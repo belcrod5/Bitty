@@ -4963,6 +4963,13 @@ async function readClientTextFile(rawPath, rawRootDir = "") {
     });
   }
   const content = await fs.readFile(resolved.realPath);
+  if (content.length > CLIENT_FILE_CONTENT_MAX_BYTES) {
+    throw makeApiError(413, "file_too_large", `file is larger than ${CLIENT_FILE_CONTENT_MAX_BYTES} bytes`, {
+      path: resolved.relativePath,
+      totalBytes: content.length,
+      maxBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
+    });
+  }
   if (isProbablyBinary(content)) {
     throw makeApiError(400, "binary_file", "binary files cannot be copied as text", {
       path: resolved.relativePath,
@@ -4972,7 +4979,7 @@ async function readClientTextFile(rawPath, rawRootDir = "") {
     ok: true,
     path: resolved.relativePath,
     bytesRead: content.length,
-    totalBytes: stat.size,
+    totalBytes: content.length,
     content: content.toString("utf8"),
   };
 }

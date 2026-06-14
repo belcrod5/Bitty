@@ -92,6 +92,15 @@ cd ..
 cp .env.ios.local.example .env.ios.local
 ```
 
+Generate the native iOS project once after cloning or after native dependency
+changes:
+
+```bash
+cd expo
+npx expo prebuild --platform ios
+cd ..
+```
+
 Set `IOS_DEVICE_ID` in `.env.ios.local`, then run:
 
 ```bash
