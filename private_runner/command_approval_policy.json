@@ -1,0 +1,22 @@
+{
+  "defaultApproval": "required",
+  "commands": {
+    "toolrun": {
+      "approval": "required",
+      "firstArgPolicies": {
+        "youtube_search": {
+          "approval": "required"
+        },
+        "youtube_channel_latest": {
+          "approval": "required"
+        },
+        "youtube_favorites": {
+          "approval": "required"
+        },
+        "brave_search": {
+          "approval": "required"
+        }
+      }
+    }
+  }
+}

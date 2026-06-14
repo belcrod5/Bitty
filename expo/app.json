@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Bitty",
+    "slug": "bitty",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "platforms": [
+      "ios"
+    ],
+    "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "録音して文字起こしを行うためにマイクを使用します。",
+          "speechRecognitionPermission": "音声を文字に変換するために音声認識を使用します。"
+        }
+      ],
+      "expo-font",
+      "react-native-enriched-markdown"
+    ],
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "CFBundleDevelopmentRegion": "ja",
+        "CFBundleLocalizations": [
+          "ja"
+        ],
+        "NSAlwaysAllowMicrophoneModeControl": true,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "WebSocket接続のためにローカルネットワークを使用します。",
+        "NSCameraUsageDescription": "画面を見ているか判定するためにカメラを使用します。",
+        "NSMicrophoneUsageDescription": "録音して文字起こしを行うためにマイクを使用します。",
+        "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
+        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"
+      },
+      "bundleIdentifier": "app.bitty.mobile"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+appId: app.bitty.mobile
+---
+- openLink: exp+bitty://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible: Continue
+    timeout: 15000
+    optional: true
+- tapOn:
+    text: Continue
+    optional: true
+- tapOn:
+    text: Close
+    optional: true
+- runFlow:
+    when:
+      visible: 開く
+    commands:
+      - tapOn:
+          point: 68%,54%
+- extendedWaitUntil:
+    visible: メニューを開く
+    timeout: 60000
+- tapOn:
+    point: 9%,8%
+- extendedWaitUntil:
+    visible: ".*Current Settings.*"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: DIRECTORIES
+    timeout: 10000
+- waitForAnimationToEnd
+- takeScreenshot: .maestro-output/ios-smoke

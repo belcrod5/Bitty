@@ -1,0 +1,75 @@
+# dependencies
+node_modules/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+.expo/web/cache/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+
+# build / test output
+coverage/
+*.tsbuildinfo
+.maestro-home/
+.maestro-output/
+debug-videos/
+
+# logs / temp / caches
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.*
+.cache/
+tmp/
+temp/
+*.tmp
+out.mp3
+
+# macOS
+.DS_Store
+
+# editor settings
+.idea/
+.vscode/
+
+# secrets and signing files
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.keystore
+
+# local private runner state
+private_runner/.env
+private_runner/.codex-home/
+private_runner/auth-cache/
+private_runner/*.log
+private_runner/logs/
+private_runner/private_runner/logs/
+docs/*.trace/
+docs/clipboard-*.txt
+
+# local GCP OAuth secrets
+gcp/client_secret*.json
+
+# native generated folders
+/ios
+/android
+/expo/ios
+/expo/android
+
+# merge backup
+*.orig.*
+
+# removed from this repository
+llm_root/timecard/

@@ -1,0 +1,561 @@
+import {
+  createWebSocketWithOptionalAuth,
+  extractNotificationMessage,
+  firstString,
+  isRpcMethodNotFoundError,
+  isThreadNotFoundError,
+  normalizeCodexWsInputs,
+  parseJsonRpcMessage,
+  parseNotificationThreadId,
+  toErrorMessage,
+} from "./helpers";
+import {
+  COMPACT_ASYNC_COMPLETION_TIMEOUT_MS,
+  NEAR_UNLIMITED_TIMEOUT_MS,
+  type CodexThreadCompactResult,
+  type JsonRpcFailure,
+  type JsonRpcId,
+  type JsonRpcSuccess,
+  type PendingRequest,
+} from "./types";
+import {
+  encodeRunnerWsLlmRpc,
+  isRunnerWsUrl,
+  normalizeRunnerWsIncomingCodexRpc,
+} from "../../runnerWs/llmAdapter";
+
+function isCompactItem(itemRaw: unknown) {
+  if (!itemRaw || typeof itemRaw !== "object") return false;
+  const type = String((itemRaw as Record<string, unknown>).type || "").trim().toLowerCase();
+  return (
+    type === "compact" ||
+    type === "compaction" ||
+    type === "threadcompaction" ||
+    type === "thread_compaction" ||
+    type === "contextcompaction" ||
+    type === "context_compaction" ||
+    type === "compacted"
+  );
+}
+
+function parseCompactThreadStatus(paramsRaw: unknown): "active" | "idle" | "" {
+  if (!paramsRaw || typeof paramsRaw !== "object") return "";
+  const params = paramsRaw as Record<string, unknown>;
+  const readStatusText = (raw: unknown) => {
+    if (typeof raw === "string" || typeof raw === "number") {
+      return String(raw).trim().toLowerCase();
+    }
+    if (!raw || typeof raw !== "object") return "";
+    const obj = raw as Record<string, unknown>;
+    return firstString(obj.type, obj.status, obj.state, obj.phase, obj.value, obj.name)
+      .toLowerCase();
+  };
+  const status = [
+    params.status,
+    params.state,
+    params.phase,
+    (params as any)?.thread?.status,
+    (params as any)?.thread?.state,
+    (params as any)?.turn?.status,
+    (params as any)?.turn?.state,
+  ].map(readStatusText).find(Boolean) || "";
+  if (["idle", "ready", "completed", "complete", "done", "succeeded", "success"].includes(status)) {
+    return "idle";
+  }
+  if (["active", "running", "busy", "processing", "working", "compacting", "inprogress", "in_progress", "starting", "queued"].includes(status)) {
+    return "active";
+  }
+  return "";
+}
+
+export async function compactCodexAppServerThread(options: {
+  wsUrl: string;
+  wsToken?: string;
+  threadId: string;
+  timeoutMs?: number;
+  onLog?: (entry: {
+    stage: string;
+    method?: string;
+    id?: number;
+    readyState?: number;
+    message?: string;
+  }) => void;
+  onEvent?: (method: string, params: unknown) => void;
+}): Promise<CodexThreadCompactResult> {
+  const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
+  const wsUrl = normalized.wsUrl;
+  const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
+  const wsToken = normalized.wsToken;
+  const threadId = String(options.threadId || "").trim();
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
+    : NEAR_UNLIMITED_TIMEOUT_MS;
+  if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
+  if (!threadId) throw new Error("threadId is empty");
+
+  const ws = createWebSocketWithOptionalAuth(wsUrl, wsToken);
+  const wsLabel = wsToken ? `${wsUrl} (token)` : `${wsUrl} (no-token)`;
+  const pending = new Map<JsonRpcId, PendingRequest>();
+  let nextId = 1;
+  let finalized = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let asyncCompletionTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let waitingForAsyncCompact = false;
+  let sawAsyncCompactActivity = false;
+
+  function emitLog(entry: {
+    stage: string;
+    method?: string;
+    id?: number;
+    readyState?: number;
+    message?: string;
+  }) {
+    if (!options.onLog) return;
+    try {
+      options.onLog(entry);
+    } catch {}
+  }
+
+  function emitEvent(method: string, params: unknown) {
+    if (!options.onEvent) return;
+    try {
+      options.onEvent(method, params);
+    } catch {}
+  }
+
+  function cleanup() {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+    }
+    if (asyncCompletionTimeoutHandle) {
+      clearTimeout(asyncCompletionTimeoutHandle);
+      asyncCompletionTimeoutHandle = null;
+    }
+    for (const entry of pending.values()) {
+      entry.reject(new Error("Codex app-server request cancelled"));
+    }
+    pending.clear();
+    try {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    } catch {}
+  }
+
+  function sendJson(payload: Record<string, unknown>) {
+    const id = Number(payload.id);
+    const method = String(payload.method || "");
+    emitLog({
+      stage: "rpc_send",
+      method: method || undefined,
+      id: Number.isFinite(id) ? id : undefined,
+      readyState: ws.readyState,
+    });
+    ws.send(useRunnerWsEnvelope
+      ? encodeRunnerWsLlmRpc(payload, threadId)
+      : JSON.stringify(payload));
+  }
+
+  function sendRequest<R>(method: string, params: Record<string, unknown> = {}) {
+    const id = nextId++;
+    return new Promise<R>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      sendJson({
+        id,
+        method,
+        params,
+      });
+    });
+  }
+
+  function resolvePendingForId(idRaw: unknown, result: unknown) {
+    const id = Number(idRaw);
+    if (!Number.isInteger(id)) return;
+    const pendingEntry = pending.get(id);
+    if (!pendingEntry) return;
+    pending.delete(id);
+    emitLog({
+      stage: "rpc_result",
+      id,
+      readyState: ws.readyState,
+    });
+    pendingEntry.resolve(result);
+  }
+
+  function rejectPendingForId(idRaw: unknown, message: string) {
+    const id = Number(idRaw);
+    if (!Number.isInteger(id)) return;
+    const pendingEntry = pending.get(id);
+    if (!pendingEntry) return;
+    pending.delete(id);
+    emitLog({
+      stage: "rpc_error",
+      id,
+      message,
+      readyState: ws.readyState,
+    });
+    pendingEntry.reject(new Error(message));
+  }
+
+  return await new Promise<CodexThreadCompactResult>((resolve, reject) => {
+    function fail(error: unknown) {
+      if (finalized) return;
+      finalized = true;
+      emitLog({
+        stage: "compact_fail",
+        message: toErrorMessage(error),
+        readyState: ws.readyState,
+      });
+      cleanup();
+      reject(error instanceof Error ? error : new Error(toErrorMessage(error)));
+    }
+
+    function succeed(method: "thread/compact/start" | "thread/compact", message = "completed") {
+      if (finalized) return;
+      finalized = true;
+      emitLog({
+        stage: "compact_success",
+        method,
+        message,
+        readyState: ws.readyState,
+      });
+      cleanup();
+      resolve({
+        threadId,
+        method,
+        accepted: true,
+      });
+    }
+
+    function waitForAsyncCompactCompletion() {
+      waitingForAsyncCompact = true;
+      if (asyncCompletionTimeoutHandle) {
+        clearTimeout(asyncCompletionTimeoutHandle);
+      }
+      asyncCompletionTimeoutHandle = setTimeout(() => {
+        fail(
+          new Error(
+            `Codex app-server compact async completion timeout (${COMPACT_ASYNC_COMPLETION_TIMEOUT_MS}ms)`
+          )
+        );
+      }, COMPACT_ASYNC_COMPLETION_TIMEOUT_MS);
+      emitLog({
+        stage: "compact_async_wait_started",
+        method: "thread/compact/start",
+        message: `timeoutMs=${COMPACT_ASYNC_COMPLETION_TIMEOUT_MS}`,
+        readyState: ws.readyState,
+      });
+    }
+
+    function stopAsyncCompactCompletionWait() {
+      waitingForAsyncCompact = false;
+      sawAsyncCompactActivity = false;
+      if (asyncCompletionTimeoutHandle) {
+        clearTimeout(asyncCompletionTimeoutHandle);
+        asyncCompletionTimeoutHandle = null;
+      }
+    }
+
+    function isTargetThreadNotification(params: unknown) {
+      const eventThreadId = parseNotificationThreadId(params);
+      return !eventThreadId || eventThreadId === threadId;
+    }
+
+    function handleAsyncCompactNotification(method: string, params: unknown) {
+      if (!waitingForAsyncCompact || !isTargetThreadNotification(params)) return;
+      if (method === "thread/compacted") {
+        succeed("thread/compact/start", "thread_compacted");
+        return;
+      }
+      if (method === "thread/status/changed") {
+        const status = parseCompactThreadStatus(params);
+        if (status === "active") {
+          sawAsyncCompactActivity = true;
+        } else if (status === "idle" && sawAsyncCompactActivity) {
+          succeed("thread/compact/start", "thread_idle_after_activity");
+        }
+        return;
+      }
+      if (method === "item/started" && isCompactItem((params as any)?.item)) {
+        sawAsyncCompactActivity = true;
+        return;
+      }
+      if (method === "item/completed" && isCompactItem((params as any)?.item)) {
+        succeed("thread/compact/start", "compact_item_completed");
+        return;
+      }
+      if (method === "turn/completed" && sawAsyncCompactActivity) {
+        succeed("thread/compact/start", "turn_completed_after_activity");
+      }
+    }
+
+    timeoutHandle = setTimeout(() => {
+      fail(new Error(`Codex app-server compact timeout (${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    emitLog({
+      stage: "ws_connect_start",
+      readyState: ws.readyState,
+      message: wsLabel,
+    });
+
+    ws.onopen = () => {
+      emitLog({
+        stage: "ws_open",
+        readyState: ws.readyState,
+      });
+      (async () => {
+        await sendRequest("initialize", {
+          clientInfo: {
+            name: "expo-ios-thread-compact",
+            title: "Expo iOS Thread Compact",
+            version: "0.1.0",
+          },
+          capabilities: {
+            experimentalApi: false,
+            optOutNotificationMethods: [],
+          },
+        });
+        sendJson({ method: "initialized", params: {} });
+
+        async function ensureThreadReachable() {
+          try {
+            const readResult = await sendRequest<Record<string, unknown>>("thread/read", {
+              threadId,
+              includeTurns: false,
+            });
+            const readThreadId = firstString(
+              (readResult as any)?.thread?.id,
+              (readResult as any)?.thread?.threadId,
+              (readResult as any)?.threadId
+            );
+            if (!readThreadId || readThreadId !== threadId) {
+              throw new Error(`thread not found: ${threadId}`);
+            }
+            emitLog({
+              stage: "compact_thread_check_ok",
+              method: "thread/read",
+              readyState: ws.readyState,
+            });
+            return;
+          } catch (readError) {
+            if (isRpcMethodNotFoundError(readError)) {
+              emitLog({
+                stage: "compact_thread_check_skip",
+                method: "thread/read",
+                message: "unsupported",
+                readyState: ws.readyState,
+              });
+              return;
+            }
+            if (!isThreadNotFoundError(readError)) {
+              throw readError;
+            }
+            emitLog({
+              stage: "compact_thread_check_retry",
+              method: "thread/resume",
+              message: "thread_not_found_on_read",
+              readyState: ws.readyState,
+            });
+            await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
+            emitLog({
+              stage: "compact_thread_check_ok",
+              method: "thread/resume",
+              readyState: ws.readyState,
+            });
+          }
+        }
+
+        let reachable = false;
+        let lastReachableError: unknown = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            await ensureThreadReachable();
+            reachable = true;
+            break;
+          } catch (error) {
+            lastReachableError = error;
+            if (!isThreadNotFoundError(error) || attempt >= 2) {
+              throw error;
+            }
+            emitLog({
+              stage: "compact_thread_check_retry_wait",
+              message: `attempt=${attempt}`,
+              readyState: ws.readyState,
+            });
+            await new Promise((r) => setTimeout(r, 400));
+          }
+        }
+        if (!reachable && lastReachableError) {
+          throw lastReachableError;
+        }
+
+        let resumedBeforeCompactStart = false;
+        const methods: Array<"thread/compact/start" | "thread/compact"> = [
+          "thread/compact/start",
+          "thread/compact",
+        ];
+        let lastError: unknown = null;
+        for (const method of methods) {
+          let retriedAfterResume = false;
+          try {
+            while (true) {
+              try {
+                if (method === "thread/compact/start" && !resumedBeforeCompactStart) {
+                  await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
+                  resumedBeforeCompactStart = true;
+                  emitLog({
+                    stage: "compact_thread_check_ok",
+                    method: "thread/resume",
+                    message: "before_compact_start",
+                    readyState: ws.readyState,
+                  });
+                }
+                if (method === "thread/compact/start") {
+                  waitForAsyncCompactCompletion();
+                }
+                await sendRequest<Record<string, unknown>>(method, { threadId });
+                emitLog({
+                  stage: "compact_method_selected",
+                  method,
+                  readyState: ws.readyState,
+                });
+                if (method !== "thread/compact/start") {
+                  succeed(method, "rpc_completed");
+                }
+                return;
+              } catch (error) {
+                lastError = error;
+                if (method === "thread/compact/start") {
+                  stopAsyncCompactCompletionWait();
+                }
+                if (isRpcMethodNotFoundError(error)) {
+                  break;
+                }
+                if (method === "thread/compact/start" && !retriedAfterResume && isThreadNotFoundError(error)) {
+                  retriedAfterResume = true;
+                  emitLog({
+                    stage: "compact_method_retry",
+                    method,
+                    message: "thread_not_found_retry_after_resume",
+                    readyState: ws.readyState,
+                  });
+                  await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
+                  emitLog({
+                    stage: "compact_thread_check_ok",
+                    method: "thread/resume",
+                    message: "retry_before_compact_start",
+                    readyState: ws.readyState,
+                  });
+                  continue;
+                }
+                throw error;
+              }
+            }
+          } catch (error) {
+            lastError = error;
+            if (isRpcMethodNotFoundError(error)) {
+              continue;
+            }
+            throw error;
+          }
+        }
+        throw (lastError instanceof Error
+          ? lastError
+          : new Error("thread compact is not supported by this codex app-server"));
+      })().catch((error) => {
+        fail(error);
+      });
+    };
+
+    ws.onmessage = (event) => {
+      if (finalized) return;
+      const rawData = typeof event.data === "string" ? event.data : String(event.data || "");
+      const incoming = normalizeRunnerWsIncomingCodexRpc(rawData);
+      if (incoming.type === "ignore") return;
+      if (incoming.type === "error") {
+        fail(new Error(incoming.message));
+        return;
+      }
+      const message = parseJsonRpcMessage(incoming.rawData);
+      if (!message) return;
+      const id = message.id;
+      const hasId = typeof id !== "undefined";
+      const method = message.method;
+      const methodText = String(method || "");
+
+      if (hasId && typeof method === "undefined") {
+        const payloadError = message.error as JsonRpcFailure["error"] | undefined;
+        if (payloadError) {
+          const msg = String(payloadError.message || "json-rpc request failed");
+          rejectPendingForId(id, msg);
+          return;
+        }
+        resolvePendingForId(id, (message as JsonRpcSuccess).result);
+        return;
+      }
+
+      if (hasId && typeof method === "string") {
+        emitLog({
+          stage: "rpc_server_request_unsupported",
+          method: methodText || undefined,
+          id: Number.isFinite(Number(id)) ? Number(id) : undefined,
+          readyState: ws.readyState,
+        });
+        sendJson({
+          id: id as any,
+          error: {
+            code: -32000,
+            message: `${method} is not supported by this client`,
+          },
+        });
+        return;
+      }
+
+      emitLog({
+        stage: "notification",
+        method: methodText || undefined,
+        readyState: ws.readyState,
+      });
+      emitEvent(methodText, message.params);
+
+      if (methodText === "error") {
+        const messageText = extractNotificationMessage(message.params);
+        if (messageText) {
+          fail(new Error(`Codex compact failed: ${messageText}`));
+        }
+        return;
+      }
+      handleAsyncCompactNotification(methodText, message.params);
+    };
+
+    ws.onerror = (event: any) => {
+      const detail = String(event?.message || event?.type || "unknown");
+      emitLog({
+        stage: "ws_error",
+        message: detail,
+        readyState: ws.readyState,
+      });
+      fail(new Error(`Codex app-server WebSocket error: ${detail} url=${wsLabel} readyState=${ws.readyState}`));
+    };
+
+    ws.onclose = (event: any) => {
+      if (finalized) return;
+      const code = Number(event?.code);
+      const reason = String(event?.reason || "").trim();
+      const wasClean = Boolean(event?.wasClean);
+      const codeText = Number.isFinite(code) ? String(code) : "unknown";
+      emitLog({
+        stage: "ws_close",
+        message: `code=${codeText} reason=${reason || "-"} clean=${wasClean}`,
+        readyState: ws.readyState,
+      });
+      fail(
+        new Error(
+          `Codex app-server WebSocket closed: code=${codeText} reason=${reason || "-"} clean=${wasClean} url=${wsLabel} readyState=${ws.readyState}`
+        )
+      );
+    };
+  });
+}

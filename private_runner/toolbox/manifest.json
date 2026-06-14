@@ -1,0 +1,64 @@
+{
+  "tools": {
+    "youtube_search": {
+      "command": "private_runner/tools/youtube_search.sh",
+      "timeoutMs": 15000,
+      "allowExtraArgs": false,
+      "argSpec": [
+        {
+          "name": "query",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 120
+        },
+        {
+          "name": "maxResults",
+          "required": false,
+          "pattern": "^(?:[1-9]|10)$"
+        }
+      ]
+    },
+    "youtube_channel_latest": {
+      "command": "private_runner/tools/youtube_channel_latest.mjs",
+      "timeoutMs": 15000,
+      "allowExtraArgs": false,
+      "argSpec": [
+        {
+          "name": "channelRef",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 120
+        },
+        {
+          "name": "maxResults",
+          "required": false
+        }
+      ]
+    },
+    "youtube_favorites": {
+      "command": "private_runner/tools/youtube_favorites.mjs",
+      "timeoutMs": 20000,
+      "allowExtraArgs": false,
+      "argSpec": [
+        {
+          "name": "pageIndex",
+          "required": false,
+          "pattern": "^(?:0|[1-9][0-9]{0,11})$"
+        }
+      ]
+    },
+    "brave_search": {
+      "command": "private_runner/tools/brave_search.sh",
+      "timeoutMs": 15000,
+      "allowExtraArgs": false,
+      "argSpec": [
+        {
+          "name": "query",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 200
+        }
+      ]
+    }
+  }
+}

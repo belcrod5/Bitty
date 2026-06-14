@@ -1,0 +1,51 @@
+{
+  "name": "bitty",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --ios",
+    "ios": "expo run:ios",
+    "start:perf": "expo start --no-dev --minify",
+    "ios:release": "expo run:ios --configuration Release",
+    "sfx:generate": "node ../scripts/generate-retro-sfx.mjs",
+    "runner:setup-auth": "node ../private_runner/setup-codex-auth.mjs",
+    "runner:setup-auth:device": "node ../private_runner/setup-codex-auth.mjs --device-auth",
+    "runner": "bash ../private_runner/run-local.sh",
+    "runner:local": "bash ../private_runner/run-local.sh",
+    "android": "expo run:android"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
+    "@legendapp/list": "^2.0.19",
+    "@react-native-picker/picker": "^2.11.4",
+    "expo": "~54.0.33",
+    "expo-av": "~16.0.8",
+    "expo-clipboard": "^55.0.13",
+    "expo-constants": "~18.0.13",
+    "expo-dev-client": "~6.0.21",
+    "expo-document-picker": "~14.0.8",
+    "expo-file-system": "~19.0.21",
+    "expo-font": "~14.0.11",
+    "expo-image-picker": "~17.0.10",
+    "expo-keep-awake": "~15.0.8",
+    "expo-speech-recognition": "^3.1.2",
+    "expo-status-bar": "~3.0.9",
+    "lottie-react-native": "~7.3.1",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-drawer-layout": "^4.2.2",
+    "react-native-enriched-markdown": "^0.5.0",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-gesture-image-viewer": "^2.3.2",
+    "react-native-keyboard-controller": "^1.21.7",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-svg": "15.12.1",
+    "react-native-webview": "13.15.0",
+    "react-native-worklets": "0.5.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}
