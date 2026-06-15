@@ -137,6 +137,15 @@ RUNNER_TOKEN=replace-with-a-long-random-string
 CODEX_HOME=$HOME/.codex
 ```
 
+Generate a runner token with:
+
+```bash
+openssl rand -hex 32
+```
+
+Paste the generated value into `RUNNER_TOKEN`. For a real iOS device, also set
+`HOST=0.0.0.0` so the runner accepts connections from your local network.
+
 3. Log in to Codex for the runner:
 
 ```bash
@@ -163,11 +172,23 @@ Useful runner commands:
 ./run-local.sh stop --mode full
 ```
 
-5. Install and start the mobile app:
+5. Install the mobile app dependencies:
 
 ```bash
 cd ../expo
 npm install
+```
+
+If the Bitty development build is not installed on the Simulator yet, build and
+install it once:
+
+```bash
+npx expo run:ios --no-bundler
+```
+
+Run this command again after changing native dependencies. Then start Metro:
+
+```bash
 npx expo start --dev-client
 ```
 
@@ -176,6 +197,20 @@ In the app settings, set:
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
 - Real device: `Runner URL = http://<your Mac LAN IP>:8788`
 - `Runner Token`: the same value as `RUNNER_TOKEN` in `private_runner/.env`
+- iOS Simulator:
+  `Codex WS URL = ws://127.0.0.1:8788/runner-ws?token=<RUNNER_TOKEN>`
+- Real device:
+  `Codex WS URL = ws://<your Mac LAN IP>:8788/runner-ws?token=<RUNNER_TOKEN>`
+- `Codex WS Token`: the same value as `RUNNER_TOKEN`
+
+If Metro fails with a Watchman permission or stale-state error, reset Watchman
+and restart Metro with a clean cache:
+
+```bash
+watchman watch-del-all
+watchman shutdown-server
+npx expo start --dev-client --clear
+```
 
 The runner writes local logs under `private_runner/logs/`. Logs and local auth
 state are intentionally ignored by Git.
