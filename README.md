@@ -5,6 +5,71 @@ your own machine. The app is built with Expo / React Native, and the runner is
 a small Node.js service that connects the mobile app to local tools, speech
 services, and Codex-style coding sessions.
 
+<p>
+  <img src="expo/assets/icon.png" alt="Bitty app icon" width="96" height="96" />
+</p>
+
+## Why Bitty Exists
+
+Bitty started as a personal companion app for local AI-assisted development. The
+original workflow used OpenClaw, but it did not expose enough control over the
+working context, and it was hard to see what the assistant could see, remember,
+or act on.
+
+The goal of Bitty is to make that shared context more visible and controllable:
+runtime state, token usage, session history, approvals, files, and speech
+activity are surfaced in the mobile app so the human and the AI assistant can
+work from a more aligned view of the task.
+
+## Features
+
+- Start, resume, and monitor Codex-style coding sessions from a mobile app.
+- Talk to the runner with voice input, automatic recording, transcription, and
+  optional auto-send.
+- Play assistant replies through local or cloud text-to-speech, including
+  streamable TTS playback.
+- Use Mini Board to keep several directory-backed coding sessions visible at
+  once.
+- Browse directory session history, unread states, and recent runner activity
+  from the mobile drawer.
+- Keep token usage, runtime limits, and context usage visible while working.
+- Review approval requests on the phone before local commands or tools
+  continue.
+- Inspect Git changes, workspace files, and running jobs without switching back
+  to the desktop.
+- Search and preview YouTube results when the runner is configured with the
+  optional YouTube tools.
+- Export and import app settings through the clipboard for device migration.
+
+## How Bitty Differs From ChatGPT Codex Mobile
+
+ChatGPT's Codex mobile experience is the official remote interface for Codex
+tasks, threads, approvals, diffs, tests, terminal output, and cloud/remote
+developer environments. Bitty is narrower: it is a local-first mobile companion
+for a runner you control on your own machine.
+
+| Area | ChatGPT Codex mobile | Bitty |
+| --- | --- | --- |
+| Primary role | Official Codex task and remote development surface | Mobile client for a local private runner |
+| Runtime | OpenAI Codex remote environment and connected workspaces | Your Mac or local network runner |
+| Interaction style | Task/thread review, approvals, diffs, logs | Voice input, TTS playback, chat, Mini Board, approvals |
+| Visibility | Codex task state and remote run details | Token usage, runtime limits, context usage, and local runner state |
+| Multi-task UX | Thread-oriented mobile access | Drawer, Mini Board, popup chat, and multiple sessions in parallel |
+| Local tools | Remote connections and configured environments | Runner endpoints for local files, jobs, speech, and tools |
+| Best fit | Managing Codex work from anywhere | Keeping a local coding assistant usable from a phone nearby |
+
+## Screenshots
+
+The screenshots below show illustrative, public-safe demo states used for the README.
+
+![Bitty Mini Board](screenshots/mini-board.png)
+
+![Bitty Chat](screenshots/chat.png)
+
+![Bitty Runner Drawer](screenshots/drawer.png)
+
+![Bitty Git Diff And Files](screenshots/git-diff-files.png)
+
 ## Repository Layout
 
 - `expo/`: Expo / React Native mobile app
@@ -22,6 +87,17 @@ services, and Codex-style coding sessions.
 
 Optional integrations such as Google Cloud TTS, YouTube API, ElevenLabs, and
 local speech services are configured through `private_runner/.env`.
+
+### Optional AivisSpeech
+
+AivisSpeech is not required to run Bitty. It is only needed when you select
+`aivisspeech` as the TTS provider.
+
+When `ttsProvider=aivisspeech` is used, the runner expects a local macOS
+AivisSpeech app/API at `http://127.0.0.1:10101`. If AivisSpeech is not installed
+or cannot become ready, voice loading and speech synthesis fail with a runner
+error instead of falling back silently to another provider. Use ElevenLabs or
+Google Cloud TTS if you do not want to run AivisSpeech locally.
 
 ## Quick Start
 
@@ -136,6 +212,14 @@ GOOGLE_CLOUD_PROJECT_ID=your-project-id
 GOOGLE_CLOUD_TTS_LANGUAGE_CODE=ja-JP
 GOOGLE_CLOUD_TTS_VOICE_NAME=ja-JP-Neural2-B
 ```
+
+## Planned Features
+
+These are not implemented yet:
+
+- Push notifications for long-running tasks and approval requests.
+- Siri shortcuts or voice commands for common app actions.
+- Access to the local runner from outside the local network.
 
 ## Tests And Checks
 

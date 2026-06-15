@@ -33,6 +33,7 @@ type PanelConversationWriteOptions = {
   selectedThreadStatusType?: string;
   sessionId?: string;
   adoptFromSessionId?: string;
+  clearRespondingRequestStartedAtMs?: number | null;
 };
 
 type SttMessageMetaLike = {
@@ -771,6 +772,7 @@ export function useCodexReplyRequest<
       isResponding: options?.isResponding ?? true,
       selectedThreadStatusType: options?.selectedThreadStatusType,
       adoptFromSessionId: options?.adoptFromSessionId,
+      clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
     });
     const hasRenderableAssistantMessage = (contentRaw: string, extra: Record<string, unknown>) => {
       if (String(contentRaw || "").trim()) return true;
@@ -1635,6 +1637,8 @@ export function useCodexReplyRequest<
             : getConversationMessagesForPanel(requestPanelId),
           {
             isResponding: false,
+            selectedThreadStatusType: "idle",
+            clearRespondingRequestStartedAtMs: replyRequestStartedAt,
             ...(latestContextUsedPct !== null ? { contextUsedPct: latestContextUsedPct } : {}),
             sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
             adoptFromSessionId: requestSessionAdoptionSourceId,

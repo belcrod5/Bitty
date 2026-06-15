@@ -4,6 +4,7 @@ LICENSE
 SECURITY.md
 .gitignore
 .env.ios.local.example
+screenshots/
 
 # Expo app
 expo/App.tsx

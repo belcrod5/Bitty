@@ -109,6 +109,11 @@ function shouldKeepPreviousRequestSnapshot(
   );
 }
 
+function isTerminalThreadStatusForRuntimeSnapshot(raw: unknown) {
+  const status = String(raw || "").trim();
+  return status === "idle" || status === "notLoaded" || status === "systemError" || status === "error";
+}
+
 type ConversationRuntimeSnapshotInput = {
   sessionId: string;
   events?: SessionRuntimeEvent[];
@@ -117,6 +122,7 @@ type ConversationRuntimeSnapshotInput = {
   contextUsedPct?: number | null;
   isResponding?: boolean;
   selectedThreadStatusType?: string;
+  clearRespondingRequestStartedAtMs?: number | null;
   request?: ConversationRuntimeRequestSnapshotInput | null;
 };
 
@@ -128,6 +134,12 @@ function normalizeContextUsedPct(raw: unknown) {
   if (raw === null || typeof raw === "undefined") return null;
   if (!Number.isFinite(Number(raw))) return null;
   return Math.max(0, Math.min(100, Math.round(Number(raw))));
+}
+
+function normalizeStartedAtMs(raw: unknown) {
+  if (!Number.isFinite(Number(raw))) return null;
+  const value = Math.floor(Number(raw));
+  return value > 0 ? value : null;
 }
 
 function cloneConversationMessages(messages: ConversationMessage[]) {
@@ -224,8 +236,17 @@ export function useConversationRuntimeStoreController() {
       : null;
     const keepPreviousRequest = hasRequestInput &&
       shouldKeepPreviousRequestSnapshot(previous?.request, normalizedRequestInput);
+    const clearRespondingRequestStartedAtMs = normalizeStartedAtMs(input.clearRespondingRequestStartedAtMs);
+    const shouldClearRespondingRequest = !hasRequestInput &&
+      isConversationRuntimeRequestResponding(previous?.request) &&
+      input.isResponding === false &&
+      isTerminalThreadStatusForRuntimeSnapshot(input.selectedThreadStatusType) &&
+      clearRespondingRequestStartedAtMs !== null &&
+      normalizeStartedAtMs(previous?.request?.startedAtMs) === clearRespondingRequestStartedAtMs;
     const nextRequest = hasRequestInput
       ? (keepPreviousRequest ? cloneRequestSnapshot(previous?.request) : normalizedRequestInput)
+      : shouldClearRespondingRequest
+      ? null
       : cloneRequestSnapshot(previous?.request);
     const inputIsResponding = keepPreviousRequest
       ? (previous?.isResponding ?? false)

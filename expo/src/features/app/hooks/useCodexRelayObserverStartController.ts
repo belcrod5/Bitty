@@ -27,6 +27,7 @@ type ConversationWriteOptions = {
   isResponding?: boolean;
   selectedThreadStatusType?: string;
   sessionId?: string;
+  clearRespondingRequestStartedAtMs?: number | null;
 };
 
 type UseCodexRelayObserverStartControllerArgs = {
@@ -78,6 +79,16 @@ type UseCodexRelayObserverStartControllerArgs = {
   ) => void;
   finalizeSessionRuntimeAfterRelayLoss: (sessionIdRaw: unknown, reason: string) => void;
   closeCodexRelayObserver: (reason: string) => void;
+  shouldProjectRelayConversation?: (params: {
+    threadId: string;
+    reason: string;
+    panelId?: string;
+  }) => boolean;
+  completeRuntimeRequestForRelayCompletion?: (params: {
+    threadId: string;
+    startedAtMs: number | null;
+    reason: string;
+  }) => void;
   onApprovalRequest: (request: ApprovalRequest) => ApprovalAction | Promise<ApprovalAction>;
   onAssistantTurnCompleted?: (params: {
     threadId: string;
@@ -143,6 +154,8 @@ export function useCodexRelayObserverStartController({
   rememberSessionRuntimeStatus,
   finalizeSessionRuntimeAfterRelayLoss,
   closeCodexRelayObserver,
+  shouldProjectRelayConversation,
+  completeRuntimeRequestForRelayCompletion,
   onApprovalRequest,
   onAssistantTurnCompleted,
 }: UseCodexRelayObserverStartControllerArgs) {
@@ -197,12 +210,42 @@ export function useCodexRelayObserverStartController({
     let ignoredPreAgentTurnCompleted = false;
     let relayPanelConversationDraft: ConversationMessage[] = [];
     const isQueueTurnObserver = observerReason === "codex_queue_turn";
-    const shouldProjectRelayToTarget = (
+    const canProjectRelayToTarget = (
       observerReason === "codex_queue_turn" ||
       isSessionRuntimeObserver
     );
+    let relayProjectionSuppressed = false;
+    let relayProjectionSuppressedLogged = false;
+    const shouldProjectRelayToTarget = () => {
+      if (!canProjectRelayToTarget) return false;
+      if (relayProjectionSuppressed) return false;
+      const allowed = shouldProjectRelayConversation
+        ? shouldProjectRelayConversation({
+          threadId,
+          reason: observerReason,
+          panelId: targetPanelId || undefined,
+        })
+        : true;
+      if (!allowed && !relayProjectionSuppressedLogged) {
+        relayProjectionSuppressedLogged = true;
+        logSessionDiag("session_relay_observer_projection_suppressed", {
+          threadId,
+          reason: observerReason,
+          panelId: targetPanelId || undefined,
+        }, {
+          throttleMs: 0,
+          throttleKey: `session_relay_observer_projection_suppressed:${threadId}:${observerReason}`,
+        });
+      }
+      if (!allowed) {
+        relayProjectionSuppressed = true;
+      }
+      return allowed;
+    };
     const readTargetConversation = () => (
-      isSessionRuntimeObserver
+      !shouldProjectRelayToTarget()
+        ? []
+        : isSessionRuntimeObserver
         ? getSessionConversationMessagesForCodex(threadId)
         : targetPanelId
         ? getPanelConversationMessagesForCodexRef.current(targetPanelId)
@@ -212,6 +255,7 @@ export function useCodexRelayObserverStartController({
       messages: ConversationMessage[],
       writeOptions?: ConversationWriteOptions
     ) => {
+      if (!shouldProjectRelayToTarget()) return;
       if (isSessionRuntimeObserver) {
         setSessionConversationMessagesForCodex(threadId, messages, writeOptions);
       } else if (targetPanelId) {
@@ -220,10 +264,10 @@ export function useCodexRelayObserverStartController({
         setActiveConversationMessagesForCodex(messages, writeOptions);
       }
     };
-    const initialTargetConversation = shouldProjectRelayToTarget
+    const initialTargetConversation = shouldProjectRelayToTarget()
       ? readTargetConversation()
       : [];
-    const initialPanelAssistant = shouldProjectRelayToTarget && observerReason === "session_restored_running_turn"
+    const initialPanelAssistant = shouldProjectRelayToTarget() && observerReason === "session_restored_running_turn"
       ? findLatestAssistantMessage(initialTargetConversation)
       : null;
     const defaultRelayAssistantMessageId = String(initialPanelAssistant?.id || "").trim() ||
@@ -311,7 +355,7 @@ export function useCodexRelayObserverStartController({
       selectedThreadStatusType?: string,
       messageIdRaw?: string
     ) => {
-      if (!shouldProjectRelayToTarget) return;
+      if (!shouldProjectRelayToTarget()) return;
       const latestConversation = relayPanelConversationDraft.length > 0
         ? relayPanelConversationDraft
         : readTargetConversation();
@@ -327,6 +371,7 @@ export function useCodexRelayObserverStartController({
           selectedThreadStatusType: selectedThreadStatusType ||
             (status === "tool_waiting_approval" ? "waiting_approval" : (isResponding ? "active" : "idle")),
           sessionId: threadId,
+          clearRespondingRequestStartedAtMs: isResponding ? null : startedAtMs,
         });
         return;
       }
@@ -360,6 +405,7 @@ export function useCodexRelayObserverStartController({
         selectedThreadStatusType: selectedThreadStatusType ||
           (status === "tool_waiting_approval" ? "waiting_approval" : (isResponding ? "active" : "idle")),
         sessionId: threadId,
+        clearRespondingRequestStartedAtMs: isResponding ? null : startedAtMs,
       });
     };
     const settleRelayAgentMessages = (
@@ -588,7 +634,13 @@ export function useCodexRelayObserverStartController({
             restoredInFlight: false,
             waitingApproval: false,
           });
-          if (shouldProjectRelayToTarget) {
+          completeRuntimeRequestForRelayCompletion?.({
+            threadId,
+            startedAtMs,
+            reason: observerReason,
+          });
+          const canProjectCompletion = shouldProjectRelayToTarget();
+          if (canProjectCompletion) {
             settleRelayAgentMessages(
               "completed",
               "turn completed",
@@ -597,14 +649,16 @@ export function useCodexRelayObserverStartController({
             );
           }
           const finalAgentMessage = getLastAgentMessage();
-          void onAssistantTurnCompleted?.({
-            threadId,
-            panelId: isSessionRuntimeObserver ? undefined : targetPanelId || undefined,
-            messageId: finalAgentMessage?.messageId || defaultRelayAssistantMessageId,
-            text: applyAssistantReply(finalAgentMessage?.content || ""),
-            directory,
-            reason: observerReason,
-          });
+          if (!relayProjectionSuppressed) {
+            void onAssistantTurnCompleted?.({
+              threadId,
+              panelId: isSessionRuntimeObserver ? undefined : targetPanelId || undefined,
+              messageId: finalAgentMessage?.messageId || defaultRelayAssistantMessageId,
+              text: applyAssistantReply(finalAgentMessage?.content || ""),
+              directory,
+              reason: observerReason,
+            });
+          }
           if (isQueueTurnObserver) {
             closeCodexRelayObserver("turn_completed");
             return;
@@ -670,6 +724,8 @@ export function useCodexRelayObserverStartController({
     setActiveConversationMessagesForCodex,
     setPanelConversationMessagesForCodexRef,
     setSessionConversationMessagesForCodex,
+    shouldProjectRelayConversation,
+    completeRuntimeRequestForRelayCompletion,
     setWaitingApprovalResumeStatusText,
     waitingApprovalResumePendingSessionIdRef,
   ]);

@@ -1356,6 +1356,7 @@ export default function App() {
     isResponding?: boolean;
     selectedThreadStatusType?: string;
     sessionId?: string;
+    clearRespondingRequestStartedAtMs?: number | null;
   };
   type PanelConversationWriteOptions = RuntimeConversationWriteOptions & {
     contextUsedPct?: number | null;
@@ -2756,6 +2757,11 @@ export default function App() {
     selectedLlmSessionId,
     conversationMessages,
   ]);
+  const {
+    getConversationRuntimeSnapshot,
+    finalizeConversationRuntimeAfterRelayLoss,
+    upsertConversationRuntimeSnapshot,
+  } = useConversationRuntimeStoreController();
 
   const rememberSessionRuntimeStatus = useCallback((
     sessionIdRaw: unknown,
@@ -3533,11 +3539,6 @@ export default function App() {
     syncTtsPlaybackWantedFromPipeline,
   });
   synthesizeSpeechStreamDelegateRef.current = synthesizeSpeechStreamFromController;
-  const {
-    getConversationRuntimeSnapshot,
-    finalizeConversationRuntimeAfterRelayLoss,
-    upsertConversationRuntimeSnapshot,
-  } = useConversationRuntimeStoreController();
   const resolveSessionHistoryContext = useCallback((sessionId: unknown) => (
     resolveSessionHistoryContextValue({
       sessionId,
@@ -3605,6 +3606,7 @@ export default function App() {
         conversationMessages: messages,
         isResponding: Boolean(options?.isResponding),
         selectedThreadStatusType: String(options?.selectedThreadStatusType || "unknown").trim() || "unknown",
+        clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
       });
     }
   }, [
@@ -3859,6 +3861,51 @@ export default function App() {
     rememberRuntimeApprovalRequest,
     resolveRuntimeApprovalRequest,
   ]);
+  const shouldProjectRelayConversation = useCallback((params: {
+    threadId: string;
+    reason: string;
+  }) => {
+    if (params.reason === "codex_queue_turn") return true;
+    const threadId = parseOptionalSessionId(params.threadId);
+    if (!threadId) return true;
+    const request = getConversationRuntimeSnapshot(threadId)?.request;
+    return !isConversationRuntimeRequestResponding(request);
+  }, [getConversationRuntimeSnapshot, parseOptionalSessionId]);
+  const completeRuntimeRequestForRelayCompletion = useCallback((params: {
+    threadId: string;
+    startedAtMs: number | null;
+    reason: string;
+  }) => {
+    const sessionId = parseOptionalSessionId(params.threadId);
+    const startedAtMs = Number.isFinite(Number(params.startedAtMs))
+      ? Math.floor(Number(params.startedAtMs))
+      : 0;
+    if (!sessionId || startedAtMs <= 0) return;
+    const request = getConversationRuntimeSnapshot(sessionId)?.request;
+    if (!isConversationRuntimeRequestResponding(request)) return;
+    if (Math.floor(Number(request?.startedAtMs || 0)) !== startedAtMs) return;
+    upsertConversationRuntimeSnapshot({
+      sessionId,
+      isResponding: false,
+      selectedThreadStatusType: "idle",
+      clearRespondingRequestStartedAtMs: startedAtMs,
+    });
+    logSessionDiag("session_runtime_request_completed_from_relay", {
+      sessionId,
+      reason: params.reason,
+      startedAtMs,
+      requestId: request?.requestId || "",
+      requestSeq: request?.requestSeq || 0,
+    }, {
+      throttleMs: 0,
+      throttleKey: `session_runtime_request_completed_from_relay:${sessionId}:${startedAtMs}`,
+    });
+  }, [
+    getConversationRuntimeSnapshot,
+    logSessionDiag,
+    parseOptionalSessionId,
+    upsertConversationRuntimeSnapshot,
+  ]);
   const { startCodexRelayObserverForSession } = useCodexRelayObserverStartController({
     parseOptionalSessionId,
     parseLlmDirectory,
@@ -3886,6 +3933,8 @@ export default function App() {
     rememberSessionRuntimeStatus,
     finalizeSessionRuntimeAfterRelayLoss,
     closeCodexRelayObserver,
+    shouldProjectRelayConversation,
+    completeRuntimeRequestForRelayCompletion,
     onApprovalRequest: handleRuntimeApprovalRequest,
     onAssistantTurnCompleted: handleRelayAssistantTurnCompleted,
   });
@@ -6472,6 +6521,7 @@ export default function App() {
         contextUsedPct: nextSnapshot.contextUsedPct,
         isResponding: nextSnapshot.isResponding,
         selectedThreadStatusType: nextSnapshot.selectedThreadStatusType,
+        clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
       });
     }
     const syncedPanelIds: string[] = [];
@@ -6585,6 +6635,7 @@ export default function App() {
       conversationMessages: messages,
       isResponding,
       selectedThreadStatusType: selectedThreadStatusTypeForRuntime,
+      clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
     });
 
     const visibleSessionId = parseOptionalSessionId(
