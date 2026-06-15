@@ -62,13 +62,34 @@ for a runner you control on your own machine.
 
 The screenshots below show illustrative, public-safe demo states used for the README.
 
-![Bitty Mini Board](screenshots/mini-board.png)
-
-![Bitty Chat](screenshots/chat.png)
-
-![Bitty Runner Drawer](screenshots/drawer.png)
-
-![Bitty Git Diff And Files](screenshots/git-diff-files.png)
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="screenshots/mini-board.png" alt="Bitty Mini Board" width="240" />
+      <br />
+      <sub>Mini Board</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="screenshots/chat.png" alt="Bitty Chat" width="240" />
+      <br />
+      <sub>Chat</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="screenshots/drawer.png" alt="Bitty Runner Drawer" width="240" />
+      <br />
+      <sub>Runner Drawer</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <img src="screenshots/git-diff-files.png" alt="Bitty Git Diff And Files" width="240" />
+      <br />
+      <sub>Git Diff And Files</sub>
+    </td>
+    <td width="33%"></td>
+    <td width="33%"></td>
+  </tr>
+</table>
 
 ## Repository Layout
 
