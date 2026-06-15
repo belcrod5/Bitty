@@ -15,10 +15,7 @@ expo/package-lock.json
 expo/tsconfig.json
 expo/audioAutoPolicy.ts
 expo/autoBargeDetector.ts
-expo/assets/adaptive-icon.png
-expo/assets/favicon.png
-expo/assets/icon.png
-expo/assets/splash-icon.png
+expo/assets/
 expo/src/
 expo/tests/
 
