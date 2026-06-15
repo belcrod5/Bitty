@@ -6,7 +6,7 @@ start or resume Codex sessions, speak prompts, review approvals, inspect files,
 and monitor local coding work from your mobile device.
 
 <p>
-  <img src="expo/assets/icon.png" alt="Bitty app icon" width="96" height="96" />
+  <img src="screenshots/image.png" alt="Bitty app screenshot" width="720" />
 </p>
 
 ## Why Bitty Exists
