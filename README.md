@@ -1,9 +1,9 @@
 # Bitty
 
-Bitty is a local-first mobile chat client for working with a private runner on
-your own machine. The app is built with Expo / React Native, and the runner is
-a small Node.js service that connects the mobile app to local tools, speech
-services, and Codex-style coding sessions.
+Bitty lets you operate Codex running on your macOS machine from an iPhone or
+iPad. The iOS app connects to a local Node.js runner on your Mac, so you can
+start or resume Codex sessions, speak prompts, review approvals, inspect files,
+and monitor local coding work from your mobile device.
 
 <p>
   <img src="expo/assets/icon.png" alt="Bitty app icon" width="96" height="96" />
@@ -23,7 +23,7 @@ work from a more aligned view of the task.
 
 ## Features
 
-- Start, resume, and monitor Codex-style coding sessions from a mobile app.
+- Start, resume, and monitor Codex sessions running on your Mac from iOS.
 - Talk to the runner with voice input, automatic recording, transcription, and
   optional auto-send.
 - Play assistant replies through local or cloud text-to-speech, including
