@@ -1,5 +1,19 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TouchableOpacity, View, type GestureResponderEvent } from "react-native";
+import {
+  ActivityIndicator,
+  InputAccessoryView,
+  Keyboard,
+  Modal,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  type GestureResponderEvent,
+} from "react-native";
 import Svg, { Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { PopupChatSourceRect } from "./popupChatTypes";
@@ -56,6 +70,8 @@ export type AppDrawerProps = {
   onMarkDirectorySessionsRead: (directoryPath: string) => void;
 };
 
+const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAccessory";
+
 function DrawerChevron({ expanded }: { expanded: boolean }) {
   const path = expanded ? "M4 6L8 10L12 6" : "M10 4L6 8L10 12";
   return (
@@ -73,6 +89,15 @@ function eventToPopupSourceRect(event: GestureResponderEvent): PopupChatSourceRe
     width: 68,
     height: 48,
   };
+}
+
+function normalizeDrawerSearchText(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function drawerSearchIncludes(query: string, values: unknown[]): boolean {
+  if (!query) return true;
+  return values.some((value) => normalizeDrawerSearchText(value).includes(query));
 }
 
 export function AppDrawer({
@@ -98,6 +123,8 @@ export function AppDrawer({
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
   const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<{
     sessionId: string;
     source: LlmSessionSource;
@@ -124,243 +151,344 @@ export function AppDrawer({
     if (color === "black") return "#111827";
     return null;
   };
+  const directoryViews = useMemo(() => registeredDirectories.flatMap((directory) => {
+    const expanded = expandedSet.has(directory.id);
+    const selectedDirectory = selectedDirectoryPath === directory.path;
+    const sessionState = directorySessionsById[directory.id];
+    const directoryLabel = String(directory.displayName || "").trim() || directory.path;
+    const sessionEntries = sessionState?.entries || [];
+    const baseVisibleSessionEntries = expanded
+      ? sessionEntries
+      : sessionEntries.filter((session) => isLlmSessionUnread(session));
+    const directoryMatches = drawerSearchIncludes(normalizedSearchQuery, [
+      directoryLabel,
+      directory.path,
+    ]);
+    const matchingSessionEntries = !normalizedSearchQuery
+      ? baseVisibleSessionEntries
+      : sessionEntries.filter((session) => {
+        const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
+        return drawerSearchIncludes(normalizedSearchQuery, [
+          titleOverride,
+          session.firstUserMessage,
+          session.sessionId,
+          session.source,
+          session.modelRef,
+          session.reasoningEffort,
+        ]);
+      });
+    const visibleSessionEntries = directoryMatches && normalizedSearchQuery
+      ? sessionEntries
+      : matchingSessionEntries;
+
+    if (normalizedSearchQuery && !directoryMatches && matchingSessionEntries.length <= 0) return [];
+
+    return [{
+      directory,
+      directoryLabel,
+      expanded,
+      selectedDirectory,
+      showLoadMoreSessions: expanded || (!!normalizedSearchQuery && directoryMatches),
+      sessionState,
+      visibleSessionEntries,
+      shouldShowSessionBlock: (
+        expanded ||
+        visibleSessionEntries.length > 0 ||
+        !!normalizedSearchQuery
+      ),
+    }];
+  }), [
+    directorySessionsById,
+    expandedSet,
+    normalizedSearchQuery,
+    registeredDirectories,
+    selectedDirectoryPath,
+    sessionTitleOverridesById,
+  ]);
 
   return (
-    <ScrollView
-      style={styles.appDrawerRoot}
-      contentContainerStyle={styles.appDrawerContent}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.appDrawerTitle}>メニュー</Text>
-      <TouchableOpacity style={styles.menuNavButton} onPress={onOpenDebug}>
-        <Text style={styles.menuNavTitle}>Current Settings</Text>
-        <Text style={styles.menuNavValue}>Debug設定画面を開く</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.menuNavButton} onPress={onOpenMiniBoard}>
-        <Text style={styles.menuNavTitle}>Mini Board</Text>
-        <Text style={styles.menuNavValue}>ミニボードを開く</Text>
-      </TouchableOpacity>
-
-      <View style={styles.appDrawerSection}>
-        <View style={styles.appDrawerSectionHeader}>
-          <Text style={styles.appDrawerSectionTitle}>Directories</Text>
-          <TouchableOpacity style={styles.appDrawerAddButton} onPress={onOpenDirectoryExplorer}>
-            <Text style={styles.appDrawerAddButtonText}>+ 追加</Text>
-          </TouchableOpacity>
-        </View>
-        {registeredDirectories.length <= 0 ? (
-          <Text style={styles.hint}>登録ディレクトリはありません。追加ボタンから登録してください。</Text>
-        ) : (
-          registeredDirectories.map((directory) => {
-            const expanded = expandedSet.has(directory.id);
-            const selectedDirectory = selectedDirectoryPath === directory.path;
-            const sessionState = directorySessionsById[directory.id];
-            const directoryLabel = String(directory.displayName || "").trim() || directory.path;
-            const sessionEntries = sessionState?.entries || [];
-            const visibleSessionEntries = expanded
-              ? sessionEntries
-              : sessionEntries.filter((session) => isLlmSessionUnread(session));
-            const shouldShowSessionBlock = expanded || visibleSessionEntries.length > 0;
-            return (
-              <View
-                key={directory.id}
-                style={[styles.appDrawerDirectoryItem, selectedDirectory && styles.appDrawerDirectoryItemSelected]}
+    <SafeAreaView style={styles.appDrawerRoot}>
+      <ScrollView
+        style={styles.appDrawerScroll}
+        contentContainerStyle={styles.appDrawerContent}
+        keyboardShouldPersistTaps="handled"
+        stickyHeaderIndices={[0]}
+      >
+        <View style={styles.appDrawerSearchSticky}>
+          <View style={styles.appDrawerSearchBox}>
+            <TextInput
+              style={styles.appDrawerSearchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="ディレクトリ・履歴を検索"
+              placeholderTextColor="#94a3b8"
+              autoCapitalize="none"
+              autoCorrect={false}
+              clearButtonMode="never"
+              inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
+              onSubmitEditing={Keyboard.dismiss}
+              returnKeyType="search"
+              submitBehavior="blurAndSubmit"
+            />
+            {searchQuery ? (
+              <TouchableOpacity
+                style={styles.appDrawerSearchClearButton}
+                onPress={() => setSearchQuery("")}
+                accessibilityRole="button"
+                accessibilityLabel="検索をクリア"
               >
-                <View style={styles.appDrawerDirectoryHeader}>
-                  <TouchableOpacity
-                    style={styles.appDrawerDirectorySelectButton}
-                    onPress={() => onStartNewSessionInDirectory(directory.path)}
-                    onLongPress={() => {
-                      setSessionContextMenuTarget(null);
-                      setDirectoryContextMenuTarget({
-                        directoryPath: directory.path,
-                      });
-                    }}
-                  >
-                    <Text
-                      style={[styles.appDrawerDirectoryName, selectedDirectory && styles.appDrawerDirectoryNameSelected]}
-                      numberOfLines={1}
+                <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+        <Text style={styles.appDrawerTitle}>メニュー</Text>
+        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenDebug}>
+          <Text style={styles.menuNavTitle}>Current Settings</Text>
+          <Text style={styles.menuNavValue}>Debug設定画面を開く</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenMiniBoard}>
+          <Text style={styles.menuNavTitle}>Mini Board</Text>
+          <Text style={styles.menuNavValue}>ミニボードを開く</Text>
+        </TouchableOpacity>
+
+        <View style={styles.appDrawerSection}>
+          <View style={styles.appDrawerSectionHeader}>
+            <Text style={styles.appDrawerSectionTitle}>Directories</Text>
+            <TouchableOpacity style={styles.appDrawerAddButton} onPress={onOpenDirectoryExplorer}>
+              <Text style={styles.appDrawerAddButtonText}>+ 追加</Text>
+            </TouchableOpacity>
+          </View>
+          {registeredDirectories.length <= 0 ? (
+            <Text style={styles.hint}>登録ディレクトリはありません。追加ボタンから登録してください。</Text>
+          ) : directoryViews.length <= 0 ? (
+            <Text style={styles.hint}>一致するディレクトリまたは履歴はありません。</Text>
+          ) : (
+            directoryViews.map(({
+              directory,
+              directoryLabel,
+              expanded,
+              selectedDirectory,
+              showLoadMoreSessions,
+              sessionState,
+              visibleSessionEntries,
+              shouldShowSessionBlock,
+            }) => {
+              return (
+                <View
+                  key={directory.id}
+                  style={[styles.appDrawerDirectoryItem, selectedDirectory && styles.appDrawerDirectoryItemSelected]}
+                >
+                  <View style={styles.appDrawerDirectoryHeader}>
+                    <TouchableOpacity
+                      style={styles.appDrawerDirectorySelectButton}
+                      onPress={() => onStartNewSessionInDirectory(directory.path)}
+                      onLongPress={() => {
+                        setSessionContextMenuTarget(null);
+                        setDirectoryContextMenuTarget({
+                          directoryPath: directory.path,
+                        });
+                      }}
                     >
-                      {directoryLabel}
-                    </Text>
-                    <Text
-                      style={[styles.appDrawerDirectoryPath, selectedDirectory && styles.appDrawerDirectoryPathSelected]}
-                      numberOfLines={1}
-                    >
-                      {directory.path}
-                    </Text>
-                  </TouchableOpacity>
-                  <View style={styles.appDrawerLoadingIndicatorWrap}>
-                    {sessionState?.loading ? <ActivityIndicator size="small" color="#0f766e" /> : null}
-                  </View>
-                  <TouchableOpacity
-                    style={styles.appDrawerExpandButton}
-                    onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
-                  >
-                    <DrawerChevron expanded={expanded} />
-                  </TouchableOpacity>
-                </View>
-                {shouldShowSessionBlock ? (
-                  <View style={styles.appDrawerSessionBlock}>
-                    {sessionState?.error ? <Text style={styles.errorText}>{sessionState.error}</Text> : null}
-                    {!sessionState?.loading && !sessionState?.error && visibleSessionEntries.length <= 0 ? (
-                      <Text style={styles.hint}>履歴はありません。</Text>
-                    ) : null}
-                    {visibleSessionEntries.map((session) => {
-                      const selected = selectedLlmSessionId === session.sessionId;
-                      const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
-                      const sessionPrimaryTitle = (
-                        titleOverride ||
-                        String(session.firstUserMessage || "").trim() ||
-                        "（ユーザーメッセージなし）"
-                      );
-                      const sessionMarkerColor = parseSessionMarkerColor(sessionMarkerColorsById[session.sessionId]);
-                      const sessionMarkerColorHex = markerColorToDotHex(sessionMarkerColor);
-                      const restoringThisSession = (
-                        llmSessionRestoreLoading &&
-                        llmSessionRestoreTargetId === session.sessionId
-                      );
-                      const contextUsedPctText = session.contextUsedPct !== null ? `${session.contextUsedPct}%` : "-";
-                      const modelTag = formatModelRefForDisplay(session.modelRef);
-                      const thinkTag = formatThinkTag(session.reasoningEffort);
-                      const hasUnread = isLlmSessionUnread(session);
-                      return (
-                        <TouchableOpacity
-                          key={`${directory.id}-${session.sessionId}`}
-                          style={[
-                            styles.appDrawerSessionItem,
-                            selected && styles.appDrawerSessionItemSelected,
-                            llmSessionRestoreLoading && styles.buttonDisabled,
-                          ]}
-                          disabled={llmSessionRestoreLoading}
-                          onPress={(event) => (
-                            onSelectSessionHistoryEntry(
-                              session.sessionId,
-                              session.source,
-                              directory.path,
-                              eventToPopupSourceRect(event)
-                            )
-                          )}
-                          onLongPress={() => {
-                            setDirectoryContextMenuTarget(null);
-                            setSessionContextMenuTarget({
-                              sessionId: session.sessionId,
-                              source: session.source,
-                              directoryPath: directory.path,
-                            });
-                          }}
-                        >
-                          <View style={styles.appDrawerSessionPrimaryRow}>
-                            {sessionMarkerColorHex ? (
-                              <View
-                                style={[
-                                  styles.appDrawerSessionMarkerDot,
-                                  { backgroundColor: sessionMarkerColorHex },
-                                ]}
-                              />
-                            ) : null}
-                            <Text
-                              style={[
-                                styles.appDrawerSessionPrimary,
-                                selected && styles.appDrawerSessionPrimarySelected,
-                              ]}
-                              numberOfLines={1}
-                            >
-                              {sessionPrimaryTitle}
-                            </Text>
-                            {restoringThisSession ? <ActivityIndicator size="small" color="#0f766e" /> : null}
-                            <Text style={styles.appDrawerSessionContextPct}>{contextUsedPctText}</Text>
-                          </View>
-                          {hasUnread ? <View style={styles.appDrawerSessionUnreadDot} /> : null}
-                          <Text style={styles.appDrawerSessionMetaText}>
-                            {`${formatSessionUpdatedAt(session.updatedAt)} [${session.source.toUpperCase()}] model:${modelTag} think:${thinkTag}`}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                    {expanded && sessionState?.hasMore ? (
-                      <TouchableOpacity
-                        style={[
-                          styles.appDrawerSessionLoadMoreButton,
-                          (sessionState.loading || sessionState.loadingMore || llmSessionRestoreLoading) && styles.buttonDisabled,
-                        ]}
-                        disabled={sessionState.loading || sessionState.loadingMore || llmSessionRestoreLoading}
-                        onPress={() => onLoadMoreSessions(directory.id, directory.path)}
+                      <Text
+                        style={[styles.appDrawerDirectoryName, selectedDirectory && styles.appDrawerDirectoryNameSelected]}
+                        numberOfLines={1}
                       >
-                        {sessionState.loadingMore ? <ActivityIndicator size="small" color="#1e40af" /> : null}
-                        <Text style={styles.appDrawerSessionLoadMoreButtonText}>もっと読み込む</Text>
-                      </TouchableOpacity>
-                    ) : null}
+                        {directoryLabel}
+                      </Text>
+                      <Text
+                        style={[styles.appDrawerDirectoryPath, selectedDirectory && styles.appDrawerDirectoryPathSelected]}
+                        numberOfLines={1}
+                      >
+                        {directory.path}
+                      </Text>
+                    </TouchableOpacity>
+                    <View style={styles.appDrawerLoadingIndicatorWrap}>
+                      {sessionState?.loading ? <ActivityIndicator size="small" color="#0f766e" /> : null}
+                    </View>
+                    <TouchableOpacity
+                      style={styles.appDrawerExpandButton}
+                      onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
+                    >
+                      <DrawerChevron expanded={expanded} />
+                    </TouchableOpacity>
                   </View>
-                ) : null}
-              </View>
-            );
-          })
-        )}
-      </View>
-      <Modal
-        visible={directoryContextMenuTarget !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setDirectoryContextMenuTarget(null)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setDirectoryContextMenuTarget(null)}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => {
-                if (directoryContextMenuTarget) {
-                  onMarkDirectorySessionsRead(directoryContextMenuTarget.directoryPath);
-                }
-                setDirectoryContextMenuTarget(null);
-              }}
-            >
-              <Text style={styles.modalOptionText}>このディレクトリの未読をすべて既読にする</Text>
-            </TouchableOpacity>
+                  {shouldShowSessionBlock ? (
+                    <View style={styles.appDrawerSessionBlock}>
+                      {sessionState?.error ? <Text style={styles.errorText}>{sessionState.error}</Text> : null}
+                      {!sessionState?.loading && !sessionState?.error && visibleSessionEntries.length <= 0 ? (
+                        <Text style={styles.hint}>履歴はありません。</Text>
+                      ) : null}
+                      {visibleSessionEntries.map((session) => {
+                        const selected = selectedLlmSessionId === session.sessionId;
+                        const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
+                        const sessionPrimaryTitle = (
+                          titleOverride ||
+                          String(session.firstUserMessage || "").trim() ||
+                          "（ユーザーメッセージなし）"
+                        );
+                        const sessionMarkerColor = parseSessionMarkerColor(sessionMarkerColorsById[session.sessionId]);
+                        const sessionMarkerColorHex = markerColorToDotHex(sessionMarkerColor);
+                        const restoringThisSession = (
+                          llmSessionRestoreLoading &&
+                          llmSessionRestoreTargetId === session.sessionId
+                        );
+                        const contextUsedPctText = session.contextUsedPct !== null ? `${session.contextUsedPct}%` : "-";
+                        const modelTag = formatModelRefForDisplay(session.modelRef);
+                        const thinkTag = formatThinkTag(session.reasoningEffort);
+                        const hasUnread = isLlmSessionUnread(session);
+                        return (
+                          <TouchableOpacity
+                            key={`${directory.id}-${session.sessionId}`}
+                            style={[
+                              styles.appDrawerSessionItem,
+                              selected && styles.appDrawerSessionItemSelected,
+                              llmSessionRestoreLoading && styles.buttonDisabled,
+                            ]}
+                            disabled={llmSessionRestoreLoading}
+                            onPress={(event) => (
+                              onSelectSessionHistoryEntry(
+                                session.sessionId,
+                                session.source,
+                                directory.path,
+                                eventToPopupSourceRect(event)
+                              )
+                            )}
+                            onLongPress={() => {
+                              setDirectoryContextMenuTarget(null);
+                              setSessionContextMenuTarget({
+                                sessionId: session.sessionId,
+                                source: session.source,
+                                directoryPath: directory.path,
+                              });
+                            }}
+                          >
+                            <View style={styles.appDrawerSessionPrimaryRow}>
+                              {sessionMarkerColorHex ? (
+                                <View
+                                  style={[
+                                    styles.appDrawerSessionMarkerDot,
+                                    { backgroundColor: sessionMarkerColorHex },
+                                  ]}
+                                />
+                              ) : null}
+                              <Text
+                                style={[
+                                  styles.appDrawerSessionPrimary,
+                                  selected && styles.appDrawerSessionPrimarySelected,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {sessionPrimaryTitle}
+                              </Text>
+                              {restoringThisSession ? <ActivityIndicator size="small" color="#0f766e" /> : null}
+                              <Text style={styles.appDrawerSessionContextPct}>{contextUsedPctText}</Text>
+                            </View>
+                            {hasUnread ? <View style={styles.appDrawerSessionUnreadDot} /> : null}
+                            <Text style={styles.appDrawerSessionMetaText}>
+                              {`${formatSessionUpdatedAt(session.updatedAt)} [${session.source.toUpperCase()}] model:${modelTag} think:${thinkTag}`}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                      {showLoadMoreSessions && sessionState?.hasMore ? (
+                        <TouchableOpacity
+                          style={[
+                            styles.appDrawerSessionLoadMoreButton,
+                            (sessionState.loading || sessionState.loadingMore || llmSessionRestoreLoading) && styles.buttonDisabled,
+                          ]}
+                          disabled={sessionState.loading || sessionState.loadingMore || llmSessionRestoreLoading}
+                          onPress={() => onLoadMoreSessions(directory.id, directory.path)}
+                        >
+                          {sessionState.loadingMore ? <ActivityIndicator size="small" color="#1e40af" /> : null}
+                          <Text style={styles.appDrawerSessionLoadMoreButtonText}>もっと読み込む</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })
+          )}
+        </View>
+        <Modal
+          visible={directoryContextMenuTarget !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setDirectoryContextMenuTarget(null)}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setDirectoryContextMenuTarget(null)}>
+            <Pressable style={styles.modalCard} onPress={() => {}}>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  if (directoryContextMenuTarget) {
+                    onMarkDirectorySessionsRead(directoryContextMenuTarget.directoryPath);
+                  }
+                  setDirectoryContextMenuTarget(null);
+                }}
+              >
+                <Text style={styles.modalOptionText}>このディレクトリの未読をすべて既読にする</Text>
+              </TouchableOpacity>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
-      <Modal
-        visible={sessionContextMenuTarget !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSessionContextMenuTarget(null)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setSessionContextMenuTarget(null)}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => {
-                if (sessionContextMenuTarget) {
-                  onMarkSessionRead(
-                    sessionContextMenuTarget.sessionId,
-                    sessionContextMenuTarget.source,
-                    sessionContextMenuTarget.directoryPath
-                  );
-                }
-                setSessionContextMenuTarget(null);
-              }}
-            >
-              <Text style={styles.modalOptionText}>既読にする</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => {
-                if (sessionContextMenuTarget) {
-                  onMarkSessionUnread(
-                    sessionContextMenuTarget.sessionId,
-                    sessionContextMenuTarget.source,
-                    sessionContextMenuTarget.directoryPath
-                  );
-                }
-                setSessionContextMenuTarget(null);
-              }}
-            >
-              <Text style={styles.modalOptionText}>未読にする</Text>
-            </TouchableOpacity>
+        </Modal>
+        <Modal
+          visible={sessionContextMenuTarget !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSessionContextMenuTarget(null)}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setSessionContextMenuTarget(null)}>
+            <Pressable style={styles.modalCard} onPress={() => {}}>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  if (sessionContextMenuTarget) {
+                    onMarkSessionRead(
+                      sessionContextMenuTarget.sessionId,
+                      sessionContextMenuTarget.source,
+                      sessionContextMenuTarget.directoryPath
+                    );
+                  }
+                  setSessionContextMenuTarget(null);
+                }}
+              >
+                <Text style={styles.modalOptionText}>既読にする</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  if (sessionContextMenuTarget) {
+                    onMarkSessionUnread(
+                      sessionContextMenuTarget.sessionId,
+                      sessionContextMenuTarget.source,
+                      sessionContextMenuTarget.directoryPath
+                    );
+                  }
+                  setSessionContextMenuTarget(null);
+                }}
+              >
+                <Text style={styles.modalOptionText}>未読にする</Text>
+              </TouchableOpacity>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
-    </ScrollView>
+        </Modal>
+      </ScrollView>
+      {Platform.OS === "ios" ? (
+        <InputAccessoryView nativeID={APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID} backgroundColor="#f8fafc">
+          <View style={styles.appDrawerKeyboardAccessory}>
+            <TouchableOpacity
+              style={styles.appDrawerKeyboardDismissButton}
+              onPress={Keyboard.dismiss}
+              accessibilityRole="button"
+              accessibilityLabel="キーボードを閉じる"
+            >
+              <Text style={styles.appDrawerKeyboardDismissButtonText}>閉じる</Text>
+            </TouchableOpacity>
+          </View>
+        </InputAccessoryView>
+      ) : null}
+    </SafeAreaView>
   );
 }
