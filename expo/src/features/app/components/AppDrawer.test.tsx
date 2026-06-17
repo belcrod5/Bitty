@@ -1,0 +1,110 @@
+import React from "react";
+import { fireEvent, render } from "@testing-library/react-native";
+import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
+import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
+
+function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
+  return {
+    sessionId: "session-default",
+    directory: "/work/bitty",
+    updatedAt: "2026-06-17T00:00:00.000Z",
+    lastReadAt: "2026-06-17T00:00:00.000Z",
+    source: "cli",
+    cwd: "/work/bitty",
+    firstUserMessage: "Default loaded session",
+    contextUsedPct: null,
+    modelRef: "gpt-5.5",
+    reasoningEffort: "high",
+    ...overrides,
+  };
+}
+
+function directoryState(entries: LlmSessionHistoryEntry[]): DirectorySessionTreeState {
+  return {
+    loading: false,
+    loadingMore: false,
+    loaded: true,
+    fetchedAtMs: 1,
+    error: "",
+    latestSessionId: entries[0]?.sessionId || "",
+    nextCursor: "next-page",
+    hasMore: true,
+    entries,
+  };
+}
+
+function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
+  const loadedSessions = [
+    session({
+      sessionId: "loaded-search",
+      firstUserMessage: "Fix drawer search",
+    }),
+    session({
+      sessionId: "loaded-restore",
+      firstUserMessage: "Restore title fallback",
+    }),
+  ];
+  const props: AppDrawerProps = {
+    selectedDirectoryPath: "/work/bitty",
+    selectedLlmSessionId: "",
+    registeredDirectories: [{
+      id: "dir-1",
+      path: "/work/bitty",
+      displayName: "Bitty",
+      markerColor: "none",
+    }],
+    expandedDirectoryIds: ["dir-1"],
+    directorySessionsById: {
+      "dir-1": directoryState(loadedSessions),
+    },
+    sessionTitleOverridesById: {
+      "loaded-restore": "Restore title override",
+    },
+    sessionMarkerColorsById: {},
+    llmSessionRestoreLoading: false,
+    llmSessionRestoreTargetId: "",
+    formatSessionUpdatedAt: () => "today",
+    onOpenDebug: jest.fn(),
+    onOpenMiniBoard: jest.fn(),
+    onOpenDirectoryExplorer: jest.fn(),
+    onToggleDirectoryExpanded: jest.fn(),
+    onLoadMoreSessions: jest.fn(),
+    onStartNewSessionInDirectory: jest.fn(),
+    onSelectSessionHistoryEntry: jest.fn(),
+    onMarkSessionRead: jest.fn(),
+    onMarkSessionUnread: jest.fn(),
+    onMarkDirectorySessionsRead: jest.fn(),
+    ...overrides,
+  };
+  return render(<AppDrawer {...props} />);
+}
+
+test("filters only loaded drawer sessions", async () => {
+  const drawer = await renderDrawer();
+
+  expect(drawer.getByText("Fix drawer search")).toBeTruthy();
+  expect(drawer.getByText("Restore title override")).toBeTruthy();
+
+  const searchInput = drawer.getByPlaceholderText("ディレクトリ・履歴を検索");
+  await fireEvent.changeText(searchInput, "restore title");
+
+  expect(drawer.queryByText("Fix drawer search")).toBeNull();
+  expect(drawer.getByText("Restore title override")).toBeTruthy();
+
+  await fireEvent.changeText(searchInput, "unloaded deploy note");
+
+  expect(drawer.queryByText("Fix drawer search")).toBeNull();
+  expect(drawer.queryByText("Restore title override")).toBeNull();
+  expect(drawer.getByText("一致するディレクトリまたは履歴はありません。")).toBeTruthy();
+});
+
+test("clears drawer search back to the loaded session list", async () => {
+  const drawer = await renderDrawer();
+
+  const searchInput = drawer.getByPlaceholderText("ディレクトリ・履歴を検索");
+  await fireEvent.changeText(searchInput, "restore title");
+  await fireEvent.press(drawer.getByLabelText("検索をクリア"));
+
+  expect(drawer.getByText("Fix drawer search")).toBeTruthy();
+  expect(drawer.getByText("Restore title override")).toBeTruthy();
+});
