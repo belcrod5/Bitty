@@ -34,9 +34,18 @@ export function useWorkspaceFileMutations({
   const [renameTarget, setRenameTarget] = useState<WorkspaceFileTarget | null>(null);
 
   const refreshAfterMutation = useCallback(async (result: WorkspaceFileMutationResult) => {
-    await reloadDirectory(getParentPath(result.previousPath || result.path));
+    const pathsToReload = new Set([
+      getParentPath(result.previousPath || result.path),
+      getParentPath(result.path),
+      String(rootDirectory || "").trim(),
+    ]);
+    for (const path of pathsToReload) {
+      if (path) {
+        await reloadDirectory(path);
+      }
+    }
     await refreshChangedFiles();
-  }, [refreshChangedFiles, reloadDirectory]);
+  }, [refreshChangedFiles, reloadDirectory, rootDirectory]);
 
   const refreshAfterMutationWithAlert = useCallback(async (result: WorkspaceFileMutationResult) => {
     try {
