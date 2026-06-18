@@ -80,6 +80,7 @@ RUN_LOCAL_RESTART_DETACHED="${RUN_LOCAL_RESTART_DETACHED:-1}"
 RUN_LOCAL_RESTART_DELAY_SEC="${RUN_LOCAL_RESTART_DELAY_SEC:-1}"
 RUN_LOCAL_REUSE_EXISTING="${RUN_LOCAL_REUSE_EXISTING:-1}"
 RUN_LOCAL_LOG_FILE="${RUN_LOCAL_LOG_FILE:-$SCRIPT_DIR/logs/run-local.log}"
+RUN_LOCAL_SCREEN_SESSION="${RUN_LOCAL_SCREEN_SESSION:-private_runner_${RUNNER_PORT}}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -447,9 +448,54 @@ reset_runtime_logs() {
   echo "[run-local] reset runtime logs under $SCRIPT_DIR/logs" >&2
 }
 
+screen_session_exists() {
+  local session="$1"
+  if ! command -v screen >/dev/null 2>&1; then
+    return 1
+  fi
+  screen -ls 2>/dev/null | grep -Eq "[[:space:]][0-9]+\\.${session}[[:space:]]"
+}
+
+wait_for_screen_session() {
+  local session="$1"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if screen_session_exists "$session"; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+start_screen_supervisor() {
+  local session="$1"
+  shift
+
+  if ! command -v screen >/dev/null 2>&1; then
+    return 127
+  fi
+  if screen_session_exists "$session"; then
+    echo "[run-local] detached screen session already exists: ${session}" >&2
+    return 0
+  fi
+
+  RUN_LOCAL_LOG_FILE="$RUN_LOCAL_LOG_FILE" \
+    RUN_LOCAL_INTERNAL_LAUNCH="${RUN_LOCAL_INTERNAL_LAUNCH:-}" \
+    RUN_LOCAL_FOREGROUND="${RUN_LOCAL_FOREGROUND:-}" \
+    RUN_LOCAL_DEFERRED_RESTART="${RUN_LOCAL_DEFERRED_RESTART:-}" \
+    RUN_LOCAL_RESTART_DETACHED="${RUN_LOCAL_RESTART_DETACHED:-}" \
+    screen -dmS "$session" /bin/bash -lc 'exec "$@" >>"$RUN_LOCAL_LOG_FILE" 2>&1' bash "$@"
+}
+
+start_nohup_supervisor() {
+  RUN_LOCAL_INTERNAL_LAUNCH="$1" RUN_LOCAL_FOREGROUND="$2" RUN_LOCAL_DEFERRED_RESTART="$3" \
+    nohup "$SCRIPT_PATH" "$4" "${@:5}" >>"$RUN_LOCAL_LOG_FILE" 2>&1 &
+  echo "$!"
+}
+
 start_in_background() {
   mkdir -p "$(dirname "$RUN_LOCAL_LOG_FILE")"
-  if ! command -v nohup >/dev/null 2>&1; then
+  if ! command -v screen >/dev/null 2>&1 && ! command -v nohup >/dev/null 2>&1; then
     echo "[run-local] nohup is required for detached start but was not found" >&2
     exit 1
   fi
@@ -459,8 +505,25 @@ start_in_background() {
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
 
-  RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 nohup "$SCRIPT_PATH" start "${mode_arg[@]}" >>"$RUN_LOCAL_LOG_FILE" 2>&1 &
-  local launcher_pid="$!"
+  if command -v screen >/dev/null 2>&1; then
+    RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 \
+      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" start "${mode_arg[@]}"
+    if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
+      echo "[run-local] started in screen session (${RUN_LOCAL_SCREEN_SESSION})" >&2
+      echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      return 0
+    fi
+    if can_reuse_runner || can_reuse_codex_app_server; then
+      echo "[run-local] start completed; target services were already running" >&2
+      echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      return 0
+    fi
+    echo "[run-local] failed to start screen session; check $RUN_LOCAL_LOG_FILE" >&2
+    exit 1
+  fi
+
+  local launcher_pid
+  launcher_pid="$(start_nohup_supervisor 1 1 0 start "${mode_arg[@]}")"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0
@@ -480,7 +543,7 @@ start_in_background() {
 
 restart_in_background() {
   mkdir -p "$(dirname "$RUN_LOCAL_LOG_FILE")"
-  if ! command -v nohup >/dev/null 2>&1; then
+  if ! command -v screen >/dev/null 2>&1 && ! command -v nohup >/dev/null 2>&1; then
     echo "[run-local] nohup is required for detached restart but was not found" >&2
     exit 1
   fi
@@ -490,9 +553,25 @@ restart_in_background() {
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
 
-  RUN_LOCAL_DEFERRED_RESTART=1 RUN_LOCAL_INTERNAL_LAUNCH=0 RUN_LOCAL_FOREGROUND=0 \
-    nohup "$SCRIPT_PATH" restart "${mode_arg[@]}" >>"$RUN_LOCAL_LOG_FILE" 2>&1 &
-  local launcher_pid="$!"
+  if command -v screen >/dev/null 2>&1; then
+    RUN_LOCAL_DEFERRED_RESTART=1 RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 RUN_LOCAL_RESTART_DETACHED=0 \
+      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" restart "${mode_arg[@]}"
+    if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
+      echo "[run-local] scheduled screen restart (${RUN_LOCAL_SCREEN_SESSION})" >&2
+      echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      return 0
+    fi
+    if can_reuse_runner || can_reuse_codex_app_server; then
+      echo "[run-local] restart completed; target services are running" >&2
+      echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      return 0
+    fi
+    echo "[run-local] failed to schedule screen restart; check $RUN_LOCAL_LOG_FILE" >&2
+    exit 1
+  fi
+
+  local launcher_pid
+  launcher_pid="$(start_nohup_supervisor 0 0 1 restart "${mode_arg[@]}")"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0
