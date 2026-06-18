@@ -96,6 +96,9 @@ The screenshots below show illustrative, public-safe demo states used for the RE
 - `expo/`: Expo / React Native mobile app
 - `private_runner/`: local runner service
 - `scripts/`: development and device-build helper scripts
+- `docs/`: repository workflow guides, including
+  [Git worktree](docs/GIT-WORKTREE.md) and
+  [code review](docs/CODE-REVIEW-GUIDE.md)
 - `maestro/`: optional iOS simulator smoke-test flows
 
 ## Requirements
