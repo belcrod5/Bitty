@@ -92,6 +92,7 @@ export function useGitChangedFilesController({
         : [];
       return {
         snapshot: {
+          branchName: String(data?.branchName || "").trim(),
           stagedFiles,
           unstagedFiles,
           untrackedFiles,

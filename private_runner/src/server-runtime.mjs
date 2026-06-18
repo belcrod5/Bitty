@@ -2958,6 +2958,20 @@ async function runGitChangedFileListCommand(args, opts = {}) {
   });
 }
 
+async function fetchGitBranchName(cwd) {
+  const result = await runCommandWithCapture("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+    timeoutMs: Math.max(10000, SANDBOXED_RUN_DEFAULT_TIMEOUT_MS),
+    maxOutputBytes: 8 * 1024,
+  });
+  if (result.timedOut) {
+    throw new Error("git command timed out: git rev-parse --abbrev-ref HEAD");
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`git command failed (${result.exitCode}): git rev-parse --abbrev-ref HEAD ${result.stderr || ""}`.trim());
+  }
+  return String(result.stdout || "").trim().split(/\r?\n/)[0] || "HEAD";
+}
+
 async function fetchGitChangedFilesSnapshot(rawDirectory) {
   const directory = String(rawDirectory || "").trim();
   let cwd = WORKSPACE_ROOT;
@@ -2973,7 +2987,8 @@ async function fetchGitChangedFilesSnapshot(rawDirectory) {
       throw makeApiError(400, "directory_invalid", errorMessage(err));
     }
   }
-  const [stagedFiles, unstagedDiffFiles, untrackedFiles] = await Promise.all([
+  const [branchName, stagedFiles, unstagedDiffFiles, untrackedFiles] = await Promise.all([
+    fetchGitBranchName(cwd),
     runGitChangedFileListCommand(["diff", "--name-only", "--staged", "-z"], { cwd }),
     runGitChangedFileListCommand(["diff", "--name-only", "-z"], { cwd }),
     runGitChangedFileListCommand(["ls-files", "--others", "--exclude-standard", "-z"], { cwd }),
@@ -2983,6 +2998,7 @@ async function fetchGitChangedFilesSnapshot(rawDirectory) {
   for (const filePath of untrackedFiles) unstagedSet.add(filePath);
   const unstagedFiles = Array.from(unstagedSet).sort((a, b) => a.localeCompare(b));
   return {
+    branchName,
     stagedFiles,
     unstagedFiles,
     untrackedFiles,

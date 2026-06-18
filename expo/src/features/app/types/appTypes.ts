@@ -211,6 +211,7 @@ export type CodexAuthProfilesSnapshot = {
 };
 
 export type GitChangedFilesSnapshot = {
+  branchName: string;
   stagedFiles: string[];
   unstagedFiles: string[];
   untrackedFiles: string[];

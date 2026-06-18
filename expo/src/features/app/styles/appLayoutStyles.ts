@@ -322,7 +322,21 @@ export const appLayoutStyles = {
   },
   gitDiffHeaderButton: {
     minHeight: 34,
+    maxWidth: 96,
     paddingHorizontal: 4,
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 1,
+  },
+  gitDiffHeaderBranchText: {
+    maxWidth: 88,
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#334155",
+    lineHeight: 13,
+  },
+  gitDiffHeaderCountRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,

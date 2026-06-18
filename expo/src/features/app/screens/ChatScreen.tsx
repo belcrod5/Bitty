@@ -1326,6 +1326,7 @@ export function ChatScreen({
     (footerSelectOpen === "model" ? modelOptions.length : thinkOptions.length) * 34
   ) + 8;
   const footerSelectTop = Math.max(8, footerSelectAnchor.y - footerSelectEstimatedHeight - 6);
+  const gitDiffBranchName = String(gitChangedFiles.branchName || "").trim() || "HEAD";
   const gitDiffAddedCount = countGitChangedFiles(gitChangedFiles.stagedFiles);
   const gitDiffRemovedCount = countGitChangedFiles(gitChangedFiles.unstagedFiles);
 
@@ -1707,8 +1708,13 @@ export function ChatScreen({
             accessibilityRole="button"
             accessibilityLabel="Git差分パネルを開く"
           >
-            <Text style={styles.gitDiffHeaderButtonPlusText}>{`+${gitDiffAddedCount}`}</Text>
-            <Text style={styles.gitDiffHeaderButtonMinusText}>{`-${gitDiffRemovedCount}`}</Text>
+            <Text style={styles.gitDiffHeaderBranchText} numberOfLines={1}>
+              {gitDiffBranchName}
+            </Text>
+            <View style={styles.gitDiffHeaderCountRow}>
+              <Text style={styles.gitDiffHeaderButtonPlusText}>{`+${gitDiffAddedCount}`}</Text>
+              <Text style={styles.gitDiffHeaderButtonMinusText}>{`-${gitDiffRemovedCount}`}</Text>
+            </View>
           </TouchableOpacity>
           <View style={styles.chatContextWrap}>
             <ChatContextUsageMenu

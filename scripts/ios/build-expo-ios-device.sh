@@ -18,6 +18,7 @@ CONFIGURATION="${IOS_CONFIGURATION:-Release}"
 SCHEME="${IOS_SCHEME:-Bitty}"
 WORKSPACE_PATH="${IOS_WORKSPACE_PATH:-${IOS_DIR}/Bitty.xcworkspace}"
 DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-${IOS_DIR}/build/oneshot-derived-data}"
+DEVELOPMENT_TEAM="${IOS_DEVELOPMENT_TEAM:-}"
 LAUNCH_AFTER_INSTALL="${IOS_LAUNCH_AFTER_INSTALL:-0}"
 BUNDLE_ID_OVERRIDE="${IOS_BUNDLE_ID:-}"
 
@@ -44,13 +45,19 @@ if ! command -v xcrun >/dev/null 2>&1; then
 fi
 
 echo "[build-ios] Building scheme=${SCHEME} configuration=${CONFIGURATION}"
-xcodebuild \
+xcodebuild_args=(
   -workspace "${WORKSPACE_PATH}" \
   -scheme "${SCHEME}" \
   -configuration "${CONFIGURATION}" \
   -destination "id=${DEVICE_ID}" \
   -derivedDataPath "${DERIVED_DATA_PATH}" \
-  build
+)
+
+if [[ -n "${DEVELOPMENT_TEAM}" ]]; then
+  xcodebuild_args+=(DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM}")
+fi
+
+xcodebuild "${xcodebuild_args[@]}" build
 
 PRODUCTS_DIR="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphoneos"
 APP_PATH="$(find "${PRODUCTS_DIR}" -maxdepth 1 -type d -name '*.app' | head -n 1)"
