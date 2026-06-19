@@ -4,7 +4,6 @@ import {
   Easing,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
@@ -17,10 +16,12 @@ import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerCon
 import { useConversation } from "../contexts/ConversationContext";
 import { styles } from "../styles";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
+import { MiniBoardChatPreviewSkeleton } from "../components/MiniBoardChatPreviewSkeleton";
 import { PopupChatOverlay } from "../components/PopupChatOverlay";
 import type { PopupChatSourceRect } from "../components/popupChatTypes";
 import type { DirectoryMarkerColor } from "../components/AppDrawer";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
+import { miniBoardStyles } from "./MiniBoardScreen.styles";
 
 const MINI_BOARD_SOURCE_LABEL = "registered_directories";
 const MINI_BOARD_PREVIEW_PANEL_IDS = [
@@ -226,9 +227,25 @@ export function MiniBoardScreen() {
     MINI_BOARD_PANEL_ASSIGNMENT.map((assignment) => {
       const entry = registeredDirectorySessionCandidates[assignment.sessionIndex];
       if (!entry) return `${assignment.panelId}:`;
-      return `${assignment.panelId}:${entry.sessionId}:${entry.directory}`;
+      return `${assignment.panelId}:${entry.sessionId}:${entry.directory}:${getMiniBoardTimeValue(entry.updatedAt)}`;
     }).join("|")
   ), [registeredDirectorySessionCandidates]);
+  const registeredDirectoryRefreshState = useMemo(() => {
+    const targets = registeredDirectories
+      .map((directory) => {
+        const directoryPath = String(directory.path || "").trim();
+        return directoryPath ? { id: directory.id, path: directoryPath } : null;
+      })
+      .filter((target): target is { id: string; path: string } => !!target);
+    return {
+      key: JSON.stringify(targets.map((target) => [target.id, target.path])),
+      count: targets.length,
+      pending: targets.some((target) => {
+        const state = directorySessionsById[target.id];
+        return !state || state.loading || state.loadingMore || !state.loaded;
+      }),
+    };
+  }, [directorySessionsById, registeredDirectories]);
   const candidateDebugSnapshot = useMemo(() => ({
     source: MINI_BOARD_SOURCE_LABEL,
     registeredDirectoryCount: registeredDirectories.length,
@@ -358,7 +375,6 @@ export function MiniBoardScreen() {
       screen: "mini_board",
       source: MINI_BOARD_SOURCE_LABEL,
     }, { throttleMs: 0 });
-    void refreshRegisteredDirectorySessionsRef.current();
     return () => {
       logSessionDiagRef.current("mini_board_unmounted", {
         miniBoardCycleId: miniBoardCycleIdRef.current,
@@ -369,6 +385,16 @@ export function MiniBoardScreen() {
       MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => resetPanel(panelId));
     };
   }, []);
+
+  useEffect(() => {
+    if (registeredDirectoryRefreshState.count <= 0) return;
+    logSessionDiagRef.current("mini_board_registered_directories_refresh", {
+      miniBoardCycleId: miniBoardCycleIdRef.current,
+      source: MINI_BOARD_SOURCE_LABEL,
+      directoryCount: registeredDirectoryRefreshState.count,
+    }, { throttleMs: 0 });
+    void refreshRegisteredDirectorySessionsRef.current();
+  }, [registeredDirectoryRefreshState.count, registeredDirectoryRefreshState.key]);
 
   useEffect(() => {
     logSessionDiagRef.current("mini_board_candidate_source_snapshot", {
@@ -394,6 +420,28 @@ export function MiniBoardScreen() {
       const state = directorySessionsById[directory.id];
       return Boolean(state?.loading || state?.loadingMore);
     });
+    if (registeredDirectoryRefreshState.pending) {
+      hydratedSessionSignatureRef.current = "";
+      MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
+      setPanelHydrationById(
+        MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
+          acc[panelId] = {
+            status: "loading",
+            sessionId: "",
+            message: "登録ディレクトリの履歴を取得中",
+          };
+          return acc;
+        }, {} as Record<MiniBoardPreviewPanelId, MiniBoardPanelHydrationState>)
+      );
+      logSessionDiagRef.current("mini_board_hydrate_waiting_for_directory_refresh", {
+        miniBoardCycleId: miniBoardCycleIdRef.current,
+        source: MINI_BOARD_SOURCE_LABEL,
+        registeredDirectoryCount: registeredDirectories.length,
+      }, { throttleMs: 0 });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (registeredDirectorySessionCandidates.length <= 0) {
       hydratedSessionSignatureRef.current = "";
       MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
@@ -550,6 +598,7 @@ export function MiniBoardScreen() {
     allRegisteredDirectorySessionCandidates.length,
     directorySessionsById,
     registeredDirectories,
+    registeredDirectoryRefreshState.pending,
     registeredDirectorySessionCandidates,
     registeredDirectorySessionHydrateSignature,
     selectedColorFilters.length,
@@ -782,7 +831,8 @@ export function MiniBoardScreen() {
                 const candidate = registeredDirectorySessionCandidates[index];
                 const hydrationState = panelHydrationById[assignment.panelId];
                 const isReady = hydrationState?.status === "ready";
-                const canOpenPopup = !!candidate;
+                const isLoading = registeredDirectoryRefreshState.pending || hydrationState?.status === "loading";
+                const canOpenPopup = !!candidate && isReady && !isLoading;
                 return (
                   <View
                     key={assignment.panelId}
@@ -794,7 +844,9 @@ export function MiniBoardScreen() {
                       hiddenPopupSourcePanelId === assignment.panelId ? miniBoardStyles.chatPreviewCardHidden : null,
                     ]}
                   >
-                    {isReady ? (
+                    {isLoading ? (
+                      <MiniBoardChatPreviewSkeleton />
+                    ) : isReady ? (
                       <View pointerEvents="none" style={miniBoardStyles.chatPreviewInner}>
                         <ChatScreen
                           mode="mini_board"
@@ -873,245 +925,3 @@ export function MiniBoardScreen() {
     </View>
   );
 }
-
-const miniBoardStyles = StyleSheet.create({
-  root: {
-    position: "relative",
-    flex: 1,
-    backgroundColor: "#fbfaf7",
-    paddingHorizontal: 0,
-    paddingTop: 0,
-  },
-  topRow: {
-    position: "relative",
-    zIndex: 80,
-    elevation: 80,
-    height: 40,
-    marginBottom: 0,
-    paddingHorizontal: 10,
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#fbfaf7",
-  },
-  menuButton: {
-    width: 44,
-    height: 40,
-    borderRadius: 999,
-    backgroundColor: "transparent",
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  menuButtonText: {
-    color: "#151515",
-    fontSize: 18,
-    lineHeight: 20,
-    fontWeight: "700",
-  },
-  filterTrigger: {
-    position: "absolute",
-    top: 0,
-    right: 10,
-    width: 44,
-    height: 40,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 72,
-    elevation: 72,
-  },
-  filterTriggerDotStack: {
-    position: "relative",
-    width: 34,
-    height: 16,
-  },
-  filterTriggerDot: {
-    position: "absolute",
-    top: 3,
-    width: 10,
-    height: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(21, 21, 17, 0.14)",
-  },
-  filterTriggerDot0: {
-    left: 5,
-  },
-  filterTriggerDot1: {
-    left: 13,
-  },
-  filterTriggerDot2: {
-    left: 21,
-  },
-  filterInlinePicker: {
-    position: "absolute",
-    top: 0,
-    right: 10,
-    height: 40,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    zIndex: 74,
-    elevation: 74,
-  },
-  filterDismissLayer: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "transparent",
-    zIndex: 70,
-    elevation: 70,
-  },
-  content: {
-    flex: 1,
-    justifyContent: "flex-start",
-    gap: 0,
-    backgroundColor: "#fbfaf7",
-  },
-  filterChip: {
-    borderRadius: 999,
-    borderWidth: 0,
-    borderColor: "transparent",
-    backgroundColor: "transparent",
-    width: 44,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  filterChipSelected: {
-    backgroundColor: "transparent",
-  },
-  filterSelectedMark: {
-    position: "absolute",
-    bottom: 5,
-    left: 20.5,
-    width: 3,
-    height: 3,
-    borderRadius: 999,
-    backgroundColor: "#151515",
-    opacity: 0.44,
-  },
-  filterDot: {
-    width: 13,
-    height: 13,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(21, 21, 17, 0.14)",
-  },
-  previewScroll: {
-    flex: 1,
-    backgroundColor: "#fbfaf7",
-  },
-  previewGrid: {
-    paddingHorizontal: 12,
-    paddingTop: 1,
-    paddingBottom: 18,
-    gap: 0,
-  },
-  previewRow: {
-    position: "relative",
-    flexDirection: "row",
-    alignItems: "stretch",
-    gap: 0,
-  },
-  previewVerticalSeparator: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: "50%",
-    width: 0,
-    borderRightWidth: 1,
-    borderStyle: "dashed",
-    borderColor: "rgba(22, 22, 19, 0.44)",
-    zIndex: 40,
-    elevation: 40,
-  },
-  previewHorizontalSeparator: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 0,
-    borderBottomWidth: 1,
-    borderStyle: "dashed",
-    borderColor: "rgba(22, 22, 19, 0.34)",
-    zIndex: 40,
-    elevation: 40,
-  },
-  chatPreviewCard: {
-    flex: 1,
-    minWidth: 0,
-    borderRadius: 0,
-    overflow: "hidden",
-    borderWidth: 0,
-    borderStyle: "dashed",
-    borderColor: "rgba(22, 22, 19, 0.48)",
-    backgroundColor: "#fbfaf7",
-    paddingHorizontal: 14,
-    paddingVertical: 15,
-  },
-  chatPreviewCardHidden: {
-    opacity: 0,
-  },
-  chatPreviewInner: {
-    flex: 1,
-  },
-  chatPreviewError: {
-    flex: 1,
-    backgroundColor: "#fbfaf7",
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    gap: 6,
-    justifyContent: "center",
-  },
-  chatPreviewErrorTitle: {
-    color: "#575650",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  chatPreviewErrorText: {
-    color: "#8d8b83",
-    fontSize: 11,
-    fontWeight: "500",
-  },
-  chatPreviewTapLayer: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 20,
-  },
-  markerDotNone: {
-    backgroundColor: "#ffffff",
-  },
-  loadMoreButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 0,
-    borderWidth: 0,
-    backgroundColor: "#fbfaf7",
-    minHeight: 48,
-    paddingVertical: 0,
-  },
-  loadMoreButtonText: {
-    color: "#8d8b83",
-    fontSize: 11.5,
-    fontWeight: "700",
-  },
-  floatingControls: {
-    position: "absolute",
-    right: 12,
-    bottom: 8,
-    zIndex: 82,
-    elevation: 82,
-    alignItems: "flex-end",
-    gap: 6,
-  },
-  popupOverlayHost: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 100,
-    elevation: 100,
-  },
-  statusMenu: {
-    borderRadius: 8,
-    backgroundColor: "rgba(251, 250, 247, 0.88)",
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-});
