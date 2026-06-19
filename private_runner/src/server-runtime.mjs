@@ -9538,7 +9538,7 @@ function parseCodexRpcMeta(rawData, isBinary) {
     const text = Buffer.isBuffer(rawData)
       ? rawData.toString("utf8")
       : String(rawData ?? "");
-    if (!text || text.length > 40000) return null;
+    if (!text || text.length > 200000) return null;
     const payload = JSON.parse(text);
     const method = typeof payload?.method === "string" ? payload.method : "";
     const id = Number.isFinite(Number(payload?.id)) ? Number(payload.id) : null;
@@ -9659,6 +9659,12 @@ function shouldBindRelayThreadFromUpstreamMethod(methodRaw) {
   if (method.startsWith("item/")) return true;
   if (method === "turn/started" || method === "turn/completed" || method === "turn/interrupted") return true;
   return false;
+}
+
+function isCodexRelayThreadMismatch(relayThreadIdRaw, eventThreadIdRaw) {
+  const relayThreadId = String(relayThreadIdRaw || "").trim();
+  const eventThreadId = String(eventThreadIdRaw || "").trim();
+  return Boolean(relayThreadId && eventThreadId && relayThreadId !== eventThreadId);
 }
 
 function setCodexAgentMessageText(item, text) {
@@ -10233,6 +10239,19 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  const metaThreadId = String(meta?.threadId || "").trim();
+  const relayThreadId = String(relay.threadId || "").trim();
+  if (isCodexRelayThreadMismatch(relayThreadId, metaThreadId)) {
+    void appendCodexWsProxyDebug("upstream_to_client_rpc_ignored_thread_mismatch", {
+      relayId: relay.relayId,
+      remote,
+      endpoint,
+      method: meta?.method || "",
+      threadId: metaThreadId,
+      relayThreadId,
+    });
+    return;
+  }
   if (!meta && !isBinary) {
     const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
     if (text) {
@@ -10921,6 +10940,8 @@ if (!RUNNER_SKIP_SERVER_START) {
 
 export const __TESTING__ = {
   shouldReplayCodexRelayEvent,
+  isCodexRelayThreadMismatch,
+  handleCodexRelayUpstreamMessage,
   resolveToolRoot,
   resolvePathWithinToolRoot,
   resolveClientFilePath,

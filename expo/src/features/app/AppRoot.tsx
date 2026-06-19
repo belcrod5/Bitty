@@ -6318,7 +6318,6 @@ export default function App() {
     resolvePanelSnapshotForDisplay,
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
-    setPanelAutoSpeechOpen,
     setSessionMarkerColorForSession,
     upsertConversationRuntimeSnapshot,
     setPanelRuntimeEntriesById,

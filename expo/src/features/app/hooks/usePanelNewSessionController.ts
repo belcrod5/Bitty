@@ -24,7 +24,6 @@ type UsePanelNewSessionControllerArgs = {
     baseSnapshot: PanelRuntimeSnapshot,
     patch?: PanelRuntimeSnapshotPatch
   ) => PanelRuntimeSnapshot;
-  setPanelAutoSpeechOpen: (panelId: string, open: boolean) => void;
   setSessionMarkerColorForSession: (sessionId: string, markerColor: "gray") => void;
   upsertConversationRuntimeSnapshot: (input: {
     sessionId: string;
@@ -53,7 +52,6 @@ export function usePanelNewSessionController({
   resolvePanelSnapshotForDisplay,
   createEmptyPanelRuntimeSnapshot,
   createPanelRuntimeSnapshot,
-  setPanelAutoSpeechOpen,
   setSessionMarkerColorForSession,
   upsertConversationRuntimeSnapshot,
   setPanelRuntimeEntriesById,
@@ -88,7 +86,6 @@ export function usePanelNewSessionController({
       ttsPlaybackMessageId: "",
     });
 
-    setPanelAutoSpeechOpen(panelId, false);
     setSessionMarkerColorForSession(sessionId, "gray");
     upsertConversationRuntimeSnapshot({
       sessionId,
@@ -116,7 +113,6 @@ export function usePanelNewSessionController({
     normalizeRuntimePanelId,
     registeredDirectories,
     resolvePanelSnapshotForDisplay,
-    setPanelAutoSpeechOpen,
     setPanelRuntimeEntriesById,
     setSessionMarkerColorForSession,
     upsertConversationRuntimeSnapshot,
