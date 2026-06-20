@@ -9,6 +9,7 @@ type StartRunnerShellScriptParams = {
   runnerUrl: string;
   runnerToken: string;
   path: string;
+  allowExternal?: boolean;
 };
 
 export type StartRunnerShellScriptResult = {
@@ -73,6 +74,7 @@ export async function startRunnerShellScript({
   runnerUrl,
   runnerToken,
   path,
+  allowExternal = false,
 }: StartRunnerShellScriptParams): Promise<StartRunnerShellScriptResult> {
   const filePath = normalizeRunnerPath(path);
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
@@ -91,6 +93,7 @@ export async function startRunnerShellScript({
     },
     body: JSON.stringify({
       path: filePath,
+      ...(allowExternal ? { allowExternal: true } : {}),
     }),
   });
   const text = await response.text();
@@ -231,9 +234,12 @@ export function openRunnerFileContextMenu({
     });
   };
   const executeAction = () => {
+    const warning = getRunnerScriptExecutionWarning(filePath, rootDir);
     Alert.alert(
-      "実行確認",
-      `${filePath} を実行してもよろしいですか？`,
+      warning?.title || "実行確認",
+      warning
+        ? `${warning.message}\n\n${filePath} を実行してもよろしいですか？`
+        : `${filePath} を実行してもよろしいですか？`,
       [
         {
           text: "キャンセル",
@@ -247,6 +253,7 @@ export function openRunnerFileContextMenu({
               runnerUrl,
               runnerToken,
               path: filePath,
+              allowExternal: warning?.allowExternal,
             })
               .then((result) => {
                 if (!result.ok) {
@@ -340,6 +347,67 @@ export function openRunnerFileContextMenu({
 
 export function normalizeRunnerPath(value: unknown) {
   return String(value || "").trim().replace(/\\/g, "/");
+}
+
+function normalizeRunnerDirectoryPath(value: unknown) {
+  const normalized = normalizeRunnerPath(value).replace(/\/+$/, "");
+  return normalized || ".";
+}
+
+function normalizeRunnerComparablePath(value: unknown) {
+  const path = normalizeRunnerDirectoryPath(value);
+  const driveMatch = /^([a-zA-Z]:)(\/.*)?$/.exec(path);
+  const drive = driveMatch ? driveMatch[1] : "";
+  const pathWithoutDrive = driveMatch ? (driveMatch[2] || "/") : path;
+  const isAbsolute = pathWithoutDrive.startsWith("/");
+  const parts: string[] = [];
+  for (const part of pathWithoutDrive.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length > 0 && parts[parts.length - 1] !== "..") {
+        parts.pop();
+      } else if (!isAbsolute) {
+        parts.push(part);
+      }
+      continue;
+    }
+    parts.push(part);
+  }
+  const normalized = `${isAbsolute ? "/" : ""}${parts.join("/")}`.replace(/\/+$/, "");
+  if (drive) return `${drive}${normalized || "/"}`;
+  return normalized || (isAbsolute ? "/" : ".");
+}
+
+function isAbsoluteRunnerPath(pathRaw: unknown) {
+  const targetPath = normalizeRunnerPath(pathRaw);
+  return targetPath.startsWith("/") || /^[a-zA-Z]:\//.test(targetPath);
+}
+
+function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
+  const targetPath = normalizeRunnerComparablePath(pathRaw);
+  const directory = normalizeRunnerComparablePath(directoryRaw);
+  if (!directory || directory === "." || directory === "/") return true;
+  return targetPath === directory || targetPath.startsWith(`${directory}/`);
+}
+
+function getRunnerScriptExecutionWarning(filePath: string, rootDir: string) {
+  const isAbsolute = isAbsoluteRunnerPath(filePath);
+  const isOutsideSelectedDirectory = !isRunnerPathInsideDirectory(filePath, rootDir);
+  if (!isAbsolute && !isOutsideSelectedDirectory) return null;
+  if (isAbsolute) {
+    return {
+      title: "絶対パスのスクリプト実行確認",
+      message: isOutsideSelectedDirectory
+        ? "選択中のディレクトリ外にあるスクリプトです。"
+        : "絶対パスで指定されたスクリプトです。",
+      allowExternal: true,
+    };
+  }
+  return {
+    title: "別ディレクトリのスクリプト実行確認",
+    message: "選択中のディレクトリとは別の場所にあるスクリプトです。",
+    allowExternal: false,
+  };
 }
 
 export function getRunnerMediaKind(pathRaw: unknown): RunnerMediaKind | null {

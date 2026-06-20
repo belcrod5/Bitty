@@ -15,6 +15,10 @@ if [ -x "$LOCAL_NODE_BIN/node" ]; then
   export PATH="$LOCAL_NODE_BIN:$PATH"
 fi
 
+if [ -x "$BOOTSTRAP_LOCAL_SCRIPT" ]; then
+  "$BOOTSTRAP_LOCAL_SCRIPT" --repo-root "$PROJECT_ROOT" --env --private-runner
+fi
+
 if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -568,7 +572,7 @@ restart_in_background() {
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
 
-  if command -v screen >/dev/null 2>&1; then
+  if command -v screen >/dev/null 2>&1 && ! screen_session_exists "$RUN_LOCAL_SCREEN_SESSION"; then
     RUN_LOCAL_DEFERRED_RESTART=1 RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 RUN_LOCAL_RESTART_DETACHED=0 \
       start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" restart "${mode_arg[@]}"
     if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
@@ -585,8 +589,12 @@ restart_in_background() {
     exit 1
   fi
 
+  if screen_session_exists "$RUN_LOCAL_SCREEN_SESSION"; then
+    echo "[run-local] existing screen session detected; scheduling restart with nohup" >&2
+  fi
+
   local launcher_pid
-  launcher_pid="$(start_nohup_supervisor 0 0 1 restart "${mode_arg[@]}")"
+  launcher_pid="$(start_nohup_supervisor 1 1 1 restart "${mode_arg[@]}")"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0

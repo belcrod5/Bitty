@@ -48,6 +48,8 @@ import { TtsWaveformPlayer } from "../components/TtsWaveformPlayer";
 import { YouTubeVideoList } from "../components/YouTubeVideoList";
 import { GitDiffPanel } from "../components/GitDiffPanel";
 import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
+import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
+import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import { modelRefLabelForDisplay, normalizeModelRef, type ReasoningEffort } from "../utils/settingsParsers";
 import { countGitChangedFiles } from "../utils/gitChangedFiles";
@@ -1186,6 +1188,20 @@ export function ChatScreen({
     }
     Alert.alert("通知", text);
   }, [showChatBottomToast]);
+  const {
+    renameTarget: chatFileRenameTarget,
+    requestRename: requestChatFileRename,
+    cancelRename: cancelChatFileRename,
+    renameFile: renameChatFile,
+    renameFileTarget: renameChatFileTarget,
+    deleteFile: deleteChatFile,
+  } = useWorkspaceFileMutations({
+    runnerUrl,
+    runnerToken,
+    rootDirectory: selectedDirectoryPathForView,
+    refreshChangedFiles: gitChangedFiles.refresh,
+    showInfoToast,
+  });
   const openChatFileLinkContextMenu = useCallback((filePathRaw: unknown) => {
     const filePath = normalizeRunnerPath(filePathRaw);
     if (!filePath) return;
@@ -1195,12 +1211,28 @@ export function ChatScreen({
       runnerUrl,
       runnerToken,
       rootDir: selectedDirectoryPathForView,
-      allowExecute: false,
+      allowExecute: true,
+      allowMutate: true,
       getPathLabel,
       showInfoToast,
       onOpenMedia: setRunnerMedia,
+      onShellScriptStarted: () => {
+        setGitDiffPanelOpen(true);
+      },
+      onRequestRename: requestChatFileRename,
+      onRequestDelete: deleteChatFile,
+      onRenameFile: renameChatFileTarget,
     });
-  }, [getPathLabel, runnerToken, runnerUrl, selectedDirectoryPathForView, showInfoToast]);
+  }, [
+    deleteChatFile,
+    getPathLabel,
+    renameChatFileTarget,
+    requestChatFileRename,
+    runnerToken,
+    runnerUrl,
+    selectedDirectoryPathForView,
+    showInfoToast,
+  ]);
   const readSelectedMessageText = useCallback((message: ConversationMessage, selectedTextRaw: unknown) => {
     const selectedText = String(selectedTextRaw || "").trim();
     if (!sanitizeTextForTts(selectedText)) return;
@@ -1970,6 +2002,11 @@ export function ChatScreen({
         <RunnerMediaViewer
           media={approvalDialogPending ? null : runnerMedia}
           onRequestClose={() => setRunnerMedia(null)}
+        />
+        <WorkspaceFileRenameDialog
+          target={approvalDialogPending ? null : chatFileRenameTarget}
+          onCancel={cancelChatFileRename}
+          onRename={renameChatFile}
         />
         <View style={styles.chatComposer}>
           <View style={styles.connectionStatusArea}>

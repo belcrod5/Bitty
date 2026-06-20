@@ -10,7 +10,7 @@ type UseWorkspaceFileMutationsParams = {
   runnerUrl: string;
   runnerToken: string;
   rootDirectory: string;
-  reloadDirectory: (path: string) => Promise<void>;
+  reloadDirectory?: (path: string) => Promise<void>;
   refreshChangedFiles: () => void | Promise<void>;
   showInfoToast: (textRaw: unknown) => void;
 };
@@ -39,8 +39,9 @@ export function useWorkspaceFileMutations({
       getParentPath(result.path),
       String(rootDirectory || "").trim(),
     ]);
-    for (const path of pathsToReload) {
-      if (path) {
+    if (reloadDirectory) {
+      for (const path of pathsToReload) {
+        if (!path) continue;
         await reloadDirectory(path);
       }
     }

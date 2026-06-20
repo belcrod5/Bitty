@@ -3038,7 +3038,7 @@ function resolveScriptExecutionTimeoutMs() {
   );
 }
 
-async function resolveWorkspaceShellScriptTarget(rawPath) {
+async function resolveWorkspaceShellScriptTarget(rawPath, opts = {}) {
   const requestedPath = String(rawPath || "").trim();
   if (!requestedPath) {
     throw makeApiError(400, "path_required", "path is required");
@@ -3046,7 +3046,22 @@ async function resolveWorkspaceShellScriptTarget(rawPath) {
   const workspaceReal = await getWorkspaceRealPath();
   let resolved;
   try {
-    resolved = await resolvePathWithinToolRoot(workspaceReal, requestedPath, { defaultPath: "." });
+    if (path.isAbsolute(requestedPath)) {
+      if (!opts.allowExternal) {
+        throw new Error("absolute script path requires confirmation");
+      }
+      const realPath = await fs.realpath(requestedPath);
+      resolved = {
+        absPath: requestedPath,
+        realPath,
+        exists: true,
+        relativePath: isPathInsideRoot(workspaceReal, realPath)
+          ? (toUnixPath(path.relative(workspaceReal, realPath)) || ".")
+          : realPath,
+      };
+    } else {
+      resolved = await resolvePathWithinToolRoot(workspaceReal, requestedPath, { defaultPath: "." });
+    }
   } catch (err) {
     throw makeApiError(400, classifyPathResolutionError(err), errorMessage(err));
   }
@@ -3157,8 +3172,8 @@ function requestScriptJobTermination(job, reason = "manual") {
   return true;
 }
 
-async function startWorkspaceShellScript(rawPath) {
-  const target = await resolveWorkspaceShellScriptTarget(rawPath);
+async function startWorkspaceShellScript(rawPath, opts = {}) {
+  const target = await resolveWorkspaceShellScriptTarget(rawPath, opts);
   const maxOutputBytes = Math.max(SANDBOXED_RUN_MAX_OUTPUT_BYTES, 1024 * 1024);
   const startedAtMs = Date.now();
   const jobId = `script_${randomUUID()}`;
@@ -4865,6 +4880,7 @@ function classifyPathResolutionError(err) {
   const msg = String(err instanceof Error ? err.message : err || "").toLowerCase();
   if (!msg) return "path_resolution_failed";
   if (msg.includes("path must not include nul")) return "path_contains_nul";
+  if (msg.includes("absolute script path requires confirmation")) return "script_absolute_path_unconfirmed";
   if (msg.includes("path must be relative")) return "path_not_relative";
   if (msg.includes("escapes root directory")) return "path_escapes_root";
   if (msg.includes("path parent escapes root directory")) return "path_parent_escapes_root";
@@ -7709,7 +7725,9 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const body = await readJsonBody(req);
-      const job = await startWorkspaceShellScript(body?.path);
+      const job = await startWorkspaceShellScript(body?.path, {
+        allowExternal: body?.allowExternal === true,
+      });
       return json(res, 200, {
         ok: true,
         job,
@@ -10944,6 +10962,7 @@ export const __TESTING__ = {
   handleCodexRelayUpstreamMessage,
   resolveToolRoot,
   resolvePathWithinToolRoot,
+  resolveWorkspaceShellScriptTarget,
   resolveClientFilePath,
   getClientMediaMimeType,
   buildInlineContentDisposition,

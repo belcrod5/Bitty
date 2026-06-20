@@ -239,7 +239,12 @@ export function GitDiffRunningJobsSection({
         {
           text: "再実行する",
           onPress: () => {
-            void startRunnerShellScript({ runnerUrl, runnerToken, path: job.path })
+            void startRunnerShellScript({
+              runnerUrl,
+              runnerToken,
+              path: job.path,
+              allowExternal: job.path.startsWith("/"),
+            })
               .then((result) => {
                 if (!result.ok) {
                   Alert.alert("再実行失敗", "スクリプトの起動に失敗しました。");
