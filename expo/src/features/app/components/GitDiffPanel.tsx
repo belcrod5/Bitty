@@ -164,6 +164,7 @@ export function GitDiffPanel({
   const [runningJobsLoading, setRunningJobsLoading] = useState(false);
   const panelAnim = useRef(new Animated.Value(0)).current;
   const onRefreshGitChangedFilesRef = useRef(onRefreshGitChangedFiles);
+  const explorerVisibleReloadKeyRef = useRef("");
   const workspaceUploadInFlightRef = useRef(false);
   const { width: screenWidth } = useWindowDimensions();
 
@@ -630,14 +631,17 @@ export function GitDiffPanel({
   ]);
 
   useEffect(() => {
-    if (!visible) return;
-    if (gitPanelTab !== "explorer") return;
+    if (!visible || gitPanelTab !== "explorer") {
+      explorerVisibleReloadKeyRef.current = "";
+      return;
+    }
     const rootPath = normalizeRunnerPath(explorerRootPath);
     if (!rootPath) return;
     const rootNode = explorerNodesByPath[rootPath];
-    if (rootNode?.loaded || rootNode?.loading) return;
+    if (rootNode?.loading || explorerVisibleReloadKeyRef.current === rootPath) return;
+    explorerVisibleReloadKeyRef.current = rootPath;
     setExplorerGlobalError("");
-    void loadExplorerChildren(rootPath).catch((err) => {
+    void loadExplorerChildren(rootPath, true).catch((err) => {
       setExplorerGlobalError(err instanceof Error ? err.message : String(err));
     });
   }, [
