@@ -422,7 +422,7 @@ export function MiniBoardScreen() {
     });
     if (registeredDirectoryRefreshState.pending) {
       hydratedSessionSignatureRef.current = "";
-      MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
+      MINI_BOARD_PREVIEW_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
       setPanelHydrationById(
         MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
           acc[panelId] = {
@@ -444,7 +444,7 @@ export function MiniBoardScreen() {
     }
     if (registeredDirectorySessionCandidates.length <= 0) {
       hydratedSessionSignatureRef.current = "";
-      MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
+      MINI_BOARD_PREVIEW_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
       setPanelHydrationById(
         MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
           acc[panelId] = {
