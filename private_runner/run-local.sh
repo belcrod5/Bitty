@@ -6,12 +6,17 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 LOCAL_NODE_BIN="$WORKSPACE_ROOT/.local/node-v24.14.1-darwin-x64/bin"
+BOOTSTRAP_LOCAL_SCRIPT="$PROJECT_ROOT/scripts/worktree/bootstrap-local.sh"
 
 # Ensure server.mjs path resolution is stable regardless of invocation directory.
 cd "$PROJECT_ROOT"
 
 if [ -x "$LOCAL_NODE_BIN/node" ]; then
   export PATH="$LOCAL_NODE_BIN:$PATH"
+fi
+
+if [ -x "$BOOTSTRAP_LOCAL_SCRIPT" ]; then
+  "$BOOTSTRAP_LOCAL_SCRIPT" --repo-root "$PROJECT_ROOT" --env --private-runner
 fi
 
 if [ -f "$SCRIPT_DIR/.env" ]; then
