@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            expo/package-lock.json
+            private_runner/package-lock.json
+
+      - name: Install Expo dependencies
+        working-directory: expo
+        run: npm ci
+
+      - name: Type-check Expo app
+        working-directory: expo
+        run: npx tsc --noEmit
+
+      - name: Install private runner dependencies
+        working-directory: private_runner
+        run: npm ci
+
+      - name: Check shell scripts
+        run: |
+          bash -n scripts/worktree/bootstrap-local.sh
+          bash -n private_runner/run-local.sh
+          bash -n scripts/ios/build-expo-ios-device.sh
