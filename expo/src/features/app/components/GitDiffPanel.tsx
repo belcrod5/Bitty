@@ -165,6 +165,7 @@ export function GitDiffPanel({
   const panelAnim = useRef(new Animated.Value(0)).current;
   const onRefreshGitChangedFilesRef = useRef(onRefreshGitChangedFiles);
   const explorerVisibleReloadKeyRef = useRef("");
+  const explorerLoadSeqByPathRef = useRef<Record<string, number>>({});
   const workspaceUploadInFlightRef = useRef(false);
   const { width: screenWidth } = useWindowDimensions();
 
@@ -336,39 +337,66 @@ export function GitDiffPanel({
     });
   }, [getPathLabel]);
 
+  const applyExplorerDirectoryPayload = useCallback((
+    pathRaw: unknown,
+    payload: { basePath: string; entries: ExplorerEntry[] },
+  ) => {
+    const targetPath = normalizeRunnerPath(payload.basePath || pathRaw);
+    if (!targetPath) return;
+    setExplorerNodesByPath((prev) => {
+      const next = { ...prev };
+      const childPaths: string[] = [];
+      const nextChildPathSet = new Set<string>();
+      for (const entry of payload.entries) {
+        const childPath = normalizeRunnerPath(entry.path);
+        if (!childPath) continue;
+        childPaths.push(childPath);
+        nextChildPathSet.add(childPath);
+        const currentChild = prev[childPath];
+        next[childPath] = {
+          kind: entry.kind,
+          name: entry.name,
+          path: childPath,
+          loaded: entry.kind === "file" ? true : (currentChild?.loaded ?? false),
+          loading: false,
+          error: currentChild?.error ?? "",
+          childPaths: entry.kind === "file" ? [] : (currentChild?.childPaths ?? []),
+        };
+      }
+      for (const stalePath of prev[targetPath]?.childPaths ?? []) {
+        const normalizedStalePath = normalizeRunnerPath(stalePath);
+        if (!normalizedStalePath || nextChildPathSet.has(normalizedStalePath)) continue;
+        if (prev[normalizedStalePath]?.kind === "file") {
+          delete next[normalizedStalePath];
+        }
+      }
+      next[targetPath] = {
+        kind: "dir",
+        name: getPathLabel(targetPath),
+        path: targetPath,
+        childPaths,
+        loaded: true,
+        loading: false,
+        error: "",
+      };
+      return next;
+    });
+  }, [getPathLabel]);
+
   const loadExplorerChildren = useCallback(async (pathRaw: unknown, forceReload = false) => {
     const targetPath = normalizeRunnerPath(pathRaw);
     if (!targetPath) return;
     const current = explorerNodesByPath[targetPath];
     if (!forceReload && current?.loaded && !current.error) return;
+    const requestSeq = (explorerLoadSeqByPathRef.current[targetPath] ?? 0) + 1;
+    explorerLoadSeqByPathRef.current[targetPath] = requestSeq;
     mergeExplorerNode(targetPath, { loading: true, error: "" });
     try {
       const payload = await fetchDirectories(targetPath);
-      const childPaths: string[] = [];
-      for (const entry of payload.entries) {
-        const childPath = normalizeRunnerPath(entry.path);
-        if (!childPath) continue;
-        childPaths.push(childPath);
-        mergeExplorerNode(childPath, {
-          kind: entry.kind,
-          name: entry.name,
-          loaded: entry.kind === "file" ? true : (explorerNodesByPath[childPath]?.loaded ?? false),
-          loading: false,
-          error: explorerNodesByPath[childPath]?.error ?? "",
-          childPaths: entry.kind === "file"
-            ? []
-            : (explorerNodesByPath[childPath]?.childPaths ?? []),
-        });
-      }
-      mergeExplorerNode(targetPath, {
-        kind: "dir",
-        name: getPathLabel(targetPath),
-        childPaths,
-        loaded: true,
-        loading: false,
-        error: "",
-      });
+      if (explorerLoadSeqByPathRef.current[targetPath] !== requestSeq) return;
+      applyExplorerDirectoryPayload(targetPath, payload);
     } catch (err) {
+      if (explorerLoadSeqByPathRef.current[targetPath] !== requestSeq) return;
       mergeExplorerNode(targetPath, {
         loading: false,
         loaded: false,
@@ -376,7 +404,7 @@ export function GitDiffPanel({
       });
       throw err;
     }
-  }, [explorerNodesByPath, fetchDirectories, getPathLabel, mergeExplorerNode]);
+  }, [applyExplorerDirectoryPayload, explorerNodesByPath, fetchDirectories, mergeExplorerNode]);
 
   const reloadExplorerDirectory = useCallback((path: string) => (
     loadExplorerChildren(path, true)
