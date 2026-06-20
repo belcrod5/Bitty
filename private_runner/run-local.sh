@@ -6,6 +6,7 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 LOCAL_NODE_BIN="$WORKSPACE_ROOT/.local/node-v24.14.1-darwin-x64/bin"
+BOOTSTRAP_LOCAL_SCRIPT="$PROJECT_ROOT/scripts/worktree/bootstrap-local.sh"
 
 # Ensure server.mjs path resolution is stable regardless of invocation directory.
 cd "$PROJECT_ROOT"
@@ -114,6 +115,20 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if { [ "$RUN_LOCAL_COMMAND" = "start" ] || [ "$RUN_LOCAL_COMMAND" = "restart" ]; } && [ -x "$BOOTSTRAP_LOCAL_SCRIPT" ]; then
+  PARSED_RUN_LOCAL_COMMAND="$RUN_LOCAL_COMMAND"
+  PARSED_RUN_LOCAL_MODE="$RUN_LOCAL_MODE"
+  "$BOOTSTRAP_LOCAL_SCRIPT" --repo-root "$PROJECT_ROOT" --env --private-runner
+  if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+  fi
+  RUN_LOCAL_COMMAND="$PARSED_RUN_LOCAL_COMMAND"
+  RUN_LOCAL_MODE="$PARSED_RUN_LOCAL_MODE"
+fi
 
 resolve_mode() {
   case "$RUN_LOCAL_MODE" in

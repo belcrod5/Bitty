@@ -2919,6 +2919,36 @@ export default function App() {
       rejectedCount: results.filter((item) => item.status === "rejected").length,
     }, { throttleMs: 0 });
   }, [loadDirectorySessionTree, logSessionDiag, registeredDirectories]);
+  const refreshMiniBoardDirectorySessionsForDirectory = useCallback((directoryRaw: unknown, reason: string) => {
+    if (activeScreen !== "mini_board") return;
+    const directoryPath = parseLlmDirectory(directoryRaw);
+    if (!directoryPath) return;
+    const target = registeredDirectories.find((directory) => (
+      parseLlmDirectory(directory.path) === directoryPath
+    ));
+    if (!target) {
+      logSessionDiag("mini_board_refresh_directory_sessions_skipped_unregistered", {
+        reason,
+        directory: directoryPath,
+      }, { throttleMs: 0 });
+      return;
+    }
+    logSessionDiag("mini_board_refresh_directory_sessions_after_completion", {
+      reason,
+      directoryId: target.id,
+      directory: target.path,
+    }, { throttleMs: 0 });
+    void loadDirectorySessionTree(target.id, target.path, {
+      force: true,
+      includeRunnerSnapshots: true,
+      runnerSnapshotLimit: DIRECTORY_SESSION_RUNNER_SNAPSHOT_LIMIT,
+    });
+  }, [
+    activeScreen,
+    loadDirectorySessionTree,
+    logSessionDiag,
+    registeredDirectories,
+  ]);
 
   const {
     queueSendReplyAfterSessionRestore,
@@ -3653,6 +3683,7 @@ export default function App() {
       finishLlmRequest("completed", "turn completed");
     }
     void refreshGitChangedFiles(params.directory, { force: true });
+    refreshMiniBoardDirectorySessionsForDirectory(params.directory, "relay_turn_completed");
     const speechAllowed = autoSpeakAfterReply && !!text.trim() && isChatOpenForAutoSpeech(target);
     if (speechAllowed) {
       await synthesizeSpeechStream(text, target);
@@ -3674,6 +3705,7 @@ export default function App() {
     isChatOpenForAutoSpeech,
     logSessionDiag,
     playUiSfx,
+    refreshMiniBoardDirectorySessionsForDirectory,
     refreshGitChangedFiles,
     selectedLlmSessionId,
     stripYouTubeTags,
@@ -5348,7 +5380,9 @@ export default function App() {
 
   const handleLlmMessageCompleted = useCallback((directory: string) => {
     void refreshGitChangedFiles(directory, { force: true });
+    refreshMiniBoardDirectorySessionsForDirectory(directory, "llm_message_completed");
   }, [
+    refreshMiniBoardDirectorySessionsForDirectory,
     refreshGitChangedFiles,
   ]);
 

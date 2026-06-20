@@ -60,6 +60,58 @@ feat/admin/export-csv
 worktree：
 ${BITTY_WORKTREE_ROOT}/feat/admin/export-csv
 
+3.1 worktree作成後の初期化
+
+worktreeはメインリポジトリと別ディレクトリなので、Git管理外の依存ディレクトリは共有されない。
+
+worktree側でサーバー再起動やiOS実機ビルドを行う場合、ユーザーが個別に `npm install` や `.env` コピーを判断しなくてよいように、実行入口の `.sh` が不足分を初期化する。
+
+初期化は `scripts/worktree/bootstrap-local.sh` に集約する。各入口スクリプトは必要な範囲だけを呼び出す。
+
+ローカル初期化でメインリポジトリ側のファイルを参照する場合は、対象worktreeの `.env` または実行環境に `BITTY_MAIN_REPO_ROOT` を明示する。自動推測はしない。
+`scripts/worktree/bootstrap-local.sh --env` は、main側の `.env` コピー後も対象worktree側の `.env` に `BITTY_MAIN_REPO_ROOT` を保持する。
+
+* `private_runner/restart.sh` は、ローカル `.env` と `private_runner/node_modules` を準備する
+* `scripts/ios/build-expo-ios-device.sh` は、ローカル `.env`、`expo/node_modules`、`expo/ios/Bitty.xcworkspace`、必要なPodsを準備する
+
+ローカル `.env` の値はログに表示しない。表示してよいのは、コピーした相対パスや初期化対象名だけにする。
+`expo/ios` をメインリポジトリ側からコピーする場合は `rsync` を必須にし、除外条件なしの丸ごとコピーへfallbackしない。
+署名ファイル、証明書、秘密鍵などをOSSに含めない。判断に迷うローカルファイルがある場合は、コピーや追跡の前にユーザーへ確認する。
+
+3.2 worktree側での動作確認
+
+worktree側の修正を確認する場合は、メインリポジトリ側ではなく、対象worktree内のスクリプトを使う。
+
+ユーザーが実行する確認コマンドは、エージェントが代わりに実行せず、チャットに対象worktreeの実パスをMarkdownリンク付きで提示する。
+
+サーバーを再起動する場合：
+
+```sh
+cd ${BITTY_WORKTREE_ROOT}/<branch-name>
+./private_runner/restart.sh --mode full
+```
+
+チャット表示例：
+
+```md
+サーバー再起動: [private_runner/restart.sh](/absolute/path/to/worktree/private_runner/restart.sh)
+```
+
+iOS実機アプリで確認する場合：
+
+```sh
+cd ${BITTY_WORKTREE_ROOT}/<branch-name>
+./scripts/ios/build-expo-ios-device.sh
+```
+
+チャット表示例：
+
+```md
+iOS実機ビルド: [scripts/ios/build-expo-ios-device.sh](/absolute/path/to/worktree/scripts/ios/build-expo-ios-device.sh)
+```
+
+これらのスクリプトは、対象worktreeのローカル初期化を先に行ってから本処理を実行する。
+
 4. エージェントの役割
 
 4.1 親エージェント

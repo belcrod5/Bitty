@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 IOS_DIR="${REPO_ROOT}/expo/ios"
 ENV_FILE="${IOS_ENV_FILE:-${REPO_ROOT}/.env.ios.local}"
+BOOTSTRAP_LOCAL_SCRIPT="${REPO_ROOT}/scripts/worktree/bootstrap-local.sh"
+
+if [[ -x "${BOOTSTRAP_LOCAL_SCRIPT}" ]]; then
+  "${BOOTSTRAP_LOCAL_SCRIPT}" --repo-root "${REPO_ROOT}" --env --expo --ios-native
+fi
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
