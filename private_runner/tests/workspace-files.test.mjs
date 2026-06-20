@@ -140,7 +140,9 @@ test("renames and deletes files only inside the selected root", async () => {
     });
 
     assert.equal(renamed.previousPath, "project/nested/before.txt");
+    assert.equal(renamed.previousDirectory, "project/nested");
     assert.equal(renamed.path, "project/nested/after.txt");
+    assert.equal(renamed.directory, "project/nested");
     assert.equal(await readFile(path.join(nestedDirectory, "after.txt"), "utf8"), "hello");
     await assert.rejects(access(path.join(nestedDirectory, "before.txt")));
 
@@ -172,6 +174,7 @@ test("renames and deletes files only inside the selected root", async () => {
       path: "nested/after.txt",
     });
     assert.equal(deleted.path, "project/nested/after.txt");
+    assert.equal(deleted.directory, "project/nested");
     await assert.rejects(access(path.join(nestedDirectory, "after.txt")));
     assert.equal(await readFile(outsideFile, "utf8"), "outside");
   });
@@ -276,6 +279,8 @@ test("accepts authenticated rename and delete requests", async () => {
       const renamePayload = await renameResponse.json();
       assert.equal(renameResponse.status, 200);
       assert.equal(renamePayload.path, "project/after.txt");
+      assert.equal(renamePayload.directory, "project");
+      assert.equal(renamePayload.previousDirectory, "project");
 
       const deleteResponse = await fetch(baseUrl, {
         method: "DELETE",
@@ -291,6 +296,7 @@ test("accepts authenticated rename and delete requests", async () => {
       const deletePayload = await deleteResponse.json();
       assert.equal(deleteResponse.status, 200);
       assert.equal(deletePayload.path, "project/after.txt");
+      assert.equal(deletePayload.directory, "project");
       await assert.rejects(access(path.join(projectRoot, "after.txt")));
     } finally {
       await new Promise((resolve, reject) => server.close((error) => (

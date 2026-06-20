@@ -212,7 +212,9 @@ export function createWorkspaceFilesService({
         ok: true,
         name: normalizedName,
         path: toClientPath(workspaceRootReal, sourceReal),
+        directory: toClientPath(workspaceRootReal, path.dirname(sourceReal)),
         previousPath: toClientPath(workspaceRootReal, sourceReal),
+        previousDirectory: toClientPath(workspaceRootReal, path.dirname(sourceReal)),
       };
     }
     try {
@@ -233,7 +235,9 @@ export function createWorkspaceFilesService({
       ok: true,
       name: normalizedName,
       path: toClientPath(workspaceRootReal, targetPath),
+      directory: toClientPath(workspaceRootReal, path.dirname(targetPath)),
       previousPath: toClientPath(workspaceRootReal, sourceReal),
+      previousDirectory: toClientPath(workspaceRootReal, path.dirname(sourceReal)),
     };
   }
 
@@ -246,6 +250,7 @@ export function createWorkspaceFilesService({
     return {
       ok: true,
       path: clientPath,
+      directory: toClientPath(workspaceRootReal, path.dirname(targetReal)),
     };
   }
 

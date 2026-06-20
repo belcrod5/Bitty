@@ -29,7 +29,9 @@ export type WorkspaceFileUploadResult = {
 export type WorkspaceFileMutationResult = {
   ok: boolean;
   path: string;
+  directory?: string;
   previousPath?: string;
+  previousDirectory?: string;
   name?: string;
 };
 
@@ -269,7 +271,9 @@ export async function mutateWorkspaceFile({
     return {
       ok: Boolean(data?.ok),
       path: String(data?.path || targetPath),
+      directory: data?.directory ? String(data.directory) : undefined,
       previousPath: data?.previousPath ? String(data.previousPath) : undefined,
+      previousDirectory: data?.previousDirectory ? String(data.previousDirectory) : undefined,
       name: data?.name ? String(data.name) : undefined,
     };
   } catch (error) {

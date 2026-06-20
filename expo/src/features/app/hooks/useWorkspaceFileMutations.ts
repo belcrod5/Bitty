@@ -35,8 +35,8 @@ export function useWorkspaceFileMutations({
 
   const refreshAfterMutation = useCallback(async (result: WorkspaceFileMutationResult) => {
     const pathsToReload = new Set([
-      getParentPath(result.previousPath || result.path),
-      getParentPath(result.path),
+      result.previousDirectory || getParentPath(result.previousPath || result.path),
+      result.directory || getParentPath(result.path),
       String(rootDirectory || "").trim(),
     ]);
     if (reloadDirectory) {
