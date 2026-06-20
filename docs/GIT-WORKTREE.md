@@ -68,10 +68,14 @@ worktree側でサーバー再起動やiOS実機ビルドを行う場合、ユー
 
 初期化は `scripts/worktree/bootstrap-local.sh` に集約する。各入口スクリプトは必要な範囲だけを呼び出す。
 
+ローカル初期化でメインリポジトリ側のファイルを参照する場合は、対象worktreeの `.env` または実行環境に `BITTY_MAIN_REPO_ROOT` を明示する。自動推測はしない。
+`scripts/worktree/bootstrap-local.sh --env` は、main側の `.env` コピー後も対象worktree側の `.env` に `BITTY_MAIN_REPO_ROOT` を保持する。
+
 * `private_runner/restart.sh` は、ローカル `.env` と `private_runner/node_modules` を準備する
 * `scripts/ios/build-expo-ios-device.sh` は、ローカル `.env`、`expo/node_modules`、`expo/ios/Bitty.xcworkspace`、必要なPodsを準備する
 
 ローカル `.env` の値はログに表示しない。表示してよいのは、コピーした相対パスや初期化対象名だけにする。
+`expo/ios` をメインリポジトリ側からコピーする場合は `rsync` を必須にし、除外条件なしの丸ごとコピーへfallbackしない。
 署名ファイル、証明書、秘密鍵などをOSSに含めない。判断に迷うローカルファイルがある場合は、コピーや追跡の前にユーザーへ確認する。
 
 3.2 worktree側での動作確認

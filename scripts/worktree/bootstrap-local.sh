@@ -61,49 +61,29 @@ fi
 
 REPO_ROOT="$(cd "${REPO_ROOT}" && pwd -P)"
 
-find_main_repo_root() {
-  if [[ -n "${BITTY_MAIN_REPO_ROOT:-}" && -d "${BITTY_MAIN_REPO_ROOT}" ]]; then
-    cd "${BITTY_MAIN_REPO_ROOT}" && pwd -P
-    return 0
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/.env"
+  set +a
+fi
+
+require_main_repo_root() {
+  if [[ -z "${BITTY_MAIN_REPO_ROOT:-}" ]]; then
+    echo "[bootstrap-local] BITTY_MAIN_REPO_ROOT is required. Set it in ${REPO_ROOT}/.env or export it before running." >&2
+    exit 1
   fi
-
-  local worktree_path=""
-  local branch_name=""
-  local first_path=""
-  local main_path=""
-
-  while IFS= read -r line; do
-    case "${line}" in
-      worktree\ *)
-        if [[ -z "${first_path}" ]]; then
-          first_path="${line#worktree }"
-        fi
-        worktree_path="${line#worktree }"
-        branch_name=""
-        ;;
-      branch\ *)
-        branch_name="${line#branch }"
-        if [[ "${branch_name}" == "refs/heads/main" || "${branch_name}" == "refs/heads/master" ]]; then
-          main_path="${worktree_path}"
-          break
-        fi
-        ;;
-    esac
-  done < <(git -C "${REPO_ROOT}" worktree list --porcelain 2>/dev/null || true)
-
-  if [[ -n "${main_path}" ]]; then
-    cd "${main_path}" && pwd -P
-    return 0
+  if [[ ! -d "${BITTY_MAIN_REPO_ROOT}" ]]; then
+    echo "[bootstrap-local] BITTY_MAIN_REPO_ROOT not found: ${BITTY_MAIN_REPO_ROOT}" >&2
+    exit 1
   fi
-  if [[ -n "${first_path}" ]]; then
-    cd "${first_path}" && pwd -P
-    return 0
-  fi
-
-  echo "${REPO_ROOT}"
+  cd "${BITTY_MAIN_REPO_ROOT}" && pwd -P
 }
 
-MAIN_REPO_ROOT="$(find_main_repo_root)"
+MAIN_REPO_ROOT=""
+if [[ "${DO_ENV}" == "1" || "${DO_IOS_NATIVE}" == "1" ]]; then
+  MAIN_REPO_ROOT="$(require_main_repo_root)"
+fi
 
 copy_local_env_files() {
   if [[ "${MAIN_REPO_ROOT}" == "${REPO_ROOT}" ]]; then
@@ -137,6 +117,14 @@ copy_local_env_files() {
   if [[ "${copied}" -eq 0 ]]; then
     echo "[bootstrap-local] no local env files found"
   fi
+
+  if [[ ! -f "${REPO_ROOT}/.env" ]] || ! grep -q '^BITTY_MAIN_REPO_ROOT=' "${REPO_ROOT}/.env"; then
+    {
+      echo
+      echo "BITTY_MAIN_REPO_ROOT=${MAIN_REPO_ROOT}"
+    } >> "${REPO_ROOT}/.env"
+    echo "[bootstrap-local] ensured BITTY_MAIN_REPO_ROOT in .env"
+  fi
 }
 
 ensure_npm_install() {
@@ -163,23 +151,23 @@ copy_ios_native_from_main() {
     return 1
   fi
 
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "[bootstrap-local] rsync is required to copy expo/ios safely" >&2
+    exit 1
+  fi
+
   mkdir -p "${target_ios}"
   echo "[bootstrap-local] copying expo/ios from main worktree"
-  if command -v rsync >/dev/null 2>&1; then
-    rsync -a \
-      --exclude '/build/' \
-      --exclude 'DerivedData/' \
-      --exclude 'xcuserdata/' \
-      --exclude '*.xcuserstate' \
-      --exclude '*.p12' \
-      --exclude '*.mobileprovision' \
-      --exclude '*.key' \
-      --exclude '*.pem' \
-      "${source_ios}/" "${target_ios}/"
-  else
-    cp -R "${source_ios}/." "${target_ios}/"
-    rm -rf "${target_ios}/build"
-  fi
+  rsync -a \
+    --exclude '/build/' \
+    --exclude 'DerivedData/' \
+    --exclude 'xcuserdata/' \
+    --exclude '*.xcuserstate' \
+    --exclude '*.p12' \
+    --exclude '*.mobileprovision' \
+    --exclude '*.key' \
+    --exclude '*.pem' \
+    "${source_ios}/" "${target_ios}/"
 }
 
 ensure_ios_native_workspace() {

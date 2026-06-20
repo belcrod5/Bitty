@@ -15,10 +15,6 @@ if [ -x "$LOCAL_NODE_BIN/node" ]; then
   export PATH="$LOCAL_NODE_BIN:$PATH"
 fi
 
-if [ -x "$BOOTSTRAP_LOCAL_SCRIPT" ]; then
-  "$BOOTSTRAP_LOCAL_SCRIPT" --repo-root "$PROJECT_ROOT" --env --private-runner
-fi
-
 if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -119,6 +115,20 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if { [ "$RUN_LOCAL_COMMAND" = "start" ] || [ "$RUN_LOCAL_COMMAND" = "restart" ]; } && [ -x "$BOOTSTRAP_LOCAL_SCRIPT" ]; then
+  PARSED_RUN_LOCAL_COMMAND="$RUN_LOCAL_COMMAND"
+  PARSED_RUN_LOCAL_MODE="$RUN_LOCAL_MODE"
+  "$BOOTSTRAP_LOCAL_SCRIPT" --repo-root "$PROJECT_ROOT" --env --private-runner
+  if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+  fi
+  RUN_LOCAL_COMMAND="$PARSED_RUN_LOCAL_COMMAND"
+  RUN_LOCAL_MODE="$PARSED_RUN_LOCAL_MODE"
+fi
 
 resolve_mode() {
   case "$RUN_LOCAL_MODE" in

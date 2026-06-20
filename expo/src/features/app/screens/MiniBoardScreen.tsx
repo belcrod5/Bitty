@@ -832,7 +832,7 @@ export function MiniBoardScreen() {
                 const hydrationState = panelHydrationById[assignment.panelId];
                 const isReady = hydrationState?.status === "ready";
                 const isLoading = registeredDirectoryRefreshState.pending || hydrationState?.status === "loading";
-                const canOpenPopup = !!candidate && isReady && !isLoading;
+                const canOpenPopup = !!candidate && !isLoading;
                 return (
                   <View
                     key={assignment.panelId}
