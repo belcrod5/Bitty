@@ -9447,6 +9447,7 @@ function sendCodexRelayControl(relay, ws, payload) {
       seq: Number(payload?.resumeFromSeq || 0),
       payload: {
         resumeFromSeq: Number(payload?.resumeFromSeq || 0),
+        reason: String(payload?.reason || ""),
       },
     });
   }
@@ -10082,9 +10083,22 @@ function shouldReplayCodexRelayEvent(relay, eventEntry) {
 function attachClientToCodexRelay(relay, clientWs, options = {}) {
   if (!relay || relay.closed || !clientWs) return 0;
   const replayAfterSeqRaw = Number(options.replayAfterSeq || 0);
-  const replayAfterSeq = Number.isFinite(replayAfterSeqRaw)
+  let replayAfterSeq = Number.isFinite(replayAfterSeqRaw)
     ? Math.max(0, Math.floor(replayAfterSeqRaw))
     : 0;
+  if (replayAfterSeq === 0 && Number(relay.currentTurnStartSeq) > 0) {
+    replayAfterSeq = Math.max(0, Math.floor(Number(relay.currentTurnStartSeq)) - 1);
+  }
+  const oldestRetainedSeq = Number(relay.eventLog[0]?.seq || 0);
+  if (replayAfterSeq > 0 && oldestRetainedSeq > replayAfterSeq + 1) {
+    sendCodexRelayControl(relay, clientWs, {
+      type: "runner_relay_resume_miss",
+      threadId: relay.threadId || "",
+      resumeFromSeq: replayAfterSeq,
+      reason: "relay_event_history_gap",
+    });
+    return 0;
+  }
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
@@ -10134,6 +10148,7 @@ function createCodexRelayContext(params) {
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
+    currentTurnStartSeq: 0,
     lastAgentMessageText: "",
     assistantThinkingPrefixSent: false,
     assistantThinkingBodyText: "",
@@ -10351,6 +10366,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     } else if (meta.method === "turn/started") {
       relay.turnStarted = true;
       relay.turnCompleted = false;
+      relay.currentTurnStartSeq = relay.lastSeq + 1;
     } else if (meta.threadStatus) {
       relay.turnStatus = String(meta.threadStatus || "");
       if (isTerminalTurnStatus(meta.threadStatus)) {

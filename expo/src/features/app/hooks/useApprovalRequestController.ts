@@ -266,25 +266,43 @@ export function useApprovalRequestController({
     approvalQueueControllerRef.current.discard();
   }, []);
 
-  const clearPendingApprovalsForSession = useCallback((sessionIdRaw: unknown) => {
-    const sessionId = String(sessionIdRaw || "").trim();
-    if (!sessionId) return;
-    const matchesSession = (request: ApprovalRequest) => getApprovalRequestSessionId(request) === sessionId;
+  const clearPendingApprovalsMatching = useCallback((matches: (request: ApprovalRequest) => boolean) => {
     const active = activeApprovalDialogRef.current;
-    approvalQueueControllerRef.current.discard(matchesSession);
-    if (!active || !matchesSession(active.item.request)) return;
+    approvalQueueControllerRef.current.discard(matches);
+    if (!active || !matches(active.item.request)) return false;
 
     activeApprovalDialogRef.current = null;
     setApprovalDialog(null);
     approvalDialogActiveRef.current = false;
     processApprovalQueue();
+    return true;
   }, [processApprovalQueue]);
+
+  const clearPendingApprovalsForSession = useCallback((sessionIdRaw: unknown) => {
+    const sessionId = String(sessionIdRaw || "").trim();
+    if (!sessionId) return;
+    clearPendingApprovalsMatching(
+      (request) => getApprovalRequestSessionId(request) === sessionId
+    );
+  }, [clearPendingApprovalsMatching]);
+
+  const clearResolvedApproval = useCallback((resolved: ApprovalRequest) => {
+    const requestId = String(resolved.requestId || "").trim();
+    const sessionId = getApprovalRequestSessionId(resolved);
+    if (!requestId || !sessionId) return false;
+    return clearPendingApprovalsMatching((request) => (
+      request.source === resolved.source &&
+      request.requestId === requestId &&
+      getApprovalRequestSessionId(request) === sessionId
+    ));
+  }, [clearPendingApprovalsMatching]);
 
   return {
     handleApprovalRequest,
     clearToolAutoApprovals,
     clearPendingApprovals,
     clearPendingApprovalsForSession,
+    clearResolvedApproval,
     approvalDialog,
     respondToApprovalDialog,
   };

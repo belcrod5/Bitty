@@ -7,6 +7,7 @@ import {
   normalizeAppServerApprovalRequest,
   normalizeCodexWsInputs,
   parseJsonRpcMessage,
+  takeResolvedApprovalRequest,
   toCodexApprovalDecision,
   toErrorMessage,
 } from "./helpers";
@@ -72,7 +73,10 @@ export function startCodexAppServerTurnRelayObserver(
   let lastRelaySeq = resumeFromSeq;
   let currentAgentMessageItemId = "";
   const agentMessageTextByItemId = new Map<string, string>();
-  const pendingApprovalRequests = new Map<JsonRpcId, { active: boolean }>();
+  const pendingApprovalRequests = new Map<JsonRpcId, {
+    active: boolean;
+    request: import("../approvalFlow").ApprovalRequest;
+  }>();
 
   const extractAgentMessageItemId = (paramsRaw: unknown) => {
     const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw as any : {};
@@ -371,6 +375,19 @@ export function startCodexAppServerTurnRelayObserver(
       if (!method) return;
       const rpcId = Number(message.id);
       options.onEvent?.(method, message.params);
+      if (method === "serverRequest/resolved") {
+        const resolvedApproval = takeResolvedApprovalRequest(
+          pendingApprovalRequests,
+          message.params
+        );
+        if (resolvedApproval) {
+          options.onApprovalRequestResolved?.(resolvedApproval);
+          if (closeRequested && pendingApprovalRequests.size === 0) {
+            finishClose();
+          }
+        }
+        return;
+      }
       if (method.endsWith("/requestApproval") && Number.isInteger(rpcId)) {
         emitLog({
           stage: "relay_observer_approval_required",
@@ -399,7 +416,7 @@ export function startCodexAppServerTurnRelayObserver(
           threadId,
           turnId: "",
         });
-        const guard = { active: true };
+        const guard = { active: true, request };
         pendingApprovalRequests.set(rpcId, guard);
         const processApprovalRequest = async () => {
           try {

@@ -3593,6 +3593,7 @@ export default function App() {
     clearToolAutoApprovals,
     clearPendingApprovals,
     clearPendingApprovalsForSession,
+    clearResolvedApproval,
     approvalDialog,
     respondToApprovalDialog,
   } = useApprovalRequestController({
@@ -3900,6 +3901,19 @@ export default function App() {
     rememberRuntimeApprovalRequest,
     resolveRuntimeApprovalRequest,
   ]);
+  const handleRuntimeApprovalResolved = useCallback((request: ApprovalRequest) => {
+    const enrichedRequest = enrichApprovalRequestWithSessionContext(request);
+    const closedVisibleDialog = clearResolvedApproval(enrichedRequest);
+    resolveRuntimeApprovalRequest(enrichedRequest, "cancel");
+    if (closedVisibleDialog) {
+      showChatBottomToast("assistant", "承認待ちはサーバー側で解消されたため閉じました。");
+    }
+  }, [
+    clearResolvedApproval,
+    enrichApprovalRequestWithSessionContext,
+    resolveRuntimeApprovalRequest,
+    showChatBottomToast,
+  ]);
   const shouldProjectRelayConversation = useCallback((params: {
     threadId: string;
     reason: string;
@@ -3975,6 +3989,7 @@ export default function App() {
     shouldProjectRelayConversation,
     completeRuntimeRequestForRelayCompletion,
     onApprovalRequest: handleRuntimeApprovalRequest,
+    onApprovalRequestResolved: handleRuntimeApprovalResolved,
     onAssistantTurnCompleted: handleRelayAssistantTurnCompleted,
   });
 
@@ -5372,6 +5387,7 @@ export default function App() {
     baseUrl,
     normalizedLlmDirectoryForRequest,
     handleApprovalRequest: handleRuntimeApprovalRequest,
+    onApprovalRequestResolved: handleRuntimeApprovalResolved,
     setError,
     setReplyDebug,
     setCodexWsProbeLoading,
@@ -5450,6 +5466,7 @@ export default function App() {
     syncLlmConversationSessionId,
     rememberKnownCodexThreadId,
     handleApprovalRequest: handleRuntimeApprovalRequest,
+    onApprovalRequestResolved: handleRuntimeApprovalResolved,
     setSelectedThreadStatusType,
     appendLlmDelta,
     applyAssistantReply,

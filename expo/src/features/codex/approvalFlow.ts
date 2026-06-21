@@ -64,19 +64,22 @@ export function createApprovalQueueController(): ApprovalQueueController {
     item: ApprovalQueueItem;
     key: string;
   }> = [];
-  const pendingByKey = new Map<string, ApprovalResponder[]>();
+  const pendingByKey = new Map<string, {
+    request: ApprovalRequest;
+    responders: ApprovalResponder[];
+  }>();
 
   return {
     enqueue(request, responder) {
       const key = approvalRequestKey(request);
-      const existingResponders = key ? pendingByKey.get(key) : null;
-      if (existingResponders) {
-        existingResponders.push(responder);
+      const existing = key ? pendingByKey.get(key) : null;
+      if (existing) {
+        existing.responders.push(responder);
         return;
       }
       const responders = [responder];
       if (key) {
-        pendingByKey.set(key, responders);
+        pendingByKey.set(key, { request, responders });
       }
       let responded = false;
       queue.push({
@@ -97,7 +100,7 @@ export function createApprovalQueueController(): ApprovalQueueController {
                 );
               }
             } finally {
-              if (key && pendingByKey.get(key) === responders) {
+              if (key && pendingByKey.get(key)?.responders === responders) {
                 pendingByKey.delete(key);
               }
             }
@@ -117,6 +120,11 @@ export function createApprovalQueueController(): ApprovalQueueController {
             if (entry.key) {
               pendingByKey.delete(entry.key);
             }
+          }
+        }
+        for (const [key, pending] of pendingByKey) {
+          if (shouldClear(pending.request)) {
+            pendingByKey.delete(key);
           }
         }
         return;

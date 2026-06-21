@@ -113,6 +113,7 @@ type UseCodexReplyRequestOptions<
   ) => boolean;
   rememberKnownCodexThreadId?: (value: unknown) => void;
   handleApprovalRequest: (request: ApprovalRequest) => Promise<ApprovalAction> | ApprovalAction;
+  onApprovalRequestResolved?: (request: ApprovalRequest) => void;
   setSelectedThreadStatusType: (statusType: string) => void;
   appendLlmDelta: (source: "native", delta: string) => void;
   applyAssistantReply: (raw: string) => string;
@@ -988,6 +989,16 @@ export function useCodexReplyRequest<
         strictThreadResume: !!requestThreadId,
         hasRequestSnapshot: !!requestSnapshot,
       });
+      const projectApprovalRequest = (request: ApprovalRequest): ApprovalRequest => ({
+        ...request,
+        sessionInfo: {
+          panelId: requestPanelId,
+          sessionId: String(requestSnapshot?.sessionId || request.threadId || requestThreadId || requestUiSessionId || "").trim(),
+          directoryPath: requestDirectory,
+          directoryDisplayName: String(requestSnapshot?.directoryDisplayName || "").trim(),
+          sessionTitle: String(requestSnapshot?.sessionTitle || "").trim(),
+        },
+      });
       const createTurnSession = (attempt: number) => startCodexAppServerTurn({
         wsUrl: targetCodexWsUrl,
         wsToken: current.codexWsToken.trim(),
@@ -1000,16 +1011,10 @@ export function useCodexReplyRequest<
         model: requestModelRef || undefined,
         effort: requestModelRef ? requestReasoningEffort : undefined,
         approvalPolicy: current.codexApprovalPolicy,
-        onApprovalRequest: (request) => current.handleApprovalRequest({
-          ...request,
-          sessionInfo: {
-            panelId: requestPanelId,
-            sessionId: String(requestSnapshot?.sessionId || request.threadId || requestThreadId || requestUiSessionId || "").trim(),
-            directoryPath: requestDirectory,
-            directoryDisplayName: String(requestSnapshot?.directoryDisplayName || "").trim(),
-            sessionTitle: String(requestSnapshot?.sessionTitle || "").trim(),
-          },
-        }),
+        onApprovalRequest: (request) => current.handleApprovalRequest(projectApprovalRequest(request)),
+        onApprovalRequestResolved: (request) => {
+          current.onApprovalRequestResolved?.(projectApprovalRequest(request));
+        },
         onThreadIdResolved: (threadId) => {
           if (!isActiveRequest() || isCancelledRequest()) return;
           const resolvedThreadId = String(threadId || "").trim();

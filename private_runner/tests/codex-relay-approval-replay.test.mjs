@@ -48,7 +48,7 @@ test("continues replaying non-approval relay events", () => {
   assert.equal(shouldReplayCodexRelayEvent(relay, event), true);
 });
 
-test("replays stream events from seq zero without resurrecting answered approvals", () => {
+test("replays only the current turn from seq zero without resurrecting answered approvals", () => {
   const sent = [];
   const client = {
     readyState: 1,
@@ -62,6 +62,7 @@ test("replays stream events from seq zero without resurrecting answered approval
     clients: new Set(),
     pendingApprovalRequestIds: new Set([8]),
     lastSeq: 4,
+    currentTurnStartSeq: 2,
     eventLog: [
       {
         seq: 1,
@@ -104,13 +105,47 @@ test("replays stream events from seq zero without resurrecting answered approval
     .map((message) => String(message.method || ""))
     .filter(Boolean);
 
-  assert.equal(replayed, 3);
+  assert.equal(replayed, 2);
   assert.deepEqual(replayedMethods, [
-    "turn/started",
     "item/commandExecution/requestApproval",
     "item/completed",
   ]);
   assert.equal(sent.some((message) => message.id === 9), false);
+});
+
+test("returns resume miss when retained relay history has a sequence gap", () => {
+  const sent = [];
+  const client = {
+    readyState: 1,
+    send(data) {
+      sent.push(JSON.parse(String(data || "{}")));
+    },
+  };
+  const relay = {
+    relayId: "relay-test",
+    threadId: "thread-test",
+    clients: new Set(),
+    pendingApprovalRequestIds: new Set(),
+    lastSeq: 7000,
+    currentTurnStartSeq: 500,
+    eventLog: [
+      {
+        seq: 1001,
+        data: JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "late" } }),
+      },
+    ],
+    turnCompleted: false,
+    closed: false,
+    cleanupTimer: null,
+  };
+
+  const replayed = attachClientToCodexRelay(relay, client, { replayAfterSeq: 500 });
+
+  assert.equal(replayed, 0);
+  assert.equal(relay.clients.size, 0);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "runner_relay_resume_miss");
+  assert.equal(sent[0].reason, "relay_event_history_gap");
 });
 
 test("detects relay events from a different thread", () => {
