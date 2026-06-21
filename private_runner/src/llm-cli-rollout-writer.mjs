@@ -1,5 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 export function createLlmCliRolloutWriter(deps = {}) {
   const {
@@ -13,14 +14,13 @@ export function createLlmCliRolloutWriter(deps = {}) {
     normalizeReasoningEffort,
     normalizeSessionRootRelativePath,
     normalizeSessionUpdatedAt,
-    selectCliSessionIndexEntryBySessionId,
+    findCliSessionIndexEntryBySessionId,
     toWorkspaceRelativeFromAbsolutePath,
     upsertCliSessionIndexEntryFromRolloutFile,
     workspaceRoot,
   } = deps;
 
   let appCliRolloutWriteQueue = Promise.resolve();
-  const appCliRolloutBySessionId = new Map();
 
   function formatCliRolloutPathDateParts(date = new Date()) {
     const year = String(date.getFullYear());
@@ -42,7 +42,7 @@ export function createLlmCliRolloutWriter(deps = {}) {
   function buildCliRolloutFilePathForSession(sessionId, date = new Date()) {
     const normalizedSessionId = normalizeLlmExecutionSessionId(sessionId);
     const parts = formatCliRolloutPathDateParts(date);
-    const fileName = `rollout-${formatCliRolloutFileStamp(date)}-${normalizedSessionId}.jsonl`;
+    const fileName = `rollout-${formatCliRolloutFileStamp(date)}-${normalizedSessionId}-${randomUUID()}.jsonl`;
     return path.join(codeCliSessionsDir, parts.year, parts.month, parts.day, fileName);
   }
 
@@ -187,11 +187,8 @@ export function createLlmCliRolloutWriter(deps = {}) {
     const op = appCliRolloutWriteQueue.then(async () => {
       await ensureCliSessionIndexLoaded();
 
-      let filePath = String(appCliRolloutBySessionId.get(normalizedSessionId) || "").trim();
-      if (!filePath) {
-        const existing = selectCliSessionIndexEntryBySessionId(normalizedSessionId, { directory });
-        if (existing) filePath = String(existing.filePath || "").trim();
-      }
+      const existing = await findCliSessionIndexEntryBySessionId(normalizedSessionId, { directory });
+      let filePath = String(existing?.filePath || "").trim();
       if (!filePath) {
         filePath = buildCliRolloutFilePathForSession(normalizedSessionId, now);
       }
@@ -292,7 +289,6 @@ export function createLlmCliRolloutWriter(deps = {}) {
         }));
       }
       await fs.appendFile(filePath, `${lines.join("\n")}\n`, "utf8");
-      appCliRolloutBySessionId.set(normalizedSessionId, filePath);
       await upsertCliSessionIndexEntryFromRolloutFile(filePath, {
         sessionId: normalizedSessionId,
         cwd,

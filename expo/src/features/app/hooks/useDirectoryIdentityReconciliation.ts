@@ -1,3 +1,4 @@
+import { Alert } from "react-native";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../components/AppDrawer";
 import type { GitChangedFilesDirectoryState } from "../types/appTypes";
@@ -87,6 +88,54 @@ export function useDirectoryIdentityReconciliation({
       const canonicalPathByPath = new Map(resolvedPaths.filter(
         (item): item is readonly [string, string] => item !== null
       ));
+      const relativeMigrations = Array.from(canonicalPathByPath.entries()).filter(
+        ([source, target]) => !source.startsWith("/") && target !== source
+      );
+      if (relativeMigrations.length > 0) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            "ディレクトリ登録を更新",
+            `相対パスを接続中runnerの絶対パスへ更新します。\n\n${relativeMigrations
+              .map(([source, target]) => `${source} → ${target}`)
+              .join("\n")}`,
+            [
+              { text: "キャンセル", style: "cancel", onPress: () => resolve(false) },
+              { text: "更新", onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) }
+          );
+        });
+        if (cancelled || !confirmed) return;
+        const migrationController = new AbortController();
+        const migrationTimeout = setTimeout(
+          () => migrationController.abort(),
+          DIRECTORY_IDENTITY_HTTP_TIMEOUT_MS
+        );
+        const migrationResults = await Promise.all(relativeMigrations.map(async ([source, target]) => {
+          try {
+            return await fetch(`${baseUrl}/directory-identities/migrate`, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${token}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({ source, target }),
+              signal: migrationController.signal,
+            });
+          } catch {
+            return null;
+          }
+        }));
+        clearTimeout(migrationTimeout);
+        if (cancelled) return;
+        if (migrationResults.some((response) => !response?.ok)) {
+          Alert.alert(
+            "ディレクトリ登録を更新できませんでした",
+            "runnerを更新してから、もう一度接続してください。"
+          );
+          return;
+        }
+      }
       const canonicalSelectedDirectory = canonicalPathByPath.get(selectedDirectory) || selectedDirectory;
       const reconciled = reconcileRegisteredDirectories(registeredDirectories, canonicalPathByPath);
       const identityChanged = (

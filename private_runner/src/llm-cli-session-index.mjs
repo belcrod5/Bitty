@@ -22,6 +22,7 @@ export function createLlmCliSessionIndex(deps = {}) {
   const cliSessionIndexByFilePath = new Map();
   let cliSessionIndexLastRefreshAtMs = 0;
   let cliSessionIndexRefreshPromise = null;
+  const cliSessionCwdIdentityByCwd = new Map();
 
   function normalizeCliSessionIndexEntry(rawEntry) {
     const entry = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
@@ -309,16 +310,33 @@ export function createLlmCliSessionIndex(deps = {}) {
   function cliSessionEntryMatchesDirectory(entry, lookup) {
     if (!lookup || (!lookup.relative && !lookup.absolute)) return true;
     const entryDirectory = resolveCliSessionEntryDirectory(entry);
-    if (lookup.relative && entryDirectory === lookup.relative) {
-      return true;
-    }
     if (lookup.absolute) {
       const entryCwd = String(entry?.cwd || "").trim();
       if (entryCwd && path.resolve(entryCwd) === lookup.absolute) {
         return true;
       }
+      if (path.isAbsolute(entryDirectory) && path.resolve(entryDirectory) === lookup.absolute) {
+        return true;
+      }
+      return false;
+    }
+    if (lookup.relative && entryDirectory === lookup.relative) {
+      return true;
     }
     return false;
+  }
+
+  async function cliSessionEntryMatchesDirectoryIdentity(entry, lookup) {
+    if (cliSessionEntryMatchesDirectory(entry, lookup)) return true;
+    if (!lookup?.absolute) return false;
+    const cwd = String(entry?.cwd || "").trim();
+    if (!cwd) return false;
+    let identityPromise = cliSessionCwdIdentityByCwd.get(cwd);
+    if (!identityPromise) {
+      identityPromise = fs.realpath(cwd).catch(() => path.resolve(cwd));
+      cliSessionCwdIdentityByCwd.set(cwd, identityPromise);
+    }
+    return await identityPromise === lookup.absolute;
   }
 
   async function listCliSessionsForDirectory(requestedDirectory) {
@@ -326,10 +344,10 @@ export function createLlmCliSessionIndex(deps = {}) {
     const lookup = buildDirectoryLookup(requestedDirectory);
     const sessions = [];
     for (const entry of cliSessionIndexByFilePath.values()) {
-      if (!cliSessionEntryMatchesDirectory(entry, lookup)) continue;
+      if (!await cliSessionEntryMatchesDirectoryIdentity(entry, lookup)) continue;
       sessions.push({
         sessionId: entry.sessionId,
-        directory: resolveCliSessionEntryDirectory(entry),
+        directory: lookup.absolute || resolveCliSessionEntryDirectory(entry),
         cwd: entry.cwd,
         updatedAt: entry.updatedAt,
         lastReadAt: String(entry.lastReadAt || "").trim(),
@@ -372,7 +390,18 @@ export function createLlmCliSessionIndex(deps = {}) {
 
   async function findCliSessionIndexEntryBySessionId(sessionId, opts = {}) {
     await refreshCliSessionIndex();
-    return selectCliSessionIndexEntryBySessionId(sessionId, opts);
+    const normalizedSessionId = normalizeLlmExecutionSessionId(sessionId);
+    if (!normalizedSessionId) return null;
+    const lookup = buildDirectoryLookup(opts?.directory);
+    const candidates = [];
+    for (const entry of cliSessionIndexByFilePath.values()) {
+      if (String(entry?.sessionId || "") !== normalizedSessionId) continue;
+      if (!await cliSessionEntryMatchesDirectoryIdentity(entry, lookup)) continue;
+      candidates.push(entry);
+    }
+    if (candidates.length <= 0) return null;
+    candidates.sort(compareCliSessionIndexEntries);
+    return candidates[0];
   }
 
   async function rewriteCliSessionMetaLastReadAt(filePath, lastReadAtRaw) {
@@ -432,15 +461,9 @@ export function createLlmCliSessionIndex(deps = {}) {
     let entryFound = false;
 
     const lookupStartedAtMs = Date.now();
-    await ensureCliSessionIndexLoaded();
-    let entry = selectCliSessionIndexEntryBySessionId(sessionId, { directory: opts?.directory });
-    if (!entry) {
-      await refreshCliSessionIndex();
-      entry = selectCliSessionIndexEntryBySessionId(sessionId, { directory: opts?.directory });
-    }
-    if (!entry) {
-      entry = selectCliSessionIndexEntryBySessionId(sessionId);
-    }
+    const entry = await findCliSessionIndexEntryBySessionId(sessionId, {
+      directory: opts?.directory,
+    });
     lookupMs = Math.max(0, Date.now() - lookupStartedAtMs);
     entryFound = Boolean(entry && entry.filePath);
     if (entry && entry.filePath) {
