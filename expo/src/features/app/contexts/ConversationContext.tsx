@@ -53,6 +53,15 @@ export type ConversationContextValue = {
   openDirectoryEntry: (path: string) => void;
   formatSessionUpdatedAt: (updatedAt: string) => string;
   refreshRegisteredDirectorySessions: () => Promise<void>;
+  loadSessionChildren: (
+    sessionId: string,
+    directory: string
+  ) => Promise<void>;
+  openSessionHistoryEntry: (params: {
+    sessionId: string;
+    source: LlmSessionSource;
+    directory: string;
+  }) => void;
   markSessionRead: (
     sessionId: string,
     source: LlmSessionSource,

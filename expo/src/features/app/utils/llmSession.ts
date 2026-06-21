@@ -1,6 +1,6 @@
 import { parseOptionalFiniteNumber } from "./formatting";
 
-export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "unknown";
+export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "unknown";
 export type LlmSessionMessageRole = "user" | "assistant";
 
 export type LlmRuntimeLimitsSnapshot = {
@@ -59,6 +59,7 @@ export function parseLlmSessionSource(raw: unknown, fallback: LlmSessionSource =
   if (value === "appserver" || value === "app_server") return "appserver";
   if (value === "vscode") return "vscode";
   if (value === "exec") return "exec";
+  if (value.startsWith("subagent") || value.startsWith("sub_agent")) return "subagent";
   if (value === "unknown") return "unknown";
   return fallback;
 }
@@ -91,6 +92,7 @@ function sessionHistoryEntryPriority(entry: LlmSessionHistoryEntryLike): number 
   if (entry.source === "appserver") score += 95;
   if (entry.source === "vscode") score += 90;
   if (entry.source === "exec") score += 80;
+  if (entry.source === "subagent") score += 75;
   if (String(entry.firstUserMessage || "").trim()) score += 10;
   if (entry.contextUsedPct !== null) score += 5;
   return score;

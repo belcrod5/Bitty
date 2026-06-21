@@ -535,6 +535,7 @@ const EMPTY_DIRECTORY_SESSION_TREE_STATE: DirectorySessionTreeState = {
   nextCursor: "",
   hasMore: false,
   entries: [],
+  childrenByParentId: {},
 };
 const DIRECTORY_SESSION_PAGE_SIZE = 5;
 const DIRECTORY_SESSION_PREFETCH_TTL_MS = 60 * 1000;
@@ -843,6 +844,7 @@ export default function App() {
     fetchRunnerSessionMessages,
     fetchLatestSessionIdForDirectory,
     fetchSessionHistory,
+    fetchSessionChildHistory,
     markRunnerSessionRead,
     loadDirectoryExplorer,
     openDirectoryExplorer: primeDirectoryExplorer,
@@ -2884,6 +2886,7 @@ export default function App() {
   const {
     loadDirectorySessionTree,
     loadMoreDirectorySessionTree,
+    loadSessionChildTree,
     toggleDirectoryExpanded,
     prefetchDirectorySessionTreesForDrawerOpen,
   } = useDirectorySessionTreeController({
@@ -2891,6 +2894,7 @@ export default function App() {
     setDirectorySessionsById,
     setExpandedDirectoryIds,
     fetchSessionHistory,
+    fetchSessionChildHistory,
     emptyDirectorySessionTreeState: EMPTY_DIRECTORY_SESSION_TREE_STATE,
     directorySessionPageSize: DIRECTORY_SESSION_PAGE_SIZE,
     directorySessionRunnerSnapshotLimit: DIRECTORY_SESSION_RUNNER_SNAPSHOT_LIMIT,
@@ -6021,6 +6025,33 @@ export default function App() {
     if (!directory) return;
     removeRegisteredDirectory(directory.id);
   }, [registeredDirectories]);
+  const loadSessionChildrenFromContext = useCallback(async (
+    sessionIdRaw: string,
+    directoryPathRaw: string
+  ) => {
+    const sessionId = parseOptionalSessionId(sessionIdRaw);
+    const directoryPath = parseLlmDirectory(directoryPathRaw || normalizedLlmDirectoryForRequest());
+    if (!sessionId || !directoryPath) return;
+    const directory = registeredDirectories.find((item) => parseLlmDirectory(item.path) === directoryPath);
+    if (!directory) return;
+    await loadSessionChildTree(directory.id, directory.path, sessionId);
+  }, [
+    loadSessionChildTree,
+    normalizedLlmDirectoryForRequest,
+    registeredDirectories,
+  ]);
+  const openSessionHistoryEntryFromContext = useCallback((params: {
+    sessionId: string;
+    source: LlmSessionSource;
+    directory: string;
+  }) => {
+    const sessionId = parseOptionalSessionId(params.sessionId);
+    if (!sessionId) return;
+    void selectSpecificLlmSession(sessionId, {
+      source: params.source || "all",
+      directory: params.directory,
+    });
+  }, [selectSpecificLlmSession]);
   const selectedSessionIdForExecutionStatus = parseOptionalSessionId(
     selectedLlmSessionId || llmConversationSessionIdRef.current
   );
@@ -6069,6 +6100,8 @@ export default function App() {
     openDirectoryEntry: openDirectoryEntryFromContext,
     formatSessionUpdatedAt,
     refreshRegisteredDirectorySessions: refreshRegisteredDirectorySessionsForMiniBoard,
+    loadSessionChildren: loadSessionChildrenFromContext,
+    openSessionHistoryEntry: openSessionHistoryEntryFromContext,
     markSessionRead: markSessionReadFromContext,
     markSelectedSessionUnread: markSelectedSessionUnreadFromContext,
     reloadSelectedSession: reloadSelectedSessionFromContext,
@@ -7411,6 +7444,7 @@ export default function App() {
     openDirectoryExplorer,
     toggleDirectoryExpanded,
     loadMoreDirectorySessionTree,
+    loadSessionChildTree,
     selectLlmDirectory,
     openNewSessionPopup,
     openSessionHistoryPopup,

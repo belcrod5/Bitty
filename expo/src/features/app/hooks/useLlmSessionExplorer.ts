@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import {
   listCodexAppServerThreads,
   readCodexAppServerThread,
+  type CodexThreadListEntry,
 } from "../../codex/codexAppServerClient";
 import { parseContextUsageUsedPct } from "../utils/formatting";
 import {
@@ -22,16 +23,19 @@ export type DirectoryPickerEntry = {
   path: string;
 };
 
-export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "unknown";
+export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "unknown";
 
 export type LlmSessionHistoryEntry = {
   sessionId: string;
+  parentSessionId: string;
   directory: string;
   updatedAt: string;
   lastReadAt: string;
   source: LlmSessionSource;
   cwd: string;
   firstUserMessage: string;
+  agentRole: string;
+  agentDisplayName: string;
   contextUsedPct: number | null;
   modelRef: string;
   reasoningEffort: string;
@@ -107,6 +111,15 @@ type FetchSessionHistoryOptions = {
   runnerSnapshotLimit?: number;
 };
 
+const MAIN_THREAD_SOURCE_KINDS = ["cli", "vscode", "appServer", "exec"] as const;
+const SUBAGENT_THREAD_SOURCE_KINDS = [
+  "subAgent",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+] as const;
+
 type JsonRecord = Record<string, unknown>;
 
 function inferLatestToolLabelFromSessionMessages(dataRaw: unknown): string {
@@ -156,6 +169,38 @@ function hasRunnerSessionSnapshotData(snapshot: RunnerSessionSnapshot) {
     Boolean(snapshot.reasoningEffort) ||
     Boolean(snapshot.latestToolLabel)
   );
+}
+
+function buildLlmSessionHistoryEntry(
+  item: CodexThreadListEntry,
+  directory: string,
+  runnerSnapshotMap: Map<string, RunnerSessionSnapshot>,
+): LlmSessionHistoryEntry {
+  const sessionId = parseOptionalSessionId(item.threadId);
+  const snapshot = sessionId ? runnerSnapshotMap.get(sessionId) : undefined;
+  return {
+    sessionId,
+    parentSessionId: parseOptionalSessionId(item.parentThreadId),
+    directory: parseLlmDirectory(item.cwd || directory),
+    updatedAt: String(item.updatedAt || item.createdAt || "").trim(),
+    lastReadAt: String(snapshot?.lastReadAt || "").trim(),
+    source: parseLlmSessionSource(item.sourceKind, "unknown"),
+    cwd: String(item.cwd || "").trim(),
+    firstUserMessage: String(item.agentDisplayName || item.preview || "").trim(),
+    agentRole: String(item.agentRole || "").trim(),
+    agentDisplayName: String(item.agentDisplayName || "").trim(),
+    contextUsedPct: (() => {
+      const value = snapshot?.contextUsedPct;
+      if (typeof value !== "undefined") {
+        return value === null ? null : Math.max(0, Math.min(100, Math.round(Number(value))));
+      }
+      return Number.isFinite(Number(item.contextUsedPct))
+        ? Math.max(0, Math.min(100, Math.round(Number(item.contextUsedPct))))
+        : null;
+    })(),
+    modelRef: String(snapshot?.modelRef || "").trim(),
+    reasoningEffort: String(snapshot?.reasoningEffort || "").trim(),
+  };
 }
 
 export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
@@ -645,7 +690,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       wsToken: codexWsToken.trim(),
       cwd: directory,
       limit: 1,
-      sourceKinds: ["cli", "vscode", "appServer", "exec"],
+      sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
     });
     return parseOptionalSessionId(listed.data[0]?.threadId);
@@ -761,7 +806,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       cwd: directory,
       limit,
       cursor,
-      sourceKinds: ["cli", "vscode", "appServer", "exec"],
+      sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
     });
     const runnerSnapshotMap = includeRunnerSnapshots
@@ -769,46 +814,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         new Map<string, RunnerSessionSnapshot>()
       ))
       : new Map<string, RunnerSessionSnapshot>();
-    const sessions = listed.data.map((item): LlmSessionHistoryEntry => ({
-      sessionId: parseOptionalSessionId(item.threadId),
-      directory: parseLlmDirectory(item.cwd || directory),
-      updatedAt: String(item.updatedAt || item.createdAt || "").trim(),
-      lastReadAt: (() => {
-        const sessionId = parseOptionalSessionId(item.threadId);
-        if (sessionId && runnerSnapshotMap.has(sessionId)) {
-          return String(runnerSnapshotMap.get(sessionId)?.lastReadAt || "").trim();
-        }
-        return "";
-      })(),
-      source: parseLlmSessionSource(item.sourceKind, "unknown"),
-      cwd: String(item.cwd || "").trim(),
-      firstUserMessage: String(item.preview || "").trim(),
-      contextUsedPct: (() => {
-        const sessionId = parseOptionalSessionId(item.threadId);
-        if (sessionId && runnerSnapshotMap.has(sessionId)) {
-          const snapshot = runnerSnapshotMap.get(sessionId);
-          const value = snapshot?.contextUsedPct;
-          return value === null ? null : Math.max(0, Math.min(100, Math.round(Number(value))));
-        }
-        return Number.isFinite(Number(item.contextUsedPct))
-          ? Math.max(0, Math.min(100, Math.round(Number(item.contextUsedPct))))
-          : null;
-      })(),
-      modelRef: (() => {
-        const sessionId = parseOptionalSessionId(item.threadId);
-        if (sessionId && runnerSnapshotMap.has(sessionId)) {
-          return String(runnerSnapshotMap.get(sessionId)?.modelRef || "").trim();
-        }
-        return "";
-      })(),
-      reasoningEffort: (() => {
-        const sessionId = parseOptionalSessionId(item.threadId);
-        if (sessionId && runnerSnapshotMap.has(sessionId)) {
-          return String(runnerSnapshotMap.get(sessionId)?.reasoningEffort || "").trim();
-        }
-        return "";
-      })(),
-    }));
+    const sessions = listed.data.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap));
     const deduped = dedupeSessionHistoryEntries(sessions);
     emitSessionDiag("session_history_fetch_done", {
       directory,
@@ -824,6 +830,71 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       latestSessionId: sessions[0]?.sessionId || "",
       nextCursor: String(listed.nextCursor || "").trim(),
     };
+  }, [
+    codexWsToken,
+    codexWsUrl,
+    emitSessionDiag,
+    fetchRunnerSessionSnapshotMap,
+    nearUnlimitedTimeoutMs,
+    normalizedLlmDirectoryForRequest,
+  ]);
+
+  const fetchSessionChildHistory = useCallback(async (
+    parentSessionIdRaw: unknown,
+    directoryRaw?: unknown,
+    historyOptions?: Pick<FetchSessionHistoryOptions, "limit" | "includeRunnerSnapshots" | "runnerSnapshotLimit">,
+  ): Promise<LlmSessionHistoryEntry[]> => {
+    const parentSessionId = parseOptionalSessionId(parentSessionIdRaw);
+    if (!parentSessionId) return [];
+    const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
+    const limit = Number.isFinite(Number(historyOptions?.limit))
+      ? Math.max(1, Math.min(100, Math.floor(Number(historyOptions?.limit))))
+      : 50;
+    const includeRunnerSnapshots = historyOptions?.includeRunnerSnapshots !== false;
+    const runnerSnapshotLimit = Number.isFinite(Number(historyOptions?.runnerSnapshotLimit))
+      ? Math.max(1, Math.min(200, Math.floor(Number(historyOptions?.runnerSnapshotLimit))))
+      : 200;
+    const targetCodexWsUrl = codexWsUrl.trim();
+    if (!targetCodexWsUrl) {
+      throw new Error("Codex WS URL が未設定です");
+    }
+    const startedAt = Date.now();
+    emitSessionDiag("session_child_history_fetch_start", {
+      directory,
+      parentSessionId,
+      limit,
+      includeRunnerSnapshots,
+      runnerSnapshotLimit: includeRunnerSnapshots ? runnerSnapshotLimit : 0,
+    });
+    const listed = await listCodexAppServerThreads({
+      wsUrl: targetCodexWsUrl,
+      wsToken: codexWsToken.trim(),
+      cwd: directory,
+      limit,
+      sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
+      timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+    });
+    const runnerSnapshotMap = includeRunnerSnapshots
+      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch(() => (
+        new Map<string, RunnerSessionSnapshot>()
+      ))
+      : new Map<string, RunnerSessionSnapshot>();
+    const directChildren = listed.data.filter(
+      (item) => parseOptionalSessionId(item.parentThreadId) === parentSessionId
+    );
+    const sessions = dedupeSessionHistoryEntries(
+      directChildren.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap))
+    );
+    emitSessionDiag("session_child_history_fetch_done", {
+      directory,
+      parentSessionId,
+      elapsedMs: Math.max(0, Date.now() - startedAt),
+      threadCountRaw: listed.data.length,
+      directChildCount: directChildren.length,
+      threadCountDeduped: sessions.length,
+      runnerSnapshotCount: runnerSnapshotMap.size,
+    });
+    return sessions;
   }, [
     codexWsToken,
     codexWsUrl,
@@ -959,6 +1030,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionMessages,
     fetchLatestSessionIdForDirectory,
     fetchSessionHistory,
+    fetchSessionChildHistory,
     markRunnerSessionRead,
     loadDirectoryExplorer,
     openDirectoryExplorer,

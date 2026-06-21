@@ -49,6 +49,7 @@ import { YouTubeVideoList } from "../components/YouTubeVideoList";
 import { GitDiffPanel } from "../components/GitDiffPanel";
 import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
+import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import { modelRefLabelForDisplay, normalizeModelRef, type ReasoningEffort } from "../utils/settingsParsers";
@@ -151,7 +152,11 @@ export function ChatScreen({
   const isMiniBoardMode = isMiniBoardPreviewMode || isMiniBoardPopupMode;
   const isPanelRuntimeView = isPanelScopedChatView(mode, panelId);
   const { getSnapshot } = usePanelRuntimeStore();
-  const { startNewPanelSession, updatePanelSettings } = usePanelRuntimeController();
+  const {
+    startNewPanelSession,
+    updatePanelSettings,
+    hydratePanelFromSessionHistory,
+  } = usePanelRuntimeController();
   const { openDrawer } = useAppShell();
   const {
     selectedModelLabel,
@@ -332,6 +337,13 @@ export function ChatScreen({
     renameSessionTitleForSession,
     selectSessionMarkerColorForSession,
     removeDirectoryForPath,
+    registeredDirectories,
+    directorySessionsById,
+    sessionTitleOverridesById,
+    formatSessionUpdatedAt,
+    loadSessionChildren,
+    openSessionHistoryEntry,
+    markSessionRead,
     markSessionUnread,
     showChatBottomToast,
     setTranscript,
@@ -406,6 +418,47 @@ export function ChatScreen({
   const selectedDirectoryPathForView = isPanelSnapshotView
     ? (String(panelSnapshot.selectedDirectoryPath || "").trim() || selectedDirectoryPath)
     : selectedDirectoryPath;
+  const selectedSessionIdForView = isPanelSnapshotView
+    ? String(panelSnapshot.selectedSessionId || "").trim()
+    : String(selectedLlmSessionId || "").trim();
+  const openSessionHistoryEntryForView = useCallback((params: {
+    sessionId: string;
+    source: Parameters<typeof openSessionHistoryEntry>[0]["source"];
+    directory: string;
+  }) => {
+    if (!isPanelRuntimeView) {
+      openSessionHistoryEntry(params);
+      return;
+    }
+    const sessionId = String(params.sessionId || "").trim();
+    const directory = String(params.directory || "").trim();
+    if (!sessionId || !directory) return;
+    const diagnosticCycleId = `chat-subagent-${Date.now().toString(36)}`;
+    void hydratePanelFromSessionHistory({
+      panelId,
+      sessionId,
+      directory,
+      diagnosticCycleId,
+    }).then((hydrated) => {
+      if (!hydrated) {
+        showChatBottomToast("assistant", "サブエージェントのセッションを読み込めませんでした。");
+        return;
+      }
+      markSessionRead(sessionId, params.source, directory);
+    }).catch((error) => {
+      showChatBottomToast(
+        "assistant",
+        `サブエージェントのセッション読込に失敗しました: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+  }, [
+    hydratePanelFromSessionHistory,
+    isPanelRuntimeView,
+    markSessionRead,
+    openSessionHistoryEntry,
+    panelId,
+    showChatBottomToast,
+  ]);
   const gitChangedFiles = useDirectoryGitChangedFiles(selectedDirectoryPathForView);
   const startNewSessionForView = useCallback(() => {
     if (isPanelRuntimeView) {
@@ -2497,6 +2550,20 @@ export function ChatScreen({
                       {`ドット色: ${selectedSessionMarkerLabel}`}
                     </Text>
                   </TouchableOpacity>
+                  <ChatSessionSubagentList
+                    selectedSessionId={selectedSessionIdForView}
+                    selectedDirectoryPath={selectedDirectoryPathForView}
+                    registeredDirectories={registeredDirectories}
+                    directorySessionsById={directorySessionsById}
+                    sessionTitleOverridesById={sessionTitleOverridesById}
+                    formatSessionUpdatedAt={formatSessionUpdatedAt}
+                    loadSessionChildren={loadSessionChildren}
+                    openSessionHistoryEntry={openSessionHistoryEntryForView}
+                    onCloseMenu={() => {
+                      setDirectoryMenuMode("actions");
+                      setDirectoryMenuOpen(false);
+                    }}
+                  />
                   <TouchableOpacity
                     style={styles.chatDirectoryMenuOption}
                     onPress={() => {

@@ -20,6 +20,7 @@ type UseAppDrawerSessionControllerArgs = {
   openDirectoryExplorer: () => void;
   toggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   loadMoreDirectorySessionTree: (directoryId: string, directoryPath: string) => Promise<void>;
+  loadSessionChildTree: (directoryId: string, directoryPath: string, parentSessionId: string) => Promise<void>;
   selectLlmDirectory: (directoryPath: string) => void;
   openNewSessionPopup: (params: { directory: string }) => void;
   openSessionHistoryPopup: (params: {
@@ -60,6 +61,7 @@ export function useAppDrawerSessionController({
   openDirectoryExplorer,
   toggleDirectoryExpanded,
   loadMoreDirectorySessionTree,
+  loadSessionChildTree,
   selectLlmDirectory,
   openNewSessionPopup,
   openSessionHistoryPopup,
@@ -88,6 +90,14 @@ export function useAppDrawerSessionController({
   const handleLoadMoreSessions = useCallback((directoryId: string, directoryPath: string) => {
     void loadMoreDirectorySessionTree(directoryId, directoryPath);
   }, [loadMoreDirectorySessionTree]);
+
+  const handleLoadSessionChildren = useCallback((
+    directoryId: string,
+    directoryPath: string,
+    parentSessionId: string
+  ) => {
+    void loadSessionChildTree(directoryId, directoryPath, parentSessionId);
+  }, [loadSessionChildTree]);
 
   const handleSelectDirectory = useCallback((directoryPath: string) => {
     selectLlmDirectory(directoryPath);
@@ -159,6 +169,7 @@ export function useAppDrawerSessionController({
     onOpenDirectoryExplorer: handleOpenDirectoryExplorer,
     onToggleDirectoryExpanded: handleToggleDirectoryExpanded,
     onLoadMoreSessions: handleLoadMoreSessions,
+    onLoadSessionChildren: handleLoadSessionChildren,
     onStartNewSessionInDirectory: handleSelectDirectory,
     onSelectSessionHistoryEntry: handleSelectSessionHistoryEntry,
     onMarkSessionRead: handleMarkSessionRead,
@@ -180,6 +191,7 @@ export function useAppDrawerSessionController({
     handleOpenDirectoryExplorer,
     handleToggleDirectoryExpanded,
     handleLoadMoreSessions,
+    handleLoadSessionChildren,
     handleSelectDirectory,
     handleSelectSessionHistoryEntry,
     handleMarkSessionRead,

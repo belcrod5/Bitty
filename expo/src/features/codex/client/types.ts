@@ -128,7 +128,16 @@ export type CodexWebSocketHandshakeProbeResult = {
   readyStateAtOpen: number;
 };
 
-export type CodexThreadSourceKind = "cli" | "vscode" | "appServer" | "exec";
+export type CodexThreadSourceKind =
+  | "cli"
+  | "vscode"
+  | "appServer"
+  | "exec"
+  | "subAgent"
+  | "subAgentReview"
+  | "subAgentCompact"
+  | "subAgentThreadSpawn"
+  | "subAgentOther";
 
 export type CodexSessionState =
   | "empty"
@@ -145,6 +154,9 @@ export type CodexThreadStatusType = "active" | "idle" | "notLoaded" | "systemErr
 
 export type CodexThreadListEntry = {
   threadId: string;
+  parentThreadId: string;
+  agentRole: string;
+  agentDisplayName: string;
   preview: string;
   modelProvider: string;
   sourceKind: string;

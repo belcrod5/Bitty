@@ -550,6 +550,45 @@ export const appLayoutStyles = {
     color: "#0f172a",
     fontWeight: "600",
   },
+  chatDirectorySubagentSection: {
+    gap: 8,
+    paddingTop: 2,
+  },
+  chatDirectorySubagentSectionTitle: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  chatDirectorySubagentOption: {
+    minHeight: 48,
+    borderRadius: 10,
+    backgroundColor: "#f8fafc",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    justifyContent: "center",
+  },
+  chatDirectorySubagentOptionText: {
+    fontSize: 14,
+    color: "#0f172a",
+    fontWeight: "700",
+  },
+  chatDirectorySubagentStatusRow: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  chatDirectorySubagentMetaText: {
+    fontSize: 12,
+    color: "#64748b",
+    lineHeight: 17,
+  },
+  chatDirectorySubagentErrorText: {
+    fontSize: 12,
+    color: "#b91c1c",
+    lineHeight: 17,
+  },
   chatDirectoryMarkerOptionRow: {
     flexDirection: "row",
     alignItems: "center",
