@@ -14,6 +14,7 @@ import { createLlmCliRolloutWriter } from "./llm-cli-rollout-writer.mjs";
 import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
 import { createWorkspaceFilesService } from "./workspace-files.mjs";
+import { fetchGitBranches } from "./git-branches.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -2953,15 +2954,12 @@ async function runGitChangedFileListCommand(args, opts = {}) {
   if (result.exitCode !== 0) {
     throw new Error(`git command failed (${result.exitCode}): git ${args.join(" ")} ${result.stderr || ""}`.trim());
   }
-  return parseGitChangedFileList(result.stdout || "", {
-    nulTerminated: gitArgs.includes("-z"),
-  });
+  return parseGitChangedFileList(result.stdout || "", { nulTerminated: gitArgs.includes("-z") });
 }
 
 async function fetchGitBranchName(cwd) {
   const result = await runCommandWithCapture("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
-    timeoutMs: Math.max(10000, SANDBOXED_RUN_DEFAULT_TIMEOUT_MS),
-    maxOutputBytes: 8 * 1024,
+    timeoutMs: Math.max(10000, SANDBOXED_RUN_DEFAULT_TIMEOUT_MS), maxOutputBytes: 8 * 1024,
   });
   if (result.timedOut) {
     throw new Error("git command timed out: git rev-parse --abbrev-ref HEAD");
@@ -2987,8 +2985,9 @@ async function fetchGitChangedFilesSnapshot(rawDirectory) {
       throw makeApiError(400, "directory_invalid", errorMessage(err));
     }
   }
-  const [branchName, stagedFiles, unstagedDiffFiles, untrackedFiles] = await Promise.all([
+  const [branchName, branches, stagedFiles, unstagedDiffFiles, untrackedFiles] = await Promise.all([
     fetchGitBranchName(cwd),
+    fetchGitBranches({ cwd, runCommandWithCapture, timeoutMs: Math.max(10000, SANDBOXED_RUN_DEFAULT_TIMEOUT_MS) }),
     runGitChangedFileListCommand(["diff", "--name-only", "--staged", "-z"], { cwd }),
     runGitChangedFileListCommand(["diff", "--name-only", "-z"], { cwd }),
     runGitChangedFileListCommand(["ls-files", "--others", "--exclude-standard", "-z"], { cwd }),
@@ -2999,6 +2998,7 @@ async function fetchGitChangedFilesSnapshot(rawDirectory) {
   const unstagedFiles = Array.from(unstagedSet).sort((a, b) => a.localeCompare(b));
   return {
     branchName,
+    branches,
     stagedFiles,
     unstagedFiles,
     untrackedFiles,
