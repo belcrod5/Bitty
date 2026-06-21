@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -46,33 +46,24 @@ export function GitBranchDropdown({
   const current = normalizeBranchName(currentBranchName) || "HEAD";
   const detached = current === "HEAD";
   const [open, setOpen] = useState(false);
-  const [selectedKey, setSelectedKey] = useState(detached ? "" : `local:${current}`);
   const branchOptions = useMemo(
     () => normalizeBranches(branches, current),
     [branches, current]
   );
-  const selectedOption = branchOptions.find((item) => `${item.kind}:${item.name}` === selectedKey);
-  const selectedKind = selectedOption?.kind || (detached ? "detached" : "local");
   const localBranches = branchOptions.filter((item) => item.kind === "local");
   const remoteBranches = branchOptions.filter((item) => item.kind === "remote");
 
-  useEffect(() => {
-    setSelectedKey(detached ? "" : `local:${current}`);
-  }, [current, detached]);
-
   const renderOption = (item: GitBranchOption) => {
     const optionKey = `${item.kind}:${item.name}`;
-    const optionSelected = optionKey === selectedKey;
+    const optionSelected = !detached && optionKey === `local:${current}`;
     return (
       <TouchableOpacity
         key={optionKey}
         style={[branchStyles.optionRow, optionSelected ? branchStyles.optionRowSelected : null]}
-        onPress={() => {
-          setSelectedKey(optionKey);
-          setOpen(false);
-        }}
+        onPress={() => setOpen(false)}
         accessibilityRole="button"
-        accessibilityLabel={`${item.kind === "local" ? "Local" : "Remote"} ${item.name}を選択`}
+        accessibilityLabel={`${item.kind === "local" ? "Local" : "Remote"} ${item.name}`}
+        accessibilityState={{ selected: optionSelected }}
       >
         <Text style={branchStyles.optionCheck}>{optionSelected ? "✓" : ""}</Text>
         <Text
@@ -94,9 +85,9 @@ export function GitBranchDropdown({
         accessibilityRole="button"
         accessibilityLabel="ブランチ一覧を開く"
       >
-        <Text style={branchStyles.triggerKind}>{selectedKind}</Text>
+        <Text style={branchStyles.triggerKind}>{detached ? "detached" : "local"}</Text>
         <Text style={branchStyles.triggerText} numberOfLines={1}>
-          {selectedOption?.name || current}
+          {current}
         </Text>
         <Ionicons name={open ? "chevron-up" : "chevron-down"} size={15} color="#334155" />
       </TouchableOpacity>
