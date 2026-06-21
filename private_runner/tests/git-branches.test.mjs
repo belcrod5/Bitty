@@ -67,7 +67,7 @@ test("rejects truncated branch list output", async () => {
         exitCode: 0,
         timedOut: false,
         stderr: "",
-        stdout: "refs/heads/main\tma",
+        stdout: `${"x".repeat(128 * 1024 - 1)}\n`,
       }),
     }),
     /branch list output was truncated/

@@ -1,4 +1,5 @@
 export async function fetchGitBranches({ cwd, runCommandWithCapture, timeoutMs }) {
+  const maxOutputBytes = 128 * 1024;
   const result = await runCommandWithCapture("git", [
     "-C",
     cwd,
@@ -8,7 +9,7 @@ export async function fetchGitBranches({ cwd, runCommandWithCapture, timeoutMs }
     "refs/remotes",
   ], {
     timeoutMs,
-    maxOutputBytes: 128 * 1024,
+    maxOutputBytes,
   });
   if (result.timedOut) {
     throw new Error("git command timed out: git for-each-ref");
@@ -16,7 +17,7 @@ export async function fetchGitBranches({ cwd, runCommandWithCapture, timeoutMs }
   if (result.exitCode !== 0) {
     throw new Error(`git command failed (${result.exitCode}): git for-each-ref ${result.stderr || ""}`.trim());
   }
-  if (result.stdout && !String(result.stdout).endsWith("\n")) {
+  if (String(result.stdout || "").length >= maxOutputBytes) {
     throw new Error("git branch list output was truncated");
   }
 
