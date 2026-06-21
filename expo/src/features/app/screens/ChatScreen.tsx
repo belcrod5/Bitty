@@ -1359,6 +1359,7 @@ export function ChatScreen({
   ) + 8;
   const footerSelectTop = Math.max(8, footerSelectAnchor.y - footerSelectEstimatedHeight - 6);
   const gitDiffBranchName = String(gitChangedFiles.branchName || "").trim() || "HEAD";
+  const gitDiffBehindCount = Math.max(0, Math.floor(Number(gitChangedFiles.behindCount) || 0));
   const gitDiffAddedCount = countGitChangedFiles(gitChangedFiles.stagedFiles);
   const gitDiffRemovedCount = countGitChangedFiles(gitChangedFiles.unstagedFiles);
 
@@ -1740,12 +1741,15 @@ export function ChatScreen({
             accessibilityRole="button"
             accessibilityLabel="Git差分パネルを開く"
           >
-            <Text style={styles.gitDiffHeaderBranchText} numberOfLines={1}>
-              {gitDiffBranchName}
-            </Text>
-            <View style={styles.gitDiffHeaderCountRow}>
-              <Text style={styles.gitDiffHeaderButtonPlusText}>{`+${gitDiffAddedCount}`}</Text>
-              <Text style={styles.gitDiffHeaderButtonMinusText}>{`-${gitDiffRemovedCount}`}</Text>
+            <Text style={styles.gitDiffHeaderBehindText}>{`↓${gitDiffBehindCount}`}</Text>
+            <View style={styles.gitDiffHeaderSummary}>
+              <Text style={styles.gitDiffHeaderBranchText} numberOfLines={1}>
+                {gitDiffBranchName}
+              </Text>
+              <View style={styles.gitDiffHeaderCountRow}>
+                <Text style={styles.gitDiffHeaderButtonPlusText}>{`+${gitDiffAddedCount}`}</Text>
+                <Text style={styles.gitDiffHeaderButtonMinusText}>{`-${gitDiffRemovedCount}`}</Text>
+              </View>
             </View>
           </TouchableOpacity>
           <View style={styles.chatContextWrap}>

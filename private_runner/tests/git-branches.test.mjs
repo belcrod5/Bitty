@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchGitBranches } from "../src/git-branches.mjs";
+import { fetchGitBranches, fetchGitBranchStatus } from "../src/git-branches.mjs";
 
 test("lists local and remote branches without the remote HEAD alias", async () => {
   const calls = [];
@@ -71,5 +71,65 @@ test("rejects truncated branch list output", async () => {
       }),
     }),
     /branch list output was truncated/
+  );
+});
+
+test("reads the current branch and upstream behind count", async () => {
+  const calls = [];
+  const status = await fetchGitBranchStatus({
+    cwd: "/workspace",
+    timeoutMs: 12000,
+    runCommandWithCapture: async (...args) => {
+      calls.push(args);
+      return {
+        exitCode: 0,
+        timedOut: false,
+        stderr: "",
+        stdout: [
+          "# branch.oid 1234567",
+          "# branch.head feature/test",
+          "# branch.upstream origin/feature/test",
+          "# branch.ab +2 -3",
+        ].join("\n"),
+      };
+    },
+  });
+
+  assert.deepEqual(status, { branchName: "feature/test", behindCount: 3 });
+  assert.deepEqual(calls[0], [
+    "git",
+    ["-C", "/workspace", "status", "--porcelain=v2", "--branch", "--untracked-files=no"],
+    { timeoutMs: 12000, maxOutputBytes: 8 * 1024 },
+  ]);
+});
+
+test("uses zero without an upstream and HEAD when detached", async () => {
+  const status = await fetchGitBranchStatus({
+    cwd: "/workspace",
+    timeoutMs: 12000,
+    runCommandWithCapture: async () => ({
+      exitCode: 0,
+      timedOut: false,
+      stderr: "",
+      stdout: "# branch.oid 1234567\n# branch.head (detached)\n",
+    }),
+  });
+
+  assert.deepEqual(status, { branchName: "HEAD", behindCount: 0 });
+});
+
+test("reports git status failures", async () => {
+  await assert.rejects(
+    fetchGitBranchStatus({
+      cwd: "/workspace",
+      timeoutMs: 12000,
+      runCommandWithCapture: async () => ({
+        exitCode: 128,
+        timedOut: false,
+        stderr: "not a repository",
+        stdout: "",
+      }),
+    }),
+    /git command failed \(128\).*not a repository/
   );
 });
