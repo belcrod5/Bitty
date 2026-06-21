@@ -13,6 +13,7 @@ import {
   normalizeCodexWsInputs,
   parseCodexApprovalPolicy,
   parseJsonRpcMessage,
+  takeResolvedApprovalRequest,
   toCodexApprovalDecision,
   toErrorMessage,
 } from "./helpers";
@@ -202,7 +203,10 @@ export function startCodexAppServerTurn(
 
   const pending = new Map<JsonRpcId, PendingRequest>();
   const pendingMethods = new Map<JsonRpcId, string>();
-  const pendingApprovalRequests = new Map<JsonRpcId, { active: boolean }>();
+  const pendingApprovalRequests = new Map<JsonRpcId, {
+    active: boolean;
+    request: import("../approvalFlow").ApprovalRequest;
+  }>();
   let nextId = 1;
   let activeThreadId = requestedThreadId;
   let activeTurnId = "";
@@ -526,7 +530,7 @@ export function startCodexAppServerTurn(
         threadId: activeThreadId,
         turnId: activeTurnId,
       });
-      const guard = { active: true };
+      const guard = { active: true, request };
       pendingApprovalRequests.set(id, guard);
       try {
         const decided = await onApprovalRequest(request);
@@ -572,6 +576,13 @@ export function startCodexAppServerTurn(
       readyState: ws.readyState,
     });
     emitEvent(method, params);
+    if (method === "serverRequest/resolved") {
+      const resolvedApproval = takeResolvedApprovalRequest(pendingApprovalRequests, params);
+      if (resolvedApproval) {
+        options.onApprovalRequestResolved?.(resolvedApproval);
+      }
+      return;
+    }
     if (method === "error") {
       lastErrorMessage = extractNotificationMessage(params);
       if (lastErrorMessage) {

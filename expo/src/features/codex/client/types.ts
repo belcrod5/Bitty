@@ -63,6 +63,7 @@ export type CodexAppServerTurnOptions = {
   effort?: "low" | "medium" | "high" | "xhigh";
   approvalPolicy?: "never" | "on-request";
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
+  onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;
   timeoutMs?: number;
   onDelta?: (delta: string, params?: unknown) => void;
   onThreadIdResolved?: (threadId: string) => void;
@@ -94,6 +95,7 @@ export type CodexAppServerRelayObserverOptions = {
   threadId: string;
   resumeFromSeq?: number;
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
+  onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;
   onEvent?: (method: string, params: unknown) => void;
   onDelta?: (delta: string, params?: unknown) => void;
   onAgentMessageCompleted?: (text: string, params?: unknown) => void;

@@ -77,6 +77,18 @@ export function parseJsonRpcMessage(raw: string): Record<string, unknown> | null
   }
 }
 
+export function takeResolvedApprovalRequest(
+  pendingRequests: Map<number, { active: boolean; request: ApprovalRequest }>,
+  paramsRaw: unknown
+) {
+  const requestId = Number((paramsRaw as any)?.requestId);
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return null;
+  pending.active = false;
+  pendingRequests.delete(requestId);
+  return pending.request;
+}
+
 export function isNoRolloutForThreadError(error: unknown) {
   const message = toErrorMessage(error).toLowerCase();
   return message.includes("no rollout found for thread id");

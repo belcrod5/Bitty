@@ -51,6 +51,7 @@ type UseCodexWsDiagnosticsControllerOptions = {
   baseUrl: () => string;
   normalizedLlmDirectoryForRequest: () => string;
   handleApprovalRequest: (request: ApprovalRequest) => Promise<ApprovalAction> | ApprovalAction;
+  onApprovalRequestResolved?: (request: ApprovalRequest) => void;
   setError: Dispatch<SetStateAction<string>>;
   setReplyDebug: Dispatch<SetStateAction<string>>;
   setCodexWsProbeLoading: Dispatch<SetStateAction<boolean>>;
@@ -92,6 +93,7 @@ export function useCodexWsDiagnosticsController({
   baseUrl,
   normalizedLlmDirectoryForRequest,
   handleApprovalRequest,
+  onApprovalRequestResolved,
   setError,
   setReplyDebug,
   setCodexWsProbeLoading,
@@ -762,6 +764,7 @@ export function useCodexWsDiagnosticsController({
         effort: modelRef ? reasoningEffort : undefined,
         approvalPolicy: codexApprovalPolicy,
         onApprovalRequest: handleApprovalRequest,
+        onApprovalRequestResolved,
         timeoutMs: nearUnlimitedTimeoutMs,
         onLog: (entry) => {
           pushE2e("codex_ws_e2e_ws_log", {

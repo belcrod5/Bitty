@@ -90,6 +90,7 @@ type UseCodexRelayObserverStartControllerArgs = {
     reason: string;
   }) => void;
   onApprovalRequest: (request: ApprovalRequest) => ApprovalAction | Promise<ApprovalAction>;
+  onApprovalRequestResolved?: (request: ApprovalRequest) => void;
   onAssistantTurnCompleted?: (params: {
     threadId: string;
     panelId?: string;
@@ -157,6 +158,7 @@ export function useCodexRelayObserverStartController({
   shouldProjectRelayConversation,
   completeRuntimeRequestForRelayCompletion,
   onApprovalRequest,
+  onApprovalRequestResolved,
   onAssistantTurnCompleted,
 }: UseCodexRelayObserverStartControllerArgs) {
   const startCodexRelayObserverForSession = useCallback((threadIdRaw: unknown, options?: StartCodexRelayObserverOptions) => {
@@ -491,10 +493,10 @@ export function useCodexRelayObserverStartController({
             }
           } else if (stage === "relay_observer_resume_miss") {
             if (finishWaitingApprovalResumeAttempt(threadId, stage)) {
-              setWaitingApprovalResumeStatusText("承認待ち再開に失敗しました。セッションを再読み込みしてください。");
+              setWaitingApprovalResumeStatusText("relay が見つからないため、承認待ちを再開できません。");
             }
             if (isSessionRuntimeObserver) {
-              finalizeSessionRuntimeAfterRelayLoss(threadId, "relay resume miss");
+              finalizeSessionRuntimeAfterRelayLoss(threadId, "relay が見つからないため、ライブ再開できません。");
             }
             clearCodexRelayObserverForMiss(threadId, directory);
             return;
@@ -678,6 +680,7 @@ export function useCodexRelayObserverStartController({
             : request;
           return onApprovalRequest(nextRequest);
         },
+        onApprovalRequestResolved,
       });
       codexRelayObserverRef.current = {
         threadId,
@@ -716,6 +719,7 @@ export function useCodexRelayObserverStartController({
     logSessionDiag,
     normalizedLlmDirectoryForRequest,
     onApprovalRequest,
+    onApprovalRequestResolved,
     onAssistantTurnCompleted,
     parseLlmDirectory,
     parseOptionalSessionId,

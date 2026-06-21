@@ -256,7 +256,7 @@ const CODEX_WS_RELAY_EVENT_MAX = Math.max(
 );
 const CODEX_WS_RELAY_IDLE_TTL_MS = Math.max(
   10000,
-  Number(process.env.CODEX_WS_RELAY_IDLE_TTL_MS || 5 * 60 * 1000)
+  Number(process.env.CODEX_WS_RELAY_IDLE_TTL_MS || 30 * 60 * 1000)
 );
 const CODEX_WS_RELAY_COMPLETED_TTL_MS = Math.max(
   5000,
@@ -8724,7 +8724,6 @@ runnerWsServer.on("connection", (ws, req) => {
     llmRelay = relay;
     return attachClientToCodexRelay(relay, ws, {
       replayAfterSeq: options.replayAfterSeq || 0,
-      replayApprovalOnlyWhenSeqZero: Boolean(options.replayApprovalOnlyWhenSeqZero),
       envelopeMode: true,
     });
   }
@@ -8849,7 +8848,6 @@ runnerWsServer.on("connection", (ws, req) => {
       }
       attachRunnerWsToRelay(relay, {
         replayAfterSeq,
-        replayApprovalOnlyWhenSeqZero: replayAfterSeq === 0,
       });
       return;
     }
@@ -9449,6 +9447,7 @@ function sendCodexRelayControl(relay, ws, payload) {
       seq: Number(payload?.resumeFromSeq || 0),
       payload: {
         resumeFromSeq: Number(payload?.resumeFromSeq || 0),
+        reason: String(payload?.reason || ""),
       },
     });
   }
@@ -10084,10 +10083,22 @@ function shouldReplayCodexRelayEvent(relay, eventEntry) {
 function attachClientToCodexRelay(relay, clientWs, options = {}) {
   if (!relay || relay.closed || !clientWs) return 0;
   const replayAfterSeqRaw = Number(options.replayAfterSeq || 0);
-  const replayAfterSeq = Number.isFinite(replayAfterSeqRaw)
+  let replayAfterSeq = Number.isFinite(replayAfterSeqRaw)
     ? Math.max(0, Math.floor(replayAfterSeqRaw))
     : 0;
-  const replayApprovalOnlyWhenSeqZero = Boolean(options.replayApprovalOnlyWhenSeqZero);
+  if (replayAfterSeq === 0 && Number(relay.currentTurnStartSeq) > 0) {
+    replayAfterSeq = Math.max(0, Math.floor(Number(relay.currentTurnStartSeq)) - 1);
+  }
+  const oldestRetainedSeq = Number(relay.eventLog[0]?.seq || 0);
+  if (replayAfterSeq > 0 && oldestRetainedSeq > replayAfterSeq + 1) {
+    sendCodexRelayControl(relay, clientWs, {
+      type: "runner_relay_resume_miss",
+      threadId: relay.threadId || "",
+      resumeFromSeq: replayAfterSeq,
+      reason: "relay_event_history_gap",
+    });
+    return 0;
+  }
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
@@ -10100,29 +10111,12 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
   relay.clients.add(clientWs);
   relay.updatedAtMs = codexRelayNowMs();
   let replayed = 0;
-  if (replayAfterSeq > 0 && relay.eventLog.length > 0) {
+  if (relay.eventLog.length > 0) {
     for (const eventEntry of relay.eventLog) {
       if (eventEntry.seq <= replayAfterSeq) continue;
       if (!shouldReplayCodexRelayEvent(relay, eventEntry)) continue;
       if (!sendCodexRelayRpcToClient(relay, clientWs, eventEntry.data, eventEntry.seq)) break;
       replayed += 1;
-    }
-  }
-  if (replayed === 0 && replayAfterSeq === 0 && replayApprovalOnlyWhenSeqZero && relay.eventLog.length > 0) {
-    let latestApprovalEvent = null;
-    for (const eventEntry of relay.eventLog) {
-      if (!eventEntry) continue;
-      const approvalMeta = parseRelayApprovalRequestEvent(eventEntry.data);
-      if (!approvalMeta) continue;
-      if (!shouldReplayCodexRelayEvent(relay, eventEntry)) continue;
-      if (!latestApprovalEvent || Number(eventEntry.seq || 0) > Number(latestApprovalEvent.seq || 0)) {
-        latestApprovalEvent = eventEntry;
-      }
-    }
-    if (latestApprovalEvent) {
-      if (sendCodexRelayRpcToClient(relay, clientWs, latestApprovalEvent.data, Number(latestApprovalEvent.seq || 0))) {
-        replayed = 1;
-      }
     }
   }
   sendCodexRelayControl(relay, clientWs, {
@@ -10154,6 +10148,7 @@ function createCodexRelayContext(params) {
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
+    currentTurnStartSeq: 0,
     lastAgentMessageText: "",
     assistantThinkingPrefixSent: false,
     assistantThinkingBodyText: "",
@@ -10371,6 +10366,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     } else if (meta.method === "turn/started") {
       relay.turnStarted = true;
       relay.turnCompleted = false;
+      relay.currentTurnStartSeq = relay.lastSeq + 1;
     } else if (meta.threadStatus) {
       relay.turnStatus = String(meta.threadStatus || "");
       if (isTerminalTurnStatus(meta.threadStatus)) {
@@ -10737,7 +10733,6 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   }
   const replayed = attachClientToCodexRelay(relay, clientWs, {
     replayAfterSeq: resumeFromSeq,
-    replayApprovalOnlyWhenSeqZero: Boolean(resumeThreadId) && resumeFromSeq === 0,
   });
   void appendCodexWsProxyDebug("proxy_connection_opened", {
     relayId: relay.relayId,
@@ -11001,6 +10996,7 @@ if (!RUNNER_SKIP_SERVER_START) {
 }
 
 export const __TESTING__ = {
+  attachClientToCodexRelay,
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
