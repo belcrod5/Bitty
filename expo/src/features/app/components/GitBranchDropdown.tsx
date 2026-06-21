@@ -29,7 +29,7 @@ function normalizeBranches(branchesRaw: GitBranchOption[], currentBranchName: st
     branches.push({ name, kind });
   }
   const current = normalizeBranchName(currentBranchName) || "HEAD";
-  if (current && !seen.has(`local:${current}`)) {
+  if (current !== "HEAD" && !seen.has(`local:${current}`)) {
     branches.unshift({ name: current, kind: "local" });
   }
   branches.sort((a, b) => {
@@ -44,20 +44,21 @@ export function GitBranchDropdown({
   branches,
 }: GitBranchDropdownProps) {
   const current = normalizeBranchName(currentBranchName) || "HEAD";
+  const detached = current === "HEAD";
   const [open, setOpen] = useState(false);
-  const [selectedKey, setSelectedKey] = useState(`local:${current}`);
+  const [selectedKey, setSelectedKey] = useState(detached ? "" : `local:${current}`);
   const branchOptions = useMemo(
     () => normalizeBranches(branches, current),
     [branches, current]
   );
-  const selectedOption = branchOptions.find((item) => `${item.kind}:${item.name}` === selectedKey) || branchOptions[0];
-  const selectedKind = selectedOption?.kind || "local";
+  const selectedOption = branchOptions.find((item) => `${item.kind}:${item.name}` === selectedKey);
+  const selectedKind = selectedOption?.kind || (detached ? "detached" : "local");
   const localBranches = branchOptions.filter((item) => item.kind === "local");
   const remoteBranches = branchOptions.filter((item) => item.kind === "remote");
 
   useEffect(() => {
-    setSelectedKey(`local:${current}`);
-  }, [current]);
+    setSelectedKey(detached ? "" : `local:${current}`);
+  }, [current, detached]);
 
   const renderOption = (item: GitBranchOption) => {
     const optionKey = `${item.kind}:${item.name}`;
