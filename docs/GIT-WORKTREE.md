@@ -880,6 +880,28 @@ git fetch origin --prune
 
 29. worktreeを削除する
 
+worktree側の検証用サーバーを起動した場合は、削除前にメインリポジトリ側のサーバーへ切り替える。
+親エージェントは再起動を代行しない。次のコマンドとメインリポジトリ側スクリプトへのMarkdownリンクをチャットに表示し、ユーザーに実行を依頼する。
+ユーザーから再起動成功の確認を得た後にworktreeの削除へ進む。この手順は省略しない。
+
+```sh
+cd /absolute/path/to/main
+./private_runner/restart.sh --mode full
+```
+
+チャット表示例：
+
+````md
+メイン側サーバーへ切り替えるため、次を実行してください。
+
+```sh
+cd /absolute/path/to/main
+./private_runner/restart.sh --mode full
+```
+
+メイン側サーバーへ切替: [private_runner/restart.sh](/absolute/path/to/main/private_runner/restart.sh)
+````
+
 最初に未保存変更がないことを確認する。
 
 git -C "$WORKTREE_PATH" status --short

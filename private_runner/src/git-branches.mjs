@@ -39,3 +39,37 @@ export async function fetchGitBranches({ cwd, runCommandWithCapture, timeoutMs }
   });
   return branches;
 }
+
+export async function fetchGitBranchStatus({ cwd, runCommandWithCapture, timeoutMs }) {
+  const result = await runCommandWithCapture("git", [
+    "-C",
+    cwd,
+    "status",
+    "--porcelain=v2",
+    "--branch",
+    "--untracked-files=no",
+  ], {
+    timeoutMs,
+    maxOutputBytes: 8 * 1024,
+  });
+  if (result.timedOut) {
+    throw new Error("git command timed out: git status --porcelain=v2 --branch");
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`git command failed (${result.exitCode}): git status --porcelain=v2 --branch ${result.stderr || ""}`.trim());
+  }
+
+  let branchName = "HEAD";
+  let behindCount = 0;
+  for (const line of String(result.stdout || "").split(/\r?\n/)) {
+    if (line.startsWith("# branch.head ")) {
+      const value = line.slice("# branch.head ".length).trim();
+      branchName = value && value !== "(detached)" ? value : "HEAD";
+    } else if (line.startsWith("# branch.ab ")) {
+      const match = line.match(/^# branch\.ab \+\d+ -(\d+)$/);
+      if (match) behindCount = Number(match[1]);
+    }
+  }
+
+  return { branchName, behindCount };
+}

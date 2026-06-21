@@ -104,6 +104,7 @@ export function useGitChangedFilesController({
       return {
         snapshot: {
           branchName: String(data?.branchName || "").trim(),
+          behindCount: Math.max(0, Math.floor(Number(data?.behindCount) || 0)),
           branches,
           stagedFiles,
           unstagedFiles,

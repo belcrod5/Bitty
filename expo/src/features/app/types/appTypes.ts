@@ -212,6 +212,7 @@ export type CodexAuthProfilesSnapshot = {
 
 export type GitChangedFilesSnapshot = {
   branchName: string;
+  behindCount: number;
   branches: {
     name: string;
     kind: "local" | "remote";
