@@ -169,15 +169,16 @@ export function AppDrawer({
     sessionId: string,
     childState?: SessionChildTreeState
   ) => {
+    const expanding = !expandedSessionSet.has(sessionId);
     setExpandedSessionIds((prev) => (
       prev.includes(sessionId)
         ? prev.filter((id) => id !== sessionId)
         : [...prev, sessionId]
     ));
-    if (!childState?.loaded && !childState?.loading) {
+    if (expanding && !childState?.loading) {
       onLoadSessionChildren(directoryId, directoryPath, sessionId);
     }
-  }, [onLoadSessionChildren]);
+  }, [expandedSessionSet, onLoadSessionChildren]);
   const directoryViews = useMemo(() => registeredDirectories.flatMap((directory) => {
     const expanded = expandedSet.has(directory.id);
     const selectedDirectory = selectedDirectoryPath === directory.path;

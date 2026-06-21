@@ -195,15 +195,13 @@ export function useDirectorySessionTreeController({
   const loadSessionChildTree = useCallback(async (
     directoryId: string,
     directoryPath: string,
-    parentSessionId: string,
-    options?: { force?: boolean }
+    parentSessionId: string
   ) => {
     const parentId = String(parentSessionId || "").trim();
     if (!parentId) return;
     const currentState = directorySessionsById[directoryId] || emptyDirectorySessionTreeState;
     const currentChildState = currentState.childrenByParentId?.[parentId];
     if (currentChildState?.loading) return;
-    if (!options?.force && currentChildState?.loaded) return;
     setDirectorySessionsById((prev) => {
       const prevState = prev[directoryId] || emptyDirectorySessionTreeState;
       return {

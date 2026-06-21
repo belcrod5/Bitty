@@ -122,7 +122,9 @@ export function ChatSessionSubagentList({
           <Text style={styles.chatDirectorySubagentMetaText}>取得中</Text>
         </View>
       ) : childState?.error ? (
-        <Text style={styles.chatDirectorySubagentErrorText}>{childState.error}</Text>
+        <TouchableOpacity onPress={() => void loadSessionChildren(selectedSessionId, selectedDirectoryPath)}>
+          <Text style={styles.chatDirectorySubagentErrorText}>{`${childState.error} 再取得`}</Text>
+        </TouchableOpacity>
       ) : children.length <= 0 ? (
         <Text style={styles.chatDirectorySubagentMetaText}>直下のサブエージェントはありません。</Text>
       ) : children.map((session) => {
