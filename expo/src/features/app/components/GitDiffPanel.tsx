@@ -12,11 +12,11 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { styles } from "../styles";
+import { GitBranchDropdown, type GitBranchOption } from "./GitBranchDropdown";
 import { GitDiffRunningJobsSection } from "./GitDiffRunningJobsSection";
-import {
-  WorkspaceFileRenameDialog,
-} from "./WorkspaceFileRenameDialog";
+import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
+import { buildGitDiffFileTree, type GitDiffFileTreeNode } from "../utils/gitDiffFileTree";
 import { normalizeGitChangedFilePaths } from "../utils/gitChangedFiles";
 import {
   buildRunnerMediaItem,
@@ -48,25 +48,14 @@ type ExplorerNode = {
   error: string;
 };
 type JsonRecord = Record<string, unknown>;
-type FileTreeDraftNode = {
-  name: string;
-  fullPath: string;
-  kind: "dir" | "file";
-  children: Record<string, FileTreeDraftNode>;
-};
-type FileTreeNode = {
-  name: string;
-  fullPath: string;
-  kind: "dir" | "file";
-  children: FileTreeNode[];
-};
-
 type GitDiffPanelProps = {
   visible: boolean;
   runnerUrl: string;
   runnerToken: string;
   selectedDirectoryPath: string;
   selectedDirectoryDisplayName: string;
+  gitBranchName: string;
+  gitBranches: GitBranchOption[];
   gitChangedFilesStaged: unknown[];
   gitChangedFilesUnstaged: unknown[];
   gitChangedFilesLoading: boolean;
@@ -81,53 +70,6 @@ type GitDiffPanelProps = {
     options?: { throttleMs?: number; throttleKey?: string; detailed?: boolean }
   ) => void;
 };
-
-function buildFileTree(paths: string[]): FileTreeNode[] {
-  const root: FileTreeDraftNode = {
-    name: "",
-    fullPath: "",
-    kind: "dir",
-    children: {},
-  };
-  for (const rawPath of paths) {
-    const normalizedPath = normalizeRunnerPath(rawPath);
-    if (!normalizedPath) continue;
-    const parts = normalizedPath.split("/").filter(Boolean);
-    if (parts.length <= 0) continue;
-    let cursor = root;
-    let currentPath = "";
-    for (let i = 0; i < parts.length; i += 1) {
-      const part = parts[i];
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const isLeaf = i === parts.length - 1;
-      if (!cursor.children[part]) {
-        cursor.children[part] = {
-          name: part,
-          fullPath: currentPath,
-          kind: isLeaf ? "file" : "dir",
-          children: {},
-        };
-      } else if (isLeaf) {
-        cursor.children[part].kind = "file";
-      }
-      cursor = cursor.children[part];
-    }
-  }
-  const sortNodes = (node: FileTreeDraftNode): FileTreeNode[] => {
-    const entries = Object.values(node.children);
-    entries.sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    return entries.map((item) => ({
-      name: item.name,
-      fullPath: item.fullPath,
-      kind: item.kind,
-      children: item.kind === "dir" ? sortNodes(item) : [],
-    }));
-  };
-  return sortNodes(root);
-}
 
 function getParentRunnerPath(pathRaw: unknown) {
   const normalizedPath = normalizeRunnerPath(pathRaw).replace(/\/+$/, "");
@@ -144,6 +86,8 @@ export function GitDiffPanel({
   runnerToken,
   selectedDirectoryPath,
   selectedDirectoryDisplayName,
+  gitBranchName,
+  gitBranches,
   gitChangedFilesStaged,
   gitChangedFilesUnstaged,
   gitChangedFilesLoading,
@@ -577,19 +521,19 @@ export function GitDiffPanel({
     );
   }, [getPathLabel, uploadFileToDirectory, uploadingDirectoryPath]);
 
-  const stagedTreeNodes = useMemo(() => buildFileTree(stagedFiles), [stagedFiles]);
-  const unstagedTreeNodes = useMemo(() => buildFileTree(unstagedFiles), [unstagedFiles]);
+  const stagedTreeNodes = useMemo(() => buildGitDiffFileTree(stagedFiles), [stagedFiles]);
+  const unstagedTreeNodes = useMemo(() => buildGitDiffFileTree(unstagedFiles), [unstagedFiles]);
   const explorerFileTreeNodes = useMemo(
-    () => buildFileTree(Array.from(new Set([...stagedFiles, ...unstagedFiles]))),
+    () => buildGitDiffFileTree(Array.from(new Set([...stagedFiles, ...unstagedFiles]))),
     [stagedFiles, unstagedFiles]
   );
   const explorerChangedFileCount = useMemo(
     () => Array.from(new Set([...stagedFiles, ...unstagedFiles])).length,
     [stagedFiles, unstagedFiles]
   );
-  const collectTreeDirectoryKeys = useCallback((nodes: FileTreeNode[], treeKeyPrefix: string): string[] => {
+  const collectTreeDirectoryKeys = useCallback((nodes: GitDiffFileTreeNode[], treeKeyPrefix: string): string[] => {
     const keys: string[] = [];
-    const visit = (items: FileTreeNode[]) => {
+    const visit = (items: GitDiffFileTreeNode[]) => {
       for (const item of items) {
         if (item.kind !== "dir") continue;
         keys.push(`${treeKeyPrefix}:${item.fullPath}`);
@@ -701,7 +645,7 @@ export function GitDiffPanel({
   }, [collectTreeDirectoryKeys, explorerFileTreeNodes, stagedTreeNodes, unstagedTreeNodes]);
 
   const renderTreeNodes = (
-    nodes: FileTreeNode[],
+    nodes: GitDiffFileTreeNode[],
     options: {
       depth?: number;
       treeKeyPrefix: string;
@@ -949,6 +893,10 @@ export function GitDiffPanel({
           ) : null}
           {gitPanelTab === "diff" ? (
             <>
+              <GitBranchDropdown
+                currentBranchName={gitBranchName}
+                branches={gitBranches}
+              />
               <View style={styles.gitDiffSectionCard}>
                 <Text style={styles.gitDiffSectionTitle}>{`staged (${stagedFiles.length})`}</Text>
                 {stagedTreeNodes.length > 0 ? (

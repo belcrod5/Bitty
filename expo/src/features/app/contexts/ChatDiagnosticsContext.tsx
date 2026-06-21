@@ -62,6 +62,7 @@ export function useDirectoryGitChangedFiles(directoryRaw: unknown) {
 
   return {
     branchName: state?.snapshot?.branchName || "HEAD",
+    branches: state?.snapshot?.branches || [],
     stagedFiles: state?.snapshot?.stagedFiles || EMPTY_GIT_CHANGED_FILES,
     unstagedFiles: state?.snapshot?.unstagedFiles || EMPTY_GIT_CHANGED_FILES,
     loading: state?.loading || false,

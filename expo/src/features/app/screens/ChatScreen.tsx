@@ -1989,6 +1989,8 @@ export function ChatScreen({
           runnerToken={runnerToken}
           selectedDirectoryPath={selectedDirectoryPathForView}
           selectedDirectoryDisplayName={selectedDirectoryDisplayNameForView}
+          gitBranchName={gitChangedFiles.branchName}
+          gitBranches={gitChangedFiles.branches}
           gitChangedFilesStaged={gitChangedFiles.stagedFiles}
           gitChangedFilesUnstaged={gitChangedFiles.unstagedFiles}
           gitChangedFilesLoading={gitChangedFiles.loading}

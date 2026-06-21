@@ -90,9 +90,21 @@ export function useGitChangedFilesController({
       const untrackedFiles = Array.isArray(data?.untrackedFiles)
         ? data.untrackedFiles.map((item: unknown) => String(item || "").trim()).filter((item: string) => !!item)
         : [];
+      const branches = Array.isArray(data?.branches)
+        ? data.branches
+          .map((itemRaw: unknown) => {
+            const item = itemRaw && typeof itemRaw === "object" ? itemRaw as Record<string, unknown> : {};
+            const name = String(item.name || "").trim();
+            const kind = String(item.kind || "").trim();
+            if (!name || (kind !== "local" && kind !== "remote")) return null;
+            return { name, kind };
+          })
+          .filter((item): item is { name: string; kind: "local" | "remote" } => Boolean(item))
+        : [];
       return {
         snapshot: {
           branchName: String(data?.branchName || "").trim(),
+          branches,
           stagedFiles,
           unstagedFiles,
           untrackedFiles,

@@ -11,6 +11,7 @@ Git Worktreeを使用したサブエージェント開発手順書
 → ブランチ・worktree作成
 → サブエージェントによる実装
 → テスト
+→ ユーザー検証用コマンド提示
 → コミット
 → push
 → Pull Request作成
@@ -71,6 +72,28 @@ worktree側でサーバー再起動やiOS実機ビルドを行う場合、ユー
 ローカル初期化でメインリポジトリ側のファイルを参照する場合は、対象worktreeの `.env` または実行環境に `BITTY_MAIN_REPO_ROOT` を明示する。自動推測はしない。
 `scripts/worktree/bootstrap-local.sh --env` は、main側の `.env` コピー後も対象worktree側の `.env` に `BITTY_MAIN_REPO_ROOT` を保持する。
 
+ユーザー検証用コマンドを提示する前に、親エージェントは対象worktreeで必要なローカル初期化を実行し、`.env` と対象の依存ディレクトリが存在することを確認する。
+ユーザーに初回実行時の `.env` コピーや `npm install` を任せない。
+
+サーバー再起動を案内する前の確認：
+
+```sh
+BITTY_MAIN_REPO_ROOT=/absolute/path/to/main-repo \
+  ./scripts/worktree/bootstrap-local.sh --repo-root /absolute/path/to/worktree --env --private-runner
+test -f /absolute/path/to/worktree/.env
+test -d /absolute/path/to/worktree/private_runner/node_modules
+```
+
+iOS実機ビルドを案内する前の確認：
+
+```sh
+BITTY_MAIN_REPO_ROOT=/absolute/path/to/main-repo \
+  ./scripts/worktree/bootstrap-local.sh --repo-root /absolute/path/to/worktree --env --expo --ios-native
+test -f /absolute/path/to/worktree/.env
+test -d /absolute/path/to/worktree/expo/node_modules
+test -d /absolute/path/to/worktree/expo/ios/Bitty.xcworkspace
+```
+
 * `private_runner/restart.sh` は、ローカル `.env` と `private_runner/node_modules` を準備する
 * `scripts/ios/build-expo-ios-device.sh` は、ローカル `.env`、`expo/node_modules`、`expo/ios/Bitty.xcworkspace`、必要なPodsを準備する
 
@@ -81,6 +104,9 @@ worktree側でサーバー再起動やiOS実機ビルドを行う場合、ユー
 3.2 worktree側での動作確認
 
 worktree側の修正を確認する場合は、メインリポジトリ側ではなく、対象worktree内のスクリプトを使う。
+
+実装と自動テストが完了したら、コミット・push・PR作成へ進む前に、ユーザー検証用のサーバー再起動コマンドと必要なアプリビルドコマンドをチャットに表示する。
+この手順は省略しない。
 
 ユーザーが実行する確認コマンドは、エージェントが代わりに実行せず、チャットに対象worktreeの実パスをMarkdownリンク付きで提示する。
 
@@ -539,6 +565,7 @@ git worktree list
 → lint
 → 型チェック
 → テスト
+→ ユーザー検証用コマンド提示
 → git diff確認
 
 最初に確認するファイル例：
@@ -556,6 +583,8 @@ Makefile
 git status --short
 git diff
 git diff --check
+
+コミット前に、3.2に従って対象worktreeのサーバー再起動コマンドと必要なアプリビルドコマンドをチャットに表示し、ユーザー検証できる状態を作る。
 
 15. 作業中に質問が発生した場合
 
@@ -999,6 +1028,7 @@ PR作成に失敗した場合
 worktree作成
 → 実装
 → テスト
+→ ユーザー検証用コマンド提示
 → コミット
 → push
 → PR作成
