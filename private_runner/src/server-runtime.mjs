@@ -8687,7 +8687,6 @@ runnerWsServer.on("connection", (ws, req) => {
     llmRelay = relay;
     return attachClientToCodexRelay(relay, ws, {
       replayAfterSeq: options.replayAfterSeq || 0,
-      replayApprovalOnlyWhenSeqZero: Boolean(options.replayApprovalOnlyWhenSeqZero),
       envelopeMode: true,
     });
   }
@@ -8812,7 +8811,6 @@ runnerWsServer.on("connection", (ws, req) => {
       }
       attachRunnerWsToRelay(relay, {
         replayAfterSeq,
-        replayApprovalOnlyWhenSeqZero: replayAfterSeq === 0,
       });
       return;
     }
@@ -10050,7 +10048,6 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
   const replayAfterSeq = Number.isFinite(replayAfterSeqRaw)
     ? Math.max(0, Math.floor(replayAfterSeqRaw))
     : 0;
-  const replayApprovalOnlyWhenSeqZero = Boolean(options.replayApprovalOnlyWhenSeqZero);
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
@@ -10063,29 +10060,12 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
   relay.clients.add(clientWs);
   relay.updatedAtMs = codexRelayNowMs();
   let replayed = 0;
-  if (replayAfterSeq > 0 && relay.eventLog.length > 0) {
+  if (relay.eventLog.length > 0) {
     for (const eventEntry of relay.eventLog) {
       if (eventEntry.seq <= replayAfterSeq) continue;
       if (!shouldReplayCodexRelayEvent(relay, eventEntry)) continue;
       if (!sendCodexRelayRpcToClient(relay, clientWs, eventEntry.data, eventEntry.seq)) break;
       replayed += 1;
-    }
-  }
-  if (replayed === 0 && replayAfterSeq === 0 && replayApprovalOnlyWhenSeqZero && relay.eventLog.length > 0) {
-    let latestApprovalEvent = null;
-    for (const eventEntry of relay.eventLog) {
-      if (!eventEntry) continue;
-      const approvalMeta = parseRelayApprovalRequestEvent(eventEntry.data);
-      if (!approvalMeta) continue;
-      if (!shouldReplayCodexRelayEvent(relay, eventEntry)) continue;
-      if (!latestApprovalEvent || Number(eventEntry.seq || 0) > Number(latestApprovalEvent.seq || 0)) {
-        latestApprovalEvent = eventEntry;
-      }
-    }
-    if (latestApprovalEvent) {
-      if (sendCodexRelayRpcToClient(relay, clientWs, latestApprovalEvent.data, Number(latestApprovalEvent.seq || 0))) {
-        replayed = 1;
-      }
     }
   }
   sendCodexRelayControl(relay, clientWs, {
@@ -10700,7 +10680,6 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   }
   const replayed = attachClientToCodexRelay(relay, clientWs, {
     replayAfterSeq: resumeFromSeq,
-    replayApprovalOnlyWhenSeqZero: Boolean(resumeThreadId) && resumeFromSeq === 0,
   });
   void appendCodexWsProxyDebug("proxy_connection_opened", {
     relayId: relay.relayId,
@@ -10964,6 +10943,7 @@ if (!RUNNER_SKIP_SERVER_START) {
 }
 
 export const __TESTING__ = {
+  attachClientToCodexRelay,
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,

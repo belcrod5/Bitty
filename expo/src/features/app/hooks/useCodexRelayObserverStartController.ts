@@ -491,10 +491,10 @@ export function useCodexRelayObserverStartController({
             }
           } else if (stage === "relay_observer_resume_miss") {
             if (finishWaitingApprovalResumeAttempt(threadId, stage)) {
-              setWaitingApprovalResumeStatusText("承認待ち再開に失敗しました。セッションを再読み込みしてください。");
+              setWaitingApprovalResumeStatusText("relay が見つからないため、承認待ちを再開できません。");
             }
             if (isSessionRuntimeObserver) {
-              finalizeSessionRuntimeAfterRelayLoss(threadId, "relay resume miss");
+              finalizeSessionRuntimeAfterRelayLoss(threadId, "relay が見つからないため、ライブ再開できません。");
             }
             clearCodexRelayObserverForMiss(threadId, directory);
             return;

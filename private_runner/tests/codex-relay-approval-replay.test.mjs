@@ -7,6 +7,7 @@ process.env.RUNNER_TOKEN = process.env.RUNNER_TOKEN || "test-token";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 const {
+  attachClientToCodexRelay,
   handleCodexRelayUpstreamMessage,
   isCodexRelayThreadMismatch,
   shouldReplayCodexRelayEvent,
@@ -45,6 +46,71 @@ test("continues replaying non-approval relay events", () => {
   };
 
   assert.equal(shouldReplayCodexRelayEvent(relay, event), true);
+});
+
+test("replays stream events from seq zero without resurrecting answered approvals", () => {
+  const sent = [];
+  const client = {
+    readyState: 1,
+    send(data) {
+      sent.push(JSON.parse(String(data || "{}")));
+    },
+  };
+  const relay = {
+    relayId: "relay-test",
+    threadId: "thread-test",
+    clients: new Set(),
+    pendingApprovalRequestIds: new Set([8]),
+    lastSeq: 4,
+    eventLog: [
+      {
+        seq: 1,
+        data: JSON.stringify({
+          method: "turn/started",
+          params: { threadId: "thread-test" },
+        }),
+      },
+      {
+        seq: 2,
+        data: JSON.stringify({
+          id: 8,
+          method: "item/commandExecution/requestApproval",
+          params: { threadId: "thread-test" },
+        }),
+      },
+      {
+        seq: 3,
+        data: JSON.stringify({
+          id: 9,
+          method: "item/commandExecution/requestApproval",
+          params: { threadId: "thread-test" },
+        }),
+      },
+      {
+        seq: 4,
+        data: JSON.stringify({
+          method: "item/completed",
+          params: { threadId: "thread-test" },
+        }),
+      },
+    ],
+    turnCompleted: false,
+    closed: false,
+    cleanupTimer: null,
+  };
+
+  const replayed = attachClientToCodexRelay(relay, client, { replayAfterSeq: 0 });
+  const replayedMethods = sent
+    .map((message) => String(message.method || ""))
+    .filter(Boolean);
+
+  assert.equal(replayed, 3);
+  assert.deepEqual(replayedMethods, [
+    "turn/started",
+    "item/commandExecution/requestApproval",
+    "item/completed",
+  ]);
+  assert.equal(sent.some((message) => message.id === 9), false);
 });
 
 test("detects relay events from a different thread", () => {
