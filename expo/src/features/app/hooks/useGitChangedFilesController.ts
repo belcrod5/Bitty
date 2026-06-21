@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useLayoutEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type {
   GitChangedFilesDirectoryState,
   GitChangedFilesSnapshot,
@@ -16,7 +16,8 @@ type UseGitChangedFilesControllerArgs = {
   auxServerBaseUrl: () => string;
   runnerToken: string;
   gitChangedFilesByDirectoryRef: MutableRefObject<Record<string, GitChangedFilesDirectoryState>>;
-  gitChangedFilesRefreshInFlightRef: MutableRefObject<Set<string>>;
+  gitChangedFilesRefreshInFlightRef: MutableRefObject<Map<string, number>>;
+  directoryIdentityGenerationRef: MutableRefObject<number>;
   setGitChangedFilesByDirectory: Dispatch<SetStateAction<Record<string, GitChangedFilesDirectoryState>>>;
   logSessionDiag: SessionDiagLogger;
 };
@@ -26,10 +27,26 @@ export function useGitChangedFilesController({
   runnerToken,
   gitChangedFilesByDirectoryRef,
   gitChangedFilesRefreshInFlightRef,
+  directoryIdentityGenerationRef,
   setGitChangedFilesByDirectory,
   logSessionDiag,
 }: UseGitChangedFilesControllerArgs) {
+  useLayoutEffect(() => {
+    directoryIdentityGenerationRef.current += 1;
+    gitChangedFilesRefreshInFlightRef.current.clear();
+    gitChangedFilesByDirectoryRef.current = {};
+    setGitChangedFilesByDirectory({});
+  }, [
+    auxServerBaseUrl,
+    directoryIdentityGenerationRef,
+    gitChangedFilesByDirectoryRef,
+    gitChangedFilesRefreshInFlightRef,
+    runnerToken,
+    setGitChangedFilesByDirectory,
+  ]);
+
   const fetchRunnerGitChangedFiles = useCallback(async (directoryRaw?: unknown): Promise<{
+    directory: string;
     snapshot: GitChangedFilesSnapshot | null;
     errorMessage: string;
   }> => {
@@ -37,6 +54,7 @@ export function useGitChangedFilesController({
     const token = runnerToken.trim();
     if (!targetLlmUrl || !token) {
       return {
+        directory: "",
         snapshot: null,
         errorMessage: "Runner URL または token が未設定です。",
       };
@@ -77,6 +95,7 @@ export function useGitChangedFilesController({
       if (!res.ok) {
         const message = String(data?.message || data?.error || `HTTP ${res.status}`).trim();
         return {
+          directory: "",
           snapshot: null,
           errorMessage: message || "差分一覧の取得に失敗しました。",
         };
@@ -102,6 +121,7 @@ export function useGitChangedFilesController({
           .filter((item): item is { name: string; kind: "local" | "remote" } => Boolean(item))
         : [];
       return {
+        directory: String(data?.directory || directoryRaw || "").trim(),
         snapshot: {
           branchName: String(data?.branchName || "").trim(),
           behindCount: Math.max(0, Math.floor(Number(data?.behindCount) || 0)),
@@ -116,11 +136,13 @@ export function useGitChangedFilesController({
     } catch (err) {
       if (err && typeof err === "object" && "name" in err && (err as { name?: unknown }).name === "AbortError") {
         return {
+          directory: "",
           snapshot: null,
           errorMessage: `request timeout (${GIT_CHANGED_FILES_HTTP_TIMEOUT_MS}ms)`,
         };
       }
       return {
+        directory: "",
         snapshot: null,
         errorMessage: err instanceof Error && err.message
           ? err.message
@@ -132,8 +154,10 @@ export function useGitChangedFilesController({
   const updateDirectoryState = useCallback((
     directory: string,
     update: (current: GitChangedFilesDirectoryState) => GitChangedFilesDirectoryState,
+    createIfMissing = true,
   ) => {
     setGitChangedFilesByDirectory((prev) => {
+      if (!createIfMissing && !prev[directory]) return prev;
       const current = prev[directory] || {
         snapshot: null,
         loading: false,
@@ -167,23 +191,25 @@ export function useGitChangedFilesController({
       return;
     }
     const startedAt = Date.now();
+    const identityGeneration = directoryIdentityGenerationRef.current;
     logSessionDiag("git_changed_files_refresh_start", {
       directory,
       force: Boolean(options?.force),
     }, { throttleMs: 0 });
-    gitChangedFilesRefreshInFlightRef.current.add(directory);
+    gitChangedFilesRefreshInFlightRef.current.set(directory, identityGeneration);
     updateDirectoryState(directory, (current) => ({
       ...current,
       loading: true,
       error: "",
     }));
     try {
-      const { snapshot, errorMessage } = await fetchRunnerGitChangedFiles(directory);
+      const { directory: canonicalDirectoryRaw, snapshot, errorMessage } = await fetchRunnerGitChangedFiles(directory);
+      if (directoryIdentityGenerationRef.current !== identityGeneration) return;
       if (!snapshot) {
         updateDirectoryState(directory, (current) => ({
           ...current,
           error: errorMessage || "差分一覧の取得に失敗しました。",
-        }));
+        }), false);
         logSessionDiag("git_changed_files_refresh_error", {
           directory,
           elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -191,23 +217,40 @@ export function useGitChangedFilesController({
         }, { throttleMs: 0 });
         return;
       }
-      updateDirectoryState(directory, (current) => ({
-        ...current,
-        snapshot,
-      }));
+      const canonicalDirectory = canonicalDirectoryRaw || directory;
+      setGitChangedFilesByDirectory((prev) => {
+        const current = prev[directory] || prev[canonicalDirectory] || {
+          snapshot: null,
+          loading: false,
+          error: "",
+        };
+        const next = { ...prev };
+        if (canonicalDirectory !== directory) delete next[directory];
+        next[canonicalDirectory] = {
+          ...current,
+          snapshot,
+          loading: false,
+          error: "",
+        };
+        gitChangedFilesByDirectoryRef.current = next;
+        return next;
+      });
       logSessionDiag("git_changed_files_refresh_done", {
-        directory,
+        directory: canonicalDirectory,
         elapsedMs: Math.max(0, Date.now() - startedAt),
         stagedCount: snapshot.stagedFiles.length,
         unstagedCount: snapshot.unstagedFiles.length,
         untrackedCount: snapshot.untrackedFiles.length,
       }, { throttleMs: 0 });
     } finally {
-      gitChangedFilesRefreshInFlightRef.current.delete(directory);
+      if (gitChangedFilesRefreshInFlightRef.current.get(directory) === identityGeneration) {
+        gitChangedFilesRefreshInFlightRef.current.delete(directory);
+      }
+      if (directoryIdentityGenerationRef.current !== identityGeneration) return;
       updateDirectoryState(directory, (current) => ({
         ...current,
         loading: false,
-      }));
+      }), false);
       logSessionDiag("git_changed_files_refresh_settled", {
         directory,
         elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -216,9 +259,11 @@ export function useGitChangedFilesController({
     }
   }, [
     fetchRunnerGitChangedFiles,
+    directoryIdentityGenerationRef,
     gitChangedFilesByDirectoryRef,
     gitChangedFilesRefreshInFlightRef,
     logSessionDiag,
+    setGitChangedFilesByDirectory,
     updateDirectoryState,
   ]);
 

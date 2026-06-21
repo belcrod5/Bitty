@@ -171,7 +171,7 @@ function hasRunnerSessionSnapshotData(snapshot: RunnerSessionSnapshot) {
   );
 }
 
-function buildLlmSessionHistoryEntry(
+export function buildLlmSessionHistoryEntry(
   item: CodexThreadListEntry,
   directory: string,
   runnerSnapshotMap: Map<string, RunnerSessionSnapshot>,
@@ -181,7 +181,7 @@ function buildLlmSessionHistoryEntry(
   return {
     sessionId,
     parentSessionId: parseOptionalSessionId(item.parentThreadId),
-    directory: parseLlmDirectory(item.cwd || directory),
+    directory: parseLlmDirectory(directory || item.cwd),
     updatedAt: String(item.updatedAt || item.createdAt || "").trim(),
     lastReadAt: String(snapshot?.lastReadAt || "").trim(),
     source: parseLlmSessionSource(item.sourceKind, "unknown"),
@@ -303,11 +303,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       if (!response.ok) return [];
       return Array.isArray(data?.sessions) ? data.sessions : [];
     };
-    let sessions = await fetchSessions(true);
-    if (sessions.length <= 0 && directory) {
-      // Directory canonicalization mismatch fallback.
-      sessions = await fetchSessions(false);
-    }
+    const sessions = await fetchSessions(true);
     const scoreSnapshot = (snapshot: RunnerSessionSnapshot) => {
       let score = 0;
       if (String(snapshot.modelRef || "").trim()) score += 4;

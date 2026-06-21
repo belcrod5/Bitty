@@ -110,6 +110,7 @@ export function GitDiffPanel({
   const onRefreshGitChangedFilesRef = useRef(onRefreshGitChangedFiles);
   const explorerVisibleReloadKeyRef = useRef("");
   const explorerLoadSeqByPathRef = useRef<Record<string, number>>({});
+  const canonicalExplorerPathByRequestedPathRef = useRef<Record<string, string>>({});
   const workspaceUploadInFlightRef = useRef(false);
   const { width: screenWidth } = useWindowDimensions();
 
@@ -285,6 +286,7 @@ export function GitDiffPanel({
     pathRaw: unknown,
     payload: { basePath: string; entries: ExplorerEntry[] },
   ) => {
+    const requestedPath = normalizeRunnerPath(pathRaw);
     const targetPath = normalizeRunnerPath(payload.basePath || pathRaw);
     if (!targetPath) return;
     setExplorerNodesByPath((prev) => {
@@ -323,6 +325,9 @@ export function GitDiffPanel({
         loading: false,
         error: "",
       };
+      if (requestedPath && requestedPath !== targetPath) {
+        delete next[requestedPath];
+      }
       return next;
     });
   }, [getPathLabel]);
@@ -339,6 +344,14 @@ export function GitDiffPanel({
       const payload = await fetchDirectories(targetPath);
       if (explorerLoadSeqByPathRef.current[targetPath] !== requestSeq) return;
       applyExplorerDirectoryPayload(targetPath, payload);
+      const canonicalPath = normalizeRunnerPath(payload.basePath);
+      if (canonicalPath) {
+        canonicalExplorerPathByRequestedPathRef.current[targetPath] = canonicalPath;
+      }
+      if (canonicalPath && canonicalPath !== targetPath && explorerRootPath === targetPath) {
+        setExplorerRootPath(canonicalPath);
+        setTreeExpanded(`explorer:${canonicalPath}`, true);
+      }
     } catch (err) {
       if (explorerLoadSeqByPathRef.current[targetPath] !== requestSeq) return;
       mergeExplorerNode(targetPath, {
@@ -348,7 +361,14 @@ export function GitDiffPanel({
       });
       throw err;
     }
-  }, [applyExplorerDirectoryPayload, explorerNodesByPath, fetchDirectories, mergeExplorerNode]);
+  }, [
+    applyExplorerDirectoryPayload,
+    explorerNodesByPath,
+    explorerRootPath,
+    fetchDirectories,
+    mergeExplorerNode,
+    setTreeExpanded,
+  ]);
 
   const reloadExplorerDirectory = useCallback((path: string) => (
     loadExplorerChildren(path, true)
@@ -557,6 +577,15 @@ export function GitDiffPanel({
   }, [onRefreshGitChangedFiles]);
 
   useEffect(() => {
+    canonicalExplorerPathByRequestedPathRef.current = {};
+    explorerVisibleReloadKeyRef.current = "";
+    explorerLoadSeqByPathRef.current = {};
+    setExplorerRootPath("");
+    setExplorerNodesByPath({});
+    setExplorerGlobalError("");
+  }, [runnerToken, runnerUrl]);
+
+  useEffect(() => {
     if (!visible) return;
     logSessionDiag?.("git_diff_panel_opened", {
       selectedDirectoryPath,
@@ -571,11 +600,12 @@ export function GitDiffPanel({
   useEffect(() => {
     if (!visible) return;
     if (gitPanelTab !== "explorer") return;
-    const rootPath = normalizeRunnerPath(selectedDirectoryPath);
-    if (!rootPath) {
+    const requestedRootPath = normalizeRunnerPath(selectedDirectoryPath);
+    if (!requestedRootPath) {
       setExplorerGlobalError("ディレクトリーが未選択です");
       return;
     }
+    const rootPath = canonicalExplorerPathByRequestedPathRef.current[requestedRootPath] || requestedRootPath;
     setExplorerGlobalError("");
     if (rootPath !== explorerRootPath) {
       setExplorerRootPath(rootPath);

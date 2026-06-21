@@ -1087,6 +1087,20 @@ function toWorkspaceRelativeFromAbsolutePath(rawAbsolutePath) {
   return normalizeSessionRootRelativePath(relativePath);
 }
 
+async function resolveCanonicalDirectoryIdentity(rawDirectory, fallback = DEFAULT_LLM_FILE_ROOT_RELATIVE) {
+  const directory = String(rawDirectory || "").trim() || fallback;
+  try {
+    const resolved = await resolveToolRoot(directory, { create: false });
+    return resolved.relativeRoot;
+  } catch (err) {
+    if (String(err?.code || "").toUpperCase() !== "ENOENT") throw err;
+    const absolutePath = path.isAbsolute(directory)
+      ? path.resolve(directory)
+      : path.resolve(WORKSPACE_ROOT, directory);
+    return toDirectoryHandlePath(WORKSPACE_ROOT, absolutePath);
+  }
+}
+
 async function listLlmDirectories(rawPath) {
   const requestedPath = String(rawPath || "").trim() || DEFAULT_LLM_FILE_ROOT_RELATIVE;
   let resolved = null;
@@ -1211,7 +1225,7 @@ const {
 });
 
 async function listLlmSessions(rawDirectory, opts = {}) {
-  const requestedDirectory = normalizeSessionRootRelativePath(rawDirectory || DEFAULT_LLM_FILE_ROOT_RELATIVE);
+  const requestedDirectory = await resolveCanonicalDirectoryIdentity(rawDirectory);
   const source = normalizeSessionSource(opts?.source, "acp");
   const limit = normalizeSessionListLimit(opts?.limit);
   const sessions = [];
@@ -1284,7 +1298,7 @@ async function markLlmSessionRead(rawSessionId, opts = {}) {
   if (!sessionId) {
     throw makeApiError(400, "invalid_session_id", "sessionId is required");
   }
-  const directory = normalizeSessionRootRelativePath(opts?.directory || DEFAULT_LLM_FILE_ROOT_RELATIVE);
+  const directory = await resolveCanonicalDirectoryIdentity(opts?.directory);
   const source = normalizeSessionSource(opts?.source, "all");
   const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
   let acpUpdated = false;
@@ -1361,7 +1375,9 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     ? (opts?.limit === null ? null : normalizeSessionMessagesLimit(opts?.limit))
     : normalizeSessionMessagesLimit(opts?.limit);
   const directoryRaw = String(opts?.directory || "").trim();
-  const requestedDirectory = directoryRaw ? normalizeSessionRootRelativePath(directoryRaw) : "";
+  const requestedDirectory = directoryRaw
+    ? await resolveCanonicalDirectoryIdentity(directoryRaw)
+    : "";
 
   const shouldCheckCli = source === "cli" || source === "acp" || source === "all";
   let cliEntry = null;
@@ -2960,10 +2976,12 @@ async function runGitChangedFileListCommand(args, opts = {}) {
 async function fetchGitChangedFilesSnapshot(rawDirectory) {
   const directory = String(rawDirectory || "").trim();
   let cwd = WORKSPACE_ROOT;
+  let canonicalDirectory = ".";
   if (directory) {
     try {
       const resolved = await resolveToolRoot(directory, { create: false });
       cwd = resolved.rootReal;
+      canonicalDirectory = resolved.relativeRoot;
     } catch (err) {
       const code = String(err?.code || "").toUpperCase();
       if (code === "ENOENT") {
@@ -2984,6 +3002,7 @@ async function fetchGitChangedFilesSnapshot(rawDirectory) {
   for (const filePath of untrackedFiles) unstagedSet.add(filePath);
   const unstagedFiles = Array.from(unstagedSet).sort((a, b) => a.localeCompare(b));
   return {
+    directory: canonicalDirectory,
     branchName: branchStatus.branchName,
     behindCount: branchStatus.behindCount,
     branches,
@@ -10949,6 +10968,7 @@ export const __TESTING__ = {
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
   resolveToolRoot,
+  resolveCanonicalDirectoryIdentity,
   resolvePathWithinToolRoot,
   resolveWorkspaceShellScriptTarget,
   resolveClientFilePath,

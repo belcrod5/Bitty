@@ -72,6 +72,7 @@ import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useLlmTraceStateController } from "./hooks/useLlmTraceStateController";
 import { useAppDrawerSessionController } from "./hooks/useAppDrawerSessionController";
 import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTreeController";
+import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentityReconciliation";
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
@@ -986,7 +987,8 @@ export default function App() {
   const codexCliStatusRefreshInFlightRef = useRef(false);
   const codexAuthProfilesRefreshInFlightRef = useRef(false);
   const gitChangedFilesByDirectoryRef = useRef<Record<string, GitChangedFilesDirectoryState>>({});
-  const gitChangedFilesRefreshInFlightRef = useRef(new Set<string>());
+  const gitChangedFilesRefreshInFlightRef = useRef(new Map<string, number>());
+  const directoryIdentityGenerationRef = useRef(0);
   const autoRecordingRef = useRef<Audio.Recording | null>(null);
   const autoFinalizeLockRef = useRef(false);
   const autoRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3276,6 +3278,7 @@ export default function App() {
     runnerToken,
     gitChangedFilesByDirectoryRef,
     gitChangedFilesRefreshInFlightRef,
+    directoryIdentityGenerationRef,
     setGitChangedFilesByDirectory,
     logSessionDiag,
   });
@@ -6133,6 +6136,23 @@ export default function App() {
   useEffect(() => {
     panelRuntimeEntriesByIdRef.current = panelRuntimeEntriesById;
   }, [panelRuntimeEntriesById]);
+  useDirectoryIdentityReconciliation({
+    settingsLoaded,
+    auxServerBaseUrl,
+    runnerToken,
+    selectedDirectory: normalizedLlmDirectoryForRequest(),
+    registeredDirectories,
+    setSelectedDirectory: setLlmDirectory,
+    setRegisteredDirectories,
+    setExpandedDirectoryIds,
+    setDirectorySessionsById,
+    setGitChangedFilesByDirectory,
+    setPanelRuntimeEntriesById,
+    llmSessionDirectoryRef,
+    gitChangedFilesByDirectoryRef,
+    gitChangedFilesRefreshInFlightRef,
+    directoryIdentityGenerationRef,
+  });
   const cloneConversationMessages = useCallback((messages: ConversationMessage[]): ConversationMessage[] => (
     messages.map((message) => ({
       ...message,
