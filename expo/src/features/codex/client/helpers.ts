@@ -449,15 +449,58 @@ function extractContextUsedPctFromUnknown(raw: unknown, modelNameRaw?: unknown):
 export function normalizeThreadListEntry(raw: unknown): CodexThreadListEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const item = raw as Record<string, unknown>;
+  const source = item.source && typeof item.source === "object"
+    ? item.source as Record<string, unknown>
+    : {};
+  const subAgent = source.subAgent && typeof source.subAgent === "object"
+    ? source.subAgent as Record<string, unknown>
+    : {};
+  const threadSpawn = subAgent.thread_spawn && typeof subAgent.thread_spawn === "object"
+    ? subAgent.thread_spawn as Record<string, unknown>
+    : {};
+  const explicitSourceKind = firstString(
+    item.sourceKind,
+    item.sessionStartSource,
+    (item as any)?.thread?.sourceKind
+  );
+  const subAgentSourceKind = source.subAgent && typeof source.subAgent === "object"
+    ? (threadSpawn.parent_thread_id ? "subAgentThreadSpawn" : "subAgentOther")
+    : source.subAgent === "review"
+      ? "subAgentReview"
+      : source.subAgent === "compact"
+        ? "subAgentCompact"
+        : source.subAgent
+          ? "subAgentOther"
+          : "";
   const threadId = firstString(item.id, item.threadId, (item as any)?.thread?.id);
   if (!threadId) return null;
   return {
     threadId,
+    parentThreadId: firstString(
+      item.parentThreadId,
+      item.parent_thread_id,
+      (item as any)?.thread?.parentThreadId,
+      (item as any)?.thread?.parent_thread_id,
+      threadSpawn.parent_thread_id
+    ),
+    agentRole: firstString(
+      item.agentRole,
+      item.agent_role,
+      (item as any)?.thread?.agentRole,
+      threadSpawn.agent_role
+    ),
+    agentDisplayName: firstString(
+      item.agentDisplayName,
+      item.agent_display_name,
+      item.agentNickname,
+      item.agent_nickname,
+      (item as any)?.thread?.agentDisplayName,
+      (item as any)?.thread?.agentNickname,
+      threadSpawn.agent_nickname
+    ),
     preview: firstString(item.preview, item.title, item.summary),
     modelProvider: firstString(item.modelProvider, item.provider),
-    sourceKind: parseCodexSourceKind(
-      firstString(item.sourceKind, item.source, item.sessionStartSource, (item as any)?.thread?.sourceKind)
-    ),
+    sourceKind: parseCodexSourceKind(explicitSourceKind || subAgentSourceKind || item.source),
     cwd: firstString(item.cwd, item.path, (item as any)?.thread?.cwd),
     createdAt: toIsoTimestamp(item.createdAt),
     updatedAt: toIsoTimestamp(item.updatedAt || item.createdAt),

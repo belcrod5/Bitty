@@ -197,10 +197,27 @@ export const menuScreenStyles = {
   appDrawerSessionItemSelected: {
     backgroundColor: "#f1f5f9",
   },
+  appDrawerSessionTreeNode: {
+    gap: 4,
+  },
+  appDrawerSessionChildrenBlock: {
+    gap: 6,
+    marginTop: 4,
+    paddingLeft: 8,
+    borderLeftWidth: 1,
+    borderLeftColor: "#e2e8f0",
+  },
   appDrawerSessionPrimaryRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  appDrawerSessionChildToggle: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   },
   appDrawerSessionMarkerDot: {
     width: 9,

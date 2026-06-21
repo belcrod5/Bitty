@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   InputAccessoryView,
@@ -30,6 +30,13 @@ export type RegisteredDirectoryEntry = {
 
 export type DirectoryMarkerColor = "none" | "gray" | "red" | "yellow" | "green" | "black";
 
+export type SessionChildTreeState = {
+  loading: boolean;
+  loaded: boolean;
+  error: string;
+  entries: LlmSessionHistoryEntry[];
+};
+
 export type DirectorySessionTreeState = {
   loading: boolean;
   loadingMore: boolean;
@@ -40,6 +47,7 @@ export type DirectorySessionTreeState = {
   nextCursor: string;
   hasMore: boolean;
   entries: LlmSessionHistoryEntry[];
+  childrenByParentId: Record<string, SessionChildTreeState>;
 };
 
 export type AppDrawerProps = {
@@ -58,6 +66,7 @@ export type AppDrawerProps = {
   onOpenDirectoryExplorer: () => void;
   onToggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   onLoadMoreSessions: (directoryId: string, directoryPath: string) => void;
+  onLoadSessionChildren: (directoryId: string, directoryPath: string, parentSessionId: string) => void;
   onStartNewSessionInDirectory: (directoryPath: string) => void;
   onSelectSessionHistoryEntry: (
     sessionId: string,
@@ -116,6 +125,7 @@ export function AppDrawer({
   onOpenDirectoryExplorer,
   onToggleDirectoryExpanded,
   onLoadMoreSessions,
+  onLoadSessionChildren,
   onStartNewSessionInDirectory,
   onSelectSessionHistoryEntry,
   onMarkSessionRead,
@@ -125,6 +135,8 @@ export function AppDrawer({
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
+  const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
+  const expandedSessionSet = useMemo(() => new Set(expandedSessionIds), [expandedSessionIds]);
   const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<{
     sessionId: string;
     source: LlmSessionSource;
@@ -151,6 +163,21 @@ export function AppDrawer({
     if (color === "black") return "#111827";
     return null;
   };
+  const toggleSessionChildren = useCallback((
+    directoryId: string,
+    directoryPath: string,
+    sessionId: string,
+    childState?: SessionChildTreeState
+  ) => {
+    setExpandedSessionIds((prev) => (
+      prev.includes(sessionId)
+        ? prev.filter((id) => id !== sessionId)
+        : [...prev, sessionId]
+    ));
+    if (!childState?.loaded && !childState?.loading) {
+      onLoadSessionChildren(directoryId, directoryPath, sessionId);
+    }
+  }, [onLoadSessionChildren]);
   const directoryViews = useMemo(() => registeredDirectories.flatMap((directory) => {
     const expanded = expandedSet.has(directory.id);
     const selectedDirectory = selectedDirectoryPath === directory.path;
@@ -205,6 +232,114 @@ export function AppDrawer({
     selectedDirectoryPath,
     sessionTitleOverridesById,
   ]);
+
+  const renderSessionEntry = (
+    directory: RegisteredDirectoryEntry,
+    sessionState: DirectorySessionTreeState | undefined,
+    session: LlmSessionHistoryEntry,
+    depth: number
+  ): ReactNode => {
+    const selected = selectedLlmSessionId === session.sessionId;
+    const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
+    const sessionPrimaryTitle = (
+      titleOverride ||
+      String(session.agentDisplayName || "").trim() ||
+      String(session.firstUserMessage || "").trim() ||
+      "（ユーザーメッセージなし）"
+    );
+    const sessionMarkerColor = parseSessionMarkerColor(sessionMarkerColorsById[session.sessionId]);
+    const sessionMarkerColorHex = markerColorToDotHex(sessionMarkerColor);
+    const restoringThisSession = (
+      llmSessionRestoreLoading &&
+      llmSessionRestoreTargetId === session.sessionId
+    );
+    const contextUsedPctText = session.contextUsedPct !== null ? `${session.contextUsedPct}%` : "-";
+    const modelTag = formatModelRefForDisplay(session.modelRef);
+    const thinkTag = formatThinkTag(session.reasoningEffort);
+    const hasUnread = isLlmSessionUnread(session);
+    const childState = sessionState?.childrenByParentId?.[session.sessionId];
+    const childrenExpanded = expandedSessionSet.has(session.sessionId);
+    return (
+      <View
+        key={`${directory.id}-${session.sessionId}`}
+        style={[styles.appDrawerSessionTreeNode, depth > 0 && { marginLeft: Math.min(52, depth * 14) }]}
+      >
+        <TouchableOpacity
+          style={[
+            styles.appDrawerSessionItem,
+            selected && styles.appDrawerSessionItemSelected,
+            llmSessionRestoreLoading && styles.buttonDisabled,
+          ]}
+          disabled={llmSessionRestoreLoading}
+          onPress={(event) => (
+            onSelectSessionHistoryEntry(
+              session.sessionId,
+              session.source,
+              directory.path,
+              eventToPopupSourceRect(event)
+            )
+          )}
+          onLongPress={() => {
+            setDirectoryContextMenuTarget(null);
+            setSessionContextMenuTarget({
+              sessionId: session.sessionId,
+              source: session.source,
+              directoryPath: directory.path,
+            });
+          }}
+        >
+          <View style={styles.appDrawerSessionPrimaryRow}>
+            <TouchableOpacity
+              style={styles.appDrawerSessionChildToggle}
+              disabled={llmSessionRestoreLoading}
+              onPress={(event) => {
+                event.stopPropagation?.();
+                toggleSessionChildren(directory.id, directory.path, session.sessionId, childState);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
+            >
+              {childState?.loading ? <ActivityIndicator size="small" color="#64748b" /> : (
+                <DrawerChevron expanded={childrenExpanded} />
+              )}
+            </TouchableOpacity>
+            {sessionMarkerColorHex ? (
+              <View
+                style={[
+                  styles.appDrawerSessionMarkerDot,
+                  { backgroundColor: sessionMarkerColorHex },
+                ]}
+              />
+            ) : null}
+            <Text
+              style={[
+                styles.appDrawerSessionPrimary,
+                selected && styles.appDrawerSessionPrimarySelected,
+              ]}
+              numberOfLines={1}
+            >
+              {sessionPrimaryTitle}
+            </Text>
+            {restoringThisSession ? <ActivityIndicator size="small" color="#0f766e" /> : null}
+            <Text style={styles.appDrawerSessionContextPct}>{contextUsedPctText}</Text>
+          </View>
+          {hasUnread ? <View style={styles.appDrawerSessionUnreadDot} /> : null}
+          <Text style={styles.appDrawerSessionMetaText}>
+            {`${formatSessionUpdatedAt(session.updatedAt)} [${session.source.toUpperCase()}] model:${modelTag} think:${thinkTag}`}
+          </Text>
+        </TouchableOpacity>
+        {childrenExpanded ? (
+          <View style={styles.appDrawerSessionChildrenBlock}>
+            {childState?.error ? <Text style={styles.errorText}>{childState.error}</Text> : null}
+            {childState?.loaded && !childState.error && childState.entries.length <= 0 ? (
+              <Text style={styles.hint}>サブエージェントはありません。</Text>
+            ) : null}
+            {(childState?.entries || []).map((child) => renderSessionEntry(directory, sessionState, child, depth + 1))}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.appDrawerRoot}>
@@ -319,78 +454,7 @@ export function AppDrawer({
                       {!sessionState?.loading && !sessionState?.error && visibleSessionEntries.length <= 0 ? (
                         <Text style={styles.hint}>履歴はありません。</Text>
                       ) : null}
-                      {visibleSessionEntries.map((session) => {
-                        const selected = selectedLlmSessionId === session.sessionId;
-                        const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
-                        const sessionPrimaryTitle = (
-                          titleOverride ||
-                          String(session.firstUserMessage || "").trim() ||
-                          "（ユーザーメッセージなし）"
-                        );
-                        const sessionMarkerColor = parseSessionMarkerColor(sessionMarkerColorsById[session.sessionId]);
-                        const sessionMarkerColorHex = markerColorToDotHex(sessionMarkerColor);
-                        const restoringThisSession = (
-                          llmSessionRestoreLoading &&
-                          llmSessionRestoreTargetId === session.sessionId
-                        );
-                        const contextUsedPctText = session.contextUsedPct !== null ? `${session.contextUsedPct}%` : "-";
-                        const modelTag = formatModelRefForDisplay(session.modelRef);
-                        const thinkTag = formatThinkTag(session.reasoningEffort);
-                        const hasUnread = isLlmSessionUnread(session);
-                        return (
-                          <TouchableOpacity
-                            key={`${directory.id}-${session.sessionId}`}
-                            style={[
-                              styles.appDrawerSessionItem,
-                              selected && styles.appDrawerSessionItemSelected,
-                              llmSessionRestoreLoading && styles.buttonDisabled,
-                            ]}
-                            disabled={llmSessionRestoreLoading}
-                            onPress={(event) => (
-                              onSelectSessionHistoryEntry(
-                                session.sessionId,
-                                session.source,
-                                directory.path,
-                                eventToPopupSourceRect(event)
-                              )
-                            )}
-                            onLongPress={() => {
-                              setDirectoryContextMenuTarget(null);
-                              setSessionContextMenuTarget({
-                                sessionId: session.sessionId,
-                                source: session.source,
-                                directoryPath: directory.path,
-                              });
-                            }}
-                          >
-                            <View style={styles.appDrawerSessionPrimaryRow}>
-                              {sessionMarkerColorHex ? (
-                                <View
-                                  style={[
-                                    styles.appDrawerSessionMarkerDot,
-                                    { backgroundColor: sessionMarkerColorHex },
-                                  ]}
-                                />
-                              ) : null}
-                              <Text
-                                style={[
-                                  styles.appDrawerSessionPrimary,
-                                  selected && styles.appDrawerSessionPrimarySelected,
-                                ]}
-                                numberOfLines={1}
-                              >
-                                {sessionPrimaryTitle}
-                              </Text>
-                              {restoringThisSession ? <ActivityIndicator size="small" color="#0f766e" /> : null}
-                              <Text style={styles.appDrawerSessionContextPct}>{contextUsedPctText}</Text>
-                            </View>
-                            {hasUnread ? <View style={styles.appDrawerSessionUnreadDot} /> : null}
-                            <Text style={styles.appDrawerSessionMetaText}>
-                              {`${formatSessionUpdatedAt(session.updatedAt)} [${session.source.toUpperCase()}] model:${modelTag} think:${thinkTag}`}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
+                      {visibleSessionEntries.map((session) => renderSessionEntry(directory, sessionState, session, 0))}
                       {showLoadMoreSessions && sessionState?.hasMore ? (
                         <TouchableOpacity
                           style={[

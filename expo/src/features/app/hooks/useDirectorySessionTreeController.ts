@@ -1,5 +1,5 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
-import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type { DirectorySessionTreeState, RegisteredDirectoryEntry, SessionChildTreeState } from "../components/AppDrawer";
 
 type FetchSessionHistoryResult = {
   latestSessionId: string;
@@ -14,6 +14,13 @@ type FetchSessionHistoryOptions = {
   runnerSnapshotLimit?: number;
 };
 
+const EMPTY_SESSION_CHILD_TREE_STATE: SessionChildTreeState = {
+  loading: false,
+  loaded: false,
+  error: "",
+  entries: [],
+};
+
 type UseDirectorySessionTreeControllerArgs = {
   directorySessionsById: Record<string, DirectorySessionTreeState>;
   setDirectorySessionsById: Dispatch<SetStateAction<Record<string, DirectorySessionTreeState>>>;
@@ -22,6 +29,15 @@ type UseDirectorySessionTreeControllerArgs = {
     directoryPath: string,
     options?: FetchSessionHistoryOptions
   ) => Promise<FetchSessionHistoryResult>;
+  fetchSessionChildHistory: (
+    parentSessionId: string,
+    directoryPath: string,
+    options?: {
+      limit?: number;
+      includeRunnerSnapshots?: boolean;
+      runnerSnapshotLimit?: number;
+    }
+  ) => Promise<DirectorySessionTreeState["entries"]>;
   emptyDirectorySessionTreeState: DirectorySessionTreeState;
   directorySessionPageSize: number;
   directorySessionRunnerSnapshotLimit: number;
@@ -37,6 +53,7 @@ export function useDirectorySessionTreeController({
   setDirectorySessionsById,
   setExpandedDirectoryIds,
   fetchSessionHistory,
+  fetchSessionChildHistory,
   emptyDirectorySessionTreeState,
   directorySessionPageSize,
   directorySessionRunnerSnapshotLimit,
@@ -90,6 +107,7 @@ export function useDirectorySessionTreeController({
           nextCursor: result.nextCursor,
           hasMore: Boolean(result.nextCursor),
           entries: result.entries,
+          childrenByParentId: (prev[directoryId] || emptyDirectorySessionTreeState).childrenByParentId || {},
         },
       }));
     } catch (err) {
@@ -106,6 +124,7 @@ export function useDirectorySessionTreeController({
           nextCursor: "",
           hasMore: false,
           entries: [],
+          childrenByParentId: {},
         },
       }));
     }
@@ -151,6 +170,7 @@ export function useDirectorySessionTreeController({
             nextCursor: result.nextCursor,
             hasMore: Boolean(result.nextCursor),
             entries: [...prevState.entries, ...appended],
+            childrenByParentId: prevState.childrenByParentId || {},
           },
         };
       });
@@ -169,6 +189,87 @@ export function useDirectorySessionTreeController({
     directorySessionsById,
     emptyDirectorySessionTreeState,
     fetchSessionHistory,
+    setDirectorySessionsById,
+  ]);
+
+  const loadSessionChildTree = useCallback(async (
+    directoryId: string,
+    directoryPath: string,
+    parentSessionId: string,
+    options?: { force?: boolean }
+  ) => {
+    const parentId = String(parentSessionId || "").trim();
+    if (!parentId) return;
+    const currentState = directorySessionsById[directoryId] || emptyDirectorySessionTreeState;
+    const currentChildState = currentState.childrenByParentId?.[parentId];
+    if (currentChildState?.loading) return;
+    if (!options?.force && currentChildState?.loaded) return;
+    setDirectorySessionsById((prev) => {
+      const prevState = prev[directoryId] || emptyDirectorySessionTreeState;
+      return {
+        ...prev,
+        [directoryId]: {
+          ...prevState,
+          childrenByParentId: {
+            ...(prevState.childrenByParentId || {}),
+            [parentId]: {
+              ...(prevState.childrenByParentId?.[parentId] || EMPTY_SESSION_CHILD_TREE_STATE),
+              loading: true,
+              error: "",
+            },
+          },
+        },
+      };
+    });
+    try {
+      const entries = await fetchSessionChildHistory(parentId, directoryPath, {
+        limit: 50,
+        includeRunnerSnapshots: true,
+        runnerSnapshotLimit: directorySessionRunnerSnapshotLimit,
+      });
+      setDirectorySessionsById((prev) => {
+        const prevState = prev[directoryId] || emptyDirectorySessionTreeState;
+        return {
+          ...prev,
+          [directoryId]: {
+            ...prevState,
+            childrenByParentId: {
+              ...(prevState.childrenByParentId || {}),
+              [parentId]: {
+                loading: false,
+                loaded: true,
+                error: "",
+                entries,
+              },
+            },
+          },
+        };
+      });
+    } catch (err) {
+      setDirectorySessionsById((prev) => {
+        const prevState = prev[directoryId] || emptyDirectorySessionTreeState;
+        return {
+          ...prev,
+          [directoryId]: {
+            ...prevState,
+            childrenByParentId: {
+              ...(prevState.childrenByParentId || {}),
+              [parentId]: {
+                loading: false,
+                loaded: true,
+                error: err instanceof Error ? err.message : String(err),
+                entries: [],
+              },
+            },
+          },
+        };
+      });
+    }
+  }, [
+    directorySessionRunnerSnapshotLimit,
+    directorySessionsById,
+    emptyDirectorySessionTreeState,
+    fetchSessionChildHistory,
     setDirectorySessionsById,
   ]);
 
@@ -249,6 +350,7 @@ export function useDirectorySessionTreeController({
   return {
     loadDirectorySessionTree,
     loadMoreDirectorySessionTree,
+    loadSessionChildTree,
     toggleDirectoryExpanded,
     prefetchDirectorySessionTreesForDrawerOpen,
   };

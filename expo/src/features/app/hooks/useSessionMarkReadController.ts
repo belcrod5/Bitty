@@ -70,11 +70,32 @@ export function useSessionMarkReadController({
             lastReadAt: markedLastReadAt,
           };
         });
-        if (entryChanged) {
+        let childChanged = false;
+        const nextChildrenByParentId = Object.fromEntries(
+          Object.entries(state.childrenByParentId || {}).map(([parentId, childState]) => {
+            let currentChildChanged = false;
+            const nextChildEntries = childState.entries.map((entry) => {
+              const markedLastReadAt = lastReadAtBySessionId.get(entry.sessionId);
+              if (!markedLastReadAt || entry.lastReadAt === markedLastReadAt) return entry;
+              currentChildChanged = true;
+              return {
+                ...entry,
+                lastReadAt: markedLastReadAt,
+              };
+            });
+            if (currentChildChanged) childChanged = true;
+            return [
+              parentId,
+              currentChildChanged ? { ...childState, entries: nextChildEntries } : childState,
+            ];
+          })
+        );
+        if (entryChanged || childChanged) {
           changed = true;
           next[dirId] = {
             ...state,
             entries: nextEntries,
+            childrenByParentId: nextChildrenByParentId,
           };
         } else {
           next[dirId] = state;
