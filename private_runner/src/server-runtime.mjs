@@ -1014,6 +1014,7 @@ const {
   getAcpSessionStoreStats,
   listAcpSessionsForDirectory,
   markAcpSessionRead,
+  migrateAcpSessionDirectoryIdentity,
   resolveSessionIdForRootDir,
 } = createLlmAcpSessionStore({
   acpSessionStorePath: ACP_SESSION_STORE_PATH,
@@ -1091,13 +1092,13 @@ async function resolveCanonicalDirectoryIdentity(rawDirectory, fallback = DEFAUL
   const directory = String(rawDirectory || "").trim() || fallback;
   try {
     const resolved = await resolveToolRoot(directory, { create: false });
-    return resolved.relativeRoot;
+    return toUnixPath(resolved.rootReal);
   } catch (err) {
     if (String(err?.code || "").toUpperCase() !== "ENOENT") throw err;
     const absolutePath = path.isAbsolute(directory)
       ? path.resolve(directory)
       : path.resolve(WORKSPACE_ROOT, directory);
-    return toDirectoryHandlePath(WORKSPACE_ROOT, absolutePath);
+    return toUnixPath(absolutePath);
   }
 }
 
@@ -1118,10 +1119,6 @@ async function listLlmDirectories(rawPath) {
   try {
     rootReal = await fs.realpath(rootAbs);
   } catch {}
-  const explorerRoot = {
-    rootReal,
-    relativeRoot: toDirectoryHandlePath(resolved.workspaceReal, rootReal),
-  };
   let dirEntries = [];
   try {
     dirEntries = await fs.readdir(resolved.rootReal, { withFileTypes: true });
@@ -1143,14 +1140,14 @@ async function listLlmDirectories(rawPath) {
       }
       directories.push({
         name: entry.name,
-        path: toDirectoryHandlePath(resolved.workspaceReal, childReal),
+        path: toUnixPath(childReal),
       });
       continue;
     }
     if (!entry.isFile()) continue;
     files.push({
       name: entry.name,
-      path: toDirectoryHandlePath(resolved.workspaceReal, childAbs),
+      path: toUnixPath(childAbs),
     });
   }
   directories.sort((a, b) => a.name.localeCompare(b.name));
@@ -1168,18 +1165,18 @@ async function listLlmDirectories(rawPath) {
     })),
   ];
   let parentPath = "";
-  if (resolved.rootReal !== explorerRoot.rootReal) {
+  if (resolved.rootReal !== rootReal) {
     const parentAbs = path.dirname(resolved.rootReal);
     let parentReal = parentAbs;
     try {
       parentReal = await fs.realpath(parentAbs);
     } catch {}
-    parentPath = toDirectoryHandlePath(resolved.workspaceReal, parentReal);
+    parentPath = toUnixPath(parentReal);
   }
   return {
-    basePath: resolved.relativeRoot,
+    basePath: toUnixPath(resolved.rootReal),
     parentPath,
-    rootPath: explorerRoot.relativeRoot,
+    rootPath: toUnixPath(rootReal),
     directories: limitedDirectories,
     files: limitedFiles,
     entries,
@@ -1188,6 +1185,27 @@ async function listLlmDirectories(rawPath) {
       files.length > limitedFiles.length
     ),
     maxEntries: Math.max(1, DIRECTORY_EXPLORER_MAX_ENTRIES),
+  };
+}
+
+async function migrateLlmDirectoryIdentity(rawSource, rawTarget) {
+  const source = String(rawSource || "").trim();
+  const target = String(rawTarget || "").trim();
+  if (!source || path.isAbsolute(source) || !target || !path.isAbsolute(target)) {
+    throw makeApiError(400, "invalid_directory_migration", "relative source and absolute target are required");
+  }
+  const [resolvedSource, resolvedTarget] = await Promise.all([
+    resolveToolRoot(source, { create: false }),
+    resolveToolRoot(target, { create: false }),
+  ]);
+  if (resolvedSource.rootReal !== resolvedTarget.rootReal) {
+    throw makeApiError(409, "directory_migration_mismatch", "source and target do not identify the same directory");
+  }
+  const result = await migrateAcpSessionDirectoryIdentity(source, resolvedTarget.rootReal);
+  return {
+    source,
+    target: resolvedTarget.rootReal,
+    migratedAcpSessions: result.migratedSessions,
   };
 }
 
@@ -1208,7 +1226,6 @@ const {
   listCliSessionsForDirectory,
   markCliSessionRead,
   resolveCliSessionEntryDirectory,
-  selectCliSessionIndexEntryBySessionId,
   upsertCliSessionIndexEntryFromRolloutFile,
 } = createLlmCliSessionIndex({
   cliSessionIndexPath: CLI_SESSION_INDEX_PATH,
@@ -1356,7 +1373,7 @@ const {
   normalizeReasoningEffort,
   normalizeSessionRootRelativePath,
   normalizeSessionUpdatedAt,
-  selectCliSessionIndexEntryBySessionId,
+  findCliSessionIndexEntryBySessionId,
   toWorkspaceRelativeFromAbsolutePath,
   upsertCliSessionIndexEntryFromRolloutFile,
   workspaceRoot: WORKSPACE_ROOT,
@@ -2975,13 +2992,13 @@ async function runGitChangedFileListCommand(args, opts = {}) {
 
 async function fetchGitChangedFilesSnapshot(rawDirectory) {
   const directory = String(rawDirectory || "").trim();
-  let cwd = WORKSPACE_ROOT;
-  let canonicalDirectory = ".";
+  let cwd = await getWorkspaceRealPath();
+  let canonicalDirectory = toUnixPath(cwd);
   if (directory) {
     try {
       const resolved = await resolveToolRoot(directory, { create: false });
       cwd = resolved.rootReal;
-      canonicalDirectory = resolved.relativeRoot;
+      canonicalDirectory = toUnixPath(resolved.rootReal);
     } catch (err) {
       const code = String(err?.code || "").toUpperCase();
       if (code === "ENOENT") {
@@ -6145,8 +6162,8 @@ async function runReplyUsecase(req, opts = {}) {
     transcript: req.transcript,
     messages: req.messages,
   });
-  const effectiveSessionId = await resolveSessionIdForRootDir(req.sessionId, validatedRoot.relativeRoot);
-  await bindSessionToRootDir(effectiveSessionId, validatedRoot.relativeRoot);
+  const effectiveSessionId = await resolveSessionIdForRootDir(req.sessionId, validatedRoot.rootReal);
+  await bindSessionToRootDir(effectiveSessionId, validatedRoot.rootReal);
   const effectiveReq = {
     ...req,
     sessionId: effectiveSessionId,
@@ -6165,7 +6182,7 @@ async function runReplyUsecase(req, opts = {}) {
     await appendAppConversationToCliRollout({
       sessionId,
       cwd: validatedRoot.rootReal,
-      directory: validatedRoot.relativeRoot,
+      directory: validatedRoot.rootReal,
       userText: lastUserText,
       assistantText: reply,
       modelRef: "mock",
@@ -6214,7 +6231,7 @@ async function runReplyUsecase(req, opts = {}) {
   await appendAppConversationToCliRollout({
     sessionId: fileResult.sessionId || effectiveSessionId,
     cwd: validatedRoot.rootReal,
-    directory: validatedRoot.relativeRoot,
+    directory: validatedRoot.rootReal,
     userText: lastUserText,
     assistantText: prependAssistantThinkingText(String(fileResult.reply || "").trim()),
     contextUsage: fileResult.contextUsage || null,
@@ -8004,6 +8021,26 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 500, {
         error: "directories_failed",
+        message: errorMessage(err),
+      });
+    }
+  }
+
+  if (req.method === "POST" && pathname === "/directory-identities/migrate") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    try {
+      const body = await readJsonBody(req);
+      const result = await migrateLlmDirectoryIdentity(body?.source, body?.target);
+      return json(res, 200, { ok: true, ...result });
+    } catch (err) {
+      if (isApiError(err)) return json(res, err.apiStatus, err.apiPayload);
+      return json(res, 500, {
+        error: "directory_identity_migration_failed",
         message: errorMessage(err),
       });
     }
@@ -10947,6 +10984,7 @@ export const __TESTING__ = {
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
+  listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,
   resolvePathWithinToolRoot,
