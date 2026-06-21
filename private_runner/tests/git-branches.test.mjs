@@ -18,7 +18,7 @@ test("lists local and remote branches without the remote HEAD alias", async () =
           "refs/heads/feature/z\tfeature/z",
           "refs/remotes/origin/HEAD\torigin/HEAD",
           "refs/remotes/origin/main\torigin/main",
-        ].join("\n"),
+        ].join("\n") + "\n",
       };
     },
   });
@@ -55,5 +55,21 @@ test("reports git branch listing failures", async () => {
       }),
     }),
     /git command failed \(128\).*not a repository/
+  );
+});
+
+test("rejects truncated branch list output", async () => {
+  await assert.rejects(
+    fetchGitBranches({
+      cwd: "/workspace",
+      timeoutMs: 12000,
+      runCommandWithCapture: async () => ({
+        exitCode: 0,
+        timedOut: false,
+        stderr: "",
+        stdout: "refs/heads/main\tma",
+      }),
+    }),
+    /branch list output was truncated/
   );
 });

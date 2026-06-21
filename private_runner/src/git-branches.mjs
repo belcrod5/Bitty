@@ -16,6 +16,9 @@ export async function fetchGitBranches({ cwd, runCommandWithCapture, timeoutMs }
   if (result.exitCode !== 0) {
     throw new Error(`git command failed (${result.exitCode}): git for-each-ref ${result.stderr || ""}`.trim());
   }
+  if (result.stdout && !String(result.stdout).endsWith("\n")) {
+    throw new Error("git branch list output was truncated");
+  }
 
   const seen = new Set();
   const branches = [];
