@@ -137,7 +137,7 @@ LLM本線:
 
 resumable relay 環境変数:
 - `CODEX_WS_RELAY_EVENT_MAX`（既定: `6000`）: threadごとの保持イベント数
-- `CODEX_WS_RELAY_IDLE_TTL_MS`（既定: `300000`）: クライアント切断後に upstream relay を保持する時間
+- `CODEX_WS_RELAY_IDLE_TTL_MS`（既定: `1800000`）: クライアント切断後に upstream relay を保持する時間
 - `CODEX_WS_RELAY_COMPLETED_TTL_MS`（既定: `60000`）: turn完了後の保持時間
 - `CODEX_WS_RELAY_MAX_ACTIVE`（既定: `64`）: 同時保持relay上限
 

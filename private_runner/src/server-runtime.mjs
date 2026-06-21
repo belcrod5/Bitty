@@ -256,7 +256,7 @@ const CODEX_WS_RELAY_EVENT_MAX = Math.max(
 );
 const CODEX_WS_RELAY_IDLE_TTL_MS = Math.max(
   10000,
-  Number(process.env.CODEX_WS_RELAY_IDLE_TTL_MS || 5 * 60 * 1000)
+  Number(process.env.CODEX_WS_RELAY_IDLE_TTL_MS || 30 * 60 * 1000)
 );
 const CODEX_WS_RELAY_COMPLETED_TTL_MS = Math.max(
   5000,
