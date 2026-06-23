@@ -33,6 +33,7 @@ import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import type { PopupChatSourceRect } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
 import { MiniBoardScreen } from "./screens/MiniBoardScreen";
+import { SkiaMiniBoardScreen } from "./screens/SkiaMiniBoardScreen";
 import {
   DEFAULT_STT_PROVIDER,
   type SttProvider,
@@ -5677,6 +5678,7 @@ export default function App() {
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openSkiaBoardScreen,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
@@ -7552,6 +7554,7 @@ export default function App() {
     closeDrawer,
     openDebugScreen,
     openMiniBoardScreen,
+    openSkiaBoardScreen,
     openDirectoryExplorer,
     toggleDirectoryExpanded,
     loadMoreDirectorySessionTree,
@@ -7590,7 +7593,7 @@ export default function App() {
         open={drawerOpen}
         onOpen={openDrawer}
         onClose={closeDrawer}
-        swipeEnabled={activeScreen === "mini_board"}
+        swipeEnabled={activeScreen === "mini_board" || activeScreen === "skia_board"}
         swipeEdgeWidth={DRAWER_SWIPE_EDGE_WIDTH}
         swipeMinDistance={DRAWER_SWIPE_MIN_DISTANCE}
         swipeMinVelocity={DRAWER_SWIPE_MIN_VELOCITY}
@@ -7608,6 +7611,8 @@ export default function App() {
         <DebugScreen />
       ) : activeScreen === "mini_board" ? (
         <MiniBoardScreen />
+      ) : activeScreen === "skia_board" ? (
+        <SkiaMiniBoardScreen onClose={openMiniBoardScreen} />
       ) : (
         <AudioLabScreen />
       )}

@@ -163,6 +163,9 @@ export function useAppContextActions({
   const openMiniBoardScreen = useCallback(() => {
     setActiveScreen("mini_board");
   }, [setActiveScreen]);
+  const openSkiaBoardScreen = useCallback(() => {
+    setActiveScreen("skia_board");
+  }, [setActiveScreen]);
   const changeRunnerUrl = useCallback((value: string) => {
     setRunnerUrl(value);
   }, [setRunnerUrl]);
@@ -375,6 +378,7 @@ export function useAppContextActions({
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openSkiaBoardScreen,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
