@@ -33,6 +33,7 @@ type UsePanelNewSessionControllerArgs = {
     selectedThreadStatusType: string;
   }) => unknown;
   setPanelRuntimeEntriesById: Dispatch<SetStateAction<Record<string, PanelRuntimeEntry>>>;
+  invalidatePanelHydration: (panelId: string) => void;
   logSessionDiag: (
     event: string,
     payload?: Record<string, unknown>,
@@ -55,11 +56,13 @@ export function usePanelNewSessionController({
   setSessionMarkerColorForSession,
   upsertConversationRuntimeSnapshot,
   setPanelRuntimeEntriesById,
+  invalidatePanelHydration,
   logSessionDiag,
 }: UsePanelNewSessionControllerArgs) {
   return useCallback((params: { panelId: string; directory: string }) => {
     const panelId = normalizeRuntimePanelId(params.panelId);
     if (!panelId) return "";
+    invalidatePanelHydration(panelId);
     const directory = parseLlmDirectory(params.directory || normalizedLlmDirectoryForRequest());
     const previousSnapshot = resolvePanelSnapshotForDisplay(panelId);
 
@@ -108,6 +111,7 @@ export function usePanelNewSessionController({
   }, [
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
+    invalidatePanelHydration,
     logSessionDiag,
     normalizedLlmDirectoryForRequest,
     normalizeRuntimePanelId,

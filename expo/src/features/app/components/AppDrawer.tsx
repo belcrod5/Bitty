@@ -276,7 +276,7 @@ export function AppDrawer({
             onSelectSessionHistoryEntry(
               session.sessionId,
               session.source,
-              directory.path,
+              session.directory || directory.path,
               eventToPopupSourceRect(event)
             )
           )}
@@ -285,7 +285,7 @@ export function AppDrawer({
             setSessionContextMenuTarget({
               sessionId: session.sessionId,
               source: session.source,
-              directoryPath: directory.path,
+              directoryPath: session.directory || directory.path,
             });
           }}
         >

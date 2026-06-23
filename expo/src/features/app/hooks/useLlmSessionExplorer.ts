@@ -57,6 +57,7 @@ export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
   content: string;
   at: string;
+  inheritedFromParent?: boolean;
 };
 
 export type RunnerSessionMessagesResult = {
@@ -181,7 +182,9 @@ export function buildLlmSessionHistoryEntry(
   return {
     sessionId,
     parentSessionId: parseOptionalSessionId(item.parentThreadId),
-    directory: parseLlmDirectory(directory || item.cwd),
+    // The thread cwd is the execution identity. `directory` is only the scope used
+    // to discover the thread and may be the parent of a subagent workspace.
+    directory: parseLlmDirectory(item.cwd || directory),
     updatedAt: String(item.updatedAt || item.createdAt || "").trim(),
     lastReadAt: String(snapshot?.lastReadAt || "").trim(),
     source: parseLlmSessionSource(item.sourceKind, "unknown"),
@@ -435,6 +438,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const fetchRunnerSessionMessages = useCallback(async (
     sessionIdRaw: unknown,
     directoryRaw?: unknown,
+    options?: { preferCliRollout?: boolean },
   ): Promise<RunnerSessionMessagesResult> => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) {
@@ -442,7 +446,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     }
     const targetCodexWsUrl = codexWsUrl.trim();
     const preferredDirectory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    if (targetCodexWsUrl) {
+    if (targetCodexWsUrl && options?.preferCliRollout !== true) {
       const appServerStartedAt = Date.now();
       try {
         emitSessionDiag("app_server_thread_restore_start", {
@@ -629,6 +633,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           role,
           content,
           at: String(item.at || "").trim(),
+          inheritedFromParent: item.inheritedFromParent === true || undefined,
         } as RunnerSessionMessage;
       })
       .filter((item: RunnerSessionMessage | null): item is RunnerSessionMessage => !!item);

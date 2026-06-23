@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
 
 export function createLlmSessionRolloutReaders(deps) {
   const {
@@ -135,6 +136,109 @@ export function createLlmSessionRolloutReaders(deps) {
     };
   }
 
+  function parseSubagentSessionMeta(parsedItems) {
+    const sessionMeta = parsedItems.find((parsed) => String(parsed?.type || "") === "session_meta");
+    const payload = sessionMeta?.payload && typeof sessionMeta.payload === "object"
+      ? sessionMeta.payload
+      : {};
+    const source = payload?.source && typeof payload.source === "object" ? payload.source : {};
+    const isSubagent = Boolean(
+      source?.subagent
+      || source?.subAgent
+      || String(payload?.thread_source || "").trim().toLowerCase() === "subagent"
+      || payload?.parent_thread_id
+      || payload?.forked_from_id
+    );
+    if (!isSubagent) {
+      return { isSubagent: false, parentSessionId: "", childStartIndex: 0 };
+    }
+
+    const firstDeveloperIndex = parsedItems.findIndex((parsed) => (
+      String(parsed?.type || "") === "response_item"
+      && String(parsed?.payload?.type || "") === "message"
+      && String(parsed?.payload?.role || "").trim().toLowerCase() === "developer"
+    ));
+    const firstToolIndex = parsedItems.findIndex((parsed) => {
+      const payloadType = String(parsed?.payload?.type || "").trim().toLowerCase();
+      return String(parsed?.type || "") === "response_item"
+        && (payloadType === "custom_tool_call" || payloadType === "function_call");
+    });
+    const firstInterAgentMessageIndex = parsedItems.findIndex(
+      (parsed) => String(parsed?.type || "") === "inter_agent_communication"
+    );
+    const boundarySearchEnd = firstInterAgentMessageIndex >= 0
+      ? firstInterAgentMessageIndex
+      : firstDeveloperIndex >= 0
+        ? firstDeveloperIndex
+        : firstToolIndex;
+    let childStartIndex = 0;
+    if (boundarySearchEnd >= 0) {
+      for (let index = 0; index < boundarySearchEnd; index += 1) {
+        const parsed = parsedItems[index];
+        if (
+          String(parsed?.type || "") === "event_msg"
+          && String(parsed?.payload?.type || "") === "task_started"
+        ) {
+          childStartIndex = index;
+        }
+      }
+    }
+    return {
+      isSubagent: true,
+      parentSessionId: String(payload?.parent_thread_id || payload?.forked_from_id || "").trim(),
+      childStartIndex,
+    };
+  }
+
+  function extractToolWorkingDirectory(parsed) {
+    if (String(parsed?.type || "") !== "response_item") return "";
+    const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
+    const payloadType = String(payload?.type || "").trim().toLowerCase();
+    if (!payload || (payloadType !== "custom_tool_call" && payloadType !== "function_call")) return "";
+    const input = payload?.input ?? payload?.arguments;
+    if (input && typeof input === "object") {
+      return String(input?.workdir || input?.cwd || "").trim();
+    }
+    const inputText = String(input || "");
+    const match = inputText.match(
+      /[,{]\s*["']?(?:workdir|cwd)["']?\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|`((?:\\.|[^`\\])*)`)/
+    );
+    if (!match) return "";
+    try {
+      if (match[1] !== undefined) {
+        return String(JSON.parse(`"${match[1]}"`) || "").trim();
+      }
+      return String(match[2] ?? match[3] ?? "")
+        .replace(/\\(['`\\])/g, "$1")
+        .trim();
+    } catch {
+      return "";
+    }
+  }
+
+  async function resolveGitWorkingDirectory(rawDirectory) {
+    const source = String(rawDirectory || "").trim();
+    if (!source || !path.isAbsolute(source)) return { directory: source, isGitRoot: false };
+    let current = path.resolve(source);
+    try {
+      if (!(await fs.stat(current)).isDirectory()) current = path.dirname(current);
+    } catch {
+      return { directory: current, isGitRoot: false };
+    }
+    while (true) {
+      try {
+        await fs.stat(path.join(current, ".git"));
+        return { directory: current, isGitRoot: true };
+      } catch {
+        const parent = path.dirname(current);
+        if (parent === current) {
+          return { directory: path.resolve(source), isGitRoot: false };
+        }
+        current = parent;
+      }
+    }
+  }
+
   async function readRolloutTextWithByteLimit(filePath, maxBytes) {
     const fileStat = await fs.stat(filePath);
     const size = Number(fileStat.size || 0);
@@ -229,6 +333,7 @@ export function createLlmSessionRolloutReaders(deps) {
     const fallbackEventMessages = [];
     let parsedLineCount = 0;
     const parseStartedAt = Date.now();
+    const parsedItems = [];
     for (const line of lines) {
       let parsed = null;
       try {
@@ -237,14 +342,53 @@ export function createLlmSessionRolloutReaders(deps) {
         continue;
       }
       parsedLineCount += 1;
+      parsedItems.push(parsed);
+    }
+    const subagentMeta = parseSubagentSessionMeta(parsedItems);
+    const workingDirectoryCandidates = [];
+    for (let index = 0; index < parsedItems.length; index += 1) {
+      const parsed = parsedItems[index];
+      const inheritedFromParent = subagentMeta.isSubagent && index < subagentMeta.childStartIndex;
+      if (subagentMeta.isSubagent && !inheritedFromParent) {
+        const workingDirectory = extractToolWorkingDirectory(parsed);
+        if (workingDirectory) workingDirectoryCandidates.push(workingDirectory);
+      }
       const responseMessage = parseSessionMessageFromResponseItem(parsed);
       if (responseMessage) {
-        responseMessages.push(responseMessage);
+        responseMessages.push(inheritedFromParent
+          ? { ...responseMessage, inheritedFromParent: true }
+          : responseMessage);
         continue;
       }
       const eventMessage = parseSessionMessageFromEventItem(parsed);
       if (eventMessage) {
-        fallbackEventMessages.push(eventMessage);
+        fallbackEventMessages.push(inheritedFromParent
+          ? { ...eventMessage, inheritedFromParent: true }
+          : eventMessage);
+      }
+    }
+    let workingDirectory = "";
+    if (workingDirectoryCandidates.length > 0) {
+      const resolvedDirectories = await Promise.all(
+        workingDirectoryCandidates.map(resolveGitWorkingDirectory)
+      );
+      workingDirectory = resolvedDirectories.find((candidate) => candidate.isGitRoot)?.directory || "";
+      const directoryUsage = new Map();
+      resolvedDirectories.forEach(({ directory }, index) => {
+        const usage = directoryUsage.get(directory) || { count: 0, lastIndex: -1 };
+        directoryUsage.set(directory, { count: usage.count + 1, lastIndex: index });
+      });
+      if (!workingDirectory) {
+        for (const [directory, usage] of directoryUsage) {
+          const selectedUsage = directoryUsage.get(workingDirectory);
+          if (
+            !selectedUsage
+            || usage.count > selectedUsage.count
+            || (usage.count === selectedUsage.count && usage.lastIndex > selectedUsage.lastIndex)
+          ) {
+            workingDirectory = directory;
+          }
+        }
       }
     }
     const jsonParseMs = Math.max(0, Date.now() - parseStartedAt);
@@ -258,6 +402,9 @@ export function createLlmSessionRolloutReaders(deps) {
     const limitSliceMs = Math.max(0, Date.now() - sliceStartedAt);
     return {
       messages,
+      isSubagent: subagentMeta.isSubagent,
+      parentSessionId: subagentMeta.parentSessionId,
+      workingDirectory,
       diagnostics: {
         fileReadMs,
         lineSplitMs,
@@ -267,6 +414,8 @@ export function createLlmSessionRolloutReaders(deps) {
         totalMs: Math.max(0, Date.now() - startedAt),
         lineCount: lines.length,
         parsedLineCount,
+        childStartIndex: subagentMeta.childStartIndex,
+        inheritedLineCount: subagentMeta.isSubagent ? subagentMeta.childStartIndex : 0,
       },
     };
   }

@@ -33,6 +33,27 @@ export const chatMessageStyles = {
     borderRadius: 0,
     minWidth: 0,
   },
+  chatBubbleInheritedFromParent: {
+    opacity: 0.52,
+  },
+  chatSubagentBoundary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 2,
+    marginBottom: 18,
+  },
+  chatSubagentBoundaryLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "#cbd5e1",
+  },
+  chatSubagentBoundaryText: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
   chatBubbleLabel: {
     fontSize: 10,
     fontWeight: "800",

@@ -30,6 +30,8 @@ test("shows and opens the direct parent of the selected subagent", async () => {
     parentSessionId: "parent",
     source: "subagent",
     agentDisplayName: "Child agent",
+    directory: "/work/bitty/child-worktree",
+    cwd: "/work/bitty/child-worktree",
   });
   const directoryState: DirectorySessionTreeState = {
     loading: false,
@@ -51,7 +53,7 @@ test("shows and opens the direct parent of the selected subagent", async () => {
   const view = await render(
     <ChatSessionSubagentList
       selectedSessionId="child"
-      selectedDirectoryPath="/work/bitty"
+      selectedDirectoryPath="/work/bitty/child-worktree"
       registeredDirectories={[{
         id: "dir-1",
         path: "/work/bitty",
@@ -75,5 +77,57 @@ test("shows and opens the direct parent of the selected subagent", async () => {
     sessionId: "parent",
     source: "cli",
     directory: "/work/bitty",
+  });
+});
+
+test("opens a child with the child's own working directory", async () => {
+  const child = session({
+    sessionId: "child",
+    parentSessionId: "parent",
+    source: "subagent",
+    directory: "/work/bitty/child-worktree",
+    cwd: "/work/bitty/child-worktree",
+    firstUserMessage: "Child task",
+  });
+  const openSessionHistoryEntry = jest.fn();
+  const directoryState: DirectorySessionTreeState = {
+    loading: false,
+    loadingMore: false,
+    loaded: true,
+    fetchedAtMs: 1,
+    error: "",
+    latestSessionId: "parent",
+    nextCursor: "",
+    hasMore: false,
+    entries: [session({ sessionId: "parent" })],
+    childrenByParentId: {
+      parent: { loading: false, loaded: true, error: "", entries: [child] },
+    },
+  };
+  const tree = await render(
+    <ChatSessionSubagentList
+      selectedSessionId="parent"
+      selectedDirectoryPath="/work/bitty"
+      registeredDirectories={[{
+        id: "dir-1",
+        path: "/work/bitty",
+        displayName: "Bitty",
+        markerColor: "none",
+      }]}
+      directorySessionsById={{ "dir-1": directoryState }}
+      sessionTitleOverridesById={{}}
+      formatSessionUpdatedAt={() => "now"}
+      loadSessionChildren={jest.fn()}
+      openSessionHistoryEntry={openSessionHistoryEntry}
+      onCloseMenu={jest.fn()}
+    />
+  );
+
+  fireEvent.press(tree.getByText("Child task"));
+
+  expect(openSessionHistoryEntry).toHaveBeenCalledWith({
+    sessionId: "child",
+    source: "subagent",
+    directory: "/work/bitty/child-worktree",
   });
 });

@@ -118,6 +118,7 @@ import {
   usePanelNewSessionController,
   type PanelRuntimeEntry,
 } from "./hooks/usePanelNewSessionController";
+import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
 import {
   appendAssistantEventMessageToMessages,
@@ -259,7 +260,10 @@ import {
 import {
   summarizeExecutionReasonFromStatus,
 } from "./utils/sessionRuntimeStatus";
-import { resolveSessionHistoryContext as resolveSessionHistoryContextValue } from "./utils/sessionHistoryContext";
+import {
+  getCachedDirectorySessions,
+  resolveSessionHistoryContext as resolveSessionHistoryContextValue,
+} from "./utils/sessionHistoryContext";
 import {
   buildRestoredSessionRuntimeSnapshot,
   deriveRestoredSessionThreadStatusType,
@@ -277,6 +281,7 @@ import {
 } from "./utils/appDiagnostics";
 import {
   createLlmSessionId,
+  parseLlmSessionSource,
   parseOptionalSessionId,
 } from "./utils/llmSession";
 import {
@@ -6052,10 +6057,16 @@ export default function App() {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     const directoryPath = parseLlmDirectory(directoryPathRaw || normalizedLlmDirectoryForRequest());
     if (!sessionId || !directoryPath) return;
-    const directory = registeredDirectories.find((item) => parseLlmDirectory(item.path) === directoryPath);
+    const directory = registeredDirectories.find((item) => {
+      const state = directorySessionsById[item.id];
+      return getCachedDirectorySessions(state).some(
+        (entry) => parseOptionalSessionId(entry.sessionId) === sessionId
+      );
+    }) || registeredDirectories.find((item) => parseLlmDirectory(item.path) === directoryPath);
     if (!directory) return;
-    await loadSessionChildTree(directory.id, directory.path, sessionId);
+    await loadSessionChildTree(directory.id, directoryPath, sessionId);
   }, [
+    directorySessionsById,
     loadSessionChildTree,
     normalizedLlmDirectoryForRequest,
     registeredDirectories,
@@ -6150,6 +6161,10 @@ export default function App() {
     conversationMessages?: ConversationMessage[];
   };
   const [panelRuntimeEntriesById, setPanelRuntimeEntriesById] = useState<Record<string, PanelRuntimeEntry>>({});
+  const {
+    beginPanelHydration,
+    invalidatePanelHydration,
+  } = usePanelHydrationGuard();
   useEffect(() => {
     panelRuntimeEntriesByIdRef.current = panelRuntimeEntriesById;
   }, [panelRuntimeEntriesById]);
@@ -6192,6 +6207,9 @@ export default function App() {
     const messages = Array.isArray(patch.conversationMessages)
       ? patch.conversationMessages
       : baseSnapshot.conversationMessages;
+    const inheritedMessages = Array.isArray(patch.inheritedConversationMessages)
+      ? patch.inheritedConversationMessages
+      : baseSnapshot.inheritedConversationMessages || [];
     const selectedSessionId = String(patch.selectedSessionId ?? baseSnapshot.selectedSessionId ?? "").trim();
     const isResponding = typeof patch.isResponding === "boolean"
       ? patch.isResponding
@@ -6222,6 +6240,7 @@ export default function App() {
       isHydrating: typeof patch.isHydrating === "boolean"
         ? patch.isHydrating
         : Boolean(baseSnapshot.isHydrating),
+      inheritedConversationMessages: cloneConversationMessages(inheritedMessages),
       conversationMessages: cloneConversationMessages(messages),
     };
     const requestStartedAtMsRaw = patch.requestStartedAtMs ?? baseSnapshot.requestStartedAtMs;
@@ -6253,6 +6272,7 @@ export default function App() {
     contextUsedPct: null,
     isResponding: false,
     isHydrating: false,
+    inheritedConversationMessages: [],
     conversationMessages: [],
     scrollOffsetY: 0,
     scrollViewportHeight: 0,
@@ -6281,6 +6301,7 @@ export default function App() {
     requestStartedAtMs: replyLoading && llmRequestStartedAtRef.current > 0
       ? llmRequestStartedAtRef.current
       : undefined,
+    inheritedConversationMessages: [],
     conversationMessages,
     scrollOffsetY: chatScrollOffsetY,
     scrollViewportHeight: chatViewportHeight,
@@ -6393,6 +6414,7 @@ export default function App() {
   const clearPanelSnapshot = useCallback((panelIdRaw: string) => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
     if (!panelId) return;
+    invalidatePanelHydration(panelId);
     setPanelAutoSpeechOpen(panelId, false);
     setPanelRuntimeEntriesById((prev) => {
       if (!prev[panelId]) return prev;
@@ -6406,7 +6428,7 @@ export default function App() {
       throttleMs: 0,
       throttleKey: `panel_runtime_snapshot_cleared:${panelId}:${Date.now()}`,
     });
-  }, [logSessionDiag, setPanelAutoSpeechOpen]);
+  }, [invalidatePanelHydration, logSessionDiag, setPanelAutoSpeechOpen]);
   const resolvePanelSnapshotForDisplay = useCallback((panelIdRaw: string): PanelRuntimeSnapshot => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
     const entry = panelRuntimeEntriesById[panelId];
@@ -6425,6 +6447,7 @@ export default function App() {
     setSessionMarkerColorForSession,
     upsertConversationRuntimeSnapshot,
     setPanelRuntimeEntriesById,
+    invalidatePanelHydration,
     logSessionDiag,
   });
   useEffect(() => {
@@ -6481,6 +6504,7 @@ export default function App() {
     const sourcePanelId = normalizeRuntimePanelId(sourcePanelIdRaw);
     const targetPanelId = normalizeRuntimePanelId(targetPanelIdRaw);
     if (!targetPanelId) return;
+    invalidatePanelHydration(targetPanelId);
     const sourceSnapshot = resolvePanelSnapshotForDisplay(sourcePanelId);
     const copiedSnapshot = createPanelRuntimeSnapshot(targetPanelId, sourceSnapshot);
     const copiedLastMessage = copiedSnapshot.conversationMessages.length > 0
@@ -6504,7 +6528,7 @@ export default function App() {
       lastMessageContentLength: String(copiedLastMessage?.content || "").length,
       lastMessagePreview: String(copiedLastMessage?.content || "").slice(0, 80),
     }, { throttleMs: 0 });
-  }, [createPanelRuntimeSnapshot, resolvePanelSnapshotForDisplay]);
+  }, [createPanelRuntimeSnapshot, invalidatePanelHydration, resolvePanelSnapshotForDisplay]);
   const updatePanelSettings = useCallback((
     panelIdRaw: string,
     settings: { modelRef?: string; reasoningEffort?: string }
@@ -6930,6 +6954,7 @@ export default function App() {
     panelId: string;
     sessionId: string;
     directory: string;
+    source?: LlmSessionSource;
     directoryDisplayName?: string;
     diagnosticCycleId?: string;
     title?: string;
@@ -6948,6 +6973,7 @@ export default function App() {
     const updatedAtHint = String(params?.updatedAt || "").trim();
     const modelRefHint = normalizeModelRef(params?.modelRef);
     const reasoningEffortHint = String(params?.reasoningEffort || "").trim();
+    const source = parseLlmSessionSource(params?.source, "unknown");
     const contextUsedPctHint = Number.isFinite(Number(params?.contextUsedPct))
       ? Math.max(0, Math.min(100, Math.round(Number(params?.contextUsedPct))))
       : null;
@@ -6958,8 +6984,9 @@ export default function App() {
         sessionId,
         directory,
       }, { throttleMs: 0 });
-      return false;
+      return "failed" as const;
     }
+    const isCurrentHydration = beginPanelHydration(panelId);
     logSessionDiag("panel_runtime_hydrate_start", {
       diagnosticCycleId,
       panelId,
@@ -7002,17 +7029,41 @@ export default function App() {
       requestedReasoningEffortHint: reasoningEffortHint,
     }, { throttleMs: 0 });
     try {
-      const restored = await fetchRunnerSessionMessages(sessionId, directory);
+      const restored = await fetchRunnerSessionMessages(sessionId, directory, {
+        preferCliRollout: source === "subagent",
+      });
+      const restoredSessionId = parseOptionalSessionId(restored.threadId);
+      if (restoredSessionId && restoredSessionId !== sessionId) {
+        throw new Error(`restored session mismatch: requested=${sessionId} received=${restoredSessionId}`);
+      }
+      if (!isCurrentHydration()) {
+        logSessionDiag("panel_runtime_hydrate_superseded", {
+          diagnosticCycleId,
+          panelId,
+          sessionId,
+          directory,
+          phase: "after_restore",
+        }, { throttleMs: 0 });
+        return "superseded" as const;
+      }
       const restoredContextUsedPct = Number.isFinite(Number(restored.contextUsedPct))
         ? Math.max(0, Math.min(100, Math.round(Number(restored.contextUsedPct))))
         : null;
       const contextUsedPct = restoredContextUsedPct ?? contextUsedPctHint;
       const panelModelRef = normalizeModelRef(restored.modelRef || modelRefHint);
       const panelReasoningEffort = String(restored.reasoningEffort || reasoningEffortHint || "").trim();
-      const resolvedSessionId = parseOptionalSessionId(restored.threadId || sessionId);
+      const resolvedSessionId = restoredSessionId || sessionId;
+      const restoredDirectory = parseLlmDirectory(restored.cwd || directory);
+      const restoredDirectoryDisplayName = restoredDirectory === directory
+        ? directoryDisplayName
+        : String(
+          registeredDirectories.find(
+            (item) => parseLlmDirectory(item.path) === restoredDirectory
+          )?.displayName || deriveDirectoryDisplayName(restoredDirectory)
+        ).trim();
       rememberKnownCodexThreadId(resolvedSessionId || sessionId);
       const markerSessionId = resolvedSessionId || sessionId;
-      const conversation = (Array.isArray(restored.messages) ? restored.messages : []).map((message, index) => {
+      const restoredConversation = (Array.isArray(restored.messages) ? restored.messages : []).map((message, index) => {
         const role = message.role === "assistant" ? "assistant" : "user";
         const content = String(message.content || "");
         const at = String(message.at || "").trim();
@@ -7021,8 +7072,15 @@ export default function App() {
           role,
           content,
           at: at || undefined,
+          inheritedFromParent: message.inheritedFromParent === true || undefined,
         } satisfies ConversationMessage;
       });
+      const inheritedConversation = restoredConversation.filter(
+        (message) => message.inheritedFromParent === true
+      );
+      const conversation = restoredConversation.filter(
+        (message) => message.inheritedFromParent !== true
+      );
       const firstConversation = conversation[0];
       const lastConversation = conversation.length > 0 ? conversation[conversation.length - 1] : null;
       logSessionDiag("mini_board_hydrate_loaded_messages", {
@@ -7033,6 +7091,7 @@ export default function App() {
         requestedDirectory: directory,
         restoredThreadId: restored.threadId,
         restoredCwd: restored.cwd,
+        restoredDirectory,
         modelRef: panelModelRef,
         reasoningEffort: panelReasoningEffort,
         contextUsedPct,
@@ -7065,8 +7124,8 @@ export default function App() {
       });
       const snapshot = createPanelRuntimeSnapshot(panelId, createEmptyPanelRuntimeSnapshot(panelId), {
         selectedSessionId: resolvedSessionId || sessionId,
-        selectedDirectoryPath: directory,
-        selectedDirectoryDisplayName: directoryDisplayName,
+        selectedDirectoryPath: restoredDirectory,
+        selectedDirectoryDisplayName: restoredDirectoryDisplayName,
         selectedSessionTitle,
         selectedSessionUpdatedAt: updatedAtHint,
         selectedSessionMarkerColor,
@@ -7076,6 +7135,7 @@ export default function App() {
         isResponding: restoredResponding,
         isHydrating: false,
         selectedThreadStatusType: restoredThreadStatusType,
+        inheritedConversationMessages: inheritedConversation,
         conversationMessages: conversationForSnapshot,
       });
       upsertConversationRuntimeSnapshot({
@@ -7096,7 +7156,7 @@ export default function App() {
         diagnosticCycleId,
         panelId,
         sessionId: snapshot.selectedSessionId,
-        directory,
+        directory: restoredDirectory,
         modelRef: snapshot.modelRef,
         reasoningEffort: snapshot.reasoningEffort,
         contextUsedPct: snapshot.contextUsedPct,
@@ -7107,7 +7167,7 @@ export default function App() {
       if (restoredResponding && snapshot.selectedSessionId) {
         const runningStartedAtMsRaw = Date.parse(String(restored.runningTurn?.startedAt || ""));
         const relayAttached = startCodexRelayObserverForSession(snapshot.selectedSessionId, {
-          directory,
+          directory: restoredDirectory,
           startedAtMs: Number.isFinite(runningStartedAtMsRaw) ? runningStartedAtMsRaw : Date.now(),
           resumeFromSeq: 0,
           reason: "session_restored_running_turn",
@@ -7116,13 +7176,24 @@ export default function App() {
           diagnosticCycleId,
           panelId,
           sessionId: snapshot.selectedSessionId,
-          directory,
+          directory: restoredDirectory,
           relayAttached,
           selectedThreadStatusType: snapshot.selectedThreadStatusType,
         }, { throttleMs: 0 });
       }
-      return true;
+      return "applied" as const;
     } catch (error) {
+      if (!isCurrentHydration()) {
+        logSessionDiag("panel_runtime_hydrate_superseded", {
+          diagnosticCycleId,
+          panelId,
+          sessionId,
+          directory,
+          phase: "after_error",
+          message: error instanceof Error ? error.message : String(error),
+        }, { throttleMs: 0 });
+        return "superseded" as const;
+      }
       logSessionDiag("panel_runtime_hydrate_error", {
         diagnosticCycleId,
         panelId,
@@ -7147,9 +7218,10 @@ export default function App() {
           },
         };
       });
-      return false;
+      return "failed" as const;
     }
   }, [
+    beginPanelHydration,
     buildConversationMessage,
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
@@ -7395,6 +7467,7 @@ export default function App() {
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
       sessionId,
       directory,
+      source: params.source,
       directoryDisplayName: context?.directoryDisplayName,
       diagnosticCycleId: cycleId,
       title: context?.sessionTitle,
@@ -7402,8 +7475,9 @@ export default function App() {
       modelRef: context?.modelRef,
       reasoningEffort: context?.reasoningEffort,
       contextUsedPct: context?.contextUsedPct,
-    }).then((hydrated) => {
-      if (!hydrated) {
+    }).then((result) => {
+      if (result === "superseded") return;
+      if (result === "failed") {
         showChatBottomToast("assistant", "セッションをポップアップに読み込めませんでした。");
         clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
         setDrawerSessionPopupPanelId("");
