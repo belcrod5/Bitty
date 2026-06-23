@@ -22,6 +22,7 @@ import type { PopupChatSourceRect } from "../components/popupChatTypes";
 import type { DirectoryMarkerColor } from "../components/AppDrawer";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import { miniBoardStyles } from "./MiniBoardScreen.styles";
+import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 
 const MINI_BOARD_SOURCE_LABEL = "registered_directories";
 const MINI_BOARD_PREVIEW_PANEL_IDS = [
@@ -162,29 +163,7 @@ export function MiniBoardScreen() {
   });
 
   const allRegisteredDirectorySessionCandidates = useMemo(() => {
-    const entries = registeredDirectories.flatMap((directory) => {
-      const directoryPath = String(directory.path || "").trim();
-      if (!directoryPath) return [];
-      const directoryDisplayName = String(directory.displayName || "").trim() || directoryPath;
-      const sessions = directorySessionsById[directory.id]?.entries || [];
-      return sessions.map((entry) => ({
-        ...entry,
-        directory: directoryPath,
-        cwd: String(entry.cwd || directoryPath).trim(),
-        miniBoardDirectoryDisplayName: directoryDisplayName,
-      }));
-    });
-    const uniqueBySessionId = new Map<string, typeof entries[number]>();
-    for (const entry of entries) {
-      const sessionId = String(entry.sessionId || "").trim();
-      if (!sessionId) continue;
-      const existing = uniqueBySessionId.get(sessionId);
-      if (existing && getMiniBoardTimeValue(existing.updatedAt) >= getMiniBoardTimeValue(entry.updatedAt)) continue;
-      uniqueBySessionId.set(sessionId, entry);
-    }
-    const sorted = [...uniqueBySessionId.values()];
-    sorted.sort((a, b) => getMiniBoardTimeValue(b.updatedAt) - getMiniBoardTimeValue(a.updatedAt));
-    return sorted;
+    return collectRegisteredDirectorySessions(registeredDirectories, directorySessionsById);
   }, [directorySessionsById, registeredDirectories]);
   const registeredDirectorySessionCandidates = useMemo(() => {
     if (selectedColorFilters.length <= 0) return [];
@@ -264,7 +243,7 @@ export function MiniBoardScreen() {
     candidateSample: registeredDirectorySessionCandidates.slice(0, 8).map((entry) => ({
       sessionId: entry.sessionId,
       directory: entry.directory,
-      directoryDisplayName: entry.miniBoardDirectoryDisplayName,
+      directoryDisplayName: entry.directoryDisplayName,
       cwd: entry.cwd,
       title: entry.firstUserMessage,
       markerColor: parseMiniBoardMarkerColor(sessionMarkerColorsById[entry.sessionId]),
@@ -502,7 +481,7 @@ export function MiniBoardScreen() {
         candidates: registeredDirectorySessionCandidates.slice(0, 8).map((item) => ({
           sessionId: item.sessionId,
           directory: item.directory,
-          directoryDisplayName: item.miniBoardDirectoryDisplayName,
+          directoryDisplayName: item.directoryDisplayName,
           cwd: item.cwd,
           updatedAt: item.updatedAt,
           contextUsedPct: item.contextUsedPct,
@@ -536,7 +515,7 @@ export function MiniBoardScreen() {
           panelId,
           requestedSessionId: candidate.sessionId,
           requestedDirectory: candidate.directory,
-          requestedDirectoryDisplayName: candidate.miniBoardDirectoryDisplayName,
+          requestedDirectoryDisplayName: candidate.directoryDisplayName,
           requestedCwd: candidate.cwd,
           requestedTitle: candidate.firstUserMessage,
           requestedContextUsedPct: candidate.contextUsedPct,
@@ -547,7 +526,7 @@ export function MiniBoardScreen() {
           panelId,
           sessionId: candidate.sessionId,
           directory: candidate.directory,
-          directoryDisplayName: candidate.miniBoardDirectoryDisplayName,
+          directoryDisplayName: candidate.directoryDisplayName,
           diagnosticCycleId: miniBoardCycleIdRef.current,
           title: candidate.firstUserMessage,
           updatedAt: candidate.updatedAt,
@@ -629,7 +608,7 @@ export function MiniBoardScreen() {
         panelId: assignment.popupPanelId,
         sessionId: candidate.sessionId,
         directory: candidate.directory,
-        directoryDisplayName: candidate.miniBoardDirectoryDisplayName,
+        directoryDisplayName: candidate.directoryDisplayName,
         diagnosticCycleId: miniBoardCycleIdRef.current,
         title: candidate.firstUserMessage,
         updatedAt: candidate.updatedAt,
