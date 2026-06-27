@@ -1,9 +1,13 @@
-preflight_cloudflare_runner() {
-  if [ "$RUNNER_ENABLE" != "1" ]; then
+preflight_cloudflare_tunnel() {
+  if [ "$CLOUDFLARE_TUNNEL_ENABLE" != "1" ]; then
     return 0
   fi
+  if [ "$RUNNER_ENABLE" != "1" ]; then
+    echo "[run-local] Cloudflare tunnel requires runner mode" >&2
+    exit 1
+  fi
   if ! command -v cloudflared >/dev/null 2>&1; then
-    echo "[run-local] cloudflared is required when runner is enabled" >&2
+    echo "[run-local] cloudflared is required when Cloudflare tunnel is enabled" >&2
     exit 1
   fi
   if [ ! -f "$CLOUDFLARED_CONFIG_PATH" ]; then

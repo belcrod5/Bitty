@@ -2083,10 +2083,8 @@ async function registerTtsMedia(audioBuffer, mimeType, publicBaseUrl) {
   };
 }
 
-function parseDebugAuthToken(req, reqUrl) {
-  const bearer = parseAuthToken(req);
-  if (bearer) return bearer;
-  return String(reqUrl.searchParams.get("token") || "").trim();
+function parseHttpBearerToken(req) {
+  return parseAuthToken(req);
 }
 
 function parseSingleByteRange(rangeHeader, totalBytes) {
@@ -7519,7 +7517,7 @@ const server = http.createServer(async (req, res) => {
         message: "RUNNER_TOKEN is required",
       });
     }
-    if (parseDebugAuthToken(req, reqUrl) !== RUNNER_TOKEN) {
+    if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
       return json(res, 401, { error: "unauthorized" });
     }
     const limit = Number(reqUrl.searchParams.get("limit") || 50);
@@ -8123,7 +8121,7 @@ const server = http.createServer(async (req, res) => {
         message: "RUNNER_TOKEN is required",
       });
     }
-    if (parseDebugAuthToken(req, reqUrl) !== RUNNER_TOKEN) {
+    if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
       return json(res, 401, { error: "unauthorized" });
     }
     try {
@@ -10988,6 +10986,7 @@ export const __TESTING__ = {
   runCommandSandboxedTool,
   runGitDiffTool,
   extractYouTubeVideoIdsFromToolResult,
+  parseHttpBearerToken,
   runCodexWithFileTools,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,

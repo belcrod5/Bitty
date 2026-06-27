@@ -152,6 +152,11 @@ resumable relay 環境変数:
 private_runner/run-local.sh start --mode full
 ```
 
+Cloudflare Tunnel も同時に起動する場合だけ、明示的に opt-in します:
+```bash
+private_runner/run-local.sh start --mode full --cloudflare-tunnel
+```
+
 ## Google Cloud TTS ローカル認証（ADC）
 Google Cloud TTS を `ttsProvider=google` で使う場合は、runner ホストで ADC を作成してください。
 

@@ -192,16 +192,22 @@ ensure_ios_native_workspace() {
 
 ensure_ios_pods() {
   local ios_dir="${REPO_ROOT}/expo/ios"
+  local manifest_lock="${ios_dir}/Pods/Manifest.lock"
 
-  if [[ -d "${ios_dir}/Pods" && -f "${ios_dir}/Pods/Manifest.lock" ]]; then
-    return 0
-  fi
   if ! command -v pod >/dev/null 2>&1; then
     echo "[bootstrap-local] CocoaPods is required because expo/ios/Pods is missing" >&2
     exit 1
   fi
 
-  echo "[bootstrap-local] installing iOS pods"
+  if [[ -d "${ios_dir}/Pods" && -f "${manifest_lock}" ]] &&
+    [[ ! "${REPO_ROOT}/expo/package.json" -nt "${manifest_lock}" ]] &&
+    [[ ! "${REPO_ROOT}/expo/package-lock.json" -nt "${manifest_lock}" ]] &&
+    [[ ! "${ios_dir}/Podfile" -nt "${manifest_lock}" ]] &&
+    [[ ! "${ios_dir}/Podfile.properties.json" -nt "${manifest_lock}" ]]; then
+    return 0
+  fi
+
+  echo "[bootstrap-local] installing/updating iOS pods"
   (cd "${ios_dir}" && pod install)
 }
 

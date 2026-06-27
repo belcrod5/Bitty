@@ -28,7 +28,7 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: ./run-local.sh [start|stop|restart|status|pairing-qr] [--mode full|codex-only|runner-only]
+Usage: ./run-local.sh [start|stop|restart|status|pairing-qr] [--mode full|codex-only|runner-only] [--cloudflare-tunnel]
 
 Modes:
   full         Target both codex app-server and runner server (default)
@@ -53,6 +53,7 @@ Environment overrides:
   RUNNER_PAIRING_QR=1|0
   RUNNER_TOKEN_FILE=private_runner/logs/runner-token
   RUNNER_PUBLIC_URL=https://app.example.com
+  CLOUDFLARE_TUNNEL_ENABLE=1|0
   CLOUDFLARE_TUNNEL_ID=<tunnel uuid>
   CLOUDFLARED_CONFIG_PATH=$HOME/.cloudflared/config.yml
 EOF
@@ -86,8 +87,10 @@ RUNNER_LOG_REQUESTS="${RUNNER_LOG_REQUESTS:-1}"
 RUNNER_TOKEN_MODE="${RUNNER_TOKEN_MODE:-random}"
 RUNNER_PAIRING_QR="${RUNNER_PAIRING_QR:-1}"
 RUNNER_TOKEN_FILE="${RUNNER_TOKEN_FILE:-$SCRIPT_DIR/logs/runner-token}"
+CLOUDFLARE_TUNNEL_ENABLE="${CLOUDFLARE_TUNNEL_ENABLE:-0}"
 RUN_LOCAL_COMMAND="start"
 RUN_LOCAL_COMMAND_SET=0
+RUN_LOCAL_CLOUDFLARE_TUNNEL_SET=0
 RUN_LOCAL_FOREGROUND="${RUN_LOCAL_FOREGROUND:-0}"
 RUN_LOCAL_INTERNAL_LAUNCH="${RUN_LOCAL_INTERNAL_LAUNCH:-0}"
 RUN_LOCAL_DEFERRED_RESTART="${RUN_LOCAL_DEFERRED_RESTART:-0}"
@@ -125,6 +128,11 @@ while [ "$#" -gt 0 ]; do
       RUN_LOCAL_MODE="$2"
       shift 2
       ;;
+    --cloudflare-tunnel)
+      CLOUDFLARE_TUNNEL_ENABLE=1
+      RUN_LOCAL_CLOUDFLARE_TUNNEL_SET=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -140,6 +148,8 @@ done
 if { [ "$RUN_LOCAL_COMMAND" = "start" ] || [ "$RUN_LOCAL_COMMAND" = "restart" ]; } && [ -x "$BOOTSTRAP_LOCAL_SCRIPT" ]; then
   PARSED_RUN_LOCAL_COMMAND="$RUN_LOCAL_COMMAND"
   PARSED_RUN_LOCAL_MODE="$RUN_LOCAL_MODE"
+  PARSED_CLOUDFLARE_TUNNEL_ENABLE="$CLOUDFLARE_TUNNEL_ENABLE"
+  PARSED_RUN_LOCAL_CLOUDFLARE_TUNNEL_SET="$RUN_LOCAL_CLOUDFLARE_TUNNEL_SET"
   "$BOOTSTRAP_LOCAL_SCRIPT" --repo-root "$PROJECT_ROOT" --env --private-runner
   if [ -f "$SCRIPT_DIR/.env" ]; then
     set -a
@@ -149,6 +159,10 @@ if { [ "$RUN_LOCAL_COMMAND" = "start" ] || [ "$RUN_LOCAL_COMMAND" = "restart" ];
   fi
   RUN_LOCAL_COMMAND="$PARSED_RUN_LOCAL_COMMAND"
   RUN_LOCAL_MODE="$PARSED_RUN_LOCAL_MODE"
+  if [ "$PARSED_RUN_LOCAL_CLOUDFLARE_TUNNEL_SET" = "1" ]; then
+    CLOUDFLARE_TUNNEL_ENABLE="$PARSED_CLOUDFLARE_TUNNEL_ENABLE"
+  fi
+  RUN_LOCAL_CLOUDFLARE_TUNNEL_SET="$PARSED_RUN_LOCAL_CLOUDFLARE_TUNNEL_SET"
 fi
 
 resolve_mode() {
@@ -360,7 +374,7 @@ preflight_signal_access_for_targets() {
 
 preflight_start_targets() {
   require_codex_home_write_access
-  preflight_cloudflare_runner
+  preflight_cloudflare_tunnel
   if [ "${RUN_LOCAL_KILL_EXISTING:-0}" = "1" ]; then
     preflight_signal_access_for_targets healthy
   fi
@@ -369,7 +383,7 @@ preflight_start_targets() {
 preflight_restart_targets() {
   preflight_signal_access_for_targets none
   require_codex_home_write_access
-  preflight_cloudflare_runner
+  preflight_cloudflare_tunnel
 }
 
 wait_for_port_release() {
@@ -542,10 +556,14 @@ start_in_background() {
   if [ -n "${RUN_LOCAL_MODE:-}" ]; then
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
+  local cloudflare_tunnel_arg=()
+  if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
+    cloudflare_tunnel_arg=(--cloudflare-tunnel)
+  fi
 
   if command -v screen >/dev/null 2>&1; then
     RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 \
-      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" start "${mode_arg[@]}"
+      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" start "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}"
     if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
       echo "[run-local] started in screen session (${RUN_LOCAL_SCREEN_SESSION})" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
@@ -561,7 +579,7 @@ start_in_background() {
   fi
 
   local launcher_pid
-  launcher_pid="$(start_nohup_supervisor 1 1 0 start "${mode_arg[@]}")"
+  launcher_pid="$(start_nohup_supervisor 1 1 0 start "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}")"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0
@@ -590,10 +608,14 @@ restart_in_background() {
   if [ -n "${RUN_LOCAL_MODE:-}" ]; then
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
+  local cloudflare_tunnel_arg=()
+  if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
+    cloudflare_tunnel_arg=(--cloudflare-tunnel)
+  fi
 
   if command -v screen >/dev/null 2>&1 && ! screen_session_exists "$RUN_LOCAL_SCREEN_SESSION"; then
     RUN_LOCAL_DEFERRED_RESTART=1 RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 RUN_LOCAL_RESTART_DETACHED=0 \
-      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" restart "${mode_arg[@]}"
+      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" restart "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}"
     if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
       echo "[run-local] scheduled screen restart (${RUN_LOCAL_SCREEN_SESSION})" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
@@ -613,7 +635,7 @@ restart_in_background() {
   fi
 
   local launcher_pid
-  launcher_pid="$(start_nohup_supervisor 1 1 1 restart "${mode_arg[@]}")"
+  launcher_pid="$(start_nohup_supervisor 1 1 1 restart "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}")"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0
@@ -701,7 +723,7 @@ run_status_target() {
 }
 
 run_status() {
-  echo "[run-local] command=status mode=${RUN_LOCAL_MODE} codex_enable=${CODEX_ENABLE} runner_enable=${RUNNER_ENABLE}" >&2
+  echo "[run-local] command=status mode=${RUN_LOCAL_MODE} codex_enable=${CODEX_ENABLE} runner_enable=${RUNNER_ENABLE} cloudflare_tunnel_enable=${CLOUDFLARE_TUNNEL_ENABLE}" >&2
   local status_rc=0
   local rc=0
 
@@ -719,10 +741,12 @@ run_status() {
   fi
 
   if [ "$RUNNER_ENABLE" = "1" ]; then
-    rc=0
-    run_status_pid_file "cloudflared tunnel" "$CLOUDFLARE_TUNNEL_PID_FILE" || rc=$?
-    if [ "$rc" -gt "$status_rc" ]; then
-      status_rc="$rc"
+    if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
+      rc=0
+      run_status_pid_file "cloudflared tunnel" "$CLOUDFLARE_TUNNEL_PID_FILE" || rc=$?
+      if [ "$rc" -gt "$status_rc" ]; then
+        status_rc="$rc"
+      fi
     fi
     rc=0
     run_status_target "runner" "$RUNNER_PORT" "http://127.0.0.1:${RUNNER_PORT}/health" || rc=$?
@@ -822,7 +846,7 @@ fi
 
 reset_runtime_logs
 
-echo "[run-local] command=start mode=${RUN_LOCAL_MODE} codex_enable=${CODEX_ENABLE} runner_enable=${RUNNER_ENABLE}" >&2
+echo "[run-local] command=start mode=${RUN_LOCAL_MODE} codex_enable=${CODEX_ENABLE} runner_enable=${RUNNER_ENABLE} cloudflare_tunnel_enable=${CLOUDFLARE_TUNNEL_ENABLE}" >&2
 if [ "$CODEX_ENABLE" = "1" ]; then
   if [ -n "$CODEX_APP_SERVER_WS_AUTH" ]; then
     echo "[run-local] starting codex app-server listen=${CODEX_APP_SERVER_LISTEN} ws-auth=${CODEX_APP_SERVER_WS_AUTH}" >&2
@@ -863,11 +887,14 @@ cleanup() {
   wait "${CLOUDFLARE_TUNNEL_PID:-}" >/dev/null 2>&1 || true
   wait "${CODEX_PID:-}" >/dev/null 2>&1 || true
   wait "${RUNNER_PID:-}" >/dev/null 2>&1 || true
-  rm -f "$CLOUDFLARE_TAIL_PID_FILE" "$CLOUDFLARE_TUNNEL_PID_FILE" "$RUNNER_TOKEN_FILE"
+  if [ -n "$CLOUDFLARE_TUNNEL_PID" ]; then
+    rm -f "$CLOUDFLARE_TAIL_PID_FILE" "$CLOUDFLARE_TUNNEL_PID_FILE"
+  fi
+  rm -f "$RUNNER_TOKEN_FILE"
 }
 trap cleanup EXIT INT TERM
 
-if [ "$RUNNER_ENABLE" = "1" ]; then
+if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
   mkdir -p "$SCRIPT_DIR/logs"
   echo "[run-local] starting cloudflared tunnel config=${CLOUDFLARED_CONFIG_PATH}" >&2
   cloudflared tunnel --config "$CLOUDFLARED_CONFIG_PATH" run >>"$CLOUDFLARE_TUNNEL_LOG_FILE" 2>&1 &
@@ -922,14 +949,14 @@ if [ "$RUNNER_ENABLE" = "1" ] && [ "$RUNNER_REUSED" != "1" ] && ! kill -0 "$RUNN
   wait "$RUNNER_PID"
   exit 1
 fi
-if [ "$RUNNER_ENABLE" = "1" ] && ! kill -0 "$CLOUDFLARE_TUNNEL_PID" >/dev/null 2>&1; then
+if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ] && ! kill -0 "$CLOUDFLARE_TUNNEL_PID" >/dev/null 2>&1; then
   echo "[run-local] cloudflared tunnel failed to start; see $CLOUDFLARE_TUNNEL_LOG_FILE" >&2
   wait "$CLOUDFLARE_TUNNEL_PID"
   exit 1
 fi
 
 STARTED_MSG="[run-local] started"
-if [ "$RUNNER_ENABLE" = "1" ]; then
+if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
   STARTED_MSG="${STARTED_MSG} cloudflared_tunnel pid=${CLOUDFLARE_TUNNEL_PID}"
 fi
 if [ "$CODEX_ENABLE" = "1" ]; then
@@ -949,26 +976,22 @@ fi
 echo "$STARTED_MSG" >&2
 print_runner_pairing_qr
 
-if [ -n "$CLOUDFLARE_TUNNEL_PID" ] || { [ -n "$RUNNER_PID" ] && [ -n "$CODEX_PID" ]; }; then
+if [ -n "$CLOUDFLARE_TUNNEL_PID" ] || [ -n "$RUNNER_PID" ] || [ -n "$CODEX_PID" ]; then
   while true; do
     if [ -n "$CLOUDFLARE_TUNNEL_PID" ] && ! kill -0 "$CLOUDFLARE_TUNNEL_PID" >/dev/null 2>&1; then
       wait "$CLOUDFLARE_TUNNEL_PID"
       rc=$?
       exit "$rc"
     fi
-    if ! kill -0 "$CODEX_PID" >/dev/null 2>&1; then
-      if [ -n "$CODEX_PID" ]; then
-        wait "$CODEX_PID"
-        rc=$?
-        exit "$rc"
-      fi
+    if [ -n "$CODEX_PID" ] && ! kill -0 "$CODEX_PID" >/dev/null 2>&1; then
+      wait "$CODEX_PID"
+      rc=$?
+      exit "$rc"
     fi
-    if ! kill -0 "$RUNNER_PID" >/dev/null 2>&1; then
-      if [ -n "$RUNNER_PID" ]; then
-        wait "$RUNNER_PID"
-        rc=$?
-        exit "$rc"
-      fi
+    if [ -n "$RUNNER_PID" ] && ! kill -0 "$RUNNER_PID" >/dev/null 2>&1; then
+      wait "$RUNNER_PID"
+      rc=$?
+      exit "$rc"
     fi
     sleep 0.2
   done

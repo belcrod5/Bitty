@@ -201,10 +201,10 @@ In the app settings, set:
 - Real device: `Runner URL = http://<your Mac LAN IP>:8788`
 - `Runner Token`: the same value as `RUNNER_TOKEN` in `private_runner/.env`
 - iOS Simulator:
-  `Codex WS URL = ws://127.0.0.1:8788/runner-ws?token=<RUNNER_TOKEN>`
+  `Codex WS URL = ws://127.0.0.1:8788/runner-ws`
 - Real device:
-  `Codex WS URL = ws://<your Mac LAN IP>:8788/runner-ws?token=<RUNNER_TOKEN>`
-- `Codex WS Token`: the same value as `RUNNER_TOKEN`
+  `Codex WS URL = ws://<your Mac LAN IP>:8788/runner-ws`
+- `Codex WS Token`: the same value as `RUNNER_TOKEN`; it is sent as `Authorization: Bearer <RUNNER_TOKEN>`, not as a URL query.
 
 If Metro fails with a Watchman permission or stale-state error, reset Watchman
 and restart Metro with a clean cache:
