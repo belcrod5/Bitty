@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   Modal,
   Pressable,
@@ -8,7 +8,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useRunnerWs } from "./RunnerWsProvider";
+import type { RunnerWsConnectionSnapshot } from "./types";
 
 type RunnerWsConnectionStatusProps = {
   turnState?: string;
@@ -19,6 +19,20 @@ const STATUS_OK = "#16a34a";
 const STATUS_WARN = "#d97706";
 const STATUS_BAD = "#dc2626";
 const STATUS_NEUTRAL = "#64748b";
+
+const idleSnapshot: RunnerWsConnectionSnapshot = {
+  url: "",
+  readyState: typeof WebSocket !== "undefined" ? WebSocket.CLOSED : 3,
+  connected: false,
+  reconnectCount: 0,
+  sentCount: 0,
+  receivedCount: 0,
+  sendErrorCount: 0,
+  closeCount: 0,
+  errorCount: 0,
+  missedPingCount: 0,
+  consecutiveMissedPingCount: 0,
+};
 
 export type RunnerWsDataSyncStatus = {
   status: "ok" | "loading" | "stale" | "error" | "unknown";
@@ -75,44 +89,17 @@ function dataSyncLabel(dataSync: RunnerWsDataSyncStatus) {
 }
 
 export function RunnerWsConnectionStatus({ turnState = "", dataSync }: RunnerWsConnectionStatusProps) {
-  const runnerWs = useRunnerWs();
   const [open, setOpen] = useState(false);
   const { height: windowHeight } = useWindowDimensions();
   const nowMs = Date.now();
-  const snapshot = runnerWs.snapshot;
+  const snapshot = idleSnapshot;
   const serverStatus = snapshot.serverStatus || {};
   const sheetMaxHeight = Math.max(280, Math.floor(windowHeight * 0.86));
   const detailMaxHeight = Math.max(170, sheetMaxHeight - 88);
-  const status = useMemo(() => {
-    if (!runnerWs.enabled || !snapshot.connected) {
-      return {
-        label: "通信 断",
-        color: STATUS_BAD,
-      };
-    }
-    const hasExpoWarning = Number(snapshot.consecutiveMissedPingCount || 0) > 0;
-    const hasUpstreamWarning = (
-      Number(serverStatus.activeRelayCount || 0) > 0 &&
-      serverStatus.upstreamOpen === false
-    ) || Number(serverStatus.upstreamQueueCount || 0) > 0;
-    if (hasExpoWarning || hasUpstreamWarning) {
-      return {
-        label: "通信 注意",
-        color: STATUS_WARN,
-      };
-    }
-    return {
-      label: "通信 良好",
-      color: STATUS_OK,
-    };
-  }, [
-    runnerWs.enabled,
-    serverStatus.activeRelayCount,
-    serverStatus.upstreamOpen,
-    serverStatus.upstreamQueueCount,
-    snapshot.consecutiveMissedPingCount,
-    snapshot.connected,
-  ]);
+  const status = {
+    label: "通信 待機",
+    color: STATUS_NEUTRAL,
+  };
 
   const expoRows: Array<[string, string]> = [
     ["接続状態", snapshot.connected ? "open" : "closed"],

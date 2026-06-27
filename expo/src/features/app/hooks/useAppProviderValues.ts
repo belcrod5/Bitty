@@ -30,6 +30,7 @@ export function useAppShellContextValue(args: UseAppShellContextValueArgs): AppS
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openCloudflareTunnelMonitorScreen,
   } = args;
 
   return useMemo(
@@ -43,8 +44,9 @@ export function useAppShellContextValue(args: UseAppShellContextValueArgs): AppS
       openDebugScreen,
       openAudioLabScreen,
       openMiniBoardScreen,
+      openCloudflareTunnelMonitorScreen,
     }),
-    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openDebugScreen, openAudioLabScreen, openMiniBoardScreen]
+    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openDebugScreen, openAudioLabScreen, openMiniBoardScreen, openCloudflareTunnelMonitorScreen]
   );
 }
 
@@ -59,6 +61,8 @@ export function useAppSettingsContextValue(
     codexWsUrl,
     codexWsToken,
     runnerToken,
+    cloudflareAccessClientId,
+    cloudflareAccessEnabled,
     executionEnvironment,
     isExpoGo,
     isDev,
@@ -89,6 +93,8 @@ export function useAppSettingsContextValue(
     changeCodexWsUrl,
     changeCodexWsToken,
     changeRunnerToken,
+    clearCloudflareAccessCredentials,
+    applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,
     loadVoices,
     changeTtsSpeedInput,
@@ -126,6 +132,8 @@ export function useAppSettingsContextValue(
       codexWsUrl,
       codexWsToken,
       runnerToken,
+      cloudflareAccessClientId,
+      cloudflareAccessEnabled,
       executionEnvironment,
       isExpoGo,
       isDev,
@@ -156,6 +164,8 @@ export function useAppSettingsContextValue(
       changeCodexWsUrl,
       changeCodexWsToken,
       changeRunnerToken,
+      clearCloudflareAccessCredentials,
+      applyCloudflareRunnerPairing,
       selectCodexApprovalPolicy,
       loadVoices,
       changeTtsSpeedInput,
@@ -191,6 +201,8 @@ export function useAppSettingsContextValue(
       codexWsUrl,
       codexWsToken,
       runnerToken,
+      cloudflareAccessClientId,
+      cloudflareAccessEnabled,
       executionEnvironment,
       isExpoGo,
       isDev,
@@ -221,6 +233,8 @@ export function useAppSettingsContextValue(
       changeCodexWsUrl,
       changeCodexWsToken,
       changeRunnerToken,
+      clearCloudflareAccessCredentials,
+      applyCloudflareRunnerPairing,
       selectCodexApprovalPolicy,
       loadVoices,
       changeTtsSpeedInput,

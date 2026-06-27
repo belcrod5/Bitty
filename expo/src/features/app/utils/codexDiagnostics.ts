@@ -29,7 +29,11 @@ export function diagErrorMessage(error: unknown): string {
   return String(error || "unknown_error");
 }
 
-export async function fetchHttpWithTimeout(url: string, timeoutMs: number) {
+export async function fetchHttpWithTimeout(
+  url: string,
+  timeoutMs: number,
+  headers?: Record<string, string>
+) {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timer = setTimeout(() => {
     try {
@@ -40,6 +44,7 @@ export async function fetchHttpWithTimeout(url: string, timeoutMs: number) {
     const response = await fetch(url, {
       method: "GET",
       cache: "no-store",
+      ...(headers ? { headers } : {}),
       ...(controller ? { signal: controller.signal } : {}),
     });
     const body = await response.text().catch(() => "");

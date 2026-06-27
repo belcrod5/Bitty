@@ -28,10 +28,14 @@ import {
   type RegisteredDirectoryEntry,
 } from "./components/AppDrawer";
 import { AppOverlays } from "./components/AppOverlays";
-import { LlmCompletionNotifications } from "./components/LlmCompletionNotifications";
+import {
+  LlmCompletionNotifications,
+  type LlmCompletionNotification,
+} from "./components/LlmCompletionNotifications";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import type { PopupChatSourceRect } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
+import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
 import { MiniBoardScreen } from "./screens/MiniBoardScreen";
 import {
   DEFAULT_STT_PROVIDER,
@@ -203,6 +207,8 @@ import {
   parseContextUsageUsedPct,
 } from "./utils/formatting";
 import { isRunnerWsUrl } from "../runnerWs/llmAdapter";
+import { configureCloudflareAccessFetch } from "./utils/cloudflareAccessFetch";
+import { normalizeCloudflareAccessCredentials, hasCloudflareAccessCredentials } from "./utils/cloudflareAccess";
 import {
   buildAutoClientLogSessionId,
   isAirPodsInputName,
@@ -684,8 +690,21 @@ export default function App() {
   const [codexWsUrl, setCodexWsUrl] = useState(DEFAULT_CODEX_WS_URL);
   const [codexWsToken, setCodexWsToken] = useState("");
   const [runnerToken, setRunnerToken] = useState("");
+  const effectiveCodexWsToken = codexWsToken.trim() || runnerToken.trim();
+  const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
+  const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
+  const [llmCompletionNotifications, setLlmCompletionNotifications] = useState<LlmCompletionNotification[]>([]);
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
+  const cloudflareAccessCredentials = useMemo(() => normalizeCloudflareAccessCredentials(
+    cloudflareAccessClientId,
+    cloudflareAccessClientSecret
+  ), [cloudflareAccessClientId, cloudflareAccessClientSecret]);
+  const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
+  configureCloudflareAccessFetch({
+    runnerUrl,
+    credentials: cloudflareAccessCredentials,
+  });
   const [activeScreen, setActiveScreen] = useState<AppScreen>("mini_board");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSessionPrefetchRequestedForOpenRef = useRef(false);
@@ -851,7 +870,7 @@ export default function App() {
     openDirectoryExplorer: primeDirectoryExplorer,
   } = useLlmSessionExplorer({
     codexWsUrl,
-    codexWsToken,
+    codexWsToken: effectiveCodexWsToken,
     runnerToken,
     auxServerBaseUrl,
     normalizedLlmDirectoryForRequest,
@@ -1189,7 +1208,7 @@ export default function App() {
       }, { throttleMs: 0 });
       void readCodexAppServerThread({
         wsUrl: codexWsUrl.trim(),
-        wsToken: codexWsToken.trim(),
+        wsToken: effectiveCodexWsToken,
         threadId: sessionId,
         timeoutMs: 25_000,
       })
@@ -1234,7 +1253,7 @@ export default function App() {
       }
     };
   }, [
-    codexWsToken,
+    effectiveCodexWsToken,
     codexWsUrl,
     selectedLlmSessionId,
     settingsLoaded,
@@ -3588,6 +3607,52 @@ export default function App() {
     registeredDirectories,
     sessionTitleOverridesById,
   ]);
+  const pushLlmCompletionNotification = useCallback((params: {
+    sessionId: string;
+    threadId: string;
+    directory?: string;
+    previewText: string;
+    completedAtMs?: number;
+  }) => {
+    const sessionId = parseOptionalSessionId(params.sessionId || params.threadId);
+    const threadId = parseOptionalSessionId(params.threadId || sessionId);
+    const previewText = String(params.previewText || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!sessionId || !threadId || !previewText) return;
+    if (activeScreen === "mini_board") {
+      const activeSessionId = parseOptionalSessionId(
+        selectedLlmSessionId || llmConversationSessionIdRef.current
+      );
+      if (activeSessionId && activeSessionId === sessionId) return;
+    }
+    if (drawerSessionPopupPanelId) {
+      const popupEntry = panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId];
+      const popupSessionId = parseOptionalSessionId(
+        popupEntry?.snapshot?.selectedSessionId
+      );
+      if (popupSessionId && popupSessionId === sessionId) return;
+    }
+    const context = resolveSessionHistoryContext(sessionId);
+    const completedAtMs = Number.isFinite(Number(params.completedAtMs))
+      ? Math.floor(Number(params.completedAtMs))
+      : Date.now();
+    const nextNotification: LlmCompletionNotification = {
+      id: `${sessionId}:${completedAtMs}`,
+      sessionId,
+      threadId,
+      directoryName: context?.directoryDisplayName || String(params.directory || "").trim(),
+      previewText,
+      completedAt: new Date(completedAtMs).toISOString(),
+    };
+    setLlmCompletionNotifications((prev) => {
+      const next = prev.filter((item) => item.sessionId !== sessionId && item.id !== nextNotification.id);
+      return [nextNotification, ...next].slice(0, 3);
+    });
+  }, [
+    activeScreen,
+    drawerSessionPopupPanelId,
+    resolveSessionHistoryContext,
+    selectedLlmSessionId,
+  ]);
   const {
     handleApprovalRequest,
     clearToolAutoApprovals,
@@ -3690,6 +3755,13 @@ export default function App() {
       setReply(text);
       finishLlmRequest("completed", "turn completed");
     }
+    pushLlmCompletionNotification({
+      sessionId,
+      threadId: sessionId,
+      directory: params.directory,
+      previewText: text,
+      completedAtMs: Date.now(),
+    });
     void refreshGitChangedFiles(params.directory, { force: true });
     refreshMiniBoardDirectorySessionsForDirectory(params.directory, "relay_turn_completed");
     const speechAllowed = autoSpeakAfterReply && !!text.trim() && isChatOpenForAutoSpeech(target);
@@ -3713,6 +3785,7 @@ export default function App() {
     isChatOpenForAutoSpeech,
     logSessionDiag,
     playUiSfx,
+    pushLlmCompletionNotification,
     refreshMiniBoardDirectorySessionsForDirectory,
     refreshGitChangedFiles,
     selectedLlmSessionId,
@@ -3969,7 +4042,7 @@ export default function App() {
     llmRequestStartedAtRef,
     reply,
     codexWsUrl,
-    codexWsToken,
+    codexWsToken: effectiveCodexWsToken,
     logSessionDiag,
     waitingApprovalResumePendingSessionIdRef,
     setWaitingApprovalResumeStatusText,
@@ -4241,10 +4314,7 @@ export default function App() {
     if (isRunnerWsUrl(targetCodexWsUrl)) {
       try {
         const url = new URL(targetCodexWsUrl);
-        const runnerWsToken = codexWsToken.trim() || runnerToken.trim();
-        if (runnerWsToken && !String(url.searchParams.get("token") || "").trim()) {
-          url.searchParams.set("token", runnerWsToken);
-        }
+        url.search = "";
         return url.toString();
       } catch {
         // fall back to the legacy stream-tts URL below
@@ -4255,7 +4325,6 @@ export default function App() {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/stream-tts";
     url.search = "";
-    url.searchParams.set("token", runnerToken.trim());
     return url.toString();
   }
 
@@ -4664,6 +4733,8 @@ export default function App() {
     defaultSelectedVoiceIds: DEFAULT_SELECTED_VOICE_IDS,
     runnerUrl,
     runnerToken,
+    cloudflareAccessClientId,
+    cloudflareAccessClientSecret,
     llmBackend,
     llmDirectory,
     registeredDirectories,
@@ -4692,6 +4763,8 @@ export default function App() {
     llmToolLogCompact,
     setRunnerUrl,
     setRunnerToken,
+    setCloudflareAccessClientId,
+    setCloudflareAccessClientSecret,
     setLlmDirectory,
     setRegisteredDirectories,
     setSessionTitleOverridesById,
@@ -5259,7 +5332,7 @@ export default function App() {
     try {
       const result = await cancelRunnerCodexQueuedTurn({
         wsUrl: codexWsUrl.trim(),
-        wsToken: codexWsToken.trim(),
+        wsToken: effectiveCodexWsToken,
         queuedTurnId,
       });
       appendSlashCommandResult(
@@ -5279,7 +5352,7 @@ export default function App() {
       );
     }
     return true;
-  }, [appendSlashCommandResult, codexWsToken, codexWsUrl]);
+  }, [appendSlashCommandResult, effectiveCodexWsToken, codexWsUrl]);
   const cancelCodexQueuedTurnForMessage = useCallback(async (params: {
     queuedTurnId: string;
     messageId: string;
@@ -5292,7 +5365,7 @@ export default function App() {
     try {
       const result = await cancelRunnerCodexQueuedTurn({
         wsUrl: codexWsUrl.trim(),
-        wsToken: codexWsToken.trim(),
+        wsToken: effectiveCodexWsToken,
         queuedTurnId,
       });
       const rawStatus = String(result.queuedTurn.status || "").trim();
@@ -5327,14 +5400,14 @@ export default function App() {
       showChatBottomToast("assistant", `queueキャンセルに失敗しました: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [
-    codexWsToken,
+    effectiveCodexWsToken,
     codexWsUrl,
     logSessionDiag,
     showChatBottomToast,
   ]);
   const { runSlashCompactCommand } = useSlashCompactCommandController({
     codexWsUrl,
-    codexWsToken,
+    codexWsToken: effectiveCodexWsToken,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     normalizedLlmDirectoryForRequest,
     fetchRunnerSessionContextUsedPct,
@@ -5365,7 +5438,7 @@ export default function App() {
     executionEnvironment: EXPO_EXECUTION_ENVIRONMENT,
     isExpoGo: IS_EXPO_GO,
     codexWsUrl,
-    codexWsToken,
+    codexWsToken: effectiveCodexWsToken,
     runnerToken,
     activeScreen,
     autoRecordingState,
@@ -5421,7 +5494,7 @@ export default function App() {
   >({
     transcript,
     codexWsUrl,
-    codexWsToken,
+    codexWsToken: effectiveCodexWsToken,
     modelRef,
     reasoningEffort,
     codexApprovalPolicy,
@@ -5501,6 +5574,7 @@ export default function App() {
     },
     startCodexRelayObserverForSession,
     onLlmMessageCompleted: handleLlmMessageCompleted,
+    onLlmTurnCompletedNotification: pushLlmCompletionNotification,
   });
 
   const {
@@ -5672,11 +5746,14 @@ export default function App() {
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openCloudflareTunnelMonitorScreen,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
     changeCodexWsToken,
     changeRunnerToken,
+    clearCloudflareAccessCredentials,
+    applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,
     openModelSelect,
     openThinkSelect,
@@ -5750,6 +5827,8 @@ export default function App() {
     setCodexWsUrl,
     setCodexWsToken,
     setRunnerToken,
+    setCloudflareAccessClientId,
+    setCloudflareAccessClientSecret,
     setCodexApprovalPolicy,
     setModelSelectOpen,
     setThinkSelectOpen,
@@ -5856,6 +5935,7 @@ export default function App() {
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openCloudflareTunnelMonitorScreen,
   });
   const appSettingsContextValue = useAppSettingsContextValue({
     runnerUrl,
@@ -5863,6 +5943,8 @@ export default function App() {
     codexWsUrl,
     codexWsToken,
     runnerToken,
+    cloudflareAccessClientId,
+    cloudflareAccessEnabled,
     executionEnvironment: EXPO_EXECUTION_ENVIRONMENT,
     isExpoGo: IS_EXPO_GO,
     isDev: __DEV__,
@@ -5893,6 +5975,8 @@ export default function App() {
     changeCodexWsUrl,
     changeCodexWsToken,
     changeRunnerToken,
+    clearCloudflareAccessCredentials,
+    applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,
     loadVoices: loadVoicesFromSettingsContext,
     changeTtsSpeedInput: setTtsSpeedInput,
@@ -7423,11 +7507,6 @@ export default function App() {
     resolveSessionHistoryContext,
     showChatBottomToast,
   ]);
-
-  const resolveCompletionNotificationDirectoryName = useCallback((sessionIdRaw: string) => {
-    return resolveSessionHistoryContext(sessionIdRaw)?.directoryDisplayName || "";
-  }, [resolveSessionHistoryContext]);
-
   const openCompletedLlmSession = useCallback((sessionIdRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
@@ -7440,7 +7519,9 @@ export default function App() {
     closeDrawer,
     openSessionHistoryPopup,
   ]);
-
+  const dismissLlmCompletionNotification = useCallback((id: string) => {
+    setLlmCompletionNotifications((prev) => prev.filter((item) => item.id !== id));
+  }, []);
   const visibleCompletionNotificationSessionIds = useMemo(() => {
     const ids: string[] = [];
     if (activeScreen === "mini_board") {
@@ -7478,6 +7559,7 @@ export default function App() {
     closeDrawer,
     openDebugScreen,
     openMiniBoardScreen,
+    openCloudflareTunnelMonitorScreen,
     openDirectoryExplorer,
     toggleDirectoryExpanded,
     loadMoreDirectorySessionTree,
@@ -7507,9 +7589,6 @@ export default function App() {
         debugRuntime={debugRuntimeContextValue}
         debugConversation={debugConversationContextValue}
         debugSpeech={debugSpeechContextValue}
-        runnerWsUrl={codexWsUrl.trim()}
-        runnerWsToken={codexWsToken.trim() || runnerToken.trim()}
-        runnerWsEnabled={isRunnerWsUrl(codexWsUrl)}
       >
       <KeyboardProvider>
         <Drawer
@@ -7534,6 +7613,8 @@ export default function App() {
         <DebugScreen />
       ) : activeScreen === "mini_board" ? (
         <MiniBoardScreen />
+      ) : activeScreen === "cloudflare_tunnel_monitor" ? (
+        <CloudflareTunnelMonitorScreen />
       ) : (
         <AudioLabScreen />
       )}
@@ -7566,9 +7647,10 @@ export default function App() {
         ) : null}
         <SafeAreaView pointerEvents="box-none" style={styles.llmCompletionNotificationLayer}>
           <LlmCompletionNotifications
+            notifications={llmCompletionNotifications}
             visibleSessionIds={visibleCompletionNotificationSessionIds}
-            resolveDirectoryName={resolveCompletionNotificationDirectoryName}
             onOpenSession={openCompletedLlmSession}
+            onDismiss={dismissLlmCompletionNotification}
           />
         </SafeAreaView>
       </KeyboardProvider>

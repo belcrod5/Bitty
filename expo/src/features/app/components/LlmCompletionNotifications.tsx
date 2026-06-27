@@ -8,17 +8,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useRunnerWs } from "../../runnerWs/RunnerWsProvider";
-import type { RunnerWsMessage } from "../../runnerWs/types";
 import { styles } from "../styles";
 
-const LLM_COMPLETION_NOTIFICATION_MAX = 3;
 const LLM_COMPLETION_NOTIFICATION_COLLAPSE_DELAY_MS = 5_000;
 const LLM_COMPLETION_NOTIFICATION_EDGE_GAP = 10;
 const LLM_COMPLETION_NOTIFICATION_COMPACT_SIZE = 48;
 const LLM_COMPLETION_NOTIFICATION_EXPANDED_WIDTH = 300;
 
-type LlmCompletionNotification = {
+export type LlmCompletionNotification = {
   id: string;
   sessionId: string;
   threadId: string;
@@ -28,9 +25,10 @@ type LlmCompletionNotification = {
 };
 
 type LlmCompletionNotificationsProps = {
+  notifications: LlmCompletionNotification[];
   visibleSessionIds: string[];
-  resolveDirectoryName: (sessionId: string) => string;
   onOpenSession: (sessionId: string) => void;
+  onDismiss: (id: string) => void;
 };
 
 type NotificationPosition = {
@@ -45,25 +43,6 @@ type NotificationViewport = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), Math.max(min, max));
-}
-
-function parseCompletionNotification(message: RunnerWsMessage): LlmCompletionNotification | null {
-  const payload = message.payload && typeof message.payload === "object"
-    ? message.payload as Record<string, unknown>
-    : {};
-  const threadId = String(message.threadId || payload.threadId || "").trim();
-  const sessionId = String(message.sessionId || payload.sessionId || threadId).trim();
-  const previewText = String(payload.previewText || "").replace(/\s+/g, " ").trim();
-  const completedAt = String(payload.completedAt || "").trim();
-  if (!sessionId || !threadId || !previewText) return null;
-  return {
-    id: `${sessionId}:${completedAt || Date.now().toString(36)}`,
-    sessionId,
-    threadId,
-    directoryName: "",
-    previewText,
-    completedAt,
-  };
 }
 
 function LlmCompletionNotificationCard({
@@ -147,13 +126,11 @@ function LlmCompletionNotificationCard({
 }
 
 export function LlmCompletionNotifications({
+  notifications,
   visibleSessionIds,
-  resolveDirectoryName,
   onOpenSession,
+  onDismiss,
 }: LlmCompletionNotificationsProps) {
-  const runnerWs = useRunnerWs();
-  const visibleSessionIdsRef = useRef(new Set<string>());
-  const [notifications, setNotifications] = useState<LlmCompletionNotification[]>([]);
   const [expanded, setExpanded] = useState(true);
   const [viewport, setViewport] = useState<NotificationViewport>({ width: 0, height: 0 });
   const [position, setPosition] = useState<NotificationPosition>({
@@ -166,7 +143,15 @@ export function LlmCompletionNotifications({
   const widgetHeightRef = useRef(0);
   const dragStartPositionRef = useRef(position);
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousTopNotificationIdRef = useRef("");
 
+  const visibleSessionIdSet = useMemo(() => (
+    new Set(visibleSessionIds.map((item) => String(item || "").trim()).filter(Boolean))
+  ), [visibleSessionIds]);
+  const visibleNotifications = useMemo(() => (
+    notifications.filter((item) => !visibleSessionIdSet.has(item.sessionId))
+  ), [notifications, visibleSessionIdSet]);
+  const topNotificationId = visibleNotifications[0]?.id || "";
   const expandedWidth = Math.min(
     LLM_COMPLETION_NOTIFICATION_EXPANDED_WIDTH,
     Math.max(0, viewport.width - LLM_COMPLETION_NOTIFICATION_EDGE_GAP * 2)
@@ -223,16 +208,6 @@ export function LlmCompletionNotifications({
     onPanResponderTerminationRequest: () => true,
   }), [updatePosition]);
 
-  useEffect(() => {
-    visibleSessionIdsRef.current = new Set(
-      visibleSessionIds.map((item) => String(item || "").trim()).filter(Boolean)
-    );
-  }, [visibleSessionIds]);
-
-  const dismissNotification = useCallback((id: string) => {
-    setNotifications((prev) => prev.filter((item) => item.id !== id));
-  }, []);
-
   useEffect(() => clearCollapseTimer, [clearCollapseTimer]);
 
   useEffect(() => {
@@ -240,24 +215,11 @@ export function LlmCompletionNotifications({
   }, [expanded, expandedWidth, updatePosition]);
 
   useEffect(() => {
-    return runnerWs.subscribe({ channel: "llm", op: "turn_completed_notification" }, (message) => {
-      const notification = parseCompletionNotification(message);
-      if (!notification) return;
-      if (visibleSessionIdsRef.current.has(notification.sessionId)) return;
-      const nextNotification = {
-        ...notification,
-        directoryName: resolveDirectoryName(notification.sessionId),
-      };
-      setNotifications((prev) => {
-        const next = prev.filter((item) => (
-          item.id !== nextNotification.id && item.sessionId !== nextNotification.sessionId
-        ));
-        return [nextNotification, ...next].slice(0, LLM_COMPLETION_NOTIFICATION_MAX);
-      });
-      setExpanded(true);
-      scheduleCollapse();
-    });
-  }, [resolveDirectoryName, runnerWs, scheduleCollapse]);
+    if (!topNotificationId || previousTopNotificationIdRef.current === topNotificationId) return;
+    previousTopNotificationIdRef.current = topNotificationId;
+    setExpanded(true);
+    scheduleCollapse();
+  }, [scheduleCollapse, topNotificationId]);
 
   const handleViewportLayout = useCallback((event: LayoutChangeEvent) => {
     const nextViewport = {
@@ -285,7 +247,7 @@ export function LlmCompletionNotifications({
       style={styles.llmCompletionNotificationHost}
       onLayout={handleViewportLayout}
     >
-      {notifications.length > 0 ? (
+      {visibleNotifications.length > 0 ? (
         <View
           style={[
             styles.llmCompletionNotificationWidget,
@@ -300,12 +262,12 @@ export function LlmCompletionNotifications({
         >
           {expanded ? (
             <View pointerEvents="box-none" style={styles.llmCompletionNotificationStack}>
-              {notifications.map((notification) => (
+              {visibleNotifications.map((notification) => (
                 <LlmCompletionNotificationCard
                   key={notification.id}
                   notification={notification}
                   onOpen={onOpenSession}
-                  onDismiss={dismissNotification}
+                  onDismiss={onDismiss}
                 />
               ))}
             </View>
@@ -315,12 +277,12 @@ export function LlmCompletionNotifications({
               style={styles.llmCompletionNotificationCompact}
               onPress={expandNotifications}
               accessibilityRole="button"
-              accessibilityLabel={`完了通知 ${notifications.length}件を表示`}
+              accessibilityLabel={`完了通知 ${visibleNotifications.length}件を表示`}
             >
               <Ionicons name="notifications-outline" size={22} color="#0f766e" />
               <View style={styles.llmCompletionNotificationCountBadge}>
                 <Text style={styles.llmCompletionNotificationCountText}>
-                  {notifications.length}
+                  {visibleNotifications.length}
                 </Text>
               </View>
             </TouchableOpacity>

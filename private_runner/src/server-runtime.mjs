@@ -15,6 +15,13 @@ import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
 import { createWorkspaceFilesService } from "./workspace-files.mjs";
 import { fetchGitBranches, fetchGitBranchStatus } from "./git-branches.mjs";
+import {
+  listRunnerConnectionEvents,
+  recordRunnerConnectionClosed,
+  recordRunnerConnectionError,
+  recordRunnerConnectionOpened,
+  recordRunnerConnectionRejected,
+} from "./runner-connection-events.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -7524,6 +7531,32 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.method === "GET" && pathname === "/runner/connection-events") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, {
+        error: "runner_token_missing",
+        message: "RUNNER_TOKEN is required",
+      });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    try {
+      const sinceSeq = Number(reqUrl.searchParams.get("sinceSeq") || 0);
+      const limit = Number(reqUrl.searchParams.get("limit") || 50);
+      return json(res, 200, {
+        ok: true,
+        ...listRunnerConnectionEvents({ sinceSeq, limit }),
+      });
+    } catch (err) {
+      console.error("[runner/connection-events] failed", err);
+      return json(res, 500, {
+        error: "runner_connection_events_failed",
+        message: errorMessage(err),
+      });
+    }
+  }
+
   if (req.method === "GET" && pathname === "/config/limits") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -8682,6 +8715,8 @@ runnerWsServer.on("connection", (ws, req) => {
   const remote = String(req?.socket?.remoteAddress || "unknown");
   const publicBaseUrl = resolvePublicBaseUrl(req, reqUrl);
   const connectionId = `runner_ws_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+  const authToken = parseAuthToken(req);
+  const queryToken = String(reqUrl.searchParams?.get("token") || "").trim();
   const protocolList = req?.headers?.["sec-websocket-protocol"];
   const protocols = Array.isArray(protocolList)
     ? protocolList
@@ -8691,6 +8726,14 @@ runnerWsServer.on("connection", (ws, req) => {
   runnerWsActiveClients.add(ws);
   runnerWsEnvelopeClients.add(ws);
   codexWsRelayClientMode.set(ws, "runner-ws-envelope");
+  recordRunnerConnectionOpened(req, {
+    connectionId,
+    route: "runner-ws",
+    endpoint: reqUrl.pathname,
+    tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
+    hasAuthHeaderToken: !!authToken,
+    hasQueryToken: !!queryToken,
+  });
 
   function resolveAttachedTtsJob() {
     if (!attachedTtsJobId) return null;
@@ -9059,12 +9102,24 @@ runnerWsServer.on("connection", (ws, req) => {
       connectionId,
       message,
     });
+    recordRunnerConnectionError(req, {
+      connectionId,
+      route: "runner-ws",
+      endpoint: reqUrl.pathname,
+      reason: message,
+    });
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code) => {
     detachRunnerWsTtsJob();
     runnerWsActiveClients.delete(ws);
     runnerWsEnvelopeClients.delete(ws);
+    recordRunnerConnectionClosed(req, {
+      connectionId,
+      route: "runner-ws",
+      endpoint: reqUrl.pathname,
+      closeCode: Number(code),
+    });
     if (!llmRelay) {
       codexWsRelayClientMode.delete(ws);
       return;
@@ -9080,6 +9135,17 @@ wsServer.on("connection", (ws, req) => {
   const wsEndpoint = String(wsReqUrl?.pathname || "/stream-tts");
   const wsRemoteAddress = String(req?.socket?.remoteAddress || "");
   const wsPublicBaseUrl = resolvePublicBaseUrl(req, wsReqUrl);
+  const connectionId = `stream_tts_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+  const authToken = parseAuthToken(req);
+  const queryToken = String(wsReqUrl.searchParams?.get("token") || "").trim();
+  recordRunnerConnectionOpened(req, {
+    connectionId,
+    route: "stream-tts",
+    endpoint: wsEndpoint,
+    tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
+    hasAuthHeaderToken: !!authToken,
+    hasQueryToken: !!queryToken,
+  });
 
   let started = false;
   let attachedJobId = "";
@@ -9100,11 +9166,17 @@ wsServer.on("connection", (ws, req) => {
     return true;
   }
 
-  ws.on("close", () => {
+  ws.on("close", (code) => {
     const attached = resolveAttachedJob();
     if (attached) {
       llmJobDetachSubscriber(attached, ws);
     }
+    recordRunnerConnectionClosed(req, {
+      connectionId,
+      route: "stream-tts",
+      endpoint: wsEndpoint,
+      closeCode: Number(code),
+    });
   });
 
   ws.on("error", () => {
@@ -10649,6 +10721,7 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   const upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL;
   const requestToken = String(reqUrl.searchParams.get("token") || "").trim();
   const authToken = parseAuthToken(req);
+  const connectionId = `codex_ws_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
   const protocolList = req.headers["sec-websocket-protocol"];
   const protocols = Array.isArray(protocolList)
     ? protocolList
@@ -10749,6 +10822,14 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
     replayed,
     threadId: relay.threadId || "",
   });
+  recordRunnerConnectionOpened(req, {
+    connectionId,
+    route: "codex-ws-proxy",
+    endpoint: reqUrl.pathname,
+    tokenSource: authToken ? "authorization" : (requestToken ? "query" : "none"),
+    hasAuthHeaderToken: !!authToken,
+    hasQueryToken: !!requestToken,
+  });
 
   clientWs.on("message", (data, isBinary) => {
     forwardCodexRelayClientData(relay, data, isBinary, {
@@ -10768,6 +10849,13 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
       remainingClients: relay.clients.size,
       threadId: relay.threadId || "",
     });
+    recordRunnerConnectionClosed(req, {
+      connectionId,
+      route: "codex-ws-proxy",
+      endpoint: reqUrl.pathname,
+      closeCode: Number(code),
+      reason: reason || "",
+    });
     cleanupOrScheduleDetachedRelay(relay, "client_detached");
   });
 
@@ -10780,6 +10868,12 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
       message,
       remainingClients: relay.clients.size,
       threadId: relay.threadId || "",
+    });
+    recordRunnerConnectionError(req, {
+      connectionId,
+      route: "codex-ws-proxy",
+      endpoint: reqUrl.pathname,
+      reason: message,
     });
     cleanupOrScheduleDetachedRelay(relay, "client_error");
   });
@@ -10813,6 +10907,14 @@ server.on("upgrade", (req, socket, head) => {
       endpoint: reqUrl.pathname,
       reason: "path_not_supported",
     });
+    recordRunnerConnectionRejected(req, {
+      route: "unsupported-ws",
+      endpoint: reqUrl.pathname,
+      reason: "path_not_supported",
+      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
+      hasAuthHeaderToken: !!authToken,
+      hasQueryToken: !!queryToken,
+    });
     socket.destroy();
     return;
   }
@@ -10822,6 +10924,14 @@ server.on("upgrade", (req, socket, head) => {
       remoteAddress,
       endpoint: reqUrl.pathname,
       reason: "runner_token_missing",
+    });
+    recordRunnerConnectionRejected(req, {
+      route: isRunnerWsPath ? "runner-ws" : (isCodexProxyPath ? "codex-ws-proxy" : "stream-tts"),
+      endpoint: reqUrl.pathname,
+      reason: "runner_token_missing",
+      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
+      hasAuthHeaderToken: !!authToken,
+      hasQueryToken: !!queryToken,
     });
     socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
     socket.destroy();
@@ -10835,6 +10945,14 @@ server.on("upgrade", (req, socket, head) => {
       reason: !providedToken ? "token_missing" : "token_mismatch",
       tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
       tokenLength: providedToken.length,
+    });
+    recordRunnerConnectionRejected(req, {
+      route: isRunnerWsPath ? "runner-ws" : (isCodexProxyPath ? "codex-ws-proxy" : "stream-tts"),
+      endpoint: reqUrl.pathname,
+      reason: !providedToken ? "token_missing" : "token_mismatch",
+      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
+      hasAuthHeaderToken: !!authToken,
+      hasQueryToken: !!queryToken,
     });
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();

@@ -143,6 +143,13 @@ type UseCodexReplyRequestOptions<
   reportError: (raw: unknown, scope?: string) => void;
   updateConversationRuntimeRequest?: (input: ConversationRuntimeRequestSnapshotInput) => void;
   onLlmMessageCompleted?: (directory: string) => void | Promise<void>;
+  onLlmTurnCompletedNotification?: (params: {
+    sessionId: string;
+    threadId: string;
+    directory: string;
+    previewText: string;
+    completedAtMs: number;
+  }) => void;
   startCodexRelayObserverForSession?: (
     threadIdRaw: unknown,
     options?: {
@@ -1496,6 +1503,13 @@ export function useCodexReplyRequest<
       void current.onLlmMessageCompleted?.(requestDirectory);
       const lastLiveAgentMessage = getLastLiveAgentMessage();
       const finalReplyForSpeech = current.stripYouTubeTags(lastLiveAgentMessage?.content || "");
+      current.onLlmTurnCompletedNotification?.({
+        sessionId: finalReplySessionId,
+        threadId: String(result.threadId || finalReplySessionId).trim(),
+        directory: requestDirectory,
+        previewText: finalReplyForSpeech || current.stripYouTubeTags(nextReplyForHistory || nextReplyRaw),
+        completedAtMs: Date.now(),
+      });
       const autoSpeechTarget = {
         panelId: requestPanelId,
         sessionId: finalReplySessionId,

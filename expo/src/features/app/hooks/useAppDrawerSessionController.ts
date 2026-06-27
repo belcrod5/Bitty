@@ -17,6 +17,7 @@ type UseAppDrawerSessionControllerArgs = {
   closeDrawer: () => void;
   openDebugScreen: () => void;
   openMiniBoardScreen: () => void;
+  openCloudflareTunnelMonitorScreen: () => void;
   openDirectoryExplorer: () => void;
   toggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   loadMoreDirectorySessionTree: (directoryId: string, directoryPath: string) => Promise<void>;
@@ -58,6 +59,7 @@ export function useAppDrawerSessionController({
   closeDrawer,
   openDebugScreen,
   openMiniBoardScreen,
+  openCloudflareTunnelMonitorScreen,
   openDirectoryExplorer,
   toggleDirectoryExpanded,
   loadMoreDirectorySessionTree,
@@ -77,6 +79,10 @@ export function useAppDrawerSessionController({
     closeDrawer();
     openMiniBoardScreen();
   }, [closeDrawer, openMiniBoardScreen]);
+  const handleOpenCloudflareTunnelMonitor = useCallback(() => {
+    closeDrawer();
+    openCloudflareTunnelMonitorScreen();
+  }, [closeDrawer, openCloudflareTunnelMonitorScreen]);
 
   const handleOpenDirectoryExplorer = useCallback(() => {
     closeDrawer();
@@ -166,6 +172,7 @@ export function useAppDrawerSessionController({
     formatSessionUpdatedAt,
     onOpenDebug: handleOpenDebug,
     onOpenMiniBoard: handleOpenMiniBoard,
+    onOpenCloudflareTunnelMonitor: handleOpenCloudflareTunnelMonitor,
     onOpenDirectoryExplorer: handleOpenDirectoryExplorer,
     onToggleDirectoryExpanded: handleToggleDirectoryExpanded,
     onLoadMoreSessions: handleLoadMoreSessions,
@@ -188,6 +195,7 @@ export function useAppDrawerSessionController({
     formatSessionUpdatedAt,
     handleOpenDebug,
     handleOpenMiniBoard,
+    handleOpenCloudflareTunnelMonitor,
     handleOpenDirectoryExplorer,
     handleToggleDirectoryExpanded,
     handleLoadMoreSessions,

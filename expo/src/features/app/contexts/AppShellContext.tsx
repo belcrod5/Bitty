@@ -11,6 +11,7 @@ export type AppShellContextValue = {
   openDebugScreen: () => void;
   openAudioLabScreen: () => void;
   openMiniBoardScreen: () => void;
+  openCloudflareTunnelMonitorScreen: () => void;
 };
 
 const AppShellContext = createContext<AppShellContextValue | null>(null);

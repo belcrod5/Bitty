@@ -229,7 +229,7 @@ export type GitChangedFilesDirectoryState = {
   error: string;
 };
 
-export type AppScreen = "mini_board" | "debug" | "audio_lab";
+export type AppScreen = "mini_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
 export type SlashCommandName = "/status" | "/compact";
 
 export type UiSfxKey =
