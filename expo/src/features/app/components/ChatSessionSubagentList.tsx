@@ -8,6 +8,7 @@ import {
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "./AppDrawer";
 import { styles } from "../styles";
+import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
 
 type ChatSessionSubagentListProps = {
   selectedSessionId: string;
@@ -52,13 +53,13 @@ export function ChatSessionSubagentList({
     const directoryPath = String(selectedDirectoryPath || "").trim();
     const sessionId = String(selectedSessionId || "").trim();
     if (!directoryPath || !sessionId) return null;
-    const directory = registeredDirectories.find((item) => String(item.path || "").trim() === directoryPath);
+    const directory = registeredDirectories.find((item) => {
+      const directoryState = directorySessionsById[item.id];
+      return getCachedDirectorySessions(directoryState).some((session) => session.sessionId === sessionId);
+    });
     const directoryState = directory ? directorySessionsById[directory.id] : undefined;
     if (!directoryState) return null;
-    const cachedSessions = [
-      ...directoryState.entries,
-      ...Object.values(directoryState.childrenByParentId || {}).flatMap((state) => state.entries),
-    ];
+    const cachedSessions = getCachedDirectorySessions(directoryState);
     const selectedSession = cachedSessions.find((session) => session.sessionId === sessionId);
     const parentSessionId = String(selectedSession?.parentSessionId || "").trim();
     return {
@@ -102,7 +103,7 @@ export function ChatSessionSubagentList({
               openSessionHistoryEntry({
                 sessionId: parentSession.sessionId,
                 source: parentSession.source,
-                directory: selectedDirectoryPath,
+                directory: parentSession.directory || selectedDirectoryPath,
               });
             }}
           >
@@ -137,7 +138,7 @@ export function ChatSessionSubagentList({
               openSessionHistoryEntry({
                 sessionId: session.sessionId,
                 source: session.source,
-                directory: selectedDirectoryPath,
+                directory: session.directory || selectedDirectoryPath,
               });
             }}
           >

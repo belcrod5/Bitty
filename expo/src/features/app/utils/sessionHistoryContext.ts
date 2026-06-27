@@ -29,6 +29,13 @@ function deriveDirectoryDisplayName(pathRaw: unknown) {
   return String(segments[segments.length - 1] || path).trim();
 }
 
+export function getCachedDirectorySessions(directoryState?: DirectorySessionTreeState) {
+  return [
+    ...(directoryState?.entries || []),
+    ...Object.values(directoryState?.childrenByParentId || {}).flatMap((state) => state.entries),
+  ];
+}
+
 export function resolveSessionHistoryContext({
   sessionId: sessionIdRaw,
   registeredDirectories,
@@ -38,7 +45,9 @@ export function resolveSessionHistoryContext({
   const sessionId = parseOptionalSessionId(sessionIdRaw);
   if (!sessionId) return null;
   for (const directory of registeredDirectories) {
-    const match = (directorySessionsById[directory.id]?.entries || []).find(
+    const directoryState = directorySessionsById[directory.id];
+    const sessions = getCachedDirectorySessions(directoryState);
+    const match = sessions.find(
       (entry) => parseOptionalSessionId(entry.sessionId) === sessionId
     );
     if (!match) continue;
@@ -54,7 +63,6 @@ export function resolveSessionHistoryContext({
       directory: directoryPath,
       directoryDisplayName: String(
         registeredDirectory?.displayName ||
-        directory.displayName ||
         deriveDirectoryDisplayName(directoryPath)
       ).trim(),
       sessionTitle: String(

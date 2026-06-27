@@ -18,6 +18,7 @@ export type PanelRuntimeSnapshot = {
   isResponding: boolean;
   isHydrating?: boolean;
   requestStartedAtMs?: number;
+  inheritedConversationMessages: ConversationMessage[];
   conversationMessages: ConversationMessage[];
   scrollOffsetY?: number;
   scrollViewportHeight?: number;

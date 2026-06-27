@@ -16,6 +16,7 @@ export type PanelRuntimeControllerContextValue = {
     panelId: string;
     sessionId: string;
     directory: string;
+    source?: "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "unknown";
     directoryDisplayName?: string;
     diagnosticCycleId?: string;
     title?: string;
@@ -23,7 +24,7 @@ export type PanelRuntimeControllerContextValue = {
     modelRef?: string;
     reasoningEffort?: string;
     contextUsedPct?: number | null;
-  }) => Promise<boolean>;
+  }) => Promise<"applied" | "superseded" | "failed">;
 };
 
 const PanelRuntimeControllerContext = createContext<PanelRuntimeControllerContextValue | null>(null);

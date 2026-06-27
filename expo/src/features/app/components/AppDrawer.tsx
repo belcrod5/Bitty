@@ -64,6 +64,7 @@ export type AppDrawerProps = {
   onOpenDebug: () => void;
   onOpenMiniBoard: () => void;
   onOpenCloudflareTunnelMonitor: () => void;
+  onOpenSkiaBoard: () => void;
   onOpenDirectoryExplorer: () => void;
   onToggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   onLoadMoreSessions: (directoryId: string, directoryPath: string) => void;
@@ -124,6 +125,7 @@ export function AppDrawer({
   onOpenDebug,
   onOpenMiniBoard,
   onOpenCloudflareTunnelMonitor,
+  onOpenSkiaBoard,
   onOpenDirectoryExplorer,
   onToggleDirectoryExpanded,
   onLoadMoreSessions,
@@ -278,7 +280,7 @@ export function AppDrawer({
             onSelectSessionHistoryEntry(
               session.sessionId,
               session.source,
-              directory.path,
+              session.directory || directory.path,
               eventToPopupSourceRect(event)
             )
           )}
@@ -287,7 +289,7 @@ export function AppDrawer({
             setSessionContextMenuTarget({
               sessionId: session.sessionId,
               source: session.source,
-              directoryPath: directory.path,
+              directoryPath: session.directory || directory.path,
             });
           }}
         >
@@ -392,6 +394,10 @@ export function AppDrawer({
         <TouchableOpacity style={styles.menuNavButton} onPress={onOpenCloudflareTunnelMonitor}>
           <Text style={styles.menuNavTitle}>Cloudflare Tunnel</Text>
           <Text style={styles.menuNavValue}>Tunnel接続ログを開く</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSkiaBoard}>
+          <Text style={styles.menuNavTitle}>Skia Board</Text>
+          <Text style={styles.menuNavValue}>Skiaボードを開く</Text>
         </TouchableOpacity>
 
         <View style={styles.appDrawerSection}>

@@ -357,6 +357,7 @@ export function ChatScreen({
   } = useConversation();
   const panelSnapshot = getSnapshot(panelId);
   const miniSourceMessages = panelSnapshot.conversationMessages;
+  const miniInheritedSourceMessages = panelSnapshot.inheritedConversationMessages;
   const miniSourceDirectoryDisplayName = panelSnapshot.selectedDirectoryDisplayName;
   const miniSourceSessionTitle = panelSnapshot.selectedSessionTitle;
   const miniSourceSessionUpdatedAt = panelSnapshot.selectedSessionUpdatedAt;
@@ -438,9 +439,11 @@ export function ChatScreen({
       panelId,
       sessionId,
       directory,
+      source: params.source,
       diagnosticCycleId,
-    }).then((hydrated) => {
-      if (!hydrated) {
+    }).then((result) => {
+      if (result === "superseded") return;
+      if (result === "failed") {
         showChatBottomToast("assistant", "サブエージェントのセッションを読み込めませんでした。");
         return;
       }
@@ -470,7 +473,9 @@ export function ChatScreen({
     }
     startNewSession({ directory: selectedDirectoryPathForView });
   }, [isPanelRuntimeView, panelId, selectedDirectoryPathForView, startNewPanelSession, startNewSession]);
-  const allConversationMessagesForView = isPanelSnapshotView ? miniSourceMessages : conversationMessages;
+  const allConversationMessagesForView = isPanelSnapshotView
+    ? [...miniInheritedSourceMessages, ...miniSourceMessages]
+    : conversationMessages;
   const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
   const [directoryMenuMode, setDirectoryMenuMode] = useState<DirectoryMenuMode>("actions");
   const [directoryRenameInput, setDirectoryRenameInput] = useState("");
@@ -1452,8 +1457,20 @@ export function ChatScreen({
     resolvePixelStatusIconKey,
   ]);
 
-  const renderConversationMessage = ({ item: message }: { item: ConversationMessage }) => {
+  const renderConversationMessage = ({
+    item: message,
+    index,
+  }: {
+    item: ConversationMessage;
+    index: number;
+  }) => {
     const isUser = message.role === "user";
+    const inheritedFromParent = message.inheritedFromParent === true;
+    const showSubagentBoundary = (
+      !inheritedFromParent
+      && index > 0
+      && conversationMessagesForView[index - 1]?.inheritedFromParent === true
+    );
     const messageSttMetaChips = isUser ? buildSttMetaChips(message.sttMeta) : [];
     const messageYouTubeVideoIds = message.youtubeVideoIds || [];
     const messageYouTubeVideos = messageYouTubeVideoIds.map((videoId: string) => {
@@ -1478,10 +1495,18 @@ export function ChatScreen({
     const queueCanCancel = !!queuedTurnId && (queueStatus === "queued" || queueStatus === "waiting_compact");
     return (
       <View style={styles.chatMessageGroup}>
+        {showSubagentBoundary ? (
+          <View style={styles.chatSubagentBoundary}>
+            <View style={styles.chatSubagentBoundaryLine} />
+            <Text style={styles.chatSubagentBoundaryText}>サブエージェント開始</Text>
+            <View style={styles.chatSubagentBoundaryLine} />
+          </View>
+        ) : null}
         <View
           style={[
             styles.chatBubble,
             isUser ? styles.chatBubbleUser : styles.chatBubbleAssistant,
+            inheritedFromParent ? styles.chatBubbleInheritedFromParent : null,
           ]}
         >
           <Text

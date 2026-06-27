@@ -74,6 +74,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     onOpenDebug: jest.fn(),
     onOpenMiniBoard: jest.fn(),
     onOpenCloudflareTunnelMonitor: jest.fn(),
+    onOpenSkiaBoard: jest.fn(),
     onOpenDirectoryExplorer: jest.fn(),
     onToggleDirectoryExpanded: jest.fn(),
     onLoadMoreSessions: jest.fn(),
@@ -87,6 +88,16 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
   };
   return render(<AppDrawer {...props} />);
 }
+
+test("opens Skia Board from the left navigation", async () => {
+  const onOpenSkiaBoard = jest.fn();
+  const drawer = await renderDrawer({ onOpenSkiaBoard });
+
+  expect(drawer.getByText("Mini Board")).toBeTruthy();
+  await fireEvent.press(drawer.getByText("Skia Board"));
+
+  expect(onOpenSkiaBoard).toHaveBeenCalledTimes(1);
+});
 
 test("filters only loaded drawer sessions", async () => {
   const drawer = await renderDrawer();

@@ -174,6 +174,9 @@ export function useAppContextActions({
   const openCloudflareTunnelMonitorScreen = useCallback(() => {
     setActiveScreen("cloudflare_tunnel_monitor");
   }, [setActiveScreen]);
+  const openSkiaBoardScreen = useCallback(() => {
+    setActiveScreen("skia_board");
+  }, [setActiveScreen]);
   const changeRunnerUrl = useCallback((value: string) => {
     setRunnerUrl(value);
   }, [setRunnerUrl]);
@@ -419,6 +422,7 @@ export function useAppContextActions({
     openAudioLabScreen,
     openMiniBoardScreen,
     openCloudflareTunnelMonitorScreen,
+    openSkiaBoardScreen,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,

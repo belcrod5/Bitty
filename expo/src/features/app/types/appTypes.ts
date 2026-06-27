@@ -28,6 +28,7 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   at?: string;
+  inheritedFromParent?: boolean;
   pendingUser?: boolean;
   youtubeVideoIds?: string[];
   ttsWaveform?: number[];
@@ -237,7 +238,7 @@ export type GitChangedFilesDirectoryState = {
   error: string;
 };
 
-export type AppScreen = "mini_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
+export type AppScreen = "mini_board" | "skia_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
 export type SlashCommandName = "/status" | "/compact";
 
 export type UiSfxKey =
