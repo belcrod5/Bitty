@@ -20,13 +20,11 @@ async function read(key: string) {
 
 async function write(key: string, valueRaw: string) {
   const value = String(valueRaw || "").trim();
-  try {
-    if (value) {
-      await SecureStore.setItemAsync(key, value);
-    } else {
-      await SecureStore.deleteItemAsync(key);
-    }
-  } catch {}
+  if (value) {
+    await SecureStore.setItemAsync(key, value);
+  } else {
+    await SecureStore.deleteItemAsync(key);
+  }
 }
 
 export async function loadSecureRunnerCredentials(): Promise<SecureRunnerCredentials> {

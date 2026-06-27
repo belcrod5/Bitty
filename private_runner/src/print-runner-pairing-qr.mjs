@@ -32,7 +32,10 @@ function normalizeHttpUrl(raw) {
   if (!value) return "";
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+    if (url.protocol !== "https:" || url.username || url.password) return "";
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
     return url.toString().replace(/\/+$/, "");
   } catch {
     return "";
@@ -42,7 +45,7 @@ function normalizeHttpUrl(raw) {
 function buildRunnerWsUrl(runnerUrl) {
   try {
     const url = new URL(runnerUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.protocol = "wss:";
     url.pathname = "/runner-ws";
     url.search = "";
     url.hash = "";
@@ -66,7 +69,7 @@ const cloudflareAccessClientSecret = readEnvOrKeychain(
 );
 
 if (!runnerUrl) {
-  console.error("[pairing-qr] RUNNER_PUBLIC_URL is required to print the Expo pairing QR");
+  console.error("[pairing-qr] RUNNER_PUBLIC_URL must be an HTTPS origin to print the Expo pairing QR");
   process.exit(0);
 }
 if (!runnerToken) {

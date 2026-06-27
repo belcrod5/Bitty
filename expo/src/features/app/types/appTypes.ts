@@ -124,6 +124,14 @@ export type TtsPlaybackTarget = {
   panelId?: string;
   sessionId?: string;
 };
+
+export type LlmMessageCompletion = {
+  sessionId: string;
+  threadId: string;
+  directory: string;
+  previewText: string;
+  completedAtMs: number;
+};
 export type MediaTarget = "all" | "youtube" | "tts";
 export type MediaAction = "stop" | "next" | "prev";
 

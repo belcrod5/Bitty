@@ -164,6 +164,7 @@ import type {
   HistoryEntry,
   LlmBackend,
   LlmDeltaEntry,
+  LlmMessageCompletion,
   LlmProgressEntry,
   LlmSessionMessage,
   LlmRuntimeLimitsSnapshot,
@@ -1199,11 +1200,9 @@ export default function App() {
     const probeSeq = selectedThreadStatusProbeSeqRef.current + 1;
     selectedThreadStatusProbeSeqRef.current = probeSeq;
     let cancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    const runProbe = (attempt: number) => {
+    const runProbe = () => {
       logSessionDiag("thread_status_probe_start", {
         sessionId,
-        attempt,
         wsUrl: codexWsUrl.trim(),
       }, { throttleMs: 0 });
       void readCodexAppServerThread({
@@ -1218,7 +1217,6 @@ export default function App() {
           setSelectedThreadStatusType(nextStatusType);
           logSessionDiag("thread_status_probe_done", {
             sessionId,
-            attempt,
             threadStatusType: nextStatusType,
             sessionState: restored.sessionState,
             latestTurnStatus: restored.latestTurnStatus,
@@ -1227,30 +1225,16 @@ export default function App() {
         })
         .catch((error) => {
           if (cancelled || selectedThreadStatusProbeSeqRef.current !== probeSeq) return;
-          if (attempt < 5) {
-            logSessionDiag("thread_status_probe_retry", {
-              sessionId,
-              attempt,
-              reason: error instanceof Error ? error.message : String(error),
-            }, { throttleMs: 0 });
-            retryTimer = setTimeout(() => runProbe(attempt + 1), 1000 * attempt);
-            return;
-          }
           logSessionDiag("thread_status_probe_failed", {
             sessionId,
-            attempt,
             reason: error instanceof Error ? error.message : String(error),
           }, { throttleMs: 0 });
           setSelectedThreadStatusType("unknown");
         });
     };
-    runProbe(1);
+    runProbe();
     return () => {
       cancelled = true;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
     };
   }, [
     effectiveCodexWsToken,
@@ -5474,10 +5458,12 @@ export default function App() {
     setCodexWsHandshakeProbeStatus,
   });
 
-  const handleLlmMessageCompleted = useCallback((directory: string) => {
-    void refreshGitChangedFiles(directory, { force: true });
-    refreshMiniBoardDirectorySessionsForDirectory(directory, "llm_message_completed");
+  const handleLlmMessageCompleted = useCallback((completion: LlmMessageCompletion) => {
+    void refreshGitChangedFiles(completion.directory, { force: true });
+    refreshMiniBoardDirectorySessionsForDirectory(completion.directory, "llm_message_completed");
+    pushLlmCompletionNotification(completion);
   }, [
+    pushLlmCompletionNotification,
     refreshMiniBoardDirectorySessionsForDirectory,
     refreshGitChangedFiles,
   ]);
@@ -5574,7 +5560,6 @@ export default function App() {
     },
     startCodexRelayObserverForSession,
     onLlmMessageCompleted: handleLlmMessageCompleted,
-    onLlmTurnCompletedNotification: pushLlmCompletionNotification,
   });
 
   const {
@@ -5812,6 +5797,7 @@ export default function App() {
     selectVoiceIdFromSettingsContext,
   } = useAppContextActions({
     drawerOpen,
+    runnerToken,
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     directoryExplorerParentPath,
     directoryExplorerRootPath,

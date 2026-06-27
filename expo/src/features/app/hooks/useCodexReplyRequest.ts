@@ -10,7 +10,7 @@ import {
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
-import type { TtsPlaybackTarget } from "../types/appTypes";
+import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
 import type {
   ConversationRuntimeRequestLifecycle,
   ConversationRuntimeRequestSnapshotInput,
@@ -142,14 +142,7 @@ type UseCodexReplyRequestOptions<
   trimForInline: (value: string, maxChars: number) => string;
   reportError: (raw: unknown, scope?: string) => void;
   updateConversationRuntimeRequest?: (input: ConversationRuntimeRequestSnapshotInput) => void;
-  onLlmMessageCompleted?: (directory: string) => void | Promise<void>;
-  onLlmTurnCompletedNotification?: (params: {
-    sessionId: string;
-    threadId: string;
-    directory: string;
-    previewText: string;
-    completedAtMs: number;
-  }) => void;
+  onLlmMessageCompleted?: (completion: LlmMessageCompletion) => void | Promise<void>;
   startCodexRelayObserverForSession?: (
     threadIdRaw: unknown,
     options?: {
@@ -1500,10 +1493,9 @@ export function useCodexReplyRequest<
           });
         }
       }
-      void current.onLlmMessageCompleted?.(requestDirectory);
       const lastLiveAgentMessage = getLastLiveAgentMessage();
       const finalReplyForSpeech = current.stripYouTubeTags(lastLiveAgentMessage?.content || "");
-      current.onLlmTurnCompletedNotification?.({
+      void current.onLlmMessageCompleted?.({
         sessionId: finalReplySessionId,
         threadId: String(result.threadId || finalReplySessionId).trim(),
         directory: requestDirectory,

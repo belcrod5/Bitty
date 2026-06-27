@@ -7,16 +7,18 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-test("creates an unauthenticated websocket only when no auth headers are needed", () => {
+test("does not create a runner websocket without a runner token", () => {
   const calls: unknown[][] = [];
   global.WebSocket = jest.fn((...args: unknown[]) => {
     calls.push(args);
     return {} as WebSocket;
   }) as unknown as typeof WebSocket;
 
-  createWebSocketWithOptionalAuth("ws://127.0.0.1:8788/runner-ws", "");
+  expect(() => {
+    createWebSocketWithOptionalAuth("ws://127.0.0.1:8788/runner-ws", "");
+  }).toThrow("runner_token_required");
 
-  expect(calls).toEqual([["ws://127.0.0.1:8788/runner-ws"]]);
+  expect(calls).toEqual([]);
 });
 
 test("does not fall back to an unauthenticated websocket when auth headers are needed", () => {
@@ -42,4 +44,19 @@ test("does not fall back to an unauthenticated websocket when auth headers are n
       { headers: { Authorization: "Bearer runner-token" } },
     ],
   ]);
+});
+
+test("does not open a Cloudflare Access websocket without a runner token", () => {
+  global.WebSocket = jest.fn() as unknown as typeof WebSocket;
+
+  jest.spyOn(require("../app/utils/cloudflareAccessFetch"), "getCloudflareAccessHeadersForUrl")
+    .mockReturnValue({
+      "CF-Access-Client-Id": "access-id",
+      "CF-Access-Client-Secret": "access-secret",
+    });
+
+  expect(() => {
+    createWebSocketWithOptionalAuth("wss://runner.example.com/runner-ws", "");
+  }).toThrow("runner_token_required");
+  expect(global.WebSocket).not.toHaveBeenCalled();
 });

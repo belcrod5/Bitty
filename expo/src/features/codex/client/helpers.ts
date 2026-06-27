@@ -22,11 +22,14 @@ export function normalizeCodexWsInputs(wsUrlRaw: unknown, wsTokenRaw: unknown) {
   let wsToken = String(wsTokenRaw || "").trim();
   try {
     const parsed = new URL(compactUrl);
-    wsUrl = parsed.toString();
-    if (!wsToken) {
-      const queryToken = String(parsed.searchParams.get("token") || "").trim();
-      if (queryToken) wsToken = queryToken;
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (key.toLowerCase() !== "token") continue;
+      if (!wsToken) {
+        wsToken = String(parsed.searchParams.get(key) || "").trim();
+      }
+      parsed.searchParams.delete(key);
     }
+    wsUrl = parsed.toString();
   } catch {
     // keep compactUrl as-is
   }

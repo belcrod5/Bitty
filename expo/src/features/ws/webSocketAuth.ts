@@ -11,7 +11,18 @@ function buildWebSocketHeaders(url: string, token: string) {
   return headers;
 }
 
+function isRunnerWebSocketUrl(url: string) {
+  try {
+    return ["/runner-ws", "/codex-ws", "/stream-tts"].includes(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function createWebSocketWithOptionalAuth(url: string, token: string) {
+  if (isRunnerWebSocketUrl(url) && !String(token || "").trim()) {
+    throw new Error("runner_token_required");
+  }
   const headers = buildWebSocketHeaders(url, token);
   if (Object.keys(headers).length <= 0) {
     return new WebSocket(url);

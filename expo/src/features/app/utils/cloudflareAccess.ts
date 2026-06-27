@@ -87,9 +87,38 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
     throw new Error("QR payload is missing Cloudflare Access client secret");
   }
 
+  let parsedRunnerUrl: URL;
+  let parsedRunnerWsUrl: URL;
+  try {
+    parsedRunnerUrl = new URL(runnerUrl);
+    parsedRunnerWsUrl = new URL(runnerWsUrl);
+  } catch {
+    throw new Error("QR payload has an invalid runner URL");
+  }
+  if (
+    parsedRunnerUrl.protocol !== "https:" ||
+    parsedRunnerUrl.username ||
+    parsedRunnerUrl.password ||
+    parsedRunnerUrl.search ||
+    parsedRunnerUrl.hash
+  ) {
+    throw new Error("Pairing requires an HTTPS runner origin");
+  }
+  if (
+    parsedRunnerWsUrl.protocol !== "wss:" ||
+    parsedRunnerWsUrl.username ||
+    parsedRunnerWsUrl.password ||
+    parsedRunnerWsUrl.host !== parsedRunnerUrl.host ||
+    parsedRunnerWsUrl.pathname !== "/runner-ws" ||
+    parsedRunnerWsUrl.search ||
+    parsedRunnerWsUrl.hash
+  ) {
+    throw new Error("Pairing requires a same-origin WSS runner endpoint");
+  }
+
   return {
-    runnerUrl,
-    runnerWsUrl,
+    runnerUrl: parsedRunnerUrl.origin,
+    runnerWsUrl: parsedRunnerWsUrl.toString(),
     runnerToken,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,

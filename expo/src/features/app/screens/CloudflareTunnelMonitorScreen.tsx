@@ -378,9 +378,13 @@ export function CloudflareTunnelMonitorScreen() {
           {showConnectionSettings ? (
             <TouchableOpacity
               style={[screenStyles.button, screenStyles.dangerButton]}
-              onPress={() => {
-                clearCloudflareAccessCredentials();
-                setPairingStatus("Cloudflare Access資格情報を削除しました。");
+              onPress={async () => {
+                try {
+                  await clearCloudflareAccessCredentials();
+                  setPairingStatus("Cloudflare Access資格情報を削除しました。");
+                } catch (error) {
+                  setPairingStatus(error instanceof Error ? error.message : String(error));
+                }
               }}
             >
               <Text style={screenStyles.buttonText}>Access資格情報を削除</Text>

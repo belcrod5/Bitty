@@ -4,9 +4,9 @@
 
 名前付きTunnelからMacの `http://127.0.0.1:8788` だけへ転送します。Tunnelは `cloudflared`、DNSとAccessはAPIで扱い、Terraformや別CLIは追加しません。エージェントはRunner確認、既存Tunnel/DNS/AccessのGET、競合がない場合の作成、設定検証、疎通確認を担当します。
 
-Global API Keyは禁止です。対象account/zoneに限定したAPI tokenへ、調査時は Cloudflare Tunnel Read、DNS Read、Access Apps and Policies Read、作成時だけ各Editを付けます。token、Tunnel credentials、OAuth secret、実メール/ドメインはrepo、引数、ログ、Expoの `EXPO_PUBLIC_*` へ保存しません。
+Global API Keyは禁止です。対象account/zoneに限定したAPI tokenへ、調査時は Cloudflare Tunnel Read、DNS Read、Access Apps and Policies Read、Access Service Tokens Read、作成時だけTunnel/DNS/Access Apps and PoliciesのEditを付けます。token、Tunnel credentials、OAuth secret、実メール/ドメインはrepo、引数、ログ、Expoの `EXPO_PUBLIC_*` へ保存しません。
 
-作成物はTunnel、proxied CNAME、self-hosted Access app、完全一致メールのAllow policyです。repo外には絶対pathで指定したcloudflared設定とTunnel credentials、macOS serviceが作られます。戻す場合はservice停止後、本人承認を得てAccess policy/app、DNS、Tunnelの順で削除します。
+作成物はTunnel、proxied CNAME、self-hosted Access app、端末用service tokenだけを許可するService Auth policyです。repo外には絶対pathで指定したcloudflared設定とTunnel credentials、macOS serviceが作られます。戻す場合はservice停止後、本人承認を得てAccess policy/app、DNS、Tunnelの順で削除します。
 
 ## 2. 本人操作
 
@@ -30,7 +30,7 @@ export CLOUDFLARE_ZONE_ID=CLOUDFLARE_ZONE_ID
 export CLOUDFLARE_HOSTNAME=app.example.com
 export CLOUDFLARE_TUNNEL_NAME=runner-tunnel
 export CLOUDFLARE_ACCESS_APP_NAME=runner-access
-export CLOUDFLARE_ACCESS_EMAIL; read -r CLOUDFLARE_ACCESS_EMAIL
+export CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID=ACCESS_SERVICE_TOKEN_ID
 export CLOUDFLARED_CONFIG_PATH="$HOME/.cloudflared/config.yml"
 scripts/cloudflare-runner.sh check
 scripts/cloudflare-runner.sh apply
@@ -38,7 +38,7 @@ scripts/cloudflare-runner.sh apply
 
 `apply` はTunnel作成前に設定先とcredentials先を検査し、ファイル作成に必要な親ディレクトリの書込・検索権限も確認します。作成後は返されたIDから標準の `$HOME/.cloudflared/<TUNNEL_ID>.json` を導出して実在確認します。別のrepo外絶対pathを使う場合だけ、事前に `CLOUDFLARED_CREDENTIALS_FILE` で上書きします。
 
-`check` はRunner health、token、既存Tunnel/DNS/Access policyを読み、同名/name/domain競合で変更前に停止します。`apply` はTunnel、DNS、Access app、policyの非秘密IDを作成直後に出力します。途中失敗時は再実行せず、その出力を使って作成済みリソースをGETしてください。
+`check` はRunner health、API token、対象Access service token ID、既存Tunnel/DNS/Access policyを読み、同名/name/domain競合で変更前に停止します。`apply` はTunnel、DNS、Access app、policyの非秘密IDを作成直後に出力します。途中失敗時は再実行せず、その出力を使って作成済みリソースをGETしてください。
 
 ```sh
 cloudflared tunnel --config "$CLOUDFLARED_CONFIG_PATH" run

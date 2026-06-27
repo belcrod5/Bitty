@@ -17,11 +17,9 @@ import { createWorkspaceFilesService } from "./workspace-files.mjs";
 import { fetchGitBranches, fetchGitBranchStatus } from "./git-branches.mjs";
 import {
   listRunnerConnectionEvents,
-  recordRunnerConnectionClosed,
-  recordRunnerConnectionError,
-  recordRunnerConnectionOpened,
-  recordRunnerConnectionRejected,
+  trackRunnerWebSocket,
 } from "./runner-connection-events.mjs";
+import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -7492,7 +7490,7 @@ const server = http.createServer(async (req, res) => {
   const pathname = reqUrl.pathname;
 
   if (RUNNER_LOG_REQUESTS) {
-    console.log(`[request] ${req.method} ${req.url} from ${req.socket.remoteAddress || "unknown"}`);
+    console.log(`[request] ${req.method} ${pathname} from ${req.socket.remoteAddress || "unknown"}`);
   }
 
   if (req.method === "GET" && pathname === "/health") {
@@ -8715,8 +8713,6 @@ runnerWsServer.on("connection", (ws, req) => {
   const remote = String(req?.socket?.remoteAddress || "unknown");
   const publicBaseUrl = resolvePublicBaseUrl(req, reqUrl);
   const connectionId = `runner_ws_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-  const authToken = parseAuthToken(req);
-  const queryToken = String(reqUrl.searchParams?.get("token") || "").trim();
   const protocolList = req?.headers?.["sec-websocket-protocol"];
   const protocols = Array.isArray(protocolList)
     ? protocolList
@@ -8726,13 +8722,10 @@ runnerWsServer.on("connection", (ws, req) => {
   runnerWsActiveClients.add(ws);
   runnerWsEnvelopeClients.add(ws);
   codexWsRelayClientMode.set(ws, "runner-ws-envelope");
-  recordRunnerConnectionOpened(req, {
+  trackRunnerWebSocket(req, ws, {
     connectionId,
     route: "runner-ws",
     endpoint: reqUrl.pathname,
-    tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-    hasAuthHeaderToken: !!authToken,
-    hasQueryToken: !!queryToken,
   });
 
   function resolveAttachedTtsJob() {
@@ -9102,24 +9095,12 @@ runnerWsServer.on("connection", (ws, req) => {
       connectionId,
       message,
     });
-    recordRunnerConnectionError(req, {
-      connectionId,
-      route: "runner-ws",
-      endpoint: reqUrl.pathname,
-      reason: message,
-    });
   });
 
-  ws.on("close", (code) => {
+  ws.on("close", () => {
     detachRunnerWsTtsJob();
     runnerWsActiveClients.delete(ws);
     runnerWsEnvelopeClients.delete(ws);
-    recordRunnerConnectionClosed(req, {
-      connectionId,
-      route: "runner-ws",
-      endpoint: reqUrl.pathname,
-      closeCode: Number(code),
-    });
     if (!llmRelay) {
       codexWsRelayClientMode.delete(ws);
       return;
@@ -9136,15 +9117,10 @@ wsServer.on("connection", (ws, req) => {
   const wsRemoteAddress = String(req?.socket?.remoteAddress || "");
   const wsPublicBaseUrl = resolvePublicBaseUrl(req, wsReqUrl);
   const connectionId = `stream_tts_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-  const authToken = parseAuthToken(req);
-  const queryToken = String(wsReqUrl.searchParams?.get("token") || "").trim();
-  recordRunnerConnectionOpened(req, {
+  trackRunnerWebSocket(req, ws, {
     connectionId,
     route: "stream-tts",
     endpoint: wsEndpoint,
-    tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-    hasAuthHeaderToken: !!authToken,
-    hasQueryToken: !!queryToken,
   });
 
   let started = false;
@@ -9166,17 +9142,11 @@ wsServer.on("connection", (ws, req) => {
     return true;
   }
 
-  ws.on("close", (code) => {
+  ws.on("close", () => {
     const attached = resolveAttachedJob();
     if (attached) {
       llmJobDetachSubscriber(attached, ws);
     }
-    recordRunnerConnectionClosed(req, {
-      connectionId,
-      route: "stream-tts",
-      endpoint: wsEndpoint,
-      closeCode: Number(code),
-    });
   });
 
   ws.on("error", () => {
@@ -10811,7 +10781,6 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
     relayId: relay.relayId,
     remote,
     endpoint: reqUrl.pathname,
-    url: req?.url || "",
     host: String(req?.headers?.host || ""),
     hasQueryToken: !!requestToken,
     hasAuthHeaderToken: !!authToken,
@@ -10822,13 +10791,10 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
     replayed,
     threadId: relay.threadId || "",
   });
-  recordRunnerConnectionOpened(req, {
+  trackRunnerWebSocket(req, clientWs, {
     connectionId,
     route: "codex-ws-proxy",
     endpoint: reqUrl.pathname,
-    tokenSource: authToken ? "authorization" : (requestToken ? "query" : "none"),
-    hasAuthHeaderToken: !!authToken,
-    hasQueryToken: !!requestToken,
   });
 
   clientWs.on("message", (data, isBinary) => {
@@ -10849,13 +10815,6 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
       remainingClients: relay.clients.size,
       threadId: relay.threadId || "",
     });
-    recordRunnerConnectionClosed(req, {
-      connectionId,
-      route: "codex-ws-proxy",
-      endpoint: reqUrl.pathname,
-      closeCode: Number(code),
-      reason: reason || "",
-    });
     cleanupOrScheduleDetachedRelay(relay, "client_detached");
   });
 
@@ -10869,128 +10828,19 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
       remainingClients: relay.clients.size,
       threadId: relay.threadId || "",
     });
-    recordRunnerConnectionError(req, {
-      connectionId,
-      route: "codex-ws-proxy",
-      endpoint: reqUrl.pathname,
-      reason: message,
-    });
     cleanupOrScheduleDetachedRelay(relay, "client_error");
   });
 });
 
-server.on("upgrade", (req, socket, head) => {
-  const reqUrl = parseRequestUrl(req);
-  const remoteAddress = String(req.socket.remoteAddress || "unknown");
-  const authToken = parseAuthToken(req);
-  const queryToken = String(reqUrl.searchParams.get("token") || "").trim();
-  const providedToken = authToken || queryToken;
-  if (RUNNER_LOG_REQUESTS) {
-    console.log(`[request] WS ${reqUrl.pathname} from ${remoteAddress}`);
-  }
-  void appendCodexWsProxyDebug("upgrade_request", {
-    remoteAddress,
-    endpoint: reqUrl.pathname,
-    url: req.url || "",
-    host: String(req.headers.host || ""),
-    hasAuthHeaderToken: !!authToken,
-    hasQueryToken: !!queryToken,
-    tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-    tokenLength: providedToken.length,
-  });
-  const isRunnerWsPath = reqUrl.pathname === RUNNER_WS_PATH;
-  const isStreamTtsPath = reqUrl.pathname === "/stream-tts";
-  const isCodexProxyPath = reqUrl.pathname === "/codex-ws";
-  if (!isRunnerWsPath && !isStreamTtsPath && !isCodexProxyPath) {
-    void appendCodexWsProxyDebug("upgrade_rejected", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      reason: "path_not_supported",
-    });
-    recordRunnerConnectionRejected(req, {
-      route: "unsupported-ws",
-      endpoint: reqUrl.pathname,
-      reason: "path_not_supported",
-      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-      hasAuthHeaderToken: !!authToken,
-      hasQueryToken: !!queryToken,
-    });
-    socket.destroy();
-    return;
-  }
-
-  if (!RUNNER_TOKEN) {
-    void appendCodexWsProxyDebug("upgrade_rejected", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      reason: "runner_token_missing",
-    });
-    recordRunnerConnectionRejected(req, {
-      route: isRunnerWsPath ? "runner-ws" : (isCodexProxyPath ? "codex-ws-proxy" : "stream-tts"),
-      endpoint: reqUrl.pathname,
-      reason: "runner_token_missing",
-      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-      hasAuthHeaderToken: !!authToken,
-      hasQueryToken: !!queryToken,
-    });
-    socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  if (!providedToken || providedToken !== RUNNER_TOKEN) {
-    void appendCodexWsProxyDebug("upgrade_rejected", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      reason: !providedToken ? "token_missing" : "token_mismatch",
-      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-      tokenLength: providedToken.length,
-    });
-    recordRunnerConnectionRejected(req, {
-      route: isRunnerWsPath ? "runner-ws" : (isCodexProxyPath ? "codex-ws-proxy" : "stream-tts"),
-      endpoint: reqUrl.pathname,
-      reason: !providedToken ? "token_missing" : "token_mismatch",
-      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-      hasAuthHeaderToken: !!authToken,
-      hasQueryToken: !!queryToken,
-    });
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  if (isRunnerWsPath) {
-    void appendCodexWsProxyDebug("upgrade_accepted", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      route: "runner-ws",
-    });
-    runnerWsServer.handleUpgrade(req, socket, head, (ws) => {
-      runnerWsServer.emit("connection", ws, req);
-    });
-    return;
-  }
-
-  if (isCodexProxyPath) {
-    void appendCodexWsProxyDebug("upgrade_accepted", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      route: "codex-ws-proxy",
-    });
-    codexProxyWsServer.handleUpgrade(req, socket, head, (ws) => {
-      codexProxyWsServer.emit("connection", ws, req);
-    });
-    return;
-  }
-
-  void appendCodexWsProxyDebug("upgrade_accepted", {
-    remoteAddress,
-    endpoint: reqUrl.pathname,
-    route: "stream-tts",
-  });
-  wsServer.handleUpgrade(req, socket, head, (ws) => {
-    wsServer.emit("connection", ws, req);
-  });
+installRunnerWebSocketUpgradeHandler({
+  server,
+  runnerToken: RUNNER_TOKEN,
+  runnerWsPath: RUNNER_WS_PATH,
+  runnerWsServer,
+  streamTtsWsServer: wsServer,
+  codexProxyWsServer,
+  appendDebug: appendCodexWsProxyDebug,
+  logRequests: RUNNER_LOG_REQUESTS,
 });
 
 async function initializeLlmFileRuntime() {

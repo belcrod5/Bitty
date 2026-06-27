@@ -27,9 +27,9 @@ list_one_page() {
 }
 common() {
   need curl; need jq; need cloudflared
-  for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID CLOUDFLARE_HOSTNAME CLOUDFLARE_TUNNEL_NAME CLOUDFLARE_ACCESS_APP_NAME CLOUDFLARE_ACCESS_EMAIL; do var "$name"; done
+  for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID CLOUDFLARE_HOSTNAME CLOUDFLARE_TUNNEL_NAME CLOUDFLARE_ACCESS_APP_NAME CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID; do var "$name"; done
   [[ "$CLOUDFLARE_HOSTNAME" =~ ^[A-Za-z0-9.-]+$ ]] || die 'invalid hostname'
-  [[ "$CLOUDFLARE_ACCESS_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die 'invalid email'
+  [[ "$CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID" =~ ^[A-Za-z0-9-]+$ ]] || die 'invalid Access service token ID'
 }
 check() {
   local tunnels dns apps ids policies conflict=0
@@ -37,6 +37,7 @@ check() {
   printf '%s\n' "$(cloudflared --version | head -n1)"
   curl -fsS --max-time 5 http://127.0.0.1:8788/health >/dev/null || die 'Runner /health failed'
   call GET /user/tokens/verify >/dev/null
+  call GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/service_tokens/$CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID" >/dev/null || die 'Access service token ID is not readable; no resources changed'
   tunnels=$(list_one_page "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel?is_deleted=false&per_page=100")
   dns=$(list_one_page "/zones/$CLOUDFLARE_ZONE_ID/dns_records?name=$CLOUDFLARE_HOSTNAME&per_page=100")
   apps=$(list_one_page "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps?per_page=100")
@@ -110,14 +111,14 @@ apply() {
   app=$(call POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps" "$body")
   app_id=$(jq -er '.result.id | select(type=="string" and length>0)' <<<"$app") || die 'created Access app ID unreadable; inspect before retry'
   printf 'created resource: Access app ID %s\n' "$app_id"
-  body=$(jq -cn --arg e "$CLOUDFLARE_ACCESS_EMAIL" '{name:"Exact email allow",decision:"allow",precedence:1,include:[{email:{email:$e}}]}')
+  body=$(jq -cn --arg id "$CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID" '{name:"Runner service token",decision:"non_identity",precedence:1,include:[{service_token:{token_id:$id}}]}')
   policy=$(call POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps/$app_id/policies" "$body")
   policy_id=$(jq -er '.result.id | select(type=="string" and length>0)' <<<"$policy") || die 'created Access policy ID unreadable; inspect before retry'
   printf 'created resource: Access policy ID %s\n' "$policy_id"
-  jq -e --arg e "$CLOUDFLARE_ACCESS_EMAIL" '.result.decision=="allow" and .result.include==[{email:{email:$e}}]' >/dev/null <<<"$policy" || die 'exact-email verification failed'
+  jq -e --arg id "$CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID" '.result.decision=="non_identity" and .result.include==[{service_token:{token_id:$id}}]' >/dev/null <<<"$policy" || die 'Service Auth verification failed'
   policies=$(list_one_page "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps/$app_id/policies?per_page=100")
-  jq -e --arg e "$CLOUDFLARE_ACCESS_EMAIL" '([.result[]|select(.decision=="allow" and .include==[{email:{email:$e}}])]|length)==1 and ([.result[]|select(.decision=="bypass" or any(.include[]?;has("everyone")))]|length)==0' >/dev/null <<<"$policies" || die 'post-create policy verification failed'
-  printf 'created tunnel, DNS, Access app %s, exact-email policy; run cloudflared with %s\n' "$app_id" "$CLOUDFLARED_CONFIG_PATH"
+  jq -e --arg id "$CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID" '(.result|length)==1 and .result[0].decision=="non_identity" and .result[0].include==[{service_token:{token_id:$id}}]' >/dev/null <<<"$policies" || die 'post-create Service Auth verification failed'
+  printf 'created tunnel, DNS, Access app %s, Service Auth policy; run cloudflared with %s\n' "$app_id" "$CLOUDFLARED_CONFIG_PATH"
 }
-plan() { printf '%s\n' 'check(GET only) -> Tunnel create -> config validate -> DNS -> Access app -> exact-email Allow. Existing matches stop all changes.'; }
+plan() { printf '%s\n' 'check(GET only) -> Tunnel create -> config validate -> DNS -> Access app -> Service Auth for one service token. Existing matches stop all changes.'; }
 case "${1:-}" in plan) plan;; check) check;; render) render;; validate) validate;; apply) apply;; *) printf 'usage: %s plan|check|render|validate|apply\n' "$0" >&2; exit 2;; esac

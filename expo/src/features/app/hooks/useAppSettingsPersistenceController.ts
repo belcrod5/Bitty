@@ -23,6 +23,7 @@ import {
   loadSecureRunnerCredentials,
   saveSecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
+import { normalizeCodexWsInputs } from "../../codex/client/helpers";
 
 const LEGACY_DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/codex-ws";
 const DEFAULT_RUNNER_WS_URL = "ws://127.0.0.1:8788/runner-ws";
@@ -275,18 +276,19 @@ export function useAppSettingsPersistenceController({
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
     const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
     const savedCodexWsUrlRaw = String(parsed.codexWsUrl || "").trim();
-    const savedCodexWsUrl = savedCodexWsUrlRaw === LEGACY_DEFAULT_CODEX_WS_URL
+    const mappedCodexWsUrl = savedCodexWsUrlRaw === LEGACY_DEFAULT_CODEX_WS_URL
       ? DEFAULT_RUNNER_WS_URL
       : savedCodexWsUrlRaw;
-    const savedCodexWsToken = String(parsed.codexWsToken || "").trim();
+    const explicitCodexWsToken = String(parsed.codexWsToken || "").trim();
+    const normalizedCodexWs = normalizeCodexWsInputs(mappedCodexWsUrl, explicitCodexWsToken);
+    const savedCodexWsUrl = normalizedCodexWs.wsUrl;
+    const savedCodexWsToken = explicitCodexWsToken;
+    const legacyQueryToken = explicitCodexWsToken ? "" : normalizedCodexWs.wsToken;
     if (!savedRunnerUrl && savedCodexWsUrl) {
       savedRunnerUrl = suggestRunnerUrlFromCodexWsUrl(savedCodexWsUrl);
     }
-    if (!savedRunnerToken && savedCodexWsUrl) {
-      try {
-        const wsUrl = new URL(savedCodexWsUrl);
-        savedRunnerToken = String(wsUrl.searchParams.get("token") || "").trim();
-      } catch {}
+    if (!savedRunnerToken && legacyQueryToken) {
+      savedRunnerToken = legacyQueryToken;
     }
 
     const savedVoiceIds = {
@@ -532,7 +534,7 @@ export function useAppSettingsPersistenceController({
         runnerToken,
         cloudflareAccessClientId,
         cloudflareAccessClientSecret,
-      });
+      }).catch(() => {});
     }, 250);
 
     return () => clearTimeout(timer);

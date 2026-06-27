@@ -5,9 +5,11 @@ import type { AppScreen } from "../types/appTypes";
 import { TTS_SPEED_STEP, type SelectedVoiceIdByProvider, type TtsProvider } from "../utils/audioConfig";
 import type { CodexApprovalPolicy, ReasoningEffort } from "../utils/settingsParsers";
 import { parseCloudflareRunnerPairingPayload } from "../utils/cloudflareAccess";
+import { saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
 
 type UseAppContextActionsArgs = {
   drawerOpen: boolean;
+  runnerToken: string;
   defaultLlmDirectory: string;
   directoryExplorerParentPath: string;
   directoryExplorerRootPath: string;
@@ -85,6 +87,7 @@ type UseAppContextActionsArgs = {
 
 export function useAppContextActions({
   drawerOpen,
+  runnerToken,
   defaultLlmDirectory,
   directoryExplorerParentPath,
   directoryExplorerRootPath,
@@ -186,12 +189,22 @@ export function useAppContextActions({
   const changeRunnerToken = useCallback((value: string) => {
     setRunnerToken(value);
   }, [setRunnerToken]);
-  const clearCloudflareAccessCredentials = useCallback(() => {
+  const clearCloudflareAccessCredentials = useCallback(async () => {
+    await saveSecureRunnerCredentials({
+      runnerToken,
+      cloudflareAccessClientId: "",
+      cloudflareAccessClientSecret: "",
+    });
     setCloudflareAccessClientId("");
     setCloudflareAccessClientSecret("");
-  }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
+  }, [runnerToken, setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
   const applyCloudflareRunnerPairing = useCallback(async (payload: string) => {
     const pairing = parseCloudflareRunnerPairingPayload(payload);
+    await saveSecureRunnerCredentials({
+      runnerToken: pairing.runnerToken,
+      cloudflareAccessClientId: pairing.cloudflareAccessClientId,
+      cloudflareAccessClientSecret: pairing.cloudflareAccessClientSecret,
+    });
     setRunnerUrl(pairing.runnerUrl);
     setRunnerToken(pairing.runnerToken);
     setCodexWsToken(pairing.runnerToken);

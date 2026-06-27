@@ -34,6 +34,20 @@ function headerValue(req, name) {
   return truncate(raw || "");
 }
 
+function requestTokenPresence(req) {
+  const authorization = headerValue(req, "authorization");
+  const hasAuthHeaderToken = /^Bearer\s+\S+/i.test(authorization);
+  let hasQueryToken = false;
+  try {
+    hasQueryToken = Boolean(new URL(String(req?.url || ""), "http://runner.local").searchParams.get("token"));
+  } catch {}
+  return {
+    hasAuthHeaderToken,
+    hasQueryToken,
+    tokenSource: hasAuthHeaderToken ? "authorization" : (hasQueryToken ? "query" : "none"),
+  };
+}
+
 function maskIp(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -48,6 +62,7 @@ function maskIp(value) {
 }
 
 function connectionMeta(req, opts = {}) {
+  const tokenPresence = requestTokenPresence(req);
   return {
     connectionId: truncate(opts.connectionId || "", 80),
     route: truncate(opts.route || "", 80),
@@ -57,9 +72,13 @@ function connectionMeta(req, opts = {}) {
     cfRay: truncate(headerValue(req, "cf-ray"), 80),
     cfIpCountry: truncate(headerValue(req, "cf-ipcountry"), 16),
     userAgent: truncate(headerValue(req, "user-agent"), 180),
-    tokenSource: truncate(opts.tokenSource || "", 32),
-    hasAuthHeaderToken: Boolean(opts.hasAuthHeaderToken),
-    hasQueryToken: Boolean(opts.hasQueryToken),
+    tokenSource: truncate(opts.tokenSource || tokenPresence.tokenSource, 32),
+    hasAuthHeaderToken: opts.hasAuthHeaderToken == null
+      ? tokenPresence.hasAuthHeaderToken
+      : Boolean(opts.hasAuthHeaderToken),
+    hasQueryToken: opts.hasQueryToken == null
+      ? tokenPresence.hasQueryToken
+      : Boolean(opts.hasQueryToken),
     reason: truncate(opts.reason || "", 120),
     closeCode: typeof opts.closeCode === "number" ? opts.closeCode : null,
   };
@@ -176,6 +195,23 @@ export function recordRunnerConnectionError(req, opts = {}) {
     activeConnections.delete(event.connectionId);
   }
   return event;
+}
+
+export function trackRunnerWebSocket(req, ws, opts = {}) {
+  recordRunnerConnectionOpened(req, opts);
+  ws.on("error", (error) => {
+    recordRunnerConnectionError(req, {
+      ...opts,
+      reason: error instanceof Error ? error.message : String(error || "websocket_error"),
+    });
+  });
+  ws.on("close", (code, reasonBuffer) => {
+    recordRunnerConnectionClosed(req, {
+      ...opts,
+      closeCode: Number(code),
+      reason: Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString("utf8") : String(reasonBuffer || ""),
+    });
+  });
 }
 
 export function listRunnerConnectionEvents({ sinceSeq = 0, limit = 50 } = {}) {
