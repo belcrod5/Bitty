@@ -19,6 +19,11 @@ import { parseToolAutoApprovalMap } from "../utils/tooling";
 import { suggestRunnerUrlFromCodexWsUrl } from "../utils/urlResolvers";
 import type { LlmBackend, ToolAutoApprovalMap } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
+import {
+  loadSecureRunnerCredentials,
+  saveSecureRunnerCredentials,
+} from "../utils/secureRunnerCredentials";
+import { normalizeCodexWsInputs } from "../../codex/client/helpers";
 
 const LEGACY_DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/codex-ws";
 const DEFAULT_RUNNER_WS_URL = "ws://127.0.0.1:8788/runner-ws";
@@ -34,6 +39,8 @@ type UseAppSettingsPersistenceControllerArgs = {
   defaultSelectedVoiceIds: SelectedVoiceIdByProvider;
   runnerUrl: string;
   runnerToken: string;
+  cloudflareAccessClientId: string;
+  cloudflareAccessClientSecret: string;
   llmBackend: LlmBackend;
   llmDirectory: string;
   registeredDirectories: RegisteredDirectoryEntry[];
@@ -62,6 +69,8 @@ type UseAppSettingsPersistenceControllerArgs = {
   llmToolLogCompact: boolean;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
+  setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
+  setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
   setSessionTitleOverridesById: Dispatch<SetStateAction<Record<string, string>>>;
@@ -107,6 +116,8 @@ export function useAppSettingsPersistenceController({
   defaultSelectedVoiceIds,
   runnerUrl,
   runnerToken,
+  cloudflareAccessClientId,
+  cloudflareAccessClientSecret,
   llmBackend,
   llmDirectory,
   registeredDirectories,
@@ -135,6 +146,8 @@ export function useAppSettingsPersistenceController({
   llmToolLogCompact,
   setRunnerUrl,
   setRunnerToken,
+  setCloudflareAccessClientId,
+  setCloudflareAccessClientSecret,
   setLlmDirectory,
   setRegisteredDirectories,
   setSessionTitleOverridesById,
@@ -170,6 +183,20 @@ export function useAppSettingsPersistenceController({
 }: UseAppSettingsPersistenceControllerArgs) {
   const loadedSettingsPathRef = useRef<string | null>(null);
 
+  const applySecureCredentials = useCallback(async () => {
+    const secureCredentials = await loadSecureRunnerCredentials();
+    if (secureCredentials.runnerToken) {
+      setRunnerToken(secureCredentials.runnerToken);
+      setCodexWsToken((current) => String(current || "").trim() ? current : secureCredentials.runnerToken);
+    }
+    if (secureCredentials.cloudflareAccessClientId) {
+      setCloudflareAccessClientId(secureCredentials.cloudflareAccessClientId);
+    }
+    if (secureCredentials.cloudflareAccessClientSecret) {
+      setCloudflareAccessClientSecret(secureCredentials.cloudflareAccessClientSecret);
+    }
+  }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret, setCodexWsToken, setRunnerToken]);
+
   const settingsPath = useCallback(() => {
     const baseDir = FileSystem.documentDirectory;
     if (!baseDir) return "";
@@ -179,7 +206,6 @@ export function useAppSettingsPersistenceController({
   const buildPersistedSettingsPayload = useCallback(() => {
     return {
       runnerUrl,
-      runnerToken,
       llmBackend,
       llmDirectory,
       registeredDirectories,
@@ -190,7 +216,7 @@ export function useAppSettingsPersistenceController({
       },
       selectedLlmSessionId,
       codexWsUrl,
-      codexWsToken,
+      codexWsToken: codexWsToken.trim() === runnerToken.trim() ? "" : codexWsToken,
       modelRef,
       reasoningEffort,
       codexApprovalPolicy,
@@ -234,6 +260,8 @@ export function useAppSettingsPersistenceController({
     sessionMarkerColorsById,
     runnerToken,
     runnerUrl,
+    cloudflareAccessClientId,
+    cloudflareAccessClientSecret,
     selectedLlmSessionId,
     selectedVoiceIdByProvider,
     sttProvider,
@@ -245,19 +273,22 @@ export function useAppSettingsPersistenceController({
   const applyPersistedSettings = useCallback((parsed: Record<string, unknown>) => {
     let savedRunnerUrl = String(parsed.runnerUrl || "").trim();
     let savedRunnerToken = String(parsed.runnerToken || "").trim();
+    const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
+    const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
     const savedCodexWsUrlRaw = String(parsed.codexWsUrl || "").trim();
-    const savedCodexWsUrl = savedCodexWsUrlRaw === LEGACY_DEFAULT_CODEX_WS_URL
+    const mappedCodexWsUrl = savedCodexWsUrlRaw === LEGACY_DEFAULT_CODEX_WS_URL
       ? DEFAULT_RUNNER_WS_URL
       : savedCodexWsUrlRaw;
-    const savedCodexWsToken = String(parsed.codexWsToken || "").trim();
+    const explicitCodexWsToken = String(parsed.codexWsToken || "").trim();
+    const normalizedCodexWs = normalizeCodexWsInputs(mappedCodexWsUrl, explicitCodexWsToken);
+    const savedCodexWsUrl = normalizedCodexWs.wsUrl;
+    const savedCodexWsToken = explicitCodexWsToken;
+    const legacyQueryToken = explicitCodexWsToken ? "" : normalizedCodexWs.wsToken;
     if (!savedRunnerUrl && savedCodexWsUrl) {
       savedRunnerUrl = suggestRunnerUrlFromCodexWsUrl(savedCodexWsUrl);
     }
-    if (!savedRunnerToken && savedCodexWsUrl) {
-      try {
-        const wsUrl = new URL(savedCodexWsUrl);
-        savedRunnerToken = String(wsUrl.searchParams.get("token") || "").trim();
-      } catch {}
+    if (!savedRunnerToken && legacyQueryToken) {
+      savedRunnerToken = legacyQueryToken;
     }
 
     const savedVoiceIds = {
@@ -280,6 +311,12 @@ export function useAppSettingsPersistenceController({
       setRunnerUrl(savedRunnerUrl);
     }
     setRunnerToken(savedRunnerToken);
+    if (legacyCloudflareAccessClientId) {
+      setCloudflareAccessClientId(legacyCloudflareAccessClientId);
+    }
+    if (legacyCloudflareAccessClientSecret) {
+      setCloudflareAccessClientSecret(legacyCloudflareAccessClientSecret);
+    }
     setLlmDirectory(parseLlmDirectory(parsed.llmDirectory));
     const parsedRegisteredDirectories = parseRegisteredDirectories(parsed.registeredDirectories);
     setRegisteredDirectories(parsedRegisteredDirectories);
@@ -373,6 +410,8 @@ export function useAppSettingsPersistenceController({
     setCodexApprovalPolicy,
     setCodexWsToken,
     setCodexWsUrl,
+    setCloudflareAccessClientId,
+    setCloudflareAccessClientSecret,
     setExpandedDirectoryIds,
     setFaceTrackingEnabledWithRef,
     setLlmDirectory,
@@ -450,6 +489,7 @@ export function useAppSettingsPersistenceController({
     async function loadSettings() {
       const path = settingsPath();
       if (!path) {
+        await applySecureCredentials();
         setSettingsLoaded(true);
         return;
       }
@@ -459,6 +499,7 @@ export function useAppSettingsPersistenceController({
       try {
         const info = await FileSystem.getInfoAsync(path);
         if (!info.exists) {
+          await applySecureCredentials();
           setSettingsLoaded(true);
           return;
         }
@@ -468,6 +509,7 @@ export function useAppSettingsPersistenceController({
           throw new Error("設定ファイルの形式が正しくありません。");
         }
         applyPersistedSettings(parsed as Record<string, unknown>);
+        await applySecureCredentials();
       } catch {}
       setSettingsLoaded(true);
     }
@@ -475,6 +517,7 @@ export function useAppSettingsPersistenceController({
     void loadSettings();
   }, [
     applyPersistedSettings,
+    applySecureCredentials,
     setSettingsLoaded,
     settingsPath,
   ]);
@@ -487,10 +530,22 @@ export function useAppSettingsPersistenceController({
 
     const timer = setTimeout(() => {
       void FileSystem.writeAsStringAsync(path, JSON.stringify(buildPersistedSettingsPayload()));
+      void saveSecureRunnerCredentials({
+        runnerToken,
+        cloudflareAccessClientId,
+        cloudflareAccessClientSecret,
+      }).catch(() => {});
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [buildPersistedSettingsPayload, settingsLoaded, settingsPath]);
+  }, [
+    buildPersistedSettingsPayload,
+    cloudflareAccessClientId,
+    cloudflareAccessClientSecret,
+    runnerToken,
+    settingsLoaded,
+    settingsPath,
+  ]);
 
   return {
     importSettingsJson,

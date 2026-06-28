@@ -1,15 +1,11 @@
-export function suggestCodexWsUrlFromRunnerUrl(rawRunnerUrl: unknown, rawRunnerToken?: unknown): string {
+export function suggestCodexWsUrlFromRunnerUrl(rawRunnerUrl: unknown): string {
   const normalizedRunnerUrl = String(rawRunnerUrl || "").trim().replace(/\/$/, "");
   if (!normalizedRunnerUrl) return "";
   try {
-    const runnerToken = String(rawRunnerToken || "").trim();
     const url = new URL(normalizedRunnerUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/codex-ws";
     url.search = "";
-    if (runnerToken) {
-      url.searchParams.set("token", runnerToken);
-    }
     url.hash = "";
     return url.toString().replace(/\/$/, "");
   } catch {
@@ -17,18 +13,14 @@ export function suggestCodexWsUrlFromRunnerUrl(rawRunnerUrl: unknown, rawRunnerT
   }
 }
 
-export function suggestRunnerWsUrlFromRunnerUrl(rawRunnerUrl: unknown, rawRunnerToken?: unknown): string {
+export function suggestRunnerWsUrlFromRunnerUrl(rawRunnerUrl: unknown): string {
   const normalizedRunnerUrl = String(rawRunnerUrl || "").trim().replace(/\/$/, "");
   if (!normalizedRunnerUrl) return "";
   try {
-    const runnerToken = String(rawRunnerToken || "").trim();
     const url = new URL(normalizedRunnerUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/runner-ws";
     url.search = "";
-    if (runnerToken) {
-      url.searchParams.set("token", runnerToken);
-    }
     url.hash = "";
     return url.toString().replace(/\/$/, "");
   } catch {

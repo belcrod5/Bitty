@@ -15,6 +15,11 @@ import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
 import { createWorkspaceFilesService } from "./workspace-files.mjs";
 import { fetchGitBranches, fetchGitBranchStatus } from "./git-branches.mjs";
+import {
+  listRunnerConnectionEvents,
+  trackRunnerWebSocket,
+} from "./runner-connection-events.mjs";
+import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -2078,10 +2083,8 @@ async function registerTtsMedia(audioBuffer, mimeType, publicBaseUrl) {
   };
 }
 
-function parseDebugAuthToken(req, reqUrl) {
-  const bearer = parseAuthToken(req);
-  if (bearer) return bearer;
-  return String(reqUrl.searchParams.get("token") || "").trim();
+function parseHttpBearerToken(req) {
+  return parseAuthToken(req);
 }
 
 function parseSingleByteRange(rangeHeader, totalBytes) {
@@ -7487,7 +7490,7 @@ const server = http.createServer(async (req, res) => {
   const pathname = reqUrl.pathname;
 
   if (RUNNER_LOG_REQUESTS) {
-    console.log(`[request] ${req.method} ${req.url} from ${req.socket.remoteAddress || "unknown"}`);
+    console.log(`[request] ${req.method} ${pathname} from ${req.socket.remoteAddress || "unknown"}`);
   }
 
   if (req.method === "GET" && pathname === "/health") {
@@ -7514,7 +7517,7 @@ const server = http.createServer(async (req, res) => {
         message: "RUNNER_TOKEN is required",
       });
     }
-    if (parseDebugAuthToken(req, reqUrl) !== RUNNER_TOKEN) {
+    if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
       return json(res, 401, { error: "unauthorized" });
     }
     const limit = Number(reqUrl.searchParams.get("limit") || 50);
@@ -7524,6 +7527,32 @@ const server = http.createServer(async (req, res) => {
       logPath: path.relative(WORKSPACE_ROOT, CODEX_WS_PROXY_DEBUG_LOG_PATH),
       bufferSize: codexWsProxyDebugBuffer.length,
     });
+  }
+
+  if (req.method === "GET" && pathname === "/runner/connection-events") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, {
+        error: "runner_token_missing",
+        message: "RUNNER_TOKEN is required",
+      });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    try {
+      const sinceSeq = Number(reqUrl.searchParams.get("sinceSeq") || 0);
+      const limit = Number(reqUrl.searchParams.get("limit") || 50);
+      return json(res, 200, {
+        ok: true,
+        ...listRunnerConnectionEvents({ sinceSeq, limit }),
+      });
+    } catch (err) {
+      console.error("[runner/connection-events] failed", err);
+      return json(res, 500, {
+        error: "runner_connection_events_failed",
+        message: errorMessage(err),
+      });
+    }
   }
 
   if (req.method === "GET" && pathname === "/config/limits") {
@@ -8092,7 +8121,7 @@ const server = http.createServer(async (req, res) => {
         message: "RUNNER_TOKEN is required",
       });
     }
-    if (parseDebugAuthToken(req, reqUrl) !== RUNNER_TOKEN) {
+    if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
       return json(res, 401, { error: "unauthorized" });
     }
     try {
@@ -8693,6 +8722,11 @@ runnerWsServer.on("connection", (ws, req) => {
   runnerWsActiveClients.add(ws);
   runnerWsEnvelopeClients.add(ws);
   codexWsRelayClientMode.set(ws, "runner-ws-envelope");
+  trackRunnerWebSocket(req, ws, {
+    connectionId,
+    route: "runner-ws",
+    endpoint: reqUrl.pathname,
+  });
 
   function resolveAttachedTtsJob() {
     if (!attachedTtsJobId) return null;
@@ -9082,6 +9116,12 @@ wsServer.on("connection", (ws, req) => {
   const wsEndpoint = String(wsReqUrl?.pathname || "/stream-tts");
   const wsRemoteAddress = String(req?.socket?.remoteAddress || "");
   const wsPublicBaseUrl = resolvePublicBaseUrl(req, wsReqUrl);
+  const connectionId = `stream_tts_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+  trackRunnerWebSocket(req, ws, {
+    connectionId,
+    route: "stream-tts",
+    endpoint: wsEndpoint,
+  });
 
   let started = false;
   let attachedJobId = "";
@@ -10651,6 +10691,7 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   const upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL;
   const requestToken = String(reqUrl.searchParams.get("token") || "").trim();
   const authToken = parseAuthToken(req);
+  const connectionId = `codex_ws_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
   const protocolList = req.headers["sec-websocket-protocol"];
   const protocols = Array.isArray(protocolList)
     ? protocolList
@@ -10740,7 +10781,6 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
     relayId: relay.relayId,
     remote,
     endpoint: reqUrl.pathname,
-    url: req?.url || "",
     host: String(req?.headers?.host || ""),
     hasQueryToken: !!requestToken,
     hasAuthHeaderToken: !!authToken,
@@ -10750,6 +10790,11 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
     resumeFromSeq,
     replayed,
     threadId: relay.threadId || "",
+  });
+  trackRunnerWebSocket(req, clientWs, {
+    connectionId,
+    route: "codex-ws-proxy",
+    endpoint: reqUrl.pathname,
   });
 
   clientWs.on("message", (data, isBinary) => {
@@ -10787,94 +10832,15 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   });
 });
 
-server.on("upgrade", (req, socket, head) => {
-  const reqUrl = parseRequestUrl(req);
-  const remoteAddress = String(req.socket.remoteAddress || "unknown");
-  const authToken = parseAuthToken(req);
-  const queryToken = String(reqUrl.searchParams.get("token") || "").trim();
-  const providedToken = authToken || queryToken;
-  if (RUNNER_LOG_REQUESTS) {
-    console.log(`[request] WS ${reqUrl.pathname} from ${remoteAddress}`);
-  }
-  void appendCodexWsProxyDebug("upgrade_request", {
-    remoteAddress,
-    endpoint: reqUrl.pathname,
-    url: req.url || "",
-    host: String(req.headers.host || ""),
-    hasAuthHeaderToken: !!authToken,
-    hasQueryToken: !!queryToken,
-    tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-    tokenLength: providedToken.length,
-  });
-  const isRunnerWsPath = reqUrl.pathname === RUNNER_WS_PATH;
-  const isStreamTtsPath = reqUrl.pathname === "/stream-tts";
-  const isCodexProxyPath = reqUrl.pathname === "/codex-ws";
-  if (!isRunnerWsPath && !isStreamTtsPath && !isCodexProxyPath) {
-    void appendCodexWsProxyDebug("upgrade_rejected", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      reason: "path_not_supported",
-    });
-    socket.destroy();
-    return;
-  }
-
-  if (!RUNNER_TOKEN) {
-    void appendCodexWsProxyDebug("upgrade_rejected", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      reason: "runner_token_missing",
-    });
-    socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  if (!providedToken || providedToken !== RUNNER_TOKEN) {
-    void appendCodexWsProxyDebug("upgrade_rejected", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      reason: !providedToken ? "token_missing" : "token_mismatch",
-      tokenSource: authToken ? "authorization" : (queryToken ? "query" : "none"),
-      tokenLength: providedToken.length,
-    });
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  if (isRunnerWsPath) {
-    void appendCodexWsProxyDebug("upgrade_accepted", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      route: "runner-ws",
-    });
-    runnerWsServer.handleUpgrade(req, socket, head, (ws) => {
-      runnerWsServer.emit("connection", ws, req);
-    });
-    return;
-  }
-
-  if (isCodexProxyPath) {
-    void appendCodexWsProxyDebug("upgrade_accepted", {
-      remoteAddress,
-      endpoint: reqUrl.pathname,
-      route: "codex-ws-proxy",
-    });
-    codexProxyWsServer.handleUpgrade(req, socket, head, (ws) => {
-      codexProxyWsServer.emit("connection", ws, req);
-    });
-    return;
-  }
-
-  void appendCodexWsProxyDebug("upgrade_accepted", {
-    remoteAddress,
-    endpoint: reqUrl.pathname,
-    route: "stream-tts",
-  });
-  wsServer.handleUpgrade(req, socket, head, (ws) => {
-    wsServer.emit("connection", ws, req);
-  });
+installRunnerWebSocketUpgradeHandler({
+  server,
+  runnerToken: RUNNER_TOKEN,
+  runnerWsPath: RUNNER_WS_PATH,
+  runnerWsServer,
+  streamTtsWsServer: wsServer,
+  codexProxyWsServer,
+  appendDebug: appendCodexWsProxyDebug,
+  logRequests: RUNNER_LOG_REQUESTS,
 });
 
 async function initializeLlmFileRuntime() {
@@ -11020,6 +10986,7 @@ export const __TESTING__ = {
   runCommandSandboxedTool,
   runGitDiffTool,
   extractYouTubeVideoIdsFromToolResult,
+  parseHttpBearerToken,
   runCodexWithFileTools,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,

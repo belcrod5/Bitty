@@ -4,6 +4,7 @@ import {
   encodeRunnerWsTtsStart,
   normalizeRunnerWsIncomingTtsEvent,
 } from "../../runnerWs/ttsAdapter";
+import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
 import type { TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
 import { parseStreamSegmentEnvelope } from "../utils/streamPayload";
 import { collectStreamWaveformSegments, mergeWaveformBars } from "../utils/waveform";
@@ -147,7 +148,7 @@ export function useSynthesizeSpeechStreamController(
 
     const wsUrl = ttsStreamWsUrl();
     const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
-    const ws = new WebSocket(wsUrl);
+    const ws = createWebSocketWithOptionalAuth(wsUrl, runnerToken);
     streamSocketRef.current = ws;
     let done = false;
 

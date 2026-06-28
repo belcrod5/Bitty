@@ -1,4 +1,4 @@
-import { normalizeThreadListEntry, takeResolvedApprovalRequest } from "./helpers";
+import { normalizeCodexWsInputs, normalizeThreadListEntry, takeResolvedApprovalRequest } from "./helpers";
 import type { ApprovalRequest } from "../approvalFlow";
 
 describe("normalizeThreadListEntry", () => {
@@ -46,5 +46,27 @@ describe("takeResolvedApprovalRequest", () => {
     expect(takeResolvedApprovalRequest(pending, { requestId: 20 })).toBe(request);
     expect(guard.active).toBe(false);
     expect(pending.size).toBe(0);
+  });
+});
+
+describe("normalizeCodexWsInputs", () => {
+  it("migrates a legacy query token out of the URL", () => {
+    expect(normalizeCodexWsInputs(
+      "wss://runner.example.com/codex-ws?token=legacy-secret&resume=1",
+      ""
+    )).toEqual({
+      wsUrl: "wss://runner.example.com/codex-ws?resume=1",
+      wsToken: "legacy-secret",
+    });
+  });
+
+  it("removes query tokens without replacing an explicit token", () => {
+    expect(normalizeCodexWsInputs(
+      "wss://runner.example.com/codex-ws?Token=old-secret",
+      "secure-store-secret"
+    )).toEqual({
+      wsUrl: "wss://runner.example.com/codex-ws",
+      wsToken: "secure-store-secret",
+    });
   });
 });

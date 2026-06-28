@@ -19,6 +19,8 @@ export type AppSettingsContextValue = {
   codexWsUrl: string;
   codexWsToken: string;
   runnerToken: string;
+  cloudflareAccessClientId: string;
+  cloudflareAccessEnabled: boolean;
   executionEnvironment: string;
   isExpoGo: boolean;
   isDev: boolean;
@@ -49,6 +51,8 @@ export type AppSettingsContextValue = {
   changeCodexWsUrl: (value: string) => void;
   changeCodexWsToken: (value: string) => void;
   changeRunnerToken: (value: string) => void;
+  clearCloudflareAccessCredentials: () => Promise<void>;
+  applyCloudflareRunnerPairing: (payload: string) => Promise<void>;
   selectCodexApprovalPolicy: (value: "on-request" | "never") => void;
   loadVoices: () => void;
   changeTtsSpeedInput: (value: string) => void;

@@ -125,6 +125,14 @@ export type TtsPlaybackTarget = {
   panelId?: string;
   sessionId?: string;
 };
+
+export type LlmMessageCompletion = {
+  sessionId: string;
+  threadId: string;
+  directory: string;
+  previewText: string;
+  completedAtMs: number;
+};
 export type MediaTarget = "all" | "youtube" | "tts";
 export type MediaAction = "stop" | "next" | "prev";
 
@@ -230,7 +238,7 @@ export type GitChangedFilesDirectoryState = {
   error: string;
 };
 
-export type AppScreen = "mini_board" | "skia_board" | "debug" | "audio_lab";
+export type AppScreen = "mini_board" | "skia_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
 export type SlashCommandName = "/status" | "/compact";
 
 export type UiSfxKey =

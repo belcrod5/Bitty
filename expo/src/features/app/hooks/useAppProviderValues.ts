@@ -17,9 +17,7 @@ import type {
   GitChangedFilesDirectoryState,
 } from "../types/appTypes";
 
-type UseAppShellContextValueArgs = AppShellContextValue;
-
-export function useAppShellContextValue(args: UseAppShellContextValueArgs): AppShellContextValue {
+export function useAppShellContextValue(args: AppShellContextValue): AppShellContextValue {
   const {
     activeScreen,
     drawerOpen,
@@ -30,6 +28,7 @@ export function useAppShellContextValue(args: UseAppShellContextValueArgs): AppS
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openCloudflareTunnelMonitorScreen,
   } = args;
 
   return useMemo(
@@ -43,22 +42,21 @@ export function useAppShellContextValue(args: UseAppShellContextValueArgs): AppS
       openDebugScreen,
       openAudioLabScreen,
       openMiniBoardScreen,
+      openCloudflareTunnelMonitorScreen,
     }),
-    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openDebugScreen, openAudioLabScreen, openMiniBoardScreen]
+    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openDebugScreen, openAudioLabScreen, openMiniBoardScreen, openCloudflareTunnelMonitorScreen]
   );
 }
 
-type UseAppSettingsContextValueArgs = AppSettingsContextValue;
-
-export function useAppSettingsContextValue(
-  args: UseAppSettingsContextValueArgs
-): AppSettingsContextValue {
+export function useAppSettingsContextValue(args: AppSettingsContextValue): AppSettingsContextValue {
   const {
     runnerUrl,
     llmDirectory,
     codexWsUrl,
     codexWsToken,
     runnerToken,
+    cloudflareAccessClientId,
+    cloudflareAccessEnabled,
     executionEnvironment,
     isExpoGo,
     isDev,
@@ -89,6 +87,8 @@ export function useAppSettingsContextValue(
     changeCodexWsUrl,
     changeCodexWsToken,
     changeRunnerToken,
+    clearCloudflareAccessCredentials,
+    applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,
     loadVoices,
     changeTtsSpeedInput,
@@ -126,6 +126,8 @@ export function useAppSettingsContextValue(
       codexWsUrl,
       codexWsToken,
       runnerToken,
+      cloudflareAccessClientId,
+      cloudflareAccessEnabled,
       executionEnvironment,
       isExpoGo,
       isDev,
@@ -156,6 +158,8 @@ export function useAppSettingsContextValue(
       changeCodexWsUrl,
       changeCodexWsToken,
       changeRunnerToken,
+      clearCloudflareAccessCredentials,
+      applyCloudflareRunnerPairing,
       selectCodexApprovalPolicy,
       loadVoices,
       changeTtsSpeedInput,
@@ -191,6 +195,8 @@ export function useAppSettingsContextValue(
       codexWsUrl,
       codexWsToken,
       runnerToken,
+      cloudflareAccessClientId,
+      cloudflareAccessEnabled,
       executionEnvironment,
       isExpoGo,
       isDev,
@@ -221,6 +227,8 @@ export function useAppSettingsContextValue(
       changeCodexWsUrl,
       changeCodexWsToken,
       changeRunnerToken,
+      clearCloudflareAccessCredentials,
+      applyCloudflareRunnerPairing,
       selectCodexApprovalPolicy,
       loadVoices,
       changeTtsSpeedInput,
@@ -253,10 +261,8 @@ export function useAppSettingsContextValue(
   );
 }
 
-type UseConversationContextValueArgs = ConversationContextValue;
-
 export function useConversationContextValue(
-  args: UseConversationContextValueArgs
+  args: ConversationContextValue
 ): ConversationContextValue {
   const {
     conversationMessages,
@@ -461,10 +467,8 @@ export function useConversationContextValue(
   );
 }
 
-type UseDebugRuntimeContextValueArgs = DebugRuntimeContextValue;
-
 export function useDebugRuntimeContextValue(
-  args: UseDebugRuntimeContextValueArgs
+  args: DebugRuntimeContextValue
 ): DebugRuntimeContextValue {
   const {
     codexWsProbeLoading,
@@ -724,10 +728,8 @@ export function useChatDiagnosticsContextValue(
   );
 }
 
-type UseDebugConversationContextValueArgs = DebugConversationContextValue;
-
 export function useDebugConversationContextValue(
-  args: UseDebugConversationContextValueArgs
+  args: DebugConversationContextValue
 ): DebugConversationContextValue {
   const {
     llmVisual,
@@ -848,10 +850,8 @@ export function useDebugConversationContextValue(
   );
 }
 
-type UseDebugSpeechContextValueArgs = DebugSpeechContextValue;
-
 export function useDebugSpeechContextValue(
-  args: UseDebugSpeechContextValueArgs
+  args: DebugSpeechContextValue
 ): DebugSpeechContextValue {
   const {
     importSettingsJson,
@@ -972,10 +972,8 @@ export function useDebugSpeechContextValue(
   );
 }
 
-type UseYouTubePlayerContextValueArgs = YouTubePlayerContextValue;
-
 export function useYouTubePlayerContextValue(
-  args: UseYouTubePlayerContextValueArgs
+  args: YouTubePlayerContextValue
 ): YouTubePlayerContextValue {
   const {
     activeYouTubeQueuePositionLabel,
@@ -1060,10 +1058,8 @@ export function useYouTubePlayerContextValue(
   );
 }
 
-type UseChatComposerContextValueArgs = ChatComposerContextValue;
-
 export function useChatComposerContextValue(
-  args: UseChatComposerContextValueArgs
+  args: ChatComposerContextValue
 ): ChatComposerContextValue {
   const {
     composerWaveformVisible,
@@ -1163,10 +1159,8 @@ export function useChatComposerContextValue(
   );
 }
 
-type UseChatVisualContextValueArgs = ChatVisualContextValue;
-
 export function useChatVisualContextValue(
-  args: UseChatVisualContextValueArgs
+  args: ChatVisualContextValue
 ): ChatVisualContextValue {
   const {
     isRobotAnimating,

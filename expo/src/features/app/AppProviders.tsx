@@ -55,7 +55,6 @@ import {
   DebugSpeechProvider,
   type DebugSpeechContextValue,
 } from "./contexts/DebugSpeechContext";
-import { RunnerWsProvider } from "../runnerWs/RunnerWsProvider";
 
 type AppProvidersProps = {
   appShell: AppShellContextValue;
@@ -72,9 +71,6 @@ type AppProvidersProps = {
   debugRuntime: DebugRuntimeContextValue;
   debugConversation: DebugConversationContextValue;
   debugSpeech: DebugSpeechContextValue;
-  runnerWsUrl: string;
-  runnerWsToken: string;
-  runnerWsEnabled: boolean;
   children: ReactNode;
 };
 
@@ -93,9 +89,6 @@ export function AppProviders({
   debugRuntime,
   debugConversation,
   debugSpeech,
-  runnerWsUrl,
-  runnerWsToken,
-  runnerWsEnabled,
   children,
 }: AppProvidersProps) {
   return (
@@ -113,13 +106,7 @@ export function AppProviders({
                           <DebugRuntimeProvider value={debugRuntime}>
                             <DebugConversationProvider value={debugConversation}>
                               <DebugSpeechProvider value={debugSpeech}>
-                                <RunnerWsProvider
-                                  url={runnerWsUrl}
-                                  token={runnerWsToken}
-                                  enabled={runnerWsEnabled}
-                                >
-                                  {children}
-                                </RunnerWsProvider>
+                                {children}
                               </DebugSpeechProvider>
                             </DebugConversationProvider>
                           </DebugRuntimeProvider>

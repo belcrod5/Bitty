@@ -19,6 +19,13 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Cloudflare TunnelのPairing QR読み取りと顔向き判定のためにカメラを使用します。",
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/icon.png",
@@ -28,7 +35,8 @@
         }
       ],
       "expo-font",
-      "react-native-enriched-markdown"
+      "react-native-enriched-markdown",
+      "expo-secure-store"
     ],
     "ios": {
       "supportsTablet": true,
@@ -43,7 +51,7 @@
           "NSAllowsLocalNetworking": true
         },
         "NSLocalNetworkUsageDescription": "WebSocket接続のためにローカルネットワークを使用します。",
-        "NSCameraUsageDescription": "画面を見ているか判定するためにカメラを使用します。",
+        "NSCameraUsageDescription": "Cloudflare TunnelのPairing QR読み取りと顔向き判定のためにカメラを使用します。",
         "NSMicrophoneUsageDescription": "録音して文字起こしを行うためにマイクを使用します。",
         "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
         "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"

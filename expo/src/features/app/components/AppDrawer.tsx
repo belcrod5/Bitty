@@ -63,6 +63,7 @@ export type AppDrawerProps = {
   formatSessionUpdatedAt: (updatedAt: string) => string;
   onOpenDebug: () => void;
   onOpenMiniBoard: () => void;
+  onOpenCloudflareTunnelMonitor: () => void;
   onOpenSkiaBoard: () => void;
   onOpenDirectoryExplorer: () => void;
   onToggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
@@ -123,6 +124,7 @@ export function AppDrawer({
   formatSessionUpdatedAt,
   onOpenDebug,
   onOpenMiniBoard,
+  onOpenCloudflareTunnelMonitor,
   onOpenSkiaBoard,
   onOpenDirectoryExplorer,
   onToggleDirectoryExpanded,
@@ -388,6 +390,10 @@ export function AppDrawer({
         <TouchableOpacity style={styles.menuNavButton} onPress={onOpenMiniBoard}>
           <Text style={styles.menuNavTitle}>Mini Board</Text>
           <Text style={styles.menuNavValue}>ミニボードを開く</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenCloudflareTunnelMonitor}>
+          <Text style={styles.menuNavTitle}>Cloudflare Tunnel</Text>
+          <Text style={styles.menuNavValue}>Tunnel接続ログを開く</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSkiaBoard}>
           <Text style={styles.menuNavTitle}>Skia Board</Text>

@@ -1,0 +1,7 @@
+tunnel: TUNNEL_ID
+credentials-file: CREDENTIALS_FILE
+
+ingress:
+  - hostname: app.example.com
+    service: http://127.0.0.1:8788
+  - service: http_status:404

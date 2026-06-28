@@ -49,6 +49,9 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 
 ## 必要なキー（このrunner用）
 - 必須: `RUNNER_TOKEN`（`/runner-ws` `/codex-ws` `/stream-tts` `/stt` `/tts` `/client-logs` 保護用のBearerトークン）
+  - `run-local.sh` では既定で `RUNNER_TOKEN_MODE=random` のため、起動ごとにランダム生成し、Expo向けPairing QRで渡します。
+  - 固定tokenで検証する場合だけ `RUNNER_TOKEN_MODE=env` と `RUNNER_TOKEN` をlocal `.env` に設定します。
+  - detached起動時はQRをログへ残さないため、起動後に `private_runner/run-local.sh pairing-qr` で表示します。
 - 不要: `OPENAI_API_KEY`（このrunnerはCodex認証を利用するため）
 - `/stt` を使う場合のみ必須: `GROQ_API_KEY`
 - `/tts` は `ttsProvider` で `elevenlabs` / `google` / `aivisspeech` を切替可能
@@ -74,7 +77,8 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 ## 起動
 ```bash
 cp private_runner/.env.example private_runner/.env
-# .env を編集して RUNNER_TOKEN と CODEX_HOME を設定
+# .env を編集して CODEX_HOME を設定
+# public Tunnel経由で使う場合は RUNNER_PUBLIC_URL とCloudflare Access service tokenをKeychainへ設定
 private_runner/run-local.sh start
 # 停止
 private_runner/run-local.sh stop
@@ -126,11 +130,13 @@ rg -n '"source":"session_diag"' "$LATEST" | tail -n 200
 ## サーバー構成（現在）
 - runner（既定: 8788）: `/runner-ws` `/codex-ws` `/stream-tts` `/stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
 - codex app-server（既定: 4500）: JSON-RPC本体
-- 推奨接続先（iOS）: `ws://<Mac LAN IP>:8788/runner-ws?token=<RUNNER_TOKEN>`
-- 互換接続先（iOS）: `ws://<Mac LAN IP>:8788/codex-ws?token=<RUNNER_TOKEN>`
+- 推奨接続先（iOS）: `ws://<Mac LAN IP>:8788/runner-ws`
+- 互換接続先（iOS）: `ws://<Mac LAN IP>:8788/codex-ws`
+- iOS/Expo は `RUNNER_TOKEN` をURL queryへ載せず、WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>` で送ります。
 
 LLM本線:
 - iOS/Expo からは `/runner-ws` の `llm:rpc` envelope 経由で `thread/*` と `turn/start` を使います。runner から codex app-server への upstream は raw JSON-RPC のままです。
+- Expo側で常時接続の補助WebSocketは作りません。会話、診断、TTSなど実際の操作が必要な時だけ、同じ認証ヘッダー付きWebSocket生成経路を使います。
 - `/codex-ws` は legacy 互換経路です。raw JSON-RPC と `runner_relay_*` control message を維持しています。
 - `/reply` と `/reply-files` は legacy 互換APIです。
 - `/runner-ws` と `/codex-ws` は resumable relay 対応です。`/runner-ws` は `relay:resume` envelope、`/codex-ws` は `resumeThreadId=<threadId>&resumeFromSeq=<lastSeq>` query で、保持中イベントの未受信分を再送して live stream に合流します。
@@ -144,6 +150,11 @@ resumable relay 環境変数:
 起動例:
 ```bash
 private_runner/run-local.sh start --mode full
+```
+
+Cloudflare Tunnel も同時に起動する場合だけ、明示的に opt-in します:
+```bash
+private_runner/run-local.sh start --mode full --cloudflare-tunnel
 ```
 
 ## Google Cloud TTS ローカル認証（ADC）
@@ -240,7 +251,7 @@ npm run ios
 10. アプリ入力値
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
 - 実機: `Runner URL = http://<MacのLAN IP>:8788`
-- `Runner Token` は `.env` の `RUNNER_TOKEN`
+- `Runner Token` は Pairing QR の token。固定token検証時だけ、`RUNNER_TOKEN_MODE=env` にして `.env` の `RUNNER_TOKEN` と同じ値を使う
 - Appには次のUXオプションがあります:
   - `LLM Model` プルダウンで `openai-codex/gpt-5.4-mini` / `openai-codex/gpt-5.4` / `openai-codex/gpt-5.3-codex` / `openai-codex/gpt-5.3-codex-spark` を選択
   - `Think` プルダウンで `low|medium|high|xhigh` を選択
@@ -499,7 +510,8 @@ npm run ios
 ```
 
 ### WS /runner-ws（統合 endpoint）
-- URL: `ws://127.0.0.1:8788/runner-ws?token=<RUNNER_TOKEN>`
+- URL: `ws://127.0.0.1:8788/runner-ws`
+- 認証: WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>`
 - Expo ↔ runner 間だけ envelope 化します。runner ↔ codex app-server upstream は raw JSON-RPC のままです。
 - envelope:
 ```json
@@ -520,7 +532,8 @@ npm run ios
 - TTS 音声本体は WebSocket に載せず、従来どおり `audioUrl` を返します。
 
 ### WS /stream-tts（legacy 互換）
-- URL: `ws://127.0.0.1:8788/stream-tts?token=<RUNNER_TOKEN>`
+- URL: `ws://127.0.0.1:8788/stream-tts`
+- 認証: WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>`
 - 最初にクライアントから `start` メッセージを送信:
 ```json
 {

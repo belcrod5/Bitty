@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useDebugRuntime } from "../contexts/DebugRuntimeContext";
@@ -7,13 +7,8 @@ import {
   suggestCodexWsUrlFromRunnerUrl,
   suggestRunnerWsUrlFromRunnerUrl,
 } from "../utils/urlResolvers";
-import { useRunnerWs } from "../../runnerWs/RunnerWsProvider";
 
 export function DebugConnectionPanel() {
-  const runnerWs = useRunnerWs();
-  const runnerWsPingRequestIdRef = useRef("");
-  const runnerWsPingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [runnerWsPingStatus, setRunnerWsPingStatus] = useState("idle");
   const {
     codexWsProbeLoading,
     probeCurrentWs,
@@ -64,67 +59,17 @@ export function DebugConnectionPanel() {
     openThinkSelect,
   } = useAppSettings();
 
-  const clearRunnerWsPingTimeout = useCallback(() => {
-    if (!runnerWsPingTimeoutRef.current) return;
-    clearTimeout(runnerWsPingTimeoutRef.current);
-    runnerWsPingTimeoutRef.current = null;
-  }, []);
-
-  useEffect(() => {
-    return runnerWs.subscribe({ channel: "control", op: "pong" }, (message) => {
-      const requestId = String(message.requestId || "");
-      const expectedRequestId = runnerWsPingRequestIdRef.current;
-      if (!expectedRequestId || requestId !== expectedRequestId) return;
-      clearRunnerWsPingTimeout();
-      runnerWsPingRequestIdRef.current = "";
-      setRunnerWsPingStatus(`pong ${requestId || "-"}`);
-    });
-  }, [clearRunnerWsPingTimeout, runnerWs.subscribe]);
-
-  useEffect(() => {
-    clearRunnerWsPingTimeout();
-    runnerWsPingRequestIdRef.current = "";
-    setRunnerWsPingStatus(runnerWs.enabled ? "idle" : "disabled");
-  }, [clearRunnerWsPingTimeout, runnerWs.enabled, runnerWs.url]);
-
-  useEffect(() => {
-    return () => {
-      clearRunnerWsPingTimeout();
-    };
-  }, [clearRunnerWsPingTimeout]);
-
-  const pingRunnerWsProvider = useCallback(() => {
-    const requestId = `debug-${Date.now()}`;
-    clearRunnerWsPingTimeout();
-    runnerWsPingRequestIdRef.current = requestId;
-    const sent = runnerWs.send({
-      channel: "control",
-      op: "ping",
-      requestId,
-    });
-    if (!sent) {
-      setRunnerWsPingStatus("send_failed");
-      return;
-    }
-    setRunnerWsPingStatus(`sent ${requestId}`);
-    runnerWsPingTimeoutRef.current = setTimeout(() => {
-      if (runnerWsPingRequestIdRef.current !== requestId) return;
-      runnerWsPingTimeoutRef.current = null;
-      setRunnerWsPingStatus(`timeout ${requestId}`);
-    }, 3000);
-  }, [clearRunnerWsPingTimeout, runnerWs.send]);
-
   const applyCodexWsRoute = useCallback(() => {
-    const suggested = suggestCodexWsUrlFromRunnerUrl(runnerUrl, runnerToken);
+    const suggested = suggestCodexWsUrlFromRunnerUrl(runnerUrl);
     if (!suggested) return;
     changeCodexWsUrl(suggested);
-  }, [changeCodexWsUrl, runnerToken, runnerUrl]);
+  }, [changeCodexWsUrl, runnerUrl]);
 
   const applyRunnerWsRoute = useCallback(() => {
-    const suggested = suggestRunnerWsUrlFromRunnerUrl(runnerUrl, runnerToken);
+    const suggested = suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
     if (!suggested) return;
     changeCodexWsUrl(suggested);
-  }, [changeCodexWsUrl, runnerToken, runnerUrl]);
+  }, [changeCodexWsUrl, runnerUrl]);
 
   return (
     <>
@@ -268,20 +213,6 @@ export function DebugConnectionPanel() {
           <Text style={styles.hint}>Aux server suite status: {runner8788SuiteStatus}</Text>
           <Text style={styles.hint}>WS E2E status: {codexWsE2eStatus}</Text>
           <Text style={styles.hint}>現在のCodex WS URL / Token設定で接続確認します。</Text>
-          <Text style={styles.hint}>
-            Runner WS Provider: enabled={String(runnerWs.enabled)} connected={String(runnerWs.snapshot.connected)} readyState={runnerWs.snapshot.readyState} reconnects={runnerWs.snapshot.reconnectCount}
-          </Text>
-          <Text style={styles.hint}>Runner WS Provider error: {runnerWs.snapshot.lastError || "-"}</Text>
-          <Text style={styles.hint}>Runner WS Provider ping: {runnerWsPingStatus}</Text>
-          <View style={styles.row}>
-            <TouchableOpacity
-              style={[styles.buttonSecondary, (!runnerWs.enabled || !runnerWs.snapshot.connected) && styles.buttonDisabled]}
-              onPress={pingRunnerWsProvider}
-              disabled={!runnerWs.enabled || !runnerWs.snapshot.connected}
-            >
-              <Text style={styles.buttonText}>Ping Shared /runner-ws Provider</Text>
-            </TouchableOpacity>
-          </View>
         </>
       ) : null}
 

@@ -73,6 +73,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     formatSessionUpdatedAt: () => "today",
     onOpenDebug: jest.fn(),
     onOpenMiniBoard: jest.fn(),
+    onOpenCloudflareTunnelMonitor: jest.fn(),
     onOpenSkiaBoard: jest.fn(),
     onOpenDirectoryExplorer: jest.fn(),
     onToggleDirectoryExpanded: jest.fn(),

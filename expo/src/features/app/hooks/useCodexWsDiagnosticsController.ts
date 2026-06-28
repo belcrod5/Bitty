@@ -6,6 +6,7 @@ import {
   runCodexAppServerTurn,
 } from "../../codex/codexAppServerClient";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
+import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
 import type { AppScreen, AutoClientLogEntry } from "../types/appTypes";
 import {
   deriveRunnerBaseUrlFromCodexWsUrl,
@@ -461,7 +462,7 @@ export function useCodexWsDiagnosticsController({
     }
   }
 
-  function toWsProxyUrlFromHttpBase(httpBase: string, token: string, path = "/codex-ws") {
+  function toWsProxyUrlFromHttpBase(httpBase: string, path = "/codex-ws") {
     const base = String(httpBase || "").trim();
     if (!base) return "";
     try {
@@ -471,20 +472,17 @@ export function useCodexWsDiagnosticsController({
         ? String(path || "").trim()
         : `/${String(path || "").trim() || "codex-ws"}`;
       const wsUrl = new URL(`${wsProtocol}//${parsed.host}${normalizedPath}`);
-      if (token) {
-        wsUrl.searchParams.set("token", token);
-      }
       return wsUrl.toString();
     } catch {
       return "";
     }
   }
 
-  async function probeRunnerWsControlPing(wsUrl: string, timeoutMs: number) {
+  async function probeRunnerWsControlPing(wsUrl: string, token: string, timeoutMs: number) {
     const timeout = Number.isFinite(Number(timeoutMs))
       ? Math.max(3000, Math.floor(Number(timeoutMs)))
       : nearUnlimitedTimeoutMs;
-    const ws = new WebSocket(wsUrl);
+    const ws = createWebSocketWithOptionalAuth(wsUrl, token);
     const requestId = `diag-${Date.now()}`;
     return await new Promise<string>((resolve, reject) => {
       let finalized = false;
@@ -648,8 +646,9 @@ export function useCodexWsDiagnosticsController({
 
           await runStep(`${candidate} GET /codex-ws-debug`, async () => {
             const res = await fetchHttpWithTimeout(
-              `${candidate}/codex-ws-debug?token=${encodeURIComponent(runnerAuth)}&limit=3`,
-              nearUnlimitedTimeoutMs
+              `${candidate}/codex-ws-debug?limit=3`,
+              nearUnlimitedTimeoutMs,
+              { authorization: `Bearer ${runnerAuth}` }
             );
             if (!res.ok) {
               throw new Error(`HTTP ${res.status}`);
@@ -658,35 +657,35 @@ export function useCodexWsDiagnosticsController({
           });
         }
 
-        const wsProxyUrl = toWsProxyUrlFromHttpBase(candidate, runnerAuth);
+        const wsProxyUrl = toWsProxyUrlFromHttpBase(candidate);
         if (!wsProxyUrl) {
           lines.push(`skip WS /codex-ws (${candidate})`);
         } else {
           await runStep(`${candidate} WS /codex-ws`, async () => {
             const result = await probeCodexWebSocketHandshakeOnly({
               wsUrl: wsProxyUrl,
-              wsToken: "",
+              wsToken: runnerAuth,
               timeoutMs: nearUnlimitedTimeoutMs,
             });
             return `readyState=${result.readyStateAtOpen}`;
           });
         }
 
-        const runnerWsUrl = toWsProxyUrlFromHttpBase(candidate, runnerAuth, "/runner-ws");
+        const runnerWsUrl = toWsProxyUrlFromHttpBase(candidate, "/runner-ws");
         if (!runnerWsUrl) {
           lines.push(`skip WS /runner-ws (${candidate})`);
         } else {
           await runStep(`${candidate} WS /runner-ws`, async () => {
             const result = await probeCodexWebSocketHandshakeOnly({
               wsUrl: runnerWsUrl,
-              wsToken: "",
+              wsToken: runnerAuth,
               timeoutMs: nearUnlimitedTimeoutMs,
             });
             return `readyState=${result.readyStateAtOpen}`;
           });
 
           await runStep(`${candidate} WS /runner-ws control ping`, async () => {
-            return await probeRunnerWsControlPing(runnerWsUrl, nearUnlimitedTimeoutMs);
+            return await probeRunnerWsControlPing(runnerWsUrl, runnerAuth, nearUnlimitedTimeoutMs);
           });
         }
       }

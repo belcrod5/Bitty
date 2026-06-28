@@ -77,6 +77,22 @@ test("content disposition supports Japanese file names without non-ASCII headers
   assert.doesNotThrow(() => validateHeaderValue("content-disposition", value));
 });
 
+test("HTTP runner auth only accepts Bearer tokens", () => {
+  assert.equal(
+    hooks.parseHttpBearerToken({
+      headers: { authorization: "Bearer test-token" },
+    }),
+    "test-token"
+  );
+  assert.equal(
+    hooks.parseHttpBearerToken({
+      url: "/codex-ws-debug?token=test-token",
+      headers: {},
+    }),
+    ""
+  );
+});
+
 test("queued Codex turns do not publish app-server notifications into relays", async () => {
   const source = await readFile(new URL("../src/server-runtime.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /publishCodexQueuedTurnRpcToRelay/);

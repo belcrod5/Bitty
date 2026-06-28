@@ -4,9 +4,12 @@ import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
 import type { AppScreen } from "../types/appTypes";
 import { TTS_SPEED_STEP, type SelectedVoiceIdByProvider, type TtsProvider } from "../utils/audioConfig";
 import type { CodexApprovalPolicy, ReasoningEffort } from "../utils/settingsParsers";
+import { parseCloudflareRunnerPairingPayload } from "../utils/cloudflareAccess";
+import { saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
 
 type UseAppContextActionsArgs = {
   drawerOpen: boolean;
+  runnerToken: string;
   defaultLlmDirectory: string;
   directoryExplorerParentPath: string;
   directoryExplorerRootPath: string;
@@ -22,6 +25,8 @@ type UseAppContextActionsArgs = {
   setCodexWsUrl: Dispatch<SetStateAction<string>>;
   setCodexWsToken: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
+  setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
+  setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setModelSelectOpen: Dispatch<SetStateAction<boolean>>;
   setThinkSelectOpen: Dispatch<SetStateAction<boolean>>;
@@ -82,6 +87,7 @@ type UseAppContextActionsArgs = {
 
 export function useAppContextActions({
   drawerOpen,
+  runnerToken,
   defaultLlmDirectory,
   directoryExplorerParentPath,
   directoryExplorerRootPath,
@@ -97,6 +103,8 @@ export function useAppContextActions({
   setCodexWsUrl,
   setCodexWsToken,
   setRunnerToken,
+  setCloudflareAccessClientId,
+  setCloudflareAccessClientSecret,
   setCodexApprovalPolicy,
   setModelSelectOpen,
   setThinkSelectOpen,
@@ -163,6 +171,9 @@ export function useAppContextActions({
   const openMiniBoardScreen = useCallback(() => {
     setActiveScreen("mini_board");
   }, [setActiveScreen]);
+  const openCloudflareTunnelMonitorScreen = useCallback(() => {
+    setActiveScreen("cloudflare_tunnel_monitor");
+  }, [setActiveScreen]);
   const openSkiaBoardScreen = useCallback(() => {
     setActiveScreen("skia_board");
   }, [setActiveScreen]);
@@ -181,6 +192,38 @@ export function useAppContextActions({
   const changeRunnerToken = useCallback((value: string) => {
     setRunnerToken(value);
   }, [setRunnerToken]);
+  const clearCloudflareAccessCredentials = useCallback(async () => {
+    await saveSecureRunnerCredentials({
+      runnerToken,
+      cloudflareAccessClientId: "",
+      cloudflareAccessClientSecret: "",
+    });
+    setCloudflareAccessClientId("");
+    setCloudflareAccessClientSecret("");
+  }, [runnerToken, setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
+  const applyCloudflareRunnerPairing = useCallback(async (payload: string) => {
+    const pairing = parseCloudflareRunnerPairingPayload(payload);
+    await saveSecureRunnerCredentials({
+      runnerToken: pairing.runnerToken,
+      cloudflareAccessClientId: pairing.cloudflareAccessClientId,
+      cloudflareAccessClientSecret: pairing.cloudflareAccessClientSecret,
+    });
+    setRunnerUrl(pairing.runnerUrl);
+    setRunnerToken(pairing.runnerToken);
+    setCodexWsToken(pairing.runnerToken);
+    setCloudflareAccessClientId(pairing.cloudflareAccessClientId);
+    setCloudflareAccessClientSecret(pairing.cloudflareAccessClientSecret);
+    if (pairing.runnerWsUrl) {
+      setCodexWsUrl(pairing.runnerWsUrl);
+    }
+  }, [
+    setCloudflareAccessClientId,
+    setCloudflareAccessClientSecret,
+    setCodexWsToken,
+    setCodexWsUrl,
+    setRunnerToken,
+    setRunnerUrl,
+  ]);
   const selectCodexApprovalPolicy = useCallback((value: CodexApprovalPolicy) => {
     setCodexApprovalPolicy(value);
   }, [setCodexApprovalPolicy]);
@@ -378,12 +421,15 @@ export function useAppContextActions({
     openDebugScreen,
     openAudioLabScreen,
     openMiniBoardScreen,
+    openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
     changeCodexWsToken,
     changeRunnerToken,
+    clearCloudflareAccessCredentials,
+    applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,
     openModelSelect,
     openThinkSelect,
