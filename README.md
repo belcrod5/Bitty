@@ -133,21 +133,24 @@ npm install
 cp .env.example .env
 ```
 
-2. Edit `private_runner/.env` and set at least:
+2. Edit `private_runner/.env` and keep the default per-start runner token mode:
 
 ```env
-RUNNER_TOKEN=replace-with-a-long-random-string
+RUNNER_TOKEN_MODE=random
+RUNNER_PAIRING_QR=1
 CODEX_HOME=$HOME/.codex
 ```
 
-Generate a runner token with:
+With `RUNNER_TOKEN_MODE=random`, `run-local.sh` generates a fresh
+`RUNNER_TOKEN` on each start and passes it to the mobile app through a Pairing
+QR. For a real iOS device on your local network, also set `HOST=0.0.0.0`.
 
-```bash
-openssl rand -hex 32
+Use a fixed token only for local debugging:
+
+```env
+RUNNER_TOKEN_MODE=env
+RUNNER_TOKEN=replace-with-a-long-random-string
 ```
-
-Paste the generated value into `RUNNER_TOKEN`. For a real iOS device, also set
-`HOST=0.0.0.0` so the runner accepts connections from your local network.
 
 3. Log in to Codex for the runner:
 
@@ -165,6 +168,13 @@ node setup-codex-auth.mjs --device-auth
 
 ```bash
 ./run-local.sh start --mode full
+```
+
+Detached starts do not write the Pairing QR to logs. After the runner is
+started, show the QR in your terminal:
+
+```bash
+./run-local.sh pairing-qr
 ```
 
 Useful runner commands:
@@ -195,16 +205,19 @@ Run this command again after changing native dependencies. Then start Metro:
 npx expo start --dev-client
 ```
 
-In the app settings, set:
+In the app settings, either scan the Pairing QR from the left menu's
+`Cloudflare Tunnel` screen, or set local values manually:
 
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
 - Real device: `Runner URL = http://<your Mac LAN IP>:8788`
-- `Runner Token`: the same value as `RUNNER_TOKEN` in `private_runner/.env`
+- `Runner Token`: the token from the Pairing QR, or the fixed `RUNNER_TOKEN`
+  only when `RUNNER_TOKEN_MODE=env`
 - iOS Simulator:
   `Codex WS URL = ws://127.0.0.1:8788/runner-ws`
 - Real device:
   `Codex WS URL = ws://<your Mac LAN IP>:8788/runner-ws`
-- `Codex WS Token`: the same value as `RUNNER_TOKEN`; it is sent as `Authorization: Bearer <RUNNER_TOKEN>`, not as a URL query.
+- `Codex WS Token`: normally the same runner token; it is sent as
+  `Authorization: Bearer <RUNNER_TOKEN>`, not as a URL query.
 
 If Metro fails with a Watchman permission or stale-state error, reset Watchman
 and restart Metro with a clean cache:

@@ -251,7 +251,7 @@ npm run ios
 10. アプリ入力値
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
 - 実機: `Runner URL = http://<MacのLAN IP>:8788`
-- `Runner Token` は `.env` の `RUNNER_TOKEN`
+- `Runner Token` は Pairing QR の token。固定token検証時だけ、`RUNNER_TOKEN_MODE=env` にして `.env` の `RUNNER_TOKEN` と同じ値を使う
 - Appには次のUXオプションがあります:
   - `LLM Model` プルダウンで `openai-codex/gpt-5.4-mini` / `openai-codex/gpt-5.4` / `openai-codex/gpt-5.3-codex` / `openai-codex/gpt-5.3-codex-spark` を選択
   - `Think` プルダウンで `low|medium|high|xhigh` を選択
