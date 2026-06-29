@@ -3,6 +3,7 @@ import type {
   LlmDeltaEntry,
   LlmProgressEntry,
   StreamSegment,
+  StreamTtsControlState,
 } from "../types/appTypes";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
@@ -11,6 +12,7 @@ type UseSessionSwitchQuiesceControllerArgs = {
   closeCodexRelayObserver: (reason: string) => void;
   stopTtsPlayback: (opts?: { interruptStream?: boolean; clearPlaybackMessageId?: boolean }) => Promise<void>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   clearStreamAudioQueue: () => void;
   streamAudioWaveformBarsRef: MutableRefObject<number[][]>;
   setStreamWaveformPreview: Dispatch<SetStateAction<number[]>>;
@@ -36,6 +38,7 @@ export function useSessionSwitchQuiesceController({
   closeCodexRelayObserver,
   stopTtsPlayback,
   streamSocketRef,
+  streamTtsControlRef,
   clearStreamAudioQueue,
   streamAudioWaveformBarsRef,
   setStreamWaveformPreview,
@@ -63,6 +66,11 @@ export function useSessionSwitchQuiesceController({
     if (ws) {
       ws.close();
       streamSocketRef.current = null;
+    }
+    const streamTtsControl = streamTtsControlRef.current;
+    if (streamTtsControl) {
+      streamTtsControl.cleanup();
+      streamTtsControlRef.current = null;
     }
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
@@ -106,6 +114,7 @@ export function useSessionSwitchQuiesceController({
     stopTtsPlayback,
     streamAudioWaveformBarsRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     suspendCodexTurnRequestForSessionSwitch,
   ]);

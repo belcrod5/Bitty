@@ -1,6 +1,7 @@
 import { useEffect, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
 import { AppState, type AppStateStatus } from "react-native";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type SessionDiagLogOptions = {
   throttleMs?: number;
@@ -25,6 +26,7 @@ type UseAppStateAutoRecoveryControllerArgs = {
   autoAppStateNonActiveTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
   autoRestartTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   replyLoadingRef: MutableRefObject<boolean>;
   elapsedSinceMs: (startedAtMs: number) => number | null;
   logAuto: (event: string, payload?: Record<string, unknown>) => void;
@@ -68,6 +70,7 @@ export function useAppStateAutoRecoveryController({
   autoAppStateNonActiveTimerRef,
   autoRestartTimerRef,
   streamSocketRef,
+  streamTtsControlRef,
   replyLoadingRef,
   elapsedSinceMs,
   logAuto,
@@ -140,7 +143,10 @@ export function useAppStateAutoRecoveryController({
         Boolean(autoRecordingRef.current) &&
         !autoFinalizeLockRef.current
       );
-      const hasInFlightTtsStream = () => streamSocketRef.current !== null;
+      const hasInFlightTtsStream = () => (
+        streamTtsControlRef.current !== null ||
+        streamSocketRef.current !== null
+      );
       if (nextState !== "active") {
         autoResumeStatusProbeInFlightRef.current = false;
         if (autoAppStateNonActiveTimerRef.current) {
@@ -202,9 +208,11 @@ export function useAppStateAutoRecoveryController({
           sinceLastNonActiveMs >= appResumeStreamRecoveryNonActiveMinMs
         );
         const recoverForSocketState = (
-          !ws ||
-          readyState === WebSocket.CLOSING ||
-          readyState === WebSocket.CLOSED
+          Boolean(ws) &&
+          (
+            readyState === WebSocket.CLOSING ||
+            readyState === WebSocket.CLOSED
+          )
         );
         if (recoverForStaleResume || recoverForSocketState) {
           logAuto("stream_tts_resume_recover_trigger", {
@@ -212,6 +220,7 @@ export function useAppStateAutoRecoveryController({
             readyState,
             replyLoading: replyLoadingRef.current,
             hasSocket: Boolean(ws),
+            streamTtsControlAlive: streamTtsControlRef.current !== null,
             recoverForStaleResume,
             recoverForSocketState,
           });
@@ -220,6 +229,7 @@ export function useAppStateAutoRecoveryController({
             readyState,
             replyLoading: replyLoadingRef.current,
             hasSocket: Boolean(ws),
+            streamTtsControlAlive: streamTtsControlRef.current !== null,
             recoverForStaleResume,
             recoverForSocketState,
           }, {

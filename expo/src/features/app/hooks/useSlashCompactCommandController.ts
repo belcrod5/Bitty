@@ -1,5 +1,6 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { compactCodexAppServerThread } from "../../codex/codexAppServerClient";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { ReplyRequestSessionSnapshot, SttMessageMeta } from "../types/appTypes";
 import { trimForInline } from "../utils/statusText";
 
@@ -14,6 +15,7 @@ type UseSlashCompactCommandControllerArgs = {
   codexWsUrl: string;
   codexWsToken: string;
   nearUnlimitedTimeoutMs: number;
+  runnerWebSocketManager?: RunnerWebSocketManager;
   normalizedLlmDirectoryForRequest: () => string;
   fetchRunnerSessionContextUsedPct: (sessionId: string, directory: string) => Promise<number | null>;
   setReplyDebug: Dispatch<SetStateAction<string>>;
@@ -37,6 +39,7 @@ export function useSlashCompactCommandController({
   codexWsUrl,
   codexWsToken,
   nearUnlimitedTimeoutMs,
+  runnerWebSocketManager,
   normalizedLlmDirectoryForRequest,
   fetchRunnerSessionContextUsedPct,
   setReplyDebug,
@@ -103,6 +106,7 @@ export function useSlashCompactCommandController({
         wsToken: codexWsToken.trim(),
         threadId,
         timeoutMs: nearUnlimitedTimeoutMs,
+        runnerWebSocketManager,
         onLog: (entry) => {
           const suffix = [
             entry.method ? `method=${entry.method}` : "",
@@ -208,6 +212,7 @@ export function useSlashCompactCommandController({
     logSessionDiag,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    runnerWebSocketManager,
     setReplyDebug,
     setCodexCompactRunning,
     speakSlashCommandResult,

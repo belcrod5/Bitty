@@ -5,6 +5,7 @@ import type {
   ConversationMessage,
   LlmBackend,
   SelectSpecificLlmSessionOptions,
+  StreamTtsControlState,
 } from "../types/appTypes";
 
 type UseSessionStartupRecoveryControllerArgs = {
@@ -27,6 +28,7 @@ type UseSessionStartupRecoveryControllerArgs = {
   llmSessionRestoreLoading: boolean;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   appResumeSessionSyncInFlightRef: MutableRefObject<boolean>;
   appResumeSessionSyncLastAtRef: MutableRefObject<number>;
   setReplyDebug: Dispatch<SetStateAction<string>>;
@@ -66,6 +68,7 @@ export function useSessionStartupRecoveryController({
   llmSessionRestoreLoading,
   replyLoadingRef,
   streamSocketRef,
+  streamTtsControlRef,
   appResumeSessionSyncInFlightRef,
   appResumeSessionSyncLastAtRef,
   setReplyDebug,
@@ -145,6 +148,7 @@ export function useSessionStartupRecoveryController({
           directory,
           replyLoading: replyLoadingRef.current,
           hasStreamSocket: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
           messageCount: conversationMessagesRef.current.length,
         }, {
           throttleMs: 0,
@@ -173,7 +177,7 @@ export function useSessionStartupRecoveryController({
         return;
       }
       if (replyLoadingRef.current) return;
-      if (streamSocketRef.current !== null) return;
+      if (streamTtsControlRef.current !== null || streamSocketRef.current !== null) return;
       const latestSessionId = await fetchLatestSessionIdForDirectory(directory);
       if (!latestSessionId) return;
       if (currentSessionId && latestSessionId === currentSessionId && conversationMessagesRef.current.length > 0) {
@@ -239,6 +243,7 @@ export function useSessionStartupRecoveryController({
     selectSpecificLlmSession,
     setReplyDebug,
     streamSocketRef,
+    streamTtsControlRef,
   ]);
 
   useEffect(() => {

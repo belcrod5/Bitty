@@ -1,5 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
-import type { StreamAudioQueueItem } from "../types/appTypes";
+import type { StreamAudioQueueItem, StreamTtsControlState } from "../types/appTypes";
 
 type EnqueueMeta = {
   chunkChars?: number | null;
@@ -13,6 +13,7 @@ type UseEnqueueStreamAudioControllerOptions = {
   streamTtsSuppressedRef: MutableRefObject<boolean>;
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   setTtsPlaybackWanted: (next: boolean, reason: string, payload?: Record<string, unknown>) => void;
   setTtsUiStatus: (value: "idle" | "queued" | "synthesizing" | "playing" | "error") => void;
   setStreamAudioQueueSize: (value: number) => void;
@@ -52,6 +53,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     streamTtsSuppressedRef,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     setTtsPlaybackWanted,
     setTtsUiStatus,
     setStreamAudioQueueSize,
@@ -88,6 +90,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
           seq,
           streamQueueSize: streamAudioQueueRef.current.length,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
         });
         setTtsUiStatus("queued");
         setStreamAudioQueueSize(streamAudioQueueRef.current.length);
@@ -112,6 +115,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     streamAudioQueueGenerationRef,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
   ]);
 }

@@ -14,6 +14,13 @@ appId: app.bitty.mobile
     optional: true
 - runFlow:
     when:
+      visible: "Runtime version:.*"
+    commands:
+      - tapOn:
+          point: 90%,48%
+      - waitForAnimationToEnd
+- runFlow:
+    when:
       visible: 開く
     commands:
       - tapOn:

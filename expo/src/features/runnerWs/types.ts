@@ -4,6 +4,7 @@ export type RunnerWsMessage = {
   channel: RunnerWsChannel;
   op: string;
   requestId?: string;
+  operationId?: string;
   sessionId?: string;
   threadId?: string;
   streamId?: string;
@@ -15,17 +16,38 @@ export type RunnerWsMessageFilter = {
   channel?: RunnerWsChannel;
   op?: string;
   requestId?: string;
+  operationId?: string;
   sessionId?: string;
   threadId?: string;
   streamId?: string;
 };
 
+export type RunnerWsConnectionState =
+  | "idle"
+  | "connecting"
+  | "handshaking"
+  | "ready"
+  | "reconnecting"
+  | "background"
+  | "stopped";
+
+export type RunnerWsAppState = "active" | "inactive" | "background" | "unknown";
+
 export type RunnerWsConnectionSnapshot = {
+  connectionState: RunnerWsConnectionState;
+  appState: RunnerWsAppState;
+  clientInstanceId: string;
+  connectionId?: string;
+  generation: number;
+  pendingRequestCount: number;
+  subscriptionCount: number;
+  lastPongAt?: number;
+  runnerWsConnectionCount?: number;
+  lastError?: string;
   url: string;
   readyState: number;
   connected: boolean;
   reconnectCount: number;
-  lastError?: string;
   openedAtMs?: number;
   lastMessageAtMs?: number;
   lastCloseAtMs?: number;
@@ -100,7 +122,7 @@ export function isRunnerWsMessage(value: unknown): value is RunnerWsMessage {
   const message = value as Record<string, unknown>;
   if (!isRunnerWsChannel(message.channel)) return false;
   if (typeof message.op !== "string" || !message.op.trim()) return false;
-  for (const key of ["requestId", "sessionId", "threadId", "streamId"] as const) {
+  for (const key of ["requestId", "operationId", "sessionId", "threadId", "streamId"] as const) {
     const item = message[key];
     if (item !== undefined && typeof item !== "string") return false;
   }

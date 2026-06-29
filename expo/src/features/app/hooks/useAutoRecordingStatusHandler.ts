@@ -1,6 +1,7 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
 import type { AppStateStatus } from "react-native";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type RecordingStatusSource = "callback" | "watchdog";
 type AutoProgressMode = "idle" | "speech" | "barge";
@@ -64,6 +65,7 @@ type UseAutoRecordingStatusHandlerOptions = {
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   ttsLoading: boolean;
   watchdogLogThrottleMs: number;
   statusNotRecordingAppTransitionGraceMs: number;
@@ -185,6 +187,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     watchdogLogThrottleMs,
     statusNotRecordingAppTransitionGraceMs,
@@ -314,6 +317,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
           ttsLoading,
           replyLoading: replyLoadingRef.current,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
         });
         logAuto("finalize_trigger", {
           reason: "status_not_recording",
@@ -424,6 +428,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
           playbackBargeInActive ||
           replyLoadingRef.current ||
           ttsLoading ||
+          streamTtsControlRef.current !== null ||
           streamSocketRef.current !== null
         )
       );
@@ -490,6 +495,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
           ttsPlaying: ttsPlayingRef.current,
           ttsLoading,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
         });
       }
       if (!autoSpeechStartedAtRef.current) {
@@ -732,6 +738,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     statusNotRecordingAppTransitionGraceMs,
     statusNotRecordingSuppressLogThrottleMs,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     ttsPlayingRef,
     trackWaveformFlatline,

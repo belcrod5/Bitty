@@ -1,6 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
-import type { StreamAudioQueueItem, TtsDebugStats } from "../types/appTypes";
+import type { StreamAudioQueueItem, StreamTtsControlState, TtsDebugStats } from "../types/appTypes";
 
 type UseAttachTtsSoundStatusHandlerControllerOptions = {
   ttsPlaybackStatusLogThrottleMs: number;
@@ -13,6 +13,7 @@ type UseAttachTtsSoundStatusHandlerControllerOptions = {
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
   streamAudioQueueProcessingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamTtsSuppressedRef: MutableRefObject<boolean>;
   trimForInline: (raw: string, max?: number) => string;
   logAuto: (event: string, payload?: Record<string, unknown>) => void;
@@ -42,6 +43,7 @@ export function useAttachTtsSoundStatusHandlerController(
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     trimForInline,
     logAuto,
@@ -132,6 +134,7 @@ export function useAttachTtsSoundStatusHandlerController(
               streamQueueSize: streamAudioQueueRef.current.length,
               streamQueueProcessing: streamAudioQueueProcessingRef.current,
               streamSocketAlive: streamSocketRef.current !== null,
+              streamTtsControlAlive: streamTtsControlRef.current !== null,
             });
           }
         }
@@ -151,6 +154,7 @@ export function useAttachTtsSoundStatusHandlerController(
           streamQueueSize: streamAudioQueueRef.current.length,
           streamQueueProcessing: streamAudioQueueProcessingRef.current,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
         });
       }
       if (durationMillis > 0 && positionMillis >= 0) {
@@ -189,11 +193,18 @@ export function useAttachTtsSoundStatusHandlerController(
             : null,
           streamQueueSize: streamAudioQueueRef.current.length,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
           streamQueueProcessing: streamAudioQueueProcessingRef.current,
         });
         const shouldKeepSession = (
           streamAudioQueueProcessingRef.current ||
-          (!streamTtsSuppressedRef.current && streamSocketRef.current !== null)
+          (
+            !streamTtsSuppressedRef.current &&
+            (
+              streamTtsControlRef.current !== null ||
+              streamSocketRef.current !== null
+            )
+          )
         );
         if (shouldKeepSession) {
           markTtsChunkPlaybackFinished();
@@ -221,6 +232,7 @@ export function useAttachTtsSoundStatusHandlerController(
     streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     syncTtsPlaybackWantedFromPipeline,
     trimForInline,

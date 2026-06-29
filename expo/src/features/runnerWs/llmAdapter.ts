@@ -37,15 +37,17 @@ export function isRunnerWsUrl(rawUrl: unknown): boolean {
 export function encodeRunnerWsLlmRpc(
   payload: Record<string, unknown>,
   threadIdRaw: unknown,
-  options?: { requestId?: unknown; sessionId?: unknown }
+  options?: { requestId?: unknown; operationId?: unknown; sessionId?: unknown }
 ): string {
   const threadId = String(threadIdRaw || "").trim();
   const requestId = String(options?.requestId || "").trim();
+  const operationId = String(options?.operationId || "").trim();
   const sessionId = String(options?.sessionId || "").trim();
   const envelope: RunnerWsMessage = {
     channel: "llm",
     op: "rpc",
     ...(requestId ? { requestId } : {}),
+    ...(operationId ? { operationId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(threadId ? { threadId } : {}),
     payload,

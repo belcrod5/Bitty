@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type PendingUserMessageLike<TSttMeta> = {
   id: string;
@@ -21,6 +22,7 @@ type UseAutoPendingUserControllerOptions<
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamAudioQueueRef: MutableRefObject<Array<unknown>>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   conversationMessages: TMessage[];
@@ -50,6 +52,7 @@ export function useAutoPendingUserController<
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueRef,
     ttsPlaybackMessageIdRef,
     conversationMessages,
@@ -219,6 +222,7 @@ export function useAutoPendingUserController<
         ttsLoading,
         replyLoading: replyLoadingRef.current,
         streamSocketAlive: streamSocketRef.current !== null,
+        streamTtsControlAlive: streamTtsControlRef.current !== null,
       });
       resolveAutoPendingUserMessage("");
       onPendingTimeout();
@@ -243,6 +247,7 @@ export function useAutoPendingUserController<
     resolveAutoPendingUserMessage,
     setConversationMessagesWithLimit,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     ttsPlayingRef,
   ]);
@@ -274,6 +279,7 @@ export function useAutoPendingUserController<
       ttsPlaying: ttsPlayingRef.current,
       ttsLoading,
       streamSocketAlive: streamSocketRef.current !== null,
+      streamTtsControlAlive: streamTtsControlRef.current !== null,
       queuedStreamAudio,
       ttsPlaybackMessageId: ttsPlaybackMessageIdRef.current,
     });
@@ -288,6 +294,7 @@ export function useAutoPendingUserController<
     stopTtsPlayback,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     ttsPlaybackMessageIdRef,
     ttsPlayingRef,

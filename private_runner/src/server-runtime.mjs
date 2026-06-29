@@ -32,6 +32,7 @@ const RUNNER_MOCK = process.env.RUNNER_MOCK === "1";
 const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
 const RUNNER_WS_PATH = "/runner-ws";
 const RUNNER_WS_CHANNELS = new Set(["llm", "tts", "relay", "control"]);
+const RUNNER_WS_ENVELOPE_MAX_CHARS = 32 * 1024 * 1024;
 const CODEX_WS_PROXY_UPSTREAM_URL = String(
   process.env.CODEX_WS_PROXY_UPSTREAM_URL || "ws://127.0.0.1:4500"
 ).trim();
@@ -316,6 +317,22 @@ const LLM_JOB_SESSION_ACTIVE_POLICY = String(
   process.env.LLM_JOB_SESSION_ACTIVE_POLICY || "cancel_and_replace"
 ).trim().toLowerCase();
 const LLM_JOB_CLIENT_REQUEST_ID_MAX_CHARS = 120;
+const RUNNER_WS_TTS_OPERATION_TTL_MS = Math.max(
+  60000,
+  Number(process.env.RUNNER_WS_TTS_OPERATION_TTL_MS || 30 * 60 * 1000)
+);
+const RUNNER_WS_TTS_OPERATION_MAX_ENTRIES = Math.max(
+  16,
+  Number(process.env.RUNNER_WS_TTS_OPERATION_MAX_ENTRIES || 512)
+);
+const RUNNER_WS_LLM_OPERATION_TTL_MS = Math.max(
+  60000,
+  Number(process.env.RUNNER_WS_LLM_OPERATION_TTL_MS || 30 * 60 * 1000)
+);
+const RUNNER_WS_LLM_OPERATION_MAX_ENTRIES = Math.max(
+  16,
+  Number(process.env.RUNNER_WS_LLM_OPERATION_MAX_ENTRIES || 512)
+);
 const COMMAND_EXEC_BIN_DIR = path.resolve(
   WORKSPACE_ROOT,
   process.env.COMMAND_EXEC_BIN_DIR || "private_runner/bin"
@@ -467,6 +484,9 @@ const ttsMediaEntries = new Map();
 const toolApprovedKeysBySessionId = new Map();
 const llmJobsById = new Map();
 const llmJobOrder = [];
+const runnerWsTtsJobIdByOperationId = new Map();
+const runnerWsLlmRelayIdByOperationId = new Map();
+const runnerWsLlmRelayIdBySessionId = new Map();
 const scriptJobsById = new Map();
 const scriptJobOrder = [];
 const codexQueuedTurnsById = new Map();
@@ -2192,7 +2212,7 @@ function runnerWsErrorEnvelope(error, message, extra = {}) {
     },
   };
   if (extra && typeof extra === "object") {
-    for (const key of ["requestId", "sessionId", "threadId", "streamId"]) {
+    for (const key of ["requestId", "operationId", "sessionId", "threadId", "streamId"]) {
       const value = typeof extra[key] === "string" ? extra[key].trim() : "";
       if (value) envelope[key] = value;
     }
@@ -2208,13 +2228,31 @@ function normalizeRunnerWsOptionalString(value, key) {
   return { ok: true, value: value.trim() };
 }
 
+function normalizeRunnerWsClientInstanceId(value) {
+  return String(value || "").trim();
+}
+
+function countRunnerWsConnectionsForClient(activeClients, clientInstanceIds, clientInstanceIdRaw) {
+  const clientInstanceId = normalizeRunnerWsClientInstanceId(clientInstanceIdRaw);
+  if (!clientInstanceId) return activeClients?.size || 0;
+  let count = 0;
+  for (const client of Array.from(activeClients || [])) {
+    if (clientInstanceIds?.get(client) === clientInstanceId) count += 1;
+  }
+  return count;
+}
+
 function parseRunnerWsEnvelope(raw, isBinary) {
   if (isBinary) {
     return { ok: false, error: "binary messages are not supported" };
   }
+  const rawText = String(raw || "");
+  if (rawText.length > RUNNER_WS_ENVELOPE_MAX_CHARS) {
+    return { ok: false, error: "message exceeds maximum size" };
+  }
   let payload;
   try {
-    payload = JSON.parse(String(raw || ""));
+    payload = JSON.parse(rawText);
   } catch {
     return { ok: false, error: "message must be valid JSON" };
   }
@@ -2230,7 +2268,7 @@ function parseRunnerWsEnvelope(raw, isBinary) {
     return { ok: false, error: "op is required" };
   }
   const message = { channel, op };
-  for (const key of ["requestId", "sessionId", "threadId", "streamId"]) {
+  for (const key of ["requestId", "operationId", "sessionId", "threadId", "streamId"]) {
     const normalized = normalizeRunnerWsOptionalString(payload[key], key);
     if (!normalized.ok) return { ok: false, error: normalized.error };
     if (normalized.value) message[key] = normalized.value;
@@ -2246,6 +2284,36 @@ function parseRunnerWsEnvelope(raw, isBinary) {
     message.payload = payload.payload;
   }
   return { ok: true, message };
+}
+
+function runnerWsRelayKey(kind, value) {
+  const normalizedKind = String(kind || "").trim();
+  const normalizedValue = String(value || "").trim();
+  if (!normalizedKind || !normalizedValue) return "";
+  return `${normalizedKind}:${normalizedValue}`;
+}
+
+function runnerWsLlmRelayKeyCandidates(message = {}, meta = {}) {
+  const threadId = pickFirstNonEmptyString(message.threadId, meta?.threadId);
+  const sessionId = pickFirstNonEmptyString(message.sessionId);
+  const operationId = pickFirstNonEmptyString(message.operationId);
+  const keys = [
+    runnerWsRelayKey("thread", threadId),
+    runnerWsRelayKey("session", sessionId),
+    runnerWsRelayKey("operation", operationId),
+  ].filter(Boolean);
+  return keys.length > 0 ? keys : ["connection:fallback"];
+}
+
+function resolveRunnerWsLlmRelayKey(message = {}, meta = {}) {
+  return runnerWsLlmRelayKeyCandidates(message, meta)[0];
+}
+
+function resolveRunnerWsTtsApprovalTargetJobId(message = {}, payload = {}, attachedJobIds = new Set()) {
+  const explicitJobId = pickFirstNonEmptyString(message.streamId, payload?.jobId);
+  if (explicitJobId) return explicitJobId;
+  if (!(attachedJobIds instanceof Set) || attachedJobIds.size !== 1) return "";
+  return String(Array.from(attachedJobIds)[0] || "").trim();
 }
 
 function jobNowIso() {
@@ -2435,6 +2503,150 @@ function getLlmJobById(rawJobId) {
   const jobId = String(rawJobId || "").trim();
   if (!jobId) return null;
   return llmJobsById.get(jobId) || null;
+}
+
+function sweepRunnerWsTtsOperationJobs(nowMs = Date.now()) {
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  for (const [operationId, entry] of runnerWsTtsJobIdByOperationId.entries()) {
+    const updatedAtMs = Number(entry?.updatedAtMs || entry?.createdAtMs || 0);
+    const expired = updatedAtMs > 0 && (updatedAtMs + RUNNER_WS_TTS_OPERATION_TTL_MS) < now;
+    const jobId = String(entry?.jobId || "").trim();
+    if (!jobId || expired || !getLlmJobById(jobId)) {
+      runnerWsTtsJobIdByOperationId.delete(operationId);
+    }
+  }
+  if (runnerWsTtsJobIdByOperationId.size <= RUNNER_WS_TTS_OPERATION_MAX_ENTRIES) return;
+  const overflow = runnerWsTtsJobIdByOperationId.size - RUNNER_WS_TTS_OPERATION_MAX_ENTRIES;
+  const oldest = Array.from(runnerWsTtsJobIdByOperationId.entries())
+    .sort((a, b) => Number(a[1]?.updatedAtMs || 0) - Number(b[1]?.updatedAtMs || 0))
+    .slice(0, overflow);
+  for (const [operationId] of oldest) {
+    runnerWsTtsJobIdByOperationId.delete(operationId);
+  }
+}
+
+function rememberRunnerWsTtsOperationJob(operationIdRaw, job) {
+  const operationId = String(operationIdRaw || "").trim();
+  const jobId = String(job?.jobId || job || "").trim();
+  if (!operationId || !jobId) return false;
+  sweepRunnerWsTtsOperationJobs();
+  const now = Date.now();
+  const existing = runnerWsTtsJobIdByOperationId.get(operationId) || null;
+  runnerWsTtsJobIdByOperationId.set(operationId, {
+    jobId,
+    createdAtMs: Number(existing?.createdAtMs || now),
+    updatedAtMs: now,
+  });
+  sweepRunnerWsTtsOperationJobs();
+  return true;
+}
+
+function resolveRunnerWsTtsOperationJob(operationIdRaw) {
+  const operationId = String(operationIdRaw || "").trim();
+  if (!operationId) return null;
+  sweepRunnerWsTtsOperationJobs();
+  const entry = runnerWsTtsJobIdByOperationId.get(operationId) || null;
+  const job = entry ? getLlmJobById(entry.jobId) : null;
+  if (!job) {
+    runnerWsTtsJobIdByOperationId.delete(operationId);
+    return null;
+  }
+  entry.updatedAtMs = Date.now();
+  return job;
+}
+
+function sweepRunnerWsLlmRelayMap(map, nowMs) {
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  for (const [logicalId, entry] of map.entries()) {
+    const updatedAtMs = Number(entry?.updatedAtMs || entry?.createdAtMs || 0);
+    const expired = updatedAtMs > 0 && (updatedAtMs + RUNNER_WS_LLM_OPERATION_TTL_MS) < now;
+    const relayId = String(entry?.relayId || "").trim();
+    const relay = relayId ? (codexWsRelaysById.get(relayId) || null) : null;
+    if (!relay || relay.closed || expired) {
+      map.delete(logicalId);
+    }
+  }
+  if (map.size <= RUNNER_WS_LLM_OPERATION_MAX_ENTRIES) return;
+  const overflow = map.size - RUNNER_WS_LLM_OPERATION_MAX_ENTRIES;
+  const oldest = Array.from(map.entries())
+    .sort((a, b) => Number(a[1]?.updatedAtMs || 0) - Number(b[1]?.updatedAtMs || 0))
+    .slice(0, overflow);
+  for (const [logicalId] of oldest) {
+    map.delete(logicalId);
+  }
+}
+
+function sweepRunnerWsLlmRelayMappings(nowMs = Date.now()) {
+  sweepRunnerWsLlmRelayMap(runnerWsLlmRelayIdByOperationId, nowMs);
+  sweepRunnerWsLlmRelayMap(runnerWsLlmRelayIdBySessionId, nowMs);
+}
+
+function rememberRunnerWsLlmRelayIdentity(relay, identity = {}) {
+  const relayId = String(relay?.relayId || "").trim();
+  if (!relayId || relay?.closed) return false;
+  const operationId = String(identity.operationId || relay.runnerWsLlmOperationId || "").trim();
+  const sessionId = String(identity.sessionId || relay.runnerWsLlmSessionId || "").trim();
+  if (!operationId && !sessionId) return false;
+  sweepRunnerWsLlmRelayMappings();
+  const now = Date.now();
+  const remember = (map, logicalId) => {
+    if (!logicalId) return;
+    const existing = map.get(logicalId) || null;
+    map.set(logicalId, {
+      relayId,
+      createdAtMs: Number(existing?.createdAtMs || now),
+      updatedAtMs: now,
+    });
+  };
+  remember(runnerWsLlmRelayIdByOperationId, operationId);
+  remember(runnerWsLlmRelayIdBySessionId, sessionId);
+  sweepRunnerWsLlmRelayMappings();
+  return true;
+}
+
+function resolveRunnerWsLlmRelayByIdentity(identity = {}) {
+  const operationId = String(identity.operationId || "").trim();
+  const sessionId = String(identity.sessionId || "").trim();
+  sweepRunnerWsLlmRelayMappings();
+  for (const [logicalId, map] of [
+    [operationId, runnerWsLlmRelayIdByOperationId],
+    [sessionId, runnerWsLlmRelayIdBySessionId],
+  ]) {
+    if (!logicalId) continue;
+    const entry = map.get(logicalId) || null;
+    const relayId = String(entry?.relayId || "").trim();
+    const relay = relayId ? (codexWsRelaysById.get(relayId) || null) : null;
+    if (relay && !relay.closed) {
+      entry.updatedAtMs = Date.now();
+      return relay;
+    }
+    map.delete(logicalId);
+  }
+  return null;
+}
+
+function hasRunnerWsLlmRelayIdentityMapping(relay) {
+  const relayId = String(relay?.relayId || "").trim();
+  if (!relayId) return false;
+  sweepRunnerWsLlmRelayMappings();
+  for (const map of [runnerWsLlmRelayIdByOperationId, runnerWsLlmRelayIdBySessionId]) {
+    for (const entry of map.values()) {
+      if (String(entry?.relayId || "").trim() === relayId) return true;
+    }
+  }
+  return false;
+}
+
+function releaseRunnerWsLlmRelayIdentityMappings(relay) {
+  const relayId = String(relay?.relayId || "").trim();
+  if (!relayId) return;
+  for (const map of [runnerWsLlmRelayIdByOperationId, runnerWsLlmRelayIdBySessionId]) {
+    for (const [logicalId, entry] of Array.from(map.entries())) {
+      if (String(entry?.relayId || "").trim() === relayId) {
+        map.delete(logicalId);
+      }
+    }
+  }
 }
 
 function llmJobSetStatus(job, status) {
@@ -8704,6 +8916,7 @@ const server = http.createServer(async (req, res) => {
 
 const runnerWsEnvelopeClients = new WeakSet();
 const runnerWsActiveClients = new Set();
+const runnerWsClientInstanceIds = new WeakMap();
 const runnerWsServer = new WebSocketServer({ noServer: true });
 const wsServer = new WebSocketServer({ noServer: true });
 const codexProxyWsServer = new WebSocketServer({ noServer: true });
@@ -8717,8 +8930,8 @@ runnerWsServer.on("connection", (ws, req) => {
   const protocols = Array.isArray(protocolList)
     ? protocolList
     : (protocolList ? String(protocolList).split(",").map((item) => item.trim()).filter(Boolean) : []);
-  let llmRelay = null;
-  let attachedTtsJobId = "";
+  const llmRelaysByKey = new Map();
+  const attachedTtsJobIds = new Set();
   runnerWsActiveClients.add(ws);
   runnerWsEnvelopeClients.add(ws);
   codexWsRelayClientMode.set(ws, "runner-ws-envelope");
@@ -8728,52 +8941,106 @@ runnerWsServer.on("connection", (ws, req) => {
     endpoint: reqUrl.pathname,
   });
 
-  function resolveAttachedTtsJob() {
-    if (!attachedTtsJobId) return null;
-    return getLlmJobById(attachedTtsJobId);
-  }
-
-  function attachRunnerWsTtsJob(job, sinceSeq = 0) {
-    if (!job) return false;
-    const previous = resolveAttachedTtsJob();
-    if (previous && previous.jobId !== job.jobId) {
-      llmJobDetachSubscriber(previous, ws);
+  function attachedRunnerWsLlmRelays() {
+    const relays = [];
+    const seen = new Set();
+    for (const [key, relay] of Array.from(llmRelaysByKey.entries())) {
+      if (!relay || relay.closed) {
+        llmRelaysByKey.delete(key);
+        continue;
+      }
+      if (seen.has(relay.relayId)) continue;
+      seen.add(relay.relayId);
+      relays.push(relay);
     }
-    attachedTtsJobId = job.jobId;
-    llmJobAttachSubscriber(job, ws, { sinceSeq });
-    return true;
-  }
-
-  function detachRunnerWsTtsJob() {
-    const attached = resolveAttachedTtsJob();
-    if (attached) {
-      llmJobDetachSubscriber(attached, ws);
-    }
-    attachedTtsJobId = "";
+    return relays;
   }
 
   function attachRunnerWsToRelay(relay, options = {}) {
     if (!relay || relay.closed) return 0;
-    if (llmRelay && llmRelay !== relay) {
-      removeClientFromRelay(llmRelay, ws);
+    const keys = Array.isArray(options.keys) && options.keys.length > 0
+      ? options.keys
+      : [String(options.key || "connection:fallback").trim()].filter(Boolean);
+    for (const key of keys) {
+      llmRelaysByKey.set(key, relay);
     }
-    llmRelay = relay;
+    if (relay.clients.has(ws) && !options.replayIfAlreadyAttached) return 0;
     return attachClientToCodexRelay(relay, ws, {
       replayAfterSeq: options.replayAfterSeq || 0,
       envelopeMode: true,
     });
   }
 
-  function ensureRunnerWsLlmRelay() {
-    if (llmRelay && !llmRelay.closed) return llmRelay;
-    llmRelay = createCodexRelayWithUpstream({
+  function ensureRunnerWsLlmRelay(message, meta) {
+    const keys = runnerWsLlmRelayKeyCandidates(message, meta);
+    for (const key of keys) {
+      const existing = llmRelaysByKey.get(key);
+      if (existing && !existing.closed) {
+        for (const alias of keys) {
+          llmRelaysByKey.set(alias, existing);
+        }
+        if (!existing.clients.has(ws)) {
+          attachRunnerWsToRelay(existing, { keys, replayAfterSeq: 0 });
+        }
+        rememberRunnerWsLlmRelayIdentity(existing, message);
+        return existing;
+      }
+      if (existing?.closed) {
+        llmRelaysByKey.delete(key);
+      }
+    }
+    const identityRelay = resolveRunnerWsLlmRelayByIdentity(message);
+    if (identityRelay && !identityRelay.closed) {
+      attachRunnerWsToRelay(identityRelay, { keys, replayAfterSeq: 0 });
+      rememberRunnerWsLlmRelayIdentity(identityRelay, message);
+      return identityRelay;
+    }
+    const threadId = pickFirstNonEmptyString(message?.threadId, meta?.threadId);
+    const threadRelay = pickBestRelayForThread(threadId);
+    if (threadRelay && !threadRelay.closed) {
+      attachRunnerWsToRelay(threadRelay, { keys, replayAfterSeq: 0 });
+      rememberRunnerWsLlmRelayIdentity(threadRelay, message);
+      return threadRelay;
+    }
+    const relay = createCodexRelayWithUpstream({
       endpoint: RUNNER_WS_PATH,
       remote,
       upstreamUrl: CODEX_WS_PROXY_UPSTREAM_URL,
       protocols,
     });
-    attachRunnerWsToRelay(llmRelay, { replayAfterSeq: 0 });
-    return llmRelay;
+    attachRunnerWsToRelay(relay, { keys, replayAfterSeq: 0 });
+    rememberRunnerWsLlmRelayIdentity(relay, message);
+    return relay;
+  }
+
+  function detachRunnerWsFromAllRelays(reason) {
+    const relays = attachedRunnerWsLlmRelays();
+    llmRelaysByKey.clear();
+    if (relays.length === 0) {
+      codexWsRelayClientMode.delete(ws);
+      return;
+    }
+    for (const relay of relays) {
+      removeClientFromRelay(relay, ws);
+      cleanupOrScheduleDetachedRelay(relay, reason);
+    }
+  }
+
+  function attachRunnerWsTtsJob(job, sinceSeq = 0) {
+    if (!job) return false;
+    attachedTtsJobIds.add(job.jobId);
+    llmJobAttachSubscriber(job, ws, { sinceSeq });
+    return true;
+  }
+
+  function detachRunnerWsTtsJobs() {
+    for (const jobId of Array.from(attachedTtsJobIds)) {
+      const job = getLlmJobById(jobId);
+      if (job) {
+        llmJobDetachSubscriber(job, ws);
+      }
+    }
+    attachedTtsJobIds.clear();
   }
 
   function normalizeRunnerWsLlmRpcPayload(payload) {
@@ -8798,6 +9065,7 @@ runnerWsServer.on("connection", (ws, req) => {
     sessionId: connectionId,
     payload: {
       endpoint: RUNNER_WS_PATH,
+      connectionId,
       channels: Array.from(RUNNER_WS_CHANNELS),
     },
   });
@@ -8814,9 +9082,23 @@ runnerWsServer.on("connection", (ws, req) => {
 
     const message = parsed.message;
     if (message.channel === "control" && message.op === "ping") {
+      const pingPayload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
+        ? message.payload
+        : {};
+      const clientInstanceId = normalizeRunnerWsClientInstanceId(pingPayload.clientInstanceId || message.sessionId);
+      if (clientInstanceId) {
+        runnerWsClientInstanceIds.set(ws, clientInstanceId);
+      }
+      const scopedRunnerWsConnectionCount = countRunnerWsConnectionsForClient(
+        runnerWsActiveClients,
+        runnerWsClientInstanceIds,
+        clientInstanceId
+      );
       const activeRelays = Array.from(codexWsRelaysById.values())
         .filter((relay) => relay && !relay.closed);
-      const statusRelay = (llmRelay && !llmRelay.closed ? llmRelay : null)
+      const attachedRelays = attachedRunnerWsLlmRelays()
+        .sort((a, b) => Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0));
+      const statusRelay = attachedRelays[0]
         || activeRelays
           .slice()
           .sort((a, b) => Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0))[0]
@@ -8835,12 +9117,15 @@ runnerWsServer.on("connection", (ws, req) => {
         channel: "control",
         op: "pong",
         requestId: message.requestId,
+        operationId: message.operationId,
         sessionId: message.sessionId || connectionId,
         payload: {
           endpoint: RUNNER_WS_PATH,
+          clientInstanceId: clientInstanceId || undefined,
+          connectionId,
           at: new Date().toISOString(),
           status: {
-            runnerWsConnectionCount: runnerWsActiveClients.size,
+            runnerWsConnectionCount: scopedRunnerWsConnectionCount,
             activeRelayCount: activeRelays.length,
             relayClientCount: statusRelay?.clients?.size || 0,
             upstreamOpen: statusRelay ? Boolean(statusRelay.upstreamOpen) : undefined,
@@ -8883,7 +9168,9 @@ runnerWsServer.on("connection", (ws, req) => {
         return;
       }
       attachRunnerWsToRelay(relay, {
+        keys: runnerWsLlmRelayKeyCandidates({ threadId }),
         replayAfterSeq,
+        replayIfAlreadyAttached: true,
       });
       return;
     }
@@ -8895,19 +9182,21 @@ runnerWsServer.on("connection", (ws, req) => {
           ws,
           runnerWsErrorEnvelope("invalid_llm_rpc_payload", normalized.error, {
             requestId: message.requestId || "",
+            operationId: message.operationId || "",
             sessionId: message.sessionId || "",
             threadId: message.threadId || "",
           })
         );
         return;
       }
-      const relay = ensureRunnerWsLlmRelay();
       const requestId = String(message.requestId || "").trim();
       const meta = parseCodexRpcMeta(normalized.text, false);
+      const relay = ensureRunnerWsLlmRelay(message, meta);
       if (requestId) {
         sendRunnerWsLlmRpcAck(relay, ws, {
           op: "llm_rpc_received",
           requestId,
+          operationId: message.operationId || "",
           method: meta?.method || "",
           id: Number.isInteger(meta?.id) ? Number(meta.id) : null,
           threadId: message.threadId || meta?.threadId || relay.threadId || "",
@@ -8931,11 +9220,15 @@ runnerWsServer.on("connection", (ws, req) => {
         remote,
         endpoint: RUNNER_WS_PATH,
         requestId,
+        operationId: message.operationId || "",
+        sessionId: message.sessionId || "",
+        threadId: message.threadId || "",
       });
       if (requestId) {
         sendRunnerWsLlmRpcAck(relay, ws, {
           op: "llm_rpc_forwarded",
           requestId,
+          operationId: message.operationId || "",
           method: meta?.method || "",
           id: Number.isInteger(meta?.id) ? Number(meta.id) : null,
           threadId: message.threadId || meta?.threadId || relay.threadId || "",
@@ -8947,29 +9240,39 @@ runnerWsServer.on("connection", (ws, req) => {
 
     if (message.channel === "tts" && message.op === "attach") {
       const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
-      const jobId = String(message.streamId || payload?.jobId || "").trim();
+      const operationId = pickFirstNonEmptyString(message.operationId, payload?.operationId);
+      let jobId = String(message.streamId || payload?.jobId || "").trim();
       const sinceSeqRaw = Number.isFinite(Number(message.seq))
         ? Number(message.seq)
         : Number(payload?.sinceSeq || 0);
       const sinceSeq = Number.isFinite(sinceSeqRaw) ? Math.max(0, Math.floor(sinceSeqRaw)) : 0;
-      const job = getLlmJobById(jobId);
+      let job = getLlmJobById(jobId);
+      if (!job && !jobId && operationId) {
+        job = resolveRunnerWsTtsOperationJob(operationId);
+        jobId = String(job?.jobId || "").trim();
+      }
       if (!job) {
         sendRunnerWsEnvelope(ws, {
           channel: "tts",
           op: "error",
           streamId: jobId,
+          operationId: operationId || undefined,
           payload: {
             type: "error",
             error: "job_not_found",
-            message: `job not found: ${jobId}`,
+            message: `job not found: ${jobId || operationId}`,
           },
         });
         return;
+      }
+      if (operationId) {
+        rememberRunnerWsTtsOperationJob(operationId, job);
       }
       attachRunnerWsTtsJob(job, sinceSeq);
       sendRunnerWsEnvelope(ws, {
         channel: "tts",
         op: "attached",
+        operationId: operationId || undefined,
         streamId: job.jobId,
         seq: sinceSeq,
         payload: {
@@ -8982,11 +9285,38 @@ runnerWsServer.on("connection", (ws, req) => {
       return;
     }
 
+    if (message.channel === "tts" && message.op === "detach") {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const operationId = pickFirstNonEmptyString(message.operationId, payload?.operationId);
+      let jobId = String(message.streamId || payload?.jobId || "").trim();
+      let job = getLlmJobById(jobId);
+      if (!job && operationId) {
+        job = resolveRunnerWsTtsOperationJob(operationId);
+        jobId = String(job?.jobId || "").trim();
+      }
+      if (job) {
+        llmJobDetachSubscriber(job, ws);
+        attachedTtsJobIds.delete(job.jobId);
+      }
+      sendRunnerWsEnvelope(ws, {
+        channel: "tts",
+        op: "detached",
+        requestId: message.requestId || "",
+        operationId: operationId || undefined,
+        streamId: jobId,
+        payload: {
+          type: "detached",
+          jobId,
+        },
+      });
+      return;
+    }
+
     if (message.channel === "tts" && message.op === "tool_approval_decision") {
       const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
       const requestId = String(payload?.requestId || message.requestId || "").trim();
       if (!requestId) return;
-      const targetJobId = String(message.streamId || payload?.jobId || attachedTtsJobId || "").trim();
+      const targetJobId = resolveRunnerWsTtsApprovalTargetJobId(message, payload, attachedTtsJobIds);
       if (!targetJobId) return;
       const job = getLlmJobById(targetJobId);
       if (!job) return;
@@ -9002,10 +9332,23 @@ runnerWsServer.on("connection", (ws, req) => {
 
     if (message.channel === "tts" && message.op === "start") {
       const payload = message.payload && typeof message.payload === "object" ? message.payload : null;
+      const operationId = pickFirstNonEmptyString(message.operationId, payload?.operationId);
       if (!payload) {
         sendRunnerWsEnvelope(
           ws,
           runnerWsErrorEnvelope("invalid_tts_start_payload", "payload must be a stream-tts start object", {
+            requestId: message.requestId || "",
+            operationId,
+            sessionId: message.sessionId || "",
+            streamId: message.streamId || "",
+          })
+        );
+        return;
+      }
+      if (!operationId) {
+        sendRunnerWsEnvelope(
+          ws,
+          runnerWsErrorEnvelope("runner_ws_tts_operation_id_required", "operationId is required for tts:start", {
             requestId: message.requestId || "",
             sessionId: message.sessionId || "",
             streamId: message.streamId || "",
@@ -9014,16 +9357,21 @@ runnerWsServer.on("connection", (ws, req) => {
         return;
       }
       try {
-        const job = startLlmStreamJob(payload, {
-          endpoint: RUNNER_WS_PATH,
-          remoteAddress: remote,
-          publicBaseUrl,
-        });
+        let job = resolveRunnerWsTtsOperationJob(operationId);
+        if (!job) {
+          job = startLlmStreamJob(payload, {
+            endpoint: RUNNER_WS_PATH,
+            remoteAddress: remote,
+            publicBaseUrl,
+          });
+          rememberRunnerWsTtsOperationJob(operationId, job);
+        }
         attachRunnerWsTtsJob(job, 0);
         sendRunnerWsEnvelope(ws, {
           channel: "tts",
           op: "job_started",
           requestId: message.requestId || "",
+          operationId: operationId || undefined,
           streamId: job.jobId,
           sessionId: String(job.sessionId || ""),
           payload: {
@@ -9038,6 +9386,7 @@ runnerWsServer.on("connection", (ws, req) => {
             channel: "tts",
             op: "error",
             requestId: message.requestId || "",
+            operationId: operationId || undefined,
             sessionId: message.sessionId || "",
             streamId: message.streamId || "",
             payload: {
@@ -9052,6 +9401,7 @@ runnerWsServer.on("connection", (ws, req) => {
           channel: "tts",
           op: "error",
           requestId: message.requestId || "",
+          operationId: operationId || undefined,
           sessionId: message.sessionId || "",
           streamId: message.streamId || "",
           payload: {
@@ -9071,6 +9421,7 @@ runnerWsServer.on("connection", (ws, req) => {
         channel: message.channel,
         op: message.op,
         requestId: message.requestId || "",
+        operationId: message.operationId || "",
         sessionId: message.sessionId || "",
         threadId: message.threadId || "",
         streamId: message.streamId || "",
@@ -9080,14 +9431,10 @@ runnerWsServer.on("connection", (ws, req) => {
 
   ws.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error || "runner_ws_error");
-    if (llmRelay) {
-      removeClientFromRelay(llmRelay, ws);
-      cleanupOrScheduleDetachedRelay(llmRelay, "runner_ws_error");
-    } else {
-      codexWsRelayClientMode.delete(ws);
-    }
-    detachRunnerWsTtsJob();
+    detachRunnerWsFromAllRelays("runner_ws_error");
+    detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);
+    runnerWsClientInstanceIds.delete(ws);
     runnerWsEnvelopeClients.delete(ws);
     void appendCodexWsProxyDebug("runner_ws_error", {
       remote,
@@ -9098,15 +9445,11 @@ runnerWsServer.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    detachRunnerWsTtsJob();
+    detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);
+    runnerWsClientInstanceIds.delete(ws);
     runnerWsEnvelopeClients.delete(ws);
-    if (!llmRelay) {
-      codexWsRelayClientMode.delete(ws);
-      return;
-    }
-    removeClientFromRelay(llmRelay, ws);
-    cleanupOrScheduleDetachedRelay(llmRelay, "runner_ws_detached");
+    detachRunnerWsFromAllRelays("runner_ws_detached");
   });
 });
 
@@ -9515,6 +9858,7 @@ function sendCodexRelayControl(relay, ws, payload) {
 function sendRunnerWsLlmRpcAck(relay, ws, params = {}) {
   if (!isRunnerWsEnvelopeClient(ws) || !relay) return false;
   const requestId = String(params.requestId || "").trim();
+  const operationId = String(params.operationId || "").trim();
   if (!requestId) return false;
   const op = String(params.op || "").trim();
   if (!op) return false;
@@ -9533,6 +9877,7 @@ function sendRunnerWsLlmRpcAck(relay, ws, params = {}) {
     channel: "control",
     op,
     requestId,
+    operationId: operationId || undefined,
     threadId: threadId || undefined,
     payload: ackPayload,
   });
@@ -9553,11 +9898,15 @@ function sendCodexRelayRpcToClient(relay, ws, text, seq, options = {}) {
     return true;
   }
   const responseRpcMethod = String(options.responseRpcMethod || "").trim();
+  const operationId = String(options.operationId || relay.runnerWsLlmOperationId || "").trim();
+  const sessionId = String(options.sessionId || relay.runnerWsLlmSessionId || "").trim();
   const parsedPayload = parseCodexRelayJsonPayload(text);
   const envelopePayload = sanitizeRunnerResumePayload(parsedPayload, responseRpcMethod);
   return sendRunnerWsEnvelope(ws, {
     channel: "llm",
     op: "rpc",
+    operationId: operationId || undefined,
+    sessionId: sessionId || undefined,
     threadId: relay.threadId || "",
     seq: Number.isFinite(Number(seq)) ? Number(seq) : undefined,
     payload: envelopePayload,
@@ -10029,16 +10378,30 @@ function cleanupNoClientRelaysForThread(threadIdRaw, currentRelay, reason = "dup
   }
 }
 
+function isClientAttachedToAnyCodexRelay(clientWs) {
+  if (!clientWs) return false;
+  for (const relay of codexWsRelaysById.values()) {
+    if (relay?.clients instanceof Set && relay.clients.has(clientWs)) return true;
+  }
+  return false;
+}
+
 function removeClientFromRelay(relay, clientWs) {
   if (!relay || !clientWs) return;
   relay.clients.delete(clientWs);
-  codexWsRelayClientMode.delete(clientWs);
+  if (!isClientAttachedToAnyCodexRelay(clientWs)) {
+    codexWsRelayClientMode.delete(clientWs);
+  }
   relay.updatedAtMs = codexRelayNowMs();
 }
 
 function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
   if (!relay || relay.closed || relay.clients.size > 0) return;
   if (!relay.turnStarted && !relay.turnCompleted) {
+    if (hasRunnerWsLlmRelayIdentityMapping(relay)) {
+      scheduleCodexRelayCleanup(relay, reason);
+      return;
+    }
     void appendCodexWsProxyDebug("pre_turn_relay_cleanup", {
       relayId: relay.relayId,
       reason,
@@ -10055,6 +10418,7 @@ function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
 function cleanupCodexRelay(relay, reason = "cleanup") {
   if (!relay || relay.closed) return;
   relay.closed = true;
+  releaseRunnerWsLlmRelayIdentityMappings(relay);
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
@@ -10068,7 +10432,9 @@ function cleanupCodexRelay(relay, reason = "cleanup") {
       threadId: relay.threadId || "",
       reason,
     });
-    safeWsClose(client, 1000, "relay_closed");
+    if (!isRunnerWsEnvelopeClient(client)) {
+      safeWsClose(client, 1000, "relay_closed");
+    }
   }
   relay.clients.clear();
   if (relay.requestIdByRpcId instanceof Map) {
@@ -10076,6 +10442,9 @@ function cleanupCodexRelay(relay, reason = "cleanup") {
   }
   if (relay.requestMethodByRpcId instanceof Map) {
     relay.requestMethodByRpcId.clear();
+  }
+  if (relay.requestMetaByRpcId instanceof Map) {
+    relay.requestMetaByRpcId.clear();
   }
   safeWsClose(relay.upstreamWs, 1000, reason);
 }
@@ -10157,7 +10526,11 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
     for (const eventEntry of relay.eventLog) {
       if (eventEntry.seq <= replayAfterSeq) continue;
       if (!shouldReplayCodexRelayEvent(relay, eventEntry)) continue;
-      if (!sendCodexRelayRpcToClient(relay, clientWs, eventEntry.data, eventEntry.seq)) break;
+      if (!sendCodexRelayRpcToClient(relay, clientWs, eventEntry.data, eventEntry.seq, {
+        responseRpcMethod: eventEntry.responseRpcMethod || "",
+        operationId: eventEntry.operationId || "",
+        sessionId: eventEntry.sessionId || "",
+      })) break;
       replayed += 1;
     }
   }
@@ -10202,6 +10575,12 @@ function createCodexRelayContext(params) {
     pendingApprovalRequestIds: new Set(),
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
+    requestMetaByRpcId: new Map(),
+    runnerWsLlmOperationId: "",
+    runnerWsLlmSessionId: "",
+    upstreamInitializeResultSeen: false,
+    upstreamInitializeResult: null,
+    upstreamInitializedNotificationForwarded: false,
     lastSeq: 0,
     eventLog: [],
     cleanupTimer: null,
@@ -10375,6 +10754,10 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     responseRpcId !== null &&
     relay.requestMethodByRpcId instanceof Map
   ) ? String(relay.requestMethodByRpcId.get(responseRpcId) || "").trim() : "";
+  const responseMeta = (
+    responseRpcId !== null &&
+    relay.requestMetaByRpcId instanceof Map
+  ) ? (relay.requestMetaByRpcId.get(responseRpcId) || {}) : {};
   if (
     responseRequestId &&
     responseRpcId !== null &&
@@ -10389,6 +10772,36 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
   ) {
     relay.requestMethodByRpcId.delete(responseRpcId);
+  }
+  if (
+    responseRpcId !== null &&
+    relay.requestMetaByRpcId instanceof Map &&
+    (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
+  ) {
+    relay.requestMetaByRpcId.delete(responseRpcId);
+  }
+  if (
+    responseRpcMethod === "initialize" &&
+    responseRpcId !== null &&
+    meta?.hasResult &&
+    !meta?.hasError &&
+    rpcPayload &&
+    Object.prototype.hasOwnProperty.call(rpcPayload, "result")
+  ) {
+    relay.upstreamInitializeResultSeen = true;
+    relay.upstreamInitializeResult = rpcPayload.result ?? null;
+  }
+  if (
+    (responseRpcMethod === "thread/start" || responseRpcMethod === "thread/resume") &&
+    responseRpcId !== null &&
+    meta?.hasResult &&
+    !meta?.hasError
+  ) {
+    const resolvedThreadId = pickFirstNonEmptyString(metaThreadId, responseMeta.threadId);
+    if (resolvedThreadId) {
+      bindCodexRelayThreadMapping(relay, resolvedThreadId, { allowSwitch: true });
+      cleanupNoClientRelaysForThread(resolvedThreadId, relay, `upstream_${responseRpcMethod}`);
+    }
   }
   if (meta && (meta.method || meta.id !== null)) {
     if (meta.threadId && shouldBindRelayThreadFromUpstreamMethod(meta.method)) {
@@ -10449,11 +10862,16 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       if (!text) continue;
       const outgoingPayload = parseCodexRpcObject(text, false) || rpcPayload;
       observeCodexRelayCompletionNotification(relay, outgoingPayload, meta);
+      const operationId = String(responseMeta.operationId || relay.runnerWsLlmOperationId || "").trim();
+      const sessionId = String(responseMeta.sessionId || relay.runnerWsLlmSessionId || "").trim();
       relay.lastSeq += 1;
       relay.eventLog.push({
         seq: relay.lastSeq,
         atMs: codexRelayNowMs(),
         data: text,
+        responseRpcMethod,
+        operationId,
+        sessionId,
       });
       if (relay.eventLog.length > CODEX_WS_RELAY_EVENT_MAX) {
         relay.eventLog.splice(0, relay.eventLog.length - CODEX_WS_RELAY_EVENT_MAX);
@@ -10461,11 +10879,14 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       for (const subscriber of subscribers) {
         sendCodexRelayRpcToClient(relay, subscriber, text, relay.lastSeq, {
           responseRpcMethod,
+          operationId,
+          sessionId,
         });
         if (responseRequestId) {
           sendRunnerWsLlmRpcAck(relay, subscriber, {
             op: "llm_rpc_upstream_response",
             requestId: responseRequestId,
+            operationId: responseMeta.operationId || "",
             method: meta?.method || "",
             id: responseRpcId,
             threadId: meta?.threadId || relay.threadId || "",
@@ -10537,7 +10958,16 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
       threadId: relay.threadId || "",
     });
     for (const subscriber of Array.from(relay.clients)) {
-      safeWsClose(subscriber, Number(code) || 1000, reason || "upstream_closed");
+      if (isRunnerWsEnvelopeClient(subscriber)) {
+        sendCodexRelayControl(relay, subscriber, {
+          type: "runner_relay_closed",
+          relayId: relay.relayId,
+          threadId: relay.threadId || "",
+          reason: reason || "upstream_closed",
+        });
+      } else {
+        safeWsClose(subscriber, Number(code) || 1000, reason || "upstream_closed");
+      }
     }
     if (relay.clients.size === 0) {
       cleanupCodexRelay(relay, "upstream_closed_no_clients");
@@ -10563,7 +10993,16 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
     relay.turnCompleted = true;
     scheduleCodexRelayCleanup(relay, "upstream_error");
     for (const subscriber of Array.from(relay.clients)) {
-      safeWsClose(subscriber, 1011, "upstream_error");
+      if (isRunnerWsEnvelopeClient(subscriber)) {
+        sendCodexRelayControl(relay, subscriber, {
+          type: "runner_relay_closed",
+          relayId: relay.relayId,
+          threadId: relay.threadId || "",
+          reason: "upstream_error",
+        });
+      } else {
+        safeWsClose(subscriber, 1011, "upstream_error");
+      }
     }
   });
 }
@@ -10599,8 +11038,20 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   const remote = String(params.remote || relay.remote || "unknown");
   const endpoint = String(params.endpoint || relay.endpoint || "/codex-ws");
   const requestId = String(params.requestId || "").trim();
+  const requestOperationId = String(params.operationId || "").trim();
+  const requestSessionId = String(params.sessionId || "").trim();
+  const requestThreadId = String(params.threadId || "").trim();
+  if (requestOperationId || requestSessionId) {
+    relay.runnerWsLlmOperationId = requestOperationId || relay.runnerWsLlmOperationId || "";
+    relay.runnerWsLlmSessionId = requestSessionId || relay.runnerWsLlmSessionId || "";
+    rememberRunnerWsLlmRelayIdentity(relay, {
+      operationId: requestOperationId,
+      sessionId: requestSessionId,
+    });
+  }
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
+  const rpcPayload = parseCodexRpcObject(data, isBinary);
   const shouldLogForwardState = (method) => (
     method === "initialize" ||
     method === "thread/resume" ||
@@ -10624,12 +11075,66 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       pendingMessages: Array.isArray(relay.pendingToUpstream) ? relay.pendingToUpstream.length : 0,
     });
   };
+  if (
+    meta?.method === "initialize" &&
+    Number.isInteger(meta.id) &&
+    relay.upstreamInitializeResultSeen
+  ) {
+    const responseText = JSON.stringify({
+      jsonrpc: "2.0",
+      id: rpcPayload?.id ?? meta.id,
+      result: relay.upstreamInitializeResult,
+    });
+    logForwardState("answered_from_initialize_cache");
+    for (const subscriber of Array.from(relay.clients)) {
+      sendCodexRelayRpcToClient(relay, subscriber, responseText, undefined, {
+        responseRpcMethod: "initialize",
+        operationId: requestOperationId,
+        sessionId: requestSessionId,
+      });
+      if (requestId) {
+        sendRunnerWsLlmRpcAck(relay, subscriber, {
+          op: "llm_rpc_upstream_response",
+          requestId,
+          operationId: requestOperationId,
+          method: "initialize",
+          id: meta.id,
+          threadId: requestThreadId || relay.threadId || "",
+          state: "result",
+        });
+      }
+    }
+    return;
+  }
+  if (meta?.method === "initialized" && relay.upstreamInitializedNotificationForwarded) {
+    void appendCodexWsProxyDebug("client_to_upstream_rpc_forward_state", {
+      relayId: relay.relayId,
+      remote,
+      endpoint,
+      requestId,
+      method: meta.method || "",
+      id: meta.id,
+      threadId: meta.threadId || relay.threadId || "",
+      state: "dropped_duplicate_initialized",
+      upstreamOpen: Boolean(relay.upstreamOpen),
+      upstreamReadyState: Number(relay.upstreamWs?.readyState),
+      pendingMessages: Array.isArray(relay.pendingToUpstream) ? relay.pendingToUpstream.length : 0,
+    });
+    return;
+  }
   if (meta && (meta.method || meta.id !== null)) {
     if (requestId && Number.isInteger(meta.id) && relay.requestIdByRpcId instanceof Map) {
       relay.requestIdByRpcId.set(Number(meta.id), requestId);
     }
     if (meta.method && Number.isInteger(meta.id) && relay.requestMethodByRpcId instanceof Map) {
       relay.requestMethodByRpcId.set(Number(meta.id), String(meta.method || "").trim());
+    }
+    if (Number.isInteger(meta.id) && relay.requestMetaByRpcId instanceof Map) {
+      relay.requestMetaByRpcId.set(Number(meta.id), {
+        operationId: requestOperationId,
+        sessionId: requestSessionId,
+        threadId: requestThreadId,
+      });
     }
     if (meta.threadId) {
       const allowSwitch = (
@@ -10674,6 +11179,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   }
   if (!relay.upstreamOpen) {
     logForwardState("queued_waiting_upstream_open");
+    if (meta?.method === "initialized") {
+      relay.upstreamInitializedNotificationForwarded = true;
+    }
     relay.pendingToUpstream.push({ data, isBinary });
     return;
   }
@@ -10682,6 +11190,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     return;
   }
   logForwardState("sent_to_upstream");
+  if (meta?.method === "initialized") {
+    relay.upstreamInitializedNotificationForwarded = true;
+  }
   relay.upstreamWs.send(data, { binary: isBinary });
 }
 
@@ -10965,9 +11476,15 @@ if (!RUNNER_SKIP_SERVER_START) {
 
 export const __TESTING__ = {
   attachClientToCodexRelay,
+  forwardCodexRelayClientData,
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
+  cleanupOrScheduleDetachedRelay,
+  cleanupCodexRelay,
+  createCodexRelayContext,
+  pickBestRelayForThread,
+  runnerWsServer,
   listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,
@@ -10992,4 +11509,18 @@ export const __TESTING__ = {
   appendAppConversationToCliRollout,
   listLlmSessions,
   listLlmSessionMessages,
+  parseRunnerWsEnvelope,
+  runnerWsErrorEnvelope,
+  countRunnerWsConnectionsForClient,
+  runnerWsLlmRelayKeyCandidates,
+  resolveRunnerWsLlmRelayKey,
+  rememberRunnerWsLlmRelayIdentity,
+  resolveRunnerWsLlmRelayByIdentity,
+  hasRunnerWsLlmRelayIdentityMapping,
+  sweepRunnerWsLlmRelayMappings,
+  resolveRunnerWsTtsApprovalTargetJobId,
+  rememberRunnerWsTtsOperationJob,
+  resolveRunnerWsTtsOperationJob,
+  sweepRunnerWsTtsOperationJobs,
+  startLlmStreamJob,
 };

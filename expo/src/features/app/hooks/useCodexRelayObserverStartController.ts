@@ -4,6 +4,7 @@ import {
   startCodexAppServerTurnRelayObserver,
 } from "../../codex/codexAppServerClient";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { ConversationMessage, SessionRuntimeStatus } from "../types/appTypes";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
@@ -41,6 +42,7 @@ type UseCodexRelayObserverStartControllerArgs = {
   reply: string;
   codexWsUrl: string;
   codexWsToken: string;
+  runnerWebSocketManager?: RunnerWebSocketManager;
   logSessionDiag: (
     event: string,
     payload?: Record<string, unknown>,
@@ -139,6 +141,7 @@ export function useCodexRelayObserverStartController({
   reply,
   codexWsUrl,
   codexWsToken,
+  runnerWebSocketManager,
   logSessionDiag,
   waitingApprovalResumePendingSessionIdRef,
   setWaitingApprovalResumeStatusText,
@@ -470,6 +473,7 @@ export function useCodexRelayObserverStartController({
       const observer = startCodexAppServerTurnRelayObserver({
         wsUrl: codexWsUrl.trim(),
         wsToken: codexWsToken.trim(),
+        runnerWebSocketManager,
         threadId,
         resumeFromSeq: Number.isFinite(Number(options?.resumeFromSeq))
           ? Math.max(0, Math.floor(Number(options?.resumeFromSeq)))
@@ -710,6 +714,7 @@ export function useCodexRelayObserverStartController({
     codexRelayObserverStartedAtMsByThreadRef,
     codexWsToken,
     codexWsUrl,
+    runnerWebSocketManager,
     finishWaitingApprovalResumeAttempt,
     finalizeSessionRuntimeAfterRelayLoss,
     getActiveConversationMessagesForCodex,

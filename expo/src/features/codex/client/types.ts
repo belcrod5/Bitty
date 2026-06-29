@@ -69,6 +69,7 @@ export type CodexAppServerTurnOptions = {
   onThreadIdResolved?: (threadId: string) => void;
   onEvent?: (method: string, params: unknown) => void;
   onLog?: (entry: CodexAppServerLogEntry) => void;
+  runnerWebSocketManager?: import("../../runnerWs/RunnerWebSocketManager").RunnerWebSocketManager;
 };
 
 export type CodexAppServerTurnResult = {
@@ -94,6 +95,7 @@ export type CodexAppServerRelayObserverOptions = {
   wsToken?: string;
   threadId: string;
   resumeFromSeq?: number;
+  runnerWebSocketManager?: import("../../runnerWs/RunnerWebSocketManager").RunnerWebSocketManager;
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
   onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;
   onEvent?: (method: string, params: unknown) => void;

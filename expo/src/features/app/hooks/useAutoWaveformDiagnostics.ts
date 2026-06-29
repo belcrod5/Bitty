@@ -1,6 +1,7 @@
 import type { MutableRefObject } from "react";
 import { Audio } from "expo-av";
 import type { AppStateStatus } from "react-native";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type UseAutoWaveformDiagnosticsOptions = {
   appStateRef: MutableRefObject<AppStateStatus>;
@@ -20,6 +21,7 @@ type UseAutoWaveformDiagnosticsOptions = {
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   autoStatusReadInFlightRef: MutableRefObject<Promise<Audio.RecordingStatus> | null>;
   autoStatusReadOwnerRef: MutableRefObject<"watchdog" | "">;
   autoStatusReadStartedAtRef: MutableRefObject<number>;
@@ -56,6 +58,7 @@ export function useAutoWaveformDiagnostics(options: UseAutoWaveformDiagnosticsOp
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     autoStatusReadInFlightRef,
     autoStatusReadOwnerRef,
     autoStatusReadStartedAtRef,
@@ -160,6 +163,7 @@ export function useAutoWaveformDiagnostics(options: UseAutoWaveformDiagnosticsOp
           ttsLoading,
           replyLoading: replyLoadingRef.current,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
           isRecording: Boolean(status?.isRecording),
           durationMillis: Number(status?.durationMillis || 0),
         });
@@ -200,6 +204,7 @@ export function useAutoWaveformDiagnostics(options: UseAutoWaveformDiagnosticsOp
       ttsLoading,
       replyLoading: replyLoadingRef.current,
       streamSocketAlive: streamSocketRef.current !== null,
+      streamTtsControlAlive: streamTtsControlRef.current !== null,
       isRecording: Boolean(status?.isRecording),
       durationMillis: Number(status?.durationMillis || 0),
     });

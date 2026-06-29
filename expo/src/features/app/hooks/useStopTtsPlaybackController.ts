@@ -1,5 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 type AudioModeSwitchOptions = {
@@ -21,6 +22,7 @@ type UseStopTtsPlaybackControllerOptions = {
   streamAudioQueueRef: MutableRefObject<Array<unknown>>;
   streamAudioQueueProcessingRef: MutableRefObject<boolean>;
   streamTtsSuppressedRef: MutableRefObject<boolean>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamAudioWaveformBarsRef: MutableRefObject<number[][]>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   ttsSoundRef: MutableRefObject<Audio.Sound | null>;
@@ -57,6 +59,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamTtsSuppressedRef,
+    streamTtsControlRef,
     streamAudioWaveformBarsRef,
     ttsPlaybackMessageIdRef,
     ttsSoundRef,
@@ -92,6 +95,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         ttsLoading,
         ttsUiStatus,
         streamSocketAlive: streamSocketRef.current !== null,
+        streamTtsControlAlive: streamTtsControlRef.current !== null,
         streamQueueSize: streamAudioQueueRef.current.length,
         replyLoading: replyLoadingRef.current,
         sinceBargeInDetectedMs: elapsedSinceMs(autoLastBargeInDetectedAtRef.current),
@@ -103,6 +107,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         streamQueueSize: streamAudioQueueRef.current.length,
         streamQueueProcessing: streamAudioQueueProcessingRef.current,
         streamSocketAlive: streamSocketRef.current !== null,
+        streamTtsControlAlive: streamTtsControlRef.current !== null,
       });
       ttsPlaybackRunIdRef.current += 1;
       ttsSynthesisRequestIdRef.current += 1;
@@ -116,8 +121,14 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
           ws.close();
           streamSocketRef.current = null;
         }
+        const streamTtsControl = streamTtsControlRef.current;
+        if (streamTtsControl) {
+          streamTtsControl.cleanup();
+          streamTtsControlRef.current = null;
+        }
         logAuto("tts_stream_interrupt_cleanup", {
           hadSocket: Boolean(ws),
+          hadControl: Boolean(streamTtsControl),
           sinceBargeInDetectedMs: elapsedSinceMs(autoLastBargeInDetectedAtRef.current),
           sinceTtsStopRequestedMs: elapsedSinceMs(autoLastTtsStopRequestedAtRef.current),
           sinceTtsStoppedMs: elapsedSinceMs(autoLastTtsStoppedAtRef.current),
@@ -186,6 +197,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     streamAudioQueueRef,
     streamAudioWaveformBarsRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     ttsLoading,
     ttsPlaybackRunIdRef,
@@ -201,6 +213,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     const shouldInterruptStream = (
       replyLoadingRef.current ||
       ttsPlaybackMessageIdRef.current === "__stream__" ||
+      streamTtsControlRef.current !== null ||
       streamSocketRef.current !== null
     );
     await stopTtsPlayback({ interruptStream: shouldInterruptStream });
@@ -208,6 +221,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     replyLoadingRef,
     stopTtsPlayback,
     streamSocketRef,
+    streamTtsControlRef,
     ttsPlaybackMessageIdRef,
   ]);
 

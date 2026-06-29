@@ -4,6 +4,7 @@ import {
   readCodexAppServerThread,
   type CodexThreadListEntry,
 } from "../../codex/codexAppServerClient";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { parseContextUsageUsedPct } from "../utils/formatting";
 import {
   dedupeSessionHistoryEntries,
@@ -94,6 +95,7 @@ type UseLlmSessionExplorerOptions = {
   normalizedLlmDirectoryForRequest: () => string;
   defaultLlmDirectory: string;
   nearUnlimitedTimeoutMs: number;
+  runnerWebSocketManager?: RunnerWebSocketManager;
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
 };
 
@@ -215,6 +217,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     normalizedLlmDirectoryForRequest,
     defaultLlmDirectory,
     nearUnlimitedTimeoutMs,
+    runnerWebSocketManager,
     onSessionDiagLog,
   } = options;
 
@@ -458,6 +461,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           wsToken: codexWsToken.trim(),
           threadId: sessionId,
           timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+          runnerWebSocketManager,
         });
         let metadataSnapshot: RunnerSessionSnapshot | null = null;
         try {
@@ -679,6 +683,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchTextWithTimeout,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    runnerWebSocketManager,
     runnerToken,
   ]);
 
@@ -693,9 +698,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       limit: 1,
       sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+      runnerWebSocketManager,
     });
     return parseOptionalSessionId(listed.data[0]?.threadId);
-  }, [codexWsToken, codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest]);
+  }, [codexWsToken, codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, runnerWebSocketManager]);
 
   const loadDirectoryExplorer = useCallback(async (pathRaw?: unknown) => {
     const targetLlmUrl = auxServerBaseUrl();
@@ -809,6 +815,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       cursor,
       sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+      runnerWebSocketManager,
     });
     const runnerSnapshotMap = includeRunnerSnapshots
       ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch(() => (
@@ -838,6 +845,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionSnapshotMap,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    runnerWebSocketManager,
   ]);
 
   const fetchSessionChildHistory = useCallback(async (
@@ -874,6 +882,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       limit,
       sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+      runnerWebSocketManager,
     });
     const runnerSnapshotMap = includeRunnerSnapshots
       ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch(() => (
@@ -903,6 +912,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionSnapshotMap,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    runnerWebSocketManager,
   ]);
 
   const markRunnerSessionRead = useCallback(async (

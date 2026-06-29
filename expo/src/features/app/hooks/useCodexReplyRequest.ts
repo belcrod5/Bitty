@@ -8,6 +8,7 @@ import {
   type CodexAppServerTurnSession,
 } from "../../codex/codexAppServerClient";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
@@ -54,6 +55,7 @@ type UseCodexReplyRequestOptions<
   transcript: string;
   codexWsUrl: string;
   codexWsToken: string;
+  runnerWebSocketManager?: RunnerWebSocketManager;
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
@@ -1002,6 +1004,7 @@ export function useCodexReplyRequest<
       const createTurnSession = (attempt: number) => startCodexAppServerTurn({
         wsUrl: targetCodexWsUrl,
         wsToken: current.codexWsToken.trim(),
+        runnerWebSocketManager: current.runnerWebSocketManager,
         traceId: requestTraceId,
         inputText: effectiveTranscript,
         cwd: requestDirectory || undefined,

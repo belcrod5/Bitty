@@ -1,5 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type RecordingStatusSource = "callback" | "watchdog";
 type AutoRecordingStatus = Awaited<ReturnType<Audio.Recording["getStatusAsync"]>>;
@@ -27,6 +28,7 @@ type UseAutoRecordingWatchdogOptions = {
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamAudioQueueProcessingRef: MutableRefObject<boolean>;
   streamAudioQueueRef: MutableRefObject<unknown[]>;
   streamCurrentChunkStartedAtRef: MutableRefObject<number>;
@@ -97,6 +99,7 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
@@ -251,6 +254,7 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
       const streamPlaybackActive = (
         streamAudioQueueProcessingRef.current ||
         streamAudioQueueRef.current.length > 0 ||
+        streamTtsControlRef.current !== null ||
         streamSocketRef.current !== null ||
         streamCurrentChunkStartedAtRef.current > 0
       );
@@ -290,6 +294,7 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
         ttsPlayingRef.current &&
         (
           replyLoadingRef.current ||
+          streamTtsControlRef.current !== null ||
           streamSocketRef.current !== null ||
           !streamPlaybackActive
         )
@@ -314,6 +319,7 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
           ttsPlaying: ttsPlayingRef.current,
           ttsLoading,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
           replyLoading: replyLoadingRef.current,
         });
         void stopTtsPlayback({ interruptStream: true }).catch(() => {});
@@ -405,6 +411,7 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     streamCurrentChunkEstimatedDurationMsRef,
     streamCurrentChunkStartedAtRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     ttsPlayingRef,
     watchdogInFlightForceReleaseMs,

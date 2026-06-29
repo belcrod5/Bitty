@@ -1,6 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { Audio } from "expo-av";
-import type { StreamAudioQueueItem } from "../types/appTypes";
+import type { StreamAudioQueueItem, StreamTtsControlState } from "../types/appTypes";
 import { withPromiseTimeout } from "../utils/asyncTimeout";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
@@ -31,6 +31,7 @@ type UseTtsPlaybackWatchdogControllerOptions = {
   ttsStopInFlightRef: MutableRefObject<Promise<void> | null>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
   streamAudioQueueProcessingRef: MutableRefObject<boolean>;
   streamTtsSuppressedRef: MutableRefObject<boolean>;
@@ -75,6 +76,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
     ttsStopInFlightRef,
     ttsPlaybackMessageIdRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamTtsSuppressedRef,
@@ -183,6 +185,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
                 streamQueueSize: streamAudioQueueRef.current.length,
                 streamQueueProcessing: streamAudioQueueProcessingRef.current,
                 streamSocketAlive: streamSocketRef.current !== null,
+                streamTtsControlAlive: streamTtsControlRef.current !== null,
               });
             }
             return;
@@ -210,6 +213,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
               streamQueueSize: streamAudioQueueRef.current.length,
               streamQueueProcessing: streamAudioQueueProcessingRef.current,
               streamSocketAlive: streamSocketRef.current !== null,
+              streamTtsControlAlive: streamTtsControlRef.current !== null,
             });
           }
 
@@ -221,7 +225,13 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
           const hasPipelineContinuation = (
             streamAudioQueueProcessingRef.current ||
             streamAudioQueueRef.current.length > 0 ||
-            (!streamTtsSuppressedRef.current && streamSocketRef.current !== null) ||
+            (
+              !streamTtsSuppressedRef.current &&
+              (
+                streamTtsControlRef.current !== null ||
+                streamSocketRef.current !== null
+              )
+            ) ||
             ttsLoading
           );
 
@@ -261,6 +271,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
             streamQueueSize: streamAudioQueueRef.current.length,
             streamQueueProcessing: streamAudioQueueProcessingRef.current,
             streamSocketAlive: streamSocketRef.current !== null,
+            streamTtsControlAlive: streamTtsControlRef.current !== null,
             ttsLoading,
             ttsPlaying: ttsPlayingRef.current,
           });
@@ -335,6 +346,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
     streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     ttsLoading,
     ttsPlaybackFinishEpsilonMs,
@@ -407,12 +419,19 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
       ttsLoading ||
       streamAudioQueueProcessingRef.current ||
       streamAudioQueueRef.current.length > 0 ||
-      (!streamTtsSuppressedRef.current && streamSocketRef.current !== null)
+      (
+        !streamTtsSuppressedRef.current &&
+        (
+          streamTtsControlRef.current !== null ||
+          streamSocketRef.current !== null
+        )
+      )
     );
     setTtsPlaybackWanted(shouldWant, reason, {
       streamQueueSize: streamAudioQueueRef.current.length,
       streamQueueProcessing: streamAudioQueueProcessingRef.current,
       streamSocketAlive: streamSocketRef.current !== null,
+      streamTtsControlAlive: streamTtsControlRef.current !== null,
       ttsLoading,
       ttsPlaying: ttsPlayingRef.current,
       ...payload,
@@ -423,6 +442,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
     streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     ttsLoading,
     ttsPlayingRef,
