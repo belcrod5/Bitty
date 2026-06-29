@@ -108,6 +108,32 @@ function readServerStatus(message: RunnerWsMessage): RunnerWsServerStatus | unde
   return normalizeRunnerWsServerStatus(payload.serverStatus || payload.status || payload);
 }
 
+function readJsonRpcMethod(payload: unknown) {
+  if (typeof payload === "string") {
+    try {
+      const parsed = JSON.parse(payload);
+      return typeof parsed?.method === "string" ? parsed.method : "";
+    } catch {
+      return "";
+    }
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+  const method = (payload as Record<string, unknown>).method;
+  return typeof method === "string" ? method : "";
+}
+
+function isStartStyleMessage(message: RunnerWsMessage) {
+  if (message.channel === "tts" && message.op === "start") return true;
+  if (message.channel !== "llm" || message.op !== "rpc") return false;
+  const method = readJsonRpcMethod(message.payload);
+  return (
+    method === "initialize" ||
+    method === "thread/start" ||
+    method === "thread/resume" ||
+    method === "turn/start"
+  );
+}
+
 export class RunnerWebSocketManager {
   private url: string;
   private token: string;
@@ -253,6 +279,12 @@ export class RunnerWebSocketManager {
       this.sendErrorCount += 1;
       this.emitSnapshot();
       throw makeError("runner_ws_not_ready", this.connectionState);
+    }
+    if (this.appState === "inactive" && isStartStyleMessage(message)) {
+      this.sendErrorCount += 1;
+      this.lastError = "runner_ws_inactive_start_blocked";
+      this.emitSnapshot();
+      throw makeError("runner_ws_inactive_start_blocked");
     }
     if ((this.ws.bufferedAmount || 0) > RUNNER_WS_MAX_BUFFERED_AMOUNT) {
       this.sendErrorCount += 1;

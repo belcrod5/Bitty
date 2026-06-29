@@ -154,6 +154,64 @@ test("runner-ws TTS operation map resolves repeated starts to the original job",
   await job.runPromise;
 });
 
+test("runner-ws LLM operation map keeps pre-turn relays recoverable after detach", () => {
+  const relay = __TESTING__.createCodexRelayContext({
+    endpoint: "/runner-ws",
+    remote: "test",
+    upstreamUrl: "ws://upstream.test",
+    upstreamWs: { readyState: 1, send() {} },
+  });
+  const operationId = `llm-operation-${Date.now()}`;
+  const sessionId = `llm-session-${Date.now()}`;
+
+  assert.equal(
+    __TESTING__.rememberRunnerWsLlmRelayIdentity(relay, { operationId, sessionId }),
+    true
+  );
+  assert.equal(__TESTING__.resolveRunnerWsLlmRelayByIdentity({ operationId })?.relayId, relay.relayId);
+  assert.equal(__TESTING__.hasRunnerWsLlmRelayIdentityMapping(relay), true);
+
+  __TESTING__.cleanupOrScheduleDetachedRelay(relay, "test_detached");
+  assert.equal(relay.closed, false);
+  assert.equal(__TESTING__.resolveRunnerWsLlmRelayByIdentity({ sessionId })?.relayId, relay.relayId);
+
+  if (relay.cleanupTimer) {
+    clearTimeout(relay.cleanupTimer);
+    relay.cleanupTimer = null;
+  }
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+  assert.equal(__TESTING__.hasRunnerWsLlmRelayIdentityMapping(relay), false);
+});
+
+test("runner-ws TTS start requires operationId", () => {
+  const ws = createRunnerWsConnectionForTest();
+  ws.sent.length = 0;
+
+  ws.emit("message", JSON.stringify({
+    channel: "tts",
+    op: "start",
+    requestId: "tts-start-without-operation",
+    payload: {
+      mode: "text",
+      text: "hello",
+      ttsProvider: "__test_unsupported__",
+    },
+  }), false);
+
+  assert.deepEqual(ws.sent[0], {
+    channel: "control",
+    op: "error",
+    requestId: "tts-start-without-operation",
+    payload: {
+      error: "runner_ws_tts_operation_id_required",
+      message: "operationId is required for tts:start",
+      requestId: "tts-start-without-operation",
+      sessionId: "",
+      streamId: "",
+    },
+  });
+});
+
 test("runner-ws LLM notifications without rpc id keep current operation metadata", () => {
   const relay = createRelayForRunnerWsTest();
   const client = createEnvelopeClientForRunnerWsTest();

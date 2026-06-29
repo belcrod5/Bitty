@@ -159,7 +159,7 @@ afterEach(() => {
 test("manager mode rewrites JSON-RPC ids and cleans up without creating a direct socket", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const promise = runCodexRpcSession({
-    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsUrl: "ws://127.0.0.1:8788/codex-ws",
     wsToken: "runner-token",
     clientName: "test-client",
     clientTitle: "Test Client",

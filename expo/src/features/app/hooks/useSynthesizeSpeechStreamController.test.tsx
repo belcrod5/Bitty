@@ -91,7 +91,7 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
       ttsPlayingRef: ref(false),
       streamAudioQueueRef: ref([]),
       baseUrl: () => "http://127.0.0.1:8788",
-      ttsStreamWsUrl: () => "ws://127.0.0.1:8788/runner-ws",
+      ttsStreamWsUrl: () => "ws://127.0.0.1:8788/stream-tts",
       clearStreamAudioQueue: jest.fn(),
       upsertStreamSegment: jest.fn(),
       enqueueStreamAudio: jest.fn(),
@@ -121,7 +121,7 @@ beforeEach(() => {
   mockCreateWebSocketWithOptionalAuth.mockReset();
 });
 
-test("uses RunnerWebSocketManager for runner-ws stream TTS control traffic", async () => {
+test("uses RunnerWebSocketManager for stream TTS control traffic when manager is available", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { options, streamSocketRef, streamTtsControlRef } = createOptions(manager);
   const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));

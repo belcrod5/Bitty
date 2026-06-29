@@ -127,9 +127,9 @@ function filterMatches(filter: RunnerWsMessageFilter, message: RunnerWsMessage) 
   );
 }
 
-function createTurn(manager: FakeRunnerWebSocketManager) {
+function createTurn(manager: FakeRunnerWebSocketManager, wsUrl = "ws://127.0.0.1:8788/runner-ws") {
   return startCodexAppServerTurn({
-    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsUrl,
     wsToken: "runner-token",
     traceId: "trace-1",
     inputText: "hello",
@@ -222,6 +222,29 @@ test("manager mode waits for ready and sends initialize without creating a direc
   });
   expect((outbound.payload as { id?: number }).id).toEqual(expect.any(Number));
   expect((outbound.payload as { id?: number }).id).not.toBe(1);
+
+  manager.dropConnection();
+  await expect(session.promise).rejects.toThrow("runner-ws disconnected");
+});
+
+test("manager mode uses singleton even when configured URL is legacy codex-ws", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+
+  const session = createTurn(manager, "ws://127.0.0.1:8788/codex-ws");
+
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+  expect(manager.connect).toHaveBeenCalledTimes(1);
+
+  manager.becomeReady();
+  await flushPromises();
+
+  expect(lastSent(manager)).toMatchObject({
+    channel: "llm",
+    op: "rpc",
+    payload: {
+      method: "initialize",
+    },
+  });
 
   manager.dropConnection();
   await expect(session.promise).rejects.toThrow("runner-ws disconnected");

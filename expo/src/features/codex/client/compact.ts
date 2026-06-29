@@ -92,9 +92,9 @@ export async function compactCodexAppServerThread(options: {
 }): Promise<CodexThreadCompactResult> {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
   const wsUrl = normalized.wsUrl;
-  const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
   const runnerWebSocketManager = options.runnerWebSocketManager;
-  const useRunnerWsManager = Boolean(runnerWebSocketManager && useRunnerWsEnvelope);
+  const useRunnerWsManager = Boolean(runnerWebSocketManager);
+  const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
   const wsToken = normalized.wsToken;
   const threadId = String(options.threadId || "").trim();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))

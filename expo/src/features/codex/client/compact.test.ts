@@ -189,7 +189,7 @@ test("manager mode treats cached initialize success as normal and completes comp
   const manager = new FakeRunnerWebSocketManager();
   const onEvent = jest.fn();
   const promise = compactCodexAppServerThread({
-    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsUrl: "ws://127.0.0.1:8788/codex-ws",
     wsToken: "runner-token",
     threadId: "thread-1",
     runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,

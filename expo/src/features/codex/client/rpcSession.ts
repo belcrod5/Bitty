@@ -36,9 +36,9 @@ export async function runCodexRpcSession<T>(options: {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
   const wsUrl = normalized.wsUrl;
   const wsToken = normalized.wsToken;
-  const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
   const runnerWebSocketManager = options.runnerWebSocketManager;
-  const useRunnerWsManager = Boolean(runnerWebSocketManager && useRunnerWsEnvelope);
+  const useRunnerWsManager = Boolean(runnerWebSocketManager);
+  const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
   const threadId = String(options.threadId || "").trim();
   const traceId = String(options.traceId || options.clientName || "").trim();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))

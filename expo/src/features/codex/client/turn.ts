@@ -190,9 +190,9 @@ export function startCodexAppServerTurn(
 ): CodexAppServerTurnSession {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
   const wsUrl = normalized.wsUrl;
-  const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
   const runnerWebSocketManager = options.runnerWebSocketManager;
-  const useRunnerWsManager = Boolean(runnerWebSocketManager && useRunnerWsEnvelope);
+  const useRunnerWsManager = Boolean(runnerWebSocketManager);
+  const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
   const inputText = String(options.inputText || "").trim();
   const wsToken = normalized.wsToken;
   const cwd = String(options.cwd || "").trim();

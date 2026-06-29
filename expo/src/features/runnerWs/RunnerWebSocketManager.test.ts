@@ -403,6 +403,45 @@ test("background closes intentionally and active reconnects once", async () => {
   });
 });
 
+test("inactive app state blocks new start-style messages without closing existing socket", async () => {
+  const socket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, socket);
+
+  manager.setAppState("inactive");
+
+  expect(() => {
+    manager.send({
+      channel: "llm",
+      op: "rpc",
+      operationId: "op-start",
+      payload: { jsonrpc: "2.0", id: 1, method: "turn/start" },
+    });
+  }).toThrow("runner_ws_inactive_start_blocked");
+  expect(() => {
+    manager.send({
+      channel: "tts",
+      op: "start",
+      operationId: "op-tts",
+      payload: { mode: "text", text: "hello" },
+    });
+  }).toThrow("runner_ws_inactive_start_blocked");
+
+  manager.send({
+    channel: "llm",
+    op: "rpc",
+    operationId: "op-existing",
+    payload: { jsonrpc: "2.0", id: 2, method: "turn/interrupt" },
+  });
+
+  expect(socket.closeCalls).toBe(0);
+  expect(JSON.parse(socket.sent[0])).toMatchObject({
+    channel: "llm",
+    op: "rpc",
+    operationId: "op-existing",
+  });
+});
+
 test("authentication failure close stops automatic reconnect loop", async () => {
   jest.useFakeTimers();
   const firstSocket = nextSocket();

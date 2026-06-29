@@ -325,6 +325,14 @@ const RUNNER_WS_TTS_OPERATION_MAX_ENTRIES = Math.max(
   16,
   Number(process.env.RUNNER_WS_TTS_OPERATION_MAX_ENTRIES || 512)
 );
+const RUNNER_WS_LLM_OPERATION_TTL_MS = Math.max(
+  60000,
+  Number(process.env.RUNNER_WS_LLM_OPERATION_TTL_MS || 30 * 60 * 1000)
+);
+const RUNNER_WS_LLM_OPERATION_MAX_ENTRIES = Math.max(
+  16,
+  Number(process.env.RUNNER_WS_LLM_OPERATION_MAX_ENTRIES || 512)
+);
 const COMMAND_EXEC_BIN_DIR = path.resolve(
   WORKSPACE_ROOT,
   process.env.COMMAND_EXEC_BIN_DIR || "private_runner/bin"
@@ -477,6 +485,8 @@ const toolApprovedKeysBySessionId = new Map();
 const llmJobsById = new Map();
 const llmJobOrder = [];
 const runnerWsTtsJobIdByOperationId = new Map();
+const runnerWsLlmRelayIdByOperationId = new Map();
+const runnerWsLlmRelayIdBySessionId = new Map();
 const scriptJobsById = new Map();
 const scriptJobOrder = [];
 const codexQueuedTurnsById = new Map();
@@ -2543,6 +2553,100 @@ function resolveRunnerWsTtsOperationJob(operationIdRaw) {
   }
   entry.updatedAtMs = Date.now();
   return job;
+}
+
+function sweepRunnerWsLlmRelayMap(map, nowMs) {
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  for (const [logicalId, entry] of map.entries()) {
+    const updatedAtMs = Number(entry?.updatedAtMs || entry?.createdAtMs || 0);
+    const expired = updatedAtMs > 0 && (updatedAtMs + RUNNER_WS_LLM_OPERATION_TTL_MS) < now;
+    const relayId = String(entry?.relayId || "").trim();
+    const relay = relayId ? (codexWsRelaysById.get(relayId) || null) : null;
+    if (!relay || relay.closed || expired) {
+      map.delete(logicalId);
+    }
+  }
+  if (map.size <= RUNNER_WS_LLM_OPERATION_MAX_ENTRIES) return;
+  const overflow = map.size - RUNNER_WS_LLM_OPERATION_MAX_ENTRIES;
+  const oldest = Array.from(map.entries())
+    .sort((a, b) => Number(a[1]?.updatedAtMs || 0) - Number(b[1]?.updatedAtMs || 0))
+    .slice(0, overflow);
+  for (const [logicalId] of oldest) {
+    map.delete(logicalId);
+  }
+}
+
+function sweepRunnerWsLlmRelayMappings(nowMs = Date.now()) {
+  sweepRunnerWsLlmRelayMap(runnerWsLlmRelayIdByOperationId, nowMs);
+  sweepRunnerWsLlmRelayMap(runnerWsLlmRelayIdBySessionId, nowMs);
+}
+
+function rememberRunnerWsLlmRelayIdentity(relay, identity = {}) {
+  const relayId = String(relay?.relayId || "").trim();
+  if (!relayId || relay?.closed) return false;
+  const operationId = String(identity.operationId || relay.runnerWsLlmOperationId || "").trim();
+  const sessionId = String(identity.sessionId || relay.runnerWsLlmSessionId || "").trim();
+  if (!operationId && !sessionId) return false;
+  sweepRunnerWsLlmRelayMappings();
+  const now = Date.now();
+  const remember = (map, logicalId) => {
+    if (!logicalId) return;
+    const existing = map.get(logicalId) || null;
+    map.set(logicalId, {
+      relayId,
+      createdAtMs: Number(existing?.createdAtMs || now),
+      updatedAtMs: now,
+    });
+  };
+  remember(runnerWsLlmRelayIdByOperationId, operationId);
+  remember(runnerWsLlmRelayIdBySessionId, sessionId);
+  sweepRunnerWsLlmRelayMappings();
+  return true;
+}
+
+function resolveRunnerWsLlmRelayByIdentity(identity = {}) {
+  const operationId = String(identity.operationId || "").trim();
+  const sessionId = String(identity.sessionId || "").trim();
+  sweepRunnerWsLlmRelayMappings();
+  for (const [logicalId, map] of [
+    [operationId, runnerWsLlmRelayIdByOperationId],
+    [sessionId, runnerWsLlmRelayIdBySessionId],
+  ]) {
+    if (!logicalId) continue;
+    const entry = map.get(logicalId) || null;
+    const relayId = String(entry?.relayId || "").trim();
+    const relay = relayId ? (codexWsRelaysById.get(relayId) || null) : null;
+    if (relay && !relay.closed) {
+      entry.updatedAtMs = Date.now();
+      return relay;
+    }
+    map.delete(logicalId);
+  }
+  return null;
+}
+
+function hasRunnerWsLlmRelayIdentityMapping(relay) {
+  const relayId = String(relay?.relayId || "").trim();
+  if (!relayId) return false;
+  sweepRunnerWsLlmRelayMappings();
+  for (const map of [runnerWsLlmRelayIdByOperationId, runnerWsLlmRelayIdBySessionId]) {
+    for (const entry of map.values()) {
+      if (String(entry?.relayId || "").trim() === relayId) return true;
+    }
+  }
+  return false;
+}
+
+function releaseRunnerWsLlmRelayIdentityMappings(relay) {
+  const relayId = String(relay?.relayId || "").trim();
+  if (!relayId) return;
+  for (const map of [runnerWsLlmRelayIdByOperationId, runnerWsLlmRelayIdBySessionId]) {
+    for (const [logicalId, entry] of Array.from(map.entries())) {
+      if (String(entry?.relayId || "").trim() === relayId) {
+        map.delete(logicalId);
+      }
+    }
+  }
 }
 
 function llmJobSetStatus(job, status) {
@@ -8878,16 +8982,24 @@ runnerWsServer.on("connection", (ws, req) => {
         if (!existing.clients.has(ws)) {
           attachRunnerWsToRelay(existing, { keys, replayAfterSeq: 0 });
         }
+        rememberRunnerWsLlmRelayIdentity(existing, message);
         return existing;
       }
       if (existing?.closed) {
         llmRelaysByKey.delete(key);
       }
     }
+    const identityRelay = resolveRunnerWsLlmRelayByIdentity(message);
+    if (identityRelay && !identityRelay.closed) {
+      attachRunnerWsToRelay(identityRelay, { keys, replayAfterSeq: 0 });
+      rememberRunnerWsLlmRelayIdentity(identityRelay, message);
+      return identityRelay;
+    }
     const threadId = pickFirstNonEmptyString(message?.threadId, meta?.threadId);
     const threadRelay = pickBestRelayForThread(threadId);
     if (threadRelay && !threadRelay.closed) {
       attachRunnerWsToRelay(threadRelay, { keys, replayAfterSeq: 0 });
+      rememberRunnerWsLlmRelayIdentity(threadRelay, message);
       return threadRelay;
     }
     const relay = createCodexRelayWithUpstream({
@@ -8897,6 +9009,7 @@ runnerWsServer.on("connection", (ws, req) => {
       protocols,
     });
     attachRunnerWsToRelay(relay, { keys, replayAfterSeq: 0 });
+    rememberRunnerWsLlmRelayIdentity(relay, message);
     return relay;
   }
 
@@ -9232,17 +9345,26 @@ runnerWsServer.on("connection", (ws, req) => {
         );
         return;
       }
+      if (!operationId) {
+        sendRunnerWsEnvelope(
+          ws,
+          runnerWsErrorEnvelope("runner_ws_tts_operation_id_required", "operationId is required for tts:start", {
+            requestId: message.requestId || "",
+            sessionId: message.sessionId || "",
+            streamId: message.streamId || "",
+          })
+        );
+        return;
+      }
       try {
-        let job = operationId ? resolveRunnerWsTtsOperationJob(operationId) : null;
+        let job = resolveRunnerWsTtsOperationJob(operationId);
         if (!job) {
           job = startLlmStreamJob(payload, {
             endpoint: RUNNER_WS_PATH,
             remoteAddress: remote,
             publicBaseUrl,
           });
-          if (operationId) {
-            rememberRunnerWsTtsOperationJob(operationId, job);
-          }
+          rememberRunnerWsTtsOperationJob(operationId, job);
         }
         attachRunnerWsTtsJob(job, 0);
         sendRunnerWsEnvelope(ws, {
@@ -10276,6 +10398,10 @@ function removeClientFromRelay(relay, clientWs) {
 function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
   if (!relay || relay.closed || relay.clients.size > 0) return;
   if (!relay.turnStarted && !relay.turnCompleted) {
+    if (hasRunnerWsLlmRelayIdentityMapping(relay)) {
+      scheduleCodexRelayCleanup(relay, reason);
+      return;
+    }
     void appendCodexWsProxyDebug("pre_turn_relay_cleanup", {
       relayId: relay.relayId,
       reason,
@@ -10292,6 +10418,7 @@ function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
 function cleanupCodexRelay(relay, reason = "cleanup") {
   if (!relay || relay.closed) return;
   relay.closed = true;
+  releaseRunnerWsLlmRelayIdentityMappings(relay);
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
@@ -10917,6 +11044,10 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (requestOperationId || requestSessionId) {
     relay.runnerWsLlmOperationId = requestOperationId || relay.runnerWsLlmOperationId || "";
     relay.runnerWsLlmSessionId = requestSessionId || relay.runnerWsLlmSessionId || "";
+    rememberRunnerWsLlmRelayIdentity(relay, {
+      operationId: requestOperationId,
+      sessionId: requestSessionId,
+    });
   }
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
@@ -11349,6 +11480,8 @@ export const __TESTING__ = {
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
+  cleanupOrScheduleDetachedRelay,
+  cleanupCodexRelay,
   createCodexRelayContext,
   pickBestRelayForThread,
   runnerWsServer,
@@ -11381,6 +11514,10 @@ export const __TESTING__ = {
   countRunnerWsConnectionsForClient,
   runnerWsLlmRelayKeyCandidates,
   resolveRunnerWsLlmRelayKey,
+  rememberRunnerWsLlmRelayIdentity,
+  resolveRunnerWsLlmRelayByIdentity,
+  hasRunnerWsLlmRelayIdentityMapping,
+  sweepRunnerWsLlmRelayMappings,
   resolveRunnerWsTtsApprovalTargetJobId,
   rememberRunnerWsTtsOperationJob,
   resolveRunnerWsTtsOperationJob,

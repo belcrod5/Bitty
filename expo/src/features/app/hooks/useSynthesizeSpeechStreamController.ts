@@ -109,8 +109,8 @@ export function useSynthesizeSpeechStreamController(
     const text = sanitizeTextForTts(sourceText);
     const targetRunnerUrl = baseUrl();
     const wsUrl = ttsStreamWsUrl();
-    const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
-    const useRunnerWsManager = Boolean(runnerWebSocketManager && useRunnerWsEnvelope);
+    const useRunnerWsManager = Boolean(runnerWebSocketManager);
+    const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
     if (!targetRunnerUrl || (!useRunnerWsManager && !runnerToken.trim()) || !text) return;
     const targetMessageId = String(streamOptions?.messageId || "").trim();
     const shouldProjectDebugToActiveSession = false;
