@@ -178,6 +178,7 @@ import type {
   SttMessageMeta,
   StreamAudioQueueItem,
   StreamSegment,
+  StreamTtsControlState,
   ToolAutoApprovalMap,
   ToolCallEntry,
   TtsDebugStats,
@@ -299,6 +300,8 @@ import {
   type ReasoningEffort,
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
+import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
+import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 
 const DEFAULT_RUNNER_URL = "http://127.0.0.1:8788";
 const DEFAULT_LLM_BACKEND: LlmBackend = "codex_app_server";
@@ -698,6 +701,14 @@ export default function App() {
   const [codexWsToken, setCodexWsToken] = useState("");
   const [runnerToken, setRunnerToken] = useState("");
   const effectiveCodexWsToken = codexWsToken.trim() || runnerToken.trim();
+  const runnerWebSocketManagerRef = useRef<RunnerWebSocketManager | null>(null);
+  if (!runnerWebSocketManagerRef.current) {
+    runnerWebSocketManagerRef.current = new RunnerWebSocketManager({
+      url: codexWsUrl,
+      token: effectiveCodexWsToken,
+    });
+  }
+  const runnerWebSocketManager = runnerWebSocketManagerRef.current;
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
   const [llmCompletionNotifications, setLlmCompletionNotifications] = useState<LlmCompletionNotification[]>([]);
@@ -883,6 +894,7 @@ export default function App() {
     normalizedLlmDirectoryForRequest,
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
+    runnerWebSocketManager,
     onSessionDiagLog: handleSessionDiagLog,
   });
   const {
@@ -1123,6 +1135,7 @@ export default function App() {
   const ttsStopInFlightRef = useRef<Promise<void> | null>(null);
   const ttsSynthesisRequestIdRef = useRef(0);
   const streamTtsSuppressedRef = useRef(false);
+  const streamTtsControlRef = useRef<StreamTtsControlState | null>(null);
   const streamSocketRef = useRef<WebSocket | null>(null);
   const codexRelayObserverRef = useRef<{ threadId: string; panelId?: string; close: () => void } | null>(null);
   const codexRelayObserverReplyByThreadRef = useRef<Record<string, string>>({});
@@ -1166,6 +1179,7 @@ export default function App() {
         ttsPlaybackWantedRef.current ||
         ttsPlayingRef.current ||
         ttsSoundRef.current !== null ||
+        streamTtsControlRef.current !== null ||
         streamSocketRef.current !== null ||
         streamAudioQueueProcessingRef.current ||
         streamAudioQueueRef.current.length > 0
@@ -1216,6 +1230,7 @@ export default function App() {
         wsToken: effectiveCodexWsToken,
         threadId: sessionId,
         timeoutMs: 25_000,
+        runnerWebSocketManager,
       })
         .then((restored) => {
           if (cancelled || selectedThreadStatusProbeSeqRef.current !== probeSeq) return;
@@ -1245,6 +1260,7 @@ export default function App() {
   }, [
     effectiveCodexWsToken,
     codexWsUrl,
+    runnerWebSocketManager,
     selectedLlmSessionId,
     settingsLoaded,
   ]);
@@ -1621,6 +1637,7 @@ export default function App() {
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueRef,
     ttsPlaybackMessageIdRef,
     conversationMessages,
@@ -1677,6 +1694,7 @@ export default function App() {
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     autoStatusReadInFlightRef,
     autoStatusReadOwnerRef,
     autoStatusReadStartedAtRef,
@@ -1767,6 +1785,7 @@ export default function App() {
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
@@ -1847,6 +1866,7 @@ export default function App() {
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     watchdogLogThrottleMs: AUTO_RECORDING_WATCHDOG_LOG_THROTTLE_MS,
     statusNotRecordingAppTransitionGraceMs: AUTO_STATUS_NOT_RECORDING_APP_TRANSITION_GRACE_MS,
@@ -1919,6 +1939,7 @@ export default function App() {
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsPlaybackMessageIdRef,
     ttsLoading,
     pendingUserProbeTimeoutMs: AUTO_PENDING_USER_PROBE_TIMEOUT_MS,
@@ -2125,6 +2146,7 @@ export default function App() {
     replyLoadingRef,
     ttsPlayingRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsPlaybackMessageIdRef,
     sttLoadingRef,
     ttsLoading,
@@ -2191,6 +2213,11 @@ export default function App() {
     if (ws) {
       ws.close();
       streamSocketRef.current = null;
+    }
+    const streamTtsControl = streamTtsControlRef.current;
+    if (streamTtsControl) {
+      streamTtsControl.cleanup();
+      streamTtsControlRef.current = null;
     }
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
@@ -3374,6 +3401,7 @@ export default function App() {
     ttsStopInFlightRef,
     ttsPlaybackMessageIdRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamTtsSuppressedRef,
@@ -3402,6 +3430,7 @@ export default function App() {
     autoPlaybackBargeGraceUntilRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamCurrentChunkStartedAtRef,
@@ -3447,6 +3476,7 @@ export default function App() {
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     trimForInline,
     logAuto,
@@ -3538,6 +3568,7 @@ export default function App() {
     streamTtsSuppressedRef,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     setTtsPlaybackWanted,
     setTtsUiStatus,
     setStreamAudioQueueSize,
@@ -3552,6 +3583,8 @@ export default function App() {
     selectedVoiceId,
     ttsSpeed,
     ttsWaveformPoints: TTS_WAVEFORM_POINTS,
+    runnerWebSocketManager,
+    streamTtsControlRef,
     streamSocketRef,
     streamTtsSuppressedRef,
     streamAudioWaveformBarsRef,
@@ -4033,6 +4066,7 @@ export default function App() {
     reply,
     codexWsUrl,
     codexWsToken: effectiveCodexWsToken,
+    runnerWebSocketManager,
     logSessionDiag,
     waitingApprovalResumePendingSessionIdRef,
     setWaitingApprovalResumeStatusText,
@@ -4212,6 +4246,7 @@ export default function App() {
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamTtsSuppressedRef,
+    streamTtsControlRef,
     streamAudioWaveformBarsRef,
     ttsPlaybackMessageIdRef,
     ttsSoundRef,
@@ -4237,6 +4272,7 @@ export default function App() {
     closeCodexRelayObserver,
     stopTtsPlayback,
     streamSocketRef,
+    streamTtsControlRef,
     clearStreamAudioQueue,
     streamAudioWaveformBarsRef,
     setStreamWaveformPreview,
@@ -4652,6 +4688,7 @@ export default function App() {
     autoAppStateNonActiveTimerRef,
     autoRestartTimerRef,
     streamSocketRef,
+    streamTtsControlRef,
     replyLoadingRef,
     elapsedSinceMs,
     logAuto,
@@ -4835,6 +4872,7 @@ export default function App() {
     llmSessionRestoreLoading,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     appResumeSessionSyncInFlightRef,
     appResumeSessionSyncLastAtRef,
     setReplyDebug,
@@ -4968,6 +5006,7 @@ export default function App() {
     autoRecordingRef,
     releaseRecording,
     streamSocketRef,
+    streamTtsControlRef,
     cleanupRecordingTranscription,
     cleanupDirectNativeStt,
     faceTrackingSessionRef,
@@ -5229,6 +5268,11 @@ export default function App() {
       ws.close();
       streamSocketRef.current = null;
     }
+    const streamTtsControl = streamTtsControlRef.current;
+    if (streamTtsControl) {
+      streamTtsControl.cleanup();
+      streamTtsControlRef.current = null;
+    }
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
     setStreamWaveformPreview([]);
@@ -5239,6 +5283,7 @@ export default function App() {
     logAuto("stream_tts_resume_recovered", {
       reason,
       hadSocket: Boolean(ws),
+      hadControl: Boolean(streamTtsControl),
       ttsPlaying: ttsPlayingRef.current,
       queuedAudio: streamAudioQueueRef.current.length,
     });
@@ -5399,6 +5444,7 @@ export default function App() {
     codexWsUrl,
     codexWsToken: effectiveCodexWsToken,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
+    runnerWebSocketManager,
     normalizedLlmDirectoryForRequest,
     fetchRunnerSessionContextUsedPct,
     setReplyDebug,
@@ -5430,6 +5476,7 @@ export default function App() {
     codexWsUrl,
     codexWsToken: effectiveCodexWsToken,
     runnerToken,
+    runnerWebSocketManager,
     activeScreen,
     autoRecordingState,
     autoLastEvent,
@@ -5487,6 +5534,7 @@ export default function App() {
     transcript,
     codexWsUrl,
     codexWsToken: effectiveCodexWsToken,
+    runnerWebSocketManager,
     modelRef,
     reasoningEffort,
     codexApprovalPolicy,
@@ -7637,6 +7685,11 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={styles.safeArea}>
+      <RunnerWebSocketProvider
+        url={codexWsUrl}
+        token={effectiveCodexWsToken}
+        manager={runnerWebSocketManager}
+      >
       <AppProviders
         appShell={appShellContextValue}
         appSettings={appSettingsContextValue}
@@ -7720,6 +7773,7 @@ export default function App() {
         </SafeAreaView>
       </KeyboardProvider>
       </AppProviders>
+      </RunnerWebSocketProvider>
     </GestureHandlerRootView>
   );
 }

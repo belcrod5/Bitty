@@ -23,6 +23,13 @@ import {
   isRunnerWsUrl,
   normalizeRunnerWsIncomingCodexRpc,
 } from "../../runnerWs/llmAdapter";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
+import type { RunnerWsMessage } from "../../runnerWs/types";
+import {
+  buildCodexRunnerWsRequestId,
+  CodexRunnerWsJsonRpcIdMapper,
+  createCodexRunnerWsLogicalId,
+} from "./runnerWsJsonRpcIds";
 
 function isCompactItem(itemRaw: unknown) {
   if (!itemRaw || typeof itemRaw !== "object") return false;
@@ -81,10 +88,13 @@ export async function compactCodexAppServerThread(options: {
     message?: string;
   }) => void;
   onEvent?: (method: string, params: unknown) => void;
+  runnerWebSocketManager?: RunnerWebSocketManager;
 }): Promise<CodexThreadCompactResult> {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
   const wsUrl = normalized.wsUrl;
   const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
+  const runnerWebSocketManager = options.runnerWebSocketManager;
+  const useRunnerWsManager = Boolean(runnerWebSocketManager && useRunnerWsEnvelope);
   const wsToken = normalized.wsToken;
   const threadId = String(options.threadId || "").trim();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))
@@ -93,9 +103,14 @@ export async function compactCodexAppServerThread(options: {
   if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
   if (!threadId) throw new Error("threadId is empty");
 
-  const ws = createWebSocketWithOptionalAuth(wsUrl, wsToken);
+  const ws = useRunnerWsManager ? null : createWebSocketWithOptionalAuth(wsUrl, wsToken);
   const wsLabel = wsToken ? `${wsUrl} (token)` : `${wsUrl} (no-token)`;
   const pending = new Map<JsonRpcId, PendingRequest>();
+  const runnerWsOperationId = createCodexRunnerWsLogicalId("codex_compact_op", threadId);
+  const runnerWsSessionId = threadId;
+  const runnerWsRpcIds = new CodexRunnerWsJsonRpcIdMapper();
+  const managerUnsubscribers: Array<() => void> = [];
+  let runnerWsEnvelopeSeq = 0;
   let nextId = 1;
   let finalized = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -136,11 +151,26 @@ export async function compactCodexAppServerThread(options: {
       entry.reject(new Error("Codex app-server request cancelled"));
     }
     pending.clear();
+    runnerWsRpcIds.clear();
+    while (managerUnsubscribers.length > 0) {
+      const unsubscribe = managerUnsubscribers.pop();
+      try {
+        unsubscribe?.();
+      } catch {}
+    }
+    if (useRunnerWsManager) return;
     try {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      if (ws && (getTransportReadyState() === WebSocket.OPEN || getTransportReadyState() === WebSocket.CONNECTING)) {
         ws.close();
       }
     } catch {}
+  }
+
+  function getTransportReadyState() {
+    if (useRunnerWsManager && runnerWebSocketManager) {
+      return runnerWebSocketManager.getSnapshot().readyState;
+    }
+    return ws?.readyState ?? WebSocket.CLOSED;
   }
 
   function sendJson(payload: Record<string, unknown>) {
@@ -150,8 +180,27 @@ export async function compactCodexAppServerThread(options: {
       stage: "rpc_send",
       method: method || undefined,
       id: Number.isFinite(id) ? id : undefined,
-      readyState: ws.readyState,
+      readyState: getTransportReadyState(),
     });
+    if (useRunnerWsManager && runnerWebSocketManager) {
+      runnerWsEnvelopeSeq += 1;
+      runnerWebSocketManager.send({
+        channel: "llm",
+        op: "rpc",
+        requestId: buildCodexRunnerWsRequestId(
+          runnerWsOperationId,
+          runnerWsEnvelopeSeq,
+          method,
+          id
+        ),
+        operationId: runnerWsOperationId,
+        sessionId: runnerWsSessionId,
+        threadId,
+        payload: runnerWsRpcIds.rewriteOutbound(payload),
+      });
+      return;
+    }
+    if (!ws) throw new Error("Codex app-server WebSocket is not initialized");
     ws.send(useRunnerWsEnvelope
       ? encodeRunnerWsLlmRpc(payload, threadId)
       : JSON.stringify(payload));
@@ -161,11 +210,16 @@ export async function compactCodexAppServerThread(options: {
     const id = nextId++;
     return new Promise<R>((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      sendJson({
-        id,
-        method,
-        params,
-      });
+      try {
+        sendJson({
+          id,
+          method,
+          params,
+        });
+      } catch (error) {
+        pending.delete(id);
+        reject(error instanceof Error ? error : new Error(toErrorMessage(error)));
+      }
     });
   }
 
@@ -178,7 +232,7 @@ export async function compactCodexAppServerThread(options: {
     emitLog({
       stage: "rpc_result",
       id,
-      readyState: ws.readyState,
+      readyState: getTransportReadyState(),
     });
     pendingEntry.resolve(result);
   }
@@ -193,7 +247,7 @@ export async function compactCodexAppServerThread(options: {
       stage: "rpc_error",
       id,
       message,
-      readyState: ws.readyState,
+      readyState: getTransportReadyState(),
     });
     pendingEntry.reject(new Error(message));
   }
@@ -205,7 +259,7 @@ export async function compactCodexAppServerThread(options: {
       emitLog({
         stage: "compact_fail",
         message: toErrorMessage(error),
-        readyState: ws.readyState,
+        readyState: getTransportReadyState(),
       });
       cleanup();
       reject(error instanceof Error ? error : new Error(toErrorMessage(error)));
@@ -218,7 +272,7 @@ export async function compactCodexAppServerThread(options: {
         stage: "compact_success",
         method,
         message,
-        readyState: ws.readyState,
+        readyState: getTransportReadyState(),
       });
       cleanup();
       resolve({
@@ -244,7 +298,7 @@ export async function compactCodexAppServerThread(options: {
         stage: "compact_async_wait_started",
         method: "thread/compact/start",
         message: `timeoutMs=${COMPACT_ASYNC_COMPLETION_TIMEOUT_MS}`,
-        readyState: ws.readyState,
+        readyState: getTransportReadyState(),
       });
     }
 
@@ -294,18 +348,7 @@ export async function compactCodexAppServerThread(options: {
       fail(new Error(`Codex app-server compact timeout (${timeoutMs}ms)`));
     }, timeoutMs);
 
-    emitLog({
-      stage: "ws_connect_start",
-      readyState: ws.readyState,
-      message: wsLabel,
-    });
-
-    ws.onopen = () => {
-      emitLog({
-        stage: "ws_open",
-        readyState: ws.readyState,
-      });
-      (async () => {
+    async function runCompactSession() {
         await sendRequest("initialize", {
           clientInfo: {
             name: "expo-ios-thread-compact",
@@ -336,7 +379,7 @@ export async function compactCodexAppServerThread(options: {
             emitLog({
               stage: "compact_thread_check_ok",
               method: "thread/read",
-              readyState: ws.readyState,
+              readyState: getTransportReadyState(),
             });
             return;
           } catch (readError) {
@@ -345,7 +388,7 @@ export async function compactCodexAppServerThread(options: {
                 stage: "compact_thread_check_skip",
                 method: "thread/read",
                 message: "unsupported",
-                readyState: ws.readyState,
+                readyState: getTransportReadyState(),
               });
               return;
             }
@@ -356,13 +399,13 @@ export async function compactCodexAppServerThread(options: {
               stage: "compact_thread_check_retry",
               method: "thread/resume",
               message: "thread_not_found_on_read",
-              readyState: ws.readyState,
+              readyState: getTransportReadyState(),
             });
             await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
             emitLog({
               stage: "compact_thread_check_ok",
               method: "thread/resume",
-              readyState: ws.readyState,
+              readyState: getTransportReadyState(),
             });
           }
         }
@@ -382,7 +425,7 @@ export async function compactCodexAppServerThread(options: {
             emitLog({
               stage: "compact_thread_check_retry_wait",
               message: `attempt=${attempt}`,
-              readyState: ws.readyState,
+              readyState: getTransportReadyState(),
             });
             await new Promise((r) => setTimeout(r, 400));
           }
@@ -409,7 +452,7 @@ export async function compactCodexAppServerThread(options: {
                     stage: "compact_thread_check_ok",
                     method: "thread/resume",
                     message: "before_compact_start",
-                    readyState: ws.readyState,
+                    readyState: getTransportReadyState(),
                   });
                 }
                 if (method === "thread/compact/start") {
@@ -419,7 +462,7 @@ export async function compactCodexAppServerThread(options: {
                 emitLog({
                   stage: "compact_method_selected",
                   method,
-                  readyState: ws.readyState,
+                  readyState: getTransportReadyState(),
                 });
                 if (method !== "thread/compact/start") {
                   succeed(method, "rpc_completed");
@@ -439,14 +482,14 @@ export async function compactCodexAppServerThread(options: {
                     stage: "compact_method_retry",
                     method,
                     message: "thread_not_found_retry_after_resume",
-                    readyState: ws.readyState,
+                    readyState: getTransportReadyState(),
                   });
                   await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
                   emitLog({
                     stage: "compact_thread_check_ok",
                     method: "thread/resume",
                     message: "retry_before_compact_start",
-                    readyState: ws.readyState,
+                    readyState: getTransportReadyState(),
                   });
                   continue;
                 }
@@ -464,14 +507,10 @@ export async function compactCodexAppServerThread(options: {
         throw (lastError instanceof Error
           ? lastError
           : new Error("thread compact is not supported by this codex app-server"));
-      })().catch((error) => {
-        fail(error);
-      });
-    };
+    }
 
-    ws.onmessage = (event) => {
+    function handleIncomingRawData(rawData: string) {
       if (finalized) return;
-      const rawData = typeof event.data === "string" ? event.data : String(event.data || "");
       const incoming = normalizeRunnerWsIncomingCodexRpc(rawData);
       if (incoming.type === "ignore") return;
       if (incoming.type === "error") {
@@ -480,19 +519,20 @@ export async function compactCodexAppServerThread(options: {
       }
       const message = parseJsonRpcMessage(incoming.rawData);
       if (!message) return;
-      const id = message.id;
+      const rewrittenMessage = useRunnerWsManager ? runnerWsRpcIds.rewriteIncoming(message) : message;
+      const id = rewrittenMessage.id;
       const hasId = typeof id !== "undefined";
-      const method = message.method;
+      const method = rewrittenMessage.method;
       const methodText = String(method || "");
 
       if (hasId && typeof method === "undefined") {
-        const payloadError = message.error as JsonRpcFailure["error"] | undefined;
+        const payloadError = rewrittenMessage.error as JsonRpcFailure["error"] | undefined;
         if (payloadError) {
           const msg = String(payloadError.message || "json-rpc request failed");
           rejectPendingForId(id, msg);
           return;
         }
-        resolvePendingForId(id, (message as JsonRpcSuccess).result);
+        resolvePendingForId(id, (rewrittenMessage as JsonRpcSuccess).result);
         return;
       }
 
@@ -501,7 +541,7 @@ export async function compactCodexAppServerThread(options: {
           stage: "rpc_server_request_unsupported",
           method: methodText || undefined,
           id: Number.isFinite(Number(id)) ? Number(id) : undefined,
-          readyState: ws.readyState,
+          readyState: getTransportReadyState(),
         });
         sendJson({
           id: id as any,
@@ -516,18 +556,85 @@ export async function compactCodexAppServerThread(options: {
       emitLog({
         stage: "notification",
         method: methodText || undefined,
-        readyState: ws.readyState,
+        readyState: getTransportReadyState(),
       });
-      emitEvent(methodText, message.params);
+      emitEvent(methodText, rewrittenMessage.params);
 
       if (methodText === "error") {
-        const messageText = extractNotificationMessage(message.params);
+        const messageText = extractNotificationMessage(rewrittenMessage.params);
         if (messageText) {
           fail(new Error(`Codex compact failed: ${messageText}`));
         }
         return;
       }
-      handleAsyncCompactNotification(methodText, message.params);
+      handleAsyncCompactNotification(methodText, rewrittenMessage.params);
+    }
+
+    function startCompactSession() {
+      runCompactSession().catch((error) => {
+        fail(error);
+      });
+    }
+
+    emitLog({
+      stage: "ws_connect_start",
+      readyState: getTransportReadyState(),
+      message: useRunnerWsManager ? `${wsUrl} (manager)` : wsLabel,
+    });
+
+    if (useRunnerWsManager && runnerWebSocketManager) {
+      let managerReadyObserved = runnerWebSocketManager.getSnapshot().connectionState === "ready";
+      managerUnsubscribers.push(runnerWebSocketManager.subscribe(
+        {
+          channel: "llm",
+          op: "rpc",
+          operationId: runnerWsOperationId,
+          sessionId: runnerWsSessionId,
+          threadId,
+        },
+        (message: RunnerWsMessage) => {
+          handleIncomingRawData(JSON.stringify(message));
+        }
+      ));
+      managerUnsubscribers.push(runnerWebSocketManager.subscribeSnapshot(() => {
+        if (finalized || !managerReadyObserved) return;
+        const snapshot = runnerWebSocketManager.getSnapshot();
+        if (snapshot.connectionState === "ready") return;
+        fail(new Error(`Codex app-server runner-ws disconnected: state=${snapshot.connectionState}`));
+      }));
+      runnerWebSocketManager.connect()
+        .then(() => {
+          if (finalized) return;
+          managerReadyObserved = true;
+          emitLog({
+            stage: "ws_open",
+            readyState: getTransportReadyState(),
+            message: "runner_ws_manager_ready",
+          });
+          startCompactSession();
+        })
+        .catch((error) => {
+          fail(error);
+        });
+      return;
+    }
+
+    if (!ws) {
+      fail(new Error("Codex app-server WebSocket is not initialized"));
+      return;
+    }
+
+    ws.onopen = () => {
+      emitLog({
+        stage: "ws_open",
+        readyState: getTransportReadyState(),
+      });
+      startCompactSession();
+    };
+
+    ws.onmessage = (event) => {
+      const rawData = typeof event.data === "string" ? event.data : String(event.data || "");
+      handleIncomingRawData(rawData);
     };
 
     ws.onerror = (event: any) => {
@@ -535,9 +642,9 @@ export async function compactCodexAppServerThread(options: {
       emitLog({
         stage: "ws_error",
         message: detail,
-        readyState: ws.readyState,
+        readyState: getTransportReadyState(),
       });
-      fail(new Error(`Codex app-server WebSocket error: ${detail} url=${wsLabel} readyState=${ws.readyState}`));
+      fail(new Error(`Codex app-server WebSocket error: ${detail} url=${wsLabel} readyState=${getTransportReadyState()}`));
     };
 
     ws.onclose = (event: any) => {
@@ -549,11 +656,11 @@ export async function compactCodexAppServerThread(options: {
       emitLog({
         stage: "ws_close",
         message: `code=${codeText} reason=${reason || "-"} clean=${wasClean}`,
-        readyState: ws.readyState,
+        readyState: getTransportReadyState(),
       });
       fail(
         new Error(
-          `Codex app-server WebSocket closed: code=${codeText} reason=${reason || "-"} clean=${wasClean} url=${wsLabel} readyState=${ws.readyState}`
+          `Codex app-server WebSocket closed: code=${codeText} reason=${reason || "-"} clean=${wasClean} url=${wsLabel} readyState=${getTransportReadyState()}`
         )
       );
     };

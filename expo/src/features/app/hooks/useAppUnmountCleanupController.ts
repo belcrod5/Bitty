@@ -2,6 +2,7 @@ import { useEffect, type MutableRefObject } from "react";
 import { deactivateKeepAwake } from "expo-keep-awake";
 import { Audio } from "expo-av";
 import type { IosFaceTrackingSession } from "../../faceTracking/iosFaceTrackingClient";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type BufferedClientLogsLike = {
   clearFlushTimer: () => void;
@@ -20,6 +21,7 @@ type UseAppUnmountCleanupControllerOptions = {
   autoRecordingRef: MutableRefObject<Audio.Recording | null>;
   releaseRecording: (recording: Audio.Recording) => Promise<unknown>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   cleanupRecordingTranscription: () => void;
   cleanupDirectNativeStt: () => void;
   faceTrackingSessionRef: MutableRefObject<IosFaceTrackingSession | null>;
@@ -49,6 +51,7 @@ export function useAppUnmountCleanupController({
   autoRecordingRef,
   releaseRecording,
   streamSocketRef,
+  streamTtsControlRef,
   cleanupRecordingTranscription,
   cleanupDirectNativeStt,
   faceTrackingSessionRef,
@@ -89,6 +92,11 @@ export function useAppUnmountCleanupController({
       if (ws) {
         ws.close();
         streamSocketRef.current = null;
+      }
+      const streamTtsControl = streamTtsControlRef.current;
+      if (streamTtsControl) {
+        streamTtsControl.cleanup();
+        streamTtsControlRef.current = null;
       }
       cleanupRecordingTranscription();
       cleanupDirectNativeStt();

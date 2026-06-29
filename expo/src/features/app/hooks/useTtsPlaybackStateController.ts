@@ -1,6 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
-import type { StreamAudioQueueItem } from "../types/appTypes";
+import type { StreamAudioQueueItem, StreamTtsControlState } from "../types/appTypes";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 
@@ -12,6 +12,7 @@ type UseTtsPlaybackStateControllerOptions = {
   autoPlaybackBargeGraceUntilRef: MutableRefObject<number>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
   streamAudioQueueProcessingRef: MutableRefObject<boolean>;
   streamCurrentChunkStartedAtRef: MutableRefObject<number>;
@@ -42,6 +43,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
     autoPlaybackBargeGraceUntilRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamAudioQueueRef,
     streamAudioQueueProcessingRef,
     streamCurrentChunkStartedAtRef,
@@ -84,13 +86,18 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
         reason,
         sinceTtsStopRequestedMs: elapsedSinceMs(autoLastTtsStopRequestedAtRef.current),
         streamSocketAlive: streamSocketRef.current !== null,
+        streamTtsControlAlive: streamTtsControlRef.current !== null,
         streamQueueSize: streamAudioQueueRef.current.length,
         replyLoading: replyLoadingRef.current,
       });
     }
     if (next) {
       autoPlaybackBargeGraceUntilRef.current = now + autoBargeInTtsGapGraceMs;
-    } else if (replyLoadingRef.current || streamSocketRef.current !== null) {
+    } else if (
+      replyLoadingRef.current ||
+      streamTtsControlRef.current !== null ||
+      streamSocketRef.current !== null
+    ) {
       autoPlaybackBargeGraceUntilRef.current = Math.max(
         autoPlaybackBargeGraceUntilRef.current,
         now + autoBargeInTtsGapGraceMs
@@ -109,6 +116,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
     setTtsPlaying,
     streamAudioQueueRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsPlayingRef,
   ]);
 
@@ -125,6 +133,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
       streamQueueSize: streamAudioQueueRef.current.length,
       streamQueueProcessing: streamAudioQueueProcessingRef.current,
       streamSocketAlive: streamSocketRef.current !== null,
+      streamTtsControlAlive: streamTtsControlRef.current !== null,
     });
     markTtsChunkPlaybackFinished();
     streamCurrentChunkStartedAtRef.current = 0;
@@ -145,6 +154,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
     streamCurrentChunkEstimatedDurationMsRef,
     streamCurrentChunkStartedAtRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsSoundRef,
   ]);
 

@@ -6,7 +6,7 @@ import {
   runCodexAppServerTurn,
 } from "../../codex/codexAppServerClient";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
-import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { AppScreen, AutoClientLogEntry } from "../types/appTypes";
 import {
   deriveRunnerBaseUrlFromCodexWsUrl,
@@ -32,6 +32,7 @@ type UseCodexWsDiagnosticsControllerOptions = {
   codexWsUrl: string;
   codexWsToken: string;
   runnerToken: string;
+  runnerWebSocketManager: RunnerWebSocketManager;
   activeScreen: AppScreen;
   autoRecordingState: string;
   autoLastEvent: string;
@@ -74,6 +75,7 @@ export function useCodexWsDiagnosticsController({
   codexWsUrl,
   codexWsToken,
   runnerToken,
+  runnerWebSocketManager,
   activeScreen,
   autoRecordingState,
   autoLastEvent,
@@ -143,6 +145,7 @@ export function useCodexWsDiagnosticsController({
         wsUrl: targetWsUrl,
         wsToken: targetWsToken,
         timeoutMs: nearUnlimitedTimeoutMs,
+        runnerWebSocketManager,
       });
       setReplyDebug(
         `codex_probe:ok url=${targetWsUrl} os=${result.platformOs || "-"} env=${executionEnvironment} expoGo=${isExpoGo}`
@@ -343,6 +346,7 @@ export function useCodexWsDiagnosticsController({
           wsUrl: targetWsUrl,
           wsToken: "",
           timeoutMs: nearUnlimitedTimeoutMs,
+          runnerWebSocketManager: targetWsToken ? undefined : runnerWebSocketManager,
         });
         return {
           platformOs: result.platformOs || "",
@@ -367,6 +371,7 @@ export function useCodexWsDiagnosticsController({
             wsUrl: targetWsUrl,
             wsToken: targetWsToken,
             timeoutMs: nearUnlimitedTimeoutMs,
+            runnerWebSocketManager,
           });
           return {
             platformOs: result.platformOs || "",
@@ -482,86 +487,39 @@ export function useCodexWsDiagnosticsController({
     const timeout = Number.isFinite(Number(timeoutMs))
       ? Math.max(3000, Math.floor(Number(timeoutMs)))
       : nearUnlimitedTimeoutMs;
-    const ws = createWebSocketWithOptionalAuth(wsUrl, token);
-    const requestId = `diag-${Date.now()}`;
-    return await new Promise<string>((resolve, reject) => {
-      let finalized = false;
-      const timeoutHandle = setTimeout(() => {
-        if (finalized) return;
-        finalized = true;
-        try {
-          ws.close();
-        } catch {}
-        reject(new Error(`runner-ws control ping timeout (${timeout}ms)`));
-      }, timeout);
-
-      function finishOk(detail: string) {
-        if (finalized) return;
-        finalized = true;
+    runnerWebSocketManager.setConnectionOptions({ url: wsUrl, token });
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        (async () => {
+          await runnerWebSocketManager.connect();
+          const response = await runnerWebSocketManager.request(
+            { channel: "control", op: "ping" },
+            { timeoutMs: timeout }
+          );
+          if (response.channel === "control" && response.op === "pong") {
+            return `pong requestId=${String(response.requestId || "-")}`;
+          }
+          if (response.channel === "control" && response.op === "error") {
+            const payload = response.payload && typeof response.payload === "object" && !Array.isArray(response.payload)
+              ? response.payload as Record<string, unknown>
+              : {};
+            throw new Error(String(payload.message || payload.error || "runner-ws control error"));
+          }
+          throw new Error(`runner-ws control ping unexpected response: channel=${response.channel} op=${response.op}`);
+        })(),
+        new Promise<string>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            runnerWebSocketManager.disconnect("manual");
+            reject(new Error(`runner-ws control ping timeout (${timeout}ms)`));
+          }, timeout);
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle) {
         clearTimeout(timeoutHandle);
-        try {
-          ws.close();
-        } catch {}
-        resolve(detail);
       }
-
-      function finishError(message: string) {
-        if (finalized) return;
-        finalized = true;
-        clearTimeout(timeoutHandle);
-        try {
-          ws.close();
-        } catch {}
-        reject(new Error(message));
-      }
-
-      ws.onopen = () => {
-        try {
-          ws.send(JSON.stringify({
-            channel: "control",
-            op: "ping",
-            requestId,
-          }));
-        } catch (error) {
-          finishError(`runner-ws control ping send failed: ${diagErrorMessage(error)}`);
-        }
-      };
-
-      ws.onmessage = (event) => {
-        const rawData = typeof event.data === "string" ? event.data : String(event.data || "");
-        let message: Record<string, unknown>;
-        try {
-          const parsed = JSON.parse(rawData);
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-          message = parsed as Record<string, unknown>;
-        } catch {
-          return;
-        }
-        if (message.channel === "control" && message.op === "pong") {
-          finishOk(`pong requestId=${String(message.requestId || "-")}`);
-          return;
-        }
-        if (message.channel === "control" && message.op === "error") {
-          const payload = message.payload && typeof message.payload === "object"
-            ? message.payload as Record<string, unknown>
-            : {};
-          finishError(String(payload.message || payload.error || "runner-ws control error"));
-        }
-      };
-
-      ws.onerror = (event: any) => {
-        finishError(`runner-ws control ping error: ${String(event?.message || event?.type || "unknown")}`);
-      };
-
-      ws.onclose = (event: any) => {
-        if (finalized) return;
-        const code = Number(event?.code);
-        const reason = String(event?.reason || "").trim();
-        finishError(
-          `runner-ws control ping closed: code=${Number.isFinite(code) ? code : "unknown"} reason=${reason || "-"}`
-        );
-      };
-    });
+    }
   }
 
   async function runRunner8788ReachabilitySuite() {
@@ -713,6 +671,7 @@ export function useCodexWsDiagnosticsController({
       setError(message);
       Alert.alert("Aux Server Reachability Error", message);
     } finally {
+      runnerWebSocketManager.setConnectionOptions({ url: targetWsUrl, token: targetWsToken });
       setRunner8788SuiteLoading(false);
     }
   }

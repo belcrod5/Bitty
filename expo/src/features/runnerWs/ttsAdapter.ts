@@ -7,12 +7,13 @@ export type RunnerWsTtsIncoming =
 
 export function encodeRunnerWsTtsStart(
   payload: Record<string, unknown>,
-  options: { requestId?: string; sessionId?: string; streamId?: string } = {}
+  options: { requestId?: string; operationId?: string; sessionId?: string; streamId?: string } = {}
 ): string {
   const envelope: RunnerWsMessage = {
     channel: "tts",
     op: "start",
     ...(options.requestId ? { requestId: options.requestId } : {}),
+    ...(options.operationId ? { operationId: options.operationId } : {}),
     ...(options.sessionId ? { sessionId: options.sessionId } : {}),
     ...(options.streamId ? { streamId: options.streamId } : {}),
     payload,

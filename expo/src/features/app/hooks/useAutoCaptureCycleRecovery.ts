@@ -1,5 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type BargeInPhase = "probe_fast" | "speech_start" | "ongoing_speech_overlap";
 type AutoProgressMode = "idle" | "speech" | "barge";
@@ -78,6 +79,7 @@ type UseAutoCaptureCycleRecoveryOptions = {
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   ttsLoading: boolean;
   pendingUserProbeTimeoutMs: number;
@@ -120,6 +122,7 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsPlaybackMessageIdRef,
     ttsLoading,
     pendingUserProbeTimeoutMs,
@@ -174,6 +177,7 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
       const playbackStillActive = (
         ttsPlayingRef.current ||
         ttsLoading ||
+        streamTtsControlRef.current !== null ||
         streamSocketRef.current !== null ||
         ttsPlaybackMessageIdRef.current === "__stream__"
       );
@@ -187,6 +191,7 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
           metering,
           sinceTtsStopRequestedMs: sinceStopRequestedMs,
           streamSocketAlive: streamSocketRef.current !== null,
+          streamTtsControlAlive: streamTtsControlRef.current !== null,
           ttsPlaying: ttsPlayingRef.current,
           ttsLoading,
         });
@@ -221,6 +226,7 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
     logAuto,
     pendingUserProbeTimeoutMs,
     streamSocketRef,
+    streamTtsControlRef,
     ttsLoading,
     ttsPlaybackMessageIdRef,
     ttsPlayingRef,

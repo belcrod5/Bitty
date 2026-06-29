@@ -125,6 +125,12 @@ export type TtsPlaybackTarget = {
   panelId?: string;
   sessionId?: string;
 };
+export type StreamTtsControlState = {
+  operationId: string;
+  requestId: string;
+  streamId?: string;
+  cleanup: () => void;
+};
 
 export type LlmMessageCompletion = {
   sessionId: string;

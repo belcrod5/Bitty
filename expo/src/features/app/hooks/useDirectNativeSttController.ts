@@ -7,6 +7,7 @@ import {
   isAudioSessionInterruptedError,
   isBackgroundAudioSessionError,
 } from "../utils/audioSession";
+import type { StreamTtsControlState } from "../types/appTypes";
 
 type DirectNativeSttMeta = {
   source: "native_direct";
@@ -31,6 +32,7 @@ type UseDirectNativeSttControllerOptions = {
   replyLoadingRef: MutableRefObject<boolean>;
   ttsPlayingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   sttLoadingRef: MutableRefObject<boolean>;
   ttsLoading: boolean;
@@ -79,6 +81,7 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     replyLoadingRef,
     ttsPlayingRef,
     streamSocketRef,
+    streamTtsControlRef,
     ttsPlaybackMessageIdRef,
     sttLoadingRef,
     ttsLoading,
@@ -170,6 +173,7 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
         ttsPlayingRef.current ||
         ttsLoading ||
         replyLoadingRef.current ||
+        streamTtsControlRef.current !== null ||
         streamSocketRef.current !== null ||
         ttsPlaybackMessageIdRef.current === "__stream__"
       )
@@ -202,6 +206,7 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     setTranscript,
     stopTtsPlayback,
     streamSocketRef,
+    streamTtsControlRef,
     faceTrackingAllowsStt,
     sttProviderRef,
     ttsLoading,
@@ -257,6 +262,7 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
                 ttsPlayingRef.current ||
                 ttsLoading ||
                 replyLoadingRef.current ||
+                streamTtsControlRef.current !== null ||
                 streamSocketRef.current !== null ||
                 ttsPlaybackMessageIdRef.current === "__stream__"
               )
@@ -348,6 +354,7 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     setTranscript,
     stopTtsPlayback,
     streamSocketRef,
+    streamTtsControlRef,
     sttLoadingRef,
     sttProviderRef,
     ttsLoading,

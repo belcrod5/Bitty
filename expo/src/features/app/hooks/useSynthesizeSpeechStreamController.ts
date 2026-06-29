@@ -1,11 +1,13 @@
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback, useRef, type MutableRefObject } from "react";
 import { isRunnerWsUrl } from "../../runnerWs/llmAdapter";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import {
   encodeRunnerWsTtsStart,
   normalizeRunnerWsIncomingTtsEvent,
 } from "../../runnerWs/ttsAdapter";
+import type { RunnerWsMessage } from "../../runnerWs/types";
 import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
-import type { TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
+import type { StreamTtsControlState, TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
 import { parseStreamSegmentEnvelope } from "../utils/streamPayload";
 import { collectStreamWaveformSegments, mergeWaveformBars } from "../utils/waveform";
 import { sanitizeTextForTts } from "../utils/statusText";
@@ -25,6 +27,8 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   selectedVoiceId: string;
   ttsSpeed: number;
   ttsWaveformPoints: number;
+  runnerWebSocketManager?: RunnerWebSocketManager;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
   streamTtsSuppressedRef: MutableRefObject<boolean>;
   streamAudioWaveformBarsRef: MutableRefObject<number[][]>;
@@ -62,6 +66,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
 export function useSynthesizeSpeechStreamController(
   options: UseSynthesizeSpeechStreamControllerOptions
 ) {
+  const streamTtsOperationSeqRef = useRef(0);
   const {
     reply,
     runnerToken,
@@ -69,6 +74,8 @@ export function useSynthesizeSpeechStreamController(
     selectedVoiceId,
     ttsSpeed,
     ttsWaveformPoints,
+    runnerWebSocketManager,
+    streamTtsControlRef,
     streamSocketRef,
     streamTtsSuppressedRef,
     streamAudioWaveformBarsRef,
@@ -101,7 +108,10 @@ export function useSynthesizeSpeechStreamController(
     const sourceText = (textOverride ?? reply).trim();
     const text = sanitizeTextForTts(sourceText);
     const targetRunnerUrl = baseUrl();
-    if (!targetRunnerUrl || !runnerToken.trim() || !text) return;
+    const wsUrl = ttsStreamWsUrl();
+    const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
+    const useRunnerWsManager = Boolean(runnerWebSocketManager && useRunnerWsEnvelope);
+    if (!targetRunnerUrl || (!useRunnerWsManager && !runnerToken.trim()) || !text) return;
     const targetMessageId = String(streamOptions?.messageId || "").trim();
     const shouldProjectDebugToActiveSession = false;
     const reportErrorToActiveSession = (raw: unknown, scope?: string) => {
@@ -140,69 +150,37 @@ export function useSynthesizeSpeechStreamController(
     setStreamMode("direct_text");
     setTtsPlaybackMessageIdWithRef(targetMessageId);
 
+    const currentControl = streamTtsControlRef.current;
+    if (currentControl) {
+      currentControl.cleanup();
+      streamTtsControlRef.current = null;
+    }
+
     const currentWs = streamSocketRef.current;
     if (currentWs) {
       currentWs.close();
       streamSocketRef.current = null;
     }
 
-    const wsUrl = ttsStreamWsUrl();
-    const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
-    const ws = createWebSocketWithOptionalAuth(wsUrl, runnerToken);
-    streamSocketRef.current = ws;
     let done = false;
+    let closeActiveStream = () => {};
 
-    ws.onopen = () => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      try {
-        const startPayload = {
-          type: "start",
-          mode: "text",
-          text,
-          ttsProvider,
-          voiceId: selectedVoiceId.trim() || undefined,
-          speedScale: ttsSpeed,
-        };
-        ws.send(useRunnerWsEnvelope
-          ? encodeRunnerWsTtsStart(startPayload)
-          : JSON.stringify(startPayload));
-      } catch (err) {
-        done = true;
-        setTtsLoading(false);
-        setTtsUiStatus("error");
-        syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_send_failed");
-        const message = err instanceof Error ? err.message : String(err);
-        reportErrorToActiveSession(`stream-tts WebSocket send failed: ${message}`, "stream-tts:text");
-        if (shouldProjectDebugToActiveSession) {
-          setReplyDebug(`route=stream-tts error=ws_send_failed url=${wsUrl}`);
-        }
-        ws.close();
-      }
+    const startPayload = {
+      type: "start",
+      mode: "text",
+      text,
+      ttsProvider,
+      voiceId: selectedVoiceId.trim() || undefined,
+      speedScale: ttsSpeed,
     };
 
-    ws.onmessage = (event) => {
-      const raw = String(event?.data || "");
-      if (!raw) return;
-      let data: Record<string, unknown> = {};
-      if (useRunnerWsEnvelope) {
-        const normalized = normalizeRunnerWsIncomingTtsEvent(raw);
-        if (normalized.type === "ignore") return;
-        if (normalized.type === "error") {
-          data = normalized.event || {
-            type: "error",
-            error: "stream_tts_failed",
-            message: normalized.message,
-          };
-        } else {
-          data = normalized.event;
-        }
-      } else {
-        try {
-          data = JSON.parse(raw) as Record<string, unknown>;
-        } catch {
-          return;
-        }
-      }
+    const readMessagePayload = (message: RunnerWsMessage) => (
+      message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
+        ? message.payload as Record<string, unknown>
+        : {}
+    );
+
+    const handleStreamMessage = (data: Record<string, unknown>) => {
       const type = String(data?.type || "");
       if (type === "started") return;
 
@@ -288,7 +266,7 @@ export function useSynthesizeSpeechStreamController(
           setReplyDebug(`route=stream-tts error=${String(data?.error || "stream_tts_failed")}`);
         }
         reportErrorToActiveSession(errorMessage, "stream-tts:text");
-        ws.close();
+        closeActiveStream();
         return;
       }
 
@@ -311,8 +289,185 @@ export function useSynthesizeSpeechStreamController(
           setTtsUiStatus("idle");
         }
         syncTtsPlaybackWantedFromPipeline("stream_tts_text_done");
+        closeActiveStream();
+      }
+    };
+
+    if (useRunnerWsManager && runnerWebSocketManager) {
+      streamTtsOperationSeqRef.current += 1;
+      const idSuffix = `${Date.now().toString(36)}-${streamTtsOperationSeqRef.current.toString(36)}`;
+      const operationId = `stream-tts-${idSuffix}`;
+      const requestId = `${operationId}-start`;
+      let unsubscribe = () => {};
+      let cancelled = false;
+      const cleanup = () => {
+        cancelled = true;
+        const active = streamTtsControlRef.current;
+        const streamId = active?.operationId === operationId ? String(active.streamId || "") : "";
+        try {
+          runnerWebSocketManager.send({
+            channel: "tts",
+            op: "detach",
+            requestId: `${operationId}-detach`,
+            operationId,
+            ...(streamId ? { streamId } : {}),
+            ...(streamOptions?.sessionId ? { sessionId: streamOptions.sessionId } : {}),
+            payload: {
+              operationId,
+              ...(streamId ? { jobId: streamId } : {}),
+            },
+          });
+        } catch {}
+        unsubscribe();
+        if (active?.operationId === operationId) {
+          streamTtsControlRef.current = null;
+        }
+      };
+      streamTtsControlRef.current = {
+        operationId,
+        requestId,
+        cleanup,
+      };
+      closeActiveStream = cleanup;
+
+      const handleManagerMessage = (message: RunnerWsMessage) => {
+        if (cancelled) return;
+        const payload = readMessagePayload(message);
+        const active = streamTtsControlRef.current;
+        const activeStreamId = active?.operationId === operationId ? String(active.streamId || "") : "";
+        const messageOperationId = String(message.operationId || payload.operationId || "").trim();
+        const messageRequestId = String(message.requestId || payload.requestId || "").trim();
+        const messageStreamId = String(message.streamId || payload.jobId || payload.streamId || "").trim();
+        const matchesControlError = (
+          message.channel === "control" &&
+          message.op === "error" &&
+          (messageOperationId === operationId || messageRequestId === requestId)
+        );
+        const matchesTts = (
+          message.channel === "tts" &&
+          (
+            messageOperationId === operationId ||
+            messageRequestId === requestId ||
+            (!!activeStreamId && messageStreamId === activeStreamId)
+          )
+        );
+        if (!matchesControlError && !matchesTts) return;
+        if (messageStreamId && active?.operationId === operationId && active.streamId !== messageStreamId) {
+          streamTtsControlRef.current = {
+            ...active,
+            streamId: messageStreamId,
+          };
+        }
+        const normalized = normalizeRunnerWsIncomingTtsEvent(JSON.stringify(message));
+        if (normalized.type === "ignore") return;
+        if (normalized.type === "error") {
+          handleStreamMessage(normalized.event || {
+            type: "error",
+            error: "stream_tts_failed",
+            message: normalized.message,
+          });
+          return;
+        }
+        handleStreamMessage(normalized.event);
+      };
+
+      const unsubscribeTts = runnerWebSocketManager.subscribe({ channel: "tts" }, handleManagerMessage);
+      const unsubscribeControlError = runnerWebSocketManager.subscribe(
+        { channel: "control", op: "error" },
+        handleManagerMessage
+      );
+      unsubscribe = () => {
+        unsubscribeControlError();
+        unsubscribeTts();
+      };
+      runnerWebSocketManager.connect()
+        .then(() => {
+          if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
+          try {
+            runnerWebSocketManager.send(JSON.parse(encodeRunnerWsTtsStart(startPayload, {
+              requestId,
+              operationId,
+              sessionId: streamOptions?.sessionId,
+            })) as RunnerWsMessage);
+          } catch (err) {
+            done = true;
+            cleanup();
+            setTtsLoading(false);
+            setTtsUiStatus("error");
+            syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_send_failed");
+            const message = err instanceof Error ? err.message : String(err);
+            reportErrorToActiveSession(`stream-tts WebSocket send failed: ${message}`, "stream-tts:text");
+            if (shouldProjectDebugToActiveSession) {
+              setReplyDebug(`route=stream-tts error=ws_send_failed url=${wsUrl}`);
+            }
+          }
+        })
+        .catch((err) => {
+          if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
+          done = true;
+          cleanup();
+          setTtsLoading(false);
+          setTtsUiStatus("error");
+          syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_error");
+          const message = err instanceof Error ? err.message : String(err);
+          reportErrorToActiveSession(`stream-tts WebSocket error: ${message}`, "stream-tts:text");
+          if (shouldProjectDebugToActiveSession) {
+            setReplyDebug(`route=stream-tts error=websocket detail=${message} url=${wsUrl}`);
+          }
+        });
+      return;
+    }
+
+    const ws = createWebSocketWithOptionalAuth(wsUrl, runnerToken);
+    streamSocketRef.current = ws;
+    closeActiveStream = () => {
+      ws.close();
+    };
+
+    ws.onopen = () => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(useRunnerWsEnvelope
+          ? encodeRunnerWsTtsStart(startPayload)
+          : JSON.stringify(startPayload));
+      } catch (err) {
+        done = true;
+        setTtsLoading(false);
+        setTtsUiStatus("error");
+        syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_send_failed");
+        const message = err instanceof Error ? err.message : String(err);
+        reportErrorToActiveSession(`stream-tts WebSocket send failed: ${message}`, "stream-tts:text");
+        if (shouldProjectDebugToActiveSession) {
+          setReplyDebug(`route=stream-tts error=ws_send_failed url=${wsUrl}`);
+        }
         ws.close();
       }
+    };
+
+    ws.onmessage = (event) => {
+      const raw = String(event?.data || "");
+      if (!raw) return;
+      let data: Record<string, unknown> = {};
+      if (useRunnerWsEnvelope) {
+        const normalized = normalizeRunnerWsIncomingTtsEvent(raw);
+        if (normalized.type === "ignore") return;
+        if (normalized.type === "error") {
+          data = normalized.event || {
+            type: "error",
+            error: "stream_tts_failed",
+            message: normalized.message,
+          };
+        } else {
+          data = normalized.event;
+        }
+      } else {
+        try {
+          data = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+      }
+      handleStreamMessage(data);
     };
 
     ws.onerror = (event: unknown) => {
@@ -355,6 +510,7 @@ export function useSynthesizeSpeechStreamController(
     patchTtsDebugStats,
     reply,
     reportError,
+    runnerWebSocketManager,
     runnerToken,
     selectedVoiceId,
     setError,
@@ -372,6 +528,7 @@ export function useSynthesizeSpeechStreamController(
     streamAudioQueueRef,
     streamAudioWaveformBarsRef,
     streamSocketRef,
+    streamTtsControlRef,
     streamTtsSuppressedRef,
     syncTtsPlaybackWantedFromPipeline,
     ttsPlayingRef,

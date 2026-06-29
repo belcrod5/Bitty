@@ -11,6 +11,7 @@ import {
   type CodexThreadReadResult,
   type CodexThreadSourceKind,
 } from "./types";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 
 export async function listCodexAppServerThreads(options: {
   wsUrl: string;
@@ -20,6 +21,7 @@ export async function listCodexAppServerThreads(options: {
   cursor?: string;
   sourceKinds?: CodexThreadSourceKind[];
   timeoutMs?: number;
+  runnerWebSocketManager?: RunnerWebSocketManager;
 }): Promise<CodexThreadListResult> {
   const limit = Number.isFinite(Number(options.limit))
     ? Math.max(1, Math.min(200, Math.floor(Number(options.limit))))
@@ -35,6 +37,8 @@ export async function listCodexAppServerThreads(options: {
     timeoutMs: options.timeoutMs ?? NEAR_UNLIMITED_TIMEOUT_MS,
     clientName: "expo-ios-thread-list",
     clientTitle: "Expo iOS Thread List",
+    traceId: "thread_list",
+    runnerWebSocketManager: options.runnerWebSocketManager,
     run: async (rpc) => {
       const result = await rpc<Record<string, unknown>>("thread/list", {
         limit,
@@ -73,6 +77,7 @@ export async function readCodexAppServerThread(options: {
   wsToken?: string;
   threadId: string;
   timeoutMs?: number;
+  runnerWebSocketManager?: RunnerWebSocketManager;
 }): Promise<CodexThreadReadResult> {
   const threadId = String(options.threadId || "").trim();
   if (!threadId) throw new Error("threadId is empty");
@@ -82,6 +87,9 @@ export async function readCodexAppServerThread(options: {
     timeoutMs: options.timeoutMs ?? NEAR_UNLIMITED_TIMEOUT_MS,
     clientName: "expo-ios-thread-read",
     clientTitle: "Expo iOS Thread Read",
+    traceId: threadId,
+    threadId,
+    runnerWebSocketManager: options.runnerWebSocketManager,
     run: async (rpc) => {
       let thread: unknown;
       try {

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useRunnerWebSocketSnapshot } from "./RunnerWebSocketContext";
 
 type RunnerWsConnectionStatusProps = {
   turnState?: string;
@@ -52,8 +53,14 @@ function statusLabel(dataSync?: RunnerWsDataSyncStatus) {
 
 export function RunnerWsConnectionStatus({ turnState = "", dataSync }: RunnerWsConnectionStatusProps) {
   const [open, setOpen] = useState(false);
+  const runnerWsSnapshot = useRunnerWebSocketSnapshot();
   const label = statusLabel(dataSync);
-  const color = dataSync ? statusColor(dataSync.status) : STATUS_NEUTRAL;
+  const singletonConnectionCount = Number(runnerWsSnapshot.runnerWsConnectionCount || 0);
+  const singletonWarn = (
+    runnerWsSnapshot.connectionState !== "ready" ||
+    (singletonConnectionCount > 1)
+  );
+  const color = singletonWarn ? STATUS_WARN : (dataSync ? statusColor(dataSync.status) : STATUS_NEUTRAL);
   const rows = [
     ["状態", label],
     ["詳細", dataSync?.detail || "-"],
@@ -63,6 +70,14 @@ export function RunnerWsConnectionStatus({ turnState = "", dataSync }: RunnerWsC
     ["エラー", String(dataSync?.errorCount ?? 0)],
     ["最終更新", dataSync?.lastUpdatedAgeText || formatAge(Date.now(), dataSync?.lastUpdatedAtMs)],
     ["処理状態", String(turnState || "-")],
+    ["WS状態", runnerWsSnapshot.connectionState],
+    ["clientInstanceId", runnerWsSnapshot.clientInstanceId || "-"],
+    ["connectionId", runnerWsSnapshot.connectionId || "-"],
+    ["generation", String(runnerWsSnapshot.generation)],
+    ["接続数", String(runnerWsSnapshot.runnerWsConnectionCount ?? "-")],
+    ["pending", String(runnerWsSnapshot.pendingRequestCount)],
+    ["subscriptions", String(runnerWsSnapshot.subscriptionCount)],
+    ["lastPong", formatAge(Date.now(), runnerWsSnapshot.lastPongAt)],
   ];
 
   return (

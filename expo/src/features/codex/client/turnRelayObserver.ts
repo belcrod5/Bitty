@@ -28,6 +28,7 @@ import {
   normalizeRunnerWsIncomingCodexRpc,
   parseRunnerWsEnvelope,
 } from "../../runnerWs/llmAdapter";
+import type { RunnerWsMessage } from "../../runnerWs/types";
 
 const RUNNER_RELAY_OBSERVER_PING_INTERVAL_MS = 5000;
 const RUNNER_RELAY_OBSERVER_MAX_MISSED_PINGS = 2;
@@ -39,6 +40,57 @@ type RelayObserverReconnectTrigger =
   | "relay_observer_resume_send_error"
   | "relay_observer_runner_ws_error"
   | "relay_observer_stale";
+
+function parseJsonRpcPayloadFromRunnerWsMessage(message: RunnerWsMessage): Record<string, unknown> | null {
+  const payload = message.payload;
+  if (typeof payload === "string") {
+    return parseJsonRpcMessage(payload);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  return payload as Record<string, unknown>;
+}
+
+function readRunnerRelayControlMessage(message: RunnerWsMessage) {
+  if (message.channel !== "relay") return null;
+  const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
+    ? message.payload as Record<string, unknown>
+    : {};
+  const seq = Number(message.seq);
+  const replayed = Number(payload.replayed);
+  const latestSeq = Number(payload.latestSeq ?? message.seq);
+  if (message.op === "seq") {
+    return {
+      type: "runner_relay_seq",
+      seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
+    };
+  }
+  if (message.op === "attached") {
+    return {
+      type: "runner_relay_attached",
+      seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
+      replayed: Number.isFinite(replayed) ? Math.max(0, Math.floor(replayed)) : undefined,
+      latestSeq: Number.isFinite(latestSeq) ? Math.max(0, Math.floor(latestSeq)) : undefined,
+    };
+  }
+  if (message.op === "resume_miss") {
+    const reason = String(payload.reason || payload.message || "").trim();
+    return {
+      type: "runner_relay_resume_miss",
+      seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
+      reason: reason || undefined,
+    };
+  }
+  if (message.op === "closed") {
+    const reason = String(payload.reason || "").trim();
+    return {
+      type: "runner_relay_closed",
+      reason: reason || undefined,
+    };
+  }
+  return null;
+}
 
 export function startCodexAppServerTurnRelayObserver(
   options: CodexAppServerRelayObserverOptions
@@ -58,10 +110,7 @@ export function startCodexAppServerTurnRelayObserver(
   }
   const onApprovalRequest = options.onApprovalRequest;
 
-  const resumeWsUrl = useRunnerWsEnvelope
-    ? wsUrl
-    : buildRunnerRelayResumeWsUrl(wsUrl, threadId, resumeFromSeq);
-  let ws = createWebSocketWithOptionalAuth(resumeWsUrl, wsToken);
+  let ws: WebSocket;
   let closeRequested = false;
   let closed = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,6 +126,14 @@ export function startCodexAppServerTurnRelayObserver(
     active: boolean;
     request: import("../approvalFlow").ApprovalRequest;
   }>();
+  let sendObserverJson: (payload: Record<string, unknown>) => void = (_payload) => {
+    throw new Error("relay observer sender is not ready");
+  };
+  let finishClose = () => {
+    if (closed) return;
+    closed = true;
+    pendingApprovalRequests.clear();
+  };
 
   const extractAgentMessageItemId = (paramsRaw: unknown) => {
     const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw as any : {};
@@ -111,22 +168,300 @@ export function startCodexAppServerTurnRelayObserver(
     heartbeatTimer = null;
   };
 
-  const finishClose = () => {
-    if (closed) return;
-    closed = true;
-    clearReconnectTimer();
-    clearHeartbeatTimer();
-    pendingPing = null;
-    for (const entry of pendingApprovalRequests.values()) {
-      entry.active = false;
-    }
-    pendingApprovalRequests.clear();
-    try {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
+  const handleJsonRpcMessage = (message: Record<string, unknown>, readyState: number) => {
+    const method = String(message.method || "");
+    if (!method) return;
+    const rpcId = Number(message.id);
+    options.onEvent?.(method, message.params);
+    if (method === "serverRequest/resolved") {
+      const resolvedApproval = takeResolvedApprovalRequest(
+        pendingApprovalRequests,
+        message.params
+      );
+      if (resolvedApproval) {
+        options.onApprovalRequestResolved?.(resolvedApproval);
+        if (closeRequested && pendingApprovalRequests.size === 0) {
+          finishClose();
+        }
       }
-    } catch {}
+      return;
+    }
+    if (method.endsWith("/requestApproval") && Number.isInteger(rpcId)) {
+      emitLog({
+        stage: "relay_observer_approval_required",
+        message: method,
+        readyState,
+      });
+      const isKnownApprovalMethod = (
+        method === "item/commandExecution/requestApproval" ||
+        method === "item/fileChange/requestApproval"
+      );
+      if (!isKnownApprovalMethod) {
+        try {
+          sendObserverJson({
+            id: rpcId,
+            error: {
+              code: -32601,
+              message: `Unsupported approval method: ${method}`,
+            },
+          });
+        } catch {}
+        return;
+      }
+      const request = normalizeAppServerApprovalRequest(message.params ?? {}, {
+        rpcId,
+        method,
+        threadId,
+        turnId: "",
+      });
+      const guard = { active: true, request };
+      pendingApprovalRequests.set(rpcId, guard);
+      const processApprovalRequest = async () => {
+        try {
+          const decided = await onApprovalRequest(request);
+          if (!isApprovalAction(decided)) {
+            throw new Error(`Invalid approval action: ${String(decided)}`);
+          }
+          if (!guard.active || closed) return;
+          sendObserverJson({
+            id: rpcId,
+            result: {
+              decision: toCodexApprovalDecision(decided),
+            },
+          });
+        } catch (error) {
+          if (!guard.active || closed) return;
+          emitLog({
+            stage: "relay_observer_approval_handler_error",
+            message: toErrorMessage(error),
+            readyState,
+          });
+        } finally {
+          pendingApprovalRequests.delete(rpcId);
+          if (closeRequested && pendingApprovalRequests.size === 0) {
+            finishClose();
+          }
+        }
+      };
+      void processApprovalRequest();
+      return;
+    }
+
+    if (method === "item/started") {
+      const itemType = String((message.params as any)?.item?.type || "");
+      if (itemType === "agentMessage") {
+        resolveAgentMessageItemId(message.params);
+      }
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      const delta = String((message.params as any)?.delta || "");
+      if (!delta) return;
+      const itemId = resolveAgentMessageItemId(message.params);
+      const nextText = `${String(agentMessageTextByItemId.get(itemId) || "")}${delta}`;
+      agentMessageTextByItemId.set(itemId, nextText);
+      options.onDelta?.(delta, { ...(message.params as any), itemId });
+      return;
+    }
+    if (method === "item/completed") {
+      const itemType = String((message.params as any)?.item?.type || "");
+      if (itemType !== "agentMessage") return;
+      const text = extractAgentMessageText((message.params as any)?.item);
+      if (!text) return;
+      const itemId = resolveAgentMessageItemId(message.params);
+      const observedAgentText = String(agentMessageTextByItemId.get(itemId) || "");
+      const nextDelta = text.startsWith(observedAgentText)
+        ? text.slice(observedAgentText.length)
+        : text;
+      agentMessageTextByItemId.set(itemId, text);
+      if (nextDelta) {
+        options.onDelta?.(nextDelta, { ...(message.params as any), itemId });
+      }
+      options.onAgentMessageCompleted?.(text, { ...(message.params as any), itemId });
+      emitLog({
+        stage: "relay_observer_agent_message_completed",
+        message: `chars=${text.length}`,
+        readyState,
+      });
+      return;
+    }
+    if (method === "turn/completed") {
+      options.onTurnCompleted?.(message.params);
+    }
   };
+
+  const runnerWebSocketManager = options.runnerWebSocketManager;
+  if (runnerWebSocketManager && useRunnerWsEnvelope) {
+    const unsubscribers: Array<() => void> = [];
+    let resumeSentGeneration = -1;
+
+    const managerReadyState = () => runnerWebSocketManager.getSnapshot().readyState;
+
+    finishClose = () => {
+      if (closed) return;
+      closed = true;
+      for (const unsubscribe of unsubscribers.splice(0)) {
+        try {
+          unsubscribe();
+        } catch {}
+      }
+      for (const entry of pendingApprovalRequests.values()) {
+        entry.active = false;
+      }
+      pendingApprovalRequests.clear();
+    };
+
+    const sendRelayResumeIfReady = (mode: "initial" | "resume") => {
+      if (closeRequested || closed) return false;
+      const snapshot = runnerWebSocketManager.getSnapshot();
+      if (snapshot.connectionState !== "ready") {
+        emitLog({
+          stage: "relay_observer_resume_send_error",
+          message: `manager_not_ready:${snapshot.connectionState}`,
+          readyState: snapshot.readyState,
+        });
+        return false;
+      }
+      if (resumeSentGeneration === snapshot.generation) return true;
+      try {
+        emitLog({
+          stage: mode === "initial" ? "relay_observer_open" : "relay_observer_reconnect_open",
+          readyState: snapshot.readyState,
+        });
+        runnerWebSocketManager.send({
+          channel: "relay",
+          op: "resume",
+          threadId,
+          seq: lastRelaySeq,
+        });
+        resumeSentGeneration = snapshot.generation;
+        return true;
+      } catch (error) {
+        emitLog({
+          stage: "relay_observer_resume_send_error",
+          message: toErrorMessage(error),
+          readyState: snapshot.readyState,
+        });
+        return false;
+      }
+    };
+
+    sendObserverJson = (payload: Record<string, unknown>) => {
+      runnerWebSocketManager.send({
+        channel: "llm",
+        op: "rpc",
+        threadId,
+        payload,
+      });
+    };
+
+    unsubscribers.push(runnerWebSocketManager.subscribe(
+      { channel: "relay", threadId },
+      (message) => {
+        if (closeRequested || closed) return;
+        if (typeof message.seq === "number") {
+          lastRelaySeq = Math.max(lastRelaySeq, Math.max(0, Math.floor(message.seq)));
+        }
+        const control = readRunnerRelayControlMessage(message);
+        if (!control) return;
+        if (typeof control.seq === "number") {
+          lastRelaySeq = Math.max(lastRelaySeq, control.seq);
+        }
+        if (typeof control.latestSeq === "number") {
+          lastRelaySeq = Math.max(lastRelaySeq, control.latestSeq);
+        }
+        const readyState = managerReadyState();
+        if (control.type === "runner_relay_attached") {
+          emitLog({
+            stage: "relay_observer_attached",
+            message: `replayed=${control.replayed ?? 0} latestSeq=${control.latestSeq ?? lastRelaySeq}`,
+            readyState,
+          });
+        } else if (control.type === "runner_relay_resume_miss") {
+          emitLog({
+            stage: "relay_observer_resume_miss",
+            message: `threadId=${threadId} fromSeq=${lastRelaySeq}`,
+            readyState,
+          });
+        } else if (control.type === "runner_relay_closed") {
+          emitLog({
+            stage: "relay_observer_relay_closed",
+            message: control.reason || "relay_closed",
+            readyState,
+          });
+        }
+      }
+    ));
+    unsubscribers.push(runnerWebSocketManager.subscribe(
+      { channel: "llm", op: "rpc", threadId },
+      (message) => {
+        if (closeRequested || closed) return;
+        if (typeof message.seq === "number") {
+          lastRelaySeq = Math.max(lastRelaySeq, Math.max(0, Math.floor(message.seq)));
+        }
+        const rpcMessage = parseJsonRpcPayloadFromRunnerWsMessage(message);
+        if (!rpcMessage) {
+          emitLog({
+            stage: "relay_observer_runner_ws_error",
+            message: "runner-ws llm:rpc payload is not a JSON-RPC object",
+            readyState: managerReadyState(),
+          });
+          return;
+        }
+        handleJsonRpcMessage(rpcMessage, managerReadyState());
+      }
+    ));
+    unsubscribers.push(runnerWebSocketManager.subscribe(
+      { channel: "control", op: "error", threadId },
+      (message) => {
+        if (closeRequested || closed) return;
+        const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
+          ? message.payload as Record<string, unknown>
+          : {};
+        const code = String(payload.error || "runner_ws_error").trim();
+        const detail = String(payload.message || payload.detail || "").trim();
+        emitLog({
+          stage: "relay_observer_runner_ws_error",
+          message: detail ? `${code}: ${detail}` : code,
+          readyState: managerReadyState(),
+        });
+      }
+    ));
+    unsubscribers.push(runnerWebSocketManager.subscribeSnapshot(() => {
+      if (closeRequested || closed) return;
+      const snapshot = runnerWebSocketManager.getSnapshot();
+      if (snapshot.connectionState !== "ready") return;
+      void sendRelayResumeIfReady(resumeSentGeneration < 0 ? "initial" : "resume");
+    }));
+
+    runnerWebSocketManager.connect()
+      .then(() => {
+        void sendRelayResumeIfReady(resumeSentGeneration < 0 ? "initial" : "resume");
+      })
+      .catch((error) => {
+        emitLog({
+          stage: "relay_observer_error",
+          message: `manager_connect_failed:${toErrorMessage(error)}`,
+          readyState: managerReadyState(),
+        });
+      });
+
+    return {
+      close: () => {
+        if (closeRequested || closed) return;
+        closeRequested = true;
+        if (pendingApprovalRequests.size > 0) {
+          emitLog({
+            stage: "relay_observer_close_deferred",
+            message: `pendingApprovals=${pendingApprovalRequests.size}`,
+            readyState: managerReadyState(),
+          });
+          return;
+        }
+        finishClose();
+      },
+    };
+  }
 
   const tryReconnectRelayObserver = (
     trigger: RelayObserverReconnectTrigger,
@@ -215,7 +550,29 @@ export function startCodexAppServerTurnRelayObserver(
     return true;
   };
 
-  const sendObserverJson = (payload: Record<string, unknown>) => {
+  const resumeWsUrl = useRunnerWsEnvelope
+    ? wsUrl
+    : buildRunnerRelayResumeWsUrl(wsUrl, threadId, resumeFromSeq);
+  ws = createWebSocketWithOptionalAuth(resumeWsUrl, wsToken);
+
+  finishClose = () => {
+    if (closed) return;
+    closed = true;
+    clearReconnectTimer();
+    clearHeartbeatTimer();
+    pendingPing = null;
+    for (const entry of pendingApprovalRequests.values()) {
+      entry.active = false;
+    }
+    pendingApprovalRequests.clear();
+    try {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    } catch {}
+  };
+
+  sendObserverJson = (payload: Record<string, unknown>) => {
     ws.send(useRunnerWsEnvelope
       ? encodeRunnerWsLlmRpc(payload, threadId)
       : JSON.stringify(payload));
@@ -371,125 +728,7 @@ export function startCodexAppServerTurnRelayObserver(
 
       const message = parseJsonRpcMessage(incoming.rawData);
       if (!message) return;
-      const method = String(message.method || "");
-      if (!method) return;
-      const rpcId = Number(message.id);
-      options.onEvent?.(method, message.params);
-      if (method === "serverRequest/resolved") {
-        const resolvedApproval = takeResolvedApprovalRequest(
-          pendingApprovalRequests,
-          message.params
-        );
-        if (resolvedApproval) {
-          options.onApprovalRequestResolved?.(resolvedApproval);
-          if (closeRequested && pendingApprovalRequests.size === 0) {
-            finishClose();
-          }
-        }
-        return;
-      }
-      if (method.endsWith("/requestApproval") && Number.isInteger(rpcId)) {
-        emitLog({
-          stage: "relay_observer_approval_required",
-          message: method,
-          readyState: socket.readyState,
-        });
-        const isKnownApprovalMethod = (
-          method === "item/commandExecution/requestApproval" ||
-          method === "item/fileChange/requestApproval"
-        );
-        if (!isKnownApprovalMethod) {
-          try {
-            sendObserverJson({
-              id: rpcId,
-              error: {
-                code: -32601,
-                message: `Unsupported approval method: ${method}`,
-              },
-            });
-          } catch {}
-          return;
-        }
-        const request = normalizeAppServerApprovalRequest(message.params ?? {}, {
-          rpcId,
-          method,
-          threadId,
-          turnId: "",
-        });
-        const guard = { active: true, request };
-        pendingApprovalRequests.set(rpcId, guard);
-        const processApprovalRequest = async () => {
-          try {
-            const decided = await onApprovalRequest(request);
-            if (!isApprovalAction(decided)) {
-              throw new Error(`Invalid approval action: ${String(decided)}`);
-            }
-            if (!guard.active || closed) return;
-            sendObserverJson({
-              id: rpcId,
-              result: {
-                decision: toCodexApprovalDecision(decided),
-              },
-            });
-          } catch (error) {
-            if (!guard.active || closed) return;
-            emitLog({
-              stage: "relay_observer_approval_handler_error",
-              message: toErrorMessage(error),
-              readyState: socket.readyState,
-            });
-          } finally {
-            pendingApprovalRequests.delete(rpcId);
-            if (closeRequested && pendingApprovalRequests.size === 0) {
-              finishClose();
-            }
-          }
-        };
-        void processApprovalRequest();
-        return;
-      }
-
-      if (method === "item/started") {
-        const itemType = String((message.params as any)?.item?.type || "");
-        if (itemType === "agentMessage") {
-          resolveAgentMessageItemId(message.params);
-        }
-        return;
-      }
-      if (method === "item/agentMessage/delta") {
-        const delta = String((message.params as any)?.delta || "");
-        if (!delta) return;
-        const itemId = resolveAgentMessageItemId(message.params);
-        const nextText = `${String(agentMessageTextByItemId.get(itemId) || "")}${delta}`;
-        agentMessageTextByItemId.set(itemId, nextText);
-        options.onDelta?.(delta, { ...(message.params as any), itemId });
-        return;
-      }
-      if (method === "item/completed") {
-        const itemType = String((message.params as any)?.item?.type || "");
-        if (itemType !== "agentMessage") return;
-        const text = extractAgentMessageText((message.params as any)?.item);
-        if (!text) return;
-        const itemId = resolveAgentMessageItemId(message.params);
-        const observedAgentText = String(agentMessageTextByItemId.get(itemId) || "");
-        const nextDelta = text.startsWith(observedAgentText)
-          ? text.slice(observedAgentText.length)
-          : text;
-        agentMessageTextByItemId.set(itemId, text);
-        if (nextDelta) {
-          options.onDelta?.(nextDelta, { ...(message.params as any), itemId });
-        }
-        options.onAgentMessageCompleted?.(text, { ...(message.params as any), itemId });
-        emitLog({
-          stage: "relay_observer_agent_message_completed",
-          message: `chars=${text.length}`,
-          readyState: socket.readyState,
-        });
-        return;
-      }
-      if (method === "turn/completed") {
-        options.onTurnCompleted?.(message.params);
-      }
+      handleJsonRpcMessage(message, socket.readyState);
     };
 
     socket.onerror = (event: any) => {
