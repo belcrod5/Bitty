@@ -118,10 +118,12 @@ AivisSpeech is not required to run Bitty. It is only needed when you select
 `aivisspeech` as the TTS provider.
 
 When `ttsProvider=aivisspeech` is used, the runner expects a local macOS
-AivisSpeech app/API at `http://127.0.0.1:10101`. If AivisSpeech is not installed
-or cannot become ready, voice loading and speech synthesis fail with a runner
-error instead of falling back silently to another provider. Use ElevenLabs or
-Google Cloud TTS if you do not want to run AivisSpeech locally.
+AivisSpeech app/API at `http://127.0.0.1:10101` and `ffmpeg` on the runner
+host. The runner converts AivisSpeech WAV output to MP3 before serving it to the
+client. If AivisSpeech or `ffmpeg` is not installed or cannot become ready,
+voice loading and speech synthesis fail with a runner error instead of falling
+back silently to another provider. Use ElevenLabs or Google Cloud TTS if you do
+not want to run AivisSpeech locally.
 
 ## Quick Start
 

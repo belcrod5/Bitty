@@ -145,6 +145,7 @@ const GOOGLE_CLOUD_TTS_API_BASE_URL =
 const GOOGLE_CLOUD_TTS_LANGUAGE_CODE = process.env.GOOGLE_CLOUD_TTS_LANGUAGE_CODE || "ja-JP";
 const GOOGLE_CLOUD_TTS_VOICE_NAME = process.env.GOOGLE_CLOUD_TTS_VOICE_NAME || "ja-JP-Neural2-B";
 const GOOGLE_CLOUD_TTS_AUDIO_ENCODING = process.env.GOOGLE_CLOUD_TTS_AUDIO_ENCODING || "MP3";
+const AIVISSPEECH_MP3_BITRATE = "96k";
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 25 * 1024 * 1024);
 const MAX_WORKSPACE_UPLOAD_BYTES = Number(
   process.env.MAX_WORKSPACE_UPLOAD_BYTES || 25 * 1024 * 1024
@@ -4028,6 +4029,90 @@ async function runAivisSpeechTts(text, opts = {}) {
   };
 }
 
+async function convertAivisSpeechWavToMp3(wavBuffer) {
+  if (!Buffer.isBuffer(wavBuffer) || wavBuffer.length <= 0) {
+    throw new Error("aivisspeech mp3 conversion input is empty");
+  }
+
+  const timeoutMs = 30000;
+  const stderrMaxBytes = 8192;
+  const chunks = [];
+  let stderr = "";
+  let resolved = false;
+
+  const result = await new Promise((resolve) => {
+    const child = spawn("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "wav",
+      "-i",
+      "pipe:0",
+      "-codec:a",
+      "libmp3lame",
+      "-b:a",
+      AIVISSPEECH_MP3_BITRATE,
+      "-f",
+      "mp3",
+      "pipe:1",
+    ], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(payload);
+    };
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({ exitCode: -1, timedOut: true });
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      chunks.push(Buffer.from(chunk));
+    });
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < stderrMaxBytes) {
+        const text = String(chunk || "");
+        stderr += text.slice(0, Math.max(0, stderrMaxBytes - stderr.length));
+      }
+    });
+    child.stdin.on("error", () => {});
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish({
+        exitCode: -1,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      finish({
+        exitCode: Number.isFinite(Number(code)) ? Number(code) : -1,
+        timedOut: false,
+      });
+    });
+
+    child.stdin.end(wavBuffer);
+  });
+
+  const mp3Buffer = Buffer.concat(chunks);
+  if (result?.timedOut) {
+    throw new Error(`aivisspeech mp3 conversion timed out after ${timeoutMs}ms`);
+  }
+  if (Number(result?.exitCode) !== 0) {
+    const detail = String(result?.error || stderr || "ffmpeg exited without details").trim();
+    throw new Error(`aivisspeech mp3 conversion failed: ${detail}`);
+  }
+  if (!mp3Buffer.length) {
+    throw new Error("aivisspeech mp3 conversion returned empty audio");
+  }
+  return mp3Buffer;
+}
+
 async function runElevenLabsTts(text, opts = {}) {
   const voiceId = opts.voiceId || ELEVENLABS_VOICE_ID;
   const modelId = opts.modelId || ELEVENLABS_TTS_MODEL;
@@ -4141,9 +4226,10 @@ async function runTtsByProvider(ttsProvider, text, opts = {}) {
       voiceId: opts.voiceId || undefined,
       speedScale: typeof opts.speedScale === "number" ? opts.speedScale : undefined,
     });
+    const audioBuffer = await convertAivisSpeechWavToMp3(tts.audioBuffer);
     return {
-      audioBuffer: tts.audioBuffer,
-      mimeType: "audio/wav",
+      audioBuffer,
+      mimeType: "audio/mpeg",
       provider: "aivisspeech",
       voiceId: tts.voiceId,
       speedScale: tts.speedScale,

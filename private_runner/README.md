@@ -58,7 +58,7 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 - ElevenLabs を使う場合のみ必須: `ELEVENLABS_API_KEY`
 - Google Cloud TTS を使う場合のみ必須: `GOOGLE_CLOUD_PROJECT_ID`
 - `youtube_search` / `youtube_channel_latest` / `youtube_favorites` は `YOUTUBE_API_KEY` 推奨（未設定時は gcloud トークンへフォールバック）
-- AivisSpeech を使う場合: runner を macOS で動かし、`AIVISSPEECH_API_BASE_URL` は localhost に設定
+- AivisSpeech を使う場合: runner を macOS で動かし、`AIVISSPEECH_API_BASE_URL` は localhost に設定。AivisSpeech の WAV 出力を MP3 配信用に変換するため、runner ホストに `ffmpeg` も必要
 
 ## モデル / think 設定
 - `OPENAI_CODEX_MODEL` は既定 `openai-codex/gpt-5.4-mini`
