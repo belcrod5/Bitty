@@ -7706,6 +7706,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/health") {
+    if (req.headers.authorization) {
+      if (!RUNNER_TOKEN) {
+        return json(res, 500, {
+          error: "runner_token_missing",
+          message: "RUNNER_TOKEN is required",
+        });
+      }
+      if (parseHttpBearerToken(req) !== RUNNER_TOKEN) {
+        return json(res, 401, { error: "unauthorized" });
+      }
+    }
     let llmFileRoot = "";
     try {
       const root = await resolveToolRoot("");

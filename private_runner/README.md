@@ -130,9 +130,10 @@ rg -n '"source":"session_diag"' "$LATEST" | tail -n 200
 ## サーバー構成（現在）
 - runner（既定: 8788）: `/runner-ws` `/codex-ws` `/stream-tts` `/stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
 - codex app-server（既定: 4500）: JSON-RPC本体
-- 推奨接続先（iOS）: `ws://<Mac LAN IP>:8788/runner-ws`
+- 推奨接続先（iOS）: `ws://<MacのLocalHostName>.local:8788/runner-ws`
 - 互換接続先（iOS）: `ws://<Mac LAN IP>:8788/codex-ws`
 - iOS/Expo は `RUNNER_TOKEN` をURL queryへ載せず、WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>` で送ります。
+- 実機からローカル接続する場合、runner は `HOST=0.0.0.0` で待ち受けます。`.local` が使えないネットワークでは、Expo側が `/health` の1回確認に失敗した時だけCloudflare Tunnel接続へ戻します。
 
 LLM本線:
 - iOS/Expo からは `/runner-ws` の `llm:rpc` envelope 経由で `thread/*` と `turn/start` を使います。runner から codex app-server への upstream は raw JSON-RPC のままです。
@@ -250,7 +251,7 @@ npm run ios
 
 10. アプリ入力値
 - iOS Simulator: `Runner URL = http://127.0.0.1:8788`
-- 実機: `Runner URL = http://<MacのLAN IP>:8788`
+- 実機: `Runner URL = http://<MacのLocalHostName>.local:8788`
 - `Runner Token` は Pairing QR の token。固定token検証時だけ、`RUNNER_TOKEN_MODE=env` にして `.env` の `RUNNER_TOKEN` と同じ値を使う
 - Appには次のUXオプションがあります:
   - `LLM Model` プルダウンで `openai-codex/gpt-5.4-mini` / `openai-codex/gpt-5.4` / `openai-codex/gpt-5.3-codex` / `openai-codex/gpt-5.3-codex-spark` を選択

@@ -86,6 +86,7 @@ import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuies
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
 import { useWaitingApprovalResumeActionController } from "./hooks/useWaitingApprovalResumeActionController";
 import { useAppSettingsPersistenceController } from "./hooks/useAppSettingsPersistenceController";
+import { useRunnerRouteSelection } from "./hooks/useRunnerRouteSelection";
 import { useApprovalRequestController } from "./hooks/useApprovalRequestController";
 import { useCodexRelayObserverLifecycleController } from "./hooks/useCodexRelayObserverLifecycleController";
 import { useCodexRelayObserverStartController } from "./hooks/useCodexRelayObserverStartController";
@@ -711,6 +712,10 @@ export default function App() {
   const runnerWebSocketManager = runnerWebSocketManagerRef.current;
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
+  const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
+  const [cloudflareRunnerWsUrl, setCloudflareRunnerWsUrl] = useState("");
+  const [localRunnerUrl, setLocalRunnerUrl] = useState("");
+  const [localRunnerWsUrl, setLocalRunnerWsUrl] = useState("");
   const [llmCompletionNotifications, setLlmCompletionNotifications] = useState<LlmCompletionNotification[]>([]);
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
@@ -720,7 +725,7 @@ export default function App() {
   ), [cloudflareAccessClientId, cloudflareAccessClientSecret]);
   const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
   configureCloudflareAccessFetch({
-    runnerUrl,
+    runnerUrl: cloudflareRunnerUrl || runnerUrl,
     credentials: cloudflareAccessCredentials,
   });
   const [activeScreen, setActiveScreen] = useState<AppScreen>("mini_board");
@@ -1019,6 +1024,18 @@ export default function App() {
   const [llmToolLogCompact, setLlmToolLogCompact] = useState(true);
   const [toolAutoApprovalMap, setToolAutoApprovalMap] = useState<ToolAutoApprovalMap>(EMPTY_TOOL_AUTO_APPROVALS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const runnerRouteSelection = useRunnerRouteSelection({
+    enabled: settingsLoaded,
+    localRunnerUrl,
+    localRunnerWsUrl,
+    cloudflareRunnerUrl,
+    cloudflareRunnerWsUrl,
+    runnerToken,
+    runnerUrl,
+    codexWsUrl,
+    setRunnerUrl,
+    setCodexWsUrl,
+  });
   const autoRecordingEnabledRef = useRef(false);
   const codexCliStatusLastFetchedAtMsRef = useRef(0);
   const codexCliStatusLastAttemptAtMsRef = useRef(0);
@@ -4762,6 +4779,10 @@ export default function App() {
     runnerToken,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
+    cloudflareRunnerUrl,
+    cloudflareRunnerWsUrl,
+    localRunnerUrl,
+    localRunnerWsUrl,
     llmBackend,
     llmDirectory,
     registeredDirectories,
@@ -4792,6 +4813,10 @@ export default function App() {
     setRunnerToken,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
+    setCloudflareRunnerUrl,
+    setCloudflareRunnerWsUrl,
+    setLocalRunnerUrl,
+    setLocalRunnerWsUrl,
     setLlmDirectory,
     setRegisteredDirectories,
     setSessionTitleOverridesById,
@@ -5870,6 +5895,10 @@ export default function App() {
     setRunnerToken,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
+    setCloudflareRunnerUrl,
+    setCloudflareRunnerWsUrl,
+    setLocalRunnerUrl,
+    setLocalRunnerWsUrl,
     setCodexApprovalPolicy,
     setModelSelectOpen,
     setThinkSelectOpen,
@@ -5986,6 +6015,10 @@ export default function App() {
     runnerToken,
     cloudflareAccessClientId,
     cloudflareAccessEnabled,
+    cloudflareRunnerUrl,
+    cloudflareRunnerWsUrl,
+    localRunnerUrl,
+    localRunnerWsUrl,
     executionEnvironment: EXPO_EXECUTION_ENVIRONMENT,
     isExpoGo: IS_EXPO_GO,
     isDev: __DEV__,
@@ -7523,6 +7556,7 @@ export default function App() {
     handleChatTouchEnd,
     runnerUrl,
     runnerToken,
+    runnerRouteSelection,
     isCodexCompactRunning,
     sanitizeTextForTts,
     handleAssistantAudioButtonPress,

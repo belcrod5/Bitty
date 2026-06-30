@@ -3,6 +3,7 @@ import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, Touchabl
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { RouteDebugPanel } from "./RouteDebugPanel";
 
 type RunnerConnectionEvent = {
   seq: number;
@@ -224,6 +225,8 @@ export function CloudflareTunnelMonitorScreen() {
   const [showAllAttentionEvents, setShowAllAttentionEvents] = useState(false);
   const [expandedEventKeys, setExpandedEventKeys] = useState<Set<string>>(() => new Set());
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [lastPairingLocalRunnerUrl, setLastPairingLocalRunnerUrl] = useState<string | null>(null);
+  const [lastPairingRawText, setLastPairingRawText] = useState("");
 
   const attentionEvents = useMemo(
     () => events.filter(isAttentionEvent).slice(0, showAllAttentionEvents ? 200 : 12),
@@ -399,9 +402,14 @@ export function CloudflareTunnelMonitorScreen() {
               barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
               onBarcodeScanned={async (result: BarcodeScanningResult) => {
                 setScanning(false);
+                const rawText = String(result.data || "");
+                setLastPairingRawText(rawText);
                 try {
-                  await applyCloudflareRunnerPairing(result.data);
-                  setPairingStatus("Pairing QRを保存しました。");
+                  const pairing = await applyCloudflareRunnerPairing(rawText);
+                  setLastPairingLocalRunnerUrl(pairing.localRunnerUrl || "");
+                  setPairingStatus(
+                    `Pairing QRを保存しました。localRunnerUrl: ${pairing.localRunnerUrl || "-"}`
+                  );
                 } catch (error) {
                   setPairingStatus(error instanceof Error ? error.message : String(error));
                 }
@@ -412,6 +420,13 @@ export function CloudflareTunnelMonitorScreen() {
             </TouchableOpacity>
           </View>
         ) : null}
+
+        <RouteDebugPanel
+          pairingStatus={pairingStatus}
+          monitorError={error}
+          lastPairingLocalRunnerUrl={lastPairingLocalRunnerUrl}
+          lastPairingRawText={lastPairingRawText}
+        />
 
         <View style={screenStyles.card}>
           <View style={screenStyles.cardHeader}>

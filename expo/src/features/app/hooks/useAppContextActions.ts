@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
+import type { RunnerPairingResult } from "../contexts/AppSettingsContext";
 import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
 import type { AppScreen } from "../types/appTypes";
 import { TTS_SPEED_STEP, type SelectedVoiceIdByProvider, type TtsProvider } from "../utils/audioConfig";
@@ -27,6 +28,10 @@ type UseAppContextActionsArgs = {
   setRunnerToken: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
+  setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
+  setCloudflareRunnerWsUrl: Dispatch<SetStateAction<string>>;
+  setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
+  setLocalRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setModelSelectOpen: Dispatch<SetStateAction<boolean>>;
   setThinkSelectOpen: Dispatch<SetStateAction<boolean>>;
@@ -105,6 +110,10 @@ export function useAppContextActions({
   setRunnerToken,
   setCloudflareAccessClientId,
   setCloudflareAccessClientSecret,
+  setCloudflareRunnerUrl,
+  setCloudflareRunnerWsUrl,
+  setLocalRunnerUrl,
+  setLocalRunnerWsUrl,
   setCodexApprovalPolicy,
   setModelSelectOpen,
   setThinkSelectOpen,
@@ -201,7 +210,7 @@ export function useAppContextActions({
     setCloudflareAccessClientId("");
     setCloudflareAccessClientSecret("");
   }, [runnerToken, setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
-  const applyCloudflareRunnerPairing = useCallback(async (payload: string) => {
+  const applyCloudflareRunnerPairing = useCallback(async (payload: string): Promise<RunnerPairingResult> => {
     const pairing = parseCloudflareRunnerPairingPayload(payload);
     await saveSecureRunnerCredentials({
       runnerToken: pairing.runnerToken,
@@ -213,14 +222,28 @@ export function useAppContextActions({
     setCodexWsToken(pairing.runnerToken);
     setCloudflareAccessClientId(pairing.cloudflareAccessClientId);
     setCloudflareAccessClientSecret(pairing.cloudflareAccessClientSecret);
+    setCloudflareRunnerUrl(pairing.runnerUrl);
+    setCloudflareRunnerWsUrl(pairing.runnerWsUrl);
+    setLocalRunnerUrl(pairing.localRunnerUrl);
+    setLocalRunnerWsUrl(pairing.localRunnerWsUrl);
     if (pairing.runnerWsUrl) {
       setCodexWsUrl(pairing.runnerWsUrl);
     }
+    return {
+      runnerUrl: pairing.runnerUrl,
+      runnerWsUrl: pairing.runnerWsUrl,
+      localRunnerUrl: pairing.localRunnerUrl,
+      localRunnerWsUrl: pairing.localRunnerWsUrl,
+    };
   }, [
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
+    setCloudflareRunnerUrl,
+    setCloudflareRunnerWsUrl,
     setCodexWsToken,
     setCodexWsUrl,
+    setLocalRunnerUrl,
+    setLocalRunnerWsUrl,
     setRunnerToken,
     setRunnerUrl,
   ]);

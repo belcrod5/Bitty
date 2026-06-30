@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useRunnerWebSocketSnapshot } from "./RunnerWebSocketContext";
 
 type RunnerWsConnectionStatusProps = {
   turnState?: string;
   dataSync?: RunnerWsDataSyncStatus;
+  selectedRoute?: "local" | "cloudflare" | "unknown";
 };
+type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
 const STATUS_OK = "#16a34a";
 const STATUS_WARN = "#d97706";
@@ -51,10 +54,34 @@ function statusLabel(dataSync?: RunnerWsDataSyncStatus) {
   return "同期不明";
 }
 
-export function RunnerWsConnectionStatus({ turnState = "", dataSync }: RunnerWsConnectionStatusProps) {
+function routeLabel(route: RunnerWsConnectionStatusProps["selectedRoute"]) {
+  if (route === "local") return "Local";
+  if (route === "cloudflare") return "Cloudflare";
+  return "-";
+}
+
+function routeIconName(route: RunnerWsConnectionStatusProps["selectedRoute"]): IoniconName | "" {
+  if (route === "local") return "wifi";
+  if (route === "cloudflare") return "globe-outline";
+  return "";
+}
+
+function formatRttMs(valueRaw: unknown) {
+  const value = Number(valueRaw || 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return `${Math.round(value)}ms`;
+}
+
+export function RunnerWsConnectionStatus({
+  turnState = "",
+  dataSync,
+  selectedRoute = "unknown",
+}: RunnerWsConnectionStatusProps) {
   const [open, setOpen] = useState(false);
   const runnerWsSnapshot = useRunnerWebSocketSnapshot();
   const label = statusLabel(dataSync);
+  const routeIcon = routeIconName(selectedRoute);
+  const rttLabel = formatRttMs(runnerWsSnapshot.lastPingRttMs);
   const singletonConnectionCount = Number(runnerWsSnapshot.runnerWsConnectionCount || 0);
   const singletonWarn = (
     runnerWsSnapshot.connectionState !== "ready" ||
@@ -70,6 +97,8 @@ export function RunnerWsConnectionStatus({ turnState = "", dataSync }: RunnerWsC
     ["エラー", String(dataSync?.errorCount ?? 0)],
     ["最終更新", dataSync?.lastUpdatedAgeText || formatAge(Date.now(), dataSync?.lastUpdatedAtMs)],
     ["処理状態", String(turnState || "-")],
+    ["経路", routeLabel(selectedRoute)],
+    ["RTT", rttLabel || "-"],
     ["WS状態", runnerWsSnapshot.connectionState],
     ["clientInstanceId", runnerWsSnapshot.clientInstanceId || "-"],
     ["connectionId", runnerWsSnapshot.connectionId || "-"],
@@ -88,8 +117,16 @@ export function RunnerWsConnectionStatus({ turnState = "", dataSync }: RunnerWsC
         accessibilityRole="button"
         accessibilityLabel="セッション同期状態を開く"
       >
+        {routeIcon ? (
+          <Ionicons
+            name={routeIcon}
+            size={14}
+            color="#334155"
+          />
+        ) : null}
         <View style={[styles.dot, { backgroundColor: color }]} />
         <Text style={styles.badgeText}>{label}</Text>
+        {rttLabel ? <Text style={styles.rttText}>{rttLabel}</Text> : null}
         <Text style={styles.chevron}>›</Text>
       </Pressable>
       <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
@@ -133,6 +170,7 @@ const styles = StyleSheet.create({
   },
   dot: { width: 8, height: 8, borderRadius: 999 },
   badgeText: { fontSize: 12, fontWeight: "700", color: "#0f172a" },
+  rttText: { fontSize: 11, fontWeight: "700", color: "#64748b" },
   chevron: { fontSize: 18, lineHeight: 18, color: "#94a3b8" },
   backdrop: {
     flex: 1,
