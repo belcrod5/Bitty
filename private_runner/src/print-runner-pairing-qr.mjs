@@ -155,5 +155,4 @@ if (!localRunnerUrl) {
 console.error(`[pairing-qr] accessClientId=${cloudflareAccessClientId.slice(0, 8)}...`);
 console.error("[pairing-qr] Treat the QR as a secret. Do not screenshot or share it.");
 qrcode.generate(JSON.stringify(payload), { small: true });
-console.error(`[pairing-qr] RUNNER_TOKEN=${runnerToken}`);
 console.error(`[pairing-qr] RUNNER_TOKEN_ID=${debugTokenId(runnerToken)}`);

@@ -29,7 +29,7 @@ type RouteDebugPanelProps = {
   pairingStatus: string;
   monitorError: string;
   lastPairingLocalRunnerUrl: string | null;
-  lastPairingRawText: string;
+  lastPairingSanitizedText: string;
 };
 
 function normalizeRunnerBaseUrl(value: string) {
@@ -119,19 +119,19 @@ function exactJapanTime(value: string) {
 function buildRouteDebugReport(params: {
   routeDebug: RouteDebugState | null;
   lastPairingLocalRunnerUrl: string | null;
-  lastPairingRawText: string;
+  lastPairingSanitizedText: string;
   pairingStatus: string;
   monitorError: string;
 }) {
-  const { routeDebug, lastPairingLocalRunnerUrl, lastPairingRawText, pairingStatus, monitorError } = params;
+  const { routeDebug, lastPairingLocalRunnerUrl, lastPairingSanitizedText, pairingStatus, monitorError } = params;
   const lines = ["Runner Connection Monitor Debug"];
   if (pairingStatus) lines.push(`pairingStatus: ${pairingStatus}`);
   if (monitorError) lines.push(`monitorError: ${monitorError}`);
   if (lastPairingLocalRunnerUrl !== null) {
     lines.push(`lastPairingLocalRunnerUrl: ${lastPairingLocalRunnerUrl || "-"}`);
   }
-  lines.push("lastPairingRawText:");
-  lines.push(lastPairingRawText || "-");
+  lines.push("lastPairingSanitizedText:");
+  lines.push(lastPairingSanitizedText || "-");
   if (!routeDebug) return lines.join("\n");
 
   lines.push("");
@@ -194,7 +194,7 @@ export function RouteDebugPanel({
   pairingStatus,
   monitorError,
   lastPairingLocalRunnerUrl,
-  lastPairingRawText,
+  lastPairingSanitizedText,
 }: RouteDebugPanelProps) {
   const {
     runnerUrl,
@@ -213,10 +213,10 @@ export function RouteDebugPanel({
   const routeDebugReport = useMemo(() => buildRouteDebugReport({
     routeDebug,
     lastPairingLocalRunnerUrl,
-    lastPairingRawText,
+    lastPairingSanitizedText,
     pairingStatus,
     monitorError,
-  }), [lastPairingLocalRunnerUrl, lastPairingRawText, monitorError, pairingStatus, routeDebug]);
+  }), [lastPairingLocalRunnerUrl, lastPairingSanitizedText, monitorError, pairingStatus, routeDebug]);
 
   const copyRouteDebugReport = useCallback(async () => {
     await Clipboard.setStringAsync(routeDebugReport);
@@ -322,8 +322,8 @@ export function RouteDebugPanel({
               {lastPairingLocalRunnerUrl !== null ? (
                 <Text style={styles.meta}>last pairing localRunnerUrl: {lastPairingLocalRunnerUrl || "-"}</Text>
               ) : null}
-              <Text style={styles.meta}>last pairing raw text:</Text>
-              <Text selectable style={styles.rawText}>{lastPairingRawText || "-"}</Text>
+              <Text style={styles.meta}>last pairing sanitized text:</Text>
+              <Text selectable style={styles.rawText}>{lastPairingSanitizedText || "-"}</Text>
               {routeDebug.diagnosis ? <Text style={styles.error}>{routeDebug.diagnosis}</Text> : null}
               {routeDebug.probes.map((probe) => (
                 <View key={probe.label} style={styles.probeRow}>

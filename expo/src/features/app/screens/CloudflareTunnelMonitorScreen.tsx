@@ -31,6 +31,43 @@ function normalizeRunnerBaseUrl(value: string) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
+function debugTokenId(raw: string) {
+  const token = String(raw || "").trim();
+  if (!token) return "-";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < token.length; i += 1) {
+    hash ^= token.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function sanitizedPairingDebugText(rawText: string) {
+  const rawLength = rawText.length;
+  try {
+    const parsed = JSON.parse(rawText) as Record<string, unknown>;
+    const runnerToken = String(parsed.runnerToken || "");
+    const accessClientId = String(parsed.cloudflareAccessClientId || "");
+    const accessSecret = String(parsed.cloudflareAccessClientSecret || "");
+    const summary = {
+      type: parsed.type || "",
+      version: parsed.version || "",
+      runnerUrl: parsed.runnerUrl || "",
+      runnerWsUrl: parsed.runnerWsUrl || "",
+      localRunnerUrl: parsed.localRunnerUrl || "",
+      localRunnerWsUrl: parsed.localRunnerWsUrl || "",
+      runnerToken: runnerToken ? `redacted (${runnerToken.length} chars, id ${debugTokenId(runnerToken)})` : "",
+      cloudflareAccessClientId: accessClientId ? `${accessClientId.slice(0, 8)}... (${accessClientId.length} chars)` : "",
+      cloudflareAccessClientSecret: accessSecret ? `redacted (${accessSecret.length} chars)` : "",
+      issuedAt: parsed.issuedAt || "",
+      rawLength,
+    };
+    return JSON.stringify(summary);
+  } catch {
+    return `unrecognized QR text (${rawLength} chars, hidden)`;
+  }
+}
+
 function eventLabel(type: string) {
   switch (type) {
     case "connection_opened":
@@ -226,7 +263,7 @@ export function CloudflareTunnelMonitorScreen() {
   const [expandedEventKeys, setExpandedEventKeys] = useState<Set<string>>(() => new Set());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [lastPairingLocalRunnerUrl, setLastPairingLocalRunnerUrl] = useState<string | null>(null);
-  const [lastPairingRawText, setLastPairingRawText] = useState("");
+  const [lastPairingSanitizedText, setLastPairingSanitizedText] = useState("");
 
   const attentionEvents = useMemo(
     () => events.filter(isAttentionEvent).slice(0, showAllAttentionEvents ? 200 : 12),
@@ -403,7 +440,7 @@ export function CloudflareTunnelMonitorScreen() {
               onBarcodeScanned={async (result: BarcodeScanningResult) => {
                 setScanning(false);
                 const rawText = String(result.data || "");
-                setLastPairingRawText(rawText);
+                setLastPairingSanitizedText(sanitizedPairingDebugText(rawText));
                 try {
                   const pairing = await applyCloudflareRunnerPairing(rawText);
                   setLastPairingLocalRunnerUrl(pairing.localRunnerUrl || "");
@@ -425,7 +462,7 @@ export function CloudflareTunnelMonitorScreen() {
           pairingStatus={pairingStatus}
           monitorError={error}
           lastPairingLocalRunnerUrl={lastPairingLocalRunnerUrl}
-          lastPairingRawText={lastPairingRawText}
+          lastPairingSanitizedText={lastPairingSanitizedText}
         />
 
         <View style={screenStyles.card}>
