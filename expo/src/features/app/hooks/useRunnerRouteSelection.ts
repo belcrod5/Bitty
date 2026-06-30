@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as Network from "expo-network";
 
 const ROUTE_RECHECK_DEBOUNCE_MS = 500;
+const NETWORK_STABILIZE_RECHECK_DELAYS_MS = [500, 2000, 5000];
 const LOCAL_HEALTH_TIMEOUT_MS = 2500;
 
 type RunnerRouteSelectionArgs = {
@@ -21,6 +22,10 @@ type RunnerRouteSelectionArgs = {
 export type RunnerRouteSelectionState = {
   selectedRoute: "local" | "cloudflare" | "unknown";
   checkedAtMs: number;
+};
+
+export type RunnerRouteSelectionResult = RunnerRouteSelectionState & {
+  requestRouteRecheck: () => void;
 };
 
 type RunnerRouteTarget = {
@@ -101,14 +106,18 @@ export function useRunnerRouteSelection({
     runnerUrl: trimTrailingSlash(runnerUrl),
     codexWsUrl: String(codexWsUrl || "").trim(),
   });
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recheckTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const scheduleGenerationRef = useRef(0);
   const probeSeqRef = useRef(0);
   const previousAppStateRef = useRef<AppStateStatus>(AppState.currentState);
-  const scheduleRouteSelectionRef = useRef<(delayMs: number) => void>(() => undefined);
+  const scheduleRouteSelectionRef = useRef<(delaysMs: readonly number[]) => void>(() => undefined);
   const [selectionState, setSelectionState] = useState<RunnerRouteSelectionState>({
     selectedRoute: "unknown",
     checkedAtMs: 0,
   });
+  const requestRouteRecheck = useCallback(() => {
+    scheduleRouteSelectionRef.current(NETWORK_STABILIZE_RECHECK_DELAYS_MS);
+  }, []);
 
   useEffect(() => {
     latestRef.current = {
@@ -133,14 +142,15 @@ export function useRunnerRouteSelection({
   ]);
 
   useEffect(() => {
-    function clearDebounce() {
-      if (!debounceTimerRef.current) return;
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
+    function clearScheduledRechecks() {
+      for (const timer of recheckTimersRef.current) {
+        clearTimeout(timer);
+      }
+      recheckTimersRef.current = [];
     }
 
-    async function reselectRoute() {
-      const seq = ++probeSeqRef.current;
+    async function reselectRoute(scheduleGeneration: number) {
+      const probeSeq = ++probeSeqRef.current;
       const latest = latestRef.current;
       if (
         !latest.enabled ||
@@ -154,7 +164,7 @@ export function useRunnerRouteSelection({
       }
 
       const localReachable = await probeRunnerHealth(latest.localRunnerUrl, latest.runnerToken);
-      if (seq !== probeSeqRef.current) return;
+      if (scheduleGeneration !== scheduleGenerationRef.current || probeSeq !== probeSeqRef.current) return;
 
       const current = latestRef.current;
       const selectedRoute = localReachable ? "local" : "cloudflare";
@@ -170,30 +180,40 @@ export function useRunnerRouteSelection({
         setRunnerUrl,
         setCodexWsUrl
       );
+      if (localReachable) {
+        clearScheduledRechecks();
+      }
     }
 
-    function scheduleRouteSelection(delayMs: number) {
-      clearDebounce();
-      debounceTimerRef.current = setTimeout(() => {
-        debounceTimerRef.current = null;
-        void reselectRoute();
-      }, delayMs);
+    function scheduleRouteSelection(delaysMs: readonly number[]) {
+      clearScheduledRechecks();
+      const scheduleGeneration = scheduleGenerationRef.current + 1;
+      scheduleGenerationRef.current = scheduleGeneration;
+      probeSeqRef.current += 1;
+      recheckTimersRef.current = delaysMs.map((delayMs) => {
+        const timeout = setTimeout(() => {
+          recheckTimersRef.current = recheckTimersRef.current.filter((timer) => timer !== timeout);
+          void reselectRoute(scheduleGeneration);
+        }, delayMs);
+        return timeout;
+      });
     }
 
     scheduleRouteSelectionRef.current = scheduleRouteSelection;
     const networkSubscription = Network.addNetworkStateListener(() => {
-      scheduleRouteSelection(ROUTE_RECHECK_DEBOUNCE_MS);
+      scheduleRouteSelection(NETWORK_STABILIZE_RECHECK_DELAYS_MS);
     });
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
       const previousState = previousAppStateRef.current;
       previousAppStateRef.current = nextState;
       if (nextState !== "active") return;
       if (previousState !== "background" && previousState !== "inactive") return;
-      scheduleRouteSelection(ROUTE_RECHECK_DEBOUNCE_MS);
+      scheduleRouteSelection([ROUTE_RECHECK_DEBOUNCE_MS]);
     });
 
     return () => {
-      clearDebounce();
+      clearScheduledRechecks();
+      scheduleGenerationRef.current += 1;
       probeSeqRef.current += 1;
       scheduleRouteSelectionRef.current = () => undefined;
       networkSubscription.remove();
@@ -203,7 +223,7 @@ export function useRunnerRouteSelection({
 
   useEffect(() => {
     if (!enabled || !localRunnerUrl || !localRunnerWsUrl || !cloudflareRunnerUrl || !cloudflareRunnerWsUrl || !runnerToken) return;
-    scheduleRouteSelectionRef.current(0);
+    scheduleRouteSelectionRef.current([0]);
   }, [
     cloudflareRunnerUrl,
     cloudflareRunnerWsUrl,
@@ -213,5 +233,8 @@ export function useRunnerRouteSelection({
     runnerToken,
   ]);
 
-  return selectionState;
+  return {
+    ...selectionState,
+    requestRouteRecheck,
+  } satisfies RunnerRouteSelectionResult;
 }

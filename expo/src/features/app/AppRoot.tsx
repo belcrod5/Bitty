@@ -7722,6 +7722,7 @@ export default function App() {
       <RunnerWebSocketProvider
         url={codexWsUrl}
         token={effectiveCodexWsToken}
+        onConnectionProblem={runnerRouteSelection.requestRouteRecheck}
         manager={runnerWebSocketManager}
       >
       <AppProviders

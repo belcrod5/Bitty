@@ -461,3 +461,25 @@ test("authentication failure close stops automatic reconnect loop", async () => 
   await jest.advanceTimersByTimeAsync(20_000);
   expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
 });
+
+test("active connection close notifies the owner before reconnecting", async () => {
+  jest.useFakeTimers();
+  const socket = nextSocket();
+  const onConnectionProblem = jest.fn();
+  const manager = new RunnerWebSocketManager({
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+    appState: "active",
+    clientInstanceId: "client-1",
+    onConnectionProblem,
+  });
+  await connectReady(manager, socket);
+
+  socket.closeWithReason("network_lost");
+
+  expect(onConnectionProblem).toHaveBeenCalledTimes(1);
+  expect(manager.getSnapshot()).toMatchObject({
+    connectionState: "reconnecting",
+    reconnectCount: 1,
+  });
+});
