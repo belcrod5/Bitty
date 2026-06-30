@@ -9,6 +9,7 @@ const RunnerWebSocketContext = createContext<RunnerWebSocketManager | null>(null
 type RunnerWebSocketProviderProps = {
   url: string;
   token: string;
+  onConnectionProblem?: () => void;
   manager?: RunnerWebSocketManager;
   children: ReactNode;
 };
@@ -21,6 +22,7 @@ function normalizeAppState(value: AppStateStatus | RunnerWsAppState | undefined)
 export function RunnerWebSocketProvider({
   url,
   token,
+  onConnectionProblem,
   manager,
   children,
 }: RunnerWebSocketProviderProps) {
@@ -30,13 +32,14 @@ export function RunnerWebSocketProvider({
       url,
       token,
       appState: normalizeAppState(AppState.currentState),
+      onConnectionProblem,
     });
   }
   const stableManager = managerRef.current;
 
   useEffect(() => {
-    stableManager.setConnectionOptions({ url, token });
-  }, [stableManager, token, url]);
+    stableManager.setConnectionOptions({ url, token, onConnectionProblem });
+  }, [onConnectionProblem, stableManager, token, url]);
 
   useEffect(() => {
     stableManager.setAppState(normalizeAppState(AppState.currentState));

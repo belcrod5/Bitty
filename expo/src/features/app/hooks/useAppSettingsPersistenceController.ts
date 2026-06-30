@@ -41,6 +41,10 @@ type UseAppSettingsPersistenceControllerArgs = {
   runnerToken: string;
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
+  cloudflareRunnerUrl: string;
+  cloudflareRunnerWsUrl: string;
+  localRunnerUrl: string;
+  localRunnerWsUrl: string;
   llmBackend: LlmBackend;
   llmDirectory: string;
   registeredDirectories: RegisteredDirectoryEntry[];
@@ -71,6 +75,10 @@ type UseAppSettingsPersistenceControllerArgs = {
   setRunnerToken: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
+  setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
+  setCloudflareRunnerWsUrl: Dispatch<SetStateAction<string>>;
+  setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
+  setLocalRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
   setSessionTitleOverridesById: Dispatch<SetStateAction<Record<string, string>>>;
@@ -118,6 +126,10 @@ export function useAppSettingsPersistenceController({
   runnerToken,
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
+  cloudflareRunnerUrl,
+  cloudflareRunnerWsUrl,
+  localRunnerUrl,
+  localRunnerWsUrl,
   llmBackend,
   llmDirectory,
   registeredDirectories,
@@ -148,6 +160,10 @@ export function useAppSettingsPersistenceController({
   setRunnerToken,
   setCloudflareAccessClientId,
   setCloudflareAccessClientSecret,
+  setCloudflareRunnerUrl,
+  setCloudflareRunnerWsUrl,
+  setLocalRunnerUrl,
+  setLocalRunnerWsUrl,
   setLlmDirectory,
   setRegisteredDirectories,
   setSessionTitleOverridesById,
@@ -206,6 +222,10 @@ export function useAppSettingsPersistenceController({
   const buildPersistedSettingsPayload = useCallback(() => {
     return {
       runnerUrl,
+      cloudflareRunnerUrl,
+      cloudflareRunnerWsUrl,
+      localRunnerUrl,
+      localRunnerWsUrl,
       llmBackend,
       llmDirectory,
       registeredDirectories,
@@ -243,6 +263,8 @@ export function useAppSettingsPersistenceController({
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
     autoTranscribeOnStop,
+    cloudflareRunnerUrl,
+    cloudflareRunnerWsUrl,
     codexApprovalPolicy,
     codexWsToken,
     codexWsUrl,
@@ -251,6 +273,8 @@ export function useAppSettingsPersistenceController({
     llmBackend,
     llmDirectory,
     llmToolLogCompact,
+    localRunnerUrl,
+    localRunnerWsUrl,
     modelRef,
     reasoningEffort,
     recordingQualityPreset,
@@ -275,6 +299,10 @@ export function useAppSettingsPersistenceController({
     let savedRunnerToken = String(parsed.runnerToken || "").trim();
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
     const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
+    const savedCloudflareRunnerUrl = String(parsed.cloudflareRunnerUrl || parsed.tunnelRunnerUrl || "").trim();
+    const savedCloudflareRunnerWsUrl = String(parsed.cloudflareRunnerWsUrl || parsed.tunnelRunnerWsUrl || "").trim();
+    const savedLocalRunnerUrl = String(parsed.localRunnerUrl || "").trim();
+    const savedLocalRunnerWsUrl = String(parsed.localRunnerWsUrl || "").trim();
     const savedCodexWsUrlRaw = String(parsed.codexWsUrl || "").trim();
     const mappedCodexWsUrl = savedCodexWsUrlRaw === LEGACY_DEFAULT_CODEX_WS_URL
       ? DEFAULT_RUNNER_WS_URL
@@ -309,6 +337,26 @@ export function useAppSettingsPersistenceController({
 
     if (savedRunnerUrl) {
       setRunnerUrl(savedRunnerUrl);
+    }
+    if (savedCloudflareRunnerUrl) {
+      setCloudflareRunnerUrl(savedCloudflareRunnerUrl);
+    } else if (savedRunnerUrl.startsWith("https://")) {
+      setCloudflareRunnerUrl(savedRunnerUrl);
+    }
+    if (savedCloudflareRunnerWsUrl) {
+      setCloudflareRunnerWsUrl(savedCloudflareRunnerWsUrl);
+    } else if (savedCodexWsUrl.startsWith("wss://")) {
+      setCloudflareRunnerWsUrl(savedCodexWsUrl);
+    }
+    if (savedLocalRunnerUrl) {
+      setLocalRunnerUrl(savedLocalRunnerUrl);
+    } else if (savedRunnerUrl.startsWith("http://") && savedRunnerUrl.includes(".local")) {
+      setLocalRunnerUrl(savedRunnerUrl);
+    }
+    if (savedLocalRunnerWsUrl) {
+      setLocalRunnerWsUrl(savedLocalRunnerWsUrl);
+    } else if (savedCodexWsUrl.startsWith("ws://") && savedCodexWsUrl.includes(".local")) {
+      setLocalRunnerWsUrl(savedCodexWsUrl);
     }
     setRunnerToken(savedRunnerToken);
     if (legacyCloudflareAccessClientId) {
@@ -412,10 +460,14 @@ export function useAppSettingsPersistenceController({
     setCodexWsUrl,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
+    setCloudflareRunnerUrl,
+    setCloudflareRunnerWsUrl,
     setExpandedDirectoryIds,
     setFaceTrackingEnabledWithRef,
     setLlmDirectory,
     setLlmToolLogCompact,
+    setLocalRunnerUrl,
+    setLocalRunnerWsUrl,
     setModelRef,
     setReasoningEffort,
     setRecordingQualityPreset,

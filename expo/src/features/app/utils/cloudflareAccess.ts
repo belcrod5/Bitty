@@ -6,6 +6,8 @@ export type CloudflareAccessCredentials = {
 export type CloudflareRunnerPairing = {
   runnerUrl: string;
   runnerWsUrl: string;
+  localRunnerUrl: string;
+  localRunnerWsUrl: string;
   runnerToken: string;
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
@@ -42,6 +44,18 @@ function readString(record: Record<string, unknown>, keys: string[]) {
   return "";
 }
 
+function sameHost(a: URL, b: URL) {
+  return a.host.toLowerCase() === b.host.toLowerCase();
+}
+
+function originWithNormalizedHost(url: URL) {
+  return `${url.protocol}//${url.host.toLowerCase()}`;
+}
+
+function endpointWithNormalizedHost(url: URL) {
+  return `${originWithNormalizedHost(url)}${url.pathname}`;
+}
+
 export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunnerPairing {
   const text = String(raw || "").trim();
   if (!text) {
@@ -66,6 +80,8 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
 
   const runnerUrl = readString(record, ["runnerUrl", "url", "baseUrl"]);
   const runnerWsUrl = readString(record, ["runnerWsUrl", "wsUrl"]);
+  const localRunnerUrl = readString(record, ["localRunnerUrl", "localUrl"]);
+  const localRunnerWsUrl = readString(record, ["localRunnerWsUrl", "localWsUrl"]);
   const runnerToken = readString(record, ["runnerToken", "token"]);
   const cloudflareAccessClientId = readString(record, [
     "cloudflareAccessClientId",
@@ -89,9 +105,13 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
 
   let parsedRunnerUrl: URL;
   let parsedRunnerWsUrl: URL;
+  let parsedLocalRunnerUrl: URL | null = null;
+  let parsedLocalRunnerWsUrl: URL | null = null;
   try {
     parsedRunnerUrl = new URL(runnerUrl);
     parsedRunnerWsUrl = new URL(runnerWsUrl);
+    parsedLocalRunnerUrl = localRunnerUrl ? new URL(localRunnerUrl) : null;
+    parsedLocalRunnerWsUrl = localRunnerWsUrl ? new URL(localRunnerWsUrl) : null;
   } catch {
     throw new Error("QR payload has an invalid runner URL");
   }
@@ -108,17 +128,44 @@ export function parseCloudflareRunnerPairingPayload(raw: string): CloudflareRunn
     parsedRunnerWsUrl.protocol !== "wss:" ||
     parsedRunnerWsUrl.username ||
     parsedRunnerWsUrl.password ||
-    parsedRunnerWsUrl.host !== parsedRunnerUrl.host ||
+    !sameHost(parsedRunnerWsUrl, parsedRunnerUrl) ||
     parsedRunnerWsUrl.pathname !== "/runner-ws" ||
     parsedRunnerWsUrl.search ||
     parsedRunnerWsUrl.hash
   ) {
     throw new Error("Pairing requires a same-origin WSS runner endpoint");
   }
+  if (parsedLocalRunnerUrl || parsedLocalRunnerWsUrl) {
+    if (!parsedLocalRunnerUrl || !parsedLocalRunnerWsUrl) {
+      throw new Error("Pairing local runner requires both local HTTP and WS endpoints");
+    }
+    if (
+      parsedLocalRunnerUrl.protocol !== "http:" ||
+      parsedLocalRunnerUrl.username ||
+      parsedLocalRunnerUrl.password ||
+      parsedLocalRunnerUrl.search ||
+      parsedLocalRunnerUrl.hash
+    ) {
+      throw new Error("Pairing local runner requires an HTTP origin");
+    }
+    if (
+      parsedLocalRunnerWsUrl.protocol !== "ws:" ||
+      parsedLocalRunnerWsUrl.username ||
+      parsedLocalRunnerWsUrl.password ||
+      !sameHost(parsedLocalRunnerWsUrl, parsedLocalRunnerUrl) ||
+      parsedLocalRunnerWsUrl.pathname !== "/runner-ws" ||
+      parsedLocalRunnerWsUrl.search ||
+      parsedLocalRunnerWsUrl.hash
+    ) {
+      throw new Error("Pairing local runner requires a same-origin WS endpoint");
+    }
+  }
 
   return {
-    runnerUrl: parsedRunnerUrl.origin,
-    runnerWsUrl: parsedRunnerWsUrl.toString(),
+    runnerUrl: originWithNormalizedHost(parsedRunnerUrl),
+    runnerWsUrl: endpointWithNormalizedHost(parsedRunnerWsUrl),
+    localRunnerUrl: parsedLocalRunnerUrl ? originWithNormalizedHost(parsedLocalRunnerUrl) : "",
+    localRunnerWsUrl: parsedLocalRunnerWsUrl ? endpointWithNormalizedHost(parsedLocalRunnerWsUrl) : "",
     runnerToken,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,

@@ -1,5 +1,6 @@
 import { createContext, useContext, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
 import type { NativeScrollEvent, NativeSyntheticEvent, View } from "react-native";
+import type { RunnerRouteSelectionState } from "../hooks/useRunnerRouteSelection";
 import type { ConversationMessage, TtsPlaybackTarget } from "../types/appTypes";
 
 export type ChatScreenContextValue = {
@@ -12,6 +13,7 @@ export type ChatScreenContextValue = {
   onChatTouchEnd: () => void;
   runnerUrl: string;
   runnerToken: string;
+  runnerRouteSelection: RunnerRouteSelectionState;
   isCodexCompactRunning: (threadId: string) => boolean;
   sanitizeTextForTts: (text: string) => string;
   handleAssistantAudioButtonPress: (

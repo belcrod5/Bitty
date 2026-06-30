@@ -24,6 +24,7 @@ type RunnerWebSocketManagerOptions = {
   token: string;
   appState?: RunnerWsAppState;
   clientInstanceId?: string;
+  onConnectionProblem?: () => void;
 };
 
 type RunnerWsPendingRequest = {
@@ -170,21 +171,26 @@ export class RunnerWebSocketManager {
   private runnerWsConnectionCount: number | undefined;
   private serverStatus: RunnerWsServerStatus | undefined;
   private cachedSnapshot: RunnerWsConnectionSnapshot;
+  private onConnectionProblem: (() => void) | undefined;
 
   constructor(options: RunnerWebSocketManagerOptions) {
     this.url = normalizeUrl(options.url);
     this.token = normalizeText(options.token);
     this.appState = options.appState || "unknown";
     this.clientInstanceId = normalizeText(options.clientInstanceId) || createClientInstanceId();
+    this.onConnectionProblem = options.onConnectionProblem;
     if (this.appState === "background") {
       this.connectionState = "background";
     }
     this.cachedSnapshot = this.buildSnapshot();
   }
 
-  setConnectionOptions(options: { url: string; token: string }) {
+  setConnectionOptions(options: { url: string; token: string; onConnectionProblem?: () => void }) {
     const nextUrl = normalizeUrl(options.url);
     const nextToken = normalizeText(options.token);
+    if ("onConnectionProblem" in options) {
+      this.onConnectionProblem = options.onConnectionProblem;
+    }
     if (nextUrl === this.url && nextToken === this.token) return;
     this.url = nextUrl;
     this.token = nextToken;
@@ -220,6 +226,7 @@ export class RunnerWebSocketManager {
       const failure = error instanceof Error ? error : makeError("runner_ws_connect_failed");
       this.lastError = failure.message;
       if (this.appState === "active") {
+        this.onConnectionProblem?.();
         this.scheduleReconnect();
       } else {
         this.connectionState = "idle";
@@ -511,6 +518,7 @@ export class RunnerWebSocketManager {
       return;
     }
     if (this.appState === "active") {
+      this.onConnectionProblem?.();
       this.scheduleReconnect();
       return;
     }

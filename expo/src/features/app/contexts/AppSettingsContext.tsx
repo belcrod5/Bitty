@@ -13,6 +13,13 @@ export type ModelOption = {
   value: string;
 };
 
+export type RunnerPairingResult = {
+  runnerUrl: string;
+  runnerWsUrl: string;
+  localRunnerUrl: string;
+  localRunnerWsUrl: string;
+};
+
 export type AppSettingsContextValue = {
   runnerUrl: string;
   llmDirectory: string;
@@ -21,6 +28,10 @@ export type AppSettingsContextValue = {
   runnerToken: string;
   cloudflareAccessClientId: string;
   cloudflareAccessEnabled: boolean;
+  cloudflareRunnerUrl: string;
+  cloudflareRunnerWsUrl: string;
+  localRunnerUrl: string;
+  localRunnerWsUrl: string;
   executionEnvironment: string;
   isExpoGo: boolean;
   isDev: boolean;
@@ -52,7 +63,7 @@ export type AppSettingsContextValue = {
   changeCodexWsToken: (value: string) => void;
   changeRunnerToken: (value: string) => void;
   clearCloudflareAccessCredentials: () => Promise<void>;
-  applyCloudflareRunnerPairing: (payload: string) => Promise<void>;
+  applyCloudflareRunnerPairing: (payload: string) => Promise<RunnerPairingResult>;
   selectCodexApprovalPolicy: (value: "on-request" | "never") => void;
   loadVoices: () => void;
   changeTtsSpeedInput: (value: string) => void;

@@ -619,11 +619,13 @@ restart_in_background() {
     if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
       echo "[run-local] scheduled screen restart (${RUN_LOCAL_SCREEN_SESSION})" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      print_restart_pairing_qr_hint
       return 0
     fi
     if can_reuse_runner || can_reuse_codex_app_server; then
       echo "[run-local] restart completed; target services are running" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      print_restart_pairing_qr_hint
       return 0
     fi
     echo "[run-local] failed to schedule screen restart; check $RUN_LOCAL_LOG_FILE" >&2
@@ -643,6 +645,7 @@ restart_in_background() {
     if [ "$rc" = "0" ]; then
       echo "[run-local] restart completed; target services were already running" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+      print_restart_pairing_qr_hint
       exit 0
     fi
     echo "[run-local] failed to schedule detached restart (exit=${rc}); check $RUN_LOCAL_LOG_FILE" >&2
@@ -651,6 +654,16 @@ restart_in_background() {
 
   echo "[run-local] scheduled detached restart (launcher pid=${launcher_pid})" >&2
   echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
+  print_restart_pairing_qr_hint
+}
+
+print_restart_pairing_qr_hint() {
+  if [ "$RUNNER_ENABLE" = "1" ]; then
+    echo "[run-local] run pairing QR after this restart finishes: ./private_runner/run-local.sh pairing-qr" >&2
+    if [ "$RUNNER_TOKEN_MODE" = "random" ]; then
+      echo "[run-local] do not restart after scanning; random RUNNER_TOKEN changes on every restart" >&2
+    fi
+  fi
 }
 
 run_stop() {

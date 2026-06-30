@@ -14,6 +14,7 @@ import { useAppShell } from "../contexts/AppShellContext";
 import { useChatDiagnostics } from "../contexts/ChatDiagnosticsContext";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { useConversation } from "../contexts/ConversationContext";
+import { useChatScreen } from "../contexts/ChatScreenContext";
 import { styles } from "../styles";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { MiniBoardChatPreviewSkeleton } from "../components/MiniBoardChatPreviewSkeleton";
@@ -99,6 +100,7 @@ export function MiniBoardScreen() {
   const [colorFilterPickerOpen, setColorFilterPickerOpen] = useState(false);
   const [colorFilterPickerRendered, setColorFilterPickerRendered] = useState(false);
   const { openDrawer } = useAppShell();
+  const { runnerRouteSelection } = useChatScreen();
   const {
     codexCliStatusText,
     codexCliStatusFetchedAtMs,
@@ -874,7 +876,10 @@ export function MiniBoardScreen() {
       </View>
       {!openPopupPanelId ? (
         <View pointerEvents="box-none" style={miniBoardStyles.floatingControls}>
-          <RunnerWsConnectionStatus dataSync={miniBoardDataSync} />
+          <RunnerWsConnectionStatus
+            dataSync={miniBoardDataSync}
+            selectedRoute={runnerRouteSelection.selectedRoute}
+          />
           <View style={miniBoardStyles.statusMenu}>
             <CodexStatusSummaryMenu
               statusText={codexCliStatusText}

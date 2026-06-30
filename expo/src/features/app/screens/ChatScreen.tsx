@@ -270,6 +270,7 @@ export function ChatScreen({
     onChatTouchEnd,
     runnerUrl,
     runnerToken,
+    runnerRouteSelection,
     isCodexCompactRunning,
     sanitizeTextForTts,
     handleAssistantAudioButtonPress,
@@ -2097,6 +2098,7 @@ export function ChatScreen({
             <RunnerWsConnectionStatus
               turnState={replyLoadingForView ? "running" : selectedThreadStatusTypeForView}
               dataSync={connectionDataSync}
+              selectedRoute={runnerRouteSelection.selectedRoute}
             />
           </View>
           <View style={styles.chatInputWrapper}>
