@@ -15,9 +15,8 @@ import {
 } from "../utils/audioConfig";
 import { parseOptionalSessionId } from "../utils/llmSession";
 import { parseCodexApprovalPolicy, parseLlmDirectory, parseModelRef, parseReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
-import { parseToolAutoApprovalMap } from "../utils/tooling";
 import { suggestRunnerUrlFromCodexWsUrl } from "../utils/urlResolvers";
-import type { LlmBackend, ToolAutoApprovalMap } from "../types/appTypes";
+import type { LlmBackend } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
 import {
   loadSecureRunnerCredentials,
@@ -69,7 +68,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   autoTranscribeOnStop: boolean;
   autoReplyAfterStt: boolean;
   autoSpeakAfterReply: boolean;
-  toolAutoApprovalMap: ToolAutoApprovalMap;
   llmToolLogCompact: boolean;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
@@ -100,7 +98,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   setRecordingTuning: Dispatch<SetStateAction<RecordingTuning>>;
   setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
   setTtsSpeedWithSync: (value: number) => void;
-  setToolAutoApprovalMap: Dispatch<SetStateAction<ToolAutoApprovalMap>>;
   setLlmToolLogCompact: Dispatch<SetStateAction<boolean>>;
   setAutoTranscribeOnStop: Dispatch<SetStateAction<boolean>>;
   setAutoBargeInEnabled: Dispatch<SetStateAction<boolean>>;
@@ -154,7 +151,6 @@ export function useAppSettingsPersistenceController({
   autoTranscribeOnStop,
   autoReplyAfterStt,
   autoSpeakAfterReply,
-  toolAutoApprovalMap,
   llmToolLogCompact,
   setRunnerUrl,
   setRunnerToken,
@@ -185,7 +181,6 @@ export function useAppSettingsPersistenceController({
   setRecordingTuning,
   setFaceTrackingEnabledWithRef,
   setTtsSpeedWithSync,
-  setToolAutoApprovalMap,
   setLlmToolLogCompact,
   setAutoTranscribeOnStop,
   setAutoBargeInEnabled,
@@ -254,7 +249,6 @@ export function useAppSettingsPersistenceController({
       autoTranscribeOnStop,
       autoReplyAfterStt,
       autoSpeakAfterReply,
-      toolAutoApprovalMap,
       llmToolLogCompact,
     };
   }, [
@@ -289,7 +283,6 @@ export function useAppSettingsPersistenceController({
     selectedLlmSessionId,
     selectedVoiceIdByProvider,
     sttProvider,
-    toolAutoApprovalMap,
     ttsProvider,
     ttsSpeed,
   ]);
@@ -418,7 +411,6 @@ export function useAppSettingsPersistenceController({
       setFaceTrackingEnabledWithRef(parsed.faceTrackingEnabled);
     }
     setTtsSpeedWithSync(parseTtsSpeed(parsed.ttsSpeed));
-    setToolAutoApprovalMap(parseToolAutoApprovalMap(parsed.toolAutoApprovalMap));
     if (typeof parsed.llmToolLogCompact === "boolean") {
       setLlmToolLogCompact(parsed.llmToolLogCompact);
     }
@@ -480,7 +472,6 @@ export function useAppSettingsPersistenceController({
     setSessionMarkerColorsById,
     setSessionTitleOverridesById,
     setSttProvider,
-    setToolAutoApprovalMap,
     setTtsProvider,
     setTtsSpeedWithSync,
   ]);

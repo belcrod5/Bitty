@@ -540,9 +540,7 @@ const WAITING_APPROVAL_RESUME_ATTACH_TIMEOUT_MS = 8000;
 const WAITING_APPROVAL_RESUME_RETRY_COOLDOWN_MS = 2500;
 const REPLY_DEBUG_MAX_LINES = 120;
 const REPLY_DEBUG_MAX_CHARS = 12000;
-const EMPTY_TOOL_AUTO_APPROVALS: ToolAutoApprovalMap = {
-  "toolrun:youtube_search": true,
-};
+const EMPTY_TOOL_AUTO_APPROVALS: ToolAutoApprovalMap = {};
 const EMPTY_DIRECTORY_SESSION_TREE_STATE: DirectorySessionTreeState = {
   loading: false,
   loadingMore: false,
@@ -3696,6 +3694,7 @@ export default function App() {
   const {
     handleApprovalRequest,
     clearToolAutoApprovals,
+    clearToolAutoApprovalsForSession,
     clearPendingApprovals,
     clearPendingApprovalsForSession,
     clearResolvedApproval,
@@ -3957,6 +3956,7 @@ export default function App() {
       waitingApproval: false,
     });
     clearPendingApprovalsForSession(sessionId);
+    clearToolAutoApprovalsForSession(sessionId);
     const visibleSessionId = parseOptionalSessionId(
       selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
     );
@@ -3978,6 +3978,7 @@ export default function App() {
     });
   }, [
     clearPendingApprovalsForSession,
+    clearToolAutoApprovalsForSession,
     finalizeConversationRuntimeAfterRelayLoss,
     logSessionDiag,
     llmUiStatusRef,
@@ -4807,7 +4808,6 @@ export default function App() {
     autoTranscribeOnStop,
     autoReplyAfterStt,
     autoSpeakAfterReply,
-    toolAutoApprovalMap,
     llmToolLogCompact,
     setRunnerUrl,
     setRunnerToken,
@@ -4838,7 +4838,6 @@ export default function App() {
     setRecordingTuning,
     setFaceTrackingEnabledWithRef,
     setTtsSpeedWithSync,
-    setToolAutoApprovalMap,
     setLlmToolLogCompact,
     setAutoTranscribeOnStop,
     setAutoBargeInEnabled,
