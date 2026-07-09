@@ -63,19 +63,6 @@ export function resolveToolApprovalKey(payload: unknown): string {
   return firstArg ? `${command}:${firstArg}` : command;
 }
 
-export function parseToolAutoApprovalMap(raw: unknown): ToolAutoApprovalMap {
-  if (!raw || typeof raw !== "object") return {};
-  const out: ToolAutoApprovalMap = {};
-  for (const [k, v] of Object.entries(raw)) {
-    const key = normalizeApprovalKey(k);
-    if (!key) continue;
-    if (v === true || v === "true" || v === 1 || v === "1") {
-      out[key] = true;
-    }
-  }
-  return out;
-}
-
 export function normalizeMediaTarget(raw: unknown): MediaTarget | "" {
   const value = String(raw || "").trim().toLowerCase();
   if (value === "all" || value === "youtube" || value === "tts") {

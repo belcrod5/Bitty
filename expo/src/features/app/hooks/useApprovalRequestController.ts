@@ -95,6 +95,13 @@ function getApprovalRequestSessionId(request: ApprovalRequest) {
   return String(request.sessionInfo?.sessionId || request.threadId || "").trim();
 }
 
+export function buildSessionScopedApprovalKey(request: ApprovalRequest) {
+  const sessionId = getApprovalRequestSessionId(request);
+  const approvalKey = normalizeApprovalKey(request.approvalKey);
+  if (!sessionId || !approvalKey) return "";
+  return `${sessionId}:${approvalKey}`;
+}
+
 export function useApprovalRequestController({
   setReplyDebug,
   updateLlmStatus,
@@ -111,17 +118,35 @@ export function useApprovalRequestController({
   const activeApprovalDialogRef = useRef<ActiveApprovalDialog | null>(null);
   const [approvalDialog, setApprovalDialog] = useState<ApprovalDialogViewState | null>(null);
 
-  const rememberToolAutoApproval = useCallback((key: string) => {
-    const normalized = normalizeApprovalKey(key);
-    if (!normalized) return;
+  const rememberToolAutoApproval = useCallback((request: ApprovalRequest) => {
+    const sessionScopedKey = buildSessionScopedApprovalKey(request);
+    if (!sessionScopedKey) return;
     setToolAutoApprovalMap((prev) => {
-      if (prev[normalized]) return prev;
-      return { ...prev, [normalized]: true };
+      if (prev[sessionScopedKey]) return prev;
+      return { ...prev, [sessionScopedKey]: true };
     });
   }, [setToolAutoApprovalMap]);
 
   const clearToolAutoApprovals = useCallback(() => {
     setToolAutoApprovalMap({});
+  }, [setToolAutoApprovalMap]);
+
+  const clearToolAutoApprovalsForSession = useCallback((sessionIdRaw: unknown) => {
+    const sessionId = String(sessionIdRaw || "").trim();
+    if (!sessionId) return;
+    const prefix = `${sessionId}:`;
+    setToolAutoApprovalMap((prev) => {
+      const next: ToolAutoApprovalMap = {};
+      let changed = false;
+      for (const [key, value] of Object.entries(prev)) {
+        if (key.startsWith(prefix)) {
+          changed = true;
+          continue;
+        }
+        next[key] = value;
+      }
+      return changed ? next : prev;
+    });
   }, [setToolAutoApprovalMap]);
 
   const processApprovalQueue = useCallback(() => {
@@ -134,7 +159,7 @@ export function useApprovalRequestController({
     const command = String(request.command || "").trim();
     const commandLabel = buildApprovalCommandLabel(request.command, request.args);
     const reason = String(request.reason || "").trim();
-    const approvalKey = normalizeApprovalKey(request.approvalKey);
+    const sessionScopedKey = buildSessionScopedApprovalKey(request);
     const shouldProjectToMainStatus = shouldUpdateLlmStatusForApproval?.(request) ?? true;
 
     appendAssistantEventMessage(`tool_approval_required : ${commandLabel}`, request);
@@ -148,14 +173,14 @@ export function useApprovalRequestController({
       });
     }
 
-    if (approvalKey && toolAutoApprovalMapRef.current[approvalKey]) {
+    if (sessionScopedKey && toolAutoApprovalMapRef.current[sessionScopedKey]) {
       if (shouldProjectToMainStatus) {
-        setReplyDebug(`route=${route} approval=auto command=${command || "-"} key=${approvalKey}`);
+        setReplyDebug(`route=${route} approval=auto command=${command || "-"} key=${sessionScopedKey}`);
       }
       if (shouldProjectToMainStatus) {
         updateLlmStatus("tool_running", `auto-approved: ${commandLabel}`);
       }
-      appendAssistantEventMessage(`tool_approval_auto : ${commandLabel}`, request);
+      appendAssistantEventMessage(`tool_approval_auto : ${commandLabel} (セッション内で承認済み)`, request);
       void Promise.resolve(next.respond("approve_for_session")).finally(() => {
         approvalDialogActiveRef.current = false;
         processApprovalQueue();
@@ -198,7 +223,7 @@ export function useApprovalRequestController({
   const respondToApprovalDialog = useCallback((action: ApprovalAction) => {
     const active = activeApprovalDialogRef.current;
     if (!active) return;
-    const approvalKey = normalizeApprovalKey(active.item.request.approvalKey);
+    const sessionScopedKey = buildSessionScopedApprovalKey(active.item.request);
     const finish = (
       nextAction: ApprovalAction,
       debugSuffix: string,
@@ -225,11 +250,11 @@ export function useApprovalRequestController({
       });
     };
     if (action === "approve_for_session") {
-      if (approvalKey) {
-        rememberToolAutoApproval(approvalKey);
+      if (sessionScopedKey) {
+        rememberToolAutoApproval(active.item.request);
         finish(
           "approve_for_session",
-          `route=${active.route} approval=approved+remembered key=${approvalKey}`,
+          `route=${active.route} approval=approved+remembered key=${sessionScopedKey}`,
           "tool_running",
           "approval granted"
         );
@@ -300,6 +325,7 @@ export function useApprovalRequestController({
   return {
     handleApprovalRequest,
     clearToolAutoApprovals,
+    clearToolAutoApprovalsForSession,
     clearPendingApprovals,
     clearPendingApprovalsForSession,
     clearResolvedApproval,
