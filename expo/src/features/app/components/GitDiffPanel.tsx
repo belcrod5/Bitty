@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -80,7 +80,7 @@ function getParentRunnerPath(pathRaw: unknown) {
   return normalizedPath.slice(0, separatorIndex);
 }
 
-export function GitDiffPanel({
+export const GitDiffPanel = memo(function GitDiffPanel({
   visible,
   runnerUrl,
   runnerToken,
@@ -98,6 +98,8 @@ export function GitDiffPanel({
   onOpenMedia,
   logSessionDiag,
 }: GitDiffPanelProps) {
+  const hasEverBeenVisibleRef = useRef(visible);
+  if (visible) hasEverBeenVisibleRef.current = true;
   const [gitPanelTab, setGitPanelTab] = useState<GitPanelTab>("diff");
   const [treeExpandedByKey, setTreeExpandedByKey] = useState<Record<string, boolean>>({});
   const [explorerRootPath, setExplorerRootPath] = useState("");
@@ -551,19 +553,6 @@ export function GitDiffPanel({
     () => Array.from(new Set([...stagedFiles, ...unstagedFiles])).length,
     [stagedFiles, unstagedFiles]
   );
-  const collectTreeDirectoryKeys = useCallback((nodes: GitDiffFileTreeNode[], treeKeyPrefix: string): string[] => {
-    const keys: string[] = [];
-    const visit = (items: GitDiffFileTreeNode[]) => {
-      for (const item of items) {
-        if (item.kind !== "dir") continue;
-        keys.push(`${treeKeyPrefix}:${item.fullPath}`);
-        visit(item.children);
-      }
-    };
-    visit(nodes);
-    return keys;
-  }, []);
-
   useEffect(() => {
     Animated.timing(panelAnim, {
       toValue: visible ? 1 : 0,
@@ -653,26 +642,6 @@ export function GitDiffPanel({
     loadExplorerChildren,
     visible,
   ]);
-
-  useEffect(() => {
-    const nextKeys = [
-      ...collectTreeDirectoryKeys(stagedTreeNodes, "diff:staged"),
-      ...collectTreeDirectoryKeys(unstagedTreeNodes, "diff:unstaged"),
-      ...collectTreeDirectoryKeys(explorerFileTreeNodes, "explorer-files"),
-    ];
-    if (nextKeys.length <= 0) return;
-    setTreeExpandedByKey((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const key of nextKeys) {
-        if (next[key] === undefined) {
-          next[key] = true;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [collectTreeDirectoryKeys, explorerFileTreeNodes, stagedTreeNodes, unstagedTreeNodes]);
 
   const renderTreeNodes = (
     nodes: GitDiffFileTreeNode[],
@@ -788,6 +757,8 @@ export function GitDiffPanel({
       </View>
     );
   };
+
+  if (!hasEverBeenVisibleRef.current) return null;
 
   const explorerRootNode = explorerRootPath ? explorerNodesByPath[explorerRootPath] : null;
   const panelWidth = Math.min(420, Math.max(260, Math.floor(screenWidth * 0.86)));
@@ -991,4 +962,4 @@ export function GitDiffPanel({
       />
     </View>
   );
-}
+});

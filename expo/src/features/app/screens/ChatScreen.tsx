@@ -1238,6 +1238,7 @@ export function ChatScreen({
     setComposerInputFocused(false);
     setGitDiffPanelOpen(true);
   }, [chatComposerInputRef, setComposerInputFocused]);
+  const closeGitDiffPanel = useCallback(() => setGitDiffPanelOpen(false), []);
   const showInfoToast = useCallback((textRaw: unknown) => {
     const text = String(textRaw || "").trim();
     if (!text) return;
@@ -2078,7 +2079,7 @@ export function ChatScreen({
           gitChangedFilesUnstaged={gitChangedFiles.unstagedFiles}
           gitChangedFilesLoading={gitChangedFiles.loading}
           gitChangedFilesError={gitChangedFiles.error}
-          onRequestClose={() => setGitDiffPanelOpen(false)}
+          onRequestClose={closeGitDiffPanel}
           onRefreshGitChangedFiles={gitChangedFiles.refresh}
           showInfoToast={showInfoToast}
           onOpenMedia={setRunnerMedia}
