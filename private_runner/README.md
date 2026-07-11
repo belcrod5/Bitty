@@ -66,6 +66,8 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 - `OPENAI_CODEX_OAUTH_PROFILE` で利用する OAuth profile を選択可能（既定 `default`）
 
 実運用で確認した互換:
+- `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`: `none`, `low`, `medium`, `high`, `xhigh`
+  （API はさらに `max` をサポートするが、本 runner は未対応。公表仕様。実機確認待ち）
 - `gpt-5.4`: `none`, `low`, `medium`, `high`, `xhigh`
 - `gpt-5`: `minimal`, `low`, `medium`, `high`
 - `gpt-5-codex`: `low`, `medium`, `high`
@@ -254,7 +256,7 @@ npm run ios
 - 実機: `Runner URL = http://<MacのLocalHostName>.local:8788`
 - `Runner Token` は Pairing QR の token。固定token検証時だけ、`RUNNER_TOKEN_MODE=env` にして `.env` の `RUNNER_TOKEN` と同じ値を使う
 - Appには次のUXオプションがあります:
-  - `LLM Model` プルダウンで `openai-codex/gpt-5.4-mini` / `openai-codex/gpt-5.4` / `openai-codex/gpt-5.3-codex` / `openai-codex/gpt-5.3-codex-spark` を選択
+  - `LLM Model` プルダウンで `openai-codex/gpt-5.6-sol` / `openai-codex/gpt-5.6-terra` / `openai-codex/gpt-5.6-luna` / `openai-codex/gpt-5.4-mini` / `openai-codex/gpt-5.4` / `openai-codex/gpt-5.3-codex` / `openai-codex/gpt-5.3-codex-spark` を選択
   - `Think` プルダウンで `low|medium|high|xhigh` を選択
   - 上記2つの設定は端末内に保存され次回起動時に復元
   - `TTS Provider` を `elevenlabs` / `google` / `aivisspeech` で切替

@@ -695,6 +695,10 @@ const OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT = Math.max(
   Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT || 400000)
 );
 const OPENAI_CODEX_MODEL_CONTEXT_WINDOW_TOKENS = {
+  "gpt-5.6": Math.max(
+    1000,
+    Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_6 || 1050000)
+  ),
   "gpt-5.4-mini": Math.max(
     1000,
     Number(process.env.OPENAI_CODEX_CONTEXT_WINDOW_GPT_5_4_MINI || OPENAI_CODEX_CONTEXT_WINDOW_TOKENS_DEFAULT)
@@ -730,6 +734,7 @@ const OPENAI_CODEX_MODEL_CONTEXT_WINDOW_TOKENS = {
 };
 
 const OPENAI_CODEX_MODEL_CONTEXT_WINDOW_MATCHERS = [
+  { prefix: "gpt-5.6", key: "gpt-5.6" },
   { prefix: "gpt-5.4-mini", key: "gpt-5.4-mini" },
   { prefix: "gpt-5.4", key: "gpt-5.4" },
   { prefix: "gpt-5.3-codex-spark", key: "gpt-5.3-codex-spark" },
