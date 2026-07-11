@@ -4,6 +4,7 @@ import type {
   LlmSessionMessage,
   LlmSessionMessageRole,
 } from "../types/appTypes";
+import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import { parseLlmSessionMessageRole } from "./llmSession";
 import { normalizeModelRef, parseModelRef, parseReasoningEffort, type ReasoningEffort } from "./settingsParsers";
@@ -18,6 +19,7 @@ type BuildConversationMessageLike = (
   content: string,
   opts?: {
     at?: string;
+    commandExecution?: CodexCommandExecutionInfo;
   }
 ) => ConversationMessage;
 
@@ -132,8 +134,8 @@ function toRestoredSessionMessages(restored: RunnerSessionMessagesResult): LlmSe
       const role = parseLlmSessionMessageRole(item.role);
       const content = String(item.content || "").trim();
       const at = String(item.at || "").trim();
-      if (!role || !content) return null;
-      return { role, content, at };
+      if (!role || (!content && !item.commandExecution)) return null;
+      return { role, content, at, ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}) };
     })
     .filter((item): item is LlmSessionMessage => !!item);
 }
@@ -151,6 +153,7 @@ export function buildRestoredSessionState({
   const nextConversation = restoredMessages.map((item) => (
     buildConversationMessage(item.role, item.content, {
       at: item.at,
+      ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}),
     })
   ));
   const nextHistory = buildHistoryFromSessionMessages(restoredMessages);
@@ -205,6 +208,7 @@ export function buildHistoryFromSessionMessages(messages: LlmSessionMessage[]) {
   const nextHistoryChronological: HistoryEntry[] = [];
   let latestUserText = "";
   for (const message of messages) {
+    if (message.commandExecution) continue;
     if (message.role === "user") {
       latestUserText = String(message.content || "").trim();
       continue;

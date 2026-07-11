@@ -1,4 +1,5 @@
 import type { SttProvider } from "../../stt/sttConfig";
+import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { LlmUiStatus } from "../hooks/useLlmRequestStatus";
 import type { LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 
@@ -36,6 +37,7 @@ export type ConversationMessage = {
   llmStatusDetail?: string;
   llmElapsedMs?: number;
   sttMeta?: SttMessageMeta;
+  commandExecution?: CodexCommandExecutionInfo;
   codexQueue?: {
     queuedTurnId: string;
     status: "queued" | "waiting_compact" | "running" | "completed" | "failed" | "cancelled";
@@ -175,6 +177,7 @@ export type LlmSessionMessage = {
   role: LlmSessionMessageRole;
   content: string;
   at: string;
+  commandExecution?: CodexCommandExecutionInfo;
 };
 
 export type SessionExecutionFact = {

@@ -180,6 +180,16 @@ export function extractUserMessageText(itemRaw: unknown) {
   return chunks.join("\n").trim();
 }
 
+export function extractCommandText(commandRaw: unknown): string {
+  if (Array.isArray(commandRaw)) {
+    return commandRaw
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join(" ");
+  }
+  return String(commandRaw || "").trim();
+}
+
 export function parseCodexSourceKind(raw: unknown) {
   const value = String(raw || "").trim();
   if (!value) return "";
@@ -802,6 +812,23 @@ export function normalizeThreadReadEntry(
           role: "assistant",
           content: text,
           at: turnAt,
+        });
+        continue;
+      }
+      if (itemType === "commandExecution") {
+        const command = extractCommandText((itemRaw as any)?.command);
+        if (!command) continue;
+        const status = String((itemRaw as any)?.status || "").trim().toLowerCase();
+        const exitCodeRaw = Number((itemRaw as any)?.exitCode ?? (itemRaw as any)?.exit_code);
+        messages.push({
+          role: "assistant",
+          content: "",
+          at: turnAt,
+          commandExecution: {
+            command,
+            status: status === "failed" || status === "declined" ? "failed" : "completed",
+            exitCode: Number.isFinite(exitCodeRaw) ? exitCodeRaw : null,
+          },
         });
       }
     }

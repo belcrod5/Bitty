@@ -176,10 +176,17 @@ export type CodexThreadListResult = {
   backwardsCursor: string;
 };
 
+export type CodexCommandExecutionInfo = {
+  command: string;
+  status: "running" | "completed" | "failed";
+  exitCode?: number | null;
+};
+
 export type CodexThreadMessage = {
   role: "user" | "assistant";
   content: string;
   at: string;
+  commandExecution?: CodexCommandExecutionInfo;
 };
 
 export type CodexThreadReadResult = {

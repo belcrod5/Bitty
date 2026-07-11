@@ -4,6 +4,7 @@ import {
   readCodexAppServerThread,
   type CodexThreadListEntry,
 } from "../../codex/codexAppServerClient";
+import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { parseContextUsageUsedPct } from "../utils/formatting";
 import {
@@ -59,6 +60,7 @@ export type RunnerSessionMessage = {
   content: string;
   at: string;
   inheritedFromParent?: boolean;
+  commandExecution?: CodexCommandExecutionInfo;
 };
 
 export type RunnerSessionMessagesResult = {
@@ -484,6 +486,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           role: item.role,
           content: item.content,
           at: item.at,
+          commandExecution: item.commandExecution,
         }));
         const latestAssistantMessage = [...messages].reverse().find((item) => item.role === "assistant");
         emitSessionDiag("app_server_thread_restore_done", {
