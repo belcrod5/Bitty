@@ -358,6 +358,67 @@ test("heartbeat records missed pongs without closing the socket", async () => {
   });
 });
 
+test("heartbeat forces a reconnect after two consecutive missed pongs", async () => {
+  jest.useFakeTimers();
+  const socket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, socket);
+
+  const pending = manager.request({ channel: "control", op: "ping" }, { timeoutMs: 60_000 });
+  const pendingRejection = expect(pending).rejects.toThrow("runner_ws_disconnected");
+
+  await jest.advanceTimersByTimeAsync(15_000); // ping #1, nothing missed yet
+  await jest.advanceTimersByTimeAsync(15_000); // ping #2 due, miss #1 recorded first (no pong seen)
+  await jest.advanceTimersByTimeAsync(15_000); // miss #2 recorded -> forced reconnect
+
+  expect(socket.closeCalls).toBe(1);
+  expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  await pendingRejection;
+});
+
+test("heartbeat does not count a miss when other traffic arrives between pings", async () => {
+  jest.useFakeTimers();
+  const socket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, socket);
+
+  await jest.advanceTimersByTimeAsync(15_000);
+  await jest.advanceTimersByTimeAsync(10_000);
+  socket.message({ channel: "llm", op: "rpc", payload: { method: "noop" } });
+  await jest.advanceTimersByTimeAsync(5_000);
+
+  expect(manager.getSnapshot()).toMatchObject({
+    missedPingCount: 0,
+    consecutiveMissedPingCount: 0,
+  });
+  expect(socket.closeCalls).toBe(0);
+});
+
+test("heartbeat state resets after reconnect so a stale ping timestamp can't cause a false miss", async () => {
+  jest.useFakeTimers();
+  const firstSocket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, firstSocket);
+
+  await jest.advanceTimersByTimeAsync(15_000); // ping #1 sent on the first connection, never ponged
+
+  const secondSocket = nextSocket();
+  firstSocket.closeWithReason("network_drop");
+  await jest.advanceTimersByTimeAsync(11_000); // covers reconnect backoff + jitter
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready" });
+  await Promise.resolve();
+
+  await jest.advanceTimersByTimeAsync(15_000); // first heartbeat tick on the new connection
+
+  expect(manager.getSnapshot()).toMatchObject({
+    connectionState: "ready",
+    missedPingCount: 0,
+    consecutiveMissedPingCount: 0,
+  });
+  expect(secondSocket.closeCalls).toBe(0);
+});
+
 test("request provides a requestId, times out, and cleans up", async () => {
   jest.useFakeTimers();
   const socket = nextSocket();
