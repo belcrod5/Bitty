@@ -1495,6 +1495,7 @@ export function useCodexReplyRequest<
             adoptFromSessionId: requestSessionAdoptionSourceId,
           });
         }
+        finalUiSettled = true;
       }
       const lastLiveAgentMessage = getLastLiveAgentMessage();
       const finalReplyForSpeech = current.stripYouTubeTags(lastLiveAgentMessage?.content || "");
@@ -1552,7 +1553,8 @@ export function useCodexReplyRequest<
             current.setReplyDebug("route=codex_app_server cancelled");
             current.finishLlmRequest("idle", "cancelled");
           }
-          finalUiSettled = true;
+          // finalUiSettled は立てない: このパスには isResponding:false を書く settle 処理がなく、
+          // finally の setConversationMessagesForPanel が isResponding を確定させる唯一の書き込み。
         }
         return;
       }
@@ -1644,20 +1646,22 @@ export function useCodexReplyRequest<
         if (shouldClearReplyLoading) {
           current.setReplyLoadingWithRef(false);
         }
-        setConversationMessagesForPanel(
-          requestPanelId,
-          panelConversationDraft.length > 0
-            ? panelConversationDraft
-            : getConversationMessagesForPanel(requestPanelId),
-          {
-            isResponding: false,
-            selectedThreadStatusType: "idle",
-            clearRespondingRequestStartedAtMs: replyRequestStartedAt,
-            ...(latestContextUsedPct !== null ? { contextUsedPct: latestContextUsedPct } : {}),
-            sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
-            adoptFromSessionId: requestSessionAdoptionSourceId,
-          }
-        );
+        if (!finalUiSettled) {
+          setConversationMessagesForPanel(
+            requestPanelId,
+            panelConversationDraft.length > 0
+              ? panelConversationDraft
+              : getConversationMessagesForPanel(requestPanelId),
+            {
+              isResponding: false,
+              selectedThreadStatusType: "idle",
+              clearRespondingRequestStartedAtMs: replyRequestStartedAt,
+              ...(latestContextUsedPct !== null ? { contextUsedPct: latestContextUsedPct } : {}),
+              sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
+              adoptFromSessionId: requestSessionAdoptionSourceId,
+            }
+          );
+        }
         if (isActiveSessionPanelRequest && !finalUiSettled && shouldClearReplyLoading) {
           current.finishLlmRequest("idle", "request_finalized_background");
         }

@@ -59,6 +59,7 @@ export type YouTubeVideoMeta = {
 export type StreamSegmentStatus = "queued" | "synthesizing" | "ready" | "playing" | "played";
 
 export type StreamSegment = {
+  messageId: string;
   seq: number;
   text: string;
   status: StreamSegmentStatus;

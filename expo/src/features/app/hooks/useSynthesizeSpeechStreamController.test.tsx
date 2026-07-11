@@ -89,7 +89,8 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
       streamTtsSuppressedRef: ref(false),
       streamAudioWaveformBarsRef: ref<number[][]>([]),
       ttsPlayingRef: ref(false),
-      streamAudioQueueRef: ref([]),
+      streamAudioQueueRef: ref<Array<{ playbackMessageId: string }>>([]),
+      ttsPlaybackMessageIdRef: ref(""),
       baseUrl: () => "http://127.0.0.1:8788",
       ttsStreamWsUrl: () => "ws://127.0.0.1:8788/stream-tts",
       clearStreamAudioQueue: jest.fn(),
@@ -105,7 +106,7 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
       patchTtsDebugStats: jest.fn(),
       setStreamWaveformPreview: jest.fn(),
       clearStreamLlmProgress: jest.fn(),
-      clearStreamSegments: jest.fn(),
+      resetStreamSegmentsForNewStream: jest.fn(),
       setStreamMode: jest.fn(),
       setTtsPlaybackMessageIdWithRef: jest.fn(),
       setTtsPlaybackProjectionTarget: jest.fn(),
@@ -174,4 +175,94 @@ test("uses RunnerWebSocketManager for stream TTS control traffic when manager is
   expect(manager.subscriptions.every((subscription) => subscription.unsubscribed)).toBe(true);
   expect(streamTtsControlRef.current).toBeNull();
   expect(streamSocketRef.current).toBeNull();
+});
+
+test("idle playback: clears segments for all messages and switches the playback target immediately", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  options.ttsPlayingRef.current = false;
+  options.streamAudioQueueRef.current = [];
+  options.ttsPlaybackMessageIdRef.current = "old-message";
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-2" });
+  await flushPromises();
+
+  expect(options.resetStreamSegmentsForNewStream).toHaveBeenCalledWith("");
+  expect(options.setTtsPlaybackMessageIdWithRef).toHaveBeenCalledWith("message-2");
+});
+
+test("busy playback: keeps the currently playing message's segments and defers the target switch to the queue processor", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  options.ttsPlayingRef.current = true;
+  options.ttsPlaybackMessageIdRef.current = "old-message";
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-2" });
+  await flushPromises();
+
+  expect(options.resetStreamSegmentsForNewStream).toHaveBeenCalledWith("old-message");
+  expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
+});
+
+test("busy playback via non-empty queue also defers the target switch", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  options.ttsPlayingRef.current = false;
+  options.streamAudioQueueRef.current = [{ playbackMessageId: "old-message" }];
+  options.ttsPlaybackMessageIdRef.current = "old-message";
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-2" });
+  await flushPromises();
+
+  expect(options.resetStreamSegmentsForNewStream).toHaveBeenCalledWith("old-message");
+  expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
+});
+
+test("segment_queued and audio_chunk events tag upsertStreamSegment with the target messageId", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-3" });
+  await flushPromises();
+
+  const operationId = String(manager.sent[0].operationId);
+  manager.emit({
+    channel: "tts",
+    op: "event",
+    operationId,
+    streamId: "tts-job-2",
+    payload: { type: "segment_queued", seq: 0, text: "hi" },
+  });
+  manager.emit({
+    channel: "tts",
+    op: "event",
+    operationId,
+    streamId: "tts-job-2",
+    payload: {
+      type: "audio_chunk",
+      seq: 0,
+      text: "hi",
+      audioUrl: "http://example.com/a.mp3",
+      mimeType: "audio/mpeg",
+    },
+  });
+
+  expect(options.upsertStreamSegment).toHaveBeenCalledWith(
+    "message-3",
+    0,
+    "hi",
+    "queued",
+    expect.any(Object)
+  );
+  expect(options.upsertStreamSegment).toHaveBeenCalledWith(
+    "message-3",
+    0,
+    "hi",
+    "ready",
+    expect.any(Object)
+  );
 });

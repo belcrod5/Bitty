@@ -43,7 +43,6 @@ export type ChatVisualContextValue = {
   chatThinkingLogLines: string[];
   setChatThinkingLogExpanded: (expanded: SetStateAction<boolean>) => void;
   chatThinkingLogExpanded: boolean;
-  isStreamWaveformPlaybackActive: boolean;
   stopWaveformPlayback: () => void;
   error: string;
   chatBottomToast: ChatBottomToast | null;

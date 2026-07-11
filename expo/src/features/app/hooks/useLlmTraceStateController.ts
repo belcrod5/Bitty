@@ -13,6 +13,7 @@ export function useLlmTraceStateController({
   stripYouTubeTags,
 }: UseLlmTraceStateControllerArgs) {
   const upsertStreamSegment = useCallback((
+    messageId: string,
     seq: number,
     text: string,
     status: StreamSegmentStatus,
@@ -20,7 +21,7 @@ export function useLlmTraceStateController({
   ) => {
     setStreamSegments((prev) => {
       const next = [...prev];
-      const index = next.findIndex((item) => item.seq === seq);
+      const index = next.findIndex((item) => item.messageId === messageId && item.seq === seq);
       if (index >= 0) {
         next[index] = {
           ...next[index],
@@ -30,6 +31,7 @@ export function useLlmTraceStateController({
         };
       } else {
         next.push({
+          messageId,
           seq,
           text,
           status,

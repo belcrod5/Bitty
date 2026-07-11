@@ -2322,6 +2322,7 @@ export default function App() {
     youtubeVideoMetaById,
     streamReplyYouTubeVideoIds,
     streamSegments,
+    ttsPlaybackMessageId,
     acpContextUsedPct,
     ttsLoading,
     ttsPlaying,
@@ -2555,7 +2556,6 @@ export default function App() {
     ttsLoading ||
     ttsQueueProcessing
   );
-  const isStreamWaveformPlaybackActive = isTtsPlaybackActive && ttsPlaybackMessageId === "__stream__";
   const {
     conversationInlineAnchorMessageId,
     showFloatingYouTubePlayer,
@@ -3605,6 +3605,7 @@ export default function App() {
     streamAudioWaveformBarsRef,
     ttsPlayingRef,
     streamAudioQueueRef,
+    ttsPlaybackMessageIdRef,
     baseUrl,
     ttsStreamWsUrl,
     clearStreamAudioQueue,
@@ -3623,7 +3624,9 @@ export default function App() {
     patchTtsDebugStats,
     setStreamWaveformPreview,
     clearStreamLlmProgress: () => setStreamLlmProgress([]),
-    clearStreamSegments: () => setStreamSegments([]),
+    resetStreamSegmentsForNewStream: (keepMessageId) => setStreamSegments((prev) => (
+      keepMessageId ? prev.filter((s) => s.messageId === keepMessageId) : []
+    )),
     setStreamMode,
     setTtsPlaybackMessageIdWithRef,
     setTtsPlaybackProjectionTarget: (target) => {
@@ -7539,7 +7542,6 @@ export default function App() {
     chatThinkingLogLines,
     setChatThinkingLogExpanded,
     chatThinkingLogExpanded,
-    isStreamWaveformPlaybackActive,
     stopWaveformPlayback: stopWaveformPlaybackFromVisualContext,
     error,
     chatBottomToast,
