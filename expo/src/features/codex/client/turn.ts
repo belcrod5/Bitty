@@ -685,6 +685,7 @@ export function startCodexAppServerTurn(
           });
           options.onDelta(nextDelta, { ...(params as any), itemId });
         }
+        options.onAgentMessageCompleted?.(text, { ...(params as any), itemId });
       }
       return;
     }

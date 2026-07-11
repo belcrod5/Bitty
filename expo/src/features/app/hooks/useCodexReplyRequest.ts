@@ -1276,6 +1276,27 @@ export function useCodexReplyRequest<
           current.updateLlmStatus("model_generating", "delta:native");
           current.setReply(current.applyAssistantReply(codexReplyBuffer));
         },
+        onAgentMessageCompleted: (text, params) => {
+          if (!isActiveRequest() || isCancelledRequest()) return;
+          const finalText = String(text || "");
+          if (!finalText.trim()) return;
+          const itemId = resolveAgentMessageItemId(params);
+          agentMessageContentById.set(itemId, finalText);
+          rebuildCodexReplyBufferFromAgentMessages();
+          const youtubeIds = current.extractYouTubeVideoIds(finalText);
+          void current.fetchYouTubeVideoMetadata(youtubeIds);
+          updatePanelLiveAgentMessage(itemId, current.applyAssistantReply(finalText), {
+            llmStatus: "completed",
+            llmStatusDetail: "",
+            youtubeVideoIds: youtubeIds,
+            llmElapsedMs: Math.max(0, Date.now() - replyRequestStartedAt),
+          }, {
+            isResponding: true,
+            selectedThreadStatusType: "active",
+            sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
+          });
+          updateRuntimeRequest("active", "model_processing", "agent message completed");
+        },
       });
       let turnAttempt = 1;
       let turnSession = createTurnSession(turnAttempt);
