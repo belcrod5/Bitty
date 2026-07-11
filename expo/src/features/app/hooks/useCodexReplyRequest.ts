@@ -551,7 +551,6 @@ export function useCodexReplyRequest<
     }
     panelRequestState.cancelledRequestSeq = null;
     const requestTraceId = createReplyTraceId(requestSeq);
-    const isActiveSessionPanelRequest = false;
     current.logSessionDiag("reply_http_panel_request_state_begin", {
       requestTraceId,
       requestSeq,
@@ -611,37 +610,6 @@ export function useCodexReplyRequest<
       }
       return state.cancelledRequestSeq === requestSeq;
     };
-    const shouldProjectToUi = (threadIdRaw: unknown) => {
-      void threadIdRaw;
-      return false;
-    };
-
-    if (isActiveSessionPanelRequest) {
-      current.playUiSfx("send");
-      const activeSocket = current.streamSocketRef.current;
-      if (activeSocket) {
-        activeSocket.close();
-        current.streamSocketRef.current = null;
-      }
-      current.setStreamMode("");
-      current.setStreamLlmNativeDeltaCount(0);
-      current.setStreamLlmPseudoDeltaCount(0);
-      current.setStreamFirstNativeDeltaOffsetMs(null);
-      current.resetStreamLlmDeltas();
-      current.resetStreamLlmProgress();
-      current.resetStreamSegments();
-      current.setStreamReplyYouTubeVideoIdsWithRef([]);
-      current.clearStreamAudioQueue();
-      current.streamAudioWaveformBarsRef.current = [];
-      current.setStreamWaveformPreview([]);
-      current.streamTtsSuppressedRef.current = false;
-      current.setTtsPlaybackMessageIdWithRef("");
-      current.setReply("");
-      current.setReplyLoadingWithRef(true);
-      current.setError("");
-      current.setReplyDebug("");
-      current.startLlmRequest("connecting", "Codex app-server WebSocket connecting");
-    }
     const replyRequestStartedAt = Date.now();
     let finalUiSettled = false;
     let trackedThreadId = requestThreadId || requestUiSessionId;
@@ -851,9 +819,6 @@ export function useCodexReplyRequest<
         ? { sttMeta: requestOptions.sttMeta }
         : undefined),
     ];
-    if (isActiveSessionPanelRequest) {
-      current.prepareChatForOutgoingMessageWindow();
-    }
     panelConversationDraft = nextConversation;
     setConversationMessagesForPanel(requestPanelId, nextConversation, {
       isResponding: true,
@@ -975,12 +940,6 @@ export function useCodexReplyRequest<
         extra: {
           transcriptChars: effectiveTranscript.length,
         },
-      }).then((preflightStatus) => {
-        if (!isActiveRequest() || isCancelledRequest()) return;
-        if (!isActiveSessionPanelRequest) return;
-        current.setReplyDebug((prev) => (
-          prev ? `${prev} | preflight=${preflightStatus}` : `preflight=${preflightStatus}`
-        ));
       }).catch(() => {
         // preflight is best-effort diagnostics
       });
@@ -1043,21 +1002,6 @@ export function useCodexReplyRequest<
               adoptFromSessionId: requestSessionAdoptionSourceId,
             })
           );
-          logTurnDiag("reply_http_thread_resolved_before_session_sync", {
-            resolvedThreadId,
-            isActiveSessionPanelRequest,
-          });
-          let sessionSynced = false;
-          if (isActiveSessionPanelRequest) {
-            sessionSynced = current.syncLlmConversationSessionId(resolvedThreadId, {
-              expectedCurrentSessionId: requestUiSessionId,
-            });
-          }
-          logTurnDiag("reply_http_thread_resolved_after_session_sync", {
-            resolvedThreadId,
-            isActiveSessionPanelRequest,
-            sessionSynced,
-          });
           logTurnDiag("reply_http_thread_resolved", {
             resolvedThreadId,
             previousTrackedThreadId: previousThreadKey,
@@ -1100,24 +1044,6 @@ export function useCodexReplyRequest<
             readyState: Number.isFinite(Number(entry.readyState)) ? Number(entry.readyState) : null,
             message: entry.message || "",
           });
-          const stage = String(entry.stage || "");
-          const uiDebugSuppressed = (
-            stage.startsWith("rx_") ||
-            stage === "rpc_result_unmatched" ||
-            stage === "rpc_error_unmatched"
-          );
-          if (uiDebugSuppressed) return;
-          if (!isActiveRequest() || !shouldProjectToUi(trackedThreadId)) return;
-          const suffix = [
-            entry.method ? `method=${entry.method}` : "",
-            Number.isFinite(Number(entry.id)) ? `id=${Number(entry.id)}` : "",
-            Number.isFinite(Number(entry.readyState)) ? `readyState=${Number(entry.readyState)}` : "",
-            entry.message ? `msg=${entry.message}` : "",
-          ].filter(Boolean).join(" ");
-          const line = suffix
-            ? `codex_ws ${entry.stage} ${suffix}`
-            : `codex_ws ${entry.stage}`;
-          current.setReplyDebug((prev) => (prev ? `${prev} | ${line}` : line));
         },
         onEvent: (method, params) => {
           if (method) {
@@ -1205,33 +1131,6 @@ export function useCodexReplyRequest<
             }
             updateRuntimeRequest("active", nextPanelStatus.status, nextPanelStatus.detail);
           }
-          if (!shouldProjectToUi(trackedThreadId)) return;
-          if (method === "thread/status/changed") {
-            if (threadStatus && threadStatus.threadStatusType !== "unknown") {
-              current.setSelectedThreadStatusType(threadStatus.threadStatusType);
-            }
-            if (threadStatus?.sessionState === "waiting_on_approval") {
-              current.updateLlmStatus("tool_waiting_approval", "thread active: waiting_on_approval");
-            } else if (threadStatus?.sessionState === "running") {
-              current.updateLlmStatus("model_processing", "thread active");
-            }
-          } else if (method === "turn/started") {
-            current.setSelectedThreadStatusType("active");
-            current.updateLlmStatus("model_processing", "turn started");
-          } else if (method === "turn/completed") {
-            current.setSelectedThreadStatusType("idle");
-          }
-          if (
-            method === "thread/status/changed" ||
-            method === "turn/started" ||
-            method === "turn/completed" ||
-            method === "item/completed" ||
-            method === "item/commandExecution/requestApproval" ||
-            method === "item/fileChange/requestApproval"
-          ) {
-            const line = `codex_evt ${method}`;
-            current.setReplyDebug((prev) => (prev ? `${prev} | ${line}` : line));
-          }
         },
         onDelta: (delta: string, params?: unknown) => {
           if (!isActiveRequest() || isCancelledRequest()) return;
@@ -1271,10 +1170,6 @@ export function useCodexReplyRequest<
             llmStatusDetail: "delta:native",
           });
           updateRuntimeRequest("active", "model_generating", "delta:native");
-          if (!shouldProjectToUi(trackedThreadId)) return;
-          current.appendLlmDelta("native", normalizedDelta);
-          current.updateLlmStatus("model_generating", "delta:native");
-          current.setReply(current.applyAssistantReply(codexReplyBuffer));
         },
         onAgentMessageCompleted: (text, params) => {
           if (!isActiveRequest() || isCancelledRequest()) return;
@@ -1331,13 +1226,6 @@ export function useCodexReplyRequest<
           nextAttempt: turnAttempt + 1,
           message: error instanceof Error ? error.message : String(error),
         });
-        if (shouldProjectToUi(trackedThreadId)) {
-          current.setReplyDebug((prev) => (
-            prev
-              ? `${prev} | retry=thread_resume_timeout`
-              : "retry=thread_resume_timeout"
-          ));
-        }
         turnAttempt += 1;
         codexReplyBuffer = "";
         turnSession = createTurnSession(turnAttempt);
@@ -1372,11 +1260,6 @@ export function useCodexReplyRequest<
           trackedThreadId = resolvedThreadId;
         }
       }
-      if (isActiveSessionPanelRequest) {
-        current.syncLlmConversationSessionId(result.threadId, {
-          expectedCurrentSessionId: requestUiSessionId,
-        });
-      }
       let contextUsedPct = current.parseContextUsageUsedPct(result.contextUsage);
       if (contextUsedPct === null) {
         contextUsedPct = await current.fetchRunnerSessionContextUsedPct(
@@ -1385,13 +1268,6 @@ export function useCodexReplyRequest<
         ).catch(() => null);
       }
       latestContextUsedPct = contextUsedPct;
-      if (shouldProjectToUi(trackedThreadId)) {
-        current.setReplyDebug((prev) => (
-          prev
-            ? `${prev} | contextPct=${contextUsedPct !== null ? contextUsedPct : "-"}`
-            : `contextPct=${contextUsedPct !== null ? contextUsedPct : "-"}`
-        ));
-      }
       current.logAuto("reply_http_done", {
         elapsedMs: Math.max(0, Date.now() - replyRequestStartedAt),
         status: 200,
@@ -1410,7 +1286,6 @@ export function useCodexReplyRequest<
         lastCodexEvent,
         firstDeltaAfterMs: firstDeltaAtMs > 0 ? Math.max(0, firstDeltaAtMs - replyRequestStartedAt) : null,
         lastDeltaAfterMs: lastDeltaAtMs > 0 ? Math.max(0, lastDeltaAtMs - replyRequestStartedAt) : null,
-        projectedToUi: shouldProjectToUi(trackedThreadId),
       });
       if (!nextReplyRaw.trim()) {
         logTurnDiag("reply_http_empty_reply_result", {
@@ -1426,16 +1301,12 @@ export function useCodexReplyRequest<
       void current.fetchYouTubeVideoMetadata(youtubeIds);
       const nextReply = current.stripYouTubeTags(nextReplyRaw);
       const nextReplyForHistory = nextReply || (youtubeIds.length > 0 ? "YouTube動画候補を表示しました。" : "");
-      const projectToActiveSessionUi = shouldProjectToUi(trackedThreadId);
       const finalReplySessionId = String(result.threadId || trackedThreadId || requestThreadId || requestUiSessionId || "").trim();
       updateRuntimeRequest("completed", "completed", "reply received", {
         sessionId: finalReplySessionId,
         threadId: String(result.threadId || finalReplySessionId).trim(),
         completedAtMs: Date.now(),
       });
-      if (projectToActiveSessionUi) {
-        current.setReplyDebug(`route=codex_app_server thread=${result.threadId || "-"} turn=${result.turnId || "-"}`);
-      }
       void current.uploadCodexWsPreflightLog({
         phase: "send_after_reply_ok",
         targetWsUrl: targetCodexWsUrl,
@@ -1446,15 +1317,21 @@ export function useCodexReplyRequest<
           replyChars: nextReplyRaw.length,
         },
       });
-      if (projectToActiveSessionUi) {
-        current.playUiSfx("reply");
-        current.setReply(nextReply);
-      }
       const elapsedMs = Math.max(0, Date.now() - replyRequestStartedAt);
-      if (projectToActiveSessionUi) {
-        const latestConversation = getConversationMessagesForPanel(requestPanelId);
-        panelConversationDraft = panelConversationDraft.length > 0 ? panelConversationDraft : latestConversation;
-        const settledLiveMessages = settlePanelLiveAgentMessages({
+      const settledLiveMessages = settlePanelLiveAgentMessages({
+        youtubeVideoIds: youtubeIds,
+        llmStatus: "completed",
+        llmStatusDetail: "reply received",
+        llmElapsedMs: elapsedMs,
+      }, {
+        contextUsedPct,
+        isResponding: false,
+        selectedThreadStatusType: "idle",
+        sessionId: finalReplySessionId,
+        adoptFromSessionId: requestSessionAdoptionSourceId,
+      });
+      if (!settledLiveMessages) {
+        updatePanelLiveAssistantMessage(nextReply, {
           youtubeVideoIds: youtubeIds,
           llmStatus: "completed",
           llmStatusDetail: "reply received",
@@ -1466,56 +1343,6 @@ export function useCodexReplyRequest<
           sessionId: finalReplySessionId,
           adoptFromSessionId: requestSessionAdoptionSourceId,
         });
-        if (!settledLiveMessages) {
-          updatePanelLiveAssistantMessage(nextReply, {
-            youtubeVideoIds: youtubeIds,
-            llmStatus: "completed",
-            llmStatusDetail: "reply received",
-            llmElapsedMs: elapsedMs,
-          }, {
-            contextUsedPct,
-            isResponding: false,
-            selectedThreadStatusType: "idle",
-            sessionId: finalReplySessionId,
-            adoptFromSessionId: requestSessionAdoptionSourceId,
-          });
-        }
-        current.setHistory((prev) => [
-          current.createHistoryEntry({
-            transcript: effectiveTranscript,
-            reply: nextReplyForHistory || nextReplyRaw,
-          }),
-          ...prev,
-        ]);
-        current.finishLlmRequest("completed", "reply received");
-        finalUiSettled = true;
-      } else {
-        const settledLiveMessages = settlePanelLiveAgentMessages({
-          youtubeVideoIds: youtubeIds,
-          llmStatus: "completed",
-          llmStatusDetail: "reply received",
-          llmElapsedMs: elapsedMs,
-        }, {
-          contextUsedPct,
-          isResponding: false,
-          selectedThreadStatusType: "idle",
-          sessionId: finalReplySessionId,
-          adoptFromSessionId: requestSessionAdoptionSourceId,
-        });
-        if (!settledLiveMessages) {
-          updatePanelLiveAssistantMessage(nextReply, {
-            youtubeVideoIds: youtubeIds,
-            llmStatus: "completed",
-            llmStatusDetail: "reply received",
-            llmElapsedMs: elapsedMs,
-          }, {
-            contextUsedPct,
-            isResponding: false,
-            selectedThreadStatusType: "idle",
-            sessionId: finalReplySessionId,
-            adoptFromSessionId: requestSessionAdoptionSourceId,
-          });
-        }
       }
       const lastLiveAgentMessage = getLastLiveAgentMessage();
       const finalReplyForSpeech = current.stripYouTubeTags(lastLiveAgentMessage?.content || "");
@@ -1537,7 +1364,6 @@ export function useCodexReplyRequest<
       if (
         current.autoSpeakAfterReply &&
         finalReplyForSpeech &&
-        (projectToActiveSessionUi || !isActiveSessionPanelRequest) &&
         chatOpenForAutoSpeech
       ) {
         await current.synthesizeSpeechStream(finalReplyForSpeech, autoSpeechTarget);
@@ -1569,10 +1395,6 @@ export function useCodexReplyRequest<
             interrupted: true,
             finalUiSettled,
           });
-          if (isActiveSessionPanelRequest) {
-            current.setReplyDebug("route=codex_app_server cancelled");
-            current.finishLlmRequest("idle", "cancelled");
-          }
           finalUiSettled = true;
         }
         return;
@@ -1605,37 +1427,26 @@ export function useCodexReplyRequest<
       updateRuntimeRequest("error", "error", current.trimForInline(errorMessage, 220), {
         completedAtMs: Date.now(),
       });
-      if (!isActiveSessionPanelRequest) {
-        const errorWriteOptions = {
-          isResponding: false,
-          selectedThreadStatusType: "idle",
-          sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
-          adoptFromSessionId: requestSessionAdoptionSourceId,
-        };
-        if (hasLiveAgentMessages()) {
-          settlePanelLiveAgentMessages({
-            llmStatus: "error",
-            llmStatusDetail: current.trimForInline(errorMessage, 220),
-          }, errorWriteOptions);
-        } else {
-          updatePanelLiveAssistantMessage(current.applyAssistantReply(codexReplyBuffer), {
-            llmStatus: "error",
-            llmStatusDetail: current.trimForInline(errorMessage, 220),
-          }, errorWriteOptions);
-        }
-        finalUiSettled = true;
+      const errorWriteOptions = {
+        isResponding: false,
+        selectedThreadStatusType: "idle",
+        sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
+        adoptFromSessionId: requestSessionAdoptionSourceId,
+      };
+      if (hasLiveAgentMessages()) {
+        settlePanelLiveAgentMessages({
+          llmStatus: "error",
+          llmStatusDetail: current.trimForInline(errorMessage, 220),
+        }, errorWriteOptions);
+      } else {
+        updatePanelLiveAssistantMessage(current.applyAssistantReply(codexReplyBuffer), {
+          llmStatus: "error",
+          llmStatusDetail: current.trimForInline(errorMessage, 220),
+        }, errorWriteOptions);
       }
+      finalUiSettled = true;
       if (trackedThreadId) {
         delete inFlightByThreadRef.current[trackedThreadId];
-      }
-      if (shouldProjectToUi(trackedThreadId)) {
-        current.setReply("");
-        current.setReplyDebug(`route=codex_app_server error=${current.trimForInline(errorMessage, 220)}`);
-        current.finishLlmRequest("error", errorMessage);
-        finalUiSettled = true;
-      }
-      if (isActiveSessionPanelRequest) {
-        current.reportError(error, "reply");
       }
     } finally {
       purgeInFlightStatesForRequest(requestSeq);
@@ -1643,15 +1454,8 @@ export function useCodexReplyRequest<
       const isFinalPanelActive = clearedRequestTracking.clearedPanelActive;
       const isFinalThreadActive = clearedRequestTracking.clearedThreadActive;
       if (isFinalPanelActive || isFinalThreadActive) {
-        const wasReplyLoading = isActiveSessionPanelRequest ? current.replyLoadingRef.current : false;
-        const shouldClearReplyLoading = isActiveSessionPanelRequest && (
-          shouldProjectToUi(trackedThreadId) ||
-          (isFinalPanelActive && wasReplyLoading)
-        );
         logTurnDiag("reply_http_finally", {
           finalUiSettled,
-          wasReplyLoading,
-          willClearReplyLoading: shouldClearReplyLoading,
           finalPanelActive: isFinalPanelActive,
           finalThreadActive: isFinalThreadActive,
           finalPanelInFlight: clearedRequestTracking.clearedPanelInFlight,
@@ -1662,9 +1466,6 @@ export function useCodexReplyRequest<
           firstDeltaAfterMs: firstDeltaAtMs > 0 ? Math.max(0, firstDeltaAtMs - replyRequestStartedAt) : null,
           lastDeltaAfterMs: lastDeltaAtMs > 0 ? Math.max(0, lastDeltaAtMs - replyRequestStartedAt) : null,
         });
-        if (shouldClearReplyLoading) {
-          current.setReplyLoadingWithRef(false);
-        }
         setConversationMessagesForPanel(
           requestPanelId,
           panelConversationDraft.length > 0
@@ -1679,9 +1480,6 @@ export function useCodexReplyRequest<
             adoptFromSessionId: requestSessionAdoptionSourceId,
           }
         );
-        if (isActiveSessionPanelRequest && !finalUiSettled && shouldClearReplyLoading) {
-          current.finishLlmRequest("idle", "request_finalized_background");
-        }
       }
     }
   }, [clearPanelRequestTracking, getPanelRequestState]);
