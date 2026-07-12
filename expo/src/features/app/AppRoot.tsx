@@ -7169,13 +7169,19 @@ export default function App() {
       isHydrating: true,
       conversationMessages: [],
     });
-    setPanelRuntimeEntriesById((prev) => ({
-      ...prev,
-      [panelId]: {
-        sessionId,
-        snapshot: loadingSnapshot,
-      },
-    }));
+    // ローディングスナップショットは ttsPlaybackMessageId を空で上書きするため、
+    // ハイドレーション終端で引き継げるよう書き込み前の値を updater 内で捕捉しておく。
+    let ttsPlaybackMessageIdBeforeHydration = "";
+    setPanelRuntimeEntriesById((prev) => {
+      ttsPlaybackMessageIdBeforeHydration = String(prev[panelId]?.snapshot?.ttsPlaybackMessageId || "");
+      return {
+        ...prev,
+        [panelId]: {
+          sessionId,
+          snapshot: loadingSnapshot,
+        },
+      };
+    });
     logSessionDiag("mini_board_hydrate_request_received", {
       diagnosticCycleId,
       panelId,
@@ -7327,8 +7333,13 @@ export default function App() {
         });
       }
       setPanelRuntimeEntriesById((prev) => {
+        // ローディングスナップショットが旧値を空にしているため、prev が空なら
+        // ハイドレーション開始前に捕捉した値へフォールバックする。
         const carriedTtsPlaybackMessageId = preserveRuntimeConversation
-          ? String(prev[panelId]?.snapshot?.ttsPlaybackMessageId || "")
+          ? (
+            String(prev[panelId]?.snapshot?.ttsPlaybackMessageId || "") ||
+            ttsPlaybackMessageIdBeforeHydration
+          )
           : "";
         return {
           ...prev,
