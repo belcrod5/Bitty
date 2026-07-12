@@ -7239,6 +7239,7 @@ export default function App() {
           content,
           at: at || undefined,
           inheritedFromParent: message.inheritedFromParent === true || undefined,
+          commandExecution: message.commandExecution || undefined,
         } satisfies ConversationMessage;
       });
       const inheritedConversation = restoredConversation.filter(

@@ -1,4 +1,34 @@
 import type { ConversationMessage } from "../types/appTypes";
+import type { CodexCommandExecutionInfo } from "../../codex/client/types";
+
+export function isCommandExecutionMessage(
+  message: { commandExecution?: CodexCommandExecutionInfo } | null | undefined
+): boolean {
+  return !!message?.commandExecution;
+}
+
+export function findLatestAssistantMessageIndex(
+  messages: readonly { role: string; commandExecution?: CodexCommandExecutionInfo }[]
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    if (isCommandExecutionMessage(message)) continue;
+    return index;
+  }
+  return -1;
+}
+
+export function settleRunningCommandExecution(
+  commandExecution: CodexCommandExecutionInfo,
+  settledLlmStatus: string
+): CodexCommandExecutionInfo {
+  if (commandExecution.status !== "running") return commandExecution;
+  return {
+    ...commandExecution,
+    status: settledLlmStatus === "error" ? "failed" : "completed",
+  };
+}
 
 export function parseIsoTimestampMs(raw: unknown): number | null {
   const text = String(raw || "").trim();
@@ -80,6 +110,7 @@ export function hasPendingAssistantReplyInConversation(messagesRaw: unknown) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const item = messages[i] as ConversationMessage;
     if (!item || typeof item !== "object") continue;
+    if (isCommandExecutionMessage(item)) continue;
     return item.role === "user";
   }
   return false;

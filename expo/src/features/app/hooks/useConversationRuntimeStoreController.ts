@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import type { ApprovalRequest } from "../../codex/approvalFlow";
 import type { ConversationMessage } from "../types/appTypes";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
+import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
 
 export type ConversationRuntimeSnapshot = {
   sessionId: string;
@@ -303,14 +304,7 @@ export function useConversationRuntimeStoreController() {
     const previous = runtimeBySessionIdRef.current[sessionId];
     const previousEvents = previous?.events || [];
     const messages = cloneConversationMessages(previous?.conversationMessages || []);
-    let latestAssistantIndex = -1;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role === "assistant") {
-        latestAssistantIndex = index;
-        break;
-      }
-    }
+    const latestAssistantIndex = findLatestAssistantMessageIndex(messages);
     if (latestAssistantIndex >= 0) {
       messages[latestAssistantIndex] = {
         ...messages[latestAssistantIndex],

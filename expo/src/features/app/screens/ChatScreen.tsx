@@ -41,6 +41,7 @@ import { useChatVisual } from "../contexts/ChatVisualContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { ChatContextUsageMenu } from "../components/ChatContextUsageMenu";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
+import { CommandExecutionRow } from "../components/CommandExecutionRow";
 import { BouncingDotsIndicator } from "../components/BouncingDotsIndicator";
 import { MarkdownText } from "../components/MarkdownText";
 import { PixelRobotIndicator } from "../components/PixelRobotIndicator";
@@ -1515,6 +1516,9 @@ export function ChatScreen({
             <View style={styles.chatSubagentBoundaryLine} />
           </View>
         ) : null}
+        {message.commandExecution ? (
+          <CommandExecutionRow {...message.commandExecution} />
+        ) : (
         <View
           style={[
             styles.chatBubble,
@@ -1648,7 +1652,8 @@ export function ChatScreen({
             ) : null}
           </View>
         </View>
-        {!isUser ? (
+        )}
+        {!isUser && !message.commandExecution ? (
           <TtsWaveformPlayer
             isPlaybackActive={isMessagePlaybackActive}
             playButtonDisabled={!runnerUrl.trim() || !runnerToken.trim() || !sanitizeTextForTts(message.content)}

@@ -8,8 +8,11 @@ import {
   type CodexAppServerTurnSession,
 } from "../../codex/codexAppServerClient";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
+import { extractCommandText } from "../../codex/client/helpers";
+import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
+import { settleRunningCommandExecution } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
 import type {
@@ -748,6 +751,7 @@ export function useCodexReplyRequest<
     const hasRenderableAssistantMessage = (contentRaw: string, extra: Record<string, unknown>) => {
       if (String(contentRaw || "").trim()) return true;
       if (Array.isArray(extra.youtubeVideoIds) && extra.youtubeVideoIds.length > 0) return true;
+      if (extra.commandExecution) return true;
       return String(extra.llmStatus || "") === "error";
     };
     const updatePanelLiveAssistantMessage = (
@@ -891,15 +895,42 @@ export function useCodexReplyRequest<
       const messageId = itemId ? agentMessageUiIdByItemId.get(itemId) : panelStreamingAssistantMessageId;
       updatePanelLiveAssistantMessage(contentRaw, extra, options, messageId);
     };
+    const commandMessageIdByItemId = new Map<string, string>();
+    const upsertPanelCommandMessage = (itemRaw: unknown, phase: "started" | "completed") => {
+      const item = itemRaw && typeof itemRaw === "object" ? itemRaw as Record<string, unknown> : {};
+      const itemId = String(item.id || "").trim();
+      const command = extractCommandText(item.command);
+      if (!itemId || !command) return;
+      if (!commandMessageIdByItemId.has(itemId)) {
+        commandMessageIdByItemId.set(itemId, `command-${requestTraceId}-${itemId}`);
+      }
+      const rawStatus = String(item.status || "").trim().toLowerCase();
+      const status: CodexCommandExecutionInfo["status"] = phase === "started"
+        ? "running"
+        : (rawStatus === "failed" || rawStatus === "declined" ? "failed" : "completed");
+      const exitCodeRaw = Number(item.exitCode ?? item.exit_code);
+      updatePanelLiveAssistantMessage("", {
+        commandExecution: {
+          command,
+          status,
+          exitCode: Number.isFinite(exitCodeRaw) ? exitCodeRaw : null,
+        },
+      }, undefined, commandMessageIdByItemId.get(itemId));
+    };
     const settlePanelLiveAgentMessages = (
       extra: Record<string, unknown>,
       options?: PanelConversationWriteOptions
     ) => {
       const liveMessageIds = new Set(Array.from(agentMessageUiIdByItemId.values()));
-      if (liveMessageIds.size <= 0) return false;
+      const commandMessageIds = new Set(Array.from(commandMessageIdByItemId.values()));
       const latestConversation = panelConversationDraft.length > 0
         ? panelConversationDraft
         : getConversationMessagesForPanel(requestPanelId);
+      const hasRunningCommand = latestConversation.some((message) => {
+        const commandMessage = message as TMessage & { commandExecution?: CodexCommandExecutionInfo };
+        return commandMessageIds.has(String(message.id || "")) && commandMessage.commandExecution?.status === "running";
+      });
+      if (liveMessageIds.size <= 0 && !hasRunningCommand) return false;
       const lastLiveMessageId = Array.from(liveMessageIds).pop() || "";
       const settledStatus = String(extra.llmStatus || "completed") as LlmUiStatus;
       const settledStatusDetail = settledStatus === "completed"
@@ -907,6 +938,13 @@ export function useCodexReplyRequest<
         : String(extra.llmStatusDetail || "");
       const nextConversationForPanel = latestConversation.map((message) => {
         const messageId = String(message.id || "");
+        const commandMessage = message as TMessage & { commandExecution?: CodexCommandExecutionInfo };
+        if (commandMessageIds.has(messageId) && commandMessage.commandExecution?.status === "running") {
+          return {
+            ...message,
+            commandExecution: settleRunningCommandExecution(commandMessage.commandExecution, settledStatus),
+          };
+        }
         if (!liveMessageIds.has(messageId)) return message;
         const liveMessage = message as TMessage & {
           llmStatus?: string;
@@ -1063,6 +1101,12 @@ export function useCodexReplyRequest<
           const payload = params && typeof params === "object" ? params as Record<string, unknown> : {};
           if (method === "item/started" && String((payload as any)?.item?.type || "") === "agentMessage") {
             rememberAgentMessageItemId(extractAgentMessageItemId(payload));
+          }
+          if (
+            (method === "item/started" || method === "item/completed") &&
+            String((payload as any)?.item?.type || "") === "commandExecution"
+          ) {
+            upsertPanelCommandMessage((payload as any).item, method === "item/started" ? "started" : "completed");
           }
           const threadStatus = method === "thread/status/changed"
             ? deriveCodexSessionStateFromSnapshot({
