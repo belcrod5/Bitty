@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   InputAccessoryView,
@@ -111,7 +111,7 @@ function drawerSearchIncludes(query: string, values: unknown[]): boolean {
   return values.some((value) => normalizeDrawerSearchText(value).includes(query));
 }
 
-export function AppDrawer({
+export const AppDrawer = memo(function AppDrawer({
   selectedDirectoryPath,
   selectedLlmSessionId,
   registeredDirectories,
@@ -568,4 +568,4 @@ export function AppDrawer({
       ) : null}
     </SafeAreaView>
   );
-}
+});

@@ -188,6 +188,58 @@ function emitTurnNotification(
   });
 }
 
+function emitTurnNotificationWithSeq(
+  manager: FakeRunnerWebSocketManager,
+  outbound: RunnerWsMessage,
+  seq: number,
+  method: string,
+  params: Record<string, unknown>
+) {
+  manager.emit({
+    channel: "llm",
+    op: "rpc",
+    operationId: outbound.operationId,
+    sessionId: outbound.sessionId,
+    threadId: String(params.threadId || outbound.threadId || ""),
+    seq,
+    payload: {
+      method,
+      params,
+    },
+  });
+}
+
+async function startLiveTurn(
+  manager: FakeRunnerWebSocketManager,
+  extra: { onDelta?: (delta: string, meta: unknown) => void } = {}
+) {
+  const session = startCodexAppServerTurn({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsToken: "runner-token",
+    traceId: "trace-1",
+    inputText: "hello",
+    cwd: "/tmp/project",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    onApprovalRequest: jest.fn(() => "approve_once"),
+    ...extra,
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { turn: { id: "turn-1" } }, "thread-1");
+  await flushPromises();
+
+  const turnStartOutbound = lastSent(manager);
+  return { session, turnStartOutbound };
+}
+
 beforeEach(() => {
   global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   mockCreateWebSocketWithOptionalAuth.mockReset();
@@ -195,6 +247,7 @@ beforeEach(() => {
 
 afterEach(() => {
   global.WebSocket = originalWebSocket;
+  jest.useRealTimers();
 });
 
 test("manager mode waits for ready and sends initialize without creating a direct socket", async () => {
@@ -403,6 +456,220 @@ test("manager mode delivers idless turn notifications with runner-ws metadata to
   );
 });
 
+test("manager mode fires onAgentMessageCompleted with full text when item/completed arrives without prior delta", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onDelta = jest.fn();
+  const onAgentMessageCompleted = jest.fn();
+  const session = startCodexAppServerTurn({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsToken: "runner-token",
+    traceId: "trace-1",
+    inputText: "hello",
+    cwd: "/tmp/project",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    onApprovalRequest: jest.fn(() => "approve_once"),
+    onDelta,
+    onAgentMessageCompleted,
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { turn: { id: "turn-1" } }, "thread-1");
+  await flushPromises();
+
+  const turnStartOutbound = lastSent(manager);
+
+  emitTurnNotification(manager, turnStartOutbound, "item/completed", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    item: {
+      id: "agent-item-1",
+      type: "agentMessage",
+      text: "hello back",
+    },
+  });
+  emitTurnNotification(manager, turnStartOutbound, "turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+    },
+  });
+
+  await expect(session.promise).resolves.toMatchObject({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    reply: "hello back",
+  });
+  expect(onDelta).toHaveBeenCalledTimes(1);
+  expect(onDelta).toHaveBeenCalledWith(
+    "hello back",
+    expect.objectContaining({ itemId: "agent-item-1" })
+  );
+  expect(onAgentMessageCompleted).toHaveBeenCalledTimes(1);
+  expect(onAgentMessageCompleted).toHaveBeenCalledWith(
+    "hello back",
+    expect.objectContaining({ itemId: "agent-item-1" })
+  );
+});
+
+test("manager mode fires onAgentMessageCompleted with full text even when the full text was already streamed via delta", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onDelta = jest.fn();
+  const onAgentMessageCompleted = jest.fn();
+  const session = startCodexAppServerTurn({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsToken: "runner-token",
+    traceId: "trace-1",
+    inputText: "hello",
+    cwd: "/tmp/project",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    onApprovalRequest: jest.fn(() => "approve_once"),
+    onDelta,
+    onAgentMessageCompleted,
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { turn: { id: "turn-1" } }, "thread-1");
+  await flushPromises();
+
+  const turnStartOutbound = lastSent(manager);
+
+  emitTurnNotification(manager, turnStartOutbound, "item/started", {
+    threadId: "thread-1",
+    item: {
+      id: "agent-item-1",
+      type: "agentMessage",
+    },
+  });
+  emitTurnNotification(manager, turnStartOutbound, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello back",
+  });
+  emitTurnNotification(manager, turnStartOutbound, "item/completed", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    item: {
+      id: "agent-item-1",
+      type: "agentMessage",
+      text: "hello back",
+    },
+  });
+  emitTurnNotification(manager, turnStartOutbound, "turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+    },
+  });
+
+  await expect(session.promise).resolves.toMatchObject({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    reply: "hello back",
+  });
+  // Only the single delta from item/agentMessage/delta; item/completed has no
+  // remaining text to flush via onDelta since it was already streamed in full.
+  expect(onDelta).toHaveBeenCalledTimes(1);
+  expect(onDelta).toHaveBeenCalledWith(
+    "hello back",
+    expect.objectContaining({ itemId: "agent-item-1" })
+  );
+  expect(onAgentMessageCompleted).toHaveBeenCalledTimes(1);
+  expect(onAgentMessageCompleted).toHaveBeenCalledWith(
+    "hello back",
+    expect.objectContaining({ itemId: "agent-item-1" })
+  );
+});
+
+test("manager mode reports onAgentMessageCompleted per item across multiple agentMessages in one turn", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onAgentMessageCompleted = jest.fn();
+  const session = startCodexAppServerTurn({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsToken: "runner-token",
+    traceId: "trace-1",
+    inputText: "hello",
+    cwd: "/tmp/project",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    onApprovalRequest: jest.fn(() => "approve_once"),
+    onAgentMessageCompleted,
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
+  await flushPromises();
+  respondToLastRequest(manager, { turn: { id: "turn-1" } }, "thread-1");
+  await flushPromises();
+
+  const turnStartOutbound = lastSent(manager);
+
+  emitTurnNotification(manager, turnStartOutbound, "item/completed", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    item: {
+      id: "agent-item-1",
+      type: "agentMessage",
+      text: "first message",
+    },
+  });
+  emitTurnNotification(manager, turnStartOutbound, "item/completed", {
+    threadId: "thread-1",
+    itemId: "agent-item-2",
+    item: {
+      id: "agent-item-2",
+      type: "agentMessage",
+      text: "second message",
+    },
+  });
+  emitTurnNotification(manager, turnStartOutbound, "turn/completed", {
+    threadId: "thread-1",
+    turn: {
+      id: "turn-1",
+      status: "completed",
+    },
+  });
+
+  await expect(session.promise).resolves.toMatchObject({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    reply: "first message\n\nsecond message",
+  });
+  expect(onAgentMessageCompleted).toHaveBeenCalledTimes(2);
+  expect(onAgentMessageCompleted).toHaveBeenNthCalledWith(
+    1,
+    "first message",
+    expect.objectContaining({ itemId: "agent-item-1" })
+  );
+  expect(onAgentMessageCompleted).toHaveBeenNthCalledWith(
+    2,
+    "second message",
+    expect.objectContaining({ itemId: "agent-item-2" })
+  );
+});
+
 test("manager cleanup unsubscribes without disconnecting singleton socket", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const session = createTurn(manager);
@@ -412,6 +679,173 @@ test("manager cleanup unsubscribes without disconnecting singleton socket", asyn
   manager.dropConnection();
 
   await expect(session.promise).rejects.toThrow("runner-ws disconnected");
-  expect(manager.unsubscribeCalls).toBe(2);
+  expect(manager.unsubscribeCalls).toBe(3);
   expect(manager.disconnect).not.toHaveBeenCalled();
+});
+
+test("manager mode does not fail an in-flight turn while awaiting reconnect", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+
+  let settled = false;
+  session.promise.then(
+    () => { settled = true; },
+    () => { settled = true; }
+  );
+  await flushPromises();
+  expect(settled).toBe(false);
+
+  // Avoid leaking the real 120s reconnect-wait timer past the end of the test.
+  await session.interrupt();
+  await expect(session.promise).rejects.toThrow();
+});
+
+test("manager mode sends relay:resume once the singleton reconnects mid-turn", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+
+  manager.send.mockClear();
+  manager.becomeReady();
+  await flushPromises();
+
+  expect(manager.send).toHaveBeenCalledWith({
+    channel: "relay",
+    op: "resume",
+    threadId: "thread-1",
+    seq: 1,
+  });
+
+  // resume was sent but never "attached"; interrupt to release the reconnect-wait timer.
+  await session.interrupt();
+  await expect(session.promise).rejects.toThrow();
+});
+
+test("manager mode resumes streaming after reconnect, ignores duplicate replay seq, and completes", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onDelta = jest.fn();
+  const { session, turnStartOutbound } = await startLiveTurn(manager, { onDelta });
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+  manager.becomeReady();
+  await flushPromises();
+
+  // Server replay re-delivers the already-applied seq=1 delta before the new seq=2 one.
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 2, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "back",
+  });
+
+  manager.emit({
+    channel: "relay",
+    op: "attached",
+    threadId: "thread-1",
+    seq: 2,
+    payload: { latestSeq: 2, replayed: 1 },
+  });
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 3, "turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed" },
+  });
+
+  await expect(session.promise).resolves.toMatchObject({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    reply: "hello back",
+  });
+  expect(onDelta).toHaveBeenCalledTimes(2);
+});
+
+test("manager mode fails the turn on relay:resume_miss after reconnect", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+  manager.becomeReady();
+  await flushPromises();
+
+  manager.emit({
+    channel: "relay",
+    op: "resume_miss",
+    threadId: "thread-1",
+    seq: 1,
+    payload: { reason: "gap" },
+  });
+
+  await expect(session.promise).rejects.toThrow("relay resume miss");
+});
+
+test("manager mode fails the turn once the reconnect wait timeout elapses", async () => {
+  jest.useFakeTimers();
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+
+  const rejection = expect(session.promise).rejects.toThrow("reconnect timeout");
+  await jest.advanceTimersByTimeAsync(120_000);
+  await rejection;
+});
+
+test("manager mode resolves as interrupted when interrupt() runs during reconnect wait", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+
+  await session.interrupt();
+
+  await expect(session.promise).rejects.toThrow("interrupted");
 });

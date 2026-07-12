@@ -18,6 +18,7 @@ import {
   View,
 } from "react-native";
 import { LegendList, type LegendListRef } from "@legendapp/list";
+import * as Clipboard from "expo-clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { WebView } from "react-native-webview";
@@ -1236,6 +1237,7 @@ export function ChatScreen({
     setComposerInputFocused(false);
     setGitDiffPanelOpen(true);
   }, [chatComposerInputRef, setComposerInputFocused]);
+  const closeGitDiffPanel = useCallback(() => setGitDiffPanelOpen(false), []);
   const showInfoToast = useCallback((textRaw: unknown) => {
     const text = String(textRaw || "").trim();
     if (!text) return;
@@ -1245,6 +1247,18 @@ export function ChatScreen({
     }
     Alert.alert("通知", text);
   }, [showChatBottomToast]);
+  const copyMessageContent = useCallback((contentRaw: unknown) => {
+    const content = String(contentRaw || "");
+    if (!content.trim()) return;
+    Clipboard.setStringAsync(content)
+      .then(() => {
+        showInfoToast("メッセージをコピーしました");
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        Alert.alert("コピー失敗", message || "メッセージをコピーできませんでした。");
+      });
+  }, [showInfoToast]);
   const {
     renameTarget: chatFileRenameTarget,
     requestRename: requestChatFileRename,
@@ -1615,13 +1629,23 @@ export function ChatScreen({
               </Text>
             ) : null}
             <TouchableOpacity
-              style={styles.chatMessageUnreadButton}
+              style={styles.chatMessageMetaIconButton}
               onPress={markSessionUnreadForView}
               accessibilityRole="button"
               accessibilityLabel="セッションを未読にする"
             >
               <Ionicons name="mail-unread-outline" size={13} color="#94a3b8" />
             </TouchableOpacity>
+            {message.content ? (
+              <TouchableOpacity
+                style={styles.chatMessageMetaIconButton}
+                onPress={() => copyMessageContent(message.content)}
+                accessibilityRole="button"
+                accessibilityLabel="メッセージをコピー"
+              >
+                <Ionicons name="copy-outline" size={13} color="#94a3b8" />
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
         {!isUser ? (
@@ -2065,7 +2089,7 @@ export function ChatScreen({
           gitChangedFilesUnstaged={gitChangedFiles.unstagedFiles}
           gitChangedFilesLoading={gitChangedFiles.loading}
           gitChangedFilesError={gitChangedFiles.error}
-          onRequestClose={() => setGitDiffPanelOpen(false)}
+          onRequestClose={closeGitDiffPanel}
           onRefreshGitChangedFiles={gitChangedFiles.refresh}
           showInfoToast={showInfoToast}
           onOpenMedia={setRunnerMedia}

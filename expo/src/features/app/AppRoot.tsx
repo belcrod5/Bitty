@@ -374,6 +374,9 @@ const UI_SFX_MIN_INTERVAL_MS: Partial<Record<UiSfxKey, number>> = {
 const PIXEL_ROBOT_IMAGE = require("../../../assets/images/robot-indicator.gif");
 const AUDIO_LAB_LOOP_ASSET = require("../../../assets/sfx/audio-lab-loop.wav");
 const MODEL_OPTIONS = [
+  { label: "ChatGPT 5.6 Sol", value: "gpt-5.6-sol" },
+  { label: "ChatGPT 5.6 Terra", value: "gpt-5.6-terra" },
+  { label: "ChatGPT 5.6 Luna", value: "gpt-5.6-luna" },
   { label: "ChatGPT 5.5", value: "gpt-5.5" },
   { label: "ChatGPT 5.4 mini", value: "gpt-5.4-mini" },
   { label: "ChatGPT 5.4", value: "gpt-5.4" },
@@ -381,7 +384,7 @@ const MODEL_OPTIONS = [
   { label: "Codex 5.3 Spark", value: "gpt-5.3-codex-spark" },
   { label: "GPT-5.2", value: "gpt-5.2" },
 ] as const;
-const DEFAULT_MODEL_REF = "gpt-5.5";
+const DEFAULT_MODEL_REF = "gpt-5.6-sol";
 const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
 const DEFAULT_CODEX_APPROVAL_POLICY: CodexApprovalPolicy = "on-request";
 const THINK_OPTIONS: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
@@ -7762,6 +7765,10 @@ export default function App() {
     markSessionRead,
     markDirectorySessionsRead,
   });
+  const renderAppDrawerContent = useCallback(
+    () => <AppDrawer {...appDrawerProps} />,
+    [appDrawerProps]
+  );
 
   return (
     <GestureHandlerRootView style={styles.safeArea}>
@@ -7801,9 +7808,7 @@ export default function App() {
         drawerPosition="left"
         drawerStyle={styles.appDrawerPanel}
         overlayStyle={styles.appDrawerOverlay}
-        renderDrawerContent={() => (
-          <AppDrawer {...appDrawerProps} />
-        )}
+        renderDrawerContent={renderAppDrawerContent}
       >
       <SafeAreaView style={styles.safeArea}>
       {activeScreen === "debug" ? (

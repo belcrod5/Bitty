@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, type ReactNode } fro
 import type {
   CodexAuthProfileEntry,
   GitChangedFilesDirectoryState,
+  GitChangedFilesSnapshot,
 } from "../types/appTypes";
 
 export type ChatDiagnosticsContextValue = {
@@ -25,6 +26,7 @@ export type ChatDiagnosticsContextValue = {
 
 const ChatDiagnosticsContext = createContext<ChatDiagnosticsContextValue | null>(null);
 const EMPTY_GIT_CHANGED_FILES: string[] = [];
+const EMPTY_GIT_BRANCHES: GitChangedFilesSnapshot["branches"] = [];
 
 type ChatDiagnosticsProviderProps = {
   value: ChatDiagnosticsContextValue;
@@ -63,7 +65,7 @@ export function useDirectoryGitChangedFiles(directoryRaw: unknown) {
   return {
     branchName: state?.snapshot?.branchName || "HEAD",
     behindCount: state?.snapshot?.behindCount || 0,
-    branches: state?.snapshot?.branches || [],
+    branches: state?.snapshot?.branches || EMPTY_GIT_BRANCHES,
     stagedFiles: state?.snapshot?.stagedFiles || EMPTY_GIT_CHANGED_FILES,
     unstagedFiles: state?.snapshot?.unstagedFiles || EMPTY_GIT_CHANGED_FILES,
     loading: state?.loading || false,

@@ -356,7 +356,7 @@ export const chatMessageStyles = {
   chatMessageTimestampTextAssistant: {
     textAlign: "left",
   },
-  chatMessageUnreadButton: {
+  chatMessageMetaIconButton: {
     width: 20,
     height: 20,
     borderRadius: 999,
