@@ -909,9 +909,15 @@ export function useCodexReplyRequest<
         const messageId = String(message.id || "");
         if (!liveMessageIds.has(messageId)) return message;
         const liveMessage = message as TMessage & {
+          llmStatus?: string;
           llmElapsedMs?: number;
           youtubeVideoIds?: string[];
         };
+        // Messages already settled as "completed" (per-item settle while the
+        // turn keeps running) must not be downgraded when the turn later errors.
+        if (settledStatus === "error" && String(liveMessage.llmStatus || "") === "completed") {
+          return message;
+        }
         return {
           ...message,
           llmStatus: settledStatus,
@@ -919,7 +925,9 @@ export function useCodexReplyRequest<
           llmElapsedMs: messageId === lastLiveMessageId && Number.isFinite(Number(extra.llmElapsedMs))
             ? Number(extra.llmElapsedMs)
             : liveMessage.llmElapsedMs,
-          youtubeVideoIds: messageId === lastLiveMessageId && Array.isArray(extra.youtubeVideoIds)
+          youtubeVideoIds: messageId === lastLiveMessageId &&
+            Array.isArray(extra.youtubeVideoIds) &&
+            !(liveMessage.youtubeVideoIds && liveMessage.youtubeVideoIds.length > 0)
             ? (extra.youtubeVideoIds as string[])
             : liveMessage.youtubeVideoIds,
         };
