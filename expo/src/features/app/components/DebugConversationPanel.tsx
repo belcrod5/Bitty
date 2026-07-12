@@ -139,7 +139,7 @@ export function DebugConversationPanel() {
       {streamSegments.length > 0 ? (
         <View style={styles.streamList}>
           {streamSegments.slice(-8).map((segment) => (
-            <View key={segment.seq} style={styles.streamItem}>
+            <View key={`${segment.messageId}:${segment.seq}`} style={styles.streamItem}>
               <Text style={styles.streamStatus}>
                 #{segment.seq + 1} {segment.status}
                 {segment.chunkChars !== null && segment.chunkChars !== undefined

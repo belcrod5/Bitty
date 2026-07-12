@@ -30,6 +30,7 @@ type ConversationMessageLike = {
 };
 
 type StreamSegmentLike = {
+  messageId: string;
   status?: string;
 };
 
@@ -67,6 +68,7 @@ type UseChatDerivedStateParams = {
   youtubeVideoMetaById: Record<string, VideoMetaLike>;
   streamReplyYouTubeVideoIds: string[];
   streamSegments: StreamSegmentLike[];
+  ttsPlaybackMessageId: string;
   acpContextUsedPct: number | null;
   ttsLoading: boolean;
   ttsPlaying: boolean;
@@ -118,6 +120,7 @@ export function useChatDerivedState({
   youtubeVideoMetaById,
   streamReplyYouTubeVideoIds,
   streamSegments,
+  ttsPlaybackMessageId,
   acpContextUsedPct,
   ttsLoading,
   ttsPlaying,
@@ -250,7 +253,8 @@ export function useChatDerivedState({
     return out;
   }, [conversationMessages, replyLoading, streamReplyYouTubeVideoIds]);
   const ttsSegmentProgress = useMemo(() => {
-    const total = streamSegments.length;
+    const activeSegments = streamSegments.filter((segment) => segment.messageId === ttsPlaybackMessageId);
+    const total = activeSegments.length;
     if (total <= 0) {
       return {
         total: 0,
@@ -263,7 +267,7 @@ export function useChatDerivedState({
     let played = 0;
     let playing = 0;
     let generated = 0;
-    for (const segment of streamSegments) {
+    for (const segment of activeSegments) {
       if (segment.status === "played") {
         played += 1;
         generated += 1;
@@ -282,7 +286,7 @@ export function useChatDerivedState({
       playbackRatio: Math.max(0, Math.min(1, playedNow / total)),
       generationRatio: Math.max(0, Math.min(1, generated / total)),
     };
-  }, [streamSegments]);
+  }, [streamSegments, ttsPlaybackMessageId]);
   const chatContextUsedPct = acpContextUsedPct === null
     ? 0
     : Math.max(0, Math.min(100, Math.round(acpContextUsedPct)));

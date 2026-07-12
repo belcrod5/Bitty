@@ -34,10 +34,17 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   streamAudioWaveformBarsRef: MutableRefObject<number[][]>;
   ttsPlayingRef: MutableRefObject<boolean>;
   streamAudioQueueRef: MutableRefObject<Array<{ playbackMessageId: string }>>;
+  ttsPlaybackMessageIdRef: MutableRefObject<string>;
   baseUrl: () => string;
   ttsStreamWsUrl: () => string;
   clearStreamAudioQueue: () => void;
-  upsertStreamSegment: (seq: number, text: string, status: "queued" | "synthesizing" | "ready", meta?: StreamSegmentMeta) => void;
+  upsertStreamSegment: (
+    messageId: string,
+    seq: number,
+    text: string,
+    status: "queued" | "synthesizing" | "ready",
+    meta?: StreamSegmentMeta
+  ) => void;
   enqueueStreamAudio: (
     seq: number,
     uri: string,
@@ -55,7 +62,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   patchTtsDebugStats: (patch: Partial<TtsDebugStats>) => void;
   setStreamWaveformPreview: (value: number[]) => void;
   clearStreamLlmProgress: () => void;
-  clearStreamSegments: () => void;
+  resetStreamSegmentsForNewStream: (keepMessageId: string) => void;
   setStreamMode: (value: string) => void;
   setTtsPlaybackMessageIdWithRef: (value: string) => void;
   setTtsPlaybackProjectionTarget: (target: TtsPlaybackTarget) => void;
@@ -81,6 +88,7 @@ export function useSynthesizeSpeechStreamController(
     streamAudioWaveformBarsRef,
     ttsPlayingRef,
     streamAudioQueueRef,
+    ttsPlaybackMessageIdRef,
     baseUrl,
     ttsStreamWsUrl,
     clearStreamAudioQueue,
@@ -96,7 +104,7 @@ export function useSynthesizeSpeechStreamController(
     patchTtsDebugStats,
     setStreamWaveformPreview,
     clearStreamLlmProgress,
-    clearStreamSegments,
+    resetStreamSegmentsForNewStream,
     setStreamMode,
     setTtsPlaybackMessageIdWithRef,
     setTtsPlaybackProjectionTarget,
@@ -141,14 +149,21 @@ export function useSynthesizeSpeechStreamController(
       streamLastWaveformBars: 0,
       streamMergedWaveformBars: 0,
     });
+    const isPlaybackBusy = ttsPlayingRef.current || streamAudioQueueRef.current.length > 0;
+    // 同一メッセージの再合成では旧セグメントを残すと seq が衝突するため全クリアする。
+    const keepMessageId = isPlaybackBusy && ttsPlaybackMessageIdRef.current !== targetMessageId
+      ? ttsPlaybackMessageIdRef.current
+      : "";
     streamTtsSuppressedRef.current = false;
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
     setStreamWaveformPreview([]);
     clearStreamLlmProgress();
-    clearStreamSegments();
+    resetStreamSegmentsForNewStream(keepMessageId);
     setStreamMode("direct_text");
-    setTtsPlaybackMessageIdWithRef(targetMessageId);
+    if (!isPlaybackBusy) {
+      setTtsPlaybackMessageIdWithRef(targetMessageId);
+    }
 
     const currentControl = streamTtsControlRef.current;
     if (currentControl) {
@@ -193,7 +208,7 @@ export function useSynthesizeSpeechStreamController(
       if (type === "segment_queued") {
         const segment = parseStreamSegmentEnvelope(data);
         if (segment.seq === null) return;
-        upsertStreamSegment(segment.seq, segment.text, "queued", {
+        upsertStreamSegment(targetMessageId, segment.seq, segment.text, "queued", {
           chunkChars: segment.chunkChars,
           segmentTargetChars: segment.segmentTargetChars,
           estimatedDurationMs: segment.estimatedDurationMs,
@@ -205,7 +220,7 @@ export function useSynthesizeSpeechStreamController(
       if (type === "segment_tts_started") {
         const seq = Number(data?.seq);
         if (!Number.isInteger(seq)) return;
-        upsertStreamSegment(seq, String(data?.text || ""), "synthesizing");
+        upsertStreamSegment(targetMessageId, seq, String(data?.text || ""), "synthesizing");
         setTtsUiStatus("synthesizing");
         return;
       }
@@ -213,7 +228,7 @@ export function useSynthesizeSpeechStreamController(
       if (type === "segment_tts_done") {
         const seq = Number(data?.seq);
         if (!Number.isInteger(seq)) return;
-        upsertStreamSegment(seq, String(data?.text || ""), "ready");
+        upsertStreamSegment(targetMessageId, seq, String(data?.text || ""), "ready");
         return;
       }
 
@@ -221,7 +236,7 @@ export function useSynthesizeSpeechStreamController(
         const segment = parseStreamSegmentEnvelope(data);
         const seq = segment.seq;
         if (seq === null) return;
-        upsertStreamSegment(seq, segment.text, "ready", {
+        upsertStreamSegment(targetMessageId, seq, segment.text, "ready", {
           chunkChars: segment.chunkChars,
           segmentTargetChars: segment.segmentTargetChars,
           estimatedDurationMs: segment.estimatedDurationMs,
@@ -518,7 +533,7 @@ export function useSynthesizeSpeechStreamController(
     setStreamMode,
     setStreamWaveformPreview,
     clearStreamLlmProgress,
-    clearStreamSegments,
+    resetStreamSegmentsForNewStream,
     setTtsDebugStats,
     setTtsLoading,
     setTtsPlaybackMessageIdWithRef,
@@ -531,6 +546,7 @@ export function useSynthesizeSpeechStreamController(
     streamTtsControlRef,
     streamTtsSuppressedRef,
     syncTtsPlaybackWantedFromPipeline,
+    ttsPlaybackMessageIdRef,
     ttsPlayingRef,
     ttsProvider,
     ttsSpeed,

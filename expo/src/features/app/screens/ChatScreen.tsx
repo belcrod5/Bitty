@@ -212,8 +212,6 @@ export function ChatScreen({
     ttsSegmentProgress,
     pixelStatusAnimations,
     llmElapsedLiveMs,
-    isStreamWaveformPlaybackActive,
-    stopWaveformPlayback,
     error,
     chatBottomToast,
     chatBottomToastAnimRef,
@@ -1967,17 +1965,6 @@ export function ChatScreen({
                           </View>
                         ) : null}
                       </View>
-                      {showActiveSessionStreamReplyArtifacts ? (
-                        <TtsWaveformPlayer
-                          isPlaybackActive={isStreamWaveformPlaybackActive}
-                          playButtonDisabled={!isTtsPlaybackActive}
-                          playbackRingProgress={isStreamWaveformPlaybackActive ? ttsSegmentProgress.playbackRatio : 0}
-                          statusRingProgress={ttsPlaybackMessageIdForView === "__stream__" ? ttsSegmentProgress.generationRatio : 0}
-                          onPressPlayStop={() => {
-                            void stopWaveformPlayback();
-                          }}
-                        />
-                      ) : null}
                     </View>
                   ) : null}
                   {errorForView ? <Text style={styles.errorText}>{errorForView}</Text> : null}
