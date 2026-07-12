@@ -73,7 +73,7 @@ export function useProcessStreamAudioQueueController(
         if (playbackMessageId && playbackMessageId !== ttsPlaybackMessageIdRef.current) {
           setTtsPlaybackMessageIdWithRef(playbackMessageId);
         }
-        upsertStreamSegment(next.playbackMessageId, next.seq, "", "playing");
+        upsertStreamSegment(playbackMessageId, next.seq, "", "playing");
         setTtsUiStatus("playing");
         streamCurrentChunkStartedAtRef.current = Date.now();
         streamCurrentChunkEstimatedDurationMsRef.current = (
@@ -87,7 +87,7 @@ export function useProcessStreamAudioQueueController(
           streamCurrentChunkStartedAtRef.current = 0;
           streamCurrentChunkEstimatedDurationMsRef.current = null;
         }
-        upsertStreamSegment(next.playbackMessageId, next.seq, "", "played", {
+        upsertStreamSegment(playbackMessageId, next.seq, "", "played", {
           chunkChars: Number.isFinite(Number(next.chunkChars)) ? Number(next.chunkChars) : null,
           segmentTargetChars: Number.isFinite(Number(next.segmentTargetChars))
             ? Number(next.segmentTargetChars)

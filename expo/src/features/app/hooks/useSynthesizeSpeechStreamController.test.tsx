@@ -206,6 +206,20 @@ test("busy playback: keeps the currently playing message's segments and defers t
   expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
 });
 
+test("busy playback re-synthesizing the same message clears all segments to avoid seq collisions", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  options.ttsPlayingRef.current = true;
+  options.ttsPlaybackMessageIdRef.current = "message-2";
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-2" });
+  await flushPromises();
+
+  expect(options.resetStreamSegmentsForNewStream).toHaveBeenCalledWith("");
+  expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
+});
+
 test("busy playback via non-empty queue also defers the target switch", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { options } = createOptions(manager);

@@ -150,7 +150,10 @@ export function useSynthesizeSpeechStreamController(
       streamMergedWaveformBars: 0,
     });
     const isPlaybackBusy = ttsPlayingRef.current || streamAudioQueueRef.current.length > 0;
-    const keepMessageId = isPlaybackBusy ? ttsPlaybackMessageIdRef.current : "";
+    // 同一メッセージの再合成では旧セグメントを残すと seq が衝突するため全クリアする。
+    const keepMessageId = isPlaybackBusy && ttsPlaybackMessageIdRef.current !== targetMessageId
+      ? ttsPlaybackMessageIdRef.current
+      : "";
     streamTtsSuppressedRef.current = false;
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
