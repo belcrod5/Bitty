@@ -18,6 +18,7 @@ const RUNNER_WS_RECONNECT_BASE_DELAY_MS = 1_000;
 const RUNNER_WS_RECONNECT_MAX_DELAY_MS = 10_000;
 const RUNNER_WS_RECONNECT_JITTER_MS = 250;
 const RUNNER_WS_HEARTBEAT_INTERVAL_MS = 15_000;
+const RUNNER_WS_HEARTBEAT_MAX_MISSED_PINGS = 2;
 
 type RunnerWebSocketManagerOptions = {
   url: string;
@@ -444,6 +445,11 @@ export class RunnerWebSocketManager {
       if (message.op === "ready") {
         this.connectionState = "ready";
         this.resolveConnectWaiter();
+        // Reset heartbeat bookkeeping so stale timestamps from a previous
+        // connection can't cause a false missed-pong on the new one.
+        this.lastPingAt = undefined;
+        this.lastPongAt = undefined;
+        this.consecutiveMissedPingCount = 0;
         this.startHeartbeat();
       }
     }
@@ -594,11 +600,20 @@ export class RunnerWebSocketManager {
       this.clearHeartbeatTimer();
       return;
     }
-    if (this.lastPingAt && (!this.lastPongAt || this.lastPongAt < this.lastPingAt)) {
+    const now = Date.now();
+    if (this.lastMessageAtMs && now - this.lastMessageAtMs < RUNNER_WS_HEARTBEAT_INTERVAL_MS) {
+      // Any traffic (including a delayed pong) within the last interval proves
+      // the socket is alive; don't count a miss off the ping/pong pair alone.
+      this.consecutiveMissedPingCount = 0;
+    } else if (this.lastPingAt && (!this.lastPongAt || this.lastPongAt < this.lastPingAt)) {
       this.missedPingCount += 1;
       this.consecutiveMissedPingCount += 1;
+      if (this.consecutiveMissedPingCount >= RUNNER_WS_HEARTBEAT_MAX_MISSED_PINGS) {
+        this.forceReconnect("heartbeat_timeout");
+        return;
+      }
     }
-    this.lastPingAt = Date.now();
+    this.lastPingAt = now;
     try {
       this.send({
         channel: "control",
@@ -612,6 +627,23 @@ export class RunnerWebSocketManager {
     } catch {
       // send() already updates the diagnostic snapshot and error counters.
     }
+  }
+
+  private forceReconnect(reason: string) {
+    // The socket is half-open, so onclose is not expected to fire on its own;
+    // clear this.ws first so the (possibly synchronous) close() callback is a no-op,
+    // then drive the same close handling path as a real disconnect.
+    const socket = this.ws;
+    this.ws = null;
+    this.lastError = `runner_ws_${reason}`;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        // Best-effort close of a socket we're discarding anyway.
+      }
+    }
+    this.handleClose(reason);
   }
 
   private clearHeartbeatTimer() {

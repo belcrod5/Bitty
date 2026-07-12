@@ -57,6 +57,9 @@ export { startCodexAppServerTurnRelayObserver } from "./turnRelayObserver";
 
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
 const PRE_TURN_RPC_TIMEOUT_MS = 15000;
+// Manager mode's own reconnect backoff tops out at ~10s; give it plenty of
+// attempts before giving up on a live turn resuming after a WS drop.
+const MANAGER_RECONNECT_WAIT_TIMEOUT_MS = 120_000;
 
 type RunnerRelayReconnectTrigger =
   | "ws_close"
@@ -236,6 +239,7 @@ export function startCodexAppServerTurn(
   let ws: WebSocket | null = useRunnerWsManager ? null : createWebSocketWithOptionalAuth(wsUrl, wsToken);
   const wsLabel = wsToken ? `${wsUrl} (token)` : `${wsUrl} (no-token)`;
   let lastRelaySeq = 0;
+  let hasReceivedRelaySeq = false;
   let reconnectAttempts = 0;
   let turnStartIssued = false;
   let turnCompletedObserved = false;
@@ -245,6 +249,15 @@ export function startCodexAppServerTurn(
   const runnerWsRpcIds = new CodexRunnerWsJsonRpcIdMapper();
   const managerUnsubscribers: Array<() => void> = [];
   let reconnectRunnerRelay: ((trigger: RunnerRelayReconnectTrigger, detail: string) => boolean) | null = null;
+  // Manager-mode reconnect wait state (see the useRunnerWsManager block below).
+  let awaitingReconnect = false;
+  let reconnectWaitTimer: ReturnType<typeof setTimeout> | null = null;
+  let resumeSentGeneration = -1;
+  function canResumeAfterReconnect() {
+    return Boolean(
+      turnStartIssued && activeThreadId && !turnCompletedObserved && !interruptRequested && !finalized
+    );
+  }
   const notifyThreadIdResolved = (threadIdRaw: unknown) => {
     if (!options.onThreadIdResolved) return;
     const threadId = String(threadIdRaw || "").trim();
@@ -313,6 +326,10 @@ export function startCodexAppServerTurn(
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (reconnectWaitTimer) {
+      clearTimeout(reconnectWaitTimer);
+      reconnectWaitTimer = null;
     }
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
@@ -706,6 +723,13 @@ export function startCodexAppServerTurn(
         readyState: getTransportReadyState(),
       });
       reconnectAttempts = 0;
+      if (awaitingReconnect) {
+        awaitingReconnect = false;
+        if (reconnectWaitTimer) {
+          clearTimeout(reconnectWaitTimer);
+          reconnectWaitTimer = null;
+        }
+      }
     } else if (control.type === "runner_relay_resume_miss") {
       const detail = control.reason || "resume_miss";
       failRef?.(new Error(`Codex app-server relay resume miss: ${detail}`));
@@ -825,7 +849,12 @@ export function startCodexAppServerTurn(
       reconnectTimer = setTimeout(runReconnect, reconnectDelayMs);
       return true;
     };
-    reconnectRunnerRelay = tryReconnectViaRunnerRelay;
+    // Manager mode never falls back to a direct socket (singleton WS policy);
+    // leaving this unset there makes runner_relay_closed fail the turn instead
+    // of racing a brand-new WebSocket into existence.
+    if (!useRunnerWsManager) {
+      reconnectRunnerRelay = tryReconnectViaRunnerRelay;
+    }
 
     const runInitialTurnSetup = async (failIfActive: (error: Error) => void) => {
       await sendRequest("initialize", {
@@ -977,10 +1006,24 @@ export function startCodexAppServerTurn(
       failIfActive: (error: Error) => void
     ) => {
       const runnerWsEnvelope = useRunnerWsEnvelope ? parseRunnerWsEnvelope(rawData) : null;
+      const isRelayedLlmRpc = runnerWsEnvelope?.channel === "llm" && runnerWsEnvelope.op === "rpc";
       if (typeof runnerWsEnvelope?.seq === "number") {
-        lastRelaySeq = Math.max(lastRelaySeq, Math.max(0, Math.floor(runnerWsEnvelope.seq)));
+        const seq = Math.max(0, Math.floor(runnerWsEnvelope.seq));
+        // On the singleton WS, another subscriber (e.g. the relay observer) can
+        // trigger its own relay:resume for the same thread, replaying events we
+        // already applied. Only llm:rpc envelopes carry actual delta/notification
+        // content, so only those are safe (and necessary) to de-dupe by seq;
+        // relay-channel control envelopes (attached/resume_miss/closed) reuse the
+        // same watermark and must always reach maybeHandleRunnerRelayControl.
+        if (isRelayedLlmRpc && hasReceivedRelaySeq && seq <= lastRelaySeq) {
+          return;
+        }
+        if (isRelayedLlmRpc) {
+          hasReceivedRelaySeq = true;
+        }
+        lastRelaySeq = Math.max(lastRelaySeq, seq);
       }
-      if (runnerWsEnvelope?.channel === "llm" && runnerWsEnvelope.op === "rpc") {
+      if (isRelayedLlmRpc) {
         reconnectAttempts = 0;
       }
       if (pendingMethods.size > 0) {
@@ -1224,11 +1267,59 @@ export function startCodexAppServerTurn(
           handleIncomingRawData(JSON.stringify(message), failIfActive);
         }
       ));
+      // threadId isn't known until thread/start or thread/resume resolves, so this
+      // subscribes broadly and matches activeThreadId inside the handler instead of
+      // via the filter (mirrors the relay observer's resume pattern).
+      managerUnsubscribers.push(runnerWebSocketManager.subscribe(
+        { channel: "relay" },
+        (message) => {
+          if (finalized) return;
+          if (!activeThreadId || String(message.threadId || "") !== activeThreadId) return;
+          maybeHandleRunnerRelayControl(JSON.stringify(message));
+        }
+      ));
       managerUnsubscribers.push(runnerWebSocketManager.subscribeSnapshot(() => {
         if (finalized || !managerReadyObserved) return;
         const snapshot = runnerWebSocketManager.getSnapshot();
-        if (snapshot.connectionState === "ready") return;
-        failIfActive(new Error(`Codex app-server runner-ws disconnected: state=${snapshot.connectionState}`));
+        if (snapshot.connectionState === "ready") {
+          if (awaitingReconnect && snapshot.generation !== resumeSentGeneration) {
+            try {
+              runnerWebSocketManager.send({
+                channel: "relay",
+                op: "resume",
+                threadId: activeThreadId,
+                seq: lastRelaySeq,
+              });
+              resumeSentGeneration = snapshot.generation;
+              emitLog({
+                stage: "ws_reconnect_resume_sent",
+                message: `threadId=${activeThreadId} fromSeq=${lastRelaySeq}`,
+                readyState: getTransportReadyState(),
+              });
+            } catch {
+              // Retried on the next ready snapshot; the generation guard above
+              // prevents sending relay:resume twice for the same reconnect.
+            }
+          }
+          return;
+        }
+        if (!canResumeAfterReconnect()) {
+          // Same terminal behavior as before this change (e.g. pre-turn drops).
+          failIfActive(new Error(`Codex app-server runner-ws disconnected: state=${snapshot.connectionState}`));
+          return;
+        }
+        if (!awaitingReconnect) {
+          awaitingReconnect = true;
+          emitLog({
+            stage: "ws_reconnect_wait",
+            message: `state=${snapshot.connectionState} threadId=${activeThreadId || "-"} fromSeq=${lastRelaySeq}`,
+            readyState: getTransportReadyState(),
+          });
+          reconnectWaitTimer = setTimeout(() => {
+            reconnectWaitTimer = null;
+            failIfActive(new Error("Codex app-server runner-ws reconnect timeout"));
+          }, MANAGER_RECONNECT_WAIT_TIMEOUT_MS);
+        }
       }));
       runnerWebSocketManager.connect()
         .then(() => {
