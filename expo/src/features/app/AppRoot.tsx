@@ -268,8 +268,10 @@ import {
   scheduleSessionRestoreUiSettle,
 } from "./utils/sessionRestoreUi";
 import {
+  parseIsoTimestampMs,
   summarizeExecutionReasonFromStatus,
 } from "./utils/sessionRuntimeStatus";
+import { shouldPreserveRuntimeConversationOnHydrate } from "./utils/panelHydrationFreshness";
 import {
   getCachedDirectorySessions,
   resolveSessionHistoryContext as resolveSessionHistoryContextValue,
@@ -7277,6 +7279,28 @@ export default function App() {
         fallbackMessageId: `panel-${panelId}-${resolvedSessionId || sessionId}-restored-live-assistant`,
         buildConversationMessage,
       });
+      const runtimeForFreshness = getConversationRuntimeSnapshot(resolvedSessionId || sessionId);
+      const preserveRuntimeConversation = shouldPreserveRuntimeConversationOnHydrate({
+        runtimeMessageCount: runtimeForFreshness?.conversationMessages.length ?? 0,
+        runtimeUpdatedAtMs: runtimeForFreshness?.updatedAtMs ?? 0,
+        runtimeIsResponding: Boolean(runtimeForFreshness?.isResponding),
+        requestCompletedAtMs: runtimeForFreshness?.request?.completedAtMs ?? null,
+        restoredUpdatedAtMs:
+          parseIsoTimestampMs(restored.updatedAt) ??
+          parseIsoTimestampMs(lastConversation?.at) ??
+          null,
+        restoredMessageCount: conversation.length,
+        nowMs: Date.now(),
+      });
+      const conversationForPanel = preserveRuntimeConversation
+        ? runtimeForFreshness!.conversationMessages
+        : conversationForSnapshot;
+      const isRespondingForPanel = preserveRuntimeConversation
+        ? Boolean(runtimeForFreshness!.isResponding)
+        : restoredResponding;
+      const threadStatusForPanel = preserveRuntimeConversation
+        ? runtimeForFreshness!.selectedThreadStatusType
+        : restoredThreadStatusType;
       const snapshot = createPanelRuntimeSnapshot(panelId, createEmptyPanelRuntimeSnapshot(panelId), {
         selectedSessionId: resolvedSessionId || sessionId,
         selectedDirectoryPath: restoredDirectory,
@@ -7287,26 +7311,35 @@ export default function App() {
         modelRef: panelModelRef,
         reasoningEffort: panelReasoningEffort,
         contextUsedPct,
-        isResponding: restoredResponding,
+        isResponding: isRespondingForPanel,
         isHydrating: false,
-        selectedThreadStatusType: restoredThreadStatusType,
+        selectedThreadStatusType: threadStatusForPanel,
         inheritedConversationMessages: inheritedConversation,
-        conversationMessages: conversationForSnapshot,
+        conversationMessages: conversationForPanel,
       });
-      upsertConversationRuntimeSnapshot({
-        sessionId: snapshot.selectedSessionId,
-        conversationMessages: snapshot.conversationMessages,
-        contextUsedPct: snapshot.contextUsedPct,
-        isResponding: snapshot.isResponding,
-        selectedThreadStatusType: snapshot.selectedThreadStatusType,
-      });
-      setPanelRuntimeEntriesById((prev) => ({
-        ...prev,
-        [panelId]: {
+      if (!preserveRuntimeConversation) {
+        upsertConversationRuntimeSnapshot({
           sessionId: snapshot.selectedSessionId,
-          snapshot,
-        },
-      }));
+          conversationMessages: snapshot.conversationMessages,
+          contextUsedPct: snapshot.contextUsedPct,
+          isResponding: snapshot.isResponding,
+          selectedThreadStatusType: snapshot.selectedThreadStatusType,
+        });
+      }
+      setPanelRuntimeEntriesById((prev) => {
+        const carriedTtsPlaybackMessageId = preserveRuntimeConversation
+          ? String(prev[panelId]?.snapshot?.ttsPlaybackMessageId || "")
+          : "";
+        return {
+          ...prev,
+          [panelId]: {
+            sessionId: snapshot.selectedSessionId,
+            snapshot: carriedTtsPlaybackMessageId
+              ? { ...snapshot, ttsPlaybackMessageId: carriedTtsPlaybackMessageId }
+              : snapshot,
+          },
+        };
+      });
       logSessionDiag("panel_runtime_hydrate_done", {
         diagnosticCycleId,
         panelId,
@@ -7318,6 +7351,7 @@ export default function App() {
         isResponding: snapshot.isResponding,
         selectedThreadStatusType: snapshot.selectedThreadStatusType,
         messageCount: snapshot.conversationMessages.length,
+        preservedRuntimeConversation: preserveRuntimeConversation,
       }, { throttleMs: 0 });
       if (restoredResponding && snapshot.selectedSessionId) {
         const runningStartedAtMsRaw = Date.parse(String(restored.runningTurn?.startedAt || ""));
