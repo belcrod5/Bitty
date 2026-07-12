@@ -1,6 +1,7 @@
 import type { ConversationMessage, LlmSessionMessage } from "../types/appTypes";
 import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import {
+  findLatestAssistantMessageIndex,
   hasPendingAssistantReplyInConversation,
   inferLatestToolLabelFromAssistantMessages,
   parseIsoTimestampMs,
@@ -83,13 +84,7 @@ export function projectRestoredRuntimeStatusToConversation(params: {
   const llmStatusDetail = llmStatus === "tool_waiting_approval"
     ? "thread active: waiting_on_approval"
     : "thread active";
-  let liveAssistantIndex = -1;
-  for (let index = conversation.length - 1; index >= 0; index -= 1) {
-    const message = conversation[index];
-    if (message.role !== "assistant") continue;
-    liveAssistantIndex = index;
-    break;
-  }
+  const liveAssistantIndex = findLatestAssistantMessageIndex(conversation);
   if (liveAssistantIndex >= 0) {
     return conversation.map((message, index) => (
       index === liveAssistantIndex
@@ -124,13 +119,10 @@ export function buildRestoredSessionRuntimeSnapshot({
 }: BuildRestoredSessionRuntimeSnapshotArgs): RestoredSessionRuntimeSnapshot {
   const hasPendingAssistant = hasPendingAssistantReplyInConversation(nextConversation);
   const hasRunningTurn = Boolean(restored.hasRunningTurn);
-  let latestAssistantText = "";
-  for (let i = restoredMessages.length - 1; i >= 0; i -= 1) {
-    if (restoredMessages[i].role === "assistant") {
-      latestAssistantText = String(restoredMessages[i].content || "").trim();
-      break;
-    }
-  }
+  const latestAssistantIndex = findLatestAssistantMessageIndex(restoredMessages);
+  const latestAssistantText = latestAssistantIndex >= 0
+    ? String(restoredMessages[latestAssistantIndex].content || "").trim()
+    : "";
   const restoredThreadId = restored.threadId || nextSessionId;
   const runtimePanelId = String(panelId || "").trim();
   const rawRestoredInFlight = runtimePanelId

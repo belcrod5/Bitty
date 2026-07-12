@@ -12,6 +12,7 @@ import { extractCommandText } from "../../codex/client/helpers";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
+import { settleRunningCommandExecution } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
 import type {
@@ -974,7 +975,10 @@ export function useCodexReplyRequest<
         const messageId = String(message.id || "");
         const commandMessage = message as TMessage & { commandExecution?: CodexCommandExecutionInfo };
         if (commandMessageIds.has(messageId) && commandMessage.commandExecution?.status === "running") {
-          return { ...message, commandExecution: { ...commandMessage.commandExecution, status: "completed" } };
+          return {
+            ...message,
+            commandExecution: settleRunningCommandExecution(commandMessage.commandExecution, settledStatus),
+          };
         }
         if (!liveMessageIds.has(messageId)) return message;
         const liveMessage = message as TMessage & {

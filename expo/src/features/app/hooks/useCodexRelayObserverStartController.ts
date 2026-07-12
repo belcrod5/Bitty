@@ -6,6 +6,7 @@ import {
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { ConversationMessage, SessionRuntimeStatus } from "../types/appTypes";
+import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
 type CodexRelayObserverRef = MutableRefObject<{ threadId: string; panelId?: string; close: () => void } | null>;
@@ -104,11 +105,8 @@ type UseCodexRelayObserverStartControllerArgs = {
 };
 
 function findLatestAssistantMessage(messages: ConversationMessage[]) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role === "assistant") return message;
-  }
-  return null;
+  const index = findLatestAssistantMessageIndex(messages);
+  return index >= 0 ? messages[index] : null;
 }
 
 function splitDeltaAfterRestoredPrefix(prefixRaw: string, deltaRaw: string) {

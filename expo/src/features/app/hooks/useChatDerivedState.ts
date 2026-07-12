@@ -9,7 +9,9 @@ import {
 } from "../utils/statusText";
 import { buildProgressStatusLine } from "../utils/tooling";
 import { resolvePixelStatusIconKey } from "../utils/statusIcons";
+import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
 import { buildYouTubeEmbedHtml, normalizeYouTubeVideoIds } from "../utils/youtube";
+import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 
 type LlmUiStatus =
   | "idle"
@@ -27,6 +29,7 @@ type ConversationMessageLike = {
   content?: string;
   youtubeVideoIds?: unknown;
   ttsWaveform?: unknown;
+  commandExecution?: CodexCommandExecutionInfo;
 };
 
 type StreamSegmentLike = {
@@ -299,13 +302,10 @@ export function useChatDerivedState({
     [replyLoading, ttsLoading, ttsPlaying, ttsQueueProcessing]
   );
   const latestAssistantWaveformLen = useMemo(() => {
-    for (let i = conversationMessages.length - 1; i >= 0; i -= 1) {
-      const item = conversationMessages[i];
-      if (item.role !== "assistant") continue;
-      const points = Array.isArray(item.ttsWaveform) ? item.ttsWaveform : [];
-      return points.length;
-    }
-    return 0;
+    const index = findLatestAssistantMessageIndex(conversationMessages);
+    if (index < 0) return 0;
+    const points = conversationMessages[index].ttsWaveform;
+    return Array.isArray(points) ? points.length : 0;
   }, [conversationMessages]);
   const llmVisual = llmStatusVisual(llmUiStatus);
   const llmPixelIconKey = useMemo(

@@ -7,6 +7,7 @@ import type {
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import { parseLlmSessionMessageRole } from "./llmSession";
+import { isCommandExecutionMessage } from "./sessionRuntimeStatus";
 import { normalizeModelRef, parseModelRef, parseReasoningEffort, type ReasoningEffort } from "./settingsParsers";
 
 type ModelOptionLike = {
@@ -208,7 +209,7 @@ export function buildHistoryFromSessionMessages(messages: LlmSessionMessage[]) {
   const nextHistoryChronological: HistoryEntry[] = [];
   let latestUserText = "";
   for (const message of messages) {
-    if (message.commandExecution) continue;
+    if (isCommandExecutionMessage(message)) continue;
     if (message.role === "user") {
       latestUserText = String(message.content || "").trim();
       continue;
