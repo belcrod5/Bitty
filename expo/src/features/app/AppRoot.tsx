@@ -7718,6 +7718,10 @@ export default function App() {
     markSessionRead,
     markDirectorySessionsRead,
   });
+  const renderAppDrawerContent = useCallback(
+    () => <AppDrawer {...appDrawerProps} />,
+    [appDrawerProps]
+  );
 
   return (
     <GestureHandlerRootView style={styles.safeArea}>
@@ -7757,9 +7761,7 @@ export default function App() {
         drawerPosition="left"
         drawerStyle={styles.appDrawerPanel}
         overlayStyle={styles.appDrawerOverlay}
-        renderDrawerContent={() => (
-          <AppDrawer {...appDrawerProps} />
-        )}
+        renderDrawerContent={renderAppDrawerContent}
       >
       <SafeAreaView style={styles.safeArea}>
       {activeScreen === "debug" ? (
