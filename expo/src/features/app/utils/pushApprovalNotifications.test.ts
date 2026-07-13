@@ -21,12 +21,12 @@ describe("registerApprovalNotificationCategories", () => {
   });
 
   it("registers TURN_COMPLETED with no actions", async () => {
-    await registerApprovalNotificationCategories();
+    await registerApprovalNotificationCategories(false);
     expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(TURN_COMPLETED_CATEGORY, []);
   });
 
-  it("both approve and deny always foreground the app (background actions cannot run JS reliably on iOS)", async () => {
-    await registerApprovalNotificationCategories();
+  it("Face ID ON: approve foregrounds the app so JS can run the biometric prompt", async () => {
+    await registerApprovalNotificationCategories(true);
     expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(
       APPROVAL_REQUEST_CATEGORY,
       expect.arrayContaining([
@@ -34,12 +34,37 @@ describe("registerApprovalNotificationCategories", () => {
           identifier: APPROVE_ACTION,
           options: { opensAppToForeground: true },
         }),
+      ])
+    );
+  });
+
+  it("Face ID OFF: approve is a background action (native responder) requiring device unlock", async () => {
+    await registerApprovalNotificationCategories(false);
+    expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(
+      APPROVAL_REQUEST_CATEGORY,
+      expect.arrayContaining([
         expect.objectContaining({
-          identifier: DENY_ACTION,
-          options: { opensAppToForeground: true },
+          identifier: APPROVE_ACTION,
+          options: { opensAppToForeground: false, isAuthenticationRequired: true },
         }),
       ])
     );
+  });
+
+  it("deny is always a background action (native responder) regardless of the Face ID setting", async () => {
+    for (const faceIdRequired of [true, false]) {
+      mockSetNotificationCategoryAsync.mockClear();
+      await registerApprovalNotificationCategories(faceIdRequired);
+      expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(
+        APPROVAL_REQUEST_CATEGORY,
+        expect.arrayContaining([
+          expect.objectContaining({
+            identifier: DENY_ACTION,
+            options: { opensAppToForeground: false },
+          }),
+        ])
+      );
+    }
   });
 });
 

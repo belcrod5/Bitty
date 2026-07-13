@@ -193,39 +193,45 @@ describe("handlePushApprovalAction", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("deny always responds immediately without any Face ID check, regardless of the setting", async () => {
+  it("never responds to deny from JS (the native bitty-push-approval module owns it)", async () => {
+    for (const faceIdRequiredForApproval of [true, false]) {
+      mockSettingsFileContent = JSON.stringify({
+        runnerUrl: "https://runner.example.com",
+        faceIdRequiredForApproval,
+      });
+      const fetchMock = jest.fn();
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      await handlePushApprovalAction({
+        categoryIdentifier: "APPROVAL_REQUEST",
+        actionIdentifier: "deny",
+        approvalId: "relay:rpc",
+      });
+
+      expect(mockHasHardwareAsync).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("attaches Cloudflare Access headers from secure-store credentials on Face-ID approves", async () => {
     mockSettingsFileContent = JSON.stringify({
       runnerUrl: "https://runner.example.com",
       faceIdRequiredForApproval: true,
     });
-    const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    await handlePushApprovalAction({
-      categoryIdentifier: "APPROVAL_REQUEST",
-      actionIdentifier: "deny",
-      approvalId: "relay:rpc",
-    });
-
-    expect(mockHasHardwareAsync).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/push/approvals/relay%3Arpc/respond"),
-      expect.objectContaining({ body: JSON.stringify({ approved: false }) })
-    );
-  });
-
-  it("attaches Cloudflare Access headers from secure-store credentials on background responds", async () => {
     mockLoadSecureRunnerCredentials.mockResolvedValue({
       runnerToken: "secret-token",
       cloudflareAccessClientId: "cf-id-from-store",
       cloudflareAccessClientSecret: "cf-secret-from-store",
     });
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
     const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
     global.fetch = fetchMock as unknown as typeof fetch;
 
     await handlePushApprovalAction({
       categoryIdentifier: "APPROVAL_REQUEST",
-      actionIdentifier: "deny",
+      actionIdentifier: "approve",
       approvalId: "relay:rpc",
     });
 
@@ -240,12 +246,12 @@ describe("handlePushApprovalAction", () => {
     );
   });
 
-  it("approve responds immediately without Face ID when the setting is OFF", async () => {
+  it("never responds to approve from JS when Face ID is OFF (the native module owns it)", async () => {
     mockSettingsFileContent = JSON.stringify({
       runnerUrl: "https://runner.example.com",
       faceIdRequiredForApproval: false,
     });
-    const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    const fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
 
     await handlePushApprovalAction({
@@ -255,10 +261,7 @@ describe("handlePushApprovalAction", () => {
     });
 
     expect(mockHasHardwareAsync).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/push/approvals/relay%3Arpc/respond"),
-      expect.objectContaining({ body: JSON.stringify({ approved: true }) })
-    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("approve requires a successful Face ID authentication before responding when the setting is ON", async () => {
@@ -306,12 +309,19 @@ describe("handlePushApprovalAction", () => {
   });
 
   it("fires a lightweight local fallback notification when the respond call fails (e.g. network error)", async () => {
+    mockSettingsFileContent = JSON.stringify({
+      runnerUrl: "https://runner.example.com",
+      faceIdRequiredForApproval: true,
+    });
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
     const fetchMock = jest.fn().mockRejectedValue(new Error("network down"));
     global.fetch = fetchMock as unknown as typeof fetch;
 
     await handlePushApprovalAction({
       categoryIdentifier: "APPROVAL_REQUEST",
-      actionIdentifier: "deny",
+      actionIdentifier: "approve",
       approvalId: "relay:rpc",
     });
 
@@ -324,6 +334,13 @@ describe("handlePushApprovalAction", () => {
   });
 
   it("fires the fallback notification on a 409 (already answered / expired) instead of throwing", async () => {
+    mockSettingsFileContent = JSON.stringify({
+      runnerUrl: "https://runner.example.com",
+      faceIdRequiredForApproval: true,
+    });
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
     const fetchMock = jest.fn().mockResolvedValue({
       ok: false,
       status: 409,
@@ -334,7 +351,7 @@ describe("handlePushApprovalAction", () => {
     await expect(
       handlePushApprovalAction({
         categoryIdentifier: "APPROVAL_REQUEST",
-        actionIdentifier: "deny",
+        actionIdentifier: "approve",
         approvalId: "relay:rpc",
       })
     ).resolves.toBeUndefined();

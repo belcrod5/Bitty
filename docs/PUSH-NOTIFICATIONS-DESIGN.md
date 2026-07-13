@@ -15,7 +15,7 @@
 | 配信経路 | private_runner から APNs へ直接送信(HTTP/2 + ES256 JWT、Node組み込みモジュールのみ、新規npm依存なし) |
 | 前提 | Apple Developer Program 加入済み。APNs認証キー(.p8)を発行して使用 |
 | 対象イベント | ターン完了、承認リクエスト |
-| 承認リクエスト | 通知のアクションボタン(承認/拒否)で返答可能にする。iOS/expo-notificationsの制約により、アクション押下時はアプリをフォアグラウンド起動して即時返答する(§4.3参照。「アプリを開かずに返答」は実機検証で不成立と判明) |
+| 承認リクエスト | 通知のアクションボタン(承認/拒否)で、アプリを開かずに返答可能にする。expo-notificationsのJS層はバックグラウンドアクションを処理できないため、ローカルネイティブモジュール(Swift)が返答を送信する(§4.3) |
 | 通知本文 | 応答プレビューを含める。runner側で gpt-5.6-luna (reasoning: low) により短文要約して送信。要約は既存Codex経路を再利用して呼び出す |
 | 送信先 | 常に全登録デバイスへ送信。アプリ側がフォアグラウンド時は表示を抑制(runner側の接続判定は不要) |
 | 通知の緊急度 | 承認リクエスト = time-sensitive(集中モード貫通)、ターン完了 = 通常 |
@@ -57,16 +57,17 @@
 - 通知カテゴリを2種定義:
   - `TURN_COMPLETED`: タップでアプリ起動 → 既存の再接続+イベントリプレイ(`runner_relay_attached`)で該当セッションへ遷移。
   - `APPROVAL_REQUEST`: アクションボタン「承認」「拒否」付き。本文タップ時はアプリを開いて既存の承認UI(`approvalFlow.ts`)を表示。
-- **アクションは両方とも `opensAppToForeground: true`(アプリを前面起動して即時返答)**:
-  - 当初は「アプリを開かずにバックグラウンドで返答」を設計していたが、実機検証で不成立と判明。expo-notifications のiOSネイティブ実装(`NotificationCenterManager.swift`)は `UNUserNotificationCenterDelegate.didReceive` で completionHandler を即時同期呼び出しし、background task assertion も取らないため、バックグラウンドアクションではJSの返答処理(fetch)が走る前にアプリがsuspendされる。アプリkill時はJSランタイム自体が起動しない(`registerTaskAsync` は content-available サイレント通知専用でアクション応答は対象外)。
-  - このためアクション押下時はアプリをフォアグラウンド起動し、起動直後にJS側で即返答を送信する(context未初期化でも動くbackground-safe実装 `pushApprovalActions.ts` を使用)。コールドスタートでリスナー登録前にイベントが発火したケースは `getLastNotificationResponse()` で回収し、リスナーとの二重処理はレスポンスIDで重複排除する。
-  - フォアグラウンド起動には端末ロック解除が必須(iOS標準動作)のため、`authenticationRequired` オプションは不要。
+- **バックグラウンド返答はローカルネイティブモジュール(Swift)が担当**:
+  - 背景: expo-notifications のiOSネイティブ実装(`NotificationCenterManager.swift`)は `UNUserNotificationCenterDelegate.didReceive` で completionHandler を即時同期呼び出しし、background task assertion も取らないため、バックグラウンドアクションのJS処理はfetch完了前にsuspendされる(アプリkill時はJS自体が起動しない。`registerTaskAsync` は content-available サイレント通知専用)。iOS自体はバックグラウンドアクションに実行時間を与えるので、ネイティブで処理すれば「アプリを開かずに返答」が成立する。
+  - 実装: `expo/modules/bitty-push-approval`(autolinking対象のローカルexpo-module)。`ExpoAppDelegateSubscriber` の didFinishLaunching で `NotificationCenterManager.shared.addDelegate(...)` に自前の `NotificationDelegate` を登録し、`APPROVAL_REQUEST` の approve/deny アクションのみを処理。`UIApplication.beginBackgroundTask` で実行時間を確保し、Swiftの `URLSession` で直接 `POST /push/approvals/:id/respond` を送る(Bearer+CF-Accessヘッダー)。それ以外のカテゴリ/アクションは `didReceive` が false を返してJS層(EmitterModule)の既存動作に委ねる。
+  - ネイティブからの資格情報取得: runnerUrl と Face ID設定は `<Documents>/bitty-settings.json`(JSと同一ファイル)、runnerToken / CF-Access client id・secret は expo-secure-store が書くKeychainエントリ(`kSecClassGenericPassword`, service `"app:no-auth"`(旧 `"app"`)、account/generic = キー名utf8)を直接読む。
 - **「承認にFace IDを要求」設定(ON/OFF、アプリの設定画面に追加、既定OFF)**:
-  - ON: 「承認」はフォアグラウンド起動後、Face ID(expo-local-authentication)成功時のみ返答を送信。
-  - OFF: フォアグラウンド起動後、即返答を送信。
-  - 「拒否」は安全側の操作なので、設定によらず起動後に即送信。
-  - 設定はカテゴリ定義に影響しない(アクションのオプションは固定)ため、カテゴリ登録は起動時1回のみ。
-- 返答失敗時(runner到達不可・409等)はローカル通知でユーザーに通知し、通知タップでアプリを開く導線にフォールバック。
+  - OFF: 「承認」はバックグラウンドアクション(ネイティブが即返答)。アクションに `isAuthenticationRequired` を付け、端末ロック中はロック解除を要求。
+  - ON: 「承認」はアプリをフォアグラウンド起動し、JS側で Face ID(expo-local-authentication。生体認証UIはバックグラウンドでは出せない)成功時のみ返答を送信。コールドスタートでリスナー登録前にイベントが発火したケースは `getLastNotificationResponse()` で回収し、レスポンスIDで重複排除。
+  - 「拒否」は安全側の操作なので、設定によらずバックグラウンドで即送信(ネイティブ)。認証オプションなし。
+  - 設定により「承認」アクションのフォアグラウンド/バックグラウンドが変わるため、設定変更時にカテゴリを再登録する。ネイティブ側も同じ設定ファイルを参照し、ON時のapproveは処理しない(JS側とちょうど相補の分担)。
+- 返答失敗時(runner到達不可・409等)はローカル通知「承認の送信に失敗しました」でユーザーに通知し、通知タップでアプリを開く導線にフォールバック(ネイティブ/JS両経路とも)。
+- 既知の制限: 端末ロック中の「拒否」はKeychain(`kSecAttrAccessibleWhenUnlocked`)からトークンを読めず失敗通知になる場合がある(承認はロック解除を要求するため対象外)。
 
 ## 5. runner側 (private_runner/)
 

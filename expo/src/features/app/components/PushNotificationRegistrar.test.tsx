@@ -189,21 +189,22 @@ describe("PushNotificationRegistrar", () => {
     });
   });
 
-  it("registers the (static) approval notification categories once on mount", async () => {
+  it("registers approval notification categories on mount and re-registers when the Face ID setting changes", async () => {
     const { rerender } = await render(<PushNotificationRegistrar />);
     await waitFor(() => {
-      expect(mockRegisterApprovalNotificationCategories).toHaveBeenCalledTimes(1);
+      expect(mockRegisterApprovalNotificationCategories).toHaveBeenCalledWith(false);
     });
 
-    // Category options no longer depend on any setting, so re-renders must not re-register.
     mockUseAppSettings.mockReturnValue({
       runnerUrl: "https://runner.example.com",
       runnerToken: "runner-token",
       faceIdRequiredForApproval: true,
     });
     await rerender(<PushNotificationRegistrar />);
-    await settle();
-    expect(mockRegisterApprovalNotificationCategories).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => {
+      expect(mockRegisterApprovalNotificationCategories).toHaveBeenLastCalledWith(true);
+    });
   });
 
   it("stashes the pending session id on a default (plain) tap", async () => {

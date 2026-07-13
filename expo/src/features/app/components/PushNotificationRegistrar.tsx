@@ -12,25 +12,29 @@ Notifications.setNotificationHandler({
 
 // Registers this device's native APNs push token with the runner once the runner
 // WebSocket connection is established, and re-registers whenever the token changes.
-// Also owns notification-category registration (once on mount; category options are static)
-// and the tap/action response listener. Renders nothing; it only needs the runner URL/token
-// (from AppSettingsContext) and the live connection state (from RunnerWebSocketContext) for
-// device registration -- the response listener's action handlers are intentionally
-// background-safe (see pushApprovalActions.ts) and do not read from context, because on a
-// cold start triggered by a notification action they run before context has loaded.
+// Also owns notification-category registration (re-run whenever the "Face ID required for
+// approval" setting changes, since the approve action's foreground/background mode depends
+// on it) and the tap/action response listener. Renders nothing; it only needs the runner
+// URL/token (from AppSettingsContext) and the live connection state (from
+// RunnerWebSocketContext) for device registration -- the response listener's action handler
+// is intentionally background-safe (see pushApprovalActions.ts) and does not read from
+// context, because on a cold start triggered by a notification action it runs before
+// context has loaded. Background actions (deny / Face-ID-OFF approve) are answered natively
+// by the bitty-push-approval module; when the app process happens to be alive their events
+// still reach the JS listener, but handlePushApprovalAction deliberately no-ops on them.
 export function PushNotificationRegistrar() {
-  const { runnerUrl, runnerToken } = useAppSettings();
+  const { runnerUrl, runnerToken, faceIdRequiredForApproval } = useAppSettings();
   const { connected } = useRunnerWebSocketSnapshot();
   const lastRegisteredKeyRef = useRef("");
-  // Guards against processing the same response twice: all notification actions foreground
-  // the app (see registerApprovalNotificationCategories), so a cold-start action press can
-  // surface both through the response listener and through getLastNotificationResponse(),
-  // and a double respond would 409 on the runner and fire a misleading failure fallback.
+  // Guards against processing the same response twice: a cold-start Face-ID approve press
+  // (foreground action) can surface both through the response listener and through
+  // getLastNotificationResponse(), and a double respond would 409 on the runner and fire a
+  // misleading failure fallback.
   const processedResponseKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    void registerApprovalNotificationCategories();
-  }, []);
+    void registerApprovalNotificationCategories(faceIdRequiredForApproval);
+  }, [faceIdRequiredForApproval]);
 
   useEffect(() => {
     const processResponse = (response: Notifications.NotificationResponse) => {

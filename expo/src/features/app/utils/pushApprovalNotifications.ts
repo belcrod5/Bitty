@@ -8,36 +8,40 @@ export const APPROVAL_REQUEST_CATEGORY = "APPROVAL_REQUEST";
 export const APPROVE_ACTION = "approve";
 export const DENY_ACTION = "deny";
 
-// Registers the two notification categories used by push notifications.
+// Registers (or re-registers) the two notification categories used by push notifications.
 // TURN_COMPLETED has no actions -- tap-to-open is handled entirely by the response listener.
 // APPROVAL_REQUEST exposes "approve"/"deny" action buttons.
 //
-// Both actions deliberately use opensAppToForeground: true. Background actions
-// (opensAppToForeground: false) are NOT viable with expo-notifications on iOS: the library's
-// UNUserNotificationCenter delegate (NotificationCenterManager.swift) invokes the system
-// completionHandler synchronously after forwarding the response, without taking a background
-// task assertion, so iOS re-suspends the app before our async respond chain (settings read ->
-// secure store -> fetch to the runner) can run -- and if the app was killed, the JS runtime is
-// never started at all (expo-notifications' iOS background task support only covers
-// content-available remote notifications, not action responses). Verified on device: the
-// respond request never reached the runner and no fallback notification fired. Foregrounding
-// the app makes the respond reliable; iOS already requires the device to be unlocked to
-// foreground an app, so no extra isAuthenticationRequired option is needed. The
-// "承認にFace IDを要求" setting is enforced by our own action handler
-// (pushApprovalActions.ts) after launch, not via category options, so the categories are
-// static and only need to be registered once.
-export async function registerApprovalNotificationCategories(): Promise<void> {
+// Background actions (opensAppToForeground: false) are handled entirely NATIVELY by the local
+// bitty-push-approval module (expo/modules/bitty-push-approval): expo-notifications' own iOS
+// delegate (NotificationCenterManager.swift) calls the system completionHandler immediately
+// without a background task assertion, so a JS respond chain would be suspended mid-flight
+// (and a killed app never starts JS for a background response at all). The native responder
+// takes its own UIBackgroundTask assertion and POSTs to the runner directly from Swift, so
+// the app never has to open.
+//
+// Ownership matrix (must stay in sync with PushApprovalNotificationDelegate.swift and
+// pushApprovalActions.ts):
+//   - deny:                 background action, native responder owns it. No auth option: it
+//                           is the safe choice, so it stays one-tap even on a locked device.
+//   - approve, Face ID OFF: background action, native responder owns it.
+//                           isAuthenticationRequired makes iOS demand device unlock first.
+//   - approve, Face ID ON:  foreground action; JS runs Face ID (expo-local-authentication --
+//                           biometric UI cannot be shown from the background) and responds.
+export async function registerApprovalNotificationCategories(faceIdRequired: boolean): Promise<void> {
   await Notifications.setNotificationCategoryAsync(TURN_COMPLETED_CATEGORY, []);
   await Notifications.setNotificationCategoryAsync(APPROVAL_REQUEST_CATEGORY, [
     {
       identifier: APPROVE_ACTION,
       buttonTitle: "承認",
-      options: { opensAppToForeground: true },
+      options: faceIdRequired
+        ? { opensAppToForeground: true }
+        : { opensAppToForeground: false, isAuthenticationRequired: true },
     },
     {
       identifier: DENY_ACTION,
       buttonTitle: "拒否",
-      options: { opensAppToForeground: true },
+      options: { opensAppToForeground: false },
     },
   ]);
 }

@@ -3,7 +3,7 @@ import * as Notifications from "expo-notifications";
 import { loadSecureRunnerCredentials } from "./secureRunnerCredentials";
 import { buildCloudflareAccessHeaders, normalizeCloudflareAccessCredentials } from "./cloudflareAccess";
 import { readPersistedSettingsField } from "./persistedSettingsFile";
-import { APPROVAL_REQUEST_CATEGORY, APPROVE_ACTION, DENY_ACTION } from "./pushApprovalNotifications";
+import { APPROVAL_REQUEST_CATEGORY, APPROVE_ACTION } from "./pushApprovalNotifications";
 
 // Notification action handlers can run while the app is freshly launched in the background,
 // before AppSettingsContext's async settings-file load has had a chance to run -- so nothing
@@ -135,7 +135,14 @@ async function authenticateWithFaceId(): Promise<boolean> {
 
 // Entry point called by the notification response listener (PushNotificationRegistrar.tsx) for
 // non-default actionIdentifiers. Deliberately takes only primitive strings, not React context,
-// since this can run before the settings/runner context has finished its async load.
+// since on a cold start it can run before the settings/runner context has finished its load.
+//
+// The JS layer only owns the approve action when "承認にFace IDを要求" is ON (the action is
+// then registered with opensAppToForeground: true, and biometric UI can only be shown in the
+// foreground). Deny and Face-ID-OFF approve are background actions owned entirely by the
+// native bitty-push-approval module (PushApprovalNotificationDelegate.swift, which applies
+// the mirror-image of this gating) -- responding here too would double-POST, 409, and fire a
+// misleading failure notification.
 export async function handlePushApprovalAction({
   categoryIdentifier,
   actionIdentifier,
@@ -147,18 +154,12 @@ export async function handlePushApprovalAction({
 }): Promise<void> {
   if (categoryIdentifier !== APPROVAL_REQUEST_CATEGORY) return;
   if (!approvalId) return;
+  if (actionIdentifier !== APPROVE_ACTION) return;
 
-  if (actionIdentifier === DENY_ACTION) {
-    await respondInBackground({ approvalId, approved: false });
-    return;
-  }
+  const faceIdRequired = await readFaceIdRequiredFromDisk();
+  if (!faceIdRequired) return;
 
-  if (actionIdentifier === APPROVE_ACTION) {
-    const faceIdRequired = await readFaceIdRequiredFromDisk();
-    if (faceIdRequired) {
-      const authenticated = await authenticateWithFaceId();
-      if (!authenticated) return;
-    }
-    await respondInBackground({ approvalId, approved: true });
-  }
+  const authenticated = await authenticateWithFaceId();
+  if (!authenticated) return;
+  await respondInBackground({ approvalId, approved: true });
 }
