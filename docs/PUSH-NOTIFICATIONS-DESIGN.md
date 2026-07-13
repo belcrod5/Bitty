@@ -93,6 +93,7 @@
 ### 5.2 送信APIエンドポイント(HTTP、既存Bearerトークン認証)
 - `POST /push/devices` — デバイストークン登録・更新
 - `DELETE /push/devices/:deviceId` — 登録解除(通知OFF設定用)
+- PUSH機能無効時(APNS_*未設定)の応答は `200 { ok: true, enabled: false }` のソフトNo-op(エラーにしない。アプリ側は enabled で判定)
 - `POST /push/approvals/:approvalId/respond` — 通知アクションからの承認/拒否返答。runner内の既存approval処理(codex-wsリレー)へ橋渡しする。期限切れ・返答済みの場合は 409 を返す。
 
 ### 5.3 イベントフックと送信条件
