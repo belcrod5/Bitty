@@ -20,6 +20,9 @@ import {
   trackRunnerWebSocket,
 } from "./runner-connection-events.mjs";
 import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade.mjs";
+import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
+import { createPushDeviceStore } from "./push-device-store.mjs";
+import { createPushSummarizer } from "./push-summarizer.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -441,6 +444,22 @@ const CLI_SESSION_INDEX_PATH = path.resolve(
   process.env.CLI_SESSION_INDEX_PATH || "private_runner/logs/cli_sessions_index.json"
 );
 const CLI_SESSION_SCAN_MAX_FILES = Math.max(100, Number(process.env.CLI_SESSION_SCAN_MAX_FILES || 5000));
+// PUSH notifications (APNs). Unset APNS_KEY_PATH/APNS_KEY_ID/APPLE_TEAM_ID disables the
+// feature entirely (registration endpoints and the turn-completed hook become no-ops)
+// so an unconfigured runner behaves exactly as before this feature existed.
+const APNS_KEY_PATH = String(process.env.APNS_KEY_PATH || "").trim();
+const APNS_KEY_ID = String(process.env.APNS_KEY_ID || "").trim();
+const APPLE_TEAM_ID = String(process.env.APPLE_TEAM_ID || "").trim();
+const APNS_TOPIC = String(process.env.APNS_TOPIC || "app.bitty.mobile").trim();
+const APNS_ENV = String(process.env.APNS_ENV || "sandbox").trim().toLowerCase() === "production"
+  ? "production"
+  : "sandbox";
+const PUSH_DEVICE_STORE_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  process.env.PUSH_DEVICE_STORE_PATH || "private_runner/logs/push_devices.json"
+);
+const PUSH_SUMMARY_MODEL_REF = String(process.env.PUSH_SUMMARY_MODEL || "openai-codex/gpt-5.6-luna").trim();
+const PUSH_ENABLED = Boolean(APNS_KEY_PATH && APNS_KEY_ID && APPLE_TEAM_ID);
 const SESSIONS_LIST_MAX_LIMIT = Math.max(10, Number(process.env.SESSIONS_LIST_MAX_LIMIT || 500));
 const SESSIONS_LIST_DEFAULT_LIMIT = Math.max(
   1,
@@ -1271,6 +1290,24 @@ const {
   toUnixPath,
   toWorkspaceRelativeFromAbsolutePath,
 });
+
+const pushDeviceStore = createPushDeviceStore(PUSH_DEVICE_STORE_PATH);
+const apnsClient = PUSH_ENABLED
+  ? createApnsClient({
+    keyPath: APNS_KEY_PATH,
+    keyId: APNS_KEY_ID,
+    teamId: APPLE_TEAM_ID,
+    topic: APNS_TOPIC,
+    env: APNS_ENV,
+  })
+  : null;
+const pushSummarizer = PUSH_ENABLED
+  ? createPushSummarizer({
+    runCodex,
+    modelInfo: parseOpenAICodexModelRef(PUSH_SUMMARY_MODEL_REF),
+    reasoningEffort: "low",
+  })
+  : null;
 
 async function listLlmSessions(rawDirectory, opts = {}) {
   const requestedDirectory = await resolveCanonicalDirectoryIdentity(rawDirectory);
@@ -8391,6 +8428,60 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && pathname === "/push/devices") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    if (!PUSH_ENABLED) {
+      return json(res, 200, { ok: true, enabled: false });
+    }
+    try {
+      const body = await readJsonBody(req);
+      const deviceId = String(body?.deviceId || "").trim();
+      const apnsToken = String(body?.apnsToken || "").trim();
+      if (!deviceId || !apnsToken) {
+        return json(res, 400, {
+          error: "invalid_request",
+          message: "deviceId and apnsToken are required",
+        });
+      }
+      const env = String(body?.env || "").trim().toLowerCase() === "production" ? "production" : APNS_ENV;
+      const record = await pushDeviceStore.upsertDevice({ deviceId, apnsToken, env });
+      return json(res, 200, {
+        ok: true,
+        enabled: true,
+        device: { deviceId: record.deviceId, env: record.env, registeredAt: record.registeredAt },
+      });
+    } catch (err) {
+      return json(res, 500, { error: "push_device_register_failed", message: errorMessage(err) });
+    }
+  }
+
+  if (req.method === "DELETE" && pathname.startsWith("/push/devices/")) {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    const deviceId = decodeURIComponent(pathname.slice("/push/devices/".length)).trim();
+    if (!deviceId) {
+      return json(res, 400, { error: "device_id_required", message: "device id is required" });
+    }
+    if (!PUSH_ENABLED) {
+      return json(res, 200, { ok: true, enabled: false });
+    }
+    try {
+      const removed = await pushDeviceStore.removeDevice(deviceId);
+      return json(res, 200, { ok: true, enabled: true, removed });
+    } catch (err) {
+      return json(res, 500, { error: "push_device_remove_failed", message: errorMessage(err) });
+    }
+  }
+
   if (
     (req.method === "POST" || req.method === "PATCH" || req.method === "DELETE") &&
     pathname === "/workspace/files"
@@ -10742,6 +10833,48 @@ function compactLlmCompletionPreview(textRaw, maxChars = 180) {
   return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
+async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText }) {
+  if (!PUSH_ENABLED || !apnsClient || !pushSummarizer) return;
+  let devices = [];
+  try {
+    devices = await pushDeviceStore.listDevices();
+  } catch (err) {
+    console.warn(`[push] failed to list devices: ${errorMessage(err)}`);
+    return;
+  }
+  if (devices.length <= 0) return;
+
+  const summary = await pushSummarizer.summarize(previewText);
+  if (!summary) return;
+
+  const id = String(sessionId || threadId || "");
+  const payload = {
+    aps: {
+      alert: { title: "タスク完了", body: summary },
+      sound: "default",
+      category: "TURN_COMPLETED",
+      "thread-id": id,
+    },
+    sessionId: id,
+    turnId: String(turnId || ""),
+  };
+
+  await Promise.all(devices.map(async (device) => {
+    try {
+      const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
+      if (result?.status === 410) {
+        await pushDeviceStore.removeDevice(device.deviceId);
+      } else if (!result?.ok) {
+        console.warn(
+          `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
+        );
+      }
+    } catch (err) {
+      console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
+    }
+  }));
+}
+
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
   if (!payload?.threadId || !payload?.previewText) return false;
   if (typeof runnerWsActiveClients === "undefined") return false;
@@ -10809,6 +10942,10 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     threadId,
     previewText,
     completedAt: new Date().toISOString(),
+  });
+  const turnId = getCodexTurnStartedId(rpcPayload) || threadId;
+  void sendTurnCompletedPush({ sessionId: threadId, threadId, turnId, previewText }).catch((err) => {
+    console.warn(`[push] turn completed push failed: ${errorMessage(err)}`);
   });
 }
 
@@ -11577,6 +11714,9 @@ if (!RUNNER_SKIP_SERVER_START) {
 }
 
 export const __TESTING__ = {
+  server,
+  pushDeviceStore,
+  sendTurnCompletedPush,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
   shouldReplayCodexRelayEvent,

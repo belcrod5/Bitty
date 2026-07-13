@@ -33,6 +33,7 @@ import {
   type LlmCompletionNotification,
 } from "./components/LlmCompletionNotifications";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
+import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
 import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
@@ -7858,6 +7859,7 @@ export default function App() {
             onDismiss={dismissLlmCompletionNotification}
           />
         </SafeAreaView>
+        <PushNotificationRegistrar />
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>

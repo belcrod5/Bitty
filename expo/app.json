@@ -36,7 +36,13 @@
       ],
       "expo-font",
       "react-native-enriched-markdown",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "mode": "development"
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
