@@ -18,6 +18,8 @@ jest.mock("expo-notifications", () => ({
   requestPermissionsAsync: jest.fn(),
   getDevicePushTokenAsync: jest.fn(),
   addNotificationResponseReceivedListener: jest.fn(),
+  getLastNotificationResponse: jest.fn(() => null),
+  clearLastNotificationResponse: jest.fn(),
   DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
 }));
 
@@ -69,6 +71,8 @@ describe("PushNotificationRegistrar", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     capturedResponseListener = null;
+    // clearAllMocks does not reset return values configured with mockReturnValue.
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(null);
     mockAddNotificationResponseReceivedListener.mockImplementation((listener: NotificationResponseListener) => {
       capturedResponseListener = listener;
       return { remove: jest.fn() };
@@ -185,22 +189,21 @@ describe("PushNotificationRegistrar", () => {
     });
   });
 
-  it("registers approval notification categories on mount and re-registers when the Face ID setting changes", async () => {
+  it("registers the (static) approval notification categories once on mount", async () => {
     const { rerender } = await render(<PushNotificationRegistrar />);
     await waitFor(() => {
-      expect(mockRegisterApprovalNotificationCategories).toHaveBeenCalledWith(false);
+      expect(mockRegisterApprovalNotificationCategories).toHaveBeenCalledTimes(1);
     });
 
+    // Category options no longer depend on any setting, so re-renders must not re-register.
     mockUseAppSettings.mockReturnValue({
       runnerUrl: "https://runner.example.com",
       runnerToken: "runner-token",
       faceIdRequiredForApproval: true,
     });
     await rerender(<PushNotificationRegistrar />);
-
-    await waitFor(() => {
-      expect(mockRegisterApprovalNotificationCategories).toHaveBeenLastCalledWith(true);
-    });
+    await settle();
+    expect(mockRegisterApprovalNotificationCategories).toHaveBeenCalledTimes(1);
   });
 
   it("stashes the pending session id on a default (plain) tap", async () => {
@@ -264,6 +267,79 @@ describe("PushNotificationRegistrar", () => {
     expect(mockHandlePushApprovalAction).toHaveBeenCalledWith({
       categoryIdentifier: "APPROVAL_REQUEST",
       actionIdentifier: "approve",
+      approvalId: "relay-1:rpc-2",
+    });
+  });
+
+  it("picks up a cold-start action press from getLastNotificationResponse and clears it", async () => {
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue({
+      actionIdentifier: "approve",
+      notification: {
+        request: {
+          identifier: "notif-cold-start",
+          content: {
+            categoryIdentifier: "APPROVAL_REQUEST",
+            data: { approvalId: "relay-1:rpc-9", sessionId: "session-abc" },
+          },
+        },
+      },
+    });
+
+    await render(<PushNotificationRegistrar />);
+
+    expect(mockHandlePushApprovalAction).toHaveBeenCalledWith({
+      categoryIdentifier: "APPROVAL_REQUEST",
+      actionIdentifier: "approve",
+      approvalId: "relay-1:rpc-9",
+    });
+    expect(Notifications.clearLastNotificationResponse).toHaveBeenCalled();
+  });
+
+  it("does not respond twice when the same response arrives via both the listener and getLastNotificationResponse", async () => {
+    const response = {
+      actionIdentifier: "approve",
+      notification: {
+        request: {
+          identifier: "notif-dup",
+          content: {
+            categoryIdentifier: "APPROVAL_REQUEST",
+            data: { approvalId: "relay-1:rpc-9", sessionId: "session-abc" },
+          },
+        },
+      },
+    };
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(response);
+
+    await render(<PushNotificationRegistrar />);
+    capturedResponseListener?.(response);
+
+    expect(mockHandlePushApprovalAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("still processes distinct responses after a dedupe hit", async () => {
+    await render(<PushNotificationRegistrar />);
+
+    const makeResponse = (identifier: string, approvalId: string) => ({
+      actionIdentifier: "deny",
+      notification: {
+        request: {
+          identifier,
+          content: {
+            categoryIdentifier: "APPROVAL_REQUEST",
+            data: { approvalId },
+          },
+        },
+      },
+    });
+
+    capturedResponseListener?.(makeResponse("notif-1", "relay-1:rpc-1"));
+    capturedResponseListener?.(makeResponse("notif-1", "relay-1:rpc-1"));
+    capturedResponseListener?.(makeResponse("notif-2", "relay-1:rpc-2"));
+
+    expect(mockHandlePushApprovalAction).toHaveBeenCalledTimes(2);
+    expect(mockHandlePushApprovalAction).toHaveBeenLastCalledWith({
+      categoryIdentifier: "APPROVAL_REQUEST",
+      actionIdentifier: "deny",
       approvalId: "relay-1:rpc-2",
     });
   });

@@ -8,31 +8,36 @@ export const APPROVAL_REQUEST_CATEGORY = "APPROVAL_REQUEST";
 export const APPROVE_ACTION = "approve";
 export const DENY_ACTION = "deny";
 
-// Registers (or re-registers) the two notification categories used by push notifications.
+// Registers the two notification categories used by push notifications.
 // TURN_COMPLETED has no actions -- tap-to-open is handled entirely by the response listener.
-// APPROVAL_REQUEST exposes "approve"/"deny" action buttons whose iOS-level behavior depends on
-// the "承認にFace IDを要求" setting:
-//   - faceIdRequired ON:  "approve" foregrounds the app so our own code can run
-//     expo-local-authentication explicitly; iOS's built-in isAuthenticationRequired is left off
-//     since it only enforces a generic device unlock, not Face ID specifically.
-//   - faceIdRequired OFF: "approve" fires in the background immediately, but iOS is asked to
-//     require the device to be unlocked first (isAuthenticationRequired) as a minimal safeguard.
-// "deny" is always an immediate, unauthenticated background action regardless of the setting --
-// it's the safe (non-destructive) choice, so there is no reason to gate it.
-export async function registerApprovalNotificationCategories(faceIdRequired: boolean): Promise<void> {
+// APPROVAL_REQUEST exposes "approve"/"deny" action buttons.
+//
+// Both actions deliberately use opensAppToForeground: true. Background actions
+// (opensAppToForeground: false) are NOT viable with expo-notifications on iOS: the library's
+// UNUserNotificationCenter delegate (NotificationCenterManager.swift) invokes the system
+// completionHandler synchronously after forwarding the response, without taking a background
+// task assertion, so iOS re-suspends the app before our async respond chain (settings read ->
+// secure store -> fetch to the runner) can run -- and if the app was killed, the JS runtime is
+// never started at all (expo-notifications' iOS background task support only covers
+// content-available remote notifications, not action responses). Verified on device: the
+// respond request never reached the runner and no fallback notification fired. Foregrounding
+// the app makes the respond reliable; iOS already requires the device to be unlocked to
+// foreground an app, so no extra isAuthenticationRequired option is needed. The
+// "承認にFace IDを要求" setting is enforced by our own action handler
+// (pushApprovalActions.ts) after launch, not via category options, so the categories are
+// static and only need to be registered once.
+export async function registerApprovalNotificationCategories(): Promise<void> {
   await Notifications.setNotificationCategoryAsync(TURN_COMPLETED_CATEGORY, []);
   await Notifications.setNotificationCategoryAsync(APPROVAL_REQUEST_CATEGORY, [
     {
       identifier: APPROVE_ACTION,
       buttonTitle: "承認",
-      options: faceIdRequired
-        ? { opensAppToForeground: true, isAuthenticationRequired: false }
-        : { opensAppToForeground: false, isAuthenticationRequired: true },
+      options: { opensAppToForeground: true },
     },
     {
       identifier: DENY_ACTION,
       buttonTitle: "拒否",
-      options: { opensAppToForeground: false, isAuthenticationRequired: false },
+      options: { opensAppToForeground: true },
     },
   ]);
 }

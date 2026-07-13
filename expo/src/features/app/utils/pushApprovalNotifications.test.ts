@@ -21,50 +21,25 @@ describe("registerApprovalNotificationCategories", () => {
   });
 
   it("registers TURN_COMPLETED with no actions", async () => {
-    await registerApprovalNotificationCategories(false);
+    await registerApprovalNotificationCategories();
     expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(TURN_COMPLETED_CATEGORY, []);
   });
 
-  it("when Face ID is required: approve foregrounds the app and skips iOS's built-in auth (handled explicitly instead)", async () => {
-    await registerApprovalNotificationCategories(true);
+  it("both approve and deny always foreground the app (background actions cannot run JS reliably on iOS)", async () => {
+    await registerApprovalNotificationCategories();
     expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(
       APPROVAL_REQUEST_CATEGORY,
       expect.arrayContaining([
         expect.objectContaining({
           identifier: APPROVE_ACTION,
-          options: { opensAppToForeground: true, isAuthenticationRequired: false },
+          options: { opensAppToForeground: true },
         }),
-      ])
-    );
-  });
-
-  it("when Face ID is not required: approve fires in the background but requires device unlock", async () => {
-    await registerApprovalNotificationCategories(false);
-    expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(
-      APPROVAL_REQUEST_CATEGORY,
-      expect.arrayContaining([
         expect.objectContaining({
-          identifier: APPROVE_ACTION,
-          options: { opensAppToForeground: false, isAuthenticationRequired: true },
+          identifier: DENY_ACTION,
+          options: { opensAppToForeground: true },
         }),
       ])
     );
-  });
-
-  it("deny is always an immediate, unauthenticated background action regardless of the Face ID setting", async () => {
-    for (const faceIdRequired of [true, false]) {
-      mockSetNotificationCategoryAsync.mockClear();
-      await registerApprovalNotificationCategories(faceIdRequired);
-      expect(mockSetNotificationCategoryAsync).toHaveBeenCalledWith(
-        APPROVAL_REQUEST_CATEGORY,
-        expect.arrayContaining([
-          expect.objectContaining({
-            identifier: DENY_ACTION,
-            options: { opensAppToForeground: false, isAuthenticationRequired: false },
-          }),
-        ])
-      );
-    }
   });
 });
 

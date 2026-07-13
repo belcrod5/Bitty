@@ -12,23 +12,34 @@ Notifications.setNotificationHandler({
 
 // Registers this device's native APNs push token with the runner once the runner
 // WebSocket connection is established, and re-registers whenever the token changes.
-// Also owns notification-category registration (re-run whenever the "Face ID required for
-// approval" setting changes) and the tap/action response listener. Renders nothing; it only
-// needs the runner URL/token (from AppSettingsContext) and the live connection state (from
-// RunnerWebSocketContext) for device registration -- the response listener's action handlers
-// are intentionally background-safe (see pushApprovalActions.ts) and do not read from context.
+// Also owns notification-category registration (once on mount; category options are static)
+// and the tap/action response listener. Renders nothing; it only needs the runner URL/token
+// (from AppSettingsContext) and the live connection state (from RunnerWebSocketContext) for
+// device registration -- the response listener's action handlers are intentionally
+// background-safe (see pushApprovalActions.ts) and do not read from context, because on a
+// cold start triggered by a notification action they run before context has loaded.
 export function PushNotificationRegistrar() {
-  const { runnerUrl, runnerToken, faceIdRequiredForApproval } = useAppSettings();
+  const { runnerUrl, runnerToken } = useAppSettings();
   const { connected } = useRunnerWebSocketSnapshot();
   const lastRegisteredKeyRef = useRef("");
+  // Guards against processing the same response twice: all notification actions foreground
+  // the app (see registerApprovalNotificationCategories), so a cold-start action press can
+  // surface both through the response listener and through getLastNotificationResponse(),
+  // and a double respond would 409 on the runner and fire a misleading failure fallback.
+  const processedResponseKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    void registerApprovalNotificationCategories(faceIdRequiredForApproval);
-  }, [faceIdRequiredForApproval]);
+    void registerApprovalNotificationCategories();
+  }, []);
 
   useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      const content = response.notification.request.content;
+    const processResponse = (response: Notifications.NotificationResponse) => {
+      const request = response.notification.request;
+      const responseKey = `${String(request.identifier || "")}:${String(response.actionIdentifier || "")}`;
+      if (processedResponseKeysRef.current.has(responseKey)) return;
+      processedResponseKeysRef.current.add(responseKey);
+
+      const content = request.content;
       const data = (content.data || {}) as Record<string, unknown>;
       const categoryIdentifier = String(content.categoryIdentifier || "");
       const sessionId = String(data.sessionId || "").trim();
@@ -42,7 +53,17 @@ export function PushNotificationRegistrar() {
       }
 
       void handlePushApprovalAction({ categoryIdentifier, actionIdentifier: response.actionIdentifier, approvalId });
-    });
+    };
+
+    const subscription = Notifications.addNotificationResponseReceivedListener(processResponse);
+    // Cold start: when an action press launched the app, the native event can fire before
+    // this listener exists. The native side retains it as the "last response"; pick it up
+    // here and clear it so a later remount cannot replay it.
+    const lastResponse = Notifications.getLastNotificationResponse();
+    if (lastResponse) {
+      processResponse(lastResponse);
+      Notifications.clearLastNotificationResponse();
+    }
     return () => subscription.remove();
   }, []);
 

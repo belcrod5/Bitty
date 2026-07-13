@@ -10991,6 +10991,7 @@ async function sendApprovalRequestPush(relay, rpcId, method, params) {
     sessionId,
   };
 
+  let sentCount = 0;
   await Promise.all(devices.map(async (device) => {
     if (!relay?.pendingApprovalRequestIds?.has?.(rpcId)) return;
     try {
@@ -11001,11 +11002,18 @@ async function sendApprovalRequestPush(relay, rpcId, method, params) {
         console.warn(
           `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
         );
+      } else {
+        sentCount += 1;
       }
     } catch (err) {
       console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
     }
   }));
+  if (sentCount > 0) {
+    console.log(
+      `[push] approval push sent devices=${sentCount}/${devices.length} relayId=${relay?.relayId || ""} rpcId=${rpcId}`
+    );
+  }
 }
 
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
