@@ -1,4 +1,5 @@
 import EXNotifications
+import UIKit
 import UserNotifications
 
 // Decides which notification responses this module owns. Everything it does not own is left
@@ -40,10 +41,27 @@ public final class PushApprovalNotificationDelegate: NSObject, NotificationDeleg
     }
     if approved && PushApprovalConfigStore.readFaceIdRequiredForApproval() {
       // Approve must never be sent without authentication in this mode; the JS layer handles
-      // it after the (foreground-opening) action launches the app.
+      // it after the (foreground-opening) action launches the app. One gap: if the pressed
+      // notification's category was registered while Face ID was still OFF, its approve
+      // action is a background action, so the app never comes to the foreground and JS never
+      // gets a chance to run Face ID -- both layers would silently drop the press. Detect
+      // that (we are still in the background) and nudge the user to open the app instead.
+      notifyOpenAppIfInBackground()
       return false
     }
     PushApprovalResponder.shared.respond(approvalId: approvalId, approved: approved)
     return true
+  }
+
+  private func notifyOpenAppIfInBackground() {
+    DispatchQueue.main.async {
+      guard UIApplication.shared.applicationState == .background else { return }
+      let content = UNMutableNotificationContent()
+      content.title = "アプリを開いて承認してください"
+      content.body = "承認にはFace ID認証が必要です。"
+      content.sound = .default
+      let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+      UNUserNotificationCenter.current().add(request)
+    }
   }
 }

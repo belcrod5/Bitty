@@ -158,6 +158,7 @@
 - **APNS_ENV**: ローカル署名のDevelopmentビルド(現行の `build-expo-ios-device.sh`)は sandbox が既定。将来 TestFlight/Ad Hoc 配布する場合は production へ切替が必要(`.env` で明示)。
 - time-sensitive 通知には entitlement `com.apple.developer.usernotifications.time-sensitive` の追加が必要(`app.json` 経由で prebuild に反映)。
 - ユーザーはiOS設定からアプリ単位で time-sensitive を無効化できるため、貫通は保証ではない。
+- **依存アップグレード時の注意**: `expo-secure-store` / `expo-notifications` をアップグレードした際は、ネイティブ承認応答(`expo/modules/bitty-push-approval`)が依存する内部実装(Keychainの保存形式・`NotificationCenterManager` のdelegate配線)が変わっていないか、実機でバックグラウンド承認/拒否の動作確認を行うこと。
 
 ## 10. 未決事項(相談ポイント)
 

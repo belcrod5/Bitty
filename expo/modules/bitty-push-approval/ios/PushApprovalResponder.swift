@@ -20,23 +20,44 @@ final class PushApprovalResponder {
   }
 
   func respond(approvalId: String, approved: Bool) {
+    let lock = NSLock()
+    var settled = false
+    var inFlightTask: URLSessionDataTask?
     var backgroundTask: UIBackgroundTaskIdentifier = .invalid
-    let finish = {
-      DispatchQueue.main.async {
-        if backgroundTask != .invalid {
-          UIApplication.shared.endBackgroundTask(backgroundTask)
-          backgroundTask = .invalid
-        }
+
+    // Exactly-once terminal path shared by the HTTP completion and the background-task
+    // expiration handler: whichever runs first wins and the other becomes a no-op, so the
+    // failure notification can never fire twice (an expiration-cancelled task still invokes
+    // its completion handler, with NSURLErrorCancelled, which lands here and is ignored).
+    func settle(failed: Bool, cancelInFlight: Bool) {
+      lock.lock()
+      let isFirst = !settled
+      settled = true
+      let task = inFlightTask
+      lock.unlock()
+      guard isFirst else { return }
+      if cancelInFlight {
+        NSLog("[push-approval] background task expired; cancelling in-flight respond")
+        task?.cancel()
+      }
+      if failed {
+        Self.scheduleFailureNotification()
+      }
+      // endBackgroundTask is documented as safe to call from any thread.
+      if backgroundTask != .invalid {
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
       }
     }
+
     backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "bitty.pushApprovalRespond") {
-      finish()
+      // iOS is about to suspend the app: abort the request and tell the user it failed.
+      settle(failed: true, cancelInFlight: true)
     }
 
     guard let request = buildRequest(approvalId: approvalId, approved: approved) else {
       NSLog("[push-approval] runner url or token unavailable; cannot respond")
-      Self.scheduleFailureNotification()
-      finish()
+      settle(failed: true, cancelInFlight: false)
       return
     }
 
@@ -44,13 +65,22 @@ final class PushApprovalResponder {
       let status = (response as? HTTPURLResponse)?.statusCode ?? 0
       if error != nil || status < 200 || status >= 300 {
         NSLog("[push-approval] respond failed status=%d hasError=%d", status, error == nil ? 0 : 1)
-        Self.scheduleFailureNotification()
+        settle(failed: true, cancelInFlight: false)
       } else {
         NSLog("[push-approval] respond ok approved=%d", approved ? 1 : 0)
+        settle(failed: false, cancelInFlight: false)
       }
-      finish()
     }
-    task.resume()
+    // If the assertion expired before the request even started, do not fire it now.
+    lock.lock()
+    inFlightTask = task
+    let expiredBeforeStart = settled
+    lock.unlock()
+    if expiredBeforeStart {
+      task.cancel()
+    } else {
+      task.resume()
+    }
   }
 
   private func buildRequest(approvalId: String, approved: Bool) -> URLRequest? {
