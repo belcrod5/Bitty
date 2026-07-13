@@ -10889,11 +10889,13 @@ function compactLlmCompletionPreview(textRaw, maxChars = 180) {
 // directoryIdentity.ts deriveDirectoryDisplayName): the trailing path segment of the
 // session's working directory. Used as the push-notification title so the user can tell
 // at a glance which project a notification belongs to. Empty input yields "" so callers
-// can fall back to their fixed title.
+// can fall back to their fixed title. Capped at 60 chars so a pathological directory
+// name cannot push the APNs payload toward its 4KB limit.
 function derivePushDirectoryTitle(pathRaw) {
   const dirPath = String(pathRaw || "").trim();
   const segments = dirPath.split("/").filter(Boolean);
-  return String(segments[segments.length - 1] || dirPath).trim();
+  const title = String(segments[segments.length - 1] || dirPath).trim();
+  return compactLlmCompletionPreview(title, 60);
 }
 
 async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText, directory }) {

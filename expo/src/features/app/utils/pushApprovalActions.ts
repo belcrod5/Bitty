@@ -1,30 +1,16 @@
-import * as FileSystem from "expo-file-system/legacy";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Notifications from "expo-notifications";
 import { loadSecureRunnerCredentials } from "./secureRunnerCredentials";
+import { buildCloudflareAccessHeaders, normalizeCloudflareAccessCredentials } from "./cloudflareAccess";
+import { readPersistedSettingsField } from "./persistedSettingsFile";
 import { APPROVAL_REQUEST_CATEGORY, APPROVE_ACTION, DENY_ACTION } from "./pushApprovalNotifications";
 
-// Mirrors AppRoot.tsx's SETTINGS_FILE_NAME / useAppSettingsPersistenceController.ts's
-// settingsPath(). Duplicated here (read-only) because notification action handlers can run
-// while the app is freshly launched in the background, before AppSettingsContext's async
-// settings-file load has had a chance to run -- so we cannot rely on React context here.
-const SETTINGS_FILE_NAME = "bitty-settings.json";
-
-async function readPersistedSettingsField(field: string): Promise<unknown> {
-  try {
-    const baseDir = FileSystem.documentDirectory;
-    if (!baseDir) return undefined;
-    const path = `${baseDir}${SETTINGS_FILE_NAME}`;
-    const info = await FileSystem.getInfoAsync(path);
-    if (!info.exists) return undefined;
-    const raw = await FileSystem.readAsStringAsync(path);
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-    return (parsed as Record<string, unknown>)[field];
-  } catch {
-    return undefined;
-  }
-}
+// Notification action handlers can run while the app is freshly launched in the background,
+// before AppSettingsContext's async settings-file load has had a chance to run -- so nothing
+// in this module may rely on React context (or on the global fetch patch installed by
+// configureCloudflareAccessFetch, whose credentials come from React state). Settings are
+// read straight from the persisted settings file (persistedSettingsFile.ts) and secrets
+// from expo-secure-store.
 
 export async function readRunnerUrlFromDisk(): Promise<string> {
   return String((await readPersistedSettingsField("runnerUrl")) || "").trim();
@@ -43,21 +29,35 @@ export async function respondToPushApproval({
   runnerToken,
   approvalId,
   approved,
+  cloudflareAccessClientId,
+  cloudflareAccessClientSecret,
 }: {
   runnerUrl: string;
   runnerToken: string;
   approvalId: string;
   approved: boolean;
+  cloudflareAccessClientId?: string;
+  cloudflareAccessClientSecret?: string;
 }): Promise<boolean> {
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
   const id = String(approvalId || "").trim();
   if (!baseUrl || !token || !id) return false;
+  // Cloudflare Access headers are normally injected by the global fetch patch
+  // (configureCloudflareAccessFetch), but that patch's credentials come from React state
+  // loaded asynchronously -- not yet available on a background launch. Attach them
+  // explicitly here instead; the request only ever targets the user's own runner URL, and
+  // buildCloudflareAccessHeaders returns {} when no credentials are configured. If the
+  // global patch is active it skips keys that are already set, so there is no duplication.
   const response = await fetch(`${baseUrl}/push/approvals/${encodeURIComponent(id)}/respond`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
+      ...buildCloudflareAccessHeaders(normalizeCloudflareAccessCredentials(
+        cloudflareAccessClientId,
+        cloudflareAccessClientSecret
+      )),
     },
     body: JSON.stringify({ approved }),
   });
@@ -94,11 +94,18 @@ async function respondInBackground({
   approved: boolean;
 }): Promise<void> {
   try {
-    const [runnerUrl, { runnerToken }] = await Promise.all([
+    const [runnerUrl, credentials] = await Promise.all([
       readRunnerUrlFromDisk(),
       loadSecureRunnerCredentials(),
     ]);
-    const ok = await respondToPushApproval({ runnerUrl, runnerToken, approvalId, approved });
+    const ok = await respondToPushApproval({
+      runnerUrl,
+      runnerToken: credentials.runnerToken,
+      approvalId,
+      approved,
+      cloudflareAccessClientId: credentials.cloudflareAccessClientId,
+      cloudflareAccessClientSecret: credentials.cloudflareAccessClientSecret,
+    });
     if (!ok) throw new Error("push approval respond returned ok=false");
   } catch (error) {
     console.warn(

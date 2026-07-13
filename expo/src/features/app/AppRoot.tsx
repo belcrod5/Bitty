@@ -305,6 +305,7 @@ import {
   type ReasoningEffort,
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
+import { SETTINGS_FILE_NAME } from "./utils/persistedSettingsFile";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 
@@ -321,7 +322,6 @@ const DEFAULT_LLM_DIRECTORY = "llm_root";
 const DEFAULT_DIRECTORY_UI_STATE: PersistedDirectoryUiState = {
   expandedDirectoryIds: [],
 };
-const SETTINGS_FILE_NAME = "bitty-settings.json";
 const DRAWER_SWIPE_EDGE_WIDTH = 48;
 const DRAWER_SWIPE_MIN_DISTANCE = 28;
 const DRAWER_SWIPE_MIN_VELOCITY = 280;

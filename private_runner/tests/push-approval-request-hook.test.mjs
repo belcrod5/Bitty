@@ -202,6 +202,13 @@ test("derives the push title from the working directory's trailing segment", () 
   assert.equal(derivePushDirectoryTitle("/"), "/");
 });
 
+test("truncates a pathologically long directory name in the push title to 60 chars", () => {
+  const longName = "x".repeat(200);
+  const title = derivePushDirectoryTitle(`/work/${longName}`);
+  assert.equal(title.length, 60);
+  assert.equal(title, `${"x".repeat(57)}...`);
+});
+
 test("uses the relay's working-directory basename as the approval push title", async (t) => {
   await pushDeviceStore.upsertDevice({ deviceId: "device-title", apnsToken: "token-title", env: "sandbox" });
   const calls = [];
