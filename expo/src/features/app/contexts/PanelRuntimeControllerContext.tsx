@@ -16,7 +16,7 @@ export type PanelRuntimeControllerContextValue = {
     panelId: string;
     sessionId: string;
     directory: string;
-    source?: "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "unknown";
+    source?: "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "notification" | "unknown";
     directoryDisplayName?: string;
     diagnosticCycleId?: string;
     title?: string;

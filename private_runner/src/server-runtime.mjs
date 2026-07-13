@@ -8482,6 +8482,57 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && pathname.startsWith("/push/approvals/") && pathname.endsWith("/respond")) {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    if (!PUSH_ENABLED) {
+      return json(res, 200, { ok: true, enabled: false });
+    }
+    // approvalId is minted as "<relayId>:<rpcId>" when the push is sent (see
+    // sendApprovalRequestPush); relayId itself never contains ":" (see createCodexWsRelayId).
+    const approvalId = decodeURIComponent(
+      pathname.slice("/push/approvals/".length, pathname.length - "/respond".length)
+    ).trim();
+    const separatorIndex = approvalId.lastIndexOf(":");
+    const relayId = separatorIndex > 0 ? approvalId.slice(0, separatorIndex) : "";
+    const rpcId = separatorIndex > 0 ? Number(approvalId.slice(separatorIndex + 1)) : NaN;
+    if (!relayId || !Number.isInteger(rpcId)) {
+      return json(res, 400, { error: "invalid_approval_id", message: "approval id is malformed" });
+    }
+    const relay = codexWsRelaysById.get(relayId);
+    if (!relay || relay.closed) {
+      return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
+    }
+    try {
+      const body = await readJsonBody(req);
+      if (typeof body?.approved !== "boolean") {
+        return json(res, 400, { error: "invalid_request", message: "approved (boolean) is required" });
+      }
+      // Re-check right before forwarding: the live WS approval UI (or a previous call to this
+      // endpoint) may have already answered this request while we awaited the request body.
+      if (!(relay.pendingApprovalRequestIds instanceof Set) || !relay.pendingApprovalRequestIds.has(rpcId)) {
+        return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
+      }
+      const decision = body.approved ? "accept" : "decline";
+      // Bridges to the existing codex-ws relay approval processing: this is the same
+      // JSON-RPC response shape/path the app sends over the live WS (see turn.ts sendJson),
+      // so forwardCodexRelayClientData's existing bookkeeping (pendingApprovalRequestIds
+      // cleanup, queueing while upstream is reconnecting, etc.) applies unchanged.
+      forwardCodexRelayClientData(
+        relay,
+        JSON.stringify({ jsonrpc: "2.0", id: rpcId, result: { decision } }),
+        false
+      );
+      return json(res, 200, { ok: true, enabled: true, approved: body.approved });
+    } catch (err) {
+      return json(res, 500, { error: "push_approval_respond_failed", message: errorMessage(err) });
+    }
+  }
+
   if (
     (req.method === "POST" || req.method === "PATCH" || req.method === "DELETE") &&
     pathname === "/workspace/files"
@@ -10875,6 +10926,74 @@ async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText 
   }));
 }
 
+// Builds a short push-notification body describing the command/tool awaiting approval.
+// No LLM summarization here (design decision): the raw command string is truncated instead,
+// matching the design doc's "要約LLM呼び出しは不要" note for approval requests.
+function buildApprovalPushBody(method, paramsRaw) {
+  const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw : {};
+  const command = pickFirstNonEmptyString(
+    params.command,
+    params.item?.command,
+    params.request?.command
+  );
+  const argsRaw = Array.isArray(params.args)
+    ? params.args
+    : (Array.isArray(params.item?.args) ? params.item.args : []);
+  const argsText = argsRaw.length > 0 ? ` ${argsRaw.map((item) => String(item ?? "")).join(" ")}` : "";
+  const fallbackLabel = String(method || "").startsWith("item/fileChange")
+    ? "ファイル変更"
+    : "コマンド実行";
+  const combined = command ? `${command}${argsText}` : fallbackLabel;
+  return compactLlmCompletionPreview(combined, 120) || fallbackLabel;
+}
+
+// Sends a PUSH for a codex-ws-relay-forwarded approval request the moment it arrives from
+// upstream, so it reaches the device before the app-side approval UI would time out.
+// Re-checks relay.pendingApprovalRequestIds right before each send so a request that was
+// already answered (via the live WS) or whose relay is gone never triggers a stale push.
+async function sendApprovalRequestPush(relay, rpcId, method, params) {
+  if (!PUSH_ENABLED || !apnsClient) return;
+  let devices = [];
+  try {
+    devices = await pushDeviceStore.listDevices();
+  } catch (err) {
+    console.warn(`[push] failed to list devices: ${errorMessage(err)}`);
+    return;
+  }
+  if (devices.length <= 0) return;
+  if (!relay?.pendingApprovalRequestIds?.has?.(rpcId)) return;
+
+  const approvalId = `${relay.relayId}:${rpcId}`;
+  const sessionId = String(relay.runnerWsLlmSessionId || relay.threadId || "");
+  const body = buildApprovalPushBody(method, params);
+  const payload = {
+    aps: {
+      alert: { title: "承認リクエスト", body },
+      sound: "default",
+      category: "APPROVAL_REQUEST",
+      "interruption-level": "time-sensitive",
+    },
+    approvalId,
+    sessionId,
+  };
+
+  await Promise.all(devices.map(async (device) => {
+    if (!relay?.pendingApprovalRequestIds?.has?.(rpcId)) return;
+    try {
+      const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
+      if (result?.status === 410) {
+        await pushDeviceStore.removeDevice(device.deviceId);
+      } else if (!result?.ok) {
+        console.warn(
+          `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
+        );
+      }
+    } catch (err) {
+      console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
+    }
+  }));
+}
+
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
   if (!payload?.threadId || !payload?.previewText) return false;
   if (typeof runnerWsActiveClients === "undefined") return false;
@@ -11049,7 +11168,17 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     if (meta.method && meta.method.endsWith("/requestApproval")) {
       const approvalRpcId = Number(meta.id);
       if (Number.isInteger(approvalRpcId)) {
+        const isNewApprovalRequest = !relay.pendingApprovalRequestIds.has(approvalRpcId);
         relay.pendingApprovalRequestIds.add(approvalRpcId);
+        // Fire exactly once per (relay, rpcId): only on first sighting of this approval id,
+        // never on a replayed/duplicate upstream message for the same request.
+        if (isNewApprovalRequest) {
+          void sendApprovalRequestPush(relay, approvalRpcId, meta.method, rpcPayload?.params).catch((err) => {
+            console.warn(
+              `[push] approval push failed relayId=${relay.relayId} rpcId=${approvalRpcId}: ${errorMessage(err)}`
+            );
+          });
+        }
       }
     }
     if (meta.method === "turn/completed") {
@@ -11716,7 +11845,10 @@ if (!RUNNER_SKIP_SERVER_START) {
 export const __TESTING__ = {
   server,
   pushDeviceStore,
+  apnsClient,
   sendTurnCompletedPush,
+  sendApprovalRequestPush,
+  codexWsRelaysById,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
   shouldReplayCodexRelayEvent,

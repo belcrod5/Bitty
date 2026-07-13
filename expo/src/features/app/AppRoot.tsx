@@ -82,6 +82,7 @@ import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentity
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
+import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
@@ -807,6 +808,9 @@ export default function App() {
   const [autoTranscribeOnStop, setAutoTranscribeOnStop] = useState(true);
   const [autoReplyAfterStt, setAutoReplyAfterStt] = useState(true);
   const [autoSpeakAfterReply, setAutoSpeakAfterReply] = useState(true);
+  // Default OFF (unlike the auto* toggles above): requiring Face ID is an extra step, so it
+  // should be an explicit opt-in rather than assumed.
+  const [faceIdRequiredForApproval, setFaceIdRequiredForApproval] = useState(false);
   const [ttsSound, setTtsSound] = useState<Audio.Sound | null>(null);
   const [autoWaveDebugNowMs, setAutoWaveDebugNowMs] = useState(0);
   const [ttsUri, setTtsUri] = useState("");
@@ -4817,6 +4821,7 @@ export default function App() {
     autoTranscribeOnStop,
     autoReplyAfterStt,
     autoSpeakAfterReply,
+    faceIdRequiredForApproval,
     llmToolLogCompact,
     setRunnerUrl,
     setRunnerToken,
@@ -4853,6 +4858,7 @@ export default function App() {
     setAutoSpeakerPriorityEnabled,
     setAutoReplyAfterStt,
     setAutoSpeakAfterReply,
+    setFaceIdRequiredForApproval,
     parseRegisteredDirectories,
     parseSessionTitleOverrides,
     parseSessionMarkerColors,
@@ -4913,6 +4919,15 @@ export default function App() {
     llmDirectory,
     llmBackend,
     codexWsToken,
+  });
+
+  // Push-notification tap-to-open: consumes the pending session id set by
+  // PushNotificationRegistrar's response listener (see pushApprovalNotifications.ts) once
+  // settings are loaded, and again whenever the app returns to foreground.
+  usePendingPushSessionNavigationController({
+    settingsLoaded,
+    normalizedLlmDirectoryForRequest,
+    selectSpecificLlmSession,
   });
 
   useEffect(() => {
@@ -6052,6 +6067,7 @@ export default function App() {
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
+    faceIdRequiredForApproval,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
@@ -6079,6 +6095,7 @@ export default function App() {
     toggleAutoBargeInEnabled: setAutoBargeInEnabled,
     toggleAutoSpeakerPriorityEnabled: setAutoSpeakerPriorityEnabled,
     toggleAutoSpeakAfterReply: setAutoSpeakAfterReply,
+    toggleFaceIdRequiredForApproval: setFaceIdRequiredForApproval,
     openModelSelect,
     openThinkSelect,
     modelSelectOpen,

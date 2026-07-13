@@ -57,6 +57,7 @@ export type AppSettingsContextValue = {
   autoBargeInEnabled: boolean;
   autoSpeakerPriorityEnabled: boolean;
   autoSpeakAfterReply: boolean;
+  faceIdRequiredForApproval: boolean;
   changeRunnerUrl: (value: string) => void;
   changeLlmDirectory: (value: string) => void;
   changeCodexWsUrl: (value: string) => void;
@@ -84,6 +85,7 @@ export type AppSettingsContextValue = {
   toggleAutoBargeInEnabled: (value: boolean) => void;
   toggleAutoSpeakerPriorityEnabled: (value: boolean) => void;
   toggleAutoSpeakAfterReply: (value: boolean) => void;
+  toggleFaceIdRequiredForApproval: (value: boolean) => void;
   openModelSelect: () => void;
   openThinkSelect: () => void;
   modelSelectOpen: boolean;

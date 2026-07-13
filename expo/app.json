@@ -64,7 +64,8 @@
       },
       "bundleIdentifier": "app.bitty.mobile",
       "entitlements": {
-        "aps-environment": "development"
+        "aps-environment": "development",
+        "com.apple.developer.usernotifications.time-sensitive": true
       }
     }
   }

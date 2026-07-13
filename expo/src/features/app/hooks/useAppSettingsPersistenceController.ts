@@ -68,6 +68,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   autoTranscribeOnStop: boolean;
   autoReplyAfterStt: boolean;
   autoSpeakAfterReply: boolean;
+  faceIdRequiredForApproval: boolean;
   llmToolLogCompact: boolean;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
@@ -104,6 +105,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setAutoSpeakerPriorityEnabled: Dispatch<SetStateAction<boolean>>;
   setAutoReplyAfterStt: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakAfterReply: Dispatch<SetStateAction<boolean>>;
+  setFaceIdRequiredForApproval: Dispatch<SetStateAction<boolean>>;
   parseRegisteredDirectories: (raw: unknown) => RegisteredDirectoryEntry[];
   parseSessionTitleOverrides: (raw: unknown) => Record<string, string>;
   parseSessionMarkerColors: (raw: unknown) => Record<string, RegisteredDirectoryEntry["markerColor"]>;
@@ -151,6 +153,7 @@ export function useAppSettingsPersistenceController({
   autoTranscribeOnStop,
   autoReplyAfterStt,
   autoSpeakAfterReply,
+  faceIdRequiredForApproval,
   llmToolLogCompact,
   setRunnerUrl,
   setRunnerToken,
@@ -187,6 +190,7 @@ export function useAppSettingsPersistenceController({
   setAutoSpeakerPriorityEnabled,
   setAutoReplyAfterStt,
   setAutoSpeakAfterReply,
+  setFaceIdRequiredForApproval,
   parseRegisteredDirectories,
   parseSessionTitleOverrides,
   parseSessionMarkerColors,
@@ -249,6 +253,7 @@ export function useAppSettingsPersistenceController({
       autoTranscribeOnStop,
       autoReplyAfterStt,
       autoSpeakAfterReply,
+      faceIdRequiredForApproval,
       llmToolLogCompact,
     };
   }, [
@@ -257,6 +262,7 @@ export function useAppSettingsPersistenceController({
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
     autoTranscribeOnStop,
+    faceIdRequiredForApproval,
     cloudflareRunnerUrl,
     cloudflareRunnerWsUrl,
     codexApprovalPolicy,
@@ -429,6 +435,9 @@ export function useAppSettingsPersistenceController({
     if (typeof parsed.autoSpeakAfterReply === "boolean") {
       setAutoSpeakAfterReply(parsed.autoSpeakAfterReply);
     }
+    if (typeof parsed.faceIdRequiredForApproval === "boolean") {
+      setFaceIdRequiredForApproval(parsed.faceIdRequiredForApproval);
+    }
   }, [
     defaultModelRef,
     defaultReasoningEffort,
@@ -447,6 +456,7 @@ export function useAppSettingsPersistenceController({
     setAutoSpeakerPriorityEnabled,
     setAutoSpeakAfterReply,
     setAutoTranscribeOnStop,
+    setFaceIdRequiredForApproval,
     setCodexApprovalPolicy,
     setCodexWsToken,
     setCodexWsUrl,
