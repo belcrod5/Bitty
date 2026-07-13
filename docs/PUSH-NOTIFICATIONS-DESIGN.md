@@ -110,7 +110,7 @@
 // ターン完了
 {
   "aps": {
-    "alert": { "title": "タスク完了", "body": "<gpt-5.6-luna low による要約>" },
+    "alert": { "title": "<作業ディレクトリ名>", "body": "<gpt-5.6-luna low による要約>" },
     "sound": "default",
     "category": "TURN_COMPLETED",
     "thread-id": "<sessionId>"
@@ -121,7 +121,7 @@
 // 承認リクエスト
 {
   "aps": {
-    "alert": { "title": "承認リクエスト", "body": "<コマンド/ツールの短い説明>" },
+    "alert": { "title": "<作業ディレクトリ名>", "body": "<コマンド/ツールの短い説明>" },
     "sound": "default",
     "category": "APPROVAL_REQUEST",
     "interruption-level": "time-sensitive"  // 集中モードを貫通(決定)。entitlementに time-sensitive 追加が必要
@@ -130,6 +130,8 @@
 }
 ```
 
+- タイトルはセッションの作業ディレクトリパスの末尾セグメント(例: `/work/test_folder` → `test_folder`)。アプリ左ナビのディレクトリ既定表示名(`deriveDirectoryDisplayName`)と同じ導出ロジックをrunner側に持つ。runnerは codex-ws リレーを通る `thread/start`/`thread/resume`/`turn/start` の `cwd`(および upstream 応答の `thread.cwd`)からディレクトリを取得する。
+- ディレクトリが取得できない/空の場合は固定タイトル(ターン完了=「タスク完了」、承認リクエスト=「承認リクエスト」)にフォールバック。通知種別の判別は body の内容で行う(bodyは現状維持)。
 - プレビュー本文はAppleサーバーを経由する(ユーザー了承済み)。機微情報を減らすため要約を通し、生ログは送らない。
 
 ## 7. セキュリティ

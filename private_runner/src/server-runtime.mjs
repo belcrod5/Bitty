@@ -10804,6 +10804,7 @@ function createCodexRelayContext(params) {
     pendingToUpstream: [],
     clients: new Set(),
     threadId: "",
+    threadCwd: "",
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
@@ -10884,7 +10885,18 @@ function compactLlmCompletionPreview(textRaw, maxChars = 180) {
   return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
-async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText }) {
+// Same derivation as the app's default directory display name (expo
+// directoryIdentity.ts deriveDirectoryDisplayName): the trailing path segment of the
+// session's working directory. Used as the push-notification title so the user can tell
+// at a glance which project a notification belongs to. Empty input yields "" so callers
+// can fall back to their fixed title.
+function derivePushDirectoryTitle(pathRaw) {
+  const dirPath = String(pathRaw || "").trim();
+  const segments = dirPath.split("/").filter(Boolean);
+  return String(segments[segments.length - 1] || dirPath).trim();
+}
+
+async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText, directory }) {
   if (!PUSH_ENABLED || !apnsClient || !pushSummarizer) return;
   let devices = [];
   try {
@@ -10901,7 +10913,7 @@ async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText 
   const id = String(sessionId || threadId || "");
   const payload = {
     aps: {
-      alert: { title: "タスク完了", body: summary },
+      alert: { title: derivePushDirectoryTitle(directory) || "タスク完了", body: summary },
       sound: "default",
       category: "TURN_COMPLETED",
       "thread-id": id,
@@ -10968,7 +10980,7 @@ async function sendApprovalRequestPush(relay, rpcId, method, params) {
   const body = buildApprovalPushBody(method, params);
   const payload = {
     aps: {
-      alert: { title: "承認リクエスト", body },
+      alert: { title: derivePushDirectoryTitle(relay?.threadCwd) || "承認リクエスト", body },
       sound: "default",
       category: "APPROVAL_REQUEST",
       "interruption-level": "time-sensitive",
@@ -11063,7 +11075,13 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     completedAt: new Date().toISOString(),
   });
   const turnId = getCodexTurnStartedId(rpcPayload) || threadId;
-  void sendTurnCompletedPush({ sessionId: threadId, threadId, turnId, previewText }).catch((err) => {
+  void sendTurnCompletedPush({
+    sessionId: threadId,
+    threadId,
+    turnId,
+    previewText,
+    directory: relay.threadCwd,
+  }).catch((err) => {
     console.warn(`[push] turn completed push failed: ${errorMessage(err)}`);
   });
 }
@@ -11160,6 +11178,13 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       bindCodexRelayThreadMapping(relay, resolvedThreadId, { allowSwitch: true });
       cleanupNoClientRelaysForThread(resolvedThreadId, relay, `upstream_${responseRpcMethod}`);
     }
+    // Fallback working-directory capture for push titles: the app-server echoes the
+    // thread's cwd in thread/start / thread/resume results even when the client request
+    // omitted it (see the client-side capture in forwardCodexRelayClientData).
+    const resultCwd = typeof rpcPayload?.result?.thread?.cwd === "string"
+      ? rpcPayload.result.thread.cwd.trim()
+      : "";
+    if (resultCwd) relay.threadCwd = resultCwd;
   }
   if (meta && (meta.method || meta.id !== null)) {
     if (meta.threadId && shouldBindRelayThreadFromUpstreamMethod(meta.method)) {
@@ -11504,6 +11529,17 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
         threadId: requestThreadId,
       });
     }
+    // Remember the session's working directory (the app sends cwd on thread/start,
+    // thread/resume, and turn/start) so push notifications can title themselves with the
+    // directory's trailing segment (see derivePushDirectoryTitle).
+    if (
+      meta.method === "thread/start" ||
+      meta.method === "thread/resume" ||
+      meta.method === "turn/start"
+    ) {
+      const requestCwd = typeof rpcPayload?.params?.cwd === "string" ? rpcPayload.params.cwd.trim() : "";
+      if (requestCwd) relay.threadCwd = requestCwd;
+    }
     if (meta.threadId) {
       const allowSwitch = (
         meta.method === "thread/resume" ||
@@ -11846,8 +11882,10 @@ export const __TESTING__ = {
   server,
   pushDeviceStore,
   apnsClient,
+  pushSummarizer,
   sendTurnCompletedPush,
   sendApprovalRequestPush,
+  derivePushDirectoryTitle,
   codexWsRelaysById,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
