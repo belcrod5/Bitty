@@ -62,7 +62,10 @@
         "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
         "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"
       },
-      "bundleIdentifier": "app.bitty.mobile"
+      "bundleIdentifier": "app.bitty.mobile",
+      "entitlements": {
+        "aps-environment": "development"
+      }
     }
   }
 }
