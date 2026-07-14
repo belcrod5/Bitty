@@ -33,6 +33,7 @@ import {
   type LlmCompletionNotification,
 } from "./components/LlmCompletionNotifications";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
+import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
 import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
@@ -81,6 +82,7 @@ import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentity
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
+import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
@@ -303,6 +305,7 @@ import {
   type ReasoningEffort,
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
+import { SETTINGS_FILE_NAME } from "./utils/persistedSettingsFile";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 
@@ -319,7 +322,6 @@ const DEFAULT_LLM_DIRECTORY = "llm_root";
 const DEFAULT_DIRECTORY_UI_STATE: PersistedDirectoryUiState = {
   expandedDirectoryIds: [],
 };
-const SETTINGS_FILE_NAME = "bitty-settings.json";
 const DRAWER_SWIPE_EDGE_WIDTH = 48;
 const DRAWER_SWIPE_MIN_DISTANCE = 28;
 const DRAWER_SWIPE_MIN_VELOCITY = 280;
@@ -806,6 +808,9 @@ export default function App() {
   const [autoTranscribeOnStop, setAutoTranscribeOnStop] = useState(true);
   const [autoReplyAfterStt, setAutoReplyAfterStt] = useState(true);
   const [autoSpeakAfterReply, setAutoSpeakAfterReply] = useState(true);
+  // Default OFF (unlike the auto* toggles above): requiring Face ID is an extra step, so it
+  // should be an explicit opt-in rather than assumed.
+  const [faceIdRequiredForApproval, setFaceIdRequiredForApproval] = useState(false);
   const [ttsSound, setTtsSound] = useState<Audio.Sound | null>(null);
   const [autoWaveDebugNowMs, setAutoWaveDebugNowMs] = useState(0);
   const [ttsUri, setTtsUri] = useState("");
@@ -4816,6 +4821,7 @@ export default function App() {
     autoTranscribeOnStop,
     autoReplyAfterStt,
     autoSpeakAfterReply,
+    faceIdRequiredForApproval,
     llmToolLogCompact,
     setRunnerUrl,
     setRunnerToken,
@@ -4852,6 +4858,7 @@ export default function App() {
     setAutoSpeakerPriorityEnabled,
     setAutoReplyAfterStt,
     setAutoSpeakAfterReply,
+    setFaceIdRequiredForApproval,
     parseRegisteredDirectories,
     parseSessionTitleOverrides,
     parseSessionMarkerColors,
@@ -4912,6 +4919,15 @@ export default function App() {
     llmDirectory,
     llmBackend,
     codexWsToken,
+  });
+
+  // Push-notification tap-to-open: consumes the pending session id set by
+  // PushNotificationRegistrar's response listener (see pushApprovalNotifications.ts) once
+  // settings are loaded, and again whenever the app returns to foreground.
+  usePendingPushSessionNavigationController({
+    settingsLoaded,
+    normalizedLlmDirectoryForRequest,
+    selectSpecificLlmSession,
   });
 
   useEffect(() => {
@@ -6051,6 +6067,7 @@ export default function App() {
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
+    faceIdRequiredForApproval,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
@@ -6078,6 +6095,7 @@ export default function App() {
     toggleAutoBargeInEnabled: setAutoBargeInEnabled,
     toggleAutoSpeakerPriorityEnabled: setAutoSpeakerPriorityEnabled,
     toggleAutoSpeakAfterReply: setAutoSpeakAfterReply,
+    toggleFaceIdRequiredForApproval: setFaceIdRequiredForApproval,
     openModelSelect,
     openThinkSelect,
     modelSelectOpen,
@@ -7858,6 +7876,7 @@ export default function App() {
             onDismiss={dismissLlmCompletionNotification}
           />
         </SafeAreaView>
+        <PushNotificationRegistrar />
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>

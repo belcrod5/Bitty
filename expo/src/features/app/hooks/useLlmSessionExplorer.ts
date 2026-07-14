@@ -25,7 +25,7 @@ export type DirectoryPickerEntry = {
   path: string;
 };
 
-export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "unknown";
+export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "notification" | "unknown";
 
 export type LlmSessionHistoryEntry = {
   sessionId: string;

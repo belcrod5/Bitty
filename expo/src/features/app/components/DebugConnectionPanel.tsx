@@ -57,6 +57,8 @@ export function DebugConnectionPanel() {
     selectCodexApprovalPolicy,
     openModelSelect,
     openThinkSelect,
+    faceIdRequiredForApproval,
+    toggleFaceIdRequiredForApproval,
   } = useAppSettings();
 
   const applyCodexWsRoute = useCallback(() => {
@@ -310,6 +312,10 @@ export function DebugConnectionPanel() {
       <View style={styles.switchRow}>
         <Text style={styles.switchLabel}>ツールログを簡易表示（1行）</Text>
         <Switch value={llmToolLogCompact} onValueChange={toggleLlmToolLogCompact} />
+      </View>
+      <View style={styles.switchRow}>
+        <Text style={styles.switchLabel}>承認にFace IDを要求</Text>
+        <Switch value={faceIdRequiredForApproval} onValueChange={toggleFaceIdRequiredForApproval} />
       </View>
     </>
   );

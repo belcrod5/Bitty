@@ -1,6 +1,6 @@
 import { parseOptionalFiniteNumber } from "./formatting";
 
-export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "unknown";
+export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "notification" | "unknown";
 export type LlmSessionMessageRole = "user" | "assistant";
 
 export type LlmRuntimeLimitsSnapshot = {
@@ -60,6 +60,7 @@ export function parseLlmSessionSource(raw: unknown, fallback: LlmSessionSource =
   if (value === "vscode") return "vscode";
   if (value === "exec") return "exec";
   if (value.startsWith("subagent") || value.startsWith("sub_agent")) return "subagent";
+  if (value === "notification") return "notification";
   if (value === "unknown") return "unknown";
   return fallback;
 }

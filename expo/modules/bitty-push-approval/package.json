@@ -1,0 +1,6 @@
+{
+  "name": "bitty-push-approval",
+  "version": "1.0.0",
+  "description": "Native (Swift) background responder for APPROVAL_REQUEST push notification actions. No JS API; wired in via an ExpoAppDelegateSubscriber.",
+  "private": true
+}

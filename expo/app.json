@@ -36,7 +36,13 @@
       ],
       "expo-font",
       "react-native-enriched-markdown",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "mode": "development"
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
@@ -56,7 +62,11 @@
         "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
         "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"
       },
-      "bundleIdentifier": "app.bitty.mobile"
+      "bundleIdentifier": "app.bitty.mobile",
+      "entitlements": {
+        "aps-environment": "development",
+        "com.apple.developer.usernotifications.time-sensitive": true
+      }
     }
   }
 }

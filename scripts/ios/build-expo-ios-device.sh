@@ -56,6 +56,7 @@ xcodebuild_args=(
   -configuration "${CONFIGURATION}" \
   -destination "id=${DEVICE_ID}" \
   -derivedDataPath "${DERIVED_DATA_PATH}" \
+  -allowProvisioningUpdates \
 )
 
 if [[ -n "${DEVELOPMENT_TEAM}" ]]; then
