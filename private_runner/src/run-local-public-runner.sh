@@ -133,6 +133,14 @@ prepare_runner_runtime_token() {
   if [ "$RUNNER_ENABLE" != "1" ]; then
     return 0
   fi
+  if [ -n "${RUN_LOCAL_RUNNER_TOKEN:-}" ]; then
+    RUNNER_TOKEN="$RUN_LOCAL_RUNNER_TOKEN"
+    export RUNNER_TOKEN
+    write_runner_token_file
+    RUN_LOCAL_REUSE_EXISTING=0
+    echo "[run-local] reusing RUNNER_TOKEN handed over from previous runner" >&2
+    return 0
+  fi
   case "$RUNNER_TOKEN_MODE" in
     random)
       RUNNER_TOKEN="$(generate_random_runner_token)"
