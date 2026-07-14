@@ -28,6 +28,7 @@ const {
   acquireCodexAuthSwitchLock,
   isCodexAuthSwitchLockStale,
   buildAuthSwitchRestartInvocation,
+  persistActiveCodexAuthProfileSnapshot,
   switchCodexAuthProfile,
 } = __TESTING__;
 
@@ -206,6 +207,63 @@ test("run-local-public-runner.sh reuses a handed-over RUNNER_TOKEN before the ra
   assert.match(
     source,
     /prepare_runner_runtime_token\(\) \{\s+if \[ "\$RUNNER_ENABLE" != "1" \]; then\s+return 0\s+fi\s+if \[ -n "\$\{RUN_LOCAL_RUNNER_TOKEN:-\}" \]; then\s+RUNNER_TOKEN="\$RUN_LOCAL_RUNNER_TOKEN"\s+export RUNNER_TOKEN\s+write_runner_token_file\s+RUN_LOCAL_REUSE_EXISTING=0/
+  );
+});
+
+// --- write-back of the live auth.json before a switch ------------------------
+// (Codex rotates tokens inside auth.json while running; a switch must save the
+// live file back to its own profile before overwriting it, or switching back
+// later would restore expired tokens.)
+
+test("switchCodexAuthProfile saves the live auth.json back to the current profile before overwriting", async () => {
+  await removeLockFileIfPresent();
+  // Make profile-a current, then simulate Codex rotating tokens in place.
+  await switchCodexAuthProfile("profile-a");
+  const rotated = '{"OPENAI_API_KEY":"a","last_refresh":"rotated"}\n';
+  await fs.writeFile(path.join(tempDir, "auth.json"), rotated);
+
+  const result = await switchCodexAuthProfile("profile-b");
+  assert.equal(result.authId, "profile-b");
+
+  const savedProfileA = await fs.readFile(path.join(profilesDir, "profile-a_auth.json"), "utf8");
+  assert.equal(savedProfileA, rotated);
+  const authJson = await fs.readFile(path.join(tempDir, "auth.json"), "utf8");
+  assert.equal(authJson.trim(), '{"OPENAI_API_KEY":"b"}');
+});
+
+test("persistActiveCodexAuthProfileSnapshot refuses to save into a profile that belongs to a different account", async () => {
+  // The marker points at profile-b after the previous test, but the live
+  // auth.json now holds a different account's tokens (a stale marker after a
+  // manual auth.json swap).
+  const profileB = '{"tokens":{"account_id":"acct-b"}}\n';
+  await fs.writeFile(path.join(profilesDir, "profile-b_auth.json"), profileB);
+  await fs.writeFile(path.join(tempDir, "auth.json"), '{"tokens":{"account_id":"acct-other"}}\n');
+
+  const result = await persistActiveCodexAuthProfileSnapshot();
+  assert.equal(result.saved, false);
+  assert.match(result.reason, /different account/);
+  assert.equal(await fs.readFile(path.join(profilesDir, "profile-b_auth.json"), "utf8"), profileB);
+});
+
+test("persistActiveCodexAuthProfileSnapshot skips when the current profile cannot be resolved", async () => {
+  await fs.unlink(path.join(profilesDir, ".active_auth_id"));
+  await fs.writeFile(path.join(tempDir, "auth.json"), '{"OPENAI_API_KEY":"unsaved"}\n');
+
+  const result = await persistActiveCodexAuthProfileSnapshot();
+  assert.equal(result.saved, false);
+  assert.match(result.reason, /could not be resolved/);
+});
+
+test("persistActiveCodexAuthProfileSnapshot skips an invalid live auth.json instead of corrupting a profile", async () => {
+  await fs.writeFile(path.join(profilesDir, ".active_auth_id"), "profile-b\n");
+  await fs.writeFile(path.join(tempDir, "auth.json"), "not json\n");
+
+  const result = await persistActiveCodexAuthProfileSnapshot();
+  assert.equal(result.saved, false);
+  assert.match(result.reason, /not valid JSON/);
+  assert.equal(
+    await fs.readFile(path.join(profilesDir, "profile-b_auth.json"), "utf8"),
+    '{"tokens":{"account_id":"acct-b"}}\n'
   );
 });
 

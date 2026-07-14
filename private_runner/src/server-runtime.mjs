@@ -3822,11 +3822,69 @@ function scheduleAuthSwitchRestartAfterResponse(res) {
   res.once("close", trigger);
 }
 
+// Codex rewrites ~/.codex/auth.json in place as its tokens refresh, so the
+// copy under profiles/ goes stale over time. Before a switch overwrites
+// auth.json, save the live file back to its own profile so switching back
+// later restores current tokens instead of expired ones. Best-effort: when
+// in doubt about which profile the live file belongs to, skip rather than
+// overwrite the wrong one.
+async function persistActiveCodexAuthProfileSnapshot() {
+  const activeRaw = await fs.readFile(CODEX_AUTH_PATH, "utf8").catch(() => "");
+  if (!activeRaw.trim()) return { saved: false, reason: "auth.json is missing or empty" };
+  let activeJson;
+  try {
+    activeJson = JSON.parse(activeRaw);
+  } catch {
+    return { saved: false, reason: "auth.json is not valid JSON" };
+  }
+  const candidates = await listCodexAuthProfileCandidates();
+  const currentAuthId = await resolveCurrentAuthIdFromProfiles(candidates);
+  if (!currentAuthId) {
+    return { saved: false, reason: "current auth profile could not be resolved" };
+  }
+  const profilePath = authProfilePathForId(currentAuthId);
+  const profileRaw = await fs.readFile(profilePath, "utf8").catch(() => "");
+  if (profileRaw.trim()) {
+    // The marker can be stale after a manual auth.json swap; never save one
+    // account's tokens into another account's profile.
+    try {
+      const activeAccountId = resolveAccountId(activeJson?.tokens || {});
+      const profileAccountId = resolveAccountId(JSON.parse(profileRaw)?.tokens || {});
+      if (activeAccountId && profileAccountId && activeAccountId !== profileAccountId) {
+        return {
+          saved: false,
+          reason: `auth.json belongs to a different account than profile ${currentAuthId}`,
+        };
+      }
+    } catch {
+      // An unreadable/invalid profile is safe to overwrite with the valid live file.
+    }
+  }
+  const tmpPath = `${profilePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await fs.writeFile(tmpPath, activeRaw.endsWith("\n") ? activeRaw : `${activeRaw}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.rename(tmpPath, profilePath);
+    await fs.chmod(profilePath, 0o600).catch(() => {});
+  } finally {
+    await fs.unlink(tmpPath).catch(() => {});
+  }
+  return { saved: true, authId: currentAuthId };
+}
+
 async function switchCodexAuthProfile(authIdRaw) {
   const authId = normalizeCodexAuthId(authIdRaw);
   const releaseLock = await acquireCodexAuthSwitchLock();
   let tmpAuthPath = "";
   try {
+    const writeBack = await persistActiveCodexAuthProfileSnapshot();
+    if (writeBack.saved) {
+      console.log(`[codex-auth-switch] saved live auth.json back to profile ${writeBack.authId}`);
+    } else {
+      console.error(`[codex-auth-switch] skipped auth.json write-back: ${writeBack.reason}`);
+    }
     const profilePath = authProfilePathForId(authId);
     const profileRaw = await fs.readFile(profilePath, "utf8").catch((err) => {
       if (String(err?.code || "") === "ENOENT") {
@@ -11975,6 +12033,7 @@ export const __TESTING__ = {
   acquireCodexAuthSwitchLock,
   isCodexAuthSwitchLockStale,
   buildAuthSwitchRestartInvocation,
+  persistActiveCodexAuthProfileSnapshot,
   switchCodexAuthProfile,
   pushDeviceStore,
   apnsClient,
