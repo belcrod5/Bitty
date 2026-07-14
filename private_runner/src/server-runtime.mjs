@@ -8467,7 +8467,14 @@ const server = http.createServer(async (req, res) => {
     if (parseAuthToken(req) !== RUNNER_TOKEN) {
       return json(res, 401, { error: "unauthorized" });
     }
-    const deviceId = decodeURIComponent(pathname.slice("/push/devices/".length)).trim();
+    let deviceId = "";
+    try {
+      deviceId = decodeURIComponent(pathname.slice("/push/devices/".length)).trim();
+    } catch {
+      // Malformed percent-encoding (e.g. "%E0%A4") throws URIError; treat as a bad request
+      // instead of letting the rejection crash the process.
+      deviceId = "";
+    }
     if (!deviceId) {
       return json(res, 400, { error: "device_id_required", message: "device id is required" });
     }
@@ -8494,9 +8501,16 @@ const server = http.createServer(async (req, res) => {
     }
     // approvalId is minted as "<relayId>:<rpcId>" when the push is sent (see
     // sendApprovalRequestPush); relayId itself never contains ":" (see createCodexWsRelayId).
-    const approvalId = decodeURIComponent(
-      pathname.slice("/push/approvals/".length, pathname.length - "/respond".length)
-    ).trim();
+    let approvalId = "";
+    try {
+      approvalId = decodeURIComponent(
+        pathname.slice("/push/approvals/".length, pathname.length - "/respond".length)
+      ).trim();
+    } catch {
+      // Malformed percent-encoding throws URIError; fall through to the 400 below rather
+      // than crashing the process with an unhandled rejection.
+      approvalId = "";
+    }
     const separatorIndex = approvalId.lastIndexOf(":");
     const relayId = separatorIndex > 0 ? approvalId.slice(0, separatorIndex) : "";
     const rpcId = separatorIndex > 0 ? Number(approvalId.slice(separatorIndex + 1)) : NaN;

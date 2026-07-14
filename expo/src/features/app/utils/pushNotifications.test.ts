@@ -13,6 +13,15 @@ jest.mock("expo-secure-store", () => ({
   }),
 }));
 
+let mockRandomUUIDCounter = 0;
+
+jest.mock("expo-crypto", () => ({
+  randomUUID: jest.fn(() => {
+    mockRandomUUIDCounter += 1;
+    return `00000000-0000-4000-8000-${String(mockRandomUUIDCounter).padStart(12, "0")}`;
+  }),
+}));
+
 describe("resolveForegroundNotificationBehavior", () => {
   it("suppresses all foreground presentation so the in-app card is the single source of truth", () => {
     expect(resolveForegroundNotificationBehavior()).toEqual({
@@ -30,9 +39,9 @@ describe("getOrCreatePushDeviceId", () => {
     jest.clearAllMocks();
   });
 
-  it("creates and persists a new device id when none is stored", async () => {
+  it("creates and persists a new device id from the CSPRNG (expo-crypto randomUUID)", async () => {
     const deviceId = await getOrCreatePushDeviceId();
-    expect(deviceId).toMatch(/^push_/);
+    expect(deviceId).toMatch(/^push_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(mockSecureStoreState.get("bitty.pushDeviceId")).toBe(deviceId);
   });
 

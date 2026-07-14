@@ -1,13 +1,13 @@
+import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 
 const PUSH_DEVICE_ID_KEY = "bitty.pushDeviceId";
 
-function randomIdPart() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
+// Cryptographically secure (expo-crypto wraps the platform CSPRNG): the device id is a
+// long-lived identifier in the runner's device registry, so it must not be guessable the
+// way a Math.random()-based id would be.
 function generateDeviceId() {
-  return `push_${Date.now().toString(36)}_${randomIdPart()}${randomIdPart()}`;
+  return `push_${Crypto.randomUUID()}`;
 }
 
 // Stable per-install identifier for the runner's push-device registry. Generated once

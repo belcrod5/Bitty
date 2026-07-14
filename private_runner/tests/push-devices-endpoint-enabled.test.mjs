@@ -80,6 +80,26 @@ test("POST /push/devices registers a device and persists it idempotently", async
   });
 });
 
+test("DELETE /push/devices/:deviceId returns 400 (and keeps the process alive) for invalid percent-encoding", async () => {
+  await withServer(async (baseUrl) => {
+    // "%E0%A4" is a truncated UTF-8 sequence: decodeURIComponent throws URIError. An
+    // unguarded call would crash the whole runner via an unhandled rejection.
+    const malformed = await fetch(`${baseUrl}/push/devices/%E0%A4`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer test-runner-token" },
+    });
+    assert.equal(malformed.status, 400);
+    assert.equal((await malformed.json()).error, "device_id_required");
+
+    // The server must still answer subsequent requests normally.
+    const followUp = await fetch(`${baseUrl}/push/devices/still-alive`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer test-runner-token" },
+    });
+    assert.equal(followUp.status, 200);
+  });
+});
+
 test("DELETE /push/devices/:deviceId removes a registered device", async () => {
   await withServer(async (baseUrl) => {
     await fetch(`${baseUrl}/push/devices`, {

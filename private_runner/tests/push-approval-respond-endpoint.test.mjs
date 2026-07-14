@@ -92,6 +92,27 @@ test("rejects a malformed approval id", async () => {
   });
 });
 
+test("returns 400 (and keeps the process alive) for invalid percent-encoding in the approval id", async () => {
+  await withServer(async (baseUrl) => {
+    // "%E0%A4" is a truncated UTF-8 sequence: decodeURIComponent throws URIError. An
+    // unguarded call would crash the whole runner via an unhandled rejection.
+    const malformed = await fetch(`${baseUrl}/push/approvals/%E0%A4/respond`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test-runner-token" },
+      body: JSON.stringify({ approved: true }),
+    });
+    assert.equal(malformed.status, 400);
+    assert.equal((await malformed.json()).error, "invalid_approval_id");
+
+    // The server must still answer subsequent requests normally.
+    makeRelay("relay-alive-check", { pendingApprovalRequestIds: new Set([2]) });
+    const followUp = await postRespond(baseUrl, "relay-alive-check:2", { approved: false }, {
+      authorization: "Bearer test-runner-token",
+    });
+    assert.equal(followUp.status, 200);
+  });
+});
+
 test("returns 409 when the relay is unknown", async () => {
   await withServer(async (baseUrl) => {
     const response = await postRespond(baseUrl, "relay-missing:1", { approved: true }, {
