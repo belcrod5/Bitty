@@ -707,14 +707,9 @@ export default function App() {
   const [codexWsToken, setCodexWsToken] = useState("");
   const [runnerToken, setRunnerToken] = useState("");
   const effectiveCodexWsToken = codexWsToken.trim() || runnerToken.trim();
-  const runnerWebSocketManagerRef = useRef<RunnerWebSocketManager | null>(null);
-  if (!runnerWebSocketManagerRef.current) {
-    runnerWebSocketManagerRef.current = new RunnerWebSocketManager({
-      url: codexWsUrl,
-      token: effectiveCodexWsToken,
-    });
-  }
-  const runnerWebSocketManager = runnerWebSocketManagerRef.current;
+  const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
+    bootstrapReady: false, url: codexWsUrl, token: effectiveCodexWsToken,
+  }));
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
   const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
@@ -729,8 +724,9 @@ export default function App() {
     cloudflareAccessClientSecret
   ), [cloudflareAccessClientId, cloudflareAccessClientSecret]);
   const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
+  const effectiveCloudflareRunnerUrl = cloudflareRunnerUrl || runnerUrl;
   configureCloudflareAccessFetch({
-    runnerUrl: cloudflareRunnerUrl || runnerUrl,
+    runnerUrl: effectiveCloudflareRunnerUrl,
     credentials: cloudflareAccessCredentials,
   });
   const [activeScreen, setActiveScreen] = useState<AppScreen>("mini_board");
@@ -7792,8 +7788,12 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
+        bootstrapReady={settingsLoaded}
         url={codexWsUrl}
         token={effectiveCodexWsToken}
+        cloudflareRunnerUrl={effectiveCloudflareRunnerUrl}
+        cloudflareAccessClientId={cloudflareAccessClientId}
+        cloudflareAccessClientSecret={cloudflareAccessClientSecret}
         onConnectionProblem={runnerRouteSelection.requestRouteRecheck}
         manager={runnerWebSocketManager}
       >

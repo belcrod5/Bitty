@@ -4,6 +4,8 @@ import type { RunnerWsMessage } from "./types";
 
 jest.mock("../ws/webSocketAuth", () => ({
   createWebSocketWithOptionalAuth: jest.fn(),
+  isWebSocketForCloudflareRunner: jest.requireActual("../ws/webSocketAuth")
+    .isWebSocketForCloudflareRunner,
 }));
 
 const mockCreateWebSocketWithOptionalAuth = jest.mocked(createWebSocketWithOptionalAuth);
@@ -156,7 +158,12 @@ test("normalizes legacy codex-ws URLs to runner-ws", () => {
 
   expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledWith(
     "ws://127.0.0.1:8788/runner-ws",
-    "runner-token"
+    "runner-token",
+    {
+      runnerUrl: "",
+      clientId: "",
+      clientSecret: "",
+    }
   );
   expect(manager.getSnapshot().url).toBe("ws://127.0.0.1:8788/runner-ws");
 });
@@ -464,6 +471,332 @@ test("background closes intentionally and active reconnects once", async () => {
   });
 });
 
+test("waits for one complete bootstrap configuration before creating a socket", async () => {
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+
+  const firstConnect = manager.connect();
+  const secondConnect = manager.connect();
+  expect(secondConnect).toBe(firstConnect);
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+
+  const socket = nextSocket();
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "runner-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "access-secret",
+  });
+
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledWith(
+    "wss://runner.example.com/runner-ws",
+    "runner-token",
+    {
+      runnerUrl: "https://runner.example.com",
+      clientId: "access-id",
+      clientSecret: "access-secret",
+    }
+  );
+  socket.open();
+  socket.message({ channel: "control", op: "ready" });
+  await expect(Promise.all([firstConnect, secondConnect])).resolves.toEqual([undefined, undefined]);
+  expect(manager.getSnapshot().connectionState).toBe("ready");
+  expect(JSON.stringify(manager.getSnapshot())).not.toContain("runner-token");
+  expect(JSON.stringify(manager.getSnapshot())).not.toContain("access-secret");
+});
+
+test("keeps bootstrap connection waiting through background until active", async () => {
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "background",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+
+  const socket = nextSocket();
+  manager.setAppState("active");
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  socket.open();
+  socket.message({ channel: "control", op: "ready" });
+
+  await expect(connecting).resolves.toBeUndefined();
+});
+
+test("keeps the same bootstrap connection when background interrupts a socket before ready", async () => {
+  const firstSocket = nextSocket();
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+
+  manager.setAppState("background");
+  expect(firstSocket.closeCalls).toBe(1);
+  expect(manager.connect()).toBe(connecting);
+
+  const secondSocket = nextSocket();
+  manager.setAppState("active");
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(2);
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready" });
+
+  await expect(connecting).resolves.toBeUndefined();
+});
+
+test("keeps bootstrap callers on the current credential generation", async () => {
+  const firstSocket = nextSocket();
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "old-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "old-secret",
+  });
+  const secondSocket = nextSocket();
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "new-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "new-secret",
+  });
+
+  expect(firstSocket.closeCalls).toBe(1);
+  await Promise.resolve();
+  expect(manager.connect()).toBe(connecting);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(2);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenNthCalledWith(
+    1,
+    "wss://runner.example.com/runner-ws",
+    "old-token",
+    expect.objectContaining({ clientSecret: "old-secret" })
+  );
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenNthCalledWith(
+    2,
+    "wss://runner.example.com/runner-ws",
+    "new-token",
+    expect.objectContaining({ clientSecret: "new-secret" })
+  );
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready" });
+
+  await expect(connecting).resolves.toBeUndefined();
+});
+
+test("bootstrap waits across network backoff while a normal connect rejects its failed attempt", async () => {
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const firstSocket = nextSocket();
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+  const settled = jest.fn();
+  connecting.then(settled, settled);
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+
+  firstSocket.closeWithReason("network_lost");
+  await Promise.resolve();
+  expect(settled).not.toHaveBeenCalled();
+
+  const secondSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(1_000);
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready" });
+  await expect(connecting).resolves.toBeUndefined();
+
+  const directSocket = nextSocket();
+  const directManager = createManager();
+  const directConnecting = directManager.connect();
+  directSocket.closeWithReason("network_lost");
+  await expect(directConnecting).rejects.toThrow("runner_ws_closed_before_ready");
+});
+
+test("manual disconnect clears a pending bootstrap connection", async () => {
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+
+  manager.disconnect("manual");
+
+  await expect(connecting).rejects.toThrow("runner_ws_disconnected_manual");
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+});
+
+test("authentication failure rejects a pending bootstrap connection", async () => {
+  const socket = nextSocket();
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+
+  socket.closeWithReason("Received bad response code from server: 401.");
+
+  await expect(connecting).rejects.toThrow("runner_ws_auth_failed");
+  expect(manager.getSnapshot().connectionState).toBe("stopped");
+});
+
+test.each([
+  [{ url: "", token: "runner-token" }, "runner_ws_url_required"],
+  [{ url: "ws://127.0.0.1:8788/runner-ws", token: "" }, "runner_token_required"],
+  [{
+    url: "wss://runner.example.com/runner-ws",
+    token: "runner-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "",
+  }, "cloudflare_access_credentials_required"],
+])("reports concrete configuration errors after bootstrap", async (options, expectedError) => {
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+
+  manager.setConnectionOptions({ bootstrapReady: true, ...options });
+
+  await expect(connecting).rejects.toThrow(expectedError);
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+});
+
+test("initial unknown to active transition starts a ready connection", () => {
+  nextSocket();
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: true,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+    appState: "unknown",
+    clientInstanceId: "client-1",
+  });
+
+  manager.setAppState("active");
+
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  expect(manager.getSnapshot().connectionState).toBe("connecting");
+  manager.disconnect("manual");
+});
+
+test("requires a complete Access pair only for the configured Cloudflare origin", async () => {
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "runner-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+
+  await expect(manager.connect()).rejects.toThrow("cloudflare_access_credentials_required");
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+
+  nextSocket();
+  manager.setConnectionOptions({
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  manager.disconnect("manual");
+});
+
+test("changing Access credentials reconnects the managed socket", async () => {
+  const firstSocket = nextSocket();
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "runner-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "old-secret",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  await connectReady(manager, firstSocket);
+
+  nextSocket();
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "runner-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "new-secret",
+  });
+
+  expect(firstSocket.closeCalls).toBe(1);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(2);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenLastCalledWith(
+    "wss://runner.example.com/runner-ws",
+    "runner-token",
+    expect.objectContaining({ clientSecret: "new-secret" })
+  );
+  manager.disconnect("manual");
+});
+
 test("inactive app state blocks new start-style messages without closing existing socket", async () => {
   const socket = nextSocket();
   const manager = createManager();
@@ -521,6 +854,46 @@ test("authentication failure close stops automatic reconnect loop", async () => 
 
   await jest.advanceTimersByTimeAsync(20_000);
   expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+
+  manager.setAppState("background");
+  manager.setAppState("active");
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  expect(manager.getSnapshot().connectionState).toBe("stopped");
+
+  nextSocket();
+  manager.setConnectionOptions({
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "new-runner-token",
+  });
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(2);
+  manager.disconnect("manual");
+});
+
+test("native constructor errors cannot expose authentication values in the snapshot", async () => {
+  jest.useFakeTimers();
+  const actualAuth = jest.requireActual<typeof import("../ws/webSocketAuth")>("../ws/webSocketAuth");
+  mockCreateWebSocketWithOptionalAuth.mockImplementation(actualAuth.createWebSocketWithOptionalAuth);
+  global.WebSocket = jest.fn(() => {
+    throw new Error("native headers include Bearer runner-token and access-secret");
+  }) as unknown as typeof WebSocket;
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: true,
+    url: "wss://runner.example.com/runner-ws",
+    token: "runner-token",
+    cloudflareRunnerUrl: "https://runner.example.com",
+    cloudflareAccessClientId: "access-id",
+    cloudflareAccessClientSecret: "access-secret",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+
+  const failure = await manager.connect().catch((error: unknown) => error);
+
+  expect(failure).toEqual(new Error("authenticated_websocket_create_failed"));
+  expect(manager.getSnapshot().lastError).toBe("authenticated_websocket_create_failed");
+  expect(JSON.stringify(manager.getSnapshot())).not.toContain("runner-token");
+  expect(JSON.stringify(manager.getSnapshot())).not.toContain("access-secret");
+  manager.disconnect("manual");
 });
 
 test("active connection close notifies the owner before reconnecting", async () => {
