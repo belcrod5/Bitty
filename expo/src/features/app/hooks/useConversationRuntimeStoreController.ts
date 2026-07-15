@@ -123,6 +123,7 @@ type ConversationRuntimeSnapshotInput = {
   contextUsedPct?: number | null;
   isResponding?: boolean;
   selectedThreadStatusType?: string;
+  expectedRequestStartedAtMs?: number | null;
   clearRespondingRequestStartedAtMs?: number | null;
   request?: ConversationRuntimeRequestSnapshotInput | null;
 };
@@ -231,6 +232,13 @@ export function useConversationRuntimeStoreController() {
     const sessionId = normalizeSessionId(input.sessionId);
     if (!sessionId) return null;
     const previous = runtimeBySessionIdRef.current[sessionId];
+    const hasExpectedRequest = Object.prototype.hasOwnProperty.call(input, "expectedRequestStartedAtMs");
+    if (
+      hasExpectedRequest &&
+      normalizeStartedAtMs(previous?.request?.startedAtMs) !== normalizeStartedAtMs(input.expectedRequestStartedAtMs)
+    ) {
+      return null;
+    }
     const hasRequestInput = Object.prototype.hasOwnProperty.call(input, "request");
     const normalizedRequestInput = hasRequestInput && input.request
       ? normalizeRequestSnapshot(input.request, sessionId)
