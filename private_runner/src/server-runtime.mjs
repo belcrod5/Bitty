@@ -3696,13 +3696,17 @@ async function listCodexAuthProfilesSnapshot() {
   };
 }
 
-async function acquireCodexAuthSwitchLock() {
+async function acquireCodexAuthSwitchLock({ allowStaleRetry = true } = {}) {
   await fs.mkdir(CODEX_AUTH_PROFILES_DIR, { recursive: true });
   let handle;
   try {
     handle = await fs.open(CODEX_AUTH_SWITCH_LOCK_PATH, "wx", 0o600);
   } catch (err) {
     if (String(err?.code || "") === "EEXIST") {
+      if (allowStaleRetry && (await isCodexAuthSwitchLockStale())) {
+        await fs.unlink(CODEX_AUTH_SWITCH_LOCK_PATH).catch(() => {});
+        return acquireCodexAuthSwitchLock({ allowStaleRetry: false });
+      }
       throw makeApiError(409, "auth_switch_busy", "another auth switch is in progress");
     }
     throw err;
@@ -3720,10 +3724,30 @@ async function acquireCodexAuthSwitchLock() {
   };
 }
 
-async function restartRunnerForAuthSwitch() {
+// A lock file left behind by a killed runner (e.g. an auth-switch restart
+// that was mid-flight) has a PID that no longer exists. Detect that case so
+// a crashed/killed holder doesn't wedge every future switch behind a 409.
+async function isCodexAuthSwitchLockStale() {
+  const raw = await fs.readFile(CODEX_AUTH_SWITCH_LOCK_PATH, "utf8").catch(() => "");
+  const pid = Number.parseInt(String(raw).split("\n", 1)[0], 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false; // still alive (or we lack permission to know otherwise)
+  } catch (err) {
+    return String(err?.code || "") === "ESRCH";
+  }
+}
+
+function buildAuthSwitchRestartInvocation() {
   const restartEnv = {
     ...process.env,
     RUN_LOCAL_REUSE_EXISTING: "0",
+    // Hand the current runner token to the restarted process so the app's
+    // existing bearer token keeps working after an auth-switch restart
+    // (unlike a manual/CLI restart, which is still free to rotate it).
+    // Passed via env only, never argv, so it never shows up in `ps`.
+    RUN_LOCAL_RUNNER_TOKEN: RUNNER_TOKEN,
   };
   const bin = CODEX_AUTH_SWITCH_REQUIRE_SUDO ? "sudo" : CODEX_AUTH_SWITCH_RESTART_SCRIPT_PATH;
   const args = CODEX_AUTH_SWITCH_REQUIRE_SUDO
@@ -3737,10 +3761,18 @@ async function restartRunnerForAuthSwitch() {
         "full",
       ]
     : ["restart", "--mode", "full"];
-  const result = await runCommandWithCapture(bin, args, {
+  const command = CODEX_AUTH_SWITCH_REQUIRE_SUDO
+    ? `${bin} ${args.join(" ")}`.trim()
+    : `RUN_LOCAL_REUSE_EXISTING=0 ${bin} ${args.join(" ")}`.trim();
+  return { bin, args, env: restartEnv, command };
+}
+
+async function restartRunnerForAuthSwitch() {
+  const invocation = buildAuthSwitchRestartInvocation();
+  const result = await runCommandWithCapture(invocation.bin, invocation.args, {
     timeoutMs: CODEX_AUTH_SWITCH_RESTART_TIMEOUT_MS,
     cwd: WORKSPACE_ROOT,
-    env: restartEnv,
+    env: invocation.env,
     maxOutputBytes: 64 * 1024,
   });
   if (result.timedOut) {
@@ -3753,11 +3785,93 @@ async function restartRunnerForAuthSwitch() {
       `restart command failed (${result.exitCode}): ${stderrText || stdoutText || "no output"}`
     );
   }
-  return {
-    command: CODEX_AUTH_SWITCH_REQUIRE_SUDO
-      ? `${bin} ${args.join(" ")}`.trim()
-      : `RUN_LOCAL_REUSE_EXISTING=0 ${bin} ${args.join(" ")}`.trim(),
+  return { command: invocation.command };
+}
+
+// Guards against overlapping fire-and-forget restarts triggered from the
+// HTTP handler below (the auth-switch lock is released before this runs, so
+// nothing else serializes concurrent switch requests).
+let authSwitchRestartInFlight = false;
+
+// Runs the deferred restart after the HTTP response for /codex-auth/switch
+// has already been flushed to the client, so the ~2s+ restart lead time
+// never races with (or delays) the response itself. Failures are logged
+// only; the client already received its 200 with restart.scheduled=true.
+function scheduleAuthSwitchRestartAfterResponse(res) {
+  let triggered = false;
+  const trigger = () => {
+    if (triggered) return;
+    triggered = true;
+    if (authSwitchRestartInFlight) {
+      console.error("[codex-auth-switch] restart already in flight, skipping duplicate trigger");
+      return;
+    }
+    authSwitchRestartInFlight = true;
+    restartRunnerForAuthSwitch()
+      .then((result) => {
+        console.log(`[codex-auth-switch] restart command completed: ${result.command}`);
+      })
+      .catch((err) => {
+        console.error(`[codex-auth-switch] restart command failed: ${errorMessage(err)}`);
+      })
+      .finally(() => {
+        authSwitchRestartInFlight = false;
+      });
   };
+  res.once("finish", trigger);
+  res.once("close", trigger);
+}
+
+// Codex rewrites ~/.codex/auth.json in place as its tokens refresh, so the
+// copy under profiles/ goes stale over time. Before a switch overwrites
+// auth.json, save the live file back to its own profile so switching back
+// later restores current tokens instead of expired ones. Best-effort: when
+// in doubt about which profile the live file belongs to, skip rather than
+// overwrite the wrong one.
+async function persistActiveCodexAuthProfileSnapshot() {
+  const activeRaw = await fs.readFile(CODEX_AUTH_PATH, "utf8").catch(() => "");
+  if (!activeRaw.trim()) return { saved: false, reason: "auth.json is missing or empty" };
+  let activeJson;
+  try {
+    activeJson = JSON.parse(activeRaw);
+  } catch {
+    return { saved: false, reason: "auth.json is not valid JSON" };
+  }
+  const candidates = await listCodexAuthProfileCandidates();
+  const currentAuthId = await resolveCurrentAuthIdFromProfiles(candidates);
+  if (!currentAuthId) {
+    return { saved: false, reason: "current auth profile could not be resolved" };
+  }
+  const profilePath = authProfilePathForId(currentAuthId);
+  const profileRaw = await fs.readFile(profilePath, "utf8").catch(() => "");
+  if (profileRaw.trim()) {
+    // The marker can be stale after a manual auth.json swap; never save one
+    // account's tokens into another account's profile.
+    try {
+      const activeAccountId = resolveAccountId(activeJson?.tokens || {});
+      const profileAccountId = resolveAccountId(JSON.parse(profileRaw)?.tokens || {});
+      if (activeAccountId && profileAccountId && activeAccountId !== profileAccountId) {
+        return {
+          saved: false,
+          reason: `auth.json belongs to a different account than profile ${currentAuthId}`,
+        };
+      }
+    } catch {
+      // An unreadable/invalid profile is safe to overwrite with the valid live file.
+    }
+  }
+  const tmpPath = `${profilePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await fs.writeFile(tmpPath, activeRaw.endsWith("\n") ? activeRaw : `${activeRaw}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.rename(tmpPath, profilePath);
+    await fs.chmod(profilePath, 0o600).catch(() => {});
+  } finally {
+    await fs.unlink(tmpPath).catch(() => {});
+  }
+  return { saved: true, authId: currentAuthId };
 }
 
 async function switchCodexAuthProfile(authIdRaw) {
@@ -3765,6 +3879,12 @@ async function switchCodexAuthProfile(authIdRaw) {
   const releaseLock = await acquireCodexAuthSwitchLock();
   let tmpAuthPath = "";
   try {
+    const writeBack = await persistActiveCodexAuthProfileSnapshot();
+    if (writeBack.saved) {
+      console.log(`[codex-auth-switch] saved live auth.json back to profile ${writeBack.authId}`);
+    } else {
+      console.error(`[codex-auth-switch] skipped auth.json write-back: ${writeBack.reason}`);
+    }
     const profilePath = authProfilePathForId(authId);
     const profileRaw = await fs.readFile(profilePath, "utf8").catch((err) => {
       if (String(err?.code || "") === "ENOENT") {
@@ -3791,11 +3911,10 @@ async function switchCodexAuthProfile(authIdRaw) {
     await fs.chmod(CODEX_AUTH_PATH, 0o600).catch(() => {});
     await writeActiveAuthIdMarker(authId);
     resetCodexAuthRuntimeCache();
-    const restart = await restartRunnerForAuthSwitch();
     const snapshot = await listCodexAuthProfilesSnapshot();
     return {
       authId,
-      restart,
+      restartCommand: buildAuthSwitchRestartInvocation().command,
       snapshot,
     };
   } finally {
@@ -8217,7 +8336,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const authId = normalizeCodexAuthId(body?.authId);
       const switchResult = await switchCodexAuthProfile(authId);
-      return json(res, 200, {
+      json(res, 200, {
         ok: true,
         authId: switchResult.authId,
         currentAuthId: switchResult.snapshot.currentAuthId,
@@ -8225,9 +8344,13 @@ const server = http.createServer(async (req, res) => {
         fetchedAt: switchResult.snapshot.fetchedAt,
         restart: {
           scheduled: true,
-          command: switchResult.restart.command,
+          command: switchResult.restartCommand,
         },
       });
+      // Restart only after the response is flushed so the deferred restart's
+      // lead time can never race with (or be blamed for) this request.
+      scheduleAuthSwitchRestartAfterResponse(res);
+      return;
     } catch (err) {
       if (isApiError(err)) {
         return json(res, err.apiStatus, err.apiPayload);
@@ -11904,6 +12027,14 @@ if (!RUNNER_SKIP_SERVER_START) {
 
 export const __TESTING__ = {
   server,
+  RUNNER_TOKEN,
+  CODEX_AUTH_PROFILES_DIR,
+  CODEX_AUTH_SWITCH_LOCK_PATH,
+  acquireCodexAuthSwitchLock,
+  isCodexAuthSwitchLockStale,
+  buildAuthSwitchRestartInvocation,
+  persistActiveCodexAuthProfileSnapshot,
+  switchCodexAuthProfile,
   pushDeviceStore,
   apnsClient,
   pushSummarizer,

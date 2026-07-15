@@ -838,6 +838,9 @@ CODEX_REUSED=0
 RUNNER_REUSED=0
 
 prepare_runner_runtime_token
+# Token has already been consumed above; do not let it leak into a later
+# manual/CLI restart run from this same shell/session.
+unset RUN_LOCAL_RUNNER_TOKEN
 
 if [ "$CODEX_ENABLE" = "1" ] && [ -n "$LISTEN_PORT" ]; then
   require_codex_home_write_access
