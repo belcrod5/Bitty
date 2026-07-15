@@ -154,7 +154,7 @@ test("runner-ws TTS operation map resolves repeated starts to the original job",
   await job.runPromise;
 });
 
-test("runner-ws LLM operation map keeps pre-turn relays recoverable after detach", () => {
+test("runner-ws LLM identity index keeps exact pre-turn pairs recoverable after detach", () => {
   const relay = __TESTING__.createCodexRelayContext({
     endpoint: "/runner-ws",
     remote: "test",
@@ -165,22 +165,207 @@ test("runner-ws LLM operation map keeps pre-turn relays recoverable after detach
   const sessionId = `llm-session-${Date.now()}`;
 
   assert.equal(
-    __TESTING__.rememberRunnerWsLlmRelayIdentity(relay, { operationId, sessionId }),
-    true
+    __TESTING__.runnerWsLlmRelayIdentities.claim(relay, { operationId, sessionId }).ok,
+    true,
   );
-  assert.equal(__TESTING__.resolveRunnerWsLlmRelayByIdentity({ operationId })?.relayId, relay.relayId);
-  assert.equal(__TESTING__.hasRunnerWsLlmRelayIdentityMapping(relay), true);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact({ operationId, sessionId }).relay?.relayId, relay.relayId);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact({ operationId }).reason, "relay_identity_required");
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.has(relay), true);
 
   __TESTING__.cleanupOrScheduleDetachedRelay(relay, "test_detached");
   assert.equal(relay.closed, false);
-  assert.equal(__TESTING__.resolveRunnerWsLlmRelayByIdentity({ sessionId })?.relayId, relay.relayId);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact({ operationId, sessionId }).relay?.relayId, relay.relayId);
 
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
   }
   __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
-  assert.equal(__TESTING__.hasRunnerWsLlmRelayIdentityMapping(relay), false);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.has(relay), false);
+});
+
+test("runner-ws LLM identity allows multiple operations on one relay without rebinding IDs", () => {
+  const relay = __TESTING__.createCodexRelayContext({
+    endpoint: "/runner-ws",
+    remote: "test",
+    upstreamUrl: "ws://upstream.test",
+    upstreamWs: { readyState: 1, send() {} },
+  });
+  const suffix = `${Date.now()}-${Math.random()}`;
+  const first = { operationId: `operation-a-${suffix}`, sessionId: `session-${suffix}` };
+  const second = { operationId: `operation-b-${suffix}`, sessionId: first.sessionId };
+
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.claim(relay, first).ok, true);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.claim(relay, second).ok, true);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact(first).relay, relay);
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact(second).relay, relay);
+  assert.equal(
+    __TESTING__.runnerWsLlmRelayIdentities.claim(relay, {
+      operationId: first.operationId,
+      sessionId: `different-${suffix}`,
+    }).reason,
+    "runner_ws_llm_identity_collision",
+  );
+  assert.equal(
+    __TESTING__.runnerWsLlmRelayIdentities.resolveExact({
+      operationId: first.operationId,
+      sessionId: `different-${suffix}`,
+    }).reason,
+    "relay_identity_mismatch",
+  );
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("runner-ws identity resume replays pre-turn response without forwarding the RPC again", () => {
+  const relay = createRelayForRunnerWsTest();
+  relay.relayId = `relay-identity-replay-${Date.now()}`;
+  __TESTING__.codexWsRelaysById.set(relay.relayId, relay);
+  const identity = {
+    operationId: `operation-replay-${Date.now()}`,
+    sessionId: `session-replay-${Date.now()}`,
+  };
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.claim(relay, identity).ok, true);
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 7, method: "initialize", params: {} }),
+    false,
+    { ...identity, requestId: "rpc-1", endpoint: "/runner-ws", remote: "test" },
+  );
+  assert.equal(relay.upstreamSent.length, 1);
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 7, result: { ready: true } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+  assert.equal(relay.eventLog.length, 1);
+
+  const ws = createRunnerWsConnectionForTest();
+  ws.sent.length = 0;
+  ws.emit("message", JSON.stringify({
+    channel: "relay",
+    op: "resume",
+    requestId: "resume-1",
+    ...identity,
+    seq: 0,
+  }), false);
+
+  assert.equal(relay.upstreamSent.length, 1);
+  assert.equal(ws.sent[0].channel, "llm");
+  assert.equal(ws.sent[0].seq, 1);
+  assert.equal(ws.sent[1].op, "attached");
+  assert.equal(ws.sent[1].requestId, "resume-1");
+  assert.equal(ws.sent[1].operationId, identity.operationId);
+  assert.equal(ws.sent[1].sessionId, identity.sessionId);
+  assert.equal(ws.sent[1].payload.match, "identity");
+  ws.close();
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("runner-ws identity resume rejects seq zero gaps and future seq without attaching", () => {
+  const relay = createRelayForRunnerWsTest();
+  relay.relayId = `relay-identity-gap-${Date.now()}`;
+  relay.threadId = "thread-1";
+  relay.lastSeq = 5;
+  relay.eventLog = [{ seq: 5, atMs: Date.now(), data: "{}" }];
+  __TESTING__.codexWsRelaysById.set(relay.relayId, relay);
+  const identity = {
+    operationId: `operation-gap-${Date.now()}`,
+    sessionId: `session-gap-${Date.now()}`,
+  };
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.claim(relay, identity).ok, true);
+  relay.cleanupTimer = setTimeout(() => {}, 60_000);
+  const cleanupTimer = relay.cleanupTimer;
+
+  for (const [seq, reason, threadId] of [
+    [0, "relay_event_history_gap", ""],
+    [1, "relay_event_history_gap", ""],
+    [6, "relay_seq_ahead", ""],
+    [5, "relay_identity_mismatch", "thread-wrong"],
+  ]) {
+    const ws = createRunnerWsConnectionForTest();
+    ws.sent.length = 0;
+    ws.emit("message", JSON.stringify({
+      channel: "relay", op: "resume", ...identity, seq,
+      ...(threadId ? { threadId } : {}),
+    }), false);
+    assert.equal(ws.sent.at(-1)?.op, "resume_miss");
+    assert.equal(ws.sent.at(-1)?.payload.reason, reason);
+    assert.equal(relay.clients.has(ws), false);
+    assert.equal(relay.cleanupTimer, cleanupTimer);
+    ws.close();
+  }
+  clearTimeout(relay.cleanupTimer);
+  relay.cleanupTimer = null;
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("runner-ws identity mismatch neither creates a relay nor forwards or acknowledges RPC", () => {
+  const relay = createRelayForRunnerWsTest();
+  relay.relayId = `relay-identity-collision-${Date.now()}`;
+  __TESTING__.codexWsRelaysById.set(relay.relayId, relay);
+  const identity = {
+    operationId: `operation-collision-${Date.now()}`,
+    sessionId: `session-collision-${Date.now()}`,
+  };
+  assert.equal(__TESTING__.runnerWsLlmRelayIdentities.claim(relay, identity).ok, true);
+  const ws = createRunnerWsConnectionForTest();
+  ws.sent.length = 0;
+  const relayCount = __TESTING__.codexWsRelaysById.size;
+  ws.emit("message", JSON.stringify({
+    channel: "llm", op: "rpc", requestId: "collision-rpc",
+    operationId: identity.operationId, sessionId: `${identity.sessionId}-wrong`,
+    payload: { jsonrpc: "2.0", id: 9, method: "initialize", params: {} },
+  }), false);
+
+  assert.equal(__TESTING__.codexWsRelaysById.size, relayCount);
+  assert.equal(relay.upstreamSent.length, 0);
+  assert.equal(ws.sent.length, 1);
+  assert.equal(ws.sent[0].channel, "control");
+  assert.equal(ws.sent[0].op, "error");
+  assert.equal(ws.sent[0].payload.error, "runner_ws_llm_identity_collision");
+  assert.equal(ws.sent.some((message) => message.op === "llm_rpc_received"), false);
+  ws.close();
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("runner-ws unknown identity resume misses without creating a relay", () => {
+  const ws = createRunnerWsConnectionForTest();
+  ws.sent.length = 0;
+  const relayCount = __TESTING__.codexWsRelaysById.size;
+  ws.emit("message", JSON.stringify({
+    channel: "relay", op: "resume", requestId: "unknown-resume",
+    operationId: "unknown-operation", sessionId: "unknown-session", seq: 0,
+  }), false);
+  assert.equal(__TESTING__.codexWsRelaysById.size, relayCount);
+  assert.equal(ws.sent.at(-1)?.op, "resume_miss");
+  assert.equal(ws.sent.at(-1)?.payload.reason, "relay_identity_not_found");
+  ws.close();
+});
+
+test("runner-ws keeps existing threadId relay resume compatible", () => {
+  const relay = createRelayForRunnerWsTest();
+  relay.relayId = `relay-thread-resume-${Date.now()}`;
+  __TESTING__.codexWsRelaysById.set(relay.relayId, relay);
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({
+      jsonrpc: "2.0", id: 10, method: "turn/start",
+      params: { threadId: "thread-legacy", input: [] },
+    }),
+    false,
+    { endpoint: "/runner-ws", remote: "test", threadId: "thread-legacy" },
+  );
+  const ws = createRunnerWsConnectionForTest();
+  ws.sent.length = 0;
+  ws.emit("message", JSON.stringify({
+    channel: "relay", op: "resume", threadId: "thread-legacy", seq: 0,
+  }), false);
+  assert.equal(ws.sent.at(-1)?.op, "attached");
+  assert.equal(ws.sent.at(-1)?.threadId, "thread-legacy");
+  assert.equal(ws.sent.at(-1)?.payload.match, "thread");
+  ws.close();
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
 });
 
 test("runner-ws TTS start requires operationId", () => {

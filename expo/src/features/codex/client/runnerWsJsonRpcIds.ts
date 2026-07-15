@@ -1,4 +1,5 @@
 import type { JsonRpcId } from "./types";
+import * as Crypto from "expo-crypto";
 
 const MAX_SAFE_WIRE_ID = 9_000_000_000_000_000;
 let nextRunnerWsJsonRpcWireId = Math.max(1000, Math.floor(Date.now() * 1000));
@@ -18,9 +19,7 @@ function readIntegerId(value: unknown): JsonRpcId | null {
 
 export function createCodexRunnerWsLogicalId(prefix: string, traceIdRaw: string) {
   const traceId = String(traceIdRaw || "").trim().replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
-  const nowPart = Date.now().toString(36);
-  const randomPart = Math.random().toString(36).slice(2, 10);
-  return [prefix, traceId, nowPart, randomPart].filter(Boolean).join("_");
+  return [prefix, traceId, Crypto.randomUUID()].filter(Boolean).join("_");
 }
 
 export function buildCodexRunnerWsRequestId(baseRaw: string, sequenceRaw: number, methodRaw: string, idRaw: number) {
