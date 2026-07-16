@@ -674,8 +674,10 @@ test("manual disconnect clears a pending bootstrap connection", async () => {
   expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
 });
 
-test("authentication failure rejects a pending bootstrap connection", async () => {
-  const socket = nextSocket();
+test("repeated authentication failures reject a pending bootstrap connection", async () => {
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const firstSocket = nextSocket();
   const manager = new RunnerWebSocketManager({
     bootstrapReady: false,
     url: "",
@@ -684,13 +686,27 @@ test("authentication failure rejects a pending bootstrap connection", async () =
     clientInstanceId: "client-1",
   });
   const connecting = manager.connect();
+  const settled = jest.fn();
+  connecting.then(settled, settled);
   manager.setConnectionOptions({
     bootstrapReady: true,
     url: "ws://127.0.0.1:8788/runner-ws",
     token: "runner-token",
   });
 
-  socket.closeWithReason("Received bad response code from server: 401.");
+  firstSocket.closeWithReason("Received bad response code from server: 401.");
+  await Promise.resolve();
+  expect(settled).not.toHaveBeenCalled();
+
+  const secondSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(1_000);
+  secondSocket.closeWithReason("Received bad response code from server: 401.");
+  await Promise.resolve();
+  expect(settled).not.toHaveBeenCalled();
+
+  const thirdSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(2_000);
+  thirdSocket.closeWithReason("Received bad response code from server: 401.");
 
   await expect(connecting).rejects.toThrow("runner_ws_auth_failed");
   expect(manager.getSnapshot().connectionState).toBe("stopped");
@@ -836,8 +852,9 @@ test("inactive app state blocks new start-style messages without closing existin
   });
 });
 
-test("authentication failure close stops automatic reconnect loop", async () => {
+test("transient authentication failure close retries with backoff and recovers", async () => {
   jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
   const firstSocket = nextSocket();
   const manager = createManager();
 
@@ -845,27 +862,56 @@ test("authentication failure close stops automatic reconnect loop", async () => 
   firstSocket.closeWithReason("Received bad response code from server: 401.");
 
   await expect(connecting).rejects.toThrow("runner_ws_closed_before_ready");
-
   expect(manager.getSnapshot()).toMatchObject({
-    connectionState: "stopped",
-    reconnectCount: 0,
+    connectionState: "reconnecting",
     lastError: "runner_ws_auth_failed: Received bad response code from server: 401.",
   });
 
-  await jest.advanceTimersByTimeAsync(20_000);
-  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  const secondSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(1_000);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(2);
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready" });
+  await Promise.resolve();
 
+  expect(manager.getSnapshot().connectionState).toBe("ready");
+});
+
+test("persistent authentication failures stop reconnecting until the app returns to foreground", async () => {
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const firstSocket = nextSocket();
+  const manager = createManager();
+
+  void manager.connect().catch(() => undefined);
+  firstSocket.closeWithReason("Received bad response code from server: 401.");
+
+  const secondSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(1_000);
+  secondSocket.closeWithReason("Received bad response code from server: 401.");
+
+  const thirdSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(2_000);
+  thirdSocket.closeWithReason("Received bad response code from server: 401.");
+
+  expect(manager.getSnapshot()).toMatchObject({
+    connectionState: "stopped",
+    lastError: "runner_ws_auth_failed: Received bad response code from server: 401.",
+  });
+
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(3);
+
+  // Returning to the foreground clears the stale auth block for one retry cycle.
+  const recoverySocket = nextSocket();
   manager.setAppState("background");
   manager.setAppState("active");
-  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
-  expect(manager.getSnapshot().connectionState).toBe("stopped");
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(4);
+  recoverySocket.open();
+  recoverySocket.message({ channel: "control", op: "ready" });
+  await Promise.resolve();
+  expect(manager.getSnapshot().connectionState).toBe("ready");
 
-  nextSocket();
-  manager.setConnectionOptions({
-    url: "ws://127.0.0.1:8788/runner-ws",
-    token: "new-runner-token",
-  });
-  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(2);
   manager.disconnect("manual");
 });
 

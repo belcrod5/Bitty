@@ -22,6 +22,9 @@ const RUNNER_WS_RECONNECT_MAX_DELAY_MS = 10_000;
 const RUNNER_WS_RECONNECT_JITTER_MS = 250;
 const RUNNER_WS_HEARTBEAT_INTERVAL_MS = 15_000;
 const RUNNER_WS_HEARTBEAT_MAX_MISSED_PINGS = 2;
+// A 401/403 close can be transient (e.g. Cloudflare tunnel restarting), so a few
+// backoff retries run before the configuration generation is blocked for auth.
+const RUNNER_WS_MAX_CONSECUTIVE_AUTH_FAILURES = 3;
 
 type RunnerWebSocketConnectionOptions = {
   bootstrapReady?: boolean;
@@ -161,6 +164,7 @@ export class RunnerWebSocketManager {
   private generation = 0;
   private connectionOptionsGeneration = 0;
   private blockedAuthGeneration: number | null = null;
+  private consecutiveAuthFailureCount = 0;
   private reconnectCount = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private bootstrapConnectPromise: Promise<void> | null = null;
@@ -239,6 +243,7 @@ export class RunnerWebSocketManager {
     this.cloudflareAccessClientId = nextCloudflareAccessClientId;
     this.cloudflareAccessClientSecret = nextCloudflareAccessClientSecret;
     this.connectionOptionsGeneration += 1;
+    this.consecutiveAuthFailureCount = 0;
     this.disconnect("config-changed");
     if (
       this.bootstrapReady &&
@@ -342,10 +347,18 @@ export class RunnerWebSocketManager {
       return;
     }
     if (nextAppState === "active") {
+      if (this.blockedAuthGeneration === this.connectionOptionsGeneration) {
+        // An auth block from an earlier foreground session may be stale (e.g. the
+        // Cloudflare tunnel came back); each return to the foreground earns one
+        // fresh retry cycle before the block re-arms.
+        this.blockedAuthGeneration = null;
+        this.consecutiveAuthFailureCount = 0;
+        if (this.connectionState === "stopped") {
+          this.connectionState = "idle";
+        }
+      }
       if (this.connectionState === "background") {
-        this.connectionState = this.blockedAuthGeneration === this.connectionOptionsGeneration
-          ? "stopped"
-          : "idle";
+        this.connectionState = "idle";
       }
       this.emitSnapshot();
       if (this.bootstrapConnectPromise || this.connectionStartError() === null) {
@@ -518,6 +531,7 @@ export class RunnerWebSocketManager {
       shouldNotifySnapshot = true;
       if (message.op === "ready") {
         this.connectionState = "ready";
+        this.consecutiveAuthFailureCount = 0;
         this.resolveConnectWaiter();
         this.resolveBootstrapConnectWaiter();
         // Reset heartbeat bookkeeping so stale timestamps from a previous
@@ -593,12 +607,17 @@ export class RunnerWebSocketManager {
       return;
     }
     if (isAuthFailureCloseReason(reason)) {
-      this.blockedAuthGeneration = this.connectionOptionsGeneration;
-      this.connectionState = "stopped";
+      this.consecutiveAuthFailureCount += 1;
       this.lastError = makeError("runner_ws_auth_failed", reason || undefined).message;
-      this.rejectBootstrapConnectWaiter(makeError("runner_ws_auth_failed", reason || undefined));
-      this.emitSnapshot();
-      return;
+      if (this.consecutiveAuthFailureCount >= RUNNER_WS_MAX_CONSECUTIVE_AUTH_FAILURES) {
+        this.blockedAuthGeneration = this.connectionOptionsGeneration;
+        this.connectionState = "stopped";
+        this.rejectBootstrapConnectWaiter(makeError("runner_ws_auth_failed", reason || undefined));
+        this.emitSnapshot();
+        return;
+      }
+      // Below the block threshold an auth close follows the generic close path,
+      // so transient 401/403s (Cloudflare tunnel restarts) retry with backoff.
     }
     if (this.appState === "active") {
       this.onConnectionProblem?.();
