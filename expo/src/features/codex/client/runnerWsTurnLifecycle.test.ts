@@ -586,3 +586,76 @@ test("manager mode recovers turn/start response before interrupting exactly once
   expect(manager.send.mock.calls.filter(([message]) => (message.payload as any)?.method === "turn/start")).toHaveLength(1);
   expect(manager.send.mock.calls.filter(([message]) => (message.payload as any)?.method === "turn/interrupt")).toHaveLength(1);
 });
+
+test("manager mode resends an unsent approval decision once admission returns", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  let failSends = true;
+  manager.send.mockImplementation(() => {
+    if (failSends) throw new Error("runner_ws_not_ready: reconnecting");
+  });
+  manager.dropConnection();
+  await flushPromises();
+
+  manager.emit({
+    channel: "llm", op: "rpc",
+    operationId: turnStartOutbound.operationId, sessionId: turnStartOutbound.sessionId,
+    threadId: "thread-1", seq: 1,
+    payload: {
+      id: 9001,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", turnId: "turn-1", command: "ls" },
+    },
+  });
+  await flushPromises();
+
+  const decisionSends = () => manager.send.mock.calls.filter(([message]) => (
+    (message.payload as any)?.id === 9001 && (message.payload as any)?.result?.decision === "accept"
+  ));
+  expect(decisionSends()).toHaveLength(1);
+
+  failSends = false;
+  manager.becomeReady();
+  await flushPromises();
+  expect(decisionSends()).toHaveLength(2);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 2, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "done",
+  });
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 3, "turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed" },
+  });
+  await expect(session.promise).resolves.toMatchObject({ reply: "done" });
+});
+
+test("manager mode retries turn/interrupt on relay attach when the first send never left", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { session } = await startLiveTurn(manager);
+
+  manager.send.mockImplementationOnce(() => {
+    throw new Error("runner_ws_not_ready: handshaking");
+  });
+  await session.interrupt();
+  const interruptSends = () => manager.send.mock.calls.filter(([message]) => (
+    (message.payload as any)?.method === "turn/interrupt"
+  ));
+  expect(interruptSends()).toHaveLength(1);
+
+  // The unsent interrupt must not settle the turn as interrupted: the runner would
+  // keep the turn running and hydration would resurrect it as "Running".
+  let settled = false;
+  session.promise.then(() => { settled = true; }, () => { settled = true; });
+  await flushPromises();
+  expect(settled).toBe(false);
+
+  manager.emit({
+    channel: "relay", op: "attached", threadId: "thread-1", seq: 1,
+    payload: { latestSeq: 1, replayed: 0 },
+  });
+  await expect(session.promise).rejects.toThrow("interrupted");
+  expect(interruptSends()).toHaveLength(2);
+});

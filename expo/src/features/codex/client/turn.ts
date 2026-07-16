@@ -155,7 +155,10 @@ export function startCodexAppServerTurn(
   let awaitingReconnect = false;
   let reconnectWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let resumeSentGeneration = -1;
-  let settleAdmission: ((error?: Error) => void) | null = null;
+  // Admission waiters: pre-turn setup RPCs plus mid-turn retries of unsent server
+  // responses (approval decisions) can wait concurrently, so this is a set, not a slot.
+  const admissionWaiters = new Set<(error?: Error) => void>();
+  let waitForAdmissionRef: ((requireSnapshotSignal?: boolean) => Promise<number>) | null = null;
   let operationEpoch = 0;
   let admissionConnectRequested = false;
   const sentPendingRpcIds = new Set<JsonRpcId>();
@@ -230,8 +233,21 @@ export function startCodexAppServerTurn(
     return ws?.readyState ?? WebSocket.CLOSED;
   }
 
+  function settleAdmissionWaiters(error?: Error) {
+    for (const settle of Array.from(admissionWaiters)) {
+      settle(error);
+    }
+  }
+
+  function isRetriableRunnerWsSendError(error: unknown): error is Error {
+    return error instanceof Error && (
+      error.message.includes("runner_ws_inactive_start_blocked") ||
+      error.message.includes("runner_ws_not_ready")
+    );
+  }
+
   function cleanup() {
-    settleAdmission?.(createTurnInterruptedError());
+    settleAdmissionWaiters(createTurnInterruptedError());
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -463,7 +479,6 @@ export function startCodexAppServerTurn(
       });
       return false;
     }
-    interruptRpcSent = true;
     const id = nextId++;
     emitLog({
       stage: "turn_interrupt_send",
@@ -481,13 +496,9 @@ export function startCodexAppServerTurn(
           turnId: activeTurnId,
         },
       });
-      emitLog({
-        stage: "turn_interrupt_sent",
-        method: "turn/interrupt",
-        id,
-        readyState: getTransportReadyState(),
-      });
     } catch (error) {
+      // Leave interruptRpcSent unset so the relay-attach path retries the send;
+      // reporting success here would strand a still-running turn on the runner.
       emitLog({
         stage: "turn_interrupt_error",
         method: "turn/interrupt",
@@ -495,8 +506,44 @@ export function startCodexAppServerTurn(
         message: toErrorMessage(error),
         readyState: getTransportReadyState(),
       });
+      return false;
     }
+    interruptRpcSent = true;
+    emitLog({
+      stage: "turn_interrupt_sent",
+      method: "turn/interrupt",
+      id,
+      readyState: getTransportReadyState(),
+    });
     return true;
+  }
+
+  // Server-initiated requests (approval decisions and error replies) must reach the
+  // runner even when the synchronous send is rejected before hitting the wire
+  // (runner_ws_not_ready during a background/reconnect window). Same principle as the
+  // pre-turn admission loop: only retry sends that provably never left this client.
+  async function sendServerResponseWhenAdmitted(
+    payload: Record<string, unknown>,
+    isStillRelevant: () => boolean
+  ) {
+    while (true) {
+      if (finalized || !isStillRelevant()) return false;
+      try {
+        sendJson(payload);
+        return true;
+      } catch (error) {
+        if (!useRunnerWsManager || !waitForAdmissionRef || !isRetriableRunnerWsSendError(error)) {
+          throw error;
+        }
+        emitLog({
+          stage: "server_response_resend_wait",
+          id: Number.isInteger(Number(payload.id)) ? Number(payload.id) : undefined,
+          message: toErrorMessage(error),
+          readyState: getTransportReadyState(),
+        });
+        await waitForAdmissionRef(true);
+      }
+    }
   }
 
   async function handleServerRequest(message: JsonRpcIncoming) {
@@ -517,13 +564,13 @@ export function startCodexAppServerTurn(
           id,
           readyState: getTransportReadyState(),
         });
-        sendJson({
+        await sendServerResponseWhenAdmitted({
           id,
           error: {
             code: -32601,
             message: `Unsupported approval method: ${method}`,
           },
-        });
+        }, () => !interruptRequested);
         return;
       }
       const request = normalizeAppServerApprovalRequest(params, {
@@ -540,12 +587,12 @@ export function startCodexAppServerTurn(
           throw new Error(`Invalid approval action: ${String(decided)}`);
         }
         if (!guard.active || finalized) return;
-        sendJson({
+        await sendServerResponseWhenAdmitted({
           id,
           result: {
             decision: toCodexApprovalDecision(decided),
           },
-        });
+        }, () => guard.active);
       } catch (error) {
         if (!guard.active || finalized) return;
         emitLog({
@@ -560,13 +607,13 @@ export function startCodexAppServerTurn(
       }
       return;
     }
-    sendJson({
+    await sendServerResponseWhenAdmitted({
       id,
       error: {
         code: -32000,
         message: `${method || "unknown_method"} is not supported by this client`,
       },
-    });
+    }, () => !interruptRequested);
   }
 
   function handleNotification(methodRaw: unknown, paramsRaw: unknown) {
@@ -816,13 +863,15 @@ export function startCodexAppServerTurn(
       }
       return new Promise<number>((resolve, reject) => {
         const epoch = operationEpoch;
-        settleAdmission = (error) => {
-          settleAdmission = null;
+        const settle = (error?: Error) => {
+          admissionWaiters.delete(settle);
           error ? reject(error) : resolve(epoch);
         };
+        admissionWaiters.add(settle);
         requestManagerConnection();
       });
     };
+    waitForAdmissionRef = waitForManagerAdmission;
     const sendRequestWhenAdmitted = async <T,>(
       method: string,
       params: Record<string, unknown>,
@@ -842,8 +891,7 @@ export function startCodexAppServerTurn(
           if (
             error instanceof Error &&
             unsentRunnerRpcErrors.has(error) &&
-            (error.message.includes("runner_ws_inactive_start_blocked") ||
-              error.message.includes("runner_ws_not_ready"))
+            isRetriableRunnerWsSendError(error)
           ) {
             requireSnapshotSignal = true;
             continue;
@@ -862,10 +910,7 @@ export function startCodexAppServerTurn(
           sendNotification(method, params);
           return;
         } catch (error) {
-          if (!(error instanceof Error) || !(
-            error.message.includes("runner_ws_inactive_start_blocked") ||
-            error.message.includes("runner_ws_not_ready")
-          )) throw error;
+          if (!isRetriableRunnerWsSendError(error)) throw error;
           requireSnapshotSignal = true;
         }
       }
@@ -879,10 +924,7 @@ export function startCodexAppServerTurn(
           sendNotification(method, params);
           return;
         } catch (error) {
-          if (error instanceof Error && (
-            error.message.includes("runner_ws_inactive_start_blocked") ||
-            error.message.includes("runner_ws_not_ready")
-          )) {
+          if (isRetriableRunnerWsSendError(error)) {
             requireSnapshotSignal = true;
             continue;
           }
@@ -1271,15 +1313,18 @@ export function startCodexAppServerTurn(
         if (finalized) return;
         const snapshot = runnerWebSocketManager.getSnapshot();
         if (snapshot.connectionState !== "idle") admissionConnectRequested = false;
-        if (settleAdmission) {
+        if (admissionWaiters.size > 0) {
           if (snapshot.appState === "active" && snapshot.connectionState === "ready") {
-            settleAdmission();
+            settleAdmissionWaiters();
           } else if (snapshot.appState === "active" && snapshot.connectionState === "stopped") {
-            settleAdmission(new Error("Codex app-server runner-ws stopped"));
+            settleAdmissionWaiters(new Error("Codex app-server runner-ws stopped"));
           } else {
             requestManagerConnection();
           }
-          return;
+          // Pre-turn setup owns admission exclusively; the reconnect/resume logic
+          // below only applies once turn/start has reached the wire (a mid-turn
+          // server-response resend can wait for admission at the same time).
+          if (!turnStartIssued) return;
         }
         if (snapshot.connectionState === "ready") {
           resumePendingRpcTimeouts();
