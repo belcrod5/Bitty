@@ -4892,6 +4892,7 @@ export default function App() {
 
   useSessionStartupRecoveryController({
     settingsLoaded,
+    runnerWebSocketManager,
     startupSessionRestoreAttemptedRef,
     conversationMessagesRef,
     codexWsUrl,
