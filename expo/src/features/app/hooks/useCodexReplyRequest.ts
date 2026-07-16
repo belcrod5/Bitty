@@ -12,6 +12,7 @@ import { extractCommandText } from "../../codex/client/helpers";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
+import { codexItemMessageId } from "../utils/codexItemMessageId";
 import { settleRunningCommandExecution } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
@@ -854,7 +855,14 @@ export function useCodexReplyRequest<
         agentMessageOrder.push(itemId);
       }
       if (!agentMessageUiIdByItemId.has(itemId)) {
-        agentMessageUiIdByItemId.set(itemId, `assistant-stream-${requestTraceId}-${itemId}`);
+        // サーバ発行のitemIdはthread/read復元と同じ決定的IDにし、
+        // 再ハイドレーションでメッセージIDが変わらないようにする。
+        agentMessageUiIdByItemId.set(
+          itemId,
+          itemId !== "__agent_message__" && trackedThreadId
+            ? codexItemMessageId(trackedThreadId, itemId)
+            : `assistant-stream-${requestTraceId}-${itemId}`
+        );
       }
       currentAgentMessageItemId = itemId;
       return itemId;
@@ -902,7 +910,12 @@ export function useCodexReplyRequest<
       const command = extractCommandText(item.command);
       if (!itemId || !command) return;
       if (!commandMessageIdByItemId.has(itemId)) {
-        commandMessageIdByItemId.set(itemId, `command-${requestTraceId}-${itemId}`);
+        commandMessageIdByItemId.set(
+          itemId,
+          trackedThreadId
+            ? codexItemMessageId(trackedThreadId, itemId)
+            : `command-${requestTraceId}-${itemId}`
+        );
       }
       const rawStatus = String(item.status || "").trim().toLowerCase();
       const status: CodexCommandExecutionInfo["status"] = phase === "started"

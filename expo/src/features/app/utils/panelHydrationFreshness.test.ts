@@ -105,7 +105,7 @@ describe("applyPanelHydrationStart", () => {
     const terminal = resolvePanelConversationAfterHydration({
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
-      restoredConversation: [message({ id: "restored-id", role: "assistant", content: "done" })],
+      restoredConversation: [message({ id: "playing-id", role: "assistant", content: "done" })],
       restoredHasRunningTurn: false,
       restoredThreadStatusType: "idle",
       restoredUpdatedAtMs: NOW_MS,
@@ -307,88 +307,115 @@ describe("resolvePanelConversationAfterHydration", () => {
     });
   });
 
-  it("keeps exact matching message ids, waveform, and playback target", () => {
+  it("keeps waveform and playback target for shared item ids even when content was normalized differently", () => {
+    const liveContent = "line one\n\ndone";
+    const restoredContent = "line one  \n\n\n\n{youtube:dQw4w9WgXcQ}\n\ndone\n";
     const result = resolvePanelConversationAfterHydration({
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
-        message({ id: "restored-user", role: "user", content: "hello" }),
-        message({ id: "restored-assistant", role: "assistant", content: "done" }),
+        message({ id: "codex-item-thread-1-item-1", role: "user", content: "hello" }),
+        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: restoredContent }),
       ],
       panelConversation: [
-        message({ id: "panel-user", role: "user", content: "hello" }),
-        message({ id: "panel-assistant", role: "assistant", content: "done", ttsWaveform: [0.1, 0.2] }),
+        message({ id: "codex-item-thread-1-item-1", role: "user", content: "hello" }),
+        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: liveContent, ttsWaveform: [0.1, 0.2] }),
       ],
       restoredHasRunningTurn: false,
       restoredThreadStatusType: "idle",
       restoredUpdatedAtMs: NOW_MS,
       restoredMessageCount: 2,
-      ttsPlaybackMessageId: "panel-assistant",
+      ttsPlaybackMessageId: "codex-item-thread-1-item-2",
       nowMs: NOW_MS,
     });
 
     expect(result.conversationMessages).toEqual([
-      message({ id: "panel-user", role: "user", content: "hello" }),
-      message({ id: "panel-assistant", role: "assistant", content: "done", ttsWaveform: [0.1, 0.2] }),
+      message({ id: "codex-item-thread-1-item-1", role: "user", content: "hello" }),
+      message({ id: "codex-item-thread-1-item-2", role: "assistant", content: restoredContent, ttsWaveform: [0.1, 0.2] }),
     ]);
-    expect(result.ttsPlaybackMessageId).toBe("panel-assistant");
+    expect(result.ttsPlaybackMessageId).toBe("codex-item-thread-1-item-2");
   });
 
-  it("matches duplicate content by occurrence and drops local placeholders", () => {
+  it("keeps the playback target while the server still reports a running turn", () => {
     const result = resolvePanelConversationAfterHydration({
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
-        message({ id: "restored-1", role: "assistant", content: "same" }),
-        message({ id: "restored-2", role: "assistant", content: "same" }),
+        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: "spoken reply" }),
+        message({ id: "codex-item-thread-1-item-3", role: "user", content: "next question" }),
       ],
       panelConversation: [
-        message({ id: "panel-1", role: "assistant", content: "same", ttsWaveform: [1] }),
+        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: "spoken reply", ttsWaveform: [0.5] }),
+      ],
+      restoredHasRunningTurn: true,
+      restoredThreadStatusType: "active",
+      restoredUpdatedAtMs: NOW_MS,
+      restoredMessageCount: 2,
+      ttsPlaybackMessageId: "codex-item-thread-1-item-2",
+      nowMs: NOW_MS,
+    });
+
+    expect(result.isResponding).toBe(true);
+    expect(result.ttsPlaybackMessageId).toBe("codex-item-thread-1-item-2");
+    expect(result.conversationMessages[0].ttsWaveform).toEqual([0.5]);
+  });
+
+  it("drops local placeholders and playback targets that no longer exist in server history", () => {
+    const result = resolvePanelConversationAfterHydration({
+      runtime: null,
+      requestStartedAtMsAtHydrationStart: 100,
+      restoredConversation: [
+        message({ id: "codex-item-thread-1-item-1", role: "assistant", content: "kept" }),
+      ],
+      panelConversation: [
+        message({ id: "codex-item-thread-1-item-1", role: "assistant", content: "kept" }),
         message({ id: "placeholder", role: "assistant", content: "" }),
-        message({ id: "panel-2", role: "assistant", content: "same", ttsWaveform: [2] }),
       ],
       restoredHasRunningTurn: false,
       restoredThreadStatusType: "idle",
       restoredUpdatedAtMs: NOW_MS,
-      restoredMessageCount: 2,
+      restoredMessageCount: 1,
       ttsPlaybackMessageId: "placeholder",
       nowMs: NOW_MS,
     });
 
-    expect(result.conversationMessages.map((item) => item.id)).toEqual(["panel-1", "panel-2"]);
-    expect(result.conversationMessages.map((item) => item.ttsWaveform)).toEqual([[1], [2]]);
+    expect(result.conversationMessages.map((item) => item.id)).toEqual(["codex-item-thread-1-item-1"]);
     expect(result.ttsPlaybackMessageId).toBe("");
   });
 
-  it("does not match command rows to text messages or different commands", () => {
+  it("adopts the server command result for a force-settled command row with the same id", () => {
     const result = resolvePanelConversationAfterHydration({
       runtime: null,
       requestStartedAtMsAtHydrationStart: 100,
       restoredConversation: [
         message({
-          id: "restored-command",
+          id: "codex-item-thread-1-item-4",
           role: "assistant",
           commandExecution: { command: "npm test", status: "completed", exitCode: 0 },
         }),
       ],
       panelConversation: [
-        message({ id: "text", role: "assistant", content: "" }),
         message({
-          id: "other-command",
+          id: "codex-item-thread-1-item-4",
           role: "assistant",
-          commandExecution: { command: "npm test", status: "failed", exitCode: 1 },
+          commandExecution: { command: "npm test", status: "completed", exitCode: null },
         }),
       ],
       restoredHasRunningTurn: false,
       restoredThreadStatusType: "idle",
       restoredUpdatedAtMs: NOW_MS,
       restoredMessageCount: 1,
-      ttsPlaybackMessageId: "other-command",
+      ttsPlaybackMessageId: "",
       nowMs: NOW_MS,
     });
 
-    expect(result.conversationMessages[0].id).toBe("restored-command");
-    expect(result.ttsPlaybackMessageId).toBe("");
+    expect(result.conversationMessages).toEqual([
+      message({
+        id: "codex-item-thread-1-item-4",
+        role: "assistant",
+        commandExecution: { command: "npm test", status: "completed", exitCode: 0 },
+      }),
+    ]);
   });
 });
 

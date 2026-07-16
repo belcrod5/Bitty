@@ -283,6 +283,7 @@ import {
   resolveSessionHistoryContext as resolveSessionHistoryContextValue,
 } from "./utils/sessionHistoryContext";
 import {
+  buildRestoredPanelConversation,
   buildRestoredSessionRuntimeSnapshot,
   deriveRestoredSessionThreadStatusType,
   projectRestoredRuntimeStatusToConversation,
@@ -7243,18 +7244,10 @@ export default function App() {
         ).trim();
       rememberKnownCodexThreadId(resolvedSessionId || sessionId);
       const markerSessionId = resolvedSessionId || sessionId;
-      const restoredConversation = (Array.isArray(restored.messages) ? restored.messages : []).map((message, index) => {
-        const role = message.role === "assistant" ? "assistant" : "user";
-        const content = String(message.content || "");
-        const at = String(message.at || "").trim();
-        return {
-          id: `panel-${panelId}-${resolvedSessionId || sessionId}-${index}-${role}`,
-          role,
-          content,
-          at: at || undefined,
-          inheritedFromParent: message.inheritedFromParent === true || undefined,
-          commandExecution: message.commandExecution || undefined,
-        } satisfies ConversationMessage;
+      const restoredConversation = buildRestoredPanelConversation({
+        messages: Array.isArray(restored.messages) ? restored.messages : [],
+        panelId,
+        sessionId: resolvedSessionId || sessionId,
       });
       const inheritedConversation = restoredConversation.filter(
         (message) => message.inheritedFromParent === true

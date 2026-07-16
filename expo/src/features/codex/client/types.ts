@@ -187,6 +187,9 @@ export type CodexThreadMessage = {
   role: "user" | "assistant";
   content: string;
   at: string;
+  // Codex app-server thread item id ("item-42"): unique per thread and identical
+  // between live turn events and later thread/read restores.
+  itemId?: string;
   commandExecution?: CodexCommandExecutionInfo;
 };
 

@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useCodexReplyRequest } from "./useCodexReplyRequest";
+import { codexItemMessageId } from "../utils/codexItemMessageId";
 import { startCodexAppServerTurn } from "../../codex/codexAppServerClient";
 
 jest.mock("../../codex/codexAppServerClient", () => ({
@@ -306,6 +307,37 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     const liveMessage = harness.assistantMessageByItemId("panel-1", "item-2");
     expect(liveMessage?.llmStatus).toBe("error");
     consoleErrorSpy.mockRestore();
+  });
+
+  test("mints thread/read-compatible message ids once the thread id is resolved", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+
+    await act(async () => {
+      harness.getTurnOptions().onThreadIdResolved("thread-1");
+      harness.getTurnOptions().onAgentMessageCompleted("stable reply", { itemId: "item-5" });
+      harness.getTurnOptions().onEvent("item/started", {
+        item: { type: "commandExecution", id: "item-6", command: "npm test", status: "inProgress" },
+      });
+    });
+
+    // 再ハイドレーション(thread/read復元)と同じ決定的IDになるため、IDが変わらない。
+    const agentMessage = harness.panelMessages("panel-1")
+      .find((message) => message.id === codexItemMessageId("thread-1", "item-5"));
+    expect(agentMessage?.content).toBe("stable reply");
+    const commandMessage = harness.panelMessages("panel-1")
+      .find((message) => message.id === codexItemMessageId("thread-1", "item-6"));
+    expect(commandMessage).toBeDefined();
+
+    await act(async () => {
+      harness.resolveTurn({
+        threadId: "thread-1",
+        turnId: "turn-1",
+        reply: "stable reply",
+        contextUsage: null,
+      });
+      await sendPromise;
+    });
   });
 
   test("final settle keeps per-message youtube ids instead of re-assigning combined ids", async () => {

@@ -79,52 +79,26 @@ export function shouldPreserveRuntimeConversationOnHydrate(
   return input.runtimeMessageCount >= input.restoredMessageCount; // (e) 欠落時フォールバック
 }
 
-function hasSameHydratedContent(left: ConversationMessage, right: ConversationMessage) {
-  const leftCommand = left.commandExecution;
-  const rightCommand = right.commandExecution;
-  return (
-    left.role === right.role &&
-    left.content === right.content &&
-    (
-      (!leftCommand && !rightCommand) ||
-      (
-        leftCommand?.command === rightCommand?.command &&
-        leftCommand?.status === rightCommand?.status &&
-        leftCommand?.exitCode === rightCommand?.exitCode
-      )
-    )
-  );
-}
-
-function reconcileTerminalPanelConversation(params: {
+// 復元メッセージとパネル表示中メッセージはitemId由来の決定的IDを共有する
+// (codexItemMessageId)。同一IDのメッセージはpanel-localな表示メタデータ
+// (ttsWaveform)を引き継ぎ、ttsPlaybackMessageId は復元後も存在するIDに限り残す。
+function reconcileRestoredPanelConversation(params: {
   restoredConversation: ConversationMessage[];
   panelConversation: ConversationMessage[];
   ttsPlaybackMessageId: string;
 }) {
-  let panelSearchStart = 0;
-  const retainedMessageIds = new Set<string>();
+  const panelMessagesById = new Map(
+    params.panelConversation.map((message) => [message.id, message])
+  );
+  let ttsPlaybackMessageId = "";
   const conversationMessages = params.restoredConversation.map((restoredMessage) => {
-    let matchedIndex = -1;
-    for (let index = panelSearchStart; index < params.panelConversation.length; index += 1) {
-      if (!hasSameHydratedContent(params.panelConversation[index], restoredMessage)) continue;
-      matchedIndex = index;
-      break;
+    if (restoredMessage.id === params.ttsPlaybackMessageId) {
+      ttsPlaybackMessageId = params.ttsPlaybackMessageId;
     }
-    if (matchedIndex < 0) return restoredMessage;
-    panelSearchStart = matchedIndex + 1;
-    const panelMessage = params.panelConversation[matchedIndex];
-    retainedMessageIds.add(panelMessage.id);
-    return {
-      ...restoredMessage,
-      id: panelMessage.id,
-      ttsWaveform: Array.isArray(panelMessage.ttsWaveform)
-        ? [...panelMessage.ttsWaveform]
-        : undefined,
-    };
+    const panelMessage = panelMessagesById.get(restoredMessage.id);
+    if (!panelMessage || !Array.isArray(panelMessage.ttsWaveform)) return restoredMessage;
+    return { ...restoredMessage, ttsWaveform: [...panelMessage.ttsWaveform] };
   });
-  const ttsPlaybackMessageId = retainedMessageIds.has(params.ttsPlaybackMessageId)
-    ? params.ttsPlaybackMessageId
-    : "";
   return { conversationMessages, ttsPlaybackMessageId };
 }
 
@@ -168,23 +142,14 @@ export function resolvePanelConversationAfterHydration(params: {
       preserveRuntimeConversation,
     };
   }
-  if (params.restoredHasRunningTurn) {
-    return {
-      conversationMessages: params.restoredConversation,
-      isResponding: true,
-      selectedThreadStatusType: params.restoredThreadStatusType,
-      ttsPlaybackMessageId: "",
-      preserveRuntimeConversation: false,
-    };
-  }
-  const terminal = reconcileTerminalPanelConversation({
+  const reconciled = reconcileRestoredPanelConversation({
     restoredConversation: params.restoredConversation,
     panelConversation: params.panelConversation,
     ttsPlaybackMessageId: params.ttsPlaybackMessageId,
   });
   return {
-    ...terminal,
-    isResponding: false,
+    ...reconciled,
+    isResponding: params.restoredHasRunningTurn,
     selectedThreadStatusType: params.restoredThreadStatusType,
     preserveRuntimeConversation: false,
   };

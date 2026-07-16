@@ -59,6 +59,9 @@ export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
   content: string;
   at: string;
+  // Codex app-server thread item id: present when restored via thread/read,
+  // absent on the aux /session-messages fallback.
+  itemId?: string;
   inheritedFromParent?: boolean;
   commandExecution?: CodexCommandExecutionInfo;
 };
@@ -486,6 +489,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           role: item.role,
           content: item.content,
           at: item.at,
+          itemId: item.itemId,
           commandExecution: item.commandExecution,
         }));
         const latestAssistantMessage = [...messages].reverse().find((item) => item.role === "assistant");
