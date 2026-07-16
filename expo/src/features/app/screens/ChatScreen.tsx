@@ -395,7 +395,7 @@ export function ChatScreen({
     return modelRefLabelForDisplay(modelRefForView, modelOptions);
   }, [isPanelRuntimeView, modelOptions, modelRefForView, selectedModelLabel]);
   const chatContextUsedPctForView = isPanelRuntimeView ? panelContextUsedPct : chatContextUsedPct;
-  const chatContextPctTextForView = chatContextUsedPctForView === null ? "--" : String(chatContextUsedPctForView);
+  const chatContextPctTextForView = chatContextUsedPctForView === null ? "--" : `${chatContextUsedPctForView}%`;
   const chatContextRingProgressForView = chatContextUsedPctForView === null
     ? 0
     : Math.max(0, Math.min(1, chatContextUsedPctForView / 100));
