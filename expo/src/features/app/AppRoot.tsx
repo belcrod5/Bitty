@@ -4902,7 +4902,6 @@ export default function App() {
     getLlmConversationSessionId,
     selectSpecificLlmSession,
     fetchLatestSessionIdForDirectory,
-    clearSelectedLlmSession,
     setLlmSessionRestoreError,
     activeScreen,
     llmSessionRestoreLoading,

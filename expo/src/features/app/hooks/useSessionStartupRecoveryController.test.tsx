@@ -37,7 +37,6 @@ function baseArgs(overrides: Partial<Parameters<typeof useSessionStartupRecovery
     getLlmConversationSessionId: () => "",
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
     fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue(""),
-    clearSelectedLlmSession: jest.fn(),
     setLlmSessionRestoreError: jest.fn(),
     activeScreen: "mini_board" as const,
     llmSessionRestoreLoading: false,
@@ -76,9 +75,11 @@ describe("useSessionStartupRecoveryController startup restore", () => {
     expect(args.startupSessionRestoreAttemptedRef.current).toBe(true);
   });
 
-  it("re-runs a failed startup restore on the next ready transition until it succeeds", async () => {
+  it("keeps the selected session on a false restore and re-runs it on the next ready transition", async () => {
+    // The real selectSpecificLlmSession never rejects: deduped concurrent
+    // restores, lost latest-request races, and runner errors all resolve false.
     const selectSpecificLlmSession = jest.fn()
-      .mockRejectedValueOnce(new Error("runner_ws_request_timeout"))
+      .mockResolvedValueOnce(false)
       .mockResolvedValue(true);
     const args = baseArgs({ selectSpecificLlmSession });
     const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
@@ -89,7 +90,6 @@ describe("useSessionStartupRecoveryController startup restore", () => {
       manager.setConnectionState("ready");
     });
     expect(selectSpecificLlmSession).toHaveBeenCalledTimes(1);
-    expect(args.setLlmSessionRestoreError).toHaveBeenCalledWith("runner_ws_request_timeout");
     expect(args.startupSessionRestoreAttemptedRef.current).toBe(false);
 
     await act(async () => {
@@ -99,7 +99,12 @@ describe("useSessionStartupRecoveryController startup restore", () => {
       manager.setConnectionState("ready");
     });
 
+    // The selection survived the false restore, so the retry targets it again.
     expect(selectSpecificLlmSession).toHaveBeenCalledTimes(2);
+    expect(selectSpecificLlmSession).toHaveBeenLastCalledWith("session-1", {
+      source: "all",
+      directory: "/workspace",
+    });
     expect(args.startupSessionRestoreAttemptedRef.current).toBe(true);
 
     // Later ready transitions must not restore again once it succeeded.
@@ -110,6 +115,39 @@ describe("useSessionStartupRecoveryController startup restore", () => {
       manager.setConnectionState("ready");
     });
     expect(selectSpecificLlmSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-runs after a latest-session fetch failure once the connection is ready again", async () => {
+    const fetchLatestSessionIdForDirectory = jest.fn()
+      .mockRejectedValueOnce(new Error("runner_ws_request_timeout"))
+      .mockResolvedValue("session-2");
+    const args = baseArgs({
+      selectedLlmSessionId: "",
+      fetchLatestSessionIdForDirectory,
+    });
+    const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
+
+    await renderHook(() => useSessionStartupRecoveryController(args));
+
+    await act(async () => {
+      manager.setConnectionState("ready");
+    });
+    expect(args.setLlmSessionRestoreError).toHaveBeenCalledWith("runner_ws_request_timeout");
+    expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+    expect(args.startupSessionRestoreAttemptedRef.current).toBe(false);
+
+    await act(async () => {
+      manager.setConnectionState("reconnecting");
+    });
+    await act(async () => {
+      manager.setConnectionState("ready");
+    });
+
+    expect(args.selectSpecificLlmSession).toHaveBeenCalledWith("session-2", {
+      source: "all",
+      directory: "/workspace",
+    });
+    expect(args.startupSessionRestoreAttemptedRef.current).toBe(true);
   });
 
   it("marks restore done without fetching when the conversation already has messages", async () => {

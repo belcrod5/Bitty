@@ -24,7 +24,6 @@ type UseSessionStartupRecoveryControllerArgs = {
     opts?: SelectSpecificLlmSessionOptions
   ) => Promise<boolean>;
   fetchLatestSessionIdForDirectory: (directoryRaw?: unknown) => Promise<string>;
-  clearSelectedLlmSession: () => void;
   setLlmSessionRestoreError: Dispatch<SetStateAction<string>>;
   activeScreen: AppScreen;
   llmSessionRestoreLoading: boolean;
@@ -65,7 +64,6 @@ export function useSessionStartupRecoveryController({
   getLlmConversationSessionId,
   selectSpecificLlmSession,
   fetchLatestSessionIdForDirectory,
-  clearSelectedLlmSession,
   setLlmSessionRestoreError,
   activeScreen,
   llmSessionRestoreLoading,
@@ -121,10 +119,13 @@ export function useSessionStartupRecoveryController({
           });
         }
       }
+      // A false restore is not proof the session is gone: selectSpecificLlmSession
+      // resolves false for deduped concurrent restores, lost latest-request races,
+      // and runner errors alike. Keep the selected session so the next ready
+      // transition retries it; if it truly no longer exists, the latest-session
+      // fallback above replaces the selection once it succeeds.
       if (restored) {
         startupSessionRestoreAttemptedRef.current = true;
-      } else if (preferredSessionId) {
-        clearSelectedLlmSession();
       }
     })().catch((err) => {
       setLlmSessionRestoreError(err instanceof Error ? err.message : String(err));
@@ -144,7 +145,6 @@ export function useSessionStartupRecoveryController({
     setLlmSessionRestoreError,
     settingsLoaded,
     startupSessionRestoreAttemptedRef,
-    clearSelectedLlmSession,
   ]);
 
   const resumeLatestSessionOnActive = useCallback(async (options?: ResumeLatestSessionOnActiveOptions) => {
