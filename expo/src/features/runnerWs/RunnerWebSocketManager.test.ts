@@ -877,6 +877,31 @@ test("transient authentication failure close retries with backoff and recovers",
   expect(manager.getSnapshot().connectionState).toBe("ready");
 });
 
+test("a non-auth close resets the consecutive auth failure count", async () => {
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const firstSocket = nextSocket();
+  const manager = createManager();
+
+  void manager.connect().catch(() => undefined);
+  firstSocket.closeWithReason("Received bad response code from server: 401.");
+
+  const secondSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(10_000);
+  secondSocket.closeWithReason("network_lost");
+
+  // Two more auth closes only reach a consecutive count of 2, so no block yet.
+  const thirdSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(10_000);
+  thirdSocket.closeWithReason("Received bad response code from server: 401.");
+  const fourthSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(10_000);
+  fourthSocket.closeWithReason("Received bad response code from server: 401.");
+
+  expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  manager.disconnect("manual");
+});
+
 test("persistent authentication failures stop reconnecting until the app returns to foreground", async () => {
   jest.useFakeTimers();
   jest.spyOn(Math, "random").mockReturnValue(0);

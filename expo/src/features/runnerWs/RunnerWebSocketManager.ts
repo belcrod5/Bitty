@@ -348,9 +348,9 @@ export class RunnerWebSocketManager {
     }
     if (nextAppState === "active") {
       if (this.blockedAuthGeneration === this.connectionOptionsGeneration) {
-        // An auth block from an earlier foreground session may be stale (e.g. the
-        // Cloudflare tunnel came back); each return to the foreground earns one
-        // fresh retry cycle before the block re-arms.
+        // An existing auth block may be stale (e.g. the Cloudflare tunnel came
+        // back), so clear it on return to the foreground; one fresh retry cycle
+        // runs before the block can re-arm.
         this.blockedAuthGeneration = null;
         this.consecutiveAuthFailureCount = 0;
         if (this.connectionState === "stopped") {
@@ -618,6 +618,8 @@ export class RunnerWebSocketManager {
       }
       // Below the block threshold an auth close follows the generic close path,
       // so transient 401/403s (Cloudflare tunnel restarts) retry with backoff.
+    } else {
+      this.consecutiveAuthFailureCount = 0;
     }
     if (this.appState === "active") {
       this.onConnectionProblem?.();
