@@ -180,6 +180,24 @@ describe("shouldPreserveRuntimeConversationOnHydrate", () => {
     expect(result).toBe(false);
   });
 
+  it("keeps a just-sent request over a terminal snapshot until turn/start can reach the server", () => {
+    const justSent = shouldPreserveRuntimeConversationOnHydrate(buildInput({
+      restoredHasRunningTurn: false,
+      runtimeIsResponding: true,
+      runtimeRequestStartedAtMs: NOW_MS - 1_000,
+      requestStartedAtMsAtHydrationStart: NOW_MS - 1_000,
+    }));
+    expect(justSent).toBe(true);
+
+    const staleSend = shouldPreserveRuntimeConversationOnHydrate(buildInput({
+      restoredHasRunningTurn: false,
+      runtimeIsResponding: true,
+      runtimeRequestStartedAtMs: NOW_MS - RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS - 1,
+      requestStartedAtMsAtHydrationStart: NOW_MS - RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS - 1,
+    }));
+    expect(staleSend).toBe(false);
+  });
+
   it("does not let completion grace override a terminal server snapshot", () => {
     const result = shouldPreserveRuntimeConversationOnHydrate(buildInput({
       restoredHasRunningTurn: false,

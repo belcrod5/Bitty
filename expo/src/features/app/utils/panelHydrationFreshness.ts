@@ -66,9 +66,19 @@ export function shouldPreserveRuntimeConversationOnHydrate(
     input.runtimeRequestStartedAtMs !== null &&
     input.runtimeRequestStartedAtMs !== input.requestStartedAtMsAtHydrationStart
   );
-  if (!input.restoredHasRunningTurn) return runtimeRequestChangedDuringHydration;
+  if (runtimeRequestChangedDuringHydration) return true; // ハイドレーション中に新リクエスト開始 → 保持
+  if (!input.restoredHasRunningTurn) {
+    // サーバのterminalスナップショットが正。ただし送信直後は turn/start が
+    // まだサーバへ届いていない可能性があるため、その間だけは置換しない。
+    return (
+      input.runtimeMessageCount > 0 &&
+      input.runtimeIsResponding &&
+      input.runtimeRequestStartedAtMs !== null &&
+      input.nowMs - input.runtimeRequestStartedAtMs <= RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS
+    );
+  }
   if (input.runtimeMessageCount <= 0) return false; // (a) ランタイム空 → 従来どおり置換
-  if (input.runtimeIsResponding) return true; // (b) ライブターン進行中 → 保持
+  if (input.runtimeIsResponding) return true; // (b) サーバもライブターン進行中 → 保持
   const completedAtMs = input.requestCompletedAtMs || 0; // (c) このクライアントで完了直後 → 保持
   if (completedAtMs > 0 && input.nowMs - completedAtMs <= RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS) {
     return true;
