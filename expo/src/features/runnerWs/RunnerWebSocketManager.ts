@@ -195,8 +195,12 @@ export class RunnerWebSocketManager {
     if (nextUrl === this.url && nextToken === this.token) return;
     this.url = nextUrl;
     this.token = nextToken;
-    this.disconnect("config-changed");
-    if (this.appState === "active" && this.url) {
+    // When we reconnect right away, pass "config-changed" so the intermediate snapshot
+    // is "idle" (transient) instead of "stopped" (terminal): turn admission treats an
+    // active+stopped snapshot as a fatal error and must not observe it here.
+    const willReconnect = this.appState === "active" && Boolean(this.url);
+    this.disconnect(willReconnect ? "config-changed" : "manual");
+    if (willReconnect) {
       this.connect().catch(() => undefined);
     }
   }
@@ -245,7 +249,11 @@ export class RunnerWebSocketManager {
   disconnect(reason: "background" | "manual" | "logout" | "config-changed" = "manual") {
     this.clearReconnectTimer();
     this.clearHeartbeatTimer();
-    const nextState: RunnerWsConnectionState = reason === "background" ? "background" : "stopped";
+    const nextState: RunnerWsConnectionState = reason === "background"
+      ? "background"
+      // "config-changed" is always followed by an immediate connect() (see
+      // setConnectionOptions), so land on "idle" rather than the terminal "stopped".
+      : reason === "config-changed" ? "idle" : "stopped";
     this.connectionState = nextState;
     this.rejectConnectWaiter(makeError(`runner_ws_disconnected_${reason}`));
     this.rejectAllPending(makeError(`runner_ws_disconnected_${reason}`));

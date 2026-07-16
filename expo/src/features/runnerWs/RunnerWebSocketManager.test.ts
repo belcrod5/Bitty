@@ -523,6 +523,35 @@ test("authentication failure close stops automatic reconnect loop", async () => 
   expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
 });
 
+test("setConnectionOptions while active reconnects without a transient stopped snapshot", async () => {
+  const firstSocket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, firstSocket);
+
+  const observedStates: string[] = [];
+  manager.subscribeSnapshot(() => {
+    observedStates.push(manager.getSnapshot().connectionState);
+  });
+
+  const secondSocket = nextSocket();
+  manager.setConnectionOptions({ url: "ws://127.0.0.1:9999/runner-ws", token: "runner-token-2" });
+
+  // A config change with an immediate reconnect must never look terminal: turn
+  // admission fails hard on an active+stopped snapshot.
+  expect(observedStates).not.toContain("stopped");
+  expect(firstSocket.closeCalls).toBe(1);
+  expect(manager.getSnapshot().connectionState).toBe("connecting");
+
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready", payload: { connectionId: "conn-2" } });
+  await Promise.resolve();
+  expect(manager.getSnapshot().connectionState).toBe("ready");
+
+  // Explicit disconnects keep their terminal semantics.
+  manager.disconnect("manual");
+  expect(manager.getSnapshot().connectionState).toBe("stopped");
+});
+
 test("active connection close notifies the owner before reconnecting", async () => {
   jest.useFakeTimers();
   const socket = nextSocket();
