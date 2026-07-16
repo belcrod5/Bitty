@@ -723,3 +723,136 @@ test("runner-ws binds thread/start result threadId to the initialized relay", ()
     relay.clients.clear();
   }
 });
+
+test("runner-ws thread/read rider does not steal notification identity from the turn owner", () => {
+  const relay = createRelayForRunnerWsTest();
+  const client = createEnvelopeClientForRunnerWsTest();
+  __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
+
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "turn/start",
+      params: { threadId: "thread-1", prompt: "hello" },
+    }),
+    false,
+    {
+      requestId: "owner-op:1:turn-start:id1",
+      operationId: "owner-op",
+      sessionId: "owner-session",
+      threadId: "thread-1",
+      endpoint: "/runner-ws",
+      remote: "test",
+    }
+  );
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { turn: { id: "turn-1" } } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" }
+  );
+
+  // A panel-hydration probe rides the same (thread-keyed) relay mid-turn.
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "thread/read",
+      params: { threadId: "thread-1", includeTurns: true },
+    }),
+    false,
+    {
+      requestId: "reader-op:1:thread-read:id2",
+      operationId: "reader-op",
+      sessionId: "reader-session",
+      threadId: "thread-1",
+      endpoint: "/runner-ws",
+      remote: "test",
+    }
+  );
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 2, result: { thread: { id: "thread-1", status: "active" } } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" }
+  );
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", delta: "pong" },
+    }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" }
+  );
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { threadId: "thread-1", status: "completed" },
+    }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" }
+  );
+
+  const llmEnvelopes = client.sent.filter((message) => message.channel === "llm" && message.op === "rpc");
+  const readResponse = llmEnvelopes.find((message) => message.payload?.id === 2);
+  assert.equal(readResponse.operationId, "reader-op");
+  assert.equal(readResponse.sessionId, "reader-session");
+
+  const notifications = llmEnvelopes.filter((message) => (
+    message.payload?.method === "item/agentMessage/delta" ||
+    message.payload?.method === "turn/completed"
+  ));
+  assert.equal(notifications.length, 2);
+  for (const message of notifications) {
+    assert.equal(message.operationId, "owner-op");
+    assert.equal(message.sessionId, "owner-session");
+  }
+
+  // The event log must record the owner identity too, so an identity resume replays
+  // the turn's notifications to the owner, not to the rider.
+  const loggedNotifications = relay.eventLog.filter((entry) => (
+    String(entry.data).includes("item/agentMessage/delta") ||
+    String(entry.data).includes("turn/completed")
+  ));
+  assert.equal(loggedNotifications.length, 2);
+  for (const entry of loggedNotifications) {
+    assert.equal(entry.operationId, "owner-op");
+    assert.equal(entry.sessionId, "owner-session");
+  }
+});
+
+test("runner-ws cached initialize answer does not rebind the relay identity", () => {
+  const relay = createRelayForRunnerWsTest();
+  const client = createEnvelopeClientForRunnerWsTest();
+  __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
+  relay.runnerWsLlmOperationId = "owner-op";
+  relay.runnerWsLlmSessionId = "owner-session";
+  relay.upstreamInitializeResultSeen = true;
+  relay.upstreamInitializeResult = { serverInfo: { name: "codex-test" } };
+
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 9, method: "initialize", params: {} }),
+    false,
+    {
+      requestId: "reader-op:1:initialize:id9",
+      operationId: "reader-op",
+      sessionId: "reader-session",
+      endpoint: "/runner-ws",
+      remote: "test",
+    }
+  );
+
+  assert.equal(relay.upstreamSent.length, 0);
+  assert.equal(relay.runnerWsLlmOperationId, "owner-op");
+  assert.equal(relay.runnerWsLlmSessionId, "owner-session");
+  const cachedResponse = client.sent.find((message) => message.payload?.id === 9);
+  assert.equal(cachedResponse.operationId, "reader-op");
+});

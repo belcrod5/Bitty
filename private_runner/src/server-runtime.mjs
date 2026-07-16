@@ -11561,6 +11561,21 @@ function createCodexRelayWithUpstream(params = {}) {
   return relay;
 }
 
+// Only the RPCs that begin/own an app-server conversation may (re)bind the relay's
+// notification identity (runnerWsLlmOperationId/SessionId). Read-style RPCs riding an
+// existing relay (thread/read during panel hydration, approval responses, turn/interrupt)
+// get their responses tagged per-request via requestMetaByRpcId, so they must not steal
+// the identity that upstream notifications (deltas, turn/completed) are tagged with —
+// otherwise the in-flight turn's client filter drops every later notification.
+function isCodexRelayIdentityBindingMethod(method) {
+  return (
+    method === "initialize" ||
+    method === "thread/resume" ||
+    method === "thread/start" ||
+    method === "turn/start"
+  );
+}
+
 function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (!relay || relay.closed) return;
   const remote = String(params.remote || relay.remote || "unknown");
@@ -11569,19 +11584,10 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   const requestOperationId = String(params.operationId || "").trim();
   const requestSessionId = String(params.sessionId || "").trim();
   const requestThreadId = String(params.threadId || "").trim();
-  if (requestOperationId && requestSessionId) {
-    relay.runnerWsLlmOperationId = requestOperationId;
-    relay.runnerWsLlmSessionId = requestSessionId;
-  }
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
-  const shouldLogForwardState = (method) => (
-    method === "initialize" ||
-    method === "thread/resume" ||
-    method === "thread/start" ||
-    method === "turn/start"
-  );
+  const shouldLogForwardState = (method) => isCodexRelayIdentityBindingMethod(method);
   const logForwardState = (state) => {
     if (!meta || (!meta.method && meta.id === null)) return;
     if (!shouldLogForwardState(meta.method)) return;
@@ -11647,6 +11653,12 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     return;
   }
   if (meta && (meta.method || meta.id !== null)) {
+    // Bound here (after the cached-initialize early return above) so an initialize
+    // answered from the relay cache never rebinds ownership away from a live turn.
+    if (requestOperationId && requestSessionId && isCodexRelayIdentityBindingMethod(meta.method)) {
+      relay.runnerWsLlmOperationId = requestOperationId;
+      relay.runnerWsLlmSessionId = requestSessionId;
+    }
     if (requestId && Number.isInteger(meta.id) && relay.requestIdByRpcId instanceof Map) {
       relay.requestIdByRpcId.set(Number(meta.id), requestId);
     }
