@@ -1,6 +1,9 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useCodexReplyRequest } from "./useCodexReplyRequest";
-import { startCodexAppServerTurn } from "../../codex/codexAppServerClient";
+import {
+  deriveCodexSessionStateFromSnapshot,
+  startCodexAppServerTurn,
+} from "../../codex/codexAppServerClient";
 
 jest.mock("../../codex/codexAppServerClient", () => ({
   deriveCodexSessionStateFromSnapshot: jest.fn(() => null),
@@ -382,5 +385,103 @@ describe("useCodexReplyRequest finalUiSettled", () => {
     expect(finallyWrites[0].options?.isResponding).toBe(false);
     const respondingFalseWrites = panelWrites.filter((call) => call.options?.isResponding === false);
     expect(respondingFalseWrites).toHaveLength(1);
+  });
+});
+
+describe("useCodexReplyRequest send gate liveness", () => {
+  test("releases the thread gate and interrupts a turn with no recent progress", async () => {
+    jest.useFakeTimers();
+    try {
+      const { options } = createOptions();
+      const turnSessions: Array<{ interrupt: jest.Mock }> = [];
+      mockStartCodexAppServerTurn.mockImplementation((() => {
+        const session = {
+          promise: new Promise(() => {}),
+          interrupt: jest.fn(async () => {}),
+        };
+        turnSessions.push(session);
+        return session;
+      }) as any);
+      const updateConversationRuntimeRequest = jest.fn();
+      (options as any).updateConversationRuntimeRequest = updateConversationRuntimeRequest;
+      const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+      const send = async (text: string) => {
+        await act(async () => {
+          void result.current.sendReplyRequest(text, {
+            panelId: "panel-1",
+            sessionSnapshot: { threadId: "thread-1" },
+          });
+          for (let i = 0; i < 6; i += 1) await Promise.resolve();
+        });
+      };
+
+      await send("first message");
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+
+      // A live (recent-progress) turn keeps blocking the thread.
+      await send("second message");
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+      expect(turnSessions[0].interrupt).not.toHaveBeenCalled();
+
+      // No progress events for longer than the staleness window: the next send
+      // interrupts the stale turn, reports it, and goes through.
+      jest.advanceTimersByTime(5 * 60_000 + 1_000);
+      await send("third message");
+      expect(turnSessions[0].interrupt).toHaveBeenCalledTimes(1);
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(2);
+      expect(updateConversationRuntimeRequest).toHaveBeenCalledWith(expect.objectContaining({
+        lifecycle: "error",
+        sessionId: "thread-1",
+      }));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("does not expire a turn that is waiting on an approval", async () => {
+    jest.useFakeTimers();
+    try {
+      const { options } = createOptions();
+      const turnSessions: Array<{ interrupt: jest.Mock; turnOptions: any }> = [];
+      mockStartCodexAppServerTurn.mockImplementation(((turnOptions: any) => {
+        const session = {
+          promise: new Promise(() => {}),
+          interrupt: jest.fn(async () => {}),
+          turnOptions,
+        };
+        turnSessions.push(session);
+        return session;
+      }) as any);
+      const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+      const send = async (text: string) => {
+        await act(async () => {
+          void result.current.sendReplyRequest(text, {
+            panelId: "panel-1",
+            sessionSnapshot: { threadId: "thread-1" },
+          });
+          for (let i = 0; i < 6; i += 1) await Promise.resolve();
+        });
+      };
+
+      await send("first message");
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+      jest.mocked(deriveCodexSessionStateFromSnapshot).mockReturnValueOnce({
+        sessionState: "waiting_on_approval",
+        threadStatusType: "active",
+      } as never);
+      await act(async () => {
+        turnSessions[0].turnOptions.onEvent("thread/status/changed", {
+          threadId: "thread-1",
+          status: { type: "waitingOnApproval" },
+        });
+      });
+
+      jest.advanceTimersByTime(30 * 60_000);
+      await send("second message");
+      expect(turnSessions[0].interrupt).not.toHaveBeenCalled();
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
