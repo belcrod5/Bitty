@@ -213,7 +213,10 @@ const LEGACY_MAIN_PANEL_ID = "main";
 // lost (e.g. its relay notifications were misrouted) when the user sends the next
 // message: the stale turn is interrupted and its send gate released instead of
 // silently dropping the new message forever. Long enough that a quiet-but-alive tool
-// run is unlikely to be cut; turns waiting on an approval are never expired.
+// run is unlikely to be cut; turns waiting on an approval are never expired. A command
+// execution that stays silent past the window can still be expired — accepted tradeoff:
+// expiry only fires when the user actively sends again on this thread, and the
+// interrupt is delivered to the runner either way.
 const STALE_ACTIVE_TURN_TIMEOUT_MS = 5 * 60_000;
 
 function normalizePanelId(panelIdRaw: unknown): string {
@@ -1503,9 +1506,6 @@ export function useCodexReplyRequest<
           messageId: autoSpeechTarget.messageId,
         });
       }
-      if (trackedThreadId) {
-        delete inFlightByThreadRef.current[trackedThreadId];
-      }
     } catch (error) {
       if (isCodexAppServerTurnInterruptedError(error) || isCancelledRequest()) {
         const interruptedAtMs = Date.now();
@@ -1515,9 +1515,6 @@ export function useCodexReplyRequest<
           isCancelledRequest() ? "cancelled" : "interrupted",
           { completedAtMs: interruptedAtMs }
         );
-        if (trackedThreadId) {
-          delete inFlightByThreadRef.current[trackedThreadId];
-        }
         if (isActiveRequest()) {
           logTurnDiag("reply_http_interrupted", {
             interrupted: true,
@@ -1574,10 +1571,11 @@ export function useCodexReplyRequest<
         }, errorWriteOptions);
       }
       finalUiSettled = true;
-      if (trackedThreadId) {
-        delete inFlightByThreadRef.current[trackedThreadId];
-      }
     } finally {
+      // Sole owner of in-flight cleanup for this request: seq-guarded, so a delayed
+      // settle of an already-superseded turn can never wipe a newer turn's state
+      // (e.g. a stale-expired turn's interrupt landing while the replacement turn
+      // is waiting on an approval).
       purgeInFlightStatesForRequest(requestSeq);
       const clearedRequestTracking = clearPanelRequestTracking(requestPanelId, requestSeq, requestThreadKey);
       const isFinalPanelActive = clearedRequestTracking.clearedPanelActive;

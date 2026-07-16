@@ -484,4 +484,69 @@ describe("useCodexReplyRequest send gate liveness", () => {
       jest.useRealTimers();
     }
   });
+
+  test("delayed settle of an expired turn does not wipe the replacement turn's in-flight state", async () => {
+    jest.useFakeTimers();
+    try {
+      const { options } = createOptions();
+      const turnSessions: Array<{
+        interrupt: jest.Mock;
+        turnOptions: any;
+        reject: (error: unknown) => void;
+      }> = [];
+      mockStartCodexAppServerTurn.mockImplementation(((turnOptions: any) => {
+        let reject: (error: unknown) => void = () => {};
+        const promise = new Promise((_resolve, promiseReject) => {
+          reject = promiseReject;
+        });
+        const session = { promise, interrupt: jest.fn(async () => {}), turnOptions, reject };
+        turnSessions.push(session);
+        return session;
+      }) as any);
+      const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+      const send = async (text: string) => {
+        await act(async () => {
+          void result.current.sendReplyRequest(text, {
+            panelId: "panel-1",
+            sessionSnapshot: { threadId: "thread-1" },
+          });
+          for (let i = 0; i < 6; i += 1) await Promise.resolve();
+        });
+      };
+
+      // Turn A goes silent past the staleness window; the next send expires it
+      // (its interrupt settles only later) and starts turn B on the same thread.
+      await send("first message");
+      jest.advanceTimersByTime(5 * 60_000 + 1_000);
+      await send("second message");
+      expect(turnSessions[0].interrupt).toHaveBeenCalledTimes(1);
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(2);
+
+      // Turn B is now waiting on an approval.
+      jest.mocked(deriveCodexSessionStateFromSnapshot).mockReturnValueOnce({
+        sessionState: "waiting_on_approval",
+        threadStatusType: "active",
+      } as never);
+      await act(async () => {
+        turnSessions[1].turnOptions.onEvent("thread/status/changed", {
+          threadId: "thread-1",
+          status: { type: "waitingOnApproval" },
+        });
+      });
+
+      // Turn A's interrupt finally lands: the delayed interrupted settle must not
+      // delete turn B's in-flight state (it carries the approval-wait protection).
+      await act(async () => {
+        turnSessions[0].reject(Object.assign(new Error("turn interrupted"), { isInterrupted: true }));
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      jest.advanceTimersByTime(30 * 60_000);
+      await send("third message");
+      expect(turnSessions[1].interrupt).not.toHaveBeenCalled();
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
