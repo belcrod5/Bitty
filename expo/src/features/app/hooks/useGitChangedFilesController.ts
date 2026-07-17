@@ -13,8 +13,12 @@ type SessionDiagLogger = (
 ) => void;
 
 type UseGitChangedFilesControllerArgs = {
+  // auxServerBaseUrl/runnerToken stay as args to reset cached state when they
+  // change; the fetch itself reads live credentials via getRunnerHttpAuth so a
+  // call fired before settings load waits instead of running with no token.
   auxServerBaseUrl: () => string;
   runnerToken: string;
+  getRunnerHttpAuth: () => Promise<{ baseUrl: string; token: string }>;
   gitChangedFilesByDirectoryRef: MutableRefObject<Record<string, GitChangedFilesDirectoryState>>;
   gitChangedFilesRefreshInFlightRef: MutableRefObject<Map<string, number>>;
   directoryIdentityGenerationRef: MutableRefObject<number>;
@@ -25,6 +29,7 @@ type UseGitChangedFilesControllerArgs = {
 export function useGitChangedFilesController({
   auxServerBaseUrl,
   runnerToken,
+  getRunnerHttpAuth,
   gitChangedFilesByDirectoryRef,
   gitChangedFilesRefreshInFlightRef,
   directoryIdentityGenerationRef,
@@ -50,8 +55,7 @@ export function useGitChangedFilesController({
     snapshot: GitChangedFilesSnapshot | null;
     errorMessage: string;
   }> => {
-    const targetLlmUrl = auxServerBaseUrl();
-    const token = runnerToken.trim();
+    const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
     if (!targetLlmUrl || !token) {
       return {
         directory: "",
@@ -149,7 +153,7 @@ export function useGitChangedFilesController({
           : String(err || "unknown_error"),
       };
     }
-  }, [auxServerBaseUrl, runnerToken]);
+  }, [getRunnerHttpAuth]);
 
   const updateDirectoryState = useCallback((
     directory: string,

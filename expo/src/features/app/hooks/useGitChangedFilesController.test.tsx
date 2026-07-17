@@ -23,6 +23,7 @@ describe("useGitChangedFilesController", () => {
       const controller = useGitChangedFilesController({
         auxServerBaseUrl,
         runnerToken: "token",
+        getRunnerHttpAuth: async () => ({ baseUrl: auxServerBaseUrl(), token: "token" }),
         gitChangedFilesByDirectoryRef: stateRef,
         gitChangedFilesRefreshInFlightRef: inFlightRef,
         directoryIdentityGenerationRef: identityGenerationRef,
