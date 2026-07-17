@@ -855,8 +855,8 @@ export function useCodexReplyRequest<
         agentMessageOrder.push(itemId);
       }
       if (!agentMessageUiIdByItemId.has(itemId)) {
-        // サーバ発行のitemIdはthread/read復元と同じ決定的IDにし、
-        // 再ハイドレーションでメッセージIDが変わらないようにする。
+        // サーバ発行のitemId(raw "msg_…")から決定的IDを作り、ライブ経路間で
+        // 同一itemが同一IDにupsertされるようにする(codexItemMessageId参照)。
         agentMessageUiIdByItemId.set(
           itemId,
           itemId !== "__agent_message__" && trackedThreadId

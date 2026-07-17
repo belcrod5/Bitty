@@ -309,24 +309,25 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  test("mints thread/read-compatible message ids once the thread id is resolved", async () => {
+  test("mints deterministic item-based message ids once the thread id is resolved", async () => {
     const harness = createHarness();
     const { sendPromise } = await startRequest(harness);
 
+    // ライブ通知のitem.idはraw Responses API id (msg_… / call_…)。
     await act(async () => {
       harness.getTurnOptions().onThreadIdResolved("thread-1");
-      harness.getTurnOptions().onAgentMessageCompleted("stable reply", { itemId: "item-5" });
+      harness.getTurnOptions().onAgentMessageCompleted("stable reply", { itemId: "msg_0483" });
       harness.getTurnOptions().onEvent("item/started", {
-        item: { type: "commandExecution", id: "item-6", command: "npm test", status: "inProgress" },
+        item: { type: "commandExecution", id: "call_1", command: "npm test", status: "inProgress" },
       });
     });
 
-    // 再ハイドレーション(thread/read復元)と同じ決定的IDになるため、IDが変わらない。
+    // 同一itemはライブ経路間で同一IDにupsertされる(codexItemMessageId契約)。
     const agentMessage = harness.panelMessages("panel-1")
-      .find((message) => message.id === codexItemMessageId("thread-1", "item-5"));
+      .find((message) => message.id === codexItemMessageId("thread-1", "msg_0483"));
     expect(agentMessage?.content).toBe("stable reply");
     const commandMessage = harness.panelMessages("panel-1")
-      .find((message) => message.id === codexItemMessageId("thread-1", "item-6"));
+      .find((message) => message.id === codexItemMessageId("thread-1", "call_1"));
     expect(commandMessage).toBeDefined();
 
     await act(async () => {

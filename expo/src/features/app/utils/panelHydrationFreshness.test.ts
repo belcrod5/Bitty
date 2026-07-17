@@ -378,6 +378,59 @@ describe("resolvePanelConversationAfterHydration", () => {
     expect(result.conversationMessages[0].ttsWaveform).toEqual([0.5]);
   });
 
+  it("remaps the playback target by normalized content when live and restored ids differ", () => {
+    // 実データ形状: ライブIDはraw Responses API id (msg_…)、復元IDはthread/read合成の連番 (item-N)。
+    const liveTargetId = "codex-item-thread-1-msg_0483acd5b8108d520069519eb01ff08191";
+    const restoredTargetId = "codex-item-thread-1-item-14";
+    const liveContent = "最初の段落\n\n最後の返答です";
+    const restoredContent = "最初の段落  \n\n\n\n{youtube:dQw4w9WgXcQ}\n最後の返答です\n";
+    const result = resolvePanelConversationAfterHydration({
+      runtime: null,
+      requestStartedAtMsAtHydrationStart: 100,
+      restoredConversation: [
+        message({ id: "codex-item-thread-1-item-13", role: "user", content: "質問" }),
+        message({ id: restoredTargetId, role: "assistant", content: restoredContent }),
+      ],
+      panelConversation: [
+        message({ id: "codex-item-thread-1-msg_user", role: "user", content: "質問" }),
+        message({ id: liveTargetId, role: "assistant", content: liveContent, ttsWaveform: [0.3, 0.7] }),
+      ],
+      restoredHasRunningTurn: false,
+      restoredThreadStatusType: "idle",
+      restoredUpdatedAtMs: NOW_MS,
+      restoredMessageCount: 2,
+      ttsPlaybackMessageId: liveTargetId,
+      nowMs: NOW_MS,
+    });
+
+    expect(result.ttsPlaybackMessageId).toBe(restoredTargetId);
+    expect(result.conversationMessages[1]).toEqual(
+      message({ id: restoredTargetId, role: "assistant", content: restoredContent, ttsWaveform: [0.3, 0.7] })
+    );
+  });
+
+  it("remaps the playback target to the last matching assistant when contents repeat", () => {
+    const result = resolvePanelConversationAfterHydration({
+      runtime: null,
+      requestStartedAtMsAtHydrationStart: 100,
+      restoredConversation: [
+        message({ id: "codex-item-thread-1-item-1", role: "assistant", content: "same" }),
+        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: "same" }),
+      ],
+      panelConversation: [
+        message({ id: "codex-item-thread-1-msg_a", role: "assistant", content: "same", ttsWaveform: [1] }),
+      ],
+      restoredHasRunningTurn: false,
+      restoredThreadStatusType: "idle",
+      restoredUpdatedAtMs: NOW_MS,
+      restoredMessageCount: 2,
+      ttsPlaybackMessageId: "codex-item-thread-1-msg_a",
+      nowMs: NOW_MS,
+    });
+
+    expect(result.ttsPlaybackMessageId).toBe("codex-item-thread-1-item-2");
+  });
+
   it("drops local placeholders and playback targets that no longer exist in server history", () => {
     const result = resolvePanelConversationAfterHydration({
       runtime: null,

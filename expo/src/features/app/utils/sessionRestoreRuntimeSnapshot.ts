@@ -66,9 +66,10 @@ export function deriveRestoredSessionThreadStatusType(restored: Pick<RunnerSessi
   return executionStatus === "unknown" ? "idle" : executionStatus;
 }
 
-// itemIdを持つメッセージはライブ側 (useCodexReplyRequest) と同じ決定的IDを得るため、
-// 再ハイドレーションしてもIDが変わらない。itemIdが無い場合(aux fallback・旧履歴)や
-// 同一itemIdの重複時のみ、従来のインデックスベースIDへフォールバックする。
+// thread/readのitemId ("item-N")は再読間で決定的なため、ハイドレーション同士では
+// IDが不変になる(ライブ通知のraw idとは一致しない点は codexItemMessageId 参照)。
+// itemIdが無い場合(aux fallback・旧履歴)や同一itemIdの重複時のみ、
+// 従来のインデックスベースIDへフォールバックする。
 export function buildRestoredPanelConversation(params: {
   messages: RunnerSessionMessage[];
   panelId: string;

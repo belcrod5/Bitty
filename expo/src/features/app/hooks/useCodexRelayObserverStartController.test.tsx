@@ -102,32 +102,34 @@ describe("useCodexRelayObserverStartController message ids", () => {
     const observerOptions = harness.getObserverOptions();
     expect(observerOptions).not.toBeNull();
 
+    // ライブ通知のitem.idはraw Responses API id (msg_…)。
     await act(async () => {
-      observerOptions.onAgentMessageCompleted("partial done", { itemId: "item-2" });
-      observerOptions.onAgentMessageCompleted("second message", { itemId: "item-3" });
+      observerOptions.onAgentMessageCompleted("partial done", { itemId: "msg_aaa" });
+      observerOptions.onAgentMessageCompleted("second message", { itemId: "msg_bbb" });
       observerOptions.onTurnCompleted();
     });
 
-    // 1つ目のitemは表示中バブルのIDを引き継ぎ、2つ目以降も安定IDで発行される。
+    // 1つ目のitemは表示中バブルのIDを引き継ぎ、2つ目以降もcodexItemMessageIdで発行される。
     const conversation = harness.getSessionConversation();
     expect(conversation.map((item) => item.id)).toEqual([
       codexItemMessageId(threadId, "item-1"),
       restoredInProgressAssistantId,
-      codexItemMessageId(threadId, "item-3"),
+      codexItemMessageId(threadId, "msg_bbb"),
     ]);
-    // 完了時のTTSターゲットは最後のagentMessageの安定ID。
+    // 完了時のTTSターゲットは最後のagentMessageのID。
     expect(harness.completedCalls).toHaveLength(1);
     const ttsTargetId = harness.completedCalls[0].messageId;
-    expect(ttsTargetId).toBe(codexItemMessageId(threadId, "item-3"));
+    expect(ttsTargetId).toBe(codexItemMessageId(threadId, "msg_bbb"));
 
-    // その後の再ハイドレーション(thread/read復元)でもTTSターゲットIDが生存する。
+    // その後の再ハイドレーションでは復元IDが合成連番(item-N)になるが、
+    // 正規化本文の照合でTTSターゲットが復元側IDへリマップされて生存する。
     const rehydrated = resolvePanelConversationAfterHydration({
       runtime: null,
       requestStartedAtMsAtHydrationStart: null,
       restoredConversation: [
         message({ id: codexItemMessageId(threadId, "item-1"), role: "user", content: "question" }),
         message({ id: codexItemMessageId(threadId, "item-2"), role: "assistant", content: "partial done" }),
-        message({ id: codexItemMessageId(threadId, "item-3"), role: "assistant", content: "second message" }),
+        message({ id: codexItemMessageId(threadId, "item-3"), role: "assistant", content: "second message  \n" }),
       ],
       restoredHasRunningTurn: false,
       restoredThreadStatusType: "idle",
@@ -137,6 +139,6 @@ describe("useCodexRelayObserverStartController message ids", () => {
       ttsPlaybackMessageId: ttsTargetId,
       nowMs: Date.now(),
     });
-    expect(rehydrated.ttsPlaybackMessageId).toBe(ttsTargetId);
+    expect(rehydrated.ttsPlaybackMessageId).toBe(codexItemMessageId(threadId, "item-3"));
   });
 });

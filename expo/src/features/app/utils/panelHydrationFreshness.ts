@@ -1,5 +1,6 @@
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { ConversationMessage } from "../types/appTypes";
+import { stripYouTubeTags } from "./youtube";
 
 export const RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS = 30_000;
 
@@ -89,9 +90,12 @@ export function shouldPreserveRuntimeConversationOnHydrate(
   return input.runtimeMessageCount >= input.restoredMessageCount; // (e) 欠落時フォールバック
 }
 
-// 復元メッセージとパネル表示中メッセージはitemId由来の決定的IDを共有する
-// (codexItemMessageId)。同一IDのメッセージはpanel-localな表示メタデータ
+// ID一致(codexItemMessageId)のメッセージはpanel-localな表示メタデータ
 // (ttsWaveform)を引き継ぎ、ttsPlaybackMessageId は復元後も存在するIDに限り残す。
+// ライブIDはraw Responses API id (msg_…)由来、復元IDはthread/readが合成する
+// 連番(item-N)由来で再ハイドレーションを跨ぐと一致しないため、TTSターゲットに
+// 限り正規化本文の一致で復元側メッセージへリマップする(復元IDは再読間で決定的
+// なので、一度リマップすれば以後のハイドレーションはID一致で生存する)。
 function reconcileRestoredPanelConversation(params: {
   restoredConversation: ConversationMessage[];
   panelConversation: ConversationMessage[];
@@ -109,6 +113,26 @@ function reconcileRestoredPanelConversation(params: {
     if (!panelMessage || !Array.isArray(panelMessage.ttsWaveform)) return restoredMessage;
     return { ...restoredMessage, ttsWaveform: [...panelMessage.ttsWaveform] };
   });
+  if (!ttsPlaybackMessageId && params.ttsPlaybackMessageId) {
+    const playbackMessage = panelMessagesById.get(params.ttsPlaybackMessageId);
+    // ライブ側本文はstripYouTubeTags済み・復元側は生テキストなので、
+    // 比較は必ず両側へ同じ正規化を適用して対称に行う。
+    const normalizedPlaybackContent = playbackMessage && !playbackMessage.commandExecution
+      ? stripYouTubeTags(playbackMessage.content)
+      : "";
+    if (playbackMessage && normalizedPlaybackContent) {
+      for (let index = conversationMessages.length - 1; index >= 0; index -= 1) {
+        const candidate = conversationMessages[index];
+        if (candidate.role !== playbackMessage.role || candidate.commandExecution) continue;
+        if (stripYouTubeTags(candidate.content) !== normalizedPlaybackContent) continue;
+        ttsPlaybackMessageId = candidate.id;
+        if (Array.isArray(playbackMessage.ttsWaveform)) {
+          conversationMessages[index] = { ...candidate, ttsWaveform: [...playbackMessage.ttsWaveform] };
+        }
+        break;
+      }
+    }
+  }
   return { conversationMessages, ttsPlaybackMessageId };
 }
 

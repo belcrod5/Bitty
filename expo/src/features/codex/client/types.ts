@@ -187,8 +187,8 @@ export type CodexThreadMessage = {
   role: "user" | "assistant";
   content: string;
   at: string;
-  // Codex app-server thread item id ("item-42"): unique per thread and identical
-  // between live turn events and later thread/read restores.
+  // thread/read が合成するスレッド内連番の item id ("item-N")。再読間では
+  // 決定的だが、ライブ通知の item.id (raw "msg_…") とは一致しない。
   itemId?: string;
   commandExecution?: CodexCommandExecutionInfo;
 };

@@ -299,8 +299,8 @@ export function useCodexRelayObserverStartController({
           isFirstItem ? String(initialPanelAssistant?.content || "") : ""
         );
         // 1つ目のitemは表示中のassistantバブルのIDを引き継いで重複表示を防ぐ。
-        // それ以外はthread/read復元と同じ決定的ID(codexItemMessageId)にし、
-        // 再ハイドレーションでTTSターゲットIDが変わらないようにする。
+        // それ以外はuseCodexReplyRequestと同じ決定的ID(codexItemMessageId)にし、
+        // ライブ経路間で同一itemが同一IDにupsertされるようにする。
         agentMessageUiIdByItemId.set(
           itemId,
           isFirstItem && initialPanelAssistant
