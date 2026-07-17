@@ -124,7 +124,10 @@ export function mergeLocalCompactSlashMessages(
     .map((item) => item.message);
 }
 
-function clampContextUsedPct(raw: unknown): number | null {
+export function clampContextUsedPct(raw: unknown): number | null {
+  // Number(null) and Number("") are 0, so guard "no value" explicitly:
+  // an unfetched context usage must stay null instead of becoming 0%.
+  if (raw === null || raw === undefined || raw === "") return null;
   if (!Number.isFinite(Number(raw))) return null;
   return Math.max(0, Math.min(100, Math.round(Number(raw))));
 }

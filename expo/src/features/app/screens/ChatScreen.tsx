@@ -1706,7 +1706,7 @@ export function ChatScreen({
           <View style={[styles.chatHeaderRight, styles.miniBoardPreviewChatHeaderRight]}>
             <View style={[styles.chatContextWrap, styles.miniBoardPreviewChatContextWrap]}>
               <Text style={[styles.chatContextPctText, styles.miniBoardPreviewChatContextPctText]}>
-                {chatContextPctTextForView}%
+                {chatContextPctTextForView}
               </Text>
             </View>
           </View>
