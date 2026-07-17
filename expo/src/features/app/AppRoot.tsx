@@ -276,6 +276,7 @@ import {
 import {
   applyPanelHydrationSnapshot,
   applyPanelHydrationStart,
+  preserveTtsPlaybackMessageOnRestore,
   resolvePanelConversationAfterHydration,
 } from "./utils/panelHydrationFreshness";
 import {
@@ -7288,13 +7289,20 @@ export default function App() {
       );
       const restoredResponding = Boolean(restored.hasRunningTurn);
       const restoredThreadStatusType = deriveRestoredSessionThreadStatusType(restored);
-      const conversationForSnapshot = projectRestoredRuntimeStatusToConversation({
-        conversation,
-        restored,
-        fallbackMessageId: `panel-${panelId}-${resolvedSessionId || sessionId}-restored-live-assistant`,
-        buildConversationMessage,
-      });
       const runtimeForFreshness = getConversationRuntimeSnapshot(resolvedSessionId || sessionId);
+      // このsnapshotは共有conversation runtime storeへも書き込まれ、同一セッションを
+      // 表示する全パネル(drawer含む)の表示を置換する。TTS再生中はターゲットの
+      // ライブIDを復元会話側で維持し、再生表示が孤立しないようにする。
+      const conversationForSnapshot = preserveTtsPlaybackMessageOnRestore({
+        restoredConversation: projectRestoredRuntimeStatusToConversation({
+          conversation,
+          restored,
+          fallbackMessageId: `panel-${panelId}-${resolvedSessionId || sessionId}-restored-live-assistant`,
+          buildConversationMessage,
+        }),
+        currentConversation: runtimeForFreshness?.conversationMessages ?? [],
+        ttsPlaybackMessageId: ttsPlaybackMessageIdRef.current,
+      });
       const latestPanelSnapshot = panelRuntimeEntriesByIdRef.current[panelId]?.snapshot;
       const panelSnapshotForReconciliation = parseOptionalSessionId(latestPanelSnapshot?.selectedSessionId) === sessionId
         ? latestPanelSnapshot

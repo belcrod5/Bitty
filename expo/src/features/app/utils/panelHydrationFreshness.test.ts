@@ -1,6 +1,7 @@
 import {
   applyPanelHydrationSnapshot,
   applyPanelHydrationStart,
+  preserveTtsPlaybackMessageOnRestore,
   resolvePanelConversationAfterHydration,
   RUNTIME_CONVERSATION_FRESHNESS_GRACE_MS,
   shouldPreserveRuntimeConversationOnHydrate,
@@ -378,59 +379,6 @@ describe("resolvePanelConversationAfterHydration", () => {
     expect(result.conversationMessages[0].ttsWaveform).toEqual([0.5]);
   });
 
-  it("remaps the playback target by normalized content when live and restored ids differ", () => {
-    // 実データ形状: ライブIDはraw Responses API id (msg_…)、復元IDはthread/read合成の連番 (item-N)。
-    const liveTargetId = "codex-item-thread-1-msg_0483acd5b8108d520069519eb01ff08191";
-    const restoredTargetId = "codex-item-thread-1-item-14";
-    const liveContent = "最初の段落\n\n最後の返答です";
-    const restoredContent = "最初の段落  \n\n\n\n{youtube:dQw4w9WgXcQ}\n最後の返答です\n";
-    const result = resolvePanelConversationAfterHydration({
-      runtime: null,
-      requestStartedAtMsAtHydrationStart: 100,
-      restoredConversation: [
-        message({ id: "codex-item-thread-1-item-13", role: "user", content: "質問" }),
-        message({ id: restoredTargetId, role: "assistant", content: restoredContent }),
-      ],
-      panelConversation: [
-        message({ id: "codex-item-thread-1-msg_user", role: "user", content: "質問" }),
-        message({ id: liveTargetId, role: "assistant", content: liveContent, ttsWaveform: [0.3, 0.7] }),
-      ],
-      restoredHasRunningTurn: false,
-      restoredThreadStatusType: "idle",
-      restoredUpdatedAtMs: NOW_MS,
-      restoredMessageCount: 2,
-      ttsPlaybackMessageId: liveTargetId,
-      nowMs: NOW_MS,
-    });
-
-    expect(result.ttsPlaybackMessageId).toBe(restoredTargetId);
-    expect(result.conversationMessages[1]).toEqual(
-      message({ id: restoredTargetId, role: "assistant", content: restoredContent, ttsWaveform: [0.3, 0.7] })
-    );
-  });
-
-  it("remaps the playback target to the last matching assistant when contents repeat", () => {
-    const result = resolvePanelConversationAfterHydration({
-      runtime: null,
-      requestStartedAtMsAtHydrationStart: 100,
-      restoredConversation: [
-        message({ id: "codex-item-thread-1-item-1", role: "assistant", content: "same" }),
-        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: "same" }),
-      ],
-      panelConversation: [
-        message({ id: "codex-item-thread-1-msg_a", role: "assistant", content: "same", ttsWaveform: [1] }),
-      ],
-      restoredHasRunningTurn: false,
-      restoredThreadStatusType: "idle",
-      restoredUpdatedAtMs: NOW_MS,
-      restoredMessageCount: 2,
-      ttsPlaybackMessageId: "codex-item-thread-1-msg_a",
-      nowMs: NOW_MS,
-    });
-
-    expect(result.ttsPlaybackMessageId).toBe("codex-item-thread-1-item-2");
-  });
-
   it("drops local placeholders and playback targets that no longer exist in server history", () => {
     const result = resolvePanelConversationAfterHydration({
       runtime: null,
@@ -487,6 +435,121 @@ describe("resolvePanelConversationAfterHydration", () => {
         commandExecution: { command: "npm test", status: "completed", exitCode: 0 },
       }),
     ]);
+  });
+});
+
+describe("preserveTtsPlaybackMessageOnRestore", () => {
+  // 実機タイムライン再現 (20260717_113349_357.jsonl):
+  // ライブ会話(msg_…ID)でTTS合成開始 → ハイドレート対象パネルはクリア済み →
+  // 別パネルのhydrationが共有storeを復元ID(item-N)で置換 → drawerパネルの
+  // TTSターゲットIDのメッセージが置換後も存在し続けること。
+  const liveTargetId = "codex-item-thread-1-msg_0483acd5b8108d520069519eb01ff08191";
+  const liveContent = "最初の段落\n\n最後の返答です";
+  const restoredContent = "最初の段落  \n\n\n\n{youtube:dQw4w9WgXcQ}\n最後の返答です\n";
+  const liveStoreConversation = [
+    message({ id: "codex-item-thread-1-msg_user", role: "user", content: "質問" }),
+    message({ id: liveTargetId, role: "assistant", content: liveContent, ttsWaveform: [0.3, 0.7] }),
+  ];
+  const restoredConversation = [
+    message({ id: "codex-item-thread-1-item-13", role: "user", content: "質問" }),
+    message({ id: "codex-item-thread-1-item-14", role: "assistant", content: restoredContent }),
+  ];
+
+  function hydrateClearedPanelWithStore(params: {
+    storeConversation: ConversationMessage[];
+    ttsPlaybackMessageId: string;
+  }) {
+    // AppRoot.hydratePanelFromSessionHistory と同じ順序:
+    // preserve → reconcile(クリア済みパネルの空snapshot) → storeへ書き込む会話を返す。
+    const preserved = preserveTtsPlaybackMessageOnRestore({
+      restoredConversation,
+      currentConversation: params.storeConversation,
+      ttsPlaybackMessageId: params.ttsPlaybackMessageId,
+    });
+    return resolvePanelConversationAfterHydration({
+      runtime: {
+        conversationMessages: params.storeConversation,
+        updatedAtMs: NOW_MS - 5_000,
+        isResponding: false,
+        requestStartedAtMs: 100,
+        requestCompletedAtMs: NOW_MS - 1_300,
+        selectedThreadStatusType: "idle",
+      },
+      requestStartedAtMsAtHydrationStart: 100,
+      restoredConversation: preserved,
+      restoredHasRunningTurn: false,
+      restoredThreadStatusType: "idle",
+      restoredUpdatedAtMs: NOW_MS,
+      restoredMessageCount: restoredConversation.length,
+      panelConversation: [],
+      ttsPlaybackMessageId: "",
+      nowMs: NOW_MS,
+    });
+  }
+
+  it("keeps the playing message id alive in the shared store across another panel's hydration", () => {
+    const firstHydration = hydrateClearedPanelWithStore({
+      storeConversation: liveStoreConversation,
+      ttsPlaybackMessageId: liveTargetId,
+    });
+    expect(firstHydration.preserveRuntimeConversation).toBe(false);
+    // drawerパネル相当の表示投影: storeへ書き込まれる会話にTTSターゲットIDが依然存在する。
+    const playingMessage = firstHydration.conversationMessages.find((item) => item.id === liveTargetId);
+    expect(playingMessage).toEqual(
+      message({ id: liveTargetId, role: "assistant", content: restoredContent, ttsWaveform: [0.3, 0.7] })
+    );
+
+    // TTS再生が続く限り、次回以降のハイドレーションでも同様に維持される。
+    const secondHydration = hydrateClearedPanelWithStore({
+      storeConversation: firstHydration.conversationMessages,
+      ttsPlaybackMessageId: liveTargetId,
+    });
+    expect(secondHydration.conversationMessages.some((item) => item.id === liveTargetId)).toBe(true);
+
+    // TTS終了後(再生中IDが空)の次のハイドレーションで復元IDへ自然に収束する。
+    const afterPlayback = hydrateClearedPanelWithStore({
+      storeConversation: secondHydration.conversationMessages,
+      ttsPlaybackMessageId: "",
+    });
+    expect(afterPlayback.conversationMessages.map((item) => item.id)).toEqual([
+      "codex-item-thread-1-item-13",
+      "codex-item-thread-1-item-14",
+    ]);
+  });
+
+  it("prefers the last matching assistant when contents repeat", () => {
+    const preserved = preserveTtsPlaybackMessageOnRestore({
+      restoredConversation: [
+        message({ id: "codex-item-thread-1-item-1", role: "assistant", content: "same" }),
+        message({ id: "codex-item-thread-1-item-2", role: "assistant", content: "same" }),
+      ],
+      currentConversation: [
+        message({ id: "codex-item-thread-1-msg_a", role: "assistant", content: "same" }),
+      ],
+      ttsPlaybackMessageId: "codex-item-thread-1-msg_a",
+    });
+    expect(preserved.map((item) => item.id)).toEqual([
+      "codex-item-thread-1-item-1",
+      "codex-item-thread-1-msg_a",
+    ]);
+  });
+
+  it("does nothing without an active playback id or a matching restored message", () => {
+    const inactive = preserveTtsPlaybackMessageOnRestore({
+      restoredConversation,
+      currentConversation: liveStoreConversation,
+      ttsPlaybackMessageId: "",
+    });
+    expect(inactive).toBe(restoredConversation);
+
+    const noMatch = preserveTtsPlaybackMessageOnRestore({
+      restoredConversation,
+      currentConversation: [
+        message({ id: liveTargetId, role: "assistant", content: "全く違う本文" }),
+      ],
+      ttsPlaybackMessageId: liveTargetId,
+    });
+    expect(noMatch).toBe(restoredConversation);
   });
 });
 

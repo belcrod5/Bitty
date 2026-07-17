@@ -1,7 +1,10 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useCodexRelayObserverStartController } from "./useCodexRelayObserverStartController";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
-import { resolvePanelConversationAfterHydration } from "../utils/panelHydrationFreshness";
+import {
+  preserveTtsPlaybackMessageOnRestore,
+  resolvePanelConversationAfterHydration,
+} from "../utils/panelHydrationFreshness";
 import { startCodexAppServerTurnRelayObserver } from "../../codex/codexAppServerClient";
 import type { ConversationMessage } from "../types/appTypes";
 
@@ -122,15 +125,20 @@ describe("useCodexRelayObserverStartController message ids", () => {
     expect(ttsTargetId).toBe(codexItemMessageId(threadId, "msg_bbb"));
 
     // その後の再ハイドレーションでは復元IDが合成連番(item-N)になるが、
-    // 正規化本文の照合でTTSターゲットが復元側IDへリマップされて生存する。
-    const rehydrated = resolvePanelConversationAfterHydration({
-      runtime: null,
-      requestStartedAtMsAtHydrationStart: null,
+    // 再生中はpreserveTtsPlaybackMessageOnRestoreがターゲットIDを維持して生存する。
+    const preserved = preserveTtsPlaybackMessageOnRestore({
       restoredConversation: [
         message({ id: codexItemMessageId(threadId, "item-1"), role: "user", content: "question" }),
         message({ id: codexItemMessageId(threadId, "item-2"), role: "assistant", content: "partial done" }),
         message({ id: codexItemMessageId(threadId, "item-3"), role: "assistant", content: "second message  \n" }),
       ],
+      currentConversation: conversation,
+      ttsPlaybackMessageId: ttsTargetId,
+    });
+    const rehydrated = resolvePanelConversationAfterHydration({
+      runtime: null,
+      requestStartedAtMsAtHydrationStart: null,
+      restoredConversation: preserved,
       restoredHasRunningTurn: false,
       restoredThreadStatusType: "idle",
       restoredUpdatedAtMs: Date.now(),
@@ -139,6 +147,7 @@ describe("useCodexRelayObserverStartController message ids", () => {
       ttsPlaybackMessageId: ttsTargetId,
       nowMs: Date.now(),
     });
-    expect(rehydrated.ttsPlaybackMessageId).toBe(codexItemMessageId(threadId, "item-3"));
+    expect(rehydrated.conversationMessages.some((item) => item.id === ttsTargetId)).toBe(true);
+    expect(rehydrated.ttsPlaybackMessageId).toBe(ttsTargetId);
   });
 });

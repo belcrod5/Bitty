@@ -90,12 +90,52 @@ export function shouldPreserveRuntimeConversationOnHydrate(
   return input.runtimeMessageCount >= input.restoredMessageCount; // (e) 欠落時フォールバック
 }
 
-// ID一致(codexItemMessageId)のメッセージはpanel-localな表示メタデータ
-// (ttsWaveform)を引き継ぎ、ttsPlaybackMessageId は復元後も存在するIDに限り残す。
-// ライブIDはraw Responses API id (msg_…)由来、復元IDはthread/readが合成する
-// 連番(item-N)由来で再ハイドレーションを跨ぐと一致しないため、TTSターゲットに
-// 限り正規化本文の一致で復元側メッセージへリマップする(復元IDは再読間で決定的
-// なので、一度リマップすれば以後のハイドレーションはID一致で生存する)。
+// TTS再生中(ロード中含む)にハイドレーションが走ると、共有runtime storeの会話が
+// 復元ID(thread/read合成のitem-N)へ置換され、ライブID(raw Responses API id)を
+// 指すTTSターゲットが全パネルで孤立する。そこでstoreへ書き込む復元会話の側で、
+// 再生中メッセージに対応する復元メッセージ(role一致+両側stripYouTubeTags対称
+// 正規化の本文一致、末尾優先)のidを再生中IDへ差し替えて維持する。これにより
+// streamSegments・projection・同一セッションを表示する全パネルが無修正で生き続け、
+// TTS終了後(再生中IDが空)の次のハイドレーションで自然に復元IDへ収束する。
+export function preserveTtsPlaybackMessageOnRestore(params: {
+  restoredConversation: ConversationMessage[];
+  currentConversation: ConversationMessage[];
+  ttsPlaybackMessageId: string;
+}): ConversationMessage[] {
+  const ttsPlaybackMessageId = String(params.ttsPlaybackMessageId || "").trim();
+  if (!ttsPlaybackMessageId) return params.restoredConversation;
+  if (params.restoredConversation.some((message) => message.id === ttsPlaybackMessageId)) {
+    return params.restoredConversation;
+  }
+  const playbackMessage = params.currentConversation.find(
+    (message) => message.id === ttsPlaybackMessageId
+  );
+  // ライブ側本文はstripYouTubeTags済み・復元側は生テキストなので、
+  // 比較は必ず両側へ同じ正規化を適用して対称に行う。
+  const normalizedPlaybackContent = playbackMessage && !playbackMessage.commandExecution
+    ? stripYouTubeTags(playbackMessage.content)
+    : "";
+  if (!playbackMessage || !normalizedPlaybackContent) return params.restoredConversation;
+  for (let index = params.restoredConversation.length - 1; index >= 0; index -= 1) {
+    const candidate = params.restoredConversation[index];
+    if (candidate.role !== playbackMessage.role || candidate.commandExecution) continue;
+    if (stripYouTubeTags(candidate.content) !== normalizedPlaybackContent) continue;
+    const next = [...params.restoredConversation];
+    next[index] = {
+      ...candidate,
+      id: ttsPlaybackMessageId,
+      ttsWaveform: Array.isArray(playbackMessage.ttsWaveform)
+        ? [...playbackMessage.ttsWaveform]
+        : candidate.ttsWaveform,
+    };
+    return next;
+  }
+  return params.restoredConversation;
+}
+
+// ID一致(codexItemMessageId / preserveTtsPlaybackMessageOnRestoreで維持されたID)の
+// メッセージはpanel-localな表示メタデータ(ttsWaveform)を引き継ぎ、
+// ttsPlaybackMessageId は復元後も存在するIDに限り残す。
 function reconcileRestoredPanelConversation(params: {
   restoredConversation: ConversationMessage[];
   panelConversation: ConversationMessage[];
@@ -113,26 +153,6 @@ function reconcileRestoredPanelConversation(params: {
     if (!panelMessage || !Array.isArray(panelMessage.ttsWaveform)) return restoredMessage;
     return { ...restoredMessage, ttsWaveform: [...panelMessage.ttsWaveform] };
   });
-  if (!ttsPlaybackMessageId && params.ttsPlaybackMessageId) {
-    const playbackMessage = panelMessagesById.get(params.ttsPlaybackMessageId);
-    // ライブ側本文はstripYouTubeTags済み・復元側は生テキストなので、
-    // 比較は必ず両側へ同じ正規化を適用して対称に行う。
-    const normalizedPlaybackContent = playbackMessage && !playbackMessage.commandExecution
-      ? stripYouTubeTags(playbackMessage.content)
-      : "";
-    if (playbackMessage && normalizedPlaybackContent) {
-      for (let index = conversationMessages.length - 1; index >= 0; index -= 1) {
-        const candidate = conversationMessages[index];
-        if (candidate.role !== playbackMessage.role || candidate.commandExecution) continue;
-        if (stripYouTubeTags(candidate.content) !== normalizedPlaybackContent) continue;
-        ttsPlaybackMessageId = candidate.id;
-        if (Array.isArray(playbackMessage.ttsWaveform)) {
-          conversationMessages[index] = { ...candidate, ttsWaveform: [...playbackMessage.ttsWaveform] };
-        }
-        break;
-      }
-    }
-  }
   return { conversationMessages, ttsPlaybackMessageId };
 }
 
