@@ -534,6 +534,78 @@ test("manager mode fails the turn once the reconnect wait timeout elapses", asyn
   await rejection;
 });
 
+test("manager mode restarts the reconnect wait window after returning from background", async () => {
+  jest.useFakeTimers();
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+  manager.setAppState("background", "background");
+  await flushPromises();
+
+  // Simulates the iOS JS freeze: wall-clock time far beyond the wait window
+  // passes while backgrounded, then the app comes back.
+  await jest.advanceTimersByTimeAsync(300_000);
+  manager.setAppState("active", "reconnecting");
+  await flushPromises();
+
+  let settled = false;
+  session.promise.then(() => { settled = true; }, () => { settled = true; });
+  await flushPromises();
+  expect(settled).toBe(false);
+
+  // Within the fresh post-resume window the relay attach recovers the turn.
+  manager.becomeReady();
+  await flushPromises();
+  manager.emit({
+    channel: "relay", op: "attached", threadId: "thread-1", seq: 1,
+    payload: { latestSeq: 1, replayed: 0 },
+  });
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 2, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "back",
+  });
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 3, "turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed" },
+  });
+  await expect(session.promise).resolves.toMatchObject({
+    threadId: "thread-1",
+    reply: "hello back",
+  });
+});
+
+test("manager mode still times out when the fresh post-resume wait window elapses", async () => {
+  jest.useFakeTimers();
+  const manager = new FakeRunnerWebSocketManager();
+  const { session, turnStartOutbound } = await startLiveTurn(manager);
+
+  emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "item/agentMessage/delta", {
+    threadId: "thread-1",
+    itemId: "agent-item-1",
+    delta: "hello ",
+  });
+
+  manager.dropConnection();
+  await flushPromises();
+  manager.setAppState("background", "background");
+  await jest.advanceTimersByTimeAsync(300_000);
+  manager.setAppState("active", "reconnecting");
+  await flushPromises();
+
+  const rejection = expect(session.promise).rejects.toThrow("reconnect timeout");
+  await jest.advanceTimersByTimeAsync(120_000);
+  await rejection;
+});
+
 test("manager mode resolves as interrupted when interrupt() runs during reconnect wait", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { session, turnStartOutbound } = await startLiveTurn(manager);

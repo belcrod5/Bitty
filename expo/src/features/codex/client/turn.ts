@@ -1309,6 +1309,13 @@ export function startCodexAppServerTurn(
           maybeHandleRunnerRelayControl(JSON.stringify(message));
         }
       ));
+      const scheduleReconnectWaitTimer = () => {
+        if (reconnectWaitTimer) return;
+        reconnectWaitTimer = setTimeout(() => {
+          reconnectWaitTimer = null;
+          fail(new Error("Codex app-server runner-ws reconnect timeout"));
+        }, MANAGER_RECONNECT_WAIT_TIMEOUT_MS);
+      };
       managerUnsubscribers.push(runnerWebSocketManager.subscribeSnapshot(() => {
         if (finalized) return;
         const snapshot = runnerWebSocketManager.getSnapshot();
@@ -1325,6 +1332,21 @@ export function startCodexAppServerTurn(
           // below only applies once turn/start has reached the wire (a mid-turn
           // server-response resend can wait for admission at the same time).
           if (!turnStartIssued) return;
+        }
+        // iOS freezes JS timers while the app is backgrounded, so a reconnect wait
+        // timer that expired during the freeze would fire the instant the app
+        // resumes — before reconnect/relay attach get any chance to recover the
+        // turn. Mirror the pendingRpcTimeouts pause/resume: drop the timer on
+        // leaving "active" and restart a fresh full window once active again.
+        if (awaitingReconnect) {
+          if (snapshot.appState !== "active") {
+            if (reconnectWaitTimer) {
+              clearTimeout(reconnectWaitTimer);
+              reconnectWaitTimer = null;
+            }
+          } else {
+            scheduleReconnectWaitTimer();
+          }
         }
         if (snapshot.connectionState === "ready") {
           resumePendingRpcTimeouts();
@@ -1363,10 +1385,9 @@ export function startCodexAppServerTurn(
             message: `state=${snapshot.connectionState} threadId=${activeThreadId || "-"} fromSeq=${lastRelaySeq}`,
             readyState: getTransportReadyState(),
           });
-          reconnectWaitTimer = setTimeout(() => {
-            reconnectWaitTimer = null;
-            fail(new Error("Codex app-server runner-ws reconnect timeout"));
-          }, MANAGER_RECONNECT_WAIT_TIMEOUT_MS);
+          if (snapshot.appState === "active") {
+            scheduleReconnectWaitTimer();
+          }
         }
       }));
       runInitialTurnSetup(fail).catch(fail);
