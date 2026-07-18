@@ -73,6 +73,15 @@ if [[ -z "${APP_PATH}" ]]; then
   exit 1
 fi
 
+if ! APP_ENTITLEMENTS="$(codesign -d --entitlements - "${APP_PATH}" 2>/dev/null)"; then
+  echo "[build-ios] failed to read signed app entitlements: ${APP_PATH}" >&2
+  exit 1
+fi
+if [[ "${APP_ENTITLEMENTS}" != *"aps-environment"* ]]; then
+  echo "[build-ios] signed app is missing aps-environment; refusing to install a build without PUSH support" >&2
+  exit 1
+fi
+
 echo "[build-ios] Installing ${APP_PATH} to device ${DEVICE_ID}"
 xcrun devicectl device install app --device "${DEVICE_ID}" "${APP_PATH}"
 

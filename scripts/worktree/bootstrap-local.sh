@@ -130,17 +130,29 @@ copy_local_env_files() {
 ensure_npm_install() {
   local package_dir="$1"
   local label="$2"
+  local installed_lock="${package_dir}/node_modules/.package-lock.json"
 
-  if [[ -d "${package_dir}/node_modules" ]]; then
-    return 0
-  fi
   if [[ ! -f "${package_dir}/package.json" ]]; then
     echo "[bootstrap-local] ${label} package.json not found: ${package_dir}" >&2
     exit 1
   fi
 
-  echo "[bootstrap-local] installing ${label} dependencies"
-  (cd "${package_dir}" && npm install)
+  if [[ -f "${installed_lock}" ]] &&
+    [[ ! "${package_dir}/package.json" -nt "${installed_lock}" ]] &&
+    [[ ! "${package_dir}/package-lock.json" -nt "${installed_lock}" ]] &&
+    (cd "${package_dir}" && npm ls --depth=0 >/dev/null 2>&1); then
+    return 0
+  fi
+
+  echo "[bootstrap-local] installing/updating ${label} dependencies"
+  if ! (cd "${package_dir}" && npm install); then
+    echo "[bootstrap-local] failed to install ${label} dependencies; aborting" >&2
+    exit 1
+  fi
+  if ! (cd "${package_dir}" && npm ls --depth=0); then
+    echo "[bootstrap-local] ${label} dependencies are still incomplete after npm install; aborting" >&2
+    exit 1
+  fi
 }
 
 copy_ios_native_from_main() {
@@ -175,14 +187,12 @@ ensure_ios_native_workspace() {
   local ios_dir="${expo_dir}/ios"
   local workspace_path="${ios_dir}/Bitty.xcworkspace"
 
-  if [[ -d "${workspace_path}" ]]; then
-    return 0
+  if [[ ! -d "${workspace_path}" ]]; then
+    copy_ios_native_from_main || true
   fi
 
-  if ! copy_ios_native_from_main; then
-    echo "[bootstrap-local] generating expo/ios workspace"
-    (cd "${expo_dir}" && npx expo prebuild --platform ios)
-  fi
+  echo "[bootstrap-local] synchronizing expo/ios workspace"
+  (cd "${expo_dir}" && npx expo prebuild --platform ios)
 
   if [[ ! -d "${workspace_path}" ]]; then
     echo "[bootstrap-local] failed to prepare iOS workspace: ${workspace_path}" >&2
