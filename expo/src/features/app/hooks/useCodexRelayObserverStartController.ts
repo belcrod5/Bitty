@@ -6,6 +6,7 @@ import {
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { ConversationMessage, SessionRuntimeStatus } from "../types/appTypes";
+import { codexItemMessageId } from "../utils/codexItemMessageId";
 import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
@@ -297,11 +298,16 @@ export function useCodexRelayObserverStartController({
           itemId,
           isFirstItem ? String(initialPanelAssistant?.content || "") : ""
         );
+        // 1つ目のitemは表示中のassistantバブルのIDを引き継いで重複表示を防ぐ。
+        // それ以外はuseCodexReplyRequestと同じ決定的ID(codexItemMessageId)にし、
+        // ライブ経路間で同一itemが同一IDにupsertされるようにする。
         agentMessageUiIdByItemId.set(
           itemId,
           isFirstItem && initialPanelAssistant
             ? defaultRelayAssistantMessageId
-            : `assistant-stream-relay-${threadId}-${itemId}`
+            : itemId !== "__agent_message__"
+              ? codexItemMessageId(threadId, itemId)
+              : `assistant-stream-relay-${threadId}-${itemId}`
         );
       }
       currentAgentMessageItemId = itemId;

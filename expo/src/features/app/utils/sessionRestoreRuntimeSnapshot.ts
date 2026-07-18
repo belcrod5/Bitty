@@ -1,5 +1,6 @@
 import type { ConversationMessage, LlmSessionMessage } from "../types/appTypes";
-import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
+import type { RunnerSessionMessage, RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
+import { codexItemMessageId } from "./codexItemMessageId";
 import {
   findLatestAssistantMessageIndex,
   hasPendingAssistantReplyInConversation,
@@ -63,6 +64,36 @@ export function deriveRestoredSessionThreadStatusType(restored: Pick<RunnerSessi
     hasRunningTurn: restored.hasRunningTurn,
   });
   return executionStatus === "unknown" ? "idle" : executionStatus;
+}
+
+// thread/readのitemId ("item-N")は再読間で決定的なため、ハイドレーション同士では
+// IDが不変になる(ライブ通知のraw idとは一致しない点は codexItemMessageId 参照)。
+// itemIdが無い場合(aux fallback・旧履歴)や同一itemIdの重複時のみ、
+// 従来のインデックスベースIDへフォールバックする。
+export function buildRestoredPanelConversation(params: {
+  messages: RunnerSessionMessage[];
+  panelId: string;
+  sessionId: string;
+}): ConversationMessage[] {
+  const seenIds = new Set<string>();
+  return params.messages.map((message, index) => {
+    const role = message.role === "assistant" ? "assistant" : "user";
+    const at = String(message.at || "").trim();
+    const itemId = String(message.itemId || "").trim();
+    const stableId = itemId ? codexItemMessageId(params.sessionId, itemId) : "";
+    const id = stableId && !seenIds.has(stableId)
+      ? stableId
+      : `panel-${params.panelId}-${params.sessionId}-${index}-${role}`;
+    seenIds.add(id);
+    return {
+      id,
+      role,
+      content: String(message.content || ""),
+      at: at || undefined,
+      inheritedFromParent: message.inheritedFromParent === true || undefined,
+      commandExecution: message.commandExecution || undefined,
+    } satisfies ConversationMessage;
+  });
 }
 
 export function projectRestoredRuntimeStatusToConversation(params: {

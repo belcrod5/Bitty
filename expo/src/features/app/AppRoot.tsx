@@ -275,12 +275,18 @@ import {
   parseIsoTimestampMs,
   summarizeExecutionReasonFromStatus,
 } from "./utils/sessionRuntimeStatus";
-import { shouldPreserveRuntimeConversationOnHydrate } from "./utils/panelHydrationFreshness";
+import {
+  applyPanelHydrationSnapshot,
+  applyPanelHydrationStart,
+  preserveTtsPlaybackMessageOnRestore,
+  resolvePanelConversationAfterHydration,
+} from "./utils/panelHydrationFreshness";
 import {
   getCachedDirectorySessions,
   resolveSessionHistoryContext as resolveSessionHistoryContextValue,
 } from "./utils/sessionHistoryContext";
 import {
+  buildRestoredPanelConversation,
   buildRestoredSessionRuntimeSnapshot,
   deriveRestoredSessionThreadStatusType,
   projectRestoredRuntimeStatusToConversation,
@@ -1190,7 +1196,7 @@ export default function App() {
   const streamReplyYouTubeVideoIdsRef = useRef<string[]>([]);
   const llmConversationSessionIdRef = useRef("");
   const selectedLlmSessionIdRef = useRef("");
-  const panelRuntimeEntriesByIdRef = useRef<Record<string, { snapshot?: { selectedSessionId?: string } }>>({});
+  const panelRuntimeEntriesByIdRef = useRef<Record<string, PanelRuntimeEntry>>({});
   const autoSpeechOpenPanelIdsRef = useRef<Record<string, true>>({});
   const ttsPlaybackProjectionTargetRef = useRef<TtsPlaybackTarget>({});
   const stopTtsPlaybackDelegateRef = useRef<(options?: { interruptStream?: boolean }) => Promise<void>>(async () => {});
@@ -7179,6 +7185,8 @@ export default function App() {
       }, { throttleMs: 0 });
       return "failed" as const;
     }
+    const runtimeAtHydrationStart = getConversationRuntimeSnapshot(sessionId);
+    const requestStartedAtMsAtHydrationStart = Number(runtimeAtHydrationStart?.request?.startedAtMs) || null;
     const isCurrentHydration = beginPanelHydration(panelId);
     logSessionDiag("panel_runtime_hydrate_start", {
       diagnosticCycleId,
@@ -7191,33 +7199,19 @@ export default function App() {
       registeredDirectories.find((item) => parseLlmDirectory(item.path) === directory)?.displayName ||
       deriveDirectoryDisplayName(directory)
     ).trim();
-    const loadingSnapshot = createPanelRuntimeSnapshot(panelId, createEmptyPanelRuntimeSnapshot(panelId), {
-      selectedSessionId: sessionId,
-      selectedDirectoryPath: directory,
-      selectedDirectoryDisplayName: directoryDisplayName,
-      selectedSessionTitle: titleHint || "（ユーザーメッセージなし）",
-      selectedSessionUpdatedAt: updatedAtHint,
-      selectedThreadStatusType: "loading",
-      modelRef: modelRefHint,
-      reasoningEffort: reasoningEffortHint,
-      contextUsedPct: contextUsedPctHint,
-      isResponding: false,
-      isHydrating: true,
-      conversationMessages: [],
-    });
-    // ローディングスナップショットは ttsPlaybackMessageId を空で上書きするため、
-    // ハイドレーション終端で引き継げるよう書き込み前の値を updater 内で捕捉しておく。
-    let ttsPlaybackMessageIdBeforeHydration = "";
-    setPanelRuntimeEntriesById((prev) => {
-      ttsPlaybackMessageIdBeforeHydration = String(prev[panelId]?.snapshot?.ttsPlaybackMessageId || "");
-      return {
-        ...prev,
-        [panelId]: {
-          sessionId,
-          snapshot: loadingSnapshot,
-        },
-      };
-    });
+    setPanelRuntimeEntriesById((entries) => applyPanelHydrationStart({
+      entries,
+      panelId,
+      sessionId,
+      emptySnapshot: createEmptyPanelRuntimeSnapshot(panelId),
+      directory,
+      directoryDisplayName,
+      titleHint,
+      updatedAtHint,
+      modelRefHint,
+      reasoningEffortHint,
+      contextUsedPctHint,
+    }));
     logSessionDiag("mini_board_hydrate_request_received", {
       diagnosticCycleId,
       panelId,
@@ -7245,6 +7239,10 @@ export default function App() {
         }, { throttleMs: 0 });
         return "superseded" as const;
       }
+      const hydratedPanelEntry = panelRuntimeEntriesByIdRef.current[panelId];
+      if (parseOptionalSessionId(hydratedPanelEntry?.snapshot.selectedSessionId || hydratedPanelEntry?.sessionId) !== sessionId) {
+        return "superseded" as const;
+      }
       const restoredContextUsedPct = clampContextUsedPct(restored.contextUsedPct);
       const contextUsedPct = restoredContextUsedPct ?? contextUsedPctHint;
       const panelModelRef = normalizeModelRef(restored.modelRef || modelRefHint);
@@ -7260,18 +7258,10 @@ export default function App() {
         ).trim();
       rememberKnownCodexThreadId(resolvedSessionId || sessionId);
       const markerSessionId = resolvedSessionId || sessionId;
-      const restoredConversation = (Array.isArray(restored.messages) ? restored.messages : []).map((message, index) => {
-        const role = message.role === "assistant" ? "assistant" : "user";
-        const content = String(message.content || "");
-        const at = String(message.at || "").trim();
-        return {
-          id: `panel-${panelId}-${resolvedSessionId || sessionId}-${index}-${role}`,
-          role,
-          content,
-          at: at || undefined,
-          inheritedFromParent: message.inheritedFromParent === true || undefined,
-          commandExecution: message.commandExecution || undefined,
-        } satisfies ConversationMessage;
+      const restoredConversation = buildRestoredPanelConversation({
+        messages: Array.isArray(restored.messages) ? restored.messages : [],
+        panelId,
+        sessionId: resolvedSessionId || sessionId,
       });
       const inheritedConversation = restoredConversation.filter(
         (message) => message.inheritedFromParent === true
@@ -7305,43 +7295,50 @@ export default function App() {
         sessionTitleOverridesById[sessionId] ||
         ""
       ).trim();
-      // セッションタイトルの手動上書きは履歴タイトルより優先する。
       selectedSessionTitle = overrideTitle || selectedSessionTitle;
-      if (!selectedSessionTitle) selectedSessionTitle = overrideTitle;
       if (!selectedSessionTitle) selectedSessionTitle = deriveSessionTitleFromConversationMessages(conversation);
       const selectedSessionMarkerColor = parseDirectoryMarkerColor(
         sessionMarkerColorsById[markerSessionId] || sessionMarkerColorsById[sessionId]
       );
       const restoredResponding = Boolean(restored.hasRunningTurn);
       const restoredThreadStatusType = deriveRestoredSessionThreadStatusType(restored);
-      const conversationForSnapshot = projectRestoredRuntimeStatusToConversation({
-        conversation,
-        restored,
-        fallbackMessageId: `panel-${panelId}-${resolvedSessionId || sessionId}-restored-live-assistant`,
-        buildConversationMessage,
-      });
       const runtimeForFreshness = getConversationRuntimeSnapshot(resolvedSessionId || sessionId);
-      const preserveRuntimeConversation = shouldPreserveRuntimeConversationOnHydrate({
-        runtimeMessageCount: runtimeForFreshness?.conversationMessages.length ?? 0,
-        runtimeUpdatedAtMs: runtimeForFreshness?.updatedAtMs ?? 0,
-        runtimeIsResponding: Boolean(runtimeForFreshness?.isResponding),
-        requestCompletedAtMs: runtimeForFreshness?.request?.completedAtMs ?? null,
-        restoredUpdatedAtMs:
-          parseIsoTimestampMs(restored.updatedAt) ??
-          parseIsoTimestampMs(lastConversation?.at) ??
-          null,
+      // このsnapshotは共有conversation runtime storeへも書き込まれ、同一セッションを
+      // 表示する全パネル(drawer含む)の表示を置換する。TTS再生中はターゲットの
+      // ライブIDを復元会話側で維持し、再生表示が孤立しないようにする。
+      const conversationForSnapshot = preserveTtsPlaybackMessageOnRestore({
+        restoredConversation: projectRestoredRuntimeStatusToConversation({
+          conversation,
+          restored,
+          fallbackMessageId: `panel-${panelId}-${resolvedSessionId || sessionId}-restored-live-assistant`,
+          buildConversationMessage,
+        }),
+        currentConversation: runtimeForFreshness?.conversationMessages ?? [],
+        ttsPlaybackMessageId: ttsPlaybackMessageIdRef.current,
+      });
+      const latestPanelSnapshot = panelRuntimeEntriesByIdRef.current[panelId]?.snapshot;
+      const panelSnapshotForReconciliation = parseOptionalSessionId(latestPanelSnapshot?.selectedSessionId) === sessionId
+        ? latestPanelSnapshot
+        : createEmptyPanelRuntimeSnapshot(panelId);
+      const hydrationConversation = resolvePanelConversationAfterHydration({
+        runtime: runtimeForFreshness ? {
+          conversationMessages: runtimeForFreshness.conversationMessages,
+          updatedAtMs: runtimeForFreshness.updatedAtMs,
+          isResponding: runtimeForFreshness.isResponding,
+          requestStartedAtMs: Number(runtimeForFreshness.request?.startedAtMs) || null,
+          requestCompletedAtMs: runtimeForFreshness.request?.completedAtMs ?? null,
+          selectedThreadStatusType: runtimeForFreshness.selectedThreadStatusType,
+        } : null,
+        requestStartedAtMsAtHydrationStart,
+        restoredConversation: conversationForSnapshot,
+        restoredHasRunningTurn: restoredResponding,
+        restoredThreadStatusType,
+        restoredUpdatedAtMs: parseIsoTimestampMs(restored.updatedAt) ?? parseIsoTimestampMs(lastConversation?.at),
         restoredMessageCount: conversation.length,
+        panelConversation: panelSnapshotForReconciliation.conversationMessages,
+        ttsPlaybackMessageId: String(panelSnapshotForReconciliation.ttsPlaybackMessageId || ""),
         nowMs: Date.now(),
       });
-      const conversationForPanel = preserveRuntimeConversation
-        ? runtimeForFreshness!.conversationMessages
-        : conversationForSnapshot;
-      const isRespondingForPanel = preserveRuntimeConversation
-        ? Boolean(runtimeForFreshness!.isResponding)
-        : restoredResponding;
-      const threadStatusForPanel = preserveRuntimeConversation
-        ? runtimeForFreshness!.selectedThreadStatusType
-        : restoredThreadStatusType;
       const snapshot = createPanelRuntimeSnapshot(panelId, createEmptyPanelRuntimeSnapshot(panelId), {
         selectedSessionId: resolvedSessionId || sessionId,
         selectedDirectoryPath: restoredDirectory,
@@ -7352,40 +7349,36 @@ export default function App() {
         modelRef: panelModelRef,
         reasoningEffort: panelReasoningEffort,
         contextUsedPct,
-        isResponding: isRespondingForPanel,
+        isResponding: hydrationConversation.isResponding,
         isHydrating: false,
-        selectedThreadStatusType: threadStatusForPanel,
+        selectedThreadStatusType: hydrationConversation.selectedThreadStatusType,
         inheritedConversationMessages: inheritedConversation,
-        conversationMessages: conversationForPanel,
+        conversationMessages: hydrationConversation.conversationMessages,
+        ttsPlaybackMessageId: hydrationConversation.ttsPlaybackMessageId,
       });
-      if (!preserveRuntimeConversation) {
-        upsertConversationRuntimeSnapshot({
+      const runtimeAfterHydration = hydrationConversation.preserveRuntimeConversation
+        ? runtimeForFreshness
+        : upsertConversationRuntimeSnapshot({
           sessionId: snapshot.selectedSessionId,
           conversationMessages: snapshot.conversationMessages,
           contextUsedPct: snapshot.contextUsedPct,
           isResponding: snapshot.isResponding,
           selectedThreadStatusType: snapshot.selectedThreadStatusType,
+          expectedRequestStartedAtMs: requestStartedAtMsAtHydrationStart,
+          clearRespondingRequestStartedAtMs: requestStartedAtMsAtHydrationStart,
         });
-      }
-      setPanelRuntimeEntriesById((prev) => {
-        // ローディングスナップショットが旧値を空にしているため、prev が空なら
-        // ハイドレーション開始前に捕捉した値へフォールバックする。
-        const carriedTtsPlaybackMessageId = preserveRuntimeConversation
-          ? (
-            String(prev[panelId]?.snapshot?.ttsPlaybackMessageId || "") ||
-            ttsPlaybackMessageIdBeforeHydration
-          )
-          : "";
-        return {
-          ...prev,
-          [panelId]: {
-            sessionId: snapshot.selectedSessionId,
-            snapshot: carriedTtsPlaybackMessageId
-              ? { ...snapshot, ttsPlaybackMessageId: carriedTtsPlaybackMessageId }
-              : snapshot,
-          },
-        };
-      });
+      const expectedRequestStartedAtMs = runtimeAfterHydration
+        ? (Number(runtimeAfterHydration.request?.startedAtMs) || null)
+        : requestStartedAtMsAtHydrationStart;
+      setPanelRuntimeEntriesById((prev) => applyPanelHydrationSnapshot({
+        entries: prev,
+        panelId,
+        sessionId,
+        snapshot,
+        expectedRequestStartedAtMs,
+        currentRequestStartedAtMs: Number(getConversationRuntimeSnapshot(snapshot.selectedSessionId)?.request?.startedAtMs) || null,
+      }));
+      if (!runtimeAfterHydration) return "superseded" as const;
       logSessionDiag("panel_runtime_hydrate_done", {
         diagnosticCycleId,
         panelId,
@@ -7397,7 +7390,7 @@ export default function App() {
         isResponding: snapshot.isResponding,
         selectedThreadStatusType: snapshot.selectedThreadStatusType,
         messageCount: snapshot.conversationMessages.length,
-        preservedRuntimeConversation: preserveRuntimeConversation,
+        preservedRuntimeConversation: hydrationConversation.preserveRuntimeConversation,
       }, { throttleMs: 0 });
       if (restoredResponding && snapshot.selectedSessionId) {
         const runningStartedAtMsRaw = Date.parse(String(restored.runningTurn?.startedAt || ""));
@@ -7440,15 +7433,16 @@ export default function App() {
         const current = prev[panelId];
         const currentSessionId = parseOptionalSessionId(current?.snapshot.selectedSessionId || current?.sessionId);
         if (currentSessionId && currentSessionId !== sessionId) return prev;
-        const baseSnapshot = current?.snapshot || loadingSnapshot;
+        const baseSnapshot = current?.snapshot || createEmptyPanelRuntimeSnapshot(panelId);
+        const preserveCurrentState = currentSessionId === sessionId;
         return {
           ...prev,
           [panelId]: {
             sessionId: current?.sessionId || sessionId,
             snapshot: createPanelRuntimeSnapshot(panelId, baseSnapshot, {
               isHydrating: false,
-              isResponding: false,
-              selectedThreadStatusType: "error",
+              isResponding: preserveCurrentState ? baseSnapshot.isResponding : false,
+              selectedThreadStatusType: preserveCurrentState ? baseSnapshot.selectedThreadStatusType : "error",
             }),
           },
         };
@@ -7461,6 +7455,7 @@ export default function App() {
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
     fetchRunnerSessionMessages,
+    getConversationRuntimeSnapshot,
     logSessionDiag,
     rememberKnownCodexThreadId,
     registeredDirectories,

@@ -795,6 +795,7 @@ export function normalizeThreadReadEntry(
       if (!itemRaw || typeof itemRaw !== "object") continue;
       const itemType = String((itemRaw as any)?.type || "").trim();
       if (itemType) lastItemType = itemType;
+      const itemId = String((itemRaw as any)?.id || "").trim() || undefined;
       if (itemType === "userMessage") {
         const text = extractUserMessageText(itemRaw);
         if (!text) continue;
@@ -802,6 +803,7 @@ export function normalizeThreadReadEntry(
           role: "user",
           content: text,
           at: turnAt,
+          itemId,
         });
         continue;
       }
@@ -812,6 +814,7 @@ export function normalizeThreadReadEntry(
           role: "assistant",
           content: text,
           at: turnAt,
+          itemId,
         });
         continue;
       }
@@ -824,6 +827,7 @@ export function normalizeThreadReadEntry(
           role: "assistant",
           content: "",
           at: turnAt,
+          itemId,
           commandExecution: {
             command,
             status: status === "failed" || status === "declined" ? "failed" : "completed",

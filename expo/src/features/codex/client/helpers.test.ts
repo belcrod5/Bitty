@@ -63,23 +63,36 @@ describe("normalizeThreadReadEntry", () => {
         {
           status: "completed",
           items: [
-            { type: "userMessage", text: "run tests" },
-            { type: "commandExecution", id: "call_1", command: "npm test", status: "completed", exitCode: 0 },
-            { type: "agentMessage", text: "done" },
+            { type: "userMessage", id: "item-1", text: "run tests" },
+            { type: "commandExecution", id: "item-2", command: "npm test", status: "completed", exitCode: 0 },
+            { type: "agentMessage", id: "item-3", text: "done" },
           ],
         },
       ],
     });
 
     expect(result.messages).toEqual([
-      expect.objectContaining({ role: "user", content: "run tests" }),
+      expect.objectContaining({ role: "user", content: "run tests", itemId: "item-1" }),
       expect.objectContaining({
         role: "assistant",
         content: "",
+        itemId: "item-2",
         commandExecution: { command: "npm test", status: "completed", exitCode: 0 },
       }),
-      expect.objectContaining({ role: "assistant", content: "done" }),
+      expect.objectContaining({ role: "assistant", content: "done", itemId: "item-3" }),
     ]);
+  });
+
+  it("omits itemId when the server did not provide item ids", () => {
+    const result = normalizeThreadReadEntry({
+      id: "thread-1",
+      status: "idle",
+      turns: [{
+        status: "completed",
+        items: [{ type: "agentMessage", text: "legacy" }],
+      }],
+    });
+    expect(result.messages[0]?.itemId).toBeUndefined();
   });
 
   it("maps failed and declined statuses to failed", () => {

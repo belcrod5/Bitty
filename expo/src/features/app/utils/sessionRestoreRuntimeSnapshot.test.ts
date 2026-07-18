@@ -1,8 +1,10 @@
 import {
+  buildRestoredPanelConversation,
   buildRestoredSessionRuntimeSnapshot,
   projectRestoredRuntimeStatusToConversation,
 } from "./sessionRestoreRuntimeSnapshot";
-import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
+import { codexItemMessageId } from "./codexItemMessageId";
+import type { RunnerSessionMessage, RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import type { ConversationMessage, LlmSessionMessage } from "../types/appTypes";
 
 const commandExecution = {
@@ -31,6 +33,54 @@ function buildRestoredResult(overrides: Partial<RunnerSessionMessagesResult> = {
     ...overrides,
   };
 }
+
+describe("buildRestoredPanelConversation", () => {
+  const restoredMessages: RunnerSessionMessage[] = [
+    { role: "user", content: "hello", at: "2026-01-01T00:00:01.000Z", itemId: "item-1" },
+    { role: "assistant", content: "hi", at: "2026-01-01T00:00:02.000Z", itemId: "item-2" },
+    { role: "assistant", content: "", at: "2026-01-01T00:00:03.000Z", itemId: "item-3", commandExecution },
+  ];
+
+  it("derives deterministic ids from item ids so rehydration keeps message ids unchanged", () => {
+    const first = buildRestoredPanelConversation({
+      messages: restoredMessages,
+      panelId: "panel-a",
+      sessionId: "thread-1",
+    });
+    const second = buildRestoredPanelConversation({
+      messages: restoredMessages,
+      panelId: "panel-b",
+      sessionId: "thread-1",
+    });
+
+    expect(first.map((item) => item.id)).toEqual([
+      codexItemMessageId("thread-1", "item-1"),
+      codexItemMessageId("thread-1", "item-2"),
+      codexItemMessageId("thread-1", "item-3"),
+    ]);
+    // 同じセッションなら別パネル・別ハイドレーションでもIDは不変。
+    expect(second.map((item) => item.id)).toEqual(first.map((item) => item.id));
+    expect(first[2].commandExecution).toEqual(commandExecution);
+  });
+
+  it("falls back to index-based ids for messages without item ids or with duplicate item ids", () => {
+    const conversation = buildRestoredPanelConversation({
+      messages: [
+        { role: "user", content: "no item id", at: "" },
+        { role: "assistant", content: "first", at: "", itemId: "item-1" },
+        { role: "assistant", content: "duplicate", at: "", itemId: "item-1" },
+      ],
+      panelId: "panel-a",
+      sessionId: "thread-1",
+    });
+
+    expect(conversation.map((item) => item.id)).toEqual([
+      "panel-panel-a-thread-1-0-user",
+      codexItemMessageId("thread-1", "item-1"),
+      "panel-panel-a-thread-1-2-assistant",
+    ]);
+  });
+});
 
 describe("projectRestoredRuntimeStatusToConversation", () => {
   it("stamps the running status on the last text assistant message, not a trailing command row", () => {
