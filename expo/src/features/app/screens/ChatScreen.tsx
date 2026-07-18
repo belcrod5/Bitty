@@ -63,6 +63,7 @@ import {
 } from "../utils/runnerFileContextMenu";
 import { formatRelativeUpdatedAt } from "../utils/formatting";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
+import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
 type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker";
@@ -2593,6 +2594,14 @@ export function ChatScreen({
                       {`ドット色: ${selectedSessionMarkerLabel}`}
                     </Text>
                   </TouchableOpacity>
+                  <LocationScheduleSettings
+                    currentCwd={selectedDirectoryPathForView}
+                    currentModelRef={normalizedModelRefForView}
+                    currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
+                    directories={registeredDirectories}
+                    modelOptions={modelOptions}
+                    thinkOptions={thinkOptions}
+                  />
                   <ChatSessionSubagentList
                     selectedSessionId={selectedSessionIdForView}
                     selectedDirectoryPath={selectedDirectoryPathForView}

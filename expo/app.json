@@ -42,6 +42,14 @@
         {
           "mode": "development"
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "位置に応じてCodexを実行するために現在地を使用します。",
+          "locationAlwaysAndWhenInUsePermission": "アプリを閉じている間も設定した場所への出入りを検知するために位置情報を使用します。",
+          "isIosBackgroundLocationEnabled": true
+        }
       ]
     ],
     "ios": {
@@ -60,7 +68,9 @@
         "NSCameraUsageDescription": "Cloudflare TunnelのPairing QR読み取りと顔向き判定のためにカメラを使用します。",
         "NSMicrophoneUsageDescription": "録音して文字起こしを行うためにマイクを使用します。",
         "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
-        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。"
+        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。",
+        "NSLocationWhenInUseUsageDescription": "位置に応じてCodexを実行するために現在地を使用します。",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "アプリを閉じている間も設定した場所への出入りを検知するために位置情報を使用します。"
       },
       "bundleIdentifier": "app.bitty.mobile",
       "entitlements": {

@@ -24,6 +24,8 @@ import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
+import { executeCodexTurn } from "./codex-turn-execution.mjs";
+import { createLocationScheduleService } from "./location-schedule-service.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -458,6 +460,10 @@ const APNS_ENV = String(process.env.APNS_ENV || "sandbox").trim().toLowerCase() 
 const PUSH_DEVICE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.PUSH_DEVICE_STORE_PATH || "private_runner/logs/push_devices.json"
+);
+const LOCATION_SCHEDULE_STORE_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  process.env.LOCATION_SCHEDULE_STORE_PATH || "private_runner/logs/location_schedules.json"
 );
 const PUSH_SUMMARY_MODEL_REF = String(process.env.PUSH_SUMMARY_MODEL || "openai-codex/gpt-5.6-luna").trim();
 const PUSH_ENABLED = Boolean(APNS_KEY_PATH && APNS_KEY_ID && APPLE_TEAM_ID);
@@ -1291,6 +1297,27 @@ const {
 });
 
 const pushDeviceStore = createPushDeviceStore(PUSH_DEVICE_STORE_PATH);
+const locationScheduleService = createLocationScheduleService({
+  storePath: LOCATION_SCHEDULE_STORE_PATH,
+  parseCodexOptions: resolveCodexRequestOptions,
+  validateCwd: async (cwd) => {
+    const resolved = path.resolve(String(cwd || "").trim());
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
+  },
+  executeTurn: async (request) => {
+    const client = createCodexRpcClient();
+    try {
+      return await executeCodexTurn({
+        client,
+        clientName: "private-runner-location-schedule",
+        ...request,
+      });
+    } finally {
+      client.close(1000, "turn_done");
+    }
+  },
+});
 const apnsClient = PUSH_ENABLED
   ? createApnsClient({
     keyPath: APNS_KEY_PATH,
@@ -6689,9 +6716,14 @@ function notFound(res) {
   json(res, 404, { error: "not_found" });
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, maxBytes = 0) {
   const chunks = [];
-  for await (const c of req) chunks.push(c);
+  let totalBytes = 0;
+  for await (const c of req) {
+    totalBytes += c.length;
+    if (maxBytes > 0 && totalBytes > maxBytes) throw new Error("request body is too large");
+    chunks.push(c);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
   return JSON.parse(raw);
@@ -6828,6 +6860,11 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
   const pending = new Map();
   let nextId = 1;
   let closed = false;
+  const completionWaiters = new Set();
+  const finishCompletionWaiters = () => {
+    for (const finish of completionWaiters) finish();
+    completionWaiters.clear();
+  };
   const close = (code = 1000, reason = "closed") => {
     if (closed) return;
     closed = true;
@@ -6836,6 +6873,7 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
       if (entry.timeout) clearTimeout(entry.timeout);
     }
     pending.clear();
+    finishCompletionWaiters();
     safeWsClose(ws, code, reason);
   };
   const openPromise = new Promise((resolve, reject) => {
@@ -6851,6 +6889,7 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
         if (entry.timeout) clearTimeout(entry.timeout);
       }
       pending.clear();
+      finishCompletionWaiters();
     });
   });
   ws.on("message", (data) => {
@@ -6863,6 +6902,9 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
       return;
     }
     if (message?.method) {
+      if (message.method === "turn/completed" || message.method === "turn/interrupted") {
+        finishCompletionWaiters();
+      }
       try {
         onNotification?.(String(message.method), message.params ?? {});
       } catch {}
@@ -6906,27 +6948,21 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
     });
   };
   const notify = (method, params = {}) => send({ method, params });
+  const waitForTurnCompletion = () => new Promise((resolve) => {
+    let timer = null;
+    const finish = () => {
+      if (!completionWaiters.delete(finish)) return;
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    completionWaiters.add(finish);
+    timer = setTimeout(finish, NEAR_UNLIMITED_TIMEOUT_MS);
+  });
   if (signal) {
     if (signal.aborted) close(1000, "aborted");
     signal.addEventListener("abort", () => close(1000, "aborted"), { once: true });
   }
-  return { ws, openPromise, request, notify, close };
-}
-
-async function initializeCodexRpcClient(client, clientName) {
-  await client.openPromise;
-  await client.request("initialize", {
-    clientInfo: {
-      name: clientName,
-      title: clientName,
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: false,
-      optOutNotificationMethods: [],
-    },
-  }, 30000);
-  client.notify("initialized", {});
+  return { ws, openPromise, request, notify, close, waitForTurnCompletion };
 }
 
 function parseCodexThreadStatus(params) {
@@ -7098,50 +7134,18 @@ async function runCodexQueuedTurn(turn) {
     },
   });
   try {
-    await initializeCodexRpcClient(client, "private-runner-codex-queued-turn");
-    let activeThreadId = turn.threadId;
-    if (activeThreadId) {
-      await client.request("thread/resume", {
-        threadId: activeThreadId,
-        cwd: turn.cwd || undefined,
-        persistExtendedHistory: false,
-      }, 30000).catch(() => null);
-    }
-    const params = {
-      threadId: activeThreadId,
-      input: [{ type: "text", text: turn.inputText }],
-      cwd: turn.cwd || undefined,
+    await executeCodexTurn({
+      client,
+      clientName: "private-runner-codex-queued-turn",
+      threadId: turn.threadId,
+      inputText: turn.inputText,
+      cwd: turn.cwd,
+      model: turn.model,
+      effort: turn.effort,
       approvalPolicy: turn.approvalPolicy,
-    };
-    if (turn.model) params.model = turn.model;
-    if (turn.effort) params.effort = turn.effort;
-    const started = await client.request("turn/start", params, 30000);
-    const turnId = String(started?.turn?.id || turn.turnId || "").trim();
-    if (turnId) markCodexQueuedTurn(turn, { turnId });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, NEAR_UNLIMITED_TIMEOUT_MS);
-      const previousOnMessage = client.ws.listeners("message").slice();
-      client.ws.removeAllListeners("message");
-      client.ws.on("message", (data) => {
-        for (const listener of previousOnMessage) listener(data);
-        const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
-        if (!text) return;
-        try {
-          const message = JSON.parse(text);
-          if (message?.method === "turn/completed" || message?.method === "turn/interrupted") {
-            clearTimeout(timer);
-            resolve();
-          }
-        } catch {}
-      });
-      client.ws.on("close", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      client.ws.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
+      onTurnStarted: ({ turnId }) => {
+        if (turnId) markCodexQueuedTurn(turn, { turnId });
+      },
     });
     if (turn.status !== "cancelled") {
       markCodexQueuedTurn(turn, {
@@ -8288,6 +8292,40 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       queue: codexQueueSnapshot(threadId),
     });
+  }
+
+  if (req.method === "GET" && pathname === "/location-schedules") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, { ok: true, snapshot: await locationScheduleService.snapshot() });
+  }
+
+  if (req.method === "PUT" && pathname === "/location-schedules") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    try {
+      const snapshot = await locationScheduleService.replaceSchedules(await readJsonBody(req, 3 * 1024 * 1024));
+      return json(res, 200, { ok: true, snapshot });
+    } catch (error) {
+      return json(res, 400, { error: "invalid_location_schedules", message: errorMessage(error) });
+    }
+  }
+
+  if (req.method === "POST" && pathname === "/location-schedules/state") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    try {
+      const snapshot = await locationScheduleService.recordState(await readJsonBody(req, 16 * 1024));
+      return json(res, 200, { ok: true, snapshot });
+    } catch (error) {
+      return json(res, 400, { error: "invalid_location_state", message: errorMessage(error) });
+    }
   }
 
   if (req.method === "POST" && pathname === "/codex/queued-turns") {
@@ -12011,6 +12049,9 @@ if (!RUNNER_SKIP_SERVER_START) {
   void initializeCliSessionIndexRuntime();
   void initializeTtsMediaRuntime();
   void initializeCodexWsDebugRuntime();
+  void locationScheduleService.start().catch((error) => {
+    console.warn(`[location-schedule] initialization failed: ${errorMessage(error)}`);
+  });
 
   server.listen(PORT, HOST, () => {
     console.log(
@@ -12034,6 +12075,7 @@ export const __TESTING__ = {
   pushDeviceStore,
   apnsClient,
   pushSummarizer,
+  locationScheduleService,
   sendTurnCompletedPush,
   sendApprovalRequestPush,
   derivePushDirectoryTitle,
