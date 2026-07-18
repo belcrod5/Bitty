@@ -135,7 +135,8 @@ Reject state updates whose `regionRevision` does not match the current rule. A l
 change must produce a new revision, while time, prompt, model, and effort edits keep it
 stable. This closes the race where an old in-flight state arrives after a schedule edit.
 If an existing runner store cannot be parsed and validated, fail closed without
-overwriting it or executing; only a missing store may initialize empty.
+overwriting it or executing; only a missing store may initialize empty. Schedule APIs
+report this state as HTTP 503, while request validation errors remain HTTP 400.
 
 The scheduler reacts to three inputs:
 

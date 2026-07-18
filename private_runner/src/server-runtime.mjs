@@ -25,7 +25,10 @@ import { createPushDeviceStore } from "./push-device-store.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
 import { executeCodexTurn } from "./codex-turn-execution.mjs";
-import { createLocationScheduleService } from "./location-schedule-service.mjs";
+import {
+  createLocationScheduleService,
+  LocationScheduleStoreUnavailableError,
+} from "./location-schedule-service.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -8299,7 +8302,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
     }
     if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
-    return json(res, 200, { ok: true, snapshot: await locationScheduleService.snapshot() });
+    try {
+      return json(res, 200, { ok: true, snapshot: await locationScheduleService.snapshot() });
+    } catch (error) {
+      if (error instanceof LocationScheduleStoreUnavailableError) {
+        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
+      throw error;
+    }
   }
 
   if (req.method === "PUT" && pathname === "/location-schedules") {
@@ -8311,6 +8321,9 @@ const server = http.createServer(async (req, res) => {
       const snapshot = await locationScheduleService.replaceSchedules(await readJsonBody(req, 3 * 1024 * 1024));
       return json(res, 200, { ok: true, snapshot });
     } catch (error) {
+      if (error instanceof LocationScheduleStoreUnavailableError) {
+        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
       return json(res, 400, { error: "invalid_location_schedules", message: errorMessage(error) });
     }
   }
@@ -8324,6 +8337,9 @@ const server = http.createServer(async (req, res) => {
       const snapshot = await locationScheduleService.recordState(await readJsonBody(req, 16 * 1024));
       return json(res, 200, { ok: true, snapshot });
     } catch (error) {
+      if (error instanceof LocationScheduleStoreUnavailableError) {
+        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
       return json(res, 400, { error: "invalid_location_state", message: errorMessage(error) });
     }
   }

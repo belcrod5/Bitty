@@ -6,6 +6,14 @@ const MAX_ENABLED_RULES = 20;
 const MAX_PROMPT_CHARS = 24_000;
 const OCCURRENCE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
+export class LocationScheduleStoreUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LocationScheduleStoreUnavailableError";
+    this.code = "LOCATION_SCHEDULE_STORE_UNAVAILABLE";
+  }
+}
+
 function localDateTime(now, timeZone) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -178,7 +186,9 @@ export function createLocationScheduleService({
         loaded = true;
         return;
       }
-      throw new Error(`failed to load location schedule store: ${error instanceof Error ? error.message : error}`);
+      throw new LocationScheduleStoreUnavailableError(
+        `failed to load location schedule store: ${error instanceof Error ? error.message : error}`
+      );
     }
   }
 
