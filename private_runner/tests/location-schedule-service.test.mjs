@@ -73,6 +73,29 @@ test("validates rules with the normal model parser and enabled-region limit", ()
     /at most 20/
   );
   assert.throws(() => parseLocationScheduleRules([rule({ endTime: "08:00" })], "Asia/Tokyo", parseCodexOptions), /cross midnight/);
+  assert.throws(() => parseLocationScheduleRules([rule({ modelRef: "" })], "Asia/Tokyo", parseCodexOptions), /modelRef is required/);
+  assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
+  assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "minimal" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
+});
+
+test("does not let the normal Codex parser default missing scheduled model or effort", () => {
+  let parserCalls = 0;
+  const defaultingParser = () => {
+    parserCalls += 1;
+    return {
+      modelInfo: { model: "fallback", modelRef: "openai-codex/fallback" },
+      reasoningEffort: "medium",
+    };
+  };
+  assert.throws(
+    () => parseLocationScheduleRules([rule({ modelRef: "" })], "Asia/Tokyo", defaultingParser),
+    /modelRef is required/
+  );
+  assert.throws(
+    () => parseLocationScheduleRules([rule({ reasoningEffort: "" })], "Asia/Tokyo", defaultingParser),
+    /reasoningEffort is invalid/
+  );
+  assert.equal(parserCalls, 0);
 });
 
 test("uses exact [start,end) boundaries in the phone timezone", () => {

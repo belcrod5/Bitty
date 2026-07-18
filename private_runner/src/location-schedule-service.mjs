@@ -83,14 +83,20 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     if (!cwd || cwd.length > 2048) throw new Error(`rules[${index}].cwd is invalid`);
     const prompt = String(raw?.prompt || "").trim();
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`rules[${index}].prompt is invalid`);
+    const modelRef = String(raw?.modelRef || "").trim();
+    if (!modelRef) throw new Error(`rules[${index}].modelRef is required`);
+    const requestedEffort = String(raw?.reasoningEffort || "").trim().toLowerCase();
+    if (!["low", "medium", "high", "xhigh"].includes(requestedEffort)) {
+      throw new Error(`rules[${index}].reasoningEffort is invalid`);
+    }
     let codexOptions;
     try {
-      codexOptions = parseCodexOptions(raw?.modelRef, raw?.reasoningEffort);
+      codexOptions = parseCodexOptions(modelRef, requestedEffort);
     } catch (error) {
       throw new Error(`rules[${index}] Codex options are invalid: ${error instanceof Error ? error.message : error}`);
     }
     const effort = String(codexOptions?.reasoningEffort || "").trim();
-    if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error(`rules[${index}].reasoningEffort is invalid`);
+    if (effort !== requestedEffort) throw new Error(`rules[${index}].reasoningEffort was not preserved`);
     return {
       id,
       enabled,
@@ -196,7 +202,6 @@ export function createLocationScheduleService({
         occurrenceKey: window.occurrenceKey,
         ruleId: rule.id,
         status: "pending",
-        requestId: `location-schedule:${window.occurrenceKey}`,
         threadId: "",
         turnId: "",
         errorMessage: "",
@@ -225,7 +230,6 @@ export function createLocationScheduleService({
         model: rule.model,
         effort: rule.reasoningEffort,
         approvalPolicy: "on-request",
-        requestId: `location-schedule:${occurrenceKey}`,
       });
     } catch (error) {
       failure = error;
@@ -302,7 +306,6 @@ export function createLocationScheduleService({
           occurrenceKey: window.occurrenceKey,
           ruleId: rule.id,
           status: "skipped_edited_active_window",
-          requestId: `location-schedule:${window.occurrenceKey}`,
           threadId: "",
           turnId: "",
           errorMessage: "",

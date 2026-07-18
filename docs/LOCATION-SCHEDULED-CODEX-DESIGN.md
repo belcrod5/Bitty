@@ -73,6 +73,8 @@ another directory.
 
 Rules are persisted with the existing `bitty-settings.json` payload. Background-safe
 code reads the same persisted field directly, as existing push background actions do.
+Serialize in-process reads and mutations and replace the file through a complete
+temporary payload so React and background work cannot observe a partial JSON write.
 Do not add a second iOS settings store.
 
 ## iOS location responsibility
@@ -89,6 +91,10 @@ updates.
   initial inside/outside state, and sync it to the runner. Registration alone does
   not emit an enter event for a device that is already inside.
 - On enter and exit events, persist the state/event before attempting network sync.
+- Coalesce unsent events to the newest observation per rule before syncing, so an old
+  inside event cannot be evaluated before a newer queued outside event.
+- Include a location-only region revision in each monitored identifier. Ignore delayed
+  events and queued states whose revision no longer matches the configured centre/radius.
 - Flush pending state updates on app launch and whenever schedule configuration is
   synchronized.
 - Reconcile the complete registered-region set after settings load, permission
@@ -133,10 +139,10 @@ For a local window `[startTime, endTime)`:
 - Leaving and re-entering in the same window must not fire again.
 
 Use a deterministic occurrence key derived from rule ID, local calendar date,
-start time, end time, and timezone. Persist the occurrence before starting Codex and
-also pass a deterministic request ID into the execution boundary. This prevents a
-boundary bounce, duplicate iOS delivery, API retry, or runner restart from starting a
-second turn.
+start time, end time, and timezone. Atomically persist the occurrence claim before
+starting Codex. The persisted claim is the at-most-once boundary; a boundary bounce,
+duplicate iOS delivery, API retry, or runner restart cannot claim the same occurrence
+again. Do not add an unsupported idempotency field to the Codex app-server RPC.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
 complete schedule set. Creating a rule or changing its time/location applies to the
@@ -201,4 +207,3 @@ Add focused tests for:
 Run the relevant Jest and Node test suites, TypeScript checks available in the Expo
 project, `git diff --check`, and an iOS development build because Expo Go cannot run
 background location tasks.
-

@@ -8,9 +8,13 @@ import {
   appendPendingLocationState,
   enabledLocationRegions,
   isCoordinateInsideRule,
+  locationRuleRevision,
+  parseLocationRegionIdentifier,
   parseLocationScheduleRules,
   parsePendingLocationStates,
-  ruleIdFromRegionIdentifier,
+  pendingLocationStatesForRules,
+  regionIdentifierForRule,
+  removeSentPendingLocationStates,
   type LocationScheduleRule,
   type PendingLocationState,
 } from "./locationScheduleRules";
@@ -84,8 +88,7 @@ export async function flushPendingLocationStates() {
   if (!sent.size) return;
   await mutatePersistedSettings((current) => ({
     ...current,
-    [PENDING_FIELD]: (Array.isArray(current[PENDING_FIELD]) ? current[PENDING_FIELD] : [])
-      .filter((event: any) => !sent.has(String(event?.eventId || ""))),
+    [PENDING_FIELD]: removeSentPendingLocationStates(current[PENDING_FIELD], sent),
   }));
 }
 
@@ -116,6 +119,7 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
     const state = isCoordinateInsideRule(current.coords, rule) ? "inside" : "outside";
     await persistLocationState({
       ruleId: rule.id,
+      regionRevision: locationRuleRevision(rule),
       state,
       eventId: `initial:${rule.id}:${Date.now()}:${state}`,
       observedAt: new Date(current.timestamp || Date.now()).toISOString(),
@@ -126,7 +130,11 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
 
 export async function saveAndActivateLocationSchedules(rules: readonly LocationScheduleRule[]) {
   const normalized = rulesInCurrentTimeZone(rules);
-  await mutatePersistedSettings((current) => ({ ...current, [RULES_FIELD]: normalized }));
+  await mutatePersistedSettings((current) => ({
+    ...current,
+    [RULES_FIELD]: normalized,
+    [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], normalized),
+  }));
   await syncLocationSchedules(normalized);
   await reconcileLocationSchedules(normalized);
 }
@@ -137,7 +145,11 @@ export async function loadLocationSchedules() {
 
 export async function bootstrapLocationSchedules() {
   const rules = await loadLocationSchedules();
-  await mutatePersistedSettings((current) => ({ ...current, [RULES_FIELD]: rules }));
+  await mutatePersistedSettings((current) => ({
+    ...current,
+    [RULES_FIELD]: rules,
+    [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], rules),
+  }));
   if (!rules.some((rule) => rule.enabled)) {
     await reconcileLocationSchedules(rules);
     return;
@@ -152,8 +164,11 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
   TaskManager.defineTask(LOCATION_SCHEDULE_TASK_NAME, async ({ data, error }) => {
     if (error) return;
     const payload = data as { eventType?: Location.GeofencingEventType; region?: { identifier?: string } } | undefined;
-    const ruleId = ruleIdFromRegionIdentifier(payload?.region?.identifier);
-    if (!ruleId) return;
+    const region = parseLocationRegionIdentifier(payload?.region?.identifier);
+    if (!region) return;
+    const rules = await loadLocationSchedules();
+    const rule = rules.find((item) => item.enabled && item.id === region.ruleId);
+    if (!rule || regionIdentifierForRule(rule) !== payload?.region?.identifier) return;
     const state = payload?.eventType === Location.GeofencingEventType.Enter
       ? "inside"
       : payload?.eventType === Location.GeofencingEventType.Exit
@@ -161,9 +176,10 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
         : null;
     if (!state) return;
     const event: PendingLocationState = {
-      ruleId,
+      ruleId: region.ruleId,
+      regionRevision: locationRuleRevision(rule),
       state,
-      eventId: `geofence:${ruleId}:${Date.now()}:${state}`,
+      eventId: `geofence:${region.ruleId}:${region.regionRevision}:${Date.now()}:${state}`,
       observedAt: new Date().toISOString(),
     };
     await persistLocationState(event);
