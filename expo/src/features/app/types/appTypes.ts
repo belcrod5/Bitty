@@ -30,7 +30,6 @@ export type ConversationMessage = {
   content: string;
   at?: string;
   inheritedFromParent?: boolean;
-  pendingUser?: boolean;
   youtubeVideoIds?: string[];
   ttsWaveform?: number[];
   llmStatus?: LlmUiStatus;

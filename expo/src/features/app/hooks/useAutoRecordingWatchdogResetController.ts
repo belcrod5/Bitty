@@ -7,7 +7,6 @@ type UseAutoRecordingWatchdogResetControllerOptions = {
   autoRecordingWatchdogInFlightTokenRef: MutableRefObject<number>;
   autoRecordingWatchdogKickAtRef: MutableRefObject<number>;
   autoRecordingWatchdogRestartAtRef: MutableRefObject<number>;
-  autoRecordingWatchdogTtsInterruptAtRef: MutableRefObject<number>;
   autoRecordingWatchdogLogAtRef: MutableRefObject<number>;
   autoRecordingWatchdogErrorLogAtRef: MutableRefObject<number>;
   autoProgressIntervalMsRef: MutableRefObject<number>;
@@ -36,7 +35,6 @@ export function useAutoRecordingWatchdogResetController(
     autoRecordingWatchdogInFlightTokenRef,
     autoRecordingWatchdogKickAtRef,
     autoRecordingWatchdogRestartAtRef,
-    autoRecordingWatchdogTtsInterruptAtRef,
     autoRecordingWatchdogLogAtRef,
     autoRecordingWatchdogErrorLogAtRef,
     autoProgressIntervalMsRef,
@@ -86,7 +84,6 @@ export function useAutoRecordingWatchdogResetController(
     autoRecordingWatchdogInFlightTokenRef.current = 0;
     autoRecordingWatchdogKickAtRef.current = 0;
     autoRecordingWatchdogRestartAtRef.current = 0;
-    autoRecordingWatchdogTtsInterruptAtRef.current = 0;
     autoRecordingWatchdogLogAtRef.current = 0;
     autoRecordingWatchdogErrorLogAtRef.current = 0;
     autoProgressIntervalMsRef.current = 0;
@@ -110,7 +107,6 @@ export function useAutoRecordingWatchdogResetController(
     autoRecordingWatchdogLogAtRef,
     autoRecordingWatchdogRestartAtRef,
     autoRecordingWatchdogTimerRef,
-    autoRecordingWatchdogTtsInterruptAtRef,
     autoStatusReadInFlightRef,
     autoStatusReadOwnerRef,
     autoStatusReadSkipLogAtRef,

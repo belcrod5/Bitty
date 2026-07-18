@@ -89,7 +89,7 @@ export function useAudioInputRouteController(options: UseAudioInputRouteControll
     const force = Boolean(audioModeOptions?.force);
     const reason = String(audioModeOptions?.reason || "unspecified");
     const allowsRecordingIOS = audioModeOptions?.allowsRecordingIOS ?? false;
-    if (!force && autoRecordingEnabledRef.current) {
+    if (!force && autoRecordingRef.current) {
       const now = Date.now();
       if (now - autoAudioModeSkipLogAtRef.current >= autoAudioModeSkipLogThrottleMs) {
         autoAudioModeSkipLogAtRef.current = now;

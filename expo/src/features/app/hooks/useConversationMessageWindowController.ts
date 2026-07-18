@@ -29,16 +29,6 @@ export function useConversationMessageWindowController({
     setConversationMessages,
   ]);
 
-  const removeConversationMessageById = useCallback((messageId: string) => {
-    const id = String(messageId || "").trim();
-    if (!id) return;
-    const current = conversationMessagesRef.current;
-    const index = current.findIndex((item) => item.id === id);
-    if (index < 0) return;
-    const next = [...current.slice(0, index), ...current.slice(index + 1)];
-    setConversationMessagesWithLimit(next);
-  }, [conversationMessagesRef, setConversationMessagesWithLimit]);
-
   const patchConversationMessageById = useCallback((
     messageId: string,
     patch: Omit<Partial<ConversationMessage>, "id" | "role" | "content">
@@ -58,7 +48,6 @@ export function useConversationMessageWindowController({
 
   return {
     setConversationMessagesWithLimit,
-    removeConversationMessageById,
     patchConversationMessageById,
   };
 }
