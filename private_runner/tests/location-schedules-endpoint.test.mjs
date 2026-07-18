@@ -42,6 +42,7 @@ test("schedule and state APIs require auth, validate, persist, and return a snap
       latitude: 35.6812,
       longitude: 139.7671,
       radiusMeters: 200,
+      regionRevision: "revision-office",
       cwd: tempDir,
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
@@ -57,9 +58,16 @@ test("schedule and state APIs require auth, validate, persist, and return a snap
     const state = await fetch(`${baseUrl}/location-schedules/state`, {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify({ ruleId: "office", state: "inside", eventId: "event-1", observedAt: "2026-07-19T00:00:00Z" }),
+      body: JSON.stringify({ ruleId: "office", regionRevision: "revision-office", state: "inside", eventId: "event-1", observedAt: "2026-07-19T00:00:00Z" }),
     });
     assert.equal(state.status, 200);
+
+    const staleState = await fetch(`${baseUrl}/location-schedules/state`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ ruleId: "office", regionRevision: "old-revision", state: "outside", eventId: "stale", observedAt: "2026-07-19T00:01:00Z" }),
+    });
+    assert.equal(staleState.status, 400);
 
     const snapshotResponse = await fetch(`${baseUrl}/location-schedules`, { headers: headers() });
     assert.equal(snapshotResponse.status, 200);

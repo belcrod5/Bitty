@@ -77,6 +77,11 @@ Serialize in-process reads and mutations and replace the file through a complete
 temporary payload so React and background work cannot observe a partial JSON write.
 Do not add a second iOS settings store.
 
+When synchronizing a rule to the runner, include the location-only region revision as
+an opaque `regionRevision`. The iOS app remains the only place that calculates this
+token; the runner stores it and requires state updates to match the currently accepted
+token exactly.
+
 ## iOS location responsibility
 
 Use iOS region monitoring through Expo Location and TaskManager, not continuous GPS
@@ -95,6 +100,9 @@ updates.
   inside event cannot be evaluated before a newer queued outside event.
 - Include a location-only region revision in each monitored identifier. Ignore delayed
   events and queued states whose revision no longer matches the configured centre/radius.
+- Re-filter the pending queue against the current rules immediately before sending it.
+  The runner's exact revision check remains authoritative if a rule changes while the
+  network request is in flight.
 - Flush pending state updates on app launch and whenever schedule configuration is
   synchronized.
 - Reconcile the complete registered-region set after settings load, permission
@@ -122,6 +130,12 @@ Persist schedules, last-known region states, pending/running/completed fire reco
 and ordinary Codex thread IDs produced by completed fires in one runner-owned JSON
 store. Use the same atomic-write style as existing runner stores. A runner restart
 must not lose the once-per-window decision.
+
+Reject state updates whose `regionRevision` does not match the current rule. A location
+change must produce a new revision, while time, prompt, model, and effort edits keep it
+stable. This closes the race where an old in-flight state arrives after a schedule edit.
+If an existing runner store cannot be parsed and validated, fail closed without
+overwriting it or executing; only a missing store may initialize empty.
 
 The scheduler reacts to three inputs:
 

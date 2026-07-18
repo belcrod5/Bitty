@@ -11,7 +11,6 @@ import {
   locationRuleRevision,
   parseLocationRegionIdentifier,
   parseLocationScheduleRules,
-  parsePendingLocationStates,
   pendingLocationStatesForRules,
   regionIdentifierForRule,
   removeSentPendingLocationStates,
@@ -25,7 +24,7 @@ const LAST_STATES_FIELD = "locationScheduleLastStates";
 
 function rulesInCurrentTimeZone(rules: readonly LocationScheduleRule[]) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  return rules.map((rule) => ({ ...rule, timeZone }));
+  return rules.map((rule) => ({ ...rule, timeZone, regionRevision: locationRuleRevision(rule) }));
 }
 
 class RunnerRequestError extends Error {
@@ -71,7 +70,12 @@ async function persistLocationState(event: PendingLocationState) {
 }
 
 export async function flushPendingLocationStates() {
-  const pending = parsePendingLocationStates(await readPersistedSettingsField(PENDING_FIELD));
+  let pending: PendingLocationState[] = [];
+  await mutatePersistedSettings((current) => {
+    const rules = rulesInCurrentTimeZone(parseLocationScheduleRules(current[RULES_FIELD]));
+    pending = pendingLocationStatesForRules(current[PENDING_FIELD], rules);
+    return { ...current, [PENDING_FIELD]: pending };
+  });
   const sent = new Set<string>();
   for (const event of pending) {
     try {

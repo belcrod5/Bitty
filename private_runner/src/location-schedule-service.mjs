@@ -83,6 +83,10 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     if (!cwd || cwd.length > 2048) throw new Error(`rules[${index}].cwd is invalid`);
     const prompt = String(raw?.prompt || "").trim();
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`rules[${index}].prompt is invalid`);
+    const regionRevision = String(raw?.regionRevision || "").trim();
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(regionRevision)) {
+      throw new Error(`rules[${index}].regionRevision is invalid`);
+    }
     const modelRef = String(raw?.modelRef || "").trim();
     if (!modelRef) throw new Error(`rules[${index}].modelRef is required`);
     const requestedEffort = String(raw?.reasoningEffort || "").trim().toLowerCase();
@@ -106,6 +110,7 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
       latitude,
       longitude,
       radiusMeters,
+      regionRevision,
       cwd,
       modelRef: codexOptions.modelInfo.modelRef,
       model: codexOptions.modelInfo.model,
@@ -148,23 +153,33 @@ export function createLocationScheduleService({
     if (loaded) return;
     try {
       const parsed = JSON.parse(await fs.readFile(storePath, "utf8"));
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const phoneTimeZone = validateTimeZone(parsed.phoneTimeZone || "UTC");
-        data = {
-          ...data,
-          phoneTimeZone,
-          rules: parseLocationScheduleRules(parsed.rules || [], phoneTimeZone, parseCodexOptions),
-          states: parsed.states && typeof parsed.states === "object" ? parsed.states : {},
-          occurrences: parsed.occurrences && typeof parsed.occurrences === "object" ? parsed.occurrences : {},
-          updatedAt: String(parsed.updatedAt || ""),
-        };
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("store must be an object");
+      if (parsed.version !== 1) throw new Error(`unsupported store version: ${parsed.version}`);
+      if (!Array.isArray(parsed.rules)) throw new Error("store.rules must be an array");
+      if (!parsed.states || typeof parsed.states !== "object" || Array.isArray(parsed.states)) {
+        throw new Error("store.states must be an object");
       }
+      if (!parsed.occurrences || typeof parsed.occurrences !== "object" || Array.isArray(parsed.occurrences)) {
+        throw new Error("store.occurrences must be an object");
+      }
+      const phoneTimeZone = validateTimeZone(parsed.phoneTimeZone);
+      const rules = parseLocationScheduleRules(parsed.rules, phoneTimeZone, parseCodexOptions);
+      data = {
+        ...data,
+        phoneTimeZone,
+        rules,
+        states: parsed.states,
+        occurrences: parsed.occurrences,
+        updatedAt: String(parsed.updatedAt || ""),
+      };
+      loaded = true;
     } catch (error) {
-      if (!(error && typeof error === "object" && error.code === "ENOENT")) {
-        console.warn(`[location-schedule] reinitializing unreadable store: ${error instanceof Error ? error.message : error}`);
+      if (error && typeof error === "object" && error.code === "ENOENT") {
+        loaded = true;
+        return;
       }
+      throw new Error(`failed to load location schedule store: ${error instanceof Error ? error.message : error}`);
     }
-    loaded = true;
   }
 
   async function persist() {
@@ -194,7 +209,8 @@ export function createLocationScheduleService({
   function claimEligibleRules(at) {
     const claimed = [];
     for (const rule of data.rules) {
-      if (!rule.enabled || data.states[rule.id]?.state !== "inside") continue;
+      const state = data.states[rule.id];
+      if (!rule.enabled || state?.state !== "inside" || state.regionRevision !== rule.regionRevision) continue;
       const window = windowAt(rule, at);
       if (!window.active || data.occurrences[window.occurrenceKey]) continue;
       const createdAt = at.toISOString();
@@ -283,6 +299,17 @@ export function createLocationScheduleService({
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
+      for (const rule of rules) {
+        const old = previous.get(rule.id);
+        if (!old) continue;
+        const locationChanged = old.latitude !== rule.latitude
+          || old.longitude !== rule.longitude
+          || old.radiusMeters !== rule.radiusMeters;
+        const revisionChanged = old.regionRevision !== rule.regionRevision;
+        if (locationChanged !== revisionChanged) {
+          throw new Error(`rule ${rule.id} regionRevision must change exactly when its location changes`);
+        }
+      }
       data.phoneTimeZone = phoneTimeZone;
       data.rules = rules;
       const liveIds = new Set(rules.map((rule) => rule.id));
@@ -325,7 +352,10 @@ export function createLocationScheduleService({
     const accepted = await serialize(async () => {
       const ruleId = String(payload?.ruleId || "").trim();
       const state = String(payload?.state || "").trim().toLowerCase();
-      if (!data.rules.some((rule) => rule.id === ruleId)) throw new Error(`unknown ruleId: ${ruleId}`);
+      const rule = data.rules.find((item) => item.id === ruleId);
+      if (!rule) throw new Error(`unknown ruleId: ${ruleId}`);
+      const regionRevision = String(payload?.regionRevision || "").trim();
+      if (regionRevision !== rule.regionRevision) throw new Error(`stale regionRevision for ruleId: ${ruleId}`);
       if (state !== "inside" && state !== "outside") throw new Error("state must be inside or outside");
       const eventId = String(payload?.eventId || "").trim().slice(0, 200);
       if (!eventId) throw new Error("eventId is required");
@@ -338,6 +368,7 @@ export function createLocationScheduleService({
         return false;
       }
       data.states[ruleId] = {
+        regionRevision,
         state,
         eventId,
         observedAt: new Date(parsedObservedAt).toISOString(),
