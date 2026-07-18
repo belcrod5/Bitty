@@ -81,6 +81,7 @@ import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTr
 import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentityReconciliation";
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
+import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
 import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
@@ -253,6 +254,7 @@ import { liveLlmStatusDetail } from "./utils/liveLlmStatusDetail";
 import {
   adoptRestoredSessionDirectory,
   buildRestoredSessionState,
+  clampContextUsedPct,
   mergeLocalCompactSlashMessages,
 } from "./utils/sessionRestore";
 import {
@@ -713,14 +715,9 @@ export default function App() {
   const [codexWsToken, setCodexWsToken] = useState("");
   const [runnerToken, setRunnerToken] = useState("");
   const effectiveCodexWsToken = codexWsToken.trim() || runnerToken.trim();
-  const runnerWebSocketManagerRef = useRef<RunnerWebSocketManager | null>(null);
-  if (!runnerWebSocketManagerRef.current) {
-    runnerWebSocketManagerRef.current = new RunnerWebSocketManager({
-      url: codexWsUrl,
-      token: effectiveCodexWsToken,
-    });
-  }
-  const runnerWebSocketManager = runnerWebSocketManagerRef.current;
+  const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
+    bootstrapReady: false, url: codexWsUrl, token: effectiveCodexWsToken,
+  }));
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
   const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
@@ -730,13 +727,25 @@ export default function App() {
   const [llmCompletionNotifications, setLlmCompletionNotifications] = useState<LlmCompletionNotification[]>([]);
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  // Latest session-tree refresh, assigned after its dependencies are defined
+  // below; the bootstrap hook fires it once on the settingsLoaded transition
+  // to recover fetches that raced the settings load.
+  const settingsLoadedSessionRecoveryRef = useRef<() => void>(() => undefined);
+  const getRunnerHttpAuth = useRunnerHttpAuthBootstrap({
+    settingsLoaded,
+    baseUrl: auxServerBaseUrl(),
+    token: runnerToken,
+    onSettingsLoadedOnceRef: settingsLoadedSessionRecoveryRef,
+  });
   const cloudflareAccessCredentials = useMemo(() => normalizeCloudflareAccessCredentials(
     cloudflareAccessClientId,
     cloudflareAccessClientSecret
   ), [cloudflareAccessClientId, cloudflareAccessClientSecret]);
   const cloudflareAccessEnabled = hasCloudflareAccessCredentials(cloudflareAccessCredentials);
+  const effectiveCloudflareRunnerUrl = cloudflareRunnerUrl || runnerUrl;
   configureCloudflareAccessFetch({
-    runnerUrl: cloudflareRunnerUrl || runnerUrl,
+    runnerUrl: effectiveCloudflareRunnerUrl,
     credentials: cloudflareAccessCredentials,
   });
   const [activeScreen, setActiveScreen] = useState<AppScreen>("mini_board");
@@ -910,6 +919,7 @@ export default function App() {
     codexWsToken: effectiveCodexWsToken,
     runnerToken,
     auxServerBaseUrl,
+    getRunnerHttpAuth,
     normalizedLlmDirectoryForRequest,
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
@@ -1037,7 +1047,6 @@ export default function App() {
   const [runner8788SuiteStatus, setRunner8788SuiteStatus] = useState("idle");
   const [llmToolLogCompact, setLlmToolLogCompact] = useState(true);
   const [toolAutoApprovalMap, setToolAutoApprovalMap] = useState<ToolAutoApprovalMap>(EMPTY_TOOL_AUTO_APPROVALS);
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const runnerRouteSelection = useRunnerRouteSelection({
     enabled: settingsLoaded,
     localRunnerUrl,
@@ -2992,6 +3001,13 @@ export default function App() {
       rejectedCount: results.filter((item) => item.status === "rejected").length,
     }, { throttleMs: 0 });
   }, [loadDirectorySessionTree, logSessionDiag, registeredDirectories]);
+  // One-shot recovery fired by useRunnerHttpAuthBootstrap on the settingsLoaded
+  // transition: session-tree fetches that raced the settings load are refreshed
+  // once with real credentials. In-flight loads are deduped by
+  // loadDirectorySessionTree, so this does not double-fetch.
+  settingsLoadedSessionRecoveryRef.current = () => {
+    void refreshRegisteredDirectorySessionsForMiniBoard();
+  };
   const refreshMiniBoardDirectorySessionsForDirectory = useCallback((directoryRaw: unknown, reason: string) => {
     if (activeScreen !== "mini_board") return;
     const directoryPath = parseLlmDirectory(directoryRaw);
@@ -3343,6 +3359,7 @@ export default function App() {
   const { refreshGitChangedFiles } = useGitChangedFilesController({
     auxServerBaseUrl,
     runnerToken,
+    getRunnerHttpAuth,
     gitChangedFilesByDirectoryRef,
     gitChangedFilesRefreshInFlightRef,
     directoryIdentityGenerationRef,
@@ -4902,6 +4919,7 @@ export default function App() {
 
   useSessionStartupRecoveryController({
     settingsLoaded,
+    runnerWebSocketManager,
     startupSessionRestoreAttemptedRef,
     conversationMessagesRef,
     codexWsUrl,
@@ -4911,7 +4929,6 @@ export default function App() {
     getLlmConversationSessionId,
     selectSpecificLlmSession,
     fetchLatestSessionIdForDirectory,
-    clearSelectedLlmSession,
     setLlmSessionRestoreError,
     activeScreen,
     llmSessionRestoreLoading,
@@ -7158,9 +7175,7 @@ export default function App() {
     const modelRefHint = normalizeModelRef(params?.modelRef);
     const reasoningEffortHint = String(params?.reasoningEffort || "").trim();
     const source = parseLlmSessionSource(params?.source, "unknown");
-    const contextUsedPctHint = Number.isFinite(Number(params?.contextUsedPct))
-      ? Math.max(0, Math.min(100, Math.round(Number(params?.contextUsedPct))))
-      : null;
+    const contextUsedPctHint = clampContextUsedPct(params?.contextUsedPct);
     if (!panelId || !sessionId || !directory) {
       logSessionDiag("panel_runtime_hydrate_skipped_invalid_params", {
         diagnosticCycleId,
@@ -7228,9 +7243,7 @@ export default function App() {
       if (parseOptionalSessionId(hydratedPanelEntry?.snapshot.selectedSessionId || hydratedPanelEntry?.sessionId) !== sessionId) {
         return "superseded" as const;
       }
-      const restoredContextUsedPct = Number.isFinite(Number(restored.contextUsedPct))
-        ? Math.max(0, Math.min(100, Math.round(Number(restored.contextUsedPct))))
-        : null;
+      const restoredContextUsedPct = clampContextUsedPct(restored.contextUsedPct);
       const contextUsedPct = restoredContextUsedPct ?? contextUsedPctHint;
       const panelModelRef = normalizeModelRef(restored.modelRef || modelRefHint);
       const panelReasoningEffort = String(restored.reasoningEffort || reasoningEffortHint || "").trim();
@@ -7787,8 +7800,12 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
+        bootstrapReady={settingsLoaded}
         url={codexWsUrl}
         token={effectiveCodexWsToken}
+        cloudflareRunnerUrl={effectiveCloudflareRunnerUrl}
+        cloudflareAccessClientId={cloudflareAccessClientId}
+        cloudflareAccessClientSecret={cloudflareAccessClientSecret}
         onConnectionProblem={runnerRouteSelection.requestRouteRecheck}
         manager={runnerWebSocketManager}
       >

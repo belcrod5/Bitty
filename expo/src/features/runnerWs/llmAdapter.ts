@@ -4,6 +4,10 @@ const RUNNER_WS_ENVELOPE_MAX_CHARS = 32 * 1024 * 1024; // 32MB
 
 export type RunnerRelayControlMessage = {
   type: string;
+  requestId?: string;
+  operationId?: string;
+  sessionId?: string;
+  threadId?: string;
   seq?: number;
   replayed?: number;
   latestSeq?: number;
@@ -55,15 +59,25 @@ export function encodeRunnerWsLlmRpc(
   return JSON.stringify(envelope);
 }
 
-export function encodeRunnerWsRelayResume(threadIdRaw: unknown, lastSeqRaw: unknown): string {
+export function encodeRunnerWsRelayResume(
+  threadIdRaw: unknown,
+  lastSeqRaw: unknown,
+  options?: { requestId?: unknown; operationId?: unknown; sessionId?: unknown }
+): string {
   const threadId = String(threadIdRaw || "").trim();
+  const requestId = String(options?.requestId || "").trim();
+  const operationId = String(options?.operationId || "").trim();
+  const sessionId = String(options?.sessionId || "").trim();
   const lastSeq = Number.isFinite(Number(lastSeqRaw))
     ? Math.max(0, Math.floor(Number(lastSeqRaw)))
     : 0;
   const envelope: RunnerWsMessage = {
     channel: "relay",
     op: "resume",
-    threadId,
+    ...(requestId ? { requestId } : {}),
+    ...(operationId ? { operationId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(threadId ? { threadId } : {}),
     seq: lastSeq,
   };
   return JSON.stringify(envelope);
@@ -89,15 +103,23 @@ export function parseRunnerWsRelayControlMessage(rawData: string): RunnerRelayCo
   const seq = Number(message.seq);
   const replayed = Number(payload.replayed);
   const latestSeq = Number(payload.latestSeq ?? message.seq);
+  const metadata = {
+    requestId: String(message.requestId || "").trim() || undefined,
+    operationId: String(message.operationId || "").trim() || undefined,
+    sessionId: String(message.sessionId || "").trim() || undefined,
+    threadId: String(message.threadId || "").trim() || undefined,
+  };
   if (message.op === "seq") {
     return {
       type: "runner_relay_seq",
+      ...metadata,
       seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
     };
   }
   if (message.op === "attached") {
     return {
       type: "runner_relay_attached",
+      ...metadata,
       seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
       replayed: Number.isFinite(replayed) ? Math.max(0, Math.floor(replayed)) : undefined,
       latestSeq: Number.isFinite(latestSeq) ? Math.max(0, Math.floor(latestSeq)) : undefined,
@@ -107,6 +129,7 @@ export function parseRunnerWsRelayControlMessage(rawData: string): RunnerRelayCo
     const reason = String(payload.reason || payload.message || "").trim();
     return {
       type: "runner_relay_resume_miss",
+      ...metadata,
       seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
       reason: reason || undefined,
     };
@@ -115,6 +138,7 @@ export function parseRunnerWsRelayControlMessage(rawData: string): RunnerRelayCo
     const reason = String(payload.reason || "").trim();
     return {
       type: "runner_relay_closed",
+      ...metadata,
       reason: reason || undefined,
     };
   }

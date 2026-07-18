@@ -24,7 +24,7 @@ type UseSlashStatusCommandControllerArgs = {
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
-  chatContextUsedPct: number;
+  chatContextUsedPct: number | null;
   appendSlashCommandResult: (commandText: string, assistantText: string, options?: RunSlashStatusOptions) => void;
   setReplyDebug: Dispatch<SetStateAction<string>>;
 };
@@ -74,7 +74,7 @@ export function useSlashStatusCommandController({
       `- model: ${modelRef || "(server default)"}`,
       `- think: ${reasoningEffort}`,
       `- approvalPolicy: ${codexApprovalPolicy}`,
-      `- contextUsedPct: ${chatContextUsedPct}%`,
+      `- contextUsedPct: ${chatContextUsedPct === null ? "--" : `${chatContextUsedPct}%`}`,
       `- toolMaxRounds: ${snapshot?.toolMaxRounds ?? "-"}`,
       `- llmTimeoutMs: ${snapshot?.llmTimeoutMs ?? "-"}`,
       `- approvalTimeoutMs: ${snapshot?.approvalTimeoutMs ?? "-"}`,

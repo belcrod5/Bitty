@@ -1,4 +1,7 @@
-import { createWebSocketWithOptionalAuth } from "../ws/webSocketAuth";
+import {
+  createWebSocketWithOptionalAuth,
+  isWebSocketForCloudflareRunner,
+} from "../ws/webSocketAuth";
 import {
   isRunnerWsMessage,
   normalizeRunnerWsServerStatus,
@@ -19,13 +22,23 @@ const RUNNER_WS_RECONNECT_MAX_DELAY_MS = 10_000;
 const RUNNER_WS_RECONNECT_JITTER_MS = 250;
 const RUNNER_WS_HEARTBEAT_INTERVAL_MS = 15_000;
 const RUNNER_WS_HEARTBEAT_MAX_MISSED_PINGS = 2;
+// A 401/403 close can be transient (e.g. Cloudflare tunnel restarting), so a few
+// backoff retries run before the configuration generation is blocked for auth.
+const RUNNER_WS_MAX_CONSECUTIVE_AUTH_FAILURES = 3;
 
-type RunnerWebSocketManagerOptions = {
+type RunnerWebSocketConnectionOptions = {
+  bootstrapReady?: boolean;
   url: string;
   token: string;
+  cloudflareRunnerUrl?: string;
+  cloudflareAccessClientId?: string;
+  cloudflareAccessClientSecret?: string;
+  onConnectionProblem?: () => void;
+};
+
+type RunnerWebSocketManagerOptions = RunnerWebSocketConnectionOptions & {
   appState?: RunnerWsAppState;
   clientInstanceId?: string;
-  onConnectionProblem?: () => void;
 };
 
 type RunnerWsPendingRequest = {
@@ -137,16 +150,25 @@ function isStartStyleMessage(message: RunnerWsMessage) {
 }
 
 export class RunnerWebSocketManager {
+  private bootstrapReady: boolean;
   private url: string;
   private token: string;
+  private cloudflareRunnerUrl: string;
+  private cloudflareAccessClientId: string;
+  private cloudflareAccessClientSecret: string;
   private ws: WebSocket | null = null;
   private connectionState: RunnerWsConnectionState = "idle";
   private appState: RunnerWsAppState;
   private clientInstanceId: string;
   private connectionId: string | undefined;
   private generation = 0;
+  private connectionOptionsGeneration = 0;
+  private blockedAuthGeneration: number | null = null;
+  private consecutiveAuthFailureCount = 0;
   private reconnectCount = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private bootstrapConnectPromise: Promise<void> | null = null;
+  private bootstrapConnectWaiter: ConnectWaiter | null = null;
   private connectPromise: Promise<void> | null = null;
   private connectWaiter: ConnectWaiter | null = null;
   private pendingRequests = new Map<string, RunnerWsPendingRequest>();
@@ -175,8 +197,12 @@ export class RunnerWebSocketManager {
   private onConnectionProblem: (() => void) | undefined;
 
   constructor(options: RunnerWebSocketManagerOptions) {
+    this.bootstrapReady = options.bootstrapReady ?? true;
     this.url = normalizeUrl(options.url);
     this.token = normalizeText(options.token);
+    this.cloudflareRunnerUrl = normalizeText(options.cloudflareRunnerUrl);
+    this.cloudflareAccessClientId = normalizeText(options.cloudflareAccessClientId);
+    this.cloudflareAccessClientSecret = normalizeText(options.cloudflareAccessClientSecret);
     this.appState = options.appState || "unknown";
     this.clientInstanceId = normalizeText(options.clientInstanceId) || createClientInstanceId();
     this.onConnectionProblem = options.onConnectionProblem;
@@ -186,17 +212,52 @@ export class RunnerWebSocketManager {
     this.cachedSnapshot = this.buildSnapshot();
   }
 
-  setConnectionOptions(options: { url: string; token: string; onConnectionProblem?: () => void }) {
+  setConnectionOptions(options: RunnerWebSocketConnectionOptions) {
+    const nextBootstrapReady = options.bootstrapReady ?? this.bootstrapReady;
     const nextUrl = normalizeUrl(options.url);
     const nextToken = normalizeText(options.token);
+    const nextCloudflareRunnerUrl = "cloudflareRunnerUrl" in options
+      ? normalizeText(options.cloudflareRunnerUrl)
+      : this.cloudflareRunnerUrl;
+    const nextCloudflareAccessClientId = "cloudflareAccessClientId" in options
+      ? normalizeText(options.cloudflareAccessClientId)
+      : this.cloudflareAccessClientId;
+    const nextCloudflareAccessClientSecret = "cloudflareAccessClientSecret" in options
+      ? normalizeText(options.cloudflareAccessClientSecret)
+      : this.cloudflareAccessClientSecret;
     if ("onConnectionProblem" in options) {
       this.onConnectionProblem = options.onConnectionProblem;
     }
-    if (nextUrl === this.url && nextToken === this.token) return;
+    if (
+      nextBootstrapReady === this.bootstrapReady &&
+      nextUrl === this.url &&
+      nextToken === this.token &&
+      nextCloudflareRunnerUrl === this.cloudflareRunnerUrl &&
+      nextCloudflareAccessClientId === this.cloudflareAccessClientId &&
+      nextCloudflareAccessClientSecret === this.cloudflareAccessClientSecret
+    ) return;
+    this.bootstrapReady = nextBootstrapReady;
     this.url = nextUrl;
     this.token = nextToken;
-    this.disconnect("config-changed");
-    if (this.appState === "active" && this.url) {
+    this.cloudflareRunnerUrl = nextCloudflareRunnerUrl;
+    this.cloudflareAccessClientId = nextCloudflareAccessClientId;
+    this.cloudflareAccessClientSecret = nextCloudflareAccessClientSecret;
+    this.connectionOptionsGeneration += 1;
+    this.consecutiveAuthFailureCount = 0;
+    // When we reconnect right away, pass "config-changed" so the intermediate snapshot
+    // is "idle" (transient) instead of "stopped" (terminal): turn admission treats an
+    // active+stopped snapshot as a fatal error and must not observe it here.
+    // "manual" (which rejects the bootstrap waiter and lands on the terminal "stopped")
+    // is reserved for the truly terminal case: bootstrap already completed, nobody is
+    // waiting on the bootstrap barrier, and the new options cannot start a connection.
+    // While bootstrap is pending or a waiter exists, always use "config-changed" so the
+    // bootstrapConnectPromise stays pending and resolves once markBootstrapReady fires.
+    const willReconnect =
+      this.bootstrapReady &&
+      (Boolean(this.bootstrapConnectPromise) || this.connectionStartError() === null);
+    const terminal = !willReconnect && this.bootstrapReady && !this.bootstrapConnectPromise;
+    this.disconnect(terminal ? "manual" : "config-changed");
+    if (willReconnect) {
       this.connect().catch(() => undefined);
     }
   }
@@ -206,13 +267,27 @@ export class RunnerWebSocketManager {
       return Promise.resolve();
     }
     if (this.connectPromise) {
-      return this.connectPromise;
+      return this.bootstrapConnectPromise || this.connectPromise;
     }
-    if (this.appState === "background") {
-      return Promise.reject(makeError("runner_ws_background"));
+    if (!this.bootstrapReady) {
+      if (!this.bootstrapConnectPromise) {
+        this.bootstrapConnectPromise = new Promise<void>((resolve, reject) => {
+          this.bootstrapConnectWaiter = { resolve, reject };
+        });
+      }
+      return this.bootstrapConnectPromise;
     }
-    if (!this.url) {
-      return Promise.reject(makeError("runner_ws_url_required"));
+    const startError = this.connectionStartError();
+    if (startError) {
+      const bootstrapConnectPromise = this.bootstrapConnectPromise;
+      if (
+        bootstrapConnectPromise &&
+        (startError.message === "runner_ws_background" || startError.message === "runner_ws_inactive")
+      ) {
+        return bootstrapConnectPromise;
+      }
+      this.rejectBootstrapConnectWaiter(startError);
+      return bootstrapConnectPromise || Promise.reject(startError);
     }
 
     this.clearReconnectTimer();
@@ -222,7 +297,11 @@ export class RunnerWebSocketManager {
 
     let socket: WebSocket;
     try {
-      socket = createWebSocketWithOptionalAuth(this.url, this.token);
+      socket = createWebSocketWithOptionalAuth(this.url, this.token, {
+        runnerUrl: this.cloudflareRunnerUrl,
+        clientId: this.cloudflareAccessClientId,
+        clientSecret: this.cloudflareAccessClientSecret,
+      });
     } catch (error) {
       const failure = error instanceof Error ? error : makeError("runner_ws_connect_failed");
       this.lastError = failure.message;
@@ -233,20 +312,32 @@ export class RunnerWebSocketManager {
         this.connectionState = "idle";
         this.emitSnapshot();
       }
-      return Promise.reject(failure);
+      const bootstrapConnectPromise = this.bootstrapConnectPromise;
+      return bootstrapConnectPromise || Promise.reject(failure);
     }
     this.connectPromise = new Promise<void>((resolve, reject) => {
       this.connectWaiter = { resolve, reject };
     });
     this.attachSocket(socket, this.generation + 1);
+    if (this.bootstrapConnectPromise) {
+      this.connectPromise.catch(() => undefined);
+      return this.bootstrapConnectPromise;
+    }
     return this.connectPromise;
   }
 
   disconnect(reason: "background" | "manual" | "logout" | "config-changed" = "manual") {
     this.clearReconnectTimer();
     this.clearHeartbeatTimer();
-    const nextState: RunnerWsConnectionState = reason === "background" ? "background" : "stopped";
+    const nextState: RunnerWsConnectionState = reason === "background"
+      ? "background"
+      // "config-changed" is always followed by an immediate connect() (see
+      // setConnectionOptions), so land on "idle" rather than the terminal "stopped".
+      : reason === "config-changed" ? "idle" : "stopped";
     this.connectionState = nextState;
+    if (reason === "manual" || reason === "logout") {
+      this.rejectBootstrapConnectWaiter(makeError(`runner_ws_disconnected_${reason}`));
+    }
     this.rejectConnectWaiter(makeError(`runner_ws_disconnected_${reason}`));
     this.rejectAllPending(makeError(`runner_ws_disconnected_${reason}`));
     const socket = this.ws;
@@ -263,18 +354,27 @@ export class RunnerWebSocketManager {
 
   setAppState(nextAppState: RunnerWsAppState) {
     if (nextAppState === this.appState) return;
-    const previous = this.appState;
     this.appState = nextAppState;
     if (nextAppState === "background") {
       this.disconnect("background");
       return;
     }
-    if (nextAppState === "active" && previous === "background") {
+    if (nextAppState === "active") {
+      if (this.blockedAuthGeneration === this.connectionOptionsGeneration) {
+        // An existing auth block may be stale (e.g. the Cloudflare tunnel came
+        // back), so clear it on return to the foreground; one fresh retry cycle
+        // runs before the block can re-arm.
+        this.blockedAuthGeneration = null;
+        this.consecutiveAuthFailureCount = 0;
+        if (this.connectionState === "stopped") {
+          this.connectionState = "idle";
+        }
+      }
       if (this.connectionState === "background") {
         this.connectionState = "idle";
       }
       this.emitSnapshot();
-      if (this.url) {
+      if (this.bootstrapConnectPromise || this.connectionStartError() === null) {
         this.connect().catch(() => undefined);
       }
       return;
@@ -444,7 +544,9 @@ export class RunnerWebSocketManager {
       shouldNotifySnapshot = true;
       if (message.op === "ready") {
         this.connectionState = "ready";
+        this.consecutiveAuthFailureCount = 0;
         this.resolveConnectWaiter();
+        this.resolveBootstrapConnectWaiter();
         // Reset heartbeat bookkeeping so stale timestamps from a previous
         // connection can't cause a false missed-pong on the new one.
         this.lastPingAt = undefined;
@@ -518,10 +620,19 @@ export class RunnerWebSocketManager {
       return;
     }
     if (isAuthFailureCloseReason(reason)) {
-      this.connectionState = "stopped";
+      this.consecutiveAuthFailureCount += 1;
       this.lastError = makeError("runner_ws_auth_failed", reason || undefined).message;
-      this.emitSnapshot();
-      return;
+      if (this.consecutiveAuthFailureCount >= RUNNER_WS_MAX_CONSECUTIVE_AUTH_FAILURES) {
+        this.blockedAuthGeneration = this.connectionOptionsGeneration;
+        this.connectionState = "stopped";
+        this.rejectBootstrapConnectWaiter(makeError("runner_ws_auth_failed", reason || undefined));
+        this.emitSnapshot();
+        return;
+      }
+      // Below the block threshold an auth close follows the generic close path,
+      // so transient 401/403s (Cloudflare tunnel restarts) retry with backoff.
+    } else {
+      this.consecutiveAuthFailureCount = 0;
     }
     if (this.appState === "active") {
       this.onConnectionProblem?.();
@@ -533,6 +644,10 @@ export class RunnerWebSocketManager {
   }
 
   private scheduleReconnect() {
+    if (this.connectionStartError()) {
+      this.emitSnapshot();
+      return;
+    }
     if (this.reconnectTimer) {
       this.emitSnapshot();
       return;
@@ -546,7 +661,7 @@ export class RunnerWebSocketManager {
     const jitterMs = Math.floor(Math.random() * RUNNER_WS_RECONNECT_JITTER_MS);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.appState !== "active" || this.connectionState === "background" || this.connectionState === "stopped") {
+      if (this.connectionStartError()) {
         this.emitSnapshot();
         return;
       }
@@ -571,6 +686,20 @@ export class RunnerWebSocketManager {
     if (waiter) {
       waiter.reject(error);
     }
+  }
+
+  private resolveBootstrapConnectWaiter() {
+    const waiter = this.bootstrapConnectWaiter;
+    this.bootstrapConnectWaiter = null;
+    this.bootstrapConnectPromise = null;
+    waiter?.resolve();
+  }
+
+  private rejectBootstrapConnectWaiter(error: Error) {
+    const waiter = this.bootstrapConnectWaiter;
+    this.bootstrapConnectWaiter = null;
+    this.bootstrapConnectPromise = null;
+    waiter?.reject(error);
   }
 
   private rejectAllPending(error: Error) {
@@ -665,6 +794,24 @@ export class RunnerWebSocketManager {
 
   private isCurrent(socket: WebSocket, generation: number) {
     return this.ws === socket && this.generation === generation;
+  }
+
+  private connectionStartError(): Error | null {
+    if (!this.bootstrapReady) return makeError("runner_ws_bootstrap_pending");
+    if (!this.url) return makeError("runner_ws_url_required");
+    if (!this.token) return makeError("runner_token_required");
+    if (this.blockedAuthGeneration === this.connectionOptionsGeneration) {
+      return makeError("runner_ws_auth_failed");
+    }
+    if (
+      isWebSocketForCloudflareRunner(this.url, this.cloudflareRunnerUrl) &&
+      (!this.cloudflareAccessClientId || !this.cloudflareAccessClientSecret)
+    ) {
+      return makeError("cloudflare_access_credentials_required");
+    }
+    if (this.appState === "background") return makeError("runner_ws_background");
+    if (this.appState !== "active") return makeError("runner_ws_inactive");
+    return null;
   }
 
   private buildSnapshot(): RunnerWsConnectionSnapshot {

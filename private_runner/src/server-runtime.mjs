@@ -23,6 +23,7 @@ import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade
 import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
+import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -505,8 +506,6 @@ const toolApprovedKeysBySessionId = new Map();
 const llmJobsById = new Map();
 const llmJobOrder = [];
 const runnerWsTtsJobIdByOperationId = new Map();
-const runnerWsLlmRelayIdByOperationId = new Map();
-const runnerWsLlmRelayIdBySessionId = new Map();
 const scriptJobsById = new Map();
 const scriptJobOrder = [];
 const codexQueuedTurnsById = new Map();
@@ -2598,99 +2597,11 @@ function resolveRunnerWsTtsOperationJob(operationIdRaw) {
   return job;
 }
 
-function sweepRunnerWsLlmRelayMap(map, nowMs) {
-  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
-  for (const [logicalId, entry] of map.entries()) {
-    const updatedAtMs = Number(entry?.updatedAtMs || entry?.createdAtMs || 0);
-    const expired = updatedAtMs > 0 && (updatedAtMs + RUNNER_WS_LLM_OPERATION_TTL_MS) < now;
-    const relayId = String(entry?.relayId || "").trim();
-    const relay = relayId ? (codexWsRelaysById.get(relayId) || null) : null;
-    if (!relay || relay.closed || expired) {
-      map.delete(logicalId);
-    }
-  }
-  if (map.size <= RUNNER_WS_LLM_OPERATION_MAX_ENTRIES) return;
-  const overflow = map.size - RUNNER_WS_LLM_OPERATION_MAX_ENTRIES;
-  const oldest = Array.from(map.entries())
-    .sort((a, b) => Number(a[1]?.updatedAtMs || 0) - Number(b[1]?.updatedAtMs || 0))
-    .slice(0, overflow);
-  for (const [logicalId] of oldest) {
-    map.delete(logicalId);
-  }
-}
-
-function sweepRunnerWsLlmRelayMappings(nowMs = Date.now()) {
-  sweepRunnerWsLlmRelayMap(runnerWsLlmRelayIdByOperationId, nowMs);
-  sweepRunnerWsLlmRelayMap(runnerWsLlmRelayIdBySessionId, nowMs);
-}
-
-function rememberRunnerWsLlmRelayIdentity(relay, identity = {}) {
-  const relayId = String(relay?.relayId || "").trim();
-  if (!relayId || relay?.closed) return false;
-  const operationId = String(identity.operationId || relay.runnerWsLlmOperationId || "").trim();
-  const sessionId = String(identity.sessionId || relay.runnerWsLlmSessionId || "").trim();
-  if (!operationId && !sessionId) return false;
-  sweepRunnerWsLlmRelayMappings();
-  const now = Date.now();
-  const remember = (map, logicalId) => {
-    if (!logicalId) return;
-    const existing = map.get(logicalId) || null;
-    map.set(logicalId, {
-      relayId,
-      createdAtMs: Number(existing?.createdAtMs || now),
-      updatedAtMs: now,
-    });
-  };
-  remember(runnerWsLlmRelayIdByOperationId, operationId);
-  remember(runnerWsLlmRelayIdBySessionId, sessionId);
-  sweepRunnerWsLlmRelayMappings();
-  return true;
-}
-
-function resolveRunnerWsLlmRelayByIdentity(identity = {}) {
-  const operationId = String(identity.operationId || "").trim();
-  const sessionId = String(identity.sessionId || "").trim();
-  sweepRunnerWsLlmRelayMappings();
-  for (const [logicalId, map] of [
-    [operationId, runnerWsLlmRelayIdByOperationId],
-    [sessionId, runnerWsLlmRelayIdBySessionId],
-  ]) {
-    if (!logicalId) continue;
-    const entry = map.get(logicalId) || null;
-    const relayId = String(entry?.relayId || "").trim();
-    const relay = relayId ? (codexWsRelaysById.get(relayId) || null) : null;
-    if (relay && !relay.closed) {
-      entry.updatedAtMs = Date.now();
-      return relay;
-    }
-    map.delete(logicalId);
-  }
-  return null;
-}
-
-function hasRunnerWsLlmRelayIdentityMapping(relay) {
-  const relayId = String(relay?.relayId || "").trim();
-  if (!relayId) return false;
-  sweepRunnerWsLlmRelayMappings();
-  for (const map of [runnerWsLlmRelayIdByOperationId, runnerWsLlmRelayIdBySessionId]) {
-    for (const entry of map.values()) {
-      if (String(entry?.relayId || "").trim() === relayId) return true;
-    }
-  }
-  return false;
-}
-
-function releaseRunnerWsLlmRelayIdentityMappings(relay) {
-  const relayId = String(relay?.relayId || "").trim();
-  if (!relayId) return;
-  for (const map of [runnerWsLlmRelayIdByOperationId, runnerWsLlmRelayIdBySessionId]) {
-    for (const [logicalId, entry] of Array.from(map.entries())) {
-      if (String(entry?.relayId || "").trim() === relayId) {
-        map.delete(logicalId);
-      }
-    }
-  }
-}
+const runnerWsLlmRelayIdentities = createRunnerWsLlmRelayIdentityIndex({
+  getRelay: (relayId) => codexWsRelaysById.get(relayId) || null,
+  ttlMs: RUNNER_WS_LLM_OPERATION_TTL_MS,
+  maxEntries: RUNNER_WS_LLM_OPERATION_MAX_ENTRIES,
+});
 
 function llmJobSetStatus(job, status) {
   if (!job) return;
@@ -9349,39 +9260,69 @@ runnerWsServer.on("connection", (ws, req) => {
     return attachClientToCodexRelay(relay, ws, {
       replayAfterSeq: options.replayAfterSeq || 0,
       envelopeMode: true,
+      controlMetadata: options.controlMetadata,
     });
   }
 
   function ensureRunnerWsLlmRelay(message, meta) {
     const keys = runnerWsLlmRelayKeyCandidates(message, meta);
+    const operationId = String(message?.operationId || "").trim();
+    const sessionId = String(message?.sessionId || "").trim();
+    const hasIdentity = Boolean(operationId || sessionId);
+    if (hasIdentity && (!operationId || !sessionId)) {
+      return { relay: null, error: "runner_ws_llm_identity_required" };
+    }
+    const claimRelay = (relay) => {
+      if (!hasIdentity) return { relay, error: "" };
+      const claimed = runnerWsLlmRelayIdentities.claim(relay, { operationId, sessionId });
+      return claimed.ok ? { relay, error: "" } : { relay: null, error: claimed.reason };
+    };
     for (const key of keys) {
       const existing = llmRelaysByKey.get(key);
       if (existing && !existing.closed) {
+        const claimed = claimRelay(existing);
+        if (!claimed.relay) return claimed;
         for (const alias of keys) {
           llmRelaysByKey.set(alias, existing);
         }
         if (!existing.clients.has(ws)) {
           attachRunnerWsToRelay(existing, { keys, replayAfterSeq: 0 });
         }
-        rememberRunnerWsLlmRelayIdentity(existing, message);
-        return existing;
+        return claimed;
       }
       if (existing?.closed) {
         llmRelaysByKey.delete(key);
       }
     }
-    const identityRelay = resolveRunnerWsLlmRelayByIdentity(message);
-    if (identityRelay && !identityRelay.closed) {
+    const identityMatch = hasIdentity
+      ? runnerWsLlmRelayIdentities.resolveExact({ operationId, sessionId })
+      : { ok: false, relay: null };
+    const identityRelay = identityMatch.relay;
+    if (identityRelay) {
+      const claimed = claimRelay(identityRelay);
+      if (!claimed.relay) return claimed;
       attachRunnerWsToRelay(identityRelay, { keys, replayAfterSeq: 0 });
-      rememberRunnerWsLlmRelayIdentity(identityRelay, message);
-      return identityRelay;
+      return claimed;
+    }
+    const claimRelayByIdentity = hasIdentity
+      ? runnerWsLlmRelayIdentities.findClaimRelay({ operationId, sessionId })
+      : null;
+    if (claimRelayByIdentity) {
+      const claimed = claimRelay(claimRelayByIdentity);
+      if (!claimed.relay) return claimed;
+      attachRunnerWsToRelay(claimRelayByIdentity, { keys, replayAfterSeq: 0 });
+      return claimed;
     }
     const threadId = pickFirstNonEmptyString(message?.threadId, meta?.threadId);
     const threadRelay = pickBestRelayForThread(threadId);
     if (threadRelay && !threadRelay.closed) {
+      const claimed = claimRelay(threadRelay);
+      if (!claimed.relay) return claimed;
       attachRunnerWsToRelay(threadRelay, { keys, replayAfterSeq: 0 });
-      rememberRunnerWsLlmRelayIdentity(threadRelay, message);
-      return threadRelay;
+      return claimed;
+    }
+    if (hasIdentity && identityMatch.reason === "relay_identity_mismatch") {
+      return { relay: null, error: "runner_ws_llm_identity_collision" };
     }
     const relay = createCodexRelayWithUpstream({
       endpoint: RUNNER_WS_PATH,
@@ -9389,9 +9330,13 @@ runnerWsServer.on("connection", (ws, req) => {
       upstreamUrl: CODEX_WS_PROXY_UPSTREAM_URL,
       protocols,
     });
+    const claimed = claimRelay(relay);
+    if (!claimed.relay) {
+      cleanupCodexRelay(relay, "runner_ws_llm_identity_rejected");
+      return claimed;
+    }
     attachRunnerWsToRelay(relay, { keys, replayAfterSeq: 0 });
-    rememberRunnerWsLlmRelayIdentity(relay, message);
-    return relay;
+    return claimed;
   }
 
   function detachRunnerWsFromAllRelays(reason) {
@@ -9533,29 +9478,45 @@ runnerWsServer.on("connection", (ws, req) => {
       });
       return;
     }
-
     if (message.channel === "relay" && (message.op === "attach" || message.op === "resume")) {
       const threadId = String(message.threadId || "").trim();
+      const operationId = String(message.operationId || "").trim();
+      const sessionId = String(message.sessionId || "").trim();
+      const requestId = String(message.requestId || "").trim();
       const replayAfterSeq = Number.isFinite(Number(message.seq || 0))
         ? Math.max(0, Math.floor(Number(message.seq || 0)))
         : 0;
-      const relay = pickBestRelayForThread(threadId);
-      if (!threadId || !relay || relay.closed) {
+      const usesIdentity = Boolean(operationId || sessionId);
+      const identityMatch = usesIdentity ? runnerWsLlmRelayIdentities.authorizeResume(
+        { operationId, sessionId }, { threadId, replayAfterSeq }
+      ) : null;
+      const relay = usesIdentity ? identityMatch.relay : pickBestRelayForThread(threadId);
+      const missReason = identityMatch?.ok ? "" : (identityMatch?.reason || "relay_identity_not_found");
+      if ((!usesIdentity && !threadId) || !relay || relay.closed || (usesIdentity && missReason)) {
         sendCodexRelayControl(null, ws, {
           type: "runner_relay_resume_miss",
           threadId,
           resumeFromSeq: replayAfterSeq,
+          requestId,
+          operationId,
+          sessionId,
+          reason: usesIdentity ? missReason : "relay_identity_not_found",
         });
         return;
       }
       attachRunnerWsToRelay(relay, {
-        keys: runnerWsLlmRelayKeyCandidates({ threadId }),
+        keys: runnerWsLlmRelayKeyCandidates({ threadId, operationId, sessionId }),
         replayAfterSeq,
         replayIfAlreadyAttached: true,
+        controlMetadata: {
+          requestId,
+          operationId,
+          sessionId,
+          match: usesIdentity ? "identity" : "thread",
+        },
       });
       return;
     }
-
     if (message.channel === "llm" && message.op === "rpc") {
       const normalized = normalizeRunnerWsLlmRpcPayload(message.payload);
       if (!normalized.ok) {
@@ -9572,7 +9533,21 @@ runnerWsServer.on("connection", (ws, req) => {
       }
       const requestId = String(message.requestId || "").trim();
       const meta = parseCodexRpcMeta(normalized.text, false);
-      const relay = ensureRunnerWsLlmRelay(message, meta);
+      const ensured = ensureRunnerWsLlmRelay(message, meta);
+      const relay = ensured.relay;
+      if (!relay) {
+        sendRunnerWsEnvelope(ws, runnerWsErrorEnvelope(
+          ensured.error || "runner_ws_llm_identity_collision",
+          "LLM relay identity was rejected",
+          {
+            requestId: message.requestId || "",
+            operationId: message.operationId || "",
+            sessionId: message.sessionId || "",
+            threadId: message.threadId || "",
+          }
+        ));
+        return;
+      }
       if (requestId) {
         sendRunnerWsLlmRpcAck(relay, ws, {
           op: "llm_rpc_received",
@@ -10181,6 +10156,9 @@ function sendCodexRelayControl(relay, ws, payload) {
   const type = String(payload?.type || "").trim();
   const relayId = String(payload?.relayId || relay?.relayId || "").trim();
   const threadId = String(payload?.threadId || relay?.threadId || "").trim();
+  const requestId = String(payload?.requestId || "").trim();
+  const operationId = String(payload?.operationId || "").trim();
+  const sessionId = String(payload?.sessionId || "").trim();
   if (type === "runner_relay_seq") {
     return sendRunnerWsEnvelope(ws, {
       channel: "relay",
@@ -10194,6 +10172,9 @@ function sendCodexRelayControl(relay, ws, payload) {
     return sendRunnerWsEnvelope(ws, {
       channel: "relay",
       op: "attached",
+      requestId: requestId || undefined,
+      operationId: operationId || undefined,
+      sessionId: sessionId || undefined,
       threadId,
       seq: Number(payload?.latestSeq || 0),
       payload: {
@@ -10202,6 +10183,7 @@ function sendCodexRelayControl(relay, ws, payload) {
         replayAfterSeq: Number(payload?.replayAfterSeq || 0),
         replayed: Number(payload?.replayed || 0),
         turnCompleted: Boolean(payload?.turnCompleted),
+        match: String(payload?.match || "thread"),
       },
     });
   }
@@ -10209,6 +10191,9 @@ function sendCodexRelayControl(relay, ws, payload) {
     return sendRunnerWsEnvelope(ws, {
       channel: "relay",
       op: "resume_miss",
+      requestId: requestId || undefined,
+      operationId: operationId || undefined,
+      sessionId: sessionId || undefined,
       threadId,
       seq: Number(payload?.resumeFromSeq || 0),
       payload: {
@@ -10779,7 +10764,7 @@ function removeClientFromRelay(relay, clientWs) {
 function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
   if (!relay || relay.closed || relay.clients.size > 0) return;
   if (!relay.turnStarted && !relay.turnCompleted) {
-    if (hasRunnerWsLlmRelayIdentityMapping(relay)) {
+    if (runnerWsLlmRelayIdentities.has(relay)) {
       scheduleCodexRelayCleanup(relay, reason);
       return;
     }
@@ -10799,7 +10784,7 @@ function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
 function cleanupCodexRelay(relay, reason = "cleanup") {
   if (!relay || relay.closed) return;
   relay.closed = true;
-  releaseRunnerWsLlmRelayIdentityMappings(relay);
+  runnerWsLlmRelayIdentities.release(relay);
   if (relay.cleanupTimer) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
@@ -10883,11 +10868,13 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
   }
   const oldestRetainedSeq = Number(relay.eventLog[0]?.seq || 0);
   if (replayAfterSeq > 0 && oldestRetainedSeq > replayAfterSeq + 1) {
+    const controlMetadata = options.controlMetadata || {};
     sendCodexRelayControl(relay, clientWs, {
       type: "runner_relay_resume_miss",
       threadId: relay.threadId || "",
       resumeFromSeq: replayAfterSeq,
       reason: "relay_event_history_gap",
+      ...controlMetadata,
     });
     return 0;
   }
@@ -10923,6 +10910,7 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
     replayAfterSeq,
     replayed,
     turnCompleted: relay.turnCompleted,
+    ...(options.controlMetadata || {}),
   });
   return replayed;
 }
@@ -11573,6 +11561,21 @@ function createCodexRelayWithUpstream(params = {}) {
   return relay;
 }
 
+// Only the RPCs that begin/own an app-server conversation may (re)bind the relay's
+// notification identity (runnerWsLlmOperationId/SessionId). Read-style RPCs riding an
+// existing relay (thread/read during panel hydration, approval responses, turn/interrupt)
+// get their responses tagged per-request via requestMetaByRpcId, so they must not steal
+// the identity that upstream notifications (deltas, turn/completed) are tagged with —
+// otherwise the in-flight turn's client filter drops every later notification.
+function isCodexRelayIdentityBindingMethod(method) {
+  return (
+    method === "initialize" ||
+    method === "thread/resume" ||
+    method === "thread/start" ||
+    method === "turn/start"
+  );
+}
+
 function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (!relay || relay.closed) return;
   const remote = String(params.remote || relay.remote || "unknown");
@@ -11581,23 +11584,10 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   const requestOperationId = String(params.operationId || "").trim();
   const requestSessionId = String(params.sessionId || "").trim();
   const requestThreadId = String(params.threadId || "").trim();
-  if (requestOperationId || requestSessionId) {
-    relay.runnerWsLlmOperationId = requestOperationId || relay.runnerWsLlmOperationId || "";
-    relay.runnerWsLlmSessionId = requestSessionId || relay.runnerWsLlmSessionId || "";
-    rememberRunnerWsLlmRelayIdentity(relay, {
-      operationId: requestOperationId,
-      sessionId: requestSessionId,
-    });
-  }
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
-  const shouldLogForwardState = (method) => (
-    method === "initialize" ||
-    method === "thread/resume" ||
-    method === "thread/start" ||
-    method === "turn/start"
-  );
+  const shouldLogForwardState = (method) => isCodexRelayIdentityBindingMethod(method);
   const logForwardState = (state) => {
     if (!meta || (!meta.method && meta.id === null)) return;
     if (!shouldLogForwardState(meta.method)) return;
@@ -11663,6 +11653,12 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     return;
   }
   if (meta && (meta.method || meta.id !== null)) {
+    // Bound here (after the cached-initialize early return above) so an initialize
+    // answered from the relay cache never rebinds ownership away from a live turn.
+    if (requestOperationId && requestSessionId && isCodexRelayIdentityBindingMethod(meta.method)) {
+      relay.runnerWsLlmOperationId = requestOperationId;
+      relay.runnerWsLlmSessionId = requestSessionId;
+    }
     if (requestId && Number.isInteger(meta.id) && relay.requestIdByRpcId instanceof Map) {
       relay.requestIdByRpcId.set(Number(meta.id), requestId);
     }
@@ -12081,10 +12077,7 @@ export const __TESTING__ = {
   countRunnerWsConnectionsForClient,
   runnerWsLlmRelayKeyCandidates,
   resolveRunnerWsLlmRelayKey,
-  rememberRunnerWsLlmRelayIdentity,
-  resolveRunnerWsLlmRelayByIdentity,
-  hasRunnerWsLlmRelayIdentityMapping,
-  sweepRunnerWsLlmRelayMappings,
+  runnerWsLlmRelayIdentities,
   resolveRunnerWsTtsApprovalTargetJobId,
   rememberRunnerWsTtsOperationJob,
   resolveRunnerWsTtsOperationJob,

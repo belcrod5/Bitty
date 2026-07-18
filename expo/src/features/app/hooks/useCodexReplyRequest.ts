@@ -195,6 +195,7 @@ type InFlightThreadState = {
   status: LlmUiStatus;
   statusDetail: string;
   replyBuffer: string;
+  lastProgressAtMs: number;
 };
 
 type PanelRequestState = {
@@ -208,6 +209,16 @@ type PanelRequestState = {
 };
 
 const LEGACY_MAIN_PANEL_ID = "main";
+
+// A thread whose in-flight turn has produced no Codex event for this long is treated as
+// lost (e.g. its relay notifications were misrouted) when the user sends the next
+// message: the stale turn is interrupted and its send gate released instead of
+// silently dropping the new message forever. Long enough that a quiet-but-alive tool
+// run is unlikely to be cut; turns waiting on an approval are never expired. A command
+// execution that stays silent past the window can still be expired — accepted tradeoff:
+// expiry only fires when the user actively sends again on this thread, and the
+// interrupt is delivered to the runner either way.
+const STALE_ACTIVE_TURN_TIMEOUT_MS = 5 * 60_000;
 
 function normalizePanelId(panelIdRaw: unknown): string {
   const panelId = String(panelIdRaw || "").trim();
@@ -517,12 +528,70 @@ export function useCodexReplyRequest<
         }, { throttleMs: 0 });
       }
     }
-    const activeRequestSeqForThread = requestThreadKey
+    // Send-gate liveness: an in-flight turn that stopped producing events (and is not
+    // waiting on an approval) must not block this thread's sends forever. Interrupt it,
+    // surface the failure through the runtime request store, and release the gate.
+    const releaseStaleActiveTurnGate = () => {
+      if (!requestThreadKey) return false;
+      const staleSeq = panelRequestState.activeRequestSeqByThreadId[requestThreadKey] || 0;
+      if (staleSeq <= 0) return false;
+      const inFlightState = inFlightByThreadRef.current[requestThreadKey];
+      const staleTurnRequest = panelRequestState.inFlightTurnRequestByThreadId[requestThreadKey];
+      if (inFlightState && inFlightState.requestSeq !== staleSeq) return false;
+      if (staleTurnRequest && staleTurnRequest.requestSeq !== staleSeq) return false;
+      if (inFlightState?.status === "tool_waiting_approval") return false;
+      const lastProgressAtMs = Math.max(
+        Number(inFlightState?.lastProgressAtMs || 0),
+        Number(inFlightState?.startedAt || 0),
+        Number(staleTurnRequest?.startedAt || 0)
+      );
+      // No tracked session and no timestamps means the gate leaked; release immediately.
+      if (lastProgressAtMs > 0 && Date.now() - lastProgressAtMs < STALE_ACTIVE_TURN_TIMEOUT_MS) {
+        return false;
+      }
+      if (lastProgressAtMs <= 0 && (inFlightState || staleTurnRequest)) return false;
+      current.logSessionDiag("reply_http_active_request_expired", {
+        panelId: requestPanelId,
+        requestThreadKey,
+        staleRequestSeq: staleSeq,
+        staleRequestId: String(inFlightState?.requestId || staleTurnRequest?.requestId || ""),
+        lastProgressAgoMs: lastProgressAtMs > 0 ? Date.now() - lastProgressAtMs : null,
+        hadInFlightSession: !!staleTurnRequest,
+      }, { throttleMs: 0 });
+      if (typeof current.updateConversationRuntimeRequest === "function") {
+        current.updateConversationRuntimeRequest({
+          requestId: String(inFlightState?.requestId || staleTurnRequest?.requestId || `reply-stale-${staleSeq}`),
+          requestSeq: staleSeq,
+          sessionId: requestThreadKey,
+          sourcePanelId: requestPanelId,
+          threadId: requestThreadKey,
+          lifecycle: "error",
+          status: "error",
+          statusDetail: "応答が届かなくなったため中断しました",
+          startedAtMs: Number(staleTurnRequest?.startedAt || inFlightState?.startedAt || Date.now()),
+          updatedAtMs: Date.now(),
+          completedAtMs: Date.now(),
+        });
+      }
+      if (staleTurnRequest) {
+        void Promise.resolve()
+          .then(() => staleTurnRequest.session.interrupt())
+          .catch(() => undefined);
+      }
+      delete inFlightByThreadRef.current[requestThreadKey];
+      clearPanelRequestTracking(requestPanelId, staleSeq, requestThreadKey);
+      return true;
+    };
+    let activeRequestSeqForThread = requestThreadKey
       ? (panelRequestState.activeRequestSeqByThreadId[requestThreadKey] || 0)
       : 0;
-    const shouldBlockForActiveRequest = requestThreadKey
+    let shouldBlockForActiveRequest = requestThreadKey
       ? activeRequestSeqForThread > 0
       : panelRequestState.activeRequestSeq > 0;
+    if (shouldBlockForActiveRequest && requestThreadKey && releaseStaleActiveTurnGate()) {
+      activeRequestSeqForThread = panelRequestState.activeRequestSeqByThreadId[requestThreadKey] || 0;
+      shouldBlockForActiveRequest = activeRequestSeqForThread > 0;
+    }
     if (!effectiveTranscript || shouldBlockForActiveRequest) {
       current.logSessionDiag("reply_http_send_skipped", {
         reason: !effectiveTranscript
@@ -688,12 +757,15 @@ export function useCodexReplyRequest<
         delete inFlightByThreadRef.current[threadId];
       }
     };
-    const upsertInFlightState = (threadIdRaw: unknown, updater: (prev: InFlightThreadState | null) => InFlightThreadState) => {
+    const upsertInFlightState = (
+      threadIdRaw: unknown,
+      updater: (prev: InFlightThreadState | null) => Omit<InFlightThreadState, "lastProgressAtMs">
+    ) => {
       const threadId = String(threadIdRaw || "").trim();
       if (!threadId) return;
       const prev = inFlightByThreadRef.current[threadId];
       const next = updater(prev || null);
-      inFlightByThreadRef.current[threadId] = next;
+      inFlightByThreadRef.current[threadId] = { ...next, lastProgressAtMs: Date.now() };
     };
     const moveInFlightStateKey = (fromRaw: unknown, toRaw: unknown) => {
       const from = String(fromRaw || "").trim();
@@ -1111,6 +1183,12 @@ export function useCodexReplyRequest<
           }
           if (!method) return;
           if (!isActiveRequest() || isCancelledRequest()) return;
+          if (trackedThreadId) {
+            const inFlightState = inFlightByThreadRef.current[trackedThreadId];
+            if (inFlightState && inFlightState.requestSeq === requestSeq) {
+              inFlightState.lastProgressAtMs = Date.now();
+            }
+          }
           const payload = params && typeof params === "object" ? params as Record<string, unknown> : {};
           if (method === "item/started" && String((payload as any)?.item?.type || "") === "agentMessage") {
             rememberAgentMessageItemId(extractAgentMessageItemId(payload));
@@ -1441,9 +1519,6 @@ export function useCodexReplyRequest<
           messageId: autoSpeechTarget.messageId,
         });
       }
-      if (trackedThreadId) {
-        delete inFlightByThreadRef.current[trackedThreadId];
-      }
     } catch (error) {
       if (isCodexAppServerTurnInterruptedError(error) || isCancelledRequest()) {
         const interruptedAtMs = Date.now();
@@ -1453,9 +1528,6 @@ export function useCodexReplyRequest<
           isCancelledRequest() ? "cancelled" : "interrupted",
           { completedAtMs: interruptedAtMs }
         );
-        if (trackedThreadId) {
-          delete inFlightByThreadRef.current[trackedThreadId];
-        }
         if (isActiveRequest()) {
           logTurnDiag("reply_http_interrupted", {
             interrupted: true,
@@ -1512,10 +1584,11 @@ export function useCodexReplyRequest<
         }, errorWriteOptions);
       }
       finalUiSettled = true;
-      if (trackedThreadId) {
-        delete inFlightByThreadRef.current[trackedThreadId];
-      }
     } finally {
+      // Sole owner of in-flight cleanup for this request: seq-guarded, so a delayed
+      // settle of an already-superseded turn can never wipe a newer turn's state
+      // (e.g. a stale-expired turn's interrupt landing while the replacement turn
+      // is waiting on an approval).
       purgeInFlightStatesForRequest(requestSeq);
       const clearedRequestTracking = clearPanelRequestTracking(requestPanelId, requestSeq, requestThreadKey);
       const isFinalPanelActive = clearedRequestTracking.clearedPanelActive;
