@@ -57,8 +57,6 @@ export { startCodexAppServerTurnRelayObserver } from "./turnRelayObserver";
 
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
 const PRE_TURN_RPC_TIMEOUT_MS = 15000;
-// Manager mode's own reconnect backoff tops out at ~10s; give it plenty of
-// attempts before giving up on a live turn resuming after a WS drop.
 const MANAGER_RECONNECT_WAIT_TIMEOUT_MS = 120_000;
 
 type RunnerRelayReconnectTrigger =
@@ -86,101 +84,6 @@ export function isCodexAppServerTurnInterruptedError(error: unknown): boolean {
     interruptedError.code === CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE ||
     interruptedError.name === "CodexAppServerTurnInterruptedError"
   );
-}
-
-function summarizeIncomingRpcFrame(
-  rawData: string,
-  pendingMethods: Map<JsonRpcId, string>
-): string {
-  const raw = String(rawData || "");
-  const info: string[] = [`chars=${raw.length}`];
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    info.push("empty=1");
-    return info.join(" ");
-  }
-  const pendingPreview = Array.from(pendingMethods.entries())
-    .slice(0, 3)
-    .map(([id, method]) => `${id}:${method}`)
-    .join(",");
-  info.push(`pendingCount=${pendingMethods.size}`);
-  if (pendingPreview) {
-    info.push(`pending=${pendingPreview}`);
-  }
-  let parsed: any = null;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    info.push("json=0");
-    return info.join(" ");
-  }
-  info.push("json=1");
-  if (!parsed || typeof parsed !== "object") {
-    info.push(`type=${typeof parsed}`);
-    return info.join(" ");
-  }
-  const channel = String((parsed as any)?.channel || "").trim();
-  const op = String((parsed as any)?.op || "").trim();
-  if (channel) info.push(`ch=${channel}`);
-  if (op) info.push(`op=${op}`);
-  const requestId = String((parsed as any)?.requestId || "").trim();
-  if (requestId) info.push(`req=${requestId}`);
-  let rpcPayload: any = parsed;
-  if (channel === "llm" && op === "rpc") {
-    const payload = (parsed as any)?.payload;
-    if (typeof payload === "string") {
-      try {
-        rpcPayload = JSON.parse(payload);
-      } catch {
-        info.push("payloadJson=0");
-        return info.join(" ");
-      }
-      info.push("payloadJson=1");
-    } else if (payload && typeof payload === "object") {
-      rpcPayload = payload;
-    } else {
-      info.push("payload=none");
-      return info.join(" ");
-    }
-  }
-  if (!rpcPayload || typeof rpcPayload !== "object") {
-    info.push("rpcObject=0");
-    return info.join(" ");
-  }
-  const rpcIdRaw = (rpcPayload as any)?.id;
-  const rpcMethod = String((rpcPayload as any)?.method || "").trim();
-  if (typeof rpcIdRaw !== "undefined") {
-    info.push(`rpcId=${String(rpcIdRaw)}`);
-  }
-  if (rpcMethod) {
-    info.push(`rpcMethod=${rpcMethod}`);
-  }
-  if (Object.prototype.hasOwnProperty.call(rpcPayload, "result")) {
-    info.push("hasResult=1");
-  }
-  if (Object.prototype.hasOwnProperty.call(rpcPayload, "error")) {
-    info.push("hasError=1");
-  }
-  return info.join(" ");
-}
-
-function summarizeParsedJsonRpcShape(message: Record<string, unknown>): string {
-  const keys = Object.keys(message || {}).slice(0, 8).join(",");
-  const idValue = (message as any)?.id;
-  const methodValue = (message as any)?.method;
-  const hasResult = Object.prototype.hasOwnProperty.call(message || {}, "result");
-  const hasError = Object.prototype.hasOwnProperty.call(message || {}, "error");
-  const methodType = typeof methodValue;
-  const idType = typeof idValue;
-  return [
-    `keys=${keys || "-"}`,
-    `idType=${idType}`,
-    `methodType=${methodType}`,
-    `hasResult=${hasResult ? 1 : 0}`,
-    `hasError=${hasError ? 1 : 0}`,
-    idType !== "undefined" ? `id=${String(idValue)}` : "",
-    methodType === "string" ? `method=${String(methodValue)}` : "",
-  ].filter(Boolean).join(" ");
 }
 
 function extractThreadReadPayload(result: unknown): unknown {
@@ -249,15 +152,23 @@ export function startCodexAppServerTurn(
   const runnerWsRpcIds = new CodexRunnerWsJsonRpcIdMapper();
   const managerUnsubscribers: Array<() => void> = [];
   let reconnectRunnerRelay: ((trigger: RunnerRelayReconnectTrigger, detail: string) => boolean) | null = null;
-  // Manager-mode reconnect wait state (see the useRunnerWsManager block below).
   let awaitingReconnect = false;
   let reconnectWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let resumeSentGeneration = -1;
-  function canResumeAfterReconnect() {
-    return Boolean(
-      turnStartIssued && activeThreadId && !turnCompletedObserved && !interruptRequested && !finalized
-    );
-  }
+  // Admission waiters: pre-turn setup RPCs plus mid-turn retries of unsent server
+  // responses (approval decisions) can wait concurrently, so this is a set, not a slot.
+  const admissionWaiters = new Set<(error?: Error) => void>();
+  let waitForAdmissionRef: ((requireSnapshotSignal?: boolean) => Promise<number>) | null = null;
+  let operationEpoch = 0;
+  let admissionConnectRequested = false;
+  const sentPendingRpcIds = new Set<JsonRpcId>();
+  const unsentRunnerRpcErrors = new WeakSet<Error>();
+  const pendingRpcTimeouts = new Map<JsonRpcId, {
+    remainingMs: number;
+    startedAtMs: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    expire: () => void;
+  }>();
   const notifyThreadIdResolved = (threadIdRaw: unknown) => {
     if (!options.onThreadIdResolved) return;
     const threadId = String(threadIdRaw || "").trim();
@@ -322,7 +233,21 @@ export function startCodexAppServerTurn(
     return ws?.readyState ?? WebSocket.CLOSED;
   }
 
+  function settleAdmissionWaiters(error?: Error) {
+    for (const settle of Array.from(admissionWaiters)) {
+      settle(error);
+    }
+  }
+
+  function isRetriableRunnerWsSendError(error: unknown): error is Error {
+    return error instanceof Error && (
+      error.message.includes("runner_ws_inactive_start_blocked") ||
+      error.message.includes("runner_ws_not_ready")
+    );
+  }
+
   function cleanup() {
+    settleAdmissionWaiters(createTurnInterruptedError());
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -340,6 +265,11 @@ export function startCodexAppServerTurn(
     }
     pending.clear();
     pendingMethods.clear();
+    sentPendingRpcIds.clear();
+    for (const timeout of pendingRpcTimeouts.values()) {
+      if (timeout.timer) clearTimeout(timeout.timer);
+    }
+    pendingRpcTimeouts.clear();
     for (const entry of pendingApprovalRequests.values()) {
       entry.active = false;
     }
@@ -360,6 +290,9 @@ export function startCodexAppServerTurn(
   }
 
   function sendJson(payload: Record<string, unknown>) {
+    if (finalized || (interruptRequested && payload.method !== "turn/interrupt")) {
+      throw createTurnInterruptedError();
+    }
     const id = Number(payload.id);
     const method = String(payload.method || "");
     let runnerRequestId = "";
@@ -372,13 +305,6 @@ export function startCodexAppServerTurn(
         id
       );
     }
-    emitLog({
-      stage: "rpc_send",
-      method: method || undefined,
-      id: Number.isFinite(id) ? id : undefined,
-      readyState: getTransportReadyState(),
-      message: runnerRequestId ? `requestId=${runnerRequestId}` : undefined,
-    });
     if (useRunnerWsManager && runnerWebSocketManager) {
       const outboundPayload = runnerWsRpcIds.rewriteOutbound(payload);
       const message: RunnerWsMessage = {
@@ -391,15 +317,18 @@ export function startCodexAppServerTurn(
         payload: outboundPayload,
       };
       runnerWebSocketManager.send(message);
-      return;
+    } else {
+      if (!ws) throw new Error("Codex app-server WebSocket is not initialized");
+      ws.send(useRunnerWsEnvelope
+        ? encodeRunnerWsLlmRpc(payload, activeThreadId, {
+          requestId: runnerRequestId || undefined,
+          operationId: runnerWsOperationId,
+          sessionId: runnerWsSessionId,
+        })
+        : JSON.stringify(payload));
     }
-    if (!ws) throw new Error("Codex app-server WebSocket is not initialized");
-    ws.send(useRunnerWsEnvelope
-      ? encodeRunnerWsLlmRpc(payload, activeThreadId, {
-        requestId: runnerRequestId || undefined,
-        sessionId: activeThreadId || undefined,
-      })
-      : JSON.stringify(payload));
+    if (Number.isInteger(id)) sentPendingRpcIds.add(id);
+    if (method === "turn/start") turnStartIssued = true;
   }
 
   function sendRequest<T>(method: string, params: Record<string, unknown>, rpcTimeoutMs?: number) {
@@ -409,40 +338,42 @@ export function startCodexAppServerTurn(
       const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
         ? Math.floor(timeoutMsRaw)
         : 0;
-      let requestTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
       const clearRequestTimeout = () => {
-        if (!requestTimeoutHandle) return;
-        clearTimeout(requestTimeoutHandle);
-        requestTimeoutHandle = null;
+        const timeout = pendingRpcTimeouts.get(id);
+        if (timeout?.timer) clearTimeout(timeout.timer);
+        pendingRpcTimeouts.delete(id);
       };
       pending.set(id, {
         resolve: (value) => {
           clearRequestTimeout();
           pendingMethods.delete(id);
+          sentPendingRpcIds.delete(id);
           resolve(value);
         },
         reject: (error) => {
           clearRequestTimeout();
           pendingMethods.delete(id);
+          sentPendingRpcIds.delete(id);
           reject(error);
         },
       });
       pendingMethods.set(id, method);
       if (timeoutMs > 0) {
-        requestTimeoutHandle = setTimeout(() => {
+        const expire = () => {
           const pendingEntry = pending.get(id);
           if (!pendingEntry) return;
           pending.delete(id);
           pendingMethods.delete(id);
-          emitLog({
-            stage: "rpc_timeout",
-            method,
-            id,
-            readyState: getTransportReadyState(),
-            message: `timeoutMs=${timeoutMs}`,
-          });
+          sentPendingRpcIds.delete(id);
+          pendingRpcTimeouts.delete(id);
           reject(new Error(`Codex app-server RPC timeout(${timeoutMs}ms): ${method} id=${id}`));
-        }, timeoutMs);
+        };
+        const timeout = {
+          remainingMs: timeoutMs, startedAtMs: Date.now(),
+          timer: null as ReturnType<typeof setTimeout> | null, expire,
+        };
+        timeout.timer = setTimeout(expire, timeoutMs);
+        pendingRpcTimeouts.set(id, timeout);
       }
       try {
         sendJson({
@@ -454,9 +385,30 @@ export function startCodexAppServerTurn(
         clearRequestTimeout();
         pending.delete(id);
         pendingMethods.delete(id);
-        reject(error instanceof Error ? error : new Error(toErrorMessage(error)));
+        sentPendingRpcIds.delete(id);
+        const sendError = error instanceof Error ? error : new Error(toErrorMessage(error));
+        unsentRunnerRpcErrors.add(sendError);
+        reject(sendError);
       }
     });
+  }
+
+  function pausePendingRpcTimeouts() {
+    const now = Date.now();
+    for (const timeout of pendingRpcTimeouts.values()) {
+      if (!timeout.timer) continue;
+      clearTimeout(timeout.timer);
+      timeout.timer = null;
+      timeout.remainingMs = Math.max(1, timeout.remainingMs - (now - timeout.startedAtMs));
+    }
+  }
+
+  function resumePendingRpcTimeouts() {
+    for (const timeout of pendingRpcTimeouts.values()) {
+      if (timeout.timer) continue;
+      timeout.startedAtMs = Date.now();
+      timeout.timer = setTimeout(timeout.expire, timeout.remainingMs);
+    }
   }
 
   function sendNotification(method: string, params: Record<string, unknown>) {
@@ -477,6 +429,7 @@ export function startCodexAppServerTurn(
       return;
     }
     pending.delete(id);
+    sentPendingRpcIds.delete(id);
     const method = pendingMethods.get(id) || "";
     pendingMethods.delete(id);
     emitLog({
@@ -503,6 +456,7 @@ export function startCodexAppServerTurn(
       return;
     }
     pending.delete(id);
+    sentPendingRpcIds.delete(id);
     const method = pendingMethods.get(id) || "";
     pendingMethods.delete(id);
     emitLog({
@@ -525,7 +479,6 @@ export function startCodexAppServerTurn(
       });
       return false;
     }
-    interruptRpcSent = true;
     const id = nextId++;
     emitLog({
       stage: "turn_interrupt_send",
@@ -543,13 +496,9 @@ export function startCodexAppServerTurn(
           turnId: activeTurnId,
         },
       });
-      emitLog({
-        stage: "turn_interrupt_sent",
-        method: "turn/interrupt",
-        id,
-        readyState: getTransportReadyState(),
-      });
     } catch (error) {
+      // Leave interruptRpcSent unset so the relay-attach path retries the send;
+      // reporting success here would strand a still-running turn on the runner.
       emitLog({
         stage: "turn_interrupt_error",
         method: "turn/interrupt",
@@ -557,8 +506,44 @@ export function startCodexAppServerTurn(
         message: toErrorMessage(error),
         readyState: getTransportReadyState(),
       });
+      return false;
     }
+    interruptRpcSent = true;
+    emitLog({
+      stage: "turn_interrupt_sent",
+      method: "turn/interrupt",
+      id,
+      readyState: getTransportReadyState(),
+    });
     return true;
+  }
+
+  // Server-initiated requests (approval decisions and error replies) must reach the
+  // runner even when the synchronous send is rejected before hitting the wire
+  // (runner_ws_not_ready during a background/reconnect window). Same principle as the
+  // pre-turn admission loop: only retry sends that provably never left this client.
+  async function sendServerResponseWhenAdmitted(
+    payload: Record<string, unknown>,
+    isStillRelevant: () => boolean
+  ) {
+    while (true) {
+      if (finalized || !isStillRelevant()) return false;
+      try {
+        sendJson(payload);
+        return true;
+      } catch (error) {
+        if (!useRunnerWsManager || !waitForAdmissionRef || !isRetriableRunnerWsSendError(error)) {
+          throw error;
+        }
+        emitLog({
+          stage: "server_response_resend_wait",
+          id: Number.isInteger(Number(payload.id)) ? Number(payload.id) : undefined,
+          message: toErrorMessage(error),
+          readyState: getTransportReadyState(),
+        });
+        await waitForAdmissionRef(true);
+      }
+    }
   }
 
   async function handleServerRequest(message: JsonRpcIncoming) {
@@ -579,13 +564,13 @@ export function startCodexAppServerTurn(
           id,
           readyState: getTransportReadyState(),
         });
-        sendJson({
+        await sendServerResponseWhenAdmitted({
           id,
           error: {
             code: -32601,
             message: `Unsupported approval method: ${method}`,
           },
-        });
+        }, () => !interruptRequested);
         return;
       }
       const request = normalizeAppServerApprovalRequest(params, {
@@ -602,12 +587,12 @@ export function startCodexAppServerTurn(
           throw new Error(`Invalid approval action: ${String(decided)}`);
         }
         if (!guard.active || finalized) return;
-        sendJson({
+        await sendServerResponseWhenAdmitted({
           id,
           result: {
             decision: toCodexApprovalDecision(decided),
           },
-        });
+        }, () => guard.active);
       } catch (error) {
         if (!guard.active || finalized) return;
         emitLog({
@@ -622,13 +607,13 @@ export function startCodexAppServerTurn(
       }
       return;
     }
-    sendJson({
+    await sendServerResponseWhenAdmitted({
       id,
       error: {
         code: -32000,
         message: `${method || "unknown_method"} is not supported by this client`,
       },
-    });
+    }, () => !interruptRequested);
   }
 
   function handleNotification(methodRaw: unknown, paramsRaw: unknown) {
@@ -731,6 +716,9 @@ export function startCodexAppServerTurn(
           reconnectWaitTimer = null;
         }
       }
+      if (interruptRequested && activeThreadId && activeTurnId && sendTurnInterruptIfPossible()) {
+        failRef?.(createTurnInterruptedError());
+      }
     } else if (control.type === "runner_relay_resume_miss") {
       const detail = control.reason || "resume_miss";
       failRef?.(new Error(`Codex app-server relay resume miss: ${detail}`));
@@ -760,6 +748,7 @@ export function startCodexAppServerTurn(
     function fail(error: unknown) {
       if (finalized) return;
       finalized = true;
+      operationEpoch += 1;
       cleanup();
       reject(error instanceof Error ? error : new Error(toErrorMessage(error)));
     }
@@ -767,6 +756,7 @@ export function startCodexAppServerTurn(
     function succeed(result: CodexAppServerTurnResult) {
       if (finalized) return;
       finalized = true;
+      operationEpoch += 1;
       cleanup();
       resolve(result);
     }
@@ -850,15 +840,102 @@ export function startCodexAppServerTurn(
       reconnectTimer = setTimeout(runReconnect, reconnectDelayMs);
       return true;
     };
-    // Manager mode never falls back to a direct socket (singleton WS policy);
-    // leaving this unset there makes runner_relay_closed fail the turn instead
-    // of racing a brand-new WebSocket into existence.
     if (!useRunnerWsManager) {
       reconnectRunnerRelay = tryReconnectViaRunnerRelay;
     }
 
+    const requestManagerConnection = () => {
+      if (!runnerWebSocketManager || admissionConnectRequested) return;
+      const snapshot = runnerWebSocketManager.getSnapshot();
+      if (snapshot.appState !== "active" || snapshot.connectionState !== "idle") return;
+      admissionConnectRequested = true;
+      runnerWebSocketManager.connect().catch(() => undefined);
+    };
+    const waitForManagerAdmission = (requireSnapshotSignal = false): Promise<number> => {
+      if (!runnerWebSocketManager) return Promise.resolve(operationEpoch);
+      if (finalized || interruptRequested) return Promise.reject(createTurnInterruptedError());
+      const snapshot = runnerWebSocketManager.getSnapshot();
+      if (!requireSnapshotSignal && snapshot.appState === "active" && snapshot.connectionState === "ready") {
+        return Promise.resolve(operationEpoch);
+      }
+      if (snapshot.appState === "active" && snapshot.connectionState === "stopped") {
+        return Promise.reject(new Error("Codex app-server runner-ws stopped"));
+      }
+      return new Promise<number>((resolve, reject) => {
+        const epoch = operationEpoch;
+        const settle = (error?: Error) => {
+          admissionWaiters.delete(settle);
+          error ? reject(error) : resolve(epoch);
+        };
+        admissionWaiters.add(settle);
+        requestManagerConnection();
+      });
+    };
+    waitForAdmissionRef = waitForManagerAdmission;
+    const sendRequestWhenAdmitted = async <T,>(
+      method: string,
+      params: Record<string, unknown>,
+      rpcTimeoutMs?: number
+    ): Promise<T> => {
+      if (!runnerWebSocketManager) return sendRequest<T>(method, params, rpcTimeoutMs);
+      let requireSnapshotSignal = false;
+      while (true) {
+        const epoch = await waitForManagerAdmission(requireSnapshotSignal);
+        requireSnapshotSignal = false;
+        const snapshot = runnerWebSocketManager.getSnapshot();
+        if (epoch !== operationEpoch || finalized || interruptRequested) throw createTurnInterruptedError();
+        if (snapshot.appState !== "active" || snapshot.connectionState !== "ready") continue;
+        try {
+          return await sendRequest<T>(method, params, rpcTimeoutMs);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            unsentRunnerRpcErrors.has(error) &&
+            isRetriableRunnerWsSendError(error)
+          ) {
+            requireSnapshotSignal = true;
+            continue;
+          }
+          throw error;
+        }
+      }
+    };
+    const sendNotificationWhenAdmitted = (method: string, params: Record<string, unknown>) => {
+      let requireSnapshotSignal = false;
+      const initialSnapshot = runnerWebSocketManager?.getSnapshot();
+      if (!initialSnapshot || (
+        initialSnapshot.appState === "active" && initialSnapshot.connectionState === "ready"
+      )) {
+        try {
+          sendNotification(method, params);
+          return;
+        } catch (error) {
+          if (!isRetriableRunnerWsSendError(error)) throw error;
+          requireSnapshotSignal = true;
+        }
+      }
+      return (async () => { while (true) {
+        const epoch = await waitForManagerAdmission(requireSnapshotSignal);
+        requireSnapshotSignal = false;
+        const snapshot = runnerWebSocketManager?.getSnapshot();
+        if (epoch !== operationEpoch || finalized || interruptRequested) throw createTurnInterruptedError();
+        if (snapshot && (snapshot.appState !== "active" || snapshot.connectionState !== "ready")) continue;
+        try {
+          sendNotification(method, params);
+          return;
+        } catch (error) {
+          if (isRetriableRunnerWsSendError(error)) {
+            requireSnapshotSignal = true;
+            continue;
+          }
+          throw error;
+        }
+      } })();
+    };
+
     const runInitialTurnSetup = async (failIfActive: (error: Error) => void) => {
-      await sendRequest("initialize", {
+      await waitForManagerAdmission();
+      await sendRequestWhenAdmitted("initialize", {
         clientInfo: {
           name: "expo-ios-client",
           title: "Expo iOS Client",
@@ -869,10 +946,11 @@ export function startCodexAppServerTurn(
           optOutNotificationMethods: [],
         },
       }, PRE_TURN_RPC_TIMEOUT_MS);
-      sendNotification("initialized", {});
+      const initializedAdmission = sendNotificationWhenAdmitted("initialized", {});
+      if (initializedAdmission) await initializedAdmission;
 
       const readThreadSnapshot = async (threadId: string, reason: string) => {
-        const readResult = await sendRequest<Record<string, unknown>>("thread/read", {
+        const readResult = await sendRequestWhenAdmitted<Record<string, unknown>>("thread/read", {
           threadId,
           includeTurns: true,
         }, PRE_TURN_RPC_TIMEOUT_MS);
@@ -915,7 +993,7 @@ export function startCodexAppServerTurn(
               reason: "before_resume_read_error",
             });
           }
-          const resumed = await sendRequest<CodexThreadResumeResponse>("thread/resume", {
+          const resumed = await sendRequestWhenAdmitted<CodexThreadResumeResponse>("thread/resume", {
             threadId: activeThreadId,
             cwd: cwd || undefined,
             persistExtendedHistory: false,
@@ -943,7 +1021,7 @@ export function startCodexAppServerTurn(
         }
       }
       if (!activeThreadId) {
-        const started = await sendRequest<CodexThreadStartResponse>("thread/start", {
+        const started = await sendRequestWhenAdmitted<CodexThreadStartResponse>("thread/start", {
           cwd: cwd || undefined,
           serviceName,
           approvalPolicy,
@@ -988,11 +1066,8 @@ export function startCodexAppServerTurn(
       if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh") {
         turnStartParams.effort = effort;
       }
-      turnStartIssued = true;
-      const turnStarted = await sendRequest<CodexTurnStartResponse>(
-        "turn/start",
-        turnStartParams,
-        PRE_TURN_RPC_TIMEOUT_MS
+      const turnStarted = await sendRequestWhenAdmitted<CodexTurnStartResponse>(
+        "turn/start", turnStartParams, PRE_TURN_RPC_TIMEOUT_MS
       );
       activeTurnId = String(turnStarted?.turn?.id || "").trim();
 
@@ -1027,33 +1102,10 @@ export function startCodexAppServerTurn(
       if (isRelayedLlmRpc) {
         reconnectAttempts = 0;
       }
-      if (pendingMethods.size > 0) {
-        emitLog({
-          stage: "rx_raw",
-          message: summarizeIncomingRpcFrame(rawData, pendingMethods),
-          readyState: getTransportReadyState(),
-        });
-      }
       if (maybeHandleRunnerRpcAck(rawData)) return;
       if (maybeHandleRunnerRelayControl(rawData)) return;
       const incoming = normalizeRunnerWsIncomingCodexRpc(rawData);
-      if (pendingMethods.size > 0 && incoming.type === "rpc") {
-        emitLog({
-          stage: "rx_normalized",
-          message: `chars=${incoming.rawData.length}`,
-          readyState: getTransportReadyState(),
-        });
-      }
-      if (incoming.type === "ignore") {
-        if (pendingMethods.size > 0) {
-          emitLog({
-            stage: "rx_ignored",
-            message: summarizeIncomingRpcFrame(rawData, pendingMethods),
-            readyState: getTransportReadyState(),
-          });
-        }
-        return;
-      }
+      if (incoming.type === "ignore") return;
       if (incoming.type === "error") {
         emitLog({
           stage: "rx_runner_error",
@@ -1065,26 +1117,10 @@ export function startCodexAppServerTurn(
         return;
       }
       const parsedMessage = parseJsonRpcMessage(incoming.rawData);
-      if (!parsedMessage) {
-        if (pendingMethods.size > 0) {
-          emitLog({
-            stage: "rx_parse_null",
-            message: summarizeIncomingRpcFrame(rawData, pendingMethods),
-            readyState: getTransportReadyState(),
-          });
-        }
-        return;
-      }
+      if (!parsedMessage) return;
       const message = useRunnerWsManager
         ? runnerWsRpcIds.rewriteIncoming(parsedMessage)
         : parsedMessage;
-      if (pendingMethods.size > 0) {
-        emitLog({
-          stage: "rx_jsonrpc_shape",
-          message: summarizeParsedJsonRpcShape(message),
-          readyState: getTransportReadyState(),
-        });
-      }
       const id = message.id;
       const hasId = typeof id !== "undefined";
       const method = message.method;
@@ -1249,13 +1285,6 @@ export function startCodexAppServerTurn(
     };
 
     if (useRunnerWsManager && runnerWebSocketManager) {
-      let managerReadyObserved = runnerWebSocketManager.getSnapshot().connectionState === "ready";
-      let handledTerminal = false;
-      const failIfActive = (error: Error) => {
-        if (handledTerminal) return;
-        handledTerminal = true;
-        fail(error);
-      };
       managerUnsubscribers.push(runnerWebSocketManager.subscribe(
         {
           channel: "llm",
@@ -1265,36 +1294,78 @@ export function startCodexAppServerTurn(
         },
         (message) => {
           if (finalized) return;
-          handleIncomingRawData(JSON.stringify(message), failIfActive);
+          handleIncomingRawData(JSON.stringify(message), fail);
         }
       ));
-      // threadId isn't known until thread/start or thread/resume resolves, so this
-      // subscribes broadly and matches activeThreadId inside the handler instead of
-      // via the filter (mirrors the relay observer's resume pattern).
       managerUnsubscribers.push(runnerWebSocketManager.subscribe(
         { channel: "relay" },
         (message) => {
           if (finalized) return;
-          if (!activeThreadId || String(message.threadId || "") !== activeThreadId) return;
+          const matchesIdentity = (
+            message.operationId === runnerWsOperationId && message.sessionId === runnerWsSessionId
+          );
+          const matchesThread = Boolean(activeThreadId && message.threadId === activeThreadId);
+          if (!matchesIdentity && !matchesThread) return;
           maybeHandleRunnerRelayControl(JSON.stringify(message));
         }
       ));
+      const scheduleReconnectWaitTimer = () => {
+        if (reconnectWaitTimer) return;
+        reconnectWaitTimer = setTimeout(() => {
+          reconnectWaitTimer = null;
+          fail(new Error("Codex app-server runner-ws reconnect timeout"));
+        }, MANAGER_RECONNECT_WAIT_TIMEOUT_MS);
+      };
       managerUnsubscribers.push(runnerWebSocketManager.subscribeSnapshot(() => {
-        if (finalized || !managerReadyObserved) return;
+        if (finalized) return;
         const snapshot = runnerWebSocketManager.getSnapshot();
+        if (snapshot.connectionState !== "idle") admissionConnectRequested = false;
+        if (admissionWaiters.size > 0) {
+          if (snapshot.appState === "active" && snapshot.connectionState === "ready") {
+            settleAdmissionWaiters();
+          } else if (snapshot.appState === "active" && snapshot.connectionState === "stopped") {
+            settleAdmissionWaiters(new Error("Codex app-server runner-ws stopped"));
+          } else {
+            requestManagerConnection();
+          }
+          // Pre-turn setup owns admission exclusively; the reconnect/resume logic
+          // below only applies once turn/start has reached the wire (a mid-turn
+          // server-response resend can wait for admission at the same time).
+          if (!turnStartIssued) return;
+        }
+        // iOS freezes JS timers while the app is backgrounded, so a reconnect wait
+        // timer that expired during the freeze would fire the instant the app
+        // resumes — before reconnect/relay attach get any chance to recover the
+        // turn. Mirror the pendingRpcTimeouts pause/resume: drop the timer on
+        // leaving "active" and restart a fresh full window once active again.
+        if (awaitingReconnect) {
+          if (snapshot.appState !== "active") {
+            if (reconnectWaitTimer) {
+              clearTimeout(reconnectWaitTimer);
+              reconnectWaitTimer = null;
+            }
+          } else {
+            scheduleReconnectWaitTimer();
+          }
+        }
         if (snapshot.connectionState === "ready") {
+          resumePendingRpcTimeouts();
           if (awaitingReconnect && snapshot.generation !== resumeSentGeneration) {
             try {
+              const resumeByThread = Boolean(turnStartIssued && activeThreadId);
               runnerWebSocketManager.send({
                 channel: "relay",
                 op: "resume",
-                threadId: activeThreadId,
+                requestId: `${runnerWsOperationId}:resume:${snapshot.generation}`,
+                ...(resumeByThread
+                  ? { threadId: activeThreadId }
+                  : { operationId: runnerWsOperationId, sessionId: runnerWsSessionId }),
                 seq: lastRelaySeq,
               });
               resumeSentGeneration = snapshot.generation;
               emitLog({
                 stage: "ws_reconnect_resume_sent",
-                message: `threadId=${activeThreadId} fromSeq=${lastRelaySeq}`,
+                message: `${resumeByThread ? `threadId=${activeThreadId}` : "match=identity"} fromSeq=${lastRelaySeq}`,
                 readyState: getTransportReadyState(),
               });
             } catch {
@@ -1304,11 +1375,9 @@ export function startCodexAppServerTurn(
           }
           return;
         }
-        if (!canResumeAfterReconnect()) {
-          // Same terminal behavior as before this change (e.g. pre-turn drops).
-          failIfActive(new Error(`Codex app-server runner-ws disconnected: state=${snapshot.connectionState}`));
-          return;
-        }
+        pausePendingRpcTimeouts();
+        if (sentPendingRpcIds.size === 0 && !turnStartIssued) return;
+        if (turnCompletedObserved || (interruptRequested && !turnStartIssued)) return;
         if (!awaitingReconnect) {
           awaitingReconnect = true;
           emitLog({
@@ -1316,26 +1385,12 @@ export function startCodexAppServerTurn(
             message: `state=${snapshot.connectionState} threadId=${activeThreadId || "-"} fromSeq=${lastRelaySeq}`,
             readyState: getTransportReadyState(),
           });
-          reconnectWaitTimer = setTimeout(() => {
-            reconnectWaitTimer = null;
-            failIfActive(new Error("Codex app-server runner-ws reconnect timeout"));
-          }, MANAGER_RECONNECT_WAIT_TIMEOUT_MS);
+          if (snapshot.appState === "active") {
+            scheduleReconnectWaitTimer();
+          }
         }
       }));
-      runnerWebSocketManager.connect()
-        .then(() => {
-          if (finalized) return;
-          managerReadyObserved = true;
-          emitLog({
-            stage: "ws_open",
-            readyState: getTransportReadyState(),
-            message: "runner_ws_manager_ready",
-          });
-          return runInitialTurnSetup(failIfActive);
-        })
-        .catch((error) => {
-          failIfActive(error instanceof Error ? error : new Error(toErrorMessage(error)));
-        });
+      runInitialTurnSetup(fail).catch(fail);
       return;
     }
 
@@ -1350,6 +1405,7 @@ export function startCodexAppServerTurn(
     if (finalized) return;
     if (!interruptRequested) {
       interruptRequested = true;
+      operationEpoch += 1;
       emitLog({
         stage: "turn_interrupt_requested",
         message: `threadId=${activeThreadId || "-"} turnId=${activeTurnId || "-"}`,
@@ -1360,15 +1416,24 @@ export function startCodexAppServerTurn(
       }
       pendingApprovalRequests.clear();
     }
-    if (activeThreadId && activeTurnId) {
-      if (sendTurnInterruptIfPossible()) {
-        failRef?.(createTurnInterruptedError());
-        return;
-      }
-    }
-    if (getTransportReadyState() === WebSocket.CLOSING || getTransportReadyState() === WebSocket.CLOSED) {
+    if (activeThreadId && activeTurnId && sendTurnInterruptIfPossible()) {
       failRef?.(createTurnInterruptedError());
+      return;
     }
+    if (turnStartIssued) {
+      if (useRunnerWsManager && runnerWebSocketManager) {
+        const snapshot = runnerWebSocketManager.getSnapshot();
+        if (snapshot.connectionState !== "ready" && !awaitingReconnect) {
+          awaitingReconnect = true;
+          reconnectWaitTimer = setTimeout(() => {
+            reconnectWaitTimer = null;
+            failRef?.(new Error("Codex app-server runner-ws reconnect timeout"));
+          }, MANAGER_RECONNECT_WAIT_TIMEOUT_MS);
+        }
+      }
+      return;
+    }
+    failRef?.(createTurnInterruptedError());
   };
 
   return {

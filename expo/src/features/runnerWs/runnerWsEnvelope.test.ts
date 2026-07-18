@@ -1,4 +1,9 @@
-import { encodeRunnerWsLlmRpc, parseRunnerWsEnvelope } from "./llmAdapter";
+import {
+  encodeRunnerWsLlmRpc,
+  encodeRunnerWsRelayResume,
+  parseRunnerWsEnvelope,
+  parseRunnerWsRelayControlMessage,
+} from "./llmAdapter";
 import { encodeRunnerWsTtsStart } from "./ttsAdapter";
 import { isRunnerWsMessage } from "./types";
 
@@ -55,4 +60,24 @@ test("rejects non-string operationId on client envelopes", () => {
 
   expect(isRunnerWsMessage(invalid)).toBe(false);
   expect(parseRunnerWsEnvelope(JSON.stringify(invalid))).toBeNull();
+});
+
+test("encodes exact identity relay resume before threadId is known", () => {
+  expect(JSON.parse(encodeRunnerWsRelayResume("", 3, {
+    requestId: "resume-1", operationId: "op-1", sessionId: "session-1",
+  }))).toEqual({
+    channel: "relay", op: "resume", requestId: "resume-1",
+    operationId: "op-1", sessionId: "session-1", seq: 3,
+  });
+});
+
+test("parses relay control identity metadata", () => {
+  expect(parseRunnerWsRelayControlMessage(JSON.stringify({
+    channel: "relay", op: "attached", requestId: "resume-1",
+    operationId: "op-1", sessionId: "session-1", seq: 4,
+    payload: { replayed: 1, latestSeq: 4 },
+  }))).toMatchObject({
+    type: "runner_relay_attached", requestId: "resume-1",
+    operationId: "op-1", sessionId: "session-1", latestSeq: 4, replayed: 1,
+  });
 });

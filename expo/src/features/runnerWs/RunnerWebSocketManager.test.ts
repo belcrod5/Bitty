@@ -513,6 +513,46 @@ test("waits for one complete bootstrap configuration before creating a socket", 
   expect(JSON.stringify(manager.getSnapshot())).not.toContain("access-secret");
 });
 
+test("keeps the bootstrap waiter pending when options change before bootstrap completes", async () => {
+  const manager = new RunnerWebSocketManager({
+    bootstrapReady: false,
+    url: "",
+    token: "",
+    appState: "active",
+    clientInstanceId: "client-1",
+  });
+  const connecting = manager.connect();
+  let settled: "resolved" | "rejected" | null = null;
+  connecting.then(
+    () => { settled = "resolved"; },
+    () => { settled = "rejected"; }
+  );
+
+  // Cold start: credentials land in a commit where bootstrap is still pending.
+  // The waiter must survive this options change instead of rejecting as "manual".
+  manager.setConnectionOptions({
+    bootstrapReady: false,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(settled).toBeNull();
+  expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
+
+  const socket = nextSocket();
+  manager.setConnectionOptions({
+    bootstrapReady: true,
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+  });
+  expect(mockCreateWebSocketWithOptionalAuth).toHaveBeenCalledTimes(1);
+  socket.open();
+  socket.message({ channel: "control", op: "ready" });
+  await expect(connecting).resolves.toBeUndefined();
+  expect(settled).toBe("resolved");
+});
+
 test("keeps bootstrap connection waiting through background until active", async () => {
   const manager = new RunnerWebSocketManager({
     bootstrapReady: false,
@@ -965,6 +1005,35 @@ test("native constructor errors cannot expose authentication values in the snaps
   expect(JSON.stringify(manager.getSnapshot())).not.toContain("runner-token");
   expect(JSON.stringify(manager.getSnapshot())).not.toContain("access-secret");
   manager.disconnect("manual");
+});
+
+test("setConnectionOptions while active reconnects without a transient stopped snapshot", async () => {
+  const firstSocket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, firstSocket);
+
+  const observedStates: string[] = [];
+  manager.subscribeSnapshot(() => {
+    observedStates.push(manager.getSnapshot().connectionState);
+  });
+
+  const secondSocket = nextSocket();
+  manager.setConnectionOptions({ url: "ws://127.0.0.1:9999/runner-ws", token: "runner-token-2" });
+
+  // A config change with an immediate reconnect must never look terminal: turn
+  // admission fails hard on an active+stopped snapshot.
+  expect(observedStates).not.toContain("stopped");
+  expect(firstSocket.closeCalls).toBe(1);
+  expect(manager.getSnapshot().connectionState).toBe("connecting");
+
+  secondSocket.open();
+  secondSocket.message({ channel: "control", op: "ready", payload: { connectionId: "conn-2" } });
+  await Promise.resolve();
+  expect(manager.getSnapshot().connectionState).toBe("ready");
+
+  // Explicit disconnects keep their terminal semantics.
+  manager.disconnect("manual");
+  expect(manager.getSnapshot().connectionState).toBe("stopped");
 });
 
 test("active connection close notifies the owner before reconnecting", async () => {

@@ -244,11 +244,20 @@ export class RunnerWebSocketManager {
     this.cloudflareAccessClientSecret = nextCloudflareAccessClientSecret;
     this.connectionOptionsGeneration += 1;
     this.consecutiveAuthFailureCount = 0;
-    this.disconnect("config-changed");
-    if (
+    // When we reconnect right away, pass "config-changed" so the intermediate snapshot
+    // is "idle" (transient) instead of "stopped" (terminal): turn admission treats an
+    // active+stopped snapshot as a fatal error and must not observe it here.
+    // "manual" (which rejects the bootstrap waiter and lands on the terminal "stopped")
+    // is reserved for the truly terminal case: bootstrap already completed, nobody is
+    // waiting on the bootstrap barrier, and the new options cannot start a connection.
+    // While bootstrap is pending or a waiter exists, always use "config-changed" so the
+    // bootstrapConnectPromise stays pending and resolves once markBootstrapReady fires.
+    const willReconnect =
       this.bootstrapReady &&
-      (this.bootstrapConnectPromise || this.connectionStartError() === null)
-    ) {
+      (Boolean(this.bootstrapConnectPromise) || this.connectionStartError() === null);
+    const terminal = !willReconnect && this.bootstrapReady && !this.bootstrapConnectPromise;
+    this.disconnect(terminal ? "manual" : "config-changed");
+    if (willReconnect) {
       this.connect().catch(() => undefined);
     }
   }
@@ -320,7 +329,11 @@ export class RunnerWebSocketManager {
   disconnect(reason: "background" | "manual" | "logout" | "config-changed" = "manual") {
     this.clearReconnectTimer();
     this.clearHeartbeatTimer();
-    const nextState: RunnerWsConnectionState = reason === "background" ? "background" : "stopped";
+    const nextState: RunnerWsConnectionState = reason === "background"
+      ? "background"
+      // "config-changed" is always followed by an immediate connect() (see
+      // setConnectionOptions), so land on "idle" rather than the terminal "stopped".
+      : reason === "config-changed" ? "idle" : "stopped";
     this.connectionState = nextState;
     if (reason === "manual" || reason === "logout") {
       this.rejectBootstrapConnectWaiter(makeError(`runner_ws_disconnected_${reason}`));
