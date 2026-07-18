@@ -1,4 +1,4 @@
-import { buildHistoryFromSessionMessages, buildRestoredSessionState } from "./sessionRestore";
+import { buildHistoryFromSessionMessages, buildRestoredSessionState, clampContextUsedPct } from "./sessionRestore";
 import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import type { ConversationMessage, LlmSessionMessage } from "../types/appTypes";
 
@@ -112,5 +112,22 @@ describe("buildHistoryFromSessionMessages", () => {
       transcript: "run tests",
       reply: "done",
     });
+  });
+});
+
+describe("clampContextUsedPct", () => {
+  it("keeps missing values null instead of coercing them to 0", () => {
+    expect(clampContextUsedPct(null)).toBeNull();
+    expect(clampContextUsedPct(undefined)).toBeNull();
+    expect(clampContextUsedPct("")).toBeNull();
+    expect(clampContextUsedPct("not-a-number")).toBeNull();
+  });
+
+  it("rounds and clamps real values into 0-100", () => {
+    expect(clampContextUsedPct(41.6)).toBe(42);
+    expect(clampContextUsedPct(0)).toBe(0);
+    expect(clampContextUsedPct(-5)).toBe(0);
+    expect(clampContextUsedPct(250)).toBe(100);
+    expect(clampContextUsedPct("17")).toBe(17);
   });
 });

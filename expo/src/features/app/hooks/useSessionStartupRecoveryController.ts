@@ -1,5 +1,6 @@
-import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { AppState } from "react-native";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type {
   AppScreen,
   ConversationMessage,
@@ -10,6 +11,7 @@ import type {
 
 type UseSessionStartupRecoveryControllerArgs = {
   settingsLoaded: boolean;
+  runnerWebSocketManager: RunnerWebSocketManager;
   startupSessionRestoreAttemptedRef: MutableRefObject<boolean>;
   conversationMessagesRef: MutableRefObject<ConversationMessage[]>;
   codexWsUrl: string;
@@ -22,7 +24,6 @@ type UseSessionStartupRecoveryControllerArgs = {
     opts?: SelectSpecificLlmSessionOptions
   ) => Promise<boolean>;
   fetchLatestSessionIdForDirectory: (directoryRaw?: unknown) => Promise<string>;
-  clearSelectedLlmSession: () => void;
   setLlmSessionRestoreError: Dispatch<SetStateAction<string>>;
   activeScreen: AppScreen;
   llmSessionRestoreLoading: boolean;
@@ -53,6 +54,7 @@ type ResumeLatestSessionOnActiveOptions = {
 
 export function useSessionStartupRecoveryController({
   settingsLoaded,
+  runnerWebSocketManager,
   startupSessionRestoreAttemptedRef,
   conversationMessagesRef,
   codexWsUrl,
@@ -62,7 +64,6 @@ export function useSessionStartupRecoveryController({
   getLlmConversationSessionId,
   selectSpecificLlmSession,
   fetchLatestSessionIdForDirectory,
-  clearSelectedLlmSession,
   setLlmSessionRestoreError,
   activeScreen,
   llmSessionRestoreLoading,
@@ -77,6 +78,17 @@ export function useSessionStartupRecoveryController({
   llmBackend,
   codexWsToken,
 }: UseSessionStartupRecoveryControllerArgs) {
+  // The session restore data rides the runner WebSocket (thread/read) and the
+  // authenticated runner HTTP endpoints, so it shares the WS bootstrap barrier:
+  // it runs once the connection is ready and re-runs on each later ready
+  // transition until one restore pass succeeds (no polling, no free retries).
+  const runnerWsConnectionState = useSyncExternalStore(
+    runnerWebSocketManager.subscribeSnapshot,
+    () => runnerWebSocketManager.getSnapshot().connectionState,
+    () => runnerWebSocketManager.getSnapshot().connectionState
+  );
+  const runnerWsReady = runnerWsConnectionState === "ready";
+  const startupSessionRestoreInFlightRef = useRef(false);
   useEffect(() => {
     if (!settingsLoaded) return;
     if (startupSessionRestoreAttemptedRef.current) return;
@@ -85,7 +97,9 @@ export function useSessionStartupRecoveryController({
       return;
     }
     if (!codexWsUrl.trim()) return;
-    startupSessionRestoreAttemptedRef.current = true;
+    if (!runnerWsReady) return;
+    if (startupSessionRestoreInFlightRef.current) return;
+    startupSessionRestoreInFlightRef.current = true;
     const directory = normalizedLlmDirectoryForRequest();
     const preferredSessionId = parseOptionalSessionId(selectedLlmSessionId || getLlmConversationSessionId());
     void (async () => {
@@ -105,14 +119,22 @@ export function useSessionStartupRecoveryController({
           });
         }
       }
-      if (!restored && preferredSessionId) {
-        clearSelectedLlmSession();
+      // A false restore is not proof the session is gone: selectSpecificLlmSession
+      // resolves false for deduped concurrent restores, lost latest-request races,
+      // and runner errors alike. Keep the selected session so the next ready
+      // transition retries it; if it truly no longer exists, the latest-session
+      // fallback above replaces the selection once it succeeds.
+      if (restored) {
+        startupSessionRestoreAttemptedRef.current = true;
       }
     })().catch((err) => {
       setLlmSessionRestoreError(err instanceof Error ? err.message : String(err));
+    }).finally(() => {
+      startupSessionRestoreInFlightRef.current = false;
     });
   }, [
     codexWsUrl,
+    runnerWsReady,
     conversationMessagesRef,
     fetchLatestSessionIdForDirectory,
     getLlmConversationSessionId,
@@ -123,7 +145,6 @@ export function useSessionStartupRecoveryController({
     setLlmSessionRestoreError,
     settingsLoaded,
     startupSessionRestoreAttemptedRef,
-    clearSelectedLlmSession,
   ]);
 
   const resumeLatestSessionOnActive = useCallback(async (options?: ResumeLatestSessionOnActiveOptions) => {

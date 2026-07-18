@@ -7,8 +7,12 @@ import type { RunnerWsAppState } from "./types";
 const RunnerWebSocketContext = createContext<RunnerWebSocketManager | null>(null);
 
 type RunnerWebSocketProviderProps = {
+  bootstrapReady: boolean;
   url: string;
   token: string;
+  cloudflareRunnerUrl: string;
+  cloudflareAccessClientId: string;
+  cloudflareAccessClientSecret: string;
   onConnectionProblem?: () => void;
   manager?: RunnerWebSocketManager;
   children: ReactNode;
@@ -20,8 +24,12 @@ function normalizeAppState(value: AppStateStatus | RunnerWsAppState | undefined)
 }
 
 export function RunnerWebSocketProvider({
+  bootstrapReady,
   url,
   token,
+  cloudflareRunnerUrl,
+  cloudflareAccessClientId,
+  cloudflareAccessClientSecret,
   onConnectionProblem,
   manager,
   children,
@@ -29,17 +37,38 @@ export function RunnerWebSocketProvider({
   const managerRef = useRef<RunnerWebSocketManager | null>(null);
   if (!managerRef.current) {
     managerRef.current = manager || new RunnerWebSocketManager({
+      bootstrapReady,
       url,
       token,
-      appState: normalizeAppState(AppState.currentState),
+      cloudflareRunnerUrl,
+      cloudflareAccessClientId,
+      cloudflareAccessClientSecret,
+      appState: "unknown",
       onConnectionProblem,
     });
   }
   const stableManager = managerRef.current;
 
   useEffect(() => {
-    stableManager.setConnectionOptions({ url, token, onConnectionProblem });
-  }, [onConnectionProblem, stableManager, token, url]);
+    stableManager.setConnectionOptions({
+      bootstrapReady,
+      url,
+      token,
+      cloudflareRunnerUrl,
+      cloudflareAccessClientId,
+      cloudflareAccessClientSecret,
+      onConnectionProblem,
+    });
+  }, [
+    bootstrapReady,
+    cloudflareAccessClientId,
+    cloudflareAccessClientSecret,
+    cloudflareRunnerUrl,
+    onConnectionProblem,
+    stableManager,
+    token,
+    url,
+  ]);
 
   useEffect(() => {
     stableManager.setAppState(normalizeAppState(AppState.currentState));

@@ -3,6 +3,7 @@ import type {
   RegisteredDirectoryEntry,
 } from "../components/AppDrawer";
 import { parseOptionalSessionId } from "./llmSession";
+import { clampContextUsedPct } from "./sessionRestore";
 import { normalizeModelRef, parseLlmDirectory } from "./settingsParsers";
 
 export type SessionHistoryContext = {
@@ -55,9 +56,7 @@ export function resolveSessionHistoryContext({
     const registeredDirectory = registeredDirectories.find(
       (item) => parseLlmDirectory(item.path) === directoryPath
     );
-    const contextUsedPct = Number.isFinite(Number(match.contextUsedPct))
-      ? Math.max(0, Math.min(100, Math.round(Number(match.contextUsedPct))))
-      : null;
+    const contextUsedPct = clampContextUsedPct(match.contextUsedPct);
     return {
       sessionId,
       directory: directoryPath,

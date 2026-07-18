@@ -7,6 +7,7 @@ import {
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { parseContextUsageUsedPct } from "../utils/formatting";
+import { clampContextUsedPct } from "../utils/sessionRestore";
 import {
   dedupeSessionHistoryEntries,
   parseLlmSessionSource,
@@ -94,6 +95,10 @@ type UseLlmSessionExplorerOptions = {
   codexWsToken: string;
   runnerToken: string;
   auxServerBaseUrl: () => string;
+  // Waits for the settings bootstrap, then returns the live runner HTTP
+  // credentials. Session snapshot fetches use this instead of render-time
+  // closures so calls fired before settings load don't run with an empty token.
+  getRunnerHttpAuth: () => Promise<{ baseUrl: string; token: string }>;
   normalizedLlmDirectoryForRequest: () => string;
   defaultLlmDirectory: string;
   nearUnlimitedTimeoutMs: number;
@@ -196,15 +201,9 @@ export function buildLlmSessionHistoryEntry(
     firstUserMessage: String(item.agentDisplayName || item.preview || "").trim(),
     agentRole: String(item.agentRole || "").trim(),
     agentDisplayName: String(item.agentDisplayName || "").trim(),
-    contextUsedPct: (() => {
-      const value = snapshot?.contextUsedPct;
-      if (typeof value !== "undefined") {
-        return value === null ? null : Math.max(0, Math.min(100, Math.round(Number(value))));
-      }
-      return Number.isFinite(Number(item.contextUsedPct))
-        ? Math.max(0, Math.min(100, Math.round(Number(item.contextUsedPct))))
-        : null;
-    })(),
+    contextUsedPct: snapshot
+      ? clampContextUsedPct(snapshot.contextUsedPct)
+      : clampContextUsedPct(item.contextUsedPct),
     modelRef: String(snapshot?.modelRef || "").trim(),
     reasoningEffort: String(snapshot?.reasoningEffort || "").trim(),
   };
@@ -216,6 +215,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     codexWsToken,
     runnerToken,
     auxServerBaseUrl,
+    getRunnerHttpAuth,
     normalizedLlmDirectoryForRequest,
     defaultLlmDirectory,
     nearUnlimitedTimeoutMs,
@@ -289,9 +289,14 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     opts?: { limit?: number }
   ): Promise<Map<string, RunnerSessionSnapshot>> => {
     const out = new Map<string, RunnerSessionSnapshot>();
-    const targetLlmUrl = auxServerBaseUrl();
-    const token = runnerToken.trim();
-    if (!targetLlmUrl || !token) return out;
+    const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
+    if (!targetLlmUrl || !token) {
+      emitSessionDiag("runner_sessions_skipped_missing_auth", {
+        hasUrl: Boolean(targetLlmUrl),
+        hasToken: Boolean(token),
+      });
+      return out;
+    }
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
     const sessionListLimit = Number.isFinite(Number(opts?.limit))
       ? Math.max(1, Math.min(200, Math.floor(Number(opts?.limit))))
@@ -308,7 +313,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           authorization: `Bearer ${token}`,
         },
       }, RUNNER_SESSIONS_HTTP_TIMEOUT_MS);
-      if (!response.ok) return [];
+      if (!response.ok) {
+        throw new Error(String(data?.message || data?.error || `sessions fetch failed: HTTP ${response.status}`));
+      }
       return Array.isArray(data?.sessions) ? data.sessions : [];
     };
     const sessions = await fetchSessions(true);
@@ -349,7 +356,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       }
     }
     return out;
-  }, [auxServerBaseUrl, fetchJsonWithTimeout, normalizedLlmDirectoryForRequest, runnerToken]);
+  }, [emitSessionDiag, fetchJsonWithTimeout, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
 
   const fetchRunnerSessionSnapshot = useCallback(async (
     sessionIdRaw: unknown,
@@ -359,9 +366,13 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     if (!sessionId) {
       return { contextUsedPct: null, modelRef: "", reasoningEffort: "", latestToolLabel: "", lastReadAt: "" };
     }
-    const targetLlmUrl = auxServerBaseUrl();
-    const token = runnerToken.trim();
+    const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
     if (!targetLlmUrl || !token) {
+      emitSessionDiag("runner_session_messages_skipped_missing_auth", {
+        sessionId,
+        hasUrl: Boolean(targetLlmUrl),
+        hasToken: Boolean(token),
+      });
       return { contextUsedPct: null, modelRef: "", reasoningEffort: "", latestToolLabel: "", lastReadAt: "" };
     }
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
@@ -425,11 +436,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     if (fallbackSnapshot) return fallbackSnapshot;
     return preferredSnapshot || { contextUsedPct: null, modelRef: "", reasoningEffort: "", latestToolLabel: "", lastReadAt: "" };
   }, [
-    auxServerBaseUrl,
     emitSessionDiag,
     fetchJsonWithTimeout,
+    getRunnerHttpAuth,
     normalizedLlmDirectoryForRequest,
-    runnerToken,
   ]);
 
   const fetchRunnerSessionContextUsedPct = useCallback(async (
@@ -821,9 +831,14 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       runnerWebSocketManager,
     });
     const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch(() => (
-        new Map<string, RunnerSessionSnapshot>()
-      ))
+      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch((error) => {
+        emitSessionDiag("runner_session_snapshot_map_failed", {
+          directory,
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return new Map<string, RunnerSessionSnapshot>();
+      })
       : new Map<string, RunnerSessionSnapshot>();
     const sessions = listed.data.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap));
     const deduped = dedupeSessionHistoryEntries(sessions);
@@ -888,9 +903,15 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       runnerWebSocketManager,
     });
     const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch(() => (
-        new Map<string, RunnerSessionSnapshot>()
-      ))
+      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch((error) => {
+        emitSessionDiag("runner_session_snapshot_map_failed", {
+          directory,
+          parentSessionId,
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return new Map<string, RunnerSessionSnapshot>();
+      })
       : new Map<string, RunnerSessionSnapshot>();
     const directChildren = listed.data.filter(
       (item) => parseOptionalSessionId(item.parentThreadId) === parentSessionId

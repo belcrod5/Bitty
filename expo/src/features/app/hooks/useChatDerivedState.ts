@@ -290,10 +290,13 @@ export function useChatDerivedState({
       generationRatio: Math.max(0, Math.min(1, generated / total)),
     };
   }, [streamSegments, ttsPlaybackMessageId]);
+  // null means "not fetched yet"; keep it null so the UI shows "--" instead of a fake 0%.
   const chatContextUsedPct = acpContextUsedPct === null
-    ? 0
+    ? null
     : Math.max(0, Math.min(100, Math.round(acpContextUsedPct)));
-  const chatContextRingProgress = Math.max(0, Math.min(1, chatContextUsedPct / 100));
+  const chatContextRingProgress = chatContextUsedPct === null
+    ? 0
+    : Math.max(0, Math.min(1, chatContextUsedPct / 100));
   const chatContextRingTrackColor = "#dbeafe";
   const chatContextRingProgressColor = "#0284c7";
   const isRobotAnimating = useMemo(

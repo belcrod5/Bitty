@@ -24,7 +24,7 @@ export type ChatVisualContextValue = {
   isRobotAnimating: boolean;
   pixelRobotImage: ImageSourcePropType;
   pixelRobotImageStatic: ImageSourcePropType;
-  chatContextUsedPct: number;
+  chatContextUsedPct: number | null;
   chatContextRingProgress: number;
   chatContextRingTrackColor: string;
   chatContextRingProgressColor: string;

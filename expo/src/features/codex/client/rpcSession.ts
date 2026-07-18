@@ -230,6 +230,20 @@ export async function runCodexRpcSession<T>(options: {
           handleIncomingRawData(JSON.stringify(message));
         }
       ));
+      // The runner reports failures (invalid payload, identity rejection, ...) as
+      // control/error envelopes addressed by operationId; without this the session
+      // would sit silent until the RPC timeout.
+      managerUnsubscribers.push(runnerWebSocketManager.subscribe(
+        { channel: "control", op: "error", operationId: runnerWsOperationId },
+        (message: RunnerWsMessage) => {
+          if (finalized) return;
+          const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
+            ? message.payload as Record<string, unknown>
+            : {};
+          const detail = String(payload.message || payload.error || "runner_ws_error");
+          fail(new Error(`Codex app-server runner-ws error: ${detail}`));
+        }
+      ));
       managerUnsubscribers.push(runnerWebSocketManager.subscribeSnapshot(() => {
         if (finalized || !managerReadyObserved) return;
         const snapshot = runnerWebSocketManager.getSnapshot();

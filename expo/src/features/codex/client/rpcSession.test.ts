@@ -199,5 +199,47 @@ test("manager mode rewrites JSON-RPC ids and cleans up without creating a direct
   respondToLastRequest(manager, { value: "done" });
 
   await expect(promise).resolves.toBe("done");
-  expect(manager.unsubscribeCalls).toBe(2);
+  expect(manager.unsubscribeCalls).toBe(3);
+});
+
+test("manager mode rejects the session when the runner reports a control error for the operation", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const promise = runCodexRpcSession({
+    wsUrl: "ws://127.0.0.1:8788/codex-ws",
+    wsToken: "runner-token",
+    clientName: "test-client",
+    clientTitle: "Test Client",
+    traceId: "trace-1",
+    threadId: "thread-1",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    run: async (rpc) => rpc("thread/read", {}),
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+
+  const initialize = lastRequest(manager);
+  expect(initialize.payload).toMatchObject({ method: "initialize" });
+
+  // Unrelated operations must not affect this session.
+  manager.emit({
+    channel: "control",
+    op: "error",
+    operationId: "another-operation",
+    payload: { error: "invalid_llm_rpc_payload", message: "other session" },
+  });
+  await flushPromises();
+
+  manager.emit({
+    channel: "control",
+    op: "error",
+    requestId: initialize.requestId,
+    operationId: initialize.operationId,
+    payload: { error: "invalid_llm_rpc_payload", message: "identity rejected" },
+  });
+
+  await expect(promise).rejects.toThrow(
+    "Codex app-server runner-ws error: identity rejected"
+  );
+  expect(manager.unsubscribeCalls).toBe(3);
 });
