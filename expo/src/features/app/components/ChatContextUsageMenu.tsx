@@ -43,10 +43,10 @@ export function ChatContextUsageMenu({
           disabled={dismissed}
           delayLongPress={450}
           accessibilityRole="button"
-          accessibilityLabel={`コンテキスト使用量 ${contextPctText}%`}
+          accessibilityLabel={`コンテキスト使用量 ${contextPctText}`}
           accessibilityHint="長押しすると新規セッションメニューを開きます"
         >
-          <Text style={styles.chatContextPctText}>{contextPctText}%</Text>
+          <Text style={styles.chatContextPctText}>{contextPctText}</Text>
         </TouchableOpacity>
       </View>
       <Modal

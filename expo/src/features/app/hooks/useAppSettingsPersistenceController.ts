@@ -357,7 +357,12 @@ export function useAppSettingsPersistenceController({
     } else if (savedCodexWsUrl.startsWith("ws://") && savedCodexWsUrl.includes(".local")) {
       setLocalRunnerWsUrl(savedCodexWsUrl);
     }
-    setRunnerToken(savedRunnerToken);
+    // The runner token lives in SecureStore, not in the settings JSON, so the
+    // parsed value is normally empty (only legacy exports carried it). Never
+    // overwrite a SecureStore-provided token with that empty string.
+    if (savedRunnerToken) {
+      setRunnerToken(savedRunnerToken);
+    }
     if (legacyCloudflareAccessClientId) {
       setCloudflareAccessClientId(legacyCloudflareAccessClientId);
     }

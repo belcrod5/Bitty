@@ -57,6 +57,26 @@ function baseParams(overrides: Partial<Parameters<typeof useChatDerivedState>[0]
   };
 }
 
+describe("useChatDerivedState chatContextUsedPct", () => {
+  it("keeps an unfetched context usage as null instead of rounding it to 0%", async () => {
+    const { result } = await renderHook(() => useChatDerivedState(baseParams({
+      acpContextUsedPct: null,
+    })));
+
+    expect(result.current.chatContextUsedPct).toBeNull();
+    expect(result.current.chatContextRingProgress).toBe(0);
+  });
+
+  it("clamps and rounds a fetched context usage", async () => {
+    const { result } = await renderHook(() => useChatDerivedState(baseParams({
+      acpContextUsedPct: 41.6,
+    })));
+
+    expect(result.current.chatContextUsedPct).toBe(42);
+    expect(result.current.chatContextRingProgress).toBeCloseTo(0.42);
+  });
+});
+
 describe("useChatDerivedState ttsSegmentProgress", () => {
   it("only aggregates segments belonging to the active playback target", async () => {
     const { result } = await renderHook(() => useChatDerivedState(baseParams({
