@@ -4,7 +4,6 @@ import {
   Alert,
   Modal,
   SafeAreaView,
-  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -12,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Picker } from "@react-native-picker/picker";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import * as Location from "expo-location";
 
 import type { ReasoningEffort } from "../app/utils/settingsParsers";
@@ -24,6 +23,7 @@ import {
 } from "./locationScheduleRules";
 import { loadLocationSchedules, saveAndActivateLocationSchedules } from "./locationScheduleRuntime";
 import { LocationMapPicker, type LocationMapPickerTarget } from "./LocationMapPicker";
+import { OptionSelectField } from "./OptionSelectField";
 
 type Props = {
   currentCwd: string;
@@ -148,7 +148,7 @@ export function LocationScheduleSettings(props: Props) {
             </TouchableOpacity>
           </View>
           {busy ? <ActivityIndicator style={styles.loader} /> : null}
-          <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <KeyboardAwareScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" bottomOffset={24}>
             <Text style={styles.help}>設定時刻にRunnerが最後に受信した位置状態を使い、通常の新規Codex実行を開始します。</Text>
             {rules.map((rule, index) => (
               <View key={rule.id} style={styles.card}>
@@ -177,24 +177,29 @@ export function LocationScheduleSettings(props: Props) {
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.label}>ディレクトリ</Text>
-                <View style={styles.pickerWrap}>
-                  <Picker selectedValue={rule.cwd} onValueChange={(cwd) => update(rule.id, { cwd: String(cwd) })}>
-                    {props.directories.map((directory) => <Picker.Item key={directory.path} label={directory.displayName || directory.path} value={directory.path} />)}
-                    {!props.directories.some((directory) => directory.path === rule.cwd) && rule.cwd ? <Picker.Item label={rule.cwd} value={rule.cwd} /> : null}
-                  </Picker>
-                </View>
+                <OptionSelectField
+                  title="ディレクトリ"
+                  options={[
+                    ...props.directories.map((directory) => ({ value: directory.path, label: directory.displayName || directory.path })),
+                    ...(!props.directories.some((directory) => directory.path === rule.cwd) && rule.cwd ? [{ value: rule.cwd, label: rule.cwd }] : []),
+                  ]}
+                  selectedValue={rule.cwd}
+                  onSelect={(cwd) => update(rule.id, { cwd })}
+                />
                 <Text style={styles.label}>モデル</Text>
-                <View style={styles.pickerWrap}>
-                  <Picker selectedValue={rule.modelRef} onValueChange={(modelRef) => update(rule.id, { modelRef: String(modelRef) })}>
-                    {props.modelOptions.map((option) => <Picker.Item key={option.value} label={option.label} value={option.value} />)}
-                  </Picker>
-                </View>
+                <OptionSelectField
+                  title="モデル"
+                  options={props.modelOptions}
+                  selectedValue={rule.modelRef}
+                  onSelect={(modelRef) => update(rule.id, { modelRef })}
+                />
                 <Text style={styles.label}>思考レベル</Text>
-                <View style={styles.pickerWrap}>
-                  <Picker selectedValue={rule.reasoningEffort} onValueChange={(reasoningEffort) => update(rule.id, { reasoningEffort })}>
-                    {props.thinkOptions.map((effort) => <Picker.Item key={effort} label={effort} value={effort} />)}
-                  </Picker>
-                </View>
+                <OptionSelectField
+                  title="思考レベル"
+                  options={props.thinkOptions.map((effort) => ({ value: effort, label: effort }))}
+                  selectedValue={rule.reasoningEffort}
+                  onSelect={(value) => update(rule.id, { reasoningEffort: value as ReasoningEffort })}
+                />
                 <Text style={styles.label}>プロンプト</Text>
                 <TextInput style={[styles.input, styles.prompt]} value={rule.prompt} onChangeText={(prompt) => update(rule.id, { prompt })} multiline textAlignVertical="top" placeholder="Codexへ送るユーザーメッセージ" />
                 <TouchableOpacity style={styles.deleteButton} onPress={() => setRules((current) => current.filter((item) => item.id !== rule.id))}>
@@ -205,7 +210,7 @@ export function LocationScheduleSettings(props: Props) {
             <TouchableOpacity style={styles.addButton} onPress={() => setRules((current) => [...current, newRule(props)])}>
               <Text style={styles.addButtonText}>ルールを追加</Text>
             </TouchableOpacity>
-          </ScrollView>
+          </KeyboardAwareScrollView>
           <LocationMapPicker
             target={mapPickerTarget}
             onCancel={() => setMapPickerRuleId(null)}
@@ -245,7 +250,6 @@ const styles = StyleSheet.create({
   coordinate: { flex: 1 },
   radius: { flex: 1 },
   prompt: { minHeight: 100, paddingTop: 10 },
-  pickerWrap: { borderWidth: 1, borderColor: "#cbd5e1", borderRadius: 8, overflow: "hidden", backgroundColor: "#fff" },
   secondaryButton: { minHeight: 40, justifyContent: "center", paddingHorizontal: 14, borderRadius: 8, backgroundColor: "#e2e8f0" },
   secondaryButtonText: { color: "#0f172a", fontWeight: "600" },
   deleteButton: { alignSelf: "flex-start", paddingVertical: 8 },
