@@ -15,6 +15,7 @@ import { styles } from "../styles";
 import { GitBranchDropdown, type GitBranchOption } from "./GitBranchDropdown";
 import { GitDiffRunningJobsSection } from "./GitDiffRunningJobsSection";
 import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
+import { WorkspaceTextFileEditor } from "./WorkspaceTextFileEditor";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { buildGitDiffFileTree, type GitDiffFileTreeNode } from "../utils/gitDiffFileTree";
 import { normalizeGitChangedFilePaths } from "../utils/gitChangedFiles";
@@ -384,6 +385,10 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     cancelRename,
     renameFile,
     renameFileTarget,
+    editTarget,
+    requestEdit,
+    cancelEdit,
+    writeFileContent,
     deleteFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -445,6 +450,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
         setGitPanelTab("running");
       },
       onRequestRename: requestRename,
+      onRequestEdit: requestEdit,
       onRequestDelete: deleteFile,
       onRenameFile: renameFileTarget,
       mediaItems,
@@ -456,6 +462,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     deleteFile,
     renameFileTarget,
     requestRename,
+    requestEdit,
     runnerToken,
     runnerUrl,
     selectedDirectoryPath,
@@ -959,6 +966,14 @@ export const GitDiffPanel = memo(function GitDiffPanel({
         target={renameTarget}
         onCancel={cancelRename}
         onRename={renameFile}
+      />
+      <WorkspaceTextFileEditor
+        target={editTarget}
+        runnerUrl={runnerUrl}
+        runnerToken={runnerToken}
+        rootDirectory={selectedDirectoryPath}
+        onClose={cancelEdit}
+        onSave={writeFileContent}
       />
     </View>
   );

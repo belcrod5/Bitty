@@ -119,6 +119,96 @@ test("rejects a target directory that enters an outside symlink", async () => {
   });
 });
 
+test("overwrites text file content only inside the selected root", async () => {
+  await withTempDir(async (workspaceRoot) => {
+    const projectRoot = path.join(workspaceRoot, "project");
+    const outsideFile = path.join(workspaceRoot, "outside.txt");
+    await mkdir(projectRoot, { recursive: true });
+    await writeFile(path.join(projectRoot, "note.md"), "before");
+    await writeFile(outsideFile, "outside");
+    const service = createWorkspaceFilesService({
+      workspaceRoot,
+      maxUploadBytes: 32,
+    });
+
+    const written = await service.writeTextFile({
+      rootDir: "project",
+      path: "project/note.md",
+      content: "after edit",
+    });
+    assert.equal(written.path, "project/note.md");
+    assert.equal(written.directory, "project");
+    assert.equal(written.size, Buffer.byteLength("after edit"));
+    assert.equal(await readFile(path.join(projectRoot, "note.md"), "utf8"), "after edit");
+
+    const emptied = await service.writeTextFile({
+      rootDir: "project",
+      path: "project/note.md",
+      content: "",
+    });
+    assert.equal(emptied.size, 0);
+    assert.equal(await readFile(path.join(projectRoot, "note.md"), "utf8"), "");
+
+    await assert.rejects(
+      service.writeTextFile({
+        rootDir: "project",
+        path: "project/note.md",
+        content: "x".repeat(33),
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "file_too_large"
+    );
+    await assert.rejects(
+      service.writeTextFile({
+        rootDir: "project",
+        path: "outside.txt",
+        content: "hacked",
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "path_invalid"
+    );
+    await assert.rejects(
+      service.writeTextFile({
+        rootDir: "project",
+        path: "project/missing.txt",
+        content: "new",
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "path_invalid"
+    );
+    await assert.rejects(
+      service.writeTextFile({
+        rootDir: "project",
+        path: "project/note.md",
+        content: undefined,
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "content_required"
+    );
+    assert.equal(await readFile(outsideFile, "utf8"), "outside");
+  });
+});
+
+test("rejects text writes through symbolic links", async () => {
+  await withTempDir(async (workspaceRoot) => {
+    const projectRoot = path.join(workspaceRoot, "project");
+    const outsideFile = path.join(workspaceRoot, "outside.txt");
+    await mkdir(projectRoot);
+    await writeFile(outsideFile, "outside");
+    await symlink(outsideFile, path.join(projectRoot, "linked.txt"));
+    const service = createWorkspaceFilesService({
+      workspaceRoot,
+      maxUploadBytes: 1024,
+    });
+
+    await assert.rejects(
+      service.writeTextFile({
+        rootDir: "project",
+        path: "project/linked.txt",
+        content: "hacked",
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "path_invalid"
+    );
+    assert.equal(await readFile(outsideFile, "utf8"), "outside");
+  });
+});
+
 test("renames and deletes files only inside the selected root", async () => {
   await withTempDir(async (workspaceRoot) => {
     const projectRoot = path.join(workspaceRoot, "project");
@@ -246,7 +336,7 @@ test("accepts an authenticated multipart upload request", async () => {
   });
 });
 
-test("accepts authenticated rename and delete requests", async () => {
+test("accepts authenticated write, rename, and delete requests", async () => {
   await withTempDir(async (workspaceRoot) => {
     const projectRoot = path.join(workspaceRoot, "project");
     await mkdir(projectRoot);
@@ -264,6 +354,27 @@ test("accepts authenticated rename and delete requests", async () => {
       const address = server.address();
       assert.ok(address && typeof address === "object");
       const baseUrl = `http://127.0.0.1:${address.port}/workspace/files`;
+      const writeResponse = await fetch(baseUrl, {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          rootDir: "project",
+          path: "project/before.txt",
+          content: "edited body",
+        }),
+      });
+      const writePayload = await writeResponse.json();
+      assert.equal(writeResponse.status, 200);
+      assert.equal(writePayload.path, "project/before.txt");
+      assert.equal(writePayload.size, Buffer.byteLength("edited body"));
+      assert.equal(
+        await readFile(path.join(projectRoot, "before.txt"), "utf8"),
+        "edited body"
+      );
+
       const renameResponse = await fetch(baseUrl, {
         method: "PATCH",
         headers: {

@@ -285,3 +285,60 @@ export async function mutateWorkspaceFile({
     clearTimeout(timeoutHandle);
   }
 }
+
+export async function writeWorkspaceTextFile({
+  runnerUrl,
+  runnerToken,
+  rootDirectory,
+  path,
+  content,
+}: {
+  runnerUrl: string;
+  runnerToken: string;
+  rootDirectory: string;
+  path: string;
+  content: string;
+}): Promise<WorkspaceFileMutationResult> {
+  const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
+  const token = String(runnerToken || "").trim();
+  const targetPath = String(path || "").trim();
+  if (!baseUrl || !token) {
+    throw new Error("Runner URL または Runner Token が未設定です。");
+  }
+  if (!targetPath) {
+    throw new Error("対象ファイルが未指定です。");
+  }
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), WORKSPACE_UPLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${baseUrl}/workspace/files`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        rootDir: String(rootDirectory || "").trim(),
+        path: targetPath,
+        content: String(content ?? ""),
+      }),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
+    }
+    return {
+      ok: Boolean(data?.ok),
+      path: String(data?.path || targetPath),
+      directory: data?.directory ? String(data.directory) : undefined,
+    };
+  } catch (error) {
+    if (error && typeof error === "object" && "name" in error && error.name === "AbortError") {
+      throw new Error(`保存がタイムアウトしました（${WORKSPACE_UPLOAD_TIMEOUT_MS / 1000}秒）。`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}

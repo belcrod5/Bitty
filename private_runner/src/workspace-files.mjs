@@ -198,6 +198,39 @@ export function createWorkspaceFilesService({
     };
   }
 
+  async function writeTextFile({ rootDir, path: rawPath, content }) {
+    if (typeof content !== "string") {
+      throw new WorkspaceFilesError(400, "content_required", "content must be a string");
+    }
+    const buffer = Buffer.from(content, "utf8");
+    if (buffer.length > maxBytes) {
+      throw new WorkspaceFilesError(413, "file_too_large", `file is larger than ${maxBytes} bytes`, {
+        maxBytes,
+      });
+    }
+    const workspaceRootReal = await workspaceRootRealPromise;
+    const rootReal = await resolveRootPath(workspaceRootReal, rootDir);
+    const targetReal = await resolveFilePath(workspaceRootReal, rootReal, rawPath);
+    const sourceStat = await fs.stat(targetReal);
+    const temporaryPath = path.join(
+      path.dirname(targetReal),
+      `.${path.basename(targetReal)}.write-${randomUUID()}.tmp`
+    );
+    try {
+      await fs.writeFile(temporaryPath, buffer, { flag: "wx", mode: sourceStat.mode });
+      await fs.rename(temporaryPath, targetReal);
+    } catch (error) {
+      await fs.unlink(temporaryPath).catch(() => {});
+      throw error;
+    }
+    return {
+      ok: true,
+      path: toClientPath(workspaceRootReal, targetReal),
+      directory: toClientPath(workspaceRootReal, path.dirname(targetReal)),
+      size: buffer.length,
+    };
+  }
+
   async function renameFile({ rootDir, path: rawPath, name: rawName }) {
     const normalizedName = normalizeFileName(rawName);
     const workspaceRootReal = await workspaceRootRealPromise;
@@ -291,7 +324,10 @@ export function createWorkspaceFilesService({
   }
 
   async function parseMutationRequest(req) {
-    const maxMutationBodyBytes = 16 * 1024;
+    // PUT はファイル本文を含むためアップロード上限に合わせる。rename/delete はメタデータのみ。
+    const maxMutationBodyBytes = req.method === "PUT"
+      ? maxBytes + 64 * 1024
+      : 16 * 1024;
     const contentLength = Number(req.headers["content-length"] || 0);
     if (Number.isFinite(contentLength) && contentLength > maxMutationBodyBytes) {
       throw new WorkspaceFilesError(413, "request_too_large", "mutation request is too large");
@@ -315,6 +351,13 @@ export function createWorkspaceFilesService({
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       throw new WorkspaceFilesError(400, "invalid_json", "request body must be a JSON object");
+    }
+    if (req.method === "PUT") {
+      return writeTextFile({
+        rootDir: body.rootDir,
+        path: body.path,
+        content: body.content,
+      });
     }
     if (req.method === "PATCH") {
       return renameFile({
@@ -372,6 +415,7 @@ export function createWorkspaceFilesService({
     parseAndSaveRequest,
     parseMutationRequest,
     saveFile,
+    writeTextFile,
     renameFile,
     deleteFile,
   };

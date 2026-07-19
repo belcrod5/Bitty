@@ -28,6 +28,11 @@ const RUNNER_VIDEO_FILE_EXTENSIONS = new Set([
   "avi",
 ]);
 
+const RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS = new Set([
+  "txt",
+  "md",
+]);
+
 const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -128,6 +133,7 @@ type OpenRunnerFileContextMenuParams = {
   onOpenMedia: (media: RunnerMediaFile) => void;
   onShellScriptStarted?: (result: StartRunnerShellScriptResult, fileName: string) => void;
   onRequestRename?: (target: WorkspaceFileTarget) => void;
+  onRequestEdit?: (target: WorkspaceFileTarget) => void;
   onRequestDelete?: (target: WorkspaceFileTarget) => void;
   onRenameFile?: RenameRunnerMediaFile;
   mediaItems?: RunnerMediaItem[];
@@ -146,6 +152,7 @@ export function openRunnerFileContextMenu({
   onOpenMedia,
   onShellScriptStarted,
   onRequestRename,
+  onRequestEdit,
   onRequestDelete,
   onRenameFile,
   mediaItems,
@@ -219,6 +226,7 @@ export function openRunnerFileContextMenu({
         onOpenMedia,
         onShellScriptStarted,
         onRequestRename: options?.onRequestRename ?? onRequestRename,
+        onRequestEdit,
         onRequestDelete,
         onRenameFile,
         mediaItems: items,
@@ -320,6 +328,17 @@ export function openRunnerFileContextMenu({
       onPress: executeAction,
     });
   }
+  if (allowMutate && onRequestEdit && isRunnerEditableTextFile(filePath)) {
+    buttons.push({
+      text: "編集",
+      onPress: () => {
+        onRequestEdit({
+          path: filePath,
+          name: fileName,
+        });
+      },
+    });
+  }
   if (allowMutate && onRequestRename) {
     buttons.push({
       text: "名前を変更",
@@ -408,6 +427,12 @@ function getRunnerScriptExecutionWarning(filePath: string, rootDir: string) {
     message: "選択中のディレクトリとは別の場所にあるスクリプトです。",
     allowExternal: false,
   };
+}
+
+export function isRunnerEditableTextFile(pathRaw: unknown) {
+  const path = normalizeRunnerPath(pathRaw).toLowerCase();
+  const match = /\.([a-z0-9]+)$/.exec(path);
+  return Boolean(match && RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS.has(match[1]));
 }
 
 export function getRunnerMediaKind(pathRaw: unknown): RunnerMediaKind | null {

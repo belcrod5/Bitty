@@ -51,6 +51,7 @@ import { YouTubeVideoList } from "../components/YouTubeVideoList";
 import { GitDiffPanel } from "../components/GitDiffPanel";
 import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
+import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
@@ -1267,6 +1268,10 @@ export function ChatScreen({
     cancelRename: cancelChatFileRename,
     renameFile: renameChatFile,
     renameFileTarget: renameChatFileTarget,
+    editTarget: chatFileEditTarget,
+    requestEdit: requestChatFileEdit,
+    cancelEdit: cancelChatFileEdit,
+    writeFileContent: writeChatFileContent,
     deleteFile: deleteChatFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -1293,6 +1298,7 @@ export function ChatScreen({
         setGitDiffPanelOpen(true);
       },
       onRequestRename: requestChatFileRename,
+      onRequestEdit: requestChatFileEdit,
       onRequestDelete: deleteChatFile,
       onRenameFile: renameChatFileTarget,
     });
@@ -1301,6 +1307,7 @@ export function ChatScreen({
     getPathLabel,
     renameChatFileTarget,
     requestChatFileRename,
+    requestChatFileEdit,
     runnerToken,
     runnerUrl,
     selectedDirectoryPathForView,
@@ -2109,6 +2116,14 @@ export function ChatScreen({
           target={approvalDialogPending ? null : chatFileRenameTarget}
           onCancel={cancelChatFileRename}
           onRename={renameChatFile}
+        />
+        <WorkspaceTextFileEditor
+          target={approvalDialogPending ? null : chatFileEditTarget}
+          runnerUrl={runnerUrl}
+          runnerToken={runnerToken}
+          rootDirectory={selectedDirectoryPathForView}
+          onClose={cancelChatFileEdit}
+          onSave={writeChatFileContent}
         />
         <View style={styles.chatComposer}>
           <View style={styles.connectionStatusArea}>

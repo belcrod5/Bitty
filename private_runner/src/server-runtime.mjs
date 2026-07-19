@@ -8664,7 +8664,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (
-    (req.method === "POST" || req.method === "PATCH" || req.method === "DELETE") &&
+    (req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE") &&
     pathname === "/workspace/files"
   ) {
     return workspaceFilesService.handleRequest(req, res, {
