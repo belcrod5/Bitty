@@ -23,6 +23,7 @@ import {
   type LocationScheduleRule,
 } from "./locationScheduleRules";
 import { loadLocationSchedules, saveAndActivateLocationSchedules } from "./locationScheduleRuntime";
+import { LocationMapPicker, type LocationMapPickerTarget } from "./LocationMapPicker";
 
 type Props = {
   currentCwd: string;
@@ -54,6 +55,16 @@ export function LocationScheduleSettings(props: Props) {
   const [visible, setVisible] = useState(false);
   const [rules, setRules] = useState<LocationScheduleRule[]>([]);
   const [busy, setBusy] = useState(false);
+  const [mapPickerRuleId, setMapPickerRuleId] = useState<string | null>(null);
+
+  const mapPickerRule = rules.find((rule) => rule.id === mapPickerRuleId) || null;
+  const mapPickerTarget: LocationMapPickerTarget | null = mapPickerRule
+    ? {
+      latitude: mapPickerRule.latitude,
+      longitude: mapPickerRule.longitude,
+      radiusMeters: mapPickerRule.radiusMeters,
+    }
+    : null;
 
   const open = async () => {
     setBusy(true);
@@ -156,6 +167,9 @@ export function LocationScheduleSettings(props: Props) {
                   <TouchableOpacity style={styles.secondaryButton} onPress={() => void useCurrentLocation(rule.id)}>
                     <Text style={styles.secondaryButtonText}>現在地を使用</Text>
                   </TouchableOpacity>
+                  <TouchableOpacity style={styles.secondaryButton} onPress={() => setMapPickerRuleId(rule.id)}>
+                    <Text style={styles.secondaryButtonText}>マップで選択</Text>
+                  </TouchableOpacity>
                 </View>
                 <Text style={styles.label}>ディレクトリ</Text>
                 <View style={styles.pickerWrap}>
@@ -187,6 +201,19 @@ export function LocationScheduleSettings(props: Props) {
               <Text style={styles.addButtonText}>ルールを追加</Text>
             </TouchableOpacity>
           </ScrollView>
+          <LocationMapPicker
+            target={mapPickerTarget}
+            onCancel={() => setMapPickerRuleId(null)}
+            onConfirm={(coordinate) => {
+              if (mapPickerRuleId) {
+                update(mapPickerRuleId, {
+                  latitude: coordinate.latitude,
+                  longitude: coordinate.longitude,
+                });
+              }
+              setMapPickerRuleId(null);
+            }}
+          />
         </SafeAreaView>
       </Modal>
     </>
