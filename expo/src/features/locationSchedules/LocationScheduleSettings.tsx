@@ -94,7 +94,7 @@ export function LocationScheduleSettings(props: Props) {
     if (parsed.some((rule) => rule.enabled && rule.radiusMeters < 100)) {
       const confirmed = await new Promise<boolean>((resolve) => Alert.alert(
         "小さい半径",
-        "100m未満のジオフェンスは検知が不安定になる場合があります。このまま保存しますか？",
+        "100m未満のジオフェンスはiOSが出入りを検知できないことがあります。200m以上を推奨します。このまま保存しますか？",
         [
           { text: "戻る", style: "cancel", onPress: () => resolve(false) },
           { text: "保存", onPress: () => resolve(true) },

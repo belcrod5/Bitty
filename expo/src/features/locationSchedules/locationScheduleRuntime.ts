@@ -1,5 +1,7 @@
+import * as BackgroundTask from "expo-background-task";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
+import { AppState, Platform } from "react-native";
 
 import { mutatePersistedSettings, readPersistedSettingsField } from "../app/utils/persistedSettingsFile";
 import { loadSecureRunnerCredentials } from "../app/utils/secureRunnerCredentials";
@@ -21,6 +23,8 @@ import {
 const RULES_FIELD = "locationSchedules";
 const PENDING_FIELD = "locationSchedulePendingStates";
 const LAST_STATES_FIELD = "locationScheduleLastStates";
+const LOCATION_REFRESH_TASK_NAME = "bitty-location-schedule-refresh";
+const LOCATION_REFRESH_MINIMUM_INTERVAL_MINUTES = 15;
 
 function rulesInCurrentTimeZone(rules: readonly LocationScheduleRule[]) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -33,12 +37,12 @@ class RunnerRequestError extends Error {
   }
 }
 
-async function runnerRequest(path: string, method: "PUT" | "POST", body: Record<string, unknown>) {
+async function runnerEndpoint() {
   const runnerUrl = String(await readPersistedSettingsField("runnerUrl") || "").trim().replace(/\/+$/, "");
   const credentials = await loadSecureRunnerCredentials();
-  if (!runnerUrl || !credentials.runnerToken) throw new Error("Runner connection is not configured");
-  const response = await fetch(`${runnerUrl}${path}`, {
-    method,
+  if (!runnerUrl || !credentials.runnerToken) return null;
+  return {
+    runnerUrl,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${credentials.runnerToken}`,
@@ -47,6 +51,15 @@ async function runnerRequest(path: string, method: "PUT" | "POST", body: Record<
         "CF-Access-Client-Secret": credentials.cloudflareAccessClientSecret,
       } : {}),
     },
+  };
+}
+
+async function runnerRequest(path: string, method: "PUT" | "POST", body: Record<string, unknown>) {
+  const endpoint = await runnerEndpoint();
+  if (!endpoint) throw new Error("Runner connection is not configured");
+  const response = await fetch(`${endpoint.runnerUrl}${path}`, {
+    method,
+    headers: endpoint.headers,
     body: JSON.stringify(body),
   });
   const result = await response.json().catch(() => ({}));
@@ -54,6 +67,29 @@ async function runnerRequest(path: string, method: "PUT" | "POST", body: Record<
     throw new RunnerRequestError(String((result as any)?.message || `Runner HTTP ${response.status}`), response.status);
   }
   return result;
+}
+
+const diagSessionId = `loc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+let diagSeq = 0;
+
+async function logLocationScheduleEvent(event: string, payload: Record<string, unknown> = {}) {
+  try {
+    const endpoint = await runnerEndpoint();
+    if (!endpoint) return;
+    diagSeq += 1;
+    await fetch(`${endpoint.runnerUrl}/client-logs`, {
+      method: "POST",
+      headers: endpoint.headers,
+      body: JSON.stringify({
+        source: "location_schedule",
+        sessionId: diagSessionId,
+        device: `${Platform.OS}:${String(Platform.Version)}`,
+        events: [{ sessionId: diagSessionId, seq: diagSeq, at: new Date().toISOString(), event, payload }],
+      }),
+    });
+  } catch {
+    // 診断ログの失敗は本体の動作に影響させない
+  }
 }
 
 async function persistLocationState(event: PendingLocationState) {
@@ -86,6 +122,11 @@ export async function flushPendingLocationStates() {
         sent.add(event.eventId);
         continue;
       }
+      void logLocationScheduleEvent("location_state_flush_failed", {
+        message: error instanceof Error ? error.message : String(error),
+        pendingCount: pending.length,
+        sentCount: sent.size,
+      });
       break;
     }
   }
@@ -102,11 +143,29 @@ export async function syncLocationSchedules(rules: readonly LocationScheduleRule
   await flushPendingLocationStates();
 }
 
+async function reconcileLocationRefreshTask(enabled: boolean) {
+  try {
+    if (enabled) {
+      await BackgroundTask.registerTaskAsync(LOCATION_REFRESH_TASK_NAME, {
+        minimumInterval: LOCATION_REFRESH_MINIMUM_INTERVAL_MINUTES,
+      });
+    } else {
+      await BackgroundTask.unregisterTaskAsync(LOCATION_REFRESH_TASK_NAME);
+    }
+  } catch (error) {
+    void logLocationScheduleEvent("location_refresh_task_register_failed", {
+      enabled,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function reconcileLocationSchedules(rules: readonly LocationScheduleRule[]) {
   const regions = enabledLocationRegions(rules);
-  const running = await Location.hasStartedGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME).catch(() => false);
   if (!regions.length) {
+    const running = await Location.hasStartedGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME).catch(() => false);
     if (running) await Location.stopGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME);
+    await reconcileLocationRefreshTask(false);
     return;
   }
   let foreground = await Location.getForegroundPermissionsAsync();
@@ -115,8 +174,10 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
   let background = await Location.getBackgroundPermissionsAsync();
   if (background.status !== "granted") background = await Location.requestBackgroundPermissionsAsync();
   if (background.status !== "granted") throw new Error("位置情報の「常に」権限が必要です。");
-  if (running) await Location.stopGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME);
+  // 監視中の再startはリージョン差し替えとして扱われる(expo公式)。stopを挟むと
+  // 停止中の境界横断を取りこぼすため、startのみを呼ぶ。
   await Location.startGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME, regions);
+  await reconcileLocationRefreshTask(true);
 
   const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
   for (const rule of rules.filter((item) => item.enabled)) {
@@ -147,7 +208,52 @@ export async function loadLocationSchedules() {
   return rulesInCurrentTimeZone(parseLocationScheduleRules(await readPersistedSettingsField(RULES_FIELD)));
 }
 
+export async function recoverLocationScheduleState(origin: string) {
+  await flushPendingLocationStates().catch(() => {});
+  const rules = (await loadLocationSchedules()).filter((rule) => rule.enabled);
+  if (!rules.length) return;
+  const foreground = await Location.getForegroundPermissionsAsync();
+  if (foreground.status !== "granted") return;
+  const lastStatesRaw = await readPersistedSettingsField(LAST_STATES_FIELD);
+  const lastStates = lastStatesRaw && typeof lastStatesRaw === "object" && !Array.isArray(lastStatesRaw)
+    ? lastStatesRaw as Record<string, Partial<PendingLocationState> | undefined>
+    : {};
+  const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+  let changed = 0;
+  for (const rule of rules) {
+    const regionRevision = locationRuleRevision(rule);
+    const state = isCoordinateInsideRule(current.coords, rule) ? "inside" : "outside";
+    const last = lastStates[rule.id];
+    if (last && last.regionRevision === regionRevision && last.state === state) continue;
+    changed += 1;
+    await persistLocationState({
+      ruleId: rule.id,
+      regionRevision,
+      state,
+      eventId: `recover:${origin}:${rule.id}:${Date.now()}:${state}`,
+      observedAt: new Date(current.timestamp || Date.now()).toISOString(),
+    });
+  }
+  void logLocationScheduleEvent("location_recover_ran", { origin, ruleCount: rules.length, changed });
+  if (changed > 0) await flushPendingLocationStates();
+}
+
+let appStateRecoverySubscribed = false;
+let lastAppState = AppState.currentState;
+
+function subscribeAppStateRecovery() {
+  if (appStateRecoverySubscribed) return;
+  appStateRecoverySubscribed = true;
+  AppState.addEventListener("change", (next) => {
+    const previous = lastAppState;
+    lastAppState = next;
+    if (next !== "active" || previous === "active") return;
+    void recoverLocationScheduleState("foreground").catch(() => {});
+  });
+}
+
 export async function bootstrapLocationSchedules() {
+  subscribeAppStateRecovery();
   const rules = await loadLocationSchedules();
   await mutatePersistedSettings((current) => ({
     ...current,
@@ -166,18 +272,34 @@ export async function bootstrapLocationSchedules() {
 
 if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
   TaskManager.defineTask(LOCATION_SCHEDULE_TASK_NAME, async ({ data, error }) => {
-    if (error) return;
+    if (error) {
+      await logLocationScheduleEvent("location_geofence_task_error", {
+        message: String(error.message || error),
+      });
+      return;
+    }
     const payload = data as { eventType?: Location.GeofencingEventType; region?: { identifier?: string } } | undefined;
-    const region = parseLocationRegionIdentifier(payload?.region?.identifier);
-    if (!region) return;
-    const rules = await loadLocationSchedules();
-    const rule = rules.find((item) => item.enabled && item.id === region.ruleId);
-    if (!rule || regionIdentifierForRule(rule) !== payload?.region?.identifier) return;
     const state = payload?.eventType === Location.GeofencingEventType.Enter
       ? "inside"
       : payload?.eventType === Location.GeofencingEventType.Exit
         ? "outside"
         : null;
+    const region = parseLocationRegionIdentifier(payload?.region?.identifier);
+    await logLocationScheduleEvent("location_geofence_task_fired", {
+      identifier: String(payload?.region?.identifier || ""),
+      state: state || "unknown",
+      matchedRegion: Boolean(region),
+    });
+    if (!region) return;
+    const rules = await loadLocationSchedules();
+    const rule = rules.find((item) => item.enabled && item.id === region.ruleId);
+    if (!rule || regionIdentifierForRule(rule) !== payload?.region?.identifier) {
+      void logLocationScheduleEvent("location_geofence_event_ignored", {
+        identifier: String(payload?.region?.identifier || ""),
+        reason: rule ? "revision_mismatch" : "rule_not_found",
+      });
+      return;
+    }
     if (!state) return;
     const event: PendingLocationState = {
       ruleId: region.ruleId,
@@ -188,5 +310,20 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
     };
     await persistLocationState(event);
     await flushPendingLocationStates().catch(() => {});
+  });
+}
+
+if (!TaskManager.isTaskDefined(LOCATION_REFRESH_TASK_NAME)) {
+  TaskManager.defineTask(LOCATION_REFRESH_TASK_NAME, async () => {
+    await logLocationScheduleEvent("location_refresh_task_fired", {});
+    try {
+      await recoverLocationScheduleState("background_task");
+      return BackgroundTask.BackgroundTaskResult.Success;
+    } catch (error) {
+      void logLocationScheduleEvent("location_refresh_task_error", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return BackgroundTask.BackgroundTaskResult.Failed;
+    }
   });
 }

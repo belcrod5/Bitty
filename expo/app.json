@@ -50,7 +50,8 @@
           "locationAlwaysAndWhenInUsePermission": "アプリを閉じている間も設定した場所への出入りを検知するために位置情報を使用します。",
           "isIosBackgroundLocationEnabled": true
         }
-      ]
+      ],
+      "expo-background-task"
     ],
     "ios": {
       "supportsTablet": true,
