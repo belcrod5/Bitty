@@ -1,5 +1,6 @@
 import * as BackgroundTask from "expo-background-task";
 import * as Location from "expo-location";
+import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
 import { AppState, Platform } from "react-native";
 
@@ -25,6 +26,8 @@ const PENDING_FIELD = "locationSchedulePendingStates";
 const LAST_STATES_FIELD = "locationScheduleLastStates";
 const LOCATION_REFRESH_TASK_NAME = "bitty-location-schedule-refresh";
 const LOCATION_REFRESH_MINIMUM_INTERVAL_MINUTES = 15;
+const LOCATION_PUSH_REFRESH_TASK_NAME = "bitty-location-state-refresh-push";
+const LOCATION_PUSH_REFRESH_MARKER = "location_state_refresh";
 
 function rulesInCurrentTimeZone(rules: readonly LocationScheduleRule[]) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -154,6 +157,18 @@ async function reconcileLocationRefreshTask(enabled: boolean) {
     }
   } catch (error) {
     void logLocationScheduleEvent("location_refresh_task_register_failed", {
+      enabled,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
+    if (enabled) {
+      await Notifications.registerTaskAsync(LOCATION_PUSH_REFRESH_TASK_NAME);
+    } else {
+      await Notifications.unregisterTaskAsync(LOCATION_PUSH_REFRESH_TASK_NAME).catch(() => {});
+    }
+  } catch (error) {
+    void logLocationScheduleEvent("location_push_refresh_task_register_failed", {
       enabled,
       message: error instanceof Error ? error.message : String(error),
     });
@@ -310,6 +325,25 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
     };
     await persistLocationState(event);
     await flushPendingLocationStates().catch(() => {});
+  });
+}
+
+if (!TaskManager.isTaskDefined(LOCATION_PUSH_REFRESH_TASK_NAME)) {
+  TaskManager.defineTask(LOCATION_PUSH_REFRESH_TASK_NAME, async ({ data, error }) => {
+    if (error) {
+      await logLocationScheduleEvent("location_push_refresh_task_error", {
+        message: String(error.message || error),
+      });
+      return;
+    }
+    // ペイロードの形はOS/ライブラリで揺れるため、マーカー文字列の有無で判定する
+    if (!JSON.stringify(data ?? {}).includes(LOCATION_PUSH_REFRESH_MARKER)) return;
+    await logLocationScheduleEvent("location_push_refresh_fired", {});
+    await recoverLocationScheduleState("silent_push").catch((err) => {
+      void logLocationScheduleEvent("location_push_refresh_task_error", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
   });
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Modal,
   SafeAreaView,
@@ -38,11 +38,19 @@ function regionForCoordinate(latitude: number, longitude: number, radiusMeters: 
 export function LocationMapPicker({ target, onCancel, onConfirm }: Props) {
   const [coordinate, setCoordinate] = useState<{ latitude: number; longitude: number } | null>(null);
   const [initialRegion, setInitialRegion] = useState<Region | null>(null);
+  const openedRef = useRef(false);
 
   useEffect(() => {
-    setCoordinate(null);
-    setInitialRegion(null);
-    if (!target) return;
+    if (!target) {
+      openedRef.current = false;
+      setCoordinate(null);
+      setInitialRegion(null);
+      return;
+    }
+    // 開いている間の親の再レンダー(targetの参照変化)では初期化しない。
+    // タップ済みのピンをリセットしないための必須ガード
+    if (openedRef.current) return;
+    openedRef.current = true;
     let cancelled = false;
     if (Number.isFinite(target.latitude) && Number.isFinite(target.longitude)) {
       setCoordinate({ latitude: target.latitude, longitude: target.longitude });

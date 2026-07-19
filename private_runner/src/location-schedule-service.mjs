@@ -5,6 +5,11 @@ import { randomUUID } from "node:crypto";
 const MAX_ENABLED_RULES = 20;
 const MAX_PROMPT_CHARS = 24_000;
 const OCCURRENCE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+// window開始時に最後の位置状態がこの時間より古い場合は、発火前にサイレントpushで
+// 端末に現在地の再報告を求める。応答が無いままタイムアウトしたら従来どおり最終状態で発火する。
+const STATE_FRESH_MS = 3 * 60 * 1000;
+const STATE_REFRESH_TIMEOUT_MS = 90 * 1000;
+const STATE_REFRESH_REQUEST_RETENTION_MS = 6 * 60 * 60 * 1000;
 
 export class LocationScheduleStoreUnavailableError extends Error {
   constructor(message) {
@@ -141,6 +146,7 @@ export function createLocationScheduleService({
   parseCodexOptions,
   executeTurn,
   validateCwd,
+  requestStateRefresh,
   now = () => new Date(),
   scheduleTimer = (fn, delay) => setTimeout(fn, delay),
   clearTimer = clearTimeout,
@@ -148,6 +154,7 @@ export function createLocationScheduleService({
   let loaded = false;
   let mutationQueue = Promise.resolve();
   let timer = null;
+  const stateRefreshRequests = new Map();
   let data = {
     version: 1,
     phoneTimeZone: "UTC",
@@ -214,15 +221,35 @@ export function createLocationScheduleService({
     for (const [key, occurrence] of Object.entries(data.occurrences)) {
       if (Date.parse(String(occurrence?.createdAt || "")) < cutoff) delete data.occurrences[key];
     }
+    const refreshCutoff = at.getTime() - STATE_REFRESH_REQUEST_RETENTION_MS;
+    for (const [key, requestedAtMs] of stateRefreshRequests) {
+      if (requestedAtMs < refreshCutoff) stateRefreshRequests.delete(key);
+    }
   }
 
   function claimEligibleRules(at) {
     const claimed = [];
+    const staleRules = [];
     for (const rule of data.rules) {
       const state = data.states[rule.id];
       if (!rule.enabled || state?.state !== "inside" || state.regionRevision !== rule.regionRevision) continue;
       const window = windowAt(rule, at);
       if (!window.active || data.occurrences[window.occurrenceKey]) continue;
+      if (typeof requestStateRefresh === "function") {
+        const observedAtMs = Date.parse(String(state.observedAt || ""));
+        const ageMs = at.getTime() - (Number.isFinite(observedAtMs) ? observedAtMs : 0);
+        if (ageMs > STATE_FRESH_MS) {
+          const requestedAtMs = stateRefreshRequests.get(window.occurrenceKey);
+          if (!requestedAtMs) {
+            stateRefreshRequests.set(window.occurrenceKey, at.getTime());
+            staleRules.push({ ...rule });
+            continue;
+          }
+          if (at.getTime() - requestedAtMs < STATE_REFRESH_TIMEOUT_MS) continue;
+          // 端末から再報告が来ないままタイムアウト。従来どおり最終状態で発火する
+        }
+      }
+      stateRefreshRequests.delete(window.occurrenceKey);
       const createdAt = at.toISOString();
       data.occurrences[window.occurrenceKey] = {
         occurrenceKey: window.occurrenceKey,
@@ -236,7 +263,7 @@ export function createLocationScheduleService({
       };
       claimed.push({ rule: { ...rule }, occurrenceKey: window.occurrenceKey });
     }
-    return claimed;
+    return { claimed, staleRules };
   }
 
   async function runClaim({ rule, occurrenceKey }) {
@@ -276,13 +303,18 @@ export function createLocationScheduleService({
   }
 
   async function evaluate() {
-    const claimed = await serialize(async () => {
+    const { claimed, staleRules } = await serialize(async () => {
       const at = now();
       pruneOccurrences(at);
       const result = claimEligibleRules(at);
-      if (result.length) await persist();
+      if (result.claimed.length) await persist();
       return result;
     });
+    if (staleRules.length && typeof requestStateRefresh === "function") {
+      void Promise.resolve(requestStateRefresh({ rules: staleRules })).catch((error) => {
+        console.warn(`[location-schedule] state refresh request failed: ${error instanceof Error ? error.message : error}`);
+      });
+    }
     for (const item of claimed) {
       void runClaim(item).catch((error) => {
         console.warn(`[location-schedule] failed to record execution result: ${error instanceof Error ? error.message : error}`);

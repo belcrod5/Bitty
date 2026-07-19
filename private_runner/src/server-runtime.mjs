@@ -1341,6 +1341,30 @@ const locationScheduleService = createLocationScheduleService({
     origin: "location_schedule",
     request,
   }),
+  // 最終位置状態が古いままwindowが始まった場合に、サイレントpushで端末へ現在地の再報告を求める
+  requestStateRefresh: PUSH_ENABLED && apnsClient
+    ? async () => {
+      const devices = await pushDeviceStore.listDevices();
+      const payload = {
+        aps: { "content-available": 1 },
+        bitty: { type: "location_state_refresh" },
+      };
+      for (const device of devices) {
+        try {
+          const result = await apnsClient.sendToDevice(device.apnsToken, payload, {
+            env: device.env,
+            pushType: "background",
+            priority: 5,
+          });
+          if (!result.ok) {
+            console.warn(`[location-schedule] state refresh push rejected (${maskApnsToken(device.apnsToken)}): ${result.status} ${result.reason}`);
+          }
+        } catch (error) {
+          console.warn(`[location-schedule] state refresh push failed (${maskApnsToken(device.apnsToken)}): ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    }
+    : undefined,
 });
 
 async function listLlmSessions(rawDirectory, opts = {}) {

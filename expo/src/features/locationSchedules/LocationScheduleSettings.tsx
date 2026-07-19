@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -58,13 +58,18 @@ export function LocationScheduleSettings(props: Props) {
   const [mapPickerRuleId, setMapPickerRuleId] = useState<string | null>(null);
 
   const mapPickerRule = rules.find((rule) => rule.id === mapPickerRuleId) || null;
-  const mapPickerTarget: LocationMapPickerTarget | null = mapPickerRule
-    ? {
-      latitude: mapPickerRule.latitude,
-      longitude: mapPickerRule.longitude,
-      radiusMeters: mapPickerRule.radiusMeters,
-    }
-    : null;
+  // ピッカーが開いている間はtargetの参照を安定させる(再生成するとピッカーが初期化される)
+  const mapPickerTarget = useMemo<LocationMapPickerTarget | null>(
+    () => mapPickerRule
+      ? {
+        latitude: mapPickerRule.latitude,
+        longitude: mapPickerRule.longitude,
+        radiusMeters: mapPickerRule.radiusMeters,
+      }
+      : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mapPickerRuleId]
+  );
 
   const open = async () => {
     setBusy(true);

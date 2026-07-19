@@ -48,7 +48,7 @@ async function withService(fn) {
   let current = new Date("2026-07-18T23:59:00.000Z"); // 08:59 JST
   const executions = [];
   const storePath = path.join(temp, "store.json");
-  const create = () => createLocationScheduleService({
+  const create = (overrides = {}) => createLocationScheduleService({
     storePath,
     parseCodexOptions,
     executeTurn: async (request) => {
@@ -59,6 +59,7 @@ async function withService(fn) {
     now: () => current,
     scheduleTimer: () => ({ unref() {} }),
     clearTimer: () => {},
+    ...overrides,
   });
   try {
     await fn({ create, executions, storePath, setNow: (value) => { current = new Date(value); } });
@@ -156,6 +157,56 @@ test("unknown/outside state does not fire and active-window edits are skipped", 
     assert.equal(executions.length, 0);
     const snapshot = await service.snapshot();
     assert.equal(Object.values(snapshot.occurrences)[0].status, "skipped_edited_active_window");
+  });
+});
+
+test("stale state at window start defers firing until a fresh report arrives", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const refreshRequests = [];
+    const service = create({ requestStateRefresh: async (request) => refreshRequests.push(request) });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "stale", observedAt: "2026-07-18T23:40:00Z" });
+    setNow("2026-07-19T00:00:00.000Z");
+    await service.evaluate();
+    assert.equal(executions.length, 0);
+    await waitFor(() => refreshRequests.length === 1);
+    assert.equal(refreshRequests[0].rules[0].id, "home");
+
+    // 圏外の新しい報告が来たら発火しない
+    setNow("2026-07-19T00:00:30.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "fresh-outside", observedAt: "2026-07-19T00:00:30Z" });
+    assert.equal(executions.length, 0);
+
+    // 新しい圏内報告が来たら発火する
+    setNow("2026-07-19T00:01:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "fresh-inside", observedAt: "2026-07-19T00:01:00Z" });
+    await waitFor(() => executions.length === 1);
+    assert.equal(refreshRequests.length, 1);
+  });
+});
+
+test("stale state falls back to firing after the refresh request times out", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const refreshRequests = [];
+    const service = create({ requestStateRefresh: async (request) => refreshRequests.push(request) });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "stale", observedAt: "2026-07-18T23:40:00Z" });
+    setNow("2026-07-19T00:00:00.000Z");
+    await service.evaluate();
+    assert.equal(executions.length, 0);
+    await waitFor(() => refreshRequests.length === 1);
+
+    // タイムアウト前は発火せず、要求も重複しない
+    setNow("2026-07-19T00:01:00.000Z");
+    await service.evaluate();
+    assert.equal(executions.length, 0);
+    assert.equal(refreshRequests.length, 1);
+
+    // タイムアウト後は従来どおり最終状態で発火する
+    setNow("2026-07-19T00:02:00.000Z");
+    await service.evaluate();
+    await waitFor(() => executions.length === 1);
+    assert.equal(refreshRequests.length, 1);
   });
 });
 
