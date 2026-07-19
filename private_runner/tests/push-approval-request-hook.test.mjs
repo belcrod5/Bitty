@@ -21,9 +21,6 @@ const {
   forwardCodexRelayClientData,
   pushDeviceStore,
   apnsClient,
-  pushSummarizer,
-  sendTurnCompletedPush,
-  derivePushDirectoryTitle,
 } = __TESTING__;
 
 test.after(async () => {
@@ -190,25 +187,6 @@ test("removes a device that APNs reports as unregistered (410)", async (t) => {
   assert.equal(devices.some((device) => device.deviceId === "device-410"), false);
 });
 
-test("derives the push title from the working directory's trailing segment", () => {
-  assert.equal(derivePushDirectoryTitle("/Volumes/SSD-500GB-SanDisk/work/test_folder"), "test_folder");
-  assert.equal(derivePushDirectoryTitle("/work/test_folder/"), "test_folder");
-  assert.equal(derivePushDirectoryTitle("relative/dir"), "dir");
-  assert.equal(derivePushDirectoryTitle("  /work/spaced  "), "spaced");
-  assert.equal(derivePushDirectoryTitle(""), "");
-  assert.equal(derivePushDirectoryTitle(null), "");
-  // Degenerate segmentless path: same as the app's deriveDirectoryDisplayName, the raw
-  // path itself is returned rather than falling back to the fixed title.
-  assert.equal(derivePushDirectoryTitle("/"), "/");
-});
-
-test("truncates a pathologically long directory name in the push title to 60 chars", () => {
-  const longName = "x".repeat(200);
-  const title = derivePushDirectoryTitle(`/work/${longName}`);
-  assert.equal(title.length, 60);
-  assert.equal(title, `${"x".repeat(57)}...`);
-});
-
 test("uses the relay's working-directory basename as the approval push title", async (t) => {
   await pushDeviceStore.upsertDevice({ deviceId: "device-title", apnsToken: "token-title", env: "sandbox" });
   const calls = [];
@@ -267,40 +245,4 @@ test("captures the session cwd from the upstream thread/resume result as a fallb
     result: { thread: { id: "thread-1", cwd: "/work/from-upstream" } },
   }), false);
   assert.equal(relay.threadCwd, "/work/from-upstream");
-});
-
-test("turn-completed push uses the directory basename title with a fixed-title fallback", async (t) => {
-  await pushDeviceStore.upsertDevice({ deviceId: "device-tc", apnsToken: "token-tc", env: "sandbox" });
-  const calls = [];
-  const originalSendToDevice = apnsClient.sendToDevice;
-  const originalSummarize = pushSummarizer.summarize;
-  apnsClient.sendToDevice = async (token, payload) => {
-    calls.push({ token, payload });
-    return { ok: true, status: 200 };
-  };
-  pushSummarizer.summarize = async (text) => String(text || "");
-  t.after(async () => {
-    apnsClient.sendToDevice = originalSendToDevice;
-    pushSummarizer.summarize = originalSummarize;
-    await pushDeviceStore.removeDevice("device-tc");
-  });
-
-  await sendTurnCompletedPush({
-    sessionId: "thread-1",
-    threadId: "thread-1",
-    turnId: "turn-1",
-    previewText: "done",
-    directory: "/Volumes/SSD-500GB-SanDisk/work/test_folder",
-  });
-  await sendTurnCompletedPush({
-    sessionId: "thread-1",
-    threadId: "thread-1",
-    turnId: "turn-2",
-    previewText: "done",
-    directory: "",
-  });
-
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].payload.aps.alert.title, "test_folder");
-  assert.equal(calls[1].payload.aps.alert.title, "タスク完了");
 });

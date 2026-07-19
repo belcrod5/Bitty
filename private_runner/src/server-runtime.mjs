@@ -24,11 +24,16 @@ import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
-import { executeCodexTurn } from "./codex-turn-execution.mjs";
+import { executeCodexTurn, extractCodexAgentMessageText } from "./codex-turn-execution.mjs";
 import {
   createLocationScheduleService,
   LocationScheduleStoreUnavailableError,
 } from "./location-schedule-service.mjs";
+import {
+  compactLlmCompletionPreview,
+  createTurnCompletionNotifier,
+  derivePushDirectoryTitle,
+} from "./turn-completion-notification.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -1300,27 +1305,6 @@ const {
 });
 
 const pushDeviceStore = createPushDeviceStore(PUSH_DEVICE_STORE_PATH);
-const locationScheduleService = createLocationScheduleService({
-  storePath: LOCATION_SCHEDULE_STORE_PATH,
-  parseCodexOptions: resolveCodexRequestOptions,
-  validateCwd: async (cwd) => {
-    const resolved = path.resolve(String(cwd || "").trim());
-    const stat = await fs.stat(resolved);
-    if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
-  },
-  executeTurn: async (request) => {
-    const client = createCodexRpcClient();
-    try {
-      return await executeCodexTurn({
-        client,
-        clientName: "private-runner-location-schedule",
-        ...request,
-      });
-    } finally {
-      client.close(1000, "turn_done");
-    }
-  },
-});
 const apnsClient = PUSH_ENABLED
   ? createApnsClient({
     keyPath: APNS_KEY_PATH,
@@ -1337,6 +1321,27 @@ const pushSummarizer = PUSH_ENABLED
     reasoningEffort: "low",
   })
   : null;
+const turnCompletionNotifier = createTurnCompletionNotifier({
+  pushEnabled: PUSH_ENABLED,
+  apnsClient,
+  pushSummarizer,
+  pushDeviceStore,
+  broadcast: (payload) => broadcastRunnerWsTurnCompletedNotification(null, payload),
+});
+const locationScheduleService = createLocationScheduleService({
+  storePath: LOCATION_SCHEDULE_STORE_PATH,
+  parseCodexOptions: resolveCodexRequestOptions,
+  validateCwd: async (cwd) => {
+    const resolved = path.resolve(String(cwd || "").trim());
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
+  },
+  executeTurn: (request) => runRunnerInitiatedTurn({
+    clientName: "private-runner-location-schedule",
+    origin: "location_schedule",
+    request,
+  }),
+});
 
 async function listLlmSessions(rawDirectory, opts = {}) {
   const requestedDirectory = await resolveCanonicalDirectoryIdentity(rawDirectory);
@@ -6854,7 +6859,7 @@ function markCodexQueuedTurn(turn, patch) {
   return turn;
 }
 
-function createCodexRpcClient({ signal, onNotification } = {}) {
+function createCodexRpcClient({ signal } = {}) {
   const headers = {};
   if (CODEX_WS_PROXY_UPSTREAM_TOKEN) {
     headers.authorization = `Bearer ${CODEX_WS_PROXY_UPSTREAM_TOKEN}`;
@@ -6864,6 +6869,7 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
   let nextId = 1;
   let closed = false;
   const completionWaiters = new Set();
+  const notificationListeners = new Set();
   const finishCompletionWaiters = () => {
     for (const finish of completionWaiters) finish();
     completionWaiters.clear();
@@ -6908,9 +6914,11 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
       if (message.method === "turn/completed" || message.method === "turn/interrupted") {
         finishCompletionWaiters();
       }
-      try {
-        onNotification?.(String(message.method), message.params ?? {});
-      } catch {}
+      for (const listener of notificationListeners) {
+        try {
+          listener(String(message.method), message.params ?? {});
+        } catch {}
+      }
       return;
     }
     const id = Number(message?.id);
@@ -6965,7 +6973,12 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
     if (signal.aborted) close(1000, "aborted");
     signal.addEventListener("abort", () => close(1000, "aborted"), { once: true });
   }
-  return { ws, openPromise, request, notify, close, waitForTurnCompletion };
+  const addNotificationListener = (listener) => {
+    if (typeof listener !== "function") throw new TypeError("notification listener must be a function");
+    notificationListeners.add(listener);
+    return () => notificationListeners.delete(listener);
+  };
+  return { ws, openPromise, request, notify, close, waitForTurnCompletion, addNotificationListener };
 }
 
 function parseCodexThreadStatus(params) {
@@ -7118,6 +7131,29 @@ function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") 
   }
 }
 
+async function runRunnerInitiatedTurn({
+  clientName,
+  origin,
+  signal,
+  onTurnStarted,
+  request,
+}) {
+  const client = createCodexRpcClient({ signal });
+  try {
+    const result = await executeCodexTurn({ client, clientName, onTurnStarted, ...request });
+    void turnCompletionNotifier.notifyTurnCompleted({
+      threadId: result.threadId,
+      turnId: result.turnId,
+      agentMessageText: result.lastAgentMessageText,
+      directory: request.cwd,
+      origin,
+    });
+    return result;
+  } finally {
+    client.close(1000, "turn_done");
+  }
+}
+
 async function runCodexQueuedTurn(turn) {
   const abortController = new AbortController();
   markCodexQueuedTurn(turn, {
@@ -7126,28 +7162,21 @@ async function runCodexQueuedTurn(turn) {
     abortController,
   });
   codexRunningTurnByThreadId.set(turn.threadId, turn.queuedTurnId);
-  // App-server notifications already reach the relay's upstream socket.
-  const client = createCodexRpcClient({
-    signal: abortController.signal,
-    onNotification: (method, params) => {
-      if (method === "turn/started") {
-        const turnId = String(params?.turn?.id || params?.turnId || "").trim();
-        if (turnId) markCodexQueuedTurn(turn, { turnId });
-      }
-    },
-  });
   try {
-    await executeCodexTurn({
-      client,
+    await runRunnerInitiatedTurn({
       clientName: "private-runner-codex-queued-turn",
-      threadId: turn.threadId,
-      inputText: turn.inputText,
-      cwd: turn.cwd,
-      model: turn.model,
-      effort: turn.effort,
-      approvalPolicy: turn.approvalPolicy,
+      origin: "queued_turn",
+      signal: abortController.signal,
       onTurnStarted: ({ turnId }) => {
         if (turnId) markCodexQueuedTurn(turn, { turnId });
+      },
+      request: {
+        threadId: turn.threadId,
+        inputText: turn.inputText,
+        cwd: turn.cwd,
+        model: turn.model,
+        effort: turn.effort,
+        approvalPolicy: turn.approvalPolicy,
       },
     });
     if (turn.status !== "cancelled") {
@@ -7166,7 +7195,6 @@ async function runCodexQueuedTurn(turn) {
       abortController: null,
     });
   } finally {
-    client.close(1000, "turn_done");
     if (codexRunningTurnByThreadId.get(turn.threadId) === turn.queuedTurnId) {
       codexRunningTurnByThreadId.delete(turn.threadId);
     }
@@ -10995,7 +11023,6 @@ function createCodexRelayContext(params) {
     assistantThinkingCurrentItemId: "",
     assistantThinkingTurnActive: false,
     assistantThinkingTurnId: "",
-    turnCompletedNotificationSent: false,
     pendingApprovalRequestIds: new Set(),
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
@@ -11035,88 +11062,6 @@ function parseCodexRpcObject(rawData, isBinary, maxChars = 200000) {
   } catch {
     return null;
   }
-}
-
-function extractCodexAgentMessageText(itemRaw) {
-  if (!itemRaw || typeof itemRaw !== "object" || Array.isArray(itemRaw)) return "";
-  const item = itemRaw;
-  const directText = pickFirstNonEmptyString(item.text, item.message?.text);
-  if (directText) return directText;
-  const content = Array.isArray(item.content) ? item.content : [];
-  const chunks = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object" || Array.isArray(part)) continue;
-    if (String(part.type || "").trim() === "localImage") {
-      const localPath = pickFirstNonEmptyString(part.path);
-      if (localPath) chunks.push(`[localImage] ${localPath}`);
-      continue;
-    }
-    const text = pickFirstNonEmptyString(part.text, part.value);
-    if (text) chunks.push(text);
-  }
-  return chunks.join("").trim();
-}
-
-function compactLlmCompletionPreview(textRaw, maxChars = 180) {
-  const text = String(textRaw || "").replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
-}
-
-// Same derivation as the app's default directory display name (expo
-// directoryIdentity.ts deriveDirectoryDisplayName): the trailing path segment of the
-// session's working directory. Used as the push-notification title so the user can tell
-// at a glance which project a notification belongs to. Empty input yields "" so callers
-// can fall back to their fixed title. Capped at 60 chars so a pathological directory
-// name cannot push the APNs payload toward its 4KB limit.
-function derivePushDirectoryTitle(pathRaw) {
-  const dirPath = String(pathRaw || "").trim();
-  const segments = dirPath.split("/").filter(Boolean);
-  const title = String(segments[segments.length - 1] || dirPath).trim();
-  return compactLlmCompletionPreview(title, 60);
-}
-
-async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText, directory }) {
-  if (!PUSH_ENABLED || !apnsClient || !pushSummarizer) return;
-  let devices = [];
-  try {
-    devices = await pushDeviceStore.listDevices();
-  } catch (err) {
-    console.warn(`[push] failed to list devices: ${errorMessage(err)}`);
-    return;
-  }
-  if (devices.length <= 0) return;
-
-  const summary = await pushSummarizer.summarize(previewText);
-  if (!summary) return;
-
-  const id = String(sessionId || threadId || "");
-  const payload = {
-    aps: {
-      alert: { title: derivePushDirectoryTitle(directory) || "タスク完了", body: summary },
-      sound: "default",
-      category: "TURN_COMPLETED",
-      "thread-id": id,
-    },
-    sessionId: id,
-    turnId: String(turnId || ""),
-  };
-
-  await Promise.all(devices.map(async (device) => {
-    try {
-      const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
-      if (result?.status === 410) {
-        await pushDeviceStore.removeDevice(device.deviceId);
-      } else if (!result?.ok) {
-        console.warn(
-          `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
-        );
-      }
-    } catch (err) {
-      console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
-    }
-  }));
 }
 
 // Builds a short push-notification body describing the command/tool awaiting approval.
@@ -11227,7 +11172,6 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     : {};
   if (method === "turn/started") {
     relay.lastAgentMessageText = "";
-    relay.turnCompletedNotificationSent = false;
     return;
   }
   if (method === "item/agentMessage/delta") {
@@ -11243,7 +11187,6 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     return;
   }
   if (method !== "turn/completed") return;
-  if (relay.turnCompletedNotificationSent) return;
   const threadId = pickFirstNonEmptyString(
     meta?.threadId,
     params.threadId,
@@ -11254,24 +11197,13 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     params.thread?.threadId,
     relay.threadId
   );
-  const previewText = compactLlmCompletionPreview(relay.lastAgentMessageText);
-  if (!threadId || !previewText) return;
-  relay.turnCompletedNotificationSent = true;
-  broadcastRunnerWsTurnCompletedNotification(relay, {
+  void turnCompletionNotifier.notifyTurnCompleted({
     sessionId: threadId,
     threadId,
-    previewText,
-    completedAt: new Date().toISOString(),
-  });
-  const turnId = getCodexTurnStartedId(rpcPayload) || threadId;
-  void sendTurnCompletedPush({
-    sessionId: threadId,
-    threadId,
-    turnId,
-    previewText,
+    turnId: getCodexTurnStartedId(rpcPayload) || "",
+    agentMessageText: relay.lastAgentMessageText,
     directory: relay.threadCwd,
-  }).catch((err) => {
-    console.warn(`[push] turn completed push failed: ${errorMessage(err)}`);
+    origin: "relay",
   });
 }
 
@@ -12092,7 +12024,7 @@ export const __TESTING__ = {
   apnsClient,
   pushSummarizer,
   locationScheduleService,
-  sendTurnCompletedPush,
+  turnCompletionNotifier,
   sendApprovalRequestPush,
   derivePushDirectoryTitle,
   codexWsRelaysById,
