@@ -389,6 +389,10 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     requestEdit,
     cancelEdit,
     writeFileContent,
+    createFileDirectory,
+    requestCreateFile,
+    cancelCreateFile,
+    createFile,
     deleteFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -525,6 +529,12 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       `アップロード先: ${targetDirectory}`,
       [
         {
+          text: "新規ファイル作成",
+          onPress: () => {
+            requestCreateFile(targetDirectory);
+          },
+        },
+        {
           text: "写真からアップロード",
           onPress: () => {
             void uploadFileToDirectory(targetDirectory, "photos");
@@ -548,7 +558,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
         },
       ]
     );
-  }, [getPathLabel, uploadFileToDirectory, uploadingDirectoryPath]);
+  }, [getPathLabel, requestCreateFile, uploadFileToDirectory, uploadingDirectoryPath]);
 
   const stagedTreeNodes = useMemo(() => buildGitDiffFileTree(stagedFiles), [stagedFiles]);
   const unstagedTreeNodes = useMemo(() => buildGitDiffFileTree(unstagedFiles), [unstagedFiles]);
@@ -966,6 +976,13 @@ export const GitDiffPanel = memo(function GitDiffPanel({
         target={renameTarget}
         onCancel={cancelRename}
         onRename={renameFile}
+      />
+      <WorkspaceFileRenameDialog
+        target={createFileDirectory ? { path: createFileDirectory, name: "" } : null}
+        title="新規ファイル作成"
+        submitLabel="作成"
+        onCancel={cancelCreateFile}
+        onRename={createFile}
       />
       <WorkspaceTextFileEditor
         target={editTarget}

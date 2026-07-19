@@ -148,10 +148,11 @@ export function createWorkspaceFilesService({
     fileName,
     mimeType,
     data,
+    allowEmpty = false,
   }) {
     const normalizedName = normalizeFileName(fileName);
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
-    if (buffer.length <= 0) {
+    if (buffer.length <= 0 && !allowEmpty) {
       throw new WorkspaceFilesError(400, "file_empty", "file is empty");
     }
     if (buffer.length > maxBytes) {
@@ -196,6 +197,20 @@ export function createWorkspaceFilesService({
       size: buffer.length,
       mimeType: String(mimeType || "application/octet-stream").trim() || "application/octet-stream",
     };
+  }
+
+  async function createTextFile({ rootDir, targetDirectory, fileName, content = "" }) {
+    if (typeof content !== "string") {
+      throw new WorkspaceFilesError(400, "content_required", "content must be a string");
+    }
+    return saveFile({
+      rootDir,
+      targetDirectory,
+      fileName,
+      mimeType: "text/plain",
+      data: Buffer.from(content, "utf8"),
+      allowEmpty: true,
+    });
   }
 
   async function writeTextFile({ rootDir, path: rawPath, content }) {
@@ -353,6 +368,14 @@ export function createWorkspaceFilesService({
       throw new WorkspaceFilesError(400, "invalid_json", "request body must be a JSON object");
     }
     if (req.method === "PUT") {
+      if (body.create) {
+        return createTextFile({
+          rootDir: body.rootDir,
+          targetDirectory: body.targetDirectory,
+          fileName: body.name,
+          content: body.content ?? "",
+        });
+      }
       return writeTextFile({
         rootDir: body.rootDir,
         path: body.path,
@@ -415,6 +438,7 @@ export function createWorkspaceFilesService({
     parseAndSaveRequest,
     parseMutationRequest,
     saveFile,
+    createTextFile,
     writeTextFile,
     renameFile,
     deleteFile,

@@ -286,6 +286,69 @@ export async function mutateWorkspaceFile({
   }
 }
 
+export async function createWorkspaceTextFile({
+  runnerUrl,
+  runnerToken,
+  rootDirectory,
+  targetDirectory,
+  name,
+  content = "",
+}: {
+  runnerUrl: string;
+  runnerToken: string;
+  rootDirectory: string;
+  targetDirectory: string;
+  name: string;
+  content?: string;
+}): Promise<WorkspaceFileMutationResult> {
+  const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
+  const token = String(runnerToken || "").trim();
+  const fileName = String(name || "").trim();
+  const directory = String(targetDirectory || "").trim();
+  if (!baseUrl || !token) {
+    throw new Error("Runner URL または Runner Token が未設定です。");
+  }
+  if (!directory || !fileName) {
+    throw new Error("作成先またはファイル名が未指定です。");
+  }
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), WORKSPACE_MUTATION_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${baseUrl}/workspace/files`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        create: true,
+        rootDir: String(rootDirectory || "").trim(),
+        targetDirectory: directory,
+        name: fileName,
+        content: String(content ?? ""),
+      }),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
+    }
+    return {
+      ok: Boolean(data?.ok),
+      path: String(data?.path || `${directory}/${fileName}`),
+      directory: data?.directory ? String(data.directory) : directory,
+      name: data?.name ? String(data.name) : fileName,
+    };
+  } catch (error) {
+    if (error && typeof error === "object" && "name" in error && error.name === "AbortError") {
+      throw new Error(`ファイル作成がタイムアウトしました（${WORKSPACE_MUTATION_TIMEOUT_MS / 1000}秒）。`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 export async function writeWorkspaceTextFile({
   runnerUrl,
   runnerToken,

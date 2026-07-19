@@ -185,6 +185,53 @@ test("overwrites text file content only inside the selected root", async () => {
   });
 });
 
+test("creates an empty text file and rejects duplicates or escapes", async () => {
+  await withTempDir(async (workspaceRoot) => {
+    const projectRoot = path.join(workspaceRoot, "project");
+    const outsideDirectory = path.join(workspaceRoot, "outside");
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(outsideDirectory);
+    const service = createWorkspaceFilesService({
+      workspaceRoot,
+      maxUploadBytes: 1024,
+    });
+
+    const created = await service.createTextFile({
+      rootDir: "project",
+      targetDirectory: "project",
+      fileName: "memo.md",
+    });
+    assert.equal(created.path, "project/memo.md");
+    assert.equal(created.size, 0);
+    assert.equal(await readFile(path.join(projectRoot, "memo.md"), "utf8"), "");
+
+    await assert.rejects(
+      service.createTextFile({
+        rootDir: "project",
+        targetDirectory: "project",
+        fileName: "memo.md",
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "file_exists"
+    );
+    await assert.rejects(
+      service.createTextFile({
+        rootDir: "project",
+        targetDirectory: "project",
+        fileName: "../escape.md",
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "invalid_file_name"
+    );
+    await assert.rejects(
+      service.createTextFile({
+        rootDir: "project",
+        targetDirectory: "outside",
+        fileName: "escape.md",
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "target_directory_invalid"
+    );
+  });
+});
+
 test("rejects text writes through symbolic links", async () => {
   await withTempDir(async (workspaceRoot) => {
     const projectRoot = path.join(workspaceRoot, "project");
@@ -354,6 +401,24 @@ test("accepts authenticated write, rename, and delete requests", async () => {
       const address = server.address();
       assert.ok(address && typeof address === "object");
       const baseUrl = `http://127.0.0.1:${address.port}/workspace/files`;
+      const createResponse = await fetch(baseUrl, {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          create: true,
+          rootDir: "project",
+          targetDirectory: "project",
+          name: "created.md",
+        }),
+      });
+      const createPayload = await createResponse.json();
+      assert.equal(createResponse.status, 200);
+      assert.equal(createPayload.path, "project/created.md");
+      assert.equal(await readFile(path.join(projectRoot, "created.md"), "utf8"), "");
+
       const writeResponse = await fetch(baseUrl, {
         method: "PUT",
         headers: {
