@@ -79,17 +79,21 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     setTtsSoundWithRef,
   } = options;
 
-  const stopTtsPlayback = useCallback(async (stopOptions?: { interruptStream?: boolean }) => {
+  const stopTtsPlayback = useCallback(async (
+    stopOptions?: { interruptStream?: boolean; reason?: string }
+  ) => {
     if (ttsStopInFlightRef.current) {
       await ttsStopInFlightRef.current;
       return;
     }
     const stopTask = (async () => {
       const interruptStream = stopOptions?.interruptStream ?? false;
+      const reason = String(stopOptions?.reason || "unspecified");
       const stopRequestedAt = Date.now();
       ttsPlaybackTransitionInFlightRef.current = true;
       autoLastTtsStopRequestedAtRef.current = stopRequestedAt;
       logAuto("tts_stop_requested", {
+        reason,
         interruptStream,
         ttsPlaying: ttsPlayingRef.current,
         ttsLoading,
@@ -102,6 +106,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         sinceTtsStoppedMs: elapsedSinceMs(autoLastTtsStoppedAtRef.current),
       });
       setTtsPlaybackWanted(false, "stop_requested", {
+        reason,
         interruptStream,
         runId: ttsPlaybackRunIdRef.current,
         streamQueueSize: streamAudioQueueRef.current.length,

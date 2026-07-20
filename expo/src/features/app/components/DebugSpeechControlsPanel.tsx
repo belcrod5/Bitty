@@ -325,7 +325,7 @@ export function DebugSpeechControlsPanel() {
         <Switch value={autoBargeInEnabled} onValueChange={toggleAutoBargeInEnabled} />
       </View>
       <View style={styles.switchRow}>
-        <Text style={styles.switchLabel}>iPhoneスピーカー優先（TTS中は録音停止）</Text>
+        <Text style={styles.switchLabel}>TTS再生優先（TTS中は録音停止）</Text>
         <Switch value={autoSpeakerPriorityEnabled} onValueChange={toggleAutoSpeakerPriorityEnabled} />
       </View>
       <View style={styles.switchRow}>
@@ -333,7 +333,7 @@ export function DebugSpeechControlsPanel() {
         <Switch value={autoSpeakAfterReply} onValueChange={toggleAutoSpeakAfterReply} />
       </View>
       {autoSpeakerPriorityEnabled ? (
-        <Text style={styles.hint}>speaker優先ON: 再生安定と自己文字起こし抑制を優先します。</Text>
+        <Text style={styles.hint}>再生優先ON: AirPodsを含め、TTS中は録音を停止します。</Text>
       ) : null}
       <View style={styles.row}>
         <TouchableOpacity style={styles.buttonSecondary} onPress={logSettingsJson}>

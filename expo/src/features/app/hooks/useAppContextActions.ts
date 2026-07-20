@@ -68,7 +68,7 @@ type UseAppContextActionsArgs = {
   stopTtsPlayback: () => Promise<void>;
   startDirectNativeStt: () => Promise<void>;
   stopDirectNativeStt: () => Promise<void>;
-  startAutoRecordingMode: () => Promise<void>;
+  startAutoRecordingMode: (panelId?: string) => Promise<void>;
   stopAutoRecordingMode: () => Promise<void>;
   sendAutoClientLogsNow: () => Promise<void>;
   transcribeRecording: () => Promise<void>;
@@ -403,8 +403,8 @@ export function useAppContextActions({
   const startDirectNativeSttFromComposerContext = useCallback(() => {
     void startDirectNativeStt();
   }, [startDirectNativeStt]);
-  const startAutoRecordingModeFromComposerContext = useCallback(() => {
-    void startAutoRecordingMode();
+  const startAutoRecordingModeFromComposerContext = useCallback((panelId?: string) => {
+    void startAutoRecordingMode(panelId);
   }, [startAutoRecordingMode]);
   const stopWaveformPlaybackFromVisualContext = useCallback(() => {
     void stopWaveformPlayback();

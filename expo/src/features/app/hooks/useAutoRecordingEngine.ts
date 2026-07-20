@@ -1,12 +1,14 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { Audio } from "expo-av";
 import type { AppStateStatus } from "react-native";
+import { shouldAllowAutoCaptureDuringTts } from "../utils/autoAudioPolicy";
 
 type AutoProgressMode = "idle" | "speech" | "barge";
 
 type UseAutoRecordingEngineOptions = {
   appStateRef: MutableRefObject<AppStateStatus>;
   autoRecordingEnabledRef: MutableRefObject<boolean>;
+  autoRecordingPanelIdRef: MutableRefObject<string>;
   autoRecordingRef: MutableRefObject<Audio.Recording | null>;
   autoFinalizeLockRef: MutableRefObject<boolean>;
   autoRestartTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
@@ -45,11 +47,6 @@ type UseAutoRecordingEngineOptions = {
   faceTrackingSuppressLogAtRef: MutableRefObject<number>;
   faceTrackingSuppressedRef: MutableRefObject<boolean>;
   faceTrackingNotLookingSinceRef: MutableRefObject<number>;
-  autoPendingUserMessageIdRef: MutableRefObject<string>;
-  autoPendingUserAnimFrameRef: MutableRefObject<number>;
-  autoPendingUserMessageStartedAtRef: MutableRefObject<number>;
-  autoPendingUserMessageVisibleAtRef: MutableRefObject<number>;
-  autoPendingUserVisibleLoggedMessageIdRef: MutableRefObject<string>;
   autoCaptureCycleSeqRef: MutableRefObject<number>;
   audioLabRecordingRef: MutableRefObject<Audio.Recording | null>;
   audioLabSoundRef: MutableRefObject<Audio.Sound | null>;
@@ -58,6 +55,7 @@ type UseAutoRecordingEngineOptions = {
   autoSpeakerPriorityEnabledRef: MutableRefObject<boolean>;
   autoBargeInEnabledRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
+  ttsPlaybackWantedRef: MutableRefObject<boolean>;
   ttsPlayingRef: MutableRefObject<boolean>;
   youtubePlayerIsPlayingRef: MutableRefObject<boolean>;
   autoSegments: number;
@@ -82,14 +80,10 @@ type UseAutoRecordingEngineOptions = {
   setAutoAirPodsInput: (active: boolean) => void;
   setAutoMeteringDb: (value: number | null) => void;
   setAutoSegments: Dispatch<SetStateAction<number>>;
-  clearAutoPendingUserTimeoutTimer: () => void;
-  clearAutoPendingUserAnimationTimer: () => void;
   clearAutoRecordingWatchdogTimer: () => void;
-  removeConversationMessageById: (messageId: string) => void;
-  resolveAutoPendingUserMessage: (finalTranscript: string) => void;
   faceTrackingAllowsStt: (forceFresh?: boolean) => boolean;
-  transcribeRecording: (uriOverride?: string) => Promise<void>;
-  enqueueAutoTranscribe: (uri: string, reason: string) => void;
+  transcribeRecording: (uriOverride?: string, panelId?: string) => Promise<void>;
+  enqueueAutoTranscribe: (uri: string, reason: string, panelId?: string) => void;
   setRecordedClip: (uri: string, sec: number) => void;
   runAutoCaptureCycleCore: (captureCycleId: number) => Promise<void>;
   resetAutoWaveform: () => void;
@@ -105,6 +99,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
   const {
     appStateRef,
     autoRecordingEnabledRef,
+    autoRecordingPanelIdRef,
     autoRecordingRef,
     autoFinalizeLockRef,
     autoRestartTimerRef,
@@ -143,11 +138,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     faceTrackingSuppressLogAtRef,
     faceTrackingSuppressedRef,
     faceTrackingNotLookingSinceRef,
-    autoPendingUserMessageIdRef,
-    autoPendingUserAnimFrameRef,
-    autoPendingUserMessageStartedAtRef,
-    autoPendingUserMessageVisibleAtRef,
-    autoPendingUserVisibleLoggedMessageIdRef,
     autoCaptureCycleSeqRef,
     audioLabRecordingRef,
     audioLabSoundRef,
@@ -156,6 +146,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoSpeakerPriorityEnabledRef,
     autoBargeInEnabledRef,
     replyLoadingRef,
+    ttsPlaybackWantedRef,
     ttsPlayingRef,
     youtubePlayerIsPlayingRef,
     autoSegments,
@@ -180,11 +171,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     setAutoAirPodsInput,
     setAutoMeteringDb,
     setAutoSegments,
-    clearAutoPendingUserTimeoutTimer,
-    clearAutoPendingUserAnimationTimer,
     clearAutoRecordingWatchdogTimer,
-    removeConversationMessageById,
-    resolveAutoPendingUserMessage,
     faceTrackingAllowsStt,
     transcribeRecording,
     enqueueAutoTranscribe,
@@ -242,16 +229,21 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
       }, autoRestartDelayMs);
       return;
     }
+    const ttsCaptureAllowed = shouldAllowAutoCaptureDuringTts({
+      autoBargeInEnabled: autoBargeInEnabledRef.current,
+      autoSpeakerPriorityEnabled: autoSpeakerPriorityEnabledRef.current,
+    });
     const waitingReplyOnly = (
       replyLoadingRef.current &&
       !ttsPlayingRef.current &&
-      !autoBargeInEnabledRef.current
+      !ttsCaptureAllowed
     );
-    const ttsPlaybackBlocksCapture = (
-      ttsPlayingRef.current &&
-      !autoAirPodsInputRef.current &&
-      !autoBargeInEnabledRef.current
+    const ttsPipelineActive = (
+      ttsPlaybackWantedRef.current ||
+      ttsPlayingRef.current ||
+      ttsLoading
     );
+    const ttsPlaybackBlocksCapture = ttsPipelineActive && !ttsCaptureAllowed;
     const youtubePlaybackBlocksCapture = (
       youtubePlayerIsPlayingRef.current &&
       !autoAirPodsInputRef.current
@@ -277,6 +269,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
           reason: waitReason,
           replyLoading: replyLoadingRef.current,
           ttsPlaying: ttsPlayingRef.current,
+          ttsPlaybackWanted: ttsPlaybackWantedRef.current,
           youtubePlaying: youtubePlayerIsPlayingRef.current,
           ttsPlaybackBlocksCapture,
           youtubePlaybackBlocksCapture,
@@ -306,6 +299,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
       captureCycleId,
       replyLoading: replyLoadingRef.current,
       ttsPlaying: ttsPlayingRef.current,
+      ttsPlaybackWanted: ttsPlaybackWantedRef.current,
       youtubePlaying: youtubePlayerIsPlayingRef.current,
       ttsLoading,
       autoAirPodsInput: autoAirPodsInputRef.current,
@@ -335,6 +329,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     setAutoLastEvent,
     setAutoRecordingState,
     ttsLoading,
+    ttsPlaybackWantedRef,
     ttsPlayingRef,
     youtubePlayerIsPlayingRef,
   ]);
@@ -343,6 +338,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     if (autoFinalizeLockRef.current) return;
     const rec = autoRecordingRef.current;
     if (!rec) return;
+    const panelId = autoRecordingPanelIdRef.current;
 
     const startedAt = autoSpeechStartedAtRef.current;
     const speechMsAtFinalize = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
@@ -390,9 +386,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
 
       if (shouldTranscribeResolved && uri) {
         setAutoSegments((v) => v + 1);
-        enqueueAutoTranscribe(uri, reason);
-      } else if (autoPendingUserMessageIdRef.current) {
-        resolveAutoPendingUserMessage("");
+        enqueueAutoTranscribe(uri, reason, panelId || undefined);
       }
     } catch (e) {
       reportError(e, "auto:finalize");
@@ -452,10 +446,10 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
     autoLastTtsStoppedAtRef,
-    autoPendingUserMessageIdRef,
     autoPostTtsAboveSinceRef,
     autoPostTtsHumanDetectedRef,
     autoRecordingEnabledRef,
+    autoRecordingPanelIdRef,
     autoRecordingRef,
     autoRestartTimerRef,
     autoSegments,
@@ -470,7 +464,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     logAuto,
     releaseRecording,
     reportError,
-    resolveAutoPendingUserMessage,
     setAudioModeForPlayback,
     setAutoLastEvent,
     setAutoMeteringDb,
@@ -480,7 +473,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     startAutoCaptureCycle,
   ]);
 
-  const startAutoRecordingMode = useCallback(async () => {
+  const startAutoRecordingMode = useCallback(async (panelIdRaw?: string) => {
     if (autoRecordingEnabledRef.current) return;
     if (audioLabRecordingRef.current || audioLabSoundRef.current || audioLabRunning) {
       reportError("Audio Lab実行中はAuto Recordingを開始できません。", "auto:start-mode");
@@ -490,7 +483,10 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
       reportError("手動録音を停止してから自動録音を開始してください。", "auto:start-mode");
       return;
     }
+    const panelId = String(panelIdRaw || "").trim();
+    autoRecordingPanelIdRef.current = panelId;
     logAuto("mode_start_requested", {
+      panelId: panelId || undefined,
       speakerPriority: autoSpeakerPriorityEnabled,
       autoBargeInEnabled,
       autoReplyAfterStt,
@@ -526,13 +522,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     faceTrackingSuppressedRef.current = false;
     faceTrackingSuppressLogAtRef.current = 0;
     faceTrackingNotLookingSinceRef.current = 0;
-    clearAutoPendingUserTimeoutTimer();
-    clearAutoPendingUserAnimationTimer();
-    autoPendingUserAnimFrameRef.current = 0;
-    autoPendingUserMessageIdRef.current = "";
-    autoPendingUserMessageStartedAtRef.current = 0;
-    autoPendingUserMessageVisibleAtRef.current = 0;
-    autoPendingUserVisibleLoggedMessageIdRef.current = "";
     clearAutoRecordingWatchdogTimer();
     if (autoAppStateNonActiveTimerRef.current) {
       clearTimeout(autoAppStateNonActiveTimerRef.current);
@@ -561,17 +550,13 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoInputDetectAtRef,
     autoLastStatusHandledAtRef,
     autoNoCallbackFinalizeAtRef,
-    autoPendingUserAnimFrameRef,
-    autoPendingUserMessageIdRef,
-    autoPendingUserMessageStartedAtRef,
-    autoPendingUserMessageVisibleAtRef,
-    autoPendingUserVisibleLoggedMessageIdRef,
     autoPlaybackBargeGraceUntilRef,
     autoPostTtsAboveSinceRef,
     autoPostTtsHumanDetectedRef,
     autoProgressIntervalModeRef,
     autoProgressIntervalMsRef,
     autoRecordingEnabledRef,
+    autoRecordingPanelIdRef,
     autoReplyAfterStt,
     autoSilenceDeadlineAtRef,
     autoSpeakAfterReply,
@@ -582,8 +567,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoWaitReasonLogAtRef,
     autoWaitReasonRef,
     autoWaveformSkipLogAtRef,
-    clearAutoPendingUserAnimationTimer,
-    clearAutoPendingUserTimeoutTimer,
     clearAutoRecordingWatchdogTimer,
     faceTrackingNotLookingSinceRef,
     faceTrackingSuppressLogAtRef,
@@ -603,7 +586,9 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
   ]);
 
   const stopAutoRecordingMode = useCallback(async () => {
+    const panelId = autoRecordingPanelIdRef.current;
     logAuto("mode_stop_requested", {
+      panelId: panelId || undefined,
       autoSegments,
       state: autoRecordingState,
       lastEvent: autoLastEvent,
@@ -632,16 +617,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     faceTrackingSuppressedRef.current = false;
     faceTrackingSuppressLogAtRef.current = 0;
     faceTrackingNotLookingSinceRef.current = 0;
-    clearAutoPendingUserTimeoutTimer();
-    clearAutoPendingUserAnimationTimer();
-    autoPendingUserAnimFrameRef.current = 0;
-    autoPendingUserMessageStartedAtRef.current = 0;
-    autoPendingUserMessageVisibleAtRef.current = 0;
-    autoPendingUserVisibleLoggedMessageIdRef.current = "";
-    if (autoPendingUserMessageIdRef.current) {
-      removeConversationMessageById(autoPendingUserMessageIdRef.current);
-      autoPendingUserMessageIdRef.current = "";
-    }
     setAutoRecordingEnabled(false);
     if (autoRestartTimerRef.current) {
       clearTimeout(autoRestartTimerRef.current);
@@ -666,7 +641,7 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
         );
         if (uri && speechMs >= autoMinSpeechMs && !suppressSelfTts && faceTrackingAllowsStt(true)) {
           setAutoSegments((v) => v + 1);
-          await transcribeRecording(uri);
+          await transcribeRecording(uri, panelId || undefined);
         } else if (!faceTrackingAllowsStt(true)) {
           setAutoLastEvent("face_not_looking");
         } else if (suppressSelfTts) {
@@ -694,6 +669,9 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoSpeechStartedDuringTtsRef.current = false;
     autoPostTtsAboveSinceRef.current = 0;
     autoPostTtsHumanDetectedRef.current = false;
+    if (autoRecordingPanelIdRef.current === panelId) {
+      autoRecordingPanelIdRef.current = "";
+    }
     setAutoRecordingState("idle");
     setAutoMeteringDb(null);
     setAutoLastEvent("stopped");
@@ -720,17 +698,13 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoLastStatusHandledAtRef,
     autoMinSpeechMs,
     autoNoCallbackFinalizeAtRef,
-    autoPendingUserAnimFrameRef,
-    autoPendingUserMessageIdRef,
-    autoPendingUserMessageStartedAtRef,
-    autoPendingUserMessageVisibleAtRef,
-    autoPendingUserVisibleLoggedMessageIdRef,
     autoPlaybackBargeGraceUntilRef,
     autoPostTtsAboveSinceRef,
     autoPostTtsHumanDetectedRef,
     autoProgressIntervalModeRef,
     autoProgressIntervalMsRef,
     autoRecordingEnabledRef,
+    autoRecordingPanelIdRef,
     autoRecordingRef,
     autoRecordingState,
     autoRestartTimerRef,
@@ -742,8 +716,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoUiLatestSpeechSampleRef,
     autoWaitReasonLogAtRef,
     autoWaitReasonRef,
-    clearAutoPendingUserAnimationTimer,
-    clearAutoPendingUserTimeoutTimer,
     clearAutoRecordingWatchdogTimer,
     faceTrackingAllowsStt,
     faceTrackingNotLookingSinceRef,
@@ -752,7 +724,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     logAuto,
     playUiSfx,
     releaseRecording,
-    removeConversationMessageById,
     reportError,
     resetAutoWaveform,
     setAudioModeForPlayback,

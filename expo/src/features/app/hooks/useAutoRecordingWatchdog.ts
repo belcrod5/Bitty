@@ -1,6 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
-import type { StreamTtsControlState } from "../types/appTypes";
 
 type RecordingStatusSource = "callback" | "watchdog";
 type AutoRecordingStatus = Awaited<ReturnType<Audio.Recording["getStatusAsync"]>>;
@@ -14,7 +13,6 @@ type UseAutoRecordingWatchdogOptions = {
   autoRecordingWatchdogInFlightTokenRef: MutableRefObject<number>;
   autoRecordingWatchdogKickAtRef: MutableRefObject<number>;
   autoRecordingWatchdogRestartAtRef: MutableRefObject<number>;
-  autoRecordingWatchdogTtsInterruptAtRef: MutableRefObject<number>;
   autoRecordingWatchdogErrorLogAtRef: MutableRefObject<number>;
   autoWaveStatusLastAtRef: MutableRefObject<number>;
   autoSpeechStartedAtRef: MutableRefObject<number>;
@@ -25,15 +23,6 @@ type UseAutoRecordingWatchdogOptions = {
   autoShadowStatusLastAtRef: MutableRefObject<number>;
   autoShadowStatusLastMeteringRef: MutableRefObject<number | null>;
   autoShadowStatusLastDurationMsRef: MutableRefObject<number | null>;
-  ttsPlayingRef: MutableRefObject<boolean>;
-  replyLoadingRef: MutableRefObject<boolean>;
-  streamSocketRef: MutableRefObject<WebSocket | null>;
-  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
-  streamAudioQueueProcessingRef: MutableRefObject<boolean>;
-  streamAudioQueueRef: MutableRefObject<unknown[]>;
-  streamCurrentChunkStartedAtRef: MutableRefObject<number>;
-  streamCurrentChunkEstimatedDurationMsRef: MutableRefObject<number | null>;
-  ttsLoading: boolean;
   autoMinSpeechMs: number;
   watchdogIntervalMs: number;
   watchdogStaleMs: number;
@@ -46,19 +35,12 @@ type UseAutoRecordingWatchdogOptions = {
   watchdogRestartStaleMs: number;
   watchdogRestartCooldownMs: number;
   watchdogKickGuardMs: number;
-  watchdogTtsInterruptStaleMs: number;
-  watchdogTtsInterruptCooldownMs: number;
-  watchdogTtsInterruptStreamMinMs: number;
-  watchdogTtsInterruptStreamMarginMs: number;
-  watchdogTtsInterruptStreamMaxMs: number;
-  watchdogRestartAfterTtsInterruptGapMs: number;
   clearAutoRecordingWatchdogTimer: () => void;
   readAutoRecordingStatus: (
     rec: Audio.Recording,
     owner: "watchdog",
     timeoutMs: number,
   ) => Promise<AutoRecordingStatus> | null;
-  stopTtsPlayback: (options?: { interruptStream?: boolean }) => Promise<void>;
   elapsedSinceMs: (startedAtMs: number) => number | null;
   logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
@@ -85,7 +67,6 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     autoRecordingWatchdogInFlightTokenRef,
     autoRecordingWatchdogKickAtRef,
     autoRecordingWatchdogRestartAtRef,
-    autoRecordingWatchdogTtsInterruptAtRef,
     autoRecordingWatchdogErrorLogAtRef,
     autoWaveStatusLastAtRef,
     autoSpeechStartedAtRef,
@@ -96,15 +77,6 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     autoShadowStatusLastAtRef,
     autoShadowStatusLastMeteringRef,
     autoShadowStatusLastDurationMsRef,
-    ttsPlayingRef,
-    replyLoadingRef,
-    streamSocketRef,
-    streamTtsControlRef,
-    streamAudioQueueProcessingRef,
-    streamAudioQueueRef,
-    streamCurrentChunkStartedAtRef,
-    streamCurrentChunkEstimatedDurationMsRef,
-    ttsLoading,
     autoMinSpeechMs,
     watchdogIntervalMs,
     watchdogStaleMs,
@@ -117,15 +89,8 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     watchdogRestartStaleMs,
     watchdogRestartCooldownMs,
     watchdogKickGuardMs,
-    watchdogTtsInterruptStaleMs,
-    watchdogTtsInterruptCooldownMs,
-    watchdogTtsInterruptStreamMinMs,
-    watchdogTtsInterruptStreamMarginMs,
-    watchdogTtsInterruptStreamMaxMs,
-    watchdogRestartAfterTtsInterruptGapMs,
     clearAutoRecordingWatchdogTimer,
     readAutoRecordingStatus,
-    stopTtsPlayback,
     elapsedSinceMs,
     logAuto,
   } = options;
@@ -245,87 +210,9 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
           return;
         }
       }
-      const shadowStaleForMs = (
-        autoShadowStatusLastAtRef.current > 0
-          ? Math.max(0, now - autoShadowStatusLastAtRef.current)
-          : staleForMs
-      );
       if (staleForMs < watchdogStaleMs) return;
-      const streamPlaybackActive = (
-        streamAudioQueueProcessingRef.current ||
-        streamAudioQueueRef.current.length > 0 ||
-        streamTtsControlRef.current !== null ||
-        streamSocketRef.current !== null ||
-        streamCurrentChunkStartedAtRef.current > 0
-      );
-      const streamChunkEstimatedMs = Number(streamCurrentChunkEstimatedDurationMsRef.current || 0);
-      const streamChunkElapsedMs = streamCurrentChunkStartedAtRef.current > 0
-        ? Math.max(0, now - streamCurrentChunkStartedAtRef.current)
-        : null;
-      const streamTtsInterruptStaleMs = (() => {
-        if (!streamPlaybackActive) return watchdogTtsInterruptStaleMs;
-        const estimatedWithMargin = (
-          streamChunkEstimatedMs > 0
-            ? Math.max(
-              watchdogTtsInterruptStreamMinMs,
-              streamChunkEstimatedMs + watchdogTtsInterruptStreamMarginMs,
-            )
-            : watchdogTtsInterruptStreamMinMs
-        );
-        return Math.max(
-          watchdogTtsInterruptStaleMs,
-          Math.min(watchdogTtsInterruptStreamMaxMs, estimatedWithMargin),
-        );
-      })();
-      const streamChunkJustStarted = (
-        streamPlaybackActive &&
-        streamChunkElapsedMs !== null &&
-        streamChunkElapsedMs < 900
-      );
-      const watchdogRestartStaleMsResolved = (
-        streamPlaybackActive
-          ? Math.max(
-            watchdogRestartStaleMs,
-            streamTtsInterruptStaleMs + watchdogRestartAfterTtsInterruptGapMs,
-          )
-          : watchdogRestartStaleMs
-      );
-      const ttsInterruptEligible = (
-        ttsPlayingRef.current &&
-        (
-          replyLoadingRef.current ||
-          streamTtsControlRef.current !== null ||
-          streamSocketRef.current !== null ||
-          !streamPlaybackActive
-        )
-      );
       if (
-        ttsInterruptEligible &&
-        !streamChunkJustStarted &&
-        staleForMs >= streamTtsInterruptStaleMs &&
-        shadowStaleForMs >= streamTtsInterruptStaleMs &&
-        now - autoRecordingWatchdogTtsInterruptAtRef.current >= watchdogTtsInterruptCooldownMs
-      ) {
-        autoRecordingWatchdogTtsInterruptAtRef.current = now;
-        logAuto("recording_watchdog_tts_interrupt", {
-          staleForMs,
-          shadowStaleForMs,
-          staleThresholdMs: streamTtsInterruptStaleMs,
-          streamPlaybackActive,
-          streamChunkEstimatedMs: streamChunkEstimatedMs > 0 ? streamChunkEstimatedMs : null,
-          streamChunkElapsedMs,
-          streamChunkJustStarted,
-          ttsInterruptEligible,
-          ttsPlaying: ttsPlayingRef.current,
-          ttsLoading,
-          streamSocketAlive: streamSocketRef.current !== null,
-          streamTtsControlAlive: streamTtsControlRef.current !== null,
-          replyLoading: replyLoadingRef.current,
-        });
-        void stopTtsPlayback({ interruptStream: true }).catch(() => {});
-      }
-      if (
-        staleForMs >= watchdogRestartStaleMsResolved &&
+        staleForMs >= watchdogRestartStaleMs &&
         now - autoRecordingWatchdogRestartAtRef.current >= watchdogRestartCooldownMs
       ) {
         autoRecordingWatchdogRestartAtRef.current = now;
@@ -389,7 +276,6 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     autoRecordingWatchdogKickAtRef,
     autoRecordingWatchdogRestartAtRef,
     autoRecordingWatchdogTimerRef,
-    autoRecordingWatchdogTtsInterruptAtRef,
     autoShadowStatusLastAtRef,
     autoShadowStatusLastDurationMsRef,
     autoShadowStatusLastMeteringRef,
@@ -404,29 +290,13 @@ export function useAutoRecordingWatchdog(options: UseAutoRecordingWatchdogOption
     noCallbackForceFinalizeMs,
     noCallbackStatusReadMs,
     readAutoRecordingStatus,
-    replyLoadingRef,
-    stopTtsPlayback,
-    streamAudioQueueProcessingRef,
-    streamAudioQueueRef,
-    streamCurrentChunkEstimatedDurationMsRef,
-    streamCurrentChunkStartedAtRef,
-    streamSocketRef,
-    streamTtsControlRef,
-    ttsLoading,
-    ttsPlayingRef,
     watchdogInFlightForceReleaseMs,
     watchdogKickGuardMs,
     watchdogLogThrottleMs,
-    watchdogRestartAfterTtsInterruptGapMs,
     watchdogRestartCooldownMs,
     watchdogRestartStaleMs,
     watchdogStaleMs,
     watchdogStatusTimeoutMs,
-    watchdogTtsInterruptCooldownMs,
-    watchdogTtsInterruptStaleMs,
-    watchdogTtsInterruptStreamMarginMs,
-    watchdogTtsInterruptStreamMaxMs,
-    watchdogTtsInterruptStreamMinMs,
     watchdogIntervalMs,
   ]);
 

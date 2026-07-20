@@ -1,10 +1,8 @@
 import { useCallback, type MutableRefObject } from "react";
-import type { ConversationMessage, HistoryEntry, SttMessageMeta } from "../types/appTypes";
+import type { ConversationMessage, HistoryEntry } from "../types/appTypes";
 
 type UseConversationMessageBuildersArgs = {
   conversationMessagesRef: MutableRefObject<ConversationMessage[]>;
-  autoPendingUserMessageIdRef: MutableRefObject<string>;
-  resolveAutoPendingUserMessage: (content: string, sttMeta?: SttMessageMeta) => boolean;
   buildConversationMessage: (
     role: "user" | "assistant",
     content: string,
@@ -49,8 +47,6 @@ export function appendAssistantEventMessageToMessages(params: {
 
 export function useConversationMessageBuilders({
   conversationMessagesRef,
-  autoPendingUserMessageIdRef,
-  resolveAutoPendingUserMessage,
   buildConversationMessage,
   playAssistantEventSfx,
   setConversationMessagesWithLimit,
@@ -82,30 +78,8 @@ export function useConversationMessageBuilders({
     setConversationMessagesWithLimit,
   ]);
 
-  const buildConversationWithLatestUserMessage = useCallback((transcriptText: string, sttMeta?: SttMessageMeta) => {
-    const normalized = String(transcriptText || "").trim();
-    if (!normalized) return conversationMessagesRef.current;
-    const pendingId = autoPendingUserMessageIdRef.current;
-    if (pendingId) {
-      const pendingResolved = resolveAutoPendingUserMessage(normalized, sttMeta);
-      if (pendingResolved) {
-        return conversationMessagesRef.current;
-      }
-    }
-    return [
-      ...conversationMessagesRef.current,
-      buildConversationMessage("user", normalized, sttMeta ? { sttMeta } : {}),
-    ];
-  }, [
-    autoPendingUserMessageIdRef,
-    buildConversationMessage,
-    conversationMessagesRef,
-    resolveAutoPendingUserMessage,
-  ]);
-
   return {
     createHistoryEntry,
     appendAssistantEventMessage,
-    buildConversationWithLatestUserMessage,
   };
 }

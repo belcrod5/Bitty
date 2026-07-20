@@ -2236,7 +2236,7 @@ export function ChatScreen({
                   if (isDirectNativeSttProvider) {
                     void startDirectNativeStt();
                   } else {
-                    void startAutoRecordingMode();
+                    void startAutoRecordingMode(isPanelRuntimeView ? panelId : undefined);
                   }
                 };
                 const onPressFaceToggle = () => {

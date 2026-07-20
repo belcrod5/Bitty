@@ -1,13 +1,14 @@
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
 import type { StreamTtsControlState } from "../types/appTypes";
+import { shouldAllowAutoCaptureDuringTts } from "../utils/autoAudioPolicy";
 
 type BargeInPhase = "probe_fast" | "speech_start" | "ongoing_speech_overlap";
 type AutoProgressMode = "idle" | "speech" | "barge";
+const BARGE_IN_FAST_PROBE_TIMEOUT_MS = 1200;
 
 type CreateRequestBargeInStopParams = {
-  startAutoPendingUserMessage: (options?: { source?: string; timeoutMs?: number }) => void;
-  stopTtsPlayback: (options?: { interruptStream?: boolean }) => Promise<void>;
+  stopTtsPlayback: (options?: { interruptStream?: boolean; reason?: string }) => Promise<void>;
   setAutoLastEvent: (event: string) => void;
 };
 
@@ -53,6 +54,7 @@ type ScheduleAutoCaptureRetryParams = {
 type UseAutoCaptureCycleRecoveryOptions = {
   autoRecordingEnabledRef: MutableRefObject<boolean>;
   autoBargeInEnabledRef: MutableRefObject<boolean>;
+  autoSpeakerPriorityEnabledRef: MutableRefObject<boolean>;
   autoRecordingRef: MutableRefObject<Audio.Recording | null>;
   autoFinalizeLockRef: MutableRefObject<boolean>;
   autoRestartTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
@@ -75,20 +77,17 @@ type UseAutoCaptureCycleRecoveryOptions = {
   autoLastTtsStopRequestedAtRef: MutableRefObject<number>;
   autoInputNameRef: MutableRefObject<string>;
   autoAirPodsInputRef: MutableRefObject<boolean>;
-  autoPendingUserMessageIdRef: MutableRefObject<string>;
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   ttsLoading: boolean;
-  pendingUserProbeTimeoutMs: number;
   isRecordingNotAllowedError: (raw: unknown) => boolean;
   isRecorderNotPreparedError: (raw: unknown) => boolean;
   ensureMicReady: () => Promise<void>;
   setAutoLastEvent: (event: string) => void;
   elapsedSinceMs: (startedAtMs: number) => number | null;
-  resolveAutoPendingUserMessage: (finalTranscript: string) => void;
   logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
@@ -96,6 +95,7 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
   const {
     autoRecordingEnabledRef,
     autoBargeInEnabledRef,
+    autoSpeakerPriorityEnabledRef,
     autoRecordingRef,
     autoFinalizeLockRef,
     autoRestartTimerRef,
@@ -118,24 +118,29 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
     autoLastTtsStopRequestedAtRef,
     autoInputNameRef,
     autoAirPodsInputRef,
-    autoPendingUserMessageIdRef,
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
     streamTtsControlRef,
     ttsPlaybackMessageIdRef,
     ttsLoading,
-    pendingUserProbeTimeoutMs,
     isRecordingNotAllowedError,
     isRecorderNotPreparedError,
     ensureMicReady,
     setAutoLastEvent,
     elapsedSinceMs,
-    resolveAutoPendingUserMessage,
     logAuto,
   } = options;
 
+  const bargeInFastProbeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearBargeInFastProbeTimeout = useCallback(() => {
+    if (!bargeInFastProbeTimeoutRef.current) return;
+    clearTimeout(bargeInFastProbeTimeoutRef.current);
+    bargeInFastProbeTimeoutRef.current = null;
+  }, []);
+
   const resetAutoSpeechTracking = useCallback(() => {
+    clearBargeInFastProbeTimeout();
     autoClipStartedAtRef.current = 0;
     autoSpeechStartedAtRef.current = 0;
     autoAboveSinceRef.current = 0;
@@ -163,17 +168,34 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
     autoSilenceDeadlineAtRef,
     autoSpeechStartedAtRef,
     autoSpeechStartedDuringTtsRef,
+    clearBargeInFastProbeTimeout,
   ]);
 
   const createRequestBargeInStop = useCallback((params: CreateRequestBargeInStopParams) => {
     const {
-      startAutoPendingUserMessage,
       stopTtsPlayback,
       setAutoLastEvent,
     } = params;
 
     return (now: number, metering: number, phase: BargeInPhase) => {
-      if (!autoBargeInEnabledRef.current) return false;
+      if (phase !== "probe_fast") {
+        clearBargeInFastProbeTimeout();
+      }
+      const captureAllowedDuringTts = shouldAllowAutoCaptureDuringTts({
+        autoBargeInEnabled: autoBargeInEnabledRef.current,
+        autoSpeakerPriorityEnabled: autoSpeakerPriorityEnabledRef.current,
+      });
+      if (!captureAllowedDuringTts) {
+        logAuto("barge_in_stop_blocked", {
+          phase,
+          metering,
+          autoBargeInEnabled: autoBargeInEnabledRef.current,
+          autoSpeakerPriorityEnabled: autoSpeakerPriorityEnabledRef.current,
+          autoInputName: autoInputNameRef.current,
+          autoAirPodsInput: autoAirPodsInputRef.current,
+        });
+        return false;
+      }
       const playbackStillActive = (
         ttsPlayingRef.current ||
         ttsLoading ||
@@ -206,12 +228,35 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
         phase,
         retriedStop: Boolean(wasStopping && !recentStopRequest),
         sinceTtsStopRequestedMs: sinceStopRequestedMs,
+        autoInputName: autoInputNameRef.current,
+        autoAirPodsInput: autoAirPodsInputRef.current,
+        autoBargeInEnabled: autoBargeInEnabledRef.current,
+        autoSpeakerPriorityEnabled: autoSpeakerPriorityEnabledRef.current,
       });
-      startAutoPendingUserMessage({
-        source: `barge_in_${phase}`,
-        timeoutMs: phase === "probe_fast" ? pendingUserProbeTimeoutMs : 0,
-      });
-      void stopTtsPlayback({ interruptStream: true }).finally(() => {
+      if (phase === "probe_fast") {
+        clearBargeInFastProbeTimeout();
+        bargeInFastProbeTimeoutRef.current = setTimeout(() => {
+          bargeInFastProbeTimeoutRef.current = null;
+          if (!autoRecordingEnabledRef.current || autoSpeechStartedAtRef.current > 0) return;
+          autoBargeInStoppingRef.current = false;
+          autoBargeInDetectedForClipRef.current = false;
+          autoBargeInFastStopAtRef.current = 0;
+          autoBargeInFastProbeAboveSinceRef.current = 0;
+          autoAboveSinceRef.current = 0;
+          autoAboveGapSinceRef.current = 0;
+          autoBelowSinceRef.current = 0;
+          if (!autoFinalizeLockRef.current) {
+            autoClipStartedAtRef.current = Date.now();
+            setAutoLastEvent("barge_in_probe_timeout");
+          }
+          logAuto("barge_in_flags_reset", {
+            phase: "probe_timeout",
+            autoBargeInStopping: autoBargeInStoppingRef.current,
+            detectedForClip: autoBargeInDetectedForClipRef.current,
+          });
+        }, BARGE_IN_FAST_PROBE_TIMEOUT_MS);
+      }
+      void stopTtsPlayback({ interruptStream: true, reason: "auto_barge_in" }).finally(() => {
         autoBargeInStoppingRef.current = false;
       });
       return true;
@@ -219,18 +264,32 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
   }, [
     autoBargeInEnabledRef,
     autoBargeInDetectedForClipRef,
+    autoBargeInFastProbeAboveSinceRef,
+    autoBargeInFastStopAtRef,
     autoBargeInStoppingRef,
+    autoBelowSinceRef,
+    autoClipStartedAtRef,
+    autoFinalizeLockRef,
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
+    autoRecordingEnabledRef,
+    autoSpeakerPriorityEnabledRef,
+    autoSpeechStartedAtRef,
+    autoAboveGapSinceRef,
+    autoAboveSinceRef,
+    clearBargeInFastProbeTimeout,
     elapsedSinceMs,
     logAuto,
-    pendingUserProbeTimeoutMs,
+    autoAirPodsInputRef,
+    autoInputNameRef,
     streamSocketRef,
     streamTtsControlRef,
     ttsLoading,
     ttsPlaybackMessageIdRef,
     ttsPlayingRef,
   ]);
+
+  useEffect(() => clearBargeInFastProbeTimeout, [clearBargeInFastProbeTimeout]);
 
   const createResetSpeechWindowWithoutFinalize = useCallback((params: CreateResetSpeechWindowParams) => {
     const {
@@ -253,9 +312,6 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
       autoSpeechStartedDuringTtsRef.current = false;
       autoPostTtsAboveSinceRef.current = 0;
       autoPostTtsHumanDetectedRef.current = false;
-      if (autoPendingUserMessageIdRef.current) {
-        resolveAutoPendingUserMessage("");
-      }
       applyAutoProgressInterval("idle", "speech_window_reset", {
         resetReason: reason,
       });
@@ -275,14 +331,12 @@ export function useAutoCaptureCycleRecovery(options: UseAutoCaptureCycleRecovery
     autoBargeInStoppingRef,
     autoBelowSinceRef,
     autoClipStartedAtRef,
-    autoPendingUserMessageIdRef,
     autoPostTtsAboveSinceRef,
     autoPostTtsHumanDetectedRef,
     autoSilenceDeadlineAtRef,
     autoSpeechStartedAtRef,
     autoSpeechStartedDuringTtsRef,
     logAuto,
-    resolveAutoPendingUserMessage,
   ]);
 
   const createRestartCaptureForWatchdog = useCallback((params: CreateRestartCaptureForWatchdogParams) => {

@@ -34,7 +34,6 @@ type UseAutoCaptureCycleCoreOptions = {
   setAutoRecordingState: (state: string) => void;
   setAutoLastEvent: (event: string) => void;
   setAutoMeteringDb: (value: number | null) => void;
-  startAutoPendingUserMessage: (options?: { source?: string; timeoutMs?: number }) => void;
   stopTtsPlayback: (options?: { interruptStream?: boolean }) => Promise<void>;
   ensureMicReady: () => Promise<void>;
   detectAutoAirPodsInput: (rec?: Audio.Recording | null) => Promise<boolean>;
@@ -43,7 +42,6 @@ type UseAutoCaptureCycleCoreOptions = {
   isBackgroundAudioSessionError: (raw: unknown) => boolean;
   isRecordingNotAllowedError: (raw: unknown) => boolean;
   createRequestBargeInStop: (params: {
-    startAutoPendingUserMessage: (options?: { source?: string; timeoutMs?: number }) => void;
     stopTtsPlayback: (options?: { interruptStream?: boolean }) => Promise<void>;
     setAutoLastEvent: (event: string) => void;
   }) => (now: number, metering: number, phase: BargeInPhase) => boolean;
@@ -136,7 +134,6 @@ export function useAutoCaptureCycleCore(options: UseAutoCaptureCycleCoreOptions)
     setAutoRecordingState,
     setAutoLastEvent,
     setAutoMeteringDb,
-    startAutoPendingUserMessage,
     stopTtsPlayback,
     ensureMicReady,
     detectAutoAirPodsInput,
@@ -165,7 +162,6 @@ export function useAutoCaptureCycleCore(options: UseAutoCaptureCycleCoreOptions)
     let pendingRec: Audio.Recording | null = null;
     try {
       const requestBargeInStop = createRequestBargeInStop({
-        startAutoPendingUserMessage,
         stopTtsPlayback,
         setAutoLastEvent,
       });
@@ -333,7 +329,6 @@ export function useAutoCaptureCycleCore(options: UseAutoCaptureCycleCoreOptions)
     setAutoLastEvent,
     setAutoMeteringDb,
     setAutoRecordingState,
-    startAutoPendingUserMessage,
     startAutoRecordingWatchdog,
     startAutoRecordingWithRetry,
     stopTtsPlayback,

@@ -72,7 +72,6 @@ import { useAutoWaveformStateController } from "./hooks/useAutoWaveformStateCont
 import { useAudioSettingsInputController } from "./hooks/useAudioSettingsInputController";
 import { useChatDerivedState } from "./hooks/useChatDerivedState";
 import { useChatBottomToast } from "./hooks/useChatBottomToast";
-import { useAutoPendingUserController } from "./hooks/useAutoPendingUserController";
 import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useLlmTraceStateController } from "./hooks/useLlmTraceStateController";
@@ -88,6 +87,7 @@ import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQu
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
 import { useWaitingApprovalResumeActionController } from "./hooks/useWaitingApprovalResumeActionController";
+import { AUTO_BARGE_BASE_START_THRESHOLD_DB } from "./utils/autoBargeDetector";
 import { useAppSettingsPersistenceController } from "./hooks/useAppSettingsPersistenceController";
 import { useRunnerRouteSelection } from "./hooks/useRunnerRouteSelection";
 import { useApprovalRequestController } from "./hooks/useApprovalRequestController";
@@ -398,20 +398,12 @@ const DEFAULT_MODEL_REF = "gpt-5.6-sol";
 const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
 const DEFAULT_CODEX_APPROVAL_POLICY: CodexApprovalPolicy = "on-request";
 const THINK_OPTIONS: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
-const AUTO_START_THRESHOLD_DB = -30;
-const AUTO_STOP_THRESHOLD_DB = -38;
-const AUTO_START_HOLD_MS = 200;
 const AUTO_STOP_SILENCE_MS = 850;
 const AUTO_MIN_SPEECH_MS = 700;
 const AUTO_MAX_SPEECH_MS = 20000;
 const AUTO_COOLDOWN_MS = 500;
 const AUTO_IDLE_ROLLOVER_MS = 10000;
-const AUTO_BARGE_IN_THRESHOLD_OFFSET_DB = -4;
-const AUTO_BARGE_IN_HOLD_MS = 140;
-const AUTO_BARGE_IN_AIRPODS_THRESHOLD_OFFSET_DB = -8;
-const AUTO_BARGE_IN_AIRPODS_HOLD_MS = 120;
 const AUTO_BARGE_IN_TTS_GAP_GRACE_MS = 420;
-const AUTO_BARGE_IN_HOLD_GAP_TOLERANCE_MS = 240;
 const AUTO_BARGE_IN_FAST_STOP_AIRPODS_THRESHOLD_DB = -40;
 const AUTO_BARGE_IN_FAST_STOP_START_OFFSET_DB = 8;
 const AUTO_BARGE_IN_FAST_STOP_HOLD_MS = 140;
@@ -508,12 +500,6 @@ const AUTO_RECORDING_NO_CALLBACK_FINALIZE_COOLDOWN_MS = 1200;
 const AUTO_RECORDING_WATCHDOG_RESTART_STALE_MS = 3200;
 const AUTO_RECORDING_WATCHDOG_RESTART_COOLDOWN_MS = 2500;
 const AUTO_RECORDING_WATCHDOG_KICK_GUARD_MS = 220;
-const AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STALE_MS = 2600;
-const AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_COOLDOWN_MS = 2200;
-const AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STREAM_MIN_MS = 6000;
-const AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STREAM_MARGIN_MS = 1400;
-const AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STREAM_MAX_MS = 30000;
-const AUTO_RECORDING_WATCHDOG_RESTART_AFTER_TTS_INTERRUPT_GAP_MS = 600;
 const FACE_TRACKING_STT_SUPPRESS_LOG_THROTTLE_MS = 1400;
 const FACE_TRACKING_RECORDING_STOP_HOLD_MS = 280;
 const AUTO_STATUS_READ_SKIP_LOG_THROTTLE_MS = 900;
@@ -531,6 +517,13 @@ const AUTO_WAVEFORM_DATA_PIPELINE_ENABLED = AUTO_DIAGNOSTICS_ENABLED || AUTO_WAV
 const AUTO_WAVEFORM_ANIMATION_ENABLED = AUTO_WAVEFORM_DEBUG_OVERLAY_ENABLED;
 const AUTO_SPECTRUM_EMPTY_BARS = Array.from({ length: AUTO_SPECTRUM_BARS }, () => 0);
 const AUTO_DIAGNOSTIC_CRITICAL_EVENTS = new Set([
+  "input_changed",
+  "tts_playback_pause_auto_capture",
+  "finalize_schedule_restart",
+  "capture_wait",
+  "barge_in_detected",
+  "barge_in_stop_blocked",
+  "tts_stop_requested",
   "capture_cycle_fatal",
   "recording_watchdog_restart_error",
   "recording_status_watchdog_error",
@@ -538,9 +531,6 @@ const AUTO_DIAGNOSTIC_CRITICAL_EVENTS = new Set([
   "stt_request_error",
   "auto_transcribe_error",
 ]);
-const AUTO_PENDING_USER_ANIMATION_FRAMES = [".", "..", "..."];
-const AUTO_PENDING_USER_ANIMATION_INTERVAL_MS = 180;
-const AUTO_PENDING_USER_PROBE_TIMEOUT_MS = 1200;
 const YOUTUBE_FLOATING_PLAYER_MARGIN = 12;
 const YOUTUBE_PAUSE_CONFIRM_MS = 850;
 const YOUTUBE_FLOATING_DRAG_ACTIVATE_PX = 10;
@@ -931,8 +921,8 @@ export default function App() {
     releaseRecording: releaseRecordingFromController,
   } = useRecordingDeviceController();
 
-  async function transcribeRecording(uriOverride?: string) {
-    await transcribeRecordingFnRef.current(uriOverride);
+  async function transcribeRecording(uriOverride?: string, panelId?: string) {
+    await transcribeRecordingFnRef.current(uriOverride, panelId);
   }
 
   async function ensureMicReady() {
@@ -1060,6 +1050,7 @@ export default function App() {
     setCodexWsUrl,
   });
   const autoRecordingEnabledRef = useRef(false);
+  const autoRecordingPanelIdRef = useRef("");
   const codexCliStatusLastFetchedAtMsRef = useRef(0);
   const codexCliStatusLastAttemptAtMsRef = useRef(0);
   const codexCliStatusRefreshInFlightRef = useRef(false);
@@ -1137,7 +1128,6 @@ export default function App() {
   const autoRecordingWatchdogInFlightTokenRef = useRef(0);
   const autoRecordingWatchdogKickAtRef = useRef(0);
   const autoRecordingWatchdogRestartAtRef = useRef(0);
-  const autoRecordingWatchdogTtsInterruptAtRef = useRef(0);
   const autoRecordingWatchdogLogAtRef = useRef(0);
   const autoRecordingWatchdogErrorLogAtRef = useRef(0);
   const autoSilenceDeadlineAtRef = useRef(0);
@@ -1199,7 +1189,9 @@ export default function App() {
   const panelRuntimeEntriesByIdRef = useRef<Record<string, PanelRuntimeEntry>>({});
   const autoSpeechOpenPanelIdsRef = useRef<Record<string, true>>({});
   const ttsPlaybackProjectionTargetRef = useRef<TtsPlaybackTarget>({});
-  const stopTtsPlaybackDelegateRef = useRef<(options?: { interruptStream?: boolean }) => Promise<void>>(async () => {});
+  const stopTtsPlaybackDelegateRef = useRef<(
+    options?: { interruptStream?: boolean; reason?: string }
+  ) => Promise<void>>(async () => {});
   const setPanelAutoSpeechOpen = useCallback((panelIdRaw: string, open: boolean) => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
     if (!panelId) return;
@@ -1312,10 +1304,12 @@ export default function App() {
   const llmToolCallArgsByIdRef = useRef<Record<string, unknown>>({});
   const replyLoadingRef = useRef(false);
   const autoReplyAfterSttRef = useRef(false);
-  const autoSpeakAfterReplyRef = useRef(false);
   const toolAutoApprovalMapRef = useRef<ToolAutoApprovalMap>(EMPTY_TOOL_AUTO_APPROVALS);
   const sttLoadingRef = useRef(false);
-  const transcribeRecordingFnRef = useRef<(uriOverride?: string) => Promise<void>>(async () => {});
+  const transcribeRecordingFnRef = useRef<(
+    uriOverride?: string,
+    panelId?: string,
+  ) => Promise<void>>(async () => {});
   useEffect(() => {
     return () => {
       if (waitingApprovalResumeAttachTimerRef.current) {
@@ -1610,7 +1604,9 @@ export default function App() {
   ) => void>(() => {});
   const markTtsChunkPlaybackFinishedDelegateRef = useRef<() => void>(() => {});
   const markTtsPlaybackStoppedDelegateRef = useRef<() => void>(() => {});
-  const stopTtsPlayback = useCallback(async (options?: { interruptStream?: boolean }) => {
+  const stopTtsPlayback = useCallback(async (
+    options?: { interruptStream?: boolean; reason?: string }
+  ) => {
     await stopTtsPlaybackDelegateRef.current(options);
   }, []);
   const stopWaveformPlayback = useCallback(async () => {
@@ -1650,65 +1646,10 @@ export default function App() {
   });
   const {
     setConversationMessagesWithLimit,
-    removeConversationMessageById,
     patchConversationMessageById,
   } = useConversationMessageWindowController({
     conversationMessagesRef,
     setConversationMessages,
-  });
-  const {
-    autoPendingUserMessageIdRef,
-    autoPendingUserAnimFrameRef,
-    autoPendingUserMessageStartedAtRef,
-    autoPendingUserMessageVisibleAtRef,
-    autoPendingUserVisibleLoggedMessageIdRef,
-    clearAutoPendingUserAnimationTimer,
-    clearAutoPendingUserTimeoutTimer,
-    resetAutoPendingUserState,
-    startAutoPendingUserMessage,
-    resolveAutoPendingUserMessage,
-  } = useAutoPendingUserController<SttMessageMeta, ConversationMessage>({
-    autoRecordingEnabledRef,
-    autoReplyAfterSttRef,
-    autoSpeechStartedAtRef,
-    autoLastBargeInDetectedAtRef,
-    autoLastTtsStopRequestedAtRef,
-    autoLastTtsStoppedAtRef,
-    ttsPlayingRef,
-    replyLoadingRef,
-    streamSocketRef,
-    streamTtsControlRef,
-    streamAudioQueueRef,
-    ttsPlaybackMessageIdRef,
-    conversationMessages,
-    conversationMessagesRef,
-    setConversationMessagesWithLimit,
-    buildPendingUserMessage: (content) => buildConversationMessage("user", content, { pendingUser: true }),
-    pendingUserAnimationFrames: AUTO_PENDING_USER_ANIMATION_FRAMES,
-    pendingUserAnimationIntervalMs: AUTO_PENDING_USER_ANIMATION_INTERVAL_MS,
-    ttsLoading,
-    elapsedSinceMs,
-    logAuto,
-    stopTtsPlayback,
-    onPendingTimeout: () => {
-      autoBargeInStoppingRef.current = false;
-      autoBargeInDetectedForClipRef.current = false;
-      autoBargeInFastStopAtRef.current = 0;
-      autoBargeInFastProbeAboveSinceRef.current = 0;
-      autoAboveSinceRef.current = 0;
-      autoAboveGapSinceRef.current = 0;
-      autoBelowSinceRef.current = 0;
-      if (autoRecordingEnabledRef.current && !autoFinalizeLockRef.current) {
-        setAutoRecordingState("listening");
-        setAutoLastEvent("barge_in_probe_timeout");
-        autoClipStartedAtRef.current = Date.now();
-      }
-      logAuto("barge_in_flags_reset", {
-        phase: "pending_timeout",
-        autoBargeInStopping: autoBargeInStoppingRef.current,
-        detectedForClip: autoBargeInDetectedForClipRef.current,
-      });
-    },
   });
   const {
     maybeLogWaveformStatusTick,
@@ -1783,7 +1724,6 @@ export default function App() {
     autoRecordingWatchdogInFlightTokenRef,
     autoRecordingWatchdogKickAtRef,
     autoRecordingWatchdogRestartAtRef,
-    autoRecordingWatchdogTtsInterruptAtRef,
     autoRecordingWatchdogLogAtRef,
     autoRecordingWatchdogErrorLogAtRef,
     autoProgressIntervalMsRef,
@@ -1811,7 +1751,6 @@ export default function App() {
     autoRecordingWatchdogInFlightTokenRef,
     autoRecordingWatchdogKickAtRef,
     autoRecordingWatchdogRestartAtRef,
-    autoRecordingWatchdogTtsInterruptAtRef,
     autoRecordingWatchdogErrorLogAtRef,
     autoWaveStatusLastAtRef,
     autoSpeechStartedAtRef,
@@ -1822,15 +1761,6 @@ export default function App() {
     autoShadowStatusLastAtRef,
     autoShadowStatusLastMeteringRef,
     autoShadowStatusLastDurationMsRef,
-    ttsPlayingRef,
-    replyLoadingRef,
-    streamSocketRef,
-    streamTtsControlRef,
-    streamAudioQueueProcessingRef,
-    streamAudioQueueRef,
-    streamCurrentChunkStartedAtRef,
-    streamCurrentChunkEstimatedDurationMsRef,
-    ttsLoading,
     autoMinSpeechMs: AUTO_MIN_SPEECH_MS,
     watchdogIntervalMs: AUTO_RECORDING_WATCHDOG_INTERVAL_MS,
     watchdogStaleMs: AUTO_RECORDING_WATCHDOG_STALE_MS,
@@ -1843,15 +1773,8 @@ export default function App() {
     watchdogRestartStaleMs: AUTO_RECORDING_WATCHDOG_RESTART_STALE_MS,
     watchdogRestartCooldownMs: AUTO_RECORDING_WATCHDOG_RESTART_COOLDOWN_MS,
     watchdogKickGuardMs: AUTO_RECORDING_WATCHDOG_KICK_GUARD_MS,
-    watchdogTtsInterruptStaleMs: AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STALE_MS,
-    watchdogTtsInterruptCooldownMs: AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_COOLDOWN_MS,
-    watchdogTtsInterruptStreamMinMs: AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STREAM_MIN_MS,
-    watchdogTtsInterruptStreamMarginMs: AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STREAM_MARGIN_MS,
-    watchdogTtsInterruptStreamMaxMs: AUTO_RECORDING_WATCHDOG_TTS_INTERRUPT_STREAM_MAX_MS,
-    watchdogRestartAfterTtsInterruptGapMs: AUTO_RECORDING_WATCHDOG_RESTART_AFTER_TTS_INTERRUPT_GAP_MS,
     clearAutoRecordingWatchdogTimer,
     readAutoRecordingStatus,
-    stopTtsPlayback,
     elapsedSinceMs,
     logAuto,
   });
@@ -1891,10 +1814,10 @@ export default function App() {
     autoPostTtsHumanDetectedRef,
     autoPlaybackBargeGraceUntilRef,
     autoBargeInProbeLogAtRef,
-    autoPendingUserMessageIdRef,
     autoInputNameRef,
     autoAirPodsInputRef,
     autoBargeInEnabledRef,
+    autoSpeakerPriorityEnabledRef,
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
     autoLastTtsStoppedAtRef,
@@ -1912,18 +1835,10 @@ export default function App() {
     statusNotRecordingAppTransitionGraceMs: AUTO_STATUS_NOT_RECORDING_APP_TRANSITION_GRACE_MS,
     statusNotRecordingSuppressLogThrottleMs: AUTO_STATUS_NOT_RECORDING_SUPPRESS_LOG_THROTTLE_MS,
     autoInputRoutePollMs: AUTO_INPUT_ROUTE_POLL_MS,
-    autoStartThresholdDb: AUTO_START_THRESHOLD_DB,
-    autoStartHoldMs: AUTO_START_HOLD_MS,
-    autoStopThresholdDb: AUTO_STOP_THRESHOLD_DB,
     autoStopSilenceMs: AUTO_STOP_SILENCE_MS,
     autoMinSpeechMs: AUTO_MIN_SPEECH_MS,
     autoMaxSpeechMs: AUTO_MAX_SPEECH_MS,
     autoIdleRolloverMs: AUTO_IDLE_ROLLOVER_MS,
-    autoBargeInThresholdOffsetDb: AUTO_BARGE_IN_THRESHOLD_OFFSET_DB,
-    autoBargeInAirpodsThresholdOffsetDb: AUTO_BARGE_IN_AIRPODS_THRESHOLD_OFFSET_DB,
-    autoBargeInHoldMs: AUTO_BARGE_IN_HOLD_MS,
-    autoBargeInAirpodsHoldMs: AUTO_BARGE_IN_AIRPODS_HOLD_MS,
-    autoBargeInHoldGapToleranceMs: AUTO_BARGE_IN_HOLD_GAP_TOLERANCE_MS,
     autoBargeInFastStopAirpodsThresholdDb: AUTO_BARGE_IN_FAST_STOP_AIRPODS_THRESHOLD_DB,
     autoBargeInFastStopStartOffsetDb: AUTO_BARGE_IN_FAST_STOP_START_OFFSET_DB,
     autoBargeInFastStopHoldMs: AUTO_BARGE_IN_FAST_STOP_HOLD_MS,
@@ -1936,8 +1851,6 @@ export default function App() {
     setAutoLastEvent,
     maybeLogWaveformStatusTick,
     trackWaveformFlatline,
-    clearAutoPendingUserTimeoutTimer,
-    resolveAutoPendingUserMessage,
     faceTrackingAllowsStt,
     detectAutoAirPodsInput,
     elapsedSinceMs,
@@ -1953,6 +1866,7 @@ export default function App() {
   } = useAutoCaptureCycleRecovery({
     autoRecordingEnabledRef,
     autoBargeInEnabledRef,
+    autoSpeakerPriorityEnabledRef,
     autoRecordingRef,
     autoFinalizeLockRef,
     autoRestartTimerRef,
@@ -1975,20 +1889,17 @@ export default function App() {
     autoLastTtsStopRequestedAtRef,
     autoInputNameRef,
     autoAirPodsInputRef,
-    autoPendingUserMessageIdRef,
     ttsPlayingRef,
     replyLoadingRef,
     streamSocketRef,
     streamTtsControlRef,
     ttsPlaybackMessageIdRef,
     ttsLoading,
-    pendingUserProbeTimeoutMs: AUTO_PENDING_USER_PROBE_TIMEOUT_MS,
     isRecordingNotAllowedError,
     isRecorderNotPreparedError,
     ensureMicReady,
     setAutoLastEvent,
     elapsedSinceMs,
-    resolveAutoPendingUserMessage,
     logAuto,
   });
   const { runAutoCaptureCycleCore } = useAutoCaptureCycleCore({
@@ -2008,7 +1919,6 @@ export default function App() {
     setAutoRecordingState,
     setAutoLastEvent,
     setAutoMeteringDb,
-    startAutoPendingUserMessage,
     stopTtsPlayback,
     ensureMicReady,
     detectAutoAirPodsInput,
@@ -2040,21 +1950,16 @@ export default function App() {
     sttLoadingRef,
     autoRecordingEnabledRef,
     autoReplyAfterSttRef,
-    autoSpeakAfterReplyRef,
     replyLoadingRef,
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
     autoLastTtsStoppedAtRef,
-    autoPendingUserMessageVisibleAtRef,
     setSttLoading,
     setTranscript,
     setErrorMessage: setError,
     getBaseUrl: baseUrl,
-    startAutoPendingUserMessage,
-    resolveAutoPendingUserMessage,
     waitForReplyIdle,
     sendReplyTranscript,
-    sendReplyRequest,
     faceTrackingAllowsStt,
     elapsedSinceMs,
     logAuto,
@@ -2069,6 +1974,7 @@ export default function App() {
   } = useAutoRecordingEngine({
     appStateRef,
     autoRecordingEnabledRef,
+    autoRecordingPanelIdRef,
     autoRecordingRef,
     autoFinalizeLockRef,
     autoRestartTimerRef,
@@ -2107,11 +2013,6 @@ export default function App() {
     faceTrackingSuppressLogAtRef,
     faceTrackingSuppressedRef,
     faceTrackingNotLookingSinceRef,
-    autoPendingUserMessageIdRef,
-    autoPendingUserAnimFrameRef,
-    autoPendingUserMessageStartedAtRef,
-    autoPendingUserMessageVisibleAtRef,
-    autoPendingUserVisibleLoggedMessageIdRef,
     autoCaptureCycleSeqRef,
     audioLabRecordingRef,
     audioLabSoundRef,
@@ -2120,6 +2021,7 @@ export default function App() {
     autoSpeakerPriorityEnabledRef,
     autoBargeInEnabledRef,
     replyLoadingRef,
+    ttsPlaybackWantedRef,
     ttsPlayingRef,
     youtubePlayerIsPlayingRef,
     autoSegments,
@@ -2144,11 +2046,7 @@ export default function App() {
     setAutoAirPodsInput,
     setAutoMeteringDb,
     setAutoSegments,
-    clearAutoPendingUserTimeoutTimer,
-    clearAutoPendingUserAnimationTimer,
     clearAutoRecordingWatchdogTimer,
-    removeConversationMessageById,
-    resolveAutoPendingUserMessage,
     faceTrackingAllowsStt,
     transcribeRecording,
     enqueueAutoTranscribe,
@@ -2181,7 +2079,6 @@ export default function App() {
     autoRecordingEnabledRef,
     appStateRef,
     autoReplyAfterSttRef,
-    autoSpeakAfterReplyRef,
     autoBargeInEnabledRef,
     replyLoadingRef,
     ttsPlayingRef,
@@ -2198,7 +2095,6 @@ export default function App() {
     stopTtsPlayback,
     waitForReplyIdle,
     sendReplyTranscript,
-    sendReplyRequest,
     setTranscript,
     setErrorMessage: setError,
     setSttLoading,
@@ -2232,8 +2128,6 @@ export default function App() {
     appendAssistantEventMessage,
   } = useConversationMessageBuilders({
     conversationMessagesRef,
-    autoPendingUserMessageIdRef,
-    resolveAutoPendingUserMessage,
     buildConversationMessage,
     playAssistantEventSfx,
     setConversationMessagesWithLimit,
@@ -2248,7 +2142,6 @@ export default function App() {
   function startNewSession(params?: { directory?: string }) {
     const directory = parseLlmDirectory(params?.directory || normalizedLlmDirectoryForRequest());
     void stopTtsPlayback({ interruptStream: true }).catch(() => {});
-    resetAutoPendingUserState();
     const ws = streamSocketRef.current;
     if (ws) {
       ws.close();
@@ -3504,11 +3397,10 @@ export default function App() {
   markTtsPlaybackStoppedDelegateRef.current = markTtsPlaybackStopped;
   const prepareTtsPlaybackSession = usePrepareTtsPlaybackSessionController({
     autoRecordingEnabledRef,
-    autoSpeakerPriorityEnabledRef,
     autoBargeInEnabledRef,
-    autoRecordingRef,
+    autoSpeakerPriorityEnabledRef,
     detectAutoAirPodsInput,
-    stopAutoRecordingMode,
+    finalizeAutoCapture,
     setAudioModeForPlayback,
     logAuto,
   });
@@ -4646,7 +4538,7 @@ export default function App() {
     autoWaveformDecayMinSignal: AUTO_WAVEFORM_DECAY_MIN_SIGNAL,
     autoWaveformDecayFactor: AUTO_WAVEFORM_DECAY_FACTOR,
     autoWaveformSkipLogThrottleMs: AUTO_WAVEFORM_SKIP_LOG_THROTTLE_MS,
-    autoStartThresholdDb: AUTO_START_THRESHOLD_DB,
+    autoStartThresholdDb: AUTO_BARGE_BASE_START_THRESHOLD_DB,
     ttsLoading,
     autoRecordingState,
     autoLastEvent,
@@ -5069,7 +4961,6 @@ export default function App() {
     clearPendingApprovals,
     hideChatBottomToast,
     autoRecordingEnabledRef,
-    resetAutoPendingUserState,
     autoClientLogs,
     clearAutoRecordingWatchdogTimer,
     autoRestartTimerRef,
@@ -5131,10 +5022,6 @@ export default function App() {
   useEffect(() => {
     autoSpeakerPriorityEnabledRef.current = autoSpeakerPriorityEnabled;
   }, [autoSpeakerPriorityEnabled]);
-
-  useEffect(() => {
-    autoSpeakAfterReplyRef.current = autoSpeakAfterReply;
-  }, [autoSpeakAfterReply]);
 
   useEffect(() => {
     toolAutoApprovalMapRef.current = toolAutoApprovalMap;
