@@ -39,7 +39,6 @@ function createRelayForRunnerWsTest() {
     assistantThinkingCurrentItemId: "",
     assistantThinkingTurnActive: false,
     assistantThinkingTurnId: "",
-    turnCompletedNotificationSent: false,
     pendingApprovalRequestIds: new Set(),
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
@@ -397,9 +396,13 @@ test("runner-ws TTS start requires operationId", () => {
   });
 });
 
-test("runner-ws LLM notifications without rpc id keep current operation metadata", () => {
+test("runner-ws LLM notifications without rpc id keep current operation metadata", (t) => {
+  const threadId = `thread-notification-${Date.now()}-${Math.random()}`;
   const relay = createRelayForRunnerWsTest();
   const client = createEnvelopeClientForRunnerWsTest();
+  const notificationClient = createRunnerWsConnectionForTest();
+  notificationClient.sent.length = 0;
+  t.after(() => notificationClient.close());
   __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
 
   __TESTING__.forwardCodexRelayClientData(
@@ -408,14 +411,14 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
       jsonrpc: "2.0",
       id: 4,
       method: "turn/start",
-      params: { threadId: "thread-1", prompt: "hello" },
+      params: { threadId, prompt: "hello" },
     }),
     false,
     {
       requestId: "request-1",
       operationId: "operation-1",
       sessionId: "session-1",
-      threadId: "thread-1",
+      threadId,
       endpoint: "/runner-ws",
       remote: "test",
     }
@@ -434,7 +437,7 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
     JSON.stringify({
       jsonrpc: "2.0",
       method: "item/agentMessage/delta",
-      params: { threadId: "thread-1", delta: "pong" },
+      params: { threadId, delta: "pong" },
     }),
     false,
     { endpoint: "/runner-ws", remote: "test" }
@@ -444,7 +447,7 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
     JSON.stringify({
       jsonrpc: "2.0",
       method: "turn/completed",
-      params: { threadId: "thread-1", status: "completed" },
+      params: { threadId, turn: { id: "turn-notification" }, status: "completed" },
     }),
     false,
     { endpoint: "/runner-ws", remote: "test" }
@@ -465,8 +468,15 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
   for (const message of notificationEnvelopes) {
     assert.equal(message.operationId, "operation-1");
     assert.equal(message.sessionId, "session-1");
-    assert.equal(message.threadId, "thread-1");
+    assert.equal(message.threadId, threadId);
   }
+
+  const completionNotifications = notificationClient.sent.filter((message) => (
+    message.channel === "llm" && message.op === "turn_completed_notification"
+  ));
+  assert.equal(completionNotifications.length, 1);
+  assert.equal(completionNotifications[0].threadId, threadId);
+  assert.match(completionNotifications[0].payload.previewText, /pong$/);
 
   const replayClient = createEnvelopeClientForRunnerWsTest();
   const replayed = __TESTING__.attachClientToCodexRelay(relay, replayClient, {
@@ -485,7 +495,7 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
   for (const message of replayedNotifications) {
     assert.equal(message.operationId, "operation-1");
     assert.equal(message.sessionId, "session-1");
-    assert.equal(message.threadId, "thread-1");
+    assert.equal(message.threadId, threadId);
   }
 });
 

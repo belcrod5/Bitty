@@ -50,12 +50,13 @@ export function useSessionSwitchQueuedSendController({
     },
     source: SessionSwitchQueuedSend["source"] = "send_reply_request"
   ) => {
+    const writePanelId = String(options?.panelId || "").trim();
+    if (writePanelId && writePanelId !== "main") return false;
     if (!isSessionRestoreSwitching()) return false;
     const normalized = String((transcriptOverride ?? transcript) || "").trim();
     if (!normalized) return true;
     const restoreRequestSeq = llmSessionRestoreRequestSeqRef.current;
     if (restoreRequestSeq <= 0) return false;
-    const writePanelId = String(options?.panelId || "").trim();
     const sessionSnapshot = options?.sessionSnapshot
       ? {
         sessionId: String(options.sessionSnapshot.sessionId || "").trim() || undefined,

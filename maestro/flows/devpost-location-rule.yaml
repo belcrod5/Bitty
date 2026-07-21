@@ -1,0 +1,78 @@
+appId: app.bitty.mobile
+name: Devpost - configure Grocery Store arrival
+---
+- runFlow:
+    when:
+      visible: ルール 1
+    commands:
+      - tapOn: 閉じる
+- runFlow:
+    when:
+      visible: ".*位置・時間実行.*"
+    commands:
+      - tapOn:
+          point: 95%,20%
+      - waitForAnimationToEnd
+- runFlow:
+    when:
+      notVisible: idle
+    commands:
+      - tapOn:
+          point: 25%,30%
+      - waitForAnimationToEnd
+- assertVisible: idle
+# The selected directory header has no accessibility label, so the recording
+# flow opens it at its stable position in the iPhone portrait layout.
+- tapOn:
+    point: 35%,16%
+- extendedWaitUntil:
+    visible: ".*位置・時間実行.*"
+    timeout: 10000
+- tapOn:
+    point: 25%,58%
+- assertVisible: 位置・時間実行
+- runFlow:
+    when:
+      visible: ルール 1
+    commands:
+      - tapOn: このルールを削除
+      - waitForAnimationToEnd
+- assertNotVisible: ルール 1
+- tapOn: ルールを追加
+- extendedWaitUntil:
+    visible: ルール 1
+    timeout: 10000
+- swipe:
+    direction: DOWN
+    duration: 500
+- tapOn: ルール 1 を有効にする
+- assertVisible:
+    text: ルール 1 を有効にする
+    checked: true
+# Tap near the trailing edge so eraseText backspaces the complete HH:MM value.
+- tapOn:
+    point: 42%,30%
+- eraseText: 5
+- setClipboard: ${DEMO_START_TIME}
+- pasteText
+- tapOn:
+    point: 91%,30%
+- eraseText: 5
+- setClipboard: ${DEMO_END_TIME}
+- pasteText
+- hideKeyboard
+- tapOn: 現在地を使用
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: プロンプト
+    direction: DOWN
+    timeout: 20000
+- tapOn: Codexへ送るユーザーメッセージ
+- setClipboard: "When I arrive at the Grocery Store, read `買い物リスト.md`, show me the checklist, and remind me what to buy. Reply in English."
+- pasteText
+- hideKeyboard
+- tapOn: 保存
+- extendedWaitUntil:
+    notVisible: ルール 1
+    timeout: 30000

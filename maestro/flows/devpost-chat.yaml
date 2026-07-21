@@ -1,0 +1,99 @@
+appId: app.bitty.mobile
+name: Devpost - create the grocery list
+---
+- waitForAnimationToEnd
+- runFlow:
+    when:
+      visible: ".*表示から削除.*"
+    commands:
+      # The directory details sheet exposes one combined accessibility string.
+      # Tap the narrow backdrop outside the sheet to close it safely.
+      - tapOn:
+          point: 98%,50%
+- runFlow:
+    when:
+      visible: 登録ディレクトリがありません
+    commands:
+      - tapOn: メニューを開く
+      - extendedWaitUntil:
+          visible: "\\+ 追加"
+          timeout: 10000
+      - tapOn: "\\+ 追加"
+      - extendedWaitUntil:
+          visible: このディレクトリを登録
+          timeout: 10000
+      - assertVisible: devpost-demo-workspace
+      - tapOn: このディレクトリを登録
+      - tapOn: メニューを開く
+      - extendedWaitUntil:
+          visible: ".*devpost-demo-workspace.*"
+          timeout: 10000
+      - tapOn: ".*devpost-demo-workspace.*"
+# Dismiss only known overlays left open by an interrupted rehearsal.
+- runFlow:
+    when:
+      visible: セッション同期状態
+    commands:
+      - tapOn:
+          point: 50%,25%
+- runFlow:
+    when:
+      visible: ChatGPT 5.6 Sol
+    commands:
+      - tapOn:
+          point: 80%,50%
+- runFlow:
+    when:
+      visible: ミニチャット1を開く
+    commands:
+      - tapOn: ミニチャット1を開く
+- extendedWaitUntil:
+    visible: "モデル選択を開く|登録ディレクトリの履歴がありません"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: 登録ディレクトリの履歴がありません
+    commands:
+      - tapOn: メニューを開く
+      - extendedWaitUntil:
+          visible: ".*devpost-demo-workspace.*"
+          timeout: 10000
+      - tapOn: ".*devpost-demo-workspace.*"
+- extendedWaitUntil:
+    visible: モデル選択を開く
+    timeout: 60000
+# The Luna row is selected by position because React Native does not expose the
+# option text to XCTest in this modal.
+- tapOn: モデル選択を開く
+- tapOn:
+    point: 23%,62%
+# The Low row and new-session option are selected by position because their
+# React Native modal text is not exposed reliably to XCTest.
+- tapOn: think設定を開く
+- tapOn:
+    point: 42%,75%
+- longPressOn: ".*コンテキスト使用量.*"
+- tapOn:
+    point: 50%,52%
+- extendedWaitUntil:
+    visible: ".*まだ会話がありません.*"
+    timeout: 30000
+# The input's accessibility text changes from its placeholder to its current
+# value, so use the stable composer position before clearing prior rehearsal text.
+- tapOn:
+    point: 30%,85%
+- eraseText: 1000
+- setClipboard: "Let's have tacos for dinner tonight. Create a grocery checklist and save it as `買い物リスト.md` in this workspace. Write the file contents and your reply in English. Then tell me what you saved."
+- pasteText
+- assertVisible: ".*Let's have tacos for dinner tonight.*"
+- hideKeyboard
+# The send control is icon-only, so this is intentionally tied to the iPhone
+# portrait composer layout used for recording.
+- tapOn:
+    point: 85%,85%
+- extendedWaitUntil:
+    visible: メッセージを入力
+    timeout: 15000
+- extendedWaitUntil:
+    visible: idle
+    timeout: 120000

@@ -23,6 +23,7 @@ import {
   saveSecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
 import { normalizeCodexWsInputs } from "../../codex/client/helpers";
+import { LOCATION_BACKGROUND_FIELDS, mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
 
 const LEGACY_DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/codex-ws";
 const DEFAULT_RUNNER_WS_URL = "ws://127.0.0.1:8788/runner-ws";
@@ -555,18 +556,13 @@ export function useAppSettingsPersistenceController({
       loadedSettingsPathRef.current = path;
 
       try {
-        const info = await FileSystem.getInfoAsync(path);
-        if (!info.exists) {
+        const parsed = await readPersistedSettings();
+        if (!parsed) {
           await applySecureCredentials();
           setSettingsLoaded(true);
           return;
         }
-        const raw = await FileSystem.readAsStringAsync(path);
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          throw new Error("設定ファイルの形式が正しくありません。");
-        }
-        applyPersistedSettings(parsed as Record<string, unknown>);
+        applyPersistedSettings(parsed);
         await applySecureCredentials();
       } catch {}
       setSettingsLoaded(true);
@@ -587,7 +583,13 @@ export function useAppSettingsPersistenceController({
     if (!path) return;
 
     const timer = setTimeout(() => {
-      void FileSystem.writeAsStringAsync(path, JSON.stringify(buildPersistedSettingsPayload()));
+      void mutatePersistedSettings((current) => {
+        const next: Record<string, unknown> = buildPersistedSettingsPayload();
+        for (const field of LOCATION_BACKGROUND_FIELDS) {
+          if (field in current) next[field] = current[field];
+        }
+        return next;
+      });
       void saveSecureRunnerCredentials({
         runnerToken,
         cloudflareAccessClientId,

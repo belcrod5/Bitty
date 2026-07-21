@@ -1,0 +1,5 @@
+appId: app.bitty.mobile
+name: Devpost - background Bitty before arrival
+---
+- assertVisible: ".*位置・時間実行.*"
+- pressKey: HOME

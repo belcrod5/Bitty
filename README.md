@@ -37,6 +37,9 @@ work from a more aligned view of the task.
   continue.
 - Inspect Git changes, workspace files, and running jobs without switching back
   to the desktop.
+- Receive iOS notifications when a turn completes or needs approval.
+- Run a Codex prompt when the iOS device enters a configured location during a
+  configured time window.
 - Search and preview YouTube results when the runner is configured with the
   optional YouTube tools.
 - Export and import app settings through the clipboard for device migration.
@@ -291,9 +294,15 @@ GOOGLE_CLOUD_TTS_VOICE_NAME=ja-JP-Neural2-B
 
 These are not implemented yet:
 
-- Push notifications for long-running tasks and approval requests.
 - Siri shortcuts or voice commands for common app actions.
 - Access to the local runner from outside the local network.
+
+## OpenAI Build Week Submission
+
+The English submission description, Build Week scope, judge setup, and
+no-rebuild iOS Simulator instructions are in [DEVPOST.md](DEVPOST.md). The
+recording and packaging checklist is in
+[docs/DEVPOST-SUBMISSION-PLAN.md](docs/DEVPOST-SUBMISSION-PLAN.md).
 
 ## Tests And Checks
 

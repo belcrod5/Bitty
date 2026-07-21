@@ -1,0 +1,27 @@
+appId: app.bitty.mobile
+name: Devpost - inspect the generated grocery list
+---
+- runFlow:
+    when:
+      visible: キャンセル
+    commands:
+      - tapOn: キャンセル
+- runFlow:
+    when:
+      visible: 差分パネルを閉じる
+    commands:
+      - tapOn: 差分パネルを閉じる
+- assertVisible: idle
+- tapOn: Git差分パネルを開く
+- tapOn: File Explorerタブを表示
+- tapOn:
+    text: 買い物リスト.mdのメニューを表示
+    index: 1
+- tapOn: 編集
+- extendedWaitUntil:
+    visible: 買い物リスト.md
+    timeout: 30000
+# Keep the editor visible long enough for the recording to show the real file.
+- waitForAnimationToEnd
+- tapOn: 閉じる
+- tapOn: 差分パネルを閉じる

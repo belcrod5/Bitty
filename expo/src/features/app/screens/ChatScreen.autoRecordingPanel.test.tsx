@@ -47,6 +47,7 @@ jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => n
 jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
 jest.mock("../components/ChatSessionSubagentList", () => ({ ChatSessionSubagentList: () => null }));
 jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({ RunnerWsConnectionStatus: () => null }));
+jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({ LocationScheduleSettings: () => null }));
 
 jest.mock("../hooks/useWorkspaceFileMutations", () => ({
   useWorkspaceFileMutations: () => ({

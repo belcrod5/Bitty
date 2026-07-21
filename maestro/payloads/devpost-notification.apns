@@ -1,0 +1,11 @@
+{
+  "Simulator Target Bundle": "app.bitty.mobile",
+  "aps": {
+    "alert": {
+      "title": "Bitty · Grocery Store",
+      "body": "Simulator notification: your scheduled grocery checklist is ready."
+    },
+    "sound": "default",
+    "category": "TURN_COMPLETED"
+  }
+}
