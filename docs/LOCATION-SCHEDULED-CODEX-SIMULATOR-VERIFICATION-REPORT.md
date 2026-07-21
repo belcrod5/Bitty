@@ -1,5 +1,9 @@
 # Location-scheduled Codex simulator verification report
 
+> This report records an earlier engineering verification run with GPT-5.6 Sol
+> and High reasoning. It is not the final recorded submission demo, which uses
+> GPT-5.6 Luna with Low reasoning as documented in `DEVPOST.md`.
+
 検証日時: 2026-07-19 09:00〜10:37 JST
 worktree / commit: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/feat/location-scheduled-codex` / `ec52a6ab8a39772cb92bea5c593d58e5ad6b4e80` (`feat/location-scheduled-codex`)
 Simulator model / iOS version / UDID: iPhone 17 Pro / iOS 26.2 / `23B43EC5-37D1-488B-A4F7-CF6971E39E1A`

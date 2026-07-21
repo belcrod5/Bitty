@@ -9,8 +9,9 @@
 - **License:** MIT
 - **Platforms:** macOS local server, iPhone, and iPad
 - **Repository:** https://github.com/belcrod5/Bitty
-- **Public demo video:** `[Add public YouTube URL before submission]`
-- **Prebuilt iOS Simulator app:** `[Add public GitHub Release URL before submission]`
+- **Public demo video:** https://www.youtube.com/watch?v=loDQF88QcDA
+- **Prebuilt iOS Simulator app:**
+  https://github.com/belcrod5/Bitty/releases/download/v1.0.0/Bitty-1.0.0-iOS-Simulator-arm64.zip
 - **Codex Session ID:** Provide only in the required Devpost form field; it is
   intentionally excluded from public artifacts.
 - **Built with:** Codex, GPT-5.6, React Native, Expo, TypeScript, Node.js,
@@ -96,18 +97,17 @@ run is real.”**
 
 ## Judge Access Without Rebuilding
 
-TestFlight is intentionally out of scope for this submission. A public GitHub
-Release will provide `Bitty-1.0.0-iOS-Simulator-arm64.zip`, containing a
+TestFlight is intentionally out of scope for this submission. The public
+[GitHub Release](https://github.com/belcrod5/Bitty/releases/tag/v1.0.0)
+provides `Bitty-1.0.0-iOS-Simulator-arm64.zip`, containing a
 prebuilt app at:
 
 ```text
 Bitty-1.0.0-iOS-Simulator-arm64/Bitty.app
 ```
 
-The release notes will record the exact macOS, Xcode, Simulator runtime, and
-Mac architecture used to verify the artifact. The target verification
-environment is Apple Silicon macOS with Xcode 26.2 and a compatible iOS
-Simulator runtime.
+The artifact was verified on an Apple Silicon Mac running macOS 15.7.3, Xcode
+26.2, and an iPhone 17 Pro Simulator with iOS 26.2.
 
 ### Requirements And Constraints
 
@@ -138,11 +138,14 @@ required for the judge path.
 ### 1. Start The Local Node.js Runner
 
 ```bash
-git clone https://github.com/belcrod5/Bitty.git
+git clone --branch v1.0.0 --depth 1 https://github.com/belcrod5/Bitty.git
 cd Bitty/private_runner
 npm install
 cp .env.example .env
 ```
+
+The `v1.0.0` tag pins the runner source used by the prebuilt app. Do not use
+the repository's default branch for this judge flow.
 
 Edit `private_runner/.env`. Create your own local token; never use a token from
 the repository or release archive:
@@ -190,9 +193,10 @@ Open Bitty's connection settings and enter:
 - **Codex WS URL:** `ws://127.0.0.1:8788/runner-ws`
 - **Codex WS Token:** the same local runner token
 
-Enter the tokens once and wait briefly for settings persistence before leaving
-the screen. The signed Release Simulator app stores them securely across normal
-app restarts.
+Enter the tokens once and wait briefly before leaving the screen. Do not
+uninstall the app during verification, because uninstalling removes local
+credentials. If either token field is empty after a relaunch, enter the same
+local token again before continuing.
 
 Select **GPT-5.6 Luna** and **Low** reasoning for the submission scenario.
 
@@ -211,6 +215,16 @@ Select **GPT-5.6 Luna** and **Low** reasoning for the submission scenario.
 
 6. Grant Always location and notification permissions when requested, set the
    Simulator outside the region, and put Bitty in the background.
+   If the Simulator does not show the location prompt or the rule does not
+   save, grant the Simulator permission explicitly and relaunch Bitty:
+
+   ```bash
+   xcrun simctl privacy booted grant location-always app.bitty.mobile
+   xcrun simctl launch booted app.bitty.mobile
+   ```
+
+   Then reopen the location schedule settings and confirm that the rule is
+   enabled before continuing.
 7. Move the Simulator into the configured region using coordinates that match
    the rule:
 
@@ -254,7 +268,8 @@ Board.
   Devpost form describe the same features, model, notification simulation, and
   Build Week scope.
 
-## Links To Add Before Submission
+## Submission Links
 
-- Public YouTube demo: `[TBD]`
-- Public GitHub Release with Simulator app: `[TBD]`
+- Public YouTube demo: https://www.youtube.com/watch?v=loDQF88QcDA
+- Public GitHub Release with Simulator app:
+  https://github.com/belcrod5/Bitty/releases/tag/v1.0.0

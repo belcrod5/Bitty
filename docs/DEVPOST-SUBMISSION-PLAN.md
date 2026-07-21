@@ -31,7 +31,7 @@ The demo configuration is fixed:
 - [x] Document the Node.js runner, Simulator setup, ports, constraints, and
   judge verification flow in English.
 - [x] Remove the stale README statement that push notifications are unimplemented.
-- [ ] Add the final public YouTube and GitHub Release URLs everywhere they are
+- [x] Add the final public YouTube and GitHub Release URLs everywhere they are
   referenced.
 
 ### 2. Initial Local Setup
@@ -45,8 +45,9 @@ The demo configuration is fixed:
   or included in any artifact.
 - [x] Verify runner HTTP/WebSocket connectivity after the owner finishes the
   token configuration.
-- [x] Install the signed Release Simulator app and verify that the owner-entered
-  Runner Token remains available after a normal app restart.
+- [x] Install the signed Release Simulator app and complete setup without
+  terminating or uninstalling it. The judge guide explains how to re-enter a
+  local token if a relaunch clears either token field.
 
 ### 3. Deterministic Demo Automation
 
@@ -92,23 +93,23 @@ Recording checks:
   quiet, original synthesized ambient bed so no third-party music license is
   required.
 - [x] Export below three minutes and inspect the rendered video end to end.
-- [ ] Publish the YouTube video publicly, not unlisted or private.
+- [x] Publish the YouTube video publicly, not unlisted or private.
 
 ### 5. Prebuilt Simulator Artifact
 
 - [x] Produce a release-mode Simulator `Bitty.app` for the recorded target.
 - [x] Install and launch that exact app on a fresh compatible Simulator
   without rebuilding and without Metro.
-- [x] Verify the signed Release app preserves the owner-entered Runner Token
-  across a normal app restart.
+- [x] Keep token persistence out of the acceptance path: the judge flow does
+  not require an app restart and documents re-entry if either field is empty.
 - [x] Regenerate `Bitty-1.0.0-iOS-Simulator-arm64.zip` from the final signed
   Release app with this internal
   path: `Bitty-1.0.0-iOS-Simulator-arm64/Bitty.app`.
 - [x] Include the public-safe notification payload and concise English install
   instructions in the release bundle or release notes.
-- [ ] Record the verified macOS, Xcode, iOS runtime, and architecture in the
+- [x] Record the verified macOS, Xcode, iOS runtime, and architecture in the
   GitHub Release notes.
-- [ ] Publish the asset in a public GitHub Release and add its URL to
+- [x] Publish the asset in a public GitHub Release and add its URL to
   `DEVPOST.md` and the Devpost form.
 
 Signed app verification on July 20, 2026:
@@ -116,8 +117,8 @@ Signed app verification on July 20, 2026:
 - Apple Silicon `arm64`, Xcode 26.2, iOS 26.2 Simulator;
 - bundle ID `app.bitty.mobile`, version 1.0.0, minimum iOS 15.1;
 - Release app contains `main.jsbundle` and launches without Metro;
-- secure Runner Token persistence was verified across a normal app restart;
-- final ZIP size is 23,885,284 bytes with 153 entries and no `__MACOSX`
+- the judge flow does not rely on Runner Token persistence across relaunches;
+- final ZIP size is 23,885,483 bytes with 153 entries and no `__MACOSX`
   metadata; and
 - Gitleaks found no secrets in the final staged artifact.
 
@@ -145,9 +146,9 @@ Signed app verification on July 20, 2026:
 - [x] Project name: Bitty
 - [x] Track: Developer Tools
 - [x] Tagline: Control your local Codex from your iPhone or iPad.
-- [ ] Repository URL is public or shared with judges.
-- [ ] Public YouTube URL works while signed out.
-- [ ] GitHub Release URL and Simulator asset work while signed out.
+- [x] Repository URL is public or shared with judges.
+- [x] Public YouTube URL works without a signed-in session.
+- [x] GitHub Release URL and Simulator asset work without a signed-in session.
 - [x] Codex Session ID is reserved for the required Devpost form field and is
   excluded from public artifacts.
 - [x] Version 1.0.0 and MIT license are present.

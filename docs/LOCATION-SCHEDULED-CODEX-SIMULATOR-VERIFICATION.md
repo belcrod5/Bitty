@@ -1,5 +1,9 @@
 # Location-scheduled Codex simulator verification
 
+> This is an earlier engineering verification plan using GPT-5.6 Sol. The final
+> recorded submission demo uses GPT-5.6 Luna with Low reasoning as documented
+> in `DEVPOST.md`.
+
 ## この指示書の目的
 
 `feat/location-scheduled-codex` の位置・時間実行を、iOS Simulator と常時起動中の Runner を使って end-to-end 検証する。
