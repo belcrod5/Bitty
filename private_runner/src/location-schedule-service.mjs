@@ -1,15 +1,18 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const MAX_ENABLED_RULES = 20;
 const MAX_PROMPT_CHARS = 24_000;
 const OCCURRENCE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const REENTRY_OCCURRENCE_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 // window開始時に最後の位置状態がこの時間より古い場合は、発火前にサイレントpushで
 // 端末に現在地の再報告を求める。応答が無い場合は古い状態で発火しない。
 const STATE_FRESH_MS = 3 * 60 * 1000;
 const STATE_REFRESH_REQUEST_RETENTION_MS = 6 * 60 * 60 * 1000;
 const MAX_LOCATION_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const REENTRY_COOLDOWN_MS = 15 * 60 * 1000;
+const REENTRY_OUTSIDE_MIN_MS = 5 * 60 * 1000;
 
 export class LocationScheduleStoreUnavailableError extends Error {
   constructor(message) {
@@ -137,8 +140,8 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
   return rules;
 }
 
-function ruleSignature(rule) {
-  return JSON.stringify(rule);
+function ruleFingerprint(rule) {
+  return createHash("sha256").update(JSON.stringify(rule)).digest("hex");
 }
 
 export function createLocationScheduleService({
@@ -179,6 +182,71 @@ export function createLocationScheduleService({
       }
       const phoneTimeZone = validateTimeZone(parsed.phoneTimeZone);
       const rules = parseLocationScheduleRules(parsed.rules, phoneTimeZone, parseCodexOptions);
+      const allowedStatuses = new Set([
+        "queued",
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "failed_uncertain_after_restart",
+        "failed_configuration_changed_while_queued",
+        "skipped_edited_active_window",
+      ]);
+      for (const [key, occurrence] of Object.entries(parsed.occurrences)) {
+        if (!occurrence || typeof occurrence !== "object" || Array.isArray(occurrence)) {
+          throw new Error(`store.occurrences[${key}] must be an object`);
+        }
+        if (key !== occurrence.occurrenceKey) throw new Error(`store.occurrences[${key}] key mismatch`);
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(String(occurrence.ruleId || ""))) {
+          throw new Error(`store.occurrences[${key}].ruleId is invalid`);
+        }
+        if (!allowedStatuses.has(occurrence.status)) {
+          throw new Error(`store.occurrences[${key}].status is invalid`);
+        }
+        if (!Number.isFinite(Date.parse(String(occurrence.createdAt || "")))) {
+          throw new Error(`store.occurrences[${key}].createdAt is invalid`);
+        }
+        if (occurrence.windowKey !== undefined) {
+          const windowKey = String(occurrence.windowKey || "");
+          if (key !== windowKey && key !== `${windowKey}|edited` && !key.startsWith(`${windowKey}|entry|`)) {
+            throw new Error(`store.occurrences[${key}].windowKey is invalid`);
+          }
+        }
+        let legacyRule = null;
+        if (occurrence.ruleSignature !== undefined
+          && !/^[a-f0-9]{64}$/.test(String(occurrence.ruleSignature))) {
+          try {
+            legacyRule = JSON.parse(occurrence.ruleSignature);
+          } catch {
+            throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
+          }
+          if (!legacyRule || typeof legacyRule !== "object" || Array.isArray(legacyRule)) {
+            throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
+          }
+          occurrence.ruleSignature = ruleFingerprint(legacyRule);
+        }
+        if (occurrence.status !== "queued") continue;
+        if (!/^[a-f0-9]{64}$/.test(String(occurrence.ruleSignature || ""))) {
+          throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
+        }
+        const createdAt = new Date(occurrence.createdAt);
+        const currentRule = rules.find((rule) => (
+          rule.id === occurrence.ruleId
+          && rule.enabled
+          && ruleFingerprint(rule) === occurrence.ruleSignature
+        ));
+        const claimedRule = legacyRule || currentRule;
+        if (claimedRule) {
+          const claimedWindow = windowAt(claimedRule, createdAt);
+          if (claimedRule.id !== occurrence.ruleId
+            || claimedRule.enabled !== true
+            || occurrence.windowKey !== claimedWindow.occurrenceKey
+            || !claimedWindow.active
+            || (key !== claimedWindow.occurrenceKey && !key.startsWith(`${claimedWindow.occurrenceKey}|entry|`))) {
+            throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
+          }
+        }
+      }
       data = {
         ...data,
         phoneTimeZone,
@@ -217,24 +285,54 @@ export function createLocationScheduleService({
   }
 
   function pruneOccurrences(at) {
-    const cutoff = at.getTime() - OCCURRENCE_RETENTION_MS;
+    let changed = false;
+    const initialCutoff = at.getTime() - OCCURRENCE_RETENTION_MS;
+    const reentryCutoff = at.getTime() - REENTRY_OCCURRENCE_RETENTION_MS;
     for (const [key, occurrence] of Object.entries(data.occurrences)) {
-      if (Date.parse(String(occurrence?.createdAt || "")) < cutoff) delete data.occurrences[key];
+      if (occurrence?.status === "queued" || occurrence?.status === "pending" || occurrence?.status === "running") {
+        continue;
+      }
+      const windowKey = String(occurrence?.windowKey || occurrence?.occurrenceKey || "");
+      const initialOccurrence = key === windowKey && occurrence?.status !== "skipped_edited_active_window";
+      const cutoff = initialOccurrence ? initialCutoff : reentryCutoff;
+      if (Date.parse(String(occurrence?.createdAt || "")) < cutoff) {
+        delete data.occurrences[key];
+        changed = true;
+      }
     }
     const refreshCutoff = at.getTime() - STATE_REFRESH_REQUEST_RETENTION_MS;
     for (const [key, requestedAtMs] of stateRefreshRequests) {
       if (requestedAtMs < refreshCutoff) stateRefreshRequests.delete(key);
     }
+    return changed;
+  }
+
+  function occurrencesForWindow(windowKey) {
+    return Object.values(data.occurrences).filter((occurrence) => (
+      String(occurrence?.windowKey || occurrence?.occurrenceKey || "") === windowKey
+    ));
+  }
+
+  function latestClaim(occurrences) {
+    return occurrences
+      .filter((occurrence) => occurrence?.status !== "skipped_edited_active_window")
+      .reduce((latest, occurrence) => (
+        !latest || Date.parse(String(occurrence?.createdAt || "")) > Date.parse(String(latest.createdAt || ""))
+          ? occurrence
+          : latest
+      ), null);
   }
 
   function claimEligibleRules(at) {
-    const claimed = [];
+    let claimedCount = 0;
     const staleRules = [];
     for (const rule of data.rules) {
       const state = data.states[rule.id];
       if (!rule.enabled || !state || state.regionRevision !== rule.regionRevision) continue;
       const window = windowAt(rule, at);
-      if (!window.active || data.occurrences[window.occurrenceKey]) continue;
+      if (!window.active) continue;
+      const windowOccurrences = occurrencesForWindow(window.occurrenceKey);
+      if (windowOccurrences.some((occurrence) => occurrence?.status === "skipped_edited_active_window")) continue;
       if (typeof requestStateRefresh === "function") {
         const observedAtMs = Date.parse(String(state.observedAt || ""));
         const receivedAtMs = Date.parse(String(state.receivedAt || ""));
@@ -251,21 +349,69 @@ export function createLocationScheduleService({
         }
       }
       if (state.state !== "inside") continue;
+      const previousClaim = latestClaim(windowOccurrences);
+      let occurrenceKey = window.occurrenceKey;
+      if (previousClaim) {
+        if (state.reentryEligible !== true || !state.entryId || !state.stateSince) continue;
+        const previousClaimAtMs = Date.parse(String(previousClaim.createdAt || ""));
+        const entryAtMs = Date.parse(String(state.stateSince || ""));
+        if (!Number.isFinite(previousClaimAtMs)
+          || !Number.isFinite(entryAtMs)
+          || at.getTime() - previousClaimAtMs < REENTRY_COOLDOWN_MS
+          || entryAtMs - previousClaimAtMs < REENTRY_COOLDOWN_MS) {
+          continue;
+        }
+        occurrenceKey = `${window.occurrenceKey}|entry|${encodeURIComponent(state.stateSince)}|${encodeURIComponent(state.entryId)}`;
+        if (data.occurrences[occurrenceKey]) continue;
+      }
       stateRefreshRequests.delete(window.occurrenceKey);
       const createdAt = at.toISOString();
-      data.occurrences[window.occurrenceKey] = {
-        occurrenceKey: window.occurrenceKey,
+      data.occurrences[occurrenceKey] = {
+        occurrenceKey,
+        windowKey: window.occurrenceKey,
         ruleId: rule.id,
-        status: "pending",
+        ruleSignature: ruleFingerprint(rule),
+        status: "queued",
         threadId: "",
         turnId: "",
         errorMessage: "",
         createdAt,
         updatedAt: createdAt,
       };
-      claimed.push({ rule: { ...rule }, occurrenceKey: window.occurrenceKey });
+      state.reentryEligible = false;
+      claimedCount += 1;
     }
-    return { claimed, staleRules };
+    return { claimedCount, staleRules };
+  }
+
+  function takeRunnableClaims(at) {
+    const runnable = [];
+    let changed = false;
+    const activeRuleIds = new Set(
+      Object.values(data.occurrences)
+        .filter((occurrence) => occurrence?.status === "pending" || occurrence?.status === "running")
+        .map((occurrence) => occurrence.ruleId)
+    );
+    const queued = Object.values(data.occurrences)
+      .filter((occurrence) => occurrence?.status === "queued")
+      .sort((left, right) => Date.parse(String(left.createdAt || "")) - Date.parse(String(right.createdAt || "")));
+    for (const occurrence of queued) {
+      if (activeRuleIds.has(occurrence.ruleId)) continue;
+      const rule = data.rules.find((candidate) => candidate.id === occurrence.ruleId && candidate.enabled);
+      if (!rule || occurrence.ruleSignature !== ruleFingerprint(rule)) {
+        occurrence.status = "failed_configuration_changed_while_queued";
+        occurrence.errorMessage = "Schedule changed after this enter was queued; not executed with different settings";
+        occurrence.updatedAt = at.toISOString();
+        changed = true;
+        continue;
+      }
+      occurrence.status = "pending";
+      occurrence.updatedAt = at.toISOString();
+      runnable.push({ rule: { ...rule }, occurrenceKey: occurrence.occurrenceKey });
+      activeRuleIds.add(rule.id);
+      changed = true;
+    }
+    return { runnable, changed };
   }
 
   async function runClaim({ rule, occurrenceKey }) {
@@ -302,27 +448,29 @@ export function createLocationScheduleService({
       occurrence.updatedAt = now().toISOString();
       await persist();
     });
+    await evaluate();
   }
 
   async function evaluate() {
-    const { claimed, staleRules } = await serialize(async () => {
+    const { claimedCount, runnable, staleRules } = await serialize(async () => {
       const at = now();
-      pruneOccurrences(at);
+      const pruned = pruneOccurrences(at);
       const result = claimEligibleRules(at);
-      if (result.claimed.length) await persist();
-      return result;
+      const pending = takeRunnableClaims(at);
+      if (pruned || result.claimedCount || pending.changed) await persist();
+      return { ...result, runnable: pending.runnable };
     });
     if (staleRules.length && typeof requestStateRefresh === "function") {
       void Promise.resolve(requestStateRefresh({ rules: staleRules })).catch((error) => {
         console.warn(`[location-schedule] state refresh request failed: ${error instanceof Error ? error.message : error}`);
       });
     }
-    for (const item of claimed) {
+    for (const item of runnable) {
       void runClaim(item).catch((error) => {
         console.warn(`[location-schedule] failed to record execution result: ${error instanceof Error ? error.message : error}`);
       });
     }
-    return claimed.length;
+    return claimedCount;
   }
 
   function armTimer() {
@@ -370,11 +518,17 @@ export function createLocationScheduleService({
         )) {
           delete data.states[rule.id];
         }
-        if (!rule.enabled || (old && ruleSignature(old) === ruleSignature(rule))) continue;
+        if (!rule.enabled || (old && ruleFingerprint(old) === ruleFingerprint(rule))) continue;
         const window = windowAt(rule, at);
-        if (!window.active || data.occurrences[window.occurrenceKey]) continue;
-        data.occurrences[window.occurrenceKey] = {
-          occurrenceKey: window.occurrenceKey,
+        if (!window.active || occurrencesForWindow(window.occurrenceKey).some((occurrence) => (
+          occurrence?.status === "skipped_edited_active_window"
+        ))) continue;
+        const occurrenceKey = data.occurrences[window.occurrenceKey]
+          ? `${window.occurrenceKey}|edited`
+          : window.occurrenceKey;
+        data.occurrences[occurrenceKey] = {
+          occurrenceKey,
+          windowKey: window.occurrenceKey,
           ruleId: rule.id,
           status: "skipped_edited_active_window",
           threadId: "",
@@ -404,22 +558,59 @@ export function createLocationScheduleService({
       const eventId = String(payload?.eventId || "").trim().slice(0, 200);
       if (!eventId) throw new Error("eventId is required");
       if (eventId && data.states[ruleId]?.eventId === eventId) return false;
+      const receivedAt = now();
       const observedAt = String(payload?.observedAt || "").trim();
       const parsedObservedAt = Date.parse(observedAt);
       if (!Number.isFinite(parsedObservedAt)) throw new Error("observedAt must be an ISO timestamp");
-      if (parsedObservedAt > now().getTime() + MAX_LOCATION_CLOCK_SKEW_MS) {
+      if (parsedObservedAt > receivedAt.getTime() + MAX_LOCATION_CLOCK_SKEW_MS) {
         throw new Error("observedAt is too far in the future");
       }
       const currentObservedAt = Date.parse(String(data.states[ruleId]?.observedAt || ""));
       if (Number.isFinite(parsedObservedAt) && Number.isFinite(currentObservedAt) && parsedObservedAt < currentObservedAt) {
         return false;
       }
+      const previousState = data.states[ruleId];
+      const observedAtIso = new Date(parsedObservedAt).toISOString();
+      const sameState = previousState?.state === state;
+      let stateSince = observedAtIso;
+      let receivedStateSince = receivedAt.toISOString();
+      let entryId = state === "inside" ? eventId : "";
+      let reentryEligible = false;
+      if (sameState) {
+        stateSince = String(previousState.stateSince || previousState.observedAt || observedAtIso);
+        receivedStateSince = String(
+          previousState.receivedStateSince || previousState.receivedAt || receivedAt.toISOString()
+        );
+        if (state === "inside") {
+          entryId = String(previousState.entryId || previousState.eventId || eventId);
+          reentryEligible = previousState.reentryEligible === true;
+        }
+      } else if (state === "inside" && previousState?.state === "outside") {
+        const outsideSinceMs = Date.parse(String(previousState.stateSince || previousState.observedAt || ""));
+        const outsideReceivedSinceMs = Date.parse(String(
+          previousState.receivedStateSince || previousState.receivedAt || ""
+        ));
+        const window = windowAt(rule, receivedAt);
+        const previousClaim = window.active ? latestClaim(occurrencesForWindow(window.occurrenceKey)) : null;
+        const previousClaimAtMs = Date.parse(String(previousClaim?.createdAt || ""));
+        reentryEligible = Number.isFinite(outsideSinceMs)
+          && parsedObservedAt - outsideSinceMs >= REENTRY_OUTSIDE_MIN_MS
+          && Number.isFinite(outsideReceivedSinceMs)
+          && receivedAt.getTime() - outsideReceivedSinceMs >= REENTRY_OUTSIDE_MIN_MS
+          && Number.isFinite(previousClaimAtMs)
+          && parsedObservedAt - previousClaimAtMs >= REENTRY_COOLDOWN_MS
+          && receivedAt.getTime() - previousClaimAtMs >= REENTRY_COOLDOWN_MS;
+      }
       data.states[ruleId] = {
         regionRevision,
         state,
         eventId,
-        observedAt: new Date(parsedObservedAt).toISOString(),
-        receivedAt: now().toISOString(),
+        observedAt: observedAtIso,
+        receivedAt: receivedAt.toISOString(),
+        stateSince,
+        receivedStateSince,
+        entryId,
+        reentryEligible,
       };
       await persist();
       return true;
