@@ -176,8 +176,9 @@ Use a deterministic window key derived from rule ID, local calendar date, start 
 end time, and timezone. The initial fire uses that key directly; a qualified re-entry
 adds the persisted inside-transition timestamp and event ID. Atomically persist each
 fire claim before starting Codex. The persisted claim is the at-most-once boundary for
-that enter cycle. Do not add an unsupported idempotency field to the Codex app-server
-RPC.
+that enter cycle. Store only a fixed-size SHA-256 rule fingerprint on each claim; do
+not duplicate the prompt or complete rule per occurrence. Do not add an unsupported
+idempotency field to the Codex app-server RPC.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
 complete schedule set. Creating a rule or changing its time/location applies to the

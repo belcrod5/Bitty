@@ -368,7 +368,7 @@ test("a qualified re-entry waits for an in-flight firing of the same rule", asyn
 });
 
 test("restart fails an ambiguous running fire but executes a persisted queued re-entry", async () => {
-  await withService(async ({ create, executions, setNow }) => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
     const neverCompletes = new Promise(() => {});
     const service = create({
       executeTurn: async (request) => {
@@ -384,7 +384,11 @@ test("restart fails an ambiguous running fire but executes a persisted queued re
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
     setNow("2026-07-19T00:25:00.000Z");
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
-    assert.ok(Object.values((await service.snapshot()).occurrences).some((occurrence) => occurrence.status === "queued"));
+    const legacyStore = await service.snapshot();
+    const queued = Object.values(legacyStore.occurrences).find((occurrence) => occurrence.status === "queued");
+    assert.ok(queued);
+    queued.ruleSignature = JSON.stringify(legacyStore.rules[0]);
+    await fs.writeFile(storePath, `${JSON.stringify(legacyStore, null, 2)}\n`, "utf8");
 
     const restarted = create();
     await restarted.start();
@@ -392,6 +396,9 @@ test("restart fails an ambiguous running fire but executes a persisted queued re
     await waitFor(async () => Object.values((await restarted.snapshot()).occurrences).some((occurrence) => occurrence.status === "completed"));
     const statuses = Object.values((await restarted.snapshot()).occurrences).map((occurrence) => occurrence.status);
     assert.deepEqual(statuses.sort(), ["completed", "failed_uncertain_after_restart"]);
+    assert.ok(Object.values((await restarted.snapshot()).occurrences).every((occurrence) => (
+      /^[a-f0-9]{64}$/.test(occurrence.ruleSignature)
+    )));
   });
 });
 
@@ -474,6 +481,37 @@ test("prunes terminal re-entry claims after two days but keeps initial and activ
     await service.evaluate();
     const statuses = Object.values((await service.snapshot()).occurrences).map((occurrence) => occurrence.status);
     assert.deepEqual(statuses.sort(), ["queued", "running"]);
+  });
+});
+
+test("many occurrences store fixed fingerprints instead of duplicating a maximum prompt", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    const service = create();
+    const maxPrompt = "x".repeat(24_000);
+    const longWindowRule = rule({ startTime: "00:00", endTime: "23:59", prompt: maxPrompt });
+    setNow("2026-07-18T14:59:00.000Z");
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [longWindowRule] });
+    const baseMs = Date.parse("2026-07-18T15:00:00.000Z");
+    setNow(new Date(baseMs).toISOString());
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-0", observedAt: new Date(baseMs).toISOString() });
+    await waitFor(() => executions.length === 1);
+    for (let index = 1; index <= 10; index += 1) {
+      const exitAt = new Date(baseMs + (index * 15 - 5) * 60_000).toISOString();
+      const enterAt = new Date(baseMs + index * 15 * 60_000).toISOString();
+      setNow(exitAt);
+      await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: `exit-${index}`, observedAt: exitAt });
+      setNow(enterAt);
+      await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: `enter-${index}`, observedAt: enterAt });
+      await waitFor(() => executions.length === index + 1);
+    }
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8"));
+    const occurrenceJson = JSON.stringify(persisted.occurrences);
+    assert.equal(Object.keys(persisted.occurrences).length, 11);
+    assert.ok(Object.values(persisted.occurrences).every((occurrence) => /^[a-f0-9]{64}$/.test(occurrence.ruleSignature)));
+    assert.equal(occurrenceJson.includes(maxPrompt), false);
+    assert.ok(occurrenceJson.length < 20_000);
   });
 });
 

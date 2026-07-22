@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const MAX_ENABLED_RULES = 20;
 const MAX_PROMPT_CHARS = 24_000;
@@ -140,8 +140,8 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
   return rules;
 }
 
-function ruleSignature(rule) {
-  return JSON.stringify(rule);
+function ruleFingerprint(rule) {
+  return createHash("sha256").update(JSON.stringify(rule)).digest("hex");
 }
 
 export function createLocationScheduleService({
@@ -212,26 +212,36 @@ export function createLocationScheduleService({
             throw new Error(`store.occurrences[${key}].windowKey is invalid`);
           }
         }
+        let legacyRule = null;
+        if (occurrence.ruleSignature !== undefined
+          && !/^[a-f0-9]{64}$/.test(String(occurrence.ruleSignature))) {
+          try {
+            legacyRule = JSON.parse(occurrence.ruleSignature);
+          } catch {
+            throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
+          }
+          if (!legacyRule || typeof legacyRule !== "object" || Array.isArray(legacyRule)) {
+            throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
+          }
+          occurrence.ruleSignature = ruleFingerprint(legacyRule);
+        }
         if (occurrence.status !== "queued") continue;
-        if (typeof occurrence.ruleSignature !== "string" || !occurrence.ruleSignature) {
-          throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
-        }
-        let claimedRule;
-        try {
-          claimedRule = JSON.parse(occurrence.ruleSignature);
-        } catch {
-          throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
-        }
-        if (!claimedRule || typeof claimedRule !== "object" || Array.isArray(claimedRule)) {
+        if (!/^[a-f0-9]{64}$/.test(String(occurrence.ruleSignature || ""))) {
           throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
         }
         const createdAt = new Date(occurrence.createdAt);
-        const claimedWindow = windowAt(claimedRule, createdAt);
-        if (claimedRule.id !== occurrence.ruleId
-          || claimedRule.enabled !== true
+        const [ruleId, , startTime, endTime, timeZone, extra] = String(occurrence.windowKey || "").split("|");
+        const claimedWindow = extra === undefined
+          ? windowAt({ id: ruleId, startTime, endTime, timeZone }, createdAt)
+          : null;
+        if (!claimedWindow
+          || ruleId !== occurrence.ruleId
           || occurrence.windowKey !== claimedWindow.occurrenceKey
           || !claimedWindow.active
           || (key !== claimedWindow.occurrenceKey && !key.startsWith(`${claimedWindow.occurrenceKey}|entry|`))) {
+          throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
+        }
+        if (legacyRule && (legacyRule.id !== occurrence.ruleId || legacyRule.enabled !== true)) {
           throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
         }
       }
@@ -358,7 +368,7 @@ export function createLocationScheduleService({
         occurrenceKey,
         windowKey: window.occurrenceKey,
         ruleId: rule.id,
-        ruleSignature: ruleSignature(rule),
+        ruleSignature: ruleFingerprint(rule),
         status: "queued",
         threadId: "",
         turnId: "",
@@ -386,7 +396,7 @@ export function createLocationScheduleService({
     for (const occurrence of queued) {
       if (activeRuleIds.has(occurrence.ruleId)) continue;
       const rule = data.rules.find((candidate) => candidate.id === occurrence.ruleId && candidate.enabled);
-      if (!rule || occurrence.ruleSignature !== ruleSignature(rule)) {
+      if (!rule || occurrence.ruleSignature !== ruleFingerprint(rule)) {
         occurrence.status = "failed_configuration_changed_while_queued";
         occurrence.errorMessage = "Schedule changed after this enter was queued; not executed with different settings";
         occurrence.updatedAt = at.toISOString();
@@ -506,7 +516,7 @@ export function createLocationScheduleService({
         )) {
           delete data.states[rule.id];
         }
-        if (!rule.enabled || (old && ruleSignature(old) === ruleSignature(rule))) continue;
+        if (!rule.enabled || (old && ruleFingerprint(old) === ruleFingerprint(rule))) continue;
         const window = windowAt(rule, at);
         if (!window.active || occurrencesForWindow(window.occurrenceKey).some((occurrence) => (
           occurrence?.status === "skipped_edited_active_window"
