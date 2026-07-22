@@ -1,9 +1,24 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 
 function toUnixPath(value) {
   return String(value || "").replaceAll(path.sep, "/");
+}
+
+export function isProbablyBinary(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8000));
+  let suspicious = 0;
+  for (const byte of sample) {
+    if (byte === 0) return true;
+    if (byte < 7 || (byte > 14 && byte < 32)) suspicious += 1;
+  }
+  return suspicious / sample.length > 0.2;
+}
+
+function fileVersion(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 function sendJson(res, status, payload) {
@@ -137,10 +152,12 @@ export class WorkspaceFilesError extends Error {
 export function createWorkspaceFilesService({
   workspaceRoot,
   maxUploadBytes,
+  maxTextFileBytes = 5 * 1024 * 1024,
 }) {
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const workspaceRootRealPromise = fs.realpath(resolvedWorkspaceRoot);
   const maxBytes = Math.max(1, Number(maxUploadBytes) || 25 * 1024 * 1024);
+  const maxTextBytes = Math.max(1, Number(maxTextFileBytes) || 5 * 1024 * 1024);
 
   async function saveFile({
     rootDir,
@@ -148,10 +165,11 @@ export function createWorkspaceFilesService({
     fileName,
     mimeType,
     data,
+    allowEmpty = false,
   }) {
     const normalizedName = normalizeFileName(fileName);
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
-    if (buffer.length <= 0) {
+    if (buffer.length <= 0 && !allowEmpty) {
       throw new WorkspaceFilesError(400, "file_empty", "file is empty");
     }
     if (buffer.length > maxBytes) {
@@ -195,6 +213,96 @@ export function createWorkspaceFilesService({
       directory: toClientPath(workspaceRootReal, targetDirectoryReal),
       size: buffer.length,
       mimeType: String(mimeType || "application/octet-stream").trim() || "application/octet-stream",
+    };
+  }
+
+  async function createTextFile({ rootDir, targetDirectory, fileName, content = "" }) {
+    if (typeof content !== "string") {
+      throw new WorkspaceFilesError(400, "content_required", "content must be a string");
+    }
+    return saveFile({
+      rootDir,
+      targetDirectory,
+      fileName,
+      mimeType: "text/plain",
+      data: Buffer.from(content, "utf8"),
+      allowEmpty: true,
+    });
+  }
+
+  async function readTextFile({ rootDir, path: rawPath }) {
+    const workspaceRootReal = await workspaceRootRealPromise;
+    const rootReal = await resolveRootPath(workspaceRootReal, rootDir);
+    const targetReal = await resolveFilePath(workspaceRootReal, rootReal, rawPath);
+    const stat = await fs.stat(targetReal);
+    if (stat.size > maxTextBytes) {
+      throw new WorkspaceFilesError(413, "file_too_large", `file is larger than ${maxTextBytes} bytes`, {
+        maxBytes: maxTextBytes,
+      });
+    }
+    const content = await fs.readFile(targetReal);
+    if (content.length > maxTextBytes) {
+      throw new WorkspaceFilesError(413, "file_too_large", `file is larger than ${maxTextBytes} bytes`, {
+        maxBytes: maxTextBytes,
+      });
+    }
+    if (isProbablyBinary(content)) {
+      throw new WorkspaceFilesError(400, "binary_file", "binary files cannot be copied as text");
+    }
+    return {
+      ok: true,
+      path: toClientPath(workspaceRootReal, targetReal),
+      bytesRead: content.length,
+      totalBytes: content.length,
+      content: content.toString("utf8"),
+      version: fileVersion(content),
+    };
+  }
+
+  async function writeTextFile({ rootDir, path: rawPath, content, expectedVersion }) {
+    if (typeof content !== "string") {
+      throw new WorkspaceFilesError(400, "content_required", "content must be a string");
+    }
+    const buffer = Buffer.from(content, "utf8");
+    if (buffer.length > maxBytes) {
+      throw new WorkspaceFilesError(413, "file_too_large", `file is larger than ${maxBytes} bytes`, {
+        maxBytes,
+      });
+    }
+    const workspaceRootReal = await workspaceRootRealPromise;
+    const rootReal = await resolveRootPath(workspaceRootReal, rootDir);
+    const targetReal = await resolveFilePath(workspaceRootReal, rootReal, rawPath);
+    const sourceStat = await fs.stat(targetReal);
+    if (sourceStat.size > maxTextBytes) {
+      throw new WorkspaceFilesError(413, "file_too_large", `file is larger than ${maxTextBytes} bytes`, {
+        maxBytes: maxTextBytes,
+      });
+    }
+    const version = String(expectedVersion || "").trim();
+    if (!/^[a-f0-9]{64}$/.test(version)) {
+      throw new WorkspaceFilesError(400, "file_version_required", "expectedVersion is required");
+    }
+    const currentContent = await fs.readFile(targetReal);
+    if (fileVersion(currentContent) !== version) {
+      throw new WorkspaceFilesError(409, "file_changed", "file changed after it was opened");
+    }
+    const temporaryPath = path.join(
+      path.dirname(targetReal),
+      `.${path.basename(targetReal)}.write-${randomUUID()}.tmp`
+    );
+    try {
+      await fs.writeFile(temporaryPath, buffer, { flag: "wx", mode: sourceStat.mode });
+      await fs.rename(temporaryPath, targetReal);
+    } catch (error) {
+      await fs.unlink(temporaryPath).catch(() => {});
+      throw error;
+    }
+    return {
+      ok: true,
+      path: toClientPath(workspaceRootReal, targetReal),
+      directory: toClientPath(workspaceRootReal, path.dirname(targetReal)),
+      size: buffer.length,
+      version: fileVersion(buffer),
     };
   }
 
@@ -291,7 +399,10 @@ export function createWorkspaceFilesService({
   }
 
   async function parseMutationRequest(req) {
-    const maxMutationBodyBytes = 16 * 1024;
+    // PUT はファイル本文を含むためアップロード上限に合わせる。rename/delete はメタデータのみ。
+    const maxMutationBodyBytes = req.method === "PUT"
+      ? maxBytes + 64 * 1024
+      : 16 * 1024;
     const contentLength = Number(req.headers["content-length"] || 0);
     if (Number.isFinite(contentLength) && contentLength > maxMutationBodyBytes) {
       throw new WorkspaceFilesError(413, "request_too_large", "mutation request is too large");
@@ -315,6 +426,22 @@ export function createWorkspaceFilesService({
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       throw new WorkspaceFilesError(400, "invalid_json", "request body must be a JSON object");
+    }
+    if (req.method === "PUT") {
+      if (body.create) {
+        return createTextFile({
+          rootDir: body.rootDir,
+          targetDirectory: body.targetDirectory,
+          fileName: body.name,
+          content: body.content ?? "",
+        });
+      }
+      return writeTextFile({
+        rootDir: body.rootDir,
+        path: body.path,
+        content: body.content,
+        expectedVersion: body.expectedVersion,
+      });
     }
     if (req.method === "PATCH") {
       return renameFile({
@@ -348,9 +475,15 @@ export function createWorkspaceFilesService({
     }
     try {
       const isUpload = req.method === "POST";
-      const payload = isUpload
-        ? await parseAndSaveRequest(req, pathname)
-        : await parseMutationRequest(req);
+      const requestUrl = new URL(req.url || pathname, "http://runner.local");
+      const payload = req.method === "GET"
+        ? await readTextFile({
+          rootDir: requestUrl.searchParams.get("rootDir"),
+          path: requestUrl.searchParams.get("path"),
+        })
+        : isUpload
+          ? await parseAndSaveRequest(req, pathname)
+          : await parseMutationRequest(req);
       return sendJson(res, isUpload ? 201 : 200, payload);
     } catch (error) {
       if (error instanceof WorkspaceFilesError) {
@@ -371,7 +504,10 @@ export function createWorkspaceFilesService({
     handleRequest,
     parseAndSaveRequest,
     parseMutationRequest,
+    readTextFile,
     saveFile,
+    createTextFile,
+    writeTextFile,
     renameFile,
     deleteFile,
   };

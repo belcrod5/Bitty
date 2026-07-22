@@ -4,6 +4,7 @@ export type RunnerTextFileContent = {
   path: string;
   content: string;
   totalBytes: number;
+  version: string;
 };
 
 export async function fetchRunnerTextFileContent(params: {
@@ -26,7 +27,7 @@ export async function fetchRunnerTextFileContent(params: {
   const timeoutMs = Math.max(1, Number(params.timeoutMs || 1));
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = new URL(`${baseUrl}/files/content`);
+    const url = new URL(`${baseUrl}/workspace/files`);
     url.searchParams.set("path", targetPath);
     if (params.rootDir) {
       url.searchParams.set("rootDir", params.rootDir);
@@ -52,6 +53,7 @@ export async function fetchRunnerTextFileContent(params: {
       path: String(data?.path || targetPath).trim(),
       content: typeof data?.content === "string" ? data.content : "",
       totalBytes: Number(data?.totalBytes || 0),
+      version: String(data?.version || ""),
     };
   } catch (err: unknown) {
     if (err && typeof err === "object" && "name" in err && (err as { name?: unknown }).name === "AbortError") {

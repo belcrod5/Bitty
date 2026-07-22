@@ -556,14 +556,14 @@ start_in_background() {
   if [ -n "${RUN_LOCAL_MODE:-}" ]; then
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
-  local cloudflare_tunnel_arg=()
+  local cloudflare_tunnel_arg=""
   if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
-    cloudflare_tunnel_arg=(--cloudflare-tunnel)
+    cloudflare_tunnel_arg="--cloudflare-tunnel"
   fi
 
   if command -v screen >/dev/null 2>&1; then
     RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 \
-      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" start "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}"
+      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" start "${mode_arg[@]}" ${cloudflare_tunnel_arg:+"$cloudflare_tunnel_arg"}
     if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
       echo "[run-local] started in screen session (${RUN_LOCAL_SCREEN_SESSION})" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
@@ -579,7 +579,7 @@ start_in_background() {
   fi
 
   local launcher_pid
-  launcher_pid="$(start_nohup_supervisor 1 1 0 start "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}")"
+  launcher_pid="$(start_nohup_supervisor 1 1 0 start "${mode_arg[@]}" ${cloudflare_tunnel_arg:+"$cloudflare_tunnel_arg"})"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0
@@ -608,14 +608,14 @@ restart_in_background() {
   if [ -n "${RUN_LOCAL_MODE:-}" ]; then
     mode_arg=(--mode "$RUN_LOCAL_MODE")
   fi
-  local cloudflare_tunnel_arg=()
+  local cloudflare_tunnel_arg=""
   if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
-    cloudflare_tunnel_arg=(--cloudflare-tunnel)
+    cloudflare_tunnel_arg="--cloudflare-tunnel"
   fi
 
   if command -v screen >/dev/null 2>&1 && ! screen_session_exists "$RUN_LOCAL_SCREEN_SESSION"; then
     RUN_LOCAL_DEFERRED_RESTART=1 RUN_LOCAL_INTERNAL_LAUNCH=1 RUN_LOCAL_FOREGROUND=1 RUN_LOCAL_RESTART_DETACHED=0 \
-      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" restart "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}"
+      start_screen_supervisor "$RUN_LOCAL_SCREEN_SESSION" "$SCRIPT_PATH" restart "${mode_arg[@]}" ${cloudflare_tunnel_arg:+"$cloudflare_tunnel_arg"}
     if wait_for_screen_session "$RUN_LOCAL_SCREEN_SESSION"; then
       echo "[run-local] scheduled screen restart (${RUN_LOCAL_SCREEN_SESSION})" >&2
       echo "[run-local] logs: $RUN_LOCAL_LOG_FILE" >&2
@@ -637,7 +637,7 @@ restart_in_background() {
   fi
 
   local launcher_pid
-  launcher_pid="$(start_nohup_supervisor 1 1 1 restart "${mode_arg[@]}" "${cloudflare_tunnel_arg[@]}")"
+  launcher_pid="$(start_nohup_supervisor 1 1 1 restart "${mode_arg[@]}" ${cloudflare_tunnel_arg:+"$cloudflare_tunnel_arg"})"
   sleep 1
   if ! kill -0 "$launcher_pid" >/dev/null 2>&1; then
     local rc=0

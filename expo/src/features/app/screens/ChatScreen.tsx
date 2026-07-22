@@ -51,6 +51,7 @@ import { YouTubeVideoList } from "../components/YouTubeVideoList";
 import { GitDiffPanel } from "../components/GitDiffPanel";
 import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
+import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
@@ -63,6 +64,7 @@ import {
 } from "../utils/runnerFileContextMenu";
 import { formatRelativeUpdatedAt } from "../utils/formatting";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
+import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
 type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker";
@@ -1266,6 +1268,10 @@ export function ChatScreen({
     cancelRename: cancelChatFileRename,
     renameFile: renameChatFile,
     renameFileTarget: renameChatFileTarget,
+    editTarget: chatFileEditTarget,
+    requestEdit: requestChatFileEdit,
+    cancelEdit: cancelChatFileEdit,
+    writeFileContent: writeChatFileContent,
     deleteFile: deleteChatFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -1292,6 +1298,7 @@ export function ChatScreen({
         setGitDiffPanelOpen(true);
       },
       onRequestRename: requestChatFileRename,
+      onRequestEdit: requestChatFileEdit,
       onRequestDelete: deleteChatFile,
       onRenameFile: renameChatFileTarget,
     });
@@ -1300,6 +1307,7 @@ export function ChatScreen({
     getPathLabel,
     renameChatFileTarget,
     requestChatFileRename,
+    requestChatFileEdit,
     runnerToken,
     runnerUrl,
     selectedDirectoryPathForView,
@@ -2109,6 +2117,14 @@ export function ChatScreen({
           onCancel={cancelChatFileRename}
           onRename={renameChatFile}
         />
+        <WorkspaceTextFileEditor
+          target={approvalDialogPending ? null : chatFileEditTarget}
+          runnerUrl={runnerUrl}
+          runnerToken={runnerToken}
+          rootDirectory={selectedDirectoryPathForView}
+          onClose={cancelChatFileEdit}
+          onSave={writeChatFileContent}
+        />
         <View style={styles.chatComposer}>
           <View style={styles.connectionStatusArea}>
             <RunnerWsConnectionStatus
@@ -2593,6 +2609,14 @@ export function ChatScreen({
                       {`ドット色: ${selectedSessionMarkerLabel}`}
                     </Text>
                   </TouchableOpacity>
+                  <LocationScheduleSettings
+                    currentCwd={selectedDirectoryPathForView}
+                    currentModelRef={normalizedModelRefForView}
+                    currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
+                    directories={registeredDirectories}
+                    modelOptions={modelOptions}
+                    thinkOptions={thinkOptions}
+                  />
                   <ChatSessionSubagentList
                     selectedSessionId={selectedSessionIdForView}
                     selectedDirectoryPath={selectedDirectoryPathForView}

@@ -13,7 +13,7 @@ import { createLlmAcpSessionStore } from "./llm-acp-session-store.mjs";
 import { createLlmCliRolloutWriter } from "./llm-cli-rollout-writer.mjs";
 import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
-import { createWorkspaceFilesService } from "./workspace-files.mjs";
+import { createWorkspaceFilesService, isProbablyBinary } from "./workspace-files.mjs";
 import { fetchGitBranches, fetchGitBranchStatus } from "./git-branches.mjs";
 import {
   listRunnerConnectionEvents,
@@ -24,6 +24,16 @@ import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
+import { executeCodexTurn, extractCodexAgentMessageText } from "./codex-turn-execution.mjs";
+import {
+  createLocationScheduleService,
+  LocationScheduleStoreUnavailableError,
+} from "./location-schedule-service.mjs";
+import {
+  compactLlmCompletionPreview,
+  createTurnCompletionNotifier,
+  derivePushDirectoryTitle,
+} from "./turn-completion-notification.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -244,6 +254,7 @@ const CLIENT_APP_LOG_SESSION_DIAG_DETAIL_ENABLED = (
 const workspaceFilesService = createWorkspaceFilesService({
   workspaceRoot: WORKSPACE_ROOT,
   maxUploadBytes: MAX_WORKSPACE_UPLOAD_BYTES,
+  maxTextFileBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
 });
 const CODEX_WS_PROXY_DEBUG_LOG_DIR = path.resolve(
   WORKSPACE_ROOT,
@@ -458,6 +469,10 @@ const APNS_ENV = String(process.env.APNS_ENV || "sandbox").trim().toLowerCase() 
 const PUSH_DEVICE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.PUSH_DEVICE_STORE_PATH || "private_runner/logs/push_devices.json"
+);
+const LOCATION_SCHEDULE_STORE_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  process.env.LOCATION_SCHEDULE_STORE_PATH || "private_runner/logs/location_schedules.json"
 );
 const PUSH_SUMMARY_MODEL_REF = String(process.env.PUSH_SUMMARY_MODEL || "openai-codex/gpt-5.6-luna").trim();
 const PUSH_ENABLED = Boolean(APNS_KEY_PATH && APNS_KEY_ID && APPLE_TEAM_ID);
@@ -1307,6 +1322,51 @@ const pushSummarizer = PUSH_ENABLED
     reasoningEffort: "low",
   })
   : null;
+const turnCompletionNotifier = createTurnCompletionNotifier({
+  pushEnabled: PUSH_ENABLED,
+  apnsClient,
+  pushSummarizer,
+  pushDeviceStore,
+  broadcast: (payload) => broadcastRunnerWsTurnCompletedNotification(null, payload),
+});
+const locationScheduleService = createLocationScheduleService({
+  storePath: LOCATION_SCHEDULE_STORE_PATH,
+  parseCodexOptions: resolveCodexRequestOptions,
+  validateCwd: async (cwd) => {
+    const resolved = path.resolve(String(cwd || "").trim());
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
+  },
+  executeTurn: (request) => runRunnerInitiatedTurn({
+    clientName: "private-runner-location-schedule",
+    origin: "location_schedule",
+    request,
+  }),
+  // 最終位置状態が古いままwindowが始まった場合に、サイレントpushで端末へ現在地の再報告を求める
+  requestStateRefresh: PUSH_ENABLED && apnsClient
+    ? async () => {
+      const devices = await pushDeviceStore.listDevices();
+      const payload = {
+        aps: { "content-available": 1 },
+        bitty: { type: "location_state_refresh" },
+      };
+      for (const device of devices) {
+        try {
+          const result = await apnsClient.sendToDevice(device.apnsToken, payload, {
+            env: device.env,
+            pushType: "background",
+            priority: 5,
+          });
+          if (!result.ok) {
+            console.warn(`[location-schedule] state refresh push rejected (${maskApnsToken(device.apnsToken)}): ${result.status} ${result.reason}`);
+          }
+        } catch (error) {
+          console.warn(`[location-schedule] state refresh push failed (${maskApnsToken(device.apnsToken)}): ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    }
+    : undefined,
+});
 
 async function listLlmSessions(rawDirectory, opts = {}) {
   const requestedDirectory = await resolveCanonicalDirectoryIdentity(rawDirectory);
@@ -5140,17 +5200,6 @@ function listCodexWsProxyDebug(limitRaw) {
   return codexWsProxyDebugBuffer.slice(-limit);
 }
 
-function isProbablyBinary(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
-  const sample = buffer.subarray(0, Math.min(buffer.length, 8000));
-  let suspicious = 0;
-  for (const b of sample) {
-    if (b === 0) return true;
-    if (b < 7 || (b > 14 && b < 32)) suspicious += 1;
-  }
-  return suspicious / sample.length > 0.2;
-}
-
 function escapeRegExp(raw) {
   return String(raw || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -5372,47 +5421,6 @@ async function resolveClientFilePath(rawPath, rawRootDir = "") {
   } catch (err) {
     throw makeApiError(400, classifyPathResolutionError(err), errorMessage(err));
   }
-}
-
-async function readClientTextFile(rawPath, rawRootDir = "") {
-  const resolved = await resolveClientFilePath(rawPath, rawRootDir);
-  let stat;
-  try {
-    stat = await fs.stat(resolved.realPath);
-  } catch (err) {
-    const code = classifyFsError(err, "read_stat_failed");
-    throw makeApiError(code === "not_found" ? 404 : 400, code, errorMessage(err));
-  }
-  if (!stat.isFile()) {
-    throw makeApiError(400, "not_a_file", "path is not a file");
-  }
-  if (stat.size > CLIENT_FILE_CONTENT_MAX_BYTES) {
-    throw makeApiError(413, "file_too_large", `file is larger than ${CLIENT_FILE_CONTENT_MAX_BYTES} bytes`, {
-      path: resolved.relativePath,
-      totalBytes: stat.size,
-      maxBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
-    });
-  }
-  const content = await fs.readFile(resolved.realPath);
-  if (content.length > CLIENT_FILE_CONTENT_MAX_BYTES) {
-    throw makeApiError(413, "file_too_large", `file is larger than ${CLIENT_FILE_CONTENT_MAX_BYTES} bytes`, {
-      path: resolved.relativePath,
-      totalBytes: content.length,
-      maxBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
-    });
-  }
-  if (isProbablyBinary(content)) {
-    throw makeApiError(400, "binary_file", "binary files cannot be copied as text", {
-      path: resolved.relativePath,
-    });
-  }
-  return {
-    ok: true,
-    path: resolved.relativePath,
-    bytesRead: content.length,
-    totalBytes: content.length,
-    content: content.toString("utf8"),
-  };
 }
 
 async function sendClientMediaFile(req, res, rawPath, rawRootDir = "") {
@@ -6689,9 +6697,14 @@ function notFound(res) {
   json(res, 404, { error: "not_found" });
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, maxBytes = 0) {
   const chunks = [];
-  for await (const c of req) chunks.push(c);
+  let totalBytes = 0;
+  for await (const c of req) {
+    totalBytes += c.length;
+    if (maxBytes > 0 && totalBytes > maxBytes) throw new Error("request body is too large");
+    chunks.push(c);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
   return JSON.parse(raw);
@@ -6819,7 +6832,7 @@ function markCodexQueuedTurn(turn, patch) {
   return turn;
 }
 
-function createCodexRpcClient({ signal, onNotification } = {}) {
+function createCodexRpcClient({ signal } = {}) {
   const headers = {};
   if (CODEX_WS_PROXY_UPSTREAM_TOKEN) {
     headers.authorization = `Bearer ${CODEX_WS_PROXY_UPSTREAM_TOKEN}`;
@@ -6828,6 +6841,12 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
   const pending = new Map();
   let nextId = 1;
   let closed = false;
+  const completionWaiters = new Set();
+  const notificationListeners = new Set();
+  const finishCompletionWaiters = () => {
+    for (const finish of completionWaiters) finish();
+    completionWaiters.clear();
+  };
   const close = (code = 1000, reason = "closed") => {
     if (closed) return;
     closed = true;
@@ -6836,6 +6855,7 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
       if (entry.timeout) clearTimeout(entry.timeout);
     }
     pending.clear();
+    finishCompletionWaiters();
     safeWsClose(ws, code, reason);
   };
   const openPromise = new Promise((resolve, reject) => {
@@ -6851,6 +6871,7 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
         if (entry.timeout) clearTimeout(entry.timeout);
       }
       pending.clear();
+      finishCompletionWaiters();
     });
   });
   ws.on("message", (data) => {
@@ -6863,9 +6884,14 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
       return;
     }
     if (message?.method) {
-      try {
-        onNotification?.(String(message.method), message.params ?? {});
-      } catch {}
+      if (message.method === "turn/completed" || message.method === "turn/interrupted") {
+        finishCompletionWaiters();
+      }
+      for (const listener of notificationListeners) {
+        try {
+          listener(String(message.method), message.params ?? {});
+        } catch {}
+      }
       return;
     }
     const id = Number(message?.id);
@@ -6906,27 +6932,26 @@ function createCodexRpcClient({ signal, onNotification } = {}) {
     });
   };
   const notify = (method, params = {}) => send({ method, params });
+  const waitForTurnCompletion = () => new Promise((resolve) => {
+    let timer = null;
+    const finish = () => {
+      if (!completionWaiters.delete(finish)) return;
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    completionWaiters.add(finish);
+    timer = setTimeout(finish, NEAR_UNLIMITED_TIMEOUT_MS);
+  });
   if (signal) {
     if (signal.aborted) close(1000, "aborted");
     signal.addEventListener("abort", () => close(1000, "aborted"), { once: true });
   }
-  return { ws, openPromise, request, notify, close };
-}
-
-async function initializeCodexRpcClient(client, clientName) {
-  await client.openPromise;
-  await client.request("initialize", {
-    clientInfo: {
-      name: clientName,
-      title: clientName,
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: false,
-      optOutNotificationMethods: [],
-    },
-  }, 30000);
-  client.notify("initialized", {});
+  const addNotificationListener = (listener) => {
+    if (typeof listener !== "function") throw new TypeError("notification listener must be a function");
+    notificationListeners.add(listener);
+    return () => notificationListeners.delete(listener);
+  };
+  return { ws, openPromise, request, notify, close, waitForTurnCompletion, addNotificationListener };
 }
 
 function parseCodexThreadStatus(params) {
@@ -7079,6 +7104,29 @@ function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") 
   }
 }
 
+async function runRunnerInitiatedTurn({
+  clientName,
+  origin,
+  signal,
+  onTurnStarted,
+  request,
+}) {
+  const client = createCodexRpcClient({ signal });
+  try {
+    const result = await executeCodexTurn({ client, clientName, onTurnStarted, ...request });
+    void turnCompletionNotifier.notifyTurnCompleted({
+      threadId: result.threadId,
+      turnId: result.turnId,
+      agentMessageText: result.lastAgentMessageText,
+      directory: request.cwd,
+      origin,
+    });
+    return result;
+  } finally {
+    client.close(1000, "turn_done");
+  }
+}
+
 async function runCodexQueuedTurn(turn) {
   const abortController = new AbortController();
   markCodexQueuedTurn(turn, {
@@ -7087,61 +7135,22 @@ async function runCodexQueuedTurn(turn) {
     abortController,
   });
   codexRunningTurnByThreadId.set(turn.threadId, turn.queuedTurnId);
-  // App-server notifications already reach the relay's upstream socket.
-  const client = createCodexRpcClient({
-    signal: abortController.signal,
-    onNotification: (method, params) => {
-      if (method === "turn/started") {
-        const turnId = String(params?.turn?.id || params?.turnId || "").trim();
-        if (turnId) markCodexQueuedTurn(turn, { turnId });
-      }
-    },
-  });
   try {
-    await initializeCodexRpcClient(client, "private-runner-codex-queued-turn");
-    let activeThreadId = turn.threadId;
-    if (activeThreadId) {
-      await client.request("thread/resume", {
-        threadId: activeThreadId,
-        cwd: turn.cwd || undefined,
-        persistExtendedHistory: false,
-      }, 30000).catch(() => null);
-    }
-    const params = {
-      threadId: activeThreadId,
-      input: [{ type: "text", text: turn.inputText }],
-      cwd: turn.cwd || undefined,
-      approvalPolicy: turn.approvalPolicy,
-    };
-    if (turn.model) params.model = turn.model;
-    if (turn.effort) params.effort = turn.effort;
-    const started = await client.request("turn/start", params, 30000);
-    const turnId = String(started?.turn?.id || turn.turnId || "").trim();
-    if (turnId) markCodexQueuedTurn(turn, { turnId });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, NEAR_UNLIMITED_TIMEOUT_MS);
-      const previousOnMessage = client.ws.listeners("message").slice();
-      client.ws.removeAllListeners("message");
-      client.ws.on("message", (data) => {
-        for (const listener of previousOnMessage) listener(data);
-        const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
-        if (!text) return;
-        try {
-          const message = JSON.parse(text);
-          if (message?.method === "turn/completed" || message?.method === "turn/interrupted") {
-            clearTimeout(timer);
-            resolve();
-          }
-        } catch {}
-      });
-      client.ws.on("close", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      client.ws.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
+    await runRunnerInitiatedTurn({
+      clientName: "private-runner-codex-queued-turn",
+      origin: "queued_turn",
+      signal: abortController.signal,
+      onTurnStarted: ({ turnId }) => {
+        if (turnId) markCodexQueuedTurn(turn, { turnId });
+      },
+      request: {
+        threadId: turn.threadId,
+        inputText: turn.inputText,
+        cwd: turn.cwd,
+        model: turn.model,
+        effort: turn.effort,
+        approvalPolicy: turn.approvalPolicy,
+      },
     });
     if (turn.status !== "cancelled") {
       markCodexQueuedTurn(turn, {
@@ -7159,7 +7168,6 @@ async function runCodexQueuedTurn(turn) {
       abortController: null,
     });
   } finally {
-    client.close(1000, "turn_done");
     if (codexRunningTurnByThreadId.get(turn.threadId) === turn.queuedTurnId) {
       codexRunningTurnByThreadId.delete(turn.threadId);
     }
@@ -8290,6 +8298,53 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.method === "GET" && pathname === "/location-schedules") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    try {
+      return json(res, 200, { ok: true, snapshot: await locationScheduleService.snapshot() });
+    } catch (error) {
+      if (error instanceof LocationScheduleStoreUnavailableError) {
+        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
+      throw error;
+    }
+  }
+
+  if (req.method === "PUT" && pathname === "/location-schedules") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    try {
+      const snapshot = await locationScheduleService.replaceSchedules(await readJsonBody(req, 3 * 1024 * 1024));
+      return json(res, 200, { ok: true, snapshot });
+    } catch (error) {
+      if (error instanceof LocationScheduleStoreUnavailableError) {
+        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
+      return json(res, 400, { error: "invalid_location_schedules", message: errorMessage(error) });
+    }
+  }
+
+  if (req.method === "POST" && pathname === "/location-schedules/state") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    try {
+      const snapshot = await locationScheduleService.recordState(await readJsonBody(req, 16 * 1024));
+      return json(res, 200, { ok: true, snapshot });
+    } catch (error) {
+      if (error instanceof LocationScheduleStoreUnavailableError) {
+        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
+      return json(res, 400, { error: "invalid_location_state", message: errorMessage(error) });
+    }
+  }
+
   if (req.method === "POST" && pathname === "/codex/queued-turns") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -8582,7 +8637,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (
-    (req.method === "POST" || req.method === "PATCH" || req.method === "DELETE") &&
+    (req.method === "GET" || req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE") &&
     pathname === "/workspace/files"
   ) {
     return workspaceFilesService.handleRequest(req, res, {
@@ -8590,32 +8645,6 @@ const server = http.createServer(async (req, res) => {
       receivedToken: parseAuthToken(req),
       pathname,
     });
-  }
-
-  if (req.method === "GET" && pathname === "/files/content") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    try {
-      const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const rootDirParam = String(reqUrl.searchParams.get("rootDir") || "").trim();
-      const payload = await readClientTextFile(pathParam, rootDirParam);
-      return json(res, 200, payload);
-    } catch (err) {
-      if (isApiError(err)) {
-        return json(res, err.apiStatus, err.apiPayload);
-      }
-      return json(res, 500, {
-        error: "file_content_failed",
-        message: errorMessage(err),
-      });
-    }
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && pathname === "/files/media") {
@@ -10941,7 +10970,6 @@ function createCodexRelayContext(params) {
     assistantThinkingCurrentItemId: "",
     assistantThinkingTurnActive: false,
     assistantThinkingTurnId: "",
-    turnCompletedNotificationSent: false,
     pendingApprovalRequestIds: new Set(),
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
@@ -10981,88 +11009,6 @@ function parseCodexRpcObject(rawData, isBinary, maxChars = 200000) {
   } catch {
     return null;
   }
-}
-
-function extractCodexAgentMessageText(itemRaw) {
-  if (!itemRaw || typeof itemRaw !== "object" || Array.isArray(itemRaw)) return "";
-  const item = itemRaw;
-  const directText = pickFirstNonEmptyString(item.text, item.message?.text);
-  if (directText) return directText;
-  const content = Array.isArray(item.content) ? item.content : [];
-  const chunks = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object" || Array.isArray(part)) continue;
-    if (String(part.type || "").trim() === "localImage") {
-      const localPath = pickFirstNonEmptyString(part.path);
-      if (localPath) chunks.push(`[localImage] ${localPath}`);
-      continue;
-    }
-    const text = pickFirstNonEmptyString(part.text, part.value);
-    if (text) chunks.push(text);
-  }
-  return chunks.join("").trim();
-}
-
-function compactLlmCompletionPreview(textRaw, maxChars = 180) {
-  const text = String(textRaw || "").replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
-}
-
-// Same derivation as the app's default directory display name (expo
-// directoryIdentity.ts deriveDirectoryDisplayName): the trailing path segment of the
-// session's working directory. Used as the push-notification title so the user can tell
-// at a glance which project a notification belongs to. Empty input yields "" so callers
-// can fall back to their fixed title. Capped at 60 chars so a pathological directory
-// name cannot push the APNs payload toward its 4KB limit.
-function derivePushDirectoryTitle(pathRaw) {
-  const dirPath = String(pathRaw || "").trim();
-  const segments = dirPath.split("/").filter(Boolean);
-  const title = String(segments[segments.length - 1] || dirPath).trim();
-  return compactLlmCompletionPreview(title, 60);
-}
-
-async function sendTurnCompletedPush({ sessionId, threadId, turnId, previewText, directory }) {
-  if (!PUSH_ENABLED || !apnsClient || !pushSummarizer) return;
-  let devices = [];
-  try {
-    devices = await pushDeviceStore.listDevices();
-  } catch (err) {
-    console.warn(`[push] failed to list devices: ${errorMessage(err)}`);
-    return;
-  }
-  if (devices.length <= 0) return;
-
-  const summary = await pushSummarizer.summarize(previewText);
-  if (!summary) return;
-
-  const id = String(sessionId || threadId || "");
-  const payload = {
-    aps: {
-      alert: { title: derivePushDirectoryTitle(directory) || "タスク完了", body: summary },
-      sound: "default",
-      category: "TURN_COMPLETED",
-      "thread-id": id,
-    },
-    sessionId: id,
-    turnId: String(turnId || ""),
-  };
-
-  await Promise.all(devices.map(async (device) => {
-    try {
-      const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
-      if (result?.status === 410) {
-        await pushDeviceStore.removeDevice(device.deviceId);
-      } else if (!result?.ok) {
-        console.warn(
-          `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
-        );
-      }
-    } catch (err) {
-      console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
-    }
-  }));
 }
 
 // Builds a short push-notification body describing the command/tool awaiting approval.
@@ -11173,7 +11119,6 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     : {};
   if (method === "turn/started") {
     relay.lastAgentMessageText = "";
-    relay.turnCompletedNotificationSent = false;
     return;
   }
   if (method === "item/agentMessage/delta") {
@@ -11189,7 +11134,6 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     return;
   }
   if (method !== "turn/completed") return;
-  if (relay.turnCompletedNotificationSent) return;
   const threadId = pickFirstNonEmptyString(
     meta?.threadId,
     params.threadId,
@@ -11200,24 +11144,13 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     params.thread?.threadId,
     relay.threadId
   );
-  const previewText = compactLlmCompletionPreview(relay.lastAgentMessageText);
-  if (!threadId || !previewText) return;
-  relay.turnCompletedNotificationSent = true;
-  broadcastRunnerWsTurnCompletedNotification(relay, {
+  void turnCompletionNotifier.notifyTurnCompleted({
     sessionId: threadId,
     threadId,
-    previewText,
-    completedAt: new Date().toISOString(),
-  });
-  const turnId = getCodexTurnStartedId(rpcPayload) || threadId;
-  void sendTurnCompletedPush({
-    sessionId: threadId,
-    threadId,
-    turnId,
-    previewText,
+    turnId: getCodexTurnStartedId(rpcPayload) || "",
+    agentMessageText: relay.lastAgentMessageText,
     directory: relay.threadCwd,
-  }).catch((err) => {
-    console.warn(`[push] turn completed push failed: ${errorMessage(err)}`);
+    origin: "relay",
   });
 }
 
@@ -12011,6 +11944,9 @@ if (!RUNNER_SKIP_SERVER_START) {
   void initializeCliSessionIndexRuntime();
   void initializeTtsMediaRuntime();
   void initializeCodexWsDebugRuntime();
+  void locationScheduleService.start().catch((error) => {
+    console.warn(`[location-schedule] initialization failed: ${errorMessage(error)}`);
+  });
 
   server.listen(PORT, HOST, () => {
     console.log(
@@ -12034,7 +11970,8 @@ export const __TESTING__ = {
   pushDeviceStore,
   apnsClient,
   pushSummarizer,
-  sendTurnCompletedPush,
+  locationScheduleService,
+  turnCompletionNotifier,
   sendApprovalRequestPush,
   derivePushDirectoryTitle,
   codexWsRelaysById,

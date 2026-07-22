@@ -13,12 +13,16 @@ import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 
 type WorkspaceFileRenameDialogProps = {
   target: WorkspaceFileTarget | null;
+  title?: string;
+  submitLabel?: string;
   onCancel: () => void;
   onRename: (name: string) => Promise<void>;
 };
 
 export function WorkspaceFileRenameDialog({
   target,
+  title = "ファイル名を変更",
+  submitLabel = "変更",
   onCancel,
   onRename,
 }: WorkspaceFileRenameDialogProps) {
@@ -52,7 +56,7 @@ export function WorkspaceFileRenameDialog({
     >
       <Pressable style={dialogStyles.backdrop} onPress={saving ? undefined : onCancel}>
         <Pressable style={dialogStyles.card} onPress={() => {}}>
-          <Text style={dialogStyles.title}>ファイル名を変更</Text>
+          <Text style={dialogStyles.title}>{title}</Text>
           <Text style={dialogStyles.path} numberOfLines={2}>{target?.path || ""}</Text>
           <TextInput
             ref={inputRef}
@@ -85,7 +89,7 @@ export function WorkspaceFileRenameDialog({
               {saving ? (
                 <ActivityIndicator size="small" color="#ffffff" />
               ) : (
-                <Text style={dialogStyles.primaryButtonText}>変更</Text>
+                <Text style={dialogStyles.primaryButtonText}>{submitLabel}</Text>
               )}
             </TouchableOpacity>
           </View>

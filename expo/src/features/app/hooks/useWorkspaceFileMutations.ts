@@ -1,10 +1,13 @@
 import { useCallback, useState } from "react";
 import { Alert } from "react-native";
 import {
+  createWorkspaceTextFile,
   mutateWorkspaceFile,
+  writeWorkspaceTextFile,
   type WorkspaceFileMutationResult,
   type WorkspaceFileTarget,
 } from "../utils/workspaceFiles";
+import { isRunnerEditableTextFile } from "../utils/runnerFileContextMenu";
 
 type UseWorkspaceFileMutationsParams = {
   runnerUrl: string;
@@ -32,6 +35,8 @@ export function useWorkspaceFileMutations({
   showInfoToast,
 }: UseWorkspaceFileMutationsParams) {
   const [renameTarget, setRenameTarget] = useState<WorkspaceFileTarget | null>(null);
+  const [editTarget, setEditTarget] = useState<WorkspaceFileTarget | null>(null);
+  const [createFileDirectory, setCreateFileDirectory] = useState<string | null>(null);
 
   const refreshAfterMutation = useCallback(async (result: WorkspaceFileMutationResult) => {
     const pathsToReload = new Set([
@@ -92,6 +97,67 @@ export function useWorkspaceFileMutations({
     await renameFileTarget(target, nextName);
   }, [renameFileTarget, renameTarget]);
 
+  const createFile = useCallback(async (name: string) => {
+    const directory = createFileDirectory;
+    if (!directory) return;
+    try {
+      const result = await createWorkspaceTextFile({
+        runnerUrl,
+        runnerToken,
+        rootDirectory,
+        targetDirectory: directory,
+        name,
+      });
+      setCreateFileDirectory(null);
+      showInfoToast(`作成しました: ${result.path}`);
+      await refreshAfterMutationWithAlert(result);
+      // テキストファイルならそのまま編集を開始する
+      if (isRunnerEditableTextFile(result.path)) {
+        setEditTarget({ path: result.path, name: result.name || name });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert("作成失敗", message || "ファイルの作成に失敗しました。");
+      throw err;
+    }
+  }, [
+    createFileDirectory,
+    refreshAfterMutationWithAlert,
+    rootDirectory,
+    runnerToken,
+    runnerUrl,
+    showInfoToast,
+  ]);
+
+  const writeFileContent = useCallback(async (
+    target: WorkspaceFileTarget,
+    content: string,
+    expectedVersion: string,
+  ) => {
+    try {
+      const result = await writeWorkspaceTextFile({
+        runnerUrl,
+        runnerToken,
+        rootDirectory,
+        path: target.path,
+        content,
+        expectedVersion,
+      });
+      showInfoToast(`保存しました: ${result.path || target.path}`);
+      await refreshAfterMutationWithAlert(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert("保存失敗", message || "ファイルの保存に失敗しました。");
+      throw err;
+    }
+  }, [
+    refreshAfterMutationWithAlert,
+    rootDirectory,
+    runnerToken,
+    runnerUrl,
+    showInfoToast,
+  ]);
+
   const deleteFile = useCallback(async (target: WorkspaceFileTarget) => {
     try {
       const result = await mutateWorkspaceFile({
@@ -121,6 +187,14 @@ export function useWorkspaceFileMutations({
     cancelRename: () => setRenameTarget(null),
     renameFile,
     renameFileTarget,
+    editTarget,
+    requestEdit: setEditTarget,
+    cancelEdit: () => setEditTarget(null),
+    writeFileContent,
+    createFileDirectory,
+    requestCreateFile: setCreateFileDirectory,
+    cancelCreateFile: () => setCreateFileDirectory(null),
+    createFile,
     deleteFile,
   };
 }

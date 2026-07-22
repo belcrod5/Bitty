@@ -1,6 +1,11 @@
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type CodexApprovalPolicy = "on-request" | "never";
 
+export function isReasoningEffort(raw: unknown): raw is ReasoningEffort {
+  const value = String(raw || "").trim().toLowerCase();
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}
+
 type ModelOption = {
   label?: string;
   value: string;
@@ -33,9 +38,7 @@ export function parseModelRef(raw: unknown, modelOptions: readonly ModelOption[]
 
 export function parseReasoningEffort(raw: unknown, fallback: ReasoningEffort): ReasoningEffort {
   const value = String(raw || "").trim().toLowerCase();
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
-    return value;
-  }
+  if (isReasoningEffort(value)) return value;
   return fallback;
 }
 

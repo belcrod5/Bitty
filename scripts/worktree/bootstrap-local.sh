@@ -70,6 +70,10 @@ fi
 
 require_main_repo_root() {
   if [[ -z "${BITTY_MAIN_REPO_ROOT:-}" ]]; then
+    if [[ -d "${REPO_ROOT}/.git" ]]; then
+      echo "${REPO_ROOT}"
+      return 0
+    fi
     echo "[bootstrap-local] BITTY_MAIN_REPO_ROOT is required. Set it in ${REPO_ROOT}/.env or export it before running." >&2
     exit 1
   fi
