@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -728,6 +729,43 @@ test("fails closed without executing a malformed persisted queued claim", async 
     await assert.rejects(service.start(), /key mismatch/);
     assert.equal(executions.length, 0);
     assert.equal(await fs.readFile(storePath, "utf8"), corrupt);
+  });
+});
+
+test("fails closed when a queued claim window does not match its fingerprinted or legacy rule", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    setNow("2026-07-18T23:30:00.000Z"); // 08:30 JST, outside the real 09:00-10:00 window
+    const normalizedRule = parseLocationScheduleRules([rule()], "Asia/Tokyo", parseCodexOptions)[0];
+    const occurrenceKey = "home|2026-07-19|08:00|11:00|Asia/Tokyo";
+    for (const ruleSignature of [
+      createHash("sha256").update(JSON.stringify(normalizedRule)).digest("hex"),
+      JSON.stringify(normalizedRule),
+    ]) {
+      const persisted = `${JSON.stringify({
+        version: 1,
+        phoneTimeZone: "Asia/Tokyo",
+        rules: [normalizedRule],
+        states: {},
+        occurrences: {
+          [occurrenceKey]: {
+            occurrenceKey,
+            windowKey: occurrenceKey,
+            ruleId: "home",
+            ruleSignature,
+            status: "queued",
+            createdAt: "2026-07-18T23:30:00.000Z",
+            updatedAt: "2026-07-18T23:30:00.000Z",
+          },
+        },
+        updatedAt: "2026-07-18T23:30:00.000Z",
+      }, null, 2)}\n`;
+      await fs.writeFile(storePath, persisted, "utf8");
+      const service = create();
+
+      await assert.rejects(service.start(), /queued claim is inconsistent with its rule/);
+      assert.equal(executions.length, 0);
+      assert.equal(await fs.readFile(storePath, "utf8"), persisted);
+    }
   });
 });
 

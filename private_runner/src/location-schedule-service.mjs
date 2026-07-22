@@ -230,19 +230,21 @@ export function createLocationScheduleService({
           throw new Error(`store.occurrences[${key}].ruleSignature is invalid`);
         }
         const createdAt = new Date(occurrence.createdAt);
-        const [ruleId, , startTime, endTime, timeZone, extra] = String(occurrence.windowKey || "").split("|");
-        const claimedWindow = extra === undefined
-          ? windowAt({ id: ruleId, startTime, endTime, timeZone }, createdAt)
-          : null;
-        if (!claimedWindow
-          || ruleId !== occurrence.ruleId
-          || occurrence.windowKey !== claimedWindow.occurrenceKey
-          || !claimedWindow.active
-          || (key !== claimedWindow.occurrenceKey && !key.startsWith(`${claimedWindow.occurrenceKey}|entry|`))) {
-          throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
-        }
-        if (legacyRule && (legacyRule.id !== occurrence.ruleId || legacyRule.enabled !== true)) {
-          throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
+        const currentRule = rules.find((rule) => (
+          rule.id === occurrence.ruleId
+          && rule.enabled
+          && ruleFingerprint(rule) === occurrence.ruleSignature
+        ));
+        const claimedRule = legacyRule || currentRule;
+        if (claimedRule) {
+          const claimedWindow = windowAt(claimedRule, createdAt);
+          if (claimedRule.id !== occurrence.ruleId
+            || claimedRule.enabled !== true
+            || occurrence.windowKey !== claimedWindow.occurrenceKey
+            || !claimedWindow.active
+            || (key !== claimedWindow.occurrenceKey && !key.startsWith(`${claimedWindow.occurrenceKey}|entry|`))) {
+            throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
+          }
         }
       }
       data = {
