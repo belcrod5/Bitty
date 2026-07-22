@@ -151,17 +151,329 @@ test("scheduled turns never wait for interactive approval", async () => {
   });
 });
 
-test("enter during the window fires once; exit and re-entry do not duplicate", async () => {
+test("re-entry before five continuous minutes outside does not fire", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:24:59.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:24:59Z" });
+    assert.equal(executions.length, 1);
+  });
+});
+
+test("future-skewed observedAt cannot manufacture five minutes outside at one Runner time", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-skew", observedAt: "2026-07-19T00:20:00Z" });
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-skew", observedAt: "2026-07-19T00:25:00Z" });
+    assert.equal(executions.length, 1);
+  });
+});
+
+test("re-entry before the fifteen-minute cooldown does not fire", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
     await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
     setNow("2026-07-19T00:30:00.000Z");
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:30:00Z" });
     await waitFor(() => executions.length === 1);
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:31:00Z" });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:32:00Z" });
-    assert.equal(executions.length, 1);
     await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+    setNow("2026-07-19T00:31:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:31:00Z" });
+    setNow("2026-07-19T00:36:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:36:00Z" });
+    assert.equal(executions.length, 1);
+  });
+});
+
+test("re-entry fires after both the outside minimum and cooldown", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:24:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "outside-refresh", observedAt: "2026-07-19T00:24:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    await waitFor(() => executions.length === 2);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+  });
+});
+
+test("duplicate enter and same-inside refresh reports do not fire again", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    const firstEnter = { ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" };
+    await service.recordState(firstEnter);
+    await waitFor(() => executions.length === 1);
+    await service.recordState(firstEnter);
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ...firstEnter, eventId: "silent-push-inside", observedAt: "2026-07-19T00:25:00Z" });
+    await service.evaluate();
+    assert.equal(executions.length, 1);
+  });
+});
+
+test("restart preserves rejected and qualified re-entry state", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-short", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:24:00.000Z");
+    const beforeShortReentry = create();
+    await beforeShortReentry.start();
+    await beforeShortReentry.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-short", observedAt: "2026-07-19T00:24:00Z" });
+    assert.equal(executions.length, 1);
+
+    setNow("2026-07-19T00:25:00.000Z");
+    await beforeShortReentry.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-long", observedAt: "2026-07-19T00:25:00Z" });
+    setNow("2026-07-19T00:30:00.000Z");
+    const beforeQualifiedReentry = create();
+    await beforeQualifiedReentry.start();
+    await beforeQualifiedReentry.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-qualified", observedAt: "2026-07-19T00:30:00Z" });
+    await waitFor(() => executions.length === 2);
+    await waitFor(async () => Object.values((await beforeQualifiedReentry.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+  });
+});
+
+test("version 1 state and occurrence records without re-entry fields remain compatible", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    const windowKey = "home|2026-07-19|09:00|10:00|Asia/Tokyo";
+    await fs.writeFile(storePath, `${JSON.stringify({
+      version: 1,
+      phoneTimeZone: "Asia/Tokyo",
+      rules: [rule()],
+      states: {
+        home: {
+          regionRevision: "revision-home",
+          state: "outside",
+          eventId: "legacy-exit",
+          observedAt: "2026-07-19T00:20:00.000Z",
+          receivedAt: "2026-07-19T00:20:00.000Z",
+        },
+      },
+      occurrences: {
+        [windowKey]: {
+          occurrenceKey: windowKey,
+          ruleId: "home",
+          status: "completed",
+          threadId: "legacy-thread",
+          turnId: "legacy-turn",
+          errorMessage: "",
+          createdAt: "2026-07-19T00:05:00.000Z",
+          updatedAt: "2026-07-19T00:05:00.000Z",
+        },
+      },
+      updatedAt: "2026-07-19T00:20:00.000Z",
+    }, null, 2)}\n`, "utf8");
+    setNow("2026-07-19T00:25:00.000Z");
+    const service = create();
+    await service.start();
+    await service.recordState({
+      ruleId: "home",
+      regionRevision: "revision-home",
+      state: "inside",
+      eventId: "legacy-reentry",
+      observedAt: "2026-07-19T00:25:00.000Z",
+    });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+  });
+});
+
+test("a failed firing still counts toward re-entry cooldown", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create({
+      executeTurn: async (request) => {
+        executions.push(request);
+        throw new Error("turn failed");
+      },
+    });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:30:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:30:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "failed");
+    setNow("2026-07-19T00:31:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:31:00Z" });
+    setNow("2026-07-19T00:36:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:36:00Z" });
+    assert.equal(executions.length, 1);
+    setNow("2026-07-19T00:40:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-2", observedAt: "2026-07-19T00:40:00Z" });
+    setNow("2026-07-19T00:45:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-3", observedAt: "2026-07-19T00:45:00Z" });
+    await waitFor(() => executions.length === 2);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "failed"));
+  });
+});
+
+test("a qualified re-entry waits for an in-flight firing of the same rule", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    let releaseFirst;
+    const firstTurn = new Promise((resolve) => { releaseFirst = resolve; });
+    const service = create({
+      executeTurn: async (request) => {
+        executions.push(request);
+        if (executions.length === 1) await firstTurn;
+        return { threadId: `thread-${executions.length}`, turnId: `turn-${executions.length}` };
+      },
+    });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    assert.equal(executions.length, 1);
+    assert.ok(Object.values((await service.snapshot()).occurrences).some((occurrence) => occurrence.status === "queued"));
+
+    setNow("2026-07-19T00:26:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-2", observedAt: "2026-07-19T00:26:00Z" });
+
+    setNow("2026-07-19T01:00:00.000Z");
+    releaseFirst();
+    await waitFor(() => executions.length === 2);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+  });
+});
+
+test("restart fails an ambiguous running fire but executes a persisted queued re-entry", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const neverCompletes = new Promise(() => {});
+    const service = create({
+      executeTurn: async (request) => {
+        executions.push(request);
+        await neverCompletes;
+      },
+    });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    assert.ok(Object.values((await service.snapshot()).occurrences).some((occurrence) => occurrence.status === "queued"));
+
+    const restarted = create();
+    await restarted.start();
+    await waitFor(() => executions.length === 2);
+    await waitFor(async () => Object.values((await restarted.snapshot()).occurrences).some((occurrence) => occurrence.status === "completed"));
+    const statuses = Object.values((await restarted.snapshot()).occurrences).map((occurrence) => occurrence.status);
+    assert.deepEqual(statuses.sort(), ["completed", "failed_uncertain_after_restart"]);
+  });
+});
+
+test("restart fails a valid queued claim after its rule was disabled before evaluation", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    const neverCompletes = new Promise(() => {});
+    const service = create({
+      executeTurn: async (request) => {
+        executions.push(request);
+        await neverCompletes;
+      },
+    });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    const persisted = await service.snapshot();
+    persisted.rules[0].enabled = false;
+    await fs.writeFile(storePath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+    executions.length = 0;
+
+    const restarted = create();
+    await restarted.start();
+    assert.equal(executions.length, 0);
+    const statuses = Object.values((await restarted.snapshot()).occurrences).map((occurrence) => occurrence.status);
+    assert.deepEqual(statuses.sort(), [
+      "failed_configuration_changed_while_queued",
+      "failed_uncertain_after_restart",
+    ]);
+  });
+});
+
+test("prunes terminal re-entry claims after two days but keeps initial and active claims", async () => {
+  await withService(async ({ create, executions, setNow, storePath }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    await waitFor(() => executions.length === 2);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+    setNow("2026-07-19T00:26:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-2", observedAt: "2026-07-19T00:26:00Z" });
+
+    setNow("2026-07-21T00:25:00.000Z");
+    await service.evaluate();
+    assert.equal(Object.keys((await service.snapshot()).occurrences).length, 2);
+    setNow("2026-07-21T00:25:00.001Z");
+    await service.evaluate();
+    const retained = Object.values((await service.snapshot()).occurrences);
+    assert.equal(retained.length, 1);
+    assert.equal(retained[0].occurrenceKey, retained[0].windowKey);
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8"));
+    assert.equal(Object.keys(persisted.occurrences).length, 1);
+  });
+
+  await withService(async ({ create, setNow }) => {
+    const neverCompletes = new Promise(() => {});
+    const service = create({ executeTurn: async () => neverCompletes });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "running");
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    setNow("2026-07-19T00:26:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-2", observedAt: "2026-07-19T00:26:00Z" });
+    setNow("2026-10-28T02:00:00.000Z");
+    await service.evaluate();
+    const statuses = Object.values((await service.snapshot()).occurrences).map((occurrence) => occurrence.status);
+    assert.deepEqual(statuses.sort(), ["queued", "running"]);
   });
 });
 
@@ -176,6 +488,26 @@ test("unknown/outside state does not fire and active-window edits are skipped", 
     assert.equal(executions.length, 0);
     const snapshot = await service.snapshot();
     assert.equal(Object.values(snapshot.occurrences)[0].status, "skipped_edited_active_window");
+  });
+});
+
+test("an active-window edit blocks re-entry after the initial firing", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:05:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ prompt: "edited prompt" })] });
+    setNow("2026-07-19T00:20:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    setNow("2026-07-19T00:25:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    assert.equal(executions.length, 1);
+    assert.ok(Object.values((await service.snapshot()).occurrences).some((occurrence) => (
+      occurrence.status === "skipped_edited_active_window"
+    )));
   });
 });
 
@@ -326,6 +658,36 @@ test("fails closed without changing a corrupt existing store", async () => {
 
     await assert.rejects(service.start(), /failed to load location schedule store/);
     await assert.rejects(service.evaluate(), /failed to load location schedule store/);
+    assert.equal(executions.length, 0);
+    assert.equal(await fs.readFile(storePath, "utf8"), corrupt);
+  });
+});
+
+test("fails closed without executing a malformed persisted queued claim", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    setNow("2026-07-19T00:30:00.000Z");
+    const corrupt = `${JSON.stringify({
+      version: 1,
+      phoneTimeZone: "Asia/Tokyo",
+      rules: [rule()],
+      states: {},
+      occurrences: {
+        "wrong-map-key": {
+          occurrenceKey: "home|2026-07-19|09:00|10:00|Asia/Tokyo",
+          windowKey: "home|2026-07-19|09:00|10:00|Asia/Tokyo",
+          ruleId: "home",
+          ruleSignature: "untrusted",
+          status: "queued",
+          createdAt: "2026-07-19T00:30:00.000Z",
+          updatedAt: "2026-07-19T00:30:00.000Z",
+        },
+      },
+      updatedAt: "2026-07-19T00:30:00.000Z",
+    }, null, 2)}\n`;
+    await fs.writeFile(storePath, corrupt, "utf8");
+    const service = create();
+
+    await assert.rejects(service.start(), /key mismatch/);
     assert.equal(executions.length, 0);
     assert.equal(await fs.readFile(storePath, "utf8"), corrupt);
   });

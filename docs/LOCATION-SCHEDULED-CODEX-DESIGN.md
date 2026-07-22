@@ -30,7 +30,8 @@ The first version supports:
 - Current-location capture and numeric latitude/longitude entry; no map UI.
 - The same model and reasoning-effort values used by normal chat.
 - A prompt and runner working directory per rule.
-- One execution per rule and local-day time window.
+- One initial execution per rule and local-day time window, with guarded re-entry
+  executions after a real exit.
 - Execution when the device enters during the window or was last known to be inside
   when the window starts.
 
@@ -126,10 +127,17 @@ Add authenticated APIs for:
 - Recording geofence state transitions/current state.
 - Returning the accepted schedule/state snapshot for reconciliation and diagnostics.
 
-Persist schedules, last-known region states, pending/running/completed fire records,
-and ordinary Codex thread IDs produced by completed fires in one runner-owned JSON
-store. Use the same atomic-write style as existing runner stores. A runner restart
-must not lose the once-per-window decision.
+Persist schedules, last-known region states and transition timing,
+pending/running/completed fire records, and ordinary Codex thread IDs produced by
+completed fires in one runner-owned JSON store. Use the same atomic-write style as
+existing runner stores. A runner restart must not lose claimed fires, cooldown state,
+or the start of a continuous outside period.
+
+Keep initial window occurrences for 90 days. Terminal re-entry occurrences and active
+window edit markers need only two days because windows cannot cross midnight; ordinary
+Codex threads remain the durable execution history. Never age-prune queued, pending, or
+running claims. This bounds the high-frequency re-entry portion of the scheduler store
+without weakening an active claim.
 
 Reject state updates whose `regionRevision` does not match the current rule. A location
 change must produce a new revision, while time, prompt, model, and effort edits keep it
@@ -150,14 +158,26 @@ For a local window `[startTime, endTime)`:
 - During the window, fire immediately when an inside state is received.
 - Do not fire outside the window or from an unknown state.
 - If the runner starts or recovers during the window, fire if the state is inside and
-  that window has not already fired.
-- Leaving and re-entering in the same window must not fire again.
+  that window has not yet had its initial fire.
+- After a fire, re-arm only when the state has remained outside for at least five
+  minutes. A later enter may fire again only when at least fifteen minutes have also
+  elapsed since the previous fire claim. Both device observation timestamps and
+  Runner receipt timestamps must independently satisfy the five-minute outside
+  minimum, so accepted device-clock skew cannot shorten it.
+- Repeated inside reports, duplicate iOS delivery, API retry, and short boundary
+  bounces do not count as a new enter. An enter that fails either timing condition is
+  not delayed into a later fire; another real exit and enter is required.
+- Do not run two fires for the same rule concurrently. A claimed fire counts even if
+  Codex execution later fails. If a qualified enter arrives during an earlier fire,
+  persist it as queued and start it automatically when that fire finishes. A later
+  exit or the window end does not discard an already-claimed enter.
 
-Use a deterministic occurrence key derived from rule ID, local calendar date,
-start time, end time, and timezone. Atomically persist the occurrence claim before
-starting Codex. The persisted claim is the at-most-once boundary; a boundary bounce,
-duplicate iOS delivery, API retry, or runner restart cannot claim the same occurrence
-again. Do not add an unsupported idempotency field to the Codex app-server RPC.
+Use a deterministic window key derived from rule ID, local calendar date, start time,
+end time, and timezone. The initial fire uses that key directly; a qualified re-entry
+adds the persisted inside-transition timestamp and event ID. Atomically persist each
+fire claim before starting Codex. The persisted claim is the at-most-once boundary for
+that enter cycle. Do not add an unsupported idempotency field to the Codex app-server
+RPC.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
 complete schedule set. Creating a rule or changing its time/location applies to the
@@ -187,13 +207,16 @@ location decisions stay in the scheduler layer.
 - Unknown location state: do not execute.
 - iPhone or runner API temporarily unreachable: retain pending iOS state and retry on
   the next available foreground/background opportunity.
-- Runner recovers inside the active window: execute once if not already recorded.
+- Runner recovers inside the active window: execute the initial fire if not already
+  recorded, or a previously qualified unclaimed re-entry after any in-flight fire ends.
+- Runner restart: do not retry a pending/running fire whose execution is ambiguous;
+  a separately persisted queued fire is known not to have started and may run once.
 - Runner recovers after the window: wait for the next daily occurrence.
 - Invalid/missing cwd, model, or prompt: record the occurrence as failed; never use a
   different fallback configuration.
-- Codex execution failure: record failure. Do not automatically start another turn in
-  the same occurrence, because doing so could duplicate side effects after an
-  ambiguous failure.
+- Codex execution failure: record failure. Do not automatically start another turn for
+  the same enter cycle, because doing so could duplicate side effects after an
+  ambiguous failure. The failed claim still starts the fifteen-minute cooldown.
 
 ## Security and privacy
 
@@ -211,7 +234,8 @@ Add focused tests for:
 
 - Schedule parsing and validation on iOS and runner.
 - Local time-window evaluation, including exact boundaries and timezone/DST cases.
-- Already-inside-at-start, enter-during-window, exit/re-entry, and unknown state.
+- Already-inside-at-start, enter-during-window, qualified exit/re-entry, short outside
+  periods, cooldown rejection, duplicate inside reports, and unknown state.
 - Duplicate events, duplicate API requests, and runner restart persistence.
 - Rule edits not firing the current active window.
 - Starting a normal new Codex thread with configured prompt/cwd/model/effort through
