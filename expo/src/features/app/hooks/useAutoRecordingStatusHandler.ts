@@ -2,6 +2,8 @@ import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "expo-av";
 import type { AppStateStatus } from "react-native";
 import type { StreamTtsControlState } from "../types/appTypes";
+import { shouldAllowAutoCaptureDuringTts } from "../utils/autoAudioPolicy";
+import { evaluateAutoBargeDetection } from "../utils/autoBargeDetector";
 
 type RecordingStatusSource = "callback" | "watchdog";
 type AutoProgressMode = "idle" | "speech" | "barge";
@@ -50,10 +52,10 @@ type UseAutoRecordingStatusHandlerOptions = {
   autoPostTtsHumanDetectedRef: MutableRefObject<boolean>;
   autoPlaybackBargeGraceUntilRef: MutableRefObject<number>;
   autoBargeInProbeLogAtRef: MutableRefObject<number>;
-  autoPendingUserMessageIdRef: MutableRefObject<string>;
   autoInputNameRef: MutableRefObject<string>;
   autoAirPodsInputRef: MutableRefObject<boolean>;
   autoBargeInEnabledRef: MutableRefObject<boolean>;
+  autoSpeakerPriorityEnabledRef: MutableRefObject<boolean>;
   autoLastBargeInDetectedAtRef: MutableRefObject<number>;
   autoLastTtsStopRequestedAtRef: MutableRefObject<number>;
   autoLastTtsStoppedAtRef: MutableRefObject<number>;
@@ -71,18 +73,10 @@ type UseAutoRecordingStatusHandlerOptions = {
   statusNotRecordingAppTransitionGraceMs: number;
   statusNotRecordingSuppressLogThrottleMs: number;
   autoInputRoutePollMs: number;
-  autoStartThresholdDb: number;
-  autoStartHoldMs: number;
-  autoStopThresholdDb: number;
   autoStopSilenceMs: number;
   autoMinSpeechMs: number;
   autoMaxSpeechMs: number;
   autoIdleRolloverMs: number;
-  autoBargeInThresholdOffsetDb: number;
-  autoBargeInAirpodsThresholdOffsetDb: number;
-  autoBargeInHoldMs: number;
-  autoBargeInAirpodsHoldMs: number;
-  autoBargeInHoldGapToleranceMs: number;
   autoBargeInFastStopAirpodsThresholdDb: number;
   autoBargeInFastStopStartOffsetDb: number;
   autoBargeInFastStopHoldMs: number;
@@ -110,8 +104,6 @@ type UseAutoRecordingStatusHandlerOptions = {
     isPlaybackActive?: boolean;
     status?: AutoRecordingStatus;
   }) => void;
-  clearAutoPendingUserTimeoutTimer: () => void;
-  resolveAutoPendingUserMessage: (finalTranscript: string) => void;
   faceTrackingAllowsStt: () => boolean;
   detectAutoAirPodsInput: (rec: Audio.Recording) => Promise<boolean>;
   elapsedSinceMs: (startedAtMs: number) => number | null;
@@ -172,10 +164,10 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     autoPostTtsHumanDetectedRef,
     autoPlaybackBargeGraceUntilRef,
     autoBargeInProbeLogAtRef,
-    autoPendingUserMessageIdRef,
     autoInputNameRef,
     autoAirPodsInputRef,
     autoBargeInEnabledRef,
+    autoSpeakerPriorityEnabledRef,
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
     autoLastTtsStoppedAtRef,
@@ -193,18 +185,10 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     statusNotRecordingAppTransitionGraceMs,
     statusNotRecordingSuppressLogThrottleMs,
     autoInputRoutePollMs,
-    autoStartThresholdDb,
-    autoStartHoldMs,
-    autoStopThresholdDb,
     autoStopSilenceMs,
     autoMinSpeechMs,
     autoMaxSpeechMs,
     autoIdleRolloverMs,
-    autoBargeInThresholdOffsetDb,
-    autoBargeInAirpodsThresholdOffsetDb,
-    autoBargeInHoldMs,
-    autoBargeInAirpodsHoldMs,
-    autoBargeInHoldGapToleranceMs,
     autoBargeInFastStopAirpodsThresholdDb,
     autoBargeInFastStopStartOffsetDb,
     autoBargeInFastStopHoldMs,
@@ -217,8 +201,6 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     setAutoLastEvent,
     maybeLogWaveformStatusTick,
     trackWaveformFlatline,
-    clearAutoPendingUserTimeoutTimer,
-    resolveAutoPendingUserMessage,
     faceTrackingAllowsStt,
     detectAutoAirPodsInput,
     elapsedSinceMs,
@@ -234,6 +216,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
       finalizeAutoCapture,
       resetSpeechWindowWithoutFinalize,
     } = params;
+    let noiseFloorDb = -80;
 
     return (status: AutoRecordingStatus, statusSource: RecordingStatusSource) => {
       if (!autoRecordingEnabledRef.current) return;
@@ -344,8 +327,41 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
       const metering = typeof status?.metering === "number" ? status.metering : -160;
       maybeLogWaveformStatusTick("auto", now, status, metering);
       autoUiLatestMeteringRef.current = metering;
-      autoUiLatestSpeechSampleRef.current = metering >= autoStartThresholdDb;
       autoWaveformLastSampleAtRef.current = now;
+
+      const captureAllowedDuringTts = shouldAllowAutoCaptureDuringTts({
+        autoBargeInEnabled: autoBargeInEnabledRef.current,
+        autoSpeakerPriorityEnabled: autoSpeakerPriorityEnabledRef.current,
+      });
+      const playbackGraceActive = (
+        captureAllowedDuringTts &&
+        now < autoPlaybackBargeGraceUntilRef.current
+      );
+      const isPlaybackActive = ttsPlayingRef.current || playbackGraceActive;
+      if (ttsPlayingRef.current && !captureAllowedDuringTts) {
+        autoAboveSinceRef.current = 0;
+        autoAboveGapSinceRef.current = 0;
+        autoBelowSinceRef.current = 0;
+        autoSilenceDeadlineAtRef.current = 0;
+        return;
+      }
+      const detector = evaluateAutoBargeDetection({
+        nowMs: now,
+        meteringDb: metering,
+        speechStarted: autoSpeechStartedAtRef.current > 0,
+        isPlaybackActive,
+        autoBargeInEnabled: captureAllowedDuringTts,
+        autoAirPodsInput: autoAirPodsInputRef.current,
+        state: {
+          noiseFloorDb,
+          aboveSinceMs: autoAboveSinceRef.current,
+          gapSinceMs: autoAboveGapSinceRef.current,
+        },
+      });
+      noiseFloorDb = detector.nextState.noiseFloorDb;
+      autoAboveSinceRef.current = detector.nextState.aboveSinceMs;
+      autoAboveGapSinceRef.current = detector.nextState.gapSinceMs;
+      autoUiLatestSpeechSampleRef.current = metering >= detector.startThresholdDb;
 
       if (!faceTrackingAllowsStt()) {
         if (!faceTrackingNotLookingSinceRef.current) {
@@ -371,9 +387,6 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
         autoBelowSinceRef.current = 0;
         autoSilenceDeadlineAtRef.current = 0;
         autoClipStartedAtRef.current = now;
-        if (autoPendingUserMessageIdRef.current) {
-          resolveAutoPendingUserMessage("");
-        }
         applyAutoProgressInterval("idle", "face_not_looking");
         setAutoRecordingState("listening");
         setAutoLastEvent("face_not_looking");
@@ -401,29 +414,11 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
         });
       }
 
-      const playbackGraceActive = (
-        autoBargeInEnabledRef.current &&
-        now < autoPlaybackBargeGraceUntilRef.current
-      );
-      const isPlaybackActive = ttsPlayingRef.current || playbackGraceActive;
-      const playbackBargeInActive = isPlaybackActive && autoBargeInEnabledRef.current;
+      const playbackBargeInActive = detector.playbackBargeEnabled;
       const airPodsRelaxedBargeIn = playbackBargeInActive && autoAirPodsInputRef.current;
-      const startThresholdDb = (
-        airPodsRelaxedBargeIn
-          ? autoStartThresholdDb + autoBargeInAirpodsThresholdOffsetDb
-          : playbackBargeInActive
-            ? autoStartThresholdDb + autoBargeInThresholdOffsetDb
-            : autoStartThresholdDb
-      );
-      const startHoldMs = (
-        airPodsRelaxedBargeIn
-          ? autoBargeInAirpodsHoldMs
-          : playbackBargeInActive
-            ? autoBargeInHoldMs
-            : autoStartHoldMs
-      );
+      const { startThresholdDb, stopThresholdDb, startHoldMs } = detector;
       const bargeInWindowActive = (
-        autoBargeInEnabledRef.current &&
+        captureAllowedDuringTts &&
         (
           playbackBargeInActive ||
           replyLoadingRef.current ||
@@ -432,7 +427,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
           streamSocketRef.current !== null
         )
       );
-      const nearStartThreshold = metering >= autoStartThresholdDb - 4;
+      const nearStartThreshold = metering >= startThresholdDb - 4;
       const nextProgressMode: AutoProgressMode = bargeInWindowActive
         ? "barge"
         : (autoSpeechStartedAtRef.current > 0 || nearStartThreshold ? "speech" : "idle");
@@ -500,33 +495,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
       }
       if (!autoSpeechStartedAtRef.current) {
         const meetsStartThreshold = metering >= startThresholdDb;
-        const holdGapToleranceMs = playbackBargeInActive
-          ? autoBargeInHoldGapToleranceMs
-          : 0;
-        if (meetsStartThreshold) {
-          if (!autoAboveSinceRef.current) autoAboveSinceRef.current = now;
-          autoAboveGapSinceRef.current = 0;
-        } else if (autoAboveSinceRef.current && holdGapToleranceMs > 0) {
-          if (!autoAboveGapSinceRef.current) autoAboveGapSinceRef.current = now;
-          if (now - autoAboveGapSinceRef.current > holdGapToleranceMs) {
-            autoAboveSinceRef.current = 0;
-            autoAboveGapSinceRef.current = 0;
-          }
-        } else {
-          autoAboveSinceRef.current = 0;
-          autoAboveGapSinceRef.current = 0;
-        }
-
-        const holdWithinTolerance = (
-          autoAboveGapSinceRef.current > 0 &&
-          now - autoAboveGapSinceRef.current <= holdGapToleranceMs
-        );
-        const holdCandidate = meetsStartThreshold || holdWithinTolerance;
-        if (
-          holdCandidate &&
-          autoAboveSinceRef.current > 0 &&
-          now - autoAboveSinceRef.current >= startHoldMs
-        ) {
+        if (detector.shouldStart) {
           autoSpeechStartedAtRef.current = now;
           autoBelowSinceRef.current = 0;
           autoSilenceDeadlineAtRef.current = 0;
@@ -535,19 +504,18 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
           autoPostTtsAboveSinceRef.current = 0;
           autoPostTtsHumanDetectedRef.current = false;
           setAutoRecordingState("speaking");
-          clearAutoPendingUserTimeoutTimer();
           logAuto("speech_started", {
             metering,
             statusSource,
             startThresholdDb,
             startHoldMs,
-            holdGapToleranceMs,
+            aboveForMs: detector.aboveForMs,
             isPlaybackActive,
             playbackGraceActive,
             autoBargeInEnabled: autoBargeInEnabledRef.current,
             airPodsRelaxedBargeIn,
           });
-          if (isPlaybackActive && autoBargeInEnabledRef.current) {
+          if (isPlaybackActive && captureAllowedDuringTts) {
             const requested = requestBargeInStop(now, metering, "speech_start");
             if (!requested) {
               logAuto("barge_in_skip_on_speech_start", {
@@ -564,19 +532,15 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
         }
 
         if (playbackBargeInActive) {
-          const aboveForMs = autoAboveSinceRef.current
-            ? Math.max(0, now - autoAboveSinceRef.current)
-            : 0;
           if (now - autoBargeInProbeLogAtRef.current >= autoBargeInProbeLogThrottleMs) {
             autoBargeInProbeLogAtRef.current = now;
             logAuto("barge_in_probe", {
               metering,
               statusSource,
               meetsStartThreshold,
-              aboveForMs,
+              aboveForMs: detector.aboveForMs,
               startThresholdDb,
               startHoldMs,
-              holdGapToleranceMs,
               playbackGraceActive,
               bargeInWindowActive,
               autoAboveSinceMs: autoAboveSinceRef.current,
@@ -603,11 +567,11 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
       }
 
       const speechMs = now - autoSpeechStartedAtRef.current;
-      if (playbackBargeInActive && metering >= autoStopThresholdDb) {
+      if (playbackBargeInActive && metering >= stopThresholdDb) {
         void requestBargeInStop(now, metering, "ongoing_speech_overlap");
       }
       if (autoSpeechStartedDuringTtsRef.current && !ttsPlayingRef.current) {
-        if (metering >= autoStartThresholdDb) {
+        if (metering >= startThresholdDb) {
           if (!autoPostTtsAboveSinceRef.current) autoPostTtsAboveSinceRef.current = now;
           if (now - autoPostTtsAboveSinceRef.current >= autoPostTtsHumanHoldMs) {
             autoPostTtsHumanDetectedRef.current = true;
@@ -617,7 +581,7 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
         }
       }
 
-      if (metering <= autoStopThresholdDb) {
+      if (metering <= stopThresholdDb) {
         if (!autoBelowSinceRef.current) autoBelowSinceRef.current = now;
         autoSilenceDeadlineAtRef.current = autoBelowSinceRef.current + autoStopSilenceMs;
       } else {
@@ -653,6 +617,8 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
         if (shouldTranscribe) {
           void finalizeAutoCapture(true, "silence");
         } else {
+          autoAboveSinceRef.current = 0;
+          autoAboveGapSinceRef.current = 0;
           resetSpeechWindowWithoutFinalize(now, "short_speech_discarded", {
             speechMs,
             silenceMs: now - autoBelowSinceRef.current,
@@ -671,14 +637,12 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     autoAirPodsInputRef,
     autoBargeInDetectedForClipRef,
     autoBargeInEnabledRef,
+    autoSpeakerPriorityEnabledRef,
     autoBargeInFastProbeAboveSinceRef,
     autoBargeInFastStopAtRef,
-    autoBargeInHoldGapToleranceMs,
-    autoBargeInHoldMs,
     autoBargeInProbeLogAtRef,
     autoBargeInProbeLogThrottleMs,
     autoBargeInStoppingRef,
-    autoBargeInThresholdOffsetDb,
     autoBelowSinceRef,
     autoClipStartedAtRef,
     autoFinalizeLockRef,
@@ -692,7 +656,6 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     autoLastTtsStoppedAtRef,
     autoMaxSpeechMs,
     autoMinSpeechMs,
-    autoPendingUserMessageIdRef,
     autoPlaybackBargeGraceUntilRef,
     autoPostTtsAboveSinceRef,
     autoPostTtsHumanDetectedRef,
@@ -706,19 +669,15 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     autoSilenceDeadlineAtRef,
     autoSpeechStartedAtRef,
     autoSpeechStartedDuringTtsRef,
-    autoStartHoldMs,
-    autoStartThresholdDb,
     autoStatusNotRecordingSuppressLogAtRef,
     autoStatusReadOwnerRef,
     autoStatusReadStartedAtRef,
     autoStopSilenceMs,
-    autoStopThresholdDb,
     autoUiLatestMeteringRef,
     autoUiLatestSpeechSampleRef,
     autoWaitReasonRef,
     autoWaveStatusLastAtRef,
     autoWaveformLastSampleAtRef,
-    clearAutoPendingUserTimeoutTimer,
     detectAutoAirPodsInput,
     elapsedSinceMs,
     faceTrackingAllowsStt,
@@ -732,7 +691,6 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     logAuto,
     maybeLogWaveformStatusTick,
     replyLoadingRef,
-    resolveAutoPendingUserMessage,
     setAutoLastEvent,
     setAutoRecordingState,
     statusNotRecordingAppTransitionGraceMs,
@@ -743,8 +701,6 @@ export function useAutoRecordingStatusHandler(options: UseAutoRecordingStatusHan
     ttsPlayingRef,
     trackWaveformFlatline,
     watchdogLogThrottleMs,
-    autoBargeInAirpodsHoldMs,
-    autoBargeInAirpodsThresholdOffsetDb,
     autoBargeInFastStopAirpodsThresholdDb,
     autoBargeInFastStopCooldownMs,
     autoBargeInFastStopHoldMs,

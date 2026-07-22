@@ -13,7 +13,6 @@ type UseAppUnmountCleanupControllerOptions = {
   clearPendingApprovals: () => void;
   hideChatBottomToast: () => void;
   autoRecordingEnabledRef: MutableRefObject<boolean>;
-  resetAutoPendingUserState: () => void;
   autoClientLogs: BufferedClientLogsLike;
   clearAutoRecordingWatchdogTimer: () => void;
   autoRestartTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
@@ -43,7 +42,6 @@ export function useAppUnmountCleanupController({
   clearPendingApprovals,
   hideChatBottomToast,
   autoRecordingEnabledRef,
-  resetAutoPendingUserState,
   autoClientLogs,
   clearAutoRecordingWatchdogTimer,
   autoRestartTimerRef,
@@ -73,7 +71,6 @@ export function useAppUnmountCleanupController({
       hideChatBottomToast();
       deactivateKeepAwake(conversationKeepAwakeTag);
       autoRecordingEnabledRef.current = false;
-      resetAutoPendingUserState();
       autoClientLogs.clearFlushTimer();
       clearAutoRecordingWatchdogTimer();
       if (autoRestartTimerRef.current) {

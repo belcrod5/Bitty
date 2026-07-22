@@ -41,8 +41,10 @@ export type AutoBargeDetectorOutput = {
   shouldStart: boolean;
 };
 
+export const AUTO_BARGE_BASE_START_THRESHOLD_DB = -35;
+
 const DEFAULT_OPTIONS: AutoBargeDetectorOptions = {
-  baseStartThresholdDb: -35,
+  baseStartThresholdDb: AUTO_BARGE_BASE_START_THRESHOLD_DB,
   baseStopThresholdDb: -45,
   bargeOffsetDb: 6,
   strictHoldMs: 350,
@@ -132,7 +134,11 @@ export function evaluateAutoBargeDetection(
   }
 
   const aboveForMs = aboveSinceMs > 0 ? Math.max(0, nowMs - aboveSinceMs) : 0;
-  const shouldStart = !speechStarted && aboveForMs >= startHoldMs;
+  const shouldStart = (
+    !speechStarted &&
+    meteringDb >= startThresholdDb &&
+    aboveForMs >= startHoldMs
+  );
 
   return {
     nextState: {

@@ -33,29 +33,18 @@ type UseRecordingTranscriptionControllerOptions = {
   sttLoadingRef: MutableRefObject<boolean>;
   autoRecordingEnabledRef: MutableRefObject<boolean>;
   autoReplyAfterSttRef: MutableRefObject<boolean>;
-  autoSpeakAfterReplyRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   autoLastBargeInDetectedAtRef: MutableRefObject<number>;
   autoLastTtsStopRequestedAtRef: MutableRefObject<number>;
   autoLastTtsStoppedAtRef: MutableRefObject<number>;
-  autoPendingUserMessageVisibleAtRef: MutableRefObject<number>;
   setSttLoading: (loading: boolean) => void;
   setTranscript: (text: string) => void;
   setErrorMessage: (message: string) => void;
   getBaseUrl: () => string;
-  startAutoPendingUserMessage: () => void;
-  resolveAutoPendingUserMessage: (
-    finalTranscript: string,
-    sttMeta?: RecordingSttMessageMeta
-  ) => void;
   waitForReplyIdle: (timeoutMs?: number) => Promise<void>;
   sendReplyTranscript: (
     transcript: string,
-    options?: { sttMeta?: RecordingSttMessageMeta }
-  ) => Promise<void>;
-  sendReplyRequest: (
-    transcript: string,
-    options?: { sttMeta?: RecordingSttMessageMeta }
+    options?: { sttMeta?: RecordingSttMessageMeta; panelId?: string }
   ) => Promise<void>;
   faceTrackingAllowsStt: (forceFresh?: boolean) => boolean;
   elapsedSinceMs: (startedAtMs: number) => number | null;
@@ -73,6 +62,7 @@ type TranscribeRecordedAudioOptions = {
   hasUriOverride?: boolean;
   fileReadMs?: number;
   sttMeta?: Record<string, unknown>;
+  panelId?: string;
 };
 
 export function useRecordingTranscriptionController(options: UseRecordingTranscriptionControllerOptions) {
@@ -85,21 +75,16 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
     sttLoadingRef,
     autoRecordingEnabledRef,
     autoReplyAfterSttRef,
-    autoSpeakAfterReplyRef,
     replyLoadingRef,
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
     autoLastTtsStoppedAtRef,
-    autoPendingUserMessageVisibleAtRef,
     setSttLoading,
     setTranscript,
     setErrorMessage,
     getBaseUrl,
-    startAutoPendingUserMessage,
-    resolveAutoPendingUserMessage,
     waitForReplyIdle,
     sendReplyTranscript,
-    sendReplyRequest,
     faceTrackingAllowsStt,
     elapsedSinceMs,
     logAuto,
@@ -143,13 +128,6 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
     const sttStartedAt = Date.now();
     const sttRequestId = sttRequestSeqRef.current + 1;
     sttRequestSeqRef.current = sttRequestId;
-    const shouldShowPendingUserMessage = (
-      autoRecordingEnabledRef.current &&
-      autoReplyAfterSttRef.current
-    );
-    if (shouldShowPendingUserMessage) {
-      startAutoPendingUserMessage();
-    }
     const abortController = new AbortController();
     sttAbortControllerRef.current = abortController;
     if (sttRequestTimeoutTimerRef.current) {
@@ -182,11 +160,9 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
       sttProviderRequested: sttProvider,
       autoMode: autoRecordingEnabledRef.current,
       autoReplyAfterStt: autoReplyAfterSttRef.current,
-      pendingUserMessage: shouldShowPendingUserMessage,
       sinceBargeInDetectedMs: elapsedSinceMs(autoLastBargeInDetectedAtRef.current),
       sinceTtsStopRequestedMs: elapsedSinceMs(autoLastTtsStopRequestedAtRef.current),
       sinceTtsStoppedMs: elapsedSinceMs(autoLastTtsStoppedAtRef.current),
-      sincePendingUserVisibleMs: elapsedSinceMs(autoPendingUserMessageVisibleAtRef.current),
       ...(transcribeOptions.sttMeta || {}),
     });
     sttLoadingRef.current = true;
@@ -268,24 +244,22 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
           rawTranscriptChars: rawTranscript.length,
           transcriptChars: nextTranscript.length,
         });
-        resolveAutoPendingUserMessage("", sttMessageMeta);
         return;
       }
       const shouldAutoReply = autoReplyAfterSttRef.current && !!nextTranscript.trim();
       if (!shouldAutoReply) {
         setTranscript(nextTranscript);
-        resolveAutoPendingUserMessage(nextTranscript, sttMessageMeta);
         return;
       }
       if (!runnerUrl.trim() || !runnerToken.trim()) {
         setTranscript(nextTranscript);
-        resolveAutoPendingUserMessage(nextTranscript, sttMessageMeta);
         return;
       }
       setTranscript("");
       if (replyLoadingRef.current) {
         await waitForReplyIdle().catch(() => {});
       }
+      const panelId = String(transcribeOptions.panelId || "").trim();
       if (replyLoadingRef.current) {
         console.log("[stt] auto-reply skipped: reply is still busy");
         logAuto("auto_reply_dispatch_skip_busy", {
@@ -293,27 +267,22 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
           source: transcribeOptions.source,
           sttProvider: activeSttProvider,
           transcriptChars: nextTranscript.length,
+          panelId: panelId || undefined,
         });
         setTranscript(nextTranscript);
-        resolveAutoPendingUserMessage(nextTranscript, sttMessageMeta);
-      } else if (autoSpeakAfterReplyRef.current) {
-        logAuto("auto_reply_dispatch", {
-          mode: "reply_transcript_auto_tts",
-          source: transcribeOptions.source,
-          elapsedMs,
-          sttProvider: activeSttProvider,
-          transcriptChars: nextTranscript.length,
-        });
-        await sendReplyTranscript(nextTranscript, { sttMeta: sttMessageMeta });
       } else {
         logAuto("auto_reply_dispatch", {
-          mode: "reply",
+          mode: "reply_transcript",
           source: transcribeOptions.source,
           elapsedMs,
           sttProvider: activeSttProvider,
           transcriptChars: nextTranscript.length,
+          panelId: panelId || undefined,
         });
-        await sendReplyRequest(nextTranscript, { sttMeta: sttMessageMeta });
+        await sendReplyTranscript(nextTranscript, {
+          sttMeta: sttMessageMeta,
+          panelId: panelId || undefined,
+        });
       }
     } catch (error) {
       const elapsedMs = Math.max(0, Date.now() - sttStartedAt);
@@ -329,7 +298,6 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
           source: transcribeOptions.source,
           sttProvider: activeSttProvider,
         });
-        resolveAutoPendingUserMessage("");
         return;
       }
       console.error("[stt] error", error);
@@ -343,7 +311,6 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
         sttProviderRequested: sttProvider,
         message,
       });
-      resolveAutoPendingUserMessage("");
       reportError(message, "stt");
     } finally {
       if (sttRequestTimeoutTimerRef.current) {
@@ -360,32 +327,28 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
     autoLastBargeInDetectedAtRef,
     autoLastTtsStopRequestedAtRef,
     autoLastTtsStoppedAtRef,
-    autoPendingUserMessageVisibleAtRef,
     autoRecordingEnabledRef,
     autoReplyAfterSttRef,
-    autoSpeakAfterReplyRef,
     elapsedSinceMs,
     getBaseUrl,
     logAuto,
     replyLoadingRef,
     reportError,
-    resolveAutoPendingUserMessage,
     runnerToken,
     runnerUrl,
-    sendReplyRequest,
     sendReplyTranscript,
     setErrorMessage,
     setSttLoading,
     setTranscript,
-    startAutoPendingUserMessage,
     sttLoadingRef,
     sttProvider,
     waitForReplyIdle,
   ]);
 
-  const transcribeRecording = useCallback(async (uriOverride?: string) => {
+  const transcribeRecording = useCallback(async (uriOverride?: string, panelId?: string) => {
     const uri = uriOverride || recordingUri;
     if (!uri) return;
+    const targetPanelId = String(panelId || "").trim();
     try {
       const fileInfo = await FileSystem.getInfoAsync(uri).catch(() => null);
       const audioBytes = (
@@ -410,6 +373,7 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
           sourceReason: "recording_uri",
           hasUriOverride: Boolean(uriOverride),
           fileReadMs: 0,
+          panelId: targetPanelId || undefined,
         });
         return;
       }
@@ -422,18 +386,21 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
         sourceReason: "recording_uri",
         hasUriOverride: Boolean(uriOverride),
         fileReadMs: 0,
+        panelId: targetPanelId || undefined,
       });
     } catch (error) {
       reportError(error, "stt:read");
     }
   }, [recordingUri, reportError, sttProvider, transcribeRecordedAudio]);
 
-  const enqueueAutoTranscribe = useCallback((uri: string, sourceReason: string) => {
+  const enqueueAutoTranscribe = useCallback((uri: string, sourceReason: string, panelId?: string) => {
     const safeUri = String(uri || "").trim();
     if (!safeUri) return;
+    const targetPanelId = String(panelId || "").trim();
     const enqueuedAt = Date.now();
     logAuto("auto_transcribe_enqueued", {
       sourceReason,
+      panelId: targetPanelId || undefined,
     });
     autoTranscribeChainRef.current = autoTranscribeChainRef.current
       .catch(() => {})
@@ -449,6 +416,7 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
         logAuto("auto_transcribe_start", {
           sourceReason,
           queueWaitMs,
+          panelId: targetPanelId || undefined,
         });
         const sttIdle = await waitForSttIdle();
         if (!sttIdle) {
@@ -458,7 +426,7 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
           });
           return;
         }
-        await transcribeRecording(safeUri);
+        await transcribeRecording(safeUri, targetPanelId || undefined);
         logAuto("auto_transcribe_done", {
           sourceReason,
           elapsedMs: Math.max(0, Date.now() - enqueuedAt),

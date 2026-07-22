@@ -26,7 +26,7 @@ export type ChatComposerContextValue = {
   stopRecording: () => void;
   stopLlmTurn: () => void;
   startDirectNativeStt: () => void;
-  startAutoRecordingMode: () => void;
+  startAutoRecordingMode: (panelId?: string) => void;
   setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
   faceTrackingRunning: boolean;
   setSlashCommandSelectOpen: Dispatch<SetStateAction<boolean>>;

@@ -27,7 +27,6 @@ type UseDirectNativeSttControllerOptions = {
   autoRecordingEnabledRef: MutableRefObject<boolean>;
   appStateRef: MutableRefObject<string>;
   autoReplyAfterSttRef: MutableRefObject<boolean>;
-  autoSpeakAfterReplyRef: MutableRefObject<boolean>;
   autoBargeInEnabledRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   ttsPlayingRef: MutableRefObject<boolean>;
@@ -44,10 +43,6 @@ type UseDirectNativeSttControllerOptions = {
   stopTtsPlayback: (options?: { interruptStream?: boolean }) => Promise<void>;
   waitForReplyIdle: () => Promise<void>;
   sendReplyTranscript: (
-    transcript: string,
-    options?: { sttMeta?: DirectNativeSttMeta }
-  ) => Promise<void>;
-  sendReplyRequest: (
     transcript: string,
     options?: { sttMeta?: DirectNativeSttMeta }
   ) => Promise<void>;
@@ -76,7 +71,6 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     autoRecordingEnabledRef,
     appStateRef,
     autoReplyAfterSttRef,
-    autoSpeakAfterReplyRef,
     autoBargeInEnabledRef,
     replyLoadingRef,
     ttsPlayingRef,
@@ -93,7 +87,6 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     stopTtsPlayback,
     waitForReplyIdle,
     sendReplyTranscript,
-    sendReplyRequest,
     setTranscript,
     setErrorMessage,
     setSttLoading,
@@ -189,19 +182,13 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
       setTranscript(nextTranscript);
       return;
     }
-    if (autoSpeakAfterReplyRef.current) {
-      await sendReplyTranscript(nextTranscript, { sttMeta: sttMessageMeta });
-      return;
-    }
-    await sendReplyRequest(nextTranscript, { sttMeta: sttMessageMeta });
+    await sendReplyTranscript(nextTranscript, { sttMeta: sttMessageMeta });
   }, [
     autoBargeInEnabledRef,
     autoReplyAfterSttRef,
-    autoSpeakAfterReplyRef,
     replyLoadingRef,
     runnerToken,
     runnerUrl,
-    sendReplyRequest,
     sendReplyTranscript,
     setTranscript,
     stopTtsPlayback,
