@@ -1294,6 +1294,8 @@ export function useChatScreenContextValue(
     isCodexCompactRunning,
     sanitizeTextForTts,
     handleAssistantAudioButtonPress,
+    sessionHistoryPagingById,
+    loadOlderSessionHistory,
   } = args;
 
   return useMemo(
@@ -1311,6 +1313,8 @@ export function useChatScreenContextValue(
       isCodexCompactRunning,
       sanitizeTextForTts,
       handleAssistantAudioButtonPress,
+      sessionHistoryPagingById,
+      loadOlderSessionHistory,
     }),
     [
       approvalDialogPending,
@@ -1326,6 +1330,8 @@ export function useChatScreenContextValue(
       isCodexCompactRunning,
       sanitizeTextForTts,
       handleAssistantAudioButtonPress,
+      sessionHistoryPagingById,
+      loadOlderSessionHistory,
     ]
   );
 }

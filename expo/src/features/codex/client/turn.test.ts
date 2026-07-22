@@ -83,6 +83,7 @@ test("manager mode resolves JSON-RPC responses delivered through subscription", 
 
   await flushPromises();
   expect((lastSent(manager).payload as any).method).toBe("thread/read");
+  expect((lastSent(manager).payload as any).params).toMatchObject({ includeTurns: false });
   expect(lastSent(manager)).toMatchObject({ threadId: "thread-1" });
   respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
 

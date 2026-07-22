@@ -1,5 +1,8 @@
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
+import { createLlmSessionHistoryPageReader } from "./llm-session-history-page-reader.mjs";
+
 
 export function createLlmSessionRolloutReaders(deps) {
   const {
@@ -8,8 +11,7 @@ export function createLlmSessionRolloutReaders(deps) {
     normalizeSessionUpdatedAt,
     normalizeTokenCount,
     parseOpenAICodexModelRef,
-    sessionMessagesDefaultLimit,
-    sessionMessagesMaxLimit,
+    sessionMessagesPageSize,
     sessionRolloutMaxReadBytes,
     sessionSummaryHeadMaxReadBytes,
     sessionSummaryTailMaxReadBytes,
@@ -17,15 +19,15 @@ export function createLlmSessionRolloutReaders(deps) {
 
   function normalizeSessionMessagesLimit(rawLimit) {
     const value = String(rawLimit ?? "").trim();
-    if (!value) return sessionMessagesDefaultLimit;
-    if (value.toLowerCase() === "all" || value === "0") return null;
+    if (!value) return sessionMessagesPageSize;
+    if (value.toLowerCase() === "all" || value === "0") {
+      throw makeApiError(400, "invalid_limit", `limit must be between 1 and ${sessionMessagesPageSize}`);
+    }
     const n = Number.parseInt(value, 10);
     if (!Number.isFinite(n) || n <= 0) {
-      throw makeApiError(400, "invalid_limit", "limit must be a positive integer", {
-        max: sessionMessagesMaxLimit,
-      });
+      throw makeApiError(400, "invalid_limit", `limit must be between 1 and ${sessionMessagesPageSize}`);
     }
-    return Math.min(sessionMessagesMaxLimit, n);
+    return Math.min(sessionMessagesPageSize, n);
   }
 
   function extractSessionMessageTextFromContent(rawContent) {
@@ -96,15 +98,7 @@ export function createLlmSessionRolloutReaders(deps) {
         content,
         at,
         kind: "status_log",
-      };
-    }
-    if (payloadType === "function_call" || payloadType === "custom_tool_call") {
-      const content = buildSessionToolMessageFromCallPayload(payload);
-      if (!content || shouldSkipSessionMessage("assistant", content)) return null;
-      return {
-        role: "assistant",
-        content,
-        at,
+        itemId: String(payload?.id || "").trim() || undefined,
       };
     }
     if (payloadType !== "message") return null;
@@ -116,6 +110,7 @@ export function createLlmSessionRolloutReaders(deps) {
       role,
       content,
       at,
+      itemId: String(payload?.id || "").trim() || undefined,
     };
   }
 
@@ -133,60 +128,6 @@ export function createLlmSessionRolloutReaders(deps) {
       role,
       content,
       at,
-    };
-  }
-
-  function parseSubagentSessionMeta(parsedItems) {
-    const sessionMeta = parsedItems.find((parsed) => String(parsed?.type || "") === "session_meta");
-    const payload = sessionMeta?.payload && typeof sessionMeta.payload === "object"
-      ? sessionMeta.payload
-      : {};
-    const source = payload?.source && typeof payload.source === "object" ? payload.source : {};
-    const isSubagent = Boolean(
-      source?.subagent
-      || source?.subAgent
-      || String(payload?.thread_source || "").trim().toLowerCase() === "subagent"
-      || payload?.parent_thread_id
-      || payload?.forked_from_id
-    );
-    if (!isSubagent) {
-      return { isSubagent: false, parentSessionId: "", childStartIndex: 0 };
-    }
-
-    const firstDeveloperIndex = parsedItems.findIndex((parsed) => (
-      String(parsed?.type || "") === "response_item"
-      && String(parsed?.payload?.type || "") === "message"
-      && String(parsed?.payload?.role || "").trim().toLowerCase() === "developer"
-    ));
-    const firstToolIndex = parsedItems.findIndex((parsed) => {
-      const payloadType = String(parsed?.payload?.type || "").trim().toLowerCase();
-      return String(parsed?.type || "") === "response_item"
-        && (payloadType === "custom_tool_call" || payloadType === "function_call");
-    });
-    const firstInterAgentMessageIndex = parsedItems.findIndex(
-      (parsed) => String(parsed?.type || "") === "inter_agent_communication"
-    );
-    const boundarySearchEnd = firstInterAgentMessageIndex >= 0
-      ? firstInterAgentMessageIndex
-      : firstDeveloperIndex >= 0
-        ? firstDeveloperIndex
-        : firstToolIndex;
-    let childStartIndex = 0;
-    if (boundarySearchEnd >= 0) {
-      for (let index = 0; index < boundarySearchEnd; index += 1) {
-        const parsed = parsedItems[index];
-        if (
-          String(parsed?.type || "") === "event_msg"
-          && String(parsed?.payload?.type || "") === "task_started"
-        ) {
-          childStartIndex = index;
-        }
-      }
-    }
-    return {
-      isSubagent: true,
-      parentSessionId: String(payload?.parent_thread_id || payload?.forked_from_id || "").trim(),
-      childStartIndex,
     };
   }
 
@@ -281,144 +222,138 @@ export function createLlmSessionRolloutReaders(deps) {
     }
   }
 
-  async function readSessionMessagesFromRolloutFile(filePath, opts = {}) {
-    const startedAt = Date.now();
-    const limit = opts?.limit === null ? null : normalizeSessionMessagesLimit(opts?.limit);
-    let text = "";
-    const fileReadStartedAt = Date.now();
-    try {
-      if (limit === null) {
-        text = await fs.readFile(filePath, "utf8");
-      } else {
-        text = await readRolloutTextWithByteLimit(filePath, sessionRolloutMaxReadBytes);
-      }
-    } catch (err) {
-      if (String(err?.code || "").toUpperCase() === "ENOENT") {
-        return {
-          messages: [],
-          diagnostics: {
-            fileReadMs: Math.max(0, Date.now() - fileReadStartedAt),
-            lineSplitMs: 0,
-            jsonParseMs: 0,
-            messageExtractMs: 0,
-            limitSliceMs: 0,
-            totalMs: Math.max(0, Date.now() - startedAt),
-            lineCount: 0,
-            parsedLineCount: 0,
-          },
-        };
-      }
-      throw err;
-    }
-    const fileReadMs = Math.max(0, Date.now() - fileReadStartedAt);
-    if (!text) {
-      return {
-        messages: [],
-        diagnostics: {
-          fileReadMs,
-          lineSplitMs: 0,
-          jsonParseMs: 0,
-          messageExtractMs: 0,
-          limitSliceMs: 0,
-          totalMs: Math.max(0, Date.now() - startedAt),
-          lineCount: 0,
-          parsedLineCount: 0,
-        },
-      };
-    }
-    const lineSplitStartedAt = Date.now();
-    const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
-    const lineSplitMs = Math.max(0, Date.now() - lineSplitStartedAt);
-    const responseMessages = [];
-    const fallbackEventMessages = [];
-    let parsedLineCount = 0;
-    const parseStartedAt = Date.now();
-    const parsedItems = [];
-    for (const line of lines) {
-      let parsed = null;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      parsedLineCount += 1;
-      parsedItems.push(parsed);
-    }
-    const subagentMeta = parseSubagentSessionMeta(parsedItems);
+  const sessionHeaderCache = new Map();
+
+  async function readSessionHeaderContext(filePath, stat) {
+    const handle = await fs.open(filePath, "r");
+    let cacheKey = "";
+    let isSubagent = false;
+    let parentSessionId = "";
+    let lastTaskStartedAt = "";
+    let boundaryTimestamp = "";
+    let boundaryFound = false;
+    let linesAfterBoundary = 0;
+    let position = 0;
+    let carry = "";
+    let skippingOversizedLine = false;
+    const decoder = new TextDecoder();
     const workingDirectoryCandidates = [];
-    for (let index = 0; index < parsedItems.length; index += 1) {
-      const parsed = parsedItems[index];
-      const inheritedFromParent = subagentMeta.isSubagent && index < subagentMeta.childStartIndex;
-      if (subagentMeta.isSubagent && !inheritedFromParent) {
-        const workingDirectory = extractToolWorkingDirectory(parsed);
-        if (workingDirectory) workingDirectoryCandidates.push(workingDirectory);
+    try {
+      while (position < Number(stat.size || 0)) {
+        const chunk = Buffer.alloc(Math.min(64 * 1024, Number(stat.size || 0) - position));
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+        if (!bytesRead) break;
+        if (position === 0) {
+          const headHash = createHash("sha256")
+            .update(chunk.subarray(0, Math.min(bytesRead, 4096)))
+            .digest("hex")
+            .slice(0, 24);
+          cacheKey = `${stat.dev}:${stat.ino}:${headHash}`;
+          const cached = sessionHeaderCache.get(cacheKey);
+          if (cached) return cached;
+        }
+        position += bytesRead;
+        let decoded = decoder.decode(chunk.subarray(0, bytesRead), { stream: position < Number(stat.size || 0) });
+        if (skippingOversizedLine) {
+          const newline = decoded.indexOf("\n");
+          if (newline < 0) continue;
+          decoded = decoded.slice(newline + 1);
+          skippingOversizedLine = false;
+        }
+        carry += decoded;
+        let newline = carry.indexOf("\n");
+        while (newline >= 0) {
+          const line = carry.slice(0, newline).replace(/\r$/, "");
+          carry = carry.slice(newline + 1);
+          newline = carry.indexOf("\n");
+          if (!line.trim() || Buffer.byteLength(line) > 256 * 1024) continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (String(parsed?.type || "") === "session_meta") {
+            const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : {};
+            const source = payload?.source && typeof payload.source === "object" ? payload.source : {};
+            isSubagent = Boolean(
+              source?.subagent
+              || source?.subAgent
+              || String(payload?.thread_source || "").trim().toLowerCase() === "subagent"
+              || payload?.parent_thread_id
+              || payload?.forked_from_id
+            );
+            parentSessionId = String(payload?.parent_thread_id || payload?.forked_from_id || "").trim();
+            if (!isSubagent) {
+              const result = { isSubagent: false, parentSessionId: "", boundaryTimestamp: "", workingDirectory: "" };
+              sessionHeaderCache.clear();
+              sessionHeaderCache.set(cacheKey, result);
+              return result;
+            }
+          }
+          if (!isSubagent) continue;
+          if (
+            String(parsed?.type || "") === "event_msg"
+            && String(parsed?.payload?.type || "") === "task_started"
+            && !boundaryFound
+          ) {
+            lastTaskStartedAt = String(parsed?.timestamp || parsed?.payload?.timestamp || "");
+          }
+          const payloadType = String(parsed?.payload?.type || "").trim().toLowerCase();
+          const isChildBoundary = (
+            String(parsed?.type || "") === "inter_agent_communication"
+            || (
+              String(parsed?.type || "") === "response_item"
+              && (
+                (payloadType === "message" && String(parsed?.payload?.role || "").trim().toLowerCase() === "developer")
+                || payloadType === "custom_tool_call"
+                || payloadType === "function_call"
+              )
+            )
+          );
+          if (!boundaryFound && isChildBoundary) {
+            boundaryFound = true;
+            boundaryTimestamp = lastTaskStartedAt;
+          }
+          if (!boundaryFound) continue;
+          linesAfterBoundary += 1;
+          const workingDirectory = extractToolWorkingDirectory(parsed);
+          if (workingDirectory) workingDirectoryCandidates.push(workingDirectory);
+          if (workingDirectoryCandidates.length >= 16 || linesAfterBoundary >= 256) break;
+        }
+        if (workingDirectoryCandidates.length >= 16 || linesAfterBoundary >= 256) break;
+        if (carry.length > 256 * 1024) {
+          carry = "";
+          skippingOversizedLine = true;
+        }
       }
-      const responseMessage = parseSessionMessageFromResponseItem(parsed);
-      if (responseMessage) {
-        responseMessages.push(inheritedFromParent
-          ? { ...responseMessage, inheritedFromParent: true }
-          : responseMessage);
-        continue;
-      }
-      const eventMessage = parseSessionMessageFromEventItem(parsed);
-      if (eventMessage) {
-        fallbackEventMessages.push(inheritedFromParent
-          ? { ...eventMessage, inheritedFromParent: true }
-          : eventMessage);
-      }
+    } finally {
+      await handle.close().catch(() => {});
     }
     let workingDirectory = "";
     if (workingDirectoryCandidates.length > 0) {
-      const resolvedDirectories = await Promise.all(
-        workingDirectoryCandidates.map(resolveGitWorkingDirectory)
-      );
-      workingDirectory = resolvedDirectories.find((candidate) => candidate.isGitRoot)?.directory || "";
-      const directoryUsage = new Map();
-      resolvedDirectories.forEach(({ directory }, index) => {
-        const usage = directoryUsage.get(directory) || { count: 0, lastIndex: -1 };
-        directoryUsage.set(directory, { count: usage.count + 1, lastIndex: index });
-      });
-      if (!workingDirectory) {
-        for (const [directory, usage] of directoryUsage) {
-          const selectedUsage = directoryUsage.get(workingDirectory);
-          if (
-            !selectedUsage
-            || usage.count > selectedUsage.count
-            || (usage.count === selectedUsage.count && usage.lastIndex > selectedUsage.lastIndex)
-          ) {
-            workingDirectory = directory;
-          }
-        }
-      }
+      const resolved = await Promise.all(workingDirectoryCandidates.map(resolveGitWorkingDirectory));
+      workingDirectory = resolved.find((item) => item.isGitRoot)?.directory || resolved.at(-1)?.directory || "";
     }
-    const jsonParseMs = Math.max(0, Date.now() - parseStartedAt);
-    const extractStartedAt = Date.now();
-    const sourceMessages = responseMessages.length > 0 ? responseMessages : fallbackEventMessages;
-    const messageExtractMs = Math.max(0, Date.now() - extractStartedAt);
-    const sliceStartedAt = Date.now();
-    const messages = (limit === null || sourceMessages.length <= limit)
-      ? sourceMessages
-      : sourceMessages.slice(sourceMessages.length - limit);
-    const limitSliceMs = Math.max(0, Date.now() - sliceStartedAt);
-    return {
-      messages,
-      isSubagent: subagentMeta.isSubagent,
-      parentSessionId: subagentMeta.parentSessionId,
+    const result = {
+      isSubagent,
+      parentSessionId,
+      boundaryTimestamp,
       workingDirectory,
-      diagnostics: {
-        fileReadMs,
-        lineSplitMs,
-        jsonParseMs,
-        messageExtractMs,
-        limitSliceMs,
-        totalMs: Math.max(0, Date.now() - startedAt),
-        lineCount: lines.length,
-        parsedLineCount,
-        childStartIndex: subagentMeta.childStartIndex,
-        inheritedLineCount: subagentMeta.isSubagent ? subagentMeta.childStartIndex : 0,
-      },
     };
+    sessionHeaderCache.clear();
+    sessionHeaderCache.set(cacheKey, result);
+    return result;
   }
+
+  const readSessionMessagesFromRolloutFile = createLlmSessionHistoryPageReader({
+    makeApiError,
+    normalizeSessionMessagesLimit,
+    normalizeSessionUpdatedAt,
+    parseSessionMessageFromEventItem,
+    parseSessionMessageFromResponseItem,
+    readSessionHeaderContext,
+  });
 
   async function readSessionFirstUserMessageFromRolloutFile(filePath, opts = {}) {
     const maxBytes = Math.max(

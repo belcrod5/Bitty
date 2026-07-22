@@ -144,6 +144,10 @@ function lastRequest(manager: FakeRunnerWebSocketManager) {
 
 function respondToLastRequest(manager: FakeRunnerWebSocketManager, result: unknown) {
   const outbound = lastRequest(manager);
+  const outboundPayload = outbound.payload as { id?: number; method?: string };
+  const responseResult = outboundPayload.method === "initialize" && result && typeof result === "object"
+    ? { userAgent: "codex-cli/0.145.0", ...result }
+    : result;
   manager.emit({
     channel: "llm",
     op: "rpc",
@@ -151,8 +155,8 @@ function respondToLastRequest(manager: FakeRunnerWebSocketManager, result: unkno
     sessionId: outbound.sessionId,
     threadId: outbound.threadId,
     payload: {
-      id: (outbound.payload as { id?: number }).id,
-      result,
+      id: outboundPayload.id,
+      result: responseResult,
     },
   });
 }

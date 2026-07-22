@@ -10,6 +10,7 @@ test("run-local shell scripts are syntactically valid", () => {
   for (const scriptPath of [
     "private_runner/run-local.sh",
     "private_runner/src/run-local-public-runner.sh",
+    "private_runner/src/codex-version-gate.sh",
   ]) {
     const result = spawnSync("bash", ["-n", scriptPath], {
       encoding: "utf8",
@@ -20,6 +21,20 @@ test("run-local shell scripts are syntactically valid", () => {
       `${scriptPath}\nstdout=${result.stdout}\nstderr=${result.stderr}`
     );
   }
+});
+
+test("Codex version gate rejects old versions and accepts the minimum", () => {
+  const runGate = (version) => spawnSync("bash", ["-c", `
+    source private_runner/src/codex-version-gate.sh
+    CODEX_ENABLE=1
+    codex() { printf '%s\\n' 'codex-cli ${version}'; }
+    require_codex_minimum_version
+  `], { encoding: "utf8" });
+
+  assert.equal(runGate("0.145.0").status, 0);
+  const old = runGate("0.144.9");
+  assert.equal(old.status, 1);
+  assert.match(old.stderr, /0\.145\.0以上へ更新/);
 });
 
 test("Cloudflare tunnel startup and preflight are explicit opt-in", async () => {

@@ -481,11 +481,7 @@ const SESSIONS_LIST_DEFAULT_LIMIT = Math.max(
   1,
   Math.min(SESSIONS_LIST_MAX_LIMIT, Number(process.env.SESSIONS_LIST_DEFAULT_LIMIT || 200))
 );
-const SESSION_MESSAGES_MAX_LIMIT = Math.max(20, Number(process.env.SESSION_MESSAGES_MAX_LIMIT || 400));
-const SESSION_MESSAGES_DEFAULT_LIMIT = Math.max(
-  1,
-  Math.min(SESSION_MESSAGES_MAX_LIMIT, Number(process.env.SESSION_MESSAGES_DEFAULT_LIMIT || 200))
-);
+const SESSION_MESSAGES_PAGE_SIZE = 10;
 const SESSION_ROLLOUT_MAX_READ_BYTES = Math.max(
   128 * 1024,
   Number(process.env.SESSION_ROLLOUT_MAX_READ_BYTES || 8 * 1024 * 1024)
@@ -1123,8 +1119,7 @@ const {
   normalizeSessionUpdatedAt,
   normalizeTokenCount,
   parseOpenAICodexModelRef,
-  sessionMessagesDefaultLimit: SESSION_MESSAGES_DEFAULT_LIMIT,
-  sessionMessagesMaxLimit: SESSION_MESSAGES_MAX_LIMIT,
+  sessionMessagesPageSize: SESSION_MESSAGES_PAGE_SIZE,
   sessionRolloutMaxReadBytes: SESSION_ROLLOUT_MAX_READ_BYTES,
   sessionSummaryHeadMaxReadBytes: SESSION_SUMMARY_HEAD_MAX_READ_BYTES,
   sessionSummaryTailMaxReadBytes: SESSION_SUMMARY_TAIL_MAX_READ_BYTES,
@@ -1513,11 +1508,8 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     throw makeApiError(400, "invalid_session_id", "sessionId is required");
   }
   const source = normalizeSessionSource(opts?.source, "all");
-  const limit = (
-    opts?.limit === null || Number.isFinite(Number(opts?.limit))
-  )
-    ? (opts?.limit === null ? null : normalizeSessionMessagesLimit(opts?.limit))
-    : normalizeSessionMessagesLimit(opts?.limit);
+  const limit = normalizeSessionMessagesLimit(opts?.limit);
+  const cursor = String(opts?.cursor || "").trim();
   const directoryRaw = String(opts?.directory || "").trim();
   const requestedDirectory = directoryRaw
     ? await resolveCanonicalDirectoryIdentity(directoryRaw)
@@ -1538,8 +1530,9 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
       cwd: "",
       updatedAt: "",
       found: false,
-      limit: limit === null ? "all" : limit,
+      limit,
       messages: [],
+      olderCursor: null,
       contextUsage: null,
       modelRef: "",
       reasoningEffort: "",
@@ -1552,15 +1545,21 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
   const readParallelStartedAt = Date.now();
   const messagesPromise = (async () => {
     const t0 = Date.now();
-    const result = await readSessionMessagesFromRolloutFile(cliEntry.filePath, { limit });
+    const result = await readSessionMessagesFromRolloutFile(cliEntry.filePath, {
+      limit,
+      cursor,
+      sessionId,
+    });
     return { result, elapsedMs: Math.max(0, Date.now() - t0) };
   })();
   const contextPromise = (async () => {
+    if (cursor) return { result: null, elapsedMs: 0 };
     const t0 = Date.now();
     const result = await readSessionContextUsageFromRolloutFile(cliEntry.filePath);
     return { result, elapsedMs: Math.max(0, Date.now() - t0) };
   })();
   const metaPromise = (async () => {
+    if (cursor) return { result: { modelRef: "", reasoningEffort: "" }, elapsedMs: 0 };
     const t0 = Date.now();
     const result = await readSessionMetaFromRolloutFile(cliEntry.filePath);
     return { result, elapsedMs: Math.max(0, Date.now() - t0) };
@@ -1597,8 +1596,9 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     parentSessionId: String(messagesResult?.parentSessionId || ""),
     updatedAt: normalizeSessionUpdatedAt(cliEntry.updatedAt) || "",
     found: true,
-    limit: limit === null ? "all" : limit,
+    limit,
     messages,
+    olderCursor: String(messagesResult?.olderCursor || "").trim() || null,
     contextUsage: contextUsage || null,
     modelRef: String(meta?.modelRef || "").trim(),
     reasoningEffort: String(meta?.reasoningEffort || "").trim(),
@@ -8763,11 +8763,13 @@ const server = http.createServer(async (req, res) => {
       const source = normalizeSessionSource(reqUrl.searchParams.get("source"), "all");
       const directory = String(reqUrl.searchParams.get("directory") || "").trim();
       const limit = normalizeSessionMessagesLimit(reqUrl.searchParams.get("limit"));
+      const cursor = String(reqUrl.searchParams.get("cursor") || "").trim();
       const payloadStartedAt = Date.now();
       const payload = await listLlmSessionMessages(sessionId, {
         source,
         directory,
         limit,
+        cursor,
       });
       const payloadBuildMs = Math.max(0, Date.now() - payloadStartedAt);
       const diagnostics = payload?.diagnostics && typeof payload.diagnostics === "object"

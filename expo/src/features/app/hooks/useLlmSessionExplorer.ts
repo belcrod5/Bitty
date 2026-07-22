@@ -17,7 +17,6 @@ import { parseLlmDirectory } from "../utils/settingsParsers";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
-const RUNNER_SESSION_MESSAGES_RESTORE_TIMEOUT_MS = 25_000;
 const SESSION_HISTORY_RPC_TIMEOUT_MS = 25_000;
 const RUNNER_DIRECTORIES_HTTP_TIMEOUT_MS = 12_000;
 
@@ -60,8 +59,7 @@ export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
   content: string;
   at: string;
-  // Codex app-server thread item id: present when restored via thread/read,
-  // absent on the aux /session-messages fallback.
+  // rollout内の永続item/call id。履歴page間の安定キーに使う。
   itemId?: string;
   inheritedFromParent?: boolean;
   commandExecution?: CodexCommandExecutionInfo;
@@ -85,6 +83,7 @@ export type RunnerSessionMessagesResult = {
     startedAt: string;
     updatedAt: string;
   } | null;
+  olderCursor: string | null;
 };
 
 type LlmSessionHistoryResult = {
@@ -387,6 +386,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       const url = new URL(`${targetLlmUrl}/session-messages`);
       url.searchParams.set("sessionId", sessionId);
       url.searchParams.set("source", "all");
+      url.searchParams.set("limit", "1");
       if (includeDirectory) {
         url.searchParams.set("directory", directory);
       }
@@ -456,252 +456,128 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const fetchRunnerSessionMessages = useCallback(async (
     sessionIdRaw: unknown,
     directoryRaw?: unknown,
-    options?: { preferCliRollout?: boolean },
+    options?: { cursor?: string },
   ): Promise<RunnerSessionMessagesResult> => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) {
       throw new Error("sessionId is required");
     }
-    const targetCodexWsUrl = codexWsUrl.trim();
     const preferredDirectory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    if (targetCodexWsUrl && options?.preferCliRollout !== true) {
-      const appServerStartedAt = Date.now();
+    const cursor = String(options?.cursor || "").trim();
+    const { baseUrl, token } = await getRunnerHttpAuth();
+    if (!baseUrl || !token) throw new Error("Aux Server URL または Runner Token が未設定です");
+    const startedAt = Date.now();
+    emitSessionDiag(cursor ? "runner_session_history_page_start" : "runner_session_history_restore_start", {
+      sessionId,
+      directory: preferredDirectory,
+      hasCursor: Boolean(cursor),
+    });
+    const fetchPage = async (includeDirectory: boolean) => {
+      const url = new URL(`${baseUrl}/session-messages`);
+      url.searchParams.set("sessionId", sessionId);
+      url.searchParams.set("source", "all");
+      url.searchParams.set("limit", "10");
+      if (cursor) url.searchParams.set("cursor", cursor);
+      if (includeDirectory && preferredDirectory) url.searchParams.set("directory", preferredDirectory);
+      const result = await fetchTextWithTimeout(url.toString(), {
+        headers: { authorization: `Bearer ${token}` },
+      }, RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS);
+      let data: JsonRecord = {};
       try {
-        emitSessionDiag("app_server_thread_restore_start", {
-          sessionId,
-          directory: preferredDirectory,
-        });
-        const restored = await readCodexAppServerThread({
+        data = result.text ? JSON.parse(result.text) : {};
+      } catch {}
+      if (!result.response.ok) {
+        const requestError = new Error(String(data?.message || data?.error || `HTTP ${result.response.status}`));
+        (requestError as Error & { code?: string }).code = String(data?.error || "").trim();
+        throw requestError;
+      }
+      if (data?.found !== true) throw new Error("session not found");
+      return data;
+    };
+    let data: JsonRecord;
+    try {
+      data = await fetchPage(true);
+    } catch (error) {
+      if (cursor || !preferredDirectory) throw error;
+      data = await fetchPage(false);
+    }
+    const messages: RunnerSessionMessage[] = (Array.isArray(data?.messages) ? data.messages : [])
+      .flatMap((raw: unknown) => {
+        const item = raw && typeof raw === "object" ? raw as JsonRecord : {};
+        const role = String(item.role || "").trim().toLowerCase();
+        const content = String(item.content || "").trim();
+        const commandRaw = item.commandExecution && typeof item.commandExecution === "object"
+          ? item.commandExecution as JsonRecord
+          : null;
+        if ((role !== "user" && role !== "assistant") || (!content && !commandRaw)) return [];
+        const commandExecution = commandRaw ? {
+          command: String(commandRaw.command || "").trim(),
+          status: commandRaw.status === "failed"
+            ? "failed" as const
+            : commandRaw.status === "running"
+              ? "running" as const
+              : "completed" as const,
+          exitCode: Number.isFinite(Number(commandRaw.exitCode)) ? Number(commandRaw.exitCode) : null,
+        } : undefined;
+        if (commandRaw && !commandExecution?.command) return [];
+        return [{
+          role: role as RunnerSessionMessageRole,
+          content,
+          at: String(item.at || "").trim(),
+          itemId: String(item.itemId || "").trim() || undefined,
+          inheritedFromParent: item.inheritedFromParent === true || undefined,
+          commandExecution,
+        }];
+      });
+    let live: Awaited<ReturnType<typeof readCodexAppServerThread>> | null = null;
+    const targetCodexWsUrl = codexWsUrl.trim();
+    if (!cursor && targetCodexWsUrl) {
+      try {
+        live = await readCodexAppServerThread({
           wsUrl: targetCodexWsUrl,
           wsToken: codexWsToken.trim(),
           threadId: sessionId,
           timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
           runnerWebSocketManager,
         });
-        let metadataSnapshot: RunnerSessionSnapshot | null = null;
-        try {
-          metadataSnapshot = await fetchRunnerSessionSnapshot(sessionId, preferredDirectory);
-          emitSessionDiag("app_server_thread_restore_metadata_done", {
-            sessionId,
-            directory: preferredDirectory,
-            hasModelRef: Boolean(metadataSnapshot.modelRef),
-            hasReasoningEffort: Boolean(metadataSnapshot.reasoningEffort),
-            contextUsedPct: metadataSnapshot.contextUsedPct,
-          });
-        } catch (error) {
-          emitSessionDiag("app_server_thread_restore_metadata_failed", {
-            sessionId,
-            directory: preferredDirectory,
-            reason: error instanceof Error ? error.message : String(error),
-          });
-        }
-        const messages = restored.messages.map((item) => ({
-          role: item.role,
-          content: item.content,
-          at: item.at,
-          itemId: item.itemId,
-          commandExecution: item.commandExecution,
-        }));
-        const latestAssistantMessage = [...messages].reverse().find((item) => item.role === "assistant");
-        emitSessionDiag("app_server_thread_restore_done", {
-          sessionId,
-          directory: preferredDirectory,
-          elapsedMs: Math.max(0, Date.now() - appServerStartedAt),
-          threadStatusType: restored.threadStatusType,
-          sessionState: restored.sessionState,
-          latestTurnStatus: restored.latestTurnStatus,
-          waitingOnApproval: restored.waitingOnApproval,
-          hasRunningTurn: restored.hasRunningTurn,
-          messageCount: messages.length,
-          latestAssistantChars: String(latestAssistantMessage?.content || "").length,
-          latestAssistantStartsWithThinking: String(latestAssistantMessage?.content || "").startsWith("思考中..."),
-          modelRef: String(metadataSnapshot?.modelRef || restored.modelProvider || "").trim(),
-          reasoningEffort: String(metadataSnapshot?.reasoningEffort || "").trim(),
-          contextUsedPct: restored.contextUsedPct ?? metadataSnapshot?.contextUsedPct ?? null,
-        });
-        return {
-          threadId: restored.threadId || sessionId,
-          sourceKind: restored.sourceKind || "appServer",
-          cwd: restored.cwd,
-          updatedAt: restored.updatedAt,
-          modelRef: String(metadataSnapshot?.modelRef || restored.modelProvider || "").trim(),
-          reasoningEffort: String(metadataSnapshot?.reasoningEffort || "").trim(),
-          latestToolLabel: String(metadataSnapshot?.latestToolLabel || "").trim(),
-          messages,
-          contextUsedPct: restored.contextUsedPct ?? metadataSnapshot?.contextUsedPct ?? null,
-          threadStatusType: restored.threadStatusType,
-          hasRunningTurn: restored.hasRunningTurn,
-          runningTurn: restored.runningTurn,
-        };
       } catch (error) {
-        emitSessionDiag("app_server_thread_restore_fallback", {
+        emitSessionDiag("app_server_thread_metadata_failed", {
           sessionId,
-          directory: preferredDirectory,
-          elapsedMs: Math.max(0, Date.now() - appServerStartedAt),
           reason: error instanceof Error ? error.message : String(error),
         });
       }
     }
-    const targetLlmUrl = auxServerBaseUrl();
-    const token = runnerToken.trim();
-    if (!targetLlmUrl || !token) {
-      throw new Error("Aux Server URL または Runner Token が未設定です");
-    }
-    const startedAt = Date.now();
-    const traceId = `sm_${startedAt.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const fetchAttempt = async (attempt: "preferred" | "fallback_no_directory", includeDirectory: boolean) => {
-      const url = new URL(`${targetLlmUrl}/session-messages`);
-      url.searchParams.set("sessionId", sessionId);
-      url.searchParams.set("source", "all");
-      url.searchParams.set("limit", "all");
-      if (includeDirectory && preferredDirectory) {
-        url.searchParams.set("directory", preferredDirectory);
-      }
-      emitSessionDiag("runner_session_messages_restore_start", {
-        traceId,
-        sessionId,
-        directory: includeDirectory ? preferredDirectory : "",
-        attempt,
-      });
-      let response: Response;
-      let data: JsonRecord = {};
-      let rawText = "";
-      const httpStartedAt = Date.now();
-      const result = await fetchTextWithTimeout(url.toString(), {
-        headers: {
-          authorization: `Bearer ${token}`,
-        },
-      }, RUNNER_SESSION_MESSAGES_RESTORE_TIMEOUT_MS);
-      const httpElapsedMs = Math.max(0, Date.now() - httpStartedAt);
-      response = result.response;
-      rawText = String(result.text || "");
-      const parseStartedAt = Date.now();
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        data = {};
-      }
-      const jsonParseElapsedMs = Math.max(0, Date.now() - parseStartedAt);
-      const isFound = data?.found === true;
-      const ok = response.ok && isFound;
-      const restoredMessagesRaw = Array.isArray((data as any)?.messages) ? ((data as any).messages as any[]) : [];
-      const latestAssistantRaw = [...restoredMessagesRaw].reverse().find((item) => String(item?.role || "") === "assistant");
-      emitSessionDiag("runner_session_messages_restore_done", {
-        traceId,
-        sessionId,
-        directory: includeDirectory ? preferredDirectory : "",
-        attempt,
-        elapsedMs: Math.max(0, Date.now() - startedAt),
-        httpElapsedMs,
-        jsonParseElapsedMs,
-        httpStatus: Number(response.status || 0),
-        ok: response.ok,
-        found: isFound,
-        responseSerializeMs: Number(response.headers.get("x-session-messages-serialize-ms") || 0),
-        responseBytesHeader: Number(response.headers.get("x-session-messages-response-bytes") || 0),
-        responseRouteTotalMsHeader: Number(response.headers.get("x-session-messages-route-total-ms") || 0),
-        responseTextBytes: rawText.length,
-        messageCount: restoredMessagesRaw.length,
-        latestAssistantChars: String(latestAssistantRaw?.content || "").length,
-        latestAssistantStartsWithThinking: String(latestAssistantRaw?.content || "").startsWith("思考中..."),
-      });
-      if (!response.ok) {
-        throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
-      }
-      if (!ok) {
-        throw new Error("session not found");
-      }
-      return {
-        response,
-        data,
-        rawText,
-      };
-    };
-
-    let response: Response;
-    let data: JsonRecord = {};
-    let rawText = "";
-    let normalizeElapsedMs = 0;
-    let normalizedViaAttempt: "preferred" | "fallback_no_directory" = "preferred";
-    try {
-      const result = await fetchAttempt("preferred", true);
-      response = result.response;
-      data = result.data;
-      rawText = result.rawText;
-    } catch (preferredError) {
-      emitSessionDiag("runner_session_messages_restore_retry", {
-        traceId,
-        sessionId,
-        preferredDirectory,
-        reason: preferredError instanceof Error ? preferredError.message : String(preferredError),
-      });
-      const fallbackResult = await fetchAttempt("fallback_no_directory", false);
-      response = fallbackResult.response;
-      data = fallbackResult.data;
-      rawText = fallbackResult.rawText;
-      normalizedViaAttempt = "fallback_no_directory";
-    }
-    const normalizeStartedAt = Date.now();
-    const messagesRaw = Array.isArray(data?.messages) ? data.messages : [];
-    const messages: RunnerSessionMessage[] = messagesRaw
-      .map((itemRaw: unknown) => {
-        const item = itemRaw && typeof itemRaw === "object" ? itemRaw as JsonRecord : {};
-        const role = String(item.role || "").trim().toLowerCase();
-        if (role !== "user" && role !== "assistant") return null;
-        const content = String(item.content || "").trim();
-        if (!content) return null;
-        return {
-          role,
-          content,
-          at: String(item.at || "").trim(),
-          inheritedFromParent: item.inheritedFromParent === true || undefined,
-        } as RunnerSessionMessage;
-      })
-      .filter((item: RunnerSessionMessage | null): item is RunnerSessionMessage => !!item);
-    normalizeElapsedMs = Math.max(0, Date.now() - normalizeStartedAt);
-    const serverDiagnostics = data?.diagnostics && typeof data.diagnostics === "object"
-      ? data.diagnostics as Record<string, unknown>
-      : null;
-    emitSessionDiag("runner_session_messages_restore_normalized", {
-      traceId,
+    emitSessionDiag(cursor ? "runner_session_history_page_done" : "runner_session_history_restore_done", {
       sessionId,
-      directory: preferredDirectory,
-      resolvedByAttempt: normalizedViaAttempt,
       elapsedMs: Math.max(0, Date.now() - startedAt),
-      normalizeElapsedMs,
-      httpStatus: Number(response.status || 0),
-      responseTextBytes: rawText.length,
       messageCount: messages.length,
-      contextUsedPct: parseContextUsageUsedPct(data?.contextUsage),
-      updatedAt: String(data?.updatedAt || "").trim(),
-      source: String(data?.source || "").trim(),
-      serverDiagnostics: serverDiagnostics || undefined,
+      olderPageAvailable: Boolean(data?.olderCursor),
+      diagnostics: data?.diagnostics,
     });
     return {
-      threadId: sessionId,
-      sourceKind: "cli",
-      cwd: String(data?.cwd || "").trim(),
-      updatedAt: String(data?.updatedAt || "").trim(),
-      modelRef: String(data?.modelRef || "").trim(),
-      reasoningEffort: String(data?.reasoningEffort || "").trim(),
+      threadId: live?.threadId || sessionId,
+      sourceKind: String(data?.source || live?.sourceKind || "cli"),
+      cwd: String(data?.cwd || live?.cwd || preferredDirectory),
+      updatedAt: String(data?.updatedAt || live?.updatedAt || ""),
+      modelRef: String(data?.modelRef || live?.modelProvider || ""),
+      reasoningEffort: String(data?.reasoningEffort || ""),
       latestToolLabel: inferLatestToolLabelFromSessionMessages(data),
       messages,
-      contextUsedPct: parseContextUsageUsedPct(data?.contextUsage),
-      threadStatusType: "",
-      hasRunningTurn: false,
-      runningTurn: null,
+      contextUsedPct: parseContextUsageUsedPct(data?.contextUsage) ?? live?.contextUsedPct ?? null,
+      threadStatusType: live?.threadStatusType || "",
+      hasRunningTurn: live?.hasRunningTurn === true,
+      runningTurn: live?.runningTurn || null,
+      olderCursor: String(data?.olderCursor || "").trim() || null,
     };
   }, [
-    auxServerBaseUrl,
     codexWsToken,
     codexWsUrl,
     emitSessionDiag,
-    fetchRunnerSessionSnapshot,
     fetchTextWithTimeout,
+    getRunnerHttpAuth,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
     runnerWebSocketManager,
-    runnerToken,
   ]);
 
   const fetchLatestSessionIdForDirectory = useCallback(async (directoryRaw?: unknown) => {

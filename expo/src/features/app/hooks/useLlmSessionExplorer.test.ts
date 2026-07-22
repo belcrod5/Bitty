@@ -1,5 +1,5 @@
 import { renderHook } from "@testing-library/react-native";
-import { listCodexAppServerThreads } from "../../codex/codexAppServerClient";
+import { listCodexAppServerThreads, readCodexAppServerThread } from "../../codex/codexAppServerClient";
 import { buildLlmSessionHistoryEntry, useLlmSessionExplorer } from "./useLlmSessionExplorer";
 
 jest.mock("../../codex/codexAppServerClient", () => ({
@@ -8,6 +8,7 @@ jest.mock("../../codex/codexAppServerClient", () => ({
 }));
 
 const mockListCodexAppServerThreads = jest.mocked(listCodexAppServerThreads);
+const mockReadCodexAppServerThread = jest.mocked(readCodexAppServerThread);
 
 function renderExplorerHook(overrides: {
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
@@ -24,6 +25,71 @@ function renderExplorerHook(overrides: {
     onSessionDiagLog: overrides.onSessionDiagLog,
   }));
 }
+
+describe("fetchRunnerSessionMessages", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockReadCodexAppServerThread.mockReset();
+  });
+
+  it("loads saved history from the bounded runner page API", async () => {
+    mockReadCodexAppServerThread.mockResolvedValue({
+      threadId: "thread-1",
+      preview: "",
+      modelProvider: "openai",
+      sourceKind: "cli",
+      cwd: "/workspace",
+      createdAt: "",
+      updatedAt: "",
+      messages: [],
+      contextUsedPct: null,
+      sessionState: "idle",
+      threadStatusType: "idle",
+      waitingOnApproval: false,
+      latestTurnStatus: "",
+      hasRunningTurn: false,
+      runningTurn: null,
+    });
+    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        found: true,
+        source: "cli",
+        messages: [{ role: "assistant", content: "latest", at: "now", itemId: "msg-1" }],
+        olderCursor: "opaque-1",
+      }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook();
+
+    const restored = await result.current.fetchRunnerSessionMessages("thread-1", "/workspace");
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/session-messages");
+    expect(url.searchParams.get("limit")).toBe("10");
+    expect(url.searchParams.get("cursor")).toBeNull();
+    expect(url.searchParams.get("limit")).not.toBe("all");
+    expect(restored.messages).toEqual([
+      { role: "assistant", content: "latest", at: "now", itemId: "msg-1", inheritedFromParent: undefined, commandExecution: undefined },
+    ]);
+    expect(restored.olderCursor).toBe("opaque-1");
+  });
+
+  it("passes an older cursor only to runner and skips App Server history", async () => {
+    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ found: true, messages: [], olderCursor: null }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook();
+
+    await result.current.fetchRunnerSessionMessages("thread-1", "/workspace", { cursor: "opaque-1" });
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.searchParams.get("cursor")).toBe("opaque-1");
+    expect(mockReadCodexAppServerThread).not.toHaveBeenCalled();
+  });
+});
 
 describe("fetchSessionHistory runner snapshot failures", () => {
   afterEach(() => {

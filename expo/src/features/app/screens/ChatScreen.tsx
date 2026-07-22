@@ -276,6 +276,8 @@ export function ChatScreen({
     isCodexCompactRunning,
     sanitizeTextForTts,
     handleAssistantAudioButtonPress,
+    sessionHistoryPagingById,
+    loadOlderSessionHistory,
   } = useChatScreen();
   const popupHeaderDragStartPageYRef = useRef<number | null>(null);
   const popupHeaderPanResponder = useMemo(() => PanResponder.create({
@@ -425,6 +427,7 @@ export function ChatScreen({
   const selectedSessionIdForView = isPanelSnapshotView
     ? String(panelSnapshot.selectedSessionId || "").trim()
     : String(selectedLlmSessionId || "").trim();
+  const sessionHistoryPagingState = sessionHistoryPagingById[selectedSessionIdForView];
   const openSessionHistoryEntryForView = useCallback((params: {
     sessionId: string;
     source: Parameters<typeof openSessionHistoryEntry>[0]["source"];
@@ -512,6 +515,28 @@ export function ChatScreen({
     contentSizeHeight: 0,
   });
   const previousMessageCountRef = useRef(0);
+  const previousLastMessageIdRef = useRef("");
+  const requestOlderSessionHistory = useCallback(() => {
+    if (
+      !didInitialScrollRef.current
+      || initialSettlingRef.current
+      || !chatAutoScrollPausedRef.current
+      || !selectedSessionIdForView
+      || !selectedDirectoryPathForView
+    ) return;
+    void loadOlderSessionHistory({
+      sessionId: selectedSessionIdForView,
+      directory: selectedDirectoryPathForView,
+    });
+  }, [loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
+  const retryOlderSessionHistory = useCallback(() => {
+    if (!selectedSessionIdForView || !selectedDirectoryPathForView) return;
+    void loadOlderSessionHistory({
+      sessionId: selectedSessionIdForView,
+      directory: selectedDirectoryPathForView,
+      retry: true,
+    });
+  }, [loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
   const popupComposerFullscreenInputRef = useRef<TextInput | null>(null);
   const [panelTranscript, setPanelTranscript] = useState("");
   const [panelComposerFocused, setPanelComposerFocused] = useState(false);
@@ -1134,6 +1159,7 @@ export function ChatScreen({
     chatAutoScrollPausedRef.current = false;
     chatScrollDragActiveRef.current = false;
     previousMessageCountRef.current = 0;
+    previousLastMessageIdRef.current = "";
     chatScrollDiagnosticRef.current.contentSizeHeight = 0;
     if (initialSettleTimerRef.current !== null) {
       clearTimeout(initialSettleTimerRef.current);
@@ -1186,6 +1212,7 @@ export function ChatScreen({
     initialSettlingRef.current = true;
     isAtBottomRef.current = true;
     previousMessageCountRef.current = conversationMessagesForView.length;
+    previousLastMessageIdRef.current = conversationMessagesForView[conversationMessagesForView.length - 1]?.id || "";
     scrollChatListToBottomSettled(false);
     if (initialSettleTimerRef.current !== null) {
       clearTimeout(initialSettleTimerRef.current);
@@ -1200,10 +1227,13 @@ export function ChatScreen({
     const previousMessageCount = previousMessageCountRef.current;
     const currentLastMessage = conversationMessagesForView[currentMessageCount - 1];
     const currentLastMessageId = currentLastMessage?.id || "";
+    const previousLastMessageId = previousLastMessageIdRef.current;
     previousMessageCountRef.current = currentMessageCount;
+    previousLastMessageIdRef.current = currentLastMessageId;
     if (!didInitialScrollRef.current) return;
     if (currentMessageCount <= previousMessageCount) return;
     if (!currentLastMessageId) return;
+    if (currentLastMessageId === previousLastMessageId) return;
     if (currentLastMessage?.role === "user") {
       isAtBottomRef.current = true;
       chatAutoScrollPausedRef.current = false;
@@ -1911,6 +1941,9 @@ export function ChatScreen({
               data={conversationMessagesForView}
               renderItem={renderConversationMessage}
               keyExtractor={(message) => message.id}
+              maintainVisibleContentPosition
+              onStartReached={requestOlderSessionHistory}
+              onStartReachedThreshold={0.1}
               estimatedItemSize={CHAT_ESTIMATED_ITEM_SIZE}
               estimatedListSize={estimatedChatListSize}
               extraData={chatListLayoutVersion}
@@ -1940,6 +1973,23 @@ export function ChatScreen({
               onItemSizeChanged={handleChatItemSizeChangedForView}
               ListEmptyComponent={conversationMessagesForView.length === 0 && !replyLoadingForView ? (
                 <Text style={styles.chatEmpty}>まだ会話がありません。下の入力欄から送信してください。</Text>
+              ) : null}
+              ListHeaderComponent={sessionHistoryPagingState ? (
+                <View style={{ height: 44, justifyContent: "center" }}>
+                  {sessionHistoryPagingState.loading ? (
+                    <ActivityIndicator size="small" color="#0f766e" />
+                  ) : sessionHistoryPagingState.errorCode === "stale_history_cursor" ? (
+                    <Text style={styles.chatEmpty} numberOfLines={1}>
+                      履歴が更新されました。セッションを開き直してください
+                    </Text>
+                  ) : sessionHistoryPagingState.error ? (
+                    <TouchableOpacity onPress={retryOlderSessionHistory} accessibilityRole="button">
+                      <Text style={styles.chatEmpty} numberOfLines={1}>
+                        過去の履歴を取得できませんでした。タップして再試行
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               ) : null}
               ListFooterComponent={(
                 <>

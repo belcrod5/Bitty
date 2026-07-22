@@ -1,5 +1,6 @@
 import {
   buildRestoredPanelConversation,
+  prependConversationMessages,
   buildRestoredSessionRuntimeSnapshot,
   projectRestoredRuntimeStatusToConversation,
 } from "./sessionRestoreRuntimeSnapshot";
@@ -30,6 +31,7 @@ function buildRestoredResult(overrides: Partial<RunnerSessionMessagesResult> = {
     contextUsedPct: null,
     hasRunningTurn: false,
     runningTurn: null,
+    olderCursor: null,
     ...overrides,
   };
 }
@@ -79,6 +81,19 @@ describe("buildRestoredPanelConversation", () => {
       codexItemMessageId("thread-1", "item-1"),
       "panel-panel-a-thread-1-2-assistant",
     ]);
+  });
+});
+
+describe("prependConversationMessages", () => {
+  it("prepends only new stable ids without replacing current message objects", () => {
+    const current = [message({ id: "m2", role: "assistant", content: "current" })];
+    const result = prependConversationMessages([
+      message({ id: "m1", role: "user", content: "older" }),
+      message({ id: "m2", role: "assistant", content: "duplicate" }),
+    ], current);
+
+    expect(result.map((item) => item.id)).toEqual(["m1", "m2"]);
+    expect(result[1]).toBe(current[0]);
   });
 });
 

@@ -31,6 +31,7 @@ function buildRestoredResult(
     contextUsedPct: null,
     hasRunningTurn: false,
     runningTurn: null,
+    olderCursor: null,
   };
 }
 

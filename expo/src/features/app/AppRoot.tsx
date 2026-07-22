@@ -119,6 +119,8 @@ import { useRecordingDeviceController } from "./hooks/useRecordingDeviceControll
 import { useFaceTrackingStateController } from "./hooks/useFaceTrackingStateController";
 import { useAppContextActions } from "./hooks/useAppContextActions";
 import { useConversationMessageWindowController } from "./hooks/useConversationMessageWindowController";
+import { useSessionHistoryPagingController } from "./hooks/useSessionHistoryPagingController";
+import { useApplySessionHistoryPage } from "./hooks/useApplySessionHistoryPage";
 import {
   isConversationRuntimeRequestResponding,
   useConversationRuntimeStoreController,
@@ -129,6 +131,13 @@ import {
 } from "./hooks/usePanelNewSessionController";
 import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
+import {
+  buildPanelRuntimeSnapshot,
+  cloneConversationMessages,
+  normalizeRuntimePanelId,
+  parseDirectoryMarkerColor,
+  type PanelRuntimeSnapshotPatch,
+} from "./utils/panelRuntimeSnapshot";
 import {
   appendAssistantEventMessageToMessages,
   useConversationMessageBuilders,
@@ -413,7 +422,6 @@ const AUTO_WAVEFORM_UPDATE_MS = 160;
 const AUTO_SPECTRUM_BARS = 64;
 const TTS_WAVEFORM_POINTS = 192;
 const DRAWER_SESSION_POPUP_PANEL_ID = "drawer_session_popup";
-const LEGACY_MAIN_PANEL_ID = "main";
 const CHAT_AUTO_SCROLL_BOTTOM_THRESHOLD = (() => {
   const env = (globalThis as { process?: { env?: Record<string, unknown> } }).process?.env || {};
   const parsed = Number(env.EXPO_PUBLIC_CHAT_BOTTOM_THRESHOLD_PX || 160);
@@ -618,14 +626,6 @@ function createRegisteredDirectoryId(pathRaw: unknown) {
   return `dir_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}_${path.length.toString(36)}`;
 }
 
-function parseDirectoryMarkerColor(raw: unknown): RegisteredDirectoryEntry["markerColor"] {
-  const value = String(raw || "").trim().toLowerCase();
-  if (value === "gray" || value === "red" || value === "yellow" || value === "green" || value === "black") {
-    return value;
-  }
-  return "none";
-}
-
 function parseRegisteredDirectories(raw: unknown): RegisteredDirectoryEntry[] {
   if (!Array.isArray(raw)) return [];
   const out: RegisteredDirectoryEntry[] = [];
@@ -681,12 +681,6 @@ function deriveSessionTitleFromConversationMessages(messages: ConversationMessag
   const title = String(firstUser?.content || "").replace(/\s+/g, " ").trim();
   if (title) return title;
   return "（ユーザーメッセージなし）";
-}
-
-function normalizeRuntimePanelId(panelIdRaw: unknown) {
-  const panelId = String(panelIdRaw || "").trim();
-  if (!panelId || panelId === LEGACY_MAIN_PANEL_ID) return "";
-  return panelId;
 }
 
 function parseExpandedDirectoryIds(raw: unknown, directories: RegisteredDirectoryEntry[]) {
@@ -915,6 +909,24 @@ export default function App() {
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     runnerWebSocketManager,
     onSessionDiagLog: handleSessionDiagLog,
+  });
+  const applyOlderSessionHistoryPageRef = useRef<(
+    sessionId: string,
+    page: RunnerSessionMessagesResult
+  ) => void>(() => {});
+  const applyOlderSessionHistoryPage = useCallback((
+    sessionId: string,
+    page: RunnerSessionMessagesResult
+  ) => {
+    applyOlderSessionHistoryPageRef.current(sessionId, page);
+  }, []);
+  const {
+    stateBySessionId: sessionHistoryPagingById,
+    registerPage: registerSessionHistoryPage,
+    loadOlder: loadOlderSessionHistory,
+  } = useSessionHistoryPagingController({
+    fetchPage: fetchRunnerSessionMessages,
+    applyPage: applyOlderSessionHistoryPage,
   });
   const {
     ensureMicReady: ensureMicReadyFromController,
@@ -2157,7 +2169,7 @@ export default function App() {
     setStreamWaveformPreview([]);
     setReplyLoadingWithRef(false);
     finishLlmRequest("idle", "conversation reset");
-    setConversationMessagesWithLimit([], { resetVisibleCount: true });
+    setConversationMessagesWithLimit([]);
     setHistory([]);
     setReply("");
     setAcpContextUsedPct(null);
@@ -3045,6 +3057,7 @@ export default function App() {
         targetSessionId: nextSessionId,
       });
       if (!isLatestRestoreRequest()) return false;
+      registerSessionHistoryPage(restored.threadId || nextSessionId, restored);
       const {
         restoredMessages,
         nextConversation,
@@ -3100,7 +3113,6 @@ export default function App() {
       applySessionRestoreConversationState({
         nextConversation: nextConversationForRuntime,
         nextHistory,
-        restoredMessageCount: restoredMessages.length,
         effectiveContextUsedPct,
         setConversationMessagesWithLimit,
         setHistory,
@@ -6245,9 +6257,6 @@ export default function App() {
     cancelCodexQueuedTurnForMessage,
     logSessionDiag,
   });
-  type PanelRuntimeSnapshotPatch = Partial<Omit<PanelRuntimeSnapshot, "conversationMessages">> & {
-    conversationMessages?: ConversationMessage[];
-  };
   const [panelRuntimeEntriesById, setPanelRuntimeEntriesById] = useState<Record<string, PanelRuntimeEntry>>({});
   const {
     beginPanelHydration,
@@ -6273,79 +6282,16 @@ export default function App() {
     gitChangedFilesRefreshInFlightRef,
     directoryIdentityGenerationRef,
   });
-  const cloneConversationMessages = useCallback((messages: ConversationMessage[]): ConversationMessage[] => (
-    messages.map((message) => ({
-      ...message,
-      youtubeVideoIds: Array.isArray(message.youtubeVideoIds) ? [...message.youtubeVideoIds] : undefined,
-      ttsWaveform: Array.isArray(message.ttsWaveform) ? [...message.ttsWaveform] : undefined,
-      sttMeta: message.sttMeta ? { ...message.sttMeta } : undefined,
-    }))
-  ), []);
   const createPanelRuntimeSnapshot = useCallback((
     panelIdRaw: string,
     baseSnapshot: PanelRuntimeSnapshot,
     patch: PanelRuntimeSnapshotPatch = {}
-  ): PanelRuntimeSnapshot => {
-    const contextUsedPctRaw = Object.prototype.hasOwnProperty.call(patch, "contextUsedPct")
-      ? patch.contextUsedPct
-      : baseSnapshot.contextUsedPct;
-    const contextUsedPct = contextUsedPctRaw !== null && typeof contextUsedPctRaw !== "undefined" && Number.isFinite(Number(contextUsedPctRaw))
-      ? Math.max(0, Math.min(100, Math.round(Number(contextUsedPctRaw))))
-      : null;
-    const messages = Array.isArray(patch.conversationMessages)
-      ? patch.conversationMessages
-      : baseSnapshot.conversationMessages;
-    const inheritedMessages = Array.isArray(patch.inheritedConversationMessages)
-      ? patch.inheritedConversationMessages
-      : baseSnapshot.inheritedConversationMessages || [];
-    const selectedSessionId = String(patch.selectedSessionId ?? baseSnapshot.selectedSessionId ?? "").trim();
-    const isResponding = typeof patch.isResponding === "boolean"
-      ? patch.isResponding
-      : Boolean(baseSnapshot.isResponding);
-    const snapshot: PanelRuntimeSnapshot = {
-      panelId: normalizeRuntimePanelId(panelIdRaw),
-      selectedSessionId,
-      selectedDirectoryPath: String(patch.selectedDirectoryPath ?? baseSnapshot.selectedDirectoryPath ?? "").trim(),
-      selectedDirectoryDisplayName: String(
-        patch.selectedDirectoryDisplayName ?? baseSnapshot.selectedDirectoryDisplayName ?? ""
-      ).trim(),
-      selectedSessionTitle: String(patch.selectedSessionTitle ?? baseSnapshot.selectedSessionTitle ?? "").trim(),
-      selectedSessionUpdatedAt: String(
-        patch.selectedSessionUpdatedAt ?? baseSnapshot.selectedSessionUpdatedAt ?? ""
-      ).trim(),
-      selectedSessionMarkerColor: parseDirectoryMarkerColor(
-        patch.selectedSessionMarkerColor ?? baseSnapshot.selectedSessionMarkerColor
-      ),
-      selectedThreadStatusType: deriveSessionExecutionStatusType({
-        threadStatusType: patch.selectedThreadStatusType ?? baseSnapshot.selectedThreadStatusType,
-        isResponding,
-        isCompactRunning: isCodexCompactRunning(selectedSessionId),
-      }),
-      modelRef: normalizeModelRef(patch.modelRef ?? baseSnapshot.modelRef),
-      reasoningEffort: String(patch.reasoningEffort ?? baseSnapshot.reasoningEffort ?? "").trim(),
-      contextUsedPct,
-      isResponding,
-      isHydrating: typeof patch.isHydrating === "boolean"
-        ? patch.isHydrating
-        : Boolean(baseSnapshot.isHydrating),
-      inheritedConversationMessages: cloneConversationMessages(inheritedMessages),
-      conversationMessages: cloneConversationMessages(messages),
-    };
-    const requestStartedAtMsRaw = patch.requestStartedAtMs ?? baseSnapshot.requestStartedAtMs;
-    const requestStartedAtMs = Number(requestStartedAtMsRaw || 0);
-    if (snapshot.isResponding && Number.isFinite(requestStartedAtMs) && requestStartedAtMs > 0) {
-      snapshot.requestStartedAtMs = requestStartedAtMs;
-    }
-    const scrollOffsetY = patch.scrollOffsetY ?? baseSnapshot.scrollOffsetY;
-    const scrollViewportHeight = patch.scrollViewportHeight ?? baseSnapshot.scrollViewportHeight;
-    const scrollNearBottom = patch.scrollNearBottom ?? baseSnapshot.scrollNearBottom;
-    const ttsPlaybackMessageId = patch.ttsPlaybackMessageId ?? baseSnapshot.ttsPlaybackMessageId;
-    if (typeof scrollOffsetY === "number") snapshot.scrollOffsetY = scrollOffsetY;
-    if (typeof scrollViewportHeight === "number") snapshot.scrollViewportHeight = scrollViewportHeight;
-    if (typeof scrollNearBottom === "boolean") snapshot.scrollNearBottom = scrollNearBottom;
-    if (typeof ttsPlaybackMessageId === "string") snapshot.ttsPlaybackMessageId = ttsPlaybackMessageId;
-    return snapshot;
-  }, [cloneConversationMessages, isCodexCompactRunning]);
+  ): PanelRuntimeSnapshot => buildPanelRuntimeSnapshot({
+    panelId: panelIdRaw,
+    base: baseSnapshot,
+    patch,
+    isCompactRunning: isCodexCompactRunning,
+  }), [isCodexCompactRunning]);
   const createEmptyPanelRuntimeSnapshot = useCallback((panelIdRaw: string): PanelRuntimeSnapshot => ({
     panelId: normalizeRuntimePanelId(panelIdRaw),
     selectedSessionId: "",
@@ -7109,13 +7055,12 @@ export default function App() {
       requestedReasoningEffortHint: reasoningEffortHint,
     }, { throttleMs: 0 });
     try {
-      const restored = await fetchRunnerSessionMessages(sessionId, directory, {
-        preferCliRollout: source === "subagent",
-      });
+      const restored = await fetchRunnerSessionMessages(sessionId, directory);
       const restoredSessionId = parseOptionalSessionId(restored.threadId);
       if (restoredSessionId && restoredSessionId !== sessionId) {
         throw new Error(`restored session mismatch: requested=${sessionId} received=${restoredSessionId}`);
       }
+      registerSessionHistoryPage(restoredSessionId || sessionId, restored);
       if (!isCurrentHydration()) {
         logSessionDiag("panel_runtime_hydrate_superseded", {
           diagnosticCycleId,
@@ -7344,6 +7289,7 @@ export default function App() {
     fetchRunnerSessionMessages,
     getConversationRuntimeSnapshot,
     logSessionDiag,
+    registerSessionHistoryPage,
     rememberKnownCodexThreadId,
     registeredDirectories,
     sessionMarkerColorsById,
@@ -7351,6 +7297,20 @@ export default function App() {
     startCodexRelayObserverForSession,
     upsertConversationRuntimeSnapshot,
   ]);
+  const applyOlderSessionHistoryPageToState = useApplySessionHistoryPage({
+    activeSessionId: () => parseOptionalSessionId(
+      selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
+    ),
+    conversationMessagesRef,
+    panelEntriesRef: panelRuntimeEntriesByIdRef,
+    setConversationMessages: setConversationMessagesWithLimit,
+    setPanelEntries: setPanelRuntimeEntriesById,
+    getRuntime: getConversationRuntimeSnapshot,
+    upsertRuntime: upsertConversationRuntimeSnapshot,
+    createPanelSnapshot: createPanelRuntimeSnapshot,
+    log: logSessionDiag,
+  });
+  applyOlderSessionHistoryPageRef.current = applyOlderSessionHistoryPageToState;
   getPanelConversationMessagesForCodexRef.current = getPanelConversationMessagesForCodex;
   setPanelConversationMessagesForCodexRef.current = setPanelConversationMessagesForCodex;
   const panelRuntimeStoreContextValue = useMemo<PanelRuntimeStoreContextValue>(() => {
@@ -7523,6 +7483,8 @@ export default function App() {
     isCodexCompactRunning,
     sanitizeTextForTts,
     handleAssistantAudioButtonPress,
+    sessionHistoryPagingById,
+    loadOlderSessionHistory,
   });
   const closeDrawerSessionPopup = useCallback(() => {
     if (drawerSessionPopupPanelId) {

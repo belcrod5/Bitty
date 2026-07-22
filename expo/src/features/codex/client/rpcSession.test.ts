@@ -5,7 +5,7 @@ import type {
   RunnerWsMessage,
   RunnerWsMessageFilter,
 } from "../../runnerWs/types";
-import { runCodexRpcSession } from "./rpcSession";
+import { assertSupportedCodexAppServer, runCodexRpcSession } from "./rpcSession";
 
 jest.mock("../../ws/webSocketAuth", () => ({
   createWebSocketWithOptionalAuth: jest.fn(),
@@ -189,7 +189,7 @@ test("manager mode rewrites JSON-RPC ids and cleans up without creating a direct
   });
   expect((initialize.payload as { id?: number }).id).not.toBe(1);
 
-  respondToLastRequest(manager, {});
+  respondToLastRequest(manager, { userAgent: "codex-cli/0.145.0" });
   await flushPromises();
 
   const threadList = lastRequest(manager);
@@ -200,6 +200,19 @@ test("manager mode rewrites JSON-RPC ids and cleans up without creating a direct
 
   await expect(promise).resolves.toBe("done");
   expect(manager.unsubscribeCalls).toBe(3);
+});
+
+test("Expo rejects an old or unparseable Codex App Server during initialize", () => {
+  expect(() => assertSupportedCodexAppServer({ userAgent: "codex-cli/0.144.9" }))
+    .toThrow("0.145.0以上へ更新");
+  expect(() => assertSupportedCodexAppServer({ userAgent: "codex-cli/0.144.999" }))
+    .toThrow("0.145.0以上へ更新");
+  expect(() => assertSupportedCodexAppServer({ userAgent: "unknown" }))
+    .toThrow("unknown");
+  expect(() => assertSupportedCodexAppServer({ userAgent: "codex-cli/0.145.0" }))
+    .not.toThrow();
+  expect(() => assertSupportedCodexAppServer({ userAgent: "codex-cli/1.0.0" }))
+    .not.toThrow();
 });
 
 test("manager mode rejects the session when the runner reports a control error for the operation", async () => {

@@ -8,6 +8,7 @@ import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import { parseLlmSessionMessageRole } from "./llmSession";
 import { isCommandExecutionMessage } from "./sessionRuntimeStatus";
+import { codexItemMessageId } from "./codexItemMessageId";
 import { normalizeModelRef, parseModelRef, parseReasoningEffort, type ReasoningEffort } from "./settingsParsers";
 
 type ModelOptionLike = {
@@ -154,12 +155,24 @@ export function buildRestoredSessionState({
   nextSessionId,
 }: BuildRestoredSessionStateArgs): RestoredSessionState {
   const restoredMessages = toRestoredSessionMessages(restored);
-  const nextConversation = restoredMessages.map((item) => (
-    buildConversationMessage(item.role, item.content, {
-      at: item.at,
-      ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}),
-    })
-  ));
+  const seenIds = new Set<string>();
+  const nextConversation = restored.messages.flatMap((item, index) => {
+    const role = parseLlmSessionMessageRole(item.role);
+    const content = String(item.content || "").trim();
+    if (!role || (!content && !item.commandExecution)) return [];
+    const stableId = item.itemId ? codexItemMessageId(nextSessionId, item.itemId) : "";
+    const id = stableId && !seenIds.has(stableId)
+      ? stableId
+      : `restored-${nextSessionId}-${index}-${role}`;
+    seenIds.add(id);
+    return [{
+      ...buildConversationMessage(role, content, {
+        at: String(item.at || "").trim(),
+        ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}),
+      }),
+      id,
+    }];
+  });
   const nextHistory = buildHistoryFromSessionMessages(restoredMessages);
   const effectiveContextUsedPct = clampContextUsedPct(restored.contextUsedPct);
   const nextModelRef = restored.modelRef

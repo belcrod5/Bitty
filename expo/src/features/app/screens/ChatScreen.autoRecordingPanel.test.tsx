@@ -1,14 +1,20 @@
 import React from "react";
-import { fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render } from "@testing-library/react-native";
 import { ChatScreen } from "./ChatScreen";
 
 const mockStartAutoRecordingMode = jest.fn();
 const mockLogSessionDiag = jest.fn();
+const mockLoadOlderSessionHistory = jest.fn();
+const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
 
 jest.mock("@legendapp/list", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
-    LegendList: ReactModule.forwardRef(() => null),
+    LegendList: ReactModule.forwardRef((props: Record<string, any>, _ref) => {
+      mockLegendListProps.current = props;
+      return ReactModule.createElement(View, { testID: "legend-list" });
+    }),
   };
 });
 
@@ -93,7 +99,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       contextUsedPct: 0,
       isResponding: false,
       inheritedConversationMessages: [],
-      conversationMessages: [],
+      conversationMessages: [{ id: "message-1", role: "assistant", content: "hello" }],
     }),
   }),
 }));
@@ -233,6 +239,8 @@ jest.mock("../contexts/ChatScreenContext", () => ({
     isCodexCompactRunning: () => false,
     sanitizeTextForTts: (text: string) => text,
     handleAssistantAudioButtonPress: jest.fn(),
+    sessionHistoryPagingById: {},
+    loadOlderSessionHistory: mockLoadOlderSessionHistory,
   }),
 }));
 
@@ -304,5 +312,26 @@ describe("ChatScreen auto recording panel target", () => {
 
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith(undefined);
     await screen.unmount();
+  });
+
+  it("loads older history only after the user interacts with the list", async () => {
+    jest.useFakeTimers();
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await act(async () => {
+      jest.advanceTimersByTime(400);
+    });
+
+    mockLegendListProps.current?.onStartReached?.();
+    expect(mockLoadOlderSessionHistory).not.toHaveBeenCalled();
+
+    mockLegendListProps.current?.onTouchStart?.();
+    mockLegendListProps.current?.onStartReached?.();
+    expect(mockLoadOlderSessionHistory).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      directory: "/workspace",
+    });
+
+    await screen.unmount();
+    jest.useRealTimers();
   });
 });

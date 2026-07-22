@@ -66,10 +66,8 @@ export function deriveRestoredSessionThreadStatusType(restored: Pick<RunnerSessi
   return executionStatus === "unknown" ? "idle" : executionStatus;
 }
 
-// thread/readのitemId ("item-N")は再読間で決定的なため、ハイドレーション同士では
-// IDが不変になる(ライブ通知のraw idとは一致しない点は codexItemMessageId 参照)。
-// itemIdが無い場合(aux fallback・旧履歴)や同一itemIdの重複時のみ、
-// 従来のインデックスベースIDへフォールバックする。
+// app-serverのitemIdから決定的なUI IDを作り、初期pageとprependで同じ行を保つ。
+// itemIdが無い場合や重複時だけインデックスベースIDへフォールバックする。
 export function buildRestoredPanelConversation(params: {
   messages: RunnerSessionMessage[];
   panelId: string;
@@ -94,6 +92,17 @@ export function buildRestoredPanelConversation(params: {
       commandExecution: message.commandExecution || undefined,
     } satisfies ConversationMessage;
   });
+}
+
+export function prependConversationMessages(
+  older: ConversationMessage[],
+  current: ConversationMessage[]
+) {
+  const currentIds = new Set(current.map((message) => message.id));
+  return [
+    ...older.filter((message) => !currentIds.has(message.id)),
+    ...current,
+  ];
 }
 
 export function projectRestoredRuntimeStatusToConversation(params: {
