@@ -210,12 +210,23 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
 
 export async function saveAndActivateLocationSchedules(rules: readonly LocationScheduleRule[]) {
   const normalized = rulesInCurrentTimeZone(rules);
+  const previousRules = await readPersistedSettingsField(RULES_FIELD);
+  const previousPending = await readPersistedSettingsField(PENDING_FIELD);
   await mutatePersistedSettings((current) => ({
     ...current,
     [RULES_FIELD]: normalized,
     [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], normalized),
   }));
-  await syncLocationSchedules(normalized);
+  try {
+    await syncLocationSchedules(normalized);
+  } catch (error) {
+    await mutatePersistedSettings((current) => ({
+      ...current,
+      [RULES_FIELD]: previousRules,
+      [PENDING_FIELD]: previousPending,
+    }));
+    throw error;
+  }
   await reconcileLocationSchedules(normalized);
 }
 
@@ -225,7 +236,20 @@ export async function loadLocationSchedules() {
 
 export async function recoverLocationScheduleState(origin: string) {
   await flushPendingLocationStates().catch(() => {});
-  const rules = (await loadLocationSchedules()).filter((rule) => rule.enabled);
+  const allRules = await loadLocationSchedules();
+  if (origin === "foreground") {
+    try {
+      await syncLocationSchedules(allRules);
+      await mutatePersistedSettings((current) => ({
+        ...current,
+        [RULES_FIELD]: allRules,
+        [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], allRules),
+      }));
+    } catch {
+      // 次のforeground復帰で再試行する
+    }
+  }
+  const rules = allRules.filter((rule) => rule.enabled);
   if (!rules.length) return;
   const foreground = await Location.getForegroundPermissionsAsync();
   if (foreground.status !== "granted") return;
@@ -239,7 +263,7 @@ export async function recoverLocationScheduleState(origin: string) {
     const regionRevision = locationRuleRevision(rule);
     const state = isCoordinateInsideRule(current.coords, rule) ? "inside" : "outside";
     const last = lastStates[rule.id];
-    if (last && last.regionRevision === regionRevision && last.state === state) continue;
+    if (origin !== "silent_push" && last && last.regionRevision === regionRevision && last.state === state) continue;
     changed += 1;
     await persistLocationState({
       ruleId: rule.id,
@@ -275,13 +299,13 @@ export async function bootstrapLocationSchedules() {
     [RULES_FIELD]: rules,
     [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], rules),
   }));
+  await syncLocationSchedules(rules).catch(() => {});
   if (!rules.some((rule) => rule.enabled)) {
     await reconcileLocationSchedules(rules);
     return;
   }
   const background = await Location.getBackgroundPermissionsAsync();
   if (background.status !== "granted") return;
-  await syncLocationSchedules(rules).catch(() => {});
   await reconcileLocationSchedules(rules).catch(() => {});
 }
 

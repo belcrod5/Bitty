@@ -22,7 +22,7 @@ type WorkspaceTextFileEditorProps = {
   runnerToken: string;
   rootDirectory: string;
   onClose: () => void;
-  onSave: (target: WorkspaceFileTarget, content: string) => Promise<void>;
+  onSave: (target: WorkspaceFileTarget, content: string, expectedVersion: string) => Promise<void>;
 };
 
 export function WorkspaceTextFileEditor({
@@ -37,6 +37,7 @@ export function WorkspaceTextFileEditor({
   const [loadError, setLoadError] = useState("");
   const [content, setContent] = useState("");
   const [initialContent, setInitialContent] = useState("");
+  const [version, setVersion] = useState("");
   const [saving, setSaving] = useState(false);
 
   const targetPath = target?.path || "";
@@ -44,6 +45,7 @@ export function WorkspaceTextFileEditor({
   useEffect(() => {
     setContent("");
     setInitialContent("");
+    setVersion("");
     setLoadError("");
     setSaving(false);
     if (!targetPath) return;
@@ -60,6 +62,7 @@ export function WorkspaceTextFileEditor({
         if (cancelled) return;
         setContent(result.content);
         setInitialContent(result.content);
+        setVersion(result.version);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -95,12 +98,12 @@ export function WorkspaceTextFileEditor({
   const save = useCallback(() => {
     if (!target || !dirty || saving) return;
     setSaving(true);
-    onSave(target, content)
+    onSave(target, content, version)
       .then(() => onClose())
       .catch(() => {
         setSaving(false);
       });
-  }, [content, dirty, onClose, onSave, saving, target]);
+  }, [content, dirty, onClose, onSave, saving, target, version]);
 
   return (
     <Modal
@@ -155,6 +158,7 @@ export function WorkspaceTextFileEditor({
             </View>
           ) : (
             <TextInput
+              testID="workspace-text-file-editor-input"
               style={editorStyles.textInput}
               value={content}
               onChangeText={setContent}

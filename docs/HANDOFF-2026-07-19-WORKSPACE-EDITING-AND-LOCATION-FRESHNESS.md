@@ -24,10 +24,10 @@ worktree: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/feat/location-schedule
 
 ### Runner 側
 - `private_runner/src/workspace-files.mjs`
-  - `writeTextFile({rootDir, path, content})`: **既存ファイル限定**の上書き保存。一時ファイル(`.<name>.write-<uuid>.tmp`)に書いて `fs.rename` する原子的書き込み。元ファイルの mode を保持。root 外パス・シンボリックリンクは `path_invalid` で拒否(既存の `resolveFilePath` を共用)。サイズ上限は `maxUploadBytes`(既定25MB)共通
-  - ルーティング: `PUT /workspace/files`(JSON body `{rootDir, path, content}`)。`parseMutationRequest` の body 上限は PUT のみ `maxBytes + 64KB`(PATCH/DELETE は従来16KB)
+  - `writeTextFile({rootDir, path, content, expectedVersion})`: **既存ファイル限定**の上書き保存。読込時の内容ハッシュと一致しない場合は409で拒否。一時ファイル(`.<name>.write-<uuid>.tmp`)に書いて `fs.rename` する原子的書き込み。元ファイルの mode を保持。root 外パス・シンボリックリンクは `path_invalid` で拒否(既存の `resolveFilePath` を共用)。サイズ上限は `maxUploadBytes`(既定25MB)共通
+  - ルーティング: `GET /workspace/files`で本文とversionを読み、`PUT /workspace/files`(JSON body `{rootDir, path, content, expectedVersion}`)で保存。`parseMutationRequest` の body 上限は PUT のみ `maxBytes + 64KB`(PATCH/DELETE は従来16KB)
 - `private_runner/src/server-runtime.mjs:8667` 付近: `/workspace/files` の許可メソッドに PUT を追加
-- 読み込みは既存の `GET /files/content` を使用。これは切り詰めせず上限超過を 413 で返す実装(server-runtime.mjs `readClientTextFile`)なので、読んで書き戻してもデータ破損しない
+- 読み込みも `workspace-files.mjs` に集約し、切り詰めず上限超過を413で返す
 
 ### Expo 側
 - `expo/src/features/app/utils/workspaceFiles.ts`: `writeWorkspaceTextFile()`(PUT、タイムアウト60秒)

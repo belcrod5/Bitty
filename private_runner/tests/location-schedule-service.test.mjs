@@ -133,6 +133,24 @@ test("fires once when already inside at start and persists idempotency across re
   });
 });
 
+test("scheduled turns never wait for interactive approval", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    setNow("2026-07-19T00:30:00.000Z");
+    await service.recordState({
+      ruleId: "home",
+      regionRevision: "revision-home",
+      state: "inside",
+      eventId: "inside",
+      observedAt: "2026-07-19T00:30:00Z",
+    });
+    await waitFor(() => executions.length === 1);
+    assert.equal(executions[0].approvalPolicy, "never");
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+  });
+});
+
 test("enter during the window fires once; exit and re-entry do not duplicate", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
@@ -143,6 +161,7 @@ test("enter during the window fires once; exit and re-entry do not duplicate", a
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:31:00Z" });
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:32:00Z" });
     assert.equal(executions.length, 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
   });
 });
 
@@ -182,10 +201,11 @@ test("stale state at window start defers firing until a fresh report arrives", a
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "fresh-inside", observedAt: "2026-07-19T00:01:00Z" });
     await waitFor(() => executions.length === 1);
     assert.equal(refreshRequests.length, 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
   });
 });
 
-test("stale state falls back to firing after the refresh request times out", async () => {
+test("stale inside state stays fail-closed after the refresh request times out", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const refreshRequests = [];
     const service = create({ requestStateRefresh: async (request) => refreshRequests.push(request) });
@@ -202,11 +222,31 @@ test("stale state falls back to firing after the refresh request times out", asy
     assert.equal(executions.length, 0);
     assert.equal(refreshRequests.length, 1);
 
-    // タイムアウト後は従来どおり最終状態で発火する
+    // タイムアウト後も古い位置情報だけでは発火しない
     setNow("2026-07-19T00:02:00.000Z");
-    await service.evaluate();
-    await waitFor(() => executions.length === 1);
+    assert.equal(await service.evaluate(), 0);
+    assert.equal(executions.length, 0);
     assert.equal(refreshRequests.length, 1);
+  });
+});
+
+test("stale outside state requests a refresh during an active window", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const refreshRequests = [];
+    const service = create({ requestStateRefresh: async (request) => refreshRequests.push(request) });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await service.recordState({
+      ruleId: "home",
+      regionRevision: "revision-home",
+      state: "outside",
+      eventId: "stale-outside",
+      observedAt: "2026-07-18T23:40:00Z",
+    });
+    setNow("2026-07-19T00:00:00.000Z");
+    await service.evaluate();
+    await waitFor(() => refreshRequests.length === 1);
+    assert.equal(refreshRequests[0].rules[0].id, "home");
+    assert.equal(executions.length, 0);
   });
 });
 
@@ -217,6 +257,24 @@ test("ignores an older delayed location event", async () => {
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "new", observedAt: "2026-07-19T00:00:00Z" });
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "old", observedAt: "2026-07-18T23:00:00Z" });
     assert.equal((await service.snapshot()).states.home.state, "inside");
+  });
+});
+
+test("rejects a location event too far in the future", async () => {
+  await withService(async ({ create }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await assert.rejects(
+      service.recordState({
+        ruleId: "home",
+        regionRevision: "revision-home",
+        state: "inside",
+        eventId: "future",
+        observedAt: "2099-01-01T00:00:00Z",
+      }),
+      /future/
+    );
+    assert.equal((await service.snapshot()).states.home, undefined);
   });
 });
 

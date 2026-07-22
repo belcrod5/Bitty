@@ -131,10 +131,12 @@ test("overwrites text file content only inside the selected root", async () => {
       maxUploadBytes: 32,
     });
 
+    const opened = await service.readTextFile({ rootDir: "project", path: "project/note.md" });
     const written = await service.writeTextFile({
       rootDir: "project",
       path: "project/note.md",
       content: "after edit",
+      expectedVersion: opened.version,
     });
     assert.equal(written.path, "project/note.md");
     assert.equal(written.directory, "project");
@@ -145,6 +147,7 @@ test("overwrites text file content only inside the selected root", async () => {
       rootDir: "project",
       path: "project/note.md",
       content: "",
+      expectedVersion: written.version,
     });
     assert.equal(emptied.size, 0);
     assert.equal(await readFile(path.join(projectRoot, "note.md"), "utf8"), "");
@@ -182,6 +185,33 @@ test("overwrites text file content only inside the selected root", async () => {
       (error) => error instanceof WorkspaceFilesError && error.code === "content_required"
     );
     assert.equal(await readFile(outsideFile, "utf8"), "outside");
+  });
+});
+
+test("rejects a text write when the file changed after it was opened", async () => {
+  await withTempDir(async (workspaceRoot) => {
+    const projectRoot = path.join(workspaceRoot, "project");
+    const targetPath = path.join(projectRoot, "note.md");
+    await mkdir(projectRoot);
+    await writeFile(targetPath, "opened content");
+    const service = createWorkspaceFilesService({
+      workspaceRoot,
+      maxUploadBytes: 1024,
+    });
+
+    const opened = await service.readTextFile({ rootDir: "project", path: "project/note.md" });
+    await writeFile(targetPath, "external edit");
+
+    await assert.rejects(
+      service.writeTextFile({
+        rootDir: "project",
+        path: "project/note.md",
+        content: "editor save",
+        expectedVersion: opened.version,
+      }),
+      (error) => error instanceof WorkspaceFilesError && error.code === "file_changed"
+    );
+    assert.equal(await readFile(targetPath, "utf8"), "external edit");
   });
 });
 
@@ -419,6 +449,14 @@ test("accepts authenticated write, rename, and delete requests", async () => {
       assert.equal(createPayload.path, "project/created.md");
       assert.equal(await readFile(path.join(projectRoot, "created.md"), "utf8"), "");
 
+      const readResponse = await fetch(`${baseUrl}?rootDir=project&path=project%2Fbefore.txt`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      const readPayload = await readResponse.json();
+      assert.equal(readResponse.status, 200);
+      assert.equal(readPayload.content, "body");
+      assert.match(readPayload.version, /^[a-f0-9]{64}$/);
+
       const writeResponse = await fetch(baseUrl, {
         method: "PUT",
         headers: {
@@ -429,6 +467,7 @@ test("accepts authenticated write, rename, and delete requests", async () => {
           rootDir: "project",
           path: "project/before.txt",
           content: "edited body",
+          expectedVersion: readPayload.version,
         }),
       });
       const writePayload = await writeResponse.json();

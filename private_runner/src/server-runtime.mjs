@@ -13,7 +13,7 @@ import { createLlmAcpSessionStore } from "./llm-acp-session-store.mjs";
 import { createLlmCliRolloutWriter } from "./llm-cli-rollout-writer.mjs";
 import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
-import { createWorkspaceFilesService } from "./workspace-files.mjs";
+import { createWorkspaceFilesService, isProbablyBinary } from "./workspace-files.mjs";
 import { fetchGitBranches, fetchGitBranchStatus } from "./git-branches.mjs";
 import {
   listRunnerConnectionEvents,
@@ -254,6 +254,7 @@ const CLIENT_APP_LOG_SESSION_DIAG_DETAIL_ENABLED = (
 const workspaceFilesService = createWorkspaceFilesService({
   workspaceRoot: WORKSPACE_ROOT,
   maxUploadBytes: MAX_WORKSPACE_UPLOAD_BYTES,
+  maxTextFileBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
 });
 const CODEX_WS_PROXY_DEBUG_LOG_DIR = path.resolve(
   WORKSPACE_ROOT,
@@ -5199,17 +5200,6 @@ function listCodexWsProxyDebug(limitRaw) {
   return codexWsProxyDebugBuffer.slice(-limit);
 }
 
-function isProbablyBinary(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
-  const sample = buffer.subarray(0, Math.min(buffer.length, 8000));
-  let suspicious = 0;
-  for (const b of sample) {
-    if (b === 0) return true;
-    if (b < 7 || (b > 14 && b < 32)) suspicious += 1;
-  }
-  return suspicious / sample.length > 0.2;
-}
-
 function escapeRegExp(raw) {
   return String(raw || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -5431,47 +5421,6 @@ async function resolveClientFilePath(rawPath, rawRootDir = "") {
   } catch (err) {
     throw makeApiError(400, classifyPathResolutionError(err), errorMessage(err));
   }
-}
-
-async function readClientTextFile(rawPath, rawRootDir = "") {
-  const resolved = await resolveClientFilePath(rawPath, rawRootDir);
-  let stat;
-  try {
-    stat = await fs.stat(resolved.realPath);
-  } catch (err) {
-    const code = classifyFsError(err, "read_stat_failed");
-    throw makeApiError(code === "not_found" ? 404 : 400, code, errorMessage(err));
-  }
-  if (!stat.isFile()) {
-    throw makeApiError(400, "not_a_file", "path is not a file");
-  }
-  if (stat.size > CLIENT_FILE_CONTENT_MAX_BYTES) {
-    throw makeApiError(413, "file_too_large", `file is larger than ${CLIENT_FILE_CONTENT_MAX_BYTES} bytes`, {
-      path: resolved.relativePath,
-      totalBytes: stat.size,
-      maxBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
-    });
-  }
-  const content = await fs.readFile(resolved.realPath);
-  if (content.length > CLIENT_FILE_CONTENT_MAX_BYTES) {
-    throw makeApiError(413, "file_too_large", `file is larger than ${CLIENT_FILE_CONTENT_MAX_BYTES} bytes`, {
-      path: resolved.relativePath,
-      totalBytes: content.length,
-      maxBytes: CLIENT_FILE_CONTENT_MAX_BYTES,
-    });
-  }
-  if (isProbablyBinary(content)) {
-    throw makeApiError(400, "binary_file", "binary files cannot be copied as text", {
-      path: resolved.relativePath,
-    });
-  }
-  return {
-    ok: true,
-    path: resolved.relativePath,
-    bytesRead: content.length,
-    totalBytes: content.length,
-    content: content.toString("utf8"),
-  };
 }
 
 async function sendClientMediaFile(req, res, rawPath, rawRootDir = "") {
@@ -8688,7 +8637,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (
-    (req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE") &&
+    (req.method === "GET" || req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE") &&
     pathname === "/workspace/files"
   ) {
     return workspaceFilesService.handleRequest(req, res, {
@@ -8696,32 +8645,6 @@ const server = http.createServer(async (req, res) => {
       receivedToken: parseAuthToken(req),
       pathname,
     });
-  }
-
-  if (req.method === "GET" && pathname === "/files/content") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    try {
-      const pathParam = String(reqUrl.searchParams.get("path") || "").trim();
-      const rootDirParam = String(reqUrl.searchParams.get("rootDir") || "").trim();
-      const payload = await readClientTextFile(pathParam, rootDirParam);
-      return json(res, 200, payload);
-    } catch (err) {
-      if (isApiError(err)) {
-        return json(res, err.apiStatus, err.apiPayload);
-      }
-      return json(res, 500, {
-        error: "file_content_failed",
-        message: errorMessage(err),
-      });
-    }
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && pathname === "/files/media") {

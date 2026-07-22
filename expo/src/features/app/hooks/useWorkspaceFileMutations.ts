@@ -132,6 +132,7 @@ export function useWorkspaceFileMutations({
   const writeFileContent = useCallback(async (
     target: WorkspaceFileTarget,
     content: string,
+    expectedVersion: string,
   ) => {
     try {
       const result = await writeWorkspaceTextFile({
@@ -140,6 +141,7 @@ export function useWorkspaceFileMutations({
         rootDirectory,
         path: target.path,
         content,
+        expectedVersion,
       });
       showInfoToast(`保存しました: ${result.path || target.path}`);
       await refreshAfterMutationWithAlert(result);

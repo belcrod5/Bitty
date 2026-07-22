@@ -355,12 +355,14 @@ export async function writeWorkspaceTextFile({
   rootDirectory,
   path,
   content,
+  expectedVersion,
 }: {
   runnerUrl: string;
   runnerToken: string;
   rootDirectory: string;
   path: string;
   content: string;
+  expectedVersion: string;
 }): Promise<WorkspaceFileMutationResult> {
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
@@ -384,6 +386,7 @@ export async function writeWorkspaceTextFile({
         rootDir: String(rootDirectory || "").trim(),
         path: targetPath,
         content: String(content ?? ""),
+        expectedVersion: String(expectedVersion || "").trim(),
       }),
       signal: controller.signal,
     });

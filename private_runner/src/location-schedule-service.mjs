@@ -6,10 +6,10 @@ const MAX_ENABLED_RULES = 20;
 const MAX_PROMPT_CHARS = 24_000;
 const OCCURRENCE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 // window開始時に最後の位置状態がこの時間より古い場合は、発火前にサイレントpushで
-// 端末に現在地の再報告を求める。応答が無いままタイムアウトしたら従来どおり最終状態で発火する。
+// 端末に現在地の再報告を求める。応答が無い場合は古い状態で発火しない。
 const STATE_FRESH_MS = 3 * 60 * 1000;
-const STATE_REFRESH_TIMEOUT_MS = 90 * 1000;
 const STATE_REFRESH_REQUEST_RETENTION_MS = 6 * 60 * 60 * 1000;
+const MAX_LOCATION_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 export class LocationScheduleStoreUnavailableError extends Error {
   constructor(message) {
@@ -232,23 +232,25 @@ export function createLocationScheduleService({
     const staleRules = [];
     for (const rule of data.rules) {
       const state = data.states[rule.id];
-      if (!rule.enabled || state?.state !== "inside" || state.regionRevision !== rule.regionRevision) continue;
+      if (!rule.enabled || !state || state.regionRevision !== rule.regionRevision) continue;
       const window = windowAt(rule, at);
       if (!window.active || data.occurrences[window.occurrenceKey]) continue;
       if (typeof requestStateRefresh === "function") {
         const observedAtMs = Date.parse(String(state.observedAt || ""));
-        const ageMs = at.getTime() - (Number.isFinite(observedAtMs) ? observedAtMs : 0);
+        const receivedAtMs = Date.parse(String(state.receivedAt || ""));
+        const freshAtMs = Number.isFinite(observedAtMs) && Number.isFinite(receivedAtMs)
+          ? Math.min(observedAtMs, receivedAtMs)
+          : 0;
+        const ageMs = at.getTime() - freshAtMs;
         if (ageMs > STATE_FRESH_MS) {
-          const requestedAtMs = stateRefreshRequests.get(window.occurrenceKey);
-          if (!requestedAtMs) {
+          if (!stateRefreshRequests.has(window.occurrenceKey)) {
             stateRefreshRequests.set(window.occurrenceKey, at.getTime());
             staleRules.push({ ...rule });
-            continue;
           }
-          if (at.getTime() - requestedAtMs < STATE_REFRESH_TIMEOUT_MS) continue;
-          // 端末から再報告が来ないままタイムアウト。従来どおり最終状態で発火する
+          continue;
         }
       }
+      if (state.state !== "inside") continue;
       stateRefreshRequests.delete(window.occurrenceKey);
       const createdAt = at.toISOString();
       data.occurrences[window.occurrenceKey] = {
@@ -282,7 +284,7 @@ export function createLocationScheduleService({
         cwd: rule.cwd,
         model: rule.model,
         effort: rule.reasoningEffort,
-        approvalPolicy: "on-request",
+        approvalPolicy: "never",
       });
     } catch (error) {
       failure = error;
@@ -405,6 +407,9 @@ export function createLocationScheduleService({
       const observedAt = String(payload?.observedAt || "").trim();
       const parsedObservedAt = Date.parse(observedAt);
       if (!Number.isFinite(parsedObservedAt)) throw new Error("observedAt must be an ISO timestamp");
+      if (parsedObservedAt > now().getTime() + MAX_LOCATION_CLOCK_SKEW_MS) {
+        throw new Error("observedAt is too far in the future");
+      }
       const currentObservedAt = Date.parse(String(data.states[ruleId]?.observedAt || ""));
       if (Number.isFinite(parsedObservedAt) && Number.isFinite(currentObservedAt) && parsedObservedAt < currentObservedAt) {
         return false;
