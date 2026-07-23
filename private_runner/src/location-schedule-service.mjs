@@ -103,6 +103,10 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     if (!/^[A-Za-z0-9._-]{1,200}$/.test(regionRevision)) {
       throw new Error(`rules[${index}].regionRevision is invalid`);
     }
+    const scheduleRevision = String(raw?.scheduleRevision || `legacy-${regionRevision}`).trim();
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(scheduleRevision)) {
+      throw new Error(`rules[${index}].scheduleRevision is invalid`);
+    }
     const modelRef = String(raw?.modelRef || "").trim();
     if (!modelRef) throw new Error(`rules[${index}].modelRef is required`);
     const requestedEffort = String(raw?.reasoningEffort || "").trim().toLowerCase();
@@ -127,6 +131,7 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
       longitude,
       radiusMeters,
       regionRevision,
+      scheduleRevision,
       cwd,
       modelRef: codexOptions.modelInfo.modelRef,
       model: codexOptions.modelInfo.model,
@@ -141,7 +146,8 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
 }
 
 function ruleFingerprint(rule) {
-  return createHash("sha256").update(JSON.stringify(rule)).digest("hex");
+  const { scheduleRevision: _scheduleRevision, ...definition } = rule;
+  return createHash("sha256").update(JSON.stringify(definition)).digest("hex");
 }
 
 export function createLocationScheduleService({
@@ -211,6 +217,17 @@ export function createLocationScheduleService({
           if (key !== windowKey && key !== `${windowKey}|edited` && !key.startsWith(`${windowKey}|entry|`)) {
             throw new Error(`store.occurrences[${key}].windowKey is invalid`);
           }
+        }
+        if (occurrence.windowAliases !== undefined && (
+          !Array.isArray(occurrence.windowAliases)
+          || occurrence.windowAliases.length > 100
+          || occurrence.windowAliases.some((alias) => (
+            typeof alias !== "string"
+            || alias.length > 500
+            || !alias.startsWith(`${occurrence.ruleId}|`)
+          ))
+        )) {
+          throw new Error(`store.occurrences[${key}].windowAliases is invalid`);
         }
         if (occurrence.status === "skipped_edited_active_window") {
           delete parsed.occurrences[key];
@@ -314,6 +331,7 @@ export function createLocationScheduleService({
   function occurrencesForWindow(windowKey) {
     return Object.values(data.occurrences).filter((occurrence) => (
       String(occurrence?.windowKey || occurrence?.occurrenceKey || "") === windowKey
+      || occurrence?.windowAliases?.includes(windowKey)
     ));
   }
 
@@ -331,7 +349,13 @@ export function createLocationScheduleService({
     const staleRules = [];
     for (const rule of data.rules) {
       const state = data.states[rule.id];
-      if (!rule.enabled || !state || state.regionRevision !== rule.regionRevision) continue;
+      const scheduleRevisionMatches = state?.scheduleRevision
+        ? state.scheduleRevision === rule.scheduleRevision
+        : rule.scheduleRevision.startsWith("legacy-");
+      if (!rule.enabled
+        || !state
+        || state.regionRevision !== rule.regionRevision
+        || !scheduleRevisionMatches) continue;
       const window = windowAt(rule, at);
       if (!window.active) continue;
       const windowOccurrences = occurrencesForWindow(window.occurrenceKey);
@@ -489,6 +513,7 @@ export function createLocationScheduleService({
 
   async function replaceSchedules(payload) {
     const result = await serialize(async () => {
+      const at = now();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
@@ -501,6 +526,21 @@ export function createLocationScheduleService({
         const revisionChanged = old.regionRevision !== rule.regionRevision;
         if (locationChanged !== revisionChanged) {
           throw new Error(`rule ${rule.id} regionRevision must change exactly when its location changes`);
+        }
+        const scheduleChanged = ruleFingerprint(old) !== ruleFingerprint(rule);
+        const scheduleRevisionChanged = old.scheduleRevision !== rule.scheduleRevision;
+        if (!old.scheduleRevision.startsWith("legacy-") && scheduleChanged !== scheduleRevisionChanged) {
+          throw new Error(`rule ${rule.id} scheduleRevision must change exactly when its schedule changes`);
+        }
+      }
+      for (const rule of rules) {
+        const old = previous.get(rule.id);
+        if (!old?.enabled || !rule.enabled) continue;
+        const oldWindow = windowAt(old, at);
+        const newWindow = windowAt(rule, at);
+        if (!oldWindow.active || !newWindow.active || oldWindow.occurrenceKey === newWindow.occurrenceKey) continue;
+        for (const occurrence of occurrencesForWindow(oldWindow.occurrenceKey)) {
+          occurrence.windowAliases = [...new Set([...(occurrence.windowAliases || []), newWindow.occurrenceKey])].slice(-100);
         }
       }
       data.phoneTimeZone = phoneTimeZone;
@@ -536,10 +576,20 @@ export function createLocationScheduleService({
       if (!rule) throw new Error(`unknown ruleId: ${ruleId}`);
       const regionRevision = String(payload?.regionRevision || "").trim();
       if (regionRevision !== rule.regionRevision) throw new Error(`stale regionRevision for ruleId: ${ruleId}`);
+      const requestedScheduleRevision = String(payload?.scheduleRevision || "").trim();
+      const scheduleRevision = requestedScheduleRevision || (
+        rule.scheduleRevision.startsWith("legacy-") ? rule.scheduleRevision : ""
+      );
+      if (scheduleRevision !== rule.scheduleRevision) throw new Error(`stale scheduleRevision for ruleId: ${ruleId}`);
       if (state !== "inside" && state !== "outside") throw new Error("state must be inside or outside");
       const eventId = String(payload?.eventId || "").trim().slice(0, 200);
       if (!eventId) throw new Error("eventId is required");
-      if (eventId && data.states[ruleId]?.eventId === eventId) return false;
+      const storedState = data.states[ruleId];
+      const previousState = storedState && (
+        storedState.scheduleRevision === scheduleRevision
+        || (!storedState.scheduleRevision && rule.scheduleRevision.startsWith("legacy-"))
+      ) ? storedState : null;
+      if (eventId && previousState?.eventId === eventId) return false;
       const receivedAt = now();
       const observedAt = String(payload?.observedAt || "").trim();
       const parsedObservedAt = Date.parse(observedAt);
@@ -547,11 +597,10 @@ export function createLocationScheduleService({
       if (parsedObservedAt > receivedAt.getTime() + MAX_LOCATION_CLOCK_SKEW_MS) {
         throw new Error("observedAt is too far in the future");
       }
-      const currentObservedAt = Date.parse(String(data.states[ruleId]?.observedAt || ""));
+      const currentObservedAt = Date.parse(String(previousState?.observedAt || ""));
       if (Number.isFinite(parsedObservedAt) && Number.isFinite(currentObservedAt) && parsedObservedAt < currentObservedAt) {
         return false;
       }
-      const previousState = data.states[ruleId];
       const observedAtIso = new Date(parsedObservedAt).toISOString();
       const sameState = previousState?.state === state;
       let stateSince = observedAtIso;
@@ -585,6 +634,7 @@ export function createLocationScheduleService({
       }
       data.states[ruleId] = {
         regionRevision,
+        scheduleRevision,
         state,
         eventId,
         observedAt: observedAtIso,

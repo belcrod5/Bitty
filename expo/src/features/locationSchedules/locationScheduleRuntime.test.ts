@@ -61,7 +61,7 @@ import {
   recoverLocationScheduleState,
   saveAndActivateLocationSchedules,
 } from "./locationScheduleRuntime";
-import { locationRuleRevision, type LocationScheduleRule } from "./locationScheduleRules";
+import { locationRuleRevision, scheduleRuleRevision, type LocationScheduleRule } from "./locationScheduleRules";
 
 function rule(overrides: Partial<LocationScheduleRule> = {}): LocationScheduleRule {
   return {
@@ -125,6 +125,21 @@ test("restores local schedules when Runner synchronization fails", async () => {
   expect(mockSettings.locationSchedulePendingStates).toEqual([{ eventId: "pending" }]);
 });
 
+test("saving reports current state with the accepted schedule revision", async () => {
+  const currentRule = rule({ startTime: "08:00", prompt: "edited" });
+
+  await saveAndActivateLocationSchedules([currentRule]);
+
+  const scheduleIndex = mockFetch.mock.calls.findIndex(([url]) => String(url).endsWith("/location-schedules"));
+  const stateIndex = mockFetch.mock.calls.findIndex(([url]) => String(url).endsWith("/location-schedules/state"));
+  const schedule = JSON.parse(String(mockFetch.mock.calls[scheduleIndex]?.[1]?.body));
+  const state = JSON.parse(String(mockFetch.mock.calls[stateIndex]?.[1]?.body));
+  expect(scheduleIndex).toBeGreaterThanOrEqual(0);
+  expect(stateIndex).toBeGreaterThan(scheduleIndex);
+  expect(state.scheduleRevision).toBe(schedule.rules[0].scheduleRevision);
+  expect(state.state).toBe("inside");
+});
+
 test.each([
   { rules: [] as LocationScheduleRule[], backgroundStatus: "granted" },
   { rules: [rule()], backgroundStatus: "denied" },
@@ -147,6 +162,7 @@ test("silent push reports a fresh state even when inside/outside did not change"
       office: {
         ruleId: "office",
         regionRevision: locationRuleRevision(currentRule),
+        scheduleRevision: scheduleRuleRevision(currentRule),
         state: "inside",
         eventId: "old",
         observedAt: "2026-07-18T00:00:00Z",

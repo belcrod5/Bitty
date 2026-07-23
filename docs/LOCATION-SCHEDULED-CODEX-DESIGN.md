@@ -79,9 +79,9 @@ temporary payload so React and background work cannot observe a partial JSON wri
 Do not add a second iOS settings store.
 
 When synchronizing a rule to the runner, include the location-only region revision as
-an opaque `regionRevision`. The iOS app remains the only place that calculates this
-token; the runner stores it and requires state updates to match the currently accepted
-token exactly.
+an opaque `regionRevision` and a complete-rule revision as `scheduleRevision`. The iOS
+app remains the only place that calculates these tokens; the runner stores them and
+requires state updates to match both currently accepted tokens exactly.
 
 ## iOS location responsibility
 
@@ -101,6 +101,9 @@ updates.
   inside event cannot be evaluated before a newer queued outside event.
 - Include a location-only region revision in each monitored identifier. Ignore delayed
   events and queued states whose revision no longer matches the configured centre/radius.
+- Include the complete-rule revision in every state report, so saving a time, prompt,
+  model, effort, directory, enabled-state, or location edit invalidates observations
+  queued before that save.
 - Re-filter the pending queue against the current rules immediately before sending it.
   The runner's exact revision check remains authoritative if a rule changes while the
   network request is in flight.
@@ -139,9 +142,10 @@ durable execution history. Never age-prune queued, pending, or running claims. T
 bounds the high-frequency re-entry portion of the scheduler store without weakening
 an active claim.
 
-Reject state updates whose `regionRevision` does not match the current rule. A location
-change must produce a new revision, while time, prompt, model, and effort edits keep it
-stable. This closes the race where an old in-flight state arrives after a schedule edit.
+Reject state updates whose `regionRevision` or `scheduleRevision` does not match the
+current rule. A location change must update both revisions; every other rule edit
+updates only `scheduleRevision`. This closes the race where an old in-flight state or
+fresh pre-save state is evaluated after a schedule edit.
 If an existing runner store cannot be parsed and validated, fail closed without
 overwriting it or executing; only a missing store may initialize empty. Schedule APIs
 report this state as HTTP 503, while request validation errors remain HTTP 400.
@@ -178,13 +182,16 @@ adds the persisted inside-transition timestamp and event ID. Atomically persist 
 fire claim before starting Codex. The persisted claim is the at-most-once boundary for
 that enter cycle. Store only a fixed-size SHA-256 rule fingerprint on each claim; do
 not duplicate the prompt or complete rule per occurrence. Do not add an unsupported
-idempotency field to the Codex app-server RPC.
+idempotency field to the Codex app-server RPC. If an edit changes the window key while
+both old and new windows are active, link the existing occurrences to the new key so
+the edit cannot reset the initial-fire or re-entry guards.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
 complete schedule set. Creating or editing a rule during its active window applies
 immediately: a synchronized inside state may produce the initial fire, while an
 outside or unknown state waits for a later enter. A window that already fired keeps
-the normal outside-duration and cooldown requirements for re-entry.
+the normal outside-duration and cooldown requirements for re-entry. Edited rules wait
+for a state carrying the revision of that save; a pre-save inside state is not enough.
 
 ## Shared Codex execution boundary
 

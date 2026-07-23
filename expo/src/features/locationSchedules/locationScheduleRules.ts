@@ -23,12 +23,13 @@ export type LocationScheduleRule = {
 export type PendingLocationState = {
   ruleId: string;
   regionRevision: string;
+  scheduleRevision: string;
   state: "inside" | "outside";
   eventId: string;
   observedAt: string;
 };
 
-function hashLocation(value: string) {
+function hashRevision(value: string) {
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
   for (let index = 0; index < value.length; index += 1) {
@@ -42,7 +43,24 @@ function hashLocation(value: string) {
 export function locationRuleRevision(
   rule: Pick<LocationScheduleRule, "latitude" | "longitude" | "radiusMeters">
 ) {
-  return hashLocation(JSON.stringify([rule.latitude, rule.longitude, rule.radiusMeters]));
+  return hashRevision(JSON.stringify([rule.latitude, rule.longitude, rule.radiusMeters]));
+}
+
+export function scheduleRuleRevision(rule: LocationScheduleRule) {
+  return hashRevision(JSON.stringify([
+    rule.id,
+    rule.enabled,
+    rule.startTime,
+    rule.endTime,
+    rule.timeZone,
+    rule.latitude,
+    rule.longitude,
+    rule.radiusMeters,
+    rule.cwd,
+    rule.modelRef,
+    rule.reasoningEffort,
+    rule.prompt,
+  ]));
 }
 
 export function regionIdentifierForRule(rule: Pick<LocationScheduleRule, "id" | "latitude" | "longitude" | "radiusMeters">) {
@@ -174,6 +192,7 @@ export function parsePendingLocationStates(current: unknown): PendingLocationSta
       !item || typeof item !== "object" ||
       typeof item.ruleId !== "string" ||
       typeof item.regionRevision !== "string" ||
+      typeof item.scheduleRevision !== "string" ||
       typeof item.eventId !== "string" ||
       typeof item.observedAt !== "string" ||
       (item.state !== "inside" && item.state !== "outside")
@@ -184,9 +203,15 @@ export function parsePendingLocationStates(current: unknown): PendingLocationSta
 
 export function pendingLocationStatesForRules(current: unknown, rules: readonly LocationScheduleRule[]) {
   const revisions = new Map(
-    rules.filter((rule) => rule.enabled).map((rule) => [rule.id, locationRuleRevision(rule)])
+    rules.filter((rule) => rule.enabled).map((rule) => [
+      rule.id,
+      [locationRuleRevision(rule), scheduleRuleRevision(rule)],
+    ])
   );
-  return parsePendingLocationStates(current).filter((event) => revisions.get(event.ruleId) === event.regionRevision);
+  return parsePendingLocationStates(current).filter((event) => {
+    const revision = revisions.get(event.ruleId);
+    return revision?.[0] === event.regionRevision && revision[1] === event.scheduleRevision;
+  });
 }
 
 export function removeSentPendingLocationStates(current: unknown, sentEventIds: ReadonlySet<string>) {
