@@ -212,6 +212,10 @@ export function createLocationScheduleService({
             throw new Error(`store.occurrences[${key}].windowKey is invalid`);
           }
         }
+        if (occurrence.status === "skipped_edited_active_window") {
+          delete parsed.occurrences[key];
+          continue;
+        }
         let legacyRule = null;
         if (occurrence.ruleSignature !== undefined
           && !/^[a-f0-9]{64}$/.test(String(occurrence.ruleSignature))) {
@@ -293,7 +297,7 @@ export function createLocationScheduleService({
         continue;
       }
       const windowKey = String(occurrence?.windowKey || occurrence?.occurrenceKey || "");
-      const initialOccurrence = key === windowKey && occurrence?.status !== "skipped_edited_active_window";
+      const initialOccurrence = key === windowKey;
       const cutoff = initialOccurrence ? initialCutoff : reentryCutoff;
       if (Date.parse(String(occurrence?.createdAt || "")) < cutoff) {
         delete data.occurrences[key];
@@ -315,7 +319,6 @@ export function createLocationScheduleService({
 
   function latestClaim(occurrences) {
     return occurrences
-      .filter((occurrence) => occurrence?.status !== "skipped_edited_active_window")
       .reduce((latest, occurrence) => (
         !latest || Date.parse(String(occurrence?.createdAt || "")) > Date.parse(String(latest.createdAt || ""))
           ? occurrence
@@ -332,7 +335,6 @@ export function createLocationScheduleService({
       const window = windowAt(rule, at);
       if (!window.active) continue;
       const windowOccurrences = occurrencesForWindow(window.occurrenceKey);
-      if (windowOccurrences.some((occurrence) => occurrence?.status === "skipped_edited_active_window")) continue;
       if (typeof requestStateRefresh === "function") {
         const observedAtMs = Date.parse(String(state.observedAt || ""));
         const receivedAtMs = Date.parse(String(state.receivedAt || ""));
@@ -487,7 +489,6 @@ export function createLocationScheduleService({
 
   async function replaceSchedules(payload) {
     const result = await serialize(async () => {
-      const at = now();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
@@ -518,25 +519,6 @@ export function createLocationScheduleService({
         )) {
           delete data.states[rule.id];
         }
-        if (!rule.enabled || (old && ruleFingerprint(old) === ruleFingerprint(rule))) continue;
-        const window = windowAt(rule, at);
-        if (!window.active || occurrencesForWindow(window.occurrenceKey).some((occurrence) => (
-          occurrence?.status === "skipped_edited_active_window"
-        ))) continue;
-        const occurrenceKey = data.occurrences[window.occurrenceKey]
-          ? `${window.occurrenceKey}|edited`
-          : window.occurrenceKey;
-        data.occurrences[occurrenceKey] = {
-          occurrenceKey,
-          windowKey: window.occurrenceKey,
-          ruleId: rule.id,
-          status: "skipped_edited_active_window",
-          threadId: "",
-          turnId: "",
-          errorMessage: "",
-          createdAt: at.toISOString(),
-          updatedAt: at.toISOString(),
-        };
       }
       await persist();
       return snapshot();

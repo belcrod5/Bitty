@@ -133,11 +133,11 @@ completed fires in one runner-owned JSON store. Use the same atomic-write style 
 existing runner stores. A runner restart must not lose claimed fires, cooldown state,
 or the start of a continuous outside period.
 
-Keep initial window occurrences for 90 days. Terminal re-entry occurrences and active
-window edit markers need only two days because windows cannot cross midnight; ordinary
-Codex threads remain the durable execution history. Never age-prune queued, pending, or
-running claims. This bounds the high-frequency re-entry portion of the scheduler store
-without weakening an active claim.
+Keep initial window occurrences for 90 days. Terminal re-entry occurrences need only
+two days because windows cannot cross midnight; ordinary Codex threads remain the
+durable execution history. Never age-prune queued, pending, or running claims. This
+bounds the high-frequency re-entry portion of the scheduler store without weakening
+an active claim.
 
 Reject state updates whose `regionRevision` does not match the current rule. A location
 change must produce a new revision, while time, prompt, model, and effort edits keep it
@@ -181,8 +181,10 @@ not duplicate the prompt or complete rule per occurrence. Do not add an unsuppor
 idempotency field to the Codex app-server RPC.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
-complete schedule set. Creating a rule or changing its time/location applies to the
-next window; it must not surprise-run an already-active edited window.
+complete schedule set. Creating or editing a rule during its active window applies
+immediately: a synchronized inside state may produce the initial fire, while an
+outside or unknown state waits for a later enter. A window that already fired keeps
+the normal outside-duration and cooldown requirements for re-entry.
 
 ## Shared Codex execution boundary
 
@@ -238,7 +240,7 @@ Add focused tests for:
 - Already-inside-at-start, enter-during-window, qualified exit/re-entry, short outside
   periods, cooldown rejection, duplicate inside reports, and unknown state.
 - Duplicate events, duplicate API requests, and runner restart persistence.
-- Rule edits not firing the current active window.
+- Creation and edits during an active window using synchronized inside/outside state.
 - Starting a normal new Codex thread with configured prompt/cwd/model/effort through
   the shared runner execution operation.
 - iOS background event persistence and later flush.

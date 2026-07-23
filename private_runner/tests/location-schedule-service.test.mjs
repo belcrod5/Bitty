@@ -516,21 +516,46 @@ test("many occurrences store fixed fingerprints instead of duplicating a maximum
   });
 });
 
-test("unknown/outside state does not fire and active-window edits are skipped", async () => {
+test("a rule created outside during its active window fires on a later enter", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
     setNow("2026-07-19T00:30:00.000Z");
-    await service.evaluate();
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ radiusMeters: 300, regionRevision: "revision-home-moved" })] });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home-moved", state: "inside", eventId: "enter-after-edit", observedAt: "2026-07-19T00:30:00Z" });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "initial-outside", observedAt: "2026-07-19T00:30:00Z" });
     assert.equal(executions.length, 0);
-    const snapshot = await service.snapshot();
-    assert.equal(Object.values(snapshot.occurrences)[0].status, "skipped_edited_active_window");
+
+    setNow("2026-07-19T00:31:00.000Z");
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter", observedAt: "2026-07-19T00:31:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
   });
 });
 
-test("an active-window edit blocks re-entry after the initial firing", async () => {
+test("a rule created inside during its active window fires from the synchronized state", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    setNow("2026-07-19T00:30:00.000Z");
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "initial-inside", observedAt: "2026-07-19T00:30:00Z" });
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+  });
+});
+
+test("an active-window edit fires from a current synchronized inside state", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create();
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
+    await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "initial-inside", observedAt: "2026-07-18T23:59:00Z" });
+    setNow("2026-07-19T00:00:00.000Z");
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ prompt: "edited prompt" })] });
+    await waitFor(() => executions.length === 1);
+    assert.equal(executions[0].inputText, "edited prompt");
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+  });
+});
+
+test("an active-window edit keeps the existing re-entry guards after a firing", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
     await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] });
@@ -543,10 +568,49 @@ test("an active-window edit blocks re-entry after the initial firing", async () 
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
     setNow("2026-07-19T00:25:00.000Z");
     await service.recordState({ ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
-    assert.equal(executions.length, 1);
-    assert.ok(Object.values((await service.snapshot()).occurrences).some((occurrence) => (
+    await waitFor(() => executions.length === 2);
+    assert.equal(executions[1].inputText, "edited prompt");
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+  });
+});
+
+test("legacy active-window edit markers are removed and no longer block firing", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    const windowKey = "home|2026-07-19|09:00|10:00|Asia/Tokyo";
+    setNow("2026-07-19T00:30:00.000Z");
+    await fs.writeFile(storePath, `${JSON.stringify({
+      version: 1,
+      phoneTimeZone: "Asia/Tokyo",
+      rules: [rule()],
+      states: {
+        home: {
+          regionRevision: "revision-home",
+          state: "inside",
+          eventId: "inside",
+          observedAt: "2026-07-19T00:30:00.000Z",
+          receivedAt: "2026-07-19T00:30:00.000Z",
+        },
+      },
+      occurrences: {
+        [windowKey]: {
+          occurrenceKey: windowKey,
+          windowKey,
+          ruleId: "home",
+          status: "skipped_edited_active_window",
+          createdAt: "2026-07-19T00:20:00.000Z",
+          updatedAt: "2026-07-19T00:20:00.000Z",
+        },
+      },
+      updatedAt: "2026-07-19T00:20:00.000Z",
+    }, null, 2)}\n`, "utf8");
+
+    const service = create();
+    await service.start();
+    await waitFor(() => executions.length === 1);
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+    assert.equal(Object.values((await service.snapshot()).occurrences).some((occurrence) => (
       occurrence.status === "skipped_edited_active_window"
-    )));
+    )), false);
   });
 });
 
