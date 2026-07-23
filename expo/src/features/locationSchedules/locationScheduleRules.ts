@@ -63,8 +63,8 @@ export function scheduleRuleRevision(rule: LocationScheduleRule) {
   ]));
 }
 
-export function regionIdentifierForRule(rule: Pick<LocationScheduleRule, "id" | "latitude" | "longitude" | "radiusMeters">) {
-  return `${LOCATION_REGION_PREFIX}${rule.id}:${locationRuleRevision(rule)}`;
+export function regionIdentifierForRule(rule: LocationScheduleRule) {
+  return `${LOCATION_REGION_PREFIX}${rule.id}:${locationRuleRevision(rule)}:${scheduleRuleRevision(rule)}`;
 }
 
 function parseTime(raw: unknown) {
@@ -150,11 +150,11 @@ export function enabledLocationRegions(rules: readonly LocationScheduleRule[]) {
 export function parseLocationRegionIdentifier(identifier: unknown) {
   const value = String(identifier || "");
   if (!value.startsWith(LOCATION_REGION_PREFIX)) return null;
-  const separator = value.lastIndexOf(":");
-  const ruleId = value.slice(LOCATION_REGION_PREFIX.length, separator);
-  const regionRevision = value.slice(separator + 1);
-  if (!ruleId || !/^[a-f0-9]{16}$/.test(regionRevision)) return null;
-  return { ruleId, regionRevision };
+  const match = value.slice(LOCATION_REGION_PREFIX.length)
+    .match(/^([A-Za-z0-9_-]{1,100}):([a-f0-9]{16})(?::([a-f0-9]{16}))?$/);
+  if (!match) return null;
+  const [, ruleId, regionRevision, scheduleRevision = ""] = match;
+  return { ruleId, regionRevision, scheduleRevision };
 }
 
 export function isCoordinateInsideRule(

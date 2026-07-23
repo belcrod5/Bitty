@@ -1,4 +1,5 @@
 import {
+  LOCATION_REGION_PREFIX,
   appendPendingLocationState,
   enabledLocationRegions,
   isCoordinateInsideRule,
@@ -43,6 +44,12 @@ test("reconciles enabled rules to one geofence each and enforces the iOS limit",
   expect(parseLocationRegionIdentifier(regionIdentifierForRule(rules[0]))).toEqual({
     ruleId: "office",
     regionRevision: locationRuleRevision(rules[0]),
+    scheduleRevision: scheduleRuleRevision(rules[0]),
+  });
+  expect(parseLocationRegionIdentifier(`${LOCATION_REGION_PREFIX}office:${locationRuleRevision(rules[0])}`)).toEqual({
+    ruleId: "office",
+    regionRevision: locationRuleRevision(rules[0]),
+    scheduleRevision: "",
   });
   const tooMany = Array.from({ length: 21 }, (_, index) => ({ ...rules[0], id: `rule_${index}` }));
   expect(() => enabledLocationRegions(tooMany)).toThrow(/20/);
@@ -73,11 +80,12 @@ test("pending state converges to each rule's latest observation before sync", ()
   expect(removeSentPendingLocationStates([inside, outside], new Set([outside.eventId]))).toEqual([]);
 });
 
-test("location and schedule revisions drop pending state after their respective edits", () => {
+test("location and schedule revisions invalidate pending state and monitored identifiers", () => {
   const parsed = parseLocationScheduleRules([validRule], models)[0];
   const revision = locationRuleRevision(parsed);
   const nonLocationEdit = { ...parsed, prompt: "different", modelRef: "different", startTime: "11:00" };
   expect(locationRuleRevision(nonLocationEdit)).toBe(revision);
+  expect(regionIdentifierForRule(nonLocationEdit)).not.toBe(regionIdentifierForRule(parsed));
   const moved = { ...parsed, latitude: parsed.latitude + 0.001 };
   expect(locationRuleRevision(moved)).not.toBe(revision);
   const oldEvent = { ruleId: parsed.id, regionRevision: revision, scheduleRevision: scheduleRuleRevision(parsed), state: "inside" as const, eventId: "old", observedAt: "2026-07-19T00:00:00Z" };

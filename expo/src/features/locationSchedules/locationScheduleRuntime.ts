@@ -357,8 +357,8 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
     if (!state) return;
     const event: PendingLocationState = {
       ruleId: region.ruleId,
-      regionRevision: locationRuleRevision(rule),
-      scheduleRevision: scheduleRuleRevision(rule),
+      regionRevision: region.regionRevision,
+      scheduleRevision: region.scheduleRevision,
       state,
       eventId: `geofence:${region.ruleId}:${region.regionRevision}:${Date.now()}:${state}`,
       observedAt: new Date().toISOString(),

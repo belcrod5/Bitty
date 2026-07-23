@@ -516,6 +516,9 @@ export function createLocationScheduleService({
       const at = now();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
+      const explicitScheduleRevisionIds = new Set(payload.rules
+        .filter((rule) => String(rule?.scheduleRevision || "").trim())
+        .map((rule) => String(rule.id || "").trim()));
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
       for (const rule of rules) {
         const old = previous.get(rule.id);
@@ -529,13 +532,19 @@ export function createLocationScheduleService({
         }
         const scheduleChanged = ruleFingerprint(old) !== ruleFingerprint(rule);
         const scheduleRevisionChanged = old.scheduleRevision !== rule.scheduleRevision;
-        if (!old.scheduleRevision.startsWith("legacy-") && scheduleChanged !== scheduleRevisionChanged) {
+        if (old.scheduleRevision.startsWith("legacy-")
+          && scheduleChanged
+          && !explicitScheduleRevisionIds.has(rule.id)) {
+          throw new Error(`rule ${rule.id} scheduleRevision is required to change a legacy schedule`);
+        }
+        if ((scheduleChanged || !old.scheduleRevision.startsWith("legacy-"))
+          && scheduleChanged !== scheduleRevisionChanged) {
           throw new Error(`rule ${rule.id} scheduleRevision must change exactly when its schedule changes`);
         }
       }
       for (const rule of rules) {
         const old = previous.get(rule.id);
-        if (!old?.enabled || !rule.enabled) continue;
+        if (!old) continue;
         const oldWindow = windowAt(old, at);
         const newWindow = windowAt(rule, at);
         if (!oldWindow.active || !newWindow.active || oldWindow.occurrenceKey === newWindow.occurrenceKey) continue;

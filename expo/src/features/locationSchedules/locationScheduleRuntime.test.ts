@@ -61,7 +61,18 @@ import {
   recoverLocationScheduleState,
   saveAndActivateLocationSchedules,
 } from "./locationScheduleRuntime";
-import { locationRuleRevision, scheduleRuleRevision, type LocationScheduleRule } from "./locationScheduleRules";
+import {
+  LOCATION_SCHEDULE_TASK_NAME,
+  locationRuleRevision,
+  regionIdentifierForRule,
+  scheduleRuleRevision,
+  type LocationScheduleRule,
+} from "./locationScheduleRules";
+import * as TaskManager from "expo-task-manager";
+
+const mockLocationScheduleTaskCallback = (TaskManager.defineTask as jest.Mock).mock.calls.find(
+  ([taskName]) => taskName === LOCATION_SCHEDULE_TASK_NAME,
+)?.[1];
 
 function rule(overrides: Partial<LocationScheduleRule> = {}): LocationScheduleRule {
   return {
@@ -138,6 +149,40 @@ test("saving reports current state with the accepted schedule revision", async (
   expect(stateIndex).toBeGreaterThan(scheduleIndex);
   expect(state.scheduleRevision).toBe(schedule.rules[0].scheduleRevision);
   expect(state.state).toBe("inside");
+});
+
+test("an enter from the previous geofence generation is ignored before current-state sync", async () => {
+  const previous = rule();
+  const edited = rule({ prompt: "edited" });
+  mockSettings = { locationSchedules: [previous] };
+  let resolveCurrentPosition!: (value: unknown) => void;
+  mockGetCurrentPositionAsync.mockReturnValue(new Promise((resolve) => {
+    resolveCurrentPosition = resolve;
+  }));
+
+  const saving = saveAndActivateLocationSchedules([edited]);
+  for (let index = 0; index < 20 && mockGetCurrentPositionAsync.mock.calls.length === 0; index += 1) {
+    await Promise.resolve();
+  }
+  expect(mockGetCurrentPositionAsync).toHaveBeenCalledTimes(1);
+  const callback = mockLocationScheduleTaskCallback;
+  expect(callback).toBeDefined();
+  await callback?.({
+    data: {
+      eventType: 1,
+      region: { identifier: regionIdentifierForRule(previous) },
+    },
+  });
+  expect(mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"))).toHaveLength(0);
+
+  resolveCurrentPosition({
+    coords: { latitude: edited.latitude, longitude: edited.longitude },
+    timestamp: Date.parse("2026-07-19T00:00:00Z"),
+  });
+  await saving;
+  const stateRequests = mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"));
+  expect(stateRequests).toHaveLength(1);
+  expect(JSON.parse(String(stateRequests[0][1]?.body)).scheduleRevision).toBe(scheduleRuleRevision(edited));
 });
 
 test.each([

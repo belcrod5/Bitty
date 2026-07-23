@@ -99,8 +99,9 @@ updates.
 - On enter and exit events, persist the state/event before attempting network sync.
 - Coalesce unsent events to the newest observation per rule before syncing, so an old
   inside event cannot be evaluated before a newer queued outside event.
-- Include a location-only region revision in each monitored identifier. Ignore delayed
-  events and queued states whose revision no longer matches the configured centre/radius.
+- Include both the location and complete-rule revisions in each monitored identifier.
+  Ignore delayed events and queued states whose revisions no longer match the current
+  rule, even when the region centre and radius did not change.
 - Include the complete-rule revision in every state report, so saving a time, prompt,
   model, effort, directory, enabled-state, or location edit invalidates observations
   queued before that save.
@@ -146,9 +147,19 @@ Reject state updates whose `regionRevision` or `scheduleRevision` does not match
 current rule. A location change must update both revisions; every other rule edit
 updates only `scheduleRevision`. This closes the race where an old in-flight state or
 fresh pre-save state is evaluated after a schedule edit.
+Stores created before `scheduleRevision` remain readable, and unchanged legacy rules
+may still synchronize their old state shape. Changing an existing legacy rule without
+an explicit `scheduleRevision` fails closed; the updated app must migrate it with the
+new rule and state revisions together.
 If an existing runner store cannot be parsed and validated, fail closed without
 overwriting it or executing; only a missing store may initialize empty. Schedule APIs
 report this state as HTTP 503, while request validation errors remain HTTP 400.
+
+Deploy the Runner before the updated app. A new app talking briefly to an old Runner
+is transport-compatible but the old Runner cannot enforce the schedule revision
+barrier, so schedule edits must wait until the Runner upgrade is complete. A new
+Runner accepts unchanged legacy synchronization from an old app but rejects its rule
+edits until the app is upgraded.
 
 The scheduler reacts to three inputs:
 
