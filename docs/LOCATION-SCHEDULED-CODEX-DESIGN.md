@@ -78,10 +78,11 @@ Serialize in-process reads and mutations and replace the file through a complete
 temporary payload so React and background work cannot observe a partial JSON write.
 Do not add a second iOS settings store.
 
-When synchronizing a rule to the runner, include the location-only region revision as
-an opaque `regionRevision`. The iOS app remains the only place that calculates this
-token; the runner stores it and requires state updates to match the currently accepted
-token exactly.
+When synchronizing a rule to the runner, include one opaque `regionRevision` derived
+from the complete rule. The wire name is retained for compatibility, but the token is
+the generation of the whole rule, not only its coordinates. The iOS app remains the
+only place that calculates it; the runner stores it and requires state updates to
+match the currently accepted token exactly.
 
 ## iOS location responsibility
 
@@ -99,8 +100,12 @@ updates.
 - On enter and exit events, persist the state/event before attempting network sync.
 - Coalesce unsent events to the newest observation per rule before syncing, so an old
   inside event cannot be evaluated before a newer queued outside event.
-- Include a location-only region revision in each monitored identifier. Ignore delayed
-  events and queued states whose revision no longer matches the configured centre/radius.
+- Include the complete-rule revision in each monitored identifier. Ignore delayed
+  events and queued states whose revision no longer matches the current rule, even
+  when the region centre and radius did not change.
+- Include the same revision in every state report, so saving a time, prompt,
+  model, effort, directory, enabled-state, or location edit invalidates observations
+  queued before that save.
 - Re-filter the pending queue against the current rules immediately before sending it.
   The runner's exact revision check remains authoritative if a rule changes while the
   network request is in flight.
@@ -133,18 +138,27 @@ completed fires in one runner-owned JSON store. Use the same atomic-write style 
 existing runner stores. A runner restart must not lose claimed fires, cooldown state,
 or the start of a continuous outside period.
 
-Keep initial window occurrences for 90 days. Terminal re-entry occurrences and active
-window edit markers need only two days because windows cannot cross midnight; ordinary
-Codex threads remain the durable execution history. Never age-prune queued, pending, or
-running claims. This bounds the high-frequency re-entry portion of the scheduler store
-without weakening an active claim.
+Keep initial window occurrences for 90 days. Terminal re-entry occurrences need only
+two days because windows cannot cross midnight; ordinary Codex threads remain the
+durable execution history. Never age-prune queued, pending, or running claims. This
+bounds the high-frequency re-entry portion of the scheduler store without weakening
+an active claim.
 
-Reject state updates whose `regionRevision` does not match the current rule. A location
-change must produce a new revision, while time, prompt, model, and effort edits keep it
-stable. This closes the race where an old in-flight state arrives after a schedule edit.
+Reject state updates whose `regionRevision` does not match the current rule. Every
+rule edit changes that one generation, closing the race where an old in-flight state
+or fresh pre-save state is evaluated after a schedule edit. Stores whose revision was
+derived only from location remain readable, and unchanged legacy rules may still
+synchronize. Editing such a legacy rule without the new `rule-` generation fails
+closed; the updated app migrates the rule and its next state together.
 If an existing runner store cannot be parsed and validated, fail closed without
 overwriting it or executing; only a missing store may initialize empty. Schedule APIs
 report this state as HTTP 503, while request validation errors remain HTTP 400.
+
+Deploy the Runner before the updated app. An old Runner rejects the updated app's
+complete-rule revision for an existing rule because it expects the token to change
+only with location, so synchronization safely fails instead of activating the edit.
+A new Runner accepts unchanged legacy synchronization from an old app but rejects its
+rule edits until the app is upgraded.
 
 The scheduler reacts to three inputs:
 
@@ -172,17 +186,23 @@ For a local window `[startTime, endTime)`:
   persist it as queued and start it automatically when that fire finishes. A later
   exit or the window end does not discard an already-claimed enter.
 
-Use a deterministic window key derived from rule ID, local calendar date, start time,
-end time, and timezone. The initial fire uses that key directly; a qualified re-entry
-adds the persisted inside-transition timestamp and event ID. Atomically persist each
-fire claim before starting Codex. The persisted claim is the at-most-once boundary for
-that enter cycle. Store only a fixed-size SHA-256 rule fingerprint on each claim; do
-not duplicate the prompt or complete rule per occurrence. Do not add an unsupported
-idempotency field to the Codex app-server RPC.
+Use a deterministic daily window key derived from rule ID, local calendar date, and
+timezone. Start and end times are deliberately excluded, so editing a window cannot
+reset that day's initial-fire or re-entry guards. The initial fire uses that key
+directly; a qualified re-entry adds the persisted inside-transition timestamp and
+event ID. Atomically persist each fire claim before starting Codex. The persisted
+claim is the at-most-once boundary for that enter cycle. Store only a fixed-size
+SHA-256 rule fingerprint on each claim; do not duplicate the prompt or complete rule
+per occurrence. Do not add an unsupported idempotency field to the Codex app-server
+RPC. Existing five-part window keys are compared as the same daily identity while
+their retained records age out.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
-complete schedule set. Creating a rule or changing its time/location applies to the
-next window; it must not surprise-run an already-active edited window.
+complete schedule set. Creating or editing a rule during its active window applies
+immediately: a synchronized inside state may produce the initial fire, while an
+outside or unknown state waits for a later enter. A window that already fired keeps
+the normal outside-duration and cooldown requirements for re-entry. Edited rules wait
+for a state carrying the revision of that save; a pre-save inside state is not enough.
 
 ## Shared Codex execution boundary
 
@@ -238,7 +258,7 @@ Add focused tests for:
 - Already-inside-at-start, enter-during-window, qualified exit/re-entry, short outside
   periods, cooldown rejection, duplicate inside reports, and unknown state.
 - Duplicate events, duplicate API requests, and runner restart persistence.
-- Rule edits not firing the current active window.
+- Creation and edits during an active window using synchronized inside/outside state.
 - Starting a normal new Codex thread with configured prompt/cwd/model/effort through
   the shared runner execution operation.
 - iOS background event persistence and later flush.

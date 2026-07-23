@@ -106,7 +106,7 @@ Expo (`expo/src/features/locationSchedules/locationScheduleRuntime.ts`):
   - expo prebuild は署名チームを誤選択(U8SYKSPD98)するので走らせない。チームは **E3W35HZ355** 固定
   - インストール: `xcrun devicectl device install app --device 6A85B2F2-C1CA-597C-A955-3803E0CD572F <path>/Bitty.app`(UDID指定だとタイムアウトすることがある。`xcrun devicectl list devices` の UUID を使う。デバイスロック中/Wi-Fi切断中は失敗)
 - **Runner 再起動(トークン維持)**: `RUN_LOCAL_RUNNER_TOKEN="$(cat private_runner/logs/runner-token)" ./private_runner/restart.sh` — これで再ペアリング不要。素の `restart` はトークンが変わり再ペアリングになる
-- **active window 中のルール保存**: 当日分 occurrence が `skipped_edited_active_window` で封鎖される。設定変更は開始時刻を未来にしてから
+- **active window 中のルール保存**: この引き継ぎ作成時は当日分を `skipped_edited_active_window` で封鎖していたが、現在は保存直後から通常の初回発火判定対象になる。圏内なら同期状態で発火し、圏外なら次の enter を待つ
 - サイレントpushの制約: ユーザーがアプリスイッチャーから強制終了した端末には配送されない(iOS仕様)。その場合は90秒タイムアウト→従来動作
 - Runner のストア/ログ: `private_runner/logs/location_schedules.json`(rules/states/occurrences)、`private_runner/logs/client_auto_logs/`(端末診断)
 

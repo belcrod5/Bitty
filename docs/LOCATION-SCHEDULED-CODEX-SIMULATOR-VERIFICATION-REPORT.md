@@ -1,5 +1,8 @@
 # Location-scheduled Codex simulator verification report
 
+> このレポートは 2026-07-19 時点の挙動を記録したもの。現在は active window
+> 中の新規作成・編集も当日から有効で、`skipped_edited_active_window` は作成しない。
+
 検証日時: 2026-07-19 09:00〜10:37 JST
 worktree / commit: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/feat/location-scheduled-codex` / `ec52a6ab8a39772cb92bea5c593d58e5ad6b4e80` (`feat/location-scheduled-codex`)
 Simulator model / iOS version / UDID: iPhone 17 Pro / iOS 26.2 / `23B43EC5-37D1-488B-A4F7-CF6971E39E1A`
@@ -22,7 +25,7 @@ Runner health: `./private_runner/run-local.sh status` → all targets look healt
 - outside のままでは active window 内でも completed occurrence は作られなかった。
 - 位置権限は foreground/background とも要求されるが、Simulator では権限ダイアログが表示されず(後述の発見事項 2)、指示書のフォールバックに従い `xcrun simctl privacy grant location-always app.bitty.mobile` で付与した。
 
-補足(仕様確認): active window 中に新規作成/編集された rule の当該 window は `skipped_edited_active_window` として封鎖される(編集直後の即時発火防止)。このため B 以降は「window 開始前に保存し、開始後に条件を満たす」形で検証した。
+補足(当時の仕様): active window 中に新規作成/編集された rule の当該 window は `skipped_edited_active_window` として封鎖されていた。このため B 以降は「window 開始前に保存し、開始後に条件を満たす」形で検証した。
 
 ### B. background enter と通常 thread: PASS
 
@@ -87,7 +90,7 @@ Runner health: `./private_runner/run-local.sh status` → all targets look healt
    - 再現条件: 位置権限未付与の Simulator で enabled ルールを保存(`reconcileLocationSchedules` が `requestForegroundPermissionsAsync` を呼ぶ)。
    - 期待値: foreground → background 権限のシステムダイアログが順に表示される。
    - 実測値: ダイアログは表示されず保存が完了しない。`simctl privacy grant location-always` 付与後は全フロー正常。実機では権限フローが機能することを実機検証(2026-07-19 progress 参照)で確認済みのため、Simulator 固有事象の可能性が高いが、1 の 401 事象と同時に発生していたため単独の切り分けは未実施。
-3. **仕様メモ(不具合ではない)**: active window 中のルール新規作成・編集は当該 window を `skipped_edited_active_window` にする。UI にはこの旨の説明がないため、「今の時間帯に合わせてルールを作ったのに発火しない」という誤解が起き得る。UX 改善候補。
+3. **当時の仕様メモ(現在は解消済み)**: active window 中のルール新規作成・編集は当該 window を `skipped_edited_active_window` にしていた。現在は当日から有効になる。
 
 ## 検証環境ノート(Maestro)
 
