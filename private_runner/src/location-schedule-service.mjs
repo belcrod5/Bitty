@@ -56,8 +56,15 @@ export function windowAt(rule, now = new Date()) {
   return {
     active: local.minute >= startMinute && local.minute < endMinute,
     localDate: local.date,
-    occurrenceKey: [rule.id, local.date, rule.startTime, rule.endTime, rule.timeZone].join("|"),
+    occurrenceKey: [rule.id, local.date, rule.timeZone].join("|"),
   };
+}
+
+function canonicalWindowKey(raw) {
+  const parts = String(raw || "").split("|");
+  if (parts.length === 3) return parts.join("|");
+  if (parts.length === 5) return [parts[0], parts[1], parts[4]].join("|");
+  return "";
 }
 
 function validateTimeZone(raw) {
@@ -103,10 +110,6 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     if (!/^[A-Za-z0-9._-]{1,200}$/.test(regionRevision)) {
       throw new Error(`rules[${index}].regionRevision is invalid`);
     }
-    const scheduleRevision = String(raw?.scheduleRevision || `legacy-${regionRevision}`).trim();
-    if (!/^[A-Za-z0-9._-]{1,200}$/.test(scheduleRevision)) {
-      throw new Error(`rules[${index}].scheduleRevision is invalid`);
-    }
     const modelRef = String(raw?.modelRef || "").trim();
     if (!modelRef) throw new Error(`rules[${index}].modelRef is required`);
     const requestedEffort = String(raw?.reasoningEffort || "").trim().toLowerCase();
@@ -131,7 +134,6 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
       longitude,
       radiusMeters,
       regionRevision,
-      scheduleRevision,
       cwd,
       modelRef: codexOptions.modelInfo.modelRef,
       model: codexOptions.modelInfo.model,
@@ -146,8 +148,7 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
 }
 
 function ruleFingerprint(rule) {
-  const { scheduleRevision: _scheduleRevision, ...definition } = rule;
-  return createHash("sha256").update(JSON.stringify(definition)).digest("hex");
+  return createHash("sha256").update(JSON.stringify(rule)).digest("hex");
 }
 
 export function createLocationScheduleService({
@@ -218,17 +219,6 @@ export function createLocationScheduleService({
             throw new Error(`store.occurrences[${key}].windowKey is invalid`);
           }
         }
-        if (occurrence.windowAliases !== undefined && (
-          !Array.isArray(occurrence.windowAliases)
-          || occurrence.windowAliases.length > 100
-          || occurrence.windowAliases.some((alias) => (
-            typeof alias !== "string"
-            || alias.length > 500
-            || !alias.startsWith(`${occurrence.ruleId}|`)
-          ))
-        )) {
-          throw new Error(`store.occurrences[${key}].windowAliases is invalid`);
-        }
         if (occurrence.status === "skipped_edited_active_window") {
           delete parsed.occurrences[key];
           continue;
@@ -261,9 +251,9 @@ export function createLocationScheduleService({
           const claimedWindow = windowAt(claimedRule, createdAt);
           if (claimedRule.id !== occurrence.ruleId
             || claimedRule.enabled !== true
-            || occurrence.windowKey !== claimedWindow.occurrenceKey
+            || canonicalWindowKey(occurrence.windowKey) !== claimedWindow.occurrenceKey
             || !claimedWindow.active
-            || (key !== claimedWindow.occurrenceKey && !key.startsWith(`${claimedWindow.occurrenceKey}|entry|`))) {
+            || (key !== occurrence.windowKey && !key.startsWith(`${occurrence.windowKey}|entry|`))) {
             throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
           }
         }
@@ -330,8 +320,7 @@ export function createLocationScheduleService({
 
   function occurrencesForWindow(windowKey) {
     return Object.values(data.occurrences).filter((occurrence) => (
-      String(occurrence?.windowKey || occurrence?.occurrenceKey || "") === windowKey
-      || occurrence?.windowAliases?.includes(windowKey)
+      canonicalWindowKey(occurrence?.windowKey || occurrence?.occurrenceKey) === windowKey
     ));
   }
 
@@ -349,13 +338,9 @@ export function createLocationScheduleService({
     const staleRules = [];
     for (const rule of data.rules) {
       const state = data.states[rule.id];
-      const scheduleRevisionMatches = state?.scheduleRevision
-        ? state.scheduleRevision === rule.scheduleRevision
-        : rule.scheduleRevision.startsWith("legacy-");
       if (!rule.enabled
         || !state
-        || state.regionRevision !== rule.regionRevision
-        || !scheduleRevisionMatches) continue;
+        || state.regionRevision !== rule.regionRevision) continue;
       const window = windowAt(rule, at);
       if (!window.active) continue;
       const windowOccurrences = occurrencesForWindow(window.occurrenceKey);
@@ -513,43 +498,21 @@ export function createLocationScheduleService({
 
   async function replaceSchedules(payload) {
     const result = await serialize(async () => {
-      const at = now();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
-      const explicitScheduleRevisionIds = new Set(payload.rules
-        .filter((rule) => String(rule?.scheduleRevision || "").trim())
-        .map((rule) => String(rule.id || "").trim()));
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
       for (const rule of rules) {
         const old = previous.get(rule.id);
         if (!old) continue;
-        const locationChanged = old.latitude !== rule.latitude
-          || old.longitude !== rule.longitude
-          || old.radiusMeters !== rule.radiusMeters;
+        const { regionRevision: _oldRevision, ...oldDefinition } = old;
+        const { regionRevision: _newRevision, ...newDefinition } = rule;
+        const ruleChanged = JSON.stringify(oldDefinition) !== JSON.stringify(newDefinition);
         const revisionChanged = old.regionRevision !== rule.regionRevision;
-        if (locationChanged !== revisionChanged) {
-          throw new Error(`rule ${rule.id} regionRevision must change exactly when its location changes`);
-        }
-        const scheduleChanged = ruleFingerprint(old) !== ruleFingerprint(rule);
-        const scheduleRevisionChanged = old.scheduleRevision !== rule.scheduleRevision;
-        if (old.scheduleRevision.startsWith("legacy-")
-          && scheduleChanged
-          && !explicitScheduleRevisionIds.has(rule.id)) {
-          throw new Error(`rule ${rule.id} scheduleRevision is required to change a legacy schedule`);
-        }
-        if ((scheduleChanged || !old.scheduleRevision.startsWith("legacy-"))
-          && scheduleChanged !== scheduleRevisionChanged) {
-          throw new Error(`rule ${rule.id} scheduleRevision must change exactly when its schedule changes`);
-        }
-      }
-      for (const rule of rules) {
-        const old = previous.get(rule.id);
-        if (!old) continue;
-        const oldWindow = windowAt(old, at);
-        const newWindow = windowAt(rule, at);
-        if (!oldWindow.active || !newWindow.active || oldWindow.occurrenceKey === newWindow.occurrenceKey) continue;
-        for (const occurrence of occurrencesForWindow(oldWindow.occurrenceKey)) {
-          occurrence.windowAliases = [...new Set([...(occurrence.windowAliases || []), newWindow.occurrenceKey])].slice(-100);
+        const oldRevisionIsCurrent = old.regionRevision.startsWith("rule-");
+        const newRevisionIsCurrent = rule.regionRevision.startsWith("rule-");
+        if ((!oldRevisionIsCurrent && ruleChanged && !newRevisionIsCurrent)
+          || (oldRevisionIsCurrent && (!newRevisionIsCurrent || ruleChanged !== revisionChanged))) {
+          throw new Error(`rule ${rule.id} regionRevision must change exactly when its rule changes`);
         }
       }
       data.phoneTimeZone = phoneTimeZone;
@@ -558,14 +521,7 @@ export function createLocationScheduleService({
       for (const id of Object.keys(data.states)) if (!liveIds.has(id)) delete data.states[id];
       for (const rule of rules) {
         const old = previous.get(rule.id);
-        if (!old || (
-          rule.enabled && (
-            !old.enabled ||
-            old.latitude !== rule.latitude ||
-            old.longitude !== rule.longitude ||
-            old.radiusMeters !== rule.radiusMeters
-          )
-        )) {
+        if (!old || old.regionRevision !== rule.regionRevision) {
           delete data.states[rule.id];
         }
       }
@@ -585,19 +541,11 @@ export function createLocationScheduleService({
       if (!rule) throw new Error(`unknown ruleId: ${ruleId}`);
       const regionRevision = String(payload?.regionRevision || "").trim();
       if (regionRevision !== rule.regionRevision) throw new Error(`stale regionRevision for ruleId: ${ruleId}`);
-      const requestedScheduleRevision = String(payload?.scheduleRevision || "").trim();
-      const scheduleRevision = requestedScheduleRevision || (
-        rule.scheduleRevision.startsWith("legacy-") ? rule.scheduleRevision : ""
-      );
-      if (scheduleRevision !== rule.scheduleRevision) throw new Error(`stale scheduleRevision for ruleId: ${ruleId}`);
       if (state !== "inside" && state !== "outside") throw new Error("state must be inside or outside");
       const eventId = String(payload?.eventId || "").trim().slice(0, 200);
       if (!eventId) throw new Error("eventId is required");
       const storedState = data.states[ruleId];
-      const previousState = storedState && (
-        storedState.scheduleRevision === scheduleRevision
-        || (!storedState.scheduleRevision && rule.scheduleRevision.startsWith("legacy-"))
-      ) ? storedState : null;
+      const previousState = storedState?.regionRevision === regionRevision ? storedState : null;
       if (eventId && previousState?.eventId === eventId) return false;
       const receivedAt = now();
       const observedAt = String(payload?.observedAt || "").trim();
@@ -643,7 +591,6 @@ export function createLocationScheduleService({
       }
       data.states[ruleId] = {
         regionRevision,
-        scheduleRevision,
         state,
         eventId,
         observedAt: observedAtIso,

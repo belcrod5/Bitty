@@ -78,10 +78,11 @@ Serialize in-process reads and mutations and replace the file through a complete
 temporary payload so React and background work cannot observe a partial JSON write.
 Do not add a second iOS settings store.
 
-When synchronizing a rule to the runner, include the location-only region revision as
-an opaque `regionRevision` and a complete-rule revision as `scheduleRevision`. The iOS
-app remains the only place that calculates these tokens; the runner stores them and
-requires state updates to match both currently accepted tokens exactly.
+When synchronizing a rule to the runner, include one opaque `regionRevision` derived
+from the complete rule. The wire name is retained for compatibility, but the token is
+the generation of the whole rule, not only its coordinates. The iOS app remains the
+only place that calculates it; the runner stores it and requires state updates to
+match the currently accepted token exactly.
 
 ## iOS location responsibility
 
@@ -99,10 +100,10 @@ updates.
 - On enter and exit events, persist the state/event before attempting network sync.
 - Coalesce unsent events to the newest observation per rule before syncing, so an old
   inside event cannot be evaluated before a newer queued outside event.
-- Include both the location and complete-rule revisions in each monitored identifier.
-  Ignore delayed events and queued states whose revisions no longer match the current
-  rule, even when the region centre and radius did not change.
-- Include the complete-rule revision in every state report, so saving a time, prompt,
+- Include the complete-rule revision in each monitored identifier. Ignore delayed
+  events and queued states whose revision no longer matches the current rule, even
+  when the region centre and radius did not change.
+- Include the same revision in every state report, so saving a time, prompt,
   model, effort, directory, enabled-state, or location edit invalidates observations
   queued before that save.
 - Re-filter the pending queue against the current rules immediately before sending it.
@@ -143,23 +144,21 @@ durable execution history. Never age-prune queued, pending, or running claims. T
 bounds the high-frequency re-entry portion of the scheduler store without weakening
 an active claim.
 
-Reject state updates whose `regionRevision` or `scheduleRevision` does not match the
-current rule. A location change must update both revisions; every other rule edit
-updates only `scheduleRevision`. This closes the race where an old in-flight state or
-fresh pre-save state is evaluated after a schedule edit.
-Stores created before `scheduleRevision` remain readable, and unchanged legacy rules
-may still synchronize their old state shape. Changing an existing legacy rule without
-an explicit `scheduleRevision` fails closed; the updated app must migrate it with the
-new rule and state revisions together.
+Reject state updates whose `regionRevision` does not match the current rule. Every
+rule edit changes that one generation, closing the race where an old in-flight state
+or fresh pre-save state is evaluated after a schedule edit. Stores whose revision was
+derived only from location remain readable, and unchanged legacy rules may still
+synchronize. Editing such a legacy rule without the new `rule-` generation fails
+closed; the updated app migrates the rule and its next state together.
 If an existing runner store cannot be parsed and validated, fail closed without
 overwriting it or executing; only a missing store may initialize empty. Schedule APIs
 report this state as HTTP 503, while request validation errors remain HTTP 400.
 
-Deploy the Runner before the updated app. A new app talking briefly to an old Runner
-is transport-compatible but the old Runner cannot enforce the schedule revision
-barrier, so schedule edits must wait until the Runner upgrade is complete. A new
-Runner accepts unchanged legacy synchronization from an old app but rejects its rule
-edits until the app is upgraded.
+Deploy the Runner before the updated app. An old Runner rejects the updated app's
+complete-rule revision for an existing rule because it expects the token to change
+only with location, so synchronization safely fails instead of activating the edit.
+A new Runner accepts unchanged legacy synchronization from an old app but rejects its
+rule edits until the app is upgraded.
 
 The scheduler reacts to three inputs:
 
@@ -187,15 +186,16 @@ For a local window `[startTime, endTime)`:
   persist it as queued and start it automatically when that fire finishes. A later
   exit or the window end does not discard an already-claimed enter.
 
-Use a deterministic window key derived from rule ID, local calendar date, start time,
-end time, and timezone. The initial fire uses that key directly; a qualified re-entry
-adds the persisted inside-transition timestamp and event ID. Atomically persist each
-fire claim before starting Codex. The persisted claim is the at-most-once boundary for
-that enter cycle. Store only a fixed-size SHA-256 rule fingerprint on each claim; do
-not duplicate the prompt or complete rule per occurrence. Do not add an unsupported
-idempotency field to the Codex app-server RPC. If an edit changes the window key while
-both old and new windows are active, link the existing occurrences to the new key so
-the edit cannot reset the initial-fire or re-entry guards.
+Use a deterministic daily window key derived from rule ID, local calendar date, and
+timezone. Start and end times are deliberately excluded, so editing a window cannot
+reset that day's initial-fire or re-entry guards. The initial fire uses that key
+directly; a qualified re-entry adds the persisted inside-transition timestamp and
+event ID. Atomically persist each fire claim before starting Codex. The persisted
+claim is the at-most-once boundary for that enter cycle. Store only a fixed-size
+SHA-256 rule fingerprint on each claim; do not duplicate the prompt or complete rule
+per occurrence. Do not add an unsupported idempotency field to the Codex app-server
+RPC. Existing five-part window keys are compared as the same daily identity while
+their retained records age out.
 
 Disabling or deleting a rule takes effect as soon as the runner accepts the new
 complete schedule set. Creating or editing a rule during its active window applies

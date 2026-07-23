@@ -77,7 +77,6 @@ test("validates rules with the normal model parser and enabled-region limit", ()
   );
   assert.throws(() => parseLocationScheduleRules([rule({ endTime: "08:00" })], "Asia/Tokyo", parseCodexOptions), /cross midnight/);
   assert.throws(() => parseLocationScheduleRules([rule({ regionRevision: "" })], "Asia/Tokyo", parseCodexOptions), /regionRevision is invalid/);
-  assert.throws(() => parseLocationScheduleRules([rule({ scheduleRevision: "invalid revision" })], "Asia/Tokyo", parseCodexOptions), /scheduleRevision is invalid/);
   assert.throws(() => parseLocationScheduleRules([rule({ modelRef: "" })], "Asia/Tokyo", parseCodexOptions), /modelRef is required/);
   assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
   assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "minimal" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
@@ -116,6 +115,14 @@ test("DST repeated local hour maps to one deterministic occurrence", () => {
   assert.equal(firstHour.active, true);
   assert.equal(repeatedHour.active, true);
   assert.equal(firstHour.occurrenceKey, repeatedHour.occurrenceKey);
+});
+
+test("time edits keep one occurrence identity for the same local day", () => {
+  const at = new Date("2026-07-19T00:30:00.000Z");
+  assert.equal(
+    windowAt(rule(), at).occurrenceKey,
+    windowAt(rule({ startTime: "08:00", endTime: "11:00" }), at).occurrenceKey
+  );
 });
 
 test("fires once when already inside at start and persists idempotency across restart", async () => {
@@ -521,12 +528,12 @@ test("a rule created outside during its active window fires on a later enter", a
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
     setNow("2026-07-19T00:30:00.000Z");
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ scheduleRevision: "schedule-a" })] });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "outside", eventId: "initial-outside", observedAt: "2026-07-19T00:30:00Z" });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ regionRevision: "rule-a" })] });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "outside", eventId: "initial-outside", observedAt: "2026-07-19T00:30:00Z" });
     assert.equal(executions.length, 0);
 
     setNow("2026-07-19T00:31:00.000Z");
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "enter", observedAt: "2026-07-19T00:31:00Z" });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "inside", eventId: "enter", observedAt: "2026-07-19T00:31:00Z" });
     await waitFor(() => executions.length === 1);
     await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
   });
@@ -536,8 +543,8 @@ test("a rule created inside during its active window fires from the synchronized
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
     setNow("2026-07-19T00:30:00.000Z");
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ scheduleRevision: "schedule-a" })] });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "initial-inside", observedAt: "2026-07-19T00:30:00Z" });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ regionRevision: "rule-a" })] });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "inside", eventId: "initial-inside", observedAt: "2026-07-19T00:30:00Z" });
     await waitFor(() => executions.length === 1);
     await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
   });
@@ -546,12 +553,12 @@ test("a rule created inside during its active window fires from the synchronized
 test("an active-window edit fires from a current synchronized inside state", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ startTime: "09:10", scheduleRevision: "schedule-a" })] });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "old-inside", observedAt: "2026-07-18T23:59:00Z" });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ startTime: "09:10", regionRevision: "rule-a" })] });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "inside", eventId: "old-inside", observedAt: "2026-07-18T23:59:00Z" });
     setNow("2026-07-19T00:00:00.000Z");
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ prompt: "edited prompt", scheduleRevision: "schedule-b" })] });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ prompt: "edited prompt", regionRevision: "rule-b" })] });
     assert.equal(executions.length, 0);
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-b", state: "inside", eventId: "current-inside", observedAt: "2026-07-19T00:00:00Z" });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-b", state: "inside", eventId: "current-inside", observedAt: "2026-07-19T00:00:00Z" });
     await waitFor(() => executions.length === 1);
     assert.equal(executions[0].inputText, "edited prompt");
     await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
@@ -563,21 +570,21 @@ test("an edit that makes a rule active waits for the edited schedule's outside s
     const service = create();
     await service.replaceSchedules({
       phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ startTime: "09:10", scheduleRevision: "schedule-a" })],
+      rules: [rule({ startTime: "09:10", regionRevision: "rule-a" })],
     });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "old-inside", observedAt: "2026-07-18T23:59:00Z" });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "inside", eventId: "old-inside", observedAt: "2026-07-18T23:59:00Z" });
 
     setNow("2026-07-19T00:00:00.000Z");
     await service.replaceSchedules({
       phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ scheduleRevision: "schedule-b" })],
+      rules: [rule({ regionRevision: "rule-b" })],
     });
     assert.equal(executions.length, 0);
     await assert.rejects(
-      service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "pending-old-inside", observedAt: "2026-07-19T00:00:00Z" }),
-      /stale scheduleRevision/
+      service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "inside", eventId: "pending-old-inside", observedAt: "2026-07-19T00:00:00Z" }),
+      /stale regionRevision/
     );
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-b", state: "outside", eventId: "current-outside", observedAt: "2026-07-19T00:00:01Z" });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-b", state: "outside", eventId: "current-outside", observedAt: "2026-07-19T00:00:01Z" });
     assert.equal(executions.length, 0);
     assert.deepEqual((await service.snapshot()).occurrences, {});
   });
@@ -586,61 +593,62 @@ test("an edit that makes a rule active waits for the edited schedule's outside s
 test("an active-window edit keeps the existing re-entry guards after a firing", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ scheduleRevision: "schedule-a" })] });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ regionRevision: "rule-a" })] });
     setNow("2026-07-19T00:05:00.000Z");
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
+    await service.recordState({ ruleId: "home", regionRevision: "rule-a", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
     await waitFor(() => executions.length === 1);
     await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
     await service.replaceSchedules({
       phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ startTime: "08:30", endTime: "10:30", prompt: "edited prompt", scheduleRevision: "schedule-b" })],
+      rules: [rule({ startTime: "08:30", endTime: "10:30", prompt: "edited prompt", regionRevision: "rule-b" })],
     });
     const restarted = create();
     await restarted.start();
-    await restarted.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-b", state: "inside", eventId: "edited-inside", observedAt: "2026-07-19T00:05:00Z" });
+    await restarted.recordState({ ruleId: "home", regionRevision: "rule-b", state: "inside", eventId: "edited-inside", observedAt: "2026-07-19T00:05:00Z" });
     assert.equal(executions.length, 1);
     setNow("2026-07-19T00:20:00.000Z");
-    await restarted.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-b", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
+    await restarted.recordState({ ruleId: "home", regionRevision: "rule-b", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
     setNow("2026-07-19T00:25:00.000Z");
-    await restarted.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-b", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
+    await restarted.recordState({ ruleId: "home", regionRevision: "rule-b", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
     await waitFor(() => executions.length === 2);
     assert.equal(executions[1].inputText, "edited prompt");
     await waitFor(async () => Object.values((await restarted.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
   });
 });
 
-test("disabled time edits preserve re-entry lineage when the rule is enabled again", async () => {
-  await withService(async ({ create, executions, setNow }) => {
+test("legacy window keys keep the same daily fire guard", async () => {
+  await withService(async ({ create, executions, storePath, setNow }) => {
+    const legacyWindowKey = "home|2026-07-19|09:00|10:00|Asia/Tokyo";
+    setNow("2026-07-19T00:30:00.000Z");
+    await fs.writeFile(storePath, `${JSON.stringify({
+      version: 1,
+      phoneTimeZone: "Asia/Tokyo",
+      rules: [rule()],
+      states: {
+        home: {
+          regionRevision: "revision-home",
+          state: "inside",
+          eventId: "inside",
+          observedAt: "2026-07-19T00:30:00.000Z",
+          receivedAt: "2026-07-19T00:30:00.000Z",
+        },
+      },
+      occurrences: {
+        [legacyWindowKey]: {
+          occurrenceKey: legacyWindowKey,
+          windowKey: legacyWindowKey,
+          ruleId: "home",
+          status: "completed",
+          createdAt: "2026-07-19T00:05:00.000Z",
+          updatedAt: "2026-07-19T00:05:00.000Z",
+        },
+      },
+      updatedAt: "2026-07-19T00:05:00.000Z",
+    }, null, 2)}\n`, "utf8");
+
     const service = create();
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ scheduleRevision: "schedule-a" })] });
-    setNow("2026-07-19T00:05:00.000Z");
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-a", state: "inside", eventId: "enter-1", observedAt: "2026-07-19T00:05:00Z" });
-    await waitFor(() => executions.length === 1);
-    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
-
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ enabled: false, scheduleRevision: "schedule-b" })] });
-    await service.replaceSchedules({
-      phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ enabled: false, startTime: "08:50", endTime: "10:10", scheduleRevision: "schedule-c" })],
-    });
-    await service.replaceSchedules({
-      phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ enabled: false, startTime: "08:40", endTime: "10:20", scheduleRevision: "schedule-d" })],
-    });
-    await service.replaceSchedules({
-      phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ startTime: "08:40", endTime: "10:20", prompt: "edited prompt", scheduleRevision: "schedule-e" })],
-    });
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-e", state: "inside", eventId: "enabled-inside", observedAt: "2026-07-19T00:05:00Z" });
-    assert.equal(executions.length, 1);
-
-    setNow("2026-07-19T00:20:00.000Z");
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-e", state: "outside", eventId: "exit-1", observedAt: "2026-07-19T00:20:00Z" });
-    setNow("2026-07-19T00:25:00.000Z");
-    await service.recordState({ ruleId: "home", regionRevision: "revision-home", scheduleRevision: "schedule-e", state: "inside", eventId: "enter-2", observedAt: "2026-07-19T00:25:00Z" });
-    await waitFor(() => executions.length === 2);
-    assert.equal(executions[1].inputText, "edited prompt");
-    await waitFor(async () => Object.values((await service.snapshot()).occurrences).every((occurrence) => occurrence.status === "completed"));
+    await service.start();
+    assert.equal(executions.length, 0);
   });
 });
 
@@ -783,35 +791,34 @@ test("rejects a location event too far in the future", async () => {
   });
 });
 
-test("rejects stale region state after a location revision changes", async () => {
+test("rejects stale state after a rule revision changes", async () => {
   await withService(async ({ create, executions }) => {
     const service = create();
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ scheduleRevision: "schedule-a" })] });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ regionRevision: "rule-a" })] });
     await service.recordState({
       ruleId: "home",
-      regionRevision: "revision-home",
-      scheduleRevision: "schedule-a",
+      regionRevision: "rule-a",
       state: "inside",
       eventId: "before-move",
       observedAt: "2026-07-18T23:59:00Z",
     });
     await assert.rejects(
-      service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ latitude: 36, scheduleRevision: "schedule-b" })] }),
-      /regionRevision must change exactly when its location changes/
+      service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ latitude: 36, regionRevision: "rule-a" })] }),
+      /regionRevision must change exactly when its rule changes/
     );
     await assert.rejects(
-      service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ prompt: "edited", regionRevision: "prompt-only-revision", scheduleRevision: "schedule-b" })] }),
-      /regionRevision must change exactly when its location changes/
+      service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ prompt: "edited", regionRevision: "rule-a" })] }),
+      /regionRevision must change exactly when its rule changes/
     );
 
     await service.replaceSchedules({
       phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ latitude: 36, regionRevision: "revision-home-moved", scheduleRevision: "schedule-b" })],
+      rules: [rule({ latitude: 36, regionRevision: "rule-b" })],
     });
     await assert.rejects(
       service.recordState({
         ruleId: "home",
-        regionRevision: "revision-home",
+        regionRevision: "rule-a",
         state: "inside",
         eventId: "stale-after-move",
         observedAt: "2026-07-19T00:00:00Z",
@@ -823,26 +830,26 @@ test("rejects stale region state after a location revision changes", async () =>
   });
 });
 
-test("requires schedule revisions to change exactly with schedule configuration", async () => {
+test("requires one rule revision to change exactly with configuration", async () => {
   await withService(async ({ create }) => {
     const service = create();
     await service.replaceSchedules({
       phoneTimeZone: "Asia/Tokyo",
-      rules: [rule({ scheduleRevision: "schedule-a" })],
+      rules: [rule({ regionRevision: "rule-a" })],
     });
     await assert.rejects(
       service.replaceSchedules({
         phoneTimeZone: "Asia/Tokyo",
-        rules: [rule({ prompt: "edited", scheduleRevision: "schedule-a" })],
+        rules: [rule({ prompt: "edited", regionRevision: "rule-a" })],
       }),
-      /scheduleRevision must change exactly/
+      /regionRevision must change exactly/
     );
     await assert.rejects(
       service.replaceSchedules({
         phoneTimeZone: "Asia/Tokyo",
-        rules: [rule({ scheduleRevision: "schedule-b" })],
+        rules: [rule({ regionRevision: "rule-b" })],
       }),
-      /scheduleRevision must change exactly/
+      /regionRevision must change exactly/
     );
   });
 });
@@ -858,7 +865,7 @@ test("legacy clients may resync unchanged rules but cannot activate an edited ru
     setNow("2026-07-19T00:00:00.000Z");
     await assert.rejects(
       service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule()] }),
-      /scheduleRevision is required to change a legacy schedule/
+      /regionRevision must change exactly when its rule changes/
     );
     await service.evaluate();
     assert.equal(executions.length, 0);
@@ -914,7 +921,7 @@ test("fails closed when a queued claim window does not match its fingerprinted o
   await withService(async ({ create, executions, storePath, setNow }) => {
     setNow("2026-07-18T23:30:00.000Z"); // 08:30 JST, outside the real 09:00-10:00 window
     const normalizedRule = parseLocationScheduleRules([rule()], "Asia/Tokyo", parseCodexOptions)[0];
-    const { scheduleRevision: _scheduleRevision, ...fingerprintedRule } = normalizedRule;
+    const fingerprintedRule = normalizedRule;
     const occurrenceKey = "home|2026-07-19|08:00|11:00|Asia/Tokyo";
     for (const ruleSignature of [
       createHash("sha256").update(JSON.stringify(fingerprintedRule)).digest("hex"),

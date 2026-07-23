@@ -23,7 +23,6 @@ export type LocationScheduleRule = {
 export type PendingLocationState = {
   ruleId: string;
   regionRevision: string;
-  scheduleRevision: string;
   state: "inside" | "outside";
   eventId: string;
   observedAt: string;
@@ -40,14 +39,8 @@ function hashRevision(value: string) {
   return `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-export function locationRuleRevision(
-  rule: Pick<LocationScheduleRule, "latitude" | "longitude" | "radiusMeters">
-) {
-  return hashRevision(JSON.stringify([rule.latitude, rule.longitude, rule.radiusMeters]));
-}
-
-export function scheduleRuleRevision(rule: LocationScheduleRule) {
-  return hashRevision(JSON.stringify([
+export function locationScheduleRevision(rule: LocationScheduleRule) {
+  return `rule-${hashRevision(JSON.stringify([
     rule.id,
     rule.enabled,
     rule.startTime,
@@ -60,11 +53,11 @@ export function scheduleRuleRevision(rule: LocationScheduleRule) {
     rule.modelRef,
     rule.reasoningEffort,
     rule.prompt,
-  ]));
+  ]))}`;
 }
 
 export function regionIdentifierForRule(rule: LocationScheduleRule) {
-  return `${LOCATION_REGION_PREFIX}${rule.id}:${locationRuleRevision(rule)}:${scheduleRuleRevision(rule)}`;
+  return `${LOCATION_REGION_PREFIX}${rule.id}:${locationScheduleRevision(rule)}`;
 }
 
 function parseTime(raw: unknown) {
@@ -151,10 +144,10 @@ export function parseLocationRegionIdentifier(identifier: unknown) {
   const value = String(identifier || "");
   if (!value.startsWith(LOCATION_REGION_PREFIX)) return null;
   const match = value.slice(LOCATION_REGION_PREFIX.length)
-    .match(/^([A-Za-z0-9_-]{1,100}):([a-f0-9]{16})(?::([a-f0-9]{16}))?$/);
+    .match(/^([A-Za-z0-9_-]{1,100}):(rule-[a-f0-9]{16}|[a-f0-9]{16})(?::[a-f0-9]{16})?$/);
   if (!match) return null;
-  const [, ruleId, regionRevision, scheduleRevision = ""] = match;
-  return { ruleId, regionRevision, scheduleRevision };
+  const [, ruleId, regionRevision] = match;
+  return { ruleId, regionRevision };
 }
 
 export function isCoordinateInsideRule(
@@ -192,7 +185,6 @@ export function parsePendingLocationStates(current: unknown): PendingLocationSta
       !item || typeof item !== "object" ||
       typeof item.ruleId !== "string" ||
       typeof item.regionRevision !== "string" ||
-      typeof item.scheduleRevision !== "string" ||
       typeof item.eventId !== "string" ||
       typeof item.observedAt !== "string" ||
       (item.state !== "inside" && item.state !== "outside")
@@ -203,15 +195,9 @@ export function parsePendingLocationStates(current: unknown): PendingLocationSta
 
 export function pendingLocationStatesForRules(current: unknown, rules: readonly LocationScheduleRule[]) {
   const revisions = new Map(
-    rules.filter((rule) => rule.enabled).map((rule) => [
-      rule.id,
-      [locationRuleRevision(rule), scheduleRuleRevision(rule)],
-    ])
+    rules.filter((rule) => rule.enabled).map((rule) => [rule.id, locationScheduleRevision(rule)])
   );
-  return parsePendingLocationStates(current).filter((event) => {
-    const revision = revisions.get(event.ruleId);
-    return revision?.[0] === event.regionRevision && revision[1] === event.scheduleRevision;
-  });
+  return parsePendingLocationStates(current).filter((event) => revisions.get(event.ruleId) === event.regionRevision);
 }
 
 export function removeSentPendingLocationStates(current: unknown, sentEventIds: ReadonlySet<string>) {

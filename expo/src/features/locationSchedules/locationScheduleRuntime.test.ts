@@ -63,9 +63,8 @@ import {
 } from "./locationScheduleRuntime";
 import {
   LOCATION_SCHEDULE_TASK_NAME,
-  locationRuleRevision,
+  locationScheduleRevision,
   regionIdentifierForRule,
-  scheduleRuleRevision,
   type LocationScheduleRule,
 } from "./locationScheduleRules";
 import * as TaskManager from "expo-task-manager";
@@ -136,7 +135,7 @@ test("restores local schedules when Runner synchronization fails", async () => {
   expect(mockSettings.locationSchedulePendingStates).toEqual([{ eventId: "pending" }]);
 });
 
-test("saving reports current state with the accepted schedule revision", async () => {
+test("saving reports current state with the accepted rule revision", async () => {
   const currentRule = rule({ startTime: "08:00", prompt: "edited" });
 
   await saveAndActivateLocationSchedules([currentRule]);
@@ -147,7 +146,7 @@ test("saving reports current state with the accepted schedule revision", async (
   const state = JSON.parse(String(mockFetch.mock.calls[stateIndex]?.[1]?.body));
   expect(scheduleIndex).toBeGreaterThanOrEqual(0);
   expect(stateIndex).toBeGreaterThan(scheduleIndex);
-  expect(state.scheduleRevision).toBe(schedule.rules[0].scheduleRevision);
+  expect(state.regionRevision).toBe(schedule.rules[0].regionRevision);
   expect(state.state).toBe("inside");
 });
 
@@ -182,7 +181,7 @@ test("an enter from the previous geofence generation is ignored before current-s
   await saving;
   const stateRequests = mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"));
   expect(stateRequests).toHaveLength(1);
-  expect(JSON.parse(String(stateRequests[0][1]?.body)).scheduleRevision).toBe(scheduleRuleRevision(edited));
+  expect(JSON.parse(String(stateRequests[0][1]?.body)).regionRevision).toBe(locationScheduleRevision(edited));
 });
 
 test.each([
@@ -206,8 +205,7 @@ test("silent push reports a fresh state even when inside/outside did not change"
     locationScheduleLastStates: {
       office: {
         ruleId: "office",
-        regionRevision: locationRuleRevision(currentRule),
-        scheduleRevision: scheduleRuleRevision(currentRule),
+        regionRevision: locationScheduleRevision(currentRule),
         state: "inside",
         eventId: "old",
         observedAt: "2026-07-18T00:00:00Z",

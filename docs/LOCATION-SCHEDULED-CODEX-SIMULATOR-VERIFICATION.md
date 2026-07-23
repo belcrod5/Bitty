@@ -292,7 +292,7 @@ restart後に追加のiOS検証を続ける場合だけ、Simulatorを新しいt
 必須シナリオが通った後に限り、次を探索してよい。
 
 - Maestro `killApp` でsystem-initiated process deathを作り、次のgeofence eventでiOSがappを再起動してRunnerへ同期できるか。
-- location変更直後のルール編集で古い`regionRevision`のeventが拒否されるか。
+- ルール変更直後に古い`regionRevision`のeventが拒否されるか。
 - network切断中にoutside -> inside -> outsideを作り、復旧後に最新outsideだけが同期されるか。
 - 半径を100m未満にした場合の警告UI。
 

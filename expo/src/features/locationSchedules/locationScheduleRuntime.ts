@@ -11,12 +11,11 @@ import {
   appendPendingLocationState,
   enabledLocationRegions,
   isCoordinateInsideRule,
-  locationRuleRevision,
+  locationScheduleRevision,
   parseLocationRegionIdentifier,
   parseLocationScheduleRules,
   pendingLocationStatesForRules,
   regionIdentifierForRule,
-  scheduleRuleRevision,
   removeSentPendingLocationStates,
   type LocationScheduleRule,
   type PendingLocationState,
@@ -36,8 +35,7 @@ function rulesInCurrentTimeZone(rules: readonly LocationScheduleRule[]) {
     const current = { ...rule, timeZone };
     return {
       ...current,
-      regionRevision: locationRuleRevision(current),
-      scheduleRevision: scheduleRuleRevision(current),
+      regionRevision: locationScheduleRevision(current),
     };
   });
 }
@@ -207,8 +205,7 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
     const state = isCoordinateInsideRule(current.coords, rule) ? "inside" : "outside";
     await persistLocationState({
       ruleId: rule.id,
-      regionRevision: locationRuleRevision(rule),
-      scheduleRevision: scheduleRuleRevision(rule),
+      regionRevision: locationScheduleRevision(rule),
       state,
       eventId: `initial:${rule.id}:${Date.now()}:${state}`,
       observedAt: new Date(current.timestamp || Date.now()).toISOString(),
@@ -269,20 +266,17 @@ export async function recoverLocationScheduleState(origin: string) {
   const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
   let changed = 0;
   for (const rule of rules) {
-    const regionRevision = locationRuleRevision(rule);
-    const scheduleRevision = scheduleRuleRevision(rule);
+    const regionRevision = locationScheduleRevision(rule);
     const state = isCoordinateInsideRule(current.coords, rule) ? "inside" : "outside";
     const last = lastStates[rule.id];
     if (origin !== "silent_push"
       && last
       && last.regionRevision === regionRevision
-      && last.scheduleRevision === scheduleRevision
       && last.state === state) continue;
     changed += 1;
     await persistLocationState({
       ruleId: rule.id,
       regionRevision,
-      scheduleRevision,
       state,
       eventId: `recover:${origin}:${rule.id}:${Date.now()}:${state}`,
       observedAt: new Date(current.timestamp || Date.now()).toISOString(),
@@ -358,7 +352,6 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
     const event: PendingLocationState = {
       ruleId: region.ruleId,
       regionRevision: region.regionRevision,
-      scheduleRevision: region.scheduleRevision,
       state,
       eventId: `geofence:${region.ruleId}:${region.regionRevision}:${Date.now()}:${state}`,
       observedAt: new Date().toISOString(),

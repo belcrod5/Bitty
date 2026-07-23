@@ -43,7 +43,7 @@ GPS／時間:  iOS geofence state -> Runner condition -> Runner Codex execution 
 - 初回登録・アプリ起動時に現在位置から initial inside／outside を計算。
 - enter／exit をネットワーク送信前に永続化し、送れなかった状態を後から flush。
 - 未送信状態をルールごとの最新値へ coalesce し、古い inside の後に新しい outside がある場合の誤発火を防止。
-- 位置と半径だけから opaque な `regionRevision` を生成。
+- ルール全体から opaque な `regionRevision` を生成し、保存前の位置状態を無効化。
 - 位置編集後に届いた古い region event／queue を iOS と Runner の双方で拒否。
 - `bitty-settings.json` の既存 settings payload を共有し、location schedule 専用の二重 store は追加していない。
 - settings の read／mutation を直列化し、background task と React 側の同時更新による部分書き込みを防止。
@@ -66,7 +66,7 @@ GPS／時間:  iOS geofence state -> Runner condition -> Runner Codex execution 
 - schedule、last-known state、occurrence、実行結果を Runner 所有の JSON store に永続化。
 - local timezone の日次 `[startTime, endTime)` window を評価。
 - schedule／state sync、enter event、次の window start、Runner restart／recovery を評価入口として統合。
-- occurrence key を永続化してから Codex を開始し、重複 event、再入場、API retry、Runner restart に対して at-most-once を保証。
+- rule ID・ローカル日付・timezone の安定した occurrence key を永続化してから Codex を開始し、時間編集、重複 event、再入場、API retry、Runner restart に対して at-most-once を保証。
 - cwd、prompt、model、reasoning effort を必須検証し、通常チャット側の default へ黙って fallback しない。
 - Runner store が存在しない場合だけ空で初期化。
 - 既存 store が破損・不正な場合は上書きも実行もせず fail closed。
