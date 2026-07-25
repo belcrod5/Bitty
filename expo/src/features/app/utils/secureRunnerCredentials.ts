@@ -11,11 +11,7 @@ export type SecureRunnerCredentials = {
 };
 
 async function read(key: string) {
-  try {
-    return String(await SecureStore.getItemAsync(key) || "").trim();
-  } catch {
-    return "";
-  }
+  return String(await SecureStore.getItemAsync(key) || "").trim();
 }
 
 async function write(key: string, valueRaw: string) {

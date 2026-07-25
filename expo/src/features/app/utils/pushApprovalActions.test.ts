@@ -7,13 +7,17 @@ import {
 import { loadSecureRunnerCredentials } from "./secureRunnerCredentials";
 
 let mockSettingsFileContent: string | null = null;
+let mockSettingsReadError: Error | null = null;
 
 jest.mock("expo-file-system/legacy", () => ({
   get documentDirectory() {
     return "file:///mock-doc-dir/";
   },
   getInfoAsync: jest.fn(async () => ({ exists: mockSettingsFileContent !== null })),
-  readAsStringAsync: jest.fn(async () => mockSettingsFileContent || "{}"),
+  readAsStringAsync: jest.fn(async () => {
+    if (mockSettingsReadError) throw mockSettingsReadError;
+    return mockSettingsFileContent || "{}";
+  }),
 }));
 
 const mockAuthenticateAsync = jest.fn();
@@ -42,6 +46,7 @@ describe("readRunnerUrlFromDisk / readFaceIdRequiredFromDisk", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSettingsFileContent = null;
+    mockSettingsReadError = null;
   });
 
   it("returns empty/false when the settings file does not exist", async () => {
@@ -169,6 +174,7 @@ describe("handlePushApprovalAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSettingsFileContent = JSON.stringify({ runnerUrl: "https://runner.example.com" });
+    mockSettingsReadError = null;
     mockLoadSecureRunnerCredentials.mockResolvedValue({
       runnerToken: "secret-token",
       cloudflareAccessClientId: "",
@@ -178,6 +184,7 @@ describe("handlePushApprovalAction", () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+    jest.restoreAllMocks();
   });
 
   it("ignores actions outside the APPROVAL_REQUEST category", async () => {
@@ -262,6 +269,33 @@ describe("handlePushApprovalAction", () => {
 
     expect(mockHasHardwareAsync).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unreadable", JSON.stringify({ faceIdRequiredForApproval: true }), new Error("read failed")],
+    ["malformed", "{", null],
+  ])("ends the action with the fallback when settings are %s", async (_case, content, readError) => {
+    mockSettingsFileContent = content;
+    mockSettingsReadError = readError;
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(handlePushApprovalAction({
+      categoryIdentifier: "APPROVAL_REQUEST",
+      actionIdentifier: "approve",
+      approvalId: "relay:rpc",
+    })).resolves.toBeUndefined();
+
+    expect(mockScheduleNotificationAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.objectContaining({ title: "承認の送信に失敗しました" }),
+        trigger: null,
+      })
+    );
+    expect(mockHasHardwareAsync).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith("[push] approval action could not read settings");
   });
 
   it("approve requires a successful Face ID authentication before responding when the setting is ON", async () => {
