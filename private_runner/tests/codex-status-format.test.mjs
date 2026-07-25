@@ -57,7 +57,7 @@ test("fails when neither top-level window is a supported duration", () => {
   assert.throws(
     () => buildCodexStatusFromWham({
       rate_limit: {
-        primary_window: null,
+        primary_window: windowWith(60 * 60, 5),
         secondary_window: null,
       },
       additional_rate_limits: [{
