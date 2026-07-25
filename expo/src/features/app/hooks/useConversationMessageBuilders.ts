@@ -10,12 +10,7 @@ type UseConversationMessageBuildersArgs = {
   ) => ConversationMessage;
   playAssistantEventSfx: (contentRaw: string) => void;
   setConversationMessagesWithLimit: (
-    nextMessages: ConversationMessage[],
-    opts?: {
-      resetVisibleCount?: boolean;
-      visibleCount?: number;
-      totalCountOverride?: number;
-    }
+    nextMessages: ConversationMessage[]
   ) => ConversationMessage[];
 };
 

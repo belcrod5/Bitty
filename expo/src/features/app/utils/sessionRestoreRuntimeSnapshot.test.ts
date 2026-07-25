@@ -1,5 +1,6 @@
 import {
   buildRestoredPanelConversation,
+  prependConversationMessages,
   buildRestoredSessionRuntimeSnapshot,
   projectRestoredRuntimeStatusToConversation,
 } from "./sessionRestoreRuntimeSnapshot";
@@ -30,6 +31,7 @@ function buildRestoredResult(overrides: Partial<RunnerSessionMessagesResult> = {
     contextUsedPct: null,
     hasRunningTurn: false,
     runningTurn: null,
+    olderCursor: null,
     ...overrides,
   };
 }
@@ -37,7 +39,7 @@ function buildRestoredResult(overrides: Partial<RunnerSessionMessagesResult> = {
 describe("buildRestoredPanelConversation", () => {
   const restoredMessages: RunnerSessionMessage[] = [
     { role: "user", content: "hello", at: "2026-01-01T00:00:01.000Z", itemId: "item-1" },
-    { role: "assistant", content: "hi", at: "2026-01-01T00:00:02.000Z", itemId: "item-2" },
+    { role: "assistant", content: "hi", at: "2026-01-01T00:00:02.000Z", itemId: "item-2", kind: "internal_context" },
     { role: "assistant", content: "", at: "2026-01-01T00:00:03.000Z", itemId: "item-3", commandExecution },
   ];
 
@@ -60,6 +62,7 @@ describe("buildRestoredPanelConversation", () => {
     ]);
     // 同じセッションなら別パネル・別ハイドレーションでもIDは不変。
     expect(second.map((item) => item.id)).toEqual(first.map((item) => item.id));
+    expect(first[1].kind).toBe("internal_context");
     expect(first[2].commandExecution).toEqual(commandExecution);
   });
 
@@ -79,6 +82,19 @@ describe("buildRestoredPanelConversation", () => {
       codexItemMessageId("thread-1", "item-1"),
       "panel-panel-a-thread-1-2-assistant",
     ]);
+  });
+});
+
+describe("prependConversationMessages", () => {
+  it("prepends only new stable ids without replacing current message objects", () => {
+    const current = [message({ id: "m2", role: "assistant", content: "current" })];
+    const result = prependConversationMessages([
+      message({ id: "m1", role: "user", content: "older" }),
+      message({ id: "m2", role: "assistant", content: "duplicate" }),
+    ], current);
+
+    expect(result.map((item) => item.id)).toEqual(["m1", "m2"]);
+    expect(result[1]).toBe(current[0]);
   });
 });
 

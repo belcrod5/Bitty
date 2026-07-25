@@ -865,6 +865,17 @@ export function normalizeThreadReadEntry(
   if (sessionStatus.waitingOnApproval) {
     hasRunningTurn = true;
   }
+  if (sessionStatus.sessionState === "running" && !runningTurn) {
+    const runningUpdatedAt = toIsoTimestamp(thread.updatedAt || thread.createdAt);
+    hasRunningTurn = true;
+    runningTurn = {
+      status: sessionStatus.latestTurnStatus || "running",
+      summary: "応答生成中",
+      startedAt: toIsoTimestamp(thread.createdAt),
+      updatedAt: runningUpdatedAt,
+      updatedAtMs: parseIsoTimestampMs(runningUpdatedAt),
+    };
+  }
   if (sessionStatus.sessionState !== "running" && sessionStatus.sessionState !== "waiting_on_approval") {
     hasRunningTurn = false;
     runningTurn = null;

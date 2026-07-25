@@ -93,11 +93,14 @@ test("direct runner-ws mode sends the exact identity pair on every setup RPC", a
   });
   const respond = async (result: unknown, threadId = "") => {
     const outbound = sent.at(-1)!;
+    const responseResult = (outbound.payload as any).method === "initialize"
+      ? { userAgent: "codex-cli/0.145.0", ...(result as Record<string, unknown>) }
+      : result;
     socket.onmessage({ data: JSON.stringify({
       channel: "llm", op: "rpc",
       operationId: outbound.operationId, sessionId: outbound.sessionId,
       ...(threadId ? { threadId } : {}),
-      payload: { id: (outbound.payload as any).id, result },
+      payload: { id: (outbound.payload as any).id, result: responseResult },
     }) });
     await flushPromises();
   };
@@ -168,7 +171,10 @@ test("manager mode resumes initialize response by identity without resending it"
   manager.emit({
     channel: "llm", op: "rpc",
     operationId: outbound.operationId, sessionId: outbound.sessionId, seq: 1,
-    payload: { id: (outbound.payload as any).id, result: {} },
+    payload: {
+      id: (outbound.payload as any).id,
+      result: { userAgent: "codex-cli/0.145.0" },
+    },
   });
   await flushPromises();
   expect(manager.send.mock.calls.filter(([message]) => (message.payload as any)?.method === "thread/start")).toHaveLength(1);

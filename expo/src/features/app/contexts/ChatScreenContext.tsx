@@ -2,6 +2,7 @@ import { createContext, useContext, type Dispatch, type MutableRefObject, type R
 import type { NativeScrollEvent, NativeSyntheticEvent, View } from "react-native";
 import type { RunnerRouteSelectionState } from "../hooks/useRunnerRouteSelection";
 import type { ConversationMessage, TtsPlaybackTarget } from "../types/appTypes";
+import type { SessionHistoryPagingState } from "../hooks/useSessionHistoryPagingController";
 
 export type ChatScreenContextValue = {
   approvalDialogPending: boolean;
@@ -20,6 +21,8 @@ export type ChatScreenContextValue = {
     message: ConversationMessage,
     target?: Omit<TtsPlaybackTarget, "messageId">
   ) => Promise<void>;
+  sessionHistoryPagingById: Record<string, SessionHistoryPagingState>;
+  loadOlderSessionHistory: (params: { sessionId: string; directory: string; retry?: boolean }) => Promise<void>;
 };
 
 const ChatScreenContext = createContext<ChatScreenContextValue | null>(null);

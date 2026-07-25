@@ -11,19 +11,12 @@ type ApplySessionRestoreChatOpenStateArgs = {
   chatNearBottomRef: { current: boolean };
 };
 
-type SetConversationMessagesOptionsLike = {
-  resetVisibleCount?: boolean;
-  totalCountOverride?: number;
-};
-
 type ApplySessionRestoreConversationStateArgs = {
   nextConversation: ConversationMessage[];
   nextHistory: HistoryEntry[];
-  restoredMessageCount: number;
   effectiveContextUsedPct: number | null;
   setConversationMessagesWithLimit: (
-    next: ConversationMessage[],
-    options?: SetConversationMessagesOptionsLike
+    next: ConversationMessage[]
   ) => void;
   setHistory: (next: HistoryEntry[]) => void;
   setAcpContextUsedPct: (next: number | null) => void;
@@ -39,7 +32,6 @@ export function applySessionRestoreChatOpenState({
 export function applySessionRestoreConversationState({
   nextConversation,
   nextHistory,
-  restoredMessageCount,
   effectiveContextUsedPct,
   setConversationMessagesWithLimit,
   setHistory,
@@ -49,10 +41,7 @@ export function applySessionRestoreConversationState({
   applySessionRestoreChatOpenState({
     chatNearBottomRef,
   });
-  setConversationMessagesWithLimit(nextConversation, {
-    resetVisibleCount: true,
-    totalCountOverride: restoredMessageCount,
-  });
+  setConversationMessagesWithLimit(nextConversation);
   setHistory(nextHistory);
   setAcpContextUsedPct(effectiveContextUsedPct);
 }

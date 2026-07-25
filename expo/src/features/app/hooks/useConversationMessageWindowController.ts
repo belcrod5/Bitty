@@ -1,12 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject } from "react";
 import type { ConversationMessage } from "../types/appTypes";
 
-type SetConversationMessagesOptions = {
-  resetVisibleCount?: boolean;
-  visibleCount?: number;
-  totalCountOverride?: number;
-};
-
 type UseConversationMessageWindowControllerArgs = {
   conversationMessagesRef: MutableRefObject<ConversationMessage[]>;
   setConversationMessages: Dispatch<ConversationMessage[]>;
@@ -17,8 +11,7 @@ export function useConversationMessageWindowController({
   setConversationMessages,
 }: UseConversationMessageWindowControllerArgs) {
   const setConversationMessagesWithLimit = useCallback((
-    nextMessages: ConversationMessage[],
-    _opts?: SetConversationMessagesOptions
+    nextMessages: ConversationMessage[]
   ) => {
     const allMessages = Array.isArray(nextMessages) ? nextMessages : [];
     conversationMessagesRef.current = allMessages;

@@ -53,6 +53,7 @@ import {
   CodexRunnerWsJsonRpcIdMapper,
   createCodexRunnerWsLogicalId,
 } from "./runnerWsJsonRpcIds";
+import { assertSupportedCodexAppServer } from "./rpcSession";
 export { startCodexAppServerTurnRelayObserver } from "./turnRelayObserver";
 
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
@@ -935,7 +936,7 @@ export function startCodexAppServerTurn(
 
     const runInitialTurnSetup = async (failIfActive: (error: Error) => void) => {
       await waitForManagerAdmission();
-      await sendRequestWhenAdmitted("initialize", {
+      const initialized = await sendRequestWhenAdmitted<Record<string, unknown>>("initialize", {
         clientInfo: {
           name: "expo-ios-client",
           title: "Expo iOS Client",
@@ -946,13 +947,14 @@ export function startCodexAppServerTurn(
           optOutNotificationMethods: [],
         },
       }, PRE_TURN_RPC_TIMEOUT_MS);
+      assertSupportedCodexAppServer(initialized);
       const initializedAdmission = sendNotificationWhenAdmitted("initialized", {});
       if (initializedAdmission) await initializedAdmission;
 
       const readThreadSnapshot = async (threadId: string, reason: string) => {
         const readResult = await sendRequestWhenAdmitted<Record<string, unknown>>("thread/read", {
           threadId,
-          includeTurns: true,
+          includeTurns: false,
         }, PRE_TURN_RPC_TIMEOUT_MS);
         const thread = extractThreadReadPayload(readResult);
         const threadStatus = deriveCodexSessionStateFromSnapshot(thread);

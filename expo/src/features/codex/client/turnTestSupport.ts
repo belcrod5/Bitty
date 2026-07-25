@@ -160,13 +160,16 @@ export function respondToLastRequest(
   threadId?: string
 ) {
   const outbound = lastSent(manager);
-  const payload = outbound.payload as { id?: number };
+  const payload = outbound.payload as { id?: number; method?: string };
+  const responseResult = payload.method === "initialize" && result && typeof result === "object"
+    ? { userAgent: "codex-cli/0.145.0", ...result }
+    : result;
   manager.emit({
     channel: "llm",
     op: "rpc",
     operationId: outbound.operationId,
     sessionId: outbound.sessionId,
     ...(threadId ? { threadId } : {}),
-    payload: { id: payload.id, result },
+    payload: { id: payload.id, result: responseResult },
   });
 }

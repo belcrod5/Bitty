@@ -1,5 +1,4 @@
 import {
-  deriveCodexSessionStateFromSnapshot,
   isThreadNotLoadedError,
   normalizeThreadListEntry,
   normalizeThreadReadEntry,
@@ -67,11 +66,6 @@ function extractThreadReadPayload(result: Record<string, unknown>): unknown {
   return (result as any)?.thread ?? result;
 }
 
-function extractLatestTurnPayload(result: Record<string, unknown>): unknown | null {
-  const data = Array.isArray((result as any)?.data) ? ((result as any).data as unknown[]) : [];
-  return data[0] || null;
-}
-
 export async function readCodexAppServerThread(options: {
   wsUrl: string;
   wsToken?: string;
@@ -95,34 +89,20 @@ export async function readCodexAppServerThread(options: {
       try {
         const readResult = await rpc<Record<string, unknown>>("thread/read", {
           threadId,
-          includeTurns: true,
+          includeTurns: false,
         });
         thread = extractThreadReadPayload(readResult);
       } catch (error) {
         if (!isThreadNotLoadedError(error)) {
           throw error;
         }
-        const resumeResult = await rpc<Record<string, unknown>>("thread/resume", { threadId });
+        const resumeResult = await rpc<Record<string, unknown>>("thread/resume", {
+          threadId,
+          excludeTurns: true,
+        });
         thread = extractThreadReadPayload(resumeResult);
       }
-      const snapshotState = deriveCodexSessionStateFromSnapshot(thread);
-      let latestTurn: unknown | null = null;
-      if (snapshotState.threadStatusType === "idle" || snapshotState.threadStatusType === "notLoaded") {
-        try {
-          const turnsResult = await rpc<Record<string, unknown>>("thread/turns/list", {
-            threadId,
-            limit: 1,
-            sortDirection: "desc",
-            itemsView: "summary",
-          });
-          latestTurn = extractLatestTurnPayload(turnsResult);
-        } catch {
-          latestTurn = null;
-        }
-      }
-      const normalized = normalizeThreadReadEntry(thread, {
-        latestTurn: latestTurn ?? undefined,
-      });
+      const normalized = normalizeThreadReadEntry(thread);
       if (!normalized.threadId) {
         throw new Error("thread/read did not return thread.id");
       }

@@ -45,6 +45,51 @@ function panelSnapshot(
 }
 
 describe("useConversationRuntimeStoreController conditional terminal update", () => {
+  it("advances executionGeneration for execution changes but not message-only updates", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        conversationMessages: [message("first", "first")],
+      });
+    });
+    const first = result.current.getConversationRuntimeSnapshot("session-1");
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        conversationMessages: [message("second", "second")],
+      });
+    });
+    const second = result.current.getConversationRuntimeSnapshot("session-1");
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        conversationMessages: [message("third", "third")],
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: activeRequest(100),
+      });
+    });
+    const running = result.current.getConversationRuntimeSnapshot("session-1");
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        isResponding: false,
+        selectedThreadStatusType: "idle",
+        expectedRequestStartedAtMs: 100,
+        clearRespondingRequestStartedAtMs: 100,
+      });
+    });
+    const completed = result.current.getConversationRuntimeSnapshot("session-1");
+
+    expect(first?.executionGeneration).toBe(0);
+    expect(second?.executionGeneration).toBe(0);
+    expect(running?.executionGeneration).toBe(1);
+    expect(completed?.request).toBeNull();
+    expect(completed?.executionGeneration).toBe(2);
+  });
+
   it("does not replace a newer request, messages, or responding state", async () => {
     const { result } = await renderHook(() => useConversationRuntimeStoreController());
     await act(() => {

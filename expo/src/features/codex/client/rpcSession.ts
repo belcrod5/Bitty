@@ -18,6 +18,26 @@ import {
   createCodexRunnerWsLogicalId,
 } from "./runnerWsJsonRpcIds";
 
+export const MINIMUM_CODEX_APP_SERVER_VERSION = "0.145.0";
+
+export function assertSupportedCodexAppServer(initialized: Record<string, unknown>) {
+  const userAgent = String(initialized.userAgent || "").trim();
+  const match = userAgent.match(/(\d+)\.(\d+)\.(\d+)/);
+  const version = match ? match.slice(1, 4).map(Number) : [];
+  const minimum = MINIMUM_CODEX_APP_SERVER_VERSION.split(".").map(Number);
+  let comparison = 0;
+  for (let index = 0; version.length === 3 && index < minimum.length; index += 1) {
+    if (version[index] === minimum[index]) continue;
+    comparison = version[index] > minimum[index] ? 1 : -1;
+    break;
+  }
+  if (version.length === 3 && comparison >= 0) return;
+  throw new Error(
+    `Codex App Server ${match?.[0] || "unknown"} は未対応です。` +
+    `${MINIMUM_CODEX_APP_SERVER_VERSION}以上へ更新してください: npm install -g @openai/codex@latest`
+  );
+}
+
 export async function runCodexRpcSession<T>(options: {
   wsUrl: string;
   wsToken?: string;
@@ -206,6 +226,7 @@ export async function runCodexRpcSession<T>(options: {
           optOutNotificationMethods: [],
         },
       });
+      assertSupportedCodexAppServer(initialized);
       sendJson({ method: "initialized", params: {} });
       const result = await options.run(sendRequest, initialized);
       succeed(result);

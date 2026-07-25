@@ -104,8 +104,8 @@ CLOUDFLARE_TUNNEL_LOG_FILE="${CLOUDFLARE_TUNNEL_LOG_FILE:-$SCRIPT_DIR/logs/cloud
 CLOUDFLARE_TUNNEL_PID_FILE="${CLOUDFLARE_TUNNEL_PID_FILE:-$SCRIPT_DIR/logs/cloudflared-tunnel.pid}"
 CLOUDFLARE_TAIL_PID_FILE="${CLOUDFLARE_TAIL_PID_FILE:-$SCRIPT_DIR/logs/cloudflare-tail.pid}"
 
-# Public Runner preflight, Tunnel lifecycle, and pairing credential helpers.
 source "$SCRIPT_DIR/src/run-local-public-runner.sh"
+source "$SCRIPT_DIR/src/codex-version-gate.sh"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -328,6 +328,7 @@ require_codex_home_write_access() {
   if [ "$CODEX_ENABLE" != "1" ]; then
     return 0
   fi
+  require_codex_minimum_version
   if will_reuse_codex_app_server; then
     return 0
   fi

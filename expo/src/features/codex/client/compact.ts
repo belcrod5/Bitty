@@ -18,6 +18,7 @@ import {
   type JsonRpcSuccess,
   type PendingRequest,
 } from "./types";
+import { assertSupportedCodexAppServer } from "./rpcSession";
 import {
   encodeRunnerWsLlmRpc,
   isRunnerWsUrl,
@@ -349,7 +350,7 @@ export async function compactCodexAppServerThread(options: {
     }, timeoutMs);
 
     async function runCompactSession() {
-        await sendRequest("initialize", {
+        const initialized = await sendRequest<Record<string, unknown>>("initialize", {
           clientInfo: {
             name: "expo-ios-thread-compact",
             title: "Expo iOS Thread Compact",
@@ -360,6 +361,7 @@ export async function compactCodexAppServerThread(options: {
             optOutNotificationMethods: [],
           },
         });
+        assertSupportedCodexAppServer(initialized);
         sendJson({ method: "initialized", params: {} });
 
         async function ensureThreadReachable() {
