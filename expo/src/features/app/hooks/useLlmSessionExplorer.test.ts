@@ -56,7 +56,10 @@ describe("fetchRunnerSessionMessages", () => {
       text: async () => JSON.stringify({
         found: true,
         source: "cli",
-        messages: [{ role: "assistant", content: "latest", at: "now", itemId: "msg-1" }],
+        messages: [
+          { role: "assistant", content: "goal body", at: "before", itemId: "goal-1", kind: "unclassified_context" },
+          { role: "assistant", content: "latest", at: "now", itemId: "msg-1" },
+        ],
         olderCursor: "opaque-1",
       }),
     } as unknown as Response);
@@ -66,10 +69,18 @@ describe("fetchRunnerSessionMessages", () => {
 
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(url.pathname).toBe("/session-messages");
-    expect(url.searchParams.get("limit")).toBe("10");
+    expect(url.searchParams.get("limit")).toBeNull();
     expect(url.searchParams.get("cursor")).toBeNull();
-    expect(url.searchParams.get("limit")).not.toBe("all");
     expect(restored.messages).toEqual([
+      {
+        role: "assistant",
+        content: "goal body",
+        at: "before",
+        kind: "unclassified_context",
+        itemId: "goal-1",
+        inheritedFromParent: undefined,
+        commandExecution: undefined,
+      },
       { role: "assistant", content: "latest", at: "now", itemId: "msg-1", inheritedFromParent: undefined, commandExecution: undefined },
     ]);
     expect(restored.olderCursor).toBe("opaque-1");

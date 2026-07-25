@@ -49,6 +49,7 @@ import { SlashCommandSelectMenu } from "../components/SlashCommandSelectMenu";
 import { TtsWaveformPlayer } from "../components/TtsWaveformPlayer";
 import { YouTubeVideoList } from "../components/YouTubeVideoList";
 import { GitDiffPanel } from "../components/GitDiffPanel";
+import { InternalContextMessage } from "../components/InternalContextMessage";
 import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
@@ -878,6 +879,9 @@ export function ChatScreen({
     scrollChatListToBottomSettled(false);
   }, [scrollChatListToBottomSettled]);
   const getConversationMessageItemType = useCallback((message: ConversationMessage) => {
+    if (message.kind === "internal_context" || message.kind === "unclassified_context") {
+      return "internal_context";
+    }
     return message.role === "assistant" ? "assistant" : "user";
   }, []);
   const getEstimatedConversationMessageSize = useCallback((
@@ -886,6 +890,7 @@ export function ChatScreen({
     itemType: string | undefined
   ) => {
     const resolvedItemType = itemType || getConversationMessageItemType(message);
+    if (resolvedItemType === "internal_context") return 72;
     const content = String(message.content || "");
     const len = content.length;
     const lineCount = content.length > 0 ? content.split(/\r\n|\r|\n/).length : 1;
@@ -1572,7 +1577,15 @@ export function ChatScreen({
           >
             {isUser ? "YOU" : "ASSISTANT"}
           </Text>
-          {message.content ? (
+          {message.kind === "internal_context" || message.kind === "unclassified_context" ? (
+            <InternalContextMessage
+              content={message.content}
+              unclassified={message.kind === "unclassified_context"}
+              textStyle={[styles.chatBubbleText, styles.chatBubbleTextAssistant]}
+              onLocalFileLinkPress={openChatFileLinkContextMenu}
+              onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}
+            />
+          ) : message.content ? (
             <MarkdownText
               content={message.content}
               tone={isUser ? "user" : "assistant"}

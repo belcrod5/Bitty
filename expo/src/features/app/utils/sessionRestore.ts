@@ -171,6 +171,7 @@ export function buildRestoredSessionState({
         ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}),
       }),
       id,
+      ...(item.kind ? { kind: item.kind } : {}),
     }];
   });
   const nextHistory = buildHistoryFromSessionMessages(restoredMessages);

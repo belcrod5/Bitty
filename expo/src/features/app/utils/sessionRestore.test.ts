@@ -36,6 +36,28 @@ function buildRestoredResult(
 }
 
 describe("buildRestoredSessionState", () => {
+  it("preserves goal context as an assistant-only display kind", () => {
+    const restored = buildRestoredResult([
+      { role: "assistant", content: "goal body", at: "2026-01-01T00:00:01.000Z", kind: "unclassified_context" },
+    ]);
+
+    const state = buildRestoredSessionState({
+      restored,
+      buildConversationMessage: buildConversationMessageStub,
+      modelOptions: [],
+      modelRef: "",
+      reasoningEffort: "medium",
+      prevEffectiveSessionId: "",
+      nextSessionId: "thread-1",
+    });
+
+    expect(state.nextConversation[0]).toMatchObject({
+      role: "assistant",
+      content: "goal body",
+      kind: "unclassified_context",
+    });
+  });
+
   it("keeps commandExecution messages with empty content in restoredMessages and nextConversation", () => {
     const restored = buildRestoredResult([
       { role: "user", content: "run tests", at: "2026-01-01T00:00:01.000Z" },

@@ -13,7 +13,7 @@ function createReaders() {
     normalizeSessionUpdatedAt: (value) => String(value || "").trim(),
     normalizeTokenCount: (value) => Number(value || 0),
     parseOpenAICodexModelRef: (value) => ({ modelRef: String(value || "") }),
-    sessionMessagesPageSize: 10,
+    sessionMessagesPageSize: 20,
     sessionRolloutMaxReadBytes: 1024 * 1024,
     sessionSummaryHeadMaxReadBytes: 128 * 1024,
     sessionSummaryTailMaxReadBytes: 128 * 1024,
@@ -44,6 +44,11 @@ test("forked subagent rollout marks its inherited parent range", async (t) => {
       timestamp: "2026-06-22T00:00:00.002Z",
       type: "response_item",
       payload: { type: "message", role: "user", content: [{ type: "input_text", text: "parent prompt" }] },
+    },
+    {
+      timestamp: "2026-06-22T00:00:00.002Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "parent prompt" },
     },
     {
       timestamp: "2026-06-22T00:00:00.003Z",
@@ -120,6 +125,7 @@ test("forked subagent rollout marks its inherited parent range", async (t) => {
   })), [
     { content: "parent prompt", inheritedFromParent: true },
     { content: "parent answer", inheritedFromParent: true },
+    { content: "subagent bootstrap", inheritedFromParent: false },
     { content: "", inheritedFromParent: false },
     { content: "", inheritedFromParent: false },
     { content: "", inheritedFromParent: false },
@@ -142,37 +148,401 @@ function messageRecord(index, role = index % 2 ? "assistant" : "user") {
   };
 }
 
-test("reads ten visible rows at a time with an opaque backward cursor", async (t) => {
+function messageSequence(count, start = 1) {
+  return Array.from({ length: count }, (_, offset) => messageRecord(start + offset)).flatMap((record) => {
+    if (record.payload.role !== "user") return [record];
+    return [
+      record,
+      {
+        timestamp: record.timestamp,
+        type: "event_msg",
+        payload: { type: "user_message", message: record.payload.content[0].text },
+      },
+    ];
+  });
+}
+
+test("reads twenty visible rows at a time with an opaque backward cursor", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-page-"));
   t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
   const filePath = path.join(tempDir, "rollout.jsonl");
   const records = [
     { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
-    ...Array.from({ length: 25 }, (_, index) => messageRecord(index + 1)),
+    ...messageSequence(45),
   ];
   await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
   const readers = createReaders();
 
   const newest = await readers.readSessionMessagesFromRolloutFile(filePath, {
     sessionId: "thread-1",
-    limit: 10,
+    limit: 20,
   });
   const middle = await readers.readSessionMessagesFromRolloutFile(filePath, {
     sessionId: "thread-1",
-    limit: 10,
+    limit: 20,
     cursor: newest.olderCursor,
   });
   const oldest = await readers.readSessionMessagesFromRolloutFile(filePath, {
     sessionId: "thread-1",
-    limit: 10,
+    limit: 20,
     cursor: middle.olderCursor,
   });
 
-  assert.deepEqual(newest.messages.map((item) => item.content), Array.from({ length: 10 }, (_, i) => `message-${i + 16}`));
-  assert.deepEqual(middle.messages.map((item) => item.content), Array.from({ length: 10 }, (_, i) => `message-${i + 6}`));
+  assert.deepEqual(newest.messages.map((item) => item.content), Array.from({ length: 20 }, (_, i) => `message-${i + 26}`));
+  assert.deepEqual(middle.messages.map((item) => item.content), Array.from({ length: 20 }, (_, i) => `message-${i + 6}`));
   assert.deepEqual(oldest.messages.map((item) => item.content), Array.from({ length: 5 }, (_, i) => `message-${i + 1}`));
   assert.equal(oldest.olderCursor, null);
-  assert.deepEqual(newest.messages.map((item) => item.itemId), Array.from({ length: 10 }, (_, i) => `msg-${i + 16}`));
+  assert.deepEqual(newest.messages.map((item) => item.itemId), Array.from({ length: 20 }, (_, i) => `msg-${i + 26}`));
+});
+
+test("returns unpaired Codex messages without modifying their bodies or misclassifying user text", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-internal-context-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "goal-1",
+        content: [{ type: "input_text", text: '<codex_internal_context source="goal">goal body</codex_internal_context>' }],
+      },
+    },
+    { timestamp: "2026-07-01T00:00:01.250Z", type: "world_state", payload: {} },
+    {
+      timestamp: "2026-07-01T00:00:01.500Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "user-1",
+        content: [{ type: "input_text", text: "<foo>user supplied</foo>" }],
+      },
+    },
+    {
+      timestamp: "2026-07-01T00:00:01.500Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "<foo>user supplied</foo>" },
+    },
+    {
+      timestamp: "2026-07-01T00:00:01.750Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "environment-1",
+        content: [{ type: "input_text", text: "<environment_context>environment body</environment_context>" }],
+      },
+    },
+    { timestamp: "2026-07-01T00:00:01.800Z", type: "world_state", payload: {} },
+    {
+      timestamp: "2026-07-01T00:00:01.875Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "bootstrap-1",
+        content: [
+          { type: "input_text", text: "<recommended_plugins>plugins body</recommended_plugins>" },
+          { type: "input_text", text: "# AGENTS.md instructions for /workspace\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>" },
+          { type: "input_text", text: "<environment_context>environment body</environment_context>" },
+        ],
+      },
+    },
+    { timestamp: "2026-07-01T00:00:01.900Z", type: "world_state", payload: {} },
+    messageRecord(2, "assistant"),
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const page = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 10,
+  });
+
+  assert.deepEqual(page.messages.map((item) => ({
+    role: item.role,
+    content: item.content,
+    kind: item.kind,
+    itemId: item.itemId,
+  })), [
+    {
+      role: "assistant",
+      content: '<codex_internal_context source="goal">goal body</codex_internal_context>',
+      kind: "unclassified_context",
+      itemId: "goal-1",
+    },
+    {
+      role: "user",
+      content: "<foo>user supplied</foo>",
+      kind: undefined,
+      itemId: "user-1",
+    },
+    {
+      role: "assistant",
+      content: "<environment_context>environment body</environment_context>",
+      kind: "unclassified_context",
+      itemId: "environment-1",
+    },
+    {
+      role: "assistant",
+      content: "<recommended_plugins>plugins body</recommended_plugins>\n\n# AGENTS.md instructions for /workspace\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>\n\n<environment_context>environment body</environment_context>",
+      kind: "unclassified_context",
+      itemId: "bootstrap-1",
+    },
+    { role: "assistant", content: "message-2", kind: undefined, itemId: "msg-2" },
+  ]);
+});
+
+test("shows an unmatched user response at EOF as unclassified without modifying its body", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-writing-user-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "user-writing",
+        content: [{ type: "input_text", text: "<foo>still writing</foo>" }],
+      },
+    },
+  ];
+  await fs.writeFile(filePath, records.map(JSON.stringify).join("\n"));
+
+  const page = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+
+  assert.deepEqual(page.messages.map((item) => ({
+    role: item.role,
+    content: item.content,
+    kind: item.kind,
+  })), [
+    { role: "assistant", content: "<foo>still writing</foo>", kind: "unclassified_context" },
+  ]);
+});
+
+test("pairs user response and event in either order across non-message records", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-pair-order-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "event first" },
+    },
+    { timestamp: "2026-07-01T00:00:01.100Z", type: "world_state", payload: {} },
+    {
+      timestamp: "2026-07-01T00:00:01.200Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "event-first-response",
+        content: [{ type: "input_text", text: "event first" }],
+      },
+    },
+    {
+      timestamp: "2026-07-01T00:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "response-first-response",
+        content: [{ type: "input_text", text: "response first" }],
+      },
+    },
+    { timestamp: "2026-07-01T00:00:02.100Z", type: "world_state", payload: {} },
+    {
+      timestamp: "2026-07-01T00:00:02.200Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "response first" },
+    },
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const page = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+
+  assert.deepEqual(page.messages.map((item) => ({
+    role: item.role,
+    content: item.content,
+    kind: item.kind,
+    itemId: item.itemId,
+  })), [
+    { role: "user", content: "event first", kind: undefined, itemId: "event-first-response" },
+    { role: "user", content: "response first", kind: undefined, itemId: "response-first-response" },
+  ]);
+});
+
+test("keeps both records visible when another visible message makes a pair ambiguous", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-ambiguous-pair-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "ambiguous-response",
+        content: [{ type: "input_text", text: "same body" }],
+      },
+    },
+    messageRecord(2, "assistant"),
+    {
+      timestamp: "2026-07-01T00:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "same body" },
+    },
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const page = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+
+  assert.deepEqual(page.messages.map((item) => ({
+    role: item.role,
+    content: item.content,
+    kind: item.kind,
+  })), [
+    { role: "assistant", content: "same body", kind: "unclassified_context" },
+    { role: "assistant", content: "message-2", kind: undefined },
+    { role: "user", content: "same body", kind: undefined },
+  ]);
+});
+
+test("does not lose an event-only user message across a page boundary", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-event-only-page-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    ...Array.from({ length: 10 }, (_, index) => messageRecord(index + 1, "assistant")),
+    {
+      timestamp: "2026-07-01T00:00:11.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "event only" },
+    },
+    ...Array.from({ length: 20 }, (_, index) => messageRecord(index + 12, "assistant")),
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+  const readers = createReaders();
+
+  const newest = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+  const older = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    cursor: newest.olderCursor,
+  });
+  const combined = [...older.messages, ...newest.messages];
+
+  assert.equal(combined.filter((item) => item.content === "event only").length, 1);
+  assert.equal(combined.find((item) => item.content === "event only")?.role, "user");
+});
+
+test("keeps a reversed non-adjacent pair intact at a page boundary", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-pair-page-boundary-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    ...Array.from({ length: 5 }, (_, index) => messageRecord(index + 1, "assistant")),
+    {
+      timestamp: "2026-07-01T00:00:06.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "boundary pair" },
+    },
+    { timestamp: "2026-07-01T00:00:06.100Z", type: "world_state", payload: {} },
+    {
+      timestamp: "2026-07-01T00:00:06.200Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        id: "boundary-response",
+        content: [{ type: "input_text", text: "boundary pair" }],
+      },
+    },
+    ...Array.from({ length: 20 }, (_, index) => messageRecord(index + 7, "assistant")),
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+  const readers = createReaders();
+
+  const newest = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+  const older = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    cursor: newest.olderCursor,
+  });
+  const combined = [...older.messages, ...newest.messages];
+
+  assert.deepEqual(combined.filter((item) => item.content === "boundary pair").map((item) => ({
+    role: item.role,
+    kind: item.kind,
+    itemId: item.itemId,
+  })), [
+    { role: "user", kind: undefined, itemId: "boundary-response" },
+  ]);
+});
+
+test("uses user_message events instead of injected response items for the session summary", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-summary-user-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "<environment_context>internal</environment_context>" }],
+      },
+    },
+    { timestamp: "2026-07-01T00:00:01.250Z", type: "world_state", payload: {} },
+    {
+      timestamp: "2026-07-01T00:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "actual prompt" }],
+      },
+    },
+    {
+      timestamp: "2026-07-01T00:00:02.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "actual prompt" },
+    },
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const summary = await createReaders().readCliSessionSummaryFromRolloutFile(filePath);
+
+  assert.equal(summary.firstUserMessage, "actual prompt");
 });
 
 test("keeps an issued older cursor valid after the rollout is appended", async (t) => {
@@ -181,7 +551,7 @@ test("keeps an issued older cursor valid after the rollout is appended", async (
   const filePath = path.join(tempDir, "rollout.jsonl");
   const records = [
     { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
-    ...Array.from({ length: 12 }, (_, index) => messageRecord(index + 1)),
+    ...messageSequence(12),
   ];
   await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
   const readers = createReaders();
@@ -196,22 +566,22 @@ test("keeps an issued older cursor valid after the rollout is appended", async (
   assert.deepEqual(older.messages.map((item) => item.content), ["message-1", "message-2"]);
 });
 
-test("does not advertise an older page when exactly ten visible rows exist", async (t) => {
+test("does not advertise an older page when exactly twenty visible rows exist", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-exact-page-"));
   t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
   const filePath = path.join(tempDir, "rollout.jsonl");
   const records = [
     { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
-    ...Array.from({ length: 10 }, (_, index) => messageRecord(index + 1)),
+    ...messageSequence(20),
   ];
   await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
 
   const page = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
     sessionId: "thread-1",
-    limit: 10,
+    limit: 20,
   });
 
-  assert.equal(page.messages.length, 10);
+  assert.equal(page.messages.length, 20);
   assert.equal(page.olderCursor, null);
 });
 
@@ -223,6 +593,11 @@ test("returns command rows without returning command output bodies", async (t) =
   const records = [
     { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
     messageRecord(1, "user"),
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "message-1" },
+    },
     {
       timestamp: "2026-07-01T00:00:02.000Z",
       type: "response_item",
@@ -263,7 +638,7 @@ test("rejects a cursor for another session or a replaced rollout", async (t) => 
   const filePath = path.join(tempDir, "rollout.jsonl");
   const records = [
     { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
-    ...Array.from({ length: 12 }, (_, index) => messageRecord(index + 1)),
+    ...messageSequence(12),
   ];
   await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
   const readers = createReaders();
@@ -312,6 +687,11 @@ test("fresh subagent rollout does not mark child messages as inherited", async (
       payload: { type: "message", role: "user", content: [{ type: "input_text", text: "child task" }] },
     },
     {
+      timestamp: "2026-06-22T00:00:00.004Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "child task" },
+    },
+    {
       timestamp: "2026-06-22T00:00:00.005Z",
       type: "response_item",
       payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "child answer" }] },
@@ -325,6 +705,7 @@ test("fresh subagent rollout does not mark child messages as inherited", async (
     content: message.content,
     inheritedFromParent: message.inheritedFromParent === true,
   })), [
+    { content: "bootstrap", inheritedFromParent: false },
     { content: "child task", inheritedFromParent: false },
     { content: "child answer", inheritedFromParent: false },
   ]);
@@ -372,6 +753,7 @@ test("finds a subagent child boundary beyond the old bounded head window", async
 
   assert.deepEqual(page.messages.map((item) => ({ content: item.content, inherited: item.inheritedFromParent === true })), [
     { content: "parent", inherited: true },
+    { content: "bootstrap", inherited: false },
     { content: "child", inherited: false },
   ]);
 });

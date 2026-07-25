@@ -30,9 +30,10 @@ export function createLlmSessionRolloutReaders(deps) {
     return Math.min(sessionMessagesPageSize, n);
   }
 
-  function extractSessionMessageTextFromContent(rawContent) {
+  function extractSessionMessageTextChunksFromContent(rawContent) {
     if (typeof rawContent === "string") {
-      return rawContent.trim();
+      const text = rawContent.trim();
+      return text ? [text] : [];
     }
     const content = Array.isArray(rawContent) ? rawContent : [];
     const chunks = [];
@@ -48,8 +49,7 @@ export function createLlmSessionRolloutReaders(deps) {
       if (!text) continue;
       chunks.push(text);
     }
-    if (chunks.length <= 0) return "";
-    return chunks.join("\n\n").trim();
+    return chunks;
   }
 
   function normalizeSessionMessageRole(rawRole) {
@@ -63,17 +63,6 @@ export function createLlmSessionRolloutReaders(deps) {
     if (!normalizedRole) return true;
     const text = String(content || "").trim();
     if (!text) return true;
-    if (normalizedRole === "user") {
-      if (text.includes("AGENTS.md instructions for") && text.includes("<INSTRUCTIONS>")) {
-        return true;
-      }
-      if (text.includes("<environment_context>") && text.includes("<cwd>")) {
-        return true;
-      }
-      if (text.includes("<permissions instructions>")) {
-        return true;
-      }
-    }
     return false;
   }
 
@@ -102,9 +91,19 @@ export function createLlmSessionRolloutReaders(deps) {
       };
     }
     if (payloadType !== "message") return null;
+    const chunks = extractSessionMessageTextChunksFromContent(payload?.content);
+    const content = chunks.join("\n\n").trim();
+    if (!content) return null;
     const role = normalizeSessionMessageRole(payload?.role);
-    if (!role) return null;
-    const content = extractSessionMessageTextFromContent(payload?.content);
+    if (!role) {
+      return {
+        role: "assistant",
+        content,
+        at,
+        kind: "unclassified_context",
+        itemId: String(payload?.id || "").trim() || undefined,
+      };
+    }
     if (shouldSkipSessionMessage(role, content)) return null;
     return {
       role,
@@ -377,10 +376,6 @@ export function createLlmSessionRolloutReaders(deps) {
         parsed = JSON.parse(line);
       } catch {
         continue;
-      }
-      const responseMessage = parseSessionMessageFromResponseItem(parsed);
-      if (responseMessage && responseMessage.role === "user") {
-        return String(responseMessage.content || "").trim();
       }
       const eventMessage = parseSessionMessageFromEventItem(parsed);
       if (eventMessage && eventMessage.role === "user") {

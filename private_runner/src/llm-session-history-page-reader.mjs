@@ -5,6 +5,7 @@ const CURSOR_VERSION = 1;
 const CHUNK_BYTES = 64 * 1024;
 const MAX_JSON_LINE_BYTES = 256 * 1024;
 const CURSOR_HASH_BYTES = 128;
+const MESSAGE_PAIR_LOOKAROUND_RECORDS = 32;
 
 export function createLlmSessionHistoryPageReader(deps) {
   const {
@@ -30,6 +31,57 @@ export function createLlmSessionHistoryPageReader(deps) {
       String(row?.content || ""),
       String(row?.commandExecution?.command || ""),
     ])}`;
+  }
+
+  function responseMessageRole(parsed) {
+    if (
+      String(parsed?.type || "") !== "response_item"
+      || String(parsed?.payload?.type || "").trim().toLowerCase() !== "message"
+    ) {
+      return "";
+    }
+    const role = String(parsed?.payload?.role || "").trim().toLowerCase();
+    return role === "user" || role === "assistant" ? role : "";
+  }
+
+  function resolveMessageCandidates(candidates, scannedLineCount, reachedStart) {
+    const resolved = [];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      const older = candidates[index + 1];
+      const pair = older
+        && candidate.pairRole
+        && candidate.pairRole === older.pairRole
+        && candidate.source !== older.source
+        && candidate.source !== "other"
+        && older.source !== "other"
+        && candidate.row.content === older.row.content
+        && Math.abs(candidate.recordIndex - older.recordIndex) <= MESSAGE_PAIR_LOOKAROUND_RECORDS;
+      if (pair) {
+        const response = candidate.source === "response_message" ? candidate : older;
+        resolved.push({
+          row: response.row,
+          start: Math.min(candidate.start, older.start),
+          confirmed: true,
+        });
+        index += 1;
+        continue;
+      }
+      const row = candidate.source === "response_message" && candidate.pairRole === "user"
+        ? { ...candidate.row, role: "assistant", kind: "unclassified_context" }
+        : candidate.row;
+      resolved.push({
+        row,
+        start: candidate.start,
+        confirmed: (
+          reachedStart
+          || !candidate.pairRole
+          || older !== undefined
+          || scannedLineCount - candidate.recordIndex >= MESSAGE_PAIR_LOOKAROUND_RECORDS
+        ),
+      });
+    }
+    return resolved;
   }
 
   function commandText(raw, direct = false) {
@@ -246,59 +298,59 @@ export function createLlmSessionHistoryPageReader(deps) {
       }
       const header = await readSessionHeaderContext(filePath, stat);
       const outcomesByCallId = new Map();
-      const primaryRows = [];
-      const fallbackRows = [];
-      const primaryFingerprints = new Set();
+      const candidates = [];
       let parsedLineCount = 0;
       let oversizedLineCount = 0;
       let scannedLineCount = 0;
+      const hasConfirmedPage = () => {
+        const resolved = resolveMessageCandidates(candidates, scannedLineCount, false);
+        return resolved.length > limit && resolved.slice(0, limit + 1).every((item) => item.confirmed);
+      };
       const scan = await scanLinesBackward(handle, endOffset, (line, start) => {
         scannedLineCount += 1;
         if (line.oversized) {
           oversizedLineCount += 1;
           recordOversizedCommandOutcome(line, outcomesByCallId);
-          return false;
+          return hasConfirmedPage();
         }
-        if (!line.text.trim()) return false;
+        if (!line.text.trim()) return hasConfirmedPage();
         let parsed;
         try {
           parsed = JSON.parse(line.text);
         } catch {
-          return false;
+          return hasConfirmedPage();
         }
         parsedLineCount += 1;
         recordCommandOutcome(parsed, outcomesByCallId);
         let row = parseCommandCall(parsed, outcomesByCallId);
-        let kind = "command";
+        let kind = row ? "command" : "message";
+        let source = row ? "other" : "";
+        let pairRole = "";
         if (!row) {
           row = parseSessionMessageFromResponseItem(parsed);
-          kind = "message";
+          pairRole = responseMessageRole(parsed);
+          source = pairRole ? "response_message" : "other";
         }
-        if (row) {
-          const logicalFingerprint = fingerprint([row.role, row.at, row.content, row.commandExecution?.command || ""]);
-          if (!primaryFingerprints.has(logicalFingerprint)) {
-            primaryFingerprints.add(logicalFingerprint);
-            row.itemId = rowId(row, kind);
-            if (header.isSubagent && header.boundaryTimestamp && String(row.at || "") < header.boundaryTimestamp) {
-              row.inheritedFromParent = true;
-            }
-            primaryRows.push({ row, start });
+        if (!row) {
+          row = parseSessionMessageFromEventItem(parsed);
+          if (row) {
+            source = "event_message";
+            pairRole = row.role;
           }
-          return primaryRows.length > limit;
         }
-        const fallback = parseSessionMessageFromEventItem(parsed);
-        if (fallback) fallbackRows.push({ row: fallback, start });
-        return false;
+        if (!row) return hasConfirmedPage();
+        row.itemId = rowId(row, kind);
+        candidates.push({ row, start, source, pairRole, recordIndex: scannedLineCount });
+        return hasConfirmedPage();
       });
-      const availableRows = [...primaryRows];
-      if (availableRows.length <= limit && scan.reachedStart) {
-        for (const candidate of fallbackRows) {
-          const logicalFingerprint = fingerprint([candidate.row.role, candidate.row.at, candidate.row.content, ""]);
-          if (primaryFingerprints.has(logicalFingerprint)) continue;
-          primaryFingerprints.add(logicalFingerprint);
-          candidate.row.itemId = rowId(candidate.row, "message");
-          availableRows.push(candidate);
-          if (availableRows.length > limit) break;
+      const availableRows = resolveMessageCandidates(candidates, scannedLineCount, scan.reachedStart);
+      for (const item of availableRows) {
+        if (
+          header.isSubagent
+          && header.boundaryTimestamp
+          && String(item.row.at || "") < header.boundaryTimestamp
+        ) {
+          item.row.inheritedFromParent = true;
         }
       }
       const selected = availableRows.slice(0, limit).sort((left, right) => left.start - right.start);

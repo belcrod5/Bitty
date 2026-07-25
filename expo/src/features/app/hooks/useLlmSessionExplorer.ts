@@ -59,6 +59,7 @@ export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
   content: string;
   at: string;
+  kind?: "internal_context" | "unclassified_context";
   // rollout内の永続item/call id。履歴page間の安定キーに使う。
   itemId?: string;
   inheritedFromParent?: boolean;
@@ -476,7 +477,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       const url = new URL(`${baseUrl}/session-messages`);
       url.searchParams.set("sessionId", sessionId);
       url.searchParams.set("source", "all");
-      url.searchParams.set("limit", "10");
       if (cursor) url.searchParams.set("cursor", cursor);
       if (includeDirectory && preferredDirectory) url.searchParams.set("directory", preferredDirectory);
       const result = await fetchTextWithTimeout(url.toString(), {
@@ -524,6 +524,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           role: role as RunnerSessionMessageRole,
           content,
           at: String(item.at || "").trim(),
+          ...(item.kind === "internal_context" || item.kind === "unclassified_context"
+            ? { kind: item.kind }
+            : {}),
           itemId: String(item.itemId || "").trim() || undefined,
           inheritedFromParent: item.inheritedFromParent === true || undefined,
           commandExecution,

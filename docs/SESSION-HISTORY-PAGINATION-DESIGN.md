@@ -129,9 +129,9 @@ UI側で`messages.slice(-10)`するだけでは、ファイルI/O、WebSocket転
 
 ### 8.1 ページ単位
 
-ページ単位は「画面に表示する最新10 row」とする。ユーザー/アシスタントのmessageとcommand executionをそれぞれ1 rowと数える。
+ページ単位は「画面に表示する最新20 row」とする。ユーザー/アシスタントのmessageとcommand executionをそれぞれ1 rowと数える。
 
-表示しないAGENTS指示、environment/permissions挿入message、reasoning、tool outputは数えない。境界をturnに合わせて件数を増減させず、常に最大10 rowとする。
+reasoningとtool outputは数えない。Goal、environment、AGENTSなど、実ユーザー入力と確認できないmessageは本文を改変せず、assistant側の「未分類」折りたたみrowとして1件に数える。境界をturnに合わせて件数を増減させず、常に最大20 rowとする。
 
 ページサイズは設定化せず、runnerを正とする単一定数にする。Expoは件数の意味を再実装しない。
 
@@ -140,18 +140,20 @@ UI側で`messages.slice(-10)`するだけでは、ファイルI/O、WebSocket転
 履歴取得は既存の認証済み`/session-messages`をcursor対応にする。
 
 ```text
-GET /session-messages?sessionId=...&limit=10
-  -> 最新10 row + olderCursor
+GET /session-messages?sessionId=...
+  -> 最新20 row + olderCursor
 
-GET /session-messages?sessionId=...&limit=10&cursor=...
-  -> 直前の10 row + 次のolderCursor
+GET /session-messages?sessionId=...&cursor=...
+  -> 直前の20 row + 次のolderCursor
 ```
 
 - runnerはsession IDから既存indexでrollout pathを解決する。cursorへpathを入れず、別sessionのpathを指定できないようにする。
 - cursorなしではEOF、cursorありではcursorのbyte offsetを起点に、固定長chunkを後方へ読む。
 - 改行が見つかるまで後方chunk走査する。通常lineは完全なlineになってからUTF-8 decodeするが、上限を超えるlineは連結せず、有界prefix/suffixだけを保持してstreaming分類する。
-- 最新から古い順に走査し、10個の表示rowを満たした境界で止める。返却時は古い順へ反転する。
-- `response_item`をmessageの正とし、対応する`response_item`がない場合だけ`event_msg`をfallbackに使う。同じrole・時刻・本文の重複recordは1 rowにする。
+- 最新から古い順に走査し、20個の表示rowを満たした境界で止める。返却時は古い順へ反転する。
+- `response_item/message`と`event_msg/*_message`はどちらも表示候補として保持する。表示候補として隣り合い、本文・roleが一致する組だけを32 physical record以内で1対1照合する。間の非表示metadataと物理順序には依存しない。
+- 照合できた組は`response_item`の永続IDを使う1 rowにする。照合できないeventも必ず通常messageとして表示し、fallback扱いで捨てない。
+- 照合できないuserの`response_item`、およびroleが未知の`response_item/message`は本文を加工せず、assistant側の「未分類」折りたたみrowとして表示する。別の表示messageを跨ぐ曖昧な組は統合せず、両方を残す。
 - command rowは実行command文字列、`running/completed/failed`、exit codeを返す。command output本文、その他のtool JSON、reasoning本文は返さない。
 - 巨大recordは行全体の`JSON.parse`やUTF-8文字列化をしない。バイト列の有界prefix/suffixでrecord種別、call ID、status、exit codeだけを識別し、不明な形式は本文を読まず診断countに回す。
 - 各rowの安定IDはrollout内の永続item/call IDを優先する。IDがない場合だけrecord指紋を使い、byte offsetだけをIDにしない。live itemと履歴rowが同じ永続IDなら更新、fallback IDならrole・時刻・種別の指紋で一度だけ照合する。
@@ -291,14 +293,18 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 
 ### 11.1 runner後方reader
 
-- 初回がEOFから最新10表示rowだけを返す。
-- 2page目が1page目の直前10表示rowを返し、重複と欠落がない。
+- 初回がEOFから最新20表示rowだけを返す。
+- 2page目が1page目の直前20表示rowを返し、重複と欠落がない。
 - 1 JSONL lineがchunkより大きくても正しく次の改行へ到達する。
 - multi-byte UTF-8がchunk境界をまたいでも壊れない。
 - 古い巨大なtool outputがあるfixtureで、初回にファイル先頭まで読まない。
 - `custom_tool_call_output`の巨大line全体をbuffer化・`JSON.parse`せず、output本文をresponseへ含めない。
 - command rowは実行command、status、exit code、stable IDを持ち、output本文を含まない。
-- `response_item`/`event_msg`の重複と、AGENTS/environment/permissions挿入messageを表示件数に数えない。
+- `response_item`/`event_msg`の重複、reasoning、tool outputを表示件数に数えない。
+- Codex内部情報は通常のユーザー文と区別し、assistant側の初期折りたたみrowとして内容を保持する。
+- 内部情報にも`role: user`が設定されるため、roleや本文タグでは分類しない。近接する本文一致eventとの1対1照合だけを実ユーザー入力の証拠とし、不確実なrecordは非表示にせず「未分類」として残す。
+- response/eventの逆順、間に非表示metadataが入る場合、eventだけの場合、ページ境界でも本文を欠落させない。
+- 別の表示messageを跨ぐ曖昧なresponse/eventは統合せず、未分類responseとeventの両方を表示する。
 - 永続item IDがあるrowはlive itemと同じIDになり、IDがないrowの指紋もページ間で変わらない。
 - rollout追記後も発行済みolder cursorが同じ過去範囲を指す。
 - truncate・置換・同inodeの先頭書き換え・別session cursor・範囲外offsetを明示的に拒否する。
@@ -342,7 +348,7 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 対象sessionで変更前後を同じrelease条件で比較する。
 
 - 初回履歴取得にApp Serverのturn replayを使用しない。
-- 初回pageは10表示rowを超えて返さない。
+- 初回pageは20表示rowを超えて返さない。
 - 初回に全61MBをExpoへ転送しない。
 - 初回に全1,473 rowをMarkdownへ渡さない。
 - `thread/read`の25秒timeoutを正常フローに含めない。
@@ -382,21 +388,22 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 ## 16. リスク
 
 - CodexのJSONL record形式が将来変わる可能性がある。
-- 10 rowの間に巨大なtool output recordがある場合、そのpageのdisk scan量は大きくなる。
-- 未知の巨大recordは本文を読まずskipするため、将来の新形式では表示行を取りこぼす可能性がある。
+- 20 rowの間に巨大なtool output recordがある場合、そのpageのdisk scan量は大きくなる。
+- 256 KiBを超えるrecordや壊れたJSONは本文を読まず診断countにするため、将来message自体が巨大化した場合は表示できない。
 - stable IDの変更はTTSとruntime reconciliationへ影響する。
 - Markdown/Mermaidの遅延layoutは単体テストだけでは保証できない。
 
-これらはrecord種別fixture、byte diagnostics、永続ID/指紋、実機anchor計測で抑える。未知recordは無理に表示せず診断countだけを残す。
+これらはrecord種別fixture、byte diagnostics、永続ID/指紋、実機anchor計測で抑える。通常サイズの`response_item/message`は未知roleでも未分類として表示し、巨大・破損recordだけは診断countを残す。
 
 ## 17. 確定事項
 
-1. ページ単位は画面上の10表示row。user/assistant messageとcommand executionを1 rowずつ数える。
+1. ページ単位は画面上の20表示row。user/assistant messageとcommand executionを1 rowずつ数える。
 2. command execution rowは実行command、status、exit codeを含め、output本文は含めない。
 3. 過去page失敗時は現在位置を保ったまま上端に再試行表示を出す。
 4. 古いCodex App Serverはサポートせず、起動時にversion確認して更新を案内する。
-5. OpenAI Codex本体は変更せず、保存済み履歴のページングをprivate_runnerで吸収する。
-6. App Serverのlegacy全replay問題は、この文書、runnerコードコメント、回帰テストで削除理由ごと固定する。
+5. GoalやenvironmentなどのCodex内部情報は非表示にせず、assistant側で初期折りたたみにする。
+6. OpenAI Codex本体は変更せず、保存済み履歴のページングをprivate_runnerで吸収する。
+7. App Serverのlegacy全replay問題は、この文書、runnerコードコメント、回帰テストで削除理由ごと固定する。
 
 ## 18. 参考資料
 

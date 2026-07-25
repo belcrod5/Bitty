@@ -271,7 +271,7 @@ npm run ios
   - 返答後に自動音声再生（/tts）（設定は端末保存・次回復元）
   - `Log Settings JSON` で現在設定をJSONとして Expo terminal に出力（他端末への初期値共有用）
   - `Read Reply (/tts)` で手動再生
-  - 最新10件の履歴表示
+  - 最新20件の履歴表示（上スクロールで過去20件ずつ追加）
   - エラー表示方針（開発時）: App画面にはエラー文言を出さず、Expoのterminalログ（`console.error`）で確認
   - エラー表示方針（開発時）: runner側エラーは runner起動terminalのログで確認
 

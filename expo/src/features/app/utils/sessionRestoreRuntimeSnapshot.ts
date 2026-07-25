@@ -88,6 +88,7 @@ export function buildRestoredPanelConversation(params: {
       role,
       content: String(message.content || ""),
       at: at || undefined,
+      ...(message.kind ? { kind: message.kind } : {}),
       inheritedFromParent: message.inheritedFromParent === true || undefined,
       commandExecution: message.commandExecution || undefined,
     } satisfies ConversationMessage;
