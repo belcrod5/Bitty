@@ -3085,46 +3085,36 @@ function buildCodexStatusFromWham(whamUsage) {
   const rateLimit = whamUsage?.rate_limit && typeof whamUsage.rate_limit === "object"
     ? whamUsage.rate_limit
     : null;
-  const primaryWindow = rateLimit?.primary_window && typeof rateLimit.primary_window === "object"
-    ? rateLimit.primary_window
-    : null;
-  const secondaryWindow = rateLimit?.secondary_window && typeof rateLimit.secondary_window === "object"
-    ? rateLimit.secondary_window
-    : null;
-  if (!primaryWindow || !secondaryWindow) {
-    throw new Error("wham usage payload missing primary/secondary windows");
+  const windows = [rateLimit?.primary_window, rateLimit?.secondary_window]
+    .filter((windowObj) => windowObj && typeof windowObj === "object");
+  const formattedLimits = [
+    { seconds: 5 * 60 * 60, label: "5h limit", includeDate: false },
+    { seconds: 7 * 24 * 60 * 60, label: "Weekly limit", includeDate: true },
+  ].flatMap(({ seconds, label, includeDate }) => {
+    const windowObj = windows.find(
+      (candidate) => Number(candidate.limit_window_seconds) === seconds
+    );
+    if (!windowObj) return [];
+    const leftPercent = computeLeftPercent(windowObj);
+    return [{
+      label,
+      value: `${formatLimitBar(leftPercent)} ${leftPercent}% left`,
+      reset: formatResetAt(windowObj.reset_at, { includeDate }),
+    }];
+  });
+  if (formattedLimits.length === 0) {
+    throw new Error("wham usage payload missing 5h/weekly windows");
   }
 
-  const primaryLeft = computeLeftPercent(primaryWindow);
-  const secondaryLeft = computeLeftPercent(secondaryWindow);
-  const primaryValue = `${formatLimitBar(primaryLeft)} ${primaryLeft}% left`;
-  const secondaryValue = `${formatLimitBar(secondaryLeft)} ${secondaryLeft}% left`;
-  const primaryReset = formatResetAt(primaryWindow?.reset_at, { includeDate: false });
-  const secondaryReset = formatResetAt(secondaryWindow?.reset_at, { includeDate: true });
-
-  const statusText = [
-    `5h limit: ${primaryValue}`,
-    `(resets ${primaryReset})`,
-    `Weekly limit: ${secondaryValue}`,
-    `(resets ${secondaryReset})`,
-  ].join("\n");
-
   return {
-    statusText,
-    limitLines: [
-      {
-        section: "default",
-        label: "5h limit",
-        value: `${primaryValue} (resets ${primaryReset})`,
-      },
-      {
-        section: "default",
-        label: "Weekly limit",
-        value: `${secondaryValue} (resets ${secondaryReset})`,
-      },
-    ],
-    primaryLeft,
-    secondaryLeft,
+    statusText: formattedLimits
+      .flatMap(({ label, value, reset }) => [`${label}: ${value}`, `(resets ${reset})`])
+      .join("\n"),
+    limitLines: formattedLimits.map(({ label, value, reset }) => ({
+      section: "default",
+      label,
+      value: `${value} (resets ${reset})`,
+    })),
   };
 }
 
@@ -11967,6 +11957,7 @@ export const __TESTING__ = {
   acquireCodexAuthSwitchLock,
   isCodexAuthSwitchLockStale,
   buildAuthSwitchRestartInvocation,
+  buildCodexStatusFromWham,
   persistActiveCodexAuthProfileSnapshot,
   switchCodexAuthProfile,
   pushDeviceStore,
