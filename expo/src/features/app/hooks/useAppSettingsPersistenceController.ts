@@ -21,6 +21,7 @@ import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
 import {
   loadSecureRunnerCredentials,
   saveSecureRunnerCredentials,
+  type SecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
 import { normalizeCodexWsInputs } from "../../codex/client/helpers";
 import { LOCATION_BACKGROUND_FIELDS, mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
@@ -198,9 +199,12 @@ export function useAppSettingsPersistenceController({
   parseExpandedDirectoryIds,
 }: UseAppSettingsPersistenceControllerArgs) {
   const loadedSettingsPathRef = useRef<string | null>(null);
+  const writablePersistenceRef = useRef({
+    settings: false,
+    secureCredentials: false,
+  });
 
-  const applySecureCredentials = useCallback(async () => {
-    const secureCredentials = await loadSecureRunnerCredentials();
+  const applySecureCredentials = useCallback((secureCredentials: SecureRunnerCredentials) => {
     if (secureCredentials.runnerToken) {
       setRunnerToken(secureCredentials.runnerToken);
       setCodexWsToken((current) => String(current || "").trim() ? current : secureCredentials.runnerToken);
@@ -547,24 +551,28 @@ export function useAppSettingsPersistenceController({
   useEffect(() => {
     async function loadSettings() {
       const path = settingsPath();
-      if (!path) {
-        await applySecureCredentials();
-        setSettingsLoaded(true);
-        return;
-      }
       if (loadedSettingsPathRef.current === path) return;
       loadedSettingsPathRef.current = path;
 
-      try {
-        const parsed = await readPersistedSettings();
-        if (!parsed) {
-          await applySecureCredentials();
-          setSettingsLoaded(true);
-          return;
+      const [settingsResult, credentialsResult] = await Promise.allSettled([
+        path ? readPersistedSettings() : Promise.resolve(undefined),
+        loadSecureRunnerCredentials(),
+      ]);
+
+      if (settingsResult.status === "fulfilled") {
+        writablePersistenceRef.current.settings = Boolean(path);
+        if (settingsResult.value) {
+          applyPersistedSettings(settingsResult.value);
         }
-        applyPersistedSettings(parsed);
-        await applySecureCredentials();
-      } catch {}
+      } else {
+        console.warn("[settings] failed to read persisted settings", settingsResult.reason);
+      }
+      if (credentialsResult.status === "fulfilled") {
+        writablePersistenceRef.current.secureCredentials = true;
+        applySecureCredentials(credentialsResult.value);
+      } else {
+        console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
+      }
       setSettingsLoaded(true);
     }
 
@@ -583,18 +591,26 @@ export function useAppSettingsPersistenceController({
     if (!path) return;
 
     const timer = setTimeout(() => {
-      void mutatePersistedSettings((current) => {
-        const next: Record<string, unknown> = buildPersistedSettingsPayload();
-        for (const field of LOCATION_BACKGROUND_FIELDS) {
-          if (field in current) next[field] = current[field];
-        }
-        return next;
-      });
-      void saveSecureRunnerCredentials({
-        runnerToken,
-        cloudflareAccessClientId,
-        cloudflareAccessClientSecret,
-      }).catch(() => {});
+      if (writablePersistenceRef.current.settings) {
+        void mutatePersistedSettings((current) => {
+          const next: Record<string, unknown> = buildPersistedSettingsPayload();
+          for (const field of LOCATION_BACKGROUND_FIELDS) {
+            if (field in current) next[field] = current[field];
+          }
+          return next;
+        }).catch((error) => {
+          console.warn("[settings] failed to save persisted settings", error);
+        });
+      }
+      if (writablePersistenceRef.current.secureCredentials) {
+        void saveSecureRunnerCredentials({
+          runnerToken,
+          cloudflareAccessClientId,
+          cloudflareAccessClientSecret,
+        }).catch((error) => {
+          console.warn("[settings] failed to save secure credentials", error);
+        });
+      }
     }, 250);
 
     return () => clearTimeout(timer);

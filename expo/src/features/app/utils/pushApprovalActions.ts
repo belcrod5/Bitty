@@ -156,7 +156,14 @@ export async function handlePushApprovalAction({
   if (!approvalId) return;
   if (actionIdentifier !== APPROVE_ACTION) return;
 
-  const faceIdRequired = await readFaceIdRequiredFromDisk();
+  let faceIdRequired: boolean;
+  try {
+    faceIdRequired = await readFaceIdRequiredFromDisk();
+  } catch {
+    console.warn("[push] approval action could not read settings");
+    await scheduleApprovalRespondFailureFallback();
+    return;
+  }
   if (!faceIdRequired) return;
 
   const authenticated = await authenticateWithFaceId();

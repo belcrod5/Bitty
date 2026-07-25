@@ -15,15 +15,13 @@ function settingsPaths() {
 }
 
 async function readSettingsAtPath(path: string) {
-  try {
-    const info = await FileSystem.getInfoAsync(path);
-    if (!info.exists) return undefined;
-    const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return undefined;
+  const info = await FileSystem.getInfoAsync(path);
+  if (!info.exists) return undefined;
+  const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Invalid settings file: ${path}`);
   }
+  return parsed as Record<string, unknown>;
 }
 
 async function readPersistedSettingsWithoutBarrier() {
@@ -64,8 +62,8 @@ export const LOCATION_BACKGROUND_FIELDS = [
 ] as const;
 
 // Reads a single field from the persisted settings JSON without going through React
-// context. Returns undefined when the file is missing/unreadable/malformed so callers
-// can apply their own defaults.
+// context. Returns undefined only when the file is missing. Read and parse failures
+// remain errors so callers cannot mistake unavailable persisted data for defaults.
 export async function readPersistedSettingsField(field: string): Promise<unknown> {
   return (await readPersistedSettings())?.[field];
 }

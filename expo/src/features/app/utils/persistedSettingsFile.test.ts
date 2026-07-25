@@ -1,4 +1,5 @@
 const mockFiles = new Map<string, string>();
+let mockReadError: Error | null = null;
 let mockMoveBarrier: Promise<void> | null = null;
 let mockWriteStarted: Promise<void>;
 let resolveMockWriteStarted: () => void;
@@ -18,6 +19,7 @@ jest.mock("expo-file-system/legacy", () => ({
   documentDirectory: "file:///documents/",
   getInfoAsync: jest.fn(async (path: string) => ({ exists: mockFiles.has(path) })),
   readAsStringAsync: jest.fn(async (path: string) => {
+    if (mockReadError) throw mockReadError;
     const value = mockFiles.get(path);
     if (typeof value === "undefined") throw new Error("missing");
     return value;
@@ -34,9 +36,21 @@ import {
 
 beforeEach(() => {
   mockFiles.clear();
+  mockReadError = null;
   mockMoveBarrier = null;
   mockWriteStarted = new Promise<void>((resolve) => { resolveMockWriteStarted = resolve; });
   jest.clearAllMocks();
+});
+
+test("distinguishes an unreadable settings file from a missing file", async () => {
+  mockFiles.set("file:///documents/bitty-settings.json", "{}");
+  mockReadError = new Error("settings file temporarily unavailable");
+
+  await expect(readPersistedSettings()).rejects.toThrow("settings file temporarily unavailable");
+});
+
+test("returns undefined when no settings file exists", async () => {
+  await expect(readPersistedSettings()).resolves.toBeUndefined();
 });
 
 test("serializes background and React-style updates without losing either field set", async () => {
