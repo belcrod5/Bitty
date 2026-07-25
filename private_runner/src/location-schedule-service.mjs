@@ -56,8 +56,15 @@ export function windowAt(rule, now = new Date()) {
   return {
     active: local.minute >= startMinute && local.minute < endMinute,
     localDate: local.date,
-    occurrenceKey: [rule.id, local.date, rule.startTime, rule.endTime, rule.timeZone].join("|"),
+    occurrenceKey: [rule.id, local.date, rule.timeZone].join("|"),
   };
+}
+
+function canonicalWindowKey(raw) {
+  const parts = String(raw || "").split("|");
+  if (parts.length === 3) return parts.join("|");
+  if (parts.length === 5) return [parts[0], parts[1], parts[4]].join("|");
+  return "";
 }
 
 function validateTimeZone(raw) {
@@ -212,6 +219,10 @@ export function createLocationScheduleService({
             throw new Error(`store.occurrences[${key}].windowKey is invalid`);
           }
         }
+        if (occurrence.status === "skipped_edited_active_window") {
+          delete parsed.occurrences[key];
+          continue;
+        }
         let legacyRule = null;
         if (occurrence.ruleSignature !== undefined
           && !/^[a-f0-9]{64}$/.test(String(occurrence.ruleSignature))) {
@@ -240,9 +251,9 @@ export function createLocationScheduleService({
           const claimedWindow = windowAt(claimedRule, createdAt);
           if (claimedRule.id !== occurrence.ruleId
             || claimedRule.enabled !== true
-            || occurrence.windowKey !== claimedWindow.occurrenceKey
+            || canonicalWindowKey(occurrence.windowKey) !== claimedWindow.occurrenceKey
             || !claimedWindow.active
-            || (key !== claimedWindow.occurrenceKey && !key.startsWith(`${claimedWindow.occurrenceKey}|entry|`))) {
+            || (key !== occurrence.windowKey && !key.startsWith(`${occurrence.windowKey}|entry|`))) {
             throw new Error(`store.occurrences[${key}] queued claim is inconsistent with its rule`);
           }
         }
@@ -293,7 +304,7 @@ export function createLocationScheduleService({
         continue;
       }
       const windowKey = String(occurrence?.windowKey || occurrence?.occurrenceKey || "");
-      const initialOccurrence = key === windowKey && occurrence?.status !== "skipped_edited_active_window";
+      const initialOccurrence = key === windowKey;
       const cutoff = initialOccurrence ? initialCutoff : reentryCutoff;
       if (Date.parse(String(occurrence?.createdAt || "")) < cutoff) {
         delete data.occurrences[key];
@@ -309,13 +320,12 @@ export function createLocationScheduleService({
 
   function occurrencesForWindow(windowKey) {
     return Object.values(data.occurrences).filter((occurrence) => (
-      String(occurrence?.windowKey || occurrence?.occurrenceKey || "") === windowKey
+      canonicalWindowKey(occurrence?.windowKey || occurrence?.occurrenceKey) === windowKey
     ));
   }
 
   function latestClaim(occurrences) {
     return occurrences
-      .filter((occurrence) => occurrence?.status !== "skipped_edited_active_window")
       .reduce((latest, occurrence) => (
         !latest || Date.parse(String(occurrence?.createdAt || "")) > Date.parse(String(latest.createdAt || ""))
           ? occurrence
@@ -328,11 +338,12 @@ export function createLocationScheduleService({
     const staleRules = [];
     for (const rule of data.rules) {
       const state = data.states[rule.id];
-      if (!rule.enabled || !state || state.regionRevision !== rule.regionRevision) continue;
+      if (!rule.enabled
+        || !state
+        || state.regionRevision !== rule.regionRevision) continue;
       const window = windowAt(rule, at);
       if (!window.active) continue;
       const windowOccurrences = occurrencesForWindow(window.occurrenceKey);
-      if (windowOccurrences.some((occurrence) => occurrence?.status === "skipped_edited_active_window")) continue;
       if (typeof requestStateRefresh === "function") {
         const observedAtMs = Date.parse(String(state.observedAt || ""));
         const receivedAtMs = Date.parse(String(state.receivedAt || ""));
@@ -487,19 +498,21 @@ export function createLocationScheduleService({
 
   async function replaceSchedules(payload) {
     const result = await serialize(async () => {
-      const at = now();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
       for (const rule of rules) {
         const old = previous.get(rule.id);
         if (!old) continue;
-        const locationChanged = old.latitude !== rule.latitude
-          || old.longitude !== rule.longitude
-          || old.radiusMeters !== rule.radiusMeters;
+        const { regionRevision: _oldRevision, ...oldDefinition } = old;
+        const { regionRevision: _newRevision, ...newDefinition } = rule;
+        const ruleChanged = JSON.stringify(oldDefinition) !== JSON.stringify(newDefinition);
         const revisionChanged = old.regionRevision !== rule.regionRevision;
-        if (locationChanged !== revisionChanged) {
-          throw new Error(`rule ${rule.id} regionRevision must change exactly when its location changes`);
+        const oldRevisionIsCurrent = old.regionRevision.startsWith("rule-");
+        const newRevisionIsCurrent = rule.regionRevision.startsWith("rule-");
+        if ((!oldRevisionIsCurrent && ruleChanged && !newRevisionIsCurrent)
+          || (oldRevisionIsCurrent && (!newRevisionIsCurrent || ruleChanged !== revisionChanged))) {
+          throw new Error(`rule ${rule.id} regionRevision must change exactly when its rule changes`);
         }
       }
       data.phoneTimeZone = phoneTimeZone;
@@ -508,35 +521,9 @@ export function createLocationScheduleService({
       for (const id of Object.keys(data.states)) if (!liveIds.has(id)) delete data.states[id];
       for (const rule of rules) {
         const old = previous.get(rule.id);
-        if (!old || (
-          rule.enabled && (
-            !old.enabled ||
-            old.latitude !== rule.latitude ||
-            old.longitude !== rule.longitude ||
-            old.radiusMeters !== rule.radiusMeters
-          )
-        )) {
+        if (!old || old.regionRevision !== rule.regionRevision) {
           delete data.states[rule.id];
         }
-        if (!rule.enabled || (old && ruleFingerprint(old) === ruleFingerprint(rule))) continue;
-        const window = windowAt(rule, at);
-        if (!window.active || occurrencesForWindow(window.occurrenceKey).some((occurrence) => (
-          occurrence?.status === "skipped_edited_active_window"
-        ))) continue;
-        const occurrenceKey = data.occurrences[window.occurrenceKey]
-          ? `${window.occurrenceKey}|edited`
-          : window.occurrenceKey;
-        data.occurrences[occurrenceKey] = {
-          occurrenceKey,
-          windowKey: window.occurrenceKey,
-          ruleId: rule.id,
-          status: "skipped_edited_active_window",
-          threadId: "",
-          turnId: "",
-          errorMessage: "",
-          createdAt: at.toISOString(),
-          updatedAt: at.toISOString(),
-        };
       }
       await persist();
       return snapshot();
@@ -557,7 +544,9 @@ export function createLocationScheduleService({
       if (state !== "inside" && state !== "outside") throw new Error("state must be inside or outside");
       const eventId = String(payload?.eventId || "").trim().slice(0, 200);
       if (!eventId) throw new Error("eventId is required");
-      if (eventId && data.states[ruleId]?.eventId === eventId) return false;
+      const storedState = data.states[ruleId];
+      const previousState = storedState?.regionRevision === regionRevision ? storedState : null;
+      if (eventId && previousState?.eventId === eventId) return false;
       const receivedAt = now();
       const observedAt = String(payload?.observedAt || "").trim();
       const parsedObservedAt = Date.parse(observedAt);
@@ -565,11 +554,10 @@ export function createLocationScheduleService({
       if (parsedObservedAt > receivedAt.getTime() + MAX_LOCATION_CLOCK_SKEW_MS) {
         throw new Error("observedAt is too far in the future");
       }
-      const currentObservedAt = Date.parse(String(data.states[ruleId]?.observedAt || ""));
+      const currentObservedAt = Date.parse(String(previousState?.observedAt || ""));
       if (Number.isFinite(parsedObservedAt) && Number.isFinite(currentObservedAt) && parsedObservedAt < currentObservedAt) {
         return false;
       }
-      const previousState = data.states[ruleId];
       const observedAtIso = new Date(parsedObservedAt).toISOString();
       const sameState = previousState?.state === state;
       let stateSince = observedAtIso;
