@@ -28,7 +28,7 @@ export type PendingLocationState = {
   observedAt: string;
 };
 
-function hashLocation(value: string) {
+function hashRevision(value: string) {
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
   for (let index = 0; index < value.length; index += 1) {
@@ -39,14 +39,25 @@ function hashLocation(value: string) {
   return `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-export function locationRuleRevision(
-  rule: Pick<LocationScheduleRule, "latitude" | "longitude" | "radiusMeters">
-) {
-  return hashLocation(JSON.stringify([rule.latitude, rule.longitude, rule.radiusMeters]));
+export function locationScheduleRevision(rule: LocationScheduleRule) {
+  return `rule-${hashRevision(JSON.stringify([
+    rule.id,
+    rule.enabled,
+    rule.startTime,
+    rule.endTime,
+    rule.timeZone,
+    rule.latitude,
+    rule.longitude,
+    rule.radiusMeters,
+    rule.cwd,
+    rule.modelRef,
+    rule.reasoningEffort,
+    rule.prompt,
+  ]))}`;
 }
 
-export function regionIdentifierForRule(rule: Pick<LocationScheduleRule, "id" | "latitude" | "longitude" | "radiusMeters">) {
-  return `${LOCATION_REGION_PREFIX}${rule.id}:${locationRuleRevision(rule)}`;
+export function regionIdentifierForRule(rule: LocationScheduleRule) {
+  return `${LOCATION_REGION_PREFIX}${rule.id}:${locationScheduleRevision(rule)}`;
 }
 
 function parseTime(raw: unknown) {
@@ -132,10 +143,10 @@ export function enabledLocationRegions(rules: readonly LocationScheduleRule[]) {
 export function parseLocationRegionIdentifier(identifier: unknown) {
   const value = String(identifier || "");
   if (!value.startsWith(LOCATION_REGION_PREFIX)) return null;
-  const separator = value.lastIndexOf(":");
-  const ruleId = value.slice(LOCATION_REGION_PREFIX.length, separator);
-  const regionRevision = value.slice(separator + 1);
-  if (!ruleId || !/^[a-f0-9]{16}$/.test(regionRevision)) return null;
+  const match = value.slice(LOCATION_REGION_PREFIX.length)
+    .match(/^([A-Za-z0-9_-]{1,100}):(rule-[a-f0-9]{16}|[a-f0-9]{16})(?::[a-f0-9]{16})?$/);
+  if (!match) return null;
+  const [, ruleId, regionRevision] = match;
   return { ruleId, regionRevision };
 }
 
@@ -184,7 +195,7 @@ export function parsePendingLocationStates(current: unknown): PendingLocationSta
 
 export function pendingLocationStatesForRules(current: unknown, rules: readonly LocationScheduleRule[]) {
   const revisions = new Map(
-    rules.filter((rule) => rule.enabled).map((rule) => [rule.id, locationRuleRevision(rule)])
+    rules.filter((rule) => rule.enabled).map((rule) => [rule.id, locationScheduleRevision(rule)])
   );
   return parsePendingLocationStates(current).filter((event) => revisions.get(event.ruleId) === event.regionRevision);
 }
