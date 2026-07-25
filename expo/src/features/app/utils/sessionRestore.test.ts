@@ -38,7 +38,13 @@ function buildRestoredResult(
 describe("buildRestoredSessionState", () => {
   it("preserves goal context as an assistant-only display kind", () => {
     const restored = buildRestoredResult([
-      { role: "assistant", content: "goal body", at: "2026-01-01T00:00:01.000Z", kind: "unclassified_context" },
+      {
+        role: "assistant",
+        content: "goal body",
+        at: "2026-01-01T00:00:01.000Z",
+        kind: "unclassified_context",
+        inheritedFromParent: true,
+      },
     ]);
 
     const state = buildRestoredSessionState({
@@ -55,6 +61,7 @@ describe("buildRestoredSessionState", () => {
       role: "assistant",
       content: "goal body",
       kind: "unclassified_context",
+      inheritedFromParent: true,
     });
   });
 

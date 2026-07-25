@@ -298,18 +298,7 @@ export function createLlmSessionRolloutReaders(deps) {
           ) {
             lastTaskStartedAt = String(parsed?.timestamp || parsed?.payload?.timestamp || "");
           }
-          const payloadType = String(parsed?.payload?.type || "").trim().toLowerCase();
-          const isChildBoundary = (
-            String(parsed?.type || "") === "inter_agent_communication"
-            || (
-              String(parsed?.type || "") === "response_item"
-              && (
-                (payloadType === "message" && String(parsed?.payload?.role || "").trim().toLowerCase() === "developer")
-                || payloadType === "custom_tool_call"
-                || payloadType === "function_call"
-              )
-            )
-          );
+          const isChildBoundary = String(parsed?.type || "") === "inter_agent_communication";
           if (!boundaryFound && isChildBoundary) {
             boundaryFound = true;
             boundaryTimestamp = lastTaskStartedAt;

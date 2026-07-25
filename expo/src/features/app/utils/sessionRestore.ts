@@ -172,6 +172,7 @@ export function buildRestoredSessionState({
       }),
       id,
       ...(item.kind ? { kind: item.kind } : {}),
+      inheritedFromParent: item.inheritedFromParent === true || undefined,
     }];
   });
   const nextHistory = buildHistoryFromSessionMessages(restoredMessages);

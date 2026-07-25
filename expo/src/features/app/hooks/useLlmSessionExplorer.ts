@@ -18,6 +18,7 @@ import { parseLlmDirectory } from "../utils/settingsParsers";
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
 const SESSION_HISTORY_RPC_TIMEOUT_MS = 25_000;
+const SESSION_HISTORY_METADATA_GRACE_MS = 150;
 const RUNNER_DIRECTORIES_HTTP_TIMEOUT_MS = 12_000;
 
 export type DirectoryPickerEntry = {
@@ -66,16 +67,8 @@ export type RunnerSessionMessage = {
   commandExecution?: CodexCommandExecutionInfo;
 };
 
-export type RunnerSessionMessagesResult = {
+export type RunnerSessionLiveState = {
   threadId: string;
-  sourceKind: string;
-  cwd: string;
-  updatedAt: string;
-  modelRef: string;
-  reasoningEffort: string;
-  latestToolLabel: string;
-  messages: RunnerSessionMessage[];
-  contextUsedPct: number | null;
   threadStatusType?: string;
   hasRunningTurn: boolean;
   runningTurn: {
@@ -84,7 +77,19 @@ export type RunnerSessionMessagesResult = {
     startedAt: string;
     updatedAt: string;
   } | null;
+};
+
+export type RunnerSessionMessagesResult = RunnerSessionLiveState & {
+  sourceKind: string;
+  cwd: string;
+  updatedAt: string;
+  modelRef: string;
+  reasoningEffort: string;
+  latestToolLabel: string;
+  messages: RunnerSessionMessage[];
+  contextUsedPct: number | null;
   olderCursor: string | null;
+  liveStatePromise?: Promise<RunnerSessionLiveState | null>;
 };
 
 type LlmSessionHistoryResult = {
@@ -134,6 +139,17 @@ const SUBAGENT_THREAD_SOURCE_KINDS = [
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
+
+function toRunnerSessionLiveState(
+  live: Awaited<ReturnType<typeof readCodexAppServerThread>>
+): RunnerSessionLiveState {
+  return {
+    threadId: live.threadId,
+    threadStatusType: live.threadStatusType || "",
+    hasRunningTurn: live.hasRunningTurn === true,
+    runningTurn: live.runningTurn || null,
+  };
+}
 
 function inferLatestToolLabelFromSessionMessages(dataRaw: unknown): string {
   const data = dataRaw && typeof dataRaw === "object" ? dataRaw as JsonRecord : {};
@@ -473,6 +489,22 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       directory: preferredDirectory,
       hasCursor: Boolean(cursor),
     });
+    const targetCodexWsUrl = codexWsUrl.trim();
+    const livePromise = !cursor && targetCodexWsUrl
+      ? readCodexAppServerThread({
+        wsUrl: targetCodexWsUrl,
+        wsToken: codexWsToken.trim(),
+        threadId: sessionId,
+        timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+        runnerWebSocketManager,
+      }).catch((error) => {
+        emitSessionDiag("app_server_thread_metadata_failed", {
+          sessionId,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      })
+      : null;
     const fetchPage = async (includeDirectory: boolean) => {
       const url = new URL(`${baseUrl}/session-messages`);
       url.searchParams.set("sessionId", sessionId);
@@ -532,24 +564,13 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           commandExecution,
         }];
       });
-    let live: Awaited<ReturnType<typeof readCodexAppServerThread>> | null = null;
-    const targetCodexWsUrl = codexWsUrl.trim();
-    if (!cursor && targetCodexWsUrl) {
-      try {
-        live = await readCodexAppServerThread({
-          wsUrl: targetCodexWsUrl,
-          wsToken: codexWsToken.trim(),
-          threadId: sessionId,
-          timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
-          runnerWebSocketManager,
-        });
-      } catch (error) {
-        emitSessionDiag("app_server_thread_metadata_failed", {
-          sessionId,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+    const live = livePromise
+      ? await Promise.race([
+        livePromise,
+        new Promise<null>((resolve) => setTimeout(resolve, SESSION_HISTORY_METADATA_GRACE_MS)),
+      ])
+      : null;
+    const liveState = live ? toRunnerSessionLiveState(live) : null;
     emitSessionDiag(cursor ? "runner_session_history_page_done" : "runner_session_history_restore_done", {
       sessionId,
       elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -558,7 +579,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       diagnostics: data?.diagnostics,
     });
     return {
-      threadId: live?.threadId || sessionId,
+      threadId: liveState?.threadId || sessionId,
       sourceKind: String(data?.source || live?.sourceKind || "cli"),
       cwd: String(data?.cwd || live?.cwd || preferredDirectory),
       updatedAt: String(data?.updatedAt || live?.updatedAt || ""),
@@ -567,10 +588,13 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       latestToolLabel: inferLatestToolLabelFromSessionMessages(data),
       messages,
       contextUsedPct: parseContextUsageUsedPct(data?.contextUsage) ?? live?.contextUsedPct ?? null,
-      threadStatusType: live?.threadStatusType || "",
-      hasRunningTurn: live?.hasRunningTurn === true,
-      runningTurn: live?.runningTurn || null,
+      threadStatusType: liveState?.threadStatusType || "",
+      hasRunningTurn: liveState?.hasRunningTurn === true,
+      runningTurn: liveState?.runningTurn || null,
       olderCursor: String(data?.olderCursor || "").trim() || null,
+      ...(!liveState && livePromise
+        ? { liveStatePromise: livePromise.then((value) => value ? toRunnerSessionLiveState(value) : null) }
+        : {}),
     };
   }, [
     codexWsToken,

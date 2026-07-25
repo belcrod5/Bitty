@@ -1775,13 +1775,23 @@ export function ChatScreen({
               miniMessages.map((message) => (
                 <View key={message.id} style={[styles.chatMessageGroup, styles.miniBoardPreviewChatMessageGroup]}>
                   <View style={[styles.chatBubble, styles.miniBoardPreviewChatBubble]}>
-                    <MarkdownText
-                      content={message.content}
-                      tone="assistant"
-                      textStyle={[styles.chatBubbleText, styles.miniBoardPreviewChatBubbleText]}
-                      onLocalFileLinkPress={openChatFileLinkContextMenu}
-                      onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}
-                    />
+                    {message.kind === "internal_context" || message.kind === "unclassified_context" ? (
+                      <InternalContextMessage
+                        content={message.content}
+                        unclassified={message.kind === "unclassified_context"}
+                        textStyle={[styles.chatBubbleText, styles.miniBoardPreviewChatBubbleText]}
+                        onLocalFileLinkPress={openChatFileLinkContextMenu}
+                        onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}
+                      />
+                    ) : (
+                      <MarkdownText
+                        content={message.content}
+                        tone="assistant"
+                        textStyle={[styles.chatBubbleText, styles.miniBoardPreviewChatBubbleText]}
+                        onLocalFileLinkPress={openChatFileLinkContextMenu}
+                        onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}
+                      />
+                    )}
                   </View>
                 </View>
               ))

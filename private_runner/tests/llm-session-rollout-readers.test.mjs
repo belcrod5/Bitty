@@ -41,6 +41,11 @@ test("forked subagent rollout marks its inherited parent range", async (t) => {
     },
     { timestamp: "2026-06-22T00:00:00.001Z", type: "event_msg", payload: { type: "task_started" } },
     {
+      timestamp: "2026-06-22T00:00:00.001Z",
+      type: "response_item",
+      payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "parent bootstrap" }] },
+    },
+    {
       timestamp: "2026-06-22T00:00:00.002Z",
       type: "response_item",
       payload: { type: "message", role: "user", content: [{ type: "input_text", text: "parent prompt" }] },
@@ -55,12 +60,18 @@ test("forked subagent rollout marks its inherited parent range", async (t) => {
       type: "response_item",
       payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "parent answer" }] },
     },
+    {
+      timestamp: "2026-06-22T00:00:00.004Z",
+      type: "response_item",
+      payload: { type: "function_call", name: "exec_command", call_id: "parent-call", arguments: { cmd: "pwd" } },
+    },
     { timestamp: "2026-06-22T00:00:01.000Z", type: "event_msg", payload: { type: "task_started" } },
     {
       timestamp: "2026-06-22T00:00:01.001Z",
       type: "response_item",
       payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "subagent bootstrap" }] },
     },
+    { timestamp: "2026-06-22T00:00:01.001Z", type: "inter_agent_communication", payload: {} },
     {
       timestamp: "2026-06-22T00:00:01.002Z",
       type: "response_item",
@@ -123,8 +134,10 @@ test("forked subagent rollout marks its inherited parent range", async (t) => {
     content: message.content,
     inheritedFromParent: message.inheritedFromParent === true,
   })), [
+    { content: "parent bootstrap", inheritedFromParent: true },
     { content: "parent prompt", inheritedFromParent: true },
     { content: "parent answer", inheritedFromParent: true },
+    { content: "", inheritedFromParent: true },
     { content: "subagent bootstrap", inheritedFromParent: false },
     { content: "", inheritedFromParent: false },
     { content: "", inheritedFromParent: false },
@@ -606,7 +619,7 @@ test("returns command rows without returning command output bodies", async (t) =
     {
       timestamp: "2026-07-01T00:00:03.000Z",
       type: "response_item",
-      payload: { type: "function_call_output", call_id: "call-1", output: hugeOutput },
+      payload: { output: hugeOutput, call_id: "call-1", type: "function_call_output" },
     },
     messageRecord(4, "assistant"),
   ];
@@ -630,6 +643,44 @@ test("returns command rows without returning command output bodies", async (t) =
   });
   assert.equal(JSON.stringify(page).includes(hugeOutput.slice(0, 100)), false);
   assert.equal(page.diagnostics.oversizedLineCount, 1);
+});
+
+test("shows a placeholder instead of silently dropping an oversized message", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-oversized-message-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const hugeMessage = "x".repeat(300 * 1024);
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        id: "huge-message",
+        role: "user",
+        content: [{ type: "input_text", text: hugeMessage }],
+      },
+    },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: hugeMessage },
+    },
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const page = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 10,
+  });
+
+  assert.equal(page.messages.length, 1);
+  assert.equal(page.messages[0].role, "assistant");
+  assert.equal(page.messages[0].kind, "unclassified_context");
+  assert.match(page.messages[0].content, /大きな履歴メッセージ/);
+  assert.equal(page.messages[0].content.includes("x".repeat(100)), false);
+  assert.equal(page.diagnostics.oversizedMessageCount, 2);
 });
 
 test("rejects a cursor for another session or a replaced rollout", async (t) => {
@@ -738,6 +789,7 @@ test("finds a subagent child boundary beyond the old bounded head window", async
       type: "response_item",
       payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "bootstrap" }] },
     },
+    { timestamp: "2026-06-22T00:00:01.001Z", type: "inter_agent_communication", payload: {} },
     {
       timestamp: "2026-06-22T00:00:01.002Z",
       type: "response_item",

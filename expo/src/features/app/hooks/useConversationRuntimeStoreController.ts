@@ -13,6 +13,7 @@ export type ConversationRuntimeSnapshot = {
   isResponding: boolean;
   selectedThreadStatusType: string;
   request: ConversationRuntimeRequestSnapshot | null;
+  executionGeneration: number;
   updatedAtMs: number;
 };
 
@@ -270,6 +271,35 @@ export function useConversationRuntimeStoreController() {
     const nextThreadStatusType = keepPreviousRequest
       ? (previous?.selectedThreadStatusType ?? "unknown")
       : (input.selectedThreadStatusType ?? previous?.selectedThreadStatusType ?? "unknown");
+    const selectedThreadStatusType = deriveSessionExecutionStatusType({
+      threadStatusType: nextThreadStatusType,
+      isResponding: nextIsResponding,
+    });
+    const previousRequestKey = previous?.request
+      ? [
+        previous.request.requestId,
+        previous.request.requestSeq,
+        previous.request.lifecycle,
+        previous.request.status,
+        previous.request.updatedAtMs,
+        previous.request.completedAtMs,
+      ].join(":")
+      : "";
+    const nextRequestKey = nextRequest
+      ? [
+        nextRequest.requestId,
+        nextRequest.requestSeq,
+        nextRequest.lifecycle,
+        nextRequest.status,
+        nextRequest.updatedAtMs,
+        nextRequest.completedAtMs,
+      ].join(":")
+      : "";
+    const executionChanged = Boolean(previous) && (
+      previousRequestKey !== nextRequestKey
+      || previous.isResponding !== nextIsResponding
+      || previous.selectedThreadStatusType !== selectedThreadStatusType
+    );
     const next: ConversationRuntimeSnapshot = {
       sessionId,
       events: Object.prototype.hasOwnProperty.call(input, "events")
@@ -285,11 +315,9 @@ export function useConversationRuntimeStoreController() {
         ? normalizeContextUsedPct(input.contextUsedPct)
         : previous?.contextUsedPct ?? null,
       isResponding: nextIsResponding,
-      selectedThreadStatusType: deriveSessionExecutionStatusType({
-        threadStatusType: nextThreadStatusType,
-        isResponding: nextIsResponding,
-      }),
+      selectedThreadStatusType,
       request: nextRequest,
+      executionGeneration: (previous?.executionGeneration || 0) + (executionChanged ? 1 : 0),
       updatedAtMs: Date.now(),
     };
     runtimeBySessionIdRef.current = {

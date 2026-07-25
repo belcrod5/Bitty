@@ -19,11 +19,11 @@
 
 ## 1. 状態
 
-- 状態: 実装・自動検証済み、実機スクロール確認待ち
+- 状態: 実装・自動検証・実機確認済み、PRレビュー対応中
 - 対象ブランチ: `fix/session-history-pagination`
 - 対象worktree: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/session-history-pagination`
 - この文書の範囲: 調査、runner後方読取の設計、未commit試作のレビュー結果
-- 未実施: 実機確認、commit、push、PR
+- PR: `#29`
 
 ## 2. 目的
 
@@ -155,13 +155,13 @@ GET /session-messages?sessionId=...&cursor=...
 - 照合できた組は`response_item`の永続IDを使う1 rowにする。照合できないeventも必ず通常messageとして表示し、fallback扱いで捨てない。
 - 照合できないuserの`response_item`、およびroleが未知の`response_item/message`は本文を加工せず、assistant側の「未分類」折りたたみrowとして表示する。別の表示messageを跨ぐ曖昧な組は統合せず、両方を残す。
 - command rowは実行command文字列、`running/completed/failed`、exit codeを返す。command output本文、その他のtool JSON、reasoning本文は返さない。
-- 巨大recordは行全体の`JSON.parse`やUTF-8文字列化をしない。バイト列の有界prefix/suffixでrecord種別、call ID、status、exit codeだけを識別し、不明な形式は本文を読まず診断countに回す。
+- 巨大recordは行全体の`JSON.parse`やUTF-8文字列化をしない。バイト列の有界prefix/suffixでrecord種別、call ID、status、exit codeだけを識別する。巨大messageは黙って捨てず、本文を運ばない「未分類」placeholderとして表示し、response/eventの組は通常messageと同じく1 rowへまとめる。
 - 各rowの安定IDはrollout内の永続item/call IDを優先する。IDがない場合だけrecord指紋を使い、byte offsetだけをIDにしない。live itemと履歴rowが同じ永続IDなら更新、fallback IDならrole・時刻・種別の指紋で一度だけ照合する。
 - cursorはクライアントにとってopaqueとし、version、session ID、次回の排他的読取終了byte offset、rolloutのdevice/inode、境界前後の有界hashを持つ。
 - 追記はcursorを無効化しない。truncate、置換、または先頭metadata書き換えでoffsetがずれた場合はdevice/inode・ファイル長・境界hashで検出し、全文読取へfallbackせず`stale_history_cursor`を返す。
 - 初期実装ではsidecar indexを作らない。後方cursorだけで同じ範囲を再走査せずに済み、cache生成・失効・cleanupの複雑性を持ち込まない。実測で必要になった場合だけ別設計とする。
 
-subagent判定、親継承境界、model、reasoning、context、cwdはmessage pageと混ぜない。subagentは先頭からchild開始recordまでforward chunk scanし、境界offsetをrollout指紋とともにプロセス内cacheする。既存のcwd優先順位と`preferCliRollout`は変えない。
+subagent判定、親継承境界、model、reasoning、context、cwdはmessage pageと混ぜない。subagentは先頭から明示的な`inter_agent_communication` recordまでforward chunk scanし、境界offsetをrollout指紋とともにプロセス内cacheする。developer messageやtool callは親履歴にも存在するため境界根拠にしない。既存のcwd優先順位と`preferCliRollout`は変えない。
 
 ### 8.3 App Serverを履歴sourceにしない理由
 
@@ -190,7 +190,7 @@ type RunnerSessionMessagesResult = {
 - cursorなし: 最新ページとmetadata/statusを取得
 - cursorあり: 同一sessionの過去ページだけを取得
 
-App Serverのmetadata-only readとrunnerのbounded metadata readerは、model、reasoning、context、statusに必要な情報だけを取得し、最新pageの表示を止めない。履歴本文はrunner responseだけを正とする。
+App Serverのmetadata-only readはrunner page取得と並行し、runner完了後は150msだけ待つ。App Serverが遅延・停止していても最新pageの表示を止めず、後から成功したrunning/approval stateは、実行状態だけで進む単調世代が復元時から変わっていない場合だけactive/panel runtimeへ適用して既存のsession-runtime relayを接続する。履歴prependなどmessage-only更新ではこの世代を進めない。履歴本文はrunner responseだけを正とする。
 
 過去ページ取得はruntime全体を置換せず、IDでdedupeして先頭へ追加する。
 
@@ -273,7 +273,7 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
   - `onStartReached`、loading/terminal表示、prepend/append判定。
   - 通常、MiniBoard、popupで同じpage actionを使用。
 
-単なるforwarding wrapper、sidecar cache、新しい設定値は追加しない。ページサイズはコード上の単一定数10とし、設定画面や環境変数へ広げない。
+単なるforwarding wrapper、sidecar cache、新しい設定値は追加しない。ページサイズはコード上の単一定数20とし、設定画面や環境変数へ広げない。
 
 ## 10. 実装順序
 
@@ -299,6 +299,8 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 - multi-byte UTF-8がchunk境界をまたいでも壊れない。
 - 古い巨大なtool outputがあるfixtureで、初回にファイル先頭まで読まない。
 - `custom_tool_call_output`の巨大line全体をbuffer化・`JSON.parse`せず、output本文をresponseへ含めない。
+- 256 KiBを超えるmessageは黙って消さず、本文省略を示す未分類placeholderを返す。
+- 同じ巨大messageのresponse/event recordはplaceholderを二重表示しない。
 - command rowは実行command、status、exit code、stable IDを持ち、output本文を含まない。
 - `response_item`/`event_msg`の重複、reasoning、tool outputを表示件数に数えない。
 - Codex内部情報は通常のユーザー文と区別し、assistant側の初期折りたたみrowとして内容を保持する。
@@ -328,6 +330,8 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 ### 11.4 State/runtime
 
 - active、panel、MiniBoard、popupで同じsession pageを共有する。
+- global runtimeで重複済みのpageも、そのpageを持たないpanelへ適用する。
+- subagentの過去pageは親継承列とchild列へ分けてprependし、親→childの時系列を維持する。
 - 多重`onStartReached`が同じcursorを二重取得しない。
 - session切替後の遅い応答を捨てる。
 - prependがlive runtime statusを上書きしない。
@@ -379,6 +383,7 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 - 無効な`visibleCount`系optionを削除する。
 - 全件restoreとpage restoreの二重state modelを作らない。
 - App Serverとrunnerの二重履歴経路を作らない。
+- 遅いApp Server metadataは履歴表示を待たせず、成功時だけlive stateへ後追い反映する。
 - 既存LegendListを使い、新依存を追加しない。
 - 手動scroll補正timerを追加しない。
 - sidecar indexとその失効管理を追加しない。
@@ -389,11 +394,12 @@ Markdown、code block、table、Mermaid WebViewなどの実測高さはLegendLis
 
 - CodexのJSONL record形式が将来変わる可能性がある。
 - 20 rowの間に巨大なtool output recordがある場合、そのpageのdisk scan量は大きくなる。
-- 256 KiBを超えるrecordや壊れたJSONは本文を読まず診断countにするため、将来message自体が巨大化した場合は表示できない。
+- 256 KiBを超えるmessage本文は表示せずplaceholderになる。
+- `inter_agent_communication`がない旧subagent recordは親境界を推測せず、継承装飾を付けない。
 - stable IDの変更はTTSとruntime reconciliationへ影響する。
 - Markdown/Mermaidの遅延layoutは単体テストだけでは保証できない。
 
-これらはrecord種別fixture、byte diagnostics、永続ID/指紋、実機anchor計測で抑える。通常サイズの`response_item/message`は未知roleでも未分類として表示し、巨大・破損recordだけは診断countを残す。
+これらはrecord種別fixture、byte diagnostics、永続ID/指紋、実機anchor計測で抑える。通常サイズの`response_item/message`は未知roleでも未分類として表示し、巨大messageはplaceholder、破損recordは診断countを残す。
 
 ## 17. 確定事項
 

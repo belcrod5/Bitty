@@ -86,6 +86,53 @@ describe("fetchRunnerSessionMessages", () => {
     expect(restored.olderCursor).toBe("opaque-1");
   });
 
+  it("returns the runner page promptly and preserves App Server metadata that arrives later", async () => {
+    let resolveLive!: (value: any) => void;
+    mockReadCodexAppServerThread.mockImplementation(() => new Promise((resolve) => {
+      resolveLive = resolve;
+    }));
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        found: true,
+        source: "cli",
+        messages: [{ role: "assistant", content: "latest", at: "now", itemId: "msg-1" }],
+        olderCursor: null,
+      }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook();
+
+    const restored = await result.current.fetchRunnerSessionMessages("thread-1", "/workspace");
+
+    expect(restored.messages).toHaveLength(1);
+    expect(mockReadCodexAppServerThread).toHaveBeenCalledTimes(1);
+    expect(restored.liveStatePromise).toBeDefined();
+
+    resolveLive({
+      threadId: "thread-1",
+      threadStatusType: "active",
+      hasRunningTurn: true,
+      runningTurn: {
+        status: "running",
+        summary: "working",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      },
+    });
+    await expect(restored.liveStatePromise).resolves.toEqual({
+      threadId: "thread-1",
+      threadStatusType: "active",
+      hasRunningTurn: true,
+      runningTurn: {
+        status: "running",
+        summary: "working",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      },
+    });
+  });
+
   it("passes an older cursor only to runner and skips App Server history", async () => {
     const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,

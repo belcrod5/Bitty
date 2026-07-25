@@ -20,7 +20,10 @@ export function useApplySessionHistoryPage(options: {
   createPanelSnapshot: (
     panelId: string,
     base: PanelRuntimeSnapshot,
-    patch: { conversationMessages: ConversationMessage[] }
+    patch: {
+      inheritedConversationMessages: ConversationMessage[];
+      conversationMessages: ConversationMessage[];
+    }
   ) => PanelRuntimeSnapshot;
   log: (event: string, payload: Record<string, unknown>, options: { throttleMs: number }) => void;
 }) {
@@ -38,20 +41,39 @@ export function useApplySessionHistoryPage(options: {
       panelId: "history",
       sessionId,
     });
+    const olderInherited = older.filter((message) => message.inheritedFromParent === true);
+    const olderConversation = older.filter((message) => message.inheritedFromParent !== true);
     const merged = prependConversationMessages(older, current);
-    if (merged.length === current.length) return;
-    options.upsertRuntime({ sessionId, conversationMessages: merged });
-    if (active === sessionId) options.setConversationMessages(merged);
+    const globalChanged = merged.length !== current.length;
+    if (globalChanged) {
+      options.upsertRuntime({ sessionId, conversationMessages: merged });
+      if (active === sessionId) options.setConversationMessages(merged);
+    }
     options.setPanelEntries((entries) => {
       let changed = false;
       const next = { ...entries };
       for (const [panelId, entry] of Object.entries(entries)) {
         if (String(entry.snapshot.selectedSessionId || entry.sessionId || "").trim() !== sessionId) continue;
+        const inheritedConversationMessages = prependConversationMessages(
+          olderInherited,
+          entry.snapshot.inheritedConversationMessages
+        );
+        const conversationMessages = prependConversationMessages(
+          olderConversation,
+          entry.snapshot.conversationMessages
+        );
+        if (
+          inheritedConversationMessages.length === entry.snapshot.inheritedConversationMessages.length
+          && conversationMessages.length === entry.snapshot.conversationMessages.length
+        ) {
+          continue;
+        }
         changed = true;
         next[panelId] = {
           ...entry,
           snapshot: options.createPanelSnapshot(panelId, entry.snapshot, {
-            conversationMessages: prependConversationMessages(older, entry.snapshot.conversationMessages),
+            inheritedConversationMessages,
+            conversationMessages,
           }),
         };
       }

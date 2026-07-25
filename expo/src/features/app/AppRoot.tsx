@@ -121,6 +121,7 @@ import { useAppContextActions } from "./hooks/useAppContextActions";
 import { useConversationMessageWindowController } from "./hooks/useConversationMessageWindowController";
 import { useSessionHistoryPagingController } from "./hooks/useSessionHistoryPagingController";
 import { useApplySessionHistoryPage } from "./hooks/useApplySessionHistoryPage";
+import { useLateSessionLiveStateController } from "./hooks/useLateSessionLiveStateController";
 import {
   isConversationRuntimeRequestResponding,
   useConversationRuntimeStoreController,
@@ -3149,6 +3150,22 @@ export default function App() {
         panelId: "",
       });
       setSelectedThreadStatusType(deriveRestoredSessionThreadStatusType(restored));
+      applyLateActiveSessionLiveState({
+        restored,
+        restoredMessages,
+        nextSessionId,
+        directory,
+        effectiveContextUsedPct,
+        restoreReplyRequestForThread,
+        setReply,
+        requestStartedAtMsAtRestoreApply: Number(
+          getConversationRuntimeSnapshot(nextSessionId)?.request?.startedAtMs
+        ) || null,
+        executionGenerationAtRestoreApply: Number(
+          getConversationRuntimeSnapshot(nextSessionId)?.executionGeneration
+        ) || 0,
+        isCurrent: isLatestRestoreRequest,
+      });
       adoptRestoredSessionDirectory({
         directory,
         resolvedSessionId,
@@ -6318,6 +6335,24 @@ export default function App() {
     reasoningEffort,
     selectedDirectoryDisplayName,
   ]);
+  const {
+    applyActive: applyLateActiveSessionLiveState,
+    applyPanel: applyLatePanelSessionLiveState,
+  } = useLateSessionLiveStateController({
+    activeSessionId: () => parseOptionalSessionId(
+      selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
+    ),
+    conversationMessagesRef,
+    panelEntriesRef: panelRuntimeEntriesByIdRef,
+    applyRestoredRuntime: applyRestoredSessionRuntimeFromMessages,
+    getRuntime: getConversationRuntimeSnapshot,
+    upsertRuntime: upsertConversationRuntimeSnapshot,
+    setPanelEntries: setPanelRuntimeEntriesById,
+    createPanelSnapshot: createPanelRuntimeSnapshot,
+    setActiveThreadStatus: setSelectedThreadStatusType,
+    startRelay: startCodexRelayObserverForSession,
+    log: logSessionDiag,
+  });
   const activeConversationSnapshot = useMemo<PanelRuntimeSnapshot>(() => ({
     panelId: "",
     selectedSessionId: String(selectedLlmSessionId || "").trim(),
@@ -7241,6 +7276,15 @@ export default function App() {
           selectedThreadStatusType: snapshot.selectedThreadStatusType,
         }, { throttleMs: 0 });
       }
+      applyLatePanelSessionLiveState({
+        restored,
+        snapshot,
+        panelId,
+        directory: restoredDirectory,
+        requestStartedAtMsAtHydrationStart,
+        executionGenerationAtHydrationApply: Number(runtimeAfterHydration.executionGeneration) || 0,
+        isCurrent: isCurrentHydration,
+      });
       return "applied" as const;
     } catch (error) {
       if (!isCurrentHydration()) {
@@ -7283,6 +7327,7 @@ export default function App() {
     }
   }, [
     beginPanelHydration,
+    applyLatePanelSessionLiveState,
     buildConversationMessage,
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,

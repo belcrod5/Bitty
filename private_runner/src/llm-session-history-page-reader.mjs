@@ -166,16 +166,49 @@ export function createLlmSessionHistoryPageReader(deps) {
 
   function recordOversizedCommandOutcome(line, outcomesByCallId) {
     const prefix = String(line?.prefix || "");
-    if (!/"type"\s*:\s*"(?:function_call_output|custom_tool_call_output)"/.test(prefix)) return;
-    const callId = prefix.match(/"(?:call_id|callId)"\s*:\s*"([^"\\]+)"/)?.[1] || "";
-    if (!callId) return;
     const suffix = String(line?.suffix || "");
-    const exitCodeText = suffix.match(/(?:exit_code|exitCode)[\\"']*\s*[:=]\s*(-?\d+)/)?.[1];
+    const sampled = `${prefix}\n${suffix}`;
+    if (!/"type"\s*:\s*"(?:function_call_output|custom_tool_call_output)"/.test(sampled)) return false;
+    const callId = sampled.match(/"(?:call_id|callId)"\s*:\s*"([^"\\]+)"/)?.[1] || "";
+    if (!callId) return true;
+    const exitCodeText = sampled.match(/(?:exit_code|exitCode)[\\"']*\s*[:=]\s*(-?\d+)/)?.[1];
     const exitCode = Number(exitCodeText);
     outcomesByCallId.set(callId, {
       status: Number.isFinite(exitCode) && exitCode !== 0 ? "failed" : "completed",
       exitCode: Number.isFinite(exitCode) ? exitCode : null,
     });
+    return true;
+  }
+
+  function oversizedRecordPlaceholder(line) {
+    const prefix = String(line?.prefix || "");
+    const suffix = String(line?.suffix || "");
+    const sampled = `${prefix}\n${suffix}`;
+    const responseMessage = (
+      /"type"\s*:\s*"response_item"/.test(sampled)
+      && /"type"\s*:\s*"message"/.test(sampled)
+    );
+    const eventMessageType = sampled.match(/"type"\s*:\s*"(user_message|agent_message)"/)?.[1] || "";
+    const eventMessage = /"type"\s*:\s*"event_msg"/.test(sampled) && Boolean(eventMessageType);
+    if (!responseMessage && !eventMessage) return null;
+    const responseRole = sampled.match(/"role"\s*:\s*"(user|assistant)"/)?.[1] || "";
+    const pairRole = responseMessage
+      ? responseRole
+      : eventMessageType === "user_message"
+        ? "user"
+        : "assistant";
+    const byteLength = Math.max(0, Number(line?.byteLength || 0));
+    return {
+      row: {
+        role: "assistant",
+        content: "大きな履歴メッセージの本文は省略されています。",
+        at: "",
+        kind: "unclassified_context",
+        itemId: `history-oversized-${fingerprint([String(byteLength), prefix, suffix])}`,
+      },
+      source: responseMessage ? "response_message" : "event_message",
+      pairRole,
+    };
   }
 
   function decodeCursor(rawCursor, sessionId) {
@@ -301,6 +334,7 @@ export function createLlmSessionHistoryPageReader(deps) {
       const candidates = [];
       let parsedLineCount = 0;
       let oversizedLineCount = 0;
+      let oversizedMessageCount = 0;
       let scannedLineCount = 0;
       const hasConfirmedPage = () => {
         const resolved = resolveMessageCandidates(candidates, scannedLineCount, false);
@@ -310,7 +344,18 @@ export function createLlmSessionHistoryPageReader(deps) {
         scannedLineCount += 1;
         if (line.oversized) {
           oversizedLineCount += 1;
-          recordOversizedCommandOutcome(line, outcomesByCallId);
+          const isCommandOutcome = recordOversizedCommandOutcome(line, outcomesByCallId);
+          const placeholder = isCommandOutcome ? null : oversizedRecordPlaceholder(line);
+          if (placeholder) {
+            oversizedMessageCount += 1;
+            candidates.push({
+              row: placeholder.row,
+              start,
+              source: placeholder.source,
+              pairRole: placeholder.pairRole,
+              recordIndex: scannedLineCount,
+            });
+          }
           return hasConfirmedPage();
         }
         if (!line.text.trim()) return hasConfirmedPage();
@@ -379,6 +424,7 @@ export function createLlmSessionHistoryPageReader(deps) {
           scannedLineCount,
           parsedLineCount,
           oversizedLineCount,
+          oversizedMessageCount,
           messageCount: selected.length,
         },
       };
