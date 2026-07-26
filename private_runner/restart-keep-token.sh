@@ -13,15 +13,38 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set +a
 fi
 
-RUNNER_TOKEN_FILE="${RUNNER_TOKEN_FILE:-$SCRIPT_DIR/logs/runner-token}"
-if [ ! -f "$RUNNER_TOKEN_FILE" ] || [ ! -r "$RUNNER_TOKEN_FILE" ]; then
-  echo "[restart-keep-token] runner token file is not readable: $RUNNER_TOKEN_FILE" >&2
+TOKEN_FILE="${RUNNER_TOKEN_FILE:-private_runner/logs/runner-token}"
+TOKEN_SOURCE="$TOKEN_FILE"
+case "$TOKEN_FILE" in
+  /*) ;;
+  *)
+    TOKEN_SOURCE="$PROJECT_ROOT/$TOKEN_FILE"
+    if [ ! -f "$TOKEN_SOURCE" ] || [ ! -r "$TOKEN_SOURCE" ]; then
+      if ! BITTY_MAIN_REPO_ROOT_VALUE="$(
+        # shellcheck disable=SC1091
+        if [ -f "$PROJECT_ROOT/.env" ] && ! source "$PROJECT_ROOT/.env" >/dev/null 2>&1; then
+          exit 1
+        fi
+        printf '%s' "${BITTY_MAIN_REPO_ROOT:-}"
+      )"; then
+        echo "[restart-keep-token] failed to load $PROJECT_ROOT/.env" >&2
+        exit 1
+      fi
+      if [ -n "$BITTY_MAIN_REPO_ROOT_VALUE" ]; then
+        TOKEN_SOURCE="$BITTY_MAIN_REPO_ROOT_VALUE/$TOKEN_FILE"
+      fi
+    fi
+    ;;
+esac
+
+if [ ! -f "$TOKEN_SOURCE" ] || [ ! -r "$TOKEN_SOURCE" ]; then
+  echo "[restart-keep-token] runner token file is not readable: $TOKEN_SOURCE" >&2
   exit 1
 fi
 
-RUN_LOCAL_RUNNER_TOKEN="$(<"$RUNNER_TOKEN_FILE")"
+RUN_LOCAL_RUNNER_TOKEN="$(<"$TOKEN_SOURCE")"
 if [ -z "$RUN_LOCAL_RUNNER_TOKEN" ]; then
-  echo "[restart-keep-token] runner token file is empty: $RUNNER_TOKEN_FILE" >&2
+  echo "[restart-keep-token] runner token file is empty: $TOKEN_SOURCE" >&2
   exit 1
 fi
 

@@ -32,40 +32,79 @@ test("run-local shell scripts are syntactically valid", () => {
   }
 });
 
-test("restart-keep-token passes the configured token and arguments to run-local", () => {
+test("restart-keep-token prefers the local token, falls back to main, and preserves arguments", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "bitty-restart-keep-token-"));
-  const runnerDir = join(repoRoot, "private_runner");
+  const mainRoot = join(repoRoot, "main");
+  const worktreeRoot = join(repoRoot, "worktree");
+  const runnerDir = join(worktreeRoot, "private_runner");
+  const localTokenPath = join(runnerDir, "custom/token");
+  const mainCustomTokenPath = join(mainRoot, "private_runner/custom/token");
+  const mainDefaultTokenPath = join(mainRoot, "private_runner/logs/runner-token");
   const captureDir = join(repoRoot, "capture");
+  mkdirSync(join(mainRoot, "private_runner/custom"), { recursive: true });
+  mkdirSync(join(mainRoot, "private_runner/logs"), { recursive: true });
   mkdirSync(join(runnerDir, "custom"), { recursive: true });
   mkdirSync(captureDir);
   copyFileSync("private_runner/restart-keep-token.sh", join(runnerDir, "restart-keep-token.sh"));
+  writeFileSync(
+    join(worktreeRoot, ".env"),
+    `RESTART_KEEP_TOKEN_ROOT_ONLY=must-not-leak\nBITTY_MAIN_REPO_ROOT=${mainRoot}\n`
+  );
   writeFileSync(join(runnerDir, ".env"), "RUNNER_TOKEN_FILE=private_runner/custom/token\n");
-  writeFileSync(join(runnerDir, "custom/token"), "same-runner-token\n");
+  writeFileSync(localTokenPath, "local-runner-token\n");
+  writeFileSync(mainCustomTokenPath, "main-custom-token\n");
+  writeFileSync(mainDefaultTokenPath, "main-default-token\n");
   writeFileSync(
     join(runnerDir, "run-local.sh"),
     `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s' "$RUN_LOCAL_RUNNER_TOKEN" >"$CAPTURE_DIR/token"
 printf '%s\n' "$@" >"$CAPTURE_DIR/arguments"
+printf '%s' "\${RUNNER_TOKEN_FILE-}" >"$CAPTURE_DIR/token-file"
+printf '%s' "\${RESTART_KEEP_TOKEN_ROOT_ONLY-unset}" >"$CAPTURE_DIR/root-only"
 `
   );
   chmodSync(join(runnerDir, "run-local.sh"), 0o755);
 
+  const env = { ...process.env, CAPTURE_DIR: captureDir };
+  delete env.RESTART_KEEP_TOKEN_ROOT_ONLY;
+  delete env.RUNNER_TOKEN_FILE;
+  const run = () =>
+    spawnSync("bash", [join(runnerDir, "restart-keep-token.sh"), "--mode", "runner-only"], {
+      encoding: "utf8",
+      env,
+    });
+
   try {
-    const result = spawnSync(
-      "bash",
-      [join(runnerDir, "restart-keep-token.sh"), "--mode", "runner-only"],
-      {
-        encoding: "utf8",
-        env: { ...process.env, CAPTURE_DIR: captureDir },
-      }
+    const local = run();
+    assert.equal(local.status, 0, `stdout=${local.stdout}\nstderr=${local.stderr}`);
+    assert.equal(readFileSync(join(captureDir, "token"), "utf8"), "local-runner-token");
+    assert.equal(
+      readFileSync(join(captureDir, "token-file"), "utf8"),
+      "private_runner/custom/token"
     );
-    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-    assert.equal(readFileSync(join(captureDir, "token"), "utf8"), "same-runner-token");
+
+    rmSync(localTokenPath);
+    rmSync(join(runnerDir, ".env"));
+    const fallback = run();
+    assert.equal(fallback.status, 0, `stdout=${fallback.stdout}\nstderr=${fallback.stderr}`);
+    assert.equal(readFileSync(join(captureDir, "token"), "utf8"), "main-default-token");
     assert.equal(
       readFileSync(join(captureDir, "arguments"), "utf8"),
       "restart\n--mode\nrunner-only\n"
     );
+    assert.equal(readFileSync(join(captureDir, "token-file"), "utf8"), "");
+    assert.equal(readFileSync(join(captureDir, "root-only"), "utf8"), "unset");
+
+    rmSync(join(worktreeRoot, ".env"));
+    env.BITTY_MAIN_REPO_ROOT = mainRoot;
+    const exportedFallback = run();
+    assert.equal(
+      exportedFallback.status,
+      0,
+      `stdout=${exportedFallback.stdout}\nstderr=${exportedFallback.stderr}`
+    );
+    assert.equal(readFileSync(join(captureDir, "token"), "utf8"), "main-default-token");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -73,11 +112,16 @@ printf '%s\n' "$@" >"$CAPTURE_DIR/arguments"
 
 test("restart-keep-token fails without a non-empty readable token before calling run-local", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "bitty-restart-keep-token-invalid-"));
-  const runnerDir = join(repoRoot, "private_runner");
+  const mainRoot = join(repoRoot, "main");
+  const worktreeRoot = join(repoRoot, "worktree");
+  const runnerDir = join(worktreeRoot, "private_runner");
   const tokenPath = join(runnerDir, "logs/runner-token");
+  const mainTokenPath = join(mainRoot, "private_runner/logs/runner-token");
   const calledPath = join(repoRoot, "run-local-called");
+  mkdirSync(join(mainRoot, "private_runner/logs"), { recursive: true });
   mkdirSync(join(runnerDir, "logs"), { recursive: true });
   copyFileSync("private_runner/restart-keep-token.sh", join(runnerDir, "restart-keep-token.sh"));
+  writeFileSync(join(worktreeRoot, ".env"), `BITTY_MAIN_REPO_ROOT=${mainRoot}\n`);
   writeFileSync(
     join(runnerDir, "run-local.sh"),
     `#!/usr/bin/env bash
@@ -86,30 +130,51 @@ touch "$RUN_LOCAL_CALLED_PATH"
   );
   chmodSync(join(runnerDir, "run-local.sh"), 0o755);
 
-  const run = () =>
-    spawnSync("bash", [join(runnerDir, "restart-keep-token.sh")], {
+  const run = (tokenFile) => {
+    const env = {
+      ...process.env,
+      RUN_LOCAL_CALLED_PATH: calledPath,
+    };
+    delete env.RUNNER_TOKEN_FILE;
+    delete env.RESTART_KEEP_TOKEN_MISSING_ROOT;
+    if (tokenFile) env.RUNNER_TOKEN_FILE = tokenFile;
+    return spawnSync("bash", [join(runnerDir, "restart-keep-token.sh")], {
       encoding: "utf8",
-      env: {
-        ...process.env,
-        RUNNER_TOKEN_FILE: tokenPath,
-        RUN_LOCAL_CALLED_PATH: calledPath,
-      },
+      env,
     });
+  };
 
   try {
     const missing = run();
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /runner token file is not readable/);
 
-    writeFileSync(tokenPath, "\n");
+    writeFileSync(mainTokenPath, "\n");
     const empty = run();
     assert.equal(empty.status, 1);
     assert.match(empty.stderr, /runner token file is empty/);
 
+    rmSync(mainTokenPath);
+    writeFileSync(tokenPath, "local-token\n");
     chmodSync(tokenPath, 0o000);
     const unreadable = run();
     assert.equal(unreadable.status, 1);
     assert.match(unreadable.stderr, /runner token file is not readable/);
+
+    chmodSync(tokenPath, 0o600);
+    rmSync(tokenPath);
+    writeFileSync(mainTokenPath, "main-token\n");
+    const absolute = run(join(worktreeRoot, "absolute-token"));
+    assert.equal(absolute.status, 1);
+    assert.match(absolute.stderr, /absolute-token/);
+
+    writeFileSync(
+      join(worktreeRoot, ".env"),
+      "BITTY_MAIN_REPO_ROOT=$RESTART_KEEP_TOKEN_MISSING_ROOT\n"
+    );
+    const invalidEnv = run();
+    assert.equal(invalidEnv.status, 1);
+    assert.match(invalidEnv.stderr, /failed to load .*\.env/);
 
     assert.throws(() => readFileSync(calledPath), { code: "ENOENT" });
   } finally {
