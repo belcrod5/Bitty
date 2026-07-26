@@ -18,6 +18,8 @@ export type LocationScheduleRule = {
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   prompt: string;
+  calendarAccess?: "none" | "read";
+  calendarDeviceId?: string | null;
 };
 
 export type PendingLocationState = {
@@ -53,6 +55,8 @@ export function locationScheduleRevision(rule: LocationScheduleRule) {
     rule.modelRef,
     rule.reasoningEffort,
     rule.prompt,
+    rule.calendarAccess === "read" ? "read" : "none",
+    rule.calendarAccess === "read" ? rule.calendarDeviceId ?? null : null,
   ]))}`;
 }
 
@@ -97,6 +101,8 @@ export function parseLocationScheduleRules(
     const modelRef = normalizeModelRef(value.modelRef);
     const reasoningEffort = String(value.reasoningEffort || "").trim().toLowerCase();
     const prompt = String(value.prompt || "").trim();
+    const calendarAccess = value.calendarAccess === "read" ? "read" : "none";
+    const calendarDeviceId = calendarAccess === "read" ? String(value.calendarDeviceId || "").trim() || null : null;
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(id) || seen.has(id)) continue;
     if (!start || !end || end.minute <= start.minute) continue;
     if (!timeZone || !isTimeZone(timeZone)) continue;
@@ -120,6 +126,8 @@ export function parseLocationScheduleRules(
       modelRef,
       reasoningEffort,
       prompt,
+      calendarAccess,
+      calendarDeviceId,
     });
   }
   return result;

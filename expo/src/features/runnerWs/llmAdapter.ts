@@ -24,7 +24,7 @@ export type RunnerWsLlmRpcAck = {
   requestId: string;
   relayId: string;
   method: string;
-  id: number | null;
+  id: string | number | null;
   threadId: string;
   state: string;
 };
@@ -142,6 +142,13 @@ export function parseRunnerWsRelayControlMessage(rawData: string): RunnerRelayCo
       reason: reason || undefined,
     };
   }
+  if (message.op === "calendar_request_cancel") {
+    return {
+      type: "runner_relay_calendar_request_cancel",
+      ...metadata,
+      payload,
+    } as RunnerRelayControlMessage;
+  }
   return null;
 }
 
@@ -192,13 +199,15 @@ export function parseRunnerWsLlmRpcAck(rawData: string): RunnerWsLlmRpcAck | nul
     : {};
   const requestId = String(message.requestId || payload.requestId || "").trim();
   if (!requestId) return null;
-  const idRaw = Number(payload.id);
+  const id = (typeof payload.id === "number" && Number.isFinite(payload.id)) || typeof payload.id === "string"
+    ? payload.id
+    : null;
   return {
     phase,
     requestId,
     relayId: String(payload.relayId || "").trim(),
     method: String(payload.method || "").trim(),
-    id: Number.isFinite(idRaw) ? Math.floor(idRaw) : null,
+    id,
     threadId: String(message.threadId || payload.threadId || "").trim(),
     state: String(payload.state || "").trim(),
   };

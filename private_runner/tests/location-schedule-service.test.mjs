@@ -160,6 +160,39 @@ test("scheduled turns never wait for interactive approval", async () => {
   });
 });
 
+test("calendar schedules fail closed before execution when their preflight fails", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create({ calendarSchedulePreflight: async () => false });
+    const calendarRule = rule({ calendarAccess: "read", calendarDeviceId: "device-1" });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [calendarRule] });
+    setNow("2026-07-19T00:30:00.000Z");
+    await service.recordState({
+      ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "inside", observedAt: "2026-07-19T00:30:00Z",
+    });
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "failed");
+    assert.equal(executions.length, 0);
+    assert.equal(Object.values((await service.snapshot()).occurrences)[0]?.errorMessage, "calendar_api_failed");
+  });
+});
+
+test("calendar schedules pass only their selected device and rule identity to execution", async () => {
+  await withService(async ({ create, executions, setNow }) => {
+    const service = create({ calendarSchedulePreflight: async () => true });
+    const calendarRule = rule({ calendarAccess: "read", calendarDeviceId: "device-1" });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [calendarRule] });
+    setNow("2026-07-19T00:30:00.000Z");
+    await service.recordState({
+      ruleId: "home", regionRevision: "revision-home", state: "inside", eventId: "inside", observedAt: "2026-07-19T00:30:00Z",
+    });
+    await waitFor(() => executions.length === 1);
+    assert.deepEqual(executions[0], {
+      inputText: "run checks", cwd: "/work/project", model: "gpt-5.6-sol", effort: "high", approvalPolicy: "never",
+      calendarMode: "read", calendarDeviceId: "device-1", ruleId: "home", ruleRevision: "revision-home",
+    });
+    await waitFor(async () => Object.values((await service.snapshot()).occurrences)[0]?.status === "completed");
+  });
+});
+
 test("re-entry before five continuous minutes outside does not fire", async () => {
   await withService(async ({ create, executions, setNow }) => {
     const service = create();

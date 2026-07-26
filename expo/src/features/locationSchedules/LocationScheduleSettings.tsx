@@ -24,6 +24,8 @@ import {
 import { loadLocationSchedules, saveAndActivateLocationSchedules } from "./locationScheduleRuntime";
 import { LocationMapPicker, type LocationMapPickerTarget } from "./LocationMapPicker";
 import { OptionSelectField } from "./OptionSelectField";
+import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
+import { requestCalendarPermission } from "../calendar/calendarService";
 
 type Props = {
   currentCwd: string;
@@ -48,6 +50,8 @@ function newRule(props: Props): LocationScheduleRule {
     modelRef: props.currentModelRef || props.modelOptions[0]?.value || "",
     reasoningEffort: props.currentReasoningEffort || props.thinkOptions[0] || "high",
     prompt: "",
+    calendarAccess: "none",
+    calendarDeviceId: null,
   };
 }
 
@@ -105,6 +109,11 @@ export function LocationScheduleSettings(props: Props) {
     }
     if (parsed.filter((rule) => rule.enabled).length > MAX_ENABLED_LOCATION_SCHEDULES) {
       Alert.alert("ルール数が多すぎます", `有効な位置ルールは${MAX_ENABLED_LOCATION_SCHEDULES}件までです。`);
+      return;
+    }
+    const calendarDevices = new Set(parsed.filter((rule) => rule.calendarAccess === "read").map((rule) => rule.calendarDeviceId));
+    if (calendarDevices.size > 1) {
+      Alert.alert("カレンダー端末を統一してください", "カレンダーを参照するルールはこのiPhoneだけにしてください。");
       return;
     }
     if (parsed.some((rule) => rule.enabled && rule.radiusMeters < 100)) {
@@ -202,6 +211,23 @@ export function LocationScheduleSettings(props: Props) {
                 />
                 <Text style={styles.label}>プロンプト</Text>
                 <TextInput style={[styles.input, styles.prompt]} value={rule.prompt} onChangeText={(prompt) => update(rule.id, { prompt })} multiline textAlignVertical="top" placeholder="Codexへ送るユーザーメッセージ" />
+                <View style={styles.cardHeader}>
+                  <Text style={styles.label}>カレンダーを参照する（隔離環境・読み取りのみ）</Text>
+                  <Switch value={rule.calendarAccess === "read"} onValueChange={(enabled) => {
+                    if (!enabled) {
+                      update(rule.id, { calendarAccess: "none", calendarDeviceId: null });
+                      return;
+                    }
+                    void requestCalendarPermission().then(async (permission) => {
+                      if (!permission.ok) {
+                        Alert.alert("カレンダーを参照できません", permission.error.message);
+                        return;
+                      }
+                      const calendarDeviceId = await getOrCreatePushDeviceId();
+                      update(rule.id, { calendarAccess: "read", calendarDeviceId });
+                    });
+                  }} />
+                </View>
                 <TouchableOpacity style={styles.deleteButton} onPress={() => setRules((current) => current.filter((item) => item.id !== rule.id))}>
                   <Text style={styles.deleteText}>このルールを削除</Text>
                 </TouchableOpacity>

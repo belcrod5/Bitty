@@ -1,0 +1,29 @@
+diff --git a/node_modules/expo-calendar/ios/Conversions/Conversions.swift b/node_modules/expo-calendar/ios/Conversions/Conversions.swift
+index 29c2eef..9f40d98 100644
+--- a/node_modules/expo-calendar/ios/Conversions/Conversions.swift
++++ b/node_modules/expo-calendar/ios/Conversions/Conversions.swift
+@@ -84,3 +84,2 @@ func serializeCalendar(event: EKEvent) -> [String: Any?] {
+   if let startDate = event.startDate {
+-    print("StartDate \(dateFormatter.string(from: startDate))")
+     serializedCalendarEvent["startDate"] = dateFormatter.string(from: startDate)
+@@ -127,3 +126,3 @@ func serializeCalendar(item: EKCalendarItem, with formatter: DateFormatter) -> [
+-  serailizedItem["timeZone"] = item.timeZone?.localizedName(for: .shortStandard, locale: .current)
++  serailizedItem["timeZone"] = item.timeZone?.identifier
+   serailizedItem["url"] = item.url?.absoluteString.removingPercentEncoding
+   serailizedItem["notes"] = item.notes
+diff --git a/node_modules/expo-calendar/ios/CalendarModule.swift b/node_modules/expo-calendar/ios/CalendarModule.swift
+index a02b199..bd8dd2e 100644
+--- a/node_modules/expo-calendar/ios/CalendarModule.swift
++++ b/node_modules/expo-calendar/ios/CalendarModule.swift
+@@ -427,3 +427,10 @@ public class CalendarModule: Module {
+-    if permissionsManager.hasGrantedPermission(usingRequesterClass: RemindersPermissionRequester.self) {
++    let remindersUsageDescription = {
++      if #available(iOS 17.0, *) {
++        return "NSRemindersFullAccessUsageDescription"
++      }
++      return "NSRemindersUsageDescription"
++    }()
++    if Bundle.main.object(forInfoDictionaryKey: remindersUsageDescription) != nil &&
++      permissionsManager.hasGrantedPermission(usingRequesterClass: RemindersPermissionRequester.self) {
+       permittedEntities.insert(.reminder)
+     }

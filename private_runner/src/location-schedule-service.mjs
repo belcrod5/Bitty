@@ -106,6 +106,9 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     if (!cwd || cwd.length > 2048) throw new Error(`rules[${index}].cwd is invalid`);
     const prompt = String(raw?.prompt || "").trim();
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`rules[${index}].prompt is invalid`);
+    const calendarAccess = raw?.calendarAccess === "read" ? "read" : "none";
+    const calendarDeviceId = calendarAccess === "read" ? String(raw?.calendarDeviceId || "").trim() : "";
+    if (calendarAccess === "read" && !calendarDeviceId) throw new Error(`rules[${index}].calendarDeviceId is required`);
     const regionRevision = String(raw?.regionRevision || "").trim();
     if (!/^[A-Za-z0-9._-]{1,200}$/.test(regionRevision)) {
       throw new Error(`rules[${index}].regionRevision is invalid`);
@@ -139,10 +142,18 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
       model: codexOptions.modelInfo.model,
       reasoningEffort: effort,
       prompt,
+      calendarAccess,
+      calendarDeviceId: calendarAccess === "read" ? calendarDeviceId : null,
     };
   });
   if (rules.filter((rule) => rule.enabled).length > MAX_ENABLED_RULES) {
     throw new Error(`at most ${MAX_ENABLED_RULES} rules may be enabled`);
+  }
+  const calendarDeviceIds = new Set(rules
+    .filter((rule) => rule.calendarAccess === "read")
+    .map((rule) => rule.calendarDeviceId));
+  if (calendarDeviceIds.size > 1) {
+    throw new Error("calendar read rules must use one calendar device");
   }
   return rules;
 }
@@ -157,6 +168,7 @@ export function createLocationScheduleService({
   executeTurn,
   validateCwd,
   requestStateRefresh,
+  calendarSchedulePreflight,
   now = () => new Date(),
   scheduleTimer = (fn, delay) => setTimeout(fn, delay),
   clearTimer = clearTimeout,
@@ -436,12 +448,23 @@ export function createLocationScheduleService({
     let failure = null;
     try {
       await validateCwd(rule.cwd);
+      if (rule.calendarAccess === "read") {
+        if (typeof calendarSchedulePreflight !== "function" || !(await calendarSchedulePreflight(rule))) {
+          throw new Error("calendar_api_failed");
+        }
+      }
       result = await executeTurn({
         inputText: rule.prompt,
         cwd: rule.cwd,
         model: rule.model,
         effort: rule.reasoningEffort,
         approvalPolicy: "never",
+        ...(rule.calendarAccess === "read" ? {
+          calendarMode: "read",
+          calendarDeviceId: rule.calendarDeviceId,
+          ruleId: rule.id,
+          ruleRevision: rule.regionRevision,
+        } : {}),
       });
     } catch (error) {
       failure = error;

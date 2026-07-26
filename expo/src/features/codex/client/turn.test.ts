@@ -69,6 +69,67 @@ test("manager mode uses singleton even when configured URL is legacy codex-ws", 
   await expect(session.promise).rejects.toThrow("interrupted");
 });
 
+test("new app threads expose calendar tools whenever the client provides the handler", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const session = startCodexAppServerTurn({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsToken: "runner-token",
+    inputText: "today's events",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    onApprovalRequest: jest.fn(() => "approve_once"),
+    onCalendarToolCall: jest.fn(async () => ({ ok: true as const, data: null })),
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  expect((lastSent(manager).payload as any).method).toBe("modelProvider/capabilities/read");
+  respondToLastRequest(manager, { namespaceTools: true });
+  await flushPromises();
+
+  const threadStart = lastSent(manager);
+  expect((threadStart.payload as any).method).toBe("thread/start");
+  const [calendarNamespace] = (threadStart.payload as any).params.dynamicTools;
+  expect(calendarNamespace).toMatchObject({
+    type: "namespace",
+    name: "calendar",
+  });
+  expect(calendarNamespace.tools.map((tool: { name: string }) => tool.name)).toEqual([
+    "calendar_list_calendars",
+    "calendar_search_events",
+    "calendar_get_event",
+    "calendar_create_event",
+    "calendar_update_event",
+    "calendar_delete_event",
+  ]);
+  expect(calendarNamespace.tools.every((tool: { deferLoading?: boolean }) => tool.deferLoading === true)).toBe(true);
+
+  await session.interrupt();
+  await expect(session.promise).rejects.toThrow("interrupted");
+});
+
+test("calendar threads fail clearly when namespace tools are unavailable", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const session = startCodexAppServerTurn({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    wsToken: "runner-token",
+    inputText: "today's events",
+    runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
+    onApprovalRequest: jest.fn(() => "approve_once"),
+    onCalendarToolCall: jest.fn(async () => ({ ok: true as const, data: null })),
+  });
+
+  manager.becomeReady();
+  await flushPromises();
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  respondToLastRequest(manager, { namespaceTools: false });
+
+  await expect(session.promise).rejects.toThrow("codex_dynamic_tools_incompatible");
+  expect(manager.send.mock.calls.some(([message]) => (message.payload as any)?.method === "thread/start")).toBe(false);
+});
+
 test("manager mode resolves JSON-RPC responses delivered through subscription", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const session = createTurn(manager);

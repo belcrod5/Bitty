@@ -18,6 +18,7 @@ process.env.PUSH_DEVICE_STORE_PATH = path.join(tempDir, "push_devices.json");
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 const {
   handleCodexRelayUpstreamMessage,
+  codexRpcIdKey,
   forwardCodexRelayClientData,
   pushDeviceStore,
   apnsClient,
@@ -238,7 +239,7 @@ test("captures the session cwd from client thread/start / turn/start RPCs", () =
 
 test("captures the session cwd from the upstream thread/resume result as a fallback", () => {
   const relay = makeRelay();
-  relay.requestMethodByRpcId.set(5, "thread/resume");
+  relay.requestMethodByRpcId.set(codexRpcIdKey(5), "thread/resume");
   handleCodexRelayUpstreamMessage(relay, JSON.stringify({
     jsonrpc: "2.0",
     id: 5,

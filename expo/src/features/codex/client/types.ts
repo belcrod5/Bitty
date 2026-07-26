@@ -1,4 +1,4 @@
-export type JsonRpcId = number;
+export type JsonRpcId = string | number;
 
 export type JsonRpcSuccess = {
   id: JsonRpcId;
@@ -62,6 +62,8 @@ export type CodexAppServerTurnOptions = {
   model?: string;
   effort?: "low" | "medium" | "high" | "xhigh";
   approvalPolicy?: "never" | "on-request";
+  onCalendarToolCall?: (message: unknown) => Promise<import("../../calendar/calendarToolSpecs").CalendarToolResult<unknown>>;
+  onCalendarRequestCancel?: (requestId: string) => void;
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
   onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;
   timeoutMs?: number;

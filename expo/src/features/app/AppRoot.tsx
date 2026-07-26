@@ -74,6 +74,11 @@ import { useChatDerivedState } from "./hooks/useChatDerivedState";
 import { useChatBottomToast } from "./hooks/useChatBottomToast";
 import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
+import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteRequestController";
+import { CalendarWriteApprovalModal } from "./components/CalendarWriteApprovalModal";
+import { bootstrapLocationSchedules } from "../locationSchedules/locationScheduleRuntime";
+import { createCalendarToolHandler, parseCalendarToolCall } from "../calendar/calendarToolHandler";
+import { recoverCalendarWriteLedger } from "../calendar/calendarWriteLedger";
 import { useLlmTraceStateController } from "./hooks/useLlmTraceStateController";
 import { useAppDrawerSessionController } from "./hooks/useAppDrawerSessionController";
 import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTreeController";
@@ -713,6 +718,10 @@ export default function App() {
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  useEffect(() => {
+    if (!settingsLoaded || AppState.currentState !== "active") return;
+    void bootstrapLocationSchedules().catch(() => {});
+  }, [settingsLoaded]);
   // Latest session-tree refresh, assigned after its dependencies are defined
   // below; the bootstrap hook fires it once on the settingsLoaded transition
   // to recover fetches that raced the settings load.
@@ -811,6 +820,14 @@ export default function App() {
   // Default OFF (unlike the auto* toggles above): requiring Face ID is an extra step, so it
   // should be an explicit opt-in rather than assumed.
   const [faceIdRequiredForApproval, setFaceIdRequiredForApproval] = useState(false);
+  useEffect(() => {
+    void recoverCalendarWriteLedger();
+  }, []);
+  const calendarWriteController = useCalendarWriteRequestController();
+  const calendarToolHandler = useMemo(() => createCalendarToolHandler({
+    isForeground: () => AppState.currentState === "active",
+    confirmWrite: calendarWriteController.confirmWrite,
+  }), [calendarWriteController.confirmWrite]);
   const [ttsSound, setTtsSound] = useState<Audio.Sound | null>(null);
   const [autoWaveDebugNowMs, setAutoWaveDebugNowMs] = useState(0);
   const [ttsUri, setTtsUri] = useState("");
@@ -5525,6 +5542,20 @@ export default function App() {
     modelRef,
     reasoningEffort,
     codexApprovalPolicy,
+    onCalendarToolCall: async (message) => {
+      const call = await parseCalendarToolCall(message);
+      return call
+        ? calendarToolHandler.handle(call)
+        : {
+          ok: false,
+          error: {
+            code: "codex_dynamic_tools_incompatible",
+            message: "Dynamic Tools互換性エラーです。phaseを確認し、Bittyのcalendar tool adapterを現行schemaへ更新してください。",
+            retryable: false,
+          },
+        };
+    },
+    onCalendarRequestCancel: calendarToolHandler.cancel,
     autoSpeakAfterReply,
     isChatOpenForAutoSpeech,
     conversationMessagesRef,
@@ -7757,6 +7788,10 @@ export default function App() {
         onSelectSlashCommand={handleSelectSlashCommand}
         approvalDialog={approvalDialog}
         onApprovalDialogAction={respondToApprovalDialog}
+      />
+      <CalendarWriteApprovalModal
+        request={calendarWriteController.request}
+        onDecide={calendarWriteController.decide}
       />
       </SafeAreaView>
         </Drawer>

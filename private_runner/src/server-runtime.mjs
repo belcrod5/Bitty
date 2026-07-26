@@ -22,6 +22,14 @@ import {
 import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade.mjs";
 import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
+import {
+  createCalendarScheduleRequestHandler,
+  createCalendarToolService,
+  createCalendarHttpHandler,
+  calendarScheduleDynamicTools,
+} from "./calendar-tool-service.mjs";
+import { createCalendarScheduleRuntime } from "./calendar-schedule-runtime.mjs";
+import { createCalendarRelayService } from "./calendar-relay-service.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
 import { executeCodexTurn, extractCodexAgentMessageText } from "./codex-turn-execution.mjs";
@@ -51,6 +59,10 @@ const CODEX_WS_PROXY_UPSTREAM_URL = String(
   process.env.CODEX_WS_PROXY_UPSTREAM_URL || "ws://127.0.0.1:4500"
 ).trim();
 const CODEX_WS_PROXY_UPSTREAM_TOKEN = String(process.env.CODEX_WS_PROXY_UPSTREAM_TOKEN || "").trim();
+const CALENDAR_CODEX_WS_UPSTREAM_URL = String(process.env.CALENDAR_CODEX_WS_UPSTREAM_URL || "").trim();
+const CALENDAR_CODEX_WS_UPSTREAM_TOKEN = String(process.env.CALENDAR_CODEX_WS_UPSTREAM_TOKEN || "").trim();
+const CALENDAR_CODEX_CAPABILITY_URL = String(process.env.CALENDAR_CODEX_CAPABILITY_URL || "").trim();
+const CALENDAR_CODEX_CAPABILITY_TOKEN = String(process.env.CALENDAR_CODEX_CAPABILITY_TOKEN || "").trim();
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const OPENAI_CODEX_ROUTE = "openai-codex-responses";
 const OPENAI_CODEX_MODEL_REF = String(
@@ -1324,6 +1336,37 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
   pushDeviceStore,
   broadcast: (payload) => broadcastRunnerWsTurnCompletedNotification(null, payload),
 });
+const calendarToolService = createCalendarToolService({
+  sendPush: async (deviceId, marker) => {
+    if (!PUSH_ENABLED || !apnsClient) return false;
+    const device = await pushDeviceStore.getDevice(deviceId);
+    if (!device) return false;
+    const result = await apnsClient.sendToDevice(device.apnsToken, {
+      aps: { "content-available": 1 },
+      bitty: marker,
+    }, { env: device.env, pushType: "background", priority: 5 });
+    return Boolean(result?.ok);
+  },
+});
+const calendarHttpHandler = createCalendarHttpHandler({
+  service: calendarToolService,
+  runnerToken: RUNNER_TOKEN,
+  parseAuthToken,
+  readJsonBody,
+  json,
+});
+const calendarScheduleRuntime = createCalendarScheduleRuntime({
+  upstreamUrl: CALENDAR_CODEX_WS_UPSTREAM_URL,
+  upstreamToken: CALENDAR_CODEX_WS_UPSTREAM_TOKEN,
+  capabilityUrl: CALENDAR_CODEX_CAPABILITY_URL,
+  capabilityToken: CALENDAR_CODEX_CAPABILITY_TOKEN,
+  fetchImpl: (...args) => fetch(...args),
+  createClient: createCodexRpcClient,
+  executeTurn: executeCodexTurn,
+  dynamicTools: calendarScheduleDynamicTools,
+  createRequestHandler: createCalendarScheduleRequestHandler,
+  createReadRequest: calendarToolService.createReadRequest,
+});
 const locationScheduleService = createLocationScheduleService({
   storePath: LOCATION_SCHEDULE_STORE_PATH,
   parseCodexOptions: resolveCodexRequestOptions,
@@ -1332,11 +1375,21 @@ const locationScheduleService = createLocationScheduleService({
     const stat = await fs.stat(resolved);
     if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
   },
-  executeTurn: (request) => runRunnerInitiatedTurn({
-    clientName: "private-runner-location-schedule",
-    origin: "location_schedule",
-    request,
-  }),
+  executeTurn: (request) => {
+    if (request.calendarMode === "read") {
+      return calendarScheduleRuntime.run({
+        clientName: "private-runner-location-schedule",
+        origin: "location_schedule",
+        request,
+      });
+    }
+    return runRunnerInitiatedTurn({
+      clientName: "private-runner-location-schedule",
+      origin: "location_schedule",
+      request,
+    });
+  },
+  calendarSchedulePreflight: calendarScheduleRuntime.preflight,
   // 最終位置状態が古いままwindowが始まった場合に、サイレントpushで端末へ現在地の再報告を求める
   requestStateRefresh: PUSH_ENABLED && apnsClient
     ? async () => {
@@ -6822,17 +6875,18 @@ function markCodexQueuedTurn(turn, patch) {
   return turn;
 }
 
-function createCodexRpcClient({ signal } = {}) {
+function createCodexRpcClient({ signal, upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL, upstreamToken = CODEX_WS_PROXY_UPSTREAM_TOKEN } = {}) {
   const headers = {};
-  if (CODEX_WS_PROXY_UPSTREAM_TOKEN) {
-    headers.authorization = `Bearer ${CODEX_WS_PROXY_UPSTREAM_TOKEN}`;
+  if (upstreamToken) {
+    headers.authorization = `Bearer ${upstreamToken}`;
   }
-  const ws = new WebSocket(CODEX_WS_PROXY_UPSTREAM_URL, { headers });
+  const ws = new WebSocket(upstreamUrl, { headers });
   const pending = new Map();
   let nextId = 1;
   let closed = false;
   const completionWaiters = new Set();
   const notificationListeners = new Set();
+  const serverRequestHandlers = new Set();
   const finishCompletionWaiters = () => {
     for (const finish of completionWaiters) finish();
     completionWaiters.clear();
@@ -6871,6 +6925,18 @@ function createCodexRpcClient({ signal } = {}) {
     try {
       message = JSON.parse(text);
     } catch {
+      return;
+    }
+    if (message?.method && (typeof message.id === "string" || typeof message.id === "number")) {
+      for (const handler of serverRequestHandlers) {
+        Promise.resolve(handler(message)).then((result) => {
+          if (closed || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ id: message.id, result }));
+        }).catch(() => {
+          if (closed || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ id: message.id, result: { success: false, contentItems: [] } }));
+        });
+      }
       return;
     }
     if (message?.method) {
@@ -6941,7 +7007,12 @@ function createCodexRpcClient({ signal } = {}) {
     notificationListeners.add(listener);
     return () => notificationListeners.delete(listener);
   };
-  return { ws, openPromise, request, notify, close, waitForTurnCompletion, addNotificationListener };
+  const addServerRequestHandler = (handler) => {
+    if (typeof handler !== "function") throw new TypeError("server request handler must be a function");
+    serverRequestHandlers.add(handler);
+    return () => serverRequestHandlers.delete(handler);
+  };
+  return { ws, openPromise, request, notify, close, waitForTurnCompletion, addNotificationListener, addServerRequestHandler };
 }
 
 function parseCodexThreadStatus(params) {
@@ -7102,6 +7173,10 @@ async function runRunnerInitiatedTurn({
   request,
 }) {
   const client = createCodexRpcClient({ signal });
+  // A resumed thread can retain old dynamic calendar tools. Runner-initiated turns
+  // have no device owner, so acknowledge those calls with a fixed result instead
+  // of leaving the app-server request hanging (and without retaining its contents).
+  const removeServerRequestHandler = client.addServerRequestHandler(runnerInitiatedCalendarResponse);
   try {
     const result = await executeCodexTurn({ client, clientName, onTurnStarted, ...request });
     void turnCompletionNotifier.notifyTurnCompleted({
@@ -7113,6 +7188,7 @@ async function runRunnerInitiatedTurn({
     });
     return result;
   } finally {
+    removeServerRequestHandler();
     client.close(1000, "turn_done");
   }
 }
@@ -8507,6 +8583,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (await calendarHttpHandler(req, res, reqUrl)) return;
+
   if (req.method === "POST" && pathname === "/push/devices") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
@@ -9575,7 +9653,7 @@ runnerWsServer.on("connection", (ws, req) => {
           requestId,
           operationId: message.operationId || "",
           method: meta?.method || "",
-          id: Number.isInteger(meta?.id) ? Number(meta.id) : null,
+          id: meta?.id ?? null,
           threadId: message.threadId || meta?.threadId || relay.threadId || "",
           state: "received",
         });
@@ -9586,7 +9664,7 @@ runnerWsServer.on("connection", (ws, req) => {
         relayId: relay.relayId,
         requestId,
         method: meta?.method || "",
-        id: Number.isInteger(meta?.id) ? Number(meta.id) : null,
+        id: meta?.id ?? null,
         threadId: message.threadId || meta?.threadId || relay.threadId || "",
       });
       if (message.threadId) {
@@ -9596,6 +9674,7 @@ runnerWsServer.on("connection", (ws, req) => {
       forwardCodexRelayClientData(relay, normalized.text, false, {
         remote,
         endpoint: RUNNER_WS_PATH,
+        clientWs: ws,
         requestId,
         operationId: message.operationId || "",
         sessionId: message.sessionId || "",
@@ -9607,7 +9686,7 @@ runnerWsServer.on("connection", (ws, req) => {
           requestId,
           operationId: message.operationId || "",
           method: meta?.method || "",
-          id: Number.isInteger(meta?.id) ? Number(meta.id) : null,
+          id: meta?.id ?? null,
           threadId: message.threadId || meta?.threadId || relay.threadId || "",
           state: "forwarded",
         });
@@ -10252,11 +10331,13 @@ function sendRunnerWsLlmRpcAck(relay, ws, params = {}) {
   const method = String(params.method || "").trim();
   const threadId = String(params.threadId || relay.threadId || "").trim();
   const state = String(params.state || "").trim();
-  const idRaw = Number(params.id);
+  const id = (typeof params.id === "number" && Number.isFinite(params.id)) || typeof params.id === "string"
+    ? params.id
+    : undefined;
   const ackPayload = {
     relayId: relay.relayId,
     method,
-    id: Number.isInteger(idRaw) ? idRaw : undefined,
+    id,
     threadId,
     state,
   };
@@ -10299,6 +10380,25 @@ function sendCodexRelayRpcToClient(relay, ws, text, seq, options = {}) {
     payload: envelopePayload,
   });
 }
+
+const calendarRelayService = createCalendarRelayService({
+  WebSocket,
+  sendRelayControl,
+  sendRunnerWsEnvelope,
+  isEnvelopeClient: isCodexRelayEnvelopeClient,
+  sendRpcToClient: sendCodexRelayRpcToClient,
+});
+const {
+  rpcIdKey: codexRpcIdKey,
+  dynamicItem: isCalendarDynamicItem,
+  runnerInitiatedResponse: runnerInitiatedCalendarResponse,
+  terminate: terminateCalendarRequest,
+  terminateOwnerRequests: terminateCalendarOwnerRequests,
+  cleanupRelayState: cleanupCalendarRelayState,
+  handleUpstreamToolCall: handleCalendarUpstreamToolCall,
+  handleClientResponse: handleCalendarClientResponse,
+  handleClientTurnLifecycle: handleCalendarClientTurnLifecycle,
+} = calendarRelayService;
 
 function parseCodexRpcMeta(rawData, isBinary) {
   if (isBinary) return null;
@@ -10380,7 +10480,9 @@ function parseCodexRpcMeta(rawData, isBinary) {
     if (!text || text.length > 200000) return null;
     const payload = JSON.parse(text);
     const method = typeof payload?.method === "string" ? payload.method : "";
-    const id = Number.isFinite(Number(payload?.id)) ? Number(payload.id) : null;
+    const id = (typeof payload?.id === "number" && Number.isFinite(payload.id)) || typeof payload?.id === "string"
+      ? payload.id
+      : null;
     const hasError = !!payload?.error;
     const hasResult = Object.prototype.hasOwnProperty.call(payload || {}, "result");
     const errorCode = Number.isFinite(Number(payload?.error?.code))
@@ -10775,6 +10877,7 @@ function isClientAttachedToAnyCodexRelay(clientWs) {
 
 function removeClientFromRelay(relay, clientWs) {
   if (!relay || !clientWs) return;
+  terminateCalendarOwnerRequests(relay, clientWs);
   relay.clients.delete(clientWs);
   if (!isClientAttachedToAnyCodexRelay(clientWs)) {
     codexWsRelayClientMode.delete(clientWs);
@@ -10833,6 +10936,7 @@ function cleanupCodexRelay(relay, reason = "cleanup") {
   if (relay.requestMetaByRpcId instanceof Map) {
     relay.requestMetaByRpcId.clear();
   }
+  cleanupCalendarRelayState(relay);
   safeWsClose(relay.upstreamWs, 1000, reason);
 }
 
@@ -10973,6 +11077,9 @@ function createCodexRelayContext(params) {
     upstreamInitializedNotificationForwarded: false,
     lastSeq: 0,
     eventLog: [],
+    calendarOwner: null,
+    calendarRequests: new Map(),
+    calendarClosedRpcIds: new Set(),
     cleanupTimer: null,
     closed: false,
   };
@@ -11166,6 +11273,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     });
     return;
   }
+  if (handleCalendarUpstreamToolCall(relay, rpcPayload, data)) return;
   if (!meta && !isBinary) {
     const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
     if (text) {
@@ -11181,44 +11289,49 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       });
     }
   }
-  const responseRpcId = meta && Number.isInteger(meta.id) ? Number(meta.id) : null;
+  const responseRpcId = meta?.id ?? null;
+  const responseRpcKey = codexRpcIdKey(responseRpcId);
   const responseRequestId = (
-    responseRpcId !== null &&
+    responseRpcKey &&
     relay.requestIdByRpcId instanceof Map
-  ) ? String(relay.requestIdByRpcId.get(responseRpcId) || "").trim() : "";
+  ) ? String(relay.requestIdByRpcId.get(responseRpcKey) || "").trim() : "";
   const responseRpcMethod = (
-    responseRpcId !== null &&
+    responseRpcKey &&
     relay.requestMethodByRpcId instanceof Map
-  ) ? String(relay.requestMethodByRpcId.get(responseRpcId) || "").trim() : "";
+  ) ? String(relay.requestMethodByRpcId.get(responseRpcKey) || "").trim() : "";
   const responseMeta = (
-    responseRpcId !== null &&
+    responseRpcKey &&
     relay.requestMetaByRpcId instanceof Map
-  ) ? (relay.requestMetaByRpcId.get(responseRpcId) || {}) : {};
+  ) ? (relay.requestMetaByRpcId.get(responseRpcKey) || {}) : {};
   if (
     responseRequestId &&
-    responseRpcId !== null &&
+    responseRpcKey &&
     relay.requestIdByRpcId instanceof Map &&
     (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
   ) {
-    relay.requestIdByRpcId.delete(responseRpcId);
+    relay.requestIdByRpcId.delete(responseRpcKey);
+  }
+  if (meta?.method === "turn/started") {
+    const turnId = String(rpcPayload?.params?.turn?.id || rpcPayload?.params?.turnId || "").trim();
+    if (relay.calendarOwner && turnId) relay.calendarOwner.turnId = turnId;
   }
   if (
-    responseRpcId !== null &&
+    responseRpcKey &&
     relay.requestMethodByRpcId instanceof Map &&
     (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
   ) {
-    relay.requestMethodByRpcId.delete(responseRpcId);
+    relay.requestMethodByRpcId.delete(responseRpcKey);
   }
   if (
-    responseRpcId !== null &&
+    responseRpcKey &&
     relay.requestMetaByRpcId instanceof Map &&
     (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
   ) {
-    relay.requestMetaByRpcId.delete(responseRpcId);
+    relay.requestMetaByRpcId.delete(responseRpcKey);
   }
   if (
     responseRpcMethod === "initialize" &&
-    responseRpcId !== null &&
+    responseRpcKey &&
     meta?.hasResult &&
     !meta?.hasError &&
     rpcPayload &&
@@ -11246,6 +11359,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       : "";
     if (resultCwd) relay.threadCwd = resultCwd;
   }
+  const calendarDynamicItem = isCalendarDynamicItem(rpcPayload);
   if (meta && (meta.method || meta.id !== null)) {
     if (meta.threadId && shouldBindRelayThreadFromUpstreamMethod(meta.method)) {
       bindCodexRelayThreadMapping(relay, meta.threadId);
@@ -11282,23 +11396,25 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       }
     }
     observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethod);
-    void appendCodexWsProxyDebug("upstream_to_client_rpc", {
-      relayId: relay.relayId,
-      remote,
-      endpoint,
-      requestId: responseRequestId,
-      method: meta.method || "",
-      id: meta.id,
-      hasError: meta.hasError,
-      hasResult: meta.hasResult,
-      errorCode: meta.errorCode,
-      errorMessage: meta.errorMessage || "",
-      threadId: meta.threadId || relay.threadId || "",
-      threadStatus: meta.threadStatus || "",
-      itemId: meta.itemId || "",
-      itemType: meta.itemType || "",
-      compactDebug: meta.compactDebug || "",
-    });
+    if (!calendarDynamicItem) {
+      void appendCodexWsProxyDebug("upstream_to_client_rpc", {
+        relayId: relay.relayId,
+        remote,
+        endpoint,
+        requestId: responseRequestId,
+        method: meta.method || "",
+        id: meta.id,
+        hasError: meta.hasError,
+        hasResult: meta.hasResult,
+        errorCode: meta.errorCode,
+        errorMessage: meta.errorMessage || "",
+        threadId: meta.threadId || relay.threadId || "",
+        threadStatus: meta.threadStatus || "",
+        itemId: meta.itemId || "",
+        itemType: meta.itemType || "",
+        compactDebug: meta.compactDebug || "",
+      });
+    }
   }
   let outgoingTexts = [];
   if (!isBinary) {
@@ -11318,18 +11434,24 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       const operationId = String(responseMeta.operationId || relay.runnerWsLlmOperationId || "").trim();
       const sessionId = String(responseMeta.sessionId || relay.runnerWsLlmSessionId || "").trim();
       relay.lastSeq += 1;
-      relay.eventLog.push({
-        seq: relay.lastSeq,
-        atMs: codexRelayNowMs(),
-        data: text,
-        responseRpcMethod,
-        operationId,
-        sessionId,
-      });
-      if (relay.eventLog.length > CODEX_WS_RELAY_EVENT_MAX) {
-        relay.eventLog.splice(0, relay.eventLog.length - CODEX_WS_RELAY_EVENT_MAX);
+      const calendarItem = isCalendarDynamicItem(outgoingPayload);
+      if (!calendarItem) {
+        relay.eventLog.push({
+          seq: relay.lastSeq,
+          atMs: codexRelayNowMs(),
+          data: text,
+          responseRpcMethod,
+          operationId,
+          sessionId,
+        });
+        if (relay.eventLog.length > CODEX_WS_RELAY_EVENT_MAX) {
+          relay.eventLog.splice(0, relay.eventLog.length - CODEX_WS_RELAY_EVENT_MAX);
+        }
       }
-      for (const subscriber of subscribers) {
+      const recipients = calendarItem && relay.calendarOwner?.ws
+        ? [relay.calendarOwner.ws]
+        : subscribers;
+      for (const subscriber of recipients) {
         sendCodexRelayRpcToClient(relay, subscriber, text, relay.lastSeq, {
           responseRpcMethod,
           operationId,
@@ -11509,9 +11631,18 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   const requestOperationId = String(params.operationId || "").trim();
   const requestSessionId = String(params.sessionId || "").trim();
   const requestThreadId = String(params.threadId || "").trim();
+  const requestTurnId = String(params.turnId || "").trim();
+  const requestClientWs = params.clientWs || null;
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (handleCalendarClientResponse(relay, rpcPayload, data, isBinary, {
+    ws: requestClientWs,
+    operationId: requestOperationId,
+    sessionId: requestSessionId,
+    threadId: requestThreadId,
+    turnId: requestTurnId,
+  })) return;
   const shouldLogForwardState = (method) => isCodexRelayIdentityBindingMethod(method);
   const logForwardState = (state) => {
     if (!meta || (!meta.method && meta.id === null)) return;
@@ -11584,14 +11715,15 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       relay.runnerWsLlmOperationId = requestOperationId;
       relay.runnerWsLlmSessionId = requestSessionId;
     }
-    if (requestId && Number.isInteger(meta.id) && relay.requestIdByRpcId instanceof Map) {
-      relay.requestIdByRpcId.set(Number(meta.id), requestId);
+    const rpcIdKey = codexRpcIdKey(meta?.id);
+    if (requestId && rpcIdKey && relay.requestIdByRpcId instanceof Map) {
+      relay.requestIdByRpcId.set(rpcIdKey, requestId);
     }
-    if (meta.method && Number.isInteger(meta.id) && relay.requestMethodByRpcId instanceof Map) {
-      relay.requestMethodByRpcId.set(Number(meta.id), String(meta.method || "").trim());
+    if (meta.method && rpcIdKey && relay.requestMethodByRpcId instanceof Map) {
+      relay.requestMethodByRpcId.set(rpcIdKey, String(meta.method || "").trim());
     }
-    if (Number.isInteger(meta.id) && relay.requestMetaByRpcId instanceof Map) {
-      relay.requestMetaByRpcId.set(Number(meta.id), {
+    if (rpcIdKey && relay.requestMetaByRpcId instanceof Map) {
+      relay.requestMetaByRpcId.set(rpcIdKey, {
         operationId: requestOperationId,
         sessionId: requestSessionId,
         threadId: requestThreadId,
@@ -11624,10 +11756,12 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     if (!meta.method && Number.isInteger(meta.id)) {
       relay.pendingApprovalRequestIds.delete(Number(meta.id));
     }
-    if (meta.method === "turn/start") {
-      relay.turnStarted = true;
-      relay.turnCompleted = false;
-    }
+    handleCalendarClientTurnLifecycle(relay, meta, {
+      ws: requestClientWs,
+      operationId: requestOperationId,
+      sessionId: requestSessionId,
+      threadId: requestThreadId,
+    });
     observeCodexCompactClientRpc(relay, meta);
     void appendCodexWsProxyDebug("client_to_upstream_rpc", {
       relayId: relay.relayId,
@@ -11784,6 +11918,7 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
     forwardCodexRelayClientData(relay, data, isBinary, {
       remote,
       endpoint: reqUrl.pathname,
+      clientWs,
     });
   });
 
@@ -11970,12 +12105,20 @@ export const __TESTING__ = {
   codexWsRelaysById,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
+  parseCodexRpcMeta,
+  codexRpcIdKey,
+  terminateCalendarRequest,
+  removeClientFromRelay,
+  runnerInitiatedCalendarResponse,
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
   cleanupOrScheduleDetachedRelay,
   cleanupCodexRelay,
   createCodexRelayContext,
+  calendarCapabilityMatches: calendarScheduleRuntime.capabilityMatches,
+  calendarScheduleConnectionOptions: calendarScheduleRuntime.connectionOptions,
+  calendarSchedulePreflight: calendarScheduleRuntime.preflight,
   pickBestRelayForThread,
   runnerWsServer,
   listLlmDirectories,

@@ -26,8 +26,13 @@ const PENDING_FIELD = "locationSchedulePendingStates";
 const LAST_STATES_FIELD = "locationScheduleLastStates";
 const LOCATION_REFRESH_TASK_NAME = "bitty-location-schedule-refresh";
 const LOCATION_REFRESH_MINIMUM_INTERVAL_MINUTES = 15;
-const LOCATION_PUSH_REFRESH_TASK_NAME = "bitty-location-state-refresh-push";
-const LOCATION_PUSH_REFRESH_MARKER = "location_state_refresh";
+const BACKGROUND_NOTIFICATION_TASK_NAME = "bitty-background-notification";
+
+export function shouldRegisterBackgroundNotificationTask(
+  rules: readonly LocationScheduleRule[]
+) {
+  return rules.some((rule) => rule.enabled);
+}
 
 function rulesInCurrentTimeZone(rules: readonly LocationScheduleRule[]) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -152,7 +157,7 @@ export async function syncLocationSchedules(rules: readonly LocationScheduleRule
   await flushPendingLocationStates();
 }
 
-async function reconcileLocationRefreshTask(enabled: boolean) {
+async function reconcileLocationRefreshTask(enabled: boolean, rules: readonly LocationScheduleRule[] = []) {
   try {
     if (enabled) {
       await BackgroundTask.registerTaskAsync(LOCATION_REFRESH_TASK_NAME, {
@@ -168,10 +173,10 @@ async function reconcileLocationRefreshTask(enabled: boolean) {
     });
   }
   try {
-    if (enabled) {
-      await Notifications.registerTaskAsync(LOCATION_PUSH_REFRESH_TASK_NAME);
+    if (shouldRegisterBackgroundNotificationTask(rules)) {
+      await Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK_NAME);
     } else {
-      await Notifications.unregisterTaskAsync(LOCATION_PUSH_REFRESH_TASK_NAME).catch(() => {});
+      await Notifications.unregisterTaskAsync(BACKGROUND_NOTIFICATION_TASK_NAME).catch(() => {});
     }
   } catch (error) {
     void logLocationScheduleEvent("location_push_refresh_task_register_failed", {
@@ -186,7 +191,7 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
   if (!regions.length) {
     const running = await Location.hasStartedGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME).catch(() => false);
     if (running) await Location.stopGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME);
-    await reconcileLocationRefreshTask(false);
+    await reconcileLocationRefreshTask(false, rules);
     return;
   }
   let foreground = await Location.getForegroundPermissionsAsync();
@@ -198,7 +203,7 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
   // 監視中の再startはリージョン差し替えとして扱われる(expo公式)。stopを挟むと
   // 停止中の境界横断を取りこぼすため、startのみを呼ぶ。
   await Location.startGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME, regions);
-  await reconcileLocationRefreshTask(true);
+  await reconcileLocationRefreshTask(true, rules);
 
   const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
   for (const rule of rules.filter((item) => item.enabled)) {
@@ -358,25 +363,6 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
     };
     await persistLocationState(event);
     await flushPendingLocationStates().catch(() => {});
-  });
-}
-
-if (!TaskManager.isTaskDefined(LOCATION_PUSH_REFRESH_TASK_NAME)) {
-  TaskManager.defineTask(LOCATION_PUSH_REFRESH_TASK_NAME, async ({ data, error }) => {
-    if (error) {
-      await logLocationScheduleEvent("location_push_refresh_task_error", {
-        message: String(error.message || error),
-      });
-      return;
-    }
-    // ペイロードの形はOS/ライブラリで揺れるため、マーカー文字列の有無で判定する
-    if (!JSON.stringify(data ?? {}).includes(LOCATION_PUSH_REFRESH_MARKER)) return;
-    await logLocationScheduleEvent("location_push_refresh_fired", {});
-    await recoverLocationScheduleState("silent_push").catch((err) => {
-      void logLocationScheduleEvent("location_push_refresh_task_error", {
-        message: err instanceof Error ? err.message : String(err),
-      });
-    });
   });
 }
 
