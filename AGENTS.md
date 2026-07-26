@@ -53,9 +53,9 @@ Avoid these unless there is a strong existing reason in the codebase:
 
 File size rule
 
-Do not create files over 1,000 lines.
+Do not create files over 2,000 lines.
 
-Do not make an existing file over 1,000 lines worse.
+Do not make an existing file over 2,000 lines worse.
 
 If a file is already too large, prefer extracting a real responsibility or deleting unnecessary code.
 Do not split files mechanically if the split only moves complexity without improving boundaries.
