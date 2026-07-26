@@ -203,9 +203,10 @@ export function useAppSettingsPersistenceController({
     settings: false,
     secureCredentials: false,
   });
-  const loadInFlightRef = useRef<Promise<boolean> | null>(null);
-  // Bumped when a retry recovers a store, so the autosave effect re-runs with fresh
-  // values instead of persisting a snapshot captured before the recovery.
+  const credentialsRecoveryInFlightRef = useRef(false);
+  // Bumped when a recovery unlocks the credential store, so the autosave effect
+  // re-runs with fresh values instead of persisting a snapshot captured before the
+  // recovery.
   const [persistenceRetryTick, setPersistenceRetryTick] = useState(0);
 
   // keepExistingValues: on a retry the user may have re-typed a credential during the
@@ -557,75 +558,74 @@ export function useAppSettingsPersistenceController({
     }
   }, [applyPersistedSettings]);
 
-  // Reads whichever stores are not yet writable, applies their values, and unlocks
-  // saving for the ones that could be read. Returns true when at least one store
-  // recovered. Reads that fail stay locked and are retried on the next call (app
-  // becoming active, or an autosave attempt) instead of staying broken for the
-  // whole session.
-  const loadFromStores = useCallback((mode: "initial" | "retry"): Promise<boolean> => {
-    if (loadInFlightRef.current) return loadInFlightRef.current;
-
-    const task = (async () => {
+  useEffect(() => {
+    async function loadSettings() {
       const path = settingsPath();
-      const needSettings = Boolean(path) && !writablePersistenceRef.current.settings;
-      const needCredentials = !writablePersistenceRef.current.secureCredentials;
-      if (!needSettings && !needCredentials) return false;
+      if (loadedSettingsPathRef.current === path) return;
+      loadedSettingsPathRef.current = path;
 
       const [settingsResult, credentialsResult] = await Promise.allSettled([
-        needSettings ? readPersistedSettings() : Promise.resolve(undefined),
-        needCredentials ? loadSecureRunnerCredentials() : Promise.resolve(undefined),
+        path ? readPersistedSettings() : Promise.resolve(undefined),
+        loadSecureRunnerCredentials(),
       ]);
 
-      let recovered = false;
-      if (needSettings) {
-        if (settingsResult.status === "fulfilled") {
-          writablePersistenceRef.current.settings = true;
-          recovered = true;
-          if (settingsResult.value) {
-            applyPersistedSettings(settingsResult.value);
-          }
-        } else {
-          console.warn("[settings] failed to read persisted settings", settingsResult.reason);
+      if (settingsResult.status === "fulfilled") {
+        writablePersistenceRef.current.settings = Boolean(path);
+        if (settingsResult.value) {
+          applyPersistedSettings(settingsResult.value);
         }
+      } else {
+        console.warn("[settings] failed to read persisted settings", settingsResult.reason);
       }
-      if (needCredentials) {
-        if (credentialsResult.status === "fulfilled" && credentialsResult.value) {
-          writablePersistenceRef.current.secureCredentials = true;
-          recovered = true;
-          applySecureCredentials(credentialsResult.value, { keepExistingValues: mode === "retry" });
-        } else if (credentialsResult.status === "rejected") {
-          console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
-        }
+      if (credentialsResult.status === "fulfilled") {
+        writablePersistenceRef.current.secureCredentials = true;
+        applySecureCredentials(credentialsResult.value, { keepExistingValues: false });
+      } else {
+        console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
       }
-      return recovered;
-    })();
+      setSettingsLoaded(true);
+    }
 
-    loadInFlightRef.current = task;
-    return task.finally(() => {
-      loadInFlightRef.current = null;
-    });
-  }, [applyPersistedSettings, applySecureCredentials, settingsPath]);
+    void loadSettings();
+  }, [
+    applyPersistedSettings,
+    applySecureCredentials,
+    setSettingsLoaded,
+    settingsPath,
+  ]);
 
-  useEffect(() => {
-    const path = settingsPath();
-    if (loadedSettingsPathRef.current === path) return;
-    loadedSettingsPathRef.current = path;
-    void loadFromStores("initial").then(() => setSettingsLoaded(true));
-  }, [loadFromStores, setSettingsLoaded, settingsPath]);
+  // A credentials read that failed at launch (e.g. a background launch while the
+  // device was locked could not read the keychain) is retried here, so the session
+  // recovers instead of losing the credentials until the next cold start. Only the
+  // credential store recovers mid-session: re-applying the settings file would
+  // overwrite settings the user changed during the degraded session, so a failed
+  // settings read keeps that store read-only until the next launch.
+  const recoverSecureCredentials = useCallback(() => {
+    if (writablePersistenceRef.current.secureCredentials) return;
+    if (credentialsRecoveryInFlightRef.current) return;
+    credentialsRecoveryInFlightRef.current = true;
+    loadSecureRunnerCredentials()
+      .then((credentials) => {
+        writablePersistenceRef.current.secureCredentials = true;
+        applySecureCredentials(credentials, { keepExistingValues: true });
+        setPersistenceRetryTick((tick) => tick + 1);
+      })
+      .catch((error) => {
+        console.warn("[settings] failed to read secure credentials", error);
+      })
+      .finally(() => {
+        credentialsRecoveryInFlightRef.current = false;
+      });
+  }, [applySecureCredentials]);
 
-  // A load that failed at launch (e.g. a background launch while the device was
-  // locked could not read the keychain) is retried when the app comes to the
-  // foreground, so the session recovers instead of losing persistence until the
-  // next cold start.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
-      void loadFromStores("retry").then((recovered) => {
-        if (recovered) setPersistenceRetryTick((tick) => tick + 1);
-      });
+      if (!settingsLoaded) return;
+      recoverSecureCredentials();
     });
     return () => subscription.remove();
-  }, [loadFromStores]);
+  }, [recoverSecureCredentials, settingsLoaded]);
 
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -633,8 +633,12 @@ export function useAppSettingsPersistenceController({
     const path = settingsPath();
     if (!path) return;
 
+    // Snapshot the writable flags now: if a recovery unlocks the credential store
+    // while this timer is pending, the timer must not save this render's stale
+    // (possibly empty) values — the recovery tick re-runs the effect with fresh ones.
+    const writableAtArm = { ...writablePersistenceRef.current };
     const timer = setTimeout(() => {
-      if (writablePersistenceRef.current.settings) {
+      if (writableAtArm.settings) {
         void mutatePersistedSettings((current) => {
           const next: Record<string, unknown> = buildPersistedSettingsPayload();
           for (const field of LOCATION_BACKGROUND_FIELDS) {
@@ -645,7 +649,7 @@ export function useAppSettingsPersistenceController({
           console.warn("[settings] failed to save persisted settings", error);
         });
       }
-      if (writablePersistenceRef.current.secureCredentials) {
+      if (writableAtArm.secureCredentials) {
         void saveSecureRunnerCredentials({
           runnerToken,
           cloudflareAccessClientId,
@@ -653,14 +657,11 @@ export function useAppSettingsPersistenceController({
         }).catch((error) => {
           console.warn("[settings] failed to save secure credentials", error);
         });
-      }
-      // A store still locked by a failed read gets one more chance here so a value
-      // the user just changed is not silently dropped. On recovery the tick re-runs
-      // this effect, which then saves the current values through the branches above.
-      if (!writablePersistenceRef.current.settings || !writablePersistenceRef.current.secureCredentials) {
-        void loadFromStores("retry").then((recovered) => {
-          if (recovered) setPersistenceRetryTick((tick) => tick + 1);
-        });
+      } else {
+        // A locked credential store gets one more chance here so a credential the
+        // user just re-entered is not silently dropped: on recovery the tick re-runs
+        // this effect, which then saves the current values through the branch above.
+        recoverSecureCredentials();
       }
     }, 250);
 
@@ -669,8 +670,8 @@ export function useAppSettingsPersistenceController({
     buildPersistedSettingsPayload,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
-    loadFromStores,
     persistenceRetryTick,
+    recoverSecureCredentials,
     runnerToken,
     settingsLoaded,
     settingsPath,

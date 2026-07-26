@@ -127,8 +127,10 @@ function createArgs() {
   >;
 }
 
-async function renderPersistenceController() {
-  const args = createArgs();
+async function renderPersistenceController(
+  overrides: Partial<ReturnType<typeof createArgs>> = {}
+) {
+  const args = { ...createArgs(), ...overrides };
   await renderHook(() => {
     const [settingsLoaded, setSettingsLoaded] = useState(false);
     return useAppSettingsPersistenceController({
@@ -208,16 +210,19 @@ test("retries a failed credentials read on the next save attempt and unlocks sav
 
 test("keeps retry reads from clobbering a credential the user re-entered", async () => {
   mockLoadSecureRunnerCredentials.mockRejectedValueOnce(new Error("secure store read failed"));
+  const setRunnerToken = jest.fn();
 
-  await renderPersistenceController();
+  await renderPersistenceController({ setRunnerToken } as Parameters<typeof renderPersistenceController>[0]);
   await act(async () => {});
 
   // Recovery applies stored values through functional updates that keep an existing
   // non-empty value, so a token typed during the degraded session survives.
-  const runnerTokenUpdate = setter.mock.calls
+  const runnerTokenUpdates = setRunnerToken.mock.calls
     .map(([update]) => update)
-    .find((update) => typeof update === "function");
-  expect(runnerTokenUpdate).toBeDefined();
-  expect(runnerTokenUpdate("user-typed-token")).toBe("user-typed-token");
-  expect(runnerTokenUpdate("")).toBe("saved-token");
+    .filter((update) => typeof update === "function");
+  expect(runnerTokenUpdates.length).toBeGreaterThan(0);
+  for (const update of runnerTokenUpdates) {
+    expect(update("user-typed-token")).toBe("user-typed-token");
+    expect(update("")).toBe("saved-token");
+  }
 });

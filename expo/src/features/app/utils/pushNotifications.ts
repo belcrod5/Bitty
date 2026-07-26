@@ -40,7 +40,12 @@ export async function getOrCreatePushDeviceId(): Promise<string> {
   }
   if (existing) return existing;
   const deviceId = generateDeviceId();
-  await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId, options);
+  try {
+    await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId, options);
+  } catch {
+    // Registration still works with the in-memory id for this session; the next
+    // call mints again, which the runner handles as a re-registration.
+  }
   return deviceId;
 }
 

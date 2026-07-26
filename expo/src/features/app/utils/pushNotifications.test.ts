@@ -7,6 +7,7 @@ import {
 const mockSecureStoreState = new Map<string, string>();
 
 let mockSecureStoreReadError: Error | null = null;
+let mockSecureStoreWriteError: Error | null = null;
 
 jest.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK: 0,
@@ -15,6 +16,7 @@ jest.mock("expo-secure-store", () => ({
     return mockSecureStoreState.get(key) ?? null;
   }),
   setItemAsync: jest.fn(async (key: string, value: string) => {
+    if (mockSecureStoreWriteError) throw mockSecureStoreWriteError;
     mockSecureStoreState.set(key, value);
   }),
   deleteItemAsync: jest.fn(async (key: string) => {
@@ -46,6 +48,7 @@ describe("getOrCreatePushDeviceId", () => {
   beforeEach(() => {
     mockSecureStoreState.clear();
     mockSecureStoreReadError = null;
+    mockSecureStoreWriteError = null;
     jest.clearAllMocks();
   });
 
@@ -69,6 +72,14 @@ describe("getOrCreatePushDeviceId", () => {
     const first = await getOrCreatePushDeviceId();
     const second = await getOrCreatePushDeviceId();
     expect(second).toBe(first);
+  });
+
+  it("still returns a freshly minted id when persisting it fails", async () => {
+    mockSecureStoreWriteError = new Error("keychain write failed");
+
+    const deviceId = await getOrCreatePushDeviceId();
+
+    expect(deviceId).toMatch(/^push_/);
   });
 
   it("throws instead of minting a duplicate id when the secure store is unreadable", async () => {
