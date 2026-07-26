@@ -86,6 +86,8 @@ private_runner/run-local.sh start
 private_runner/run-local.sh stop
 # 再起動
 private_runner/run-local.sh restart
+# 現在のRunner tokenを維持して再起動
+private_runner/restart-keep-token.sh
 # 状態確認（ポート重複・ヘルス）
 private_runner/run-local.sh status
 # ログ
