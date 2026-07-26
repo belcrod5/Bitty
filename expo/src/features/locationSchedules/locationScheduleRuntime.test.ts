@@ -60,6 +60,7 @@ import {
   bootstrapLocationSchedules,
   recoverLocationScheduleState,
   saveAndActivateLocationSchedules,
+  shouldRegisterBackgroundNotificationTask,
 } from "./locationScheduleRuntime";
 import {
   LOCATION_SCHEDULE_TASK_NAME,
@@ -68,6 +69,7 @@ import {
   type LocationScheduleRule,
 } from "./locationScheduleRules";
 import * as TaskManager from "expo-task-manager";
+import * as Notifications from "expo-notifications";
 
 const mockLocationScheduleTaskCallback = (TaskManager.defineTask as jest.Mock).mock.calls.find(
   ([taskName]) => taskName === LOCATION_SCHEDULE_TASK_NAME,
@@ -122,6 +124,19 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+test("uses the shared notification task while either background feature is active", async () => {
+  const currentRule = rule();
+
+  expect(shouldRegisterBackgroundNotificationTask([])).toBe(false);
+  expect(shouldRegisterBackgroundNotificationTask([currentRule])).toBe(true);
+
+  await saveAndActivateLocationSchedules([currentRule]);
+  expect(Notifications.registerTaskAsync).toHaveBeenCalledWith("bitty-background-notification");
+
+  await saveAndActivateLocationSchedules([{ ...currentRule, enabled: false, calendarAccess: "none", calendarDeviceId: null }]);
+  expect(Notifications.unregisterTaskAsync).toHaveBeenCalledWith("bitty-background-notification");
 });
 
 test("restores local schedules when Runner synchronization fails", async () => {

@@ -122,7 +122,7 @@ export function startCodexAppServerTurnRelayObserver(
   let lastRelaySeq = resumeFromSeq;
   let currentAgentMessageItemId = "";
   const agentMessageTextByItemId = new Map<string, string>();
-  const pendingApprovalRequests = new Map<JsonRpcId, {
+  const pendingApprovalRequests = new Map<number, {
     active: boolean;
     request: import("../approvalFlow").ApprovalRequest;
   }>();

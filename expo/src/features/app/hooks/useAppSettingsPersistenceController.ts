@@ -24,7 +24,11 @@ import {
   type SecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
 import { normalizeCodexWsInputs } from "../../codex/client/helpers";
-import { LOCATION_BACKGROUND_FIELDS, mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
+import {
+  LOCATION_BACKGROUND_FIELDS,
+  mutatePersistedSettings,
+  readPersistedSettings,
+} from "../utils/persistedSettingsFile";
 
 const LEGACY_DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/codex-ws";
 const DEFAULT_RUNNER_WS_URL = "ws://127.0.0.1:8788/runner-ws";

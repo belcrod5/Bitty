@@ -10,6 +10,7 @@ import {
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import { extractCommandText } from "../../codex/client/helpers";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
+import type { CalendarToolResult } from "../../calendar/calendarToolSpecs";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
@@ -63,6 +64,8 @@ type UseCodexReplyRequestOptions<
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
+  onCalendarToolCall?: (message: unknown) => Promise<CalendarToolResult<unknown>>;
+  onCalendarRequestCancel?: (requestId: string) => void;
   autoSpeakAfterReply: boolean;
   isChatOpenForAutoSpeech?: (target: TtsPlaybackTarget) => boolean;
   conversationMessagesRef: MutableRefObject<TMessage[]>;
@@ -1104,6 +1107,8 @@ export function useCodexReplyRequest<
         model: requestModelRef || undefined,
         effort: requestModelRef ? requestReasoningEffort : undefined,
         approvalPolicy: current.codexApprovalPolicy,
+        onCalendarToolCall: current.onCalendarToolCall,
+        onCalendarRequestCancel: current.onCalendarRequestCancel,
         onApprovalRequest: (request) => current.handleApprovalRequest(projectApprovalRequest(request)),
         onApprovalRequestResolved: (request) => {
           current.onApprovalRequestResolved?.(projectApprovalRequest(request));

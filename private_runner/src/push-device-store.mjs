@@ -109,9 +109,15 @@ export function createPushDeviceStore(storePath) {
     return Array.from(byDeviceId.values());
   }
 
+  async function getDevice(deviceId) {
+    await ensureLoaded();
+    return byDeviceId.get(String(deviceId || "").trim()) || null;
+  }
+
   return {
     upsertDevice,
     removeDevice,
     listDevices,
+    getDevice,
   };
 }

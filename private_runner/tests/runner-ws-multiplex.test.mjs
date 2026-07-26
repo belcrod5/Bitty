@@ -866,3 +866,168 @@ test("runner-ws cached initialize answer does not rebind the relay identity", ()
   const cachedResponse = client.sent.find((message) => message.payload?.id === 9);
   assert.equal(cachedResponse.operationId, "reader-op");
 });
+
+test("relay keeps numeric and string RPC ids distinct in response routing", () => {
+  const relay = createRelayForRunnerWsTest();
+  const client = createEnvelopeClientForRunnerWsTest();
+  __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
+
+  for (const id of [42, "42", "request-alpha"]) {
+    __TESTING__.forwardCodexRelayClientData(
+      relay,
+      JSON.stringify({ jsonrpc: "2.0", id, method: "thread/read", params: { threadId: "thread-1" } }),
+      false,
+      { requestId: `request-${typeof id}-${id}`, operationId: "operation", sessionId: "session", threadId: "thread-1", clientWs: client }
+    );
+  }
+  assert.deepEqual([...relay.requestIdByRpcId.keys()].sort(), ["n:42", "s:42", "s:request-alpha"]);
+
+  for (const id of ["42", 42, "request-alpha"]) {
+    __TESTING__.handleCodexRelayUpstreamMessage(
+      relay,
+      JSON.stringify({ jsonrpc: "2.0", id, result: { thread: { id: "thread-1" } } }),
+      false,
+      { endpoint: "/runner-ws", remote: "test" }
+    );
+  }
+  assert.equal(relay.requestIdByRpcId.size, 0);
+  const replies = client.sent.filter((message) => message.channel === "llm" && message.payload?.result);
+  assert.equal(replies.some((message) => message.payload.id === 42), true);
+  assert.equal(replies.some((message) => message.payload.id === "42"), true);
+  assert.equal(replies.some((message) => message.payload.id === "request-alpha"), true);
+});
+
+test("calendar requests stay with their owner and are excluded from replayable events", () => {
+  const relay = createRelayForRunnerWsTest();
+  const owner = createEnvelopeClientForRunnerWsTest();
+  const observer = createEnvelopeClientForRunnerWsTest();
+  __TESTING__.attachClientToCodexRelay(relay, owner, { envelopeMode: true });
+  __TESTING__.attachClientToCodexRelay(relay, observer, { envelopeMode: true });
+  owner.sent.length = 0;
+  observer.sent.length = 0;
+  relay.calendarOwner = { ws: owner, operationId: "op-owner", sessionId: "session-owner", threadId: "thread-1", turnId: "turn-1" };
+  relay.calendarRequests = new Map();
+
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: "42", method: "item/tool/call", params: { namespace: null, tool: "calendar_list_calendars", callId: "call-1", threadId: "thread-1", turnId: "turn-1", arguments: {} } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" }
+  );
+  assert.equal(relay.calendarRequests.size, 1);
+  assert.equal(observer.sent.length, 0);
+  assert.equal(relay.eventLog.length, 0);
+
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: "42", result: { success: true } }),
+    false,
+    { clientWs: observer, operationId: "op-observer", sessionId: "session-observer", threadId: "thread-1" }
+  );
+  assert.equal(relay.calendarRequests.size, 1);
+  assert.equal(relay.upstreamSent.length, 0);
+
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: "42", result: { success: true } }),
+    false,
+    { clientWs: owner, operationId: "op-owner", sessionId: "session-owner", threadId: "thread-1", turnId: "turn-1" }
+  );
+  assert.equal(relay.calendarRequests.size, 0);
+  assert.equal(JSON.parse(relay.upstreamSent[0]).id, "42");
+
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", method: "item/started", params: { item: { type: "dynamicToolCall", toolName: "calendar_list_calendars" } } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" }
+  );
+  assert.equal(relay.eventLog.length, 0);
+  assert.equal(observer.sent.length, 0);
+});
+
+test("calendar cancellation responds once and uses the same wire payload for direct and envelope clients", () => {
+  for (const envelopeMode of [false, true]) {
+    const relay = createRelayForRunnerWsTest();
+    const client = envelopeMode ? createEnvelopeClientForRunnerWsTest() : {
+      readyState: 1,
+      sent: [],
+      send(data) { this.sent.push(JSON.parse(String(data))); },
+    };
+    __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode });
+    relay.calendarRequests = new Map();
+    const request = {
+      id: 5,
+      requestId: "deterministic-request",
+      tool: "calendar_create_event",
+      owner: { ws: client, operationId: "operation", sessionId: "session", threadId: "thread-1", turnId: "turn-1" },
+      turnId: "turn-1",
+      done: false,
+      timer: setTimeout(() => {}, 60_000),
+    };
+    relay.calendarRequests.set("n:5", request);
+    __TESTING__.terminateCalendarRequest(relay, request, "timeout");
+    __TESTING__.terminateCalendarRequest(relay, request, "timeout");
+    assert.equal(relay.upstreamSent.length, 1);
+    __TESTING__.forwardCodexRelayClientData(
+      relay,
+      JSON.stringify({ jsonrpc: "2.0", id: 5, result: { success: true } }),
+      false,
+      { clientWs: client, operationId: "operation", sessionId: "session", threadId: "thread-1", turnId: "turn-1" }
+    );
+    assert.equal(relay.upstreamSent.length, 1);
+    const cancellation = envelopeMode
+      ? client.sent.find((message) => message.op === "calendar_request_cancel")?.payload
+      : client.sent.find((message) => message.type === "runner_relay_calendar_request_cancel")?.payload;
+    assert.equal(cancellation.requestId, "deterministic-request");
+    assert.equal(cancellation.appServerRequestId.value, 5);
+  }
+});
+
+test("owner disconnect and turn interrupt terminate a calendar request exactly once", () => {
+  for (const reason of ["owner_disconnect", "interrupt"]) {
+    const relay = createRelayForRunnerWsTest();
+    const owner = createEnvelopeClientForRunnerWsTest();
+    __TESTING__.attachClientToCodexRelay(relay, owner, { envelopeMode: true });
+    owner.sent.length = 0;
+    relay.calendarOwner = { ws: owner, operationId: "operation", sessionId: "session", threadId: "thread-1", turnId: "turn-1" };
+    relay.calendarRequests = new Map();
+    const request = {
+      id: reason === "interrupt" ? "interrupt-id" : "disconnect-id",
+      requestId: `request-${reason}`,
+      tool: "calendar_list_calendars",
+      owner: relay.calendarOwner,
+      turnId: "turn-1",
+      done: false,
+      timer: setTimeout(() => {}, 60_000),
+    };
+    relay.calendarRequests.set(`s:${request.id}`, request);
+    if (reason === "owner_disconnect") {
+      __TESTING__.removeClientFromRelay(relay, owner);
+    } else {
+      __TESTING__.forwardCodexRelayClientData(
+        relay,
+        JSON.stringify({ jsonrpc: "2.0", id: 9, method: "turn/interrupt", params: { threadId: "thread-1" } }),
+        false,
+        { clientWs: owner, operationId: "operation", sessionId: "session", threadId: "thread-1" }
+      );
+    }
+    assert.equal(request.done, true);
+    assert.equal(relay.upstreamSent.length, reason === "interrupt" ? 2 : 1);
+    assert.equal(relay.calendarRequests.size, 0);
+  }
+});
+
+test("queued turns with retained calendar tools receive fixed errors without echoing tool arguments", () => {
+  const read = __TESTING__.runnerInitiatedCalendarResponse({
+    method: "item/tool/call",
+    params: { tool: "calendar_search_events", arguments: { start: "private-start", end: "private-end" } },
+  });
+  const write = __TESTING__.runnerInitiatedCalendarResponse({
+    method: "item/tool/call",
+    params: { tool: "calendar_create_event", arguments: { title: "private-title" } },
+  });
+  assert.equal(JSON.parse(read.contentItems[0].text).error.code, "device_unavailable");
+  assert.equal(JSON.parse(write.contentItems[0].text).error.code, "foreground_required");
+  assert.equal(JSON.stringify([read, write]).includes("private-"), false);
+});

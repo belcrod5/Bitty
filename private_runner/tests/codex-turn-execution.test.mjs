@@ -2,20 +2,31 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { executeCodexTurn } from "../src/codex-turn-execution.mjs";
+import { calendarScheduleDynamicTools } from "../src/calendar-tool-service.mjs";
 
 function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) {
   const calls = [];
   const listeners = new Set();
+  const serverRequestHandlers = new Set();
   return {
     calls,
     listeners,
+    serverRequestHandlers,
+    serverResponses: [],
     openPromise: Promise.resolve(),
     notify(method, params) { calls.push({ kind: "notify", method, params }); },
     async request(method, params) {
       calls.push({ kind: "request", method, params });
       if (method === "thread/start") return { thread: { id: "thread-new" } };
       if (method === "thread/resume") return { thread: { id: params.threadId } };
+      if (method === "plugin/list") return { marketplaces: [] };
+      if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
       if (method === "turn/start") {
+        if (this.serverRequest) {
+          for (const handler of serverRequestHandlers) {
+            this.serverResponses.push({ id: this.serverRequest.id, result: await handler(this.serverRequest) });
+          }
+        }
         for (const notification of notifications) {
           for (const listener of listeners) listener(notification.method, notification.params);
         }
@@ -31,6 +42,10 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
         calls.push({ kind: "listener-removed" });
         listeners.delete(listener);
       };
+    },
+    addServerRequestHandler(handler) {
+      serverRequestHandlers.add(handler);
+      return () => serverRequestHandlers.delete(handler);
     },
   };
 }
@@ -129,4 +144,104 @@ test("requires a notification listener API so completion capture cannot be skipp
     executeCodexTurn({ client, clientName: "location-schedule", inputText: "run", cwd: "/work/project" }),
     /client\.addNotificationListener is required/
   );
+});
+
+test("calendar schedules create a closed-down thread with only three dynamic tools", async () => {
+  const client = fakeClient();
+  const originalRequest = client.request;
+  client.request = async (method, params) => {
+    if (method === "plugin/list") {
+      client.calls.push({ kind: "request", method, params });
+      return { marketplaces: [{ name: "marketplace-a", path: "/plugins/marketplace-a", plugins: [{ name: "plugin-a", enabled: true }] }] };
+    }
+    return originalRequest.call(client, method, params);
+  };
+  client.serverRequest = {
+    id: "server-request-42",
+    method: "item/tool/call",
+    params: { tool: "calendar_list_calendars", callId: "call", threadId: "thread-new", turnId: "turn-1", namespace: null, arguments: {} },
+  };
+  let handled = null;
+  const result = await executeCodexTurn({
+    client,
+    clientName: "calendar-schedule",
+    inputText: "read my calendar",
+    cwd: "/empty",
+    approvalPolicy: "never",
+    calendarSchedule: {
+      ruleId: "rule-1",
+      ruleRevision: "revision-1",
+      deviceId: "device-1",
+      dynamicTools: calendarScheduleDynamicTools(),
+      handleServerRequest: async (request) => {
+        handled = request;
+        return { success: true, contentItems: [{ type: "inputText", text: "{}" }] };
+      },
+    },
+  });
+
+  assert.equal(result.threadId, "thread-new");
+  assert.equal(client.calls.find((call) => call.method === "initialize")?.params.capabilities.experimentalApi, true);
+  assert.deepEqual(client.calls.filter((call) => call.method === "config/read").length, 1);
+  assert.deepEqual(client.calls.filter((call) => call.method === "plugin/list").length, 1);
+  assert.deepEqual(client.calls.find((call) => call.method === "plugin/read")?.params, { pluginName: "plugin-a", marketplacePath: "/plugins/marketplace-a" });
+  const start = client.calls.find((call) => call.method === "thread/start")?.params;
+  assert.deepEqual(start.dynamicTools.map((tool) => tool.name), [
+    "calendar_list_calendars", "calendar_search_events", "calendar_get_event",
+  ]);
+  assert.equal(start.config.web_search, "disabled");
+  assert.deepEqual(start.config.apps, { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } });
+  assert.match(start.developerInstructions, /untrusted external data/);
+  const turn = client.calls.find((call) => call.method === "turn/start")?.params;
+  assert.deepEqual(turn.sandboxPolicy, {
+    type: "externalSandbox",
+    networkAccess: "restricted",
+  });
+  assert.equal(client.calls.findIndex((call) => call.method === "mcpServerStatus/list")
+    < client.calls.findIndex((call) => call.method === "turn/start"), true);
+  assert.equal(handled.id, "server-request-42");
+  assert.equal(handled.ruleId, "rule-1");
+  assert.deepEqual(client.serverResponses, [{
+    id: "server-request-42",
+    result: { success: true, contentItems: [{ type: "inputText", text: "{}" }] },
+  }]);
+});
+
+test("calendar schedules fail closed before turn/start when MCP status is not empty", async () => {
+  const client = fakeClient();
+  const originalRequest = client.request;
+  client.request = async (method, params) => (
+    method === "mcpServerStatus/list" ? { data: [{ name: "forbidden" }], nextCursor: null } : originalRequest.call(client, method, params)
+  );
+  await assert.rejects(
+    executeCodexTurn({
+      client, clientName: "calendar-schedule", inputText: "read", cwd: "/empty", calendarSchedule: {
+        ruleId: "rule", ruleRevision: "revision", deviceId: "device", dynamicTools: calendarScheduleDynamicTools(), handleServerRequest: async () => ({}),
+      },
+    }),
+    /calendar_api_failed/
+  );
+  assert.equal(client.calls.some((call) => call.method === "turn/start"), false);
+});
+
+test("calendar thread-start incompatibility is explicit and never falls back", async () => {
+  const client = fakeClient();
+  const originalRequest = client.request;
+  client.request = async (method, params) => {
+    if (method === "thread/start") {
+      client.calls.push({ kind: "request", method, params });
+      throw new Error("unsupported dynamic tools");
+    }
+    return originalRequest.call(client, method, params);
+  };
+  await assert.rejects(
+    executeCodexTurn({
+      client, clientName: "calendar-schedule", inputText: "read", cwd: "/empty", calendarSchedule: {
+        ruleId: "rule", ruleRevision: "revision", deviceId: "device", dynamicTools: calendarScheduleDynamicTools(), handleServerRequest: async () => ({}),
+      },
+    }),
+    /codex_dynamic_tools_incompatible.*thread_start/
+  );
+  assert.equal(client.calls.filter((call) => call.method === "thread/start").length, 1);
+  assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
 });

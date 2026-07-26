@@ -54,6 +54,14 @@ import {
   createCodexRunnerWsLogicalId,
 } from "./runnerWsJsonRpcIds";
 import { assertSupportedCodexAppServer } from "./rpcSession";
+import {
+  calendarDynamicTools,
+} from "../../calendar/calendarToolSpecs";
+import {
+  calendarDynamicToolsIncompatible,
+  calendarToolResponse,
+  parseCalendarToolCall,
+} from "../../calendar/calendarToolHandler";
 export { startCodexAppServerTurnRelayObserver } from "./turnRelayObserver";
 
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
@@ -120,7 +128,7 @@ export function startCodexAppServerTurn(
 
   const pending = new Map<JsonRpcId, PendingRequest>();
   const pendingMethods = new Map<JsonRpcId, string>();
-  const pendingApprovalRequests = new Map<JsonRpcId, {
+  const pendingApprovalRequests = new Map<number, {
     active: boolean;
     request: import("../approvalFlow").ApprovalRequest;
   }>();
@@ -548,11 +556,37 @@ export function startCodexAppServerTurn(
   }
 
   async function handleServerRequest(message: JsonRpcIncoming) {
-    const id = Number(message.id);
+    const id = message.id;
     const method = String(message.method || "");
     const params = message.params ?? {};
     emitEvent(method, params);
-    if (!Number.isInteger(id)) return;
+    if (typeof id !== "string" && typeof id !== "number") return;
+    if (method === "item/tool/call") {
+      const call = await parseCalendarToolCall(message);
+      if (!call) {
+        await sendServerResponseWhenAdmitted(
+          calendarToolResponse(id, calendarDynamicToolsIncompatible("tool_call_parse")),
+          () => !interruptRequested
+        );
+        return;
+      }
+      if (!options.onCalendarToolCall) {
+        await sendServerResponseWhenAdmitted(
+          calendarToolResponse(id, calendarDynamicToolsIncompatible("tool_response")),
+          () => !interruptRequested
+        );
+        return;
+      }
+      let result;
+      try {
+        result = await options.onCalendarToolCall(message);
+      } catch {
+        result = calendarDynamicToolsIncompatible("tool_response");
+      }
+      await sendServerResponseWhenAdmitted(calendarToolResponse(id, result), () => !interruptRequested);
+      return;
+    }
+    if (typeof id !== "number" || !Number.isInteger(id)) return;
     if (method.endsWith("/requestApproval")) {
       const isKnownApprovalMethod = (
         method === "item/commandExecution/requestApproval" ||
@@ -729,6 +763,9 @@ export function startCodexAppServerTurn(
         failRef?.(new Error(`Codex app-server relay closed: ${detail}`));
       }
     }
+    if (control.type === "runner_relay_calendar_request_cancel") {
+      options.onCalendarRequestCancel?.(String(control.payload?.requestId || ""));
+    }
     return true;
   }
 
@@ -738,7 +775,7 @@ export function startCodexAppServerTurn(
     emitLog({
       stage: "ws_server_ack",
       method: ack.method || undefined,
-      id: Number.isInteger(ack.id) ? Number(ack.id) : undefined,
+      id: typeof ack.id === "number" && Number.isInteger(ack.id) ? ack.id : undefined,
       readyState: getTransportReadyState(),
       message: `phase=${ack.phase} requestId=${ack.requestId}${ack.state ? ` state=${ack.state}` : ""}${ack.relayId ? ` relayId=${ack.relayId}` : ""}`,
     });
@@ -1023,13 +1060,22 @@ export function startCodexAppServerTurn(
         }
       }
       if (!activeThreadId) {
-        const started = await sendRequestWhenAdmitted<CodexThreadStartResponse>("thread/start", {
-          cwd: cwd || undefined,
-          serviceName,
-          approvalPolicy,
-          experimentalRawEvents: false,
-          persistExtendedHistory: false,
-        }, PRE_TURN_RPC_TIMEOUT_MS);
+        let started: CodexThreadStartResponse;
+        try {
+          started = await sendRequestWhenAdmitted<CodexThreadStartResponse>("thread/start", {
+            cwd: cwd || undefined,
+            serviceName,
+            approvalPolicy,
+            experimentalRawEvents: false,
+            persistExtendedHistory: false,
+            ...(options.onCalendarToolCall ? { dynamicTools: calendarDynamicTools() } : {}),
+          }, PRE_TURN_RPC_TIMEOUT_MS);
+        } catch {
+          if (options.onCalendarToolCall) {
+            throw new Error(JSON.stringify(calendarDynamicToolsIncompatible("thread_start")));
+          }
+          throw new Error("thread/start failed");
+        }
         activeThreadId = String(started?.thread?.id || "").trim();
         notifyThreadIdResolved(activeThreadId);
         if (activeThreadId) {

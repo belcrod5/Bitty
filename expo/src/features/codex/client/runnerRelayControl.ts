@@ -6,6 +6,7 @@ export type RunnerRelayControlMessage = {
   replayed?: number;
   latestSeq?: number;
   reason?: string;
+  payload?: Record<string, unknown>;
 };
 
 export function buildRunnerRelayResumeWsUrl(wsUrlRaw: string, threadIdRaw: string, lastSeqRaw: number): string {
@@ -44,6 +45,9 @@ export function parseRunnerRelayControlMessage(rawData: string): RunnerRelayCont
       replayed: Number.isFinite(replayed) ? Math.max(0, Math.floor(replayed)) : undefined,
       latestSeq: Number.isFinite(latestSeq) ? Math.max(0, Math.floor(latestSeq)) : undefined,
       reason: reason || undefined,
+      payload: (payload as any)?.payload && typeof (payload as any).payload === "object"
+        ? (payload as any).payload as Record<string, unknown>
+        : undefined,
     };
   } catch {
     return null;
