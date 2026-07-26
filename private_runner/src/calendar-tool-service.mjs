@@ -7,7 +7,8 @@ const READ_TOOLS = new Set([
 ]);
 const REQUEST_TTL_MS = 60_000;
 
-export const CALENDAR_DYNAMIC_TOOLS_CONTRACT = "calendar-dynamic-tools-v1";
+export const CALENDAR_DYNAMIC_TOOLS_CONTRACT = "calendar-dynamic-tools-v2";
+export const CALENDAR_DYNAMIC_TOOLS_NAMESPACE = "calendar";
 
 export function calendarResultError(code, retryable = false) {
   const messages = {
@@ -40,9 +41,10 @@ export function calendarScheduleDynamicTools() {
     name,
     description: `${description}。${UNTRUSTED_CALENDAR_DATA}`,
     inputSchema,
+    deferLoading: true,
   });
   const object = { type: "object", additionalProperties: false };
-  return [
+  const tools = [
     tool("calendar_list_calendars", "端末の予定表一覧を取得する", object),
     tool("calendar_search_events", "指定期間の予定を検索する", {
       ...object,
@@ -58,6 +60,12 @@ export function calendarScheduleDynamicTools() {
       properties: { eventId: { type: "string" }, instanceStart: { type: "string" }, detached: { type: "boolean" } },
     }),
   ];
+  return [{
+    type: "namespace",
+    name: CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
+    description: "iOSカレンダーの予定を読み取るツール",
+    tools,
+  }];
 }
 
 function canonical(value) {
@@ -120,7 +128,7 @@ export function createCalendarScheduleRequestHandler({ createReadRequest }) {
     const callId = String(params?.callId || "").trim();
     const threadId = String(params?.threadId || "").trim();
     const turnId = String(params?.turnId || "").trim();
-    if (request.method !== "item/tool/call" || params?.namespace !== null || !READ_TOOLS.has(tool)
+    if (request.method !== "item/tool/call" || params?.namespace !== CALENDAR_DYNAMIC_TOOLS_NAMESPACE || !READ_TOOLS.has(tool)
       || !callId || !threadId || !turnId || !params?.arguments || typeof params.arguments !== "object" || Array.isArray(params.arguments)) {
       return serverResponse(codexDynamicToolsIncompatible("tool_call_parse"));
     }

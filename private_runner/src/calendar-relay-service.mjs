@@ -1,4 +1,7 @@
-import { calendarScheduleRequestId } from "./calendar-tool-service.mjs";
+import {
+  CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
+  calendarScheduleRequestId,
+} from "./calendar-tool-service.mjs";
 
 export function createCalendarRelayService({
   WebSocket,
@@ -91,7 +94,7 @@ export function createCalendarRelayService({
     if (!tool) return false;
     const owner = relay.calendarOwner;
     const requestKey = rpcIdKey(payload?.id);
-    if (!requestKey || payload?.params?.namespace !== null) {
+    if (!requestKey || payload?.params?.namespace !== CALENDAR_DYNAMIC_TOOLS_NAMESPACE) {
       sendResponse(relay, { id: payload?.id }, error("invalid_arguments"));
       return true;
     }

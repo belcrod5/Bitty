@@ -2,6 +2,8 @@ import * as Crypto from "expo-crypto";
 import { AppState } from "react-native";
 import {
   calendarError,
+  CALENDAR_DYNAMIC_TOOLS_CONTRACT,
+  CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
   type CalendarReadToolName,
   type CalendarToolName,
   type CalendarToolResult,
@@ -127,7 +129,7 @@ export function calendarDynamicToolsIncompatible(phase: "thread_start" | "tool_c
       code: "codex_dynamic_tools_incompatible" as const,
       message: "Dynamic Tools互換性エラーです。phaseを確認し、Bittyのcalendar tool adapterを現行schemaへ更新してください。",
       retryable: false,
-      expectedContract: "calendar-dynamic-tools-v1",
+      expectedContract: CALENDAR_DYNAMIC_TOOLS_CONTRACT,
       phase,
     },
   };
@@ -157,7 +159,7 @@ export function createCalendarToolHandler(options: CalendarToolHandlerOptions) {
   };
 
   const handle = async (call: CalendarToolCall): Promise<CalendarToolResult<unknown>> => {
-    if (call.namespace !== null) return calendarError("invalid_arguments");
+    if (call.namespace !== CALENDAR_DYNAMIC_TOOLS_NAMESPACE) return calendarError("invalid_arguments");
     const serialized = canonical(call.arguments);
     if (serialized === null) return calendarError("invalid_arguments");
     const requestId = await hash(lengthPrefix([call.threadId, call.turnId, call.callId, call.tool]));

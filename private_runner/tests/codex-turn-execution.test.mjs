@@ -19,6 +19,7 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
       calls.push({ kind: "request", method, params });
       if (method === "thread/start") return { thread: { id: "thread-new" } };
       if (method === "thread/resume") return { thread: { id: params.threadId } };
+      if (method === "modelProvider/capabilities/read") return { namespaceTools: true };
       if (method === "plugin/list") return { marketplaces: [] };
       if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
       if (method === "turn/start") {
@@ -159,7 +160,7 @@ test("calendar schedules create a closed-down thread with only three dynamic too
   client.serverRequest = {
     id: "server-request-42",
     method: "item/tool/call",
-    params: { tool: "calendar_list_calendars", callId: "call", threadId: "thread-new", turnId: "turn-1", namespace: null, arguments: {} },
+    params: { tool: "calendar_list_calendars", callId: "call", threadId: "thread-new", turnId: "turn-1", namespace: "calendar", arguments: {} },
   };
   let handled = null;
   const result = await executeCodexTurn({
@@ -186,9 +187,13 @@ test("calendar schedules create a closed-down thread with only three dynamic too
   assert.deepEqual(client.calls.filter((call) => call.method === "plugin/list").length, 1);
   assert.deepEqual(client.calls.find((call) => call.method === "plugin/read")?.params, { pluginName: "plugin-a", marketplacePath: "/plugins/marketplace-a" });
   const start = client.calls.find((call) => call.method === "thread/start")?.params;
-  assert.deepEqual(start.dynamicTools.map((tool) => tool.name), [
+  assert.equal(start.dynamicTools.length, 1);
+  assert.equal(start.dynamicTools[0].type, "namespace");
+  assert.equal(start.dynamicTools[0].name, "calendar");
+  assert.deepEqual(start.dynamicTools[0].tools.map((tool) => tool.name), [
     "calendar_list_calendars", "calendar_search_events", "calendar_get_event",
   ]);
+  assert.equal(start.dynamicTools[0].tools.every((tool) => tool.deferLoading === true), true);
   assert.equal(start.config.web_search, "disabled");
   assert.deepEqual(start.config.apps, { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } });
   assert.match(start.developerInstructions, /untrusted external data/);
@@ -244,4 +249,43 @@ test("calendar thread-start incompatibility is explicit and never falls back", a
   );
   assert.equal(client.calls.filter((call) => call.method === "thread/start").length, 1);
   assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
+});
+
+test("calendar schedules fail clearly when namespace tools are unavailable", async () => {
+  const client = fakeClient();
+  const originalRequest = client.request;
+  client.request = async (method, params) => (
+    method === "modelProvider/capabilities/read"
+      ? { namespaceTools: false }
+      : originalRequest.call(client, method, params)
+  );
+
+  await assert.rejects(
+    executeCodexTurn({
+      client, clientName: "calendar-schedule", inputText: "read", cwd: "/empty", calendarSchedule: {
+        ruleId: "rule", ruleRevision: "revision", deviceId: "device", dynamicTools: calendarScheduleDynamicTools(), handleServerRequest: async () => ({}),
+      },
+    }),
+    /codex_dynamic_tools_incompatible.*thread_start/
+  );
+  assert.equal(client.calls.some((call) => call.method === "thread/start"), false);
+});
+
+test("calendar schedules report capability API incompatibility clearly", async () => {
+  const client = fakeClient();
+  const originalRequest = client.request;
+  client.request = async (method, params) => {
+    if (method === "modelProvider/capabilities/read") throw new Error("unsupported method");
+    return originalRequest.call(client, method, params);
+  };
+
+  await assert.rejects(
+    executeCodexTurn({
+      client, clientName: "calendar-schedule", inputText: "read", cwd: "/empty", calendarSchedule: {
+        ruleId: "rule", ruleRevision: "revision", deviceId: "device", dynamicTools: calendarScheduleDynamicTools(), handleServerRequest: async () => ({}),
+      },
+    }),
+    /codex_dynamic_tools_incompatible.*thread_start/
+  );
+  assert.equal(client.calls.some((call) => call.method === "thread/start"), false);
 });

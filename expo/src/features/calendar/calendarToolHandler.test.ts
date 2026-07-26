@@ -31,7 +31,7 @@ import { createCalendarToolHandler, parseCalendarToolCall } from "./calendarTool
 
 const ok = { ok: true as const, data: null };
 const view = { title: "actual", start: "2026-01-01T00:00:00.000Z", end: "2026-01-01T01:00:00.000Z", allDay: false, timeZone: "UTC", location: null, notes: null, calendarId: "cal", lastModifiedAt: "v1", recurring: false, allowsModifications: true };
-const call = { appServerRequestId: 42, callId: "call", threadId: "thread", turnId: "turn", namespace: null, tool: "calendar_create_event" as const, arguments: { title: "model text" } };
+const call = { appServerRequestId: 42, callId: "call", threadId: "thread", turnId: "turn", namespace: "calendar", tool: "calendar_create_event" as const, arguments: { title: "model text" } };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -46,14 +46,14 @@ beforeEach(() => {
 });
 
 test("strict parser keeps typed ids and rejects malformed calls", async () => {
-  await expect(parseCalendarToolCall({ id: "42", method: "item/tool/call", params: { callId: "c", threadId: "t", turnId: "u", namespace: null, tool: "calendar_list_calendars", arguments: {} } })).resolves.toMatchObject({ appServerRequestId: "42" });
-  await expect(parseCalendarToolCall({ id: 42, method: "item/tool/call", params: { callId: "c", threadId: "t", turnId: "u", namespace: null, tool: "unknown", arguments: {} } })).resolves.toBeNull();
+  await expect(parseCalendarToolCall({ id: "42", method: "item/tool/call", params: { callId: "c", threadId: "t", turnId: "u", namespace: "calendar", tool: "calendar_list_calendars", arguments: {} } })).resolves.toMatchObject({ appServerRequestId: "42" });
+  await expect(parseCalendarToolCall({ id: 42, method: "item/tool/call", params: { callId: "c", threadId: "t", turnId: "u", namespace: "calendar", tool: "unknown", arguments: {} } })).resolves.toBeNull();
 });
 
-test("rejects namespace and preparation failures before confirmation", async () => {
+test("rejects the wrong namespace and preparation failures before confirmation", async () => {
   const confirmWrite = jest.fn();
   const handler = createCalendarToolHandler({ isForeground: () => true, confirmWrite });
-  await expect(handler.handle({ ...call, namespace: "not-top-level" })).resolves.toMatchObject({ error: { code: "invalid_arguments" } });
+  await expect(handler.handle({ ...call, namespace: "not-calendar" })).resolves.toMatchObject({ error: { code: "invalid_arguments" } });
   mockPrepare.mockResolvedValueOnce({ ok: false, error: { code: "event_changed", message: "changed", retryable: false } });
   await expect(handler.handle(call)).resolves.toMatchObject({ error: { code: "event_changed" } });
   expect(confirmWrite).not.toHaveBeenCalled();

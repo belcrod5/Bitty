@@ -108,9 +108,30 @@ Runnerを時刻判定の権威とする既存設計は変更しない。バッ�
 ## 4. Codex app-serverとの契約
 
 Expoがカレンダーtool handlerを持つ場合、新しい会話の
-`thread/start.dynamicTools`へ常に登録する。現在使っているCodex CLIの
-実験的schemaでは、`dynamicTools`は`thread/start`だけに存在し、`thread/resume`や
-`turn/start`には存在しない。
+`thread/start.dynamicTools`へ`calendar` namespaceとして登録する。各functionは
+`deferLoading: true`とし、通常のモデル入力へ6個の完全な定義を常時載せず、
+Codexの`tool_search`から必要な定義だけを公開する。
+
+Codex CLI 0.145.0の公式README、型定義、実装を確認した結果は次のとおり。
+
+- `dynamicTools`はApp Serverクライアントが`thread/start`時に独自ツールを登録する
+  experimental APIであり、自動ロードそのものを意味しない。
+- `deferLoading`の既定値は`false`。`true`のfunctionはnamespace配下でなければならない。
+- 非遅延toolは各sampling requestのmodel-facing tool listへ入り、遅延toolは通常時の
+  listから除外される。検索結果に一致した定義だけが`tool_search` outputへ入る。
+- `tool_search`はmodelがsearch toolを、providerがnamespace toolsをサポートする場合だけ
+  Codex Coreが追加する。App Serverの公開capabilityでは`namespaceTools`を事前確認できるが、
+  model個別の`supports_search_tool`は公開されていない。
+- MCPも同じmodel-facing exposure処理を通る。現行実装では`tool_search`利用可能時はMCP
+  toolも遅延、それ以外は直接公開される。コンテキスト効率は接続方式よりexposureで決まる。
+
+根拠:
+
+- [App Server README: Dynamic tool calls](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/app-server/README.md#dynamic-tool-calls-experimental)
+- [DynamicToolの公式型定義](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/protocol/src/dynamic_tools.rs)
+- [model-facing toolの選別](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/core/src/tools/spec_plan.rs)
+- [各sampling requestへのtool組み立て](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/core/src/session/turn.rs)
+- [MCP toolのexposure](https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/core/src/mcp_tool_exposure.rs)
 
 そのため次の動作に固定する。
 
@@ -118,12 +139,14 @@ Expoがカレンダーtool handlerを持つ場合、新しい会話の
 - 既存スレッドへ後付けしない。
 - アプリ全体またはディレクトリー単位のカレンダーON/OFF設定は作らない。
 - app-server初期化は`experimentalApi: true`にする。
+- 新規threadの前に`modelProvider/capabilities/read`を呼び、`namespaceTools: true`でなければ
+  `codex_dynamic_tools_incompatible`で終了する。
 - Codexのバージョンは固定しない。`thread/start`失敗や`item/tool/call`の形を実行時に
   検証し、契約が合わなければ`codex_dynamic_tools_incompatible`で終了する。
 - テストではexperimental schemaの現行契約を検証する。
 
 互換性エラーには`code`、`retryable: false`、`expectedContract:
-"calendar-dynamic-tools-v1"`、`phase: "thread_start" | "tool_call_parse" | "tool_response"`を含める。
+"calendar-dynamic-tools-v2"`、`phase: "thread_start" | "tool_call_parse" | "tool_response"`を含める。
 messageは「Dynamic Tools互換性エラーです。phaseを確認し、Bittyのcalendar tool adapterを
 現行schemaへ更新してください。」とする。ExpoとRunnerへ同じ内容を出し、機密情報、
 内部例外、自動再試行、Dynamic Toolsなしでの継続は含めない。
@@ -138,7 +161,7 @@ app-serverから来る要求は次の形である。
     "callId": "call_...",
     "threadId": "thread_...",
     "turnId": "turn_...",
-    "namespace": null,
+    "namespace": "calendar",
     "tool": "calendar_search_events",
     "arguments": {}
   }
@@ -170,8 +193,8 @@ app-serverから来る要求は次の形である。
 - `requestId`: Bittyの配送・重複防止用。
 - `namespace`: 現行experimental schemaの必須フィールド。`string | null`のまま保持する。
 
-top-level functionとして登録するため、calendar handlerが受理する`namespace`は
-`null`だけとする。非nullは`invalid_arguments`で実行せず終端する。
+calendar handlerが受理する`namespace`は`"calendar"`だけとする。それ以外は
+`invalid_arguments`で実行せず終端する。
 
 `requestId`は`threadId`、`turnId`、`callId`、`tool`を連結してSHA-256で生成する。
 区切りは各値のUTF-8 byte長を10進数で付けるlength-prefix形式とし、単純連結による
@@ -646,7 +669,8 @@ type CalendarRuleFields = {
 
 - Runnerへ最後に同期されたruleが有効で`calendarAccess: "read"`。
 - `experimentalApi: true`。
-- `dynamicTools`はlist、search、getだけ。
+- `dynamicTools`は`calendar` namespace内のlist、search、getだけで、すべて
+  `deferLoading: true`。
 - `approvalPolicy: "never"`。
 - `turn/start.sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" }`。
 - external sandbox workerはhost filesystemをmountせず、空のread-only filesystemと
@@ -900,10 +924,15 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 - 同じrequest ID、異なるhash、同時タップ、結果再送。
 - canonical JSONでobject key順がhashへ影響せず、array順が影響すること。
 - dynamicToolsが新規threadにだけ入ること。
+- `dynamicTools`が`calendar` namespaceにまとまり、全functionが`deferLoading: true`で
+  あること。
+- `namespaceTools: false`またはcapability取得失敗時に、threadを開始せず
+  `codex_dynamic_tools_incompatible`を出すこと。
 - Codexを固定せず、`thread/start`拒否、tool callの必須フィールド不足、tool応答拒否を
   正しい`phase`の`codex_dynamic_tools_incompatible`として出し、再試行・fallbackしないこと。
 - server requestのstring/number外側ID、namespace、call IDを混同しないこと。
-- `42`、`"42"`、非数値string IDがpending/ack Mapで衝突せず、非null namespaceを拒否すること。
+- `42`、`"42"`、非数値string IDがpending/ack Mapで衝突せず、`"calendar"`以外の
+  namespaceを拒否すること。
 - turn owner以外へtool callを送らないこと。
 - 同一WebSocketの別operation/session/turnをownerと誤認しないこと。
 - owner切断、interrupt、timeoutでread/writeが一度だけ終端し、再接続で再送されないこと。

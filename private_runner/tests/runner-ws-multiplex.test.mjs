@@ -910,7 +910,7 @@ test("calendar requests stay with their owner and are excluded from replayable e
 
   __TESTING__.handleCodexRelayUpstreamMessage(
     relay,
-    JSON.stringify({ jsonrpc: "2.0", id: "42", method: "item/tool/call", params: { namespace: null, tool: "calendar_list_calendars", callId: "call-1", threadId: "thread-1", turnId: "turn-1", arguments: {} } }),
+    JSON.stringify({ jsonrpc: "2.0", id: "42", method: "item/tool/call", params: { namespace: "calendar", tool: "calendar_list_calendars", callId: "call-1", threadId: "thread-1", turnId: "turn-1", arguments: {} } }),
     false,
     { endpoint: "/runner-ws", remote: "test" }
   );

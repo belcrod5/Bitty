@@ -114,7 +114,7 @@ test("schedule handler preserves typed app-server ids and only accepts three rea
     ruleRevision: "revision-1",
     deviceId: "device-1",
     params: {
-      callId: "call-1", threadId: "thread-1", turnId: "turn-1", namespace: null,
+      callId: "call-1", threadId: "thread-1", turnId: "turn-1", namespace: "calendar",
       tool: "calendar_list_calendars", arguments: {},
     },
   };
@@ -123,9 +123,10 @@ test("schedule handler preserves typed app-server ids and only accepts three rea
   assert.equal(created.ruleId, "rule-1");
   assert.equal(created.requestId.length, 64);
   assert.deepEqual(JSON.parse(response.contentItems[0].text), { ok: true, data: { calendars: [] } });
-  assert.deepEqual(calendarScheduleDynamicTools().map((tool) => tool.name), [
+  assert.deepEqual(calendarScheduleDynamicTools()[0].tools.map((tool) => tool.name), [
     "calendar_list_calendars", "calendar_search_events", "calendar_get_event",
   ]);
+  assert.equal(calendarScheduleDynamicTools()[0].tools.every((tool) => tool.deferLoading === true), true);
 });
 
 test("schedule handler reports incompatible Dynamic Tools phases without accepting writes", async () => {
@@ -136,7 +137,7 @@ test("schedule handler reports incompatible Dynamic Tools phases without accepti
     id: 42,
     method: "item/tool/call",
     params: {
-      callId: "call", threadId: "thread", turnId: "turn", namespace: null,
+      callId: "call", threadId: "thread", turnId: "turn", namespace: "calendar",
       tool: "calendar_create_event", arguments: {},
     },
   });
@@ -158,7 +159,7 @@ test("schedule handler reports an incompatible tool response instead of serializ
     id: 42,
     method: "item/tool/call",
     ruleId: "rule", ruleRevision: "revision", deviceId: "device",
-    params: { callId: "call", threadId: "thread", turnId: "turn", namespace: null, tool: "calendar_list_calendars", arguments: {} },
+    params: { callId: "call", threadId: "thread", turnId: "turn", namespace: "calendar", tool: "calendar_list_calendars", arguments: {} },
   });
   const result = JSON.parse(response.contentItems[0].text);
   assert.equal(result.error.code, "codex_dynamic_tools_incompatible");

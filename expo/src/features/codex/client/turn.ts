@@ -1062,6 +1062,14 @@ export function startCodexAppServerTurn(
       if (!activeThreadId) {
         let started: CodexThreadStartResponse;
         try {
+          if (options.onCalendarToolCall) {
+            const capabilities = await sendRequestWhenAdmitted<{ namespaceTools?: boolean }>(
+              "modelProvider/capabilities/read",
+              {},
+              PRE_TURN_RPC_TIMEOUT_MS
+            );
+            if (capabilities.namespaceTools !== true) throw new Error("namespace tools unavailable");
+          }
           started = await sendRequestWhenAdmitted<CodexThreadStartResponse>("thread/start", {
             cwd: cwd || undefined,
             serviceName,

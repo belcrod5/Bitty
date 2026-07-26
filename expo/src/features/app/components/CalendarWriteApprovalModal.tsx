@@ -1,6 +1,25 @@
 import { Modal, Text, TouchableOpacity, View } from "react-native";
 import type { CalendarWriteConfirmation } from "../../calendar/calendarToolHandler";
 
+function formatCalendarDate(value: string, allDay: boolean, timeZone: string | null) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const options: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short",
+    ...(allDay ? {} : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" as const }),
+    ...(timeZone ? { timeZone } : {}),
+  };
+  try {
+    return new Intl.DateTimeFormat("ja-JP", options).format(date);
+  } catch {
+    delete options.timeZone;
+    return new Intl.DateTimeFormat("ja-JP", options).format(date);
+  }
+}
+
 export function CalendarWriteApprovalModal(props: {
   request: CalendarWriteConfirmation | null;
   onDecide: (accepted: boolean) => void;
@@ -13,8 +32,8 @@ export function CalendarWriteApprovalModal(props: {
           <Text style={{ fontWeight: "700", fontSize: 18 }}>カレンダーの変更を確認</Text>
           <Text>{String(props.request?.operation || "")}</Text>
           <Text>予定: {value?.title || "予定"}</Text>
-          {value?.start ? <Text>開始: {value.start}</Text> : null}
-          {value?.end ? <Text>終了: {value.end}</Text> : null}
+          {value?.start ? <Text>開始: {formatCalendarDate(value.start, value.allDay, value.timeZone)}</Text> : null}
+          {value?.end ? <Text>終了: {formatCalendarDate(value.end, value.allDay, value.timeZone)}</Text> : null}
           {value?.location ? <Text>場所: {value.location}</Text> : null}
           {value?.notes ? <Text>メモ: {value.notes}</Text> : null}
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 12 }}>
