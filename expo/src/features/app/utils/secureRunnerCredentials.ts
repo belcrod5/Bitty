@@ -1,50 +1,68 @@
 import * as SecureStore from "expo-secure-store";
 
-const RUNNER_TOKEN_KEY = "bitty.runnerToken";
-const CF_ACCESS_CLIENT_ID_KEY = "bitty.cloudflareAccessClientId";
-const CF_ACCESS_CLIENT_SECRET_KEY = "bitty.cloudflareAccessClientSecret";
-
-// Credentials must stay readable during locked-device background launches (location and
-// schedule wakeups, push approval actions). The expo-secure-store default is
-// WHEN_UNLOCKED, which makes every read fail while the device is locked.
-export const SECURE_CREDENTIAL_KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
-  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-};
-
 export type SecureRunnerCredentials = {
   runnerToken: string;
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
 };
 
-const KEY_BY_FIELD: Record<keyof SecureRunnerCredentials, string> = {
-  runnerToken: RUNNER_TOKEN_KEY,
-  cloudflareAccessClientId: CF_ACCESS_CLIENT_ID_KEY,
-  cloudflareAccessClientSecret: CF_ACCESS_CLIENT_SECRET_KEY,
+// v2 keys are written with AFTER_FIRST_UNLOCK so locked-device background launches
+// (location/schedule wakeups, push approval actions) can read credentials. Legacy keys
+// were created with the WHEN_UNLOCKED default and cannot be re-attributed in place
+// (SecItemUpdate keeps the original kSecAttrAccessible), which is why migration moves
+// each value to a new key instead of rewriting the old one. Saves always set the v2
+// key before touching the legacy key, so an interruption can leave two copies of a
+// credential, never zero.
+const KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
 };
 
-const CREDENTIAL_FIELDS = Object.keys(KEY_BY_FIELD) as (keyof SecureRunnerCredentials)[];
+const FIELDS = [
+  "runnerToken",
+  "cloudflareAccessClientId",
+  "cloudflareAccessClientSecret",
+] as const;
+type SecureCredentialField = (typeof FIELDS)[number];
 
-async function read(key: string) {
-  return String(await SecureStore.getItemAsync(key, SECURE_CREDENTIAL_KEYCHAIN_OPTIONS) || "").trim();
+const KEY_BY_FIELD: Record<SecureCredentialField, string> = {
+  runnerToken: "bitty.runnerToken.v2",
+  cloudflareAccessClientId: "bitty.cloudflareAccessClientId.v2",
+  cloudflareAccessClientSecret: "bitty.cloudflareAccessClientSecret.v2",
+};
+
+const LEGACY_KEY_BY_FIELD: Record<SecureCredentialField, string> = {
+  runnerToken: "bitty.runnerToken",
+  cloudflareAccessClientId: "bitty.cloudflareAccessClientId",
+  cloudflareAccessClientSecret: "bitty.cloudflareAccessClientSecret",
+};
+
+async function readKey(key: string) {
+  return String(await SecureStore.getItemAsync(key, KEYCHAIN_OPTIONS) || "").trim();
 }
 
-async function write(key: string, valueRaw: string) {
+async function readField(field: SecureCredentialField) {
+  const value = await readKey(KEY_BY_FIELD[field]);
+  if (value) return value;
+  return readKey(LEGACY_KEY_BY_FIELD[field]);
+}
+
+async function writeField(field: SecureCredentialField, valueRaw: string) {
   const value = String(valueRaw || "").trim();
-  // Items written before the AFTER_FIRST_UNLOCK rollout keep their original
-  // accessibility on update (SecItemUpdate does not replace kSecAttrAccessible),
-  // so delete first to guarantee the new attribute applies.
-  await SecureStore.deleteItemAsync(key, SECURE_CREDENTIAL_KEYCHAIN_OPTIONS);
   if (value) {
-    await SecureStore.setItemAsync(key, value, SECURE_CREDENTIAL_KEYCHAIN_OPTIONS);
+    // Set before delete: the value must exist under some key at every point in time.
+    await SecureStore.setItemAsync(KEY_BY_FIELD[field], value, KEYCHAIN_OPTIONS);
+    await SecureStore.deleteItemAsync(LEGACY_KEY_BY_FIELD[field], KEYCHAIN_OPTIONS);
+  } else {
+    await SecureStore.deleteItemAsync(KEY_BY_FIELD[field], KEYCHAIN_OPTIONS);
+    await SecureStore.deleteItemAsync(LEGACY_KEY_BY_FIELD[field], KEYCHAIN_OPTIONS);
   }
 }
 
 export async function loadSecureRunnerCredentials(): Promise<SecureRunnerCredentials> {
   const [runnerToken, cloudflareAccessClientId, cloudflareAccessClientSecret] = await Promise.all([
-    read(RUNNER_TOKEN_KEY),
-    read(CF_ACCESS_CLIENT_ID_KEY),
-    read(CF_ACCESS_CLIENT_SECRET_KEY),
+    readField("runnerToken"),
+    readField("cloudflareAccessClientId"),
+    readField("cloudflareAccessClientSecret"),
   ]);
   return {
     runnerToken,
@@ -54,12 +72,12 @@ export async function loadSecureRunnerCredentials(): Promise<SecureRunnerCredent
 }
 
 // Writes only the fields present in the partial: an explicitly provided empty string
-// deletes that key, an omitted field is never touched. Callers therefore cannot
+// deletes that credential, an omitted field is never touched. Callers therefore cannot
 // delete a credential they did not intend to change.
 export async function saveSecureRunnerCredentials(credentials: Partial<SecureRunnerCredentials>) {
   await Promise.all(
-    CREDENTIAL_FIELDS
+    FIELDS
       .filter((field) => typeof credentials[field] === "string")
-      .map((field) => write(KEY_BY_FIELD[field], credentials[field] as string))
+      .map((field) => writeField(field, credentials[field] as string))
   );
 }

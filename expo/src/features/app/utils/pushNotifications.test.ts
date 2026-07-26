@@ -17,6 +17,9 @@ jest.mock("expo-secure-store", () => ({
   setItemAsync: jest.fn(async (key: string, value: string) => {
     mockSecureStoreState.set(key, value);
   }),
+  deleteItemAsync: jest.fn(async (key: string) => {
+    mockSecureStoreState.delete(key);
+  }),
 }));
 
 let mockRandomUUIDCounter = 0;
@@ -49,7 +52,17 @@ describe("getOrCreatePushDeviceId", () => {
   it("creates and persists a new device id from the CSPRNG (expo-crypto randomUUID)", async () => {
     const deviceId = await getOrCreatePushDeviceId();
     expect(deviceId).toMatch(/^push_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    expect(mockSecureStoreState.get("bitty.pushDeviceId")).toBe(deviceId);
+    expect(mockSecureStoreState.get("bitty.pushDeviceId.v2")).toBe(deviceId);
+  });
+
+  it("migrates a legacy id to the v2 key without changing the id", async () => {
+    mockSecureStoreState.set("bitty.pushDeviceId", "push_legacy");
+
+    const deviceId = await getOrCreatePushDeviceId();
+
+    expect(deviceId).toBe("push_legacy");
+    expect(mockSecureStoreState.get("bitty.pushDeviceId.v2")).toBe("push_legacy");
+    expect(mockSecureStoreState.has("bitty.pushDeviceId")).toBe(false);
   });
 
   it("returns the same id on subsequent calls instead of generating a new one", async () => {
@@ -59,11 +72,11 @@ describe("getOrCreatePushDeviceId", () => {
   });
 
   it("throws instead of minting a duplicate id when the secure store is unreadable", async () => {
-    mockSecureStoreState.set("bitty.pushDeviceId", "push_existing");
+    mockSecureStoreState.set("bitty.pushDeviceId.v2", "push_existing");
     mockSecureStoreReadError = new Error("keychain locked");
 
     await expect(getOrCreatePushDeviceId()).rejects.toThrow("push device id is temporarily unavailable");
-    expect(mockSecureStoreState.get("bitty.pushDeviceId")).toBe("push_existing");
+    expect(mockSecureStoreState.get("bitty.pushDeviceId.v2")).toBe("push_existing");
   });
 });
 
