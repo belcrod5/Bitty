@@ -127,8 +127,10 @@ function createArgs() {
   >;
 }
 
-async function renderPersistenceController() {
-  const args = createArgs();
+async function renderPersistenceController(
+  overrides: Partial<ReturnType<typeof createArgs>> = {}
+) {
+  const args = { ...createArgs(), ...overrides };
   await renderHook(() => {
     const [settingsLoaded, setSettingsLoaded] = useState(false);
     return useAppSettingsPersistenceController({
@@ -186,4 +188,41 @@ test("does not delete credentials after their initial read fails", async () => {
     "[settings] failed to read secure credentials",
     expect.any(Error)
   );
+});
+
+test("retries a failed credentials read on the next save attempt and unlocks saving after recovery", async () => {
+  mockLoadSecureRunnerCredentials.mockRejectedValueOnce(new Error("secure store read failed"));
+
+  await renderPersistenceController();
+  // The first autosave pass runs while the credential store is still locked.
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
+
+  // Its retry read succeeds (the mock only failed once); the recovery tick re-arms
+  // the autosave timer, which may then persist credentials.
+  await act(async () => {});
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+
+  expect(mockLoadSecureRunnerCredentials).toHaveBeenCalledTimes(2);
+  expect(mockSaveSecureRunnerCredentials).toHaveBeenCalled();
+});
+
+test("keeps retry reads from clobbering a credential the user re-entered", async () => {
+  mockLoadSecureRunnerCredentials.mockRejectedValueOnce(new Error("secure store read failed"));
+  const setRunnerToken = jest.fn();
+
+  await renderPersistenceController({ setRunnerToken } as Parameters<typeof renderPersistenceController>[0]);
+  await act(async () => {});
+
+  // Recovery applies stored values through functional updates that keep an existing
+  // non-empty value, so a token typed during the degraded session survives.
+  const runnerTokenUpdates = setRunnerToken.mock.calls
+    .map(([update]) => update)
+    .filter((update) => typeof update === "function");
+  expect(runnerTokenUpdates.length).toBeGreaterThan(0);
+  for (const update of runnerTokenUpdates) {
+    expect(update("user-typed-token")).toBe("user-typed-token");
+    expect(update("")).toBe("saved-token");
+  }
 });

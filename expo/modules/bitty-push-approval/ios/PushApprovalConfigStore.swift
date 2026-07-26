@@ -42,7 +42,18 @@ enum PushApprovalConfigStore {
     return (readSettingsField("faceIdRequiredForApproval") as? Bool) ?? false
   }
 
+  // Credentials migrated to AFTER_FIRST_UNLOCK accessibility live under "<key>.v2"
+  // (see secureRunnerCredentials.ts); the suffix-less key is the pre-migration
+  // location and is checked second, mirroring the JS readField fallback order.
   static func readSecureStoreValue(_ key: String) -> String {
+    let v2Value = readSecureStoreValueAtExactKey("\(key).v2")
+    if !v2Value.isEmpty {
+      return v2Value
+    }
+    return readSecureStoreValueAtExactKey(key)
+  }
+
+  private static func readSecureStoreValueAtExactKey(_ key: String) -> String {
     let encodedKey = Data(key.utf8)
     for service in ["app:no-auth", "app"] {
       let query: [String: Any] = [

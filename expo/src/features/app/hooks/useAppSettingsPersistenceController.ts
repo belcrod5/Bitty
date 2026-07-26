@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
-import { Alert } from "react-native";
+import { Alert, AppState } from "react-native";
 import { parseSttProvider, type SttProvider } from "../../stt/sttConfig";
 import {
   normalizeRecordingTuning,
@@ -203,18 +203,28 @@ export function useAppSettingsPersistenceController({
     settings: false,
     secureCredentials: false,
   });
+  const credentialsRecoveryInFlightRef = useRef(false);
+  // Bumped when a recovery unlocks the credential store, so the autosave effect
+  // re-runs with fresh values instead of persisting a snapshot captured before the
+  // recovery.
+  const [persistenceRetryTick, setPersistenceRetryTick] = useState(0);
 
-  const applySecureCredentials = useCallback((secureCredentials: SecureRunnerCredentials) => {
+  // keepExistingValues: on a retry the user may have re-typed a credential during the
+  // degraded session; the stored value must not clobber that input.
+  const applySecureCredentials = useCallback((
+    secureCredentials: SecureRunnerCredentials,
+    { keepExistingValues }: { keepExistingValues: boolean }
+  ) => {
+    const applyValue = (setter: Dispatch<SetStateAction<string>>, value: string) => {
+      if (!value) return;
+      setter((current) => keepExistingValues && String(current || "").trim() ? current : value);
+    };
+    applyValue(setRunnerToken, secureCredentials.runnerToken);
     if (secureCredentials.runnerToken) {
-      setRunnerToken(secureCredentials.runnerToken);
       setCodexWsToken((current) => String(current || "").trim() ? current : secureCredentials.runnerToken);
     }
-    if (secureCredentials.cloudflareAccessClientId) {
-      setCloudflareAccessClientId(secureCredentials.cloudflareAccessClientId);
-    }
-    if (secureCredentials.cloudflareAccessClientSecret) {
-      setCloudflareAccessClientSecret(secureCredentials.cloudflareAccessClientSecret);
-    }
+    applyValue(setCloudflareAccessClientId, secureCredentials.cloudflareAccessClientId);
+    applyValue(setCloudflareAccessClientSecret, secureCredentials.cloudflareAccessClientSecret);
   }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret, setCodexWsToken, setRunnerToken]);
 
   const settingsPath = useCallback(() => {
@@ -569,7 +579,7 @@ export function useAppSettingsPersistenceController({
       }
       if (credentialsResult.status === "fulfilled") {
         writablePersistenceRef.current.secureCredentials = true;
-        applySecureCredentials(credentialsResult.value);
+        applySecureCredentials(credentialsResult.value, { keepExistingValues: false });
       } else {
         console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
       }
@@ -584,14 +594,51 @@ export function useAppSettingsPersistenceController({
     settingsPath,
   ]);
 
+  // A credentials read that failed at launch (e.g. a background launch while the
+  // device was locked could not read the keychain) is retried here, so the session
+  // recovers instead of losing the credentials until the next cold start. Only the
+  // credential store recovers mid-session: re-applying the settings file would
+  // overwrite settings the user changed during the degraded session, so a failed
+  // settings read keeps that store read-only until the next launch.
+  const recoverSecureCredentials = useCallback(() => {
+    if (writablePersistenceRef.current.secureCredentials) return;
+    if (credentialsRecoveryInFlightRef.current) return;
+    credentialsRecoveryInFlightRef.current = true;
+    loadSecureRunnerCredentials()
+      .then((credentials) => {
+        writablePersistenceRef.current.secureCredentials = true;
+        applySecureCredentials(credentials, { keepExistingValues: true });
+        setPersistenceRetryTick((tick) => tick + 1);
+      })
+      .catch((error) => {
+        console.warn("[settings] failed to read secure credentials", error);
+      })
+      .finally(() => {
+        credentialsRecoveryInFlightRef.current = false;
+      });
+  }, [applySecureCredentials]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      if (!settingsLoaded) return;
+      recoverSecureCredentials();
+    });
+    return () => subscription.remove();
+  }, [recoverSecureCredentials, settingsLoaded]);
+
   useEffect(() => {
     if (!settingsLoaded) return;
 
     const path = settingsPath();
     if (!path) return;
 
+    // Snapshot the writable flags now: if a recovery unlocks the credential store
+    // while this timer is pending, the timer must not save this render's stale
+    // (possibly empty) values — the recovery tick re-runs the effect with fresh ones.
+    const writableAtArm = { ...writablePersistenceRef.current };
     const timer = setTimeout(() => {
-      if (writablePersistenceRef.current.settings) {
+      if (writableAtArm.settings) {
         void mutatePersistedSettings((current) => {
           const next: Record<string, unknown> = buildPersistedSettingsPayload();
           for (const field of LOCATION_BACKGROUND_FIELDS) {
@@ -602,7 +649,7 @@ export function useAppSettingsPersistenceController({
           console.warn("[settings] failed to save persisted settings", error);
         });
       }
-      if (writablePersistenceRef.current.secureCredentials) {
+      if (writableAtArm.secureCredentials) {
         void saveSecureRunnerCredentials({
           runnerToken,
           cloudflareAccessClientId,
@@ -610,6 +657,11 @@ export function useAppSettingsPersistenceController({
         }).catch((error) => {
           console.warn("[settings] failed to save secure credentials", error);
         });
+      } else {
+        // A locked credential store gets one more chance here so a credential the
+        // user just re-entered is not silently dropped: on recovery the tick re-runs
+        // this effect, which then saves the current values through the branch above.
+        recoverSecureCredentials();
       }
     }, 250);
 
@@ -618,6 +670,8 @@ export function useAppSettingsPersistenceController({
     buildPersistedSettingsPayload,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
+    persistenceRetryTick,
+    recoverSecureCredentials,
     runnerToken,
     settingsLoaded,
     settingsPath,

@@ -1,7 +1,11 @@
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 
-const PUSH_DEVICE_ID_KEY = "bitty.pushDeviceId";
+const PUSH_DEVICE_ID_LEGACY_KEY = "bitty.pushDeviceId";
+// v2 carries AFTER_FIRST_UNLOCK (the legacy key was created with the WHEN_UNLOCKED
+// default, whose accessibility cannot be changed in place), so locked-device
+// background launches can read the id.
+const PUSH_DEVICE_ID_KEY = "bitty.pushDeviceId.v2";
 
 // Cryptographically secure (expo-crypto wraps the platform CSPRNG): the device id is a
 // long-lived identifier in the runner's device registry, so it must not be guessable the
@@ -14,14 +18,34 @@ function generateDeviceId() {
 // and persisted in secure storage so re-registration (e.g. after an APNs token change)
 // updates the same device record instead of creating a new one.
 export async function getOrCreatePushDeviceId(): Promise<string> {
+  const options = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK };
+  let existing = "";
   try {
-    const existing = String((await SecureStore.getItemAsync(PUSH_DEVICE_ID_KEY)) || "").trim();
-    if (existing) return existing;
-  } catch {}
+    existing = String((await SecureStore.getItemAsync(PUSH_DEVICE_ID_KEY, options)) || "").trim();
+    if (!existing) {
+      existing = String((await SecureStore.getItemAsync(PUSH_DEVICE_ID_LEGACY_KEY, options)) || "").trim();
+      if (existing) {
+        // Best-effort migration, set-first so the id exists under some key at every
+        // point in time; a failure keeps the legacy copy and retries next call.
+        try {
+          await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, existing, options);
+          await SecureStore.deleteItemAsync(PUSH_DEVICE_ID_LEGACY_KEY, options);
+        } catch {}
+      }
+    }
+  } catch {
+    // Unreadable is not the same as missing: never mint a new id here, or the runner
+    // ends up with a second device record for this install.
+    throw new Error("push device id is temporarily unavailable");
+  }
+  if (existing) return existing;
   const deviceId = generateDeviceId();
   try {
-    await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId);
-  } catch {}
+    await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId, options);
+  } catch {
+    // Registration still works with the in-memory id for this session; the next
+    // call mints again, which the runner handles as a re-registration.
+  }
   return deviceId;
 }
 
