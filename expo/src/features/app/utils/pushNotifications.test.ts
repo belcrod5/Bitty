@@ -6,8 +6,14 @@ import {
 
 const mockSecureStoreState = new Map<string, string>();
 
+let mockSecureStoreReadError: Error | null = null;
+
 jest.mock("expo-secure-store", () => ({
-  getItemAsync: jest.fn(async (key: string) => mockSecureStoreState.get(key) ?? null),
+  AFTER_FIRST_UNLOCK: 0,
+  getItemAsync: jest.fn(async (key: string) => {
+    if (mockSecureStoreReadError) throw mockSecureStoreReadError;
+    return mockSecureStoreState.get(key) ?? null;
+  }),
   setItemAsync: jest.fn(async (key: string, value: string) => {
     mockSecureStoreState.set(key, value);
   }),
@@ -36,6 +42,7 @@ describe("resolveForegroundNotificationBehavior", () => {
 describe("getOrCreatePushDeviceId", () => {
   beforeEach(() => {
     mockSecureStoreState.clear();
+    mockSecureStoreReadError = null;
     jest.clearAllMocks();
   });
 
@@ -49,6 +56,14 @@ describe("getOrCreatePushDeviceId", () => {
     const first = await getOrCreatePushDeviceId();
     const second = await getOrCreatePushDeviceId();
     expect(second).toBe(first);
+  });
+
+  it("throws instead of minting a duplicate id when the secure store is unreadable", async () => {
+    mockSecureStoreState.set("bitty.pushDeviceId", "push_existing");
+    mockSecureStoreReadError = new Error("keychain locked");
+
+    await expect(getOrCreatePushDeviceId()).rejects.toThrow("push device id is temporarily unavailable");
+    expect(mockSecureStoreState.get("bitty.pushDeviceId")).toBe("push_existing");
   });
 });
 

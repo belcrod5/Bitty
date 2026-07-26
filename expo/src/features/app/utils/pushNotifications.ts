@@ -14,14 +14,19 @@ function generateDeviceId() {
 // and persisted in secure storage so re-registration (e.g. after an APNs token change)
 // updates the same device record instead of creating a new one.
 export async function getOrCreatePushDeviceId(): Promise<string> {
+  // AFTER_FIRST_UNLOCK: with the WHEN_UNLOCKED default, a locked-device background
+  // launch cannot read the stored id and would register a duplicate device.
+  const options = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK };
   try {
-    const existing = String((await SecureStore.getItemAsync(PUSH_DEVICE_ID_KEY)) || "").trim();
+    const existing = String((await SecureStore.getItemAsync(PUSH_DEVICE_ID_KEY, options)) || "").trim();
     if (existing) return existing;
-  } catch {}
+  } catch {
+    // Unreadable is not the same as missing: never mint a new id here, or the runner
+    // ends up with a second device record for this install.
+    throw new Error("push device id is temporarily unavailable");
+  }
   const deviceId = generateDeviceId();
-  try {
-    await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId);
-  } catch {}
+  await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId, options);
   return deviceId;
 }
 

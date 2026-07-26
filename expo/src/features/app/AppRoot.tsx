@@ -5839,7 +5839,6 @@ export default function App() {
     selectVoiceIdFromSettingsContext,
   } = useAppContextActions({
     drawerOpen,
-    runnerToken,
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     directoryExplorerParentPath,
     directoryExplorerRootPath,

@@ -10,7 +10,6 @@ import { saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
 
 type UseAppContextActionsArgs = {
   drawerOpen: boolean;
-  runnerToken: string;
   defaultLlmDirectory: string;
   directoryExplorerParentPath: string;
   directoryExplorerRootPath: string;
@@ -92,7 +91,6 @@ type UseAppContextActionsArgs = {
 
 export function useAppContextActions({
   drawerOpen,
-  runnerToken,
   defaultLlmDirectory,
   directoryExplorerParentPath,
   directoryExplorerRootPath,
@@ -202,14 +200,15 @@ export function useAppContextActions({
     setRunnerToken(value);
   }, [setRunnerToken]);
   const clearCloudflareAccessCredentials = useCallback(async () => {
+    // Only the Cloudflare fields: passing runnerToken here would delete it whenever
+    // this runs in a session whose credential load failed (state still empty).
     await saveSecureRunnerCredentials({
-      runnerToken,
       cloudflareAccessClientId: "",
       cloudflareAccessClientSecret: "",
     });
     setCloudflareAccessClientId("");
     setCloudflareAccessClientSecret("");
-  }, [runnerToken, setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
+  }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret]);
   const applyCloudflareRunnerPairing = useCallback(async (payload: string): Promise<RunnerPairingResult> => {
     const pairing = parseCloudflareRunnerPairingPayload(payload);
     await saveSecureRunnerCredentials({
