@@ -40,3 +40,8 @@ jobs:
           bash -n scripts/worktree/bootstrap-local.sh
           bash -n private_runner/run-local.sh
           bash -n scripts/ios/build-expo-ios-device.sh
+          bash -n scripts/maestro/prepare-ios-simulator.sh
+          bash -n scripts/maestro/run-ios-simulator.sh
+          bash -n scripts/maestro/run-ios-simulator-with-load-report.sh
+          bash -n scripts/maestro/test-ios-simulator-scripts.sh
+          ./scripts/maestro/test-ios-simulator-scripts.sh
