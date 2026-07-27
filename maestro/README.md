@@ -4,20 +4,21 @@ This directory contains local Maestro flows for the iOS Simulator.
 
 ## Smoke Test
 
-1. Build and install the app on an iOS Simulator.
+1. Boot the target iOS Simulator.
 2. Start Metro for the development build.
 3. Run the smoke flow.
 
 ```bash
 cd expo
-npx expo run:ios --device "iPhone 17 Pro" --no-bundler
 npx expo start --dev-client --localhost --port 8081
 cd ..
-```
-
-```bash
 ./scripts/maestro/run-ios-simulator.sh
 ```
+
+The Maestro script prepares the current worktree, then incrementally builds and
+installs its development build before running the flow. This keeps the
+Simulator's native modules and config plugins in sync after native dependency
+changes.
 
 By default, the script uses the first booted iOS Simulator. Override it with a
 Simulator UDID when needed:
@@ -39,22 +40,14 @@ Use this workflow when you want to reproduce a UI issue with Maestro, keep a
 screen recording, and collect a lightweight load summary for performance or bug
 analysis.
 
-1. Build and install the development build on the booted iOS Simulator.
-
-```bash
-cd expo
-npx expo run:ios --device "iPhone 17 Pro" --no-bundler
-cd ..
-```
-
-2. Start Metro for the development build.
+1. Start Metro for the development build.
 
 ```bash
 cd expo
 npx expo start --dev-client --localhost --port 8081
 ```
 
-3. Open React Native DevTools from the Expo CLI terminal.
+2. Open React Native DevTools from the Expo CLI terminal.
 
 ```text
 j
@@ -71,7 +64,8 @@ cd ..
 ./scripts/maestro/run-ios-simulator-with-load-report.sh
 ```
 
-The script writes:
+The script first incrementally builds and installs the current worktree's
+development build, then writes:
 
 - a Simulator recording under `debug-videos/`
 - a TSV sample log under `.maestro-output/perf/<run-id>/`

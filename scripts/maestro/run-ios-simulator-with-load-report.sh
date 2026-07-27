@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FLOW_PATH="${1:-maestro/flows/ios-smoke.yaml}"
 APP_ID="${MAESTRO_APP_ID:-app.bitty.mobile}"
-DEVICE="${MAESTRO_IOS_DEVICE:-}"
 SAMPLE_INTERVAL_SECONDS="${MAESTRO_LOAD_SAMPLE_INTERVAL_SECONDS:-1}"
 RUN_ID="${MAESTRO_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 MAESTRO_HOME_DIR="${MAESTRO_HOME_DIR:-$ROOT_DIR/.maestro-home}"
@@ -12,6 +11,7 @@ OUTPUT_DIR="$ROOT_DIR/.maestro-output/perf/$RUN_ID"
 SAMPLES_PATH="$OUTPUT_DIR/ios-process-samples.tsv"
 REPORT_PATH="$OUTPUT_DIR/report.md"
 VIDEO_PATH="${MAESTRO_VIDEO_PATH:-$ROOT_DIR/debug-videos/maestro-ios-load-$RUN_ID.mp4}"
+DEVICE="$("${ROOT_DIR}/scripts/maestro/prepare-ios-simulator.sh")"
 
 mkdir -p "$MAESTRO_HOME_DIR/.maestro"
 mkdir -p "$OUTPUT_DIR"
@@ -19,15 +19,6 @@ mkdir -p "$(dirname "$VIDEO_PATH")"
 
 export JAVA_OPTS="${JAVA_OPTS:-} -Duser.home=$MAESTRO_HOME_DIR"
 export MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED="${MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED:-true}"
-
-if [[ -z "$DEVICE" ]]; then
-  DEVICE="$(xcrun simctl list devices booted | sed -nE 's/.*\(([0-9A-F-]{36})\) \(Booted\).*/\1/p' | head -n 1)"
-fi
-
-if [[ -z "$DEVICE" ]]; then
-  echo "No booted iOS Simulator found. Boot one first, or set MAESTRO_IOS_DEVICE to a Simulator UDID." >&2
-  exit 1
-fi
 
 echo -e "timestamp\tpid\tcpu_percent\trss_kb\tcommand" > "$SAMPLES_PATH"
 
