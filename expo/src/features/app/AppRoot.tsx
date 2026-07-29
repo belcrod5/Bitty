@@ -1489,19 +1489,6 @@ export default function App() {
     trimText: trimForInline,
     maxChars: 120,
   });
-  const {
-    markSessionReadAsync,
-    markSessionUnread,
-    markSessionRead,
-    markDirectorySessionsRead,
-  } = useSessionMarkReadController({
-    markRunnerSessionRead,
-    fetchSessionHistory,
-    normalizedLlmDirectoryForRequest,
-    setDirectorySessionsById,
-    showChatBottomToast,
-    logSessionDiag,
-  });
   const appStateRef = useRef(AppState.currentState);
   const appStateChangedAtRef = useRef(Date.now());
   const appStateLastNonActiveAtRef = useRef(
@@ -2890,6 +2877,7 @@ export default function App() {
     loadSessionChildTree,
     toggleDirectoryExpanded,
     prefetchDirectorySessionTreesForDrawerOpen,
+    recordSessionReadDuringFetch,
   } = useDirectorySessionTreeController({
     directorySessionsById,
     setDirectorySessionsById,
@@ -2904,6 +2892,21 @@ export default function App() {
     drawerOpen,
     registeredDirectories,
     normalizedLlmDirectoryForRequest,
+  });
+  const {
+    markSessionReadAsync,
+    markSessionUnread,
+    markSessionRead,
+    markDirectorySessionsRead,
+    directoryReadProgressByPath,
+  } = useSessionMarkReadController({
+    markRunnerSessionRead,
+    fetchSessionHistory,
+    normalizedLlmDirectoryForRequest,
+    setDirectorySessionsById,
+    showChatBottomToast,
+    logSessionDiag,
+    recordSessionReadDuringFetch,
   });
   const refreshRegisteredDirectorySessionsForMiniBoard = useCallback(async () => {
     const targets = registeredDirectories.filter((directory) => String(directory.path || "").trim());
@@ -7695,6 +7698,7 @@ export default function App() {
     registeredDirectories,
     expandedDirectoryIds,
     directorySessionsById,
+    directoryReadProgressByPath,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,

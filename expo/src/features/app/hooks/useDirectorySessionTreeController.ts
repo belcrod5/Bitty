@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry, SessionChildTreeState } from "../components/AppDrawer";
 
 type FetchSessionHistoryResult = {
@@ -20,6 +20,21 @@ const EMPTY_SESSION_CHILD_TREE_STATE: SessionChildTreeState = {
   error: "",
   entries: [],
 };
+
+function applyReadOverrides(
+  entries: DirectorySessionTreeState["entries"],
+  lastReadAtBySessionId: Map<string, string>
+) {
+  if (lastReadAtBySessionId.size <= 0) return entries;
+  return entries.map((entry) => {
+    const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
+    if (!lastReadAt || lastReadAt === entry.lastReadAt) return entry;
+    return {
+      ...entry,
+      lastReadAt,
+    };
+  });
+}
 
 type UseDirectorySessionTreeControllerArgs = {
   directorySessionsById: Record<string, DirectorySessionTreeState>;
@@ -63,6 +78,12 @@ export function useDirectorySessionTreeController({
   registeredDirectories,
   normalizedLlmDirectoryForRequest,
 }: UseDirectorySessionTreeControllerArgs) {
+  const readOverridesByActiveFetchRef = useRef(new Set<Map<string, string>>());
+  const recordSessionReadDuringFetch = useCallback((sessionId: string, lastReadAt: string) => {
+    for (const readOverrides of readOverridesByActiveFetchRef.current) {
+      readOverrides.set(sessionId, lastReadAt);
+    }
+  }, []);
   const loadDirectorySessionTree = useCallback(async (
     directoryId: string,
     directoryPath: string,
@@ -89,6 +110,8 @@ export function useDirectorySessionTreeController({
         error: "",
       },
     }));
+    const readOverrides = new Map<string, string>();
+    readOverridesByActiveFetchRef.current.add(readOverrides);
     try {
       const result = await fetchSessionHistory(directoryPath, {
         limit: directorySessionPageSize,
@@ -106,7 +129,7 @@ export function useDirectorySessionTreeController({
           latestSessionId: result.latestSessionId,
           nextCursor: result.nextCursor,
           hasMore: Boolean(result.nextCursor),
-          entries: result.entries,
+          entries: applyReadOverrides(result.entries, readOverrides),
           childrenByParentId: (prev[directoryId] || emptyDirectorySessionTreeState).childrenByParentId || {},
         },
       }));
@@ -127,6 +150,8 @@ export function useDirectorySessionTreeController({
           childrenByParentId: {},
         },
       }));
+    } finally {
+      readOverridesByActiveFetchRef.current.delete(readOverrides);
     }
   }, [
     directorySessionPageSize,
@@ -148,6 +173,8 @@ export function useDirectorySessionTreeController({
         error: "",
       },
     }));
+    const readOverrides = new Map<string, string>();
+    readOverridesByActiveFetchRef.current.add(readOverrides);
     try {
       const result = await fetchSessionHistory(directoryPath, {
         limit: directorySessionPageSize,
@@ -156,7 +183,8 @@ export function useDirectorySessionTreeController({
       setDirectorySessionsById((prev) => {
         const prevState = prev[directoryId] || emptyDirectorySessionTreeState;
         const existingIds = new Set(prevState.entries.map((item) => item.sessionId));
-        const appended = result.entries.filter((item) => !existingIds.has(item.sessionId));
+        const appended = applyReadOverrides(result.entries, readOverrides)
+          .filter((item) => !existingIds.has(item.sessionId));
         return {
           ...prev,
           [directoryId]: {
@@ -183,6 +211,8 @@ export function useDirectorySessionTreeController({
           error: err instanceof Error ? err.message : String(err),
         },
       }));
+    } finally {
+      readOverridesByActiveFetchRef.current.delete(readOverrides);
     }
   }, [
     directorySessionPageSize,
@@ -219,6 +249,8 @@ export function useDirectorySessionTreeController({
         },
       };
     });
+    const readOverrides = new Map<string, string>();
+    readOverridesByActiveFetchRef.current.add(readOverrides);
     try {
       const entries = await fetchSessionChildHistory(parentId, directoryPath, {
         limit: 50,
@@ -237,7 +269,7 @@ export function useDirectorySessionTreeController({
                 loading: false,
                 loaded: true,
                 error: "",
-                entries,
+                entries: applyReadOverrides(entries, readOverrides),
               },
             },
           },
@@ -262,6 +294,8 @@ export function useDirectorySessionTreeController({
           },
         };
       });
+    } finally {
+      readOverridesByActiveFetchRef.current.delete(readOverrides);
     }
   }, [
     directorySessionRunnerSnapshotLimit,
@@ -351,5 +385,6 @@ export function useDirectorySessionTreeController({
     loadSessionChildTree,
     toggleDirectoryExpanded,
     prefetchDirectorySessionTreesForDrawerOpen,
+    recordSessionReadDuringFetch,
   };
 }

@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render } from "@testing-library/react-native";
+import { fireEvent, render, userEvent } from "@testing-library/react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 
@@ -64,6 +64,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     directorySessionsById: {
       "dir-1": directoryState(loadedSessions),
     },
+    directoryReadProgressByPath: {},
     sessionTitleOverridesById: {
       "loaded-restore": "Restore title override",
     },
@@ -97,6 +98,27 @@ test("opens Skia Board from the left navigation", async () => {
   await fireEvent.press(drawer.getByText("Skia Board"));
 
   expect(onOpenSkiaBoard).toHaveBeenCalledTimes(1);
+});
+
+test("shows progress for a directory read operation", async () => {
+  const drawer = await renderDrawer({
+    directoryReadProgressByPath: {
+      "/work/bitty": { completed: 1, total: 4 },
+    },
+  });
+
+  expect(drawer.getByText("既読にしています 1/4")).toBeTruthy();
+});
+
+test("runs the directory read action from the long-press menu", async () => {
+  const onMarkDirectorySessionsRead = jest.fn();
+  const drawer = await renderDrawer({ onMarkDirectorySessionsRead });
+  const user = userEvent.setup();
+
+  await user.longPress(drawer.getByText("Bitty"));
+  await user.press(drawer.getByText("このディレクトリの未読をすべて既読にする"));
+
+  expect(onMarkDirectorySessionsRead).toHaveBeenCalledWith("/work/bitty");
 });
 
 test("filters only loaded drawer sessions", async () => {

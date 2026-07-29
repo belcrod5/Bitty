@@ -127,6 +127,7 @@ type FetchSessionHistoryOptions = {
   cursor?: string;
   includeRunnerSnapshots?: boolean;
   runnerSnapshotLimit?: number;
+  includeSubagents?: boolean;
 };
 
 const MAIN_THREAD_SOURCE_KINDS = ["cli", "vscode", "appServer", "exec"] as const;
@@ -733,7 +734,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       cwd: directory,
       limit,
       cursor,
-      sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
+      sourceKinds: historyOptions?.includeSubagents
+        ? [...MAIN_THREAD_SOURCE_KINDS, ...SUBAGENT_THREAD_SOURCE_KINDS]
+        : [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
     });
@@ -865,19 +868,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         diagnostics: null,
       };
     }
-    const targetLlmUrl = auxServerBaseUrl();
-    const token = runnerToken.trim();
+    const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
     if (!targetLlmUrl || !token) {
-      return {
-        sessionId,
-        directory: "",
-        source: "all",
-        lastReadAt: "",
-        updated: false,
-        acpUpdated: false,
-        cliUpdated: false,
-        diagnostics: null,
-      };
+      throw new Error("Aux Server URL または Runner Token が未設定です");
     }
     const directory = parseLlmDirectory(opts?.directory ?? normalizedLlmDirectoryForRequest());
     const sourceRaw = String(opts?.source || "").trim().toLowerCase();
@@ -954,10 +947,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     }
   }, [
     emitSessionDiag,
-    auxServerBaseUrl,
     fetchJsonWithTimeout,
+    getRunnerHttpAuth,
     normalizedLlmDirectoryForRequest,
-    runnerToken,
   ]);
 
   return {

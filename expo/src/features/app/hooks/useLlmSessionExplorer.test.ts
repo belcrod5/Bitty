@@ -12,19 +12,59 @@ const mockReadCodexAppServerThread = jest.mocked(readCodexAppServerThread);
 
 function renderExplorerHook(overrides: {
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
+  runnerToken?: string;
+  getRunnerHttpAuth?: () => Promise<{ baseUrl: string; token: string }>;
 } = {}) {
   return renderHook(() => useLlmSessionExplorer({
     codexWsUrl: "ws://127.0.0.1:8788/runner-ws",
     codexWsToken: "runner-token",
-    runnerToken: "runner-token",
+    runnerToken: overrides.runnerToken ?? "runner-token",
     auxServerBaseUrl: () => "http://runner.test",
-    getRunnerHttpAuth: async () => ({ baseUrl: "http://runner.test", token: "runner-token" }),
+    getRunnerHttpAuth: overrides.getRunnerHttpAuth
+      ?? (async () => ({ baseUrl: "http://runner.test", token: "runner-token" })),
     normalizedLlmDirectoryForRequest: () => "/workspace",
     defaultLlmDirectory: "/workspace",
     nearUnlimitedTimeoutMs: 60_000,
     onSessionDiagLog: overrides.onSessionDiagLog,
   }));
 }
+
+test("marks a session with credentials resolved after render", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({
+      sessionId: "thread-1",
+      directory: "/workspace",
+      source: "all",
+      lastReadAt: "2026-07-29T02:00:00.000Z",
+      updated: true,
+      acpUpdated: false,
+      cliUpdated: true,
+    }),
+  } as unknown as Response);
+  const { result } = await renderExplorerHook({
+    runnerToken: "",
+    getRunnerHttpAuth: async () => ({
+      baseUrl: "http://live-runner.test",
+      token: "live-token",
+    }),
+  });
+
+  await result.current.markRunnerSessionRead("thread-1", {
+    directory: "/workspace",
+  });
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    "http://live-runner.test/sessions/read",
+    expect.objectContaining({
+      headers: expect.objectContaining({
+        authorization: "Bearer live-token",
+      }),
+    })
+  );
+  fetchMock.mockRestore();
+});
 
 describe("fetchRunnerSessionMessages", () => {
   afterEach(() => {
@@ -193,6 +233,55 @@ describe("fetchSessionHistory runner snapshot failures", () => {
     );
     expect(history.entries).toHaveLength(1);
     expect(history.entries[0].contextUsedPct).toBeNull();
+  });
+
+  it("requests every subagent source kind through paginated directory history", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({
+      data: [{
+        threadId: "child-1",
+        parentThreadId: "parent-1",
+        agentRole: "",
+        agentDisplayName: "",
+        preview: "child",
+        modelProvider: "",
+        sourceKind: "subAgent",
+        cwd: "/workspace",
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z",
+        contextUsedPct: null,
+      }],
+      nextCursor: "next-page",
+      backwardsCursor: "",
+    });
+    const { result } = await renderExplorerHook();
+
+    const history = await result.current.fetchSessionHistory("/workspace", {
+      cursor: "current-page",
+      includeRunnerSnapshots: false,
+      includeSubagents: true,
+    });
+
+    expect(mockListCodexAppServerThreads).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/workspace",
+      cursor: "current-page",
+      sourceKinds: [
+        "cli",
+        "vscode",
+        "appServer",
+        "exec",
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+      ],
+    }));
+    expect(history.entries[0]).toMatchObject({
+      sessionId: "child-1",
+      parentSessionId: "parent-1",
+      source: "subagent",
+    });
+    expect(history.nextCursor).toBe("next-page");
   });
 });
 
