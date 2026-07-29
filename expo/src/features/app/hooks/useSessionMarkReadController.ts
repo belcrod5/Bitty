@@ -12,10 +12,25 @@ type MarkReadParams = {
   restoreRequestSeq: number;
 };
 
+type SessionReadOptions = {
+  directory?: unknown;
+  source?: LlmSessionSource;
+  lastReadAt?: unknown;
+};
+
+type SessionReadMutation = {
+  promise: Promise<RunnerSessionReadResult>;
+  previous?: SessionReadMutation;
+  replaced: boolean;
+  release: () => void;
+  retained: boolean;
+  settled: boolean;
+};
+
 type UseSessionMarkReadControllerArgs = {
   markRunnerSessionRead: (
     sessionIdRaw: unknown,
-    opts?: { directory?: unknown; source?: LlmSessionSource; lastReadAt?: unknown }
+    opts?: SessionReadOptions
   ) => Promise<RunnerSessionReadResult>;
   fetchSessionHistory: (
     directoryPath: string,
@@ -53,34 +68,23 @@ export function useSessionMarkReadController({
   showChatBottomToast,
   logSessionDiag,
 }: UseSessionMarkReadControllerArgs) {
-  const sessionReadMutationSeqRef = useRef(0);
-  const latestSessionReadMutationSeqByIdRef = useRef(new Map<string, number>());
-  const beginSessionReadMutation = useCallback((sessionId: string) => {
-    sessionReadMutationSeqRef.current += 1;
-    const mutationSeq = sessionReadMutationSeqRef.current;
-    latestSessionReadMutationSeqByIdRef.current.set(sessionId, mutationSeq);
-    return mutationSeq;
-  }, []);
-  const applySessionReadUpdatesToDirectoryTrees = useCallback((
-    updatesBySessionId: Map<string, { lastReadAt: string; mutationSeq: number }>
+  const pendingSessionReadMutationByIdRef = useRef(new Map<string, SessionReadMutation>());
+  const applySessionLastReadAtByIdToDirectoryTrees = useCallback((
+    lastReadAtBySessionId: Map<string, string>
   ) => {
-    if (updatesBySessionId.size <= 0) return;
+    if (lastReadAtBySessionId.size <= 0) return;
     setDirectorySessionsById((prev) => {
       let changed = false;
       const next: Record<string, DirectorySessionTreeState> = {};
       for (const [dirId, state] of Object.entries(prev)) {
         let entryChanged = false;
         const nextEntries = state.entries.map((entry) => {
-          const update = updatesBySessionId.get(entry.sessionId);
-          if (
-            !update ||
-            latestSessionReadMutationSeqByIdRef.current.get(entry.sessionId) !== update.mutationSeq ||
-            entry.lastReadAt === update.lastReadAt
-          ) return entry;
+          const markedLastReadAt = lastReadAtBySessionId.get(entry.sessionId);
+          if (!markedLastReadAt || entry.lastReadAt === markedLastReadAt) return entry;
           entryChanged = true;
           return {
             ...entry,
-            lastReadAt: update.lastReadAt,
+            lastReadAt: markedLastReadAt,
           };
         });
         let childChanged = false;
@@ -88,16 +92,12 @@ export function useSessionMarkReadController({
           Object.entries(state.childrenByParentId || {}).map(([parentId, childState]) => {
             let currentChildChanged = false;
             const nextChildEntries = childState.entries.map((entry) => {
-              const update = updatesBySessionId.get(entry.sessionId);
-              if (
-                !update ||
-                latestSessionReadMutationSeqByIdRef.current.get(entry.sessionId) !== update.mutationSeq ||
-                entry.lastReadAt === update.lastReadAt
-              ) return entry;
+              const markedLastReadAt = lastReadAtBySessionId.get(entry.sessionId);
+              if (!markedLastReadAt || entry.lastReadAt === markedLastReadAt) return entry;
               currentChildChanged = true;
               return {
                 ...entry,
-                lastReadAt: update.lastReadAt,
+                lastReadAt: markedLastReadAt,
               };
             });
             if (currentChildChanged) childChanged = true;
@@ -122,6 +122,56 @@ export function useSessionMarkReadController({
     });
   }, [setDirectorySessionsById]);
 
+  const startSessionReadMutation = useCallback((
+    sessionId: string,
+    options: SessionReadOptions,
+    retain = false
+  ): SessionReadMutation => {
+    const previous = pendingSessionReadMutationByIdRef.current.get(sessionId);
+    const run = async () => {
+      const result = await markRunnerSessionRead(sessionId, options);
+      const markedLastReadAt = String(result?.lastReadAt || "").trim();
+      if (markedLastReadAt) {
+        applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, markedLastReadAt]]));
+      }
+      for (let superseded = previous; superseded; superseded = superseded.previous) {
+        superseded.replaced = true;
+      }
+      return result;
+    };
+    const promise = previous
+      ? previous.promise.then(run, run)
+      : run();
+    const mutation: SessionReadMutation = {
+      promise,
+      previous,
+      replaced: false,
+      release: () => {},
+      retained: retain,
+      settled: false,
+    };
+    pendingSessionReadMutationByIdRef.current.set(sessionId, mutation);
+    const cleanupIfUnused = () => {
+      if (
+        mutation.settled &&
+        !mutation.retained &&
+        pendingSessionReadMutationByIdRef.current.get(sessionId) === mutation
+      ) {
+        pendingSessionReadMutationByIdRef.current.delete(sessionId);
+      }
+    };
+    mutation.release = () => {
+      mutation.retained = false;
+      cleanupIfUnused();
+    };
+    const settle = () => {
+      mutation.settled = true;
+      cleanupIfUnused();
+    };
+    void mutation.promise.then(settle, settle);
+    return mutation;
+  }, [applySessionLastReadAtByIdToDirectoryTrees, markRunnerSessionRead]);
+
   const markSessionReadAsync = useCallback(({
     sessionId,
     directory,
@@ -130,20 +180,13 @@ export function useSessionMarkReadController({
     restoreRequestSeq,
   }: MarkReadParams) => {
     const markReadStartedAt = Date.now();
-    const mutationSeq = beginSessionReadMutation(sessionId);
+    const mutation = startSessionReadMutation(sessionId, {
+      directory,
+      source,
+    });
     void (async () => {
       try {
-        const asyncMarkReadResult = await markRunnerSessionRead(sessionId, {
-          directory,
-          source,
-        });
-        const markedLastReadAt = String(asyncMarkReadResult?.lastReadAt || "").trim();
-        if (markedLastReadAt) {
-          applySessionReadUpdatesToDirectoryTrees(new Map([[
-            sessionId,
-            { lastReadAt: markedLastReadAt, mutationSeq },
-          ]]));
-        }
+        const asyncMarkReadResult = await mutation.promise;
         logSessionDiag("session_open_perf_mark_read_async_done", {
           traceId: perfTraceId || undefined,
           sessionId,
@@ -170,7 +213,7 @@ export function useSessionMarkReadController({
         });
       }
     })();
-  }, [applySessionReadUpdatesToDirectoryTrees, beginSessionReadMutation, logSessionDiag, markRunnerSessionRead]);
+  }, [logSessionDiag, startSessionReadMutation]);
 
   const markSessionUnread = useCallback(async ({
     sessionId: sessionIdRaw,
@@ -184,20 +227,12 @@ export function useSessionMarkReadController({
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return false;
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
-    const mutationSeq = beginSessionReadMutation(sessionId);
     try {
-      const markResult = await markRunnerSessionRead(sessionId, {
+      await startSessionReadMutation(sessionId, {
         source: source || "all",
         directory,
         lastReadAt: new Date(0).toISOString(),
-      });
-      const markedLastReadAt = String(markResult?.lastReadAt || "").trim();
-      if (markedLastReadAt) {
-        applySessionReadUpdatesToDirectoryTrees(new Map([[
-          sessionId,
-          { lastReadAt: markedLastReadAt, mutationSeq },
-        ]]));
-      }
+      }).promise;
       showChatBottomToast("assistant", "未読にしました。");
       return true;
     } catch (err) {
@@ -206,11 +241,9 @@ export function useSessionMarkReadController({
       return false;
     }
   }, [
-    applySessionReadUpdatesToDirectoryTrees,
-    beginSessionReadMutation,
-    markRunnerSessionRead,
     normalizedLlmDirectoryForRequest,
     showChatBottomToast,
+    startSessionReadMutation,
   ]);
 
   const markSessionRead = useCallback(async ({
@@ -225,19 +258,11 @@ export function useSessionMarkReadController({
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return false;
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
-    const mutationSeq = beginSessionReadMutation(sessionId);
     try {
-      const markResult = await markRunnerSessionRead(sessionId, {
+      await startSessionReadMutation(sessionId, {
         source: source || "all",
         directory,
-      });
-      const markedLastReadAt = String(markResult?.lastReadAt || "").trim();
-      if (markedLastReadAt) {
-        applySessionReadUpdatesToDirectoryTrees(new Map([[
-          sessionId,
-          { lastReadAt: markedLastReadAt, mutationSeq },
-        ]]));
-      }
+      }).promise;
       showChatBottomToast("assistant", "既読にしました。");
       return true;
     } catch (err) {
@@ -246,11 +271,9 @@ export function useSessionMarkReadController({
       return false;
     }
   }, [
-    applySessionReadUpdatesToDirectoryTrees,
-    beginSessionReadMutation,
-    markRunnerSessionRead,
     normalizedLlmDirectoryForRequest,
     showChatBottomToast,
+    startSessionReadMutation,
   ]);
 
   const markDirectorySessionsRead = useCallback(async ({
@@ -259,8 +282,6 @@ export function useSessionMarkReadController({
     directory: string;
   }) => {
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
-    sessionReadMutationSeqRef.current += 1;
-    const directoryMutationSeq = sessionReadMutationSeqRef.current;
     try {
       const sessionsById = new Map<string, DirectorySessionTreeState["entries"][number]>();
       let cursor = "";
@@ -290,63 +311,61 @@ export function useSessionMarkReadController({
         showChatBottomToast("assistant", "既読にする未読セッションはありません。");
         return true;
       }
-      const markResults = await Promise.allSettled(unreadSessions.map(async (entry) => {
+      const batchMutations = unreadSessions.map((entry) => {
         const sessionId = parseOptionalSessionId(entry.sessionId);
-        if (
-          (latestSessionReadMutationSeqByIdRef.current.get(sessionId) || 0) > directoryMutationSeq
-        ) {
-          return { sessionId, lastReadAt: "", mutationSeq: directoryMutationSeq };
-        }
-        latestSessionReadMutationSeqByIdRef.current.set(sessionId, directoryMutationSeq);
-        const result = await markRunnerSessionRead(sessionId, {
+        const mutation = startSessionReadMutation(sessionId, {
           source: entry.source || "all",
           directory,
-        });
-        return {
-          sessionId,
-          lastReadAt: String(result?.lastReadAt || "").trim(),
-          mutationSeq: directoryMutationSeq,
-        };
-      }));
-      const updatesBySessionId = new Map<string, { lastReadAt: string; mutationSeq: number }>();
-      for (const result of markResults) {
-        if (result.status === "fulfilled" && result.value.sessionId && result.value.lastReadAt) {
-          updatesBySessionId.set(result.value.sessionId, {
-            lastReadAt: result.value.lastReadAt,
-            mutationSeq: result.value.mutationSeq,
-          });
+        }, true);
+        return { sessionId, mutation };
+      });
+      try {
+        const markResults = await Promise.allSettled(batchMutations.map(async ({ sessionId, mutation }) => {
+          const result = await mutation.promise;
+          return {
+            sessionId,
+            lastReadAt: String(result?.lastReadAt || "").trim(),
+            mutation,
+          };
+        }));
+        const completedCount = markResults.filter((result) => (
+          result.status === "fulfilled" &&
+          Boolean(result.value.sessionId && result.value.lastReadAt) &&
+          !result.value.mutation.replaced
+        )).length;
+        const failedResult = markResults.find((result) => result.status === "rejected");
+        if (failedResult?.status === "rejected") {
+          const failedCount = markResults.filter((result) => result.status === "rejected").length;
+          const message = failedResult.reason instanceof Error
+            ? failedResult.reason.message
+            : String(failedResult.reason);
+          if (completedCount > 0) {
+            showChatBottomToast(
+              "assistant",
+              `${completedCount}件を既読にしました。${failedCount}件は失敗しました: ${message}`
+            );
+          } else {
+            showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
+          }
+          return false;
         }
-      }
-      applySessionReadUpdatesToDirectoryTrees(updatesBySessionId);
-      const failedResult = markResults.find((result) => result.status === "rejected");
-      if (failedResult?.status === "rejected") {
-        const failedCount = markResults.filter((result) => result.status === "rejected").length;
-        const message = failedResult.reason instanceof Error
-          ? failedResult.reason.message
-          : String(failedResult.reason);
-        if (updatesBySessionId.size > 0) {
-          showChatBottomToast(
-            "assistant",
-            `${updatesBySessionId.size}件を既読にしました。${failedCount}件は失敗しました: ${message}`
-          );
-        } else {
-          showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
+        if (completedCount > 0) {
+          showChatBottomToast("assistant", `${completedCount}件を既読にしました。`);
         }
-        return false;
+        return true;
+      } finally {
+        for (const { mutation } of batchMutations) mutation.release();
       }
-      showChatBottomToast("assistant", `${updatesBySessionId.size}件を既読にしました。`);
-      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
       return false;
     }
   }, [
-    applySessionReadUpdatesToDirectoryTrees,
     fetchSessionHistory,
-    markRunnerSessionRead,
     normalizedLlmDirectoryForRequest,
     showChatBottomToast,
+    startSessionReadMutation,
   ]);
 
   return {
