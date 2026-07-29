@@ -248,6 +248,55 @@ describe("fetchSessionHistory runner snapshot failures", () => {
     expect(history.entries).toHaveLength(1);
     expect(history.entries[0].contextUsedPct).toBeNull();
   });
+
+  it("lists subagents through the same paginated directory history request when requested", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({
+      data: [{
+        threadId: "child-1",
+        parentThreadId: "parent-1",
+        agentRole: "",
+        agentDisplayName: "",
+        preview: "child",
+        modelProvider: "",
+        sourceKind: "subAgent",
+        cwd: "/workspace",
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z",
+        contextUsedPct: null,
+      }],
+      nextCursor: "next-page",
+      backwardsCursor: "",
+    });
+    const { result } = await renderExplorerHook();
+
+    const history = await result.current.fetchSessionHistory("/workspace", {
+      cursor: "current-page",
+      includeRunnerSnapshots: false,
+      includeSubagents: true,
+    });
+
+    expect(mockListCodexAppServerThreads).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/workspace",
+      cursor: "current-page",
+      sourceKinds: [
+        "cli",
+        "vscode",
+        "appServer",
+        "exec",
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+      ],
+    }));
+    expect(history.entries[0]).toMatchObject({
+      sessionId: "child-1",
+      parentSessionId: "parent-1",
+      source: "subagent",
+    });
+    expect(history.nextCursor).toBe("next-page");
+  });
 });
 
 describe("buildLlmSessionHistoryEntry", () => {

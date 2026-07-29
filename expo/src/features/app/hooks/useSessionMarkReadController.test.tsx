@@ -50,25 +50,25 @@ function marked(sessionId: string): RunnerSessionReadResult {
   };
 }
 
-test("keeps successful directory read updates when another session fails", async () => {
-  const first = session("first");
-  const second = session("second");
-  const markRunnerSessionRead = jest.fn(async (sessionId: unknown) => {
-    if (sessionId === "second") throw new Error("runner unavailable");
-    return marked(String(sessionId));
-  });
+type ControllerArgs = Parameters<typeof useSessionMarkReadController>[0];
+
+async function renderControllerHarness(
+  entries: LlmSessionHistoryEntry[],
+  markRunnerSessionRead: ControllerArgs["markRunnerSessionRead"],
+  fetchSessionHistory: ControllerArgs["fetchSessionHistory"] = jest.fn(async () => ({
+    latestSessionId: entries[0]?.sessionId || "",
+    nextCursor: "",
+    entries,
+  }))
+) {
   const showChatBottomToast = jest.fn();
-  const { result } = await renderHook(() => {
+  const hook = await renderHook(() => {
     const [directorySessionsById, setDirectorySessionsById] = useState<Record<string, DirectorySessionTreeState>>({
-      workspace: directoryState([first, second]),
+      workspace: directoryState(entries),
     });
     const controller = useSessionMarkReadController({
       markRunnerSessionRead,
-      fetchSessionHistory: async () => ({
-        latestSessionId: first.sessionId,
-        nextCursor: "",
-        entries: [first, second],
-      }),
+      fetchSessionHistory,
       normalizedLlmDirectoryForRequest: () => "/workspace",
       setDirectorySessionsById,
       showChatBottomToast,
@@ -76,6 +76,20 @@ test("keeps successful directory read updates when another session fails", async
     });
     return { controller, directorySessionsById };
   });
+  return { ...hook, fetchSessionHistory, showChatBottomToast };
+}
+
+test("keeps successful directory read updates when another session fails", async () => {
+  const first = session("first");
+  const second = session("second");
+  const markRunnerSessionRead = jest.fn(async (sessionId: unknown) => {
+    if (sessionId === "second") throw new Error("runner unavailable");
+    return marked(String(sessionId));
+  });
+  const { result, showChatBottomToast } = await renderControllerHarness(
+    [first, second],
+    markRunnerSessionRead
+  );
 
   let completed = true;
   await act(async () => {
@@ -93,4 +107,83 @@ test("keeps successful directory read updates when another session fails", async
     "assistant",
     "1件を既読にしました。1件は失敗しました: runner unavailable"
   );
+});
+
+test("does not overwrite a newer unread action with an older directory result", async () => {
+  const first = session("first");
+  const second = session("second");
+  let rejectSecond!: (reason: Error) => void;
+  const pendingSecond = new Promise<RunnerSessionReadResult>((_resolve, reject) => {
+    rejectSecond = reject;
+  });
+  const markRunnerSessionRead = jest.fn((
+    sessionId: unknown,
+    opts?: { lastReadAt?: unknown }
+  ) => {
+    if (sessionId === "second") return pendingSecond;
+    if (opts?.lastReadAt) {
+      return Promise.resolve({
+        ...marked("first"),
+        lastReadAt: String(opts.lastReadAt),
+      });
+    }
+    return Promise.resolve(marked("first"));
+  });
+  const { result } = await renderControllerHarness([first, second], markRunnerSessionRead);
+
+  let directoryRead!: Promise<boolean>;
+  await act(async () => {
+    directoryRead = result.current.controller.markDirectorySessionsRead({
+      directory: "/workspace",
+    });
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await result.current.controller.markSessionUnread({
+      sessionId: "first",
+      source: "cli",
+      directory: "/workspace",
+    });
+  });
+  await act(async () => {
+    rejectSecond(new Error("runner unavailable"));
+    await directoryRead;
+  });
+
+  expect(result.current.directorySessionsById.workspace.entries[0].lastReadAt)
+    .toBe("1970-01-01T00:00:00.000Z");
+});
+
+test("includes unexpanded subagent sessions in a directory read", async () => {
+  const parent = session("parent");
+  const child = {
+    ...session("child"),
+    parentSessionId: parent.sessionId,
+    source: "subagent" as const,
+  };
+  const markRunnerSessionRead = jest.fn(async (sessionId: unknown) => marked(String(sessionId)));
+  const fetchSessionHistory = jest.fn(async () => ({
+    latestSessionId: parent.sessionId,
+    nextCursor: "",
+    entries: [parent, child],
+  }));
+  const { result } = await renderControllerHarness(
+    [parent],
+    markRunnerSessionRead,
+    fetchSessionHistory
+  );
+
+  await act(async () => {
+    await result.current.controller.markDirectorySessionsRead({
+      directory: "/workspace",
+    });
+  });
+
+  expect(fetchSessionHistory).toHaveBeenCalledWith("/workspace", expect.objectContaining({
+    includeSubagents: true,
+  }));
+  expect(markRunnerSessionRead).toHaveBeenCalledWith("child", {
+    source: "subagent",
+    directory: "/workspace",
+  });
 });
