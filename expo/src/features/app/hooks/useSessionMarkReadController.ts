@@ -256,7 +256,7 @@ export function useSessionMarkReadController({
         showChatBottomToast("assistant", "既読にする未読セッションはありません。");
         return true;
       }
-      const markResults = await Promise.all(unreadSessions.map(async (entry) => {
+      const markResults = await Promise.allSettled(unreadSessions.map(async (entry) => {
         const sessionId = parseOptionalSessionId(entry.sessionId);
         const result = await markRunnerSessionRead(sessionId, {
           source: entry.source || "all",
@@ -269,11 +269,27 @@ export function useSessionMarkReadController({
       }));
       const lastReadAtBySessionId = new Map<string, string>();
       for (const result of markResults) {
-        if (result.sessionId && result.lastReadAt) {
-          lastReadAtBySessionId.set(result.sessionId, result.lastReadAt);
+        if (result.status === "fulfilled" && result.value.sessionId && result.value.lastReadAt) {
+          lastReadAtBySessionId.set(result.value.sessionId, result.value.lastReadAt);
         }
       }
       applySessionLastReadAtByIdToDirectoryTrees(lastReadAtBySessionId);
+      const failedResult = markResults.find((result) => result.status === "rejected");
+      if (failedResult?.status === "rejected") {
+        const failedCount = markResults.filter((result) => result.status === "rejected").length;
+        const message = failedResult.reason instanceof Error
+          ? failedResult.reason.message
+          : String(failedResult.reason);
+        if (lastReadAtBySessionId.size > 0) {
+          showChatBottomToast(
+            "assistant",
+            `${lastReadAtBySessionId.size}件を既読にしました。${failedCount}件は失敗しました: ${message}`
+          );
+        } else {
+          showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
+        }
+        return false;
+      }
       showChatBottomToast("assistant", `${lastReadAtBySessionId.size}件を既読にしました。`);
       return true;
     } catch (err) {
