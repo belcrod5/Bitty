@@ -143,6 +143,24 @@ export const menuScreenStyles = {
     alignItems: "center",
     justifyContent: "center",
   },
+  appDrawerDirectoryReadProgress: {
+    gap: 4,
+    paddingHorizontal: 4,
+  },
+  appDrawerDirectoryReadProgressTrack: {
+    height: 4,
+    borderRadius: 2,
+    overflow: "hidden",
+    backgroundColor: "#dbeafe",
+  },
+  appDrawerDirectoryReadProgressFill: {
+    height: "100%",
+    backgroundColor: "#2563eb",
+  },
+  appDrawerDirectoryReadProgressText: {
+    color: "#475569",
+    fontSize: 11,
+  },
   appDrawerUnreadCountBadge: {
     minWidth: 22,
     height: 22,

@@ -1499,11 +1499,13 @@ async function markLlmSessionRead(rawSessionId, opts = {}) {
   let cliLookupMs = 0;
   let cliRewriteMs = 0;
   let cliPersistMs = 0;
+  let acpEntryFound = false;
   let cliEntryFound = false;
 
   if (source === "acp" || source === "all") {
     const acpResult = await markAcpSessionRead(sessionId, lastReadAt);
     acpUpdated = Boolean(acpResult?.updated);
+    acpEntryFound = Boolean(acpResult?.entryFound);
     acpPhaseMs = Math.max(0, Number(acpResult?.elapsedMs || 0));
   }
 
@@ -1530,6 +1532,7 @@ async function markLlmSessionRead(rawSessionId, opts = {}) {
       cliLookupMs,
       cliRewriteMs,
       cliPersistMs,
+      acpEntryFound,
       cliEntryFound,
     },
   };

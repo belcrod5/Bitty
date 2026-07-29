@@ -88,3 +88,33 @@ test("stores new ACP roots as absolute real paths", async (t) => {
   assert.equal(persisted.sessions["new-session"].directory, targetReal);
   assert.equal(await store.resolveSessionIdForRootDir("", targetRoot), "new-session");
 });
+
+test("reports whether an ACP read target exists even when its timestamp is unchanged", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-acp-store-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const workspaceRoot = path.join(tempRoot, "workspace");
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: path.join(workspaceRoot, "acp_sessions.json"),
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: true,
+    workspaceRoot,
+  });
+  await fs.mkdir(workspaceRoot, { recursive: true });
+  await store.bindSessionToRootDir("existing", workspaceRoot);
+  const lastReadAt = "2026-07-29T02:00:00.000Z";
+
+  const first = await store.markAcpSessionRead("existing", lastReadAt);
+  assert.equal(first.updated, true);
+  assert.equal(first.entryFound, true);
+  const unchanged = await store.markAcpSessionRead("existing", lastReadAt);
+  assert.equal(unchanged.updated, false);
+  assert.equal(unchanged.entryFound, true);
+  const missing = await store.markAcpSessionRead("missing", lastReadAt);
+  assert.equal(missing.updated, false);
+  assert.equal(missing.entryFound, false);
+});

@@ -253,9 +253,11 @@ export function createLlmAcpSessionStore(deps = {}) {
   async function markAcpSessionRead(sessionId, lastReadAt) {
     const startedAtMs = Date.now();
     let updated = false;
+    let entryFound = false;
     await ensureAcpSessionStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
       if (!acpSessionRootBySessionId.has(sessionId)) return;
+      entryFound = true;
       const previous = normalizeSessionUpdatedAt(acpSessionLastReadAtBySessionId.get(sessionId));
       if (previous === lastReadAt) return;
       acpSessionLastReadAtBySessionId.set(sessionId, lastReadAt);
@@ -266,6 +268,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     await op;
     return {
       updated,
+      entryFound,
       elapsedMs: Math.max(0, Date.now() - startedAtMs),
     };
   }

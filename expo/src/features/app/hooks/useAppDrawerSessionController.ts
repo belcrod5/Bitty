@@ -1,5 +1,10 @@
 import { useCallback, useMemo } from "react";
-import type { AppDrawerProps, DirectorySessionTreeState, RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type {
+  AppDrawerProps,
+  DirectoryReadProgress,
+  DirectorySessionTreeState,
+  RegisteredDirectoryEntry,
+} from "../components/AppDrawer";
 import type { PopupChatSourceRect } from "../components/popupChatTypes";
 import type { LlmSessionSource } from "./useLlmSessionExplorer";
 
@@ -9,6 +14,7 @@ type UseAppDrawerSessionControllerArgs = {
   registeredDirectories: RegisteredDirectoryEntry[];
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
+  directoryReadProgressByPath: Record<string, DirectoryReadProgress>;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, RegisteredDirectoryEntry["markerColor"]>;
   llmSessionRestoreLoading: boolean;
@@ -52,6 +58,7 @@ export function useAppDrawerSessionController({
   registeredDirectories,
   expandedDirectoryIds,
   directorySessionsById,
+  directoryReadProgressByPath,
   sessionTitleOverridesById,
   sessionMarkerColorsById,
   llmSessionRestoreLoading,
@@ -171,6 +178,7 @@ export function useAppDrawerSessionController({
     registeredDirectories,
     expandedDirectoryIds,
     directorySessionsById,
+    directoryReadProgressByPath,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,
@@ -195,6 +203,7 @@ export function useAppDrawerSessionController({
     registeredDirectories,
     expandedDirectoryIds,
     directorySessionsById,
+    directoryReadProgressByPath,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,

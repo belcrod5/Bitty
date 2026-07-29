@@ -50,12 +50,18 @@ export type DirectorySessionTreeState = {
   childrenByParentId: Record<string, SessionChildTreeState>;
 };
 
+export type DirectoryReadProgress = {
+  completed: number;
+  total: number;
+};
+
 export type AppDrawerProps = {
   selectedDirectoryPath: string;
   selectedLlmSessionId: string;
   registeredDirectories: RegisteredDirectoryEntry[];
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
+  directoryReadProgressByPath: Record<string, DirectoryReadProgress>;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, DirectoryMarkerColor>;
   llmSessionRestoreLoading: boolean;
@@ -117,6 +123,7 @@ export const AppDrawer = memo(function AppDrawer({
   registeredDirectories,
   expandedDirectoryIds,
   directorySessionsById,
+  directoryReadProgressByPath,
   sessionTitleOverridesById,
   sessionMarkerColorsById,
   llmSessionRestoreLoading,
@@ -187,6 +194,7 @@ export const AppDrawer = memo(function AppDrawer({
     const expanded = expandedSet.has(directory.id);
     const selectedDirectory = selectedDirectoryPath === directory.path;
     const sessionState = directorySessionsById[directory.id];
+    const readProgress = directoryReadProgressByPath[directory.path];
     const directoryLabel = String(directory.displayName || "").trim() || directory.path;
     const sessionEntries = sessionState?.entries || [];
     const baseVisibleSessionEntries = expanded
@@ -222,6 +230,7 @@ export const AppDrawer = memo(function AppDrawer({
       selectedDirectory,
       showLoadMoreSessions: expanded || (!!normalizedSearchQuery && directoryMatches),
       sessionState,
+      readProgress,
       visibleSessionEntries,
       shouldShowSessionBlock: (
         expanded ||
@@ -231,6 +240,7 @@ export const AppDrawer = memo(function AppDrawer({
     }];
   }), [
     directorySessionsById,
+    directoryReadProgressByPath,
     expandedSet,
     normalizedSearchQuery,
     registeredDirectories,
@@ -419,6 +429,7 @@ export const AppDrawer = memo(function AppDrawer({
               selectedDirectory,
               showLoadMoreSessions,
               sessionState,
+              readProgress,
               visibleSessionEntries,
               shouldShowSessionBlock,
             }) => {
@@ -461,6 +472,29 @@ export const AppDrawer = memo(function AppDrawer({
                       <DrawerChevron expanded={expanded} />
                     </TouchableOpacity>
                   </View>
+                  {readProgress ? (
+                    <View style={styles.appDrawerDirectoryReadProgress}>
+                      <View style={styles.appDrawerDirectoryReadProgressTrack}>
+                        <View
+                          style={[
+                            styles.appDrawerDirectoryReadProgressFill,
+                            {
+                              width: `${
+                                readProgress.total > 0
+                                  ? Math.round((readProgress.completed / readProgress.total) * 100)
+                                  : 0
+                              }%`,
+                            },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.appDrawerDirectoryReadProgressText}>
+                        {readProgress.total > 0
+                          ? `既読にしています ${readProgress.completed}/${readProgress.total}`
+                          : "未読を確認しています…"}
+                      </Text>
+                    </View>
+                  ) : null}
                   {shouldShowSessionBlock ? (
                     <View style={styles.appDrawerSessionBlock}>
                       {sessionState?.error ? <Text style={styles.errorText}>{sessionState.error}</Text> : null}

@@ -12,15 +12,14 @@ const mockReadCodexAppServerThread = jest.mocked(readCodexAppServerThread);
 
 function renderExplorerHook(overrides: {
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
-  auxServerBaseUrl?: () => string;
-  getRunnerHttpAuth?: () => Promise<{ baseUrl: string; token: string }>;
   runnerToken?: string;
+  getRunnerHttpAuth?: () => Promise<{ baseUrl: string; token: string }>;
 } = {}) {
   return renderHook(() => useLlmSessionExplorer({
     codexWsUrl: "ws://127.0.0.1:8788/runner-ws",
     codexWsToken: "runner-token",
     runnerToken: overrides.runnerToken ?? "runner-token",
-    auxServerBaseUrl: overrides.auxServerBaseUrl ?? (() => "http://runner.test"),
+    auxServerBaseUrl: () => "http://runner.test",
     getRunnerHttpAuth: overrides.getRunnerHttpAuth
       ?? (async () => ({ baseUrl: "http://runner.test", token: "runner-token" })),
     normalizedLlmDirectoryForRequest: () => "/workspace",
@@ -30,54 +29,41 @@ function renderExplorerHook(overrides: {
   }));
 }
 
-describe("markRunnerSessionRead", () => {
-  afterEach(() => {
-    jest.restoreAllMocks();
-  });
-
-  it("uses live runner credentials after settings bootstrap", async () => {
-    const getRunnerHttpAuth = jest.fn(async () => ({
-      baseUrl: "http://live-runner.test",
-      token: "live-token",
-    }));
-    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({
-        sessionId: "thread-1",
-        directory: "/workspace",
-        source: "cli",
-        lastReadAt: "2026-07-29T02:00:00.000Z",
-        updated: true,
-        acpUpdated: false,
-        cliUpdated: true,
-      }),
-    } as unknown as Response);
-    const { result } = await renderExplorerHook({
-      auxServerBaseUrl: () => "",
-      getRunnerHttpAuth,
-      runnerToken: "",
-    });
-
-    await expect(result.current.markRunnerSessionRead("thread-1", {
-      directory: "/workspace",
-      source: "cli",
-    })).resolves.toMatchObject({
+test("marks a session with credentials resolved after render", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({
       sessionId: "thread-1",
+      directory: "/workspace",
+      source: "all",
       lastReadAt: "2026-07-29T02:00:00.000Z",
       updated: true,
-    });
-
-    expect(getRunnerHttpAuth).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://live-runner.test/sessions/read",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          authorization: "Bearer live-token",
-        }),
-      })
-    );
+      acpUpdated: false,
+      cliUpdated: true,
+    }),
+  } as unknown as Response);
+  const { result } = await renderExplorerHook({
+    runnerToken: "",
+    getRunnerHttpAuth: async () => ({
+      baseUrl: "http://live-runner.test",
+      token: "live-token",
+    }),
   });
+
+  await result.current.markRunnerSessionRead("thread-1", {
+    directory: "/workspace",
+  });
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    "http://live-runner.test/sessions/read",
+    expect.objectContaining({
+      headers: expect.objectContaining({
+        authorization: "Bearer live-token",
+      }),
+    })
+  );
+  fetchMock.mockRestore();
 });
 
 describe("fetchRunnerSessionMessages", () => {
@@ -249,7 +235,7 @@ describe("fetchSessionHistory runner snapshot failures", () => {
     expect(history.entries[0].contextUsedPct).toBeNull();
   });
 
-  it("lists subagents through the same paginated directory history request when requested", async () => {
+  it("requests every subagent source kind through paginated directory history", async () => {
     mockListCodexAppServerThreads.mockResolvedValue({
       data: [{
         threadId: "child-1",

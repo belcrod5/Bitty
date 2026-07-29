@@ -1,5 +1,5 @@
-import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
-import type { DirectorySessionTreeState } from "../components/AppDrawer";
+import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import type { DirectoryReadProgress, DirectorySessionTreeState } from "../components/AppDrawer";
 import type { LlmSessionSource, RunnerSessionReadResult } from "./useLlmSessionExplorer";
 import { isLlmSessionUnread, parseOptionalSessionId } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
@@ -18,14 +18,7 @@ type SessionReadOptions = {
   lastReadAt?: unknown;
 };
 
-type SessionReadMutation = {
-  promise: Promise<RunnerSessionReadResult>;
-};
-
-type RetainedDirectoryReadResult = {
-  order: number;
-  replaced: boolean;
-};
+const DIRECTORY_READ_CONCURRENCY = 4;
 
 type UseSessionMarkReadControllerArgs = {
   markRunnerSessionRead: (
@@ -58,7 +51,16 @@ type UseSessionMarkReadControllerArgs = {
       throttleKey?: string;
     }
   ) => void;
+  recordSessionReadDuringFetch: (sessionId: string, lastReadAt: string) => void;
 };
+
+function runnerSessionReadTargetFound(result: RunnerSessionReadResult): boolean {
+  if (result.updated || result.acpUpdated || result.cliUpdated) return true;
+  const diagnostics = result.diagnostics;
+  if (result.source === "cli") return diagnostics?.cliEntryFound === true;
+  if (result.source === "acp") return diagnostics?.acpEntryFound === true;
+  return diagnostics?.cliEntryFound === true || diagnostics?.acpEntryFound === true;
+}
 
 export function useSessionMarkReadController({
   markRunnerSessionRead,
@@ -67,12 +69,13 @@ export function useSessionMarkReadController({
   setDirectorySessionsById,
   showChatBottomToast,
   logSessionDiag,
+  recordSessionReadDuringFetch,
 }: UseSessionMarkReadControllerArgs) {
-  const pendingSessionReadMutationByIdRef = useRef(new Map<string, SessionReadMutation>());
-  const sessionReadMutationOrderRef = useRef(0);
-  const retainedDirectoryReadResultsByIdRef = useRef(
-    new Map<string, Set<RetainedDirectoryReadResult>>()
-  );
+  const pendingSessionReadByIdRef = useRef(new Map<string, Promise<RunnerSessionReadResult>>());
+  const directoryReadInFlightPathsRef = useRef(new Set<string>());
+  const [directoryReadProgressByPath, setDirectoryReadProgressByPath] = useState<
+    Record<string, DirectoryReadProgress>
+  >({});
   const applySessionLastReadAtByIdToDirectoryTrees = useCallback((
     lastReadAtBySessionId: Map<string, string>
   ) => {
@@ -128,39 +131,34 @@ export function useSessionMarkReadController({
 
   const startSessionReadMutation = useCallback((
     sessionId: string,
-    options: SessionReadOptions,
-    currentDirectoryResult?: RetainedDirectoryReadResult
-  ): SessionReadMutation => {
-    const previous = pendingSessionReadMutationByIdRef.current.get(sessionId);
-    sessionReadMutationOrderRef.current += 1;
-    const mutationOrder = sessionReadMutationOrderRef.current;
-    if (currentDirectoryResult) currentDirectoryResult.order = mutationOrder;
+    options: SessionReadOptions
+  ) => {
     const run = async () => {
       const result = await markRunnerSessionRead(sessionId, options);
-      const markedLastReadAt = String(result?.lastReadAt || "").trim();
-      if (markedLastReadAt) {
-        applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, markedLastReadAt]]));
+      const lastReadAt = String(result?.lastReadAt || "").trim();
+      if (!lastReadAt) throw new Error("Runnerから既読日時が返されませんでした");
+      if (!runnerSessionReadTargetFound(result)) {
+        throw new Error("Runnerで対象セッションの既読状態を更新できませんでした");
       }
-      for (const retainedResult of retainedDirectoryReadResultsByIdRef.current.get(sessionId) || []) {
-        if (retainedResult.order < mutationOrder) retainedResult.replaced = true;
-      }
+      applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, lastReadAt]]));
+      recordSessionReadDuringFetch(sessionId, lastReadAt);
       return result;
     };
-    const promise = previous
-      ? previous.promise.then(run, run)
-      : run();
-    const mutation: SessionReadMutation = {
-      promise,
-    };
-    pendingSessionReadMutationByIdRef.current.set(sessionId, mutation);
+    const previous = pendingSessionReadByIdRef.current.get(sessionId);
+    const promise = previous ? previous.then(run, run) : run();
+    pendingSessionReadByIdRef.current.set(sessionId, promise);
     const cleanup = () => {
-      if (pendingSessionReadMutationByIdRef.current.get(sessionId) === mutation) {
-        pendingSessionReadMutationByIdRef.current.delete(sessionId);
+      if (pendingSessionReadByIdRef.current.get(sessionId) === promise) {
+        pendingSessionReadByIdRef.current.delete(sessionId);
       }
     };
-    void mutation.promise.then(cleanup, cleanup);
-    return mutation;
-  }, [applySessionLastReadAtByIdToDirectoryTrees, markRunnerSessionRead]);
+    void promise.then(cleanup, cleanup);
+    return promise;
+  }, [
+    applySessionLastReadAtByIdToDirectoryTrees,
+    markRunnerSessionRead,
+    recordSessionReadDuringFetch,
+  ]);
 
   const markSessionReadAsync = useCallback(({
     sessionId,
@@ -170,13 +168,12 @@ export function useSessionMarkReadController({
     restoreRequestSeq,
   }: MarkReadParams) => {
     const markReadStartedAt = Date.now();
-    const mutation = startSessionReadMutation(sessionId, {
-      directory,
-      source,
-    });
     void (async () => {
       try {
-        const asyncMarkReadResult = await mutation.promise;
+        const asyncMarkReadResult = await startSessionReadMutation(sessionId, {
+          directory,
+          source,
+        });
         logSessionDiag("session_open_perf_mark_read_async_done", {
           traceId: perfTraceId || undefined,
           sessionId,
@@ -222,7 +219,7 @@ export function useSessionMarkReadController({
         source: source || "all",
         directory,
         lastReadAt: new Date(0).toISOString(),
-      }).promise;
+      });
       showChatBottomToast("assistant", "未読にしました。");
       return true;
     } catch (err) {
@@ -252,7 +249,7 @@ export function useSessionMarkReadController({
       await startSessionReadMutation(sessionId, {
         source: source || "all",
         directory,
-      }).promise;
+      });
       showChatBottomToast("assistant", "既読にしました。");
       return true;
     } catch (err) {
@@ -272,6 +269,12 @@ export function useSessionMarkReadController({
     directory: string;
   }) => {
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
+    if (directoryReadInFlightPathsRef.current.has(directory)) return false;
+    directoryReadInFlightPathsRef.current.add(directory);
+    setDirectoryReadProgressByPath((prev) => ({
+      ...prev,
+      [directory]: { completed: 0, total: 0 },
+    }));
     try {
       const sessionsById = new Map<string, DirectorySessionTreeState["entries"][number]>();
       let cursor = "";
@@ -301,70 +304,70 @@ export function useSessionMarkReadController({
         showChatBottomToast("assistant", "既読にする未読セッションはありません。");
         return true;
       }
-      const batchMutations = unreadSessions.map((entry) => {
-        const sessionId = parseOptionalSessionId(entry.sessionId);
-        const retainedResult: RetainedDirectoryReadResult = { order: 0, replaced: false };
-        const retainedResults = retainedDirectoryReadResultsByIdRef.current.get(sessionId)
-          || new Set<RetainedDirectoryReadResult>();
-        retainedResults.add(retainedResult);
-        retainedDirectoryReadResultsByIdRef.current.set(sessionId, retainedResults);
-        const mutation = startSessionReadMutation(sessionId, {
-          source: entry.source || "all",
-          directory,
-        }, retainedResult);
-        return { sessionId, mutation, retainedResult };
+      setDirectoryReadProgressByPath((prev) => ({
+        ...prev,
+        [directory]: { completed: 0, total: unreadSessions.length },
+      }));
+      let nextSessionIndex = 0;
+      let completedCount = 0;
+      const failures: unknown[] = [];
+      const workers = Array.from({
+        length: Math.min(DIRECTORY_READ_CONCURRENCY, unreadSessions.length),
+      }, async () => {
+        while (nextSessionIndex < unreadSessions.length) {
+          const index = nextSessionIndex;
+          nextSessionIndex += 1;
+          const entry = unreadSessions[index];
+          const sessionId = parseOptionalSessionId(entry?.sessionId);
+          try {
+            await startSessionReadMutation(sessionId, {
+              source: "all",
+              directory: parseLlmDirectory(entry?.directory || directory),
+            });
+            completedCount += 1;
+          } catch (reason) {
+            failures.push(reason);
+          } finally {
+            setDirectoryReadProgressByPath((prev) => {
+              const current = prev[directory];
+              if (!current) return prev;
+              return {
+                ...prev,
+                [directory]: {
+                  ...current,
+                  completed: Math.min(current.total, current.completed + 1),
+                },
+              };
+            });
+          }
+        }
       });
-      try {
-        const markResults = await Promise.allSettled(batchMutations.map(async ({
-          sessionId,
-          mutation,
-          retainedResult,
-        }) => {
-          const result = await mutation.promise;
-          return {
-            sessionId,
-            lastReadAt: String(result?.lastReadAt || "").trim(),
-            retainedResult,
-          };
-        }));
-        const completedCount = markResults.filter((result) => (
-          result.status === "fulfilled" &&
-          Boolean(result.value.sessionId && result.value.lastReadAt) &&
-          !result.value.retainedResult.replaced
-        )).length;
-        const failedResult = markResults.find((result) => result.status === "rejected");
-        if (failedResult?.status === "rejected") {
-          const failedCount = markResults.filter((result) => result.status === "rejected").length;
-          const message = failedResult.reason instanceof Error
-            ? failedResult.reason.message
-            : String(failedResult.reason);
-          if (completedCount > 0) {
-            showChatBottomToast(
-              "assistant",
-              `${completedCount}件を既読にしました。${failedCount}件は失敗しました: ${message}`
-            );
-          } else {
-            showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
-          }
-          return false;
-        }
-        if (completedCount > 0) {
-          showChatBottomToast("assistant", `${completedCount}件を既読にしました。`);
-        }
-        return true;
-      } finally {
-        for (const { sessionId, retainedResult } of batchMutations) {
-          const retainedResults = retainedDirectoryReadResultsByIdRef.current.get(sessionId);
-          retainedResults?.delete(retainedResult);
-          if (retainedResults?.size === 0) {
-            retainedDirectoryReadResultsByIdRef.current.delete(sessionId);
-          }
-        }
+      await Promise.all(workers);
+      if (failures.length > 0) {
+        const firstFailure = failures[0];
+        const message = firstFailure instanceof Error
+          ? firstFailure.message
+          : String(firstFailure);
+        showChatBottomToast(
+          "assistant",
+          `${completedCount}件を既読にしました。${failures.length}件は失敗しました: ${message}`
+        );
+        return false;
       }
+      showChatBottomToast("assistant", `${completedCount}件を既読にしました。`);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
       return false;
+    } finally {
+      directoryReadInFlightPathsRef.current.delete(directory);
+      setDirectoryReadProgressByPath((prev) => {
+        if (!prev[directory]) return prev;
+        const next = { ...prev };
+        delete next[directory];
+        return next;
+      });
     }
   }, [
     fetchSessionHistory,
@@ -378,5 +381,6 @@ export function useSessionMarkReadController({
     markSessionUnread,
     markSessionRead,
     markDirectorySessionsRead,
+    directoryReadProgressByPath,
   };
 }
