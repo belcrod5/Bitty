@@ -166,6 +166,64 @@ test("excludes a directory result replaced by a successful unread action from it
   expect(showChatBottomToast).toHaveBeenLastCalledWith("assistant", "1件を既読にしました。");
 });
 
+test("tracks a retained directory result across a failed mutation and a later successful unread", async () => {
+  const first = session("first");
+  const second = session("second");
+  const pendingSecond = deferred<RunnerSessionReadResult>();
+  let firstReadCalls = 0;
+  const markRunnerSessionRead = jest.fn((
+    sessionId: unknown,
+    opts?: { lastReadAt?: unknown }
+  ) => {
+    if (sessionId === "second") return pendingSecond.promise;
+    if (opts?.lastReadAt) {
+      return Promise.resolve({
+        ...marked("first"),
+        lastReadAt: String(opts.lastReadAt),
+      });
+    }
+    firstReadCalls += 1;
+    return firstReadCalls === 1
+      ? Promise.resolve(marked("first"))
+      : Promise.reject(new Error("read failed"));
+  });
+  const { result, showChatBottomToast } = await renderControllerHarness(
+    [first, second],
+    markRunnerSessionRead
+  );
+
+  let directoryRead!: Promise<boolean>;
+  await act(async () => {
+    directoryRead = result.current.controller.markDirectorySessionsRead({
+      directory: "/workspace",
+    });
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await expect(result.current.controller.markSessionRead({
+      sessionId: "first",
+      source: "cli",
+      directory: "/workspace",
+    })).resolves.toBe(false);
+  });
+  await act(async () => {
+    await expect(result.current.controller.markSessionUnread({
+      sessionId: "first",
+      source: "cli",
+      directory: "/workspace",
+    })).resolves.toBe(true);
+  });
+  await act(async () => {
+    pendingSecond.resolve(marked("second"));
+    await directoryRead;
+  });
+
+  expect(result.current.directorySessionsById.workspace.entries[0].lastReadAt)
+    .toBe("1970-01-01T00:00:00.000Z");
+  expect(showChatBottomToast).not.toHaveBeenCalledWith("assistant", "2件を既読にしました。");
+  expect(showChatBottomToast).toHaveBeenLastCalledWith("assistant", "1件を既読にしました。");
+});
+
 test("keeps a successful directory read when the queued unread action fails", async () => {
   const first = session("first");
   const second = session("second");

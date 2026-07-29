@@ -20,11 +20,11 @@ type SessionReadOptions = {
 
 type SessionReadMutation = {
   promise: Promise<RunnerSessionReadResult>;
-  previous?: SessionReadMutation;
+};
+
+type RetainedDirectoryReadResult = {
+  order: number;
   replaced: boolean;
-  release: () => void;
-  retained: boolean;
-  settled: boolean;
 };
 
 type UseSessionMarkReadControllerArgs = {
@@ -69,6 +69,10 @@ export function useSessionMarkReadController({
   logSessionDiag,
 }: UseSessionMarkReadControllerArgs) {
   const pendingSessionReadMutationByIdRef = useRef(new Map<string, SessionReadMutation>());
+  const sessionReadMutationOrderRef = useRef(0);
+  const retainedDirectoryReadResultsByIdRef = useRef(
+    new Map<string, Set<RetainedDirectoryReadResult>>()
+  );
   const applySessionLastReadAtByIdToDirectoryTrees = useCallback((
     lastReadAtBySessionId: Map<string, string>
   ) => {
@@ -125,17 +129,20 @@ export function useSessionMarkReadController({
   const startSessionReadMutation = useCallback((
     sessionId: string,
     options: SessionReadOptions,
-    retain = false
+    currentDirectoryResult?: RetainedDirectoryReadResult
   ): SessionReadMutation => {
     const previous = pendingSessionReadMutationByIdRef.current.get(sessionId);
+    sessionReadMutationOrderRef.current += 1;
+    const mutationOrder = sessionReadMutationOrderRef.current;
+    if (currentDirectoryResult) currentDirectoryResult.order = mutationOrder;
     const run = async () => {
       const result = await markRunnerSessionRead(sessionId, options);
       const markedLastReadAt = String(result?.lastReadAt || "").trim();
       if (markedLastReadAt) {
         applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, markedLastReadAt]]));
       }
-      for (let superseded = previous; superseded; superseded = superseded.previous) {
-        superseded.replaced = true;
+      for (const retainedResult of retainedDirectoryReadResultsByIdRef.current.get(sessionId) || []) {
+        if (retainedResult.order < mutationOrder) retainedResult.replaced = true;
       }
       return result;
     };
@@ -144,31 +151,14 @@ export function useSessionMarkReadController({
       : run();
     const mutation: SessionReadMutation = {
       promise,
-      previous,
-      replaced: false,
-      release: () => {},
-      retained: retain,
-      settled: false,
     };
     pendingSessionReadMutationByIdRef.current.set(sessionId, mutation);
-    const cleanupIfUnused = () => {
-      if (
-        mutation.settled &&
-        !mutation.retained &&
-        pendingSessionReadMutationByIdRef.current.get(sessionId) === mutation
-      ) {
+    const cleanup = () => {
+      if (pendingSessionReadMutationByIdRef.current.get(sessionId) === mutation) {
         pendingSessionReadMutationByIdRef.current.delete(sessionId);
       }
     };
-    mutation.release = () => {
-      mutation.retained = false;
-      cleanupIfUnused();
-    };
-    const settle = () => {
-      mutation.settled = true;
-      cleanupIfUnused();
-    };
-    void mutation.promise.then(settle, settle);
+    void mutation.promise.then(cleanup, cleanup);
     return mutation;
   }, [applySessionLastReadAtByIdToDirectoryTrees, markRunnerSessionRead]);
 
@@ -313,25 +303,34 @@ export function useSessionMarkReadController({
       }
       const batchMutations = unreadSessions.map((entry) => {
         const sessionId = parseOptionalSessionId(entry.sessionId);
+        const retainedResult: RetainedDirectoryReadResult = { order: 0, replaced: false };
+        const retainedResults = retainedDirectoryReadResultsByIdRef.current.get(sessionId)
+          || new Set<RetainedDirectoryReadResult>();
+        retainedResults.add(retainedResult);
+        retainedDirectoryReadResultsByIdRef.current.set(sessionId, retainedResults);
         const mutation = startSessionReadMutation(sessionId, {
           source: entry.source || "all",
           directory,
-        }, true);
-        return { sessionId, mutation };
+        }, retainedResult);
+        return { sessionId, mutation, retainedResult };
       });
       try {
-        const markResults = await Promise.allSettled(batchMutations.map(async ({ sessionId, mutation }) => {
+        const markResults = await Promise.allSettled(batchMutations.map(async ({
+          sessionId,
+          mutation,
+          retainedResult,
+        }) => {
           const result = await mutation.promise;
           return {
             sessionId,
             lastReadAt: String(result?.lastReadAt || "").trim(),
-            mutation,
+            retainedResult,
           };
         }));
         const completedCount = markResults.filter((result) => (
           result.status === "fulfilled" &&
           Boolean(result.value.sessionId && result.value.lastReadAt) &&
-          !result.value.mutation.replaced
+          !result.value.retainedResult.replaced
         )).length;
         const failedResult = markResults.find((result) => result.status === "rejected");
         if (failedResult?.status === "rejected") {
@@ -354,7 +353,13 @@ export function useSessionMarkReadController({
         }
         return true;
       } finally {
-        for (const { mutation } of batchMutations) mutation.release();
+        for (const { sessionId, retainedResult } of batchMutations) {
+          const retainedResults = retainedDirectoryReadResultsByIdRef.current.get(sessionId);
+          retainedResults?.delete(retainedResult);
+          if (retainedResults?.size === 0) {
+            retainedDirectoryReadResultsByIdRef.current.delete(sessionId);
+          }
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
