@@ -153,6 +153,7 @@ export function useDirectorySessionTreeController({
     new Map<string, "newer_request" | "path_changed" | "removed" | "identity_merged">()
   );
   const inFlightByKeyRef = useRef(new Map<string, Promise<DirectoryLoadOutcome>>());
+  const refreshAfterActiveByKeyRef = useRef(new Map<string, Promise<DirectoryLoadOutcome>>());
   const readOverridesByActiveFetchRef = useRef(new Set<Map<string, string>>());
   const activeFetchCountRef = useRef(0);
   const waitingFetchesRef = useRef<Array<() => void>>([]);
@@ -285,12 +286,29 @@ export function useDirectorySessionTreeController({
   const loadFirstPage = useCallback((
     directory: RegisteredDirectoryEntry,
     mode: "ensure" | "refresh",
-    _reason: DirectorySessionSyncReason
+    reason: DirectorySessionSyncReason
   ): Promise<DirectoryLoadOutcome> => {
     const directoryPath = normalizeDirectoryPath(directory.path);
     const key = `${directory.id}\u0000${directoryPath}`;
     const joined = inFlightByKeyRef.current.get(key);
-    if (joined) return joined;
+    if (joined) {
+      if (reason !== "session_completed") return joined;
+      const queued = refreshAfterActiveByKeyRef.current.get(key);
+      if (queued) return queued;
+      let refreshAfterActive!: Promise<DirectoryLoadOutcome>;
+      refreshAfterActive = joined.then(() => {
+        if (refreshAfterActiveByKeyRef.current.get(key) === refreshAfterActive) {
+          refreshAfterActiveByKeyRef.current.delete(key);
+        }
+        return loadFirstPage(directory, "refresh", reason);
+      }).finally(() => {
+        if (refreshAfterActiveByKeyRef.current.get(key) === refreshAfterActive) {
+          refreshAfterActiveByKeyRef.current.delete(key);
+        }
+      });
+      refreshAfterActiveByKeyRef.current.set(key, refreshAfterActive);
+      return refreshAfterActive;
+    }
 
     const current = directorySessionsByIdRef.current[directory.id];
     if (

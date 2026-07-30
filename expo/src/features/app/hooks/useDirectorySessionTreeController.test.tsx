@@ -510,6 +510,72 @@ test("queues a refresh requested during an active ensure cycle", async () => {
   });
 });
 
+test("reruns a completed-session refresh after an active directory fetch", async () => {
+  const requests: ReturnType<typeof deferred<{
+    latestSessionId: string;
+    nextCursor: string;
+    entries: LlmSessionHistoryEntry[];
+  }>>[] = [];
+  const fetchSessionHistory = jest.fn(() => {
+    const request = deferred<{
+      latestSessionId: string;
+      nextCursor: string;
+      entries: LlmSessionHistoryEntry[];
+    }>();
+    requests.push(request);
+    return request.promise;
+  });
+  const { result } = await renderHook(() => useTestController({ fetchSessionHistory }));
+
+  let active!: Promise<unknown>;
+  let completionRefresh!: Promise<unknown>;
+  let duplicateCompletionRefresh!: Promise<unknown>;
+  await act(async () => {
+    active = result.current.controller.ensureDirectorySessionTree(
+      workspaceDirectory,
+      "drawer_open"
+    );
+    completionRefresh = result.current.controller.refreshDirectorySessionTree(
+      workspaceDirectory,
+      "session_completed"
+    );
+    duplicateCompletionRefresh = result.current.controller.refreshDirectorySessionTree(
+      workspaceDirectory,
+      "session_completed"
+    );
+    await Promise.resolve();
+  });
+  expect(fetchSessionHistory).toHaveBeenCalledTimes(1);
+
+  requests[0].resolve({
+    latestSessionId: "session-1",
+    nextCursor: "",
+    entries: [session()],
+  });
+  await act(async () => {
+    await active;
+    await Promise.resolve();
+  });
+  expect(fetchSessionHistory).toHaveBeenCalledTimes(2);
+
+  requests[1].resolve({
+    latestSessionId: "session-2",
+    nextCursor: "",
+    entries: [session("", "session-2"), session()],
+  });
+  await act(async () => {
+    await Promise.all([completionRefresh, duplicateCompletionRefresh]);
+  });
+
+  expect(result.current.directorySessionsById.workspace).toMatchObject({
+    latestSessionId: "session-2",
+    entries: [
+      expect.objectContaining({ sessionId: "session-2" }),
+      expect.objectContaining({ sessionId: "session-1" }),
+    ],
+  });
+});
+
 test("moves and rewrites a usable tree when directory identity is canonicalized", async () => {
   const relativeDirectory = {
     id: "relative",
