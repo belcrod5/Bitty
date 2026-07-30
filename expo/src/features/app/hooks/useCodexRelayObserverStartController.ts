@@ -503,6 +503,8 @@ export function useCodexRelayObserverStartController({
             if (finishWaitingApprovalResumeAttempt(threadId, stage)) {
               setWaitingApprovalResumeStatusText("relay が見つからないため、承認待ちを再開できません。");
             }
+            // relay喪失(replay不能)。セッション実行中の復元observerは
+            // finalizeSessionRuntimeAfterRelayLoss経由でJSONLから本文を再同期する。
             if (isSessionRuntimeObserver) {
               finalizeSessionRuntimeAfterRelayLoss(threadId, "relay が見つからないため、ライブ再開できません。");
             }
@@ -511,6 +513,13 @@ export function useCodexRelayObserverStartController({
           } else if (stage === "relay_observer_relay_closed") {
             if (finishWaitingApprovalResumeAttempt(threadId, stage)) {
               setWaitingApprovalResumeStatusText("承認待ち再開の relay が切断されました。再接続を待機しています。");
+            }
+            // サーバー側でrelayが破棄された(turn完了未受信のまま配信終了)。
+            // resume_missと同じ回復経路に合流し、JSONLから本文を再同期する。
+            if (isSessionRuntimeObserver) {
+              finalizeSessionRuntimeAfterRelayLoss(threadId, "relay が切断されたため、ライブ配信を継続できません。");
+              closeCodexRelayObserver("relay_closed");
+              return;
             }
           } else if (stage === "relay_observer_error" || stage === "relay_observer_close") {
             if (finishWaitingApprovalResumeAttempt(threadId, stage)) {

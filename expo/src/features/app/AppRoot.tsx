@@ -84,6 +84,7 @@ import { useAppDrawerSessionController } from "./hooks/useAppDrawerSessionContro
 import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTreeController";
 import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentityReconciliation";
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
+import { useSessionRelayLossRecoveryController } from "./hooks/useSessionRelayLossRecoveryController";
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
 import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
@@ -557,6 +558,8 @@ const APP_RESUME_STREAM_RECOVERY_NON_ACTIVE_MIN_MS = 2500;
 const SESSION_RESUME_AUTO_SIGNAL_MAX_AGE_MS = 10 * 60 * 1000;
 const WAITING_APPROVAL_RESUME_ATTACH_TIMEOUT_MS = 8000;
 const WAITING_APPROVAL_RESUME_RETRY_COOLDOWN_MS = 2500;
+// relay喪失後のJSONL再同期の最短間隔。再同期→relay再開→再喪失のループを抑止する。
+const RELAY_LOSS_RESYNC_MIN_INTERVAL_MS = 5000;
 const REPLY_DEBUG_MAX_LINES = 120;
 const REPLY_DEBUG_MAX_CHARS = 12000;
 const EMPTY_TOOL_AUTO_APPROVALS: ToolAutoApprovalMap = {};
@@ -3880,59 +3883,24 @@ export default function App() {
     rememberSessionRuntimeStatus,
     upsertConversationRuntimeSnapshot,
   ]);
-  const finalizeSessionRuntimeAfterRelayLoss = useCallback((sessionIdRaw: unknown, reasonRaw: string) => {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
-    if (!sessionId) return;
-    const finalized = finalizeConversationRuntimeAfterRelayLoss(sessionId, reasonRaw);
-    const detail = finalized?.reason || String(reasonRaw || "relay unavailable").trim() || "relay unavailable";
-    const messages = finalized?.snapshot.conversationMessages || [];
-
-    if (messages.length > 0) {
-      setSessionConversationMessagesForCodexRef.current(sessionId, messages, {
-        isResponding: false,
-        selectedThreadStatusType: "idle",
-        sessionId,
-      });
-    }
-    rememberSessionRuntimeStatus(sessionId, {
-      hasRunningTurn: false,
-      hasPendingAssistant: false,
-      restoredInFlight: false,
-      waitingApproval: false,
-    });
-    clearPendingApprovalsForSession(sessionId);
-    clearToolAutoApprovalsForSession(sessionId);
-    const visibleSessionId = parseOptionalSessionId(
-      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
-    );
-    if (visibleSessionId === sessionId) {
-      setReplyLoadingWithRef(false);
-      setSelectedThreadStatusType("idle");
-      if (isLlmActiveStatus(llmUiStatusRef.current)) {
-        updateLlmStatus("error", detail);
-      }
-    }
-    logSessionDiag("session_runtime_relay_unavailable", {
-      sessionId,
-      reason: detail,
-      cancelledPendingApprovals: finalized?.cancelledPendingApprovals || 0,
-      messageCount: messages.length,
-    }, {
-      throttleMs: 0,
-      throttleKey: `session_runtime_relay_unavailable:${sessionId}:${detail}`,
-    });
-  }, [
+  const { finalizeSessionRuntimeAfterRelayLoss } = useSessionRelayLossRecoveryController({
+    finalizeConversationRuntimeAfterRelayLoss,
+    setSessionConversationMessagesForCodexRef,
+    rememberSessionRuntimeStatus,
     clearPendingApprovalsForSession,
     clearToolAutoApprovalsForSession,
-    finalizeConversationRuntimeAfterRelayLoss,
-    logSessionDiag,
-    llmUiStatusRef,
-    rememberSessionRuntimeStatus,
     selectedLlmSessionId,
     selectedLlmSessionIdRef,
-    setSessionConversationMessagesForCodexRef,
+    llmConversationSessionIdRef,
+    setReplyLoadingWithRef,
+    setSelectedThreadStatusType,
+    llmUiStatusRef,
     updateLlmStatus,
-  ]);
+    normalizedLlmDirectoryForRequest,
+    selectSpecificLlmSession,
+    relayLossResyncMinIntervalMs: RELAY_LOSS_RESYNC_MIN_INTERVAL_MS,
+    logSessionDiag,
+  });
   const enrichApprovalRequestWithSessionContext = useCallback((request: ApprovalRequest): ApprovalRequest => {
     const sessionId = parseOptionalSessionId(request.sessionInfo?.sessionId || request.threadId);
     const context = resolveSessionHistoryContext(sessionId);

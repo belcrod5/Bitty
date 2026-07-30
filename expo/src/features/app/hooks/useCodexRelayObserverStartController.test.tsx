@@ -84,6 +84,60 @@ beforeEach(() => {
   mockStartRelayObserver.mockReset();
 });
 
+describe("useCodexRelayObserverStartController relay loss recovery", () => {
+  async function startObserver(reason: string) {
+    const harness = createHarness([]);
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason,
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+    });
+    return harness;
+  }
+
+  test("resume_miss on a session runtime observer routes into the relay-loss recovery", async () => {
+    const harness = await startObserver("session_restored_running_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onLog({ stage: "relay_observer_resume_miss" });
+    });
+
+    expect(harness.options.finalizeSessionRuntimeAfterRelayLoss).toHaveBeenCalledWith(
+      "thread-1",
+      expect.any(String)
+    );
+    expect(harness.options.clearCodexRelayObserverForMiss).toHaveBeenCalledWith("thread-1", "/workspace");
+  });
+
+  test("relay_closed on a session runtime observer routes into the same recovery and closes the observer", async () => {
+    const harness = await startObserver("session_restored_running_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onLog({ stage: "relay_observer_relay_closed" });
+    });
+
+    expect(harness.options.finalizeSessionRuntimeAfterRelayLoss).toHaveBeenCalledWith(
+      "thread-1",
+      expect.any(String)
+    );
+    expect(harness.options.closeCodexRelayObserver).toHaveBeenCalledWith("relay_closed");
+  });
+
+  test("relay_closed on a queue turn observer keeps waiting for reconnection", async () => {
+    const harness = await startObserver("codex_queue_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onLog({ stage: "relay_observer_relay_closed" });
+    });
+
+    expect(harness.options.finalizeSessionRuntimeAfterRelayLoss).not.toHaveBeenCalled();
+    expect(harness.options.closeCodexRelayObserver).not.toHaveBeenCalled();
+  });
+});
+
 describe("useCodexRelayObserverStartController message ids", () => {
   test("multi-item turns keep a thread/read-compatible TTS target across rehydration", async () => {
     const threadId = "thread-1";
