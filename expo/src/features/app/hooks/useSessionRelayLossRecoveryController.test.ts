@@ -6,6 +6,8 @@ function baseArgs(overrides: Partial<Parameters<typeof useSessionRelayLossRecove
   return {
     finalizeConversationRuntimeAfterRelayLoss: jest.fn(() => null),
     setSessionConversationMessagesForCodexRef: { current: jest.fn() },
+    panelRuntimeEntriesByIdRef: { current: {} },
+    hydratePanelFromSessionHistoryRef: { current: jest.fn().mockResolvedValue("applied" as const) },
     rememberSessionRuntimeStatus: jest.fn(),
     clearPendingApprovalsForSession: jest.fn(),
     clearToolAutoApprovalsForSession: jest.fn(),
@@ -97,6 +99,102 @@ describe("useSessionRelayLossRecoveryController", () => {
       waitingApproval: false,
     });
     expect(args.clearPendingApprovalsForSession).toHaveBeenCalledWith("session-other");
+  });
+
+  it("rehydrates panels showing the lost session instead of pinning stale runtime messages", async () => {
+    const args = baseArgs({
+      finalizeConversationRuntimeAfterRelayLoss: jest.fn(() => ({
+        snapshot: { conversationMessages: [{ id: "m1", role: "assistant", content: "stale" }] },
+        reason: "relay lost",
+        cancelledPendingApprovals: 0,
+      })) as never,
+      panelRuntimeEntriesByIdRef: {
+        current: {
+          skia_mini_preview_1: {
+            sessionId: "session-2",
+            snapshot: { selectedSessionId: "session-2", selectedDirectoryPath: "/repo" },
+          } as never,
+        },
+      },
+    });
+    const { result } = await renderHook(() => useSessionRelayLossRecoveryController(args));
+
+    await act(async () => {
+      result.current.finalizeSessionRuntimeAfterRelayLoss("session-2", "relay lost");
+    });
+
+    expect(args.hydratePanelFromSessionHistoryRef.current).toHaveBeenCalledWith({
+      panelId: "skia_mini_preview_1",
+      sessionId: "session-2",
+      directory: "/repo",
+      diagnosticCycleId: expect.any(String),
+    });
+    // パネル表示中は喪失時点のruntimeメッセージで固定しない。
+    expect(args.setSessionConversationMessagesForCodexRef.current).not.toHaveBeenCalled();
+    // 非可視セッションなのでメインチャットの再同期は走らない。
+    expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+  });
+
+  it("falls back to pinning the finalized messages when the panel rehydrate fails", async () => {
+    const staleMessages = [{ id: "m1", role: "assistant", content: "stale" }];
+    const args = baseArgs({
+      finalizeConversationRuntimeAfterRelayLoss: jest.fn(() => ({
+        snapshot: { conversationMessages: staleMessages },
+        reason: "relay lost",
+        cancelledPendingApprovals: 0,
+      })) as never,
+      hydratePanelFromSessionHistoryRef: { current: jest.fn().mockResolvedValue("failed" as const) },
+      panelRuntimeEntriesByIdRef: {
+        current: {
+          skia_mini_preview_1: {
+            sessionId: "session-2",
+            snapshot: { selectedSessionId: "session-2", selectedDirectoryPath: "/repo" },
+          } as never,
+        },
+      },
+    });
+    const { result } = await renderHook(() => useSessionRelayLossRecoveryController(args));
+
+    await act(async () => {
+      result.current.finalizeSessionRuntimeAfterRelayLoss("session-2", "relay lost");
+    });
+
+    // 応答中表示のまま残さないよう、従来どおりのidle固定へフォールバックする。
+    expect(args.setSessionConversationMessagesForCodexRef.current).toHaveBeenCalledWith(
+      "session-2",
+      staleMessages,
+      { isResponding: false, selectedThreadStatusType: "idle", sessionId: "session-2" }
+    );
+  });
+
+  it("throttles repeated panel rehydrates per session", async () => {
+    const args = baseArgs({
+      finalizeConversationRuntimeAfterRelayLoss: jest.fn(() => ({
+        snapshot: { conversationMessages: [{ id: "m1", role: "assistant", content: "stale" }] },
+        reason: "relay lost",
+        cancelledPendingApprovals: 0,
+      })) as never,
+      panelRuntimeEntriesByIdRef: {
+        current: {
+          skia_mini_preview_1: {
+            sessionId: "session-2",
+            snapshot: { selectedSessionId: "session-2", selectedDirectoryPath: "/repo" },
+          } as never,
+        },
+      },
+    });
+    const { result } = await renderHook(() => useSessionRelayLossRecoveryController(args));
+
+    await act(async () => {
+      result.current.finalizeSessionRuntimeAfterRelayLoss("session-2", "relay lost");
+    });
+    await act(async () => {
+      result.current.finalizeSessionRuntimeAfterRelayLoss("session-2", "relay lost again");
+    });
+
+    expect(args.hydratePanelFromSessionHistoryRef.current).toHaveBeenCalledTimes(1);
+    // クールダウン内の2度目は従来どおりの固定に落とす。
+    expect(args.setSessionConversationMessagesForCodexRef.current).toHaveBeenCalledTimes(1);
   });
 
   it("skips the error pin when the visible status is not active", async () => {

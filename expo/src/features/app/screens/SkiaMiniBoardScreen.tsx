@@ -147,6 +147,7 @@ export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
     directorySync,
     hydratingPanelCount,
     panelHydrationErrorCount,
+    refreshPanelSessionForPopup,
     sessions,
   } = useSkiaMiniChatSessions();
   const syncStatusText =
@@ -203,12 +204,15 @@ export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
     const session = sessions[index];
     if (!session) return;
     if (selectedSessionId === session.sessionId) {
+      // ポップアップはパネルスナップショットをそのまま表示するため、
+      // 開く時にJSONLから再同期して古い本文のまま固定されないようにする。
+      refreshPanelSessionForPopup(session.panelId);
       setOpenPopupPanelId(session.panelId);
       return;
     }
     selectedCardIndex.value = index;
     setSelectedSessionId(session.sessionId);
-  }, [selectedCardIndex, selectedSessionId, sessions]);
+  }, [refreshPanelSessionForPopup, selectedCardIndex, selectedSessionId, sessions]);
 
   const boardTranslate = useDerivedValue(() => [
     { translateX: boardX.value },

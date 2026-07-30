@@ -1474,6 +1474,14 @@ export default function App() {
     messages: ConversationMessage[],
     options?: RuntimeConversationWriteOptions
   ) => void>(() => {});
+  // hydratePanelFromSessionHistoryは定義がパネルruntime系の後段にあるため、
+  // 前段のrelay喪失回復からはrefで遅延参照する(render中に実体を代入)。
+  const hydratePanelFromSessionHistoryRef = useRef<(params: {
+    panelId: string;
+    sessionId: string;
+    directory: string;
+    diagnosticCycleId?: string;
+  }) => Promise<"applied" | "superseded" | "failed">>(async () => "failed" as const);
   const llmSessionRestoreLoadingRef = useRef(false);
   const llmSessionRestoreInFlightRef = useRef(false);
   const llmSessionRestoreRequestSeqRef = useRef(0);
@@ -3886,6 +3894,8 @@ export default function App() {
   const { finalizeSessionRuntimeAfterRelayLoss } = useSessionRelayLossRecoveryController({
     finalizeConversationRuntimeAfterRelayLoss,
     setSessionConversationMessagesForCodexRef,
+    panelRuntimeEntriesByIdRef,
+    hydratePanelFromSessionHistoryRef,
     rememberSessionRuntimeStatus,
     clearPendingApprovalsForSession,
     clearToolAutoApprovalsForSession,
@@ -7329,6 +7339,7 @@ export default function App() {
   applyOlderSessionHistoryPageRef.current = applyOlderSessionHistoryPageToState;
   getPanelConversationMessagesForCodexRef.current = getPanelConversationMessagesForCodex;
   setPanelConversationMessagesForCodexRef.current = setPanelConversationMessagesForCodex;
+  hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
   const panelRuntimeStoreContextValue = useMemo<PanelRuntimeStoreContextValue>(() => {
     return {
       getSnapshot: resolvePanelSnapshotForDisplay,
