@@ -404,6 +404,33 @@ export function createLlmCliSessionIndex(deps = {}) {
     return candidates[0];
   }
 
+  async function findCliSessionIndexEntriesBySessionIds(sessionIds, opts = {}) {
+    await refreshCliSessionIndex();
+    const normalizedIds = [];
+    const requestedIds = new Set();
+    for (const sessionId of Array.isArray(sessionIds) ? sessionIds : []) {
+      const normalized = normalizeLlmExecutionSessionId(sessionId);
+      if (!normalized || requestedIds.has(normalized)) continue;
+      requestedIds.add(normalized);
+      normalizedIds.push(normalized);
+    }
+    if (normalizedIds.length <= 0) return [];
+    const lookup = buildDirectoryLookup(opts?.directory);
+    const selectedBySessionId = new Map();
+    for (const entry of cliSessionIndexByFilePath.values()) {
+      const sessionId = String(entry?.sessionId || "");
+      if (!requestedIds.has(sessionId)) continue;
+      if (!await cliSessionEntryMatchesDirectoryIdentity(entry, lookup)) continue;
+      const current = selectedBySessionId.get(sessionId);
+      if (!current || compareCliSessionIndexEntries(entry, current) < 0) {
+        selectedBySessionId.set(sessionId, entry);
+      }
+    }
+    return normalizedIds
+      .map((sessionId) => selectedBySessionId.get(sessionId))
+      .filter(Boolean);
+  }
+
   async function rewriteCliSessionMetaLastReadAt(filePath, lastReadAtRaw) {
     const lastReadAt = normalizeSessionUpdatedAt(lastReadAtRaw) || new Date().toISOString();
     let raw = "";
@@ -534,6 +561,7 @@ export function createLlmCliSessionIndex(deps = {}) {
 
   return {
     ensureCliSessionIndexLoaded,
+    findCliSessionIndexEntriesBySessionIds,
     findCliSessionIndexEntryBySessionId,
     getCliSessionIndexStats,
     listCliSessionsForDirectory,

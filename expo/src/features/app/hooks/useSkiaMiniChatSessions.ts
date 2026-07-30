@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useConversation } from "../contexts/ConversationContext";
-import type { DirectoryMarkerColor } from "../components/AppDrawer";
+import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
@@ -36,32 +36,35 @@ export function useSkiaMiniChatSessions() {
   const {
     registeredDirectories,
     directorySessionsById,
+    directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
-    refreshRegisteredDirectorySessions,
+    ensureRegisteredDirectorySessions,
   } = useConversation();
   const { getSnapshot } = usePanelRuntimeStore();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
-  const refreshRegisteredDirectorySessionsRef = useRef(refreshRegisteredDirectorySessions);
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
   const hydratedSignatureRef = useRef("");
+  const hydrationGenerationRef = useRef(0);
+  const [hydratingPanelCount, setHydratingPanelCount] = useState(0);
+  const [panelHydrationErrorCount, setPanelHydrationErrorCount] = useState(0);
   const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
-    refreshRegisteredDirectorySessionsRef.current = refreshRegisteredDirectorySessions;
     clearPanelSnapshotRef.current = clearPanelSnapshot;
     hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
-  }, [clearPanelSnapshot, hydratePanelFromSessionHistory, refreshRegisteredDirectorySessions]);
+  }, [clearPanelSnapshot, hydratePanelFromSessionHistory]);
 
   useEffect(() => {
-    void refreshRegisteredDirectorySessionsRef.current();
+    void ensureRegisteredDirectorySessions("screen_mount");
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => {
+      hydrationGenerationRef.current += 1;
       clearInterval(timer);
       SKIA_MINI_CHAT_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
     };
-  }, []);
+  }, [ensureRegisteredDirectorySessions]);
 
   const sessionCandidates = useMemo(() => (
     collectRegisteredDirectorySessions(registeredDirectories, directorySessionsById)
@@ -76,27 +79,53 @@ export function useSkiaMiniChatSessions() {
   )).join("|");
 
   useEffect(() => {
+    const generation = hydrationGenerationRef.current + 1;
+    hydrationGenerationRef.current = generation;
     if (!sessionSignature) {
       hydratedSignatureRef.current = "";
+      setHydratingPanelCount(0);
+      setPanelHydrationErrorCount(0);
       SKIA_MINI_CHAT_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
       return;
     }
     if (hydratedSignatureRef.current === sessionSignature) return;
-    hydratedSignatureRef.current = sessionSignature;
-    sessionCandidates.forEach((session, index) => {
+    setHydratingPanelCount(sessionCandidates.length);
+    setPanelHydrationErrorCount(0);
+    SKIA_MINI_CHAT_PANEL_IDS.slice(sessionCandidates.length)
+      .forEach((panelId) => clearPanelSnapshotRef.current(panelId));
+    void Promise.all(sessionCandidates.map(async (session, index) => {
       const panelId = SKIA_MINI_CHAT_PANEL_IDS[index];
-      void hydratePanelFromSessionHistoryRef.current({
-        panelId,
-        sessionId: session.sessionId,
-        directory: session.directory,
-        source: session.source,
-        directoryDisplayName: session.directoryDisplayName,
-        title: sessionTitleOverridesById[session.sessionId] || session.firstUserMessage,
-        updatedAt: session.updatedAt,
-        modelRef: session.modelRef,
-        reasoningEffort: session.reasoningEffort,
-        contextUsedPct: session.contextUsedPct,
-      }).catch(() => clearPanelSnapshotRef.current(panelId));
+      try {
+        const result = await hydratePanelFromSessionHistoryRef.current({
+          panelId,
+          sessionId: session.sessionId,
+          directory: session.directory,
+          source: session.source,
+          directoryDisplayName: session.directoryDisplayName,
+          title: sessionTitleOverridesById[session.sessionId] || session.firstUserMessage,
+          updatedAt: session.updatedAt,
+          modelRef: session.modelRef,
+          reasoningEffort: session.reasoningEffort,
+          contextUsedPct: session.contextUsedPct,
+        });
+        if (hydrationGenerationRef.current !== generation) return;
+        if (result === "failed") {
+          clearPanelSnapshotRef.current(panelId);
+          setPanelHydrationErrorCount((count) => count + 1);
+        }
+      } catch {
+        if (hydrationGenerationRef.current !== generation) return;
+        clearPanelSnapshotRef.current(panelId);
+        setPanelHydrationErrorCount((count) => count + 1);
+      } finally {
+        if (hydrationGenerationRef.current === generation) {
+          setHydratingPanelCount((count) => Math.max(0, count - 1));
+        }
+      }
+    })).then(() => {
+      if (hydrationGenerationRef.current !== generation) return;
+      hydratedSignatureRef.current = sessionSignature;
+      setHydratingPanelCount(0);
     });
   }, [sessionCandidates, sessionSignature, sessionTitleOverridesById]);
 
@@ -133,10 +162,10 @@ export function useSkiaMiniChatSessions() {
     sessionTitleOverridesById,
   ]);
 
-  const loading = registeredDirectories.some((directory) => {
-    const state = directorySessionsById[directory.id];
-    return !state || state.loading || state.loadingMore || !state.loaded;
-  });
-
-  return { loading, sessions };
+  return {
+    directorySync: directorySessionSync,
+    hydratingPanelCount,
+    panelHydrationErrorCount,
+    sessions,
+  };
 }

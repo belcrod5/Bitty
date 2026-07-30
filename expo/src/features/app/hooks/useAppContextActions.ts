@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { RunnerPairingResult } from "../contexts/AppSettingsContext";
-import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import type { AppScreen } from "../types/appTypes";
 import { TTS_SPEED_STEP, type SelectedVoiceIdByProvider, type TtsProvider } from "../utils/audioConfig";
 import type { CodexApprovalPolicy, ReasoningEffort } from "../utils/settingsParsers";

@@ -1,7 +1,7 @@
 import type {
   DirectorySessionTreeState,
   RegisteredDirectoryEntry,
-} from "../components/AppDrawer";
+} from "../types/directorySessions";
 import { parseOptionalSessionId } from "./llmSession";
 import { clampContextUsedPct } from "./sessionRestore";
 import { normalizeModelRef, parseLlmDirectory } from "./settingsParsers";

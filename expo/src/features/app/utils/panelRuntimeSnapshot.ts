@@ -1,4 +1,4 @@
-import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { ConversationMessage } from "../types/appTypes";
 import { deriveSessionExecutionStatusType } from "./sessionExecutionStatus";

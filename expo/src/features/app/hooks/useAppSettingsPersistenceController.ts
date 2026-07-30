@@ -17,7 +17,7 @@ import { parseOptionalSessionId } from "../utils/llmSession";
 import { parseCodexApprovalPolicy, parseLlmDirectory, parseModelRef, parseReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import { suggestRunnerUrlFromCodexWsUrl } from "../utils/urlResolvers";
 import type { LlmBackend } from "../types/appTypes";
-import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import {
   loadSecureRunnerCredentials,
   saveSecureRunnerCredentials,

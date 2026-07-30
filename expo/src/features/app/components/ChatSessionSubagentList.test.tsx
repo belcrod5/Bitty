@@ -34,8 +34,9 @@ test("shows and opens the direct parent of the selected subagent", async () => {
     cwd: "/work/bitty/child-worktree",
   });
   const directoryState: DirectorySessionTreeState = {
-    loading: false,
-    loadingMore: false,
+        loading: false,
+        refreshing: false,
+        loadingMore: false,
     loaded: true,
     fetchedAtMs: 1,
     error: "",
@@ -91,8 +92,9 @@ test("opens a child with the child's own working directory", async () => {
   });
   const openSessionHistoryEntry = jest.fn();
   const directoryState: DirectorySessionTreeState = {
-    loading: false,
-    loadingMore: false,
+        loading: false,
+        refreshing: false,
+        loadingMore: false,
     loaded: true,
     fetchedAtMs: 1,
     error: "",

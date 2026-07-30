@@ -23,8 +23,9 @@ function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryE
 
 function tree(entries: LlmSessionHistoryEntry[]): DirectorySessionTreeState {
   return {
-    loading: false,
-    loadingMore: false,
+  loading: false,
+  refreshing: false,
+  loadingMore: false,
     loaded: true,
     fetchedAtMs: 0,
     error: "",

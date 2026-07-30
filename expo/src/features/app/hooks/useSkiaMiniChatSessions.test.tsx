@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react-native";
+import { act, renderHook } from "@testing-library/react-native";
 import type { DirectorySessionTreeState } from "../components/AppDrawer";
 import { useConversation } from "../contexts/ConversationContext";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
@@ -8,6 +8,7 @@ import {
   formatSkiaMiniChatUpdatedAt,
   useSkiaMiniChatSessions,
 } from "./useSkiaMiniChatSessions";
+import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: jest.fn(),
@@ -22,6 +23,12 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
 const mockUseConversation = jest.mocked(useConversation);
 const mockUsePanelRuntimeController = jest.mocked(usePanelRuntimeController);
 const mockUsePanelRuntimeStore = jest.mocked(usePanelRuntimeStore);
+const workspaceDirectory = {
+  id: "workspace",
+  path: "/workspace",
+  displayName: "Workspace",
+  markerColor: "none" as const,
+};
 
 beforeEach(() => {
   mockUsePanelRuntimeController.mockReturnValue({
@@ -61,8 +68,9 @@ function session(index: number): LlmSessionHistoryEntry {
 
 function tree(entries: LlmSessionHistoryEntry[]): DirectorySessionTreeState {
   return {
-    loading: false,
-    loadingMore: false,
+  loading: false,
+  refreshing: false,
+  loadingMore: false,
     loaded: true,
     fetchedAtMs: 0,
     error: "",
@@ -74,6 +82,14 @@ function tree(entries: LlmSessionHistoryEntry[]): DirectorySessionTreeState {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe("useSkiaMiniChatSessions", () => {
   it("formats recent updates in seconds and minutes", () => {
     const now = new Date("2026-06-23T00:01:30.000Z").getTime();
@@ -81,25 +97,24 @@ describe("useSkiaMiniChatSessions", () => {
     expect(formatSkiaMiniChatUpdatedAt("2026-06-23T00:00:00.000Z", now)).toBe("1分前");
   });
 
-  it("refreshes registered sessions and returns only the latest six", async () => {
-    const refreshRegisteredDirectorySessions = jest.fn().mockResolvedValue(undefined);
+  it("ensures registered sessions and returns only the latest six", async () => {
+    const ensureRegisteredDirectorySessions = jest.fn().mockResolvedValue(undefined);
     mockUseConversation.mockReturnValue({
-      registeredDirectories: [
-        { id: "workspace", path: "/workspace", displayName: "Workspace", markerColor: "none" },
-      ],
+      registeredDirectories: [workspaceDirectory],
       directorySessionsById: {
         workspace: tree(Array.from({ length: 8 }, (_, index) => session(index + 1))),
       },
       sessionTitleOverridesById: { "session-8": "Pinned title" },
       sessionMarkerColorsById: { "session-8": "green" },
       formatSessionUpdatedAt: (value: string) => `formatted:${value}`,
-      refreshRegisteredDirectorySessions,
+      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
+      ensureRegisteredDirectorySessions,
     } as unknown as ReturnType<typeof useConversation>);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions());
 
-    expect(refreshRegisteredDirectorySessions).toHaveBeenCalledTimes(1);
-    expect(result.current.loading).toBe(false);
+    expect(ensureRegisteredDirectorySessions).toHaveBeenCalledTimes(1);
+    expect(result.current.directorySync.phase).toBe("idle");
     expect(result.current.sessions).toHaveLength(6);
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual([
       "session-8",
@@ -118,24 +133,96 @@ describe("useSkiaMiniChatSessions", () => {
     });
   });
 
-  it("does not refresh again when the context callback identity changes", async () => {
-    const firstRefresh = jest.fn().mockResolvedValue(undefined);
-    const nextRefresh = jest.fn().mockResolvedValue(undefined);
-    const { rerender } = await renderHook((refresh: () => Promise<void>) => {
+  it("delegates callback identity changes to the shared controller", async () => {
+    const firstEnsure = jest.fn().mockResolvedValue(undefined);
+    const nextEnsure = jest.fn().mockResolvedValue(undefined);
+    const { rerender } = await renderHook((ensure: () => Promise<void>) => {
       mockUseConversation.mockReturnValue({
         registeredDirectories: [],
         directorySessionsById: {},
         sessionTitleOverridesById: {},
         sessionMarkerColorsById: {},
         formatSessionUpdatedAt: (value: string) => value,
-        refreshRegisteredDirectorySessions: refresh,
+        directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
+        ensureRegisteredDirectorySessions: ensure,
       } as unknown as ReturnType<typeof useConversation>);
       return useSkiaMiniChatSessions();
-    }, { initialProps: firstRefresh });
+    }, { initialProps: firstEnsure });
 
-    await rerender(nextRefresh);
+    await rerender(nextEnsure);
 
-    expect(firstRefresh).toHaveBeenCalledTimes(1);
-    expect(nextRefresh).not.toHaveBeenCalled();
+    expect(firstEnsure).toHaveBeenCalledTimes(1);
+    expect(nextEnsure).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles failed panel hydration separately from directory sync", async () => {
+    const clearPanelSnapshot = jest.fn();
+    mockUsePanelRuntimeController.mockReturnValue({
+      clearPanelSnapshot,
+      hydratePanelFromSessionHistory: jest.fn(async ({ sessionId }) => (
+        sessionId === "session-1" ? "failed" : "applied"
+      )),
+    } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    mockUseConversation.mockReturnValue({
+      registeredDirectories: [workspaceDirectory],
+      directorySessionsById: {
+        workspace: tree([session(2), session(1)]),
+      },
+      sessionTitleOverridesById: {},
+      sessionMarkerColorsById: {},
+      formatSessionUpdatedAt: (value: string) => value,
+      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
+      ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useConversation>);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.hydratingPanelCount).toBe(0);
+    expect(result.current.panelHydrationErrorCount).toBe(1);
+    expect(clearPanelSnapshot).toHaveBeenCalledWith("skia_mini_preview_2");
+    expect(result.current.directorySync.phase).toBe("idle");
+  });
+
+  it("ignores a failed hydration from an obsolete candidate generation", async () => {
+    const oldHydration = deferred<"failed">();
+    const clearPanelSnapshot = jest.fn();
+    mockUsePanelRuntimeController.mockReturnValue({
+      clearPanelSnapshot,
+      hydratePanelFromSessionHistory: jest.fn(({ sessionId }) => (
+        sessionId === "session-1" ? oldHydration.promise : Promise.resolve("applied")
+      )),
+    } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    const ensureRegisteredDirectorySessions = jest.fn().mockResolvedValue(undefined);
+
+    const { result, rerender } = await renderHook((candidate: LlmSessionHistoryEntry) => {
+      mockUseConversation.mockReturnValue({
+        registeredDirectories: [workspaceDirectory],
+        directorySessionsById: {
+          workspace: tree([candidate]),
+        },
+        sessionTitleOverridesById: {},
+        sessionMarkerColorsById: {},
+        formatSessionUpdatedAt: (value: string) => value,
+        directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
+        ensureRegisteredDirectorySessions,
+      } as unknown as ReturnType<typeof useConversation>);
+      return useSkiaMiniChatSessions();
+    }, { initialProps: session(1) });
+
+    await rerender(session(2));
+    await act(async () => {
+      await Promise.resolve();
+      oldHydration.resolve("failed");
+      await Promise.resolve();
+    });
+
+    expect(result.current.hydratingPanelCount).toBe(0);
+    expect(result.current.panelHydrationErrorCount).toBe(0);
+    expect(clearPanelSnapshot).not.toHaveBeenCalledWith("skia_mini_preview_1");
+    expect(result.current.sessions[0].sessionId).toBe("session-2");
   });
 });

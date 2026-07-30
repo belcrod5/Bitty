@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { act, renderHook } from "@testing-library/react-native";
 import type { DirectorySessionTreeState } from "../components/AppDrawer";
 import type { LlmSessionHistoryEntry, RunnerSessionReadResult } from "./useLlmSessionExplorer";
@@ -24,8 +24,9 @@ function session(sessionId: string, directory = "/workspace"): LlmSessionHistory
 
 function directoryState(entries: LlmSessionHistoryEntry[]): DirectorySessionTreeState {
   return {
-    loading: false,
-    loadingMore: false,
+  loading: false,
+  refreshing: false,
+  loadingMore: false,
     loaded: true,
     fetchedAtMs: 1,
     error: "",
@@ -60,6 +61,26 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+function applyLastReadAt(
+  setDirectorySessionsById: Dispatch<
+    SetStateAction<Record<string, DirectorySessionTreeState>>
+  >,
+  lastReadAtBySessionId: Map<string, string>
+) {
+  setDirectorySessionsById((current) => Object.fromEntries(
+    Object.entries(current).map(([directoryId, state]) => [
+      directoryId,
+      {
+        ...state,
+        entries: state.entries.map((entry) => {
+          const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
+          return lastReadAt ? { ...entry, lastReadAt } : entry;
+        }),
+      },
+    ])
+  ));
+}
+
 function renderController({
   entries = [],
   markRunnerSessionRead = jest.fn(async (sessionId: unknown) => marked(String(sessionId))),
@@ -83,10 +104,11 @@ function renderController({
       markRunnerSessionRead,
       fetchSessionHistory,
       normalizedLlmDirectoryForRequest: () => "/workspace",
-      setDirectorySessionsById,
+      applySessionLastReadAtByIdToDirectoryTrees: (updates) => {
+        applyLastReadAt(setDirectorySessionsById, updates);
+      },
       showChatBottomToast,
       logSessionDiag: jest.fn(),
-      recordSessionReadDuringFetch: jest.fn(),
     });
     return { controller, directorySessionsById };
   });
@@ -116,10 +138,11 @@ test("reports directory progress and keeps each completed read when another requ
       markRunnerSessionRead,
       fetchSessionHistory,
       normalizedLlmDirectoryForRequest: () => "/workspace",
-      setDirectorySessionsById,
+      applySessionLastReadAtByIdToDirectoryTrees: (updates) => {
+        applyLastReadAt(setDirectorySessionsById, updates);
+      },
       showChatBottomToast,
       logSessionDiag: jest.fn(),
-      recordSessionReadDuringFetch: jest.fn(),
     });
     return { controller, directorySessionsById };
   });

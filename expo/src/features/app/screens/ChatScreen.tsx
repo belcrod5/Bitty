@@ -24,7 +24,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { WebView } from "react-native-webview";
 import { isIosFaceTrackingAvailable } from "../../faceTracking/iosFaceTrackingClient";
 import type { ConversationMessage } from "../types/appTypes";
-import type { DirectoryMarkerColor } from "../components/AppDrawer";
+import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { styles } from "../styles";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";

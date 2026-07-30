@@ -1,10 +1,13 @@
 import { useCallback, useMemo } from "react";
 import type {
   AppDrawerProps,
+} from "../components/AppDrawer";
+import type {
   DirectoryReadProgress,
+  DirectorySessionSyncState,
   DirectorySessionTreeState,
   RegisteredDirectoryEntry,
-} from "../components/AppDrawer";
+} from "../types/directorySessions";
 import type { PopupChatSourceRect } from "../components/popupChatTypes";
 import type { LlmSessionSource } from "./useLlmSessionExplorer";
 
@@ -15,6 +18,7 @@ type UseAppDrawerSessionControllerArgs = {
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
   directoryReadProgressByPath: Record<string, DirectoryReadProgress>;
+  directorySessionSync: DirectorySessionSyncState;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, RegisteredDirectoryEntry["markerColor"]>;
   llmSessionRestoreLoading: boolean;
@@ -59,6 +63,7 @@ export function useAppDrawerSessionController({
   expandedDirectoryIds,
   directorySessionsById,
   directoryReadProgressByPath,
+  directorySessionSync,
   sessionTitleOverridesById,
   sessionMarkerColorsById,
   llmSessionRestoreLoading,
@@ -107,8 +112,10 @@ export function useAppDrawerSessionController({
   }, [toggleDirectoryExpanded]);
 
   const handleLoadMoreSessions = useCallback((directoryId: string, directoryPath: string) => {
+    const state = directorySessionsById[directoryId];
+    if (state?.loading || state?.refreshing || state?.loadingMore) return;
     void loadMoreDirectorySessionTree(directoryId, directoryPath);
-  }, [loadMoreDirectorySessionTree]);
+  }, [directorySessionsById, loadMoreDirectorySessionTree]);
 
   const handleLoadSessionChildren = useCallback((
     directoryId: string,
@@ -177,8 +184,9 @@ export function useAppDrawerSessionController({
     selectedLlmSessionId,
     registeredDirectories,
     expandedDirectoryIds,
-    directorySessionsById,
-    directoryReadProgressByPath,
+      directorySessionsById,
+      directoryReadProgressByPath,
+      directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,
@@ -204,6 +212,7 @@ export function useAppDrawerSessionController({
     expandedDirectoryIds,
     directorySessionsById,
     directoryReadProgressByPath,
+    directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,

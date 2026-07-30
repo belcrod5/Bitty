@@ -137,11 +137,32 @@ export const menuScreenStyles = {
     justifyContent: "center",
     backgroundColor: "transparent",
   },
-  appDrawerLoadingIndicatorWrap: {
-    width: 20,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
+  appDrawerSessionSync: {
+    gap: 5,
+    marginBottom: 8,
+  },
+  appDrawerSessionSyncTrack: {
+    height: 5,
+    borderRadius: 3,
+    overflow: "hidden",
+    backgroundColor: "#ccfbf1",
+  },
+  appDrawerSessionSyncFill: {
+    height: "100%",
+    backgroundColor: "#0f766e",
+  },
+  appDrawerSessionSyncText: {
+    color: "#475569",
+    fontSize: 11,
+  },
+  appDrawerSessionSyncError: {
+    marginBottom: 8,
+    color: "#b45309",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  appDrawerSessionSyncFatalError: {
+    color: "#b91c1c",
   },
   appDrawerDirectoryReadProgress: {
     gap: 4,

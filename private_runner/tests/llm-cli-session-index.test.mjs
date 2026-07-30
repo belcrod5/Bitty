@@ -78,6 +78,11 @@ test("absolute CLI lookup does not match a copied relative worktree identity", a
   const sessions = await index.listCliSessionsForDirectory(worktreeReal);
   assert.deepEqual(sessions.map((session) => session.sessionId), ["shared-session"]);
   assert.equal(sessions[0].directory, worktreeReal);
+  const batchEntries = await index.findCliSessionIndexEntriesBySessionIds(
+    ["missing-session", "shared-session", "shared-session"],
+    { directory: worktreeReal },
+  );
+  assert.deepEqual(batchEntries.map((entry) => entry.filePath), [worktreeFile]);
 
   await index.markCliSessionRead("shared-session", {
     directory: worktreeReal,
