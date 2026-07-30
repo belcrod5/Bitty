@@ -20,7 +20,7 @@ import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { MiniBoardChatPreviewSkeleton } from "../components/MiniBoardChatPreviewSkeleton";
 import { PopupChatOverlay } from "../components/PopupChatOverlay";
 import type { PopupChatSourceRect } from "../components/popupChatTypes";
-import type { DirectoryMarkerColor } from "../components/AppDrawer";
+import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import { miniBoardStyles } from "./MiniBoardScreen.styles";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
@@ -117,7 +117,9 @@ export function MiniBoardScreen() {
   const {
     registeredDirectories,
     directorySessionsById,
+    directorySessionSync,
     sessionMarkerColorsById,
+    ensureRegisteredDirectorySessions,
     refreshRegisteredDirectorySessions,
     showChatBottomToast,
     markSessionRead,
@@ -129,7 +131,6 @@ export function MiniBoardScreen() {
     hydratePanelFromSessionHistory,
   } = usePanelRuntimeController();
   const logSessionDiagRef = useRef(logSessionDiag);
-  const refreshRegisteredDirectorySessionsRef = useRef(refreshRegisteredDirectorySessions);
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
   const openPopupPanelIdRef = useRef<MiniBoardPopupPanelId | null>(null);
@@ -158,7 +159,6 @@ export function MiniBoardScreen() {
 
   useEffect(() => {
     logSessionDiagRef.current = logSessionDiag;
-    refreshRegisteredDirectorySessionsRef.current = refreshRegisteredDirectorySessions;
     clearPanelSnapshotRef.current = clearPanelSnapshot;
     hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
     openPopupPanelIdRef.current = openPopupPanelId;
@@ -211,22 +211,6 @@ export function MiniBoardScreen() {
       return `${assignment.panelId}:${entry.sessionId}:${entry.directory}:${getMiniBoardTimeValue(entry.updatedAt)}`;
     }).join("|")
   ), [registeredDirectorySessionCandidates]);
-  const registeredDirectoryRefreshState = useMemo(() => {
-    const targets = registeredDirectories
-      .map((directory) => {
-        const directoryPath = String(directory.path || "").trim();
-        return directoryPath ? { id: directory.id, path: directoryPath } : null;
-      })
-      .filter((target): target is { id: string; path: string } => !!target);
-    return {
-      key: JSON.stringify(targets.map((target) => [target.id, target.path])),
-      count: targets.length,
-      pending: targets.some((target) => {
-        const state = directorySessionsById[target.id];
-        return !state || state.loading || state.loadingMore || !state.loaded;
-      }),
-    };
-  }, [directorySessionsById, registeredDirectories]);
   const candidateDebugSnapshot = useMemo(() => ({
     source: MINI_BOARD_SOURCE_LABEL,
     registeredDirectoryCount: registeredDirectories.length,
@@ -266,8 +250,6 @@ export function MiniBoardScreen() {
     const directoryStates = registeredDirectories
       .map((directory) => directorySessionsById[directory.id])
       .filter((state) => !!state);
-    const directoryLoadingCount = directoryStates.filter((state) => state.loading || state.loadingMore).length;
-    const directoryErrorCount = directoryStates.filter((state) => String(state.error || "").trim()).length;
     const lastFetchedAtMs = directoryStates.reduce((max, state) => {
       const fetchedAtMs = Number(state.fetchedAtMs || 0);
       return Number.isFinite(fetchedAtMs) && fetchedAtMs > max ? fetchedAtMs : max;
@@ -287,8 +269,14 @@ export function MiniBoardScreen() {
       const hydrationState = panelHydrationById[assignment.panelId];
       return hydrationState?.status === "ready" && hydrationState.sessionId !== candidate?.sessionId;
     }).length;
-    const loadingCount = directoryLoadingCount + panelLoadingCount;
-    const errorCount = directoryErrorCount + panelErrorCount;
+    const directorySyncActive = (
+      directorySessionSync.phase === "loading" ||
+      directorySessionSync.phase === "refreshing"
+    );
+    const loadingCount = directorySyncActive
+      ? directorySessionSync.pendingCount + directorySessionSync.activeCount
+      : panelLoadingCount;
+    const errorCount = directorySessionSync.failedCount + panelErrorCount;
     const base = {
       totalCount: expectedAssignments.length,
       loadingCount,
@@ -309,8 +297,10 @@ export function MiniBoardScreen() {
       return {
         ...base,
         status: "loading",
-        label: "取得中",
-        detail: `${loadingCount}件取得中`,
+        label: directorySyncActive ? "同期中" : "チャット読込中",
+        detail: directorySyncActive
+          ? `${directorySessionSync.completedCount}/${directorySessionSync.totalCount}`
+          : `${loadingCount}件取得中`,
       };
     }
     if (errorCount > 0) {
@@ -345,6 +335,7 @@ export function MiniBoardScreen() {
     };
   }, [
     directorySessionsById,
+    directorySessionSync,
     panelHydrationById,
     registeredDirectories,
     registeredDirectorySessionCandidates,
@@ -368,14 +359,13 @@ export function MiniBoardScreen() {
   }, []);
 
   useEffect(() => {
-    if (registeredDirectoryRefreshState.count <= 0) return;
-    logSessionDiagRef.current("mini_board_registered_directories_refresh", {
+    logSessionDiagRef.current("mini_board_registered_directories_ensure", {
       miniBoardCycleId: miniBoardCycleIdRef.current,
       source: MINI_BOARD_SOURCE_LABEL,
-      directoryCount: registeredDirectoryRefreshState.count,
+      directoryCount: registeredDirectories.length,
     }, { throttleMs: 0 });
-    void refreshRegisteredDirectorySessionsRef.current();
-  }, [registeredDirectoryRefreshState.count, registeredDirectoryRefreshState.key]);
+    void ensureRegisteredDirectorySessions("screen_mount");
+  }, [ensureRegisteredDirectorySessions, registeredDirectories.length]);
 
   useEffect(() => {
     logSessionDiagRef.current("mini_board_candidate_source_snapshot", {
@@ -397,32 +387,7 @@ export function MiniBoardScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    const anyDirectoryLoading = registeredDirectories.some((directory) => {
-      const state = directorySessionsById[directory.id];
-      return Boolean(state?.loading || state?.loadingMore);
-    });
-    if (registeredDirectoryRefreshState.pending) {
-      hydratedSessionSignatureRef.current = "";
-      MINI_BOARD_PREVIEW_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
-      setPanelHydrationById(
-        MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
-          acc[panelId] = {
-            status: "loading",
-            sessionId: "",
-            message: "登録ディレクトリの履歴を取得中",
-          };
-          return acc;
-        }, {} as Record<MiniBoardPreviewPanelId, MiniBoardPanelHydrationState>)
-      );
-      logSessionDiagRef.current("mini_board_hydrate_waiting_for_directory_refresh", {
-        miniBoardCycleId: miniBoardCycleIdRef.current,
-        source: MINI_BOARD_SOURCE_LABEL,
-        registeredDirectoryCount: registeredDirectories.length,
-      }, { throttleMs: 0 });
-      return () => {
-        cancelled = true;
-      };
-    }
+    const anyDirectoryLoading = directorySessionSync.phase === "loading";
     if (registeredDirectorySessionCandidates.length <= 0) {
       hydratedSessionSignatureRef.current = "";
       MINI_BOARD_PREVIEW_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
@@ -581,7 +546,7 @@ export function MiniBoardScreen() {
     allRegisteredDirectorySessionCandidates.length,
     directorySessionsById,
     registeredDirectories,
-    registeredDirectoryRefreshState.pending,
+    directorySessionSync.phase,
     registeredDirectorySessionCandidates,
     registeredDirectorySessionHydrateSignature,
     selectedColorFilters.length,
@@ -724,7 +689,7 @@ export function MiniBoardScreen() {
       visiblePanelCount: MINI_BOARD_PREVIEW_PANEL_IDS.length,
       candidateCount: registeredDirectorySessionCandidates.length,
     }, { throttleMs: 0 });
-    void refreshRegisteredDirectorySessions();
+    void refreshRegisteredDirectorySessions("manual_refresh");
     showChatBottomToast("assistant", "さらに読み込み: 登録ディレクトリの履歴を更新しました");
   };
 
@@ -814,7 +779,7 @@ export function MiniBoardScreen() {
                 const candidate = registeredDirectorySessionCandidates[index];
                 const hydrationState = panelHydrationById[assignment.panelId];
                 const isReady = hydrationState?.status === "ready";
-                const isLoading = registeredDirectoryRefreshState.pending || hydrationState?.status === "loading";
+                const isLoading = (!candidate && directorySessionSync.phase === "loading") || hydrationState?.status === "loading";
                 const canOpenPopup = !!candidate && !isLoading;
                 return (
                   <View

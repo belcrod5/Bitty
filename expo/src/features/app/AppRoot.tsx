@@ -22,11 +22,11 @@ import { WebView } from "react-native-webview";
 import { styles } from "./styles";
 import { AppProviders } from "./AppProviders";
 import { AudioLabScreen } from "./components/AudioLabScreen";
-import {
-  AppDrawer,
-  type DirectorySessionTreeState,
-  type RegisteredDirectoryEntry,
-} from "./components/AppDrawer";
+import { AppDrawer } from "./components/AppDrawer";
+import type {
+  DirectorySessionTreeState,
+  RegisteredDirectoryEntry,
+} from "./types/directorySessions";
 import { AppOverlays } from "./components/AppOverlays";
 import {
   LlmCompletionNotifications,
@@ -562,6 +562,7 @@ const REPLY_DEBUG_MAX_CHARS = 12000;
 const EMPTY_TOOL_AUTO_APPROVALS: ToolAutoApprovalMap = {};
 const EMPTY_DIRECTORY_SESSION_TREE_STATE: DirectorySessionTreeState = {
   loading: false,
+  refreshing: false,
   loadingMore: false,
   loaded: false,
   fetchedAtMs: 0,
@@ -575,7 +576,6 @@ const EMPTY_DIRECTORY_SESSION_TREE_STATE: DirectorySessionTreeState = {
 const DIRECTORY_SESSION_PAGE_SIZE = 5;
 const DIRECTORY_SESSION_PREFETCH_TTL_MS = 60 * 1000;
 const DIRECTORY_SESSION_PREFETCH_CONCURRENCY = 2;
-const DIRECTORY_SESSION_RUNNER_SNAPSHOT_LIMIT = 200;
 const YOUTUBE_EMBED_ORIGIN = "https://bitty-embed.local";
 const CODEX_CLI_STATUS_AUTO_REFRESH_MS = 10 * 60 * 1000;
 const CODEX_CLI_STATUS_MIN_REFRESH_GAP_MS = 15 * 1000;
@@ -2854,30 +2854,16 @@ export default function App() {
     });
   }
 
-  function removeRegisteredDirectory(directoryId: string) {
-    const target = registeredDirectories.find((item) => item.id === directoryId);
-    if (!target) return;
-    setRegisteredDirectories((prev) => prev.filter((item) => item.id !== directoryId));
-    setExpandedDirectoryIds((prev) => prev.filter((id) => id !== directoryId));
-    setDirectorySessionsById((prev) => {
-      const next = { ...prev };
-      delete next[directoryId];
-      return next;
-    });
-    if (normalizedLlmDirectoryForRequest() === target.path) {
-      clearSelectedLlmSession();
-      const fallback = registeredDirectories.find((item) => item.id !== directoryId)?.path || DEFAULT_LLM_DIRECTORY;
-      selectLlmDirectory(fallback);
-    }
-  }
-
   const {
-    loadDirectorySessionTree,
+    applySessionLastReadAtByIdToDirectoryTrees,
+    directorySessionSync,
+    ensureRegisteredDirectorySessions,
     loadMoreDirectorySessionTree,
     loadSessionChildTree,
+    prepareDirectorySessionTargetChange,
     toggleDirectoryExpanded,
-    prefetchDirectorySessionTreesForDrawerOpen,
-    recordSessionReadDuringFetch,
+    refreshDirectorySessionTree,
+    refreshRegisteredDirectorySessions,
   } = useDirectorySessionTreeController({
     directorySessionsById,
     setDirectorySessionsById,
@@ -2886,13 +2872,27 @@ export default function App() {
     fetchSessionChildHistory,
     emptyDirectorySessionTreeState: EMPTY_DIRECTORY_SESSION_TREE_STATE,
     directorySessionPageSize: DIRECTORY_SESSION_PAGE_SIZE,
-    directorySessionRunnerSnapshotLimit: DIRECTORY_SESSION_RUNNER_SNAPSHOT_LIMIT,
     directorySessionPrefetchTtlMs: DIRECTORY_SESSION_PREFETCH_TTL_MS,
     directorySessionPrefetchConcurrency: DIRECTORY_SESSION_PREFETCH_CONCURRENCY,
-    drawerOpen,
     registeredDirectories,
-    normalizedLlmDirectoryForRequest,
+    selectedDirectoryPath: normalizedLlmDirectoryForRequest(),
   });
+
+  function removeRegisteredDirectory(directoryId: string) {
+    const target = registeredDirectories.find((item) => item.id === directoryId);
+    if (!target) return;
+    const nextRegisteredDirectories = registeredDirectories.filter((item) => item.id !== directoryId);
+    prepareDirectorySessionTargetChange({
+      nextRegisteredDirectories,
+      transitions: [{ kind: "remove", directoryId, fromPath: target.path }],
+    });
+    setRegisteredDirectories(nextRegisteredDirectories);
+    setExpandedDirectoryIds((prev) => prev.filter((id) => id !== directoryId));
+    if (normalizedLlmDirectoryForRequest() === target.path) {
+      clearSelectedLlmSession();
+      selectLlmDirectory(nextRegisteredDirectories[0]?.path || DEFAULT_LLM_DIRECTORY);
+    }
+  }
   const {
     markSessionReadAsync,
     markSessionUnread,
@@ -2903,65 +2903,33 @@ export default function App() {
     markRunnerSessionRead,
     fetchSessionHistory,
     normalizedLlmDirectoryForRequest,
-    setDirectorySessionsById,
+    applySessionLastReadAtByIdToDirectoryTrees,
     showChatBottomToast,
     logSessionDiag,
-    recordSessionReadDuringFetch,
   });
-  const refreshRegisteredDirectorySessionsForMiniBoard = useCallback(async () => {
-    const targets = registeredDirectories.filter((directory) => String(directory.path || "").trim());
-    logSessionDiag("mini_board_refresh_registered_directory_sessions_start", {
-      directoryCount: targets.length,
-    }, { throttleMs: 0 });
-    const results = await Promise.allSettled(
-      targets.map((directory) => (
-        loadDirectorySessionTree(directory.id, directory.path, {
-          force: true,
-          includeRunnerSnapshots: true,
-          runnerSnapshotLimit: DIRECTORY_SESSION_RUNNER_SNAPSHOT_LIMIT,
-        })
-      ))
-    );
-    logSessionDiag("mini_board_refresh_registered_directory_sessions_done", {
-      directoryCount: targets.length,
-      rejectedCount: results.filter((item) => item.status === "rejected").length,
-    }, { throttleMs: 0 });
-  }, [loadDirectorySessionTree, logSessionDiag, registeredDirectories]);
-  // One-shot recovery fired by useRunnerHttpAuthBootstrap on the settingsLoaded
-  // transition: session-tree fetches that raced the settings load are refreshed
-  // once with real credentials. In-flight loads are deduped by
-  // loadDirectorySessionTree, so this does not double-fetch.
   settingsLoadedSessionRecoveryRef.current = () => {
-    void refreshRegisteredDirectorySessionsForMiniBoard();
+    void refreshRegisteredDirectorySessions("auth_recovery");
   };
-  const refreshMiniBoardDirectorySessionsForDirectory = useCallback((directoryRaw: unknown, reason: string) => {
-    if (activeScreen !== "mini_board") return;
+  const refreshDirectorySessionsAfterCompletion = useCallback((directoryRaw: unknown) => {
     const directoryPath = parseLlmDirectory(directoryRaw);
     if (!directoryPath) return;
     const target = registeredDirectories.find((directory) => (
       parseLlmDirectory(directory.path) === directoryPath
     ));
     if (!target) {
-      logSessionDiag("mini_board_refresh_directory_sessions_skipped_unregistered", {
-        reason,
+      logSessionDiag("session_completion_refresh_skipped_unregistered", {
         directory: directoryPath,
       }, { throttleMs: 0 });
       return;
     }
-    logSessionDiag("mini_board_refresh_directory_sessions_after_completion", {
-      reason,
+    logSessionDiag("session_completion_refresh_directory", {
       directoryId: target.id,
       directory: target.path,
     }, { throttleMs: 0 });
-    void loadDirectorySessionTree(target.id, target.path, {
-      force: true,
-      includeRunnerSnapshots: true,
-      runnerSnapshotLimit: DIRECTORY_SESSION_RUNNER_SNAPSHOT_LIMIT,
-    });
+    void refreshDirectorySessionTree(target, "session_completed");
   }, [
-    activeScreen,
-    loadDirectorySessionTree,
     logSessionDiag,
+    refreshDirectorySessionTree,
     registeredDirectories,
   ]);
 
@@ -3779,7 +3747,7 @@ export default function App() {
       completedAtMs: Date.now(),
     });
     void refreshGitChangedFiles(params.directory, { force: true });
-    refreshMiniBoardDirectorySessionsForDirectory(params.directory, "relay_turn_completed");
+    refreshDirectorySessionsAfterCompletion(params.directory);
     const speechAllowed = autoSpeakAfterReply && !!text.trim() && isChatOpenForAutoSpeech(target);
     if (speechAllowed) {
       await synthesizeSpeechStream(text, target);
@@ -3802,7 +3770,7 @@ export default function App() {
     logSessionDiag,
     playUiSfx,
     pushLlmCompletionNotification,
-    refreshMiniBoardDirectorySessionsForDirectory,
+    refreshDirectorySessionsAfterCompletion,
     refreshGitChangedFiles,
     selectedLlmSessionId,
     stripYouTubeTags,
@@ -4855,8 +4823,8 @@ export default function App() {
     }
     if (drawerSessionPrefetchRequestedForOpenRef.current) return;
     drawerSessionPrefetchRequestedForOpenRef.current = true;
-    void prefetchDirectorySessionTreesForDrawerOpen();
-  }, [drawerOpen, prefetchDirectorySessionTreesForDrawerOpen]);
+    void ensureRegisteredDirectorySessions("drawer_open");
+  }, [drawerOpen, ensureRegisteredDirectorySessions]);
 
   useSessionStartupRecoveryController({
     settingsLoaded,
@@ -5520,11 +5488,11 @@ export default function App() {
 
   const handleLlmMessageCompleted = useCallback((completion: LlmMessageCompletion) => {
     void refreshGitChangedFiles(completion.directory, { force: true });
-    refreshMiniBoardDirectorySessionsForDirectory(completion.directory, "llm_message_completed");
+    refreshDirectorySessionsAfterCompletion(completion.directory);
     pushLlmCompletionNotification(completion);
   }, [
     pushLlmCompletionNotification,
-    refreshMiniBoardDirectorySessionsForDirectory,
+    refreshDirectorySessionsAfterCompletion,
     refreshGitChangedFiles,
   ]);
 
@@ -6259,6 +6227,7 @@ export default function App() {
     llmSessionRestoreError,
     registeredDirectories,
     directorySessionsById,
+    directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     selectedLlmSessionId,
@@ -6280,7 +6249,8 @@ export default function App() {
     selectCurrentDirectory: selectCurrentDirectoryFromContext,
     openDirectoryEntry: openDirectoryEntryFromContext,
     formatSessionUpdatedAt,
-    refreshRegisteredDirectorySessions: refreshRegisteredDirectorySessionsForMiniBoard,
+    ensureRegisteredDirectorySessions,
+    refreshRegisteredDirectorySessions,
     loadSessionChildren: loadSessionChildrenFromContext,
     openSessionHistoryEntry: openSessionHistoryEntryFromContext,
     markSessionRead: markSessionReadFromContext,
@@ -6324,7 +6294,7 @@ export default function App() {
     setSelectedDirectory: setLlmDirectory,
     setRegisteredDirectories,
     setExpandedDirectoryIds,
-    setDirectorySessionsById,
+    prepareDirectorySessionTargetChange,
     setGitChangedFilesByDirectory,
     setPanelRuntimeEntriesById,
     llmSessionDirectoryRef,
@@ -7699,6 +7669,7 @@ export default function App() {
     expandedDirectoryIds,
     directorySessionsById,
     directoryReadProgressByPath,
+    directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,

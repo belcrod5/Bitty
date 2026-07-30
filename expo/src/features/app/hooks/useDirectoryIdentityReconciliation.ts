@@ -1,9 +1,10 @@
 import { Alert } from "react-native";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import type { GitChangedFilesDirectoryState } from "../types/appTypes";
 import { reconcileRegisteredDirectories } from "../utils/directoryIdentity";
 import type { PanelRuntimeEntry } from "./usePanelNewSessionController";
+import type { DirectoryTargetTransition } from "./useDirectorySessionTreeController";
 
 const DIRECTORY_IDENTITY_HTTP_TIMEOUT_MS = 12_000;
 const DIRECTORY_IDENTITY_RETRY_MS = 2_000;
@@ -17,7 +18,10 @@ type Args = {
   setSelectedDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
   setExpandedDirectoryIds: Dispatch<SetStateAction<string[]>>;
-  setDirectorySessionsById: Dispatch<SetStateAction<Record<string, DirectorySessionTreeState>>>;
+  prepareDirectorySessionTargetChange: (params: {
+    nextRegisteredDirectories: RegisteredDirectoryEntry[];
+    transitions: DirectoryTargetTransition[];
+  }) => void;
   setGitChangedFilesByDirectory: Dispatch<SetStateAction<Record<string, GitChangedFilesDirectoryState>>>;
   setPanelRuntimeEntriesById: Dispatch<SetStateAction<Record<string, PanelRuntimeEntry>>>;
   llmSessionDirectoryRef: MutableRefObject<string>;
@@ -35,7 +39,7 @@ export function useDirectoryIdentityReconciliation({
   setSelectedDirectory,
   setRegisteredDirectories,
   setExpandedDirectoryIds,
-  setDirectorySessionsById,
+  prepareDirectorySessionTargetChange,
   setGitChangedFilesByDirectory,
   setPanelRuntimeEntriesById,
   llmSessionDirectoryRef,
@@ -147,38 +151,30 @@ export function useDirectoryIdentityReconciliation({
 
       llmSessionDirectoryRef.current = canonicalSelectedDirectory;
       setSelectedDirectory(canonicalSelectedDirectory);
+      const reconciledById = new Map(reconciled.directories.map((directory) => [directory.id, directory]));
+      const transitions: DirectoryTargetTransition[] = [];
+      for (const directory of registeredDirectories) {
+        const retainedId = reconciled.retainedIdByRemovedId.get(directory.id) || directory.id;
+        const retained = reconciledById.get(retainedId);
+        if (!retained) continue;
+        if (retainedId !== directory.id || retained.path !== directory.path) {
+          transitions.push({
+            kind: "same_identity",
+            fromId: directory.id,
+            toId: retainedId,
+            fromPath: directory.path,
+            toPath: retained.path,
+          });
+        }
+      }
+      prepareDirectorySessionTargetChange({
+        nextRegisteredDirectories: reconciled.directories,
+        transitions,
+      });
       setRegisteredDirectories(reconciled.directories);
       setExpandedDirectoryIds((current) => Array.from(new Set(current.map(
         (id) => reconciled.retainedIdByRemovedId.get(id) || id
       ))));
-      setDirectorySessionsById((current) => {
-        const next = { ...current };
-        for (const removedId of reconciled.removedIds) {
-          const retainedId = reconciled.retainedIdByRemovedId.get(removedId) || "";
-          if (retainedId && !next[retainedId] && next[removedId]) next[retainedId] = next[removedId];
-          delete next[removedId];
-        }
-        for (const [id, state] of Object.entries(next)) {
-          next[id] = {
-            ...state,
-            entries: state.entries.map((entry) => ({
-              ...entry,
-              directory: canonicalPathByPath.get(entry.directory) || entry.directory,
-            })),
-            childrenByParentId: Object.fromEntries(Object.entries(state.childrenByParentId).map(([parentId, child]) => [
-              parentId,
-              {
-                ...child,
-                entries: child.entries.map((entry) => ({
-                  ...entry,
-                  directory: canonicalPathByPath.get(entry.directory) || entry.directory,
-                })),
-              },
-            ])),
-          };
-        }
-        return next;
-      });
       setPanelRuntimeEntriesById((current) => Object.fromEntries(Object.entries(current).map(([id, entry]) => {
         const directory = entry.snapshot.selectedDirectoryPath;
         const canonicalDirectory = canonicalPathByPath.get(directory) || directory;
@@ -220,7 +216,7 @@ export function useDirectoryIdentityReconciliation({
     registeredDirectories,
     runnerToken,
     selectedDirectory,
-    setDirectorySessionsById,
+    prepareDirectorySessionTargetChange,
     setExpandedDirectoryIds,
     setGitChangedFilesByDirectory,
     setPanelRuntimeEntriesById,

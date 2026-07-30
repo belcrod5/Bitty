@@ -195,6 +195,57 @@ describe("fetchSessionHistory runner snapshot failures", () => {
     mockListCodexAppServerThreads.mockReset();
   });
 
+  it("posts exactly the listed session ids to the bounded summary endpoint", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({
+      data: ["session-1", "session-2"].map((threadId) => ({
+        threadId,
+        parentThreadId: "",
+        agentRole: "",
+        agentDisplayName: "",
+        preview: threadId,
+        modelProvider: "",
+        sourceKind: "cli",
+        cwd: "/workspace",
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z",
+        contextUsedPct: null,
+      })),
+      nextCursor: "",
+      backwardsCursor: "",
+    });
+    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        sessions: [{
+          sessionId: "session-2",
+          contextUsage: { usedPct: 10 },
+        }],
+        missingSessionIds: ["session-1"],
+      }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook();
+
+    const history = await result.current.fetchSessionHistory("/workspace");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://runner.test/session-summaries",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          authorization: "Bearer runner-token",
+          "content-type": "application/json",
+        }),
+        body: JSON.stringify({
+          directory: "/workspace",
+          sessionIds: ["session-1", "session-2"],
+        }),
+      })
+    );
+    expect(history.entries[1].contextUsedPct).toBe(10);
+  });
+
   it("logs a failed snapshot fetch and keeps contextUsedPct null instead of 0", async () => {
     mockListCodexAppServerThreads.mockResolvedValue({
       data: [{

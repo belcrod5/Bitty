@@ -20,40 +20,22 @@ import type { PopupChatSourceRect } from "./popupChatTypes";
 import { styles } from "../styles";
 import { isLlmSessionUnread } from "../utils/llmSession";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
+import type {
+  DirectoryMarkerColor,
+  DirectoryReadProgress,
+  DirectorySessionSyncState,
+  DirectorySessionTreeState,
+  RegisteredDirectoryEntry,
+  SessionChildTreeState,
+} from "../types/directorySessions";
 
-export type RegisteredDirectoryEntry = {
-  id: string;
-  path: string;
-  displayName: string;
-  markerColor: DirectoryMarkerColor;
-};
-
-export type DirectoryMarkerColor = "none" | "gray" | "red" | "yellow" | "green" | "black";
-
-export type SessionChildTreeState = {
-  loading: boolean;
-  loaded: boolean;
-  error: string;
-  entries: LlmSessionHistoryEntry[];
-};
-
-export type DirectorySessionTreeState = {
-  loading: boolean;
-  loadingMore: boolean;
-  loaded: boolean;
-  fetchedAtMs: number;
-  error: string;
-  latestSessionId: string;
-  nextCursor: string;
-  hasMore: boolean;
-  entries: LlmSessionHistoryEntry[];
-  childrenByParentId: Record<string, SessionChildTreeState>;
-};
-
-export type DirectoryReadProgress = {
-  completed: number;
-  total: number;
-};
+export type {
+  DirectoryMarkerColor,
+  DirectoryReadProgress,
+  DirectorySessionTreeState,
+  RegisteredDirectoryEntry,
+  SessionChildTreeState,
+} from "../types/directorySessions";
 
 export type AppDrawerProps = {
   selectedDirectoryPath: string;
@@ -62,6 +44,7 @@ export type AppDrawerProps = {
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
   directoryReadProgressByPath: Record<string, DirectoryReadProgress>;
+  directorySessionSync: DirectorySessionSyncState;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, DirectoryMarkerColor>;
   llmSessionRestoreLoading: boolean;
@@ -124,6 +107,7 @@ export const AppDrawer = memo(function AppDrawer({
   expandedDirectoryIds,
   directorySessionsById,
   directoryReadProgressByPath,
+  directorySessionSync,
   sessionTitleOverridesById,
   sessionMarkerColorsById,
   llmSessionRestoreLoading,
@@ -417,6 +401,43 @@ export const AppDrawer = memo(function AppDrawer({
               <Text style={styles.appDrawerAddButtonText}>+ 追加</Text>
             </TouchableOpacity>
           </View>
+          {directorySessionSync.phase === "loading" || directorySessionSync.phase === "refreshing" ? (
+            <View
+              style={styles.appDrawerSessionSync}
+              accessibilityRole="progressbar"
+              accessibilityLabel="登録ディレクトリのセッション同期"
+              accessibilityValue={{
+                min: 0,
+                max: directorySessionSync.totalCount,
+                now: directorySessionSync.completedCount,
+                text: `${directorySessionSync.completedCount}/${directorySessionSync.totalCount}`,
+              }}
+            >
+              <View style={styles.appDrawerSessionSyncTrack}>
+                <View
+                  style={[
+                    styles.appDrawerSessionSyncFill,
+                    { width: `${Math.round(directorySessionSync.progress * 100)}%` },
+                  ]}
+                />
+              </View>
+              <Text style={styles.appDrawerSessionSyncText}>
+                {`${directorySessionSync.phase === "loading" ? "セッション同期中" : "セッション更新中"} ${directorySessionSync.completedCount}/${directorySessionSync.totalCount}`}
+              </Text>
+            </View>
+          ) : directorySessionSync.phase === "partial_error" || directorySessionSync.phase === "error" ? (
+            <Text
+              style={[
+                styles.appDrawerSessionSyncError,
+                directorySessionSync.phase === "error" && styles.appDrawerSessionSyncFatalError,
+              ]}
+              accessibilityRole="alert"
+            >
+              {directorySessionSync.phase === "error"
+                ? `セッション同期失敗 ${directorySessionSync.failedCount}/${directorySessionSync.totalCount}`
+                : `一部更新失敗 ${directorySessionSync.failedCount}/${directorySessionSync.totalCount}`}
+            </Text>
+          ) : null}
           {registeredDirectories.length <= 0 ? (
             <Text style={styles.hint}>登録ディレクトリはありません。追加ボタンから登録してください。</Text>
           ) : directoryViews.length <= 0 ? (
@@ -462,9 +483,6 @@ export const AppDrawer = memo(function AppDrawer({
                         {directory.path}
                       </Text>
                     </TouchableOpacity>
-                    <View style={styles.appDrawerLoadingIndicatorWrap}>
-                      {sessionState?.loading ? <ActivityIndicator size="small" color="#0f766e" /> : null}
-                    </View>
                     <TouchableOpacity
                       style={styles.appDrawerExpandButton}
                       onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}
@@ -506,9 +524,9 @@ export const AppDrawer = memo(function AppDrawer({
                         <TouchableOpacity
                           style={[
                             styles.appDrawerSessionLoadMoreButton,
-                            (sessionState.loading || sessionState.loadingMore || llmSessionRestoreLoading) && styles.buttonDisabled,
+                            (sessionState.loading || sessionState.refreshing || sessionState.loadingMore || llmSessionRestoreLoading) && styles.buttonDisabled,
                           ]}
-                          disabled={sessionState.loading || sessionState.loadingMore || llmSessionRestoreLoading}
+                          disabled={sessionState.loading || sessionState.refreshing || sessionState.loadingMore || llmSessionRestoreLoading}
                           onPress={() => onLoadMoreSessions(directory.id, directory.path)}
                         >
                           {sessionState.loadingMore ? <ActivityIndicator size="small" color="#1e40af" /> : null}

@@ -2,6 +2,7 @@ import React from "react";
 import { fireEvent, render, userEvent } from "@testing-library/react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
+import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 
 function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
   return {
@@ -27,8 +28,9 @@ function directoryState(
   childrenByParentId: DirectorySessionTreeState["childrenByParentId"] = {},
 ): DirectorySessionTreeState {
   return {
-    loading: false,
-    loadingMore: false,
+  loading: false,
+  refreshing: false,
+  loadingMore: false,
     loaded: true,
     fetchedAtMs: 1,
     error: "",
@@ -65,6 +67,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
       "dir-1": directoryState(loadedSessions),
     },
     directoryReadProgressByPath: {},
+    directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
     sessionTitleOverridesById: {
       "loaded-restore": "Restore title override",
     },
@@ -108,6 +111,47 @@ test("shows progress for a directory read operation", async () => {
   });
 
   expect(drawer.getByText("既読にしています 1/4")).toBeTruthy();
+});
+
+test("shows one aggregate progress bar for registered directory session sync", async () => {
+  const drawer = await renderDrawer({
+    directorySessionSync: {
+      ...IDLE_DIRECTORY_SESSION_SYNC,
+      cycleId: 1,
+      phase: "loading",
+      totalCount: 4,
+      pendingCount: 2,
+      completedCount: 2,
+      progress: 0.5,
+    },
+  });
+
+  expect(drawer.getByText("セッション同期中 2/4")).toBeTruthy();
+  expect(
+    drawer.getByLabelText("登録ディレクトリのセッション同期").props.accessibilityValue
+  ).toEqual({
+    min: 0,
+    max: 4,
+    now: 2,
+    text: "2/4",
+  });
+});
+
+test("shows a terminal partial error instead of leaving sync pending", async () => {
+  const drawer = await renderDrawer({
+    directorySessionSync: {
+      ...IDLE_DIRECTORY_SESSION_SYNC,
+      cycleId: 1,
+      phase: "partial_error",
+      totalCount: 3,
+      failedCount: 1,
+      completedCount: 3,
+      progress: 1,
+    },
+  });
+
+  expect(drawer.getByRole("alert").props.children).toBe("一部更新失敗 1/3");
+  expect(drawer.queryByLabelText("登録ディレクトリのセッション同期")).toBeNull();
 });
 
 test("runs the directory read action from the long-press menu", async () => {

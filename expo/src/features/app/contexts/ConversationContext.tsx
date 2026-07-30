@@ -9,9 +9,11 @@ import type {
 } from "../hooks/useLlmSessionExplorer";
 import type {
   DirectoryMarkerColor,
+  DirectorySessionSyncReason,
+  DirectorySessionSyncState,
   DirectorySessionTreeState,
   RegisteredDirectoryEntry,
-} from "../components/AppDrawer";
+} from "../types/directorySessions";
 
 export type ConversationContextValue = {
   conversationMessages: ConversationMessage[];
@@ -31,6 +33,7 @@ export type ConversationContextValue = {
   llmSessionRestoreError: string;
   registeredDirectories: RegisteredDirectoryEntry[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
+  directorySessionSync: DirectorySessionSyncState;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, DirectoryMarkerColor>;
   selectedLlmSessionId: string;
@@ -52,7 +55,8 @@ export type ConversationContextValue = {
   selectCurrentDirectory: () => void;
   openDirectoryEntry: (path: string) => void;
   formatSessionUpdatedAt: (updatedAt: string) => string;
-  refreshRegisteredDirectorySessions: () => Promise<void>;
+  ensureRegisteredDirectorySessions: (reason: DirectorySessionSyncReason) => Promise<void>;
+  refreshRegisteredDirectorySessions: (reason: DirectorySessionSyncReason) => Promise<void>;
   loadSessionChildren: (
     sessionId: string,
     directory: string

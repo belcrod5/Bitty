@@ -13,6 +13,7 @@ import { createLlmAcpSessionStore } from "./llm-acp-session-store.mjs";
 import { createLlmCliRolloutWriter } from "./llm-cli-rollout-writer.mjs";
 import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
+import { createLlmSessionService } from "./llm-session-service.mjs";
 import { createWorkspaceFilesService, isProbablyBinary } from "./workspace-files.mjs";
 import { fetchGitBranches, fetchGitBranchStatus } from "./git-branches.mjs";
 import {
@@ -1292,6 +1293,7 @@ function compareSessionHistoryEntries(a, b) {
 
 const {
   ensureCliSessionIndexLoaded,
+  findCliSessionIndexEntriesBySessionIds,
   findCliSessionIndexEntryBySessionId,
   getCliSessionIndexStats,
   listCliSessionsForDirectory,
@@ -1310,6 +1312,22 @@ const {
   normalizeSessionUpdatedAt,
   toUnixPath,
   toWorkspaceRelativeFromAbsolutePath,
+});
+
+const {
+  getLlmSessionSummaries,
+  listLlmSessions,
+} = createLlmSessionService({
+  compareSessionHistoryEntries,
+  findCliSessionIndexEntriesBySessionIds,
+  listAcpSessionsForDirectory,
+  listCliSessionsForDirectory,
+  makeApiError,
+  normalizeLlmExecutionSessionId,
+  normalizeSessionListLimit,
+  normalizeSessionSource,
+  readCliSessionSummaryFromRolloutFile,
+  resolveCanonicalDirectoryIdentity,
 });
 
 const pushDeviceStore = createPushDeviceStore(PUSH_DEVICE_STORE_PATH);
@@ -1415,74 +1433,6 @@ const locationScheduleService = createLocationScheduleService({
     }
     : undefined,
 });
-
-async function listLlmSessions(rawDirectory, opts = {}) {
-  const requestedDirectory = await resolveCanonicalDirectoryIdentity(rawDirectory);
-  const source = normalizeSessionSource(opts?.source, "acp");
-  const limit = normalizeSessionListLimit(opts?.limit);
-  const sessions = [];
-  if (source === "acp" || source === "all") {
-    sessions.push(...await listAcpSessionsForDirectory(requestedDirectory));
-  }
-  if (source === "cli" || source === "all") {
-    sessions.push(...await listCliSessionsForDirectory(requestedDirectory));
-  }
-  sessions.sort(compareSessionHistoryEntries);
-  const limited = sessions.slice(0, limit);
-  const enriched = [];
-  for (const item of limited) {
-    const sourceName = String(item?.source || "").trim().toLowerCase();
-    const filePath = String(item?.filePath || "").trim();
-    if (sourceName === "cli" && filePath) {
-      let summary = {
-        firstUserMessage: "",
-        contextUsage: null,
-        modelRef: "",
-        reasoningEffort: "",
-      };
-      try {
-        summary = await readCliSessionSummaryFromRolloutFile(filePath);
-      } catch {
-        summary = {
-          firstUserMessage: "",
-          contextUsage: null,
-          modelRef: "",
-          reasoningEffort: "",
-        };
-      }
-      enriched.push({
-        ...item,
-        firstUserMessage: String(summary.firstUserMessage || "").trim(),
-        contextUsage: summary.contextUsage || null,
-        modelRef: String(summary.modelRef || "").trim(),
-        reasoningEffort: String(summary.reasoningEffort || "").trim(),
-      });
-      continue;
-    }
-    enriched.push({
-      ...item,
-      firstUserMessage: "",
-      contextUsage: null,
-      modelRef: "",
-      reasoningEffort: "",
-    });
-  }
-  const serializedSessions = enriched.map((item) => {
-    const cloned = { ...item };
-    delete cloned.filePath;
-    return cloned;
-  });
-  const latestSessionId = limited.length > 0
-    ? String(limited[0]?.sessionId || "").trim()
-    : "";
-  return {
-    directory: requestedDirectory,
-    source,
-    limit,
-    latestSessionId,
-    sessions: serializedSessions,
-  };
-}
 
 async function markLlmSessionRead(rawSessionId, opts = {}) {
   const startedAtMs = Date.now();
@@ -8767,6 +8717,37 @@ const server = http.createServer(async (req, res) => {
       return json(res, 500, {
         error: "sessions_failed",
         message: errorMessage(err),
+      });
+    }
+  }
+
+  if (req.method === "POST" && pathname === "/session-summaries") {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, {
+        error: "runner_token_missing",
+        message: "RUNNER_TOKEN is required",
+      });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    try {
+      const body = await readJsonBody(req, 32 * 1024);
+      return json(res, 200, await getLlmSessionSummaries(body));
+    } catch (err) {
+      if (isApiError(err)) {
+        return json(res, err.apiStatus, err.apiPayload);
+      }
+      const message = errorMessage(err);
+      if (err instanceof SyntaxError || message === "request body is too large") {
+        return json(res, 400, {
+          error: message === "request body is too large" ? "request_body_too_large" : "invalid_json",
+          message,
+        });
+      }
+      return json(res, 500, {
+        error: "session_summaries_failed",
+        message,
       });
     }
   }

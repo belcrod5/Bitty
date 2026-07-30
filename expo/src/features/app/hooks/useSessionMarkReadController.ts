@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import type { DirectoryReadProgress, DirectorySessionTreeState } from "../components/AppDrawer";
+import { useCallback, useRef, useState } from "react";
+import type { DirectoryReadProgress, DirectorySessionTreeState } from "../types/directorySessions";
 import type { LlmSessionSource, RunnerSessionReadResult } from "./useLlmSessionExplorer";
 import { isLlmSessionUnread, parseOptionalSessionId } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
@@ -31,7 +31,6 @@ type UseSessionMarkReadControllerArgs = {
       limit?: number;
       cursor?: string;
       includeRunnerSnapshots?: boolean;
-      runnerSnapshotLimit?: number;
       includeSubagents?: boolean;
     }
   ) => Promise<{
@@ -40,7 +39,9 @@ type UseSessionMarkReadControllerArgs = {
     entries: DirectorySessionTreeState["entries"];
   }>;
   normalizedLlmDirectoryForRequest: () => string;
-  setDirectorySessionsById: Dispatch<SetStateAction<Record<string, DirectorySessionTreeState>>>;
+  applySessionLastReadAtByIdToDirectoryTrees: (
+    lastReadAtBySessionId: Map<string, string>
+  ) => void;
   showChatBottomToast: (role: "user" | "assistant", rawText: string) => void;
   logSessionDiag: (
     event: string,
@@ -51,7 +52,6 @@ type UseSessionMarkReadControllerArgs = {
       throttleKey?: string;
     }
   ) => void;
-  recordSessionReadDuringFetch: (sessionId: string, lastReadAt: string) => void;
 };
 
 function runnerSessionReadTargetFound(result: RunnerSessionReadResult): boolean {
@@ -66,69 +66,15 @@ export function useSessionMarkReadController({
   markRunnerSessionRead,
   fetchSessionHistory,
   normalizedLlmDirectoryForRequest,
-  setDirectorySessionsById,
+  applySessionLastReadAtByIdToDirectoryTrees,
   showChatBottomToast,
   logSessionDiag,
-  recordSessionReadDuringFetch,
 }: UseSessionMarkReadControllerArgs) {
   const pendingSessionReadByIdRef = useRef(new Map<string, Promise<RunnerSessionReadResult>>());
   const directoryReadInFlightPathsRef = useRef(new Set<string>());
   const [directoryReadProgressByPath, setDirectoryReadProgressByPath] = useState<
     Record<string, DirectoryReadProgress>
   >({});
-  const applySessionLastReadAtByIdToDirectoryTrees = useCallback((
-    lastReadAtBySessionId: Map<string, string>
-  ) => {
-    if (lastReadAtBySessionId.size <= 0) return;
-    setDirectorySessionsById((prev) => {
-      let changed = false;
-      const next: Record<string, DirectorySessionTreeState> = {};
-      for (const [dirId, state] of Object.entries(prev)) {
-        let entryChanged = false;
-        const nextEntries = state.entries.map((entry) => {
-          const markedLastReadAt = lastReadAtBySessionId.get(entry.sessionId);
-          if (!markedLastReadAt || entry.lastReadAt === markedLastReadAt) return entry;
-          entryChanged = true;
-          return {
-            ...entry,
-            lastReadAt: markedLastReadAt,
-          };
-        });
-        let childChanged = false;
-        const nextChildrenByParentId = Object.fromEntries(
-          Object.entries(state.childrenByParentId || {}).map(([parentId, childState]) => {
-            let currentChildChanged = false;
-            const nextChildEntries = childState.entries.map((entry) => {
-              const markedLastReadAt = lastReadAtBySessionId.get(entry.sessionId);
-              if (!markedLastReadAt || entry.lastReadAt === markedLastReadAt) return entry;
-              currentChildChanged = true;
-              return {
-                ...entry,
-                lastReadAt: markedLastReadAt,
-              };
-            });
-            if (currentChildChanged) childChanged = true;
-            return [
-              parentId,
-              currentChildChanged ? { ...childState, entries: nextChildEntries } : childState,
-            ];
-          })
-        );
-        if (entryChanged || childChanged) {
-          changed = true;
-          next[dirId] = {
-            ...state,
-            entries: nextEntries,
-            childrenByParentId: nextChildrenByParentId,
-          };
-        } else {
-          next[dirId] = state;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [setDirectorySessionsById]);
-
   const startSessionReadMutation = useCallback((
     sessionId: string,
     options: SessionReadOptions
@@ -141,7 +87,6 @@ export function useSessionMarkReadController({
         throw new Error("Runnerで対象セッションの既読状態を更新できませんでした");
       }
       applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, lastReadAt]]));
-      recordSessionReadDuringFetch(sessionId, lastReadAt);
       return result;
     };
     const previous = pendingSessionReadByIdRef.current.get(sessionId);
@@ -157,7 +102,6 @@ export function useSessionMarkReadController({
   }, [
     applySessionLastReadAtByIdToDirectoryTrees,
     markRunnerSessionRead,
-    recordSessionReadDuringFetch,
   ]);
 
   const markSessionReadAsync = useCallback(({
@@ -285,7 +229,6 @@ export function useSessionMarkReadController({
           limit: 100,
           cursor,
           includeRunnerSnapshots: true,
-          runnerSnapshotLimit: 200,
           includeSubagents: true,
         });
         for (const entry of result.entries) {

@@ -126,7 +126,6 @@ type FetchSessionHistoryOptions = {
   limit?: number;
   cursor?: string;
   includeRunnerSnapshots?: boolean;
-  runnerSnapshotLimit?: number;
   includeSubagents?: boolean;
 };
 
@@ -306,9 +305,15 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
 
   const fetchRunnerSessionSnapshotMap = useCallback(async (
     directoryRaw?: unknown,
-    opts?: { limit?: number }
+    sessionIdsRaw?: unknown[]
   ): Promise<Map<string, RunnerSessionSnapshot>> => {
     const out = new Map<string, RunnerSessionSnapshot>();
+    const sessionIds = Array.from(new Set(
+      (Array.isArray(sessionIdsRaw) ? sessionIdsRaw : [])
+        .map(parseOptionalSessionId)
+        .filter(Boolean)
+    ));
+    if (sessionIds.length <= 0) return out;
     const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
     if (!targetLlmUrl || !token) {
       emitSessionDiag("runner_sessions_skipped_missing_auth", {
@@ -318,62 +323,23 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       return out;
     }
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    const sessionListLimit = Number.isFinite(Number(opts?.limit))
-      ? Math.max(1, Math.min(200, Math.floor(Number(opts?.limit))))
-      : 200;
-    const fetchSessions = async (includeDirectory: boolean): Promise<unknown[]> => {
-      const url = new URL(`${targetLlmUrl}/sessions`);
-      if (includeDirectory) {
-        url.searchParams.set("directory", directory);
-      }
-      url.searchParams.set("source", "all");
-      url.searchParams.set("limit", String(sessionListLimit));
-      const { response, data } = await fetchJsonWithTimeout(url.toString(), {
-        headers: {
-          authorization: `Bearer ${token}`,
-        },
-      }, RUNNER_SESSIONS_HTTP_TIMEOUT_MS);
-      if (!response.ok) {
-        throw new Error(String(data?.message || data?.error || `sessions fetch failed: HTTP ${response.status}`));
-      }
-      return Array.isArray(data?.sessions) ? data.sessions : [];
-    };
-    const sessions = await fetchSessions(true);
-    const scoreSnapshot = (snapshot: RunnerSessionSnapshot) => {
-      let score = 0;
-      if (String(snapshot.modelRef || "").trim()) score += 4;
-      if (String(snapshot.reasoningEffort || "").trim()) score += 2;
-      if (snapshot.contextUsedPct !== null) score += 1;
-      if (String(snapshot.latestToolLabel || "").trim()) score += 1;
-      return score;
-    };
+    const { response, data } = await fetchJsonWithTimeout(`${targetLlmUrl}/session-summaries`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ directory, sessionIds }),
+    }, RUNNER_SESSIONS_HTTP_TIMEOUT_MS);
+    if (!response.ok) {
+      throw new Error(String(data?.message || data?.error || `session summaries fetch failed: HTTP ${response.status}`));
+    }
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
     for (const itemRaw of sessions) {
       const item = itemRaw && typeof itemRaw === "object" ? itemRaw as JsonRecord : {};
       const sessionId = parseOptionalSessionId(item.sessionId);
       if (!sessionId) continue;
-      const candidate = buildRunnerSessionSnapshot(item);
-      const current = out.get(sessionId);
-      const candidateScore = scoreSnapshot(candidate);
-      const currentScore = current ? scoreSnapshot(current) : -1;
-      const candidateLastReadAtMs = Date.parse(String(candidate.lastReadAt || ""));
-      const currentLastReadAtMs = Date.parse(String(current?.lastReadAt || ""));
-      const shouldAdopt = (
-        !current ||
-        candidateScore > currentScore ||
-        (candidateScore === currentScore && Number.isFinite(candidateLastReadAtMs) && (
-          !Number.isFinite(currentLastReadAtMs) || candidateLastReadAtMs > currentLastReadAtMs
-        ))
-      );
-      if (shouldAdopt) {
-        out.set(sessionId, candidate);
-      } else if (current && Number.isFinite(candidateLastReadAtMs) && (
-        !Number.isFinite(currentLastReadAtMs) || candidateLastReadAtMs > currentLastReadAtMs
-      )) {
-        out.set(sessionId, {
-          ...current,
-          lastReadAt: candidate.lastReadAt,
-        });
-      }
+      out.set(sessionId, buildRunnerSessionSnapshot(item));
     }
     return out;
   }, [emitSessionDiag, fetchJsonWithTimeout, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
@@ -713,9 +679,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       : 80;
     const cursor = String(historyOptions?.cursor || "").trim();
     const includeRunnerSnapshots = historyOptions?.includeRunnerSnapshots !== false;
-    const runnerSnapshotLimit = Number.isFinite(Number(historyOptions?.runnerSnapshotLimit))
-      ? Math.max(1, Math.min(200, Math.floor(Number(historyOptions?.runnerSnapshotLimit))))
-      : 200;
     const targetCodexWsUrl = codexWsUrl.trim();
     if (!targetCodexWsUrl) {
       throw new Error("Codex WS URL が未設定です");
@@ -726,7 +689,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       limit,
       cursor,
       includeRunnerSnapshots,
-      runnerSnapshotLimit: includeRunnerSnapshots ? runnerSnapshotLimit : 0,
     });
     const listed = await listCodexAppServerThreads({
       wsUrl: targetCodexWsUrl,
@@ -740,8 +702,11 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
     });
+    const listedSessionIds = listed.data
+      .map((item) => parseOptionalSessionId(item.threadId))
+      .filter(Boolean);
     const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch((error) => {
+      ? await fetchRunnerSessionSnapshotMap(directory, listedSessionIds).catch((error) => {
         emitSessionDiag("runner_session_snapshot_map_failed", {
           directory,
           elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -779,7 +744,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const fetchSessionChildHistory = useCallback(async (
     parentSessionIdRaw: unknown,
     directoryRaw?: unknown,
-    historyOptions?: Pick<FetchSessionHistoryOptions, "limit" | "includeRunnerSnapshots" | "runnerSnapshotLimit">,
+    historyOptions?: Pick<FetchSessionHistoryOptions, "limit" | "includeRunnerSnapshots">,
   ): Promise<LlmSessionHistoryEntry[]> => {
     const parentSessionId = parseOptionalSessionId(parentSessionIdRaw);
     if (!parentSessionId) return [];
@@ -788,9 +753,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       ? Math.max(1, Math.min(100, Math.floor(Number(historyOptions?.limit))))
       : 50;
     const includeRunnerSnapshots = historyOptions?.includeRunnerSnapshots !== false;
-    const runnerSnapshotLimit = Number.isFinite(Number(historyOptions?.runnerSnapshotLimit))
-      ? Math.max(1, Math.min(200, Math.floor(Number(historyOptions?.runnerSnapshotLimit))))
-      : 200;
     const targetCodexWsUrl = codexWsUrl.trim();
     if (!targetCodexWsUrl) {
       throw new Error("Codex WS URL が未設定です");
@@ -801,7 +763,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       parentSessionId,
       limit,
       includeRunnerSnapshots,
-      runnerSnapshotLimit: includeRunnerSnapshots ? runnerSnapshotLimit : 0,
     });
     const listed = await listCodexAppServerThreads({
       wsUrl: targetCodexWsUrl,
@@ -812,8 +773,14 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
     });
+    const directChildren = listed.data.filter(
+      (item) => parseOptionalSessionId(item.parentThreadId) === parentSessionId
+    );
     const runnerSnapshotMap = includeRunnerSnapshots
-      ? await fetchRunnerSessionSnapshotMap(directory, { limit: runnerSnapshotLimit }).catch((error) => {
+      ? await fetchRunnerSessionSnapshotMap(
+        directory,
+        directChildren.map((item) => parseOptionalSessionId(item.threadId)).filter(Boolean)
+      ).catch((error) => {
         emitSessionDiag("runner_session_snapshot_map_failed", {
           directory,
           parentSessionId,
@@ -823,9 +790,6 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         return new Map<string, RunnerSessionSnapshot>();
       })
       : new Map<string, RunnerSessionSnapshot>();
-    const directChildren = listed.data.filter(
-      (item) => parseOptionalSessionId(item.parentThreadId) === parentSessionId
-    );
     const sessions = dedupeSessionHistoryEntries(
       directChildren.map((item) => buildLlmSessionHistoryEntry(item, directory, runnerSnapshotMap))
     );

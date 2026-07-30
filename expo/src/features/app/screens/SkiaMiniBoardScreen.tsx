@@ -143,7 +143,26 @@ function MiniChatCard({
 export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
   const { width: windowWidth } = useWindowDimensions();
   const { openDrawer } = useAppShell();
-  const { loading, sessions } = useSkiaMiniChatSessions();
+  const {
+    directorySync,
+    hydratingPanelCount,
+    panelHydrationErrorCount,
+    sessions,
+  } = useSkiaMiniChatSessions();
+  const syncStatusText =
+    directorySync.phase === "loading"
+      ? `同期中 ${directorySync.completedCount}/${directorySync.totalCount}`
+      : directorySync.phase === "refreshing"
+        ? `更新中 ${directorySync.completedCount}/${directorySync.totalCount}`
+        : directorySync.phase === "error"
+          ? `セッション同期失敗 ${directorySync.failedCount}/${directorySync.totalCount}`
+          : hydratingPanelCount > 0
+            ? `チャット読込中 ${hydratingPanelCount}件`
+            : panelHydrationErrorCount > 0
+              ? `${sessions.length}件を表示・${panelHydrationErrorCount}件の読込失敗`
+              : directorySync.phase === "partial_error"
+                ? `${sessions.length}件を表示・一部更新失敗`
+                : `${sessions.length}件を表示`;
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [openPopupPanelId, setOpenPopupPanelId] = useState("");
   const popupCycleId = useRef(`skia-board-${Date.now().toString(36)}`).current;
@@ -390,7 +409,7 @@ export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
 
       <View pointerEvents="none" style={screenStyles.statusPill}>
         <Text style={screenStyles.statusText}>
-          {loading ? "同期中…" : `${sessions.length}件を表示`}
+          {syncStatusText}
         </Text>
       </View>
       {openPopupPanelId ? (

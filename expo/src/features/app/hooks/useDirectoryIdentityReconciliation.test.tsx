@@ -2,7 +2,7 @@ import { act, renderHook } from "@testing-library/react-native";
 import { Alert } from "react-native";
 import { useRef, useState } from "react";
 import { useDirectoryIdentityReconciliation } from "./useDirectoryIdentityReconciliation";
-import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../components/AppDrawer";
+import type { RegisteredDirectoryEntry } from "../components/AppDrawer";
 import type { GitChangedFilesDirectoryState } from "../types/appTypes";
 
 describe("useDirectoryIdentityReconciliation", () => {
@@ -25,7 +25,7 @@ describe("useDirectoryIdentityReconciliation", () => {
       const [selectedDirectory, setSelectedDirectory] = useState("/workspace/bitty");
       const [registeredDirectories, setRegisteredDirectories] = useState<RegisteredDirectoryEntry[]>([]);
       const [, setExpandedDirectoryIds] = useState<string[]>([]);
-      const [, setDirectorySessionsById] = useState<Record<string, DirectorySessionTreeState>>({});
+      const prepareDirectorySessionTargetChange = jest.fn();
       const [, setGitChangedFilesByDirectory] = useState<Record<string, GitChangedFilesDirectoryState>>({});
       const [, setPanelRuntimeEntriesById] = useState({});
       const llmSessionDirectoryRef = useRef(selectedDirectory);
@@ -41,7 +41,7 @@ describe("useDirectoryIdentityReconciliation", () => {
         setSelectedDirectory,
         setRegisteredDirectories,
         setExpandedDirectoryIds,
-        setDirectorySessionsById,
+        prepareDirectorySessionTargetChange,
         setGitChangedFilesByDirectory,
         setPanelRuntimeEntriesById,
         llmSessionDirectoryRef,
@@ -84,7 +84,7 @@ describe("useDirectoryIdentityReconciliation", () => {
         markerColor: "gray",
       }]);
       const [, setExpandedDirectoryIds] = useState<string[]>([]);
-      const [, setDirectorySessionsById] = useState<Record<string, DirectorySessionTreeState>>({});
+      const prepareDirectorySessionTargetChange = jest.fn();
       const [, setGitChangedFilesByDirectory] = useState<Record<string, GitChangedFilesDirectoryState>>({});
       const [, setPanelRuntimeEntriesById] = useState({});
       const llmSessionDirectoryRef = useRef(selectedDirectory);
@@ -100,7 +100,7 @@ describe("useDirectoryIdentityReconciliation", () => {
         setSelectedDirectory,
         setRegisteredDirectories,
         setExpandedDirectoryIds,
-        setDirectorySessionsById,
+        prepareDirectorySessionTargetChange,
         setGitChangedFilesByDirectory,
         setPanelRuntimeEntriesById,
         llmSessionDirectoryRef,
@@ -155,7 +155,7 @@ describe("useDirectoryIdentityReconciliation", () => {
         markerColor: "gray",
       }]);
       const [, setExpandedDirectoryIds] = useState<string[]>([]);
-      const [, setDirectorySessionsById] = useState<Record<string, DirectorySessionTreeState>>({});
+      const prepareDirectorySessionTargetChange = jest.fn();
       const [, setGitChangedFilesByDirectory] = useState<Record<string, GitChangedFilesDirectoryState>>({});
       const [, setPanelRuntimeEntriesById] = useState({});
       const llmSessionDirectoryRef = useRef(selectedDirectory);
@@ -171,7 +171,7 @@ describe("useDirectoryIdentityReconciliation", () => {
         setSelectedDirectory,
         setRegisteredDirectories,
         setExpandedDirectoryIds,
-        setDirectorySessionsById,
+        prepareDirectorySessionTargetChange,
         setGitChangedFilesByDirectory,
         setPanelRuntimeEntriesById,
         llmSessionDirectoryRef,
