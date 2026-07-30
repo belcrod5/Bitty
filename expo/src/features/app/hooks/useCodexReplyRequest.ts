@@ -181,6 +181,18 @@ type ReplyRequestOptions<TSttMeta> = {
   sessionSnapshot?: ReplyRequestSessionSnapshot;
 };
 
+export type SendReplyRequestRejectReason =
+  | "empty_transcript"
+  | "active_request"
+  | "missing_codex_ws_url";
+
+// Contract: sendReplyRequest resolves void when the request was accepted
+// (slash-handled, queued, or dispatched as a turn) — the composer is cleared
+// synchronously at the acceptance point. A `{ rejected }` result means nothing
+// was sent and the composer content was intentionally kept; callers must
+// surface the rejection to the user instead of failing silently.
+export type SendReplyRequestResult = { rejected: SendReplyRequestRejectReason } | void;
+
 type InFlightCodexTurnRequest = {
   requestId: string;
   requestSeq: number;
@@ -371,7 +383,7 @@ export function useCodexReplyRequest<
   const sendReplyRequest = useCallback(async (
     transcriptOverride?: string,
     requestOptions?: ReplyRequestOptions<TSttMeta>
-  ) => {
+  ): Promise<SendReplyRequestResult> => {
     const current = optionsRef.current;
     const requestPanelId = normalizePanelId(requestOptions?.panelId);
     const panelRequestState = getPanelRequestState(requestPanelId, true)!;
@@ -441,95 +453,6 @@ export function useCodexReplyRequest<
         transcriptChars: effectiveTranscript.length,
       }, { throttleMs: 0 });
       return;
-    }
-    if (
-      effectiveTranscript &&
-      requestThreadKey &&
-      targetCodexWsUrl
-    ) {
-      try {
-        const queued = await enqueueRunnerCodexTurn({
-          wsUrl: targetCodexWsUrl,
-          wsToken: current.codexWsToken.trim(),
-          threadId: requestThreadKey,
-          inputText: effectiveTranscript,
-          cwd: requestDirectory || undefined,
-          model: requestModelRef || undefined,
-          effort: requestReasoningEffort || undefined,
-          approvalPolicy: current.codexApprovalPolicy,
-          sourcePanelId: requestPanelId,
-          clientRequestId: `compact-queue-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-          onlyIfCompacting: true,
-          waitForCompactMs: compactRunningLocally ? 15000 : undefined,
-        });
-        if (queued.queued && queued.queuedTurn) {
-          if (clearInput) current.setTranscript("");
-          const currentMessages = readPanelMessages();
-          const queuePatch = {
-            codexQueue: {
-              queuedTurnId: queued.queuedTurn.queuedTurnId,
-              status: queued.queuedTurn.status,
-              errorMessage: queued.queuedTurn.errorMessage || undefined,
-            },
-          };
-          const matchedUserIndex = findRecentMatchingUserMessageIndex(currentMessages);
-          const queuedMessages = matchedUserIndex >= 0
-            ? currentMessages.map((message, index) => (
-              index === matchedUserIndex
-                ? ({
-                  ...message,
-                  ...queuePatch,
-                })
-                : message
-            ))
-            : [
-              ...currentMessages,
-              current.buildConversationMessage(
-                "user",
-                effectiveTranscript,
-                {
-                  ...(requestOptions?.sttMeta ? { sttMeta: requestOptions.sttMeta } : {}),
-                  ...queuePatch,
-                } as Omit<Partial<TMessage>, "id" | "role" | "content">
-              ),
-            ];
-          writePanelMessages(queuedMessages, {
-            isResponding: false,
-            selectedThreadStatusType: "active",
-            sessionId: requestThreadKey,
-          });
-          current.startCodexRelayObserverForSession?.(requestThreadKey, {
-            directory: requestDirectory || undefined,
-            startedAtMs: Date.now(),
-            resumeFromSeq: 0,
-            reason: "codex_queue_turn",
-            panelId: requestPanelId,
-          });
-          current.logSessionDiag("reply_http_send_queued_after_compact", {
-            panelId: requestPanelId,
-            threadId: requestThreadKey,
-            queuedTurnId: queued.queuedTurn.queuedTurnId,
-            modelRef: requestModelRef,
-            reasoningEffort: requestReasoningEffort,
-            compactRunningLocally,
-          }, { throttleMs: 0 });
-          return;
-        }
-        current.logSessionDiag("reply_http_send_queue_not_compacting", {
-          panelId: requestPanelId,
-          threadId: requestThreadKey,
-          reason: queued.reason || "not_compacting",
-          modelRef: requestModelRef,
-          reasoningEffort: requestReasoningEffort,
-          compactRunningLocally,
-        }, { throttleMs: 0 });
-      } catch (error) {
-        current.logSessionDiag("reply_http_compact_queue_failed", {
-          panelId: requestPanelId,
-          threadId: requestThreadKey,
-          message: error instanceof Error ? error.message : String(error),
-        }, { throttleMs: 0 });
-      }
     }
     // Send-gate liveness: an in-flight turn that stopped producing events (and is not
     // waiting on an approval) must not block this thread's sends forever. Interrupt it,
@@ -608,14 +531,14 @@ export function useCodexReplyRequest<
         panelActiveRequestSeq: panelRequestState.activeRequestSeq,
         threadActiveRequestSeq: activeRequestSeqForThread,
       }, { throttleMs: 0 });
-      return;
+      return { rejected: !effectiveTranscript ? "empty_transcript" : "active_request" };
     }
     if (!targetCodexWsUrl) {
       current.logSessionDiag("reply_http_send_skipped", {
         reason: "missing_codex_ws_url",
         transcriptChars: effectiveTranscript.length,
       }, { throttleMs: 0 });
-      return;
+      return { rejected: "missing_codex_ws_url" };
     }
     const requestSeq = nextRequestSeqRef.current + 1;
     nextRequestSeqRef.current = requestSeq;
@@ -641,6 +564,100 @@ export function useCodexReplyRequest<
       inFlightThreadKeys: Object.keys(panelRequestState.inFlightTurnRequestByThreadId),
       hasInFlightTurnRequest: !!panelRequestState.inFlightTurnRequest,
     }, { throttleMs: 0 });
+    // Acceptance choke point: the request is now committed (it will be queued or
+    // dispatched as a turn), so clear the composer synchronously BEFORE any network
+    // I/O. Clearing must never wait on the compact-queue round trip below, and a
+    // rejected send must never reach this line (input is kept + caller notifies).
+    if (clearInput) {
+      current.setTranscript("");
+    }
+    if (requestThreadKey) {
+      try {
+        const queued = await enqueueRunnerCodexTurn({
+          wsUrl: targetCodexWsUrl,
+          wsToken: current.codexWsToken.trim(),
+          threadId: requestThreadKey,
+          inputText: effectiveTranscript,
+          cwd: requestDirectory || undefined,
+          model: requestModelRef || undefined,
+          effort: requestReasoningEffort || undefined,
+          approvalPolicy: current.codexApprovalPolicy,
+          sourcePanelId: requestPanelId,
+          clientRequestId: `compact-queue-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+          onlyIfCompacting: true,
+          waitForCompactMs: compactRunningLocally ? 15000 : undefined,
+        });
+        if (queued.queued && queued.queuedTurn) {
+          // The runner queued the turn: no local turn will run for this request,
+          // so release the send gate taken above.
+          clearPanelRequestTracking(requestPanelId, requestSeq, requestThreadKey);
+          const currentMessages = readPanelMessages();
+          const queuePatch = {
+            codexQueue: {
+              queuedTurnId: queued.queuedTurn.queuedTurnId,
+              status: queued.queuedTurn.status,
+              errorMessage: queued.queuedTurn.errorMessage || undefined,
+            },
+          };
+          const matchedUserIndex = findRecentMatchingUserMessageIndex(currentMessages);
+          const queuedMessages = matchedUserIndex >= 0
+            ? currentMessages.map((message, index) => (
+              index === matchedUserIndex
+                ? ({
+                  ...message,
+                  ...queuePatch,
+                })
+                : message
+            ))
+            : [
+              ...currentMessages,
+              current.buildConversationMessage(
+                "user",
+                effectiveTranscript,
+                {
+                  ...(requestOptions?.sttMeta ? { sttMeta: requestOptions.sttMeta } : {}),
+                  ...queuePatch,
+                } as Omit<Partial<TMessage>, "id" | "role" | "content">
+              ),
+            ];
+          writePanelMessages(queuedMessages, {
+            isResponding: false,
+            selectedThreadStatusType: "active",
+            sessionId: requestThreadKey,
+          });
+          current.startCodexRelayObserverForSession?.(requestThreadKey, {
+            directory: requestDirectory || undefined,
+            startedAtMs: Date.now(),
+            resumeFromSeq: 0,
+            reason: "codex_queue_turn",
+            panelId: requestPanelId,
+          });
+          current.logSessionDiag("reply_http_send_queued_after_compact", {
+            panelId: requestPanelId,
+            threadId: requestThreadKey,
+            queuedTurnId: queued.queuedTurn.queuedTurnId,
+            modelRef: requestModelRef,
+            reasoningEffort: requestReasoningEffort,
+            compactRunningLocally,
+          }, { throttleMs: 0 });
+          return;
+        }
+        current.logSessionDiag("reply_http_send_queue_not_compacting", {
+          panelId: requestPanelId,
+          threadId: requestThreadKey,
+          reason: queued.reason || "not_compacting",
+          modelRef: requestModelRef,
+          reasoningEffort: requestReasoningEffort,
+          compactRunningLocally,
+        }, { throttleMs: 0 });
+      } catch (error) {
+        current.logSessionDiag("reply_http_compact_queue_failed", {
+          panelId: requestPanelId,
+          threadId: requestThreadKey,
+          message: error instanceof Error ? error.message : String(error),
+        }, { throttleMs: 0 });
+      }
+    }
     const getConversationMessagesForPanel = (panelId: string): TMessage[] => {
       const normalizedPanelId = normalizePanelId(panelId);
       if (typeof current.getPanelConversationMessages === "function") {
@@ -660,9 +677,6 @@ export function useCodexReplyRequest<
         return;
       }
     };
-    if (clearInput) {
-      current.setTranscript("");
-    }
     const activeRequestSeqForCurrentThread = () => {
       const state = getPanelRequestState(requestPanelId);
       if (!state) return 0;

@@ -4,6 +4,16 @@ import type {
   SessionSwitchQueuedSend,
 } from "../types/appTypes";
 import { normalizeModelRef } from "../utils/settingsParsers";
+import type { SendReplyRequestRejectReason, SendReplyRequestResult } from "./useCodexReplyRequest";
+
+// A rejected send keeps the composer content (the core request hook clears input
+// only at its acceptance choke point), so every rejection must become visible
+// user feedback here instead of a silent no-op. "empty_transcript" needs no toast:
+// the send button is disabled for empty input.
+const SEND_REJECT_TOAST_TEXT: Partial<Record<SendReplyRequestRejectReason, string>> = {
+  active_request: "前の応答が完了していないため送信できませんでした。完了を待つか停止してから再送してください。",
+  missing_codex_ws_url: "Codex WS URLが未設定のため送信できませんでした。設定を確認してください。",
+};
 
 type ReplyRequestOptions<TSttMeta> = {
   sttMeta?: TSttMeta;
@@ -42,7 +52,7 @@ type UseSendReplyRequestControllerArgs<TSttMeta> = {
   sendReplyRequestFromCodex: (
     transcriptOverride?: string,
     options?: ReplyRequestOptions<TSttMeta>
-  ) => Promise<void>;
+  ) => Promise<SendReplyRequestResult>;
   llmBackend: string;
   cancelReplyRequestFromCodex: (options?: { panelId?: string }) => Promise<boolean>;
   suspendReplyRequestFromCodex: (reason?: string, options?: { panelId?: string }) => boolean;
@@ -113,7 +123,7 @@ export function useSendReplyRequestController<TSttMeta>({
       reasoningEffort: forcedReasoningEffort || undefined,
       source: forcedSource || `send_guard_panel_snapshot:panel=${writePanelId}`,
     }, { throttleMs: 0 });
-    await sendReplyRequestFromCodex(transcriptOverride, {
+    const result = await sendReplyRequestFromCodex(transcriptOverride, {
       ...options,
       sessionSnapshot: {
         sessionId: forcedSessionId,
@@ -126,6 +136,16 @@ export function useSendReplyRequestController<TSttMeta>({
         source: forcedSource || `send_guard_panel_snapshot:panel=${writePanelId}`,
       },
     });
+    if (result?.rejected) {
+      logSessionDiag("reply_send_guard_rejected", {
+        panelId: writePanelId,
+        reason: result.rejected,
+      }, { throttleMs: 0 });
+      const toastText = SEND_REJECT_TOAST_TEXT[result.rejected];
+      if (toastText) {
+        showChatBottomToast("assistant", toastText);
+      }
+    }
   }, [
     closeCodexRelayObserver,
     normalizedLlmDirectoryForRequest,

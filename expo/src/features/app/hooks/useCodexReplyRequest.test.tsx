@@ -3,6 +3,7 @@ import { useCodexReplyRequest } from "./useCodexReplyRequest";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
 import {
   deriveCodexSessionStateFromSnapshot,
+  enqueueRunnerCodexTurn,
   startCodexAppServerTurn,
 } from "../../codex/codexAppServerClient";
 
@@ -16,6 +17,7 @@ jest.mock("../../codex/codexAppServerClient", () => ({
 }));
 
 const mockStartCodexAppServerTurn = jest.mocked(startCodexAppServerTurn);
+const mockEnqueueRunnerCodexTurn = jest.mocked(enqueueRunnerCodexTurn);
 
 type StoredMessage = {
   id: string;
@@ -148,7 +150,7 @@ function createHarness() {
 
 async function startRequest(harness: ReturnType<typeof createHarness>) {
   const { result } = await renderHook(() => useCodexReplyRequest(harness.options as any));
-  let sendPromise: Promise<void> = Promise.resolve();
+  let sendPromise: Promise<unknown> = Promise.resolve();
   await act(async () => {
     sendPromise = result.current.sendReplyRequest("hello", { panelId: "panel-1" });
     await Promise.resolve();
@@ -581,5 +583,117 @@ describe("useCodexReplyRequest send gate liveness", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe("useCodexReplyRequest send acceptance contract", () => {
+  test("clears the composer synchronously on accept, before the compact-queue round trip settles", async () => {
+    const { options } = createOptions();
+    (options as { transcript: string }).transcript = "hello world";
+    let resolveEnqueue: (value: unknown) => void = () => {};
+    mockEnqueueRunnerCodexTurn.mockImplementationOnce((() => new Promise((resolve) => {
+      resolveEnqueue = resolve;
+    })) as never);
+    mockStartCodexAppServerTurn.mockImplementation((() => ({
+      promise: Promise.resolve({ reply: "ok", threadId: "thread-1", turnId: "turn-1" }),
+    })) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    let sendPromise: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      sendPromise = result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+
+    // 送信受理と同時に同期クリアされる。キュー問い合わせ(HTTP)完了を待たない。
+    expect(mockEnqueueRunnerCodexTurn).toHaveBeenCalledTimes(1);
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+    expect(options.setTranscript).toHaveBeenCalledWith("");
+
+    await act(async () => {
+      resolveEnqueue({ queued: false });
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+  });
+
+  test("queued-during-compact send clears the composer and releases the send gate", async () => {
+    const { options } = createOptions();
+    (options as { transcript: string }).transcript = "queued message";
+    mockEnqueueRunnerCodexTurn.mockResolvedValueOnce({
+      queued: true,
+      queuedTurn: { queuedTurnId: "qt-1", threadId: "thread-1", status: "queued", inputPreview: "" },
+    } as never);
+    mockStartCodexAppServerTurn.mockImplementation((() => ({
+      promise: new Promise(() => {}),
+      interrupt: jest.fn(),
+    })) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await expect(result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      })).resolves.toBeUndefined();
+    });
+    expect(options.setTranscript).toHaveBeenCalledWith("");
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+
+    // ゲートが解放されているので、次の送信は通常ターンとして通る。
+    await act(async () => {
+      void result.current.sendReplyRequest("next message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test("gate-blocked send keeps the composer and reports the rejection", async () => {
+    const { options } = createOptions();
+    mockStartCodexAppServerTurn.mockImplementation((() => ({
+      promise: new Promise(() => {}),
+      interrupt: jest.fn(),
+    })) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      void result.current.sendReplyRequest("first message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+
+    (options as { transcript: string }).transcript = "second message";
+    await act(async () => {
+      // ブロックされた送信は入力を消さず、拒否理由を返す(サイレントskip禁止)。
+      await expect(result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      })).resolves.toEqual({ rejected: "active_request" });
+    });
+    expect(options.setTranscript).not.toHaveBeenCalled();
+  });
+
+  test("missing codex ws url send keeps the composer and reports the rejection", async () => {
+    const { options } = createOptions();
+    (options as { transcript: string; codexWsUrl: string }).codexWsUrl = "";
+    (options as { transcript: string }).transcript = "hello";
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await expect(result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      })).resolves.toEqual({ rejected: "missing_codex_ws_url" });
+    });
+    expect(options.setTranscript).not.toHaveBeenCalled();
+    expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 });
