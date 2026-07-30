@@ -29,6 +29,7 @@ import {
 } from "../utils/runnerFileContextMenu";
 import {
   uploadWorkspaceFile,
+  type WorkspaceFileTarget,
   type WorkspaceUploadSource,
 } from "../utils/workspaceFiles";
 
@@ -65,6 +66,7 @@ type GitDiffPanelProps = {
   onRefreshGitChangedFiles?: () => void | Promise<void>;
   showInfoToast: (textRaw: unknown) => void;
   onOpenMedia: (media: RunnerMediaFile) => void;
+  onOpenHtml?: (target: WorkspaceFileTarget) => void;
   logSessionDiag?: (
     event: string,
     payload?: Record<string, unknown>,
@@ -97,6 +99,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   onRefreshGitChangedFiles,
   showInfoToast,
   onOpenMedia,
+  onOpenHtml,
   logSessionDiag,
 }: GitDiffPanelProps) {
   const hasEverBeenVisibleRef = useRef(visible);
@@ -450,6 +453,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       getPathLabel,
       showInfoToast,
       onOpenMedia,
+      onOpenHtml,
       onShellScriptStarted: () => {
         setGitPanelTab("running");
       },
@@ -463,6 +467,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     explorerNodesByPath,
     getPathLabel,
     onOpenMedia,
+    onOpenHtml,
     deleteFile,
     renameFileTarget,
     requestRename,
