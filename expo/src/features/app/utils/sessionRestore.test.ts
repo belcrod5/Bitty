@@ -1,4 +1,9 @@
-import { buildHistoryFromSessionMessages, buildRestoredSessionState, clampContextUsedPct } from "./sessionRestore";
+import {
+  buildHistoryFromSessionMessages,
+  buildRestoredSessionState,
+  clampContextUsedPct,
+  mergeLocalCompactSlashMessages,
+} from "./sessionRestore";
 import type { RunnerSessionMessagesResult } from "../hooks/useLlmSessionExplorer";
 import type { ConversationMessage, LlmSessionMessage } from "../types/appTypes";
 
@@ -142,6 +147,87 @@ describe("buildHistoryFromSessionMessages", () => {
       transcript: "run tests",
       reply: "done",
     });
+  });
+});
+
+describe("mergeLocalCompactSlashMessages", () => {
+  const compactUser = (id: string, at: string): ConversationMessage => ({
+    id,
+    role: "user",
+    content: "/compact",
+    at,
+  });
+  const compactRunningAssistant = (id: string, at: string): ConversationMessage => ({
+    id,
+    role: "assistant",
+    content: "コンテキスト圧縮中です。完了まで待ってください。",
+    llmStatusDetail: "slash command running: /compact",
+    at,
+  });
+  const restoredMessage = (id: string, role: "user" | "assistant", content: string, at: string): ConversationMessage => ({
+    id,
+    role,
+    content,
+    at,
+  });
+
+  it("JSONLに存在しないローカルの/compact開始ペアを復元結果へ引き継ぐ", () => {
+    const restored = [
+      restoredMessage("r1", "user", "こんにちは", "2026-01-01T00:00:01.000Z"),
+      restoredMessage("r2", "assistant", "どうしましたか", "2026-01-01T00:00:02.000Z"),
+    ];
+    const local = [
+      ...restored,
+      compactUser("l1", "2026-01-01T00:00:03.000Z"),
+      compactRunningAssistant("l2", "2026-01-01T00:00:04.000Z"),
+    ];
+
+    const merged = mergeLocalCompactSlashMessages(restored, local);
+
+    expect(merged.map((item) => item.id)).toEqual(["r1", "r2", "l1", "l2"]);
+  });
+
+  it("復元結果へタイムスタンプ順で差し込む", () => {
+    const restored = [
+      restoredMessage("r1", "user", "こんにちは", "2026-01-01T00:00:01.000Z"),
+      restoredMessage("r2", "assistant", "圧縮後の続き", "2026-01-01T00:00:10.000Z"),
+    ];
+    const local = [
+      compactUser("l1", "2026-01-01T00:00:03.000Z"),
+      compactRunningAssistant("l2", "2026-01-01T00:00:04.000Z"),
+    ];
+
+    const merged = mergeLocalCompactSlashMessages(restored, local);
+
+    expect(merged.map((item) => item.id)).toEqual(["r1", "l1", "l2", "r2"]);
+  });
+
+  it("復元結果に同一メッセージがある場合は重複させない", () => {
+    const restored = [
+      restoredMessage("r1", "user", "こんにちは", "2026-01-01T00:00:01.000Z"),
+      compactUser("r2", "2026-01-01T00:00:03.000Z"),
+      compactRunningAssistant("r3", "2026-01-01T00:00:04.000Z"),
+    ];
+    const local = [
+      restored[0],
+      compactUser("l1", "2026-01-01T00:00:03.000Z"),
+      compactRunningAssistant("l2", "2026-01-01T00:00:04.000Z"),
+    ];
+
+    const merged = mergeLocalCompactSlashMessages(restored, local);
+
+    expect(merged.map((item) => item.id)).toEqual(["r1", "r2", "r3"]);
+  });
+
+  it("ローカルに/compactメッセージが無ければ復元結果をそのまま返す", () => {
+    const restored = [
+      restoredMessage("r1", "user", "こんにちは", "2026-01-01T00:00:01.000Z"),
+    ];
+    const local = [
+      restoredMessage("l1", "user", "別の発言", "2026-01-01T00:00:02.000Z"),
+    ];
+
+    expect(mergeLocalCompactSlashMessages(restored, local)).toBe(restored);
   });
 });
 

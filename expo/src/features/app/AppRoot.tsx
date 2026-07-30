@@ -135,6 +135,7 @@ import {
   usePanelNewSessionController,
   type PanelRuntimeEntry,
 } from "./hooks/usePanelNewSessionController";
+import { usePanelConversationWriteController } from "./hooks/usePanelConversationWriteController";
 import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
 import {
@@ -6688,141 +6689,25 @@ export default function App() {
     const snapshot = resolvePanelSnapshotForDisplay(panelId);
     return cloneConversationMessages(snapshot.conversationMessages);
   }, [cloneConversationMessages, resolvePanelSnapshotForDisplay]);
-  const setPanelConversationMessagesForCodex = useCallback((
-    panelIdRaw: string,
-    messagesRaw: ConversationMessage[],
-    options?: PanelConversationWriteOptions
-  ) => {
-    const panelId = normalizeRuntimePanelId(panelIdRaw);
-    if (!panelId) return;
-    const optionSessionId = parseOptionalSessionId(options?.sessionId);
-    const baseSnapshot = resolvePanelSnapshotForDisplay(panelId);
-    const contextUsedPct = options?.contextUsedPct !== null && typeof options?.contextUsedPct !== "undefined" && Number.isFinite(Number(options?.contextUsedPct))
-      ? Math.max(0, Math.min(100, Math.round(Number(options?.contextUsedPct))))
-      : baseSnapshot.contextUsedPct;
-    const isResponding = typeof options?.isResponding === "boolean"
-      ? options.isResponding
-      : Boolean(baseSnapshot.isResponding);
-    const selectedThreadStatusTypeForPanel = typeof options?.selectedThreadStatusType === "string"
-      ? String(options?.selectedThreadStatusType || "unknown").trim() || "unknown"
-      : String(baseSnapshot.selectedThreadStatusType || "unknown").trim() || "unknown";
-    const selectedSessionId = String(optionSessionId || baseSnapshot.selectedSessionId || "").trim();
-    const runtimeSnapshot = selectedSessionId ? getConversationRuntimeSnapshot(selectedSessionId) : null;
-    const runtimeRequestStartedAtMs = runtimeSnapshot?.isResponding &&
-      runtimeSnapshot.request &&
-      isConversationRuntimeRequestResponding(runtimeSnapshot.request) &&
-      runtimeSnapshot.request.startedAtMs > 0
-      ? runtimeSnapshot.request.startedAtMs
-      : undefined;
-    const shouldSyncSameSession = !!selectedSessionId;
-    const previousMessageCount = Array.isArray(baseSnapshot.conversationMessages)
-      ? baseSnapshot.conversationMessages.length
-      : 0;
-    const nextMessageCount = Array.isArray(messagesRaw) ? messagesRaw.length : 0;
-    const lastMessage = nextMessageCount > 0 ? messagesRaw[nextMessageCount - 1] : null;
-    const selectedSessionUpdatedAt = String(lastMessage?.at || "").trim() || new Date().toISOString();
-    const nextSnapshot = createPanelRuntimeSnapshot(panelId, baseSnapshot, {
-      selectedSessionId,
-      selectedSessionUpdatedAt,
-      contextUsedPct,
-      isResponding,
-      requestStartedAtMs: runtimeRequestStartedAtMs,
-      selectedThreadStatusType: selectedThreadStatusTypeForPanel,
-      conversationMessages: messagesRaw,
-    });
-    const currentPanelSessionId = parseOptionalSessionId(resolvePanelSnapshotForDisplay(panelId).selectedSessionId);
-    const adoptFromSessionId = parseOptionalSessionId(options?.adoptFromSessionId);
-    const shouldAdoptSourcePanelSession = Boolean(
-      optionSessionId &&
-      adoptFromSessionId &&
-      currentPanelSessionId === adoptFromSessionId
-    );
-    const shouldUpdateSourcePanel = (
-      !optionSessionId ||
-      !currentPanelSessionId ||
-      currentPanelSessionId === selectedSessionId ||
-      shouldAdoptSourcePanelSession
-    );
-    if (nextSnapshot.selectedSessionId) {
-      upsertConversationRuntimeSnapshot({
-        sessionId: nextSnapshot.selectedSessionId,
-        conversationMessages: nextSnapshot.conversationMessages,
-        contextUsedPct: nextSnapshot.contextUsedPct,
-        isResponding: nextSnapshot.isResponding,
-        selectedThreadStatusType: nextSnapshot.selectedThreadStatusType,
-        clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
-      });
-    }
-    const syncedPanelIds: string[] = [];
-    setPanelRuntimeEntriesById((prev) => {
-      const next: Record<string, PanelRuntimeEntry> = { ...prev };
-      if (shouldUpdateSourcePanel) {
-        next[panelId] = {
-          sessionId: nextSnapshot.selectedSessionId,
-          snapshot: nextSnapshot,
-        };
-      }
-      if (shouldSyncSameSession) {
-        for (const [entryPanelId, entry] of Object.entries(prev)) {
-          if (entryPanelId === panelId) continue;
-          const entrySessionId = String(entry.snapshot.selectedSessionId || entry.sessionId || "").trim();
-          if (entrySessionId !== selectedSessionId) continue;
-          next[entryPanelId] = {
-            ...entry,
-            sessionId: entry.sessionId || selectedSessionId,
-            snapshot: createPanelRuntimeSnapshot(entryPanelId, entry.snapshot, {
-              modelRef: entry.snapshot.modelRef || baseSnapshot.modelRef,
-              reasoningEffort: entry.snapshot.reasoningEffort || baseSnapshot.reasoningEffort,
-              selectedSessionUpdatedAt,
-              contextUsedPct,
-              isResponding,
-              requestStartedAtMs: runtimeRequestStartedAtMs,
-              selectedThreadStatusType: selectedThreadStatusTypeForPanel,
-              conversationMessages: messagesRaw,
-            }),
-          };
-          syncedPanelIds.push(entryPanelId);
-        }
-      }
-      return next;
-    });
-    const hasContextUpdate = options?.contextUsedPct !== null &&
-      typeof options?.contextUsedPct !== "undefined" &&
-      Number.isFinite(Number(options?.contextUsedPct));
-    logSessionDiag("panel_runtime_messages_updated", {
-      panelId,
-      sessionId: nextSnapshot.selectedSessionId || undefined,
-      contextUsedPct: nextSnapshot.contextUsedPct,
-      isResponding: nextSnapshot.isResponding,
-      selectedThreadStatusType: nextSnapshot.selectedThreadStatusType,
-      syncedSameSessionPanelIds: syncedPanelIds,
-      sourcePanelUpdated: shouldUpdateSourcePanel,
-      sourcePanelSessionAdopted: shouldAdoptSourcePanelSession,
-      adoptFromSessionId: adoptFromSessionId || undefined,
-      currentPanelSessionId: currentPanelSessionId || undefined,
-      previousMessageCount,
-      messageCount: nextSnapshot.conversationMessages.length,
-      messageCountDelta: nextMessageCount - previousMessageCount,
-      lastMessageId: String(lastMessage?.id || "").trim(),
-      lastMessageRole: String(lastMessage?.role || "").trim(),
-      lastMessageContentLength: String(lastMessage?.content || "").length,
-      lastMessagePreview: String(lastMessage?.content || "").slice(0, 80),
-      source: "codex_reply_request",
-      updateKind: hasContextUpdate ? "final" : "stream",
-    }, {
-      throttleMs: hasContextUpdate ? 0 : 1000,
-      throttleKey: hasContextUpdate
-        ? `panel_runtime_messages_updated:${panelId}:${Date.now()}`
-        : `panel_runtime_messages_updated:${panelId}:stream`,
-    });
-  }, [
+  // パネル書込は書込対象セッションが表示中セッションと一致する場合、トップレベルの会話表示state
+  // (conversationMessages / replyLoading / selectedThreadStatusType / contextUsedPct)へも伝播する。
+  // 伝播しないとアクティブ会話stateが古いまま activeConversationSnapshot 同期に巻き戻され、
+  // /compact 開始メッセージのようなローカル追記が表示から消える。
+  const { setPanelConversationMessagesForCodex } = usePanelConversationWriteController({
+    resolvePanelSnapshotForDisplay,
     createPanelRuntimeSnapshot,
     getConversationRuntimeSnapshot,
-    logSessionDiag,
-    panelRuntimeEntriesById,
-    resolvePanelSnapshotForDisplay,
     upsertConversationRuntimeSnapshot,
-  ]);
+    setPanelRuntimeEntriesById,
+    getVisibleSessionId: () => (
+      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
+    ),
+    setVisibleConversationMessages: setConversationMessagesWithLimit,
+    setVisibleReplyLoading: setReplyLoadingWithRef,
+    setVisibleThreadStatusType: setSelectedThreadStatusType,
+    setVisibleContextUsedPct: setAcpContextUsedPct,
+    logSessionDiag,
+  });
   getSessionConversationMessagesForCodexRef.current = (sessionIdRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return [];
