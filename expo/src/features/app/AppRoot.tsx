@@ -135,7 +135,10 @@ import {
   usePanelNewSessionController,
   type PanelRuntimeEntry,
 } from "./hooks/usePanelNewSessionController";
-import { usePanelConversationWriteController } from "./hooks/usePanelConversationWriteController";
+import {
+  usePanelConversationWriteController,
+  type PanelConversationWriteOptions,
+} from "./hooks/usePanelConversationWriteController";
 import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
 import {
@@ -1446,15 +1449,12 @@ export default function App() {
   const faceTrackingSuppressedRef = useRef(false);
   const faceTrackingNotLookingSinceRef = useRef(0);
   const conversationMessagesRef = useRef<ConversationMessage[]>([]);
+  const setReplyLoadingWithRefDelegateRef = useRef<(next: boolean) => void>(() => {});
   type RuntimeConversationWriteOptions = {
     isResponding?: boolean;
     selectedThreadStatusType?: string;
     sessionId?: string;
     clearRespondingRequestStartedAtMs?: number | null;
-  };
-  type PanelConversationWriteOptions = RuntimeConversationWriteOptions & {
-    contextUsedPct?: number | null;
-    adoptFromSessionId?: string;
   };
   const getPanelConversationMessagesForCodexRef = useRef<(panelId: string) => ConversationMessage[]>(
     () => []
@@ -6689,6 +6689,14 @@ export default function App() {
     const snapshot = resolvePanelSnapshotForDisplay(panelId);
     return cloneConversationMessages(snapshot.conversationMessages);
   }, [cloneConversationMessages, resolvePanelSnapshotForDisplay]);
+  const getVisibleSessionIdForPanelWrite = useCallback(() => (
+    selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
+  ), [selectedLlmSessionId]);
+  // setReplyLoadingWithRefは関数宣言で毎レンダー同一性が変わるため、refを介して安定化する。
+  setReplyLoadingWithRefDelegateRef.current = setReplyLoadingWithRef;
+  const setVisibleReplyLoadingForPanelWrite = useCallback((next: boolean) => {
+    setReplyLoadingWithRefDelegateRef.current(next);
+  }, []);
   // パネル書込は書込対象セッションが表示中セッションと一致する場合、トップレベルの会話表示state
   // (conversationMessages / replyLoading / selectedThreadStatusType / contextUsedPct)へも伝播する。
   // 伝播しないとアクティブ会話stateが古いまま activeConversationSnapshot 同期に巻き戻され、
@@ -6699,11 +6707,9 @@ export default function App() {
     getConversationRuntimeSnapshot,
     upsertConversationRuntimeSnapshot,
     setPanelRuntimeEntriesById,
-    getVisibleSessionId: () => (
-      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
-    ),
+    getVisibleSessionId: getVisibleSessionIdForPanelWrite,
     setVisibleConversationMessages: setConversationMessagesWithLimit,
-    setVisibleReplyLoading: setReplyLoadingWithRef,
+    setVisibleReplyLoading: setVisibleReplyLoadingForPanelWrite,
     setVisibleThreadStatusType: setSelectedThreadStatusType,
     setVisibleContextUsedPct: setAcpContextUsedPct,
     logSessionDiag,
