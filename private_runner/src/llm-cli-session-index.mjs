@@ -56,6 +56,18 @@ export function createLlmCliSessionIndex(deps = {}) {
     };
   }
 
+  function pickNewerLastReadAt(first, second) {
+    const a = normalizeSessionUpdatedAt(first);
+    const b = normalizeSessionUpdatedAt(second);
+    if (!a) return b || "";
+    if (!b) return a;
+    const aMs = Date.parse(a);
+    const bMs = Date.parse(b);
+    if (!Number.isFinite(aMs)) return b;
+    if (!Number.isFinite(bMs)) return a;
+    return bMs > aMs ? b : a;
+  }
+
   function buildCliSessionIndexPayload() {
     const entries = Array.from(cliSessionIndexByFilePath.values())
       .sort((a, b) => a.filePath.localeCompare(b.filePath));
@@ -255,7 +267,9 @@ export function createLlmCliSessionIndex(deps = {}) {
           cwd: meta.cwd,
           directory: meta.directory,
           updatedAt: meta.updatedAt,
-          lastReadAt: meta.lastReadAt,
+          // The index is the source of truth for read state; the file-side
+          // last_read_at only remains as legacy data in already-annotated files.
+          lastReadAt: pickNewerLastReadAt(cached?.lastReadAt, meta.lastReadAt),
         });
         if (!normalized) continue;
         nextByFilePath.set(filePath, normalized);
@@ -431,59 +445,9 @@ export function createLlmCliSessionIndex(deps = {}) {
       .filter(Boolean);
   }
 
-  async function rewriteCliSessionMetaLastReadAt(filePath, lastReadAtRaw) {
-    const lastReadAt = normalizeSessionUpdatedAt(lastReadAtRaw) || new Date().toISOString();
-    let raw = "";
-    try {
-      raw = await fs.readFile(filePath, "utf8");
-    } catch {
-      return { updated: false, sessionId: "" };
-    }
-    if (!raw) return { updated: false, sessionId: "" };
-    const lineEndIndex = raw.indexOf("\n");
-    const firstLine = (lineEndIndex >= 0 ? raw.slice(0, lineEndIndex) : raw).trim();
-    if (!firstLine) return { updated: false, sessionId: "" };
-    let parsedFirstLine = null;
-    try {
-      parsedFirstLine = JSON.parse(firstLine);
-    } catch {
-      return { updated: false, sessionId: "" };
-    }
-    if (String(parsedFirstLine?.type || "") !== "session_meta") return { updated: false, sessionId: "" };
-    const existingPayload = parsedFirstLine?.payload && typeof parsedFirstLine.payload === "object"
-      ? parsedFirstLine.payload
-      : null;
-    if (!existingPayload) return { updated: false, sessionId: "" };
-    let sessionId = "";
-    try {
-      sessionId = normalizeLlmExecutionSessionId(existingPayload?.id);
-    } catch {
-      sessionId = "";
-    }
-    if (!sessionId) return { updated: false, sessionId: "" };
-    const currentLastReadAt = normalizeSessionUpdatedAt(existingPayload?.last_read_at);
-    if (currentLastReadAt === lastReadAt) {
-      return { updated: false, sessionId };
-    }
-    const replacementEntry = {
-      ...parsedFirstLine,
-      payload: {
-        ...existingPayload,
-        last_read_at: lastReadAt,
-      },
-    };
-    const replacementLine = JSON.stringify(replacementEntry);
-    const remainder = lineEndIndex >= 0 ? raw.slice(lineEndIndex + 1) : "";
-    const nextRaw = `${replacementLine}\n${remainder}`;
-    if (nextRaw === raw) return { updated: false, sessionId };
-    await fs.writeFile(filePath, nextRaw, "utf8");
-    return { updated: true, sessionId };
-  }
-
   async function markCliSessionRead(sessionId, opts = {}) {
     let updated = false;
     let lookupMs = 0;
-    let rewriteMs = 0;
     let persistMs = 0;
     let entryFound = false;
 
@@ -494,13 +458,13 @@ export function createLlmCliSessionIndex(deps = {}) {
     lookupMs = Math.max(0, Date.now() - lookupStartedAtMs);
     entryFound = Boolean(entry && entry.filePath);
     if (entry && entry.filePath) {
-      const rewriteStartedAtMs = Date.now();
-      const writeResult = await rewriteCliSessionMetaLastReadAt(entry.filePath, opts?.lastReadAt);
-      rewriteMs = Math.max(0, Date.now() - rewriteStartedAtMs);
-      if (writeResult.updated) {
+      // Read state lives only in the index: rewriting the rollout file here would
+      // bump its mtime, which codex thread/list reports as the session updatedAt.
+      const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
+      if (normalizeSessionUpdatedAt(entry.lastReadAt) !== lastReadAt) {
         const normalized = normalizeCliSessionIndexEntry({
           ...entry,
-          lastReadAt: opts?.lastReadAt,
+          lastReadAt,
         });
         if (normalized) {
           cliSessionIndexByFilePath.set(entry.filePath, normalized);
@@ -511,15 +475,15 @@ export function createLlmCliSessionIndex(deps = {}) {
           cliSessionIndexWriteQueue = op.catch(() => {});
           await op;
           persistMs = Math.max(0, Date.now() - persistStartedAtMs);
+          updated = true;
         }
-        updated = true;
       }
     }
 
     return {
       updated,
       lookupMs,
-      rewriteMs,
+      rewriteMs: 0,
       persistMs,
       entryFound,
     };
@@ -533,6 +497,7 @@ export function createLlmCliSessionIndex(deps = {}) {
       return;
     }
     const fallbackUpdatedAt = normalizeSessionUpdatedAt(meta.updatedAt) || new Date(Math.floor(Number(stat.mtimeMs || Date.now()))).toISOString();
+    const cached = cliSessionIndexByFilePath.get(path.resolve(filePath));
     const normalized = normalizeCliSessionIndexEntry({
       filePath,
       mtimeMs: Number(stat.mtimeMs || 0),
@@ -541,7 +506,7 @@ export function createLlmCliSessionIndex(deps = {}) {
       cwd: meta.cwd,
       directory: meta.directory,
       updatedAt: fallbackUpdatedAt,
-      lastReadAt: meta.lastReadAt,
+      lastReadAt: pickNewerLastReadAt(cached?.lastReadAt, meta.lastReadAt),
     });
     if (!normalized) return;
     cliSessionIndexByFilePath.set(filePath, normalized);
