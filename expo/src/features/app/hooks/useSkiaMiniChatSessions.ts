@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
+import type { LlmSessionSource } from "./useLlmSessionExplorer";
 
 const SKIA_MINI_CHAT_PANEL_IDS = Array.from(
   { length: 6 },
@@ -13,6 +14,8 @@ const SKIA_MINI_CHAT_PANEL_IDS = Array.from(
 export type SkiaMiniChatSession = {
   panelId: string;
   sessionId: string;
+  directory: string;
+  source: LlmSessionSource;
   title: string;
   directoryName: string;
   lastMessageContent: string;
@@ -129,32 +132,6 @@ export function useSkiaMiniChatSessions() {
     });
   }, [sessionCandidates, sessionSignature, sessionTitleOverridesById]);
 
-  // ポップアップで開く直前にJSONLから本文を再同期する(ドロワー経由と同じ鮮度に揃える)。
-  // パネルスナップショットはメモリ上の写像でしかなく、relay喪失やバックグラウンド完了で
-  // 古いまま残ることがある。ライブ応答中のパネルは上書きしない。
-  // 多重呼び出しのdedupは既存のパネルhydration世代ガード(superseded)に委譲する。
-  const refreshPanelSessionForPopup = useCallback((panelIdRaw: string) => {
-    const panelId = String(panelIdRaw || "").trim();
-    const session = sessionCandidates[SKIA_MINI_CHAT_PANEL_IDS.indexOf(panelId)];
-    if (!session) return;
-    const snapshot = getSnapshot(panelId);
-    if (snapshot.selectedSessionId === session.sessionId && snapshot.isResponding) return;
-    void hydratePanelFromSessionHistoryRef.current({
-      panelId,
-      sessionId: session.sessionId,
-      directory: session.directory,
-      source: session.source,
-      directoryDisplayName: session.directoryDisplayName,
-      title: sessionTitleOverridesById[session.sessionId] || session.firstUserMessage,
-      updatedAt: session.updatedAt,
-      modelRef: session.modelRef,
-      reasoningEffort: session.reasoningEffort,
-      contextUsedPct: session.contextUsedPct,
-    }).catch(() => {
-      // 失敗時は既存スナップショットを表示し続ける(hydration側が同一セッションの状態を保持する)。
-    });
-  }, [getSnapshot, sessionCandidates, sessionTitleOverridesById]);
-
   const sessions = useMemo<SkiaMiniChatSession[]>(() => (
     sessionCandidates.map((session, index) => {
       const panelId = SKIA_MINI_CHAT_PANEL_IDS[index];
@@ -166,6 +143,8 @@ export function useSkiaMiniChatSessions() {
       return {
         panelId,
         sessionId: session.sessionId,
+        directory: session.directory,
+        source: session.source,
         title: String(
           sessionTitleOverridesById[session.sessionId]
           || session.agentDisplayName
@@ -192,7 +171,6 @@ export function useSkiaMiniChatSessions() {
     directorySync: directorySessionSync,
     hydratingPanelCount,
     panelHydrationErrorCount,
-    refreshPanelSessionForPopup,
     sessions,
   };
 }

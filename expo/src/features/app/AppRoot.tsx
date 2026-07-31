@@ -32,9 +32,10 @@ import {
   LlmCompletionNotifications,
   type LlmCompletionNotification,
 } from "./components/LlmCompletionNotifications";
+import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
-import type { PopupChatSourceRect } from "./components/popupChatTypes";
+import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
 import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
 import { MiniBoardScreen } from "./screens/MiniBoardScreen";
@@ -1020,6 +1021,7 @@ export default function App() {
   const [drawerSessionPopupPanelId, setDrawerSessionPopupPanelId] = useState("");
   const [drawerSessionPopupCycleId, setDrawerSessionPopupCycleId] = useState("");
   const [drawerSessionPopupSourceRect, setDrawerSessionPopupSourceRect] = useState<PopupChatSourceRect | null>(null);
+  const [drawerSessionPopupOrigin, setDrawerSessionPopupOrigin] = useState<SessionPopupOrigin>("drawer");
   const [youtubeInlineLayout, setYoutubeInlineLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [youtubeFloatingPosition, setYoutubeFloatingPosition] = useState<{ x: number; y: number } | null>(null);
   const [youtubePlayerVideoId, setYoutubePlayerVideoId] = useState("");
@@ -7520,6 +7522,7 @@ export default function App() {
     setDrawerSessionPopupPanelId("");
     setDrawerSessionPopupCycleId("");
     setDrawerSessionPopupSourceRect(null);
+    setDrawerSessionPopupOrigin("drawer");
   }, [clearPanelSnapshot, drawerSessionPopupPanelId]);
   const openNewSessionPopup = useCallback((params: { directory: string }) => {
     const directory = parseLlmDirectory(params?.directory || normalizedLlmDirectoryForRequest());
@@ -7531,6 +7534,7 @@ export default function App() {
     const cycleId = `drawer-new-session-popup-${Date.now().toString(36)}`;
     setDrawerSessionPopupSourceRect(null);
     setDrawerSessionPopupCycleId(cycleId);
+    setDrawerSessionPopupOrigin("drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
     logSessionDiag("drawer_new_session_popup_opened", {
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
@@ -7548,6 +7552,7 @@ export default function App() {
     source: LlmSessionSource;
     directory?: string;
     sourceRect?: PopupChatSourceRect;
+    origin?: SessionPopupOrigin;
   }) => {
     const sessionId = parseOptionalSessionId(params.sessionId);
     if (!sessionId) {
@@ -7568,6 +7573,7 @@ export default function App() {
     const cycleId = `drawer-session-popup-${Date.now().toString(36)}`;
     setDrawerSessionPopupSourceRect(params.sourceRect || null);
     setDrawerSessionPopupCycleId(cycleId);
+    setDrawerSessionPopupOrigin(params.origin || "drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
     void hydratePanelFromSessionHistory({
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
@@ -7727,7 +7733,10 @@ export default function App() {
       ) : activeScreen === "cloudflare_tunnel_monitor" ? (
         <CloudflareTunnelMonitorScreen />
       ) : activeScreen === "skia_board" ? (
-        <SkiaMiniBoardScreen onClose={openMiniBoardScreen} />
+        <SkiaMiniBoardScreen
+          onClose={openMiniBoardScreen}
+          openSessionHistoryPopup={openSessionHistoryPopup}
+        />
       ) : (
         <AudioLabScreen />
       )}
@@ -7750,17 +7759,19 @@ export default function App() {
       </SafeAreaView>
         </Drawer>
         {drawerSessionPopupPanelId ? (
-          <View pointerEvents="box-none" style={styles.drawerPopupOverlayHost}>
-            <SafeAreaView style={styles.drawerPopupSafeArea}>
-              <PopupChatOverlay
-                visible={!!drawerSessionPopupPanelId}
-                panelId={drawerSessionPopupPanelId}
-                cycleId={drawerSessionPopupCycleId}
-                sourceRect={drawerSessionPopupSourceRect}
-                onClose={closeDrawerSessionPopup}
-              />
-            </SafeAreaView>
-          </View>
+          <DrawerSessionPopupHost
+            origin={drawerSessionPopupOrigin}
+            hostStyle={styles.drawerPopupOverlayHost}
+            safeAreaStyle={styles.drawerPopupSafeArea}
+          >
+            <PopupChatOverlay
+              visible={!!drawerSessionPopupPanelId}
+              panelId={drawerSessionPopupPanelId}
+              cycleId={drawerSessionPopupCycleId}
+              sourceRect={drawerSessionPopupSourceRect}
+              onClose={closeDrawerSessionPopup}
+            />
+          </DrawerSessionPopupHost>
         ) : null}
         <SafeAreaView pointerEvents="box-none" style={styles.llmCompletionNotificationLayer}>
           <LlmCompletionNotifications

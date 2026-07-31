@@ -126,6 +126,8 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
     expect(result.current.sessions[0]).toMatchObject({
       title: "Pinned title",
+      directory: "/workspace",
+      source: "appserver",
       directoryName: "Workspace",
       lastMessageContent: "Last message 8",
       markerColor: "green",
@@ -185,101 +187,6 @@ describe("useSkiaMiniChatSessions", () => {
     expect(result.current.panelHydrationErrorCount).toBe(1);
     expect(clearPanelSnapshot).toHaveBeenCalledWith("skia_mini_preview_2");
     expect(result.current.directorySync.phase).toBe("idle");
-  });
-
-  it("rehydrates the panel session from history when opening the popup", async () => {
-    const hydratePanelFromSessionHistory = jest.fn().mockResolvedValue("applied");
-    mockUsePanelRuntimeController.mockReturnValue({
-      clearPanelSnapshot: jest.fn(),
-      hydratePanelFromSessionHistory,
-    } as unknown as ReturnType<typeof usePanelRuntimeController>);
-    mockUseConversation.mockReturnValue({
-      registeredDirectories: [workspaceDirectory],
-      directorySessionsById: {
-        workspace: tree([session(8)]),
-      },
-      sessionTitleOverridesById: { "session-8": "Pinned title" },
-      sessionMarkerColorsById: {},
-      formatSessionUpdatedAt: (value: string) => value,
-      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
-      ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ReturnType<typeof useConversation>);
-
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
-    hydratePanelFromSessionHistory.mockClear();
-
-    await act(async () => {
-      result.current.refreshPanelSessionForPopup("skia_mini_preview_1");
-    });
-
-    expect(hydratePanelFromSessionHistory).toHaveBeenCalledWith(expect.objectContaining({
-      panelId: "skia_mini_preview_1",
-      sessionId: "session-8",
-      directory: "/workspace",
-      title: "Pinned title",
-    }));
-  });
-
-  it("keeps a live responding panel untouched when opening the popup", async () => {
-    const hydratePanelFromSessionHistory = jest.fn().mockResolvedValue("applied");
-    mockUsePanelRuntimeController.mockReturnValue({
-      clearPanelSnapshot: jest.fn(),
-      hydratePanelFromSessionHistory,
-    } as unknown as ReturnType<typeof usePanelRuntimeController>);
-    mockUsePanelRuntimeStore.mockReturnValue({
-      getSnapshot: () => ({
-        selectedSessionId: "session-8",
-        conversationMessages: [],
-        isResponding: true,
-      }),
-      getKnownPanelIds: () => [],
-    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
-    mockUseConversation.mockReturnValue({
-      registeredDirectories: [workspaceDirectory],
-      directorySessionsById: {
-        workspace: tree([session(8)]),
-      },
-      sessionTitleOverridesById: {},
-      sessionMarkerColorsById: {},
-      formatSessionUpdatedAt: (value: string) => value,
-      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
-      ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ReturnType<typeof useConversation>);
-
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
-    hydratePanelFromSessionHistory.mockClear();
-
-    await act(async () => {
-      result.current.refreshPanelSessionForPopup("skia_mini_preview_1");
-    });
-
-    expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
-  });
-
-  it("ignores a popup refresh for a panel without a session candidate", async () => {
-    const hydratePanelFromSessionHistory = jest.fn().mockResolvedValue("applied");
-    mockUsePanelRuntimeController.mockReturnValue({
-      clearPanelSnapshot: jest.fn(),
-      hydratePanelFromSessionHistory,
-    } as unknown as ReturnType<typeof usePanelRuntimeController>);
-    mockUseConversation.mockReturnValue({
-      registeredDirectories: [],
-      directorySessionsById: {},
-      sessionTitleOverridesById: {},
-      sessionMarkerColorsById: {},
-      formatSessionUpdatedAt: (value: string) => value,
-      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
-      ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
-    } as unknown as ReturnType<typeof useConversation>);
-
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
-    hydratePanelFromSessionHistory.mockClear();
-
-    await act(async () => {
-      result.current.refreshPanelSessionForPopup("skia_mini_preview_1");
-    });
-
-    expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
   });
 
   it("ignores a failed hydration from an obsolete candidate generation", async () => {
