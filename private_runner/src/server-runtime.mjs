@@ -178,6 +178,10 @@ const MAX_WORKSPACE_UPLOAD_BYTES = Number(
   process.env.MAX_WORKSPACE_UPLOAD_BYTES || 25 * 1024 * 1024
 );
 const MAX_TTS_CHARS = Number(process.env.MAX_TTS_CHARS || 5000);
+const STREAM_TTS_MAX_CHARS = Math.max(
+  1000,
+  Number(process.env.STREAM_TTS_MAX_CHARS || 50000)
+);
 const STREAM_TTS_SEGMENT_MAX_CHARS = Math.max(
   24,
   Number(process.env.STREAM_TTS_SEGMENT_MAX_CHARS || 70)
@@ -2815,7 +2819,18 @@ function findStreamTtsSplitIndex(buffer, maxChars) {
   for (let i = hardLimit - 1; i >= softStart; i -= 1) {
     if (isSoftTtsSplitChar(text[i])) return i;
   }
-  return hardLimit - 1;
+  let hardIndex = hardLimit - 1;
+  if (splitsSurrogatePair(text, hardIndex)) {
+    hardIndex = hardIndex > 0 ? hardIndex - 1 : hardIndex + 1;
+  }
+  return hardIndex;
+}
+
+function splitsSurrogatePair(text, index) {
+  const hi = text.charCodeAt(index);
+  if (hi < 0xd800 || hi > 0xdbff) return false;
+  const lo = text.charCodeAt(index + 1);
+  return lo >= 0xdc00 && lo <= 0xdfff;
 }
 
 function takeNextStreamTtsSegment(buffer, maxChars = STREAM_TTS_SEGMENT_MAX_CHARS, force = false) {
@@ -7405,6 +7420,14 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
         type: "error",
         error: "text_required",
         message: "text is required when mode=text",
+      });
+      return;
+    }
+    if (directText.length > STREAM_TTS_MAX_CHARS) {
+      emitEvent({
+        type: "error",
+        error: "text_too_long",
+        max: STREAM_TTS_MAX_CHARS,
       });
       return;
     }
@@ -12162,5 +12185,6 @@ export const __TESTING__ = {
   resolveStreamTtsSegmentTargetChars,
   fetchTtsWithTimeout,
   STREAM_TTS_SEGMENT_MAX_CHARS,
+  STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
 };

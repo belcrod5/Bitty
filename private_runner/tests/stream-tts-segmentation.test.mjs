@@ -4,13 +4,16 @@ import test from "node:test";
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_TOKEN = "test-runner-token";
 process.env.TTS_FETCH_TIMEOUT_MS = "1000";
+process.env.STREAM_TTS_MAX_CHARS = "1000";
 
 const {
   takeNextStreamTtsSegment,
   findStreamTtsSplitIndex,
   resolveStreamTtsSegmentTargetChars,
   fetchTtsWithTimeout,
+  startLlmStreamJob,
   STREAM_TTS_SEGMENT_MAX_CHARS,
+  STREAM_TTS_MAX_CHARS,
   TTS_FETCH_TIMEOUT_MS,
 } = (await import("../src/server-runtime.mjs")).__TESTING__;
 
@@ -118,6 +121,42 @@ test("fetchTtsWithTimeout rejects with a timeout error when the provider hangs",
     globalThis.fetch = originalFetch;
     clearTimeout(keepAlive);
   }
+});
+
+test("hard cut never splits a surrogate pair", () => {
+  // "a" offsets the emoji pairs so the hard cut at max chars lands on a high surrogate.
+  const text = `a${"😀".repeat(100)}`;
+  const splitIndex = findStreamTtsSplitIndex(text, STREAM_TTS_SEGMENT_MAX_CHARS);
+  assert.equal(splitIndex, STREAM_TTS_SEGMENT_MAX_CHARS - 2);
+  const segments = collectSegments(text);
+  assert.equal(segments.join(""), text);
+  for (const segment of segments) {
+    assert.ok(segment.isWellFormed(), `segment must not contain lone surrogates: ${segment}`);
+  }
+});
+
+test("hard cut on an aligned emoji run keeps pairs intact", () => {
+  const text = "😀".repeat(100);
+  const segments = collectSegments(text);
+  assert.equal(segments.join(""), text);
+  for (const segment of segments) {
+    assert.ok(segment.isWellFormed());
+  }
+});
+
+test("stream-tts text mode rejects text above the sanity limit with text_too_long", async () => {
+  assert.equal(STREAM_TTS_MAX_CHARS, 1000);
+  const job = startLlmStreamJob({
+    mode: "text",
+    text: "あ".repeat(STREAM_TTS_MAX_CHARS + 1),
+    ttsProvider: "elevenlabs",
+  });
+  await job.runPromise;
+  const errors = job.events.filter((e) => e.type === "error");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].error, "text_too_long");
+  assert.equal(errors[0].max, STREAM_TTS_MAX_CHARS);
+  assert.ok(!job.events.some((e) => e.type === "segment_queued"));
 });
 
 test("fetchTtsWithTimeout passes through successful responses", async () => {
