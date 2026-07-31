@@ -32,9 +32,10 @@ import {
   LlmCompletionNotifications,
   type LlmCompletionNotification,
 } from "./components/LlmCompletionNotifications";
+import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
-import type { PopupChatSourceRect } from "./components/popupChatTypes";
+import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
 import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
 import { MiniBoardScreen } from "./screens/MiniBoardScreen";
@@ -84,6 +85,7 @@ import { useAppDrawerSessionController } from "./hooks/useAppDrawerSessionContro
 import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTreeController";
 import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentityReconciliation";
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
+import { useSessionRelayLossRecoveryController } from "./hooks/useSessionRelayLossRecoveryController";
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
 import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
@@ -561,6 +563,8 @@ const APP_RESUME_STREAM_RECOVERY_NON_ACTIVE_MIN_MS = 2500;
 const SESSION_RESUME_AUTO_SIGNAL_MAX_AGE_MS = 10 * 60 * 1000;
 const WAITING_APPROVAL_RESUME_ATTACH_TIMEOUT_MS = 8000;
 const WAITING_APPROVAL_RESUME_RETRY_COOLDOWN_MS = 2500;
+// relay喪失後のJSONL再同期の最短間隔。再同期→relay再開→再喪失のループを抑止する。
+const RELAY_LOSS_RESYNC_MIN_INTERVAL_MS = 5000;
 const REPLY_DEBUG_MAX_LINES = 120;
 const REPLY_DEBUG_MAX_CHARS = 12000;
 const EMPTY_TOOL_AUTO_APPROVALS: ToolAutoApprovalMap = {};
@@ -1021,6 +1025,7 @@ export default function App() {
   const [drawerSessionPopupPanelId, setDrawerSessionPopupPanelId] = useState("");
   const [drawerSessionPopupCycleId, setDrawerSessionPopupCycleId] = useState("");
   const [drawerSessionPopupSourceRect, setDrawerSessionPopupSourceRect] = useState<PopupChatSourceRect | null>(null);
+  const [drawerSessionPopupOrigin, setDrawerSessionPopupOrigin] = useState<SessionPopupOrigin>("drawer");
   const [youtubeInlineLayout, setYoutubeInlineLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [youtubeFloatingPosition, setYoutubeFloatingPosition] = useState<{ x: number; y: number } | null>(null);
   const [youtubePlayerVideoId, setYoutubePlayerVideoId] = useState("");
@@ -1472,6 +1477,14 @@ export default function App() {
     messages: ConversationMessage[],
     options?: RuntimeConversationWriteOptions
   ) => void>(() => {});
+  // hydratePanelFromSessionHistoryは定義がパネルruntime系の後段にあるため、
+  // 前段のrelay喪失回復からはrefで遅延参照する(render中に実体を代入)。
+  const hydratePanelFromSessionHistoryRef = useRef<(params: {
+    panelId: string;
+    sessionId: string;
+    directory: string;
+    diagnosticCycleId?: string;
+  }) => Promise<"applied" | "superseded" | "failed">>(async () => "failed" as const);
   const llmSessionRestoreLoadingRef = useRef(false);
   const llmSessionRestoreInFlightRef = useRef(false);
   const llmSessionRestoreRequestSeqRef = useRef(0);
@@ -3881,59 +3894,26 @@ export default function App() {
     rememberSessionRuntimeStatus,
     upsertConversationRuntimeSnapshot,
   ]);
-  const finalizeSessionRuntimeAfterRelayLoss = useCallback((sessionIdRaw: unknown, reasonRaw: string) => {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
-    if (!sessionId) return;
-    const finalized = finalizeConversationRuntimeAfterRelayLoss(sessionId, reasonRaw);
-    const detail = finalized?.reason || String(reasonRaw || "relay unavailable").trim() || "relay unavailable";
-    const messages = finalized?.snapshot.conversationMessages || [];
-
-    if (messages.length > 0) {
-      setSessionConversationMessagesForCodexRef.current(sessionId, messages, {
-        isResponding: false,
-        selectedThreadStatusType: "idle",
-        sessionId,
-      });
-    }
-    rememberSessionRuntimeStatus(sessionId, {
-      hasRunningTurn: false,
-      hasPendingAssistant: false,
-      restoredInFlight: false,
-      waitingApproval: false,
-    });
-    clearPendingApprovalsForSession(sessionId);
-    clearToolAutoApprovalsForSession(sessionId);
-    const visibleSessionId = parseOptionalSessionId(
-      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
-    );
-    if (visibleSessionId === sessionId) {
-      setReplyLoadingWithRef(false);
-      setSelectedThreadStatusType("idle");
-      if (isLlmActiveStatus(llmUiStatusRef.current)) {
-        updateLlmStatus("error", detail);
-      }
-    }
-    logSessionDiag("session_runtime_relay_unavailable", {
-      sessionId,
-      reason: detail,
-      cancelledPendingApprovals: finalized?.cancelledPendingApprovals || 0,
-      messageCount: messages.length,
-    }, {
-      throttleMs: 0,
-      throttleKey: `session_runtime_relay_unavailable:${sessionId}:${detail}`,
-    });
-  }, [
+  const { finalizeSessionRuntimeAfterRelayLoss } = useSessionRelayLossRecoveryController({
+    finalizeConversationRuntimeAfterRelayLoss,
+    setSessionConversationMessagesForCodexRef,
+    panelRuntimeEntriesByIdRef,
+    hydratePanelFromSessionHistoryRef,
+    rememberSessionRuntimeStatus,
     clearPendingApprovalsForSession,
     clearToolAutoApprovalsForSession,
-    finalizeConversationRuntimeAfterRelayLoss,
-    logSessionDiag,
-    llmUiStatusRef,
-    rememberSessionRuntimeStatus,
     selectedLlmSessionId,
     selectedLlmSessionIdRef,
-    setSessionConversationMessagesForCodexRef,
+    llmConversationSessionIdRef,
+    setReplyLoadingWithRef,
+    setSelectedThreadStatusType,
+    llmUiStatusRef,
     updateLlmStatus,
-  ]);
+    normalizedLlmDirectoryForRequest,
+    selectSpecificLlmSession,
+    relayLossResyncMinIntervalMs: RELAY_LOSS_RESYNC_MIN_INTERVAL_MS,
+    logSessionDiag,
+  });
   const enrichApprovalRequestWithSessionContext = useCallback((request: ApprovalRequest): ApprovalRequest => {
     const sessionId = parseOptionalSessionId(request.sessionInfo?.sessionId || request.threadId);
     const context = resolveSessionHistoryContext(sessionId);
@@ -7252,6 +7232,7 @@ export default function App() {
   applyOlderSessionHistoryPageRef.current = applyOlderSessionHistoryPageToState;
   getPanelConversationMessagesForCodexRef.current = getPanelConversationMessagesForCodex;
   setPanelConversationMessagesForCodexRef.current = setPanelConversationMessagesForCodex;
+  hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
   const panelRuntimeStoreContextValue = useMemo<PanelRuntimeStoreContextValue>(() => {
     return {
       getSnapshot: resolvePanelSnapshotForDisplay,
@@ -7432,6 +7413,7 @@ export default function App() {
     setDrawerSessionPopupPanelId("");
     setDrawerSessionPopupCycleId("");
     setDrawerSessionPopupSourceRect(null);
+    setDrawerSessionPopupOrigin("drawer");
   }, [clearPanelSnapshot, drawerSessionPopupPanelId]);
   const openNewSessionPopup = useCallback((params: { directory: string }) => {
     const directory = parseLlmDirectory(params?.directory || normalizedLlmDirectoryForRequest());
@@ -7443,6 +7425,7 @@ export default function App() {
     const cycleId = `drawer-new-session-popup-${Date.now().toString(36)}`;
     setDrawerSessionPopupSourceRect(null);
     setDrawerSessionPopupCycleId(cycleId);
+    setDrawerSessionPopupOrigin("drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
     logSessionDiag("drawer_new_session_popup_opened", {
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
@@ -7460,6 +7443,7 @@ export default function App() {
     source: LlmSessionSource;
     directory?: string;
     sourceRect?: PopupChatSourceRect;
+    origin?: SessionPopupOrigin;
   }) => {
     const sessionId = parseOptionalSessionId(params.sessionId);
     if (!sessionId) {
@@ -7480,6 +7464,7 @@ export default function App() {
     const cycleId = `drawer-session-popup-${Date.now().toString(36)}`;
     setDrawerSessionPopupSourceRect(params.sourceRect || null);
     setDrawerSessionPopupCycleId(cycleId);
+    setDrawerSessionPopupOrigin(params.origin || "drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
     void hydratePanelFromSessionHistory({
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
@@ -7639,7 +7624,10 @@ export default function App() {
       ) : activeScreen === "cloudflare_tunnel_monitor" ? (
         <CloudflareTunnelMonitorScreen />
       ) : activeScreen === "skia_board" ? (
-        <SkiaMiniBoardScreen onClose={openMiniBoardScreen} />
+        <SkiaMiniBoardScreen
+          onClose={openMiniBoardScreen}
+          openSessionHistoryPopup={openSessionHistoryPopup}
+        />
       ) : (
         <AudioLabScreen />
       )}
@@ -7662,17 +7650,19 @@ export default function App() {
       </SafeAreaView>
         </Drawer>
         {drawerSessionPopupPanelId ? (
-          <View pointerEvents="box-none" style={styles.drawerPopupOverlayHost}>
-            <SafeAreaView style={styles.drawerPopupSafeArea}>
-              <PopupChatOverlay
-                visible={!!drawerSessionPopupPanelId}
-                panelId={drawerSessionPopupPanelId}
-                cycleId={drawerSessionPopupCycleId}
-                sourceRect={drawerSessionPopupSourceRect}
-                onClose={closeDrawerSessionPopup}
-              />
-            </SafeAreaView>
-          </View>
+          <DrawerSessionPopupHost
+            origin={drawerSessionPopupOrigin}
+            hostStyle={styles.drawerPopupOverlayHost}
+            safeAreaStyle={styles.drawerPopupSafeArea}
+          >
+            <PopupChatOverlay
+              visible={!!drawerSessionPopupPanelId}
+              panelId={drawerSessionPopupPanelId}
+              cycleId={drawerSessionPopupCycleId}
+              sourceRect={drawerSessionPopupSourceRect}
+              onClose={closeDrawerSessionPopup}
+            />
+          </DrawerSessionPopupHost>
         ) : null}
         <SafeAreaView pointerEvents="box-none" style={styles.llmCompletionNotificationLayer}>
           <LlmCompletionNotifications

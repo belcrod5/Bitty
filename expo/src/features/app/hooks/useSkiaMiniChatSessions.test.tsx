@@ -126,6 +126,8 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
     expect(result.current.sessions[0]).toMatchObject({
       title: "Pinned title",
+      directory: "/workspace",
+      source: "appserver",
       directoryName: "Workspace",
       lastMessageContent: "Last message 8",
       markerColor: "green",

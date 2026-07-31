@@ -4,6 +4,7 @@ import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
+import type { LlmSessionSource } from "./useLlmSessionExplorer";
 
 const SKIA_MINI_CHAT_PANEL_IDS = Array.from(
   { length: 6 },
@@ -13,6 +14,8 @@ const SKIA_MINI_CHAT_PANEL_IDS = Array.from(
 export type SkiaMiniChatSession = {
   panelId: string;
   sessionId: string;
+  directory: string;
+  source: LlmSessionSource;
   title: string;
   directoryName: string;
   lastMessageContent: string;
@@ -140,6 +143,8 @@ export function useSkiaMiniChatSessions() {
       return {
         panelId,
         sessionId: session.sessionId,
+        directory: session.directory,
+        source: session.source,
         title: String(
           sessionTitleOverridesById[session.sessionId]
           || session.agentDisplayName

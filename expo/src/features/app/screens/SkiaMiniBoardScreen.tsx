@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Platform,
   StyleSheet,
@@ -25,7 +25,8 @@ import {
   type SharedValue,
 } from "react-native-reanimated";
 import { useAppShell } from "../contexts/AppShellContext";
-import { PopupChatOverlay } from "../components/PopupChatOverlay";
+import type { SessionPopupOrigin } from "../components/popupChatTypes";
+import type { LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import {
   useSkiaMiniChatSessions,
   type SkiaMiniChatSession,
@@ -140,7 +141,17 @@ function MiniChatCard({
   );
 }
 
-export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
+type SkiaMiniBoardScreenProps = {
+  onClose: () => void;
+  openSessionHistoryPopup: (params: {
+    sessionId: string;
+    source: LlmSessionSource;
+    directory?: string;
+    origin?: SessionPopupOrigin;
+  }) => void;
+};
+
+export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMiniBoardScreenProps) {
   const { width: windowWidth } = useWindowDimensions();
   const { openDrawer } = useAppShell();
   const {
@@ -164,8 +175,6 @@ export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
                 ? `${sessions.length}件を表示・一部更新失敗`
                 : `${sessions.length}件を表示`;
   const [selectedSessionId, setSelectedSessionId] = useState("");
-  const [openPopupPanelId, setOpenPopupPanelId] = useState("");
-  const popupCycleId = useRef(`skia-board-${Date.now().toString(36)}`).current;
   const [viewportWidth, setViewportWidth] = useState(windowWidth);
   const cardWidth = Math.max(150, Math.min(270, (viewportWidth - BOARD_PADDING * 2 - CARD_GAP) / 2));
   const positions = useSharedValue<CardPosition[]>(createCardPositions(cardWidth));
@@ -203,12 +212,20 @@ export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
     const session = sessions[index];
     if (!session) return;
     if (selectedSessionId === session.sessionId) {
-      setOpenPopupPanelId(session.panelId);
+      // プレビュー用パネル(skia_mini_preview_N)はインデックス割当で担当セッションが
+      // 入れ替わるため直接開かず、ドロワーと同じ専用パネルのポップアップで開く
+      // (毎オープン時にJSONLからhydrateされ、常に最新の本文になる)。
+      openSessionHistoryPopup({
+        sessionId: session.sessionId,
+        directory: session.directory,
+        source: session.source,
+        origin: "skia_board",
+      });
       return;
     }
     selectedCardIndex.value = index;
     setSelectedSessionId(session.sessionId);
-  }, [selectedCardIndex, selectedSessionId, sessions]);
+  }, [openSessionHistoryPopup, selectedCardIndex, selectedSessionId, sessions]);
 
   const boardTranslate = useDerivedValue(() => [
     { translateX: boardX.value },
@@ -412,16 +429,6 @@ export function SkiaMiniBoardScreen({ onClose }: { onClose: () => void }) {
           {syncStatusText}
         </Text>
       </View>
-      {openPopupPanelId ? (
-        <View pointerEvents="box-none" style={screenStyles.popupOverlayHost}>
-          <PopupChatOverlay
-            visible
-            panelId={openPopupPanelId}
-            cycleId={popupCycleId}
-            onClose={() => setOpenPopupPanelId("")}
-          />
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -506,9 +513,5 @@ const screenStyles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 11,
     fontWeight: "700",
-  },
-  popupOverlayHost: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 20,
   },
 });

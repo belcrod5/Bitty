@@ -149,7 +149,9 @@ export function useSessionStartupRecoveryController({
 
   const resumeLatestSessionOnActive = useCallback(async (options?: ResumeLatestSessionOnActiveOptions) => {
     if (!settingsLoaded) return;
-    if (activeScreen !== "mini_board") return;
+    // チャット(会話)を表示できるボード画面のみ再同期する。
+    // debug / audio_lab / cloudflare_tunnel_monitor は会話を表示しないため対象外。
+    if (activeScreen !== "mini_board" && activeScreen !== "skia_board") return;
     if (llmSessionRestoreLoading) return;
     if (appResumeSessionSyncInFlightRef.current) return;
     const now = Date.now();
