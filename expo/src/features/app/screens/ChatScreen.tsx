@@ -51,6 +51,7 @@ import { YouTubeVideoList } from "../components/YouTubeVideoList";
 import { GitDiffPanel } from "../components/GitDiffPanel";
 import { InternalContextMessage } from "../components/InternalContextMessage";
 import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
+import { RunnerHtmlViewer } from "../components/RunnerHtmlViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
@@ -63,6 +64,7 @@ import {
   openRunnerFileContextMenu,
   type RunnerMediaFile,
 } from "../utils/runnerFileContextMenu";
+import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { formatRelativeUpdatedAt } from "../utils/formatting";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
@@ -494,6 +496,7 @@ export function ChatScreen({
   const [executionNowTick, setExecutionNowTick] = useState(0);
   const [gitDiffPanelOpen, setGitDiffPanelOpen] = useState(false);
   const [runnerMedia, setRunnerMedia] = useState<RunnerMediaFile | null>(null);
+  const [runnerHtmlFile, setRunnerHtmlFile] = useState<WorkspaceFileTarget | null>(null);
   const modelSelectTriggerRef = useRef<View | null>(null);
   const thinkSelectTriggerRef = useRef<View | null>(null);
   const embeddedChatListRef = useRef<LegendListRef | null>(null);
@@ -1130,6 +1133,7 @@ export function ChatScreen({
     setSlashCommandSelectOpen(false);
     setGitDiffPanelOpen(false);
     setRunnerMedia(null);
+    setRunnerHtmlFile(null);
   }, [approvalDialogPending, setSlashCommandSelectOpen]);
 
   useEffect(() => {
@@ -1329,6 +1333,7 @@ export function ChatScreen({
       getPathLabel,
       showInfoToast,
       onOpenMedia: setRunnerMedia,
+      onOpenHtml: setRunnerHtmlFile,
       onShellScriptStarted: () => {
         setGitDiffPanelOpen(true);
       },
@@ -2179,11 +2184,19 @@ export function ChatScreen({
           onRefreshGitChangedFiles={gitChangedFiles.refresh}
           showInfoToast={showInfoToast}
           onOpenMedia={setRunnerMedia}
+          onOpenHtml={setRunnerHtmlFile}
           logSessionDiag={logSessionDiag}
         />
         <RunnerMediaViewer
           media={approvalDialogPending ? null : runnerMedia}
           onRequestClose={() => setRunnerMedia(null)}
+        />
+        <RunnerHtmlViewer
+          target={approvalDialogPending ? null : runnerHtmlFile}
+          runnerUrl={runnerUrl}
+          runnerToken={runnerToken}
+          rootDirectory={selectedDirectoryPathForView}
+          onRequestClose={() => setRunnerHtmlFile(null)}
         />
         <WorkspaceFileRenameDialog
           target={approvalDialogPending ? null : chatFileRenameTarget}

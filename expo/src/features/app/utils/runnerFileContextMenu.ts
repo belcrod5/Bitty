@@ -33,6 +33,11 @@ const RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS = new Set([
   "md",
 ]);
 
+const RUNNER_HTML_FILE_EXTENSIONS = new Set([
+  "html",
+  "htm",
+]);
+
 const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -131,6 +136,7 @@ type OpenRunnerFileContextMenuParams = {
   getPathLabel: (pathRaw: unknown) => string;
   showInfoToast: (textRaw: unknown) => void;
   onOpenMedia: (media: RunnerMediaFile) => void;
+  onOpenHtml?: (target: WorkspaceFileTarget) => void;
   onShellScriptStarted?: (result: StartRunnerShellScriptResult, fileName: string) => void;
   onRequestRename?: (target: WorkspaceFileTarget) => void;
   onRequestEdit?: (target: WorkspaceFileTarget) => void;
@@ -150,6 +156,7 @@ export function openRunnerFileContextMenu({
   getPathLabel,
   showInfoToast,
   onOpenMedia,
+  onOpenHtml,
   onShellScriptStarted,
   onRequestRename,
   onRequestEdit,
@@ -224,6 +231,7 @@ export function openRunnerFileContextMenu({
         getPathLabel,
         showInfoToast,
         onOpenMedia,
+        onOpenHtml,
         onShellScriptStarted,
         onRequestRename: options?.onRequestRename ?? onRequestRename,
         onRequestEdit,
@@ -316,6 +324,17 @@ export function openRunnerFileContextMenu({
       onPress: openMediaAction,
     });
   } else {
+    if (onOpenHtml && isRunnerHtmlFile(filePath)) {
+      buttons.push({
+        text: "開く",
+        onPress: () => {
+          onOpenHtml({
+            path: filePath,
+            name: fileName,
+          });
+        },
+      });
+    }
     buttons.push({
       text: "ファイル内容をコピー",
       onPress: copyContentAction,
@@ -433,6 +452,12 @@ export function isRunnerEditableTextFile(pathRaw: unknown) {
   const path = normalizeRunnerPath(pathRaw).toLowerCase();
   const match = /\.([a-z0-9]+)$/.exec(path);
   return Boolean(match && RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS.has(match[1]));
+}
+
+export function isRunnerHtmlFile(pathRaw: unknown) {
+  const path = normalizeRunnerPath(pathRaw).toLowerCase();
+  const match = /\.([a-z0-9]+)$/.exec(path);
+  return Boolean(match && RUNNER_HTML_FILE_EXTENSIONS.has(match[1]));
 }
 
 export function getRunnerMediaKind(pathRaw: unknown): RunnerMediaKind | null {
