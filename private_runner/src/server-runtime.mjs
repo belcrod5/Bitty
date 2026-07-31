@@ -198,6 +198,10 @@ const STREAM_TTS_EST_BASE_CHARS_PER_SEC = Math.max(
   1,
   Number(process.env.STREAM_TTS_EST_BASE_CHARS_PER_SEC || 7.5)
 );
+const TTS_FETCH_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.TTS_FETCH_TIMEOUT_MS || 30000)
+);
 const TTS_MEDIA_DIR = path.resolve(
   WORKSPACE_ROOT,
   process.env.TTS_MEDIA_DIR || "private_runner/.cache/tts-media"
@@ -2814,6 +2818,26 @@ function findStreamTtsSplitIndex(buffer, maxChars) {
   return hardLimit - 1;
 }
 
+function takeNextStreamTtsSegment(buffer, maxChars = STREAM_TTS_SEGMENT_MAX_CHARS, force = false) {
+  const text = String(buffer || "");
+  if (!text) return null;
+  const limit = Math.max(1, Number(maxChars) || STREAM_TTS_SEGMENT_MAX_CHARS);
+  const scanLimit = Math.min(text.length, limit);
+  for (let i = 0; i < scanLimit; i += 1) {
+    if (isTtsBoundaryChar(text[i])) {
+      return { segment: text.slice(0, i + 1), rest: text.slice(i + 1) };
+    }
+  }
+  if (text.length >= limit) {
+    const splitIndex = findStreamTtsSplitIndex(text, limit);
+    return { segment: text.slice(0, splitIndex + 1), rest: text.slice(splitIndex + 1) };
+  }
+  if (force && text.trim()) {
+    return { segment: text, rest: "" };
+  }
+  return null;
+}
+
 function normalizeSpeedScaleForTtsEstimate(speedScale) {
   const value = Number(speedScale);
   if (!Number.isFinite(value) || value <= 0) return 1;
@@ -3905,6 +3929,18 @@ async function getGoogleCloudAccessToken() {
   return fallback.stdout;
 }
 
+async function fetchTtsWithTimeout(label, url, init = {}) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(TTS_FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    const name = String(err?.name || "").toLowerCase();
+    if (name === "timeouterror" || name === "aborterror") {
+      throw new Error(`${label} timeout (${TTS_FETCH_TIMEOUT_MS}ms)`);
+    }
+    throw err;
+  }
+}
+
 function googleTtsHeaders(accessToken) {
   const headers = {
     authorization: `Bearer ${accessToken}`,
@@ -3997,7 +4033,7 @@ async function runGoogleCloudTts(text, opts = {}) {
   const speedScale = typeof opts.speedScale === "number" ? opts.speedScale : undefined;
   const accessToken = await getGoogleCloudAccessToken();
 
-  const response = await fetch(`${GOOGLE_CLOUD_TTS_API_BASE_URL}/v1/text:synthesize`, {
+  const response = await fetchTtsWithTimeout("google tts", `${GOOGLE_CLOUD_TTS_API_BASE_URL}/v1/text:synthesize`, {
     method: "POST",
     headers: googleTtsHeaders(accessToken),
     body: JSON.stringify({
@@ -4041,7 +4077,7 @@ async function listGoogleCloudVoices(opts = {}) {
     url.searchParams.set("languageCode", languageCode);
   }
 
-  const response = await fetch(url, {
+  const response = await fetchTtsWithTimeout("google voices", url, {
     method: "GET",
     headers: googleTtsHeaders(accessToken),
   });
@@ -4063,7 +4099,7 @@ async function listGoogleCloudVoices(opts = {}) {
 
 async function listAivisSpeechVoices() {
   const apiBaseUrl = await ensureAivisSpeechReady();
-  const response = await fetch(new URL("/speakers", apiBaseUrl), {
+  const response = await fetchTtsWithTimeout("aivisspeech voices", new URL("/speakers", apiBaseUrl), {
     method: "GET",
   });
   if (!response.ok) {
@@ -4113,7 +4149,7 @@ async function runAivisSpeechTts(text, opts = {}) {
   const audioQueryUrl = new URL("/audio_query", apiBaseUrl);
   audioQueryUrl.searchParams.set("speaker", speakerId);
   audioQueryUrl.searchParams.set("text", text);
-  const audioQueryRes = await fetch(audioQueryUrl, {
+  const audioQueryRes = await fetchTtsWithTimeout("aivisspeech audio_query", audioQueryUrl, {
     method: "POST",
   });
   if (!audioQueryRes.ok) {
@@ -4131,7 +4167,7 @@ async function runAivisSpeechTts(text, opts = {}) {
 
   const synthesisUrl = new URL("/synthesis", apiBaseUrl);
   synthesisUrl.searchParams.set("speaker", speakerId);
-  const synthesisRes = await fetch(synthesisUrl, {
+  const synthesisRes = await fetchTtsWithTimeout("aivisspeech synthesis", synthesisUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json; charset=utf-8",
@@ -4257,7 +4293,7 @@ async function runElevenLabsTts(text, opts = {}) {
     payload.apply_language_text_normalization = opts.applyLanguageTextNormalization;
   }
 
-  const response = await fetch(url, {
+  const response = await fetchTtsWithTimeout("elevenlabs tts", url, {
     method: "POST",
     headers: {
       "xi-api-key": ELEVENLABS_API_KEY,
@@ -4285,7 +4321,7 @@ async function runElevenLabsTts(text, opts = {}) {
 }
 
 async function listElevenLabsVoices() {
-  const response = await fetch(`${ELEVENLABS_API_BASE_URL}/v1/voices`, {
+  const response = await fetchTtsWithTimeout("elevenlabs voices", `${ELEVENLABS_API_BASE_URL}/v1/voices`, {
     method: "GET",
     headers: {
       "xi-api-key": ELEVENLABS_API_KEY,
@@ -7372,14 +7408,6 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
       });
       return;
     }
-    if (directText.length > MAX_TTS_CHARS) {
-      emitEvent({
-        type: "error",
-        error: "text_too_long",
-        max: MAX_TTS_CHARS,
-      });
-      return;
-    }
     transcript = directText;
   }
   const ttsProvider = resolveTtsProvider(startPayload?.ttsProvider);
@@ -7523,22 +7551,11 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
   }
 
   function flushReadySegments(force = false) {
-    while (pendingSegmentBuffer) {
-      let splitIndex = -1;
-      for (let i = 0; i < pendingSegmentBuffer.length; i += 1) {
-        if (isTtsBoundaryChar(pendingSegmentBuffer[i])) {
-          splitIndex = i;
-          break;
-        }
-      }
-      if (splitIndex < 0) break;
-      const segment = pendingSegmentBuffer.slice(0, splitIndex + 1);
-      pendingSegmentBuffer = pendingSegmentBuffer.slice(splitIndex + 1);
-      enqueueSegment(segment);
-    }
-    if (force && pendingSegmentBuffer.trim()) {
-      enqueueSegment(pendingSegmentBuffer);
-      pendingSegmentBuffer = "";
+    for (;;) {
+      const next = takeNextStreamTtsSegment(pendingSegmentBuffer, STREAM_TTS_SEGMENT_MAX_CHARS, force);
+      if (!next) break;
+      pendingSegmentBuffer = next.rest;
+      enqueueSegment(next.segment);
     }
   }
 
@@ -12140,4 +12157,10 @@ export const __TESTING__ = {
   resolveRunnerWsTtsOperationJob,
   sweepRunnerWsTtsOperationJobs,
   startLlmStreamJob,
+  takeNextStreamTtsSegment,
+  findStreamTtsSplitIndex,
+  resolveStreamTtsSegmentTargetChars,
+  fetchTtsWithTimeout,
+  STREAM_TTS_SEGMENT_MAX_CHARS,
+  TTS_FETCH_TIMEOUT_MS,
 };
