@@ -1319,6 +1319,30 @@ export function ChatScreen({
     refreshChangedFiles: gitChangedFiles.refresh,
     showInfoToast,
   });
+  const speakRunnerFileText = useCallback((textRaw: unknown, target: WorkspaceFileTarget) => {
+    const text = String(textRaw || "").trim();
+    if (!sanitizeTextForTts(text)) {
+      showInfoToast(`読み上げるテキストがありません: ${target.path}`);
+      return;
+    }
+    void handleAssistantAudioButtonPress({
+      id: `runner-file-tts:${target.path}`,
+      role: "assistant",
+      content: text,
+    }, {
+      panelId: isPanelRuntimeView ? panelId : undefined,
+      sessionId: isPanelRuntimeView
+        ? (String(panelSnapshot.selectedSessionId || "").trim() || undefined)
+        : undefined,
+    });
+  }, [
+    handleAssistantAudioButtonPress,
+    isPanelRuntimeView,
+    panelId,
+    panelSnapshot.selectedSessionId,
+    sanitizeTextForTts,
+    showInfoToast,
+  ]);
   const openChatFileLinkContextMenu = useCallback((filePathRaw: unknown) => {
     const filePath = normalizeRunnerPath(filePathRaw);
     if (!filePath) return;
@@ -1334,6 +1358,7 @@ export function ChatScreen({
       showInfoToast,
       onOpenMedia: setRunnerMedia,
       onOpenHtml: setRunnerHtmlFile,
+      onSpeakText: speakRunnerFileText,
       onShellScriptStarted: () => {
         setGitDiffPanelOpen(true);
       },
@@ -1352,6 +1377,7 @@ export function ChatScreen({
     runnerUrl,
     selectedDirectoryPathForView,
     showInfoToast,
+    speakRunnerFileText,
   ]);
   const readSelectedMessageText = useCallback((message: ConversationMessage, selectedTextRaw: unknown) => {
     const selectedText = String(selectedTextRaw || "").trim();
@@ -2185,6 +2211,7 @@ export function ChatScreen({
           showInfoToast={showInfoToast}
           onOpenMedia={setRunnerMedia}
           onOpenHtml={setRunnerHtmlFile}
+          onSpeakText={speakRunnerFileText}
           logSessionDiag={logSessionDiag}
         />
         <RunnerMediaViewer
