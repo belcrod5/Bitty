@@ -67,6 +67,7 @@ type GitDiffPanelProps = {
   showInfoToast: (textRaw: unknown) => void;
   onOpenMedia: (media: RunnerMediaFile) => void;
   onOpenHtml?: (target: WorkspaceFileTarget) => void;
+  onSpeakText?: (text: string, target: WorkspaceFileTarget) => void;
   logSessionDiag?: (
     event: string,
     payload?: Record<string, unknown>,
@@ -100,6 +101,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   showInfoToast,
   onOpenMedia,
   onOpenHtml,
+  onSpeakText,
   logSessionDiag,
 }: GitDiffPanelProps) {
   const hasEverBeenVisibleRef = useRef(visible);
@@ -454,6 +456,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       showInfoToast,
       onOpenMedia,
       onOpenHtml,
+      onSpeakText,
       onShellScriptStarted: () => {
         setGitPanelTab("running");
       },
@@ -468,6 +471,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     getPathLabel,
     onOpenMedia,
     onOpenHtml,
+    onSpeakText,
     deleteFile,
     renameFileTarget,
     requestRename,

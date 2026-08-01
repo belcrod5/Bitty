@@ -137,6 +137,7 @@ type OpenRunnerFileContextMenuParams = {
   showInfoToast: (textRaw: unknown) => void;
   onOpenMedia: (media: RunnerMediaFile) => void;
   onOpenHtml?: (target: WorkspaceFileTarget) => void;
+  onSpeakText?: (text: string, target: WorkspaceFileTarget) => void;
   onShellScriptStarted?: (result: StartRunnerShellScriptResult, fileName: string) => void;
   onRequestRename?: (target: WorkspaceFileTarget) => void;
   onRequestEdit?: (target: WorkspaceFileTarget) => void;
@@ -157,6 +158,7 @@ export function openRunnerFileContextMenu({
   showInfoToast,
   onOpenMedia,
   onOpenHtml,
+  onSpeakText,
   onShellScriptStarted,
   onRequestRename,
   onRequestEdit,
@@ -196,6 +198,29 @@ export function openRunnerFileContextMenu({
         Alert.alert("コピー失敗", message || "ファイル内容のコピーに失敗しました。");
       });
   };
+  const speakContentAction = () => {
+    void fetchRunnerTextFileContent({
+      runnerUrl,
+      runnerToken,
+      rootDir,
+      path: filePath,
+      timeoutMs: RUNNER_FILE_HTTP_TIMEOUT_MS,
+    })
+      .then((result) => {
+        if (!result.content.trim()) {
+          showInfoToast(`読み上げるテキストがありません: ${result.path || filePath}`);
+          return;
+        }
+        onSpeakText?.(result.content, {
+          path: filePath,
+          name: fileName,
+        });
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        Alert.alert("読み上げ失敗", message || "ファイル内容の取得に失敗しました。");
+      });
+  };
   const openMediaAction = () => {
     const currentItem = buildRunnerMediaItem({
       runnerUrl,
@@ -232,6 +257,7 @@ export function openRunnerFileContextMenu({
         showInfoToast,
         onOpenMedia,
         onOpenHtml,
+        onSpeakText,
         onShellScriptStarted,
         onRequestRename: options?.onRequestRename ?? onRequestRename,
         onRequestEdit,
@@ -339,6 +365,12 @@ export function openRunnerFileContextMenu({
       text: "ファイル内容をコピー",
       onPress: copyContentAction,
     });
+    if (onSpeakText && isRunnerEditableTextFile(filePath)) {
+      buttons.push({
+        text: "読み上げ",
+        onPress: speakContentAction,
+      });
+    }
   }
   if (isShellScript) {
     buttons.push({
