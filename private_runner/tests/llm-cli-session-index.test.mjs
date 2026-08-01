@@ -84,14 +84,72 @@ test("absolute CLI lookup does not match a copied relative worktree identity", a
   );
   assert.deepEqual(batchEntries.map((entry) => entry.filePath), [worktreeFile]);
 
-  await index.markCliSessionRead("shared-session", {
+  const [mainRawBefore, worktreeRawBefore] = await Promise.all([
+    fs.readFile(mainFile, "utf8"),
+    fs.readFile(worktreeFile, "utf8"),
+  ]);
+  const markResult = await index.markCliSessionRead("shared-session", {
     directory: worktreeReal,
     lastReadAt: "2026-02-01T00:00:00.000Z",
   });
-  const mainMeta = JSON.parse((await fs.readFile(mainFile, "utf8")).trim()).payload;
-  const worktreeMeta = JSON.parse((await fs.readFile(worktreeFile, "utf8")).trim()).payload;
-  assert.equal(mainMeta.last_read_at, undefined);
-  assert.equal(worktreeMeta.last_read_at, "2026-02-01T00:00:00.000Z");
+  assert.equal(markResult.updated, true);
+  // Rollout files must stay untouched: rewriting them clobbers the mtime that
+  // codex thread/list reports as the session updatedAt.
+  assert.equal(await fs.readFile(mainFile, "utf8"), mainRawBefore);
+  assert.equal(await fs.readFile(worktreeFile, "utf8"), worktreeRawBefore);
+  const readSessions = await index.listCliSessionsForDirectory(worktreeReal);
+  assert.equal(readSessions[0].lastReadAt, "2026-02-01T00:00:00.000Z");
+  const persisted = JSON.parse(await fs.readFile(indexPath, "utf8"));
+  const persistedWorktree = persisted.entries.find((entry) => entry.filePath === worktreeFile);
+  assert.equal(persistedWorktree.lastReadAt, "2026-02-01T00:00:00.000Z");
+});
+
+test("index lastReadAt survives a rescan after the rollout file changes", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-cli-index-rescan-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const rootDir = path.join(tempRoot, "root");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const indexPath = path.join(tempRoot, "cli_sessions_index.json");
+  await Promise.all([
+    fs.mkdir(rootDir, { recursive: true }),
+    fs.mkdir(sessionsDir, { recursive: true }),
+  ]);
+  const rolloutFile = path.join(sessionsDir, "rollout-session.jsonl");
+  await fs.writeFile(rolloutFile, `${JSON.stringify({
+    type: "session_meta",
+    payload: { id: "session-1", cwd: rootDir, timestamp: "2026-01-01T00:00:00.000Z" },
+  })}\n`);
+
+  const index = createLlmCliSessionIndex({
+    cliSessionIndexPath: indexPath,
+    cliSessionIndexRefreshMinIntervalMs: 0,
+    cliSessionScanMaxFiles: 10,
+    codeCliSessionsDir: sessionsDir,
+    compareSessionHistoryEntries: () => 0,
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeReasoningEffort: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: (value) => String(value || "").trim() || ".",
+    normalizeSessionUpdatedAt: (value) => String(value || "").trim(),
+    toUnixPath: (value) => String(value || "").replaceAll("\\", "/"),
+    toWorkspaceRelativeFromAbsolutePath: () => "",
+  });
+
+  const rootReal = await fs.realpath(rootDir);
+  await index.listCliSessionsForDirectory(rootReal);
+  await index.markCliSessionRead("session-1", {
+    directory: rootReal,
+    lastReadAt: "2026-02-01T00:00:00.000Z",
+  });
+
+  // Session continues: the rollout file grows, forcing a meta re-read on rescan.
+  await fs.appendFile(rolloutFile, `${JSON.stringify({
+    timestamp: "2026-02-02T00:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete" },
+  })}\n`);
+  const sessions = await index.listCliSessionsForDirectory(rootReal);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].lastReadAt, "2026-02-01T00:00:00.000Z");
 });
 
 test("rollout writes remain scoped by directory when a session id is reused", async (t) => {
