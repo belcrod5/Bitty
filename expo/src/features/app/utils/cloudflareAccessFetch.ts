@@ -54,11 +54,33 @@ function mergeHeaders(headers: HeadersInit | undefined, extra: Record<string, st
   return next;
 }
 
+// RNのFormDataは _parts に [name, value] を保持する。valueは文字列またはファイルパート
+// ({uri, name, type, size?})。ファイルパートの実体サイズは同期的には取れないため、
+// 呼び出し元が付与した size を使う下限推定(multipart境界・パートヘッダは含まない)。
+function formDataPartsBytes(parts: unknown[]): number {
+  let bytes = 0;
+  for (const part of parts) {
+    if (!Array.isArray(part)) continue;
+    const value = part[1];
+    if (typeof value === "string") {
+      bytes += utf8ByteLength(value);
+      continue;
+    }
+    if (value && typeof value === "object") {
+      const size = Number((value as { size?: unknown }).size);
+      if (Number.isFinite(size) && size > 0) bytes += size;
+    }
+  }
+  return bytes;
+}
+
 function requestBodyBytes(body: BodyInit | null | undefined): number {
   if (!body) return 0;
   if (typeof body === "string") return utf8ByteLength(body);
   if (body instanceof ArrayBuffer) return body.byteLength;
   if (ArrayBuffer.isView(body)) return body.byteLength;
+  const maybeParts = (body as { _parts?: unknown })._parts;
+  if (Array.isArray(maybeParts)) return formDataPartsBytes(maybeParts);
   const maybeBlobSize = (body as { size?: unknown }).size;
   return typeof maybeBlobSize === "number" && Number.isFinite(maybeBlobSize) ? maybeBlobSize : 0;
 }
@@ -102,12 +124,22 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
       ? { ...(init || {}), headers: mergeHeaders(init?.headers, activeHeaders) }
       : init;
     const responsePromise = originalFetch(input, finalInit);
-    const url = requestUrl(input);
-    recordHttpNetworkUsage(url, requestBodyBytes(finalInit?.body), 0);
-    responsePromise.then(
-      (response) => recordHttpResponseUsage(url, response),
-      () => undefined
-    );
+    try {
+      const url = requestUrl(input);
+      recordHttpNetworkUsage(url, requestBodyBytes(finalInit?.body), 0);
+      responsePromise.then(
+        (response) => {
+          try {
+            recordHttpResponseUsage(url, response);
+          } catch {
+            // 計測失敗は通信本体に影響させない。
+          }
+        },
+        () => undefined
+      );
+    } catch {
+      // 計測失敗は通信本体に影響させない。
+    }
     return responsePromise;
   }) as typeof fetch;
   installed = true;

@@ -192,6 +192,9 @@ export async function uploadWorkspaceFile({
       uri: asset.uri,
       name: asset.name,
       type: asset.mimeType,
+      // RNはuri/name/type以外のプロパティを無視する。通信量計測がアップロードの
+      // 上り推定に使うため、既知のファイルサイズを付与する。
+      ...(Number.isFinite(asset.size) && Number(asset.size) > 0 ? { size: Math.floor(Number(asset.size)) } : {}),
     } as any);
     const response = await fetch(`${baseUrl}/workspace/files`, {
       method: "POST",

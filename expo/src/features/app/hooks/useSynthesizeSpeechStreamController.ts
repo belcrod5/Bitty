@@ -184,6 +184,8 @@ export function useSynthesizeSpeechStreamController(
 
     let done = false;
     let closeActiveStream = () => {};
+    // 再接続等でaudio_chunkが同一seqで再配信された場合の二重計上を防ぐ(このstream内のみ)。
+    const countedAudioChunkSeqs = new Set<number>();
 
     const startPayload = {
       type: "start",
@@ -268,7 +270,12 @@ export function useSynthesizeSpeechStreamController(
           return;
         }
         if (streamTtsSuppressedRef.current) return;
-        if (/^https?:/i.test(segment.audioUrl) && segment.audioBytes > 0) {
+        if (
+          /^https?:/i.test(segment.audioUrl) &&
+          segment.audioBytes > 0 &&
+          !countedAudioChunkSeqs.has(seq)
+        ) {
+          countedAudioChunkSeqs.add(seq);
           // 音声本体は expo-av がネイティブ側でダウンロードするため fetch 計測に乗らない。
           // サーバー報告の audioBytes を tts-media 受信量の推定値として計上する。
           recordHttpNetworkUsage(segment.audioUrl, 0, segment.audioBytes);

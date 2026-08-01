@@ -5,6 +5,9 @@ export type RunnerSttRequest = {
   mimeType: string;
   fileName: string;
   language: string;
+  // 録音ファイルのバイト数(既知の場合)。通信量計測がアップロードの上りを
+  // 推定計上するためにファイルパートの size として渡す。
+  audioBytes?: number;
   sttMeta?: Record<string, unknown>;
   signal?: AbortSignal;
 };
@@ -23,11 +26,14 @@ export async function requestRunnerSttTranscript(options: RunnerSttRequest) {
     throw new Error("recordingUri is required for runner /stt");
   }
 
+  const audioBytes = Number(options.audioBytes);
   const form = new FormData();
   form.append("file", {
     uri: recordingUri,
     name: fileName,
     type: mimeType,
+    // RNはuri/name/type以外のプロパティを無視するため送信内容には影響しない。
+    ...(Number.isFinite(audioBytes) && audioBytes > 0 ? { size: Math.floor(audioBytes) } : {}),
   } as any);
   if (language) {
     form.append("language", language);

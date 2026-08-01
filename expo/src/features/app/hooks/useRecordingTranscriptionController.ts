@@ -188,6 +188,7 @@ export function useRecordingTranscriptionController(options: UseRecordingTranscr
         fileName: transcribeOptions.fileName,
         baseUrl: getBaseUrl(),
         runnerToken,
+        audioBytes: toFiniteNumber(transcribeOptions.audioBytes),
         sttMeta: transcribeOptions.sttMeta,
       });
       console.log("[stt] success", {
