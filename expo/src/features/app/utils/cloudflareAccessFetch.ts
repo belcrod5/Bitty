@@ -3,6 +3,7 @@ import {
   normalizeCloudflareAccessCredentials,
   type CloudflareAccessCredentials,
 } from "./cloudflareAccess";
+import { recordHttpNetworkUsage, utf8ByteLength } from "../../ws/networkUsageMetrics";
 
 type FetchPatchConfig = {
   runnerUrl: string;
@@ -53,6 +54,37 @@ function mergeHeaders(headers: HeadersInit | undefined, extra: Record<string, st
   return next;
 }
 
+function requestBodyBytes(body: BodyInit | null | undefined): number {
+  if (!body) return 0;
+  if (typeof body === "string") return utf8ByteLength(body);
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  const maybeBlobSize = (body as { size?: unknown }).size;
+  return typeof maybeBlobSize === "number" && Number.isFinite(maybeBlobSize) ? maybeBlobSize : 0;
+}
+
+function recordHttpResponseUsage(url: string, response: Response) {
+  const headers = response?.headers;
+  const contentLength = Number(headers?.get?.("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    recordHttpNetworkUsage(url, 0, contentLength);
+    return;
+  }
+  // /session-messages はサーバーが応答バイト数をヘッダで報告している。
+  const reportedBytes = Number(headers?.get?.("x-session-messages-response-bytes") || 0);
+  if (Number.isFinite(reportedBytes) && reportedBytes > 0) {
+    recordHttpNetworkUsage(url, 0, reportedBytes);
+    return;
+  }
+  try {
+    response.clone().arrayBuffer()
+      .then((buffer) => recordHttpNetworkUsage(url, 0, buffer.byteLength))
+      .catch(() => undefined);
+  } catch {
+    // clone不可(既に消費済み等)の応答は未計上のまま許容する。
+  }
+}
+
 export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
   activeRunnerOrigin = normalizeOrigin(config.runnerUrl);
   activeHeaders = buildCloudflareAccessHeaders(normalizeCloudflareAccessCredentials(
@@ -65,13 +97,18 @@ export function configureCloudflareAccessFetch(config: FetchPatchConfig) {
 
   originalFetch = fetch.bind(globalThis);
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    if (!originalFetch || !shouldAttachCloudflareAccessHeaders(input)) {
-      return originalFetch ? originalFetch(input, init) : fetch(input, init);
-    }
-    return originalFetch(input, {
-      ...(init || {}),
-      headers: mergeHeaders(init?.headers, activeHeaders),
-    });
+    if (!originalFetch) return fetch(input, init);
+    const finalInit = shouldAttachCloudflareAccessHeaders(input)
+      ? { ...(init || {}), headers: mergeHeaders(init?.headers, activeHeaders) }
+      : init;
+    const responsePromise = originalFetch(input, finalInit);
+    const url = requestUrl(input);
+    recordHttpNetworkUsage(url, requestBodyBytes(finalInit?.body), 0);
+    responsePromise.then(
+      (response) => recordHttpResponseUsage(url, response),
+      () => undefined
+    );
+    return responsePromise;
   }) as typeof fetch;
   installed = true;
 }

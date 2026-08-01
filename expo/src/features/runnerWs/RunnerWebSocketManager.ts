@@ -2,6 +2,7 @@ import {
   createWebSocketWithOptionalAuth,
   isWebSocketForCloudflareRunner,
 } from "../ws/webSocketAuth";
+import { recordNetworkUsage, utf8ByteLength } from "../ws/networkUsageMetrics";
 import {
   isRunnerWsMessage,
   normalizeRunnerWsServerStatus,
@@ -410,6 +411,7 @@ export class RunnerWebSocketManager {
     try {
       this.ws.send(payload);
       this.sentCount += 1;
+      recordNetworkUsage("runner-ws", utf8ByteLength(payload), 0);
       this.refreshSnapshot();
     } catch (error) {
       this.sendErrorCount += 1;
@@ -534,6 +536,9 @@ export class RunnerWebSocketManager {
   }
 
   private handleMessage(data: unknown) {
+    if (typeof data === "string") {
+      recordNetworkUsage("runner-ws", 0, utf8ByteLength(data));
+    }
     const message = parseMessage(data);
     if (!message) return;
     this.receivedCount += 1;

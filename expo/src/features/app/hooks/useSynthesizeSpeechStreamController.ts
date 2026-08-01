@@ -7,6 +7,11 @@ import {
 } from "../../runnerWs/ttsAdapter";
 import type { RunnerWsMessage } from "../../runnerWs/types";
 import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
+import {
+  recordHttpNetworkUsage,
+  recordNetworkUsage,
+  utf8ByteLength,
+} from "../../ws/networkUsageMetrics";
 import type { StreamTtsControlState, TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
 import { parseStreamSegmentEnvelope } from "../utils/streamPayload";
 import { collectStreamWaveformSegments, mergeWaveformBars } from "../utils/waveform";
@@ -263,6 +268,11 @@ export function useSynthesizeSpeechStreamController(
           return;
         }
         if (streamTtsSuppressedRef.current) return;
+        if (/^https?:/i.test(segment.audioUrl) && segment.audioBytes > 0) {
+          // 音声本体は expo-av がネイティブ側でダウンロードするため fetch 計測に乗らない。
+          // サーバー報告の audioBytes を tts-media 受信量の推定値として計上する。
+          recordHttpNetworkUsage(segment.audioUrl, 0, segment.audioBytes);
+        }
         enqueueStreamAudio(seq, segment.audioUrl, segment.mimeType, targetMessageId, {
           chunkChars: segment.chunkChars,
           segmentTargetChars: segment.segmentTargetChars,
@@ -442,9 +452,11 @@ export function useSynthesizeSpeechStreamController(
     ws.onopen = () => {
       if (ws.readyState !== WebSocket.OPEN) return;
       try {
-        ws.send(useRunnerWsEnvelope
+        const startFrame = useRunnerWsEnvelope
           ? encodeRunnerWsTtsStart(startPayload)
-          : JSON.stringify(startPayload));
+          : JSON.stringify(startPayload);
+        ws.send(startFrame);
+        recordNetworkUsage("stream-tts", utf8ByteLength(startFrame), 0);
       } catch (err) {
         done = true;
         setTtsLoading(false);
@@ -462,6 +474,7 @@ export function useSynthesizeSpeechStreamController(
     ws.onmessage = (event) => {
       const raw = String(event?.data || "");
       if (!raw) return;
+      recordNetworkUsage("stream-tts", 0, utf8ByteLength(raw));
       let data: Record<string, unknown> = {};
       if (useRunnerWsEnvelope) {
         const normalized = normalizeRunnerWsIncomingTtsEvent(raw);
