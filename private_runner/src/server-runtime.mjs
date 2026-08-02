@@ -10485,15 +10485,20 @@ function sendRunnerWsLlmRpcAck(relay, ws, params = {}) {
 }
 
 function sendCodexRelayRpcToClient(relay, ws, text, seq, options = {}) {
+  // seq is the client's replay watermark and must stay monotonic per operation. A
+  // shared threadless relay has no replayable event log, and its messages interleave
+  // with a dedicated relay's inside one operation — a seq from here would advance the
+  // client watermark and make it silently drop the dedicated relay's responses.
+  const replaySeq = relay.runnerWsSharedThreadless ? undefined : seq;
   if (!isCodexRelayEnvelopeClient(ws)) {
     const delivered = safeWsSend(ws, text, { binary: false });
     if (!delivered) return false;
-    if (Number.isFinite(Number(seq)) && Number(seq) > 0) {
+    if (Number.isFinite(Number(replaySeq)) && Number(replaySeq) > 0) {
       sendCodexRelayControl(relay, ws, {
         type: "runner_relay_seq",
         relayId: relay.relayId,
         threadId: relay.threadId || "",
-        seq: Number(seq),
+        seq: Number(replaySeq),
       });
     }
     return true;
@@ -10509,7 +10514,7 @@ function sendCodexRelayRpcToClient(relay, ws, text, seq, options = {}) {
     operationId: operationId || undefined,
     sessionId: sessionId || undefined,
     threadId: relay.threadId || "",
-    seq: Number.isFinite(Number(seq)) ? Number(seq) : undefined,
+    seq: Number.isFinite(Number(replaySeq)) ? Number(replaySeq) : undefined,
     payload: envelopePayload,
   });
 }
