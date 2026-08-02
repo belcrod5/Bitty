@@ -12,6 +12,7 @@ export type SttServiceRequest = {
   fileName: string;
   baseUrl: string;
   runnerToken: string;
+  audioBytes?: number;
   sttMeta?: Record<string, unknown>;
 };
 
@@ -38,6 +39,7 @@ export async function transcribeWithConfiguredProvider(options: SttServiceReques
       fileName: options.fileName,
       language: options.language,
       signal: options.signal,
+      audioBytes: options.audioBytes,
       sttMeta: options.sttMeta,
     });
   }
@@ -50,6 +52,7 @@ export async function transcribeWithConfiguredProvider(options: SttServiceReques
     fileName: options.fileName,
     language: options.language,
     signal: options.signal,
+    audioBytes: options.audioBytes,
     sttMeta: options.sttMeta,
   });
 }

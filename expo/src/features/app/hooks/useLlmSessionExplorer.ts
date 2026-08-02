@@ -14,6 +14,7 @@ import {
   parseOptionalSessionId,
 } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
+import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
@@ -188,6 +189,17 @@ function buildRunnerSessionSnapshot(dataRaw: unknown): RunnerSessionSnapshot {
     reasoningEffort: String(data.reasoningEffort || "").trim(),
     latestToolLabel: inferLatestToolLabelFromSessionMessages(data),
     lastReadAt: String(data.lastReadAt || "").trim(),
+  };
+}
+
+// /session-messages 応答の実測バイト(通信量調査用)。content-length はサーバーが
+// 付与しない場合があるため、サーバー報告の専用ヘッダも併記する。
+function readSessionMessagesByteMeta(response: Response) {
+  const responseBytesHeader = Number(response.headers?.get?.("x-session-messages-response-bytes") || 0);
+  const contentLengthHeader = Number(response.headers?.get?.("content-length") || 0);
+  return {
+    responseBytesHeader: Number.isFinite(responseBytesHeader) ? responseBytesHeader : 0,
+    contentLengthHeader: Number.isFinite(contentLengthHeader) ? contentLengthHeader : 0,
   };
 }
 
@@ -407,6 +419,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         status: response.status,
         ok: response.ok,
         found: data?.found === true,
+        ...readSessionMessagesByteMeta(response),
       });
       if (!response.ok) return null;
       return buildRunnerSessionSnapshot(data);
@@ -472,6 +485,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         return null;
       })
       : null;
+    let responseByteMeta = { responseBytesHeader: 0, contentLengthHeader: 0, bodyBytes: 0 };
     const fetchPage = async (includeDirectory: boolean) => {
       const url = new URL(`${baseUrl}/session-messages`);
       url.searchParams.set("sessionId", sessionId);
@@ -481,6 +495,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       const result = await fetchTextWithTimeout(url.toString(), {
         headers: { authorization: `Bearer ${token}` },
       }, RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS);
+      responseByteMeta = {
+        ...readSessionMessagesByteMeta(result.response),
+        bodyBytes: result.text ? utf8ByteLength(result.text) : 0,
+      };
       let data: JsonRecord = {};
       try {
         data = result.text ? JSON.parse(result.text) : {};
@@ -544,6 +562,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       messageCount: messages.length,
       olderPageAvailable: Boolean(data?.olderCursor),
       diagnostics: data?.diagnostics,
+      ...responseByteMeta,
     });
     return {
       threadId: liveState?.threadId || sessionId,

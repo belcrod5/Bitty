@@ -1,7 +1,13 @@
-import { useState, type ComponentProps } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useState, type ComponentProps } from "react";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRunnerWebSocketSnapshot } from "./RunnerWebSocketContext";
+import {
+  getNetworkUsageSnapshot,
+  resetNetworkUsage,
+  type NetworkUsageCounter,
+} from "../ws/networkUsageMetrics";
+import { formatBytesCompact } from "../app/utils/formatting";
 
 type RunnerWsConnectionStatusProps = {
   turnState?: string;
@@ -72,13 +78,24 @@ function formatRttMs(valueRaw: unknown) {
   return `${Math.round(value)}ms`;
 }
 
+function formatUsageCounter(counter: NetworkUsageCounter) {
+  return `送 ${formatBytesCompact(counter.sentBytes) || "0B"} / 受 ${formatBytesCompact(counter.receivedBytes) || "0B"}`;
+}
+
 export function RunnerWsConnectionStatus({
   turnState = "",
   dataSync,
   selectedRoute = "unknown",
 }: RunnerWsConnectionStatusProps) {
   const [open, setOpen] = useState(false);
+  const [networkUsage, setNetworkUsage] = useState(getNetworkUsageSnapshot);
   const runnerWsSnapshot = useRunnerWebSocketSnapshot();
+  useEffect(() => {
+    if (!open) return;
+    setNetworkUsage(getNetworkUsageSnapshot());
+    const timer = setInterval(() => setNetworkUsage(getNetworkUsageSnapshot()), 1000);
+    return () => clearInterval(timer);
+  }, [open]);
   const label = statusLabel(dataSync);
   const routeIcon = routeIconName(selectedRoute);
   const rttLabel = formatRttMs(runnerWsSnapshot.lastPingRttMs);
@@ -107,6 +124,18 @@ export function RunnerWsConnectionStatus({
     ["pending", String(runnerWsSnapshot.pendingRequestCount)],
     ["subscriptions", String(runnerWsSnapshot.subscriptionCount)],
     ["lastPong", formatAge(Date.now(), runnerWsSnapshot.lastPongAt)],
+    ["通信量 合計", formatUsageCounter({
+      sentBytes: networkUsage.totalSentBytes,
+      receivedBytes: networkUsage.totalReceivedBytes,
+    })],
+    ["計測時間", formatAge(Date.now(), networkUsage.sinceMs)],
+    ["HTTP", formatUsageCounter(networkUsage.http)],
+    ["runner WS", formatUsageCounter(networkUsage.runnerWs)],
+    ["stream-tts WS", formatUsageCounter(networkUsage.streamTts)],
+    ["HTTP: session-messages", formatUsageCounter(networkUsage.httpByCategory["session-messages"])],
+    ["HTTP: session-summaries", formatUsageCounter(networkUsage.httpByCategory["session-summaries"])],
+    ["HTTP: tts-media", formatUsageCounter(networkUsage.httpByCategory["tts-media"])],
+    ["HTTP: その他", formatUsageCounter(networkUsage.httpByCategory.other)],
   ];
 
   return (
@@ -139,14 +168,27 @@ export function RunnerWsConnectionStatus({
                 <Text style={styles.close}>×</Text>
               </Pressable>
             </View>
-            <View style={styles.grid}>
-              {rows.map(([rowLabel, value]) => (
-                <View key={rowLabel} style={styles.cell}>
-                  <Text style={styles.cellLabel}>{rowLabel}</Text>
-                  <Text style={styles.cellValue} numberOfLines={2}>{value}</Text>
-                </View>
-              ))}
-            </View>
+            <ScrollView style={styles.gridScroll}>
+              <View style={styles.grid}>
+                {rows.map(([rowLabel, value]) => (
+                  <View key={rowLabel} style={styles.cell}>
+                    <Text style={styles.cellLabel}>{rowLabel}</Text>
+                    <Text style={styles.cellValue} numberOfLines={2}>{value}</Text>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+            <Pressable
+              style={styles.resetButton}
+              onPress={() => {
+                resetNetworkUsage();
+                setNetworkUsage(getNetworkUsageSnapshot());
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="通信量をリセット"
+            >
+              <Text style={styles.resetButtonText}>通信量をリセット</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -178,6 +220,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15, 23, 42, 0.36)",
   },
   sheet: {
+    maxHeight: "82%",
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 26,
@@ -185,6 +228,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 20,
     backgroundColor: "#ffffff",
   },
+  gridScroll: { flexGrow: 0 },
   header: {
     minHeight: 38,
     flexDirection: "row",
@@ -203,4 +247,15 @@ const styles = StyleSheet.create({
   },
   cellLabel: { fontSize: 11, color: "#64748b" },
   cellValue: { marginTop: 2, fontSize: 14, fontWeight: "700", color: "#0f172a" },
+  resetButton: {
+    marginTop: 10,
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+  },
+  resetButtonText: { fontSize: 12, fontWeight: "700", color: "#334155" },
 });
