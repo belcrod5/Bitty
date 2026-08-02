@@ -2421,6 +2421,19 @@ function runnerWsLlmRelayKeyCandidates(message = {}, meta = {}) {
   return keys.length > 0 ? keys : ["connection:fallback"];
 }
 
+// Threadless single-shot RPCs (mostly thread/list) share one relay per runner-ws
+// connection under this key instead of creating a fresh relay + upstream WS per
+// operation. Turn-owning RPCs never ride this relay (see ensureRunnerWsLlmRelay).
+const RUNNER_WS_LLM_SHARED_THREADLESS_KEY = "connection:llm-threadless";
+const RUNNER_WS_THREADLESS_HANDSHAKE_MAX = 64;
+
+// thread/start, thread/resume and turn/start begin/own an app-server conversation,
+// so they need a dedicated relay whose upstream carries that conversation.
+function isCodexTurnOwningMethod(methodRaw) {
+  const method = String(methodRaw || "").trim();
+  return method === "thread/start" || method === "thread/resume" || method === "turn/start";
+}
+
 function resolveRunnerWsLlmRelayKey(message = {}, meta = {}) {
   return runnerWsLlmRelayKeyCandidates(message, meta)[0];
 }
@@ -9387,6 +9400,46 @@ runnerWsServer.on("connection", (ws, req) => {
     });
   }
 
+  // Raw initialize/initialized texts of operations that started on the shared
+  // threadless relay, kept so a later turn-owning RPC of the same operation can
+  // replay the handshake on its dedicated relay's fresh upstream.
+  const runnerWsThreadlessHandshakes = new Map();
+
+  function rememberRunnerWsThreadlessHandshake(operationIdRaw, method, text) {
+    const operationId = String(operationIdRaw || "").trim();
+    if (!operationId || !text) return;
+    const entry = runnerWsThreadlessHandshakes.get(operationId) || {};
+    if (method === "initialize") entry.initializeText = text;
+    if (method === "initialized") entry.initializedText = text;
+    runnerWsThreadlessHandshakes.delete(operationId);
+    runnerWsThreadlessHandshakes.set(operationId, entry);
+    while (runnerWsThreadlessHandshakes.size > RUNNER_WS_THREADLESS_HANDSHAKE_MAX) {
+      runnerWsThreadlessHandshakes.delete(runnerWsThreadlessHandshakes.keys().next().value);
+    }
+  }
+
+  function replayRunnerWsThreadlessHandshake(relay, operationId, sessionId) {
+    const handshake = operationId ? runnerWsThreadlessHandshakes.get(operationId) : null;
+    if (!handshake?.initializeText) return;
+    runnerWsThreadlessHandshakes.delete(operationId);
+    for (const text of [handshake.initializeText, handshake.initializedText]) {
+      if (!text) continue;
+      forwardCodexRelayClientData(relay, text, false, {
+        remote,
+        endpoint: RUNNER_WS_PATH,
+        clientWs: ws,
+        operationId,
+        sessionId,
+      });
+    }
+    void appendCodexWsProxyDebug("runner_ws_llm_threadless_handshake_replayed", {
+      relayId: relay.relayId,
+      remote,
+      endpoint: RUNNER_WS_PATH,
+      operationId,
+    });
+  }
+
   function ensureRunnerWsLlmRelay(message, meta) {
     const keys = runnerWsLlmRelayKeyCandidates(message, meta);
     const operationId = String(message?.operationId || "").trim();
@@ -9395,21 +9448,44 @@ runnerWsServer.on("connection", (ws, req) => {
     if (hasIdentity && (!operationId || !sessionId)) {
       return { relay: null, error: "runner_ws_llm_identity_required" };
     }
+    const threadId = pickFirstNonEmptyString(message?.threadId, meta?.threadId);
+    const useSharedThreadlessRelay = hasIdentity && !threadId && !isCodexTurnOwningMethod(meta?.method);
+    // The shared relay is mapped only under the shared key (never under
+    // operation/session keys), so a turn-owning RPC of an operation that began
+    // there falls through to the dedicated-relay paths below.
+    const lookupKeys = useSharedThreadlessRelay
+      ? [...keys, RUNNER_WS_LLM_SHARED_THREADLESS_KEY]
+      : keys;
     const claimRelay = (relay) => {
-      if (!hasIdentity) return { relay, error: "" };
+      if (!hasIdentity || relay.runnerWsSharedThreadless) return { relay, error: "" };
       const claimed = runnerWsLlmRelayIdentities.claim(relay, { operationId, sessionId });
       return claimed.ok ? { relay, error: "" } : { relay: null, error: claimed.reason };
     };
-    for (const key of keys) {
+    for (const key of lookupKeys) {
       const existing = llmRelaysByKey.get(key);
       if (existing && !existing.closed) {
+        // A shared relay with a dead upstream would silently swallow RPCs until its
+        // cleanup timer fires; retire it now so the next RPC gets a fresh one.
+        // (Per-op relays never reused a dead upstream, so this window is new here.)
+        const upstreamReadyState = Number(existing.upstreamWs?.readyState);
+        if (
+          existing.runnerWsSharedThreadless &&
+          (upstreamReadyState === WebSocket.CLOSING || upstreamReadyState === WebSocket.CLOSED)
+        ) {
+          cleanupCodexRelay(existing, "shared_threadless_upstream_lost");
+          llmRelaysByKey.delete(key);
+          continue;
+        }
         const claimed = claimRelay(existing);
         if (!claimed.relay) return claimed;
-        for (const alias of keys) {
+        const aliases = existing.runnerWsSharedThreadless
+          ? [RUNNER_WS_LLM_SHARED_THREADLESS_KEY]
+          : keys;
+        for (const alias of aliases) {
           llmRelaysByKey.set(alias, existing);
         }
         if (!existing.clients.has(ws)) {
-          attachRunnerWsToRelay(existing, { keys, replayAfterSeq: 0 });
+          attachRunnerWsToRelay(existing, { keys: aliases, replayAfterSeq: 0 });
         }
         return claimed;
       }
@@ -9436,7 +9512,6 @@ runnerWsServer.on("connection", (ws, req) => {
       attachRunnerWsToRelay(claimRelayByIdentity, { keys, replayAfterSeq: 0 });
       return claimed;
     }
-    const threadId = pickFirstNonEmptyString(message?.threadId, meta?.threadId);
     const threadRelay = pickBestRelayForThread(threadId);
     if (threadRelay && !threadRelay.closed) {
       const claimed = claimRelay(threadRelay);
@@ -9453,12 +9528,28 @@ runnerWsServer.on("connection", (ws, req) => {
       upstreamUrl: CODEX_WS_PROXY_UPSTREAM_URL,
       protocols,
     });
+    if (useSharedThreadlessRelay) {
+      relay.runnerWsSharedThreadless = true;
+      void appendCodexWsProxyDebug("runner_ws_llm_shared_relay_created", {
+        relayId: relay.relayId,
+        remote,
+        endpoint: RUNNER_WS_PATH,
+        connectionId,
+        method: String(meta?.method || ""),
+      });
+    }
     const claimed = claimRelay(relay);
     if (!claimed.relay) {
       cleanupCodexRelay(relay, "runner_ws_llm_identity_rejected");
       return claimed;
     }
-    attachRunnerWsToRelay(relay, { keys, replayAfterSeq: 0 });
+    attachRunnerWsToRelay(relay, {
+      keys: useSharedThreadlessRelay ? [RUNNER_WS_LLM_SHARED_THREADLESS_KEY] : keys,
+      replayAfterSeq: 0,
+    });
+    if (!useSharedThreadlessRelay && hasIdentity) {
+      replayRunnerWsThreadlessHandshake(relay, operationId, sessionId);
+    }
     return claimed;
   }
 
@@ -9658,6 +9749,9 @@ runnerWsServer.on("connection", (ws, req) => {
       const meta = parseCodexRpcMeta(normalized.text, false);
       const ensured = ensureRunnerWsLlmRelay(message, meta);
       const relay = ensured.relay;
+      if (relay?.runnerWsSharedThreadless && (meta?.method === "initialize" || meta?.method === "initialized")) {
+        rememberRunnerWsThreadlessHandshake(message.operationId, meta.method, normalized.text);
+      }
       if (!relay) {
         sendRunnerWsEnvelope(ws, runnerWsErrorEnvelope(
           ensured.error || "runner_ws_llm_identity_collision",
@@ -11096,6 +11190,7 @@ function createCodexRelayContext(params) {
     requestMetaByRpcId: new Map(),
     runnerWsLlmOperationId: "",
     runnerWsLlmSessionId: "",
+    runnerWsSharedThreadless: false,
     upstreamInitializeResultSeen: false,
     upstreamInitializeResult: null,
     upstreamInitializedNotificationForwarded: false,
@@ -11459,7 +11554,10 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       const sessionId = String(responseMeta.sessionId || relay.runnerWsLlmSessionId || "").trim();
       relay.lastSeq += 1;
       const calendarItem = isCalendarDynamicItem(outgoingPayload);
-      if (!calendarItem) {
+      // Shared threadless relays are never resumed/replayed, so skipping their event
+      // log keeps large thread/list responses from accumulating for the connection's
+      // lifetime.
+      if (!calendarItem && !relay.runnerWsSharedThreadless) {
         relay.eventLog.push({
           seq: relay.lastSeq,
           atMs: codexRelayNowMs(),
@@ -11639,12 +11737,7 @@ function createCodexRelayWithUpstream(params = {}) {
 // the identity that upstream notifications (deltas, turn/completed) are tagged with —
 // otherwise the in-flight turn's client filter drops every later notification.
 function isCodexRelayIdentityBindingMethod(method) {
-  return (
-    method === "initialize" ||
-    method === "thread/resume" ||
-    method === "thread/start" ||
-    method === "turn/start"
-  );
+  return method === "initialize" || isCodexTurnOwningMethod(method);
 }
 
 function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
