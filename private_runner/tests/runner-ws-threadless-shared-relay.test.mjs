@@ -260,6 +260,41 @@ test("an initialize error propagates to parked initializes and allows an upstrea
   cleanupRelays(created);
 });
 
+test("a solo initialize error re-arms forwarding without any parked initializes", () => {
+  const newRelays = trackNewRelays();
+  const ws = createRunnerWsConnectionForTest();
+  const op1 = { operationId: "op-solo-err-1", sessionId: "session-solo-err-1" };
+  const op2 = { operationId: "op-solo-err-2", sessionId: "session-solo-err-2" };
+
+  sendLlmRpc(ws, { ...op1, requestId: "rq-se1", payload: { jsonrpc: "2.0", id: 931, method: "initialize", params: {} } });
+  const created = newRelays();
+  const shared = created[0];
+  assert.equal(shared.upstreamInitializeRequested, true);
+  assert.equal(shared.pendingInitializeReplies.length, 0, "no other initialize is parked");
+
+  ws.sent.length = 0;
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    shared,
+    JSON.stringify({ jsonrpc: "2.0", id: 931, error: { code: -32600, message: "solo boom" } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+  const errors = ws.sent.filter((message) => message.channel === "llm" && message.op === "rpc" && message.payload?.error);
+  assert.deepEqual(
+    errors.map((message) => [message.operationId, message.payload.id, message.payload.error.message]),
+    [[op1.operationId, 931, "solo boom"]],
+  );
+  assert.equal(shared.upstreamInitializeRequested, false, "a solo error must re-arm forwarding");
+
+  // Without the re-arm this initialize would be parked forever with nothing in flight.
+  sendLlmRpc(ws, { ...op2, requestId: "rq-se2", payload: { jsonrpc: "2.0", id: 932, method: "initialize", params: {} } });
+  assert.deepEqual(pendingMethods(shared), ["initialize", "initialize"], "the next initialize must reach the upstream");
+  assert.equal(shared.pendingInitializeReplies.length, 0);
+
+  ws.close();
+  cleanupRelays(created);
+});
+
 test("turn-owning RPC gets a dedicated relay with the operation's handshake replayed", () => {
   const newRelays = trackNewRelays();
   const ws = createRunnerWsConnectionForTest();

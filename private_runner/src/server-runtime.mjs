@@ -11481,18 +11481,20 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   }
   // Answer initializes parked while the first initialize was in flight (a second
   // initialize on the same upstream connection fails with "Already initialized").
-  // On an error result the next client initialize is forwarded upstream again.
+  // On an error result the next client initialize is forwarded upstream again;
+  // re-arming must not depend on whether anything is parked, or a solo failed
+  // initialize would leave the shared relay parking forever.
   if (
     responseRpcMethod === "initialize" &&
-    (Boolean(meta?.hasResult) || Boolean(meta?.hasError)) &&
-    Array.isArray(relay.pendingInitializeReplies) &&
-    relay.pendingInitializeReplies.length > 0
+    (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
   ) {
     const errorPayload = meta?.hasError
       ? (rpcPayload?.error ?? { code: -32603, message: "initialize failed" })
       : null;
     if (errorPayload) relay.upstreamInitializeRequested = false;
-    const parked = relay.pendingInitializeReplies.splice(0, relay.pendingInitializeReplies.length);
+    const parked = Array.isArray(relay.pendingInitializeReplies)
+      ? relay.pendingInitializeReplies.splice(0, relay.pendingInitializeReplies.length)
+      : [];
     for (const entry of parked) {
       const responseText = JSON.stringify({
         jsonrpc: "2.0",
