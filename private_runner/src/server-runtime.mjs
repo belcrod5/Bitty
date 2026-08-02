@@ -9420,8 +9420,11 @@ runnerWsServer.on("connection", (ws, req) => {
 
   function replayRunnerWsThreadlessHandshake(relay, operationId, sessionId) {
     const handshake = operationId ? runnerWsThreadlessHandshakes.get(operationId) : null;
-    if (!handshake?.initializeText) return;
+    if (!handshake?.initializeText) return false;
+    // Keep the entry (LRU refresh only) so the same operation can replay again if
+    // this relay's upstream dies right away and the RPC is retried.
     runnerWsThreadlessHandshakes.delete(operationId);
+    runnerWsThreadlessHandshakes.set(operationId, handshake);
     for (const text of [handshake.initializeText, handshake.initializedText]) {
       if (!text) continue;
       forwardCodexRelayClientData(relay, text, false, {
@@ -9438,6 +9441,7 @@ runnerWsServer.on("connection", (ws, req) => {
       endpoint: RUNNER_WS_PATH,
       operationId,
     });
+    return true;
   }
 
   function ensureRunnerWsLlmRelay(message, meta) {
@@ -9548,7 +9552,18 @@ runnerWsServer.on("connection", (ws, req) => {
       replayAfterSeq: 0,
     });
     if (!useSharedThreadlessRelay && hasIdentity) {
-      replayRunnerWsThreadlessHandshake(relay, operationId, sessionId);
+      const replayed = replayRunnerWsThreadlessHandshake(relay, operationId, sessionId);
+      // A turn-owning threadless RPC always needs the handshake replay; a miss means
+      // the stored handshake was evicted (RUNNER_WS_THREADLESS_HANDSHAKE_MAX overflow).
+      if (!replayed && !threadId && isCodexTurnOwningMethod(meta?.method)) {
+        void appendCodexWsProxyDebug("runner_ws_llm_threadless_handshake_replay_miss", {
+          relayId: relay.relayId,
+          remote,
+          endpoint: RUNNER_WS_PATH,
+          operationId,
+          method: String(meta?.method || ""),
+        });
+      }
     }
     return claimed;
   }
@@ -11054,6 +11069,9 @@ function cleanupCodexRelay(relay, reason = "cleanup") {
   if (relay.requestMetaByRpcId instanceof Map) {
     relay.requestMetaByRpcId.clear();
   }
+  if (Array.isArray(relay.pendingInitializeReplies)) {
+    relay.pendingInitializeReplies.length = 0;
+  }
   cleanupCalendarRelayState(relay);
   safeWsClose(relay.upstreamWs, 1000, reason);
 }
@@ -11193,6 +11211,8 @@ function createCodexRelayContext(params) {
     runnerWsSharedThreadless: false,
     upstreamInitializeResultSeen: false,
     upstreamInitializeResult: null,
+    upstreamInitializeRequested: false,
+    pendingInitializeReplies: [],
     upstreamInitializedNotificationForwarded: false,
     lastSeq: 0,
     eventLog: [],
@@ -11458,6 +11478,46 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   ) {
     relay.upstreamInitializeResultSeen = true;
     relay.upstreamInitializeResult = rpcPayload.result ?? null;
+  }
+  // Answer initializes parked while the first initialize was in flight (a second
+  // initialize on the same upstream connection fails with "Already initialized").
+  // On an error result the next client initialize is forwarded upstream again.
+  if (
+    responseRpcMethod === "initialize" &&
+    (Boolean(meta?.hasResult) || Boolean(meta?.hasError)) &&
+    Array.isArray(relay.pendingInitializeReplies) &&
+    relay.pendingInitializeReplies.length > 0
+  ) {
+    const errorPayload = meta?.hasError
+      ? (rpcPayload?.error ?? { code: -32603, message: "initialize failed" })
+      : null;
+    if (errorPayload) relay.upstreamInitializeRequested = false;
+    const parked = relay.pendingInitializeReplies.splice(0, relay.pendingInitializeReplies.length);
+    for (const entry of parked) {
+      const responseText = JSON.stringify({
+        jsonrpc: "2.0",
+        id: entry.id,
+        ...(errorPayload ? { error: errorPayload } : { result: relay.upstreamInitializeResult }),
+      });
+      for (const subscriber of Array.from(relay.clients)) {
+        sendCodexRelayRpcToClient(relay, subscriber, responseText, undefined, {
+          responseRpcMethod: "initialize",
+          operationId: entry.operationId,
+          sessionId: entry.sessionId,
+        });
+        if (entry.requestId) {
+          sendRunnerWsLlmRpcAck(relay, subscriber, {
+            op: "llm_rpc_upstream_response",
+            requestId: entry.requestId,
+            operationId: entry.operationId,
+            method: "initialize",
+            id: entry.id,
+            threadId: entry.threadId || relay.threadId || "",
+            state: errorPayload ? "error" : "result",
+          });
+        }
+      }
+    }
   }
   if (
     (responseRpcMethod === "thread/start" || responseRpcMethod === "thread/resume") &&
@@ -11809,6 +11869,25 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     }
     return;
   }
+  if (
+    meta?.method === "initialize" &&
+    Number.isInteger(meta.id) &&
+    relay.runnerWsSharedThreadless &&
+    relay.upstreamInitializeRequested
+  ) {
+    // First initialize is still in flight: forwarding another one would fail with
+    // "Already initialized", so park this one and answer it from the first response
+    // (see handleCodexRelayUpstreamMessage).
+    relay.pendingInitializeReplies.push({
+      id: rpcPayload?.id ?? meta.id,
+      requestId,
+      operationId: requestOperationId,
+      sessionId: requestSessionId,
+      threadId: requestThreadId,
+    });
+    logForwardState("parked_waiting_initialize_result");
+    return;
+  }
   if (meta?.method === "initialized" && relay.upstreamInitializedNotificationForwarded) {
     void appendCodexWsProxyDebug("client_to_upstream_rpc_forward_state", {
       relayId: relay.relayId,
@@ -11902,6 +11981,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   }
   if (!relay.upstreamOpen) {
     logForwardState("queued_waiting_upstream_open");
+    if (meta?.method === "initialize" && Number.isInteger(meta.id)) {
+      relay.upstreamInitializeRequested = true;
+    }
     if (meta?.method === "initialized") {
       relay.upstreamInitializedNotificationForwarded = true;
     }
@@ -11913,6 +11995,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     return;
   }
   logForwardState("sent_to_upstream");
+  if (meta?.method === "initialize" && Number.isInteger(meta.id)) {
+    relay.upstreamInitializeRequested = true;
+  }
   if (meta?.method === "initialized") {
     relay.upstreamInitializedNotificationForwarded = true;
   }

@@ -78,8 +78,10 @@ test("threadless single-shot RPCs share one relay per runner-ws connection", () 
   assert.equal(shared.clients.has(ws), true);
   assert.deepEqual(
     pendingMethods(shared),
-    ["initialize", "initialized", "thread/list", "initialize", "thread/list"],
+    ["initialize", "initialized", "thread/list", "thread/list"],
+    "only the first initialize may reach the upstream (a second one errors with Already initialized)",
   );
+  assert.equal(shared.pendingInitializeReplies.length, 1, "op2's initialize must be parked");
   // Single-shot operations are not registered in the identity index (no resume).
   assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact(op1).ok, false);
   assert.equal(__TESTING__.runnerWsLlmRelayIdentities.resolveExact(op2).ok, false);
@@ -131,6 +133,128 @@ test("shared relay tags responses per operation and keeps threadId unbound", () 
   assert.equal(shared.threadId, "", "list responses must not bind a threadId on the shared relay");
   assert.equal(shared.eventLog.length, 0, "shared relay must not accumulate an event log");
   assert.equal(shared.lastSeq, 2);
+
+  ws.close();
+  cleanupRelays(created);
+});
+
+test("initializes parked behind an in-flight initialize are answered from its result", () => {
+  const newRelays = trackNewRelays();
+  const ws = createRunnerWsConnectionForTest();
+  const op1 = { operationId: "op-park-1", sessionId: "session-park-1" };
+  const op2 = { operationId: "op-park-2", sessionId: "session-park-2" };
+  const op3 = { operationId: "op-park-3", sessionId: "session-park-3" };
+
+  sendLlmRpc(ws, { ...op1, requestId: "rq-p1", payload: { jsonrpc: "2.0", id: 901, method: "initialize", params: {} } });
+  sendLlmRpc(ws, { ...op2, requestId: "rq-p2", payload: { jsonrpc: "2.0", id: 902, method: "initialize", params: {} } });
+  sendLlmRpc(ws, { ...op3, requestId: "rq-p3", payload: { jsonrpc: "2.0", id: 903, method: "initialize", params: {} } });
+  const created = newRelays();
+  assert.equal(created.length, 1);
+  const shared = created[0];
+  assert.deepEqual(pendingMethods(shared), ["initialize"], "only the first initialize is forwarded");
+  assert.equal(shared.pendingInitializeReplies.length, 2);
+
+  ws.sent.length = 0;
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    shared,
+    JSON.stringify({ jsonrpc: "2.0", id: 901, result: { userAgent: "codex/0.145.0" } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+
+  // Parked replies are flushed first; the originating op's response follows via
+  // the normal upstream delivery path.
+  const responses = ws.sent.filter((message) => message.channel === "llm" && message.op === "rpc");
+  assert.deepEqual(
+    responses.map((message) => [message.operationId, message.sessionId, message.payload.id]),
+    [
+      [op2.operationId, op2.sessionId, 902],
+      [op3.operationId, op3.sessionId, 903],
+      [op1.operationId, op1.sessionId, 901],
+    ],
+  );
+  for (const message of responses) {
+    assert.deepEqual(message.payload.result, { userAgent: "codex/0.145.0" });
+  }
+  const acks = ws.sent.filter((message) => message.op === "llm_rpc_upstream_response");
+  assert.deepEqual(
+    acks.map((message) => [message.requestId, message.payload.state]),
+    [["rq-p2", "result"], ["rq-p3", "result"], ["rq-p1", "result"]],
+  );
+  assert.equal(shared.pendingInitializeReplies.length, 0);
+
+  ws.close();
+  cleanupRelays(created);
+});
+
+test("a later initialize is answered from the cache once the first result arrived", () => {
+  const newRelays = trackNewRelays();
+  const ws = createRunnerWsConnectionForTest();
+  const op1 = { operationId: "op-cache-1", sessionId: "session-cache-1" };
+  const op2 = { operationId: "op-cache-2", sessionId: "session-cache-2" };
+
+  sendLlmRpc(ws, { ...op1, requestId: "rq-c1", payload: { jsonrpc: "2.0", id: 911, method: "initialize", params: {} } });
+  const created = newRelays();
+  const shared = created[0];
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    shared,
+    JSON.stringify({ jsonrpc: "2.0", id: 911, result: { userAgent: "codex/0.145.0" } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+  assert.equal(shared.upstreamInitializeResultSeen, true);
+
+  ws.sent.length = 0;
+  sendLlmRpc(ws, { ...op2, requestId: "rq-c2", payload: { jsonrpc: "2.0", id: 912, method: "initialize", params: {} } });
+  assert.deepEqual(pendingMethods(shared), ["initialize"], "the cached answer must not forward upstream again");
+  const cached = ws.sent.filter((message) => message.channel === "llm" && message.op === "rpc");
+  assert.equal(cached.length, 1);
+  assert.equal(cached[0].operationId, op2.operationId);
+  assert.equal(cached[0].sessionId, op2.sessionId);
+  assert.equal(cached[0].payload.id, 912);
+  assert.deepEqual(cached[0].payload.result, { userAgent: "codex/0.145.0" });
+  assert.equal(
+    ws.sent.filter((message) => message.op === "llm_rpc_upstream_response" && message.requestId === "rq-c2").length,
+    1,
+  );
+
+  ws.close();
+  cleanupRelays(created);
+});
+
+test("an initialize error propagates to parked initializes and allows an upstream retry", () => {
+  const newRelays = trackNewRelays();
+  const ws = createRunnerWsConnectionForTest();
+  const op1 = { operationId: "op-err-1", sessionId: "session-err-1" };
+  const op2 = { operationId: "op-err-2", sessionId: "session-err-2" };
+  const op3 = { operationId: "op-err-3", sessionId: "session-err-3" };
+
+  sendLlmRpc(ws, { ...op1, requestId: "rq-e1", payload: { jsonrpc: "2.0", id: 921, method: "initialize", params: {} } });
+  sendLlmRpc(ws, { ...op2, requestId: "rq-e2", payload: { jsonrpc: "2.0", id: 922, method: "initialize", params: {} } });
+  const created = newRelays();
+  const shared = created[0];
+
+  ws.sent.length = 0;
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    shared,
+    JSON.stringify({ jsonrpc: "2.0", id: 921, error: { code: -32600, message: "boom" } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+  const errors = ws.sent.filter((message) => message.channel === "llm" && message.op === "rpc" && message.payload?.error);
+  assert.deepEqual(
+    errors.map((message) => [message.operationId, message.payload.id, message.payload.error.message]),
+    [
+      [op2.operationId, 922, "boom"],
+      [op1.operationId, 921, "boom"],
+    ],
+  );
+  assert.equal(shared.upstreamInitializeResultSeen, false);
+
+  // The next initialize must be forwarded upstream again (fresh handshake attempt).
+  sendLlmRpc(ws, { ...op3, requestId: "rq-e3", payload: { jsonrpc: "2.0", id: 923, method: "initialize", params: {} } });
+  assert.deepEqual(pendingMethods(shared), ["initialize", "initialize"]);
+  assert.equal(shared.pendingInitializeReplies.length, 0);
 
   ws.close();
   cleanupRelays(created);
