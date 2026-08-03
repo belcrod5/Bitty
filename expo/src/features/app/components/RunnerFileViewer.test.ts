@@ -13,6 +13,7 @@ test("sends drawio XML safely to the official chromeless viewer", () => {
   const html = buildRunnerFileViewerHtml("drawio", xml);
 
   expect(html).toContain("https://viewer.diagrams.net/?lightbox=1&amp;chrome=0");
+  expect(html).toContain("zoom=nocss");
   expect(html).toContain("create=%7B%22type%22%3A%22message%22%7D");
   expect(html).toContain("maximum-scale=1.0, user-scalable=no");
   expect(html).toContain('event.origin !== "https://viewer.diagrams.net"');

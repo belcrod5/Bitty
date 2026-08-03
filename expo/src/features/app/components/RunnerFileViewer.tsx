@@ -18,7 +18,7 @@ import {
 } from "../utils/runnerFileContextMenu";
 
 const DRAWIO_VIEWER_URL =
-  "https://viewer.diagrams.net/?lightbox=1&chrome=0&layers=1&nav=1&border=10#create=%7B%22type%22%3A%22message%22%7D";
+  "https://viewer.diagrams.net/?lightbox=1&chrome=0&layers=1&nav=1&border=10&zoom=nocss#create=%7B%22type%22%3A%22message%22%7D";
 
 type RunnerFileViewerProps = {
   target: RunnerFileViewerTarget | null;
