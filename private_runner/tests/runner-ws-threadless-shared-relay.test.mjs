@@ -130,6 +130,11 @@ test("shared relay tags responses per operation and keeps threadId unbound", () 
       [op1.operationId, op1.sessionId, 301],
     ],
   );
+  assert.deepEqual(
+    rpcEnvelopes.map((message) => message.seq),
+    [undefined, undefined],
+    "shared relay envelopes must not carry a seq (it would advance the client's replay watermark past the dedicated relay's seq)",
+  );
   assert.equal(shared.threadId, "", "list responses must not bind a threadId on the shared relay");
   assert.equal(shared.eventLog.length, 0, "shared relay must not accumulate an event log");
   assert.equal(shared.lastSeq, 2);
@@ -331,6 +336,58 @@ test("turn-owning RPC gets a dedicated relay with the operation's handshake repl
   assert.equal(pendingMethods(dedicated).at(-1), "turn/start");
   assert.equal(pendingMethods(shared).includes("thread/start"), false);
   assert.equal(pendingMethods(shared).includes("turn/start"), false);
+
+  ws.close();
+  cleanupRelays(newRelays());
+});
+
+// The regression itself (shared relay envelopes must be seq-less) is asserted in
+// "shared relay tags responses per operation" above; this guards the other half of
+// the invariant: the dedicated relay keeps its own replayable seq, independent of
+// how far the shared relay's counter advanced within the same operation.
+test("a dedicated relay's responses keep their seq after shared relay traffic in the same operation", () => {
+  const newRelays = trackNewRelays();
+  const ws = createRunnerWsConnectionForTest();
+  const turnOp = { operationId: "op-seq-1", sessionId: "session-seq-1" };
+
+  sendLlmRpc(ws, { ...turnOp, requestId: "rq-q1", payload: { jsonrpc: "2.0", id: 601, method: "initialize", params: {} } });
+  sendLlmRpc(ws, { ...turnOp, payload: { jsonrpc: "2.0", method: "initialized", params: {} } });
+  sendLlmRpc(ws, { ...turnOp, requestId: "rq-q2", payload: { jsonrpc: "2.0", id: 602, method: "modelProvider/capabilities/read", params: {} } });
+  const shared = newRelays().find((relay) => relay.runnerWsSharedThreadless);
+  assert.ok(shared);
+  // The shared relay answers the pre-turn RPCs first, advancing its own counter.
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    shared,
+    JSON.stringify({ jsonrpc: "2.0", id: 601, result: {} }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    shared,
+    JSON.stringify({ jsonrpc: "2.0", id: 602, result: { namespaceTools: true } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+
+  sendLlmRpc(ws, { ...turnOp, requestId: "rq-q3", payload: { jsonrpc: "2.0", id: 603, method: "thread/start", params: {} } });
+  const dedicated = newRelays().find((relay) => !relay.runnerWsSharedThreadless);
+  assert.ok(dedicated);
+
+  ws.sent.length = 0;
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    dedicated,
+    JSON.stringify({ jsonrpc: "2.0", id: 603, result: { thread: { id: "thread-seq-1" } } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+  const rpcEnvelopes = ws.sent.filter((message) => message.channel === "llm" && message.op === "rpc");
+  assert.equal(rpcEnvelopes.length, 1);
+  assert.equal(rpcEnvelopes[0].payload.id, 603);
+  assert.equal(
+    rpcEnvelopes[0].seq,
+    1,
+    "dedicated relay responses must keep their own replayable seq, not continue the shared relay's counter",
+  );
 
   ws.close();
   cleanupRelays(newRelays());
