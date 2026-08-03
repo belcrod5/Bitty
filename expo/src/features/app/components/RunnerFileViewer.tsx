@@ -38,15 +38,17 @@ function escapeHtmlAttribute(value: string) {
 }
 
 export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: string) {
-  if (kind === "html") return content;
-
-  const viewerConfig = escapeHtmlAttribute(JSON.stringify({
-    nav: true,
-    resize: true,
-    toolbar: "pages layers",
-    xml: content,
-  }));
-  return `<!doctype html>
+  switch (kind) {
+    case "html":
+      return content;
+    case "drawio": {
+      const viewerConfig = escapeHtmlAttribute(JSON.stringify({
+        nav: true,
+        resize: true,
+        toolbar: "pages layers",
+        xml: content,
+      }));
+      return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -65,6 +67,12 @@ export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: s
   <script src="${DRAWIO_VIEWER_SCRIPT_URL}"></script>
 </body>
 </html>`;
+    }
+    default: {
+      const exhaustiveKind: never = kind;
+      return exhaustiveKind;
+    }
+  }
 }
 
 export function RunnerFileViewer({
