@@ -53,8 +53,13 @@ export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: s
   <meta name="viewport" content="width=device-width, initial-scale=1">
 </head>
 <body>
-  <div class="mxgraph" style="max-width: 100%; border: 1px solid transparent;" data-mxgraph="${viewerOptions}"></div>
+  <div id="drawio-viewer" style="max-width: 100%; border: 1px solid transparent;" data-mxgraph="${viewerOptions}"></div>
   <script src="${DRAWIO_VIEWER_SCRIPT_URL}"></script>
+  <script>
+    GraphViewer.createViewerForElement(document.getElementById("drawio-viewer"), function(viewer) {
+      viewer.graph.panningHandler.setPinchEnabled(true);
+    });
+  </script>
 </body>
 </html>`;
 }
