@@ -8,24 +8,20 @@ test("keeps HTML file content unchanged", () => {
   expect(buildRunnerFileViewerHtml("html", content)).toBe(content);
 });
 
-test("sends drawio XML safely to the official chromeless viewer", () => {
+test("renders drawio XML safely with the official static viewer", () => {
   const xml = `<mxfile><diagram name='A &quot;B&quot; & C'><mxCell value="</script><img src=x onerror=alert(1)>"></mxCell></diagram></mxfile>`;
   const html = buildRunnerFileViewerHtml("drawio", xml);
 
-  expect(html).toContain("https://viewer.diagrams.net/?lightbox=1&amp;chrome=0");
-  expect(html).toContain("zoom=nocss");
-  expect(html).toContain("create=%7B%22type%22%3A%22message%22%7D");
-  expect(html).toContain("maximum-scale=1.0, user-scalable=no");
-  expect(html).toContain('event.origin !== "https://viewer.diagrams.net"');
-  expect(html).toContain('action: "create"');
-  expect(html).toContain('type: "xml"');
-  expect(html.indexOf('window.addEventListener("message"')).toBeLessThan(
-    html.indexOf('.src = "https://viewer.diagrams.net/')
-  );
+  expect(html).toContain("https://viewer.diagrams.net/js/viewer-static.min.js");
+  expect(html).toContain("maximum-scale=8.0, user-scalable=yes");
+  expect(html).toContain('class="mxgraph"');
+  expect(html).toContain('class="drawio-native-scroll"');
+  expect(html).toContain('&quot;toolbar&quot;:&quot;pages layers&quot;');
   expect(html).toContain("&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;");
   expect(html).toContain("&#39;A &amp;quot;B&amp;quot; &amp; C&#39;");
   expect(html).not.toContain("</script><img");
   expect(html).not.toContain(xml);
-  expect(html).not.toContain("GraphViewer");
+  expect(html).not.toContain("<iframe");
+  expect(html).not.toContain("postMessage");
   expect(html).not.toContain("pinchEnabled");
 });

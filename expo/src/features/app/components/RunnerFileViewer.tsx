@@ -17,8 +17,8 @@ import {
   type RunnerFileViewerTarget,
 } from "../utils/runnerFileContextMenu";
 
-const DRAWIO_VIEWER_URL =
-  "https://viewer.diagrams.net/?lightbox=1&chrome=0&layers=1&nav=1&border=10&zoom=nocss#create=%7B%22type%22%3A%22message%22%7D";
+const DRAWIO_VIEWER_SCRIPT_URL =
+  "https://viewer.diagrams.net/js/viewer-static.min.js";
 
 type RunnerFileViewerProps = {
   target: RunnerFileViewerTarget | null;
@@ -40,42 +40,29 @@ function escapeHtmlAttribute(value: string) {
 export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: string) {
   if (kind === "html") return content;
 
-  const diagramXml = escapeHtmlAttribute(content);
-  const viewerUrl = escapeHtmlAttribute(DRAWIO_VIEWER_URL);
+  const viewerConfig = escapeHtmlAttribute(JSON.stringify({
+    nav: true,
+    resize: true,
+    toolbar: "pages layers",
+    xml: content,
+  }));
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=8.0, user-scalable=yes">
   <style>
-    html, body, iframe { width: 100%; height: 100%; margin: 0; border: 0; overflow: hidden; }
+    html, body { margin: 0; min-width: 100%; min-height: 100%; }
+    .drawio-page { position: relative; min-width: 100%; min-height: 100%; }
+    .drawio-native-scroll { position: absolute; inset: 0; z-index: 998; }
   </style>
 </head>
 <body>
-  <div id="drawio-data" hidden data-xml="${diagramXml}"></div>
-  <iframe id="drawio-viewer" title="draw.io viewer"></iframe>
-  <script>
-    window.addEventListener("message", function(event) {
-      if (event.origin !== "https://viewer.diagrams.net") return;
-
-      var message = event.data;
-      if (typeof message === "string") {
-        try { message = JSON.parse(message); } catch (_) { return; }
-      }
-
-      if (message && message.event === "ready") {
-        event.source.postMessage({
-          action: "create",
-          data: {
-            type: "xml",
-            data: document.getElementById("drawio-data").getAttribute("data-xml")
-          }
-        }, event.origin);
-      }
-    });
-
-    document.getElementById("drawio-viewer").src = "${viewerUrl}";
-  </script>
+  <div class="drawio-page">
+    <div class="mxgraph" style="max-width:100%;border:1px solid transparent;" data-mxgraph="${viewerConfig}"></div>
+    <div class="drawio-native-scroll" aria-hidden="true"></div>
+  </div>
+  <script src="${DRAWIO_VIEWER_SCRIPT_URL}"></script>
 </body>
 </html>`;
 }
