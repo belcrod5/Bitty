@@ -24,6 +24,7 @@ import {
   normalizeRunnerPath,
   openRunnerFileContextMenu,
   RUNNER_FILE_HTTP_TIMEOUT_MS,
+  type RunnerFileViewerTarget,
   type RunnerMediaFile,
   type RunnerMediaItem,
 } from "../utils/runnerFileContextMenu";
@@ -66,7 +67,7 @@ type GitDiffPanelProps = {
   onRefreshGitChangedFiles?: () => void | Promise<void>;
   showInfoToast: (textRaw: unknown) => void;
   onOpenMedia: (media: RunnerMediaFile) => void;
-  onOpenHtml?: (target: WorkspaceFileTarget) => void;
+  onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: WorkspaceFileTarget) => void;
   logSessionDiag?: (
     event: string,
@@ -100,7 +101,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   onRefreshGitChangedFiles,
   showInfoToast,
   onOpenMedia,
-  onOpenHtml,
+  onOpenFile,
   onSpeakText,
   logSessionDiag,
 }: GitDiffPanelProps) {
@@ -455,7 +456,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       getPathLabel,
       showInfoToast,
       onOpenMedia,
-      onOpenHtml,
+      onOpenFile,
       onSpeakText,
       onShellScriptStarted: () => {
         setGitPanelTab("running");
@@ -470,7 +471,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     explorerNodesByPath,
     getPathLabel,
     onOpenMedia,
-    onOpenHtml,
+    onOpenFile,
     onSpeakText,
     deleteFile,
     renameFileTarget,
