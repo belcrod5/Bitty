@@ -14,6 +14,7 @@ test("sends drawio XML safely to the official chromeless viewer", () => {
 
   expect(html).toContain("https://viewer.diagrams.net/?lightbox=1&amp;chrome=0");
   expect(html).toContain("create=%7B%22type%22%3A%22message%22%7D");
+  expect(html).toContain("maximum-scale=1.0, user-scalable=no");
   expect(html).toContain('event.origin !== "https://viewer.diagrams.net"');
   expect(html).toContain('action: "create"');
   expect(html).toContain('type: "xml"');
