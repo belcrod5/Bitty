@@ -33,10 +33,11 @@ const RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS = new Set([
   "md",
 ]);
 
-const RUNNER_HTML_FILE_EXTENSIONS = new Set([
-  "html",
-  "htm",
-]);
+const RUNNER_FILE_VIEWER_KIND_BY_EXTENSION: Record<string, RunnerFileViewerKind> = {
+  html: "html",
+  htm: "html",
+  drawio: "drawio",
+};
 
 const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
   "png",
@@ -52,6 +53,12 @@ const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
 ]);
 
 export type RunnerMediaKind = "video" | "image";
+
+export type RunnerFileViewerKind = "html" | "drawio";
+
+export type RunnerFileViewerTarget = WorkspaceFileTarget & {
+  kind: RunnerFileViewerKind;
+};
 
 export type RunnerMediaItem = {
   kind: RunnerMediaKind;
@@ -136,7 +143,7 @@ type OpenRunnerFileContextMenuParams = {
   getPathLabel: (pathRaw: unknown) => string;
   showInfoToast: (textRaw: unknown) => void;
   onOpenMedia: (media: RunnerMediaFile) => void;
-  onOpenHtml?: (target: WorkspaceFileTarget) => void;
+  onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: WorkspaceFileTarget) => void;
   onShellScriptStarted?: (result: StartRunnerShellScriptResult, fileName: string) => void;
   onRequestRename?: (target: WorkspaceFileTarget) => void;
@@ -157,7 +164,7 @@ export function openRunnerFileContextMenu({
   getPathLabel,
   showInfoToast,
   onOpenMedia,
-  onOpenHtml,
+  onOpenFile,
   onSpeakText,
   onShellScriptStarted,
   onRequestRename,
@@ -256,7 +263,7 @@ export function openRunnerFileContextMenu({
         getPathLabel,
         showInfoToast,
         onOpenMedia,
-        onOpenHtml,
+        onOpenFile,
         onSpeakText,
         onShellScriptStarted,
         onRequestRename: options?.onRequestRename ?? onRequestRename,
@@ -350,11 +357,13 @@ export function openRunnerFileContextMenu({
       onPress: openMediaAction,
     });
   } else {
-    if (onOpenHtml && isRunnerHtmlFile(filePath)) {
+    const viewerKind = getRunnerFileViewerKind(filePath);
+    if (onOpenFile && viewerKind) {
       buttons.push({
         text: "開く",
         onPress: () => {
-          onOpenHtml({
+          onOpenFile({
+            kind: viewerKind,
             path: filePath,
             name: fileName,
           });
@@ -486,10 +495,10 @@ export function isRunnerEditableTextFile(pathRaw: unknown) {
   return Boolean(match && RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS.has(match[1]));
 }
 
-export function isRunnerHtmlFile(pathRaw: unknown) {
+export function getRunnerFileViewerKind(pathRaw: unknown): RunnerFileViewerKind | null {
   const path = normalizeRunnerPath(pathRaw).toLowerCase();
   const match = /\.([a-z0-9]+)$/.exec(path);
-  return Boolean(match && RUNNER_HTML_FILE_EXTENSIONS.has(match[1]));
+  return match ? RUNNER_FILE_VIEWER_KIND_BY_EXTENSION[match[1]] ?? null : null;
 }
 
 export function getRunnerMediaKind(pathRaw: unknown): RunnerMediaKind | null {

@@ -11,32 +11,69 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
-import { RUNNER_FILE_HTTP_TIMEOUT_MS } from "../utils/runnerFileContextMenu";
-import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import {
+  RUNNER_FILE_HTTP_TIMEOUT_MS,
+  type RunnerFileViewerKind,
+  type RunnerFileViewerTarget,
+} from "../utils/runnerFileContextMenu";
 
-type RunnerHtmlViewerProps = {
-  target: WorkspaceFileTarget | null;
+const DRAWIO_VIEWER_SCRIPT_URL = "https://viewer.diagrams.net/js/viewer-static.min.js";
+
+type RunnerFileViewerProps = {
+  target: RunnerFileViewerTarget | null;
   runnerUrl: string;
   runnerToken: string;
   rootDirectory: string;
   onRequestClose: () => void;
 };
 
-export function RunnerHtmlViewer({
+function escapeHtmlAttribute(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: string) {
+  if (kind === "html") return content;
+
+  const viewerOptions = escapeHtmlAttribute(JSON.stringify({
+    highlight: "#0000ff",
+    nav: true,
+    resize: true,
+    toolbar: "zoom layers lightbox",
+    xml: content,
+  }));
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+  <div class="mxgraph" style="max-width: 100%; border: 1px solid transparent;" data-mxgraph="${viewerOptions}"></div>
+  <script src="${DRAWIO_VIEWER_SCRIPT_URL}"></script>
+</body>
+</html>`;
+}
+
+export function RunnerFileViewer({
   target,
   runnerUrl,
   runnerToken,
   rootDirectory,
   onRequestClose,
-}: RunnerHtmlViewerProps) {
+}: RunnerFileViewerProps) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [html, setHtml] = useState("");
+  const [content, setContent] = useState("");
 
   const targetPath = target?.path || "";
 
   useEffect(() => {
-    setHtml("");
+    setContent("");
     setLoadError("");
     if (!targetPath) return;
     let cancelled = false;
@@ -50,12 +87,12 @@ export function RunnerHtmlViewer({
     })
       .then((result) => {
         if (cancelled) return;
-        setHtml(result.content);
+        setContent(result.content);
       })
       .catch((err) => {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
-        setLoadError(message || "HTMLファイルの読み込みに失敗しました。");
+        setLoadError(message || "ファイルの読み込みに失敗しました。");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -79,14 +116,14 @@ export function RunnerHtmlViewer({
       <SafeAreaView style={viewerStyles.root}>
         <View style={viewerStyles.header}>
           <View style={viewerStyles.titleWrap}>
-            <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "HTML"}</Text>
+            <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "ファイル"}</Text>
             <Text style={viewerStyles.path} numberOfLines={1}>{targetPath}</Text>
           </View>
           <TouchableOpacity
             style={viewerStyles.closeButton}
             onPress={onRequestClose}
             accessibilityRole="button"
-            accessibilityLabel="HTMLビューアーを閉じる"
+            accessibilityLabel="ファイルビューアーを閉じる"
           >
             <Ionicons name="close" size={24} color="#e2e8f0" />
           </TouchableOpacity>
@@ -103,7 +140,7 @@ export function RunnerHtmlViewer({
           <WebView
             style={viewerStyles.webview}
             originWhitelist={["*"]}
-            source={{ html }}
+            source={{ html: buildRunnerFileViewerHtml(target.kind, content) }}
             setSupportMultipleWindows={false}
           />
         )}

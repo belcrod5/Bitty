@@ -1,8 +1,9 @@
 import { Alert } from "react-native";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
-  isRunnerHtmlFile,
+  getRunnerFileViewerKind,
   openRunnerFileContextMenu,
+  type RunnerFileViewerTarget,
 } from "./runnerFileContextMenu";
 
 jest.mock("expo-clipboard", () => ({
@@ -27,7 +28,7 @@ function flushPromises() {
 
 function openContextMenuButtons(params: {
   filePath: string;
-  onOpenHtml?: (target: { path: string; name: string }) => void;
+  onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
 }): AlertButton[] {
@@ -41,7 +42,7 @@ function openContextMenuButtons(params: {
     getPathLabel: (pathRaw) => String(pathRaw || ""),
     showInfoToast: params.showInfoToast || (() => {}),
     onOpenMedia: () => {},
-    onOpenHtml: params.onOpenHtml,
+    onOpenFile: params.onOpenFile,
     onSpeakText: params.onSpeakText,
   });
   expect(alertSpy).toHaveBeenCalledTimes(1);
@@ -55,41 +56,41 @@ afterEach(() => {
   fetchRunnerTextFileContentMock.mockReset();
 });
 
-test("isRunnerHtmlFile detects html and htm extensions only", () => {
-  expect(isRunnerHtmlFile("docs/index.html")).toBe(true);
-  expect(isRunnerHtmlFile("docs/INDEX.HTM")).toBe(true);
-  expect(isRunnerHtmlFile("docs/readme.md")).toBe(false);
-  expect(isRunnerHtmlFile("scripts/run.sh")).toBe(false);
-  expect(isRunnerHtmlFile("videos/clip.mp4")).toBe(false);
-  expect(isRunnerHtmlFile("Makefile")).toBe(false);
-  expect(isRunnerHtmlFile("")).toBe(false);
+test("getRunnerFileViewerKind detects supported extensions case-insensitively", () => {
+  expect(getRunnerFileViewerKind("docs/index.html")).toBe("html");
+  expect(getRunnerFileViewerKind("docs/INDEX.HTM")).toBe("html");
+  expect(getRunnerFileViewerKind("diagrams/ARCHITECTURE.DRAWIO")).toBe("drawio");
+  expect(getRunnerFileViewerKind("docs/readme.md")).toBeNull();
+  expect(getRunnerFileViewerKind("Makefile")).toBeNull();
+  expect(getRunnerFileViewerKind("")).toBeNull();
 });
 
-test("shows an open button for html files and passes the target to onOpenHtml", () => {
-  const onOpenHtml = jest.fn();
-  const buttons = openContextMenuButtons({
-    filePath: "docs/report.html",
-    onOpenHtml,
-  });
+test.each([
+  ["docs/report.html", "html"],
+  ["diagrams/architecture.drawio", "drawio"],
+] as const)("shows an open button for %s and passes its viewer kind", (filePath, kind) => {
+  const onOpenFile = jest.fn();
+  const buttons = openContextMenuButtons({ filePath, onOpenFile });
   const openButton = buttons.find((button) => button.text === "開く");
   expect(openButton).toBeDefined();
   openButton?.onPress?.();
-  expect(onOpenHtml).toHaveBeenCalledWith({
-    path: "docs/report.html",
-    name: "docs/report.html",
+  expect(onOpenFile).toHaveBeenCalledWith({
+    kind,
+    path: filePath,
+    name: filePath,
   });
 });
 
-test("hides the open button when onOpenHtml is not provided", () => {
+test("hides the open button when onOpenFile is not provided", () => {
   const buttons = openContextMenuButtons({ filePath: "docs/report.html" });
   expect(buttons.some((button) => button.text === "開く")).toBe(false);
 });
 
-test("hides the open button for non-html files", () => {
-  const onOpenHtml = jest.fn();
+test("hides the open button for unsupported files", () => {
+  const onOpenFile = jest.fn();
   const buttons = openContextMenuButtons({
     filePath: "docs/readme.md",
-    onOpenHtml,
+    onOpenFile,
   });
   expect(buttons.some((button) => button.text === "開く")).toBe(false);
 });
@@ -185,17 +186,17 @@ test("shows an alert when fetching the file content for speech fails", async () 
 });
 
 test("keeps existing menu items for media and shell script files", () => {
-  const onOpenHtml = jest.fn();
+  const onOpenFile = jest.fn();
   const videoButtons = openContextMenuButtons({
     filePath: "videos/clip.mp4",
-    onOpenHtml,
+    onOpenFile,
   });
   expect(videoButtons.some((button) => button.text === "再生")).toBe(true);
   expect(videoButtons.some((button) => button.text === "開く")).toBe(false);
 
   const shellButtons = openContextMenuButtons({
     filePath: "scripts/run.sh",
-    onOpenHtml,
+    onOpenFile,
   });
   expect(shellButtons.some((button) => button.text === "実行する")).toBe(true);
   expect(shellButtons.some((button) => button.text === "ファイル内容をコピー")).toBe(true);
