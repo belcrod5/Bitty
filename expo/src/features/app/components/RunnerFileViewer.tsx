@@ -46,6 +46,7 @@ export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: s
         nav: true,
         resize: true,
         toolbar: "pages layers",
+        "toolbar-nohide": true,
         xml: content,
       }));
       return `<!doctype html>

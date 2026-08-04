@@ -17,6 +17,7 @@ test("renders drawio XML safely with the official static viewer", () => {
   expect(html).toContain('class="mxgraph"');
   expect(html).toContain('class="drawio-native-scroll"');
   expect(html).toContain('&quot;toolbar&quot;:&quot;pages layers&quot;');
+  expect(html).toContain('&quot;toolbar-nohide&quot;:true');
   expect(html).toContain("&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;");
   expect(html).toContain("&#39;A &amp;quot;B&amp;quot; &amp; C&#39;");
   expect(html).not.toContain("</script><img");
