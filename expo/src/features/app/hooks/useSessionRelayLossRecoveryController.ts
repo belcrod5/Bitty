@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { parseOptionalSessionId } from "../utils/llmSession";
 import { isLlmActiveStatus } from "../utils/statusText";
 import type { ResyncRateLimiter } from "../utils/resumeSync";
@@ -85,6 +85,17 @@ export function useSessionRelayLossRecoveryController({
   resyncRateLimiter,
   logSessionDiag,
 }: UseSessionRelayLossRecoveryControllerArgs) {
+  // レート制御(グローバル枠)超過で再同期を見送ったセッションのone-shot遅延再試行。
+  // 多数セッションの同時relay-lossで合算枠を超えた分が古いまま残らないようにする。
+  const rateLimitRetryTimerBySessionIdRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const finalizeSelfRef = useRef<(sessionIdRaw: unknown, reasonRaw: string) => void>(() => {});
+  useEffect(() => () => {
+    for (const [sessionId, timer] of Object.entries(rateLimitRetryTimerBySessionIdRef.current)) {
+      clearTimeout(timer);
+      delete rateLimitRetryTimerBySessionIdRef.current[sessionId];
+    }
+  }, []);
+
   const finalizeSessionRuntimeAfterRelayLoss = useCallback((sessionIdRaw: unknown, reasonRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
@@ -176,6 +187,32 @@ export function useSessionRelayLossRecoveryController({
     }
     if (resyncScheduled || panelResyncScheduled) {
       resyncRateLimiter.recordResync(sessionId, now);
+    } else if (
+      !canResync &&
+      // セッション自身のクールダウン中はloop guardとして従来どおり見送る。
+      // グローバル枠超過(他セッションの混雑)で弾かれた場合のみ遅延再試行する。
+      !resyncRateLimiter.isSessionCoolingDown(sessionId, now) &&
+      (panelsShowingSession.length > 0 || visibleSessionId === sessionId) &&
+      !rateLimitRetryTimerBySessionIdRef.current[sessionId]
+    ) {
+      // 合算枠で見送った可視セッションは、解除時刻に1回だけ再試行する。
+      // 多数セッション同時lossで枠を超えた分が「古いまま」で残らないようにする(M-6)。
+      const waitMs = resyncRateLimiter.msUntilAllowed(sessionId, now);
+      if (Number.isFinite(waitMs) && waitMs > 0) {
+        const delayMs = Math.floor(waitMs) + 50;
+        logSessionDiag("session_runtime_relay_loss_resync_deferred", {
+          sessionId,
+          reason: detail,
+          delayMs,
+        }, {
+          throttleMs: 0,
+          throttleKey: `session_runtime_relay_loss_resync_deferred:${sessionId}`,
+        });
+        rateLimitRetryTimerBySessionIdRef.current[sessionId] = setTimeout(() => {
+          delete rateLimitRetryTimerBySessionIdRef.current[sessionId];
+          finalizeSelfRef.current(sessionId, `${detail} (rate_limit_retry)`);
+        }, delayMs);
+      }
     }
     logSessionDiag("session_runtime_relay_unavailable", {
       sessionId,
@@ -209,6 +246,7 @@ export function useSessionRelayLossRecoveryController({
     setSessionConversationMessagesForCodexRef,
     updateLlmStatus,
   ]);
+  finalizeSelfRef.current = finalizeSessionRuntimeAfterRelayLoss;
 
   return {
     finalizeSessionRuntimeAfterRelayLoss,

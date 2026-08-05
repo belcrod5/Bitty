@@ -1209,6 +1209,9 @@ export default function App() {
   const streamTtsControlRef = useRef<StreamTtsControlState | null>(null);
   const streamSocketRef = useRef<WebSocket | null>(null);
   const codexRelayObserverRef = useRef<{ threadId: string; panelId?: string; close: () => void } | null>(null);
+  // observer強奪時の補償ハンドラ。実体は後段のuseReadyDrivenResumeSyncControllerが
+  // 提供する markSessionRespondingForResync(refで前方参照を解決する)。
+  const observerPreemptedHandlerRef = useRef<((sessionId: string) => void) | null>(null);
   const codexRelayObserverReplyByThreadRef = useRef<Record<string, string>>({});
   const codexRelayObserverStartedAtMsByThreadRef = useRef<Record<string, number>>({});
   const waitingApprovalResumePendingSessionIdRef = useRef("");
@@ -3027,6 +3030,9 @@ export default function App() {
     const restoreBegin = beginSessionRestore(nextSessionId, {
       source,
       directory,
+      // 復帰時の同一セッション再同期は表示中の会話を差し替えるだけなので、
+      // 「セッションを復元中...」オーバーレイを出さない(WS再接続毎の点滅防止)。
+      silent: opts?.preserveLiveObserver === true,
     });
     if (!restoreBegin) return false;
     const {
@@ -4042,6 +4048,12 @@ export default function App() {
     onApprovalRequest: handleRuntimeApprovalRequest,
     onApprovalRequestResolved: handleRuntimeApprovalResolved,
     onAssistantTurnCompleted: handleRelayAssistantTurnCompleted,
+    // observer強奪(別スレッドのrunning turnがobserverを奪う)時の補償:
+    // clean closeされる側のセッションはresume_missを出せないため、
+    // 「あとで再同期が必要」マーカーに積んで次のready遷移・G2再取得判定で拾う(M-4)。
+    onObserverPreempted: (previousThreadId) => {
+      observerPreemptedHandlerRef.current?.(previousThreadId);
+    },
   });
 
   function applyRestoredSessionRuntimeFromMessages({
@@ -4843,6 +4855,7 @@ export default function App() {
   const {
     requestSessionResync,
     wasRespondingAtBackground,
+    markSessionRespondingForResync,
   } = useReadyDrivenResumeSyncController({
     settingsLoaded,
     activeScreen,
@@ -4866,6 +4879,7 @@ export default function App() {
     fetchLatestSessionIdForDirectory,
     logSessionDiag,
   });
+  observerPreemptedHandlerRef.current = markSessionRespondingForResync;
 
   // 遅延liveメタが「実行中でない」で解決したときの完了レース窓を閉じる(G2):
   // restore適用時点でrunningと信じていた、またはバックグラウンド移行時点で応答中だった

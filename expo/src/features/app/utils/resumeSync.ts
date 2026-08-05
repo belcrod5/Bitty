@@ -11,6 +11,13 @@ export const RESUME_SYNC_GLOBAL_MAX_PER_WINDOW = 6;
 export type ResyncRateLimiter = {
   canResync: (sessionId: string, nowMs?: number) => boolean;
   recordResync: (sessionId: string, nowMs?: number) => void;
+  // canResyncがfalseのとき、許可されるまでの待ち時間(ms)。既に許可済みなら0。
+  // 呼び出し側はこれを使って「取りこぼし禁止の再同期」をone-shot遅延リトライにできる。
+  msUntilAllowed: (sessionId: string, nowMs?: number) => number;
+  // このセッション自身のクールダウン(perSessionMinIntervalMs)中かどうか。
+  // 「セッション単位の抑止(=ループガード)」と「グローバル枠超過(=他セッションの
+  // 混雑)」を区別したい呼び出し側(relay-loss回復の遅延再試行など)が使う。
+  isSessionCoolingDown: (sessionId: string, nowMs?: number) => boolean;
 };
 
 // 再同期(履歴全文の再取得)の合算レート制御。
@@ -51,6 +58,29 @@ export function createResyncRateLimiter(options?: {
       pruneRecent(nowMs);
       recentResyncAts.push(nowMs);
     },
+    isSessionCoolingDown: (sessionIdRaw: string, nowMs: number = Date.now()) => {
+      const sessionId = String(sessionIdRaw || "").trim();
+      if (!sessionId) return false;
+      const lastAt = lastResyncAtBySessionId.get(sessionId);
+      return lastAt !== undefined && nowMs - lastAt < perSessionMinIntervalMs;
+    },
+    msUntilAllowed: (sessionIdRaw: string, nowMs: number = Date.now()) => {
+      const sessionId = String(sessionIdRaw || "").trim();
+      if (!sessionId) return Number.POSITIVE_INFINITY;
+      const lastAt = lastResyncAtBySessionId.get(sessionId);
+      const perSessionWaitMs = lastAt !== undefined
+        ? Math.max(0, perSessionMinIntervalMs - (nowMs - lastAt))
+        : 0;
+      pruneRecent(nowMs);
+      let globalWaitMs = 0;
+      if (recentResyncAts.length >= globalMaxPerWindow) {
+        // 窓内件数が globalMaxPerWindow-1 まで減るのは、古い方から
+        // (len - max + 1) 件が期限切れになった時点。その最後の1件の期限を待つ。
+        const releaseAt = recentResyncAts[recentResyncAts.length - globalMaxPerWindow] + globalWindowMs;
+        globalWaitMs = Math.max(0, releaseAt - nowMs);
+      }
+      return Math.max(perSessionWaitMs, globalWaitMs);
+    },
   };
 }
 
@@ -74,21 +104,24 @@ export type ResumeSyncPanelEntry = {
   isResponding: boolean;
 };
 
-export type ResumeSyncTarget =
-  | { kind: "selected"; sessionId: string }
-  | { kind: "panel"; sessionId: string; panelId: string; directory: string };
+// 1セッション=1ターゲット。同一セッションを表示する全可視パネルをまとめて持ち、
+// レート制御は1回の獲得で全反映先に適用する(relay-loss回復経路と同じ扱い)。
+export type ResumeSyncSessionTarget = {
+  sessionId: string;
+  selected: boolean;
+  panels: Array<{ panelId: string; directory: string }>;
+};
 
 export type ResumeSyncSkip = {
   sessionId: string;
   panelId?: string;
   reason:
     | "live_observer"
-    | "session_already_covered"
     | "missing_directory";
 };
 
 export type ResumeSyncPlan = {
-  targets: ResumeSyncTarget[];
+  targets: ResumeSyncSessionTarget[];
   skipped: ResumeSyncSkip[];
 };
 
@@ -98,7 +131,8 @@ export type ResumeSyncPlan = {
 //   ここで全文再取得するとライブ配信路を壊す)。
 // - パネルは「ポップアップ表示中」「応答中」「バックグラウンド移行時点で応答中だった」
 //   もののみ対象(全パネルfan-outの再発防止)。
-// - 同一セッションは1回だけ再同期する(選択セッション優先)。
+// - 同一セッションを表示する可視パネルは全て同じターゲットにまとめ、レート制御1回で
+//   全パネルへ反映する(#40 relay-loss回復経路と同じ扱い)。
 export function planResumeSyncTargets(input: {
   selectedSessionId: string;
   observerThreadId: string;
@@ -106,9 +140,9 @@ export function planResumeSyncTargets(input: {
   panelEntries: ResumeSyncPanelEntry[];
   respondingSessionIds: string[];
 }): ResumeSyncPlan {
-  const targets: ResumeSyncTarget[] = [];
   const skipped: ResumeSyncSkip[] = [];
-  const coveredSessionIds = new Set<string>();
+  const targetsBySessionId = new Map<string, ResumeSyncSessionTarget>();
+  const observerSkippedSessionIds = new Set<string>();
   const selectedSessionId = String(input.selectedSessionId || "").trim();
   const observerThreadId = String(input.observerThreadId || "").trim();
   const popupPanelId = String(input.popupPanelId || "").trim();
@@ -117,14 +151,21 @@ export function planResumeSyncTargets(input: {
       .map((id) => String(id || "").trim())
       .filter(Boolean)
   );
+  const ensureTarget = (sessionId: string): ResumeSyncSessionTarget => {
+    const existing = targetsBySessionId.get(sessionId);
+    if (existing) return existing;
+    const created: ResumeSyncSessionTarget = { sessionId, selected: false, panels: [] };
+    targetsBySessionId.set(sessionId, created);
+    return created;
+  };
 
   if (selectedSessionId) {
     if (observerThreadId && observerThreadId === selectedSessionId) {
       skipped.push({ sessionId: selectedSessionId, reason: "live_observer" });
+      observerSkippedSessionIds.add(selectedSessionId);
     } else {
-      targets.push({ kind: "selected", sessionId: selectedSessionId });
+      ensureTarget(selectedSessionId).selected = true;
     }
-    coveredSessionIds.add(selectedSessionId);
   }
 
   for (const entryRaw of Array.isArray(input.panelEntries) ? input.panelEntries : []) {
@@ -138,13 +179,9 @@ export function planResumeSyncTargets(input: {
       respondingSessionIds.has(sessionId)
     );
     if (!wanted) continue;
-    if (coveredSessionIds.has(sessionId)) {
-      skipped.push({ sessionId, panelId, reason: "session_already_covered" });
-      continue;
-    }
     if (observerThreadId && sessionId === observerThreadId) {
       skipped.push({ sessionId, panelId, reason: "live_observer" });
-      coveredSessionIds.add(sessionId);
+      observerSkippedSessionIds.add(sessionId);
       continue;
     }
     const directory = String(entryRaw.directory || "").trim();
@@ -152,9 +189,11 @@ export function planResumeSyncTargets(input: {
       skipped.push({ sessionId, panelId, reason: "missing_directory" });
       continue;
     }
-    targets.push({ kind: "panel", sessionId, panelId, directory });
-    coveredSessionIds.add(sessionId);
+    ensureTarget(sessionId).panels.push({ panelId, directory });
   }
 
-  return { targets, skipped };
+  return {
+    targets: Array.from(targetsBySessionId.values()),
+    skipped,
+  };
 }

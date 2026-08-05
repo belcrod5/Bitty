@@ -24,6 +24,10 @@ const RESUME_SYNC_RESTORE_BUSY_RETRY_MS = 2000;
 const RESUME_SYNC_MAX_RESTORE_BUSY_RETRIES = 3;
 // バックグラウンド移行時点で応答中だったセッションの記録の有効期限。
 const RESPONDING_AT_BACKGROUND_TTL_MS = 15 * 60_000;
+// requestSessionResync(G2の完了レース窓クローズ等)がレート制御・restore中に阻まれた場合の
+// one-shot遅延リトライの上限と余裕時間。取りこぼし禁止の再同期を、limiter解除時刻まで持ち越す。
+const SESSION_RESYNC_RETRY_MAX_ATTEMPTS = 3;
+const SESSION_RESYNC_RETRY_SLACK_MS = 50;
 
 type LogSessionDiag = (
   event: string,
@@ -73,11 +77,16 @@ type UseReadyDrivenResumeSyncControllerArgs = {
 // これにより「WS ready前のHTTP再取得がライブ配信路(relay observer)を壊す」(G1)と
 // 「activeの一発勝負+live meta 150ms猶予レース」(G4)を構造的に排除する。
 //
-// - ライブrelay observerが生存しているセッションは対象外: observer自身がready遷移で
-//   lastRelaySeqからのrelay/resumeを送り、サーバーが差分再送する(第一経路)。
-//   resume_miss / relay_closed のときだけ従来のJSONL再同期(#40経路)にフォールバックする。
+// - ライブ配信路が生きているセッションは対象外:
+//   - relay observerが生存するセッションはobserver自身がready遷移でlastRelaySeqから
+//     relay/resumeを送り、サーバーが差分再送する(第一経路)。
+//   - 選択セッションのin-flight turn(replyLoading)はturn.ts自身のws_reconnect_resume
+//     (同じくseq resume)が無傷復旧する。ここで全文再取得+quiesceするとTTS切断・
+//     ストリームUIリセットが毎フラップ発生してしまう。
+//   いずれも resume_miss / relay_closed のときだけ従来のJSONL再同期(#40経路)に
+//   フォールバックする。
 // - 対象は選択セッション+可視パネル群(ポップアップ・応答中・バックグラウンド移行時点で
-//   応答中だったセッション)(G3)。
+//   応答中だったセッション)(G3)。同一セッションの全可視パネルへ反映する。
 // - 全対象は共有のグローバルレート制御(resyncRateLimiter)を通す(修正計画§4②)。
 //   relay-loss回復(#40経路)も同じlimiterを共有するため、経路間の二重再同期も抑止される(§4③)。
 export function useReadyDrivenResumeSyncController({
@@ -116,6 +125,7 @@ export function useReadyDrivenResumeSyncController({
   const restoreBusyRetryCountRef = useRef(0);
   const syncInFlightRef = useRef(false);
   const queuedSyncRef = useRef<{ reason: string; generation: number } | null>(null);
+  const sessionResyncRetryTimerBySessionIdRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const collectPanelEntries = useCallback((): ResumeSyncPanelEntry[] => (
     Object.entries(panelRuntimeEntriesByIdRef.current || {}).map(([panelId, entry]) => ({
@@ -145,6 +155,16 @@ export function useReadyDrivenResumeSyncController({
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
     delete respondingAtBackgroundAtMsBySessionIdRef.current[sessionId];
+  }, []);
+
+  // 「あとで再同期が必要」なセッションとして登録する(バックグラウンド応答中マーカーと同じ扱い)。
+  // observer強奪(別セッションのrestoreがrunningでobserverを奪った)時の補償にも使う:
+  // clean closeされたセッションはresume_missを出せないため、ここに積んで次のready遷移・
+  // 遅延live適用の再取得判定で拾う。
+  const markSessionRespondingForResync = useCallback((sessionIdRaw: unknown) => {
+    const sessionId = parseOptionalSessionId(sessionIdRaw);
+    if (!sessionId) return;
+    respondingAtBackgroundAtMsBySessionIdRef.current[sessionId] = Date.now();
   }, []);
 
   // バックグラウンド移行時点で応答中(ストリーミング中)だったセッションを記録する。
@@ -200,6 +220,54 @@ export function useReadyDrivenResumeSyncController({
     }, RESUME_SYNC_RESTORE_BUSY_RETRY_MS);
   }, [logSessionDiag]);
 
+  const resyncSelectedSession = useCallback((sessionId: string, directory: string, logContext: Record<string, unknown>) => (
+    selectSpecificLlmSession(sessionId, {
+      source: "all",
+      directory,
+      preserveLiveObserver: true,
+    }).then((restored) => {
+      logSessionDiag("resume_sync_selected_done", {
+        ...logContext,
+        sessionId,
+        restored,
+      }, { throttleMs: 0, throttleKey: `resume_sync_selected_done:${sessionId}` });
+    }).catch((error) => {
+      logSessionDiag("resume_sync_selected_failed", {
+        ...logContext,
+        sessionId,
+        message: error instanceof Error ? error.message : String(error),
+      }, { throttleMs: 0, throttleKey: `resume_sync_selected_failed:${sessionId}` });
+    })
+  ), [logSessionDiag, selectSpecificLlmSession]);
+
+  const resyncPanel = useCallback((
+    sessionId: string,
+    panel: { panelId: string; directory: string },
+    diagnosticCycleId: string,
+    logContext: Record<string, unknown>
+  ) => (
+    hydratePanelFromSessionHistoryRef.current({
+      panelId: panel.panelId,
+      sessionId,
+      directory: panel.directory,
+      diagnosticCycleId,
+    }).then((result) => {
+      logSessionDiag("resume_sync_panel_done", {
+        ...logContext,
+        sessionId,
+        panelId: panel.panelId,
+        result,
+      }, { throttleMs: 0, throttleKey: `resume_sync_panel_done:${sessionId}:${panel.panelId}` });
+    }).catch((error) => {
+      logSessionDiag("resume_sync_panel_failed", {
+        ...logContext,
+        sessionId,
+        panelId: panel.panelId,
+        message: error instanceof Error ? error.message : String(error),
+      }, { throttleMs: 0, throttleKey: `resume_sync_panel_failed:${sessionId}:${panel.panelId}` });
+    })
+  ), [hydratePanelFromSessionHistoryRef, logSessionDiag]);
+
   const runResumeSyncPass = useCallback(async (reason: string, generation: number) => {
     const inputs = inputsRef.current;
     if (!inputs.settingsLoaded) return;
@@ -222,11 +290,11 @@ export function useReadyDrivenResumeSyncController({
       reason,
       generation,
       selectedSessionId: selectedSessionId || undefined,
-      targets: plan.targets.map((target) => (
-        target.kind === "selected"
-          ? { kind: target.kind, sessionId: target.sessionId }
-          : { kind: target.kind, sessionId: target.sessionId, panelId: target.panelId }
-      )),
+      targets: plan.targets.map((target) => ({
+        sessionId: target.sessionId,
+        selected: target.selected,
+        panelIds: target.panels.map((panel) => panel.panelId),
+      })),
       skipped: plan.skipped,
     }, { throttleMs: 0, throttleKey: `resume_sync_run:${generation}:${reason}` });
     // observerが生きているセッションはライブ経路(seq resume)が回復を担う。
@@ -237,7 +305,18 @@ export function useReadyDrivenResumeSyncController({
     const directory = normalizedLlmDirectoryForRequest();
     const work: Promise<unknown>[] = [];
     for (const target of plan.targets) {
-      if (target.kind === "selected") {
+      if (target.selected) {
+        // in-flight turn(replyLoading)が生きている間はturn.ts自身のseq resumeが
+        // ライブ復旧を担う。ここで全文再取得+quiesceするとストリームUI・TTSを壊す(High-2)。
+        // 失敗時は resume_miss → relay-loss回復(#40)が同じlimiter経由で再同期する。
+        if (replyLoadingRef.current) {
+          logSessionDiag("resume_sync_skipped_turn_in_flight", {
+            reason,
+            generation,
+            sessionId: target.sessionId,
+          }, { throttleMs: 0, throttleKey: `resume_sync_skipped_turn_in_flight:${target.sessionId}` });
+          continue;
+        }
         if (!startupSessionRestoreAttemptedRef.current) {
           // 起動時リストアが未完了の間は useSessionStartupRecoveryController が
           // ready遷移ごとの復元を担うため、二重restoreを避ける。
@@ -247,76 +326,27 @@ export function useReadyDrivenResumeSyncController({
           scheduleRestoreBusyRetry(reason, generation);
           continue;
         }
-        if (!resyncRateLimiter.canResync(target.sessionId, now)) {
-          logSessionDiag("resume_sync_rate_limited", {
-            reason,
-            generation,
-            sessionId: target.sessionId,
-            kind: target.kind,
-          }, { throttleMs: 0, throttleKey: `resume_sync_rate_limited:${target.sessionId}` });
-          continue;
-        }
-        resyncRateLimiter.recordResync(target.sessionId, now);
-        consumeRespondingAtBackground(target.sessionId);
-        work.push(
-          selectSpecificLlmSession(target.sessionId, {
-            source: "all",
-            directory,
-            preserveLiveObserver: true,
-          }).then((restored) => {
-            logSessionDiag("resume_sync_selected_done", {
-              reason,
-              generation,
-              sessionId: target.sessionId,
-              restored,
-            }, { throttleMs: 0, throttleKey: `resume_sync_selected_done:${target.sessionId}` });
-          }).catch((error) => {
-            logSessionDiag("resume_sync_selected_failed", {
-              reason,
-              generation,
-              sessionId: target.sessionId,
-              message: error instanceof Error ? error.message : String(error),
-            }, { throttleMs: 0, throttleKey: `resume_sync_selected_failed:${target.sessionId}` });
-          })
-        );
-        continue;
       }
       if (!resyncRateLimiter.canResync(target.sessionId, now)) {
         logSessionDiag("resume_sync_rate_limited", {
           reason,
           generation,
           sessionId: target.sessionId,
-          panelId: target.panelId,
-          kind: target.kind,
+          selected: target.selected,
+          panelIds: target.panels.map((panel) => panel.panelId),
         }, { throttleMs: 0, throttleKey: `resume_sync_rate_limited:${target.sessionId}` });
         continue;
       }
       resyncRateLimiter.recordResync(target.sessionId, now);
       consumeRespondingAtBackground(target.sessionId);
-      work.push(
-        hydratePanelFromSessionHistoryRef.current({
-          panelId: target.panelId,
-          sessionId: target.sessionId,
-          directory: target.directory,
-          diagnosticCycleId: `resume-sync-${generation}-${now.toString(36)}`,
-        }).then((result) => {
-          logSessionDiag("resume_sync_panel_done", {
-            reason,
-            generation,
-            sessionId: target.sessionId,
-            panelId: target.panelId,
-            result,
-          }, { throttleMs: 0, throttleKey: `resume_sync_panel_done:${target.sessionId}:${target.panelId}` });
-        }).catch((error) => {
-          logSessionDiag("resume_sync_panel_failed", {
-            reason,
-            generation,
-            sessionId: target.sessionId,
-            panelId: target.panelId,
-            message: error instanceof Error ? error.message : String(error),
-          }, { throttleMs: 0, throttleKey: `resume_sync_panel_failed:${target.sessionId}:${target.panelId}` });
-        })
-      );
+      const logContext = { reason, generation };
+      if (target.selected) {
+        work.push(resyncSelectedSession(target.sessionId, directory, logContext));
+      }
+      const diagnosticCycleId = `resume-sync-${generation}-${now.toString(36)}`;
+      for (const panel of target.panels) {
+        work.push(resyncPanel(target.sessionId, panel, diagnosticCycleId, logContext));
+      }
     }
     // 選択セッションが無い場合は最新セッションへフォールバック(旧resume経路の互換)。
     if (
@@ -357,7 +387,6 @@ export function useReadyDrivenResumeSyncController({
     collectPanelEntries,
     consumeRespondingAtBackground,
     fetchLatestSessionIdForDirectory,
-    hydratePanelFromSessionHistoryRef,
     llmConversationSessionIdRef,
     llmSessionRestoreInFlightRef,
     llmSessionRestoreLoadingRef,
@@ -365,7 +394,9 @@ export function useReadyDrivenResumeSyncController({
     normalizedLlmDirectoryForRequest,
     pruneRespondingAtBackground,
     replyLoadingRef,
+    resyncPanel,
     resyncRateLimiter,
+    resyncSelectedSession,
     scheduleRestoreBusyRetry,
     selectSpecificLlmSession,
     selectedLlmSessionIdRef,
@@ -436,85 +467,119 @@ export function useReadyDrivenResumeSyncController({
         clearTimeout(restoreBusyRetryTimerRef.current);
         restoreBusyRetryTimerRef.current = null;
       }
+      for (const [sessionId, timer] of Object.entries(sessionResyncRetryTimerBySessionIdRef.current)) {
+        clearTimeout(timer);
+        delete sessionResyncRetryTimerBySessionIdRef.current[sessionId];
+      }
     };
   }, [runnerWebSocketManager, scheduleSync]);
 
   // 単一セッションの再同期要求(遅延live適用のidle解決=G2などから呼ばれる)。
-  // グローバルレート制御を通し、observerが生きているセッションはライブ経路に任せる。
-  const requestSessionResync = useCallback((sessionIdRaw: unknown, opts: { panelId?: string; reason: string }) => {
+  // observerが生きているセッションはライブ経路に任せる。
+  // レート制御・restore実行中に阻まれた場合は、解除時刻にone-shot遅延リトライを積む:
+  // G2が閉じたい完了レース窓は「直前のresyncから数秒以内」に必ず起きるため、
+  // 即時拒否だけだと恒常的にドロップしてしまう(High-1)。
+  const requestSessionResyncRef = useRef<(sessionIdRaw: unknown, opts: {
+    panelId?: string;
+    reason: string;
+    attempt?: number;
+  }) => boolean>(() => false);
+  const requestSessionResync = useCallback((sessionIdRaw: unknown, opts: {
+    panelId?: string;
+    reason: string;
+    attempt?: number;
+  }) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return false;
     const reason = String(opts?.reason || "session_resync").trim() || "session_resync";
+    const attempt = Math.max(0, Math.floor(Number(opts?.attempt) || 0));
     const observerThreadId = parseOptionalSessionId(codexRelayObserverRef.current?.threadId);
     if (observerThreadId && observerThreadId === sessionId) return false;
     const now = Date.now();
-    if (!resyncRateLimiter.canResync(sessionId, now)) {
-      logSessionDiag("session_resync_request_rate_limited", {
+    const scheduleRetry = (delayMs: number, blockedBy: string) => {
+      if (attempt >= SESSION_RESYNC_RETRY_MAX_ATTEMPTS) {
+        logSessionDiag("session_resync_request_gave_up", {
+          sessionId,
+          reason,
+          blockedBy,
+          attempt,
+        }, { throttleMs: 0, throttleKey: `session_resync_request_gave_up:${sessionId}:${reason}` });
+        return false;
+      }
+      if (sessionResyncRetryTimerBySessionIdRef.current[sessionId]) return false;
+      const normalizedDelayMs = Math.max(SESSION_RESYNC_RETRY_SLACK_MS, Math.floor(delayMs) + SESSION_RESYNC_RETRY_SLACK_MS);
+      logSessionDiag("session_resync_request_deferred", {
         sessionId,
         reason,
-      }, { throttleMs: 0, throttleKey: `session_resync_request_rate_limited:${sessionId}` });
+        blockedBy,
+        attempt,
+        delayMs: normalizedDelayMs,
+      }, { throttleMs: 0, throttleKey: `session_resync_request_deferred:${sessionId}:${reason}:${attempt}` });
+      sessionResyncRetryTimerBySessionIdRef.current[sessionId] = setTimeout(() => {
+        delete sessionResyncRetryTimerBySessionIdRef.current[sessionId];
+        requestSessionResyncRef.current(sessionId, {
+          ...opts,
+          attempt: attempt + 1,
+        });
+      }, normalizedDelayMs);
       return false;
+    };
+    if (!resyncRateLimiter.canResync(sessionId, now)) {
+      const waitMs = resyncRateLimiter.msUntilAllowed(sessionId, now);
+      if (!Number.isFinite(waitMs)) return false;
+      return scheduleRetry(waitMs, "rate_limit");
     }
-    const panelId = String(opts?.panelId || "").trim();
+    const panelIdHint = String(opts?.panelId || "").trim();
     const selectedSessionId = parseOptionalSessionId(
       selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
     );
-    if (!panelId && sessionId === selectedSessionId) {
-      if (llmSessionRestoreInFlightRef.current || llmSessionRestoreLoadingRef.current) return false;
-      resyncRateLimiter.recordResync(sessionId, now);
-      consumeRespondingAtBackground(sessionId);
-      logSessionDiag("session_resync_requested", {
-        sessionId,
-        reason,
-        scope: "selected",
-      }, { throttleMs: 0, throttleKey: `session_resync_requested:${sessionId}:${reason}` });
-      void selectSpecificLlmSession(sessionId, {
-        source: "all",
-        directory: normalizedLlmDirectoryForRequest(),
-        preserveLiveObserver: true,
-      }).catch(() => {});
-      return true;
-    }
+    const isSelected = sessionId === selectedSessionId;
+    // 同一セッションを表示する全可視パネルへ反映する(#40経路と同じ扱い)。
     const panelEntries = collectPanelEntries().filter((entry) => (
-      entry.sessionId === sessionId &&
-      (!panelId || entry.panelId === panelId) &&
-      Boolean(entry.directory)
+      entry.sessionId === sessionId && Boolean(entry.directory)
     ));
-    if (panelEntries.length === 0) return false;
+    if (isSelected && (llmSessionRestoreInFlightRef.current || llmSessionRestoreLoadingRef.current)) {
+      return scheduleRetry(RESUME_SYNC_RESTORE_BUSY_RETRY_MS, "restore_busy");
+    }
+    if (!isSelected && panelEntries.length === 0) return false;
     resyncRateLimiter.recordResync(sessionId, now);
     consumeRespondingAtBackground(sessionId);
     logSessionDiag("session_resync_requested", {
       sessionId,
       reason,
-      scope: "panel",
+      attempt,
+      selected: isSelected,
+      panelIdHint: panelIdHint || undefined,
       panelIds: panelEntries.map((entry) => entry.panelId),
     }, { throttleMs: 0, throttleKey: `session_resync_requested:${sessionId}:${reason}` });
+    const logContext = { reason, source: "session_resync_request" };
+    if (isSelected) {
+      void resyncSelectedSession(sessionId, normalizedLlmDirectoryForRequest(), logContext);
+    }
+    const diagnosticCycleId = `session-resync-${now.toString(36)}`;
     for (const entry of panelEntries) {
-      void hydratePanelFromSessionHistoryRef.current({
-        panelId: entry.panelId,
-        sessionId,
-        directory: entry.directory,
-        diagnosticCycleId: `session-resync-${now.toString(36)}`,
-      }).catch(() => {});
+      void resyncPanel(sessionId, { panelId: entry.panelId, directory: entry.directory }, diagnosticCycleId, logContext);
     }
     return true;
   }, [
     codexRelayObserverRef,
     collectPanelEntries,
     consumeRespondingAtBackground,
-    hydratePanelFromSessionHistoryRef,
     llmConversationSessionIdRef,
     llmSessionRestoreInFlightRef,
     llmSessionRestoreLoadingRef,
     logSessionDiag,
     normalizedLlmDirectoryForRequest,
+    resyncPanel,
     resyncRateLimiter,
-    selectSpecificLlmSession,
+    resyncSelectedSession,
     selectedLlmSessionIdRef,
   ]);
+  requestSessionResyncRef.current = requestSessionResync;
 
   return {
     requestSessionResync,
     wasRespondingAtBackground,
+    markSessionRespondingForResync,
   };
 }
