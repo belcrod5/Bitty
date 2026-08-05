@@ -1,4 +1,5 @@
 import { act, renderHook } from "@testing-library/react-native";
+import { createResyncRateLimiter } from "../utils/resumeSync";
 import { useSessionRelayLossRecoveryController } from "./useSessionRelayLossRecoveryController";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
@@ -20,7 +21,7 @@ function baseArgs(overrides: Partial<Parameters<typeof useSessionRelayLossRecove
     updateLlmStatus: jest.fn(),
     normalizedLlmDirectoryForRequest: () => "/workspace",
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
-    relayLossResyncMinIntervalMs: 5000,
+    resyncRateLimiter: createResyncRateLimiter({ perSessionMinIntervalMs: 5000 }),
     logSessionDiag: jest.fn(),
     ...overrides,
   };

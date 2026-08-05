@@ -89,6 +89,7 @@ import { useSessionRelayLossRecoveryController } from "./hooks/useSessionRelayLo
 import { useSessionRestoreTransitionController } from "./hooks/useSessionRestoreTransitionController";
 import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
+import { useReadyDrivenResumeSyncController } from "./hooks/useReadyDrivenResumeSyncController";
 import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
@@ -143,6 +144,7 @@ import {
 } from "./hooks/usePanelConversationWriteController";
 import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
+import { createResyncRateLimiter } from "./utils/resumeSync";
 import {
   buildPanelRuntimeSnapshot,
   cloneConversationMessages,
@@ -1508,8 +1510,11 @@ export default function App() {
   const appStateLastNonActiveAtRef = useRef(
     AppState.currentState === "active" ? 0 : Date.now()
   );
-  const appResumeSessionSyncInFlightRef = useRef(false);
-  const appResumeSessionSyncLastAtRef = useRef(0);
+  // 履歴全文再取得(再同期)の全セッション合算レート制御。ready遷移駆動の再同期と
+  // relay喪失回復(#40経路)で共有し、経路間の二重再同期も抑止する(修正計画§4②③)。
+  const [resumeSyncRateLimiter] = useState(() => createResyncRateLimiter({
+    perSessionMinIntervalMs: RELAY_LOSS_RESYNC_MIN_INTERVAL_MS,
+  }));
   const autoResumeStatusProbeInFlightRef = useRef(false);
   const autoStatusNotRecordingSuppressLogAtRef = useRef(0);
   const autoCaptureCycleSeqRef = useRef(0);
@@ -3049,7 +3054,11 @@ export default function App() {
       prev ? `${prev} | session_switch_begin seq=${restoreRequestSeq} session=${nextSessionId}` : `session_switch_begin seq=${restoreRequestSeq} session=${nextSessionId}`
     ));
     try {
-      await quiesceForSessionSwitch("select_specific_session");
+      // 復帰時の同一セッション再同期(preserveLiveObserver)では、ライブrelay observerを
+      // 温存する(WS ready時のseq resumeを壊さない)。切替時は従来どおり全quiesce。
+      await quiesceForSessionSwitch("select_specific_session", {
+        preserveRelayObserver: opts?.preserveLiveObserver === true,
+      });
       if (!isLatestRestoreRequest()) return false;
       markSessionRestoreThreadReadStarted(perf);
       const restored = await fetchRunnerSessionMessages(nextSessionId, directory);
@@ -3150,6 +3159,7 @@ export default function App() {
         restoreReplyRequestForThread,
         setReply,
         panelId: "",
+        preserveOtherThreadObserver: opts?.preserveLiveObserver === true,
       });
       setSelectedThreadStatusType(deriveRestoredSessionThreadStatusType(restored));
       applyLateActiveSessionLiveState({
@@ -3911,7 +3921,7 @@ export default function App() {
     updateLlmStatus,
     normalizedLlmDirectoryForRequest,
     selectSpecificLlmSession,
-    relayLossResyncMinIntervalMs: RELAY_LOSS_RESYNC_MIN_INTERVAL_MS,
+    resyncRateLimiter: resumeSyncRateLimiter,
     logSessionDiag,
   });
   const enrichApprovalRequestWithSessionContext = useCallback((request: ApprovalRequest): ApprovalRequest => {
@@ -4044,6 +4054,7 @@ export default function App() {
     restoreReplyRequestForThread,
     setReply,
     panelId,
+    preserveOtherThreadObserver,
   }: {
     restored: RunnerSessionMessagesResult;
     restoredMessages: LlmSessionMessage[];
@@ -4054,6 +4065,7 @@ export default function App() {
     restoreReplyRequestForThread: (sessionIdRaw: unknown, options?: { panelId?: string }) => boolean;
     setReply: (value: string) => void;
     panelId?: string;
+    preserveOtherThreadObserver?: boolean;
   }) {
     const runtimeSnapshot = buildRestoredSessionRuntimeSnapshot({
       restored,
@@ -4147,7 +4159,11 @@ export default function App() {
       });
     } else {
       const activeObserver = codexRelayObserverRef.current;
-      if (activeObserver && activeObserver.threadId !== nextSessionId) {
+      if (
+        activeObserver &&
+        activeObserver.threadId !== nextSessionId &&
+        preserveOtherThreadObserver !== true
+      ) {
         closeCodexRelayObserver("session_restored_other_thread");
       }
     }
@@ -4820,19 +4836,54 @@ export default function App() {
     selectSpecificLlmSession,
     fetchLatestSessionIdForDirectory,
     setLlmSessionRestoreError,
+  });
+
+  // バックグラウンド復帰・WS再接続時の一元再同期(ready遷移駆動)。
+  // 旧AppState "active"駆動のresumeLatestSessionOnActiveを置き換える。
+  const {
+    requestSessionResync,
+    wasRespondingAtBackground,
+  } = useReadyDrivenResumeSyncController({
+    settingsLoaded,
     activeScreen,
-    llmSessionRestoreLoading,
+    codexWsUrl,
+    drawerSessionPopupPanelId,
+    runnerWebSocketManager,
+    resyncRateLimiter: resumeSyncRateLimiter,
+    codexRelayObserverRef,
+    panelRuntimeEntriesByIdRef,
+    selectedLlmSessionIdRef,
+    llmConversationSessionIdRef,
     replyLoadingRef,
     streamSocketRef,
     streamTtsControlRef,
-    appResumeSessionSyncInFlightRef,
-    appResumeSessionSyncLastAtRef,
-    setReplyDebug,
+    llmSessionRestoreInFlightRef,
+    llmSessionRestoreLoadingRef,
+    startupSessionRestoreAttemptedRef,
+    normalizedLlmDirectoryForRequest,
+    selectSpecificLlmSession,
+    hydratePanelFromSessionHistoryRef,
+    fetchLatestSessionIdForDirectory,
     logSessionDiag,
-    llmDirectory,
-    llmBackend,
-    codexWsToken,
   });
+
+  // 遅延liveメタが「実行中でない」で解決したときの完了レース窓を閉じる(G2):
+  // restore適用時点でrunningと信じていた、またはバックグラウンド移行時点で応答中だった
+  // セッションは、JSONLがターン途中の可能性があるため1回だけ再取得する。
+  const handleLateLiveStateNotRunning = useCallback((params: {
+    sessionId: string;
+    panelId: string;
+    hadRunningBelief: boolean;
+    reason: "idle" | "unavailable";
+  }) => {
+    const sessionId = parseOptionalSessionId(params.sessionId);
+    if (!sessionId) return;
+    if (!params.hadRunningBelief && !wasRespondingAtBackground(sessionId)) return;
+    requestSessionResync(sessionId, {
+      panelId: params.panelId,
+      reason: `late_live_${params.reason}`,
+    });
+  }, [requestSessionResync, wasRespondingAtBackground]);
 
   // Push-notification tap-to-open: consumes the pending session id set by
   // PushNotificationRegistrar's response listener (see pushApprovalNotifications.ts) once
@@ -6335,6 +6386,7 @@ export default function App() {
     createPanelSnapshot: createPanelRuntimeSnapshot,
     setActiveThreadStatus: setSelectedThreadStatusType,
     startRelay: startCodexRelayObserverForSession,
+    onLiveStateNotRunning: handleLateLiveStateNotRunning,
     log: logSessionDiag,
   });
   const activeConversationSnapshot = useMemo<PanelRuntimeSnapshot>(() => ({

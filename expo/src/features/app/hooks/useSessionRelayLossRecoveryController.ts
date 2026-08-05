@@ -1,6 +1,7 @@
-import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { parseOptionalSessionId } from "../utils/llmSession";
 import { isLlmActiveStatus } from "../utils/statusText";
+import type { ResyncRateLimiter } from "../utils/resumeSync";
 import type { ConversationMessage, SelectSpecificLlmSessionOptions, SessionRuntimeStatus } from "../types/appTypes";
 import type { ConversationRuntimeSnapshot } from "./useConversationRuntimeStoreController";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
@@ -42,7 +43,8 @@ type UseSessionRelayLossRecoveryControllerArgs = {
     nextSessionIdRaw: unknown,
     opts?: SelectSpecificLlmSessionOptions
   ) => Promise<boolean>;
-  relayLossResyncMinIntervalMs: number;
+  // 全セッション合算の再同期レート制御(ready遷移駆動の再同期と共有)。
+  resyncRateLimiter: ResyncRateLimiter;
   logSessionDiag: (
     event: string,
     payload?: Record<string, unknown>,
@@ -80,12 +82,9 @@ export function useSessionRelayLossRecoveryController({
   updateLlmStatus,
   normalizedLlmDirectoryForRequest,
   selectSpecificLlmSession,
-  relayLossResyncMinIntervalMs,
+  resyncRateLimiter,
   logSessionDiag,
 }: UseSessionRelayLossRecoveryControllerArgs) {
-  // Guards the resync->relay restart->loss loop: one resync per session per interval.
-  const relayLossResyncLastAtBySessionIdRef = useRef<Record<string, number>>({});
-
   const finalizeSessionRuntimeAfterRelayLoss = useCallback((sessionIdRaw: unknown, reasonRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
@@ -93,8 +92,9 @@ export function useSessionRelayLossRecoveryController({
     const detail = finalized?.reason || String(reasonRaw || "relay unavailable").trim() || "relay unavailable";
     const messages = finalized?.snapshot.conversationMessages || [];
     const now = Date.now();
-    const lastResyncAtMs = relayLossResyncLastAtBySessionIdRef.current[sessionId] || 0;
-    const canResync = now - lastResyncAtMs >= relayLossResyncMinIntervalMs;
+    // Guards the resync->relay restart->loss loop: one resync per session per
+    // interval, plus the shared global (all-sessions) budget.
+    const canResync = resyncRateLimiter.canResync(sessionId, now);
 
     const pinFinalizedMessagesToRuntime = () => {
       if (messages.length === 0) return;
@@ -175,7 +175,7 @@ export function useSessionRelayLossRecoveryController({
       }
     }
     if (resyncScheduled || panelResyncScheduled) {
-      relayLossResyncLastAtBySessionIdRef.current[sessionId] = now;
+      resyncRateLimiter.recordResync(sessionId, now);
     }
     logSessionDiag("session_runtime_relay_unavailable", {
       sessionId,
@@ -199,7 +199,7 @@ export function useSessionRelayLossRecoveryController({
     llmUiStatusRef,
     normalizedLlmDirectoryForRequest,
     panelRuntimeEntriesByIdRef,
-    relayLossResyncMinIntervalMs,
+    resyncRateLimiter,
     rememberSessionRuntimeStatus,
     selectSpecificLlmSession,
     selectedLlmSessionId,
