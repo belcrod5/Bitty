@@ -155,3 +155,105 @@ it("applies late running state to active and panel runtimes and attaches the pan
   await act(async () => { await Promise.resolve(); });
   expect(applyRestoredRuntime).not.toHaveBeenCalled();
 });
+
+describe("onLiveStateNotRunning", () => {
+  function buildController(onLiveStateNotRunning: jest.Mock) {
+    return renderHook(() => {
+      const conversationMessagesRef = useRef<ConversationMessage[]>([]);
+      const panelEntriesRef = useRef<Record<string, PanelRuntimeEntry>>({
+        "panel-1": { sessionId: "thread-1", snapshot: snapshot() },
+      });
+      return useLateSessionLiveStateController({
+        activeSessionId: () => "thread-1",
+        conversationMessagesRef,
+        panelEntriesRef,
+        applyRestoredRuntime: jest.fn(),
+        getRuntime: () => null,
+        upsertRuntime: jest.fn(() => ({})),
+        setPanelEntries: jest.fn(),
+        createPanelSnapshot: (_panelId, base, patch) => ({ ...base, ...patch }),
+        setActiveThreadStatus: jest.fn(),
+        startRelay: jest.fn(() => true),
+        onLiveStateNotRunning,
+        log: jest.fn(),
+      });
+    });
+  }
+
+  it("notifies with the running belief when the active live state resolves idle", async () => {
+    const onLiveStateNotRunning = jest.fn();
+    const { result } = await buildController(onLiveStateNotRunning);
+
+    result.current.applyActive({
+      restored: restored(Promise.resolve({
+        threadId: "thread-1",
+        threadStatusType: "idle",
+        hasRunningTurn: false,
+        runningTurn: null,
+      })),
+      restoredMessages: [],
+      nextSessionId: "thread-1",
+      directory: "/workspace",
+      effectiveContextUsedPct: null,
+      restoreReplyRequestForThread: () => false,
+      setReply: jest.fn(),
+      requestStartedAtMsAtRestoreApply: 1234,
+      executionGenerationAtRestoreApply: 0,
+      isCurrent: () => true,
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    // restore適用時点でrunningと信じていた(request registered)のにidleで解決した
+    // 完了レース窓。呼び出し側がJSONL再取得で閉じる(G2)。
+    expect(onLiveStateNotRunning).toHaveBeenCalledWith({
+      sessionId: "thread-1",
+      panelId: "",
+      hadRunningBelief: true,
+      reason: "idle",
+    });
+  });
+
+  it("notifies when the live state fetch fails (unavailable)", async () => {
+    const onLiveStateNotRunning = jest.fn();
+    const { result } = await buildController(onLiveStateNotRunning);
+
+    result.current.applyPanel({
+      restored: restored(Promise.resolve(null)),
+      snapshot: snapshot(),
+      panelId: "panel-1",
+      directory: "/workspace",
+      requestStartedAtMsAtHydrationStart: null,
+      executionGenerationAtHydrationApply: 0,
+      isCurrent: () => true,
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(onLiveStateNotRunning).toHaveBeenCalledWith({
+      sessionId: "thread-1",
+      panelId: "panel-1",
+      hadRunningBelief: false,
+      reason: "unavailable",
+    });
+  });
+
+  it("does not notify when the restore was superseded", async () => {
+    const onLiveStateNotRunning = jest.fn();
+    const { result } = await buildController(onLiveStateNotRunning);
+
+    result.current.applyActive({
+      restored: restored(Promise.resolve(null)),
+      restoredMessages: [],
+      nextSessionId: "thread-1",
+      directory: "/workspace",
+      effectiveContextUsedPct: null,
+      restoreReplyRequestForThread: () => false,
+      setReply: jest.fn(),
+      requestStartedAtMsAtRestoreApply: 1234,
+      executionGenerationAtRestoreApply: 0,
+      isCurrent: () => false,
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(onLiveStateNotRunning).not.toHaveBeenCalled();
+  });
+});

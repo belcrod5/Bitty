@@ -1,5 +1,4 @@
 import { act, renderHook } from "@testing-library/react-native";
-import { AppState } from "react-native";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsConnectionSnapshot, RunnerWsConnectionState } from "../../runnerWs/types";
 import { useSessionStartupRecoveryController } from "./useSessionStartupRecoveryController";
@@ -39,18 +38,6 @@ function baseArgs(overrides: Partial<Parameters<typeof useSessionStartupRecovery
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
     fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue(""),
     setLlmSessionRestoreError: jest.fn(),
-    activeScreen: "mini_board" as const,
-    llmSessionRestoreLoading: false,
-    replyLoadingRef: { current: false },
-    streamSocketRef: { current: null },
-    streamTtsControlRef: { current: null },
-    appResumeSessionSyncInFlightRef: { current: false },
-    appResumeSessionSyncLastAtRef: { current: 0 },
-    setReplyDebug: jest.fn(),
-    logSessionDiag: jest.fn(),
-    llmDirectory: "/workspace",
-    llmBackend: "codex_app_server" as const,
-    codexWsToken: "runner-token",
     ...overrides,
   };
 }
@@ -165,61 +152,4 @@ describe("useSessionStartupRecoveryController startup restore", () => {
     expect(args.startupSessionRestoreAttemptedRef.current).toBe(true);
     expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
   });
-});
-
-describe("useSessionStartupRecoveryController foreground resume", () => {
-  function captureAppStateHandler() {
-    const handlers: Array<(state: string) => void> = [];
-    jest.spyOn(AppState, "addEventListener").mockImplementation(((_type: string, handler: (state: string) => void) => {
-      handlers.push(handler);
-      return { remove: jest.fn() };
-    }) as never);
-    return {
-      fireActive: async () => {
-        await act(async () => {
-          for (const handler of handlers) handler("active");
-        });
-      },
-    };
-  }
-
-  afterEach(() => {
-    jest.restoreAllMocks();
-  });
-
-  it.each(["mini_board", "skia_board"] as const)(
-    "resyncs the current session body on foreground while on %s",
-    async (activeScreen) => {
-      const appState = captureAppStateHandler();
-      const args = baseArgs({
-        activeScreen,
-        // 起動時リストアを済ませておき、フォアグラウンド復帰経路だけを観測する。
-        startupSessionRestoreAttemptedRef: { current: true },
-      });
-
-      await renderHook(() => useSessionStartupRecoveryController(args));
-      await appState.fireActive();
-
-      expect(args.selectSpecificLlmSession).toHaveBeenCalledWith("session-1", {
-        source: "all",
-        directory: "/workspace",
-      });
-    }
-  );
-
-  it.each(["debug", "audio_lab", "cloudflare_tunnel_monitor"] as const)(
-    "keeps foreground resume disabled on non-conversation screen %s",
-    async (activeScreen) => {
-      const appState = captureAppStateHandler();
-      const args = baseArgs({
-        activeScreen,
-        startupSessionRestoreAttemptedRef: { current: true },
-      });
-
-      await renderHook(() => useSessionStartupRecoveryController(args));
-      await appState.fireActive();
-
-      expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
-    }
-  );
 });

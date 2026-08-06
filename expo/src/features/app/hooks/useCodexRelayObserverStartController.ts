@@ -95,6 +95,10 @@ type UseCodexRelayObserverStartControllerArgs = {
   }) => void;
   onApprovalRequest: (request: ApprovalRequest) => ApprovalAction | Promise<ApprovalAction>;
   onApprovalRequestResolved?: (request: ApprovalRequest) => void;
+  // 別スレッドのobserver起動で既存observerをclean closeする(=強奪)直前に呼ぶ。
+  // 奪われた側のセッションはresume_missを出せずライブ経路を失うため、呼び出し側が
+  // 再同期マーカーへの登録などの補償を行う。
+  onObserverPreempted?: (previousThreadId: string) => void;
   onAssistantTurnCompleted?: (params: {
     threadId: string;
     panelId?: string;
@@ -161,6 +165,7 @@ export function useCodexRelayObserverStartController({
   completeRuntimeRequestForRelayCompletion,
   onApprovalRequest,
   onApprovalRequestResolved,
+  onObserverPreempted,
   onAssistantTurnCompleted,
 }: UseCodexRelayObserverStartControllerArgs) {
   const startCodexRelayObserverForSession = useCallback((threadIdRaw: unknown, options?: StartCodexRelayObserverOptions) => {
@@ -193,6 +198,9 @@ export function useCodexRelayObserverStartController({
       }
       closeCodexRelayObserver("switch_panel");
     } else if (existing) {
+      try {
+        onObserverPreempted?.(existing.threadId);
+      } catch {}
       closeCodexRelayObserver("switch_thread");
     }
     const directory = parseLlmDirectory(options?.directory || normalizedLlmDirectoryForRequest());
@@ -738,6 +746,7 @@ export function useCodexRelayObserverStartController({
     normalizedLlmDirectoryForRequest,
     onApprovalRequest,
     onApprovalRequestResolved,
+    onObserverPreempted,
     onAssistantTurnCompleted,
     parseLlmDirectory,
     parseOptionalSessionId,

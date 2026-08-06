@@ -88,6 +88,9 @@ export type StreamAudioQueueItem = {
 export type SelectSpecificLlmSessionOptions = {
   source?: LlmSessionSource;
   directory?: string;
+  // 復帰時の同一セッション再同期など「切替ではない再取得」で使う。
+  // trueのとき、restore中もライブrelay observer(別スレッドのものを含む)をcloseしない。
+  preserveLiveObserver?: boolean;
 };
 
 export type LlmDeltaSource = "native" | "pseudo" | "mock" | "unknown";

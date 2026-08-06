@@ -53,6 +53,15 @@ export function useLateSessionLiveStateController(options: {
     resumeFromSeq: number;
     reason: string;
   }) => boolean;
+  // 遅延liveメタが「実行中でない」(idle解決/取得失敗)で返ったときに呼ばれる。
+  // restore時点のJSONLがターン途中の可能性がある(hadRunningBelief)場合、呼び出し側は
+  // 1回のJSONL再取得で完了レース窓を閉じる(サイレントドロップ廃止、G2)。
+  onLiveStateNotRunning?: (params: {
+    sessionId: string;
+    panelId: string;
+    hadRunningBelief: boolean;
+    reason: "idle" | "unavailable";
+  }) => void;
   log: (event: string, payload: Record<string, unknown>, options: { throttleMs: number }) => void;
 }) {
   const applyActive = useCallback((params: {
@@ -69,7 +78,16 @@ export function useLateSessionLiveStateController(options: {
   }) => {
     if (!params.restored.liveStatePromise) return;
     void params.restored.liveStatePromise.then((liveState) => {
-      if (!liveState || !shouldApplyLateLiveState(liveState) || !params.isCurrent()) return;
+      if (!params.isCurrent()) return;
+      if (!liveState || !shouldApplyLateLiveState(liveState)) {
+        options.onLiveStateNotRunning?.({
+          sessionId: params.nextSessionId,
+          panelId: "",
+          hadRunningBelief: params.requestStartedAtMsAtRestoreApply !== null,
+          reason: liveState ? "idle" : "unavailable",
+        });
+        return;
+      }
       const activeSessionId = options.activeSessionId();
       if (
         activeSessionId
@@ -116,7 +134,16 @@ export function useLateSessionLiveStateController(options: {
   }) => {
     if (!params.restored.liveStatePromise) return;
     void params.restored.liveStatePromise.then((liveState) => {
-      if (!liveState || !shouldApplyLateLiveState(liveState) || !params.isCurrent()) return;
+      if (!params.isCurrent()) return;
+      if (!liveState || !shouldApplyLateLiveState(liveState)) {
+        options.onLiveStateNotRunning?.({
+          sessionId: params.snapshot.selectedSessionId,
+          panelId: params.panelId,
+          hadRunningBelief: params.requestStartedAtMsAtHydrationStart !== null,
+          reason: liveState ? "idle" : "unavailable",
+        });
+        return;
+      }
       const currentEntry = options.panelEntriesRef.current[params.panelId];
       if (currentEntry?.snapshot.selectedSessionId !== params.snapshot.selectedSessionId) return;
       const restored = { ...params.restored, ...liveState, liveStatePromise: undefined };

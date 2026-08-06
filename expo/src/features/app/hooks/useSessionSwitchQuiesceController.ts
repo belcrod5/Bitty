@@ -58,9 +58,17 @@ export function useSessionSwitchQuiesceController({
   finishLlmRequest,
   setReplyDebug,
 }: UseSessionSwitchQuiesceControllerArgs) {
-  const quiesceForSessionSwitch = useCallback(async (reason: string) => {
+  const quiesceForSessionSwitch = useCallback(async (
+    reason: string,
+    opts?: { preserveRelayObserver?: boolean }
+  ) => {
     suspendCodexTurnRequestForSessionSwitch();
-    closeCodexRelayObserver(`session_switch:${reason}`);
+    // 復帰時の同一セッション再同期(preserveRelayObserver)では、ライブ配信路である
+    // relay observerをcloseしない。closeするとWS ready時のseq resume(サーバー差分再送)が
+    // 失われ、resume_missも発生しないため回復経路が発火しなくなる(G1)。
+    if (opts?.preserveRelayObserver !== true) {
+      closeCodexRelayObserver(`session_switch:${reason}`);
+    }
     await stopTtsPlayback({ interruptStream: false }).catch(() => {});
     const ws = streamSocketRef.current;
     if (ws) {

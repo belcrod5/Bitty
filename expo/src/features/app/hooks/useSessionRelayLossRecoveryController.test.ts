@@ -1,4 +1,5 @@
 import { act, renderHook } from "@testing-library/react-native";
+import { createResyncRateLimiter } from "../utils/resumeSync";
 import { useSessionRelayLossRecoveryController } from "./useSessionRelayLossRecoveryController";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
@@ -20,7 +21,7 @@ function baseArgs(overrides: Partial<Parameters<typeof useSessionRelayLossRecove
     updateLlmStatus: jest.fn(),
     normalizedLlmDirectoryForRequest: () => "/workspace",
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
-    relayLossResyncMinIntervalMs: 5000,
+    resyncRateLimiter: createResyncRateLimiter({ perSessionMinIntervalMs: 5000 }),
     logSessionDiag: jest.fn(),
     ...overrides,
   };
@@ -209,5 +210,113 @@ describe("useSessionRelayLossRecoveryController", () => {
     });
 
     expect(args.updateLlmStatus).not.toHaveBeenCalled();
+  });
+
+  it("retries a resync deferred by the global budget once a slot frees up", async () => {
+    jest.useFakeTimers();
+    try {
+      const limiter = createResyncRateLimiter({
+        perSessionMinIntervalMs: 5000,
+        globalWindowMs: 10_000,
+        globalMaxPerWindow: 1,
+      });
+      // 他セッションが直前に合算枠を使い切った状態(多数セッション同時lossの7個目以降)。
+      limiter.recordResync("session-other");
+      const args = baseArgs({
+        resyncRateLimiter: limiter,
+        finalizeConversationRuntimeAfterRelayLoss: jest.fn(() => ({
+          snapshot: { conversationMessages: [{ id: "m1", role: "assistant", content: "stale" }] },
+          reason: "relay lost",
+          cancelledPendingApprovals: 0,
+        })) as never,
+        panelRuntimeEntriesByIdRef: {
+          current: {
+            skia_mini_preview_1: {
+              sessionId: "session-2",
+              snapshot: { selectedSessionId: "session-2", selectedDirectoryPath: "/repo" },
+            } as never,
+          },
+        },
+      });
+      const { result } = await renderHook(() => useSessionRelayLossRecoveryController(args));
+
+      await act(async () => {
+        result.current.finalizeSessionRuntimeAfterRelayLoss("session-2", "relay lost");
+      });
+      // 枠超過なので即時の再同期はなし(従来どおりの固定にフォールバック)。
+      expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+
+      // 枠が空く時刻(グローバル窓経過)にone-shot再試行が走り、古いままにならない(M-6)。
+      await act(async () => {
+        jest.advanceTimersByTime(10_200);
+      });
+      await act(async () => {});
+      expect(args.hydratePanelFromSessionHistoryRef.current).toHaveBeenCalledWith(
+        expect.objectContaining({
+          panelId: "skia_mini_preview_1",
+          sessionId: "session-2",
+          directory: "/repo",
+        })
+      );
+      // 再試行は再同期部分のみ: finalize全体(approval取り消し等)は再実行しない。
+      expect(args.finalizeConversationRuntimeAfterRelayLoss).toHaveBeenCalledTimes(1);
+      expect(args.clearPendingApprovalsForSession).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("aborts the deferred resync when the session resumed activity while waiting", async () => {
+    jest.useFakeTimers();
+    try {
+      const limiter = createResyncRateLimiter({
+        perSessionMinIntervalMs: 5000,
+        globalWindowMs: 10_000,
+        globalMaxPerWindow: 1,
+      });
+      limiter.recordResync("session-other");
+      const args = baseArgs({
+        resyncRateLimiter: limiter,
+        finalizeConversationRuntimeAfterRelayLoss: jest.fn(() => ({
+          snapshot: { conversationMessages: [{ id: "m1", role: "assistant", content: "stale" }] },
+          reason: "relay lost",
+          cancelledPendingApprovals: 0,
+        })) as never,
+        panelRuntimeEntriesByIdRef: {
+          current: {
+            skia_mini_preview_1: {
+              sessionId: "session-2",
+              snapshot: { selectedSessionId: "session-2", selectedDirectoryPath: "/repo" },
+            } as never,
+          },
+        },
+      });
+      const { result } = await renderHook(() => useSessionRelayLossRecoveryController(args));
+
+      await act(async () => {
+        result.current.finalizeSessionRuntimeAfterRelayLoss("session-2", "relay lost");
+      });
+      expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+
+      // 待機中(最大~10秒)にセッションが新しいターンを開始した状況。
+      args.panelRuntimeEntriesByIdRef.current = {
+        skia_mini_preview_1: {
+          sessionId: "session-2",
+          snapshot: { selectedSessionId: "session-2", selectedDirectoryPath: "/repo", isResponding: true },
+        } as never,
+      };
+
+      await act(async () => {
+        jest.advanceTimersByTime(10_200);
+      });
+      await act(async () => {});
+
+      // 活動再開済みのセッションには触らない(hydrateもfinalize副作用も走らない)。
+      expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+      expect(args.finalizeConversationRuntimeAfterRelayLoss).toHaveBeenCalledTimes(1);
+      expect(args.clearPendingApprovalsForSession).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
