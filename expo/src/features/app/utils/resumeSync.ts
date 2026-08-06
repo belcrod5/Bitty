@@ -142,7 +142,6 @@ export function planResumeSyncTargets(input: {
 }): ResumeSyncPlan {
   const skipped: ResumeSyncSkip[] = [];
   const targetsBySessionId = new Map<string, ResumeSyncSessionTarget>();
-  const observerSkippedSessionIds = new Set<string>();
   const selectedSessionId = String(input.selectedSessionId || "").trim();
   const observerThreadId = String(input.observerThreadId || "").trim();
   const popupPanelId = String(input.popupPanelId || "").trim();
@@ -162,7 +161,6 @@ export function planResumeSyncTargets(input: {
   if (selectedSessionId) {
     if (observerThreadId && observerThreadId === selectedSessionId) {
       skipped.push({ sessionId: selectedSessionId, reason: "live_observer" });
-      observerSkippedSessionIds.add(selectedSessionId);
     } else {
       ensureTarget(selectedSessionId).selected = true;
     }
@@ -181,7 +179,6 @@ export function planResumeSyncTargets(input: {
     if (!wanted) continue;
     if (observerThreadId && sessionId === observerThreadId) {
       skipped.push({ sessionId, panelId, reason: "live_observer" });
-      observerSkippedSessionIds.add(sessionId);
       continue;
     }
     const directory = String(entryRaw.directory || "").trim();

@@ -7,6 +7,9 @@ import type { ConversationRuntimeSnapshot } from "./useConversationRuntimeStoreC
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { PanelRuntimeEntry } from "./usePanelNewSessionController";
 
+// グローバル枠超過で見送った再同期のone-shot遅延再試行の上限(High-1のリトライと同じ値)。
+const RELAY_LOSS_RESYNC_RETRY_MAX_ATTEMPTS = 3;
+
 type UseSessionRelayLossRecoveryControllerArgs = {
   finalizeConversationRuntimeAfterRelayLoss: (sessionIdRaw: unknown, reasonRaw: string) => {
     snapshot: ConversationRuntimeSnapshot;
@@ -87,14 +90,137 @@ export function useSessionRelayLossRecoveryController({
 }: UseSessionRelayLossRecoveryControllerArgs) {
   // レート制御(グローバル枠)超過で再同期を見送ったセッションのone-shot遅延再試行。
   // 多数セッションの同時relay-lossで合算枠を超えた分が古いまま残らないようにする。
+  // 再試行はfinalize全体の再実行ではなく「再同期部分のみ」:
+  // finalizeを再実行すると、待機中(最大~10秒)に活動を再開したセッションの
+  // pending approval取り消し・idle固定・error付与で新しいターンを壊してしまう。
   const rateLimitRetryTimerBySessionIdRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const finalizeSelfRef = useRef<(sessionIdRaw: unknown, reasonRaw: string) => void>(() => {});
+  const runDeferredRelayLossResyncRef = useRef<(sessionId: string, detail: string, attempt: number) => void>(() => {});
   useEffect(() => () => {
     for (const [sessionId, timer] of Object.entries(rateLimitRetryTimerBySessionIdRef.current)) {
       clearTimeout(timer);
       delete rateLimitRetryTimerBySessionIdRef.current[sessionId];
     }
   }, []);
+
+  const scheduleDeferredRelayLossResync = useCallback((
+    sessionId: string,
+    detail: string,
+    attempt: number,
+    waitMs: number
+  ) => {
+    if (attempt > RELAY_LOSS_RESYNC_RETRY_MAX_ATTEMPTS) {
+      logSessionDiag("session_runtime_relay_loss_resync_retry_gave_up", {
+        sessionId,
+        reason: detail,
+        attempt,
+      }, {
+        throttleMs: 0,
+        throttleKey: `session_runtime_relay_loss_resync_retry_gave_up:${sessionId}`,
+      });
+      return;
+    }
+    if (rateLimitRetryTimerBySessionIdRef.current[sessionId]) return;
+    const delayMs = Math.floor(waitMs) + 50;
+    logSessionDiag("session_runtime_relay_loss_resync_deferred", {
+      sessionId,
+      reason: detail,
+      attempt,
+      delayMs,
+    }, {
+      throttleMs: 0,
+      throttleKey: `session_runtime_relay_loss_resync_deferred:${sessionId}`,
+    });
+    rateLimitRetryTimerBySessionIdRef.current[sessionId] = setTimeout(() => {
+      delete rateLimitRetryTimerBySessionIdRef.current[sessionId];
+      runDeferredRelayLossResyncRef.current(sessionId, detail, attempt);
+    }, delayMs);
+  }, [logSessionDiag]);
+
+  // 遅延再試行の本体: JSONLからの再同期のみを行う(runtimeの後始末・approval取り消し・
+  // エラー固定は初回のfinalizeで完了済み)。待機中にセッションが活動再開していたら中止する。
+  const runDeferredRelayLossResync = useCallback((sessionId: string, detail: string, attempt: number) => {
+    const now = Date.now();
+    const visibleSessionId = parseOptionalSessionId(
+      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
+    );
+    const isVisible = visibleSessionId === sessionId;
+    const panelsShowingSession = Object.entries(panelRuntimeEntriesByIdRef.current).filter(([, entry]) => (
+      parseOptionalSessionId(entry?.snapshot?.selectedSessionId || entry?.sessionId) === sessionId
+    ));
+    if (!isVisible && panelsShowingSession.length === 0) return;
+    const resumedActivity = (
+      panelsShowingSession.some(([, entry]) => entry?.snapshot?.isResponding === true) ||
+      (isVisible && isLlmActiveStatus(llmUiStatusRef.current))
+    );
+    if (resumedActivity) {
+      logSessionDiag("session_runtime_relay_loss_resync_retry_skipped_active", {
+        sessionId,
+        reason: detail,
+        attempt,
+      }, {
+        throttleMs: 0,
+        throttleKey: `session_runtime_relay_loss_resync_retry_skipped_active:${sessionId}`,
+      });
+      return;
+    }
+    if (!resyncRateLimiter.canResync(sessionId, now)) {
+      const waitMs = resyncRateLimiter.msUntilAllowed(sessionId, now);
+      if (Number.isFinite(waitMs) && waitMs > 0) {
+        scheduleDeferredRelayLossResync(sessionId, detail, attempt + 1, waitMs);
+      }
+      return;
+    }
+    resyncRateLimiter.recordResync(sessionId, now);
+    const diagnosticCycleId = `relay-loss-retry-${now.toString(36)}`;
+    for (const [panelId, entry] of panelsShowingSession) {
+      void hydratePanelFromSessionHistoryRef.current({
+        panelId,
+        sessionId,
+        directory: String(entry?.snapshot?.selectedDirectoryPath || "").trim(),
+        diagnosticCycleId,
+      }).then((result) => {
+        logSessionDiag("session_runtime_relay_loss_panel_resync_done", {
+          sessionId,
+          panelId,
+          reason: detail,
+          result,
+          retryAttempt: attempt,
+        }, {
+          throttleMs: 0,
+          throttleKey: `session_runtime_relay_loss_panel_resync_done:${sessionId}:${panelId}`,
+        });
+      }).catch(() => {});
+    }
+    if (isVisible) {
+      void selectSpecificLlmSession(sessionId, {
+        source: "all",
+        directory: normalizedLlmDirectoryForRequest(),
+      }).then((restored) => {
+        logSessionDiag("session_runtime_relay_loss_resync_done", {
+          sessionId,
+          reason: detail,
+          restored,
+          retryAttempt: attempt,
+        }, {
+          throttleMs: 0,
+          throttleKey: `session_runtime_relay_loss_resync_done:${sessionId}`,
+        });
+      }).catch(() => {});
+    }
+  }, [
+    hydratePanelFromSessionHistoryRef,
+    llmConversationSessionIdRef,
+    llmUiStatusRef,
+    logSessionDiag,
+    normalizedLlmDirectoryForRequest,
+    panelRuntimeEntriesByIdRef,
+    resyncRateLimiter,
+    scheduleDeferredRelayLossResync,
+    selectSpecificLlmSession,
+    selectedLlmSessionId,
+    selectedLlmSessionIdRef,
+  ]);
+  runDeferredRelayLossResyncRef.current = runDeferredRelayLossResync;
 
   const finalizeSessionRuntimeAfterRelayLoss = useCallback((sessionIdRaw: unknown, reasonRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
@@ -195,23 +321,11 @@ export function useSessionRelayLossRecoveryController({
       (panelsShowingSession.length > 0 || visibleSessionId === sessionId) &&
       !rateLimitRetryTimerBySessionIdRef.current[sessionId]
     ) {
-      // 合算枠で見送った可視セッションは、解除時刻に1回だけ再試行する。
+      // 合算枠で見送った可視セッションは、解除時刻に再同期部分のみを再試行する。
       // 多数セッション同時lossで枠を超えた分が「古いまま」で残らないようにする(M-6)。
       const waitMs = resyncRateLimiter.msUntilAllowed(sessionId, now);
       if (Number.isFinite(waitMs) && waitMs > 0) {
-        const delayMs = Math.floor(waitMs) + 50;
-        logSessionDiag("session_runtime_relay_loss_resync_deferred", {
-          sessionId,
-          reason: detail,
-          delayMs,
-        }, {
-          throttleMs: 0,
-          throttleKey: `session_runtime_relay_loss_resync_deferred:${sessionId}`,
-        });
-        rateLimitRetryTimerBySessionIdRef.current[sessionId] = setTimeout(() => {
-          delete rateLimitRetryTimerBySessionIdRef.current[sessionId];
-          finalizeSelfRef.current(sessionId, `${detail} (rate_limit_retry)`);
-        }, delayMs);
+        scheduleDeferredRelayLossResync(sessionId, detail, 1, waitMs);
       }
     }
     logSessionDiag("session_runtime_relay_unavailable", {
@@ -238,6 +352,7 @@ export function useSessionRelayLossRecoveryController({
     panelRuntimeEntriesByIdRef,
     resyncRateLimiter,
     rememberSessionRuntimeStatus,
+    scheduleDeferredRelayLossResync,
     selectSpecificLlmSession,
     selectedLlmSessionId,
     selectedLlmSessionIdRef,
@@ -246,7 +361,6 @@ export function useSessionRelayLossRecoveryController({
     setSessionConversationMessagesForCodexRef,
     updateLlmStatus,
   ]);
-  finalizeSelfRef.current = finalizeSessionRuntimeAfterRelayLoss;
 
   return {
     finalizeSessionRuntimeAfterRelayLoss,

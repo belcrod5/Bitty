@@ -405,6 +405,10 @@ export function useReadyDrivenResumeSyncController({
     streamTtsControlRef,
   ]);
 
+  // タイマー(debounce・各種リトライ)から呼ぶ処理は必ずrefを経由する。
+  // runResumeSyncPassの依存には毎レンダー新規生成の関数(selectSpecificLlmSession等)が
+  // 含まれるため、直接closureで持つとeffect/タイマーの生存がレンダー頻度に依存してしまう。
+  const runCoalescedSyncRef = useRef<(reason: string, generation: number) => Promise<void>>(async () => {});
   const runCoalescedSync = useCallback(async (reason: string, generation: number) => {
     if (syncInFlightRef.current) {
       queuedSyncRef.current = { reason, generation };
@@ -418,27 +422,33 @@ export function useReadyDrivenResumeSyncController({
       const queued = queuedSyncRef.current;
       queuedSyncRef.current = null;
       if (queued) {
-        void runCoalescedSync(queued.reason, queued.generation);
+        void runCoalescedSyncRef.current(queued.reason, queued.generation);
       }
     }
   }, [runResumeSyncPass]);
+  runCoalescedSyncRef.current = runCoalescedSync;
 
+  // 依存なし(ref経由)で恒久安定。timer callbackも常に最新のrunCoalescedSyncを呼ぶ。
   const scheduleSync = useCallback((reason: string, generation: number, opts?: { immediate?: boolean }) => {
     if (syncTimerRef.current) {
       clearTimeout(syncTimerRef.current);
       syncTimerRef.current = null;
     }
     if (opts?.immediate === true) {
-      void runCoalescedSync(reason, generation);
+      void runCoalescedSyncRef.current(reason, generation);
       return;
     }
     syncTimerRef.current = setTimeout(() => {
       syncTimerRef.current = null;
-      void runCoalescedSync(reason, generation);
+      void runCoalescedSyncRef.current(reason, generation);
     }, READY_RESUME_SYNC_DEBOUNCE_MS);
-  }, [runCoalescedSync]);
+  }, []);
   scheduleSyncRef.current = scheduleSync;
 
+  // 購読effectの依存はmanagerのみ。ready遷移直後は必ず再レンダーが起きるため、
+  // ここに毎レンダー変わる関数を依存で持つとcleanupがdebounce/リトライタイマーを
+  // 破棄してしまい、ready駆動再同期が実機でほぼ発火しなくなる(generationは消費済みで
+  // 再スケジュールされない)。タイマーの生存はレンダー頻度に依存させない。
   useEffect(() => {
     const handleSnapshot = () => {
       const snapshot = runnerWebSocketManager.getSnapshot();
@@ -453,26 +463,30 @@ export function useReadyDrivenResumeSyncController({
         clearTimeout(restoreBusyRetryTimerRef.current);
         restoreBusyRetryTimerRef.current = null;
       }
-      scheduleSync("runner_ws_ready", snapshot.generation);
+      scheduleSyncRef.current("runner_ws_ready", snapshot.generation);
     };
     const unsubscribe = runnerWebSocketManager.subscribeSnapshot(handleSnapshot);
     handleSnapshot();
     return () => {
       unsubscribe();
-      if (syncTimerRef.current) {
-        clearTimeout(syncTimerRef.current);
-        syncTimerRef.current = null;
-      }
-      if (restoreBusyRetryTimerRef.current) {
-        clearTimeout(restoreBusyRetryTimerRef.current);
-        restoreBusyRetryTimerRef.current = null;
-      }
-      for (const [sessionId, timer] of Object.entries(sessionResyncRetryTimerBySessionIdRef.current)) {
-        clearTimeout(timer);
-        delete sessionResyncRetryTimerBySessionIdRef.current[sessionId];
-      }
     };
-  }, [runnerWebSocketManager, scheduleSync]);
+  }, [runnerWebSocketManager]);
+
+  // タイマー破棄はunmount時のみ(購読effectの再実行では破棄しない)。
+  useEffect(() => () => {
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    if (restoreBusyRetryTimerRef.current) {
+      clearTimeout(restoreBusyRetryTimerRef.current);
+      restoreBusyRetryTimerRef.current = null;
+    }
+    for (const [sessionId, timer] of Object.entries(sessionResyncRetryTimerBySessionIdRef.current)) {
+      clearTimeout(timer);
+      delete sessionResyncRetryTimerBySessionIdRef.current[sessionId];
+    }
+  }, []);
 
   // 単一セッションの再同期要求(遅延live適用のidle解決=G2などから呼ばれる)。
   // observerが生きているセッションはライブ経路に任せる。

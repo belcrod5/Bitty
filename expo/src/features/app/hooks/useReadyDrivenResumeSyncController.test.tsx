@@ -73,6 +73,24 @@ async function advance(ms: number) {
   await act(async () => {});
 }
 
+// 実機のAppRootでは selectSpecificLlmSession 等が毎レンダー新規生成される。
+// その再レンダーを模擬するため、同じmockへ委譲する新しい関数identityでpropsを作り直す。
+function unstableClone(args: ReturnType<typeof baseArgs>): ReturnType<typeof baseArgs> {
+  return {
+    ...args,
+    selectSpecificLlmSession: ((...params: unknown[]) => (
+      (args.selectSpecificLlmSession as unknown as (...p: unknown[]) => Promise<boolean>)(...params)
+    )) as never,
+    fetchLatestSessionIdForDirectory: ((...params: unknown[]) => (
+      (args.fetchLatestSessionIdForDirectory as unknown as (...p: unknown[]) => Promise<string>)(...params)
+    )) as never,
+    normalizedLlmDirectoryForRequest: () => args.normalizedLlmDirectoryForRequest(),
+    logSessionDiag: ((...params: unknown[]) => (
+      (args.logSessionDiag as unknown as (...p: unknown[]) => void)(...params)
+    )) as never,
+  };
+}
+
 describe("useReadyDrivenResumeSyncController", () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -399,6 +417,61 @@ describe("useReadyDrivenResumeSyncController", () => {
       expect.objectContaining({ panelId: "panel-b", sessionId: "session-5", directory: "/repo" })
     );
     expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+  });
+
+  it("fires the ready-driven resync even when re-renders follow the ready transition", async () => {
+    const args = baseArgs();
+    const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
+    const { rerender } = await renderHook(
+      (props: ReturnType<typeof baseArgs>) => useReadyDrivenResumeSyncController(props),
+      { initialProps: args }
+    );
+
+    await act(async () => {
+      manager.setState("ready", 1);
+    });
+    // ready遷移はconnectionState変化で必ず再レンダーを伴う。毎レンダー新規生成の
+    // 関数identityでもdebounceタイマーが破棄されないこと(Critical回帰テスト)。
+    await act(async () => {
+      rerender(unstableClone(args));
+    });
+    await act(async () => {
+      rerender(unstableClone(args));
+    });
+    await advance(READY_DEBOUNCE_MS);
+
+    expect(args.selectSpecificLlmSession).toHaveBeenCalledTimes(1);
+    expect(args.selectSpecificLlmSession).toHaveBeenCalledWith("session-1", {
+      source: "all",
+      directory: "/workspace",
+      preserveLiveObserver: true,
+    });
+  });
+
+  it("keeps the deferred late-live retry alive across re-renders", async () => {
+    const args = baseArgs();
+    const { result, rerender } = await renderHook(
+      (props: ReturnType<typeof baseArgs>) => useReadyDrivenResumeSyncController(props),
+      { initialProps: args }
+    );
+
+    args.resyncRateLimiter.recordResync("session-1");
+    await act(async () => {
+      result.current.requestSessionResync("session-1", { reason: "late_live_idle" });
+    });
+    expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+
+    // one-shotリトライタイマーは再レンダーを跨いで生存する(unmount時のみ破棄)。
+    await act(async () => {
+      rerender(unstableClone(args));
+    });
+    await advance(5100);
+
+    expect(args.selectSpecificLlmSession).toHaveBeenCalledWith("session-1", {
+      source: "all",
+      directory: "/workspace",
+      preserveLiveObserver: true,
+    });
   });
 
   it("marks observer-preempted sessions so a later pass resyncs them", async () => {
