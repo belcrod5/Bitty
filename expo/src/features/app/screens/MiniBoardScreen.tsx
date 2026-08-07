@@ -475,9 +475,14 @@ export function MiniBoardScreen() {
           }
           : plan.decision?.action === "hydrate"
             ? { status: "loading", sessionId: "", message: "セッション取得中" }
-            : snapshotHoldsAssignedSession(plan.snapshot, plan.candidate.sessionId)
+            // skip時のready化はhydrate完了済みsnapshot(またはライブ配信中)に限る。
+            // isHydrating中にreadyへ早期遷移すると、タップ時にcopyPanelSnapshotが
+            // 未完成のsnapshotをポップアップへ複製してしまう(完了時の反映はrun側)。
+            : snapshotHoldsAssignedSession(plan.snapshot, plan.candidate.sessionId) &&
+              !plan.snapshot?.isHydrating &&
+              ((plan.snapshot?.conversationMessages.length || 0) > 0 || plan.snapshot?.isResponding)
               ? { status: "ready", sessionId: plan.candidate.sessionId, message: "" }
-              // skip(already_requested)かつsnapshot無し=直前の失敗表示を維持
+              // hydrate進行中(already_requested)や失敗直後は直前の表示を維持
               : null;
         if (!target) continue;
         const current = prev[panelId];
@@ -549,8 +554,8 @@ export function MiniBoardScreen() {
         }, { throttleMs: 0 });
         // 発行記録は失敗時も残し、同じupdatedAtのままでのホットリトライを防ぐ
         // (updatedAtが前進すれば再試行される)。
-        lastRequestedHydrationByPanelRef.current[panelId] =
-          buildPanelHydrationRequestMark(panelId, candidate);
+        const requestMark = buildPanelHydrationRequestMark(panelId, candidate);
+        lastRequestedHydrationByPanelRef.current[panelId] = requestMark;
         const hydrationResult = await hydratePanelFromSessionHistoryRef.current({
           panelId,
           sessionId: candidate.sessionId,
@@ -563,36 +568,33 @@ export function MiniBoardScreen() {
           reasoningEffort: candidate.reasoningEffort,
           contextUsedPct: candidate.contextUsedPct,
         });
-        if (cancelled) return;
         if (hydrationResult === "superseded") return;
-        const ok = hydrationResult === "applied";
-        logSessionDiagRef.current("mini_board_hydrate_candidate_result", {
-          miniBoardCycleId: miniBoardCycleIdRef.current,
-          panelId,
-          requestedSessionId: candidate.sessionId,
-          ok,
-        }, { throttleMs: 0 });
-        if (!ok) {
-          clearPanelSnapshotRef.current(panelId);
+        // この要求がまだ最新(後続runが再要求していない)なら、effectがキャンセル済み
+        // でも結果を反映する。後続runはalready_requestedでこのパネルをスキップして
+        // loading表示を維持しているため、ここで反映しないとスケルトンが固着する。
+        const stillCurrentRequest =
+          lastRequestedHydrationByPanelRef.current[panelId] === requestMark;
+        if (stillCurrentRequest) {
+          const ok = hydrationResult === "applied";
+          logSessionDiagRef.current("mini_board_hydrate_candidate_result", {
+            miniBoardCycleId: miniBoardCycleIdRef.current,
+            panelId,
+            requestedSessionId: candidate.sessionId,
+            ok,
+          }, { throttleMs: 0 });
+          if (ok) {
+            selectedByPanel[panelId] = candidate.sessionId;
+          } else {
+            clearPanelSnapshotRef.current(panelId);
+          }
           setPanelHydrationById((prev) => ({
             ...prev,
-            [panelId]: {
-              status: "error",
-              sessionId: candidate.sessionId,
-              message: "セッション読み込み失敗",
-            },
+            [panelId]: ok
+              ? { status: "ready", sessionId: candidate.sessionId, message: "" }
+              : { status: "error", sessionId: candidate.sessionId, message: "セッション読み込み失敗" },
           }));
-          continue;
         }
-        selectedByPanel[panelId] = candidate.sessionId;
-        setPanelHydrationById((prev) => ({
-          ...prev,
-          [panelId]: {
-            status: "ready",
-            sessionId: candidate.sessionId,
-            message: "",
-          },
-        }));
+        if (cancelled) return;
       }
       logSessionDiagRef.current("mini_board_hydrate_sessions_done", {
         miniBoardCycleId: miniBoardCycleIdRef.current,
