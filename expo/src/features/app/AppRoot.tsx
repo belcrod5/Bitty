@@ -4022,6 +4022,11 @@ export default function App() {
     parseOptionalSessionId,
     upsertConversationRuntimeSnapshot,
   ]);
+  // relay作り直し(watermark gap)検出時の補償。実体は後段で
+  // relayWatermarkGapHandlerRef に代入するマーカー登録(前方参照をrefで解決)。
+  const handleRelayWatermarkGap = useCallback((threadId: string) => {
+    relayWatermarkGapHandlerRef.current?.(threadId);
+  }, []);
   const { startCodexRelayObserverForSession } = useCodexRelayObserverStartController({
     parseOptionalSessionId,
     parseLlmDirectory,
@@ -4030,11 +4035,7 @@ export default function App() {
     codexRelayObserverReplyByThreadRef,
     codexRelayObserverStartedAtMsByThreadRef,
     codexRelayWatermarkByThreadRef,
-    // relay作り直し検出時の穴埋め: 既存のHTTP差分同期経路(requestSessionResync)へ
-    // refで前方参照を解決してつなぐ。
-    onRelayWatermarkGap: (threadId) => {
-      relayWatermarkGapHandlerRef.current?.(threadId);
-    },
+    onRelayWatermarkGap: handleRelayWatermarkGap,
     llmRequestStartedAtRef,
     reply,
     codexWsUrl,
@@ -4180,6 +4181,8 @@ export default function App() {
         startedAtMs: runningStartedAtMs ?? undefined,
         reason: "session_restored_running_turn",
         panelId,
+        // 承認待ち復元はpending approvalのreplayが必要(seq≦watermarkは再送されない)。
+        ignoreWatermark: waitingApprovalOnRestore,
       });
     } else {
       const activeObserver = codexRelayObserverRef.current;
@@ -4892,14 +4895,11 @@ export default function App() {
     logSessionDiag,
   });
   observerPreemptedHandlerRef.current = markSessionRespondingForResync;
-  // relay watermark gap(relay作り直し検出)の穴埋め: observerは生きているが
-  // ライブ経路に無い欠落分があるため、allowLiveObserverでHTTP差分同期を1回通す。
-  relayWatermarkGapHandlerRef.current = (sessionId) => {
-    requestSessionResync(sessionId, {
-      reason: "relay_watermark_gap",
-      allowLiveObserver: true,
-    });
-  };
+  // relay watermark gap(relay作り直し検出)の穴埋め: observer存命中の即時resyncは
+  // freshness判定(実行中turnの取得結果破棄)でno-opになりrate limiter枠だけ消費する
+  // ため行わず、「あとで再同期が必要」マーカーに積んでready遷移・G2再取得判定で拾う
+  // (observer強奪時の補償と同じ経路)。
+  relayWatermarkGapHandlerRef.current = markSessionRespondingForResync;
 
   // 遅延liveメタが「実行中でない」で解決したときの完了レース窓を閉じる(G2):
   // restore適用時点でrunningと信じていた、またはバックグラウンド移行時点で応答中だった
@@ -7225,6 +7225,8 @@ export default function App() {
           directory: restoredDirectory,
           startedAtMs: Number.isFinite(runningStartedAtMsRaw) ? runningStartedAtMsRaw : Date.now(),
           reason: "session_restored_running_turn",
+          // 承認待ち復元はpending approvalのreplayが必要(seq≦watermarkは再送されない)。
+          ignoreWatermark: snapshot.selectedThreadStatusType === "waiting_approval",
         });
         logSessionDiag("panel_runtime_hydrate_session_player_attach", {
           diagnosticCycleId,

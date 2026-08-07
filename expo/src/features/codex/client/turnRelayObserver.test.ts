@@ -288,6 +288,83 @@ test("manager mode resets watermark when latestSeq regresses even with same rela
   observer.close();
 });
 
+test("manager mode mirrors relayId on attached even without seq advance", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onRelaySeqAdvance = jest.fn();
+  const observer = createObserver(manager, {
+    resumeFromSeq: 0,
+    onRelaySeqAdvance,
+  });
+  manager.becomeReady();
+  await flushPromises();
+
+  // replayイベントがattachedより先に届く(サーバーはreplay→attachedの順で送る)。
+  manager.emit({
+    channel: "llm",
+    op: "rpc",
+    threadId: "thread-1",
+    seq: 5,
+    payload: { method: "item/agentMessage/delta", params: { delta: "x" } },
+  });
+  expect(onRelaySeqAdvance).toHaveBeenLastCalledWith({
+    threadId: "thread-1",
+    relayId: "",
+    seq: 5,
+  });
+
+  // attachedはseq前進を伴わなくてもrelayIdをwatermarkへミラーする
+  // (relayId空のままだと次回起動時のrelay作り直し照合が素通りになる)。
+  manager.emit({
+    channel: "relay",
+    op: "attached",
+    threadId: "thread-1",
+    seq: 5,
+    payload: { relayId: "relay-a", latestSeq: 5, replayed: 5 },
+  });
+  expect(onRelaySeqAdvance).toHaveBeenLastCalledWith({
+    threadId: "thread-1",
+    relayId: "relay-a",
+    seq: 5,
+  });
+  observer.close();
+});
+
+test("manager mode falls back to seq 0 resume after resume_miss", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const observer = createObserver(manager, {
+    resumeFromSeq: 200,
+    resumeFromRelayId: "relay-old",
+  });
+  manager.becomeReady();
+  await flushPromises();
+  expect(manager.send).toHaveBeenCalledWith({
+    channel: "relay",
+    op: "resume",
+    threadId: "thread-1",
+    seq: 200,
+  });
+
+  // サーバーのeventLogトリムでreplay不能(resume_miss)。同じseqで再resumeし続けると
+  // 恒久missになるため、次回はseq=0(サーバーの現行turn補正)へ落とす。
+  manager.emit({
+    channel: "relay",
+    op: "resume_miss",
+    threadId: "thread-1",
+    seq: 200,
+    payload: { resumeFromSeq: 200, reason: "relay_event_history_gap" },
+  });
+  manager.send.mockClear();
+  manager.becomeReady(2);
+  await flushPromises();
+  expect(manager.send).toHaveBeenCalledWith({
+    channel: "relay",
+    op: "resume",
+    threadId: "thread-1",
+    seq: 0,
+  });
+  observer.close();
+});
+
 test("manager mode sends approval decisions through llm rpc envelopes", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const onApprovalRequest = jest.fn(async () => "approve_once" as const);

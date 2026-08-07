@@ -20,6 +20,10 @@ type StartCodexRelayObserverOptions = {
   directory?: string;
   startedAtMs?: number | null;
   resumeFromSeq?: number;
+  // trueならwatermarkを使わずseq=0(サーバーの現行turn補正)でresumeする。
+  // pending approvalはseq≦replayAfterSeqだとサーバーが再送しないため、
+  // 承認待ち再開・承認待ち復元の経路は必ずtrueにすること。
+  ignoreWatermark?: boolean;
   reason?: string;
   panelId?: string;
 };
@@ -481,15 +485,21 @@ export function useCodexRelayObserverStartController({
     // resumeFromSeq未指定(または0)ならwatermark(実受信済みseq)から差分再開する。
     // replayAfterSeq=0はサーバー側で「現行turn全イベント再送」に補正されるため、
     // observer再生成のたびに全再送となるのを避ける。
+    // 例外: ignoreWatermark時(承認待ち再開など、pending approvalの再送が必要)と、
+    // relayId不明のwatermark(relay作り直し照合が素通りになり無音欠落リスク)は使わない。
     const requestedResumeFromSeq = Number.isFinite(Number(options?.resumeFromSeq))
       ? Math.max(0, Math.floor(Number(options?.resumeFromSeq)))
       : 0;
-    const watermark = codexRelayWatermarkByThreadRef.current[threadId];
-    const watermarkSeq = Math.max(0, Math.floor(Number(watermark?.seq) || 0));
-    const resumeFromSeq = requestedResumeFromSeq > 0 ? requestedResumeFromSeq : watermarkSeq;
-    const resumeFromRelayId = requestedResumeFromSeq > 0
-      ? ""
-      : String(watermark?.relayId || "").trim();
+    const watermark = options?.ignoreWatermark === true
+      ? undefined
+      : codexRelayWatermarkByThreadRef.current[threadId];
+    const watermarkRelayId = String(watermark?.relayId || "").trim();
+    const watermarkSeq = watermarkRelayId
+      ? Math.max(0, Math.floor(Number(watermark?.seq) || 0))
+      : 0;
+    const usingWatermark = requestedResumeFromSeq === 0 && watermarkSeq > 0;
+    const resumeFromSeq = usingWatermark ? watermarkSeq : requestedResumeFromSeq;
+    const resumeFromRelayId = usingWatermark ? watermarkRelayId : "";
     logSessionDiag("session_relay_observer_start", {
       threadId,
       reason: observerReason,
@@ -498,11 +508,13 @@ export function useCodexRelayObserverStartController({
       requestedPanelId: targetPanelId || undefined,
       observerScope: isSessionRuntimeObserver ? "session" : "panel",
       resumeFromSeq,
-      resumeSource: requestedResumeFromSeq > 0
-        ? "explicit"
-        : watermarkSeq > 0
-          ? "watermark"
-          : "none",
+      resumeSource: options?.ignoreWatermark === true
+        ? "ignored"
+        : requestedResumeFromSeq > 0
+          ? "explicit"
+          : usingWatermark
+            ? "watermark"
+            : "none",
     }, {
       throttleMs: 0,
       throttleKey: `session_relay_observer_start:${threadId}`,
@@ -519,10 +531,16 @@ export function useCodexRelayObserverStartController({
           const active = codexRelayObserverRef.current;
           if (!active || active.threadId !== threadId) return;
           const prev = codexRelayWatermarkByThreadRef.current[threadId];
+          const prevRelayId = String(prev?.relayId || "");
+          const nextRelayId = String(relayId || "").trim();
           const prevSeq = Math.max(0, Math.floor(Number(prev?.seq) || 0));
+          const nextSeq = Math.max(0, Math.floor(Number(seq) || 0));
+          // seqはrelayインスタンススコープ。別relayのseqをmaxすると古い大seqが残り
+          // 無音欠落につながるため、relayIdが変わったら置き換える。
+          const relayChanged = nextRelayId !== "" && prevRelayId !== "" && nextRelayId !== prevRelayId;
           codexRelayWatermarkByThreadRef.current[threadId] = {
-            relayId: String(relayId || "").trim() || String(prev?.relayId || ""),
-            seq: Math.max(prevSeq, Math.max(0, Math.floor(Number(seq) || 0))),
+            relayId: nextRelayId || prevRelayId,
+            seq: relayChanged ? nextSeq : Math.max(prevSeq, nextSeq),
           };
         },
         onRelayReset: ({ relayId, seq }) => {
@@ -533,20 +551,27 @@ export function useCodexRelayObserverStartController({
             relayId: String(relayId || "").trim(),
             seq: nextSeq,
           };
+          // latestSeq=0の新relayは「まだ何も流れていない」= 欠落ゼロ確定。
+          // relay完了TTL明けの新turnごとにHTTP全文fetchが走るのを防ぐため、
+          // watermark上書きのみ行い穴埋め同期は要求しない。
+          const gapResync = nextSeq > 0;
           logSessionDiag("session_relay_watermark_reset", {
             threadId,
             reason: observerReason,
             relayId: String(relayId || "").trim() || undefined,
             seq: nextSeq,
+            gapResync,
           }, {
             throttleMs: 0,
             throttleKey: `session_relay_watermark_reset:${threadId}`,
           });
           // relay作り直しの間に流れたイベントはreplayで埋まらないため、
-          // 既存のHTTP差分同期経路で1回だけ穴埋めする。
-          try {
-            onRelayWatermarkGap?.(threadId);
-          } catch {}
+          // 既存の再同期経路に欠落分の回収を要求する。
+          if (gapResync) {
+            try {
+              onRelayWatermarkGap?.(threadId);
+            } catch {}
+          }
         },
         onLog: (entry) => {
           const active = codexRelayObserverRef.current;
@@ -569,6 +594,9 @@ export function useCodexRelayObserverStartController({
             if (finishWaitingApprovalResumeAttempt(threadId, stage)) {
               setWaitingApprovalResumeStatusText("relay が見つからないため、承認待ちを再開できません。");
             }
+            // eventLogトリム起因のmissは同じwatermarkで再attachしても再びmissする
+            // (恒久ループ)ため、watermarkを破棄して次回はseq=0へ落とす。
+            delete codexRelayWatermarkByThreadRef.current[threadId];
             // relay喪失(replay不能)。セッション実行中の復元observerは
             // finalizeSessionRuntimeAfterRelayLoss経由でJSONLから本文を再同期する。
             if (isSessionRuntimeObserver) {

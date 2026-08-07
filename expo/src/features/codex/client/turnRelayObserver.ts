@@ -169,16 +169,17 @@ export function startCodexAppServerTurnRelayObserver(
   };
 
   // lastRelaySeqの単調前進+watermarkミラー。seq-less envelope(共有threadless relay
-  // 由来など)はNumber変換で弾かれ、無視される。
-  const advanceRelaySeq = (seqRaw: unknown) => {
+  // 由来など)はNumber変換で弾かれ、無視される。前進したときのみtrueを返す。
+  const advanceRelaySeq = (seqRaw: unknown): boolean => {
     const seq = Number(seqRaw);
-    if (!Number.isFinite(seq)) return;
+    if (!Number.isFinite(seq)) return false;
     const next = Math.max(0, Math.floor(seq));
-    if (next <= lastRelaySeq) return;
+    if (next <= lastRelaySeq) return false;
     lastRelaySeq = next;
     try {
       options.onRelaySeqAdvance?.({ threadId, relayId: currentRelayId, seq: lastRelaySeq });
     } catch {}
+    return true;
   };
 
   // relay controlのseq反映。attachedはrelayId照合を行い、relay作り直し
@@ -190,6 +191,14 @@ export function startCodexAppServerTurnRelayObserver(
     seq?: number;
     latestSeq?: number;
   }): { relayRecreated: boolean } => {
+    if (control.type === "runner_relay_resume_miss") {
+      // サーバーのeventLogトリムでreplay不能。同じseqで再resumeし続けると恒久missに
+      // なるため、次回はseq=0(サーバーの現行turn開始位置への補正)へ落とす。
+      // relayIdも照合対象から外し、再attach時のスプリアスなreset検出を防ぐ。
+      lastRelaySeq = 0;
+      currentRelayId = "";
+      return { relayRecreated: false };
+    }
     if (control.type !== "runner_relay_attached") {
       if (typeof control.seq === "number") advanceRelaySeq(control.seq);
       if (typeof control.latestSeq === "number") advanceRelaySeq(control.latestSeq);
@@ -215,7 +224,13 @@ export function startCodexAppServerTurnRelayObserver(
       } catch {}
       return { relayRecreated: true };
     }
-    advanceRelaySeq(latestSeq);
+    if (!advanceRelaySeq(latestSeq)) {
+      // seq前進が無くてもrelayIdはwatermarkへミラーする。relayId空のwatermarkが
+      // 残ると、次回起動時のrelay作り直し照合が素通りになり無音欠落につながる。
+      try {
+        options.onRelaySeqAdvance?.({ threadId, relayId: currentRelayId, seq: lastRelaySeq });
+      } catch {}
+    }
     return { relayRecreated: false };
   };
 

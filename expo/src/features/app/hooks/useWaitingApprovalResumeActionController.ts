@@ -5,6 +5,7 @@ type StartCodexRelayObserverForSessionOptions = {
   directory?: string;
   startedAtMs?: number | null;
   resumeFromSeq?: number;
+  ignoreWatermark?: boolean;
   reason?: string;
   panelId?: string;
 };
@@ -120,6 +121,9 @@ export function useWaitingApprovalResumeActionController({
       directory,
       startedAtMs: Number(selectedSessionExecutionFactStartedAtMs || 0) || Date.now(),
       reason: "session_restored_running_turn",
+      // pending approval requestはseq≦watermarkだとサーバーが再送しないため、
+      // 承認待ち再開はwatermarkを使わずseq=0で現行turnをreplayさせる。
+      ignoreWatermark: true,
     });
     if (!attached) {
       finishWaitingApprovalResumeAttempt(sessionId, "observer_start_failed");
