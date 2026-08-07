@@ -50,7 +50,6 @@ export function useLateSessionLiveStateController(options: {
   startRelay: (sessionId: string, options: {
     directory: string;
     startedAtMs?: number;
-    resumeFromSeq: number;
     reason: string;
   }) => boolean;
   // 遅延liveメタが「実行中でない」(idle解決/取得失敗)で返ったときに呼ばれる。
@@ -180,7 +179,6 @@ export function useLateSessionLiveStateController(options: {
         options.startRelay(params.snapshot.selectedSessionId, {
           directory: params.directory,
           startedAtMs: Number.isFinite(runningStartedAtMs) ? runningStartedAtMs : Date.now(),
-          resumeFromSeq: 0,
           reason: "session_restored_running_turn",
         });
       }

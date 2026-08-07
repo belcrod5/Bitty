@@ -39,6 +39,8 @@ function createHarness(initialConversation: ConversationMessage[]) {
     codexRelayObserverRef: { current: null as { threadId: string; panelId?: string; close: () => void } | null },
     codexRelayObserverReplyByThreadRef: { current: {} as Record<string, string> },
     codexRelayObserverStartedAtMsByThreadRef: { current: {} as Record<string, number> },
+    codexRelayWatermarkByThreadRef: { current: {} as Record<string, { relayId: string; seq: number }> },
+    onRelayWatermarkGap: jest.fn(),
     llmRequestStartedAtRef: { current: 0 },
     reply: "",
     codexWsUrl: "ws://127.0.0.1:8788/codex",
@@ -135,6 +137,111 @@ describe("useCodexRelayObserverStartController relay loss recovery", () => {
 
     expect(harness.options.finalizeSessionRuntimeAfterRelayLoss).not.toHaveBeenCalled();
     expect(harness.options.closeCodexRelayObserver).not.toHaveBeenCalled();
+  });
+});
+
+describe("useCodexRelayObserverStartController relay watermark", () => {
+  test("resolves resumeFromSeq and resumeFromRelayId from the watermark when unspecified", async () => {
+    const harness = createHarness([]);
+    harness.options.codexRelayWatermarkByThreadRef.current["thread-1"] = {
+      relayId: "relay-a",
+      seq: 42,
+    };
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+    });
+
+    const observerOptions = harness.getObserverOptions();
+    expect(observerOptions.resumeFromSeq).toBe(42);
+    expect(observerOptions.resumeFromRelayId).toBe("relay-a");
+  });
+
+  test("explicit resumeFromSeq wins over the watermark", async () => {
+    const harness = createHarness([]);
+    harness.options.codexRelayWatermarkByThreadRef.current["thread-1"] = {
+      relayId: "relay-a",
+      seq: 42,
+    };
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+        resumeFromSeq: 7,
+      });
+    });
+
+    const observerOptions = harness.getObserverOptions();
+    expect(observerOptions.resumeFromSeq).toBe(7);
+    expect(observerOptions.resumeFromRelayId).toBe("");
+  });
+
+  test("onRelaySeqAdvance updates the watermark monotonically", async () => {
+    const harness = createHarness([]);
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+    });
+    const observerOptions = harness.getObserverOptions();
+
+    await act(async () => {
+      observerOptions.onRelaySeqAdvance({ threadId: "thread-1", relayId: "relay-a", seq: 10 });
+    });
+    expect(harness.options.codexRelayWatermarkByThreadRef.current["thread-1"]).toEqual({
+      relayId: "relay-a",
+      seq: 10,
+    });
+
+    // 後退はしない(単調増加)。relayIdは既知の値を保持する。
+    await act(async () => {
+      observerOptions.onRelaySeqAdvance({ threadId: "thread-1", relayId: "", seq: 3 });
+    });
+    expect(harness.options.codexRelayWatermarkByThreadRef.current["thread-1"]).toEqual({
+      relayId: "relay-a",
+      seq: 10,
+    });
+    expect(harness.options.onRelayWatermarkGap).not.toHaveBeenCalled();
+  });
+
+  test("onRelayReset overwrites the watermark and requests one HTTP gap resync", async () => {
+    const harness = createHarness([]);
+    harness.options.codexRelayWatermarkByThreadRef.current["thread-1"] = {
+      relayId: "relay-old",
+      seq: 200,
+    };
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+    });
+    const observerOptions = harness.getObserverOptions();
+
+    await act(async () => {
+      observerOptions.onRelayReset({ threadId: "thread-1", relayId: "relay-new", seq: 50 });
+    });
+    expect(harness.options.codexRelayWatermarkByThreadRef.current["thread-1"]).toEqual({
+      relayId: "relay-new",
+      seq: 50,
+    });
+    expect(harness.options.onRelayWatermarkGap).toHaveBeenCalledTimes(1);
+    expect(harness.options.onRelayWatermarkGap).toHaveBeenCalledWith("thread-1");
   });
 });
 

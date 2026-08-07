@@ -12,6 +12,10 @@ import type { LlmUiStatus } from "./useLlmRequestStatus";
 
 type CodexRelayObserverRef = MutableRefObject<{ threadId: string; panelId?: string; close: () => void } | null>;
 
+// threadIdごとの実受信済みrelay位置(メモリのみ、永続化しない)。
+// observer再生成時にresumeFromSeqへ解決し、現行turn全イベントの再送を避ける。
+export type CodexRelayWatermark = { relayId: string; seq: number };
+
 type StartCodexRelayObserverOptions = {
   directory?: string;
   startedAtMs?: number | null;
@@ -40,6 +44,11 @@ type UseCodexRelayObserverStartControllerArgs = {
   codexRelayObserverRef: CodexRelayObserverRef;
   codexRelayObserverReplyByThreadRef: MutableRefObject<Record<string, string>>;
   codexRelayObserverStartedAtMsByThreadRef: MutableRefObject<Record<string, number>>;
+  codexRelayWatermarkByThreadRef: MutableRefObject<Record<string, CodexRelayWatermark>>;
+  // relay作り直し検出(attachedのrelayId不一致 or latestSeq後退)時に1回呼ばれる。
+  // watermarkはリセット済み。呼び出し側はHTTP差分同期(requestSessionResync相当)で
+  // 欠落分を穴埋めする。
+  onRelayWatermarkGap?: (threadId: string) => void;
   llmRequestStartedAtRef: MutableRefObject<number>;
   reply: string;
   codexWsUrl: string;
@@ -140,6 +149,8 @@ export function useCodexRelayObserverStartController({
   codexRelayObserverRef,
   codexRelayObserverReplyByThreadRef,
   codexRelayObserverStartedAtMsByThreadRef,
+  codexRelayWatermarkByThreadRef,
+  onRelayWatermarkGap,
   llmRequestStartedAtRef,
   reply,
   codexWsUrl,
@@ -467,6 +478,18 @@ export function useCodexRelayObserverStartController({
     codexRelayObserverReplyByThreadRef.current[threadId] = shouldDiscardRestoredReplyPrefix
       ? ""
       : initialRelayReply;
+    // resumeFromSeq未指定(または0)ならwatermark(実受信済みseq)から差分再開する。
+    // replayAfterSeq=0はサーバー側で「現行turn全イベント再送」に補正されるため、
+    // observer再生成のたびに全再送となるのを避ける。
+    const requestedResumeFromSeq = Number.isFinite(Number(options?.resumeFromSeq))
+      ? Math.max(0, Math.floor(Number(options?.resumeFromSeq)))
+      : 0;
+    const watermark = codexRelayWatermarkByThreadRef.current[threadId];
+    const watermarkSeq = Math.max(0, Math.floor(Number(watermark?.seq) || 0));
+    const resumeFromSeq = requestedResumeFromSeq > 0 ? requestedResumeFromSeq : watermarkSeq;
+    const resumeFromRelayId = requestedResumeFromSeq > 0
+      ? ""
+      : String(watermark?.relayId || "").trim();
     logSessionDiag("session_relay_observer_start", {
       threadId,
       reason: observerReason,
@@ -474,9 +497,12 @@ export function useCodexRelayObserverStartController({
       panelId: isSessionRuntimeObserver ? undefined : targetPanelId || undefined,
       requestedPanelId: targetPanelId || undefined,
       observerScope: isSessionRuntimeObserver ? "session" : "panel",
-      resumeFromSeq: Number.isFinite(Number(options?.resumeFromSeq))
-        ? Math.max(0, Math.floor(Number(options?.resumeFromSeq)))
-        : 0,
+      resumeFromSeq,
+      resumeSource: requestedResumeFromSeq > 0
+        ? "explicit"
+        : watermarkSeq > 0
+          ? "watermark"
+          : "none",
     }, {
       throttleMs: 0,
       throttleKey: `session_relay_observer_start:${threadId}`,
@@ -487,9 +513,41 @@ export function useCodexRelayObserverStartController({
         wsToken: codexWsToken.trim(),
         runnerWebSocketManager,
         threadId,
-        resumeFromSeq: Number.isFinite(Number(options?.resumeFromSeq))
-          ? Math.max(0, Math.floor(Number(options?.resumeFromSeq)))
-          : 0,
+        resumeFromSeq,
+        resumeFromRelayId,
+        onRelaySeqAdvance: ({ relayId, seq }) => {
+          const active = codexRelayObserverRef.current;
+          if (!active || active.threadId !== threadId) return;
+          const prev = codexRelayWatermarkByThreadRef.current[threadId];
+          const prevSeq = Math.max(0, Math.floor(Number(prev?.seq) || 0));
+          codexRelayWatermarkByThreadRef.current[threadId] = {
+            relayId: String(relayId || "").trim() || String(prev?.relayId || ""),
+            seq: Math.max(prevSeq, Math.max(0, Math.floor(Number(seq) || 0))),
+          };
+        },
+        onRelayReset: ({ relayId, seq }) => {
+          const active = codexRelayObserverRef.current;
+          if (!active || active.threadId !== threadId) return;
+          const nextSeq = Math.max(0, Math.floor(Number(seq) || 0));
+          codexRelayWatermarkByThreadRef.current[threadId] = {
+            relayId: String(relayId || "").trim(),
+            seq: nextSeq,
+          };
+          logSessionDiag("session_relay_watermark_reset", {
+            threadId,
+            reason: observerReason,
+            relayId: String(relayId || "").trim() || undefined,
+            seq: nextSeq,
+          }, {
+            throttleMs: 0,
+            throttleKey: `session_relay_watermark_reset:${threadId}`,
+          });
+          // relay作り直しの間に流れたイベントはreplayで埋まらないため、
+          // 既存のHTTP差分同期経路で1回だけ穴埋めする。
+          try {
+            onRelayWatermarkGap?.(threadId);
+          } catch {}
+        },
         onLog: (entry) => {
           const active = codexRelayObserverRef.current;
           if (!active || active.threadId !== threadId) return;
@@ -733,6 +791,8 @@ export function useCodexRelayObserverStartController({
     codexRelayObserverRef,
     codexRelayObserverReplyByThreadRef,
     codexRelayObserverStartedAtMsByThreadRef,
+    codexRelayWatermarkByThreadRef,
+    onRelayWatermarkGap,
     codexWsToken,
     codexWsUrl,
     runnerWebSocketManager,

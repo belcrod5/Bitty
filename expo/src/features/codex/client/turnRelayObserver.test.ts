@@ -152,6 +152,142 @@ test("manager mode unsubscribes on close without closing the singleton", () => {
   expect("disconnect" in manager).toBe(false);
 });
 
+test("manager mode mirrors seq advances and ignores seq-less llm rpc envelopes", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onRelaySeqAdvance = jest.fn();
+  const onRelayReset = jest.fn();
+  const observer = createObserver(manager, {
+    resumeFromSeq: 4,
+    resumeFromRelayId: "relay-a",
+    onRelaySeqAdvance,
+    onRelayReset,
+  });
+  manager.becomeReady();
+  await flushPromises();
+
+  // attachedで同一relayのlatestSeqまで前進する。
+  manager.emit({
+    channel: "relay",
+    op: "attached",
+    threadId: "thread-1",
+    seq: 10,
+    payload: { relayId: "relay-a", latestSeq: 10, replayed: 6 },
+  });
+  expect(onRelayReset).not.toHaveBeenCalled();
+  expect(onRelaySeqAdvance).toHaveBeenLastCalledWith({
+    threadId: "thread-1",
+    relayId: "relay-a",
+    seq: 10,
+  });
+
+  // llm:rpc envelopeのseqでも前進をミラーする。
+  manager.emit({
+    channel: "llm",
+    op: "rpc",
+    threadId: "thread-1",
+    seq: 11,
+    payload: { method: "item/agentMessage/delta", params: { delta: "x" } },
+  });
+  expect(onRelaySeqAdvance).toHaveBeenLastCalledWith({
+    threadId: "thread-1",
+    relayId: "relay-a",
+    seq: 11,
+  });
+
+  // seq-less envelope(共有threadless relay由来の規約)はwatermarkに影響しない。
+  onRelaySeqAdvance.mockClear();
+  manager.emit({
+    channel: "llm",
+    op: "rpc",
+    threadId: "thread-1",
+    payload: { method: "item/agentMessage/delta", params: { delta: "y" } },
+  });
+  // 過去より小さいseqも無視(後退しない)。
+  manager.emit({
+    channel: "llm",
+    op: "rpc",
+    threadId: "thread-1",
+    seq: 3,
+    payload: { method: "item/agentMessage/delta", params: { delta: "z" } },
+  });
+  expect(onRelaySeqAdvance).not.toHaveBeenCalled();
+  observer.close();
+});
+
+test("manager mode resets watermark when attached reports a different relayId", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onRelaySeqAdvance = jest.fn();
+  const onRelayReset = jest.fn();
+  const observer = createObserver(manager, {
+    resumeFromSeq: 200,
+    resumeFromRelayId: "relay-old",
+    onRelaySeqAdvance,
+    onRelayReset,
+  });
+  manager.becomeReady();
+  await flushPromises();
+  expect(manager.send).toHaveBeenCalledWith({
+    channel: "relay",
+    op: "resume",
+    threadId: "thread-1",
+    seq: 200,
+  });
+
+  // relayが作り直された: relayId不一致 + latestSeq後退。
+  manager.emit({
+    channel: "relay",
+    op: "attached",
+    threadId: "thread-1",
+    seq: 50,
+    payload: { relayId: "relay-new", latestSeq: 50, replayed: 0 },
+  });
+  expect(onRelayReset).toHaveBeenCalledTimes(1);
+  expect(onRelayReset).toHaveBeenCalledWith({
+    threadId: "thread-1",
+    relayId: "relay-new",
+    seq: 50,
+  });
+  expect(onRelaySeqAdvance).not.toHaveBeenCalled();
+
+  // 次のWS世代のresumeはリセット後のseqで送られる(古いseqの再送=無音欠落を防ぐ)。
+  manager.send.mockClear();
+  manager.becomeReady(2);
+  await flushPromises();
+  expect(manager.send).toHaveBeenCalledWith({
+    channel: "relay",
+    op: "resume",
+    threadId: "thread-1",
+    seq: 50,
+  });
+  observer.close();
+});
+
+test("manager mode resets watermark when latestSeq regresses even with same relayId", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const onRelayReset = jest.fn();
+  const observer = createObserver(manager, {
+    resumeFromSeq: 200,
+    resumeFromRelayId: "",
+    onRelayReset,
+  });
+  manager.becomeReady();
+  await flushPromises();
+
+  manager.emit({
+    channel: "relay",
+    op: "attached",
+    threadId: "thread-1",
+    seq: 120,
+    payload: { relayId: "relay-x", latestSeq: 120, replayed: 0 },
+  });
+  expect(onRelayReset).toHaveBeenCalledWith({
+    threadId: "thread-1",
+    relayId: "relay-x",
+    seq: 120,
+  });
+  observer.close();
+});
+
 test("manager mode sends approval decisions through llm rpc envelopes", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const onApprovalRequest = jest.fn(async () => "approve_once" as const);

@@ -628,7 +628,6 @@ export function useCodexReplyRequest<
           current.startCodexRelayObserverForSession?.(requestThreadKey, {
             directory: requestDirectory || undefined,
             startedAtMs: Date.now(),
-            resumeFromSeq: 0,
             reason: "codex_queue_turn",
             panelId: requestPanelId,
           });

@@ -119,7 +119,6 @@ export function useWaitingApprovalResumeActionController({
     const attached = startCodexRelayObserverForSession(sessionId, {
       directory,
       startedAtMs: Number(selectedSessionExecutionFactStartedAtMs || 0) || Date.now(),
-      resumeFromSeq: 0,
       reason: "session_restored_running_turn",
     });
     if (!attached) {

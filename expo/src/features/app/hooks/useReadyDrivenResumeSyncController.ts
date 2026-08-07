@@ -497,18 +497,22 @@ export function useReadyDrivenResumeSyncController({
     panelId?: string;
     reason: string;
     attempt?: number;
+    // relay watermark gap(relay作り直し検出)の穴埋めなど、observer存命中でも
+    // ライブ経路に無い欠落分をHTTPで埋めたい場合にtrueにする。
+    allowLiveObserver?: boolean;
   }) => boolean>(() => false);
   const requestSessionResync = useCallback((sessionIdRaw: unknown, opts: {
     panelId?: string;
     reason: string;
     attempt?: number;
+    allowLiveObserver?: boolean;
   }) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return false;
     const reason = String(opts?.reason || "session_resync").trim() || "session_resync";
     const attempt = Math.max(0, Math.floor(Number(opts?.attempt) || 0));
     const observerThreadId = parseOptionalSessionId(codexRelayObserverRef.current?.threadId);
-    if (observerThreadId && observerThreadId === sessionId) return false;
+    if (observerThreadId && observerThreadId === sessionId && opts?.allowLiveObserver !== true) return false;
     const now = Date.now();
     const scheduleRetry = (delayMs: number, blockedBy: string) => {
       if (attempt >= SESSION_RESYNC_RETRY_MAX_ATTEMPTS) {

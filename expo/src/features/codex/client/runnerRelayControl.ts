@@ -2,6 +2,7 @@ import { parseRunnerWsRelayControlMessage } from "../../runnerWs/llmAdapter";
 
 export type RunnerRelayControlMessage = {
   type: string;
+  relayId?: string;
   seq?: number;
   replayed?: number;
   latestSeq?: number;
@@ -35,12 +36,14 @@ export function parseRunnerRelayControlMessage(rawData: string): RunnerRelayCont
     if (runnerWsControl) return runnerWsControl;
     const type = String((payload as any)?.type || "").trim();
     if (!type.startsWith("runner_relay_")) return null;
+    const relayId = String((payload as any)?.relayId || "").trim();
     const seq = Number((payload as any)?.seq);
     const replayed = Number((payload as any)?.replayed);
     const latestSeq = Number((payload as any)?.latestSeq);
     const reason = String((payload as any)?.reason || "").trim();
     return {
       type,
+      relayId: relayId || undefined,
       seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
       replayed: Number.isFinite(replayed) ? Math.max(0, Math.floor(replayed)) : undefined,
       latestSeq: Number.isFinite(latestSeq) ? Math.max(0, Math.floor(latestSeq)) : undefined,

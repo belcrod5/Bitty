@@ -1215,6 +1215,12 @@ export default function App() {
   const observerPreemptedHandlerRef = useRef<((sessionId: string) => void) | null>(null);
   const codexRelayObserverReplyByThreadRef = useRef<Record<string, string>>({});
   const codexRelayObserverStartedAtMsByThreadRef = useRef<Record<string, number>>({});
+  // relay watermark: threadId → 実受信済み{relayId, seq}(メモリのみ、永続化しない)。
+  // observer再生成時のresumeFromSeq解決に使い、現行turn全イベントの再送を避ける(④-b)。
+  const codexRelayWatermarkByThreadRef = useRef<Record<string, { relayId: string; seq: number }>>({});
+  // relay作り直し(watermarkのrelayId不一致等)検出時のHTTP差分同期ハンドラ。実体は後段の
+  // useReadyDrivenResumeSyncControllerのrequestSessionResync(refで前方参照を解決する)。
+  const relayWatermarkGapHandlerRef = useRef<((sessionId: string) => void) | null>(null);
   const waitingApprovalResumePendingSessionIdRef = useRef("");
   const waitingApprovalResumeAttachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const waitingApprovalResumeCooldownUntilMsRef = useRef(0);
@@ -4023,6 +4029,12 @@ export default function App() {
     codexRelayObserverRef,
     codexRelayObserverReplyByThreadRef,
     codexRelayObserverStartedAtMsByThreadRef,
+    codexRelayWatermarkByThreadRef,
+    // relay作り直し検出時の穴埋め: 既存のHTTP差分同期経路(requestSessionResync)へ
+    // refで前方参照を解決してつなぐ。
+    onRelayWatermarkGap: (threadId) => {
+      relayWatermarkGapHandlerRef.current?.(threadId);
+    },
     llmRequestStartedAtRef,
     reply,
     codexWsUrl,
@@ -4166,7 +4178,6 @@ export default function App() {
       codexRelayAttached = startCodexRelayObserverForSession(nextSessionId, {
         directory,
         startedAtMs: runningStartedAtMs ?? undefined,
-        resumeFromSeq: 0,
         reason: "session_restored_running_turn",
         panelId,
       });
@@ -4881,6 +4892,14 @@ export default function App() {
     logSessionDiag,
   });
   observerPreemptedHandlerRef.current = markSessionRespondingForResync;
+  // relay watermark gap(relay作り直し検出)の穴埋め: observerは生きているが
+  // ライブ経路に無い欠落分があるため、allowLiveObserverでHTTP差分同期を1回通す。
+  relayWatermarkGapHandlerRef.current = (sessionId) => {
+    requestSessionResync(sessionId, {
+      reason: "relay_watermark_gap",
+      allowLiveObserver: true,
+    });
+  };
 
   // 遅延liveメタが「実行中でない」で解決したときの完了レース窓を閉じる(G2):
   // restore適用時点でrunningと信じていた、またはバックグラウンド移行時点で応答中だった
@@ -7205,7 +7224,6 @@ export default function App() {
         const relayAttached = startCodexRelayObserverForSession(snapshot.selectedSessionId, {
           directory: restoredDirectory,
           startedAtMs: Number.isFinite(runningStartedAtMsRaw) ? runningStartedAtMsRaw : Date.now(),
-          resumeFromSeq: 0,
           reason: "session_restored_running_turn",
         });
         logSessionDiag("panel_runtime_hydrate_session_player_attach", {

@@ -57,18 +57,21 @@ function readRunnerRelayControlMessage(message: RunnerWsMessage) {
   const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
     ? message.payload as Record<string, unknown>
     : {};
+  const relayId = String(payload.relayId || "").trim();
   const seq = Number(message.seq);
   const replayed = Number(payload.replayed);
   const latestSeq = Number(payload.latestSeq ?? message.seq);
   if (message.op === "seq") {
     return {
       type: "runner_relay_seq",
+      relayId: relayId || undefined,
       seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
     };
   }
   if (message.op === "attached") {
     return {
       type: "runner_relay_attached",
+      relayId: relayId || undefined,
       seq: Number.isFinite(seq) ? Math.max(0, Math.floor(seq)) : undefined,
       replayed: Number.isFinite(replayed) ? Math.max(0, Math.floor(replayed)) : undefined,
       latestSeq: Number.isFinite(latestSeq) ? Math.max(0, Math.floor(latestSeq)) : undefined,
@@ -120,6 +123,9 @@ export function startCodexAppServerTurnRelayObserver(
   let pendingPing: { requestId: string; sentAtMs: number } | null = null;
   let missedPingCount = 0;
   let lastRelaySeq = resumeFromSeq;
+  // seqはrelayインスタンススコープ。attachedのrelayIdがここから変わったら
+  // 「relayが作り直された」= 手持ちseqは別カウンタの値、として扱う。
+  let currentRelayId = String(options.resumeFromRelayId || "").trim();
   let currentAgentMessageItemId = "";
   const agentMessageTextByItemId = new Map<string, string>();
   const pendingApprovalRequests = new Map<number, {
@@ -160,6 +166,57 @@ export function startCodexAppServerTurnRelayObserver(
     if (!reconnectTimer) return;
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  };
+
+  // lastRelaySeqの単調前進+watermarkミラー。seq-less envelope(共有threadless relay
+  // 由来など)はNumber変換で弾かれ、無視される。
+  const advanceRelaySeq = (seqRaw: unknown) => {
+    const seq = Number(seqRaw);
+    if (!Number.isFinite(seq)) return;
+    const next = Math.max(0, Math.floor(seq));
+    if (next <= lastRelaySeq) return;
+    lastRelaySeq = next;
+    try {
+      options.onRelaySeqAdvance?.({ threadId, relayId: currentRelayId, seq: lastRelaySeq });
+    } catch {}
+  };
+
+  // relay controlのseq反映。attachedはrelayId照合を行い、relay作り直し
+  // (relayId不一致 or latestSeq後退)ならlastRelaySeqをlatestSeqへリセットして
+  // onRelayResetで通知する(古いseqのままだとイベントの無音欠落になる)。
+  const applyRelayControlSeqTracking = (control: {
+    type: string;
+    relayId?: string;
+    seq?: number;
+    latestSeq?: number;
+  }): { relayRecreated: boolean } => {
+    if (control.type !== "runner_relay_attached") {
+      if (typeof control.seq === "number") advanceRelaySeq(control.seq);
+      if (typeof control.latestSeq === "number") advanceRelaySeq(control.latestSeq);
+      return { relayRecreated: false };
+    }
+    const attachedRelayId = String(control.relayId || "").trim();
+    const latestSeq = typeof control.latestSeq === "number"
+      ? Math.max(0, Math.floor(control.latestSeq))
+      : typeof control.seq === "number"
+        ? Math.max(0, Math.floor(control.seq))
+        : lastRelaySeq;
+    const relayRecreated = (
+      (attachedRelayId !== "" && currentRelayId !== "" && attachedRelayId !== currentRelayId) ||
+      latestSeq < lastRelaySeq
+    );
+    if (attachedRelayId) {
+      currentRelayId = attachedRelayId;
+    }
+    if (relayRecreated) {
+      lastRelaySeq = latestSeq;
+      try {
+        options.onRelayReset?.({ threadId, relayId: currentRelayId, seq: lastRelaySeq });
+      } catch {}
+      return { relayRecreated: true };
+    }
+    advanceRelaySeq(latestSeq);
+    return { relayRecreated: false };
   };
 
   const clearHeartbeatTimer = () => {
@@ -359,22 +416,18 @@ export function startCodexAppServerTurnRelayObserver(
       { channel: "relay", threadId },
       (message) => {
         if (closeRequested || closed) return;
-        if (typeof message.seq === "number") {
-          lastRelaySeq = Math.max(lastRelaySeq, Math.max(0, Math.floor(message.seq)));
-        }
         const control = readRunnerRelayControlMessage(message);
-        if (!control) return;
-        if (typeof control.seq === "number") {
-          lastRelaySeq = Math.max(lastRelaySeq, control.seq);
+        if (!control) {
+          advanceRelaySeq(message.seq);
+          return;
         }
-        if (typeof control.latestSeq === "number") {
-          lastRelaySeq = Math.max(lastRelaySeq, control.latestSeq);
-        }
+        const tracking = applyRelayControlSeqTracking(control);
         const readyState = managerReadyState();
         if (control.type === "runner_relay_attached") {
           emitLog({
             stage: "relay_observer_attached",
-            message: `replayed=${control.replayed ?? 0} latestSeq=${control.latestSeq ?? lastRelaySeq}`,
+            message: `replayed=${control.replayed ?? 0} latestSeq=${control.latestSeq ?? lastRelaySeq}` +
+              `${tracking.relayRecreated ? ` relayRecreated relayId=${currentRelayId}` : ""}`,
             readyState,
           });
         } else if (control.type === "runner_relay_resume_miss") {
@@ -396,9 +449,7 @@ export function startCodexAppServerTurnRelayObserver(
       { channel: "llm", op: "rpc", threadId },
       (message) => {
         if (closeRequested || closed) return;
-        if (typeof message.seq === "number") {
-          lastRelaySeq = Math.max(lastRelaySeq, Math.max(0, Math.floor(message.seq)));
-        }
+        advanceRelaySeq(message.seq);
         const rpcMessage = parseJsonRpcPayloadFromRunnerWsMessage(message);
         if (!rpcMessage) {
           emitLog({
@@ -662,11 +713,11 @@ export function startCodexAppServerTurnRelayObserver(
       if (closeRequested || closed || socket !== ws) return;
       const rawData = typeof event.data === "string" ? event.data : String(event.data || "");
       const envelope = useRunnerWsEnvelope ? parseRunnerWsEnvelope(rawData) : null;
-      if (typeof envelope?.seq === "number") {
-        lastRelaySeq = Math.max(lastRelaySeq, Math.max(0, Math.floor(envelope.seq)));
-      }
       if (envelope?.channel === "llm" && envelope.op === "rpc") {
         reconnectAttempts = 0;
+        // seq処理は「llm:rpcかつseq持ち」に限定(relay controlのseqは下の
+        // applyRelayControlSeqTrackingで反映する)。seq-less envelopeは無視。
+        advanceRelaySeq(envelope.seq);
       }
       if (envelope?.channel === "control" && envelope.op === "pong") {
         const requestId = String(envelope.requestId || "");
@@ -681,18 +732,14 @@ export function startCodexAppServerTurnRelayObserver(
 
       const control = parseRunnerRelayControlMessage(rawData);
       if (control) {
-        if (typeof control.seq === "number") {
-          lastRelaySeq = Math.max(lastRelaySeq, control.seq);
-        }
-        if (typeof control.latestSeq === "number") {
-          lastRelaySeq = Math.max(lastRelaySeq, control.latestSeq);
-        }
+        const tracking = applyRelayControlSeqTracking(control);
         if (control.type === "runner_relay_attached") {
           reconnectAttempts = 0;
           clearReconnectTimer();
           emitLog({
             stage: "relay_observer_attached",
-            message: `replayed=${control.replayed ?? 0} latestSeq=${control.latestSeq ?? lastRelaySeq}`,
+            message: `replayed=${control.replayed ?? 0} latestSeq=${control.latestSeq ?? lastRelaySeq}` +
+              `${tracking.relayRecreated ? ` relayRecreated relayId=${currentRelayId}` : ""}`,
             readyState: socket.readyState,
           });
         } else if (control.type === "runner_relay_resume_miss") {
