@@ -6,6 +6,10 @@ const CHUNK_BYTES = 64 * 1024;
 const MAX_JSON_LINE_BYTES = 256 * 1024;
 const CURSOR_HASH_BYTES = 128;
 const MESSAGE_PAIR_LOOKAROUND_RECORDS = 32;
+// A command outcome appended past the delta boundary must repair its call row
+// even when the call sits far before the boundary, so the delta lookbehind may
+// extend beyond the message-pair window — but never past this safety cap.
+const DELTA_OUTCOME_LOOKBEHIND_MAX_RECORDS = 2048;
 
 export function createLlmSessionHistoryPageReader(deps) {
   const {
@@ -151,12 +155,12 @@ export function createLlmSessionHistoryPageReader(deps) {
   }
 
   function recordCommandOutcome(parsed, outcomesByCallId, recordEnd = 0) {
-    if (String(parsed?.type || "") !== "response_item") return;
+    if (String(parsed?.type || "") !== "response_item") return "";
     const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
     const payloadType = String(payload?.type || "").trim().toLowerCase();
-    if (!payload || (payloadType !== "function_call_output" && payloadType !== "custom_tool_call_output")) return;
+    if (!payload || (payloadType !== "function_call_output" && payloadType !== "custom_tool_call_output")) return "";
     const callId = String(payload?.call_id || payload?.callId || payload?.id || "").trim();
-    if (!callId) return;
+    if (!callId) return "";
     const output = payload?.output;
     const outputObject = output && typeof output === "object" ? output : {};
     const exitCodeRaw = payload?.exit_code ?? payload?.exitCode ?? outputObject?.exit_code ?? outputObject?.exitCode;
@@ -173,15 +177,18 @@ export function createLlmSessionHistoryPageReader(deps) {
       exitCode: Number.isFinite(exitCode) ? exitCode : null,
       end: Math.max(0, Number(recordEnd) || 0),
     });
+    return callId;
   }
 
   function recordOversizedCommandOutcome(line, outcomesByCallId, recordEnd = 0) {
     const prefix = String(line?.prefix || "");
     const suffix = String(line?.suffix || "");
     const sampled = `${prefix}\n${suffix}`;
-    if (!/"type"\s*:\s*"(?:function_call_output|custom_tool_call_output)"/.test(sampled)) return false;
+    if (!/"type"\s*:\s*"(?:function_call_output|custom_tool_call_output)"/.test(sampled)) {
+      return { isOutcome: false, callId: "" };
+    }
     const callId = sampled.match(/"(?:call_id|callId)"\s*:\s*"([^"\\]+)"/)?.[1] || "";
-    if (!callId) return true;
+    if (!callId) return { isOutcome: true, callId: "" };
     const exitCodeText = sampled.match(/(?:exit_code|exitCode)[\\"']*\s*[:=]\s*(-?\d+)/)?.[1];
     const exitCode = Number(exitCodeText);
     outcomesByCallId.set(callId, {
@@ -189,7 +196,7 @@ export function createLlmSessionHistoryPageReader(deps) {
       exitCode: Number.isFinite(exitCode) ? exitCode : null,
       end: Math.max(0, Number(recordEnd) || 0),
     });
-    return true;
+    return { isOutcome: true, callId };
   }
 
   function oversizedRecordPlaceholder(line) {
@@ -383,10 +390,20 @@ export function createLlmSessionHistoryPageReader(deps) {
         const resolved = resolveMessageCandidates(candidates, scannedLineCount, false);
         return resolved.length > limit && resolved.slice(0, limit + 1).every((item) => item.confirmed);
       };
+      // Command outcomes appended past the boundary whose call row has not been
+      // seen yet: the lookbehind keeps scanning until each call is found (or the
+      // safety cap is hit), so the repaired row can be re-sent to the client.
+      const pendingOutcomeCallIds = new Set();
+      const trackDeltaOutcome = (callId, start) => {
+        if (deltaMode && callId && start >= sinceOffset) pendingOutcomeCallIds.add(callId);
+      };
       // In delta mode the scan must cover the whole appended range plus the pair
       // lookaround window right before the boundary, so it cannot stop earlier.
       const shouldStopScan = () => (deltaMode
-        ? lookbehindLineCount >= MESSAGE_PAIR_LOOKAROUND_RECORDS
+        ? (
+          lookbehindLineCount >= MESSAGE_PAIR_LOOKAROUND_RECORDS
+          && (pendingOutcomeCallIds.size === 0 || lookbehindLineCount >= DELTA_OUTCOME_LOOKBEHIND_MAX_RECORDS)
+        )
         : hasConfirmedPage());
       const scan = await scanLinesBackward(handle, endOffset, (line, start) => {
         scannedLineCount += 1;
@@ -395,8 +412,9 @@ export function createLlmSessionHistoryPageReader(deps) {
         if (deltaMode && start < sinceOffset) lookbehindLineCount += 1;
         if (line.oversized) {
           oversizedLineCount += 1;
-          const isCommandOutcome = recordOversizedCommandOutcome(line, outcomesByCallId, lineEnd);
-          const placeholder = isCommandOutcome ? null : oversizedRecordPlaceholder(line);
+          const oversizedOutcome = recordOversizedCommandOutcome(line, outcomesByCallId, lineEnd);
+          trackDeltaOutcome(oversizedOutcome.callId, start);
+          const placeholder = oversizedOutcome.isOutcome ? null : oversizedRecordPlaceholder(line);
           if (placeholder) {
             oversizedMessageCount += 1;
             candidates.push({
@@ -418,7 +436,7 @@ export function createLlmSessionHistoryPageReader(deps) {
           return shouldStopScan();
         }
         parsedLineCount += 1;
-        recordCommandOutcome(parsed, outcomesByCallId, lineEnd);
+        trackDeltaOutcome(recordCommandOutcome(parsed, outcomesByCallId, lineEnd), start);
         let row = parseCommandCall(parsed, outcomesByCallId);
         let kind = row ? "command" : "message";
         let source = row ? "other" : "";
@@ -440,6 +458,7 @@ export function createLlmSessionHistoryPageReader(deps) {
         const outcomeEnd = kind === "command"
           ? Math.max(0, Number(outcomesByCallId.get(String(row.itemId || ""))?.end || 0))
           : 0;
+        if (kind === "command") pendingOutcomeCallIds.delete(String(row.itemId || ""));
         candidates.push({ row, start, lineEnd, outcomeEnd, source, pairRole, recordIndex: scannedLineCount });
         return shouldStopScan();
       });
@@ -503,7 +522,9 @@ export function createLlmSessionHistoryPageReader(deps) {
       const olderCursor = oldestStart > 0 && (!scan.reachedStart || availableRows.length > limit)
         ? await encodePositionCursor(handle, stat, sessionId, oldestStart)
         : null;
-      const latestCursor = await encodePositionCursor(handle, stat, sessionId, endOffset);
+      // Contract: latestCursor always marks EOF at read time (also on older
+      // pages), so any response can seed a later sinceCursor delta.
+      const latestCursor = await encodePositionCursor(handle, stat, sessionId, fileSize);
       return {
         messages: selected.map((item) => item.row),
         olderCursor,

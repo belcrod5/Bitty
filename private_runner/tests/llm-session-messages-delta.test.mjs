@@ -273,6 +273,87 @@ test("delta re-sends a command row when its outcome lands after the boundary", a
   ]);
 });
 
+function fillerRecord(index) {
+  return {
+    timestamp: `2026-07-01T00:01:${String(index % 60).padStart(2, "0")}.000Z`,
+    type: "event_msg",
+    payload: { type: "reasoning", text: `thinking-${index}` },
+  };
+}
+
+test("delta repairs a command whose outcome lands more than 32 records after its call", async (t) => {
+  const { filePath } = await makeRollout(t, [
+    sessionMeta,
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: { type: "function_call", name: "exec_command", call_id: "call-far", arguments: { cmd: "npm test" } },
+    },
+    ...Array.from({ length: 40 }, (_, i) => fillerRecord(i)),
+  ]);
+  const readers = createReaders();
+  const snapshot = await readers.readSessionMessagesFromRolloutFile(filePath, { sessionId: "thread-1", limit: 20 });
+  assert.equal(snapshot.messages[0]?.commandExecution?.status, "running");
+
+  await appendRecords(filePath, [
+    {
+      timestamp: "2026-07-01T00:00:50.000Z",
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call-far", output: "ok", exit_code: 0 },
+    },
+  ]);
+  const delta = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    sinceCursor: snapshot.latestCursor,
+  });
+  assert.deepEqual(delta.messages.map((item) => ({
+    itemId: item.itemId,
+    commandExecution: item.commandExecution,
+  })), [
+    { itemId: "call-far", commandExecution: { command: "npm test", status: "completed", exitCode: 0 } },
+  ]);
+
+  // Once the client stored the repaired row, the next delta is clean again.
+  const drained = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    sinceCursor: delta.latestCursor,
+  });
+  assert.deepEqual(drained.messages, []);
+});
+
+test("delta gives up on an outcome whose call is beyond the lookbehind safety cap", async (t) => {
+  const { filePath } = await makeRollout(t, [
+    sessionMeta,
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: { type: "function_call", name: "exec_command", call_id: "call-lost", arguments: { cmd: "npm test" } },
+    },
+    ...Array.from({ length: 2100 }, (_, i) => fillerRecord(i)),
+  ]);
+  const readers = createReaders();
+  const snapshot = await readers.readSessionMessagesFromRolloutFile(filePath, { sessionId: "thread-1", limit: 20 });
+
+  await appendRecords(filePath, [
+    {
+      timestamp: "2026-07-01T00:01:00.000Z",
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call-lost", output: "ok", exit_code: 0 },
+    },
+  ]);
+  const delta = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    sinceCursor: snapshot.latestCursor,
+  });
+  // The call sits beyond the safety cap, so the outcome is abandoned instead of
+  // scanning the whole file; the delta stays empty and terminates.
+  assert.deepEqual(delta.messages, []);
+  assert.equal(delta.moreAfter, false);
+});
+
 test("sinceCursor rejects truncated, replaced, rewritten, and removed rollouts with 409", async (t) => {
   const records = [sessionMeta, ...Array.from({ length: 4 }, (_, i) => messageRecord(i + 1))];
   const { tempDir, filePath } = await makeRollout(t, records);
@@ -368,4 +449,13 @@ test("latestCursor issued by an older page keeps olderCursor paging intact", asy
     sinceCursor: newest.latestCursor,
   });
   assert.deepEqual(delta.messages.map((item) => item.content), ["message-50"]);
+
+  // An older page also hands out an EOF latestCursor, so a delta taken from it
+  // returns only rows appended after that read.
+  const middleDelta = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    sinceCursor: middle.latestCursor,
+  });
+  assert.deepEqual(middleDelta.messages.map((item) => item.content), ["message-50"]);
 });
