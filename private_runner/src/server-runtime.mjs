@@ -1524,6 +1524,10 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
   const source = normalizeSessionSource(opts?.source, "all");
   const limit = normalizeSessionMessagesLimit(opts?.limit);
   const cursor = String(opts?.cursor || "").trim();
+  const sinceCursor = String(opts?.sinceCursor || "").trim();
+  if (cursor && sinceCursor) {
+    throw makeApiError(400, "conflicting_history_cursor", "cursor と sinceCursor は同時に指定できません");
+  }
   const directoryRaw = String(opts?.directory || "").trim();
   const requestedDirectory = directoryRaw
     ? await resolveCanonicalDirectoryIdentity(directoryRaw)
@@ -1547,6 +1551,8 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
       limit,
       messages: [],
       olderCursor: null,
+      latestCursor: null,
+      ...(sinceCursor ? { moreAfter: false } : {}),
       contextUsage: null,
       modelRef: "",
       reasoningEffort: "",
@@ -1562,6 +1568,7 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     const result = await readSessionMessagesFromRolloutFile(cliEntry.filePath, {
       limit,
       cursor,
+      sinceCursor,
       sessionId,
     });
     return { result, elapsedMs: Math.max(0, Date.now() - t0) };
@@ -1613,6 +1620,8 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     limit,
     messages,
     olderCursor: String(messagesResult?.olderCursor || "").trim() || null,
+    latestCursor: String(messagesResult?.latestCursor || "").trim() || null,
+    ...(sinceCursor ? { moreAfter: messagesResult?.moreAfter === true } : {}),
     contextUsage: contextUsage || null,
     modelRef: String(meta?.modelRef || "").trim(),
     reasoningEffort: String(meta?.reasoningEffort || "").trim(),
@@ -8869,12 +8878,14 @@ const server = http.createServer(async (req, res) => {
       const directory = String(reqUrl.searchParams.get("directory") || "").trim();
       const limit = normalizeSessionMessagesLimit(reqUrl.searchParams.get("limit"));
       const cursor = String(reqUrl.searchParams.get("cursor") || "").trim();
+      const sinceCursor = String(reqUrl.searchParams.get("sinceCursor") || "").trim();
       const payloadStartedAt = Date.now();
       const payload = await listLlmSessionMessages(sessionId, {
         source,
         directory,
         limit,
         cursor,
+        sinceCursor,
       });
       const payloadBuildMs = Math.max(0, Date.now() - payloadStartedAt);
       const diagnostics = payload?.diagnostics && typeof payload.diagnostics === "object"

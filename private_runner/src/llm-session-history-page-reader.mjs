@@ -62,6 +62,14 @@ export function createLlmSessionHistoryPageReader(deps) {
         resolved.push({
           row: response.row,
           start: Math.min(candidate.start, older.start),
+          end: Math.max(candidate.lineEnd || 0, older.lineEnd || 0),
+          latestRecordEnd: Math.max(
+            candidate.lineEnd || 0,
+            older.lineEnd || 0,
+            candidate.outcomeEnd || 0,
+            older.outcomeEnd || 0
+          ),
+          pairOlderRowId: older.row.itemId,
           confirmed: true,
         });
         index += 1;
@@ -73,6 +81,8 @@ export function createLlmSessionHistoryPageReader(deps) {
       resolved.push({
         row,
         start: candidate.start,
+        end: candidate.lineEnd || 0,
+        latestRecordEnd: Math.max(candidate.lineEnd || 0, candidate.outcomeEnd || 0),
         confirmed: (
           reachedStart
           || !candidate.pairRole
@@ -140,7 +150,7 @@ export function createLlmSessionHistoryPageReader(deps) {
     return row;
   }
 
-  function recordCommandOutcome(parsed, outcomesByCallId) {
+  function recordCommandOutcome(parsed, outcomesByCallId, recordEnd = 0) {
     if (String(parsed?.type || "") !== "response_item") return;
     const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
     const payloadType = String(payload?.type || "").trim().toLowerCase();
@@ -161,10 +171,11 @@ export function createLlmSessionHistoryPageReader(deps) {
         ? "failed"
         : "completed",
       exitCode: Number.isFinite(exitCode) ? exitCode : null,
+      end: Math.max(0, Number(recordEnd) || 0),
     });
   }
 
-  function recordOversizedCommandOutcome(line, outcomesByCallId) {
+  function recordOversizedCommandOutcome(line, outcomesByCallId, recordEnd = 0) {
     const prefix = String(line?.prefix || "");
     const suffix = String(line?.suffix || "");
     const sampled = `${prefix}\n${suffix}`;
@@ -176,6 +187,7 @@ export function createLlmSessionHistoryPageReader(deps) {
     outcomesByCallId.set(callId, {
       status: Number.isFinite(exitCode) && exitCode !== 0 ? "failed" : "completed",
       exitCode: Number.isFinite(exitCode) ? exitCode : null,
+      end: Math.max(0, Number(recordEnd) || 0),
     });
     return true;
   }
@@ -229,12 +241,37 @@ export function createLlmSessionHistoryPageReader(deps) {
     }
   }
 
-  async function hashBoundary(handle, endOffset, fileSize) {
+  // Hash only the bytes right before the boundary: rollouts are append-only, so
+  // this keeps a cursor issued at EOF valid after new records are appended.
+  async function hashBoundary(handle, endOffset) {
     const start = Math.max(0, endOffset - CURSOR_HASH_BYTES);
-    const end = Math.min(fileSize, endOffset + CURSOR_HASH_BYTES);
-    const buffer = Buffer.alloc(Math.max(0, end - start));
+    const buffer = Buffer.alloc(Math.max(0, endOffset - start));
     if (buffer.length > 0) await handle.read(buffer, 0, buffer.length, start);
     return fingerprint([String(endOffset), buffer.toString("base64")]);
+  }
+
+  async function encodePositionCursor(handle, stat, sessionId, end) {
+    return Buffer.from(JSON.stringify({
+      v: CURSOR_VERSION,
+      sessionId,
+      end,
+      dev: String(stat.dev),
+      ino: String(stat.ino),
+      boundaryHash: await hashBoundary(handle, end),
+    }), "utf8").toString("base64url");
+  }
+
+  async function requireValidCursor(rawCursor, sessionId, handle, stat, fileSize) {
+    const cursor = decodeCursor(rawCursor, sessionId);
+    if (
+      String(cursor.dev) !== String(stat.dev)
+      || String(cursor.ino) !== String(stat.ino)
+      || cursor.end > fileSize
+      || cursor.boundaryHash !== await hashBoundary(handle, cursor.end)
+    ) {
+      throw makeApiError(409, "stale_history_cursor", "履歴が更新されたため、セッションを開き直してください");
+    }
+    return cursor;
   }
 
   function prependFragment(pending, fragment) {
@@ -302,14 +339,19 @@ export function createLlmSessionHistoryPageReader(deps) {
     const startedAt = Date.now();
     const limit = normalizeSessionMessagesLimit(opts?.limit);
     const sessionId = String(opts?.sessionId || "").trim();
+    const sinceCursorRaw = String(opts?.sinceCursor || "").trim();
     let handle;
     try {
       handle = await fs.open(filePath, "r");
     } catch (error) {
       if (String(error?.code || "").toUpperCase() !== "ENOENT") throw error;
+      if (sinceCursorRaw) {
+        throw makeApiError(409, "stale_history_cursor", "履歴が更新されたため、セッションを開き直してください");
+      }
       return {
         messages: [],
         olderCursor: null,
+        latestCursor: null,
         diagnostics: { totalMs: Math.max(0, Date.now() - startedAt), bytesRead: 0, parsedLineCount: 0 },
       };
     }
@@ -318,17 +360,16 @@ export function createLlmSessionHistoryPageReader(deps) {
       const fileSize = Number(stat.size || 0);
       let endOffset = fileSize;
       if (opts?.cursor) {
-        const cursor = decodeCursor(opts.cursor, sessionId);
-        if (
-          String(cursor.dev) !== String(stat.dev)
-          || String(cursor.ino) !== String(stat.ino)
-          || cursor.end > fileSize
-          || cursor.boundaryHash !== await hashBoundary(handle, cursor.end, fileSize)
-        ) {
-          throw makeApiError(409, "stale_history_cursor", "履歴が更新されたため、セッションを開き直してください");
-        }
+        const cursor = await requireValidCursor(opts.cursor, sessionId, handle, stat, fileSize);
         endOffset = cursor.end;
       }
+      // Forward-delta mode: return only rows past the previously issued cursor.
+      let sinceOffset = -1;
+      if (sinceCursorRaw) {
+        const sinceCursor = await requireValidCursor(sinceCursorRaw, sessionId, handle, stat, fileSize);
+        sinceOffset = sinceCursor.end;
+      }
+      const deltaMode = sinceOffset >= 0;
       const header = await readSessionHeaderContext(filePath, stat);
       const outcomesByCallId = new Map();
       const candidates = [];
@@ -336,37 +377,48 @@ export function createLlmSessionHistoryPageReader(deps) {
       let oversizedLineCount = 0;
       let oversizedMessageCount = 0;
       let scannedLineCount = 0;
+      let lookbehindLineCount = 0;
+      let nextNewerLineStart = endOffset;
       const hasConfirmedPage = () => {
         const resolved = resolveMessageCandidates(candidates, scannedLineCount, false);
         return resolved.length > limit && resolved.slice(0, limit + 1).every((item) => item.confirmed);
       };
+      // In delta mode the scan must cover the whole appended range plus the pair
+      // lookaround window right before the boundary, so it cannot stop earlier.
+      const shouldStopScan = () => (deltaMode
+        ? lookbehindLineCount >= MESSAGE_PAIR_LOOKAROUND_RECORDS
+        : hasConfirmedPage());
       const scan = await scanLinesBackward(handle, endOffset, (line, start) => {
         scannedLineCount += 1;
+        const lineEnd = nextNewerLineStart;
+        nextNewerLineStart = start;
+        if (deltaMode && start < sinceOffset) lookbehindLineCount += 1;
         if (line.oversized) {
           oversizedLineCount += 1;
-          const isCommandOutcome = recordOversizedCommandOutcome(line, outcomesByCallId);
+          const isCommandOutcome = recordOversizedCommandOutcome(line, outcomesByCallId, lineEnd);
           const placeholder = isCommandOutcome ? null : oversizedRecordPlaceholder(line);
           if (placeholder) {
             oversizedMessageCount += 1;
             candidates.push({
               row: placeholder.row,
               start,
+              lineEnd,
               source: placeholder.source,
               pairRole: placeholder.pairRole,
               recordIndex: scannedLineCount,
             });
           }
-          return hasConfirmedPage();
+          return shouldStopScan();
         }
-        if (!line.text.trim()) return hasConfirmedPage();
+        if (!line.text.trim()) return shouldStopScan();
         let parsed;
         try {
           parsed = JSON.parse(line.text);
         } catch {
-          return hasConfirmedPage();
+          return shouldStopScan();
         }
         parsedLineCount += 1;
-        recordCommandOutcome(parsed, outcomesByCallId);
+        recordCommandOutcome(parsed, outcomesByCallId, lineEnd);
         let row = parseCommandCall(parsed, outcomesByCallId);
         let kind = row ? "command" : "message";
         let source = row ? "other" : "";
@@ -383,10 +435,13 @@ export function createLlmSessionHistoryPageReader(deps) {
             pairRole = row.role;
           }
         }
-        if (!row) return hasConfirmedPage();
+        if (!row) return shouldStopScan();
         row.itemId = rowId(row, kind);
-        candidates.push({ row, start, source, pairRole, recordIndex: scannedLineCount });
-        return hasConfirmedPage();
+        const outcomeEnd = kind === "command"
+          ? Math.max(0, Number(outcomesByCallId.get(String(row.itemId || ""))?.end || 0))
+          : 0;
+        candidates.push({ row, start, lineEnd, outcomeEnd, source, pairRole, recordIndex: scannedLineCount });
+        return shouldStopScan();
       });
       const availableRows = resolveMessageCandidates(candidates, scannedLineCount, scan.reachedStart);
       for (const item of availableRows) {
@@ -398,21 +453,61 @@ export function createLlmSessionHistoryPageReader(deps) {
           item.row.inheritedFromParent = true;
         }
       }
+      if (deltaMode) {
+        const ascending = [...availableRows].sort((left, right) => left.start - right.start);
+        const freshRows = [];
+        const replacedRows = [];
+        for (const item of ascending) {
+          if ((item.latestRecordEnd || 0) <= sinceOffset) continue;
+          if (item.start >= sinceOffset) {
+            freshRows.push(item);
+            continue;
+          }
+          // The row starts before the boundary but a record past the boundary
+          // (pair partner or command outcome) changed its resolution: re-send it
+          // so the client can replace its cached copy by itemId. When the pair
+          // resolution changed the row id, expose the superseded id explicitly.
+          const row = item.pairOlderRowId && item.pairOlderRowId !== item.row.itemId
+            ? { ...item.row, replacesItemId: item.pairOlderRowId }
+            : item.row;
+          replacedRows.push({ ...item, row });
+        }
+        const moreAfter = freshRows.length > limit;
+        const selectedFresh = freshRows.slice(0, limit);
+        const selected = [...replacedRows, ...selectedFresh];
+        const latestEnd = moreAfter ? selectedFresh[selectedFresh.length - 1].end : fileSize;
+        const latestCursor = await encodePositionCursor(handle, stat, sessionId, latestEnd);
+        return {
+          messages: selected.map((item) => item.row),
+          olderCursor: null,
+          latestCursor,
+          moreAfter,
+          isSubagent: header.isSubagent,
+          parentSessionId: header.parentSessionId,
+          workingDirectory: header.workingDirectory,
+          diagnostics: {
+            totalMs: Math.max(0, Date.now() - startedAt),
+            startOffset: sinceOffset,
+            endOffset,
+            bytesRead: scan.bytesRead,
+            scannedLineCount,
+            parsedLineCount,
+            oversizedLineCount,
+            oversizedMessageCount,
+            messageCount: selected.length,
+          },
+        };
+      }
       const selected = availableRows.slice(0, limit).sort((left, right) => left.start - right.start);
       const oldestStart = selected[0]?.start ?? 0;
       const olderCursor = oldestStart > 0 && (!scan.reachedStart || availableRows.length > limit)
-        ? Buffer.from(JSON.stringify({
-          v: CURSOR_VERSION,
-          sessionId,
-          end: oldestStart,
-          dev: String(stat.dev),
-          ino: String(stat.ino),
-          boundaryHash: await hashBoundary(handle, oldestStart, fileSize),
-        }), "utf8").toString("base64url")
+        ? await encodePositionCursor(handle, stat, sessionId, oldestStart)
         : null;
+      const latestCursor = await encodePositionCursor(handle, stat, sessionId, endOffset);
       return {
         messages: selected.map((item) => item.row),
         olderCursor,
+        latestCursor,
         isSubagent: header.isSubagent,
         parentSessionId: header.parentSessionId,
         workingDirectory: header.workingDirectory,
