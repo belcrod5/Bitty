@@ -318,6 +318,35 @@ describe("useCodexRelayObserverStartController relay watermark", () => {
     });
   });
 
+  test("first relayId on a relayId-less watermark also replaces the seq", async () => {
+    const harness = createHarness([]);
+    // relayId未確定のままobserverがcloseした残留watermark(replay中にturn/completed等)。
+    harness.options.codexRelayWatermarkByThreadRef.current["thread-1"] = {
+      relayId: "",
+      seq: 200,
+    };
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+    });
+    const observerOptions = harness.getObserverOptions();
+
+    // 旧seq(別relayのカウンタかもしれない)をmaxで残すと、次回resumeで後退reset→
+    // 不要なgapマーカーが1回発生する。relayId初確定時もseqは置き換える。
+    await act(async () => {
+      observerOptions.onRelaySeqAdvance({ threadId: "thread-1", relayId: "relay-a", seq: 50 });
+    });
+    expect(harness.options.codexRelayWatermarkByThreadRef.current["thread-1"]).toEqual({
+      relayId: "relay-a",
+      seq: 50,
+    });
+  });
+
   test("onRelayReset with latestSeq 0 updates the watermark without requesting a gap resync", async () => {
     const harness = createHarness([]);
     harness.options.codexRelayWatermarkByThreadRef.current["thread-1"] = {

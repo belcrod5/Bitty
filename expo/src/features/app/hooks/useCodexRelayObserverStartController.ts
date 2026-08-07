@@ -536,8 +536,10 @@ export function useCodexRelayObserverStartController({
           const prevSeq = Math.max(0, Math.floor(Number(prev?.seq) || 0));
           const nextSeq = Math.max(0, Math.floor(Number(seq) || 0));
           // seqはrelayインスタンススコープ。別relayのseqをmaxすると古い大seqが残り
-          // 無音欠落につながるため、relayIdが変わったら置き換える。
-          const relayChanged = nextRelayId !== "" && prevRelayId !== "" && nextRelayId !== prevRelayId;
+          // 無音欠落(または後退reset→不要なgapマーカー)につながるため、relayIdが
+          // 変わったら置き換える。relayId未確定("")の残留watermarkに初めてrelayIdが
+          // 付くときも、旧seqの出所relayは不明なので置き換える。
+          const relayChanged = nextRelayId !== "" && nextRelayId !== prevRelayId;
           codexRelayWatermarkByThreadRef.current[threadId] = {
             relayId: nextRelayId || prevRelayId,
             seq: relayChanged ? nextSeq : Math.max(prevSeq, nextSeq),

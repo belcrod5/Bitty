@@ -158,10 +158,14 @@ type UseCodexReplyRequestOptions<
       directory?: string;
       startedAtMs?: number | null;
       resumeFromSeq?: number;
+      ignoreWatermark?: boolean;
       reason?: string;
       panelId?: string;
     }
   ) => boolean;
+  // queue経路のobserver起動でwatermark無視(承認待ち中のpending approval replay)を
+  // 判定するためのruntime status参照。
+  getSessionRuntimeStatus?: (sessionIdRaw: unknown) => { waitingApproval?: boolean } | undefined;
 };
 
 type ReplyRequestSessionSnapshot = {
@@ -630,6 +634,10 @@ export function useCodexReplyRequest<
             startedAtMs: Date.now(),
             reason: "codex_queue_turn",
             panelId: requestPanelId,
+            // 承認待ち中のqueue: pending approvalはseq≦watermarkだとサーバーが
+            // 再送しないため、watermarkを使わずseq=0で現行turnをreplayさせる
+            // (承認待ち再開・復元経路と同じ意味論)。
+            ignoreWatermark: current.getSessionRuntimeStatus?.(requestThreadKey)?.waitingApproval === true,
           });
           current.logSessionDiag("reply_http_send_queued_after_compact", {
             panelId: requestPanelId,

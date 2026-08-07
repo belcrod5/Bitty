@@ -5668,6 +5668,11 @@ export default function App() {
       });
     },
     startCodexRelayObserverForSession,
+    // queue経路(codex_queue_turn)のobserver起動で、承認待ち中ならwatermarkを
+    // 無視してpending approvalをreplayさせるためのruntime status参照。
+    getSessionRuntimeStatus: (sessionIdRaw: unknown) => (
+      sessionRuntimeStatusByIdRef.current[parseOptionalSessionId(sessionIdRaw)]
+    ),
     onLlmMessageCompleted: handleLlmMessageCompleted,
   });
 

@@ -652,6 +652,76 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
   });
 
+  test("queued-during-compact send ignores the watermark when the session is waiting on approval", async () => {
+    const { options } = createOptions();
+    (options as { transcript: string }).transcript = "queued while waiting approval";
+    const startCodexRelayObserverForSession = jest.fn(() => true);
+    (options as any).startCodexRelayObserverForSession = startCodexRelayObserverForSession;
+    // 承認待ち中: pending approvalはseq≦watermarkだとサーバーが再送しないため、
+    // queue経路のobserverもwatermarkを使わずreplayさせる必要がある。
+    (options as any).getSessionRuntimeStatus = jest.fn(() => ({
+      hasRunningTurn: true,
+      hasPendingAssistant: false,
+      restoredInFlight: false,
+      waitingApproval: true,
+      updatedAtMs: Date.now(),
+    }));
+    mockEnqueueRunnerCodexTurn.mockResolvedValueOnce({
+      queued: true,
+      queuedTurn: { queuedTurnId: "qt-1", threadId: "thread-1", status: "queued", inputPreview: "" },
+    } as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+    });
+
+    expect(startCodexRelayObserverForSession).toHaveBeenCalledWith(
+      "thread-1",
+      expect.objectContaining({
+        reason: "codex_queue_turn",
+        ignoreWatermark: true,
+      })
+    );
+  });
+
+  test("queued-during-compact send keeps the watermark when the session is not waiting on approval", async () => {
+    const { options } = createOptions();
+    (options as { transcript: string }).transcript = "queued message";
+    const startCodexRelayObserverForSession = jest.fn(() => true);
+    (options as any).startCodexRelayObserverForSession = startCodexRelayObserverForSession;
+    (options as any).getSessionRuntimeStatus = jest.fn(() => ({
+      hasRunningTurn: true,
+      hasPendingAssistant: false,
+      restoredInFlight: false,
+      waitingApproval: false,
+      updatedAtMs: Date.now(),
+    }));
+    mockEnqueueRunnerCodexTurn.mockResolvedValueOnce({
+      queued: true,
+      queuedTurn: { queuedTurnId: "qt-1", threadId: "thread-1", status: "queued", inputPreview: "" },
+    } as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+    });
+
+    expect(startCodexRelayObserverForSession).toHaveBeenCalledWith(
+      "thread-1",
+      expect.objectContaining({
+        reason: "codex_queue_turn",
+        ignoreWatermark: false,
+      })
+    );
+  });
+
   test("gate-blocked send keeps the composer and reports the rejection", async () => {
     const { options } = createOptions();
     mockStartCodexAppServerTurn.mockImplementation((() => ({
