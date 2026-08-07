@@ -55,7 +55,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
   ];
   const props: AppDrawerProps = {
     selectedDirectoryPath: "/work/bitty",
-    selectedLlmSessionId: "",
+    highlightedSessionId: "",
     registeredDirectories: [{
       id: "dir-1",
       path: "/work/bitty",

@@ -82,6 +82,7 @@ import { createCalendarToolHandler, parseCalendarToolCall } from "../calendar/ca
 import { recoverCalendarWriteLedger } from "../calendar/calendarWriteLedger";
 import { useLlmTraceStateController } from "./hooks/useLlmTraceStateController";
 import { useAppDrawerSessionController } from "./hooks/useAppDrawerSessionController";
+import { useDrawerSessionHighlight } from "./hooks/useDrawerSessionHighlight";
 import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTreeController";
 import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentityReconciliation";
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
@@ -7472,15 +7473,26 @@ export default function App() {
     sessionHistoryPagingById,
     loadOlderSessionHistory,
   });
+  const {
+    drawerHighlightedSessionId,
+    setDrawerPopupHighlightSessionId,
+  } = useDrawerSessionHighlight(selectedLlmSessionId);
   const closeDrawerSessionPopup = useCallback(() => {
     if (drawerSessionPopupPanelId) {
+      const popupEntry = panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId];
+      const popupSessionId = parseOptionalSessionId(
+        popupEntry?.snapshot?.selectedSessionId || popupEntry?.sessionId
+      );
+      // ポップアップ中にセッションIDが変わっていても、閉じた時点の実セッションを
+      // ドロワーのハイライトへ反映する。
+      if (popupSessionId) setDrawerPopupHighlightSessionId(popupSessionId);
       clearPanelSnapshot(drawerSessionPopupPanelId);
     }
     setDrawerSessionPopupPanelId("");
     setDrawerSessionPopupCycleId("");
     setDrawerSessionPopupSourceRect(null);
     setDrawerSessionPopupOrigin("drawer");
-  }, [clearPanelSnapshot, drawerSessionPopupPanelId]);
+  }, [clearPanelSnapshot, drawerSessionPopupPanelId, setDrawerPopupHighlightSessionId]);
   const openNewSessionPopup = useCallback((params: { directory: string }) => {
     const directory = parseLlmDirectory(params?.directory || normalizedLlmDirectoryForRequest());
     const sessionId = startNewPanelSession({
@@ -7493,6 +7505,7 @@ export default function App() {
     setDrawerSessionPopupCycleId(cycleId);
     setDrawerSessionPopupOrigin("drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
+    setDrawerPopupHighlightSessionId(sessionId);
     logSessionDiag("drawer_new_session_popup_opened", {
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
       sessionId,
@@ -7502,6 +7515,7 @@ export default function App() {
   }, [
     logSessionDiag,
     normalizedLlmDirectoryForRequest,
+    setDrawerPopupHighlightSessionId,
     startNewPanelSession,
   ]);
   const openSessionHistoryPopup = useCallback((params: {
@@ -7532,6 +7546,7 @@ export default function App() {
     setDrawerSessionPopupCycleId(cycleId);
     setDrawerSessionPopupOrigin(params.origin || "drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
+    setDrawerPopupHighlightSessionId(sessionId);
     void hydratePanelFromSessionHistory({
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
       sessionId,
@@ -7550,6 +7565,7 @@ export default function App() {
         showChatBottomToast("assistant", "セッションをポップアップに読み込めませんでした。");
         clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
         setDrawerSessionPopupPanelId("");
+        setDrawerPopupHighlightSessionId("");
         return;
       }
       markSessionReadFromContext(sessionId, params.source, directory);
@@ -7557,6 +7573,7 @@ export default function App() {
       showChatBottomToast("assistant", `セッション読込に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
       clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
       setDrawerSessionPopupPanelId("");
+      setDrawerPopupHighlightSessionId("");
     });
   }, [
     clearPanelSnapshot,
@@ -7564,6 +7581,7 @@ export default function App() {
     markSessionReadFromContext,
     logSessionDiag,
     resolveSessionHistoryContext,
+    setDrawerPopupHighlightSessionId,
     showChatBottomToast,
   ]);
   const openCompletedLlmSession = useCallback((sessionIdRaw: string) => {
@@ -7606,7 +7624,7 @@ export default function App() {
 
   const appDrawerProps = useAppDrawerSessionController({
     selectedDirectoryPath: selectedDirectoryPathForConversationContext,
-    selectedLlmSessionId,
+    highlightedSessionId: drawerHighlightedSessionId,
     registeredDirectories,
     expandedDirectoryIds,
     directorySessionsById,

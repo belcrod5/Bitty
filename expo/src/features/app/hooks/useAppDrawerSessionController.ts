@@ -13,7 +13,7 @@ import type { LlmSessionSource } from "./useLlmSessionExplorer";
 
 type UseAppDrawerSessionControllerArgs = {
   selectedDirectoryPath: string;
-  selectedLlmSessionId: string;
+  highlightedSessionId: string;
   registeredDirectories: RegisteredDirectoryEntry[];
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
@@ -58,7 +58,7 @@ type UseAppDrawerSessionControllerArgs = {
 
 export function useAppDrawerSessionController({
   selectedDirectoryPath,
-  selectedLlmSessionId,
+  highlightedSessionId,
   registeredDirectories,
   expandedDirectoryIds,
   directorySessionsById,
@@ -181,7 +181,7 @@ export function useAppDrawerSessionController({
 
   return useMemo(() => ({
     selectedDirectoryPath,
-    selectedLlmSessionId,
+    highlightedSessionId,
     registeredDirectories,
     expandedDirectoryIds,
       directorySessionsById,
@@ -207,7 +207,7 @@ export function useAppDrawerSessionController({
     onMarkDirectorySessionsRead: handleMarkDirectorySessionsRead,
   }), [
     selectedDirectoryPath,
-    selectedLlmSessionId,
+    highlightedSessionId,
     registeredDirectories,
     expandedDirectoryIds,
     directorySessionsById,

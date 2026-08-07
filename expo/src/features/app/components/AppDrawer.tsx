@@ -39,7 +39,8 @@ export type {
 
 export type AppDrawerProps = {
   selectedDirectoryPath: string;
-  selectedLlmSessionId: string;
+  // ハイライト対象のセッション（最後に開いたセッション。メインチャットの選択とは別系統）
+  highlightedSessionId: string;
   registeredDirectories: RegisteredDirectoryEntry[];
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
@@ -102,7 +103,7 @@ function drawerSearchIncludes(query: string, values: unknown[]): boolean {
 
 export const AppDrawer = memo(function AppDrawer({
   selectedDirectoryPath,
-  selectedLlmSessionId,
+  highlightedSessionId,
   registeredDirectories,
   expandedDirectoryIds,
   directorySessionsById,
@@ -238,7 +239,7 @@ export const AppDrawer = memo(function AppDrawer({
     session: LlmSessionHistoryEntry,
     depth: number
   ): ReactNode => {
-    const selected = selectedLlmSessionId === session.sessionId;
+    const selected = highlightedSessionId === session.sessionId;
     const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
     const sessionPrimaryTitle = (
       titleOverride ||
