@@ -129,6 +129,7 @@ import { useFaceTrackingStateController } from "./hooks/useFaceTrackingStateCont
 import { useAppContextActions } from "./hooks/useAppContextActions";
 import { useConversationMessageWindowController } from "./hooks/useConversationMessageWindowController";
 import { useSessionHistoryPagingController } from "./hooks/useSessionHistoryPagingController";
+import { useSessionMessagesCacheController } from "./hooks/useSessionMessagesCacheController";
 import { useApplySessionHistoryPage } from "./hooks/useApplySessionHistoryPage";
 import { useLateSessionLiveStateController } from "./hooks/useLateSessionLiveStateController";
 import {
@@ -939,6 +940,12 @@ export default function App() {
     runnerWebSocketManager,
     onSessionDiagLog: handleSessionDiagLog,
   });
+  // /session-messages のメモリ+ファイルキャッシュ。キャッシュがあれば sinceCursor 差分
+  // 取得に置き換わる。olderページング(cursor指定)は素通しで従来どおりサーバーへ。
+  const { fetchRunnerSessionMessagesCached } = useSessionMessagesCacheController({
+    fetchSessionMessages: fetchRunnerSessionMessages,
+    onSessionDiagLog: handleSessionDiagLog,
+  });
   const applyOlderSessionHistoryPageRef = useRef<(
     sessionId: string,
     page: RunnerSessionMessagesResult
@@ -954,7 +961,7 @@ export default function App() {
     registerPage: registerSessionHistoryPage,
     loadOlder: loadOlderSessionHistory,
   } = useSessionHistoryPagingController({
-    fetchPage: fetchRunnerSessionMessages,
+    fetchPage: fetchRunnerSessionMessagesCached,
     applyPage: applyOlderSessionHistoryPage,
   });
   const {
@@ -3068,7 +3075,7 @@ export default function App() {
       });
       if (!isLatestRestoreRequest()) return false;
       markSessionRestoreThreadReadStarted(perf);
-      const restored = await fetchRunnerSessionMessages(nextSessionId, directory);
+      const restored = await fetchRunnerSessionMessagesCached(nextSessionId, directory);
       logSessionRestoreThreadReadDone({
         logSessionDiag,
         perf,
@@ -7031,7 +7038,7 @@ export default function App() {
       requestedReasoningEffortHint: reasoningEffortHint,
     }, { throttleMs: 0 });
     try {
-      const restored = await fetchRunnerSessionMessages(sessionId, directory);
+      const restored = await fetchRunnerSessionMessagesCached(sessionId, directory);
       const restoredSessionId = parseOptionalSessionId(restored.threadId);
       if (restoredSessionId && restoredSessionId !== sessionId) {
         throw new Error(`restored session mismatch: requested=${sessionId} received=${restoredSessionId}`);
@@ -7272,7 +7279,7 @@ export default function App() {
     buildConversationMessage,
     createEmptyPanelRuntimeSnapshot,
     createPanelRuntimeSnapshot,
-    fetchRunnerSessionMessages,
+    fetchRunnerSessionMessagesCached,
     getConversationRuntimeSnapshot,
     logSessionDiag,
     registerSessionHistoryPage,
