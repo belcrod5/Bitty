@@ -189,6 +189,89 @@ describe("useSkiaMiniChatSessions", () => {
     expect(result.current.directorySync.phase).toBe("idle");
   });
 
+  it("skips hydration when the panel snapshot already holds the fresh session", async () => {
+    const hydratePanelFromSessionHistory = jest.fn().mockResolvedValue("applied");
+    mockUsePanelRuntimeController.mockReturnValue({
+      clearPanelSnapshot: jest.fn(),
+      hydratePanelFromSessionHistory,
+    } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    mockUsePanelRuntimeStore.mockReturnValue({
+      getSnapshot: (panelId: string) => (
+        panelId === "skia_mini_preview_1"
+          ? {
+            selectedSessionId: "session-1",
+            selectedSessionUpdatedAt: session(1).updatedAt,
+            isResponding: false,
+            isHydrating: false,
+            conversationMessages: [{ content: "kept" }],
+          }
+          : { selectedSessionId: "", conversationMessages: [] }
+      ),
+      getKnownPanelIds: () => [],
+    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    mockUseConversation.mockReturnValue({
+      registeredDirectories: [workspaceDirectory],
+      directorySessionsById: {
+        workspace: tree([session(1)]),
+      },
+      sessionTitleOverridesById: {},
+      sessionMarkerColorsById: {},
+      formatSessionUpdatedAt: (value: string) => value,
+      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
+      ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useConversation>);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
+    expect(result.current.hydratingPanelCount).toBe(0);
+    expect(result.current.sessions[0].lastMessageContent).toBe("kept");
+  });
+
+  it("skips hydration while the assigned session is live-responding", async () => {
+    const hydratePanelFromSessionHistory = jest.fn().mockResolvedValue("applied");
+    mockUsePanelRuntimeController.mockReturnValue({
+      clearPanelSnapshot: jest.fn(),
+      hydratePanelFromSessionHistory,
+    } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    mockUsePanelRuntimeStore.mockReturnValue({
+      getSnapshot: (panelId: string) => (
+        panelId === "skia_mini_preview_1"
+          ? {
+            selectedSessionId: "session-2",
+            selectedSessionUpdatedAt: session(1).updatedAt,
+            isResponding: true,
+            isHydrating: false,
+            conversationMessages: [{ content: "live" }],
+          }
+          : { selectedSessionId: "", conversationMessages: [] }
+      ),
+      getKnownPanelIds: () => [],
+    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    mockUseConversation.mockReturnValue({
+      registeredDirectories: [workspaceDirectory],
+      directorySessionsById: {
+        workspace: tree([session(2)]),
+      },
+      sessionTitleOverridesById: {},
+      sessionMarkerColorsById: {},
+      formatSessionUpdatedAt: (value: string) => value,
+      directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
+      ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useConversation>);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
+    expect(result.current.hydratingPanelCount).toBe(0);
+  });
+
   it("ignores a failed hydration from an obsolete candidate generation", async () => {
     const oldHydration = deferred<"failed">();
     const clearPanelSnapshot = jest.fn();
