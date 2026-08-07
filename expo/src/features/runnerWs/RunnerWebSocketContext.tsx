@@ -14,6 +14,7 @@ type RunnerWebSocketProviderProps = {
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
   onConnectionProblem?: () => void;
+  onDiagEvent?: (event: string, payload: Record<string, unknown>) => void;
   manager?: RunnerWebSocketManager;
   children: ReactNode;
 };
@@ -31,6 +32,7 @@ export function RunnerWebSocketProvider({
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
   onConnectionProblem,
+  onDiagEvent,
   manager,
   children,
 }: RunnerWebSocketProviderProps) {
@@ -45,6 +47,7 @@ export function RunnerWebSocketProvider({
       cloudflareAccessClientSecret,
       appState: "unknown",
       onConnectionProblem,
+      onDiagEvent,
     });
   }
   const stableManager = managerRef.current;
@@ -58,6 +61,7 @@ export function RunnerWebSocketProvider({
       cloudflareAccessClientId,
       cloudflareAccessClientSecret,
       onConnectionProblem,
+      onDiagEvent,
     });
   }, [
     bootstrapReady,
@@ -65,6 +69,7 @@ export function RunnerWebSocketProvider({
     cloudflareAccessClientSecret,
     cloudflareRunnerUrl,
     onConnectionProblem,
+    onDiagEvent,
     stableManager,
     token,
     url,

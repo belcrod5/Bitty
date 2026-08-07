@@ -35,6 +35,9 @@ type RunnerWebSocketConnectionOptions = {
   cloudflareAccessClientId?: string;
   cloudflareAccessClientSecret?: string;
   onConnectionProblem?: () => void;
+  // 切断1回につき1行の診断ログ(close理由・generation等)をclient logへ流すためのフック。
+  // 再接続フラップ(heartbeat_timeout / 経路切替)の切り分けに使う。
+  onDiagEvent?: (event: string, payload: Record<string, unknown>) => void;
 };
 
 type RunnerWebSocketManagerOptions = RunnerWebSocketConnectionOptions & {
@@ -196,6 +199,7 @@ export class RunnerWebSocketManager {
   private serverStatus: RunnerWsServerStatus | undefined;
   private cachedSnapshot: RunnerWsConnectionSnapshot;
   private onConnectionProblem: (() => void) | undefined;
+  private onDiagEvent: ((event: string, payload: Record<string, unknown>) => void) | undefined;
 
   constructor(options: RunnerWebSocketManagerOptions) {
     this.bootstrapReady = options.bootstrapReady ?? true;
@@ -207,6 +211,7 @@ export class RunnerWebSocketManager {
     this.appState = options.appState || "unknown";
     this.clientInstanceId = normalizeText(options.clientInstanceId) || createClientInstanceId();
     this.onConnectionProblem = options.onConnectionProblem;
+    this.onDiagEvent = options.onDiagEvent;
     if (this.appState === "background") {
       this.connectionState = "background";
     }
@@ -228,6 +233,9 @@ export class RunnerWebSocketManager {
       : this.cloudflareAccessClientSecret;
     if ("onConnectionProblem" in options) {
       this.onConnectionProblem = options.onConnectionProblem;
+    }
+    if ("onDiagEvent" in options) {
+      this.onDiagEvent = options.onDiagEvent;
     }
     if (
       nextBootstrapReady === this.bootstrapReady &&
@@ -618,6 +626,22 @@ export class RunnerWebSocketManager {
     this.clearHeartbeatTimer();
     this.closeCount += 1;
     this.lastCloseAtMs = Date.now();
+    // 切断1回につき1行の理由ログ。ready側は再同期ログ(reason=runner_ws_ready+generation)と
+    // 突き合わせて、フラップの原因(heartbeat_timeout / 経路切替等)を切り分ける。
+    try {
+      this.onDiagEvent?.("runner_ws_closed", {
+        reason: normalizeText(reason) || undefined,
+        lastError: this.lastError,
+        generation: this.generation,
+        closeCount: this.closeCount,
+        reconnectCount: this.reconnectCount,
+        connectionState: this.connectionState,
+        appState: this.appState,
+        sinceOpenMs: this.openedAtMs ? Math.max(0, this.lastCloseAtMs - this.openedAtMs) : undefined,
+      });
+    } catch {
+      // Diagnostics must never interfere with close handling.
+    }
     this.rejectConnectWaiter(makeError("runner_ws_closed_before_ready", reason || undefined));
     this.rejectAllPending(makeError("runner_ws_disconnected", reason || undefined));
     if (this.connectionState === "background" || this.connectionState === "stopped") {

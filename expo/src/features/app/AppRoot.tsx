@@ -894,6 +894,11 @@ export default function App() {
   const handleSessionDiagLog = useCallback((event: string, payload?: Record<string, unknown>) => {
     logSessionDiag(event, payload, { throttleMs: 0 });
   }, [logSessionDiag]);
+  // runner WSの切断理由ログ(runner_ws_closed)。フラップは分単位なので通常は全件残るが、
+  // 接続不能時の再試行ストーム(1秒間隔close)ではイベント名単位で1行/秒に抑える。
+  const handleRunnerWsDiagEvent = useCallback((event: string, payload: Record<string, unknown>) => {
+    logSessionDiag(event, payload, { throttleMs: 1000, throttleKey: event });
+  }, [logSessionDiag]);
   const {
     voicesLoading,
     voiceFilter,
@@ -4852,6 +4857,11 @@ export default function App() {
 
   // バックグラウンド復帰・WS再接続時の一元再同期(ready遷移駆動)。
   // 旧AppState "active"駆動のresumeLatestSessionOnActiveを置き換える。
+  // このクライアントのreply request(turn.ts)がin-flightなセッションはturn.ts自身の
+  // seq resumeがライブ復旧を担うため、ready駆動のパネル再hydrateから外す。
+  const hasActiveClientTurnForSession = useCallback((sessionId: string) => (
+    isConversationRuntimeRequestResponding(getConversationRuntimeSnapshot(sessionId)?.request)
+  ), [getConversationRuntimeSnapshot]);
   const {
     requestSessionResync,
     wasRespondingAtBackground,
@@ -4874,6 +4884,7 @@ export default function App() {
     llmSessionRestoreLoadingRef,
     startupSessionRestoreAttemptedRef,
     normalizedLlmDirectoryForRequest,
+    hasActiveClientTurnForSession,
     selectSpecificLlmSession,
     hydratePanelFromSessionHistoryRef,
     fetchLatestSessionIdForDirectory,
@@ -7019,6 +7030,7 @@ export default function App() {
       modelRefHint,
       reasoningEffortHint,
       contextUsedPctHint,
+      runtimeConversationMessageCount: runtimeAtHydrationStart?.conversationMessages.length ?? 0,
     }));
     logSessionDiag("mini_board_hydrate_request_received", {
       diagnosticCycleId,
@@ -7648,6 +7660,7 @@ export default function App() {
         cloudflareAccessClientId={cloudflareAccessClientId}
         cloudflareAccessClientSecret={cloudflareAccessClientSecret}
         onConnectionProblem={runnerRouteSelection.requestRouteRecheck}
+        onDiagEvent={handleRunnerWsDiagEvent}
         manager={runnerWebSocketManager}
       >
       <AppProviders

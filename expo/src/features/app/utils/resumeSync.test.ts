@@ -194,6 +194,29 @@ describe("planResumeSyncTargets", () => {
     expect(plan.skipped).toEqual([]);
   });
 
+  it("skips panels whose session has an in-flight client turn (turn.ts owns the seq resume)", () => {
+    const plan = planResumeSyncTargets({
+      selectedSessionId: "session-1",
+      observerThreadId: "",
+      popupPanelId: "drawer_session_popup",
+      panelEntries: [
+        basePanel({ panelId: "drawer_session_popup", sessionId: "session-2", isResponding: true }),
+        basePanel({ panelId: "panel-a", sessionId: "session-3", isResponding: true }),
+      ],
+      respondingSessionIds: [],
+      turnInFlightSessionIds: ["session-2"],
+    });
+    // ストリーミング中のパネル(観測observerなし・turn.ts経由)はready passの再hydrateから
+    // 外す。選択セッションのreplyLoadingスキップと同じ理屈で、seq resumeが復旧を担う。
+    expect(plan.targets).toEqual([
+      { sessionId: "session-1", selected: true, panels: [] },
+      { sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
+    ]);
+    expect(plan.skipped).toEqual([
+      { sessionId: "session-2", panelId: "drawer_session_popup", reason: "turn_in_flight" },
+    ]);
+  });
+
   it("skips observer-owned panel sessions and panels without a directory", () => {
     const plan = planResumeSyncTargets({
       selectedSessionId: "",

@@ -57,6 +57,7 @@ function baseArgs(overrides: Partial<Parameters<typeof useReadyDrivenResumeSyncC
     llmSessionRestoreLoadingRef: { current: false },
     startupSessionRestoreAttemptedRef: { current: true },
     normalizedLlmDirectoryForRequest: () => "/workspace",
+    hasActiveClientTurnForSession: jest.fn().mockReturnValue(false),
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
     hydratePanelFromSessionHistoryRef: { current: jest.fn().mockResolvedValue("applied" as const) },
     fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue(""),
@@ -195,6 +196,47 @@ describe("useReadyDrivenResumeSyncController", () => {
     // 他セッションのパネル再同期は影響を受けない。
     expect(args.hydratePanelFromSessionHistoryRef.current).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "session-3", panelId: "panel-a" })
+    );
+  });
+
+  it("skips panels whose session has an in-flight client turn and resyncs them after the turn ends", async () => {
+    const args = baseArgs({
+      drawerSessionPopupPanelId: "drawer_session_popup",
+      panelRuntimeEntriesByIdRef: {
+        current: {
+          drawer_session_popup: panelEntry("session-3", "/repo", true),
+        },
+      },
+      hasActiveClientTurnForSession: jest.fn((sessionId: string) => sessionId === "session-3"),
+    });
+    const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
+
+    const { result } = await renderHook(() => useReadyDrivenResumeSyncController(args));
+    // observer強奪補償と同様にrespondingマーカーが積まれている状況(G2)。
+    await act(async () => {
+      result.current.markSessionRespondingForResync("session-3");
+    });
+    await act(async () => {
+      manager.setState("ready", 1);
+    });
+    await advance(READY_DEBOUNCE_MS);
+
+    // ストリーミング中のパネルはturn.ts自身のws_reconnect_resume(seq resume)が復旧する。
+    // ready passで全文再取得するとストリーム表示を上書きしてしまう。
+    expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+    // スキップではrespondingマーカー(G2)を消費しない(turn完了後の回収経路を保つ)。
+    expect(result.current.wasRespondingAtBackground("session-3")).toBe(true);
+
+    // turn終了後の次のready遷移では従来どおり再hydrateされる。
+    (args.hasActiveClientTurnForSession as jest.Mock).mockReturnValue(false);
+    await advance(5000);
+    await act(async () => {
+      manager.setState("reconnecting", 1);
+      manager.setState("ready", 2);
+    });
+    await advance(READY_DEBOUNCE_MS);
+    expect(args.hydratePanelFromSessionHistoryRef.current).toHaveBeenCalledWith(
+      expect.objectContaining({ panelId: "drawer_session_popup", sessionId: "session-3" })
     );
   });
 
