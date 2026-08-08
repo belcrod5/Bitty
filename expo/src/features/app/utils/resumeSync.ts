@@ -117,6 +117,7 @@ export type ResumeSyncSkip = {
   panelId?: string;
   reason:
     | "live_observer"
+    | "turn_in_flight"
     | "missing_directory";
 };
 
@@ -131,6 +132,11 @@ export type ResumeSyncPlan = {
 //   ここで全文再取得するとライブ配信路を壊す)。
 // - パネルは「ポップアップ表示中」「応答中」「バックグラウンド移行時点で応答中だった」
 //   もののみ対象(全パネルfan-outの再発防止)。
+// - このクライアントのreply request(turn.ts)がin-flightなセッションのパネルは対象外
+//   (turnInFlightSessionIds)。選択セッションのreplyLoadingスキップと同じ理屈で、
+//   turn.ts自身のws_reconnect_resume(seq resume)がライブ復旧を担うため、ここで
+//   全文再取得するとストリーミング表示を上書きしてしまう。呼び出し側はこのスキップで
+//   respondingマーカー(G2)を消費しないので、turn完了後の回収経路は保たれる。
 // - 同一セッションを表示する可視パネルは全て同じターゲットにまとめ、レート制御1回で
 //   全パネルへ反映する(#40 relay-loss回復経路と同じ扱い)。
 export function planResumeSyncTargets(input: {
@@ -139,6 +145,7 @@ export function planResumeSyncTargets(input: {
   popupPanelId: string;
   panelEntries: ResumeSyncPanelEntry[];
   respondingSessionIds: string[];
+  turnInFlightSessionIds?: string[];
 }): ResumeSyncPlan {
   const skipped: ResumeSyncSkip[] = [];
   const targetsBySessionId = new Map<string, ResumeSyncSessionTarget>();
@@ -147,6 +154,11 @@ export function planResumeSyncTargets(input: {
   const popupPanelId = String(input.popupPanelId || "").trim();
   const respondingSessionIds = new Set(
     (Array.isArray(input.respondingSessionIds) ? input.respondingSessionIds : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  );
+  const turnInFlightSessionIds = new Set(
+    (Array.isArray(input.turnInFlightSessionIds) ? input.turnInFlightSessionIds : [])
       .map((id) => String(id || "").trim())
       .filter(Boolean)
   );
@@ -179,6 +191,10 @@ export function planResumeSyncTargets(input: {
     if (!wanted) continue;
     if (observerThreadId && sessionId === observerThreadId) {
       skipped.push({ sessionId, panelId, reason: "live_observer" });
+      continue;
+    }
+    if (turnInFlightSessionIds.has(sessionId)) {
+      skipped.push({ sessionId, panelId, reason: "turn_in_flight" });
       continue;
     }
     const directory = String(entryRaw.directory || "").trim();

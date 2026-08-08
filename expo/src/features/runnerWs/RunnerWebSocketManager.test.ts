@@ -383,6 +383,33 @@ test("heartbeat forces a reconnect after two consecutive missed pongs", async ()
   await pendingRejection;
 });
 
+test("emits one diagnostics line per close with the close reason and generation", async () => {
+  jest.useFakeTimers();
+  const socket = nextSocket();
+  const onDiagEvent = jest.fn();
+  const manager = new RunnerWebSocketManager({
+    url: "ws://127.0.0.1:8788/runner-ws",
+    token: "runner-token",
+    appState: "active",
+    clientInstanceId: "client-1",
+    onDiagEvent,
+  });
+  await connectReady(manager, socket);
+  expect(onDiagEvent).not.toHaveBeenCalled();
+
+  await jest.advanceTimersByTimeAsync(15_000); // ping #1
+  await jest.advanceTimersByTimeAsync(15_000); // miss #1
+  await jest.advanceTimersByTimeAsync(15_000); // miss #2 -> forced reconnect
+
+  // 切断1回=1行。フラップ切り分け用にclose理由とgenerationを含む。
+  expect(onDiagEvent).toHaveBeenCalledTimes(1);
+  expect(onDiagEvent).toHaveBeenCalledWith("runner_ws_closed", expect.objectContaining({
+    reason: "heartbeat_timeout",
+    lastError: "runner_ws_heartbeat_timeout",
+    generation: 1,
+  }));
+});
+
 test("heartbeat does not count a miss when other traffic arrives between pings", async () => {
   jest.useFakeTimers();
   const socket = nextSocket();

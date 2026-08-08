@@ -57,6 +57,9 @@ type UseReadyDrivenResumeSyncControllerArgs = {
   llmSessionRestoreLoadingRef: MutableRefObject<boolean>;
   startupSessionRestoreAttemptedRef: MutableRefObject<boolean>;
   normalizedLlmDirectoryForRequest: () => string;
+  // このクライアントのreply request(turn.tsのHTTP/relayターン)がin-flight
+  // (lifecycle=active/suspended)なセッションか。ready駆動再同期のパネルスキップ判定に使う。
+  hasActiveClientTurnForSession: (sessionId: string) => boolean;
   selectSpecificLlmSession: (
     nextSessionIdRaw: unknown,
     opts?: SelectSpecificLlmSessionOptions
@@ -107,6 +110,7 @@ export function useReadyDrivenResumeSyncController({
   llmSessionRestoreLoadingRef,
   startupSessionRestoreAttemptedRef,
   normalizedLlmDirectoryForRequest,
+  hasActiveClientTurnForSession,
   selectSpecificLlmSession,
   hydratePanelFromSessionHistoryRef,
   fetchLatestSessionIdForDirectory,
@@ -279,12 +283,22 @@ export function useReadyDrivenResumeSyncController({
     const selectedSessionId = parseOptionalSessionId(
       selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
     );
+    const panelEntries = collectPanelEntries();
+    // このクライアントのreply request(turn.ts)がin-flightなセッションのパネルは対象から
+    // 外す(選択セッションのreplyLoadingスキップと同じ理屈)。ready遷移ではturn.ts自身の
+    // ws_reconnect_resume(seq resume)がライブ復旧するため、ここでhydrateすると
+    // ストリーミング中の表示を全文再取得で上書きしてしまう。スキップしたセッションの
+    // respondingマーカー(G2)は消費しないので、turn完了後の回収経路は保たれる。
+    const turnInFlightSessionIds = Array.from(new Set(
+      panelEntries.map((entry) => entry.sessionId).filter(Boolean)
+    )).filter((sessionId) => hasActiveClientTurnForSession(sessionId));
     const plan = planResumeSyncTargets({
       selectedSessionId,
       observerThreadId: parseOptionalSessionId(codexRelayObserverRef.current?.threadId),
       popupPanelId: inputs.drawerSessionPopupPanelId,
-      panelEntries: collectPanelEntries(),
+      panelEntries,
       respondingSessionIds: Object.keys(respondingAtBackgroundAtMsBySessionIdRef.current),
+      turnInFlightSessionIds,
     });
     logSessionDiag("resume_sync_run", {
       reason,
@@ -387,6 +401,7 @@ export function useReadyDrivenResumeSyncController({
     collectPanelEntries,
     consumeRespondingAtBackground,
     fetchLatestSessionIdForDirectory,
+    hasActiveClientTurnForSession,
     llmConversationSessionIdRef,
     llmSessionRestoreInFlightRef,
     llmSessionRestoreLoadingRef,

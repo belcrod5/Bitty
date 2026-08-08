@@ -21,11 +21,29 @@ export function applyPanelHydrationStart(params: {
   modelRefHint: string;
   reasoningEffortHint: string;
   contextUsedPctHint: number | null;
+  // 対象セッションの共有conversation runtime storeが持つメッセージ数。パネル表示は
+  // runtime storeのprojectionを優先するため、パネルsnapshotが空でもruntime側に会話が
+  // あれば「表示中の会話がある」と判定する(下のisSilentRehydrate参照)。
+  runtimeConversationMessageCount?: number;
 }) {
   const current = params.entries[params.panelId];
   const currentSessionId = String(current?.snapshot.selectedSessionId || current?.sessionId || "").trim();
   const isSameSession = currentSessionId === params.sessionId;
   const base = isSameSession && current ? current.snapshot : params.emptySnapshot;
+  const runtimeConversationMessageCount = Math.max(
+    0,
+    Math.floor(Number(params.runtimeConversationMessageCount) || 0)
+  );
+  // 同一セッションの再hydrate(resume-sync / FGフラップ / G2 / relay-loss / mini_board署名の
+  // 全経路がここを通る)は background revalidate として扱い、isHydratingを立てずに既存の
+  // 会話表示を保持したまま裏で取得する。isHydratingを立てるとポップアップのメッセージ
+  // 一覧全体がスケルトンへ置換され(ChatScreenのshowMessagesSkeletonForView)、WSフラップの
+  // たびに「画面リロード」に見えてしまう。会話が本当に空(初回hydrate相当)のとき、または
+  // 別セッションへの切替時は従来どおりisHydratingを立ててスケルトンを出す。
+  const isSilentRehydrate = isSameSession && (
+    base.conversationMessages.length > 0 ||
+    runtimeConversationMessageCount > 0
+  );
   const snapshot: PanelRuntimeSnapshot = {
     ...base,
     selectedSessionId: params.sessionId,
@@ -38,7 +56,7 @@ export function applyPanelHydrationStart(params: {
     reasoningEffort: params.reasoningEffortHint || base.reasoningEffort,
     contextUsedPct: params.contextUsedPctHint ?? base.contextUsedPct,
     isResponding: isSameSession && base.isResponding,
-    isHydrating: true,
+    isHydrating: !isSilentRehydrate,
     conversationMessages: isSameSession ? base.conversationMessages : [],
   };
   return {

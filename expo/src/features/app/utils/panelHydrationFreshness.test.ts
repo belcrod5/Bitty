@@ -53,7 +53,8 @@ function panelSnapshot(panelId: string, sessionId: string, content: string): Pan
 function startHydration(
   entries: Parameters<typeof applyPanelHydrationStart>[0]["entries"],
   sessionId: string,
-  emptySnapshot: PanelRuntimeSnapshot
+  emptySnapshot: PanelRuntimeSnapshot,
+  runtimeConversationMessageCount = 0
 ) {
   return applyPanelHydrationStart({
     entries,
@@ -67,6 +68,7 @@ function startHydration(
     modelRefHint: "",
     reasoningEffortHint: "",
     contextUsedPctHint: null,
+    runtimeConversationMessageCount,
   });
 }
 
@@ -93,8 +95,10 @@ describe("applyPanelHydrationStart", () => {
       other,
     }, "session-1", staleSnapshot);
 
+    // 同一セッション+会話ありの再hydrateは background revalidate(isHydrating=false)。
+    // スケルトンを出さず既存表示を保持したまま裏で取得する。
     expect(started.target.snapshot).toMatchObject({
-      isHydrating: true,
+      isHydrating: false,
       isResponding: true,
       requestStartedAtMs: 100,
       selectedThreadStatusType: "active",
@@ -145,6 +149,45 @@ describe("applyPanelHydrationStart", () => {
       ttsPlaybackMessageId: "",
     });
     expect(started.other).toBe(other);
+  });
+
+  it("rehydrates the same session silently while a conversation is visible (no skeleton)", () => {
+    const snapshot = panelSnapshot("target", "session-1", "visible message");
+    const started = startHydration({
+      target: { sessionId: "session-1", snapshot },
+    }, "session-1", panelSnapshot("target", "", ""));
+
+    // 同一セッションの再hydrate(resume-sync / FGフラップ / G2 / relay-loss / mini_board署名)は
+    // isHydratingを立てず、既存の会話表示を保持したまま裏で取得する。
+    expect(started.target.snapshot.isHydrating).toBe(false);
+    expect(started.target.snapshot.conversationMessages).toEqual(snapshot.conversationMessages);
+  });
+
+  it("rehydrates silently when the panel snapshot is empty but the shared runtime store has messages", () => {
+    const emptyConversationSnapshot = {
+      ...panelSnapshot("target", "session-1", ""),
+      conversationMessages: [],
+    };
+    const started = startHydration({
+      target: { sessionId: "session-1", snapshot: emptyConversationSnapshot },
+    }, "session-1", panelSnapshot("target", "", ""), 4);
+
+    // パネル表示はruntime storeのprojectionを優先するため、runtime側に会話があれば
+    // 表示中の会話がある=silent扱い。
+    expect(started.target.snapshot.isHydrating).toBe(false);
+  });
+
+  it("keeps the skeleton for a same-session rehydrate when no conversation is visible anywhere", () => {
+    const emptyConversationSnapshot = {
+      ...panelSnapshot("target", "session-1", ""),
+      conversationMessages: [],
+    };
+    const started = startHydration({
+      target: { sessionId: "session-1", snapshot: emptyConversationSnapshot },
+    }, "session-1", panelSnapshot("target", "", ""), 0);
+
+    // 空会話+初回hydrate相当では従来どおりスケルトンを出す(「何も出ない」劣化の防止)。
+    expect(started.target.snapshot.isHydrating).toBe(true);
   });
 });
 
