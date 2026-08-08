@@ -8,6 +8,7 @@ export type RunnerRelayControlMessage = {
   operationId?: string;
   sessionId?: string;
   threadId?: string;
+  relayId?: string;
   seq?: number;
   replayed?: number;
   latestSeq?: number;
@@ -108,6 +109,9 @@ export function parseRunnerWsRelayControlMessage(rawData: string): RunnerRelayCo
     operationId: String(message.operationId || "").trim() || undefined,
     sessionId: String(message.sessionId || "").trim() || undefined,
     threadId: String(message.threadId || "").trim() || undefined,
+    // seqはrelayインスタンス(relayId)スコープの独立カウンタ。watermark照合のため
+    // サーバーがpayloadに載せるrelayIdを捨てずに引き回す。
+    relayId: String(payload.relayId || "").trim() || undefined,
   };
   if (message.op === "seq") {
     return {

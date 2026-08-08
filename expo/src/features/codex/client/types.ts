@@ -98,6 +98,15 @@ export type CodexAppServerRelayObserverOptions = {
   wsToken?: string;
   threadId: string;
   resumeFromSeq?: number;
+  // resumeFromSeqの由来relay(watermark)のrelayId。seqはrelayインスタンススコープの
+  // 独立カウンタなので、attachedのrelayIdと不一致なら「relayが作り直された」と判定する。
+  resumeFromRelayId?: string;
+  // lastRelaySeq前進のミラー(watermark更新用)。relayIdはattached受信前は
+  // resumeFromRelayId(未指定なら空文字)のまま。
+  onRelaySeqAdvance?: (params: { threadId: string; relayId: string; seq: number }) => void;
+  // relay作り直し検出(attachedのrelayId不一致 or latestSeq後退)によるwatermarkの
+  // latestSeqへのリセット通知。受け手はHTTP差分同期などで欠落分を穴埋めする。
+  onRelayReset?: (params: { threadId: string; relayId: string; seq: number }) => void;
   runnerWebSocketManager?: import("../../runnerWs/RunnerWebSocketManager").RunnerWebSocketManager;
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
   onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;

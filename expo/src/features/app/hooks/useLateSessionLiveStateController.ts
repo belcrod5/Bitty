@@ -50,7 +50,7 @@ export function useLateSessionLiveStateController(options: {
   startRelay: (sessionId: string, options: {
     directory: string;
     startedAtMs?: number;
-    resumeFromSeq: number;
+    ignoreWatermark?: boolean;
     reason: string;
   }) => boolean;
   // 遅延liveメタが「実行中でない」(idle解決/取得失敗)で返ったときに呼ばれる。
@@ -180,8 +180,9 @@ export function useLateSessionLiveStateController(options: {
         options.startRelay(params.snapshot.selectedSessionId, {
           directory: params.directory,
           startedAtMs: Number.isFinite(runningStartedAtMs) ? runningStartedAtMs : Date.now(),
-          resumeFromSeq: 0,
           reason: "session_restored_running_turn",
+          // 承認待ち復元はpending approvalのreplayが必要(seq≦watermarkは再送されない)。
+          ignoreWatermark: selectedThreadStatusType === "waiting_approval",
         });
       }
       options.log("panel_runtime_late_live_state_applied", {
