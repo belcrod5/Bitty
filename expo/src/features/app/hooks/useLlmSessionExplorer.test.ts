@@ -187,6 +187,54 @@ describe("fetchRunnerSessionMessages", () => {
     expect(url.searchParams.get("cursor")).toBe("opaque-1");
     expect(mockReadCodexAppServerThread).not.toHaveBeenCalled();
   });
+
+  it("requests a forward delta with sinceCursor and surfaces latestCursor/moreAfter/replacesItemId", async () => {
+    mockReadCodexAppServerThread.mockResolvedValue(null as never);
+    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        found: true,
+        source: "cli",
+        messages: [
+          { role: "assistant", content: "resolved pair", at: "now", itemId: "item-2", replacesItemId: "item-1" },
+        ],
+        olderCursor: null,
+        latestCursor: "latest-2",
+        moreAfter: true,
+      }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook();
+
+    const restored = await result.current.fetchRunnerSessionMessages("thread-1", "/workspace", {
+      sinceCursor: "latest-1",
+      skipLiveState: true,
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.searchParams.get("sinceCursor")).toBe("latest-1");
+    expect(url.searchParams.get("cursor")).toBeNull();
+    expect(restored.messages[0]?.replacesItemId).toBe("item-1");
+    expect(restored.latestCursor).toBe("latest-2");
+    expect(restored.moreAfter).toBe(true);
+    // skipLiveState指定時はApp ServerへのライブRPCを発行しない(moreAfter連鎖用)。
+    expect(mockReadCodexAppServerThread).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a failed sinceCursor request without directory and keeps the error code", async () => {
+    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: false,
+      status: 409,
+      text: async () => JSON.stringify({ error: "stale_history_cursor", message: "stale" }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook();
+
+    await expect(result.current.fetchRunnerSessionMessages("thread-1", "/workspace", {
+      sinceCursor: "latest-1",
+      skipLiveState: true,
+    })).rejects.toMatchObject({ code: "stale_history_cursor" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("fetchSessionHistory runner snapshot failures", () => {

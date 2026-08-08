@@ -64,6 +64,8 @@ export type RunnerSessionMessage = {
   kind?: "internal_context" | "unclassified_context";
   // rollout内の永続item/call id。履歴page間の安定キーに使う。
   itemId?: string;
+  // sinceCursor差分応答のみ: ペア確定で行IDが変わったとき、置換すべき旧行のitemId。
+  replacesItemId?: string;
   inheritedFromParent?: boolean;
   commandExecution?: CodexCommandExecutionInfo;
 };
@@ -90,6 +92,11 @@ export type RunnerSessionMessagesResult = RunnerSessionLiveState & {
   messages: RunnerSessionMessage[];
   contextUsedPct: number | null;
   olderCursor: string | null;
+  // 差分取得(sinceCursor)対応サーバーは全応答に付与する。null/未定義は差分不可
+  // (旧サーバー)を意味し、キャッシュ側は全量挙動のままにする。
+  latestCursor?: string | null;
+  // sinceCursor応答のみ: limit超過の続きがあるか。
+  moreAfter?: boolean;
   liveStatePromise?: Promise<RunnerSessionLiveState | null>;
 };
 
@@ -152,7 +159,7 @@ function toRunnerSessionLiveState(
   };
 }
 
-function inferLatestToolLabelFromSessionMessages(dataRaw: unknown): string {
+export function inferLatestToolLabelFromSessionMessages(dataRaw: unknown): string {
   const data = dataRaw && typeof dataRaw === "object" ? dataRaw as JsonRecord : {};
   const session = data.session && typeof data.session === "object" ? data.session as JsonRecord : {};
   const explicit = String(data.latestToolLabel || data.lastToolLabel || "").trim();
@@ -453,7 +460,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const fetchRunnerSessionMessages = useCallback(async (
     sessionIdRaw: unknown,
     directoryRaw?: unknown,
-    options?: { cursor?: string },
+    options?: { cursor?: string; sinceCursor?: string; skipLiveState?: boolean },
   ): Promise<RunnerSessionMessagesResult> => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) {
@@ -461,6 +468,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     }
     const preferredDirectory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
     const cursor = String(options?.cursor || "").trim();
+    const sinceCursor = String(options?.sinceCursor || "").trim();
+    if (cursor && sinceCursor) {
+      throw new Error("cursor と sinceCursor は同時に指定できません");
+    }
     const { baseUrl, token } = await getRunnerHttpAuth();
     if (!baseUrl || !token) throw new Error("Aux Server URL または Runner Token が未設定です");
     const startedAt = Date.now();
@@ -468,9 +479,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sessionId,
       directory: preferredDirectory,
       hasCursor: Boolean(cursor),
+      hasSinceCursor: Boolean(sinceCursor),
     });
     const targetCodexWsUrl = codexWsUrl.trim();
-    const livePromise = !cursor && targetCodexWsUrl
+    const livePromise = !cursor && options?.skipLiveState !== true && targetCodexWsUrl
       ? readCodexAppServerThread({
         wsUrl: targetCodexWsUrl,
         wsToken: codexWsToken.trim(),
@@ -491,6 +503,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       url.searchParams.set("sessionId", sessionId);
       url.searchParams.set("source", "all");
       if (cursor) url.searchParams.set("cursor", cursor);
+      if (sinceCursor) url.searchParams.set("sinceCursor", sinceCursor);
       if (includeDirectory && preferredDirectory) url.searchParams.set("directory", preferredDirectory);
       const result = await fetchTextWithTimeout(url.toString(), {
         headers: { authorization: `Bearer ${token}` },
@@ -515,7 +528,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     try {
       data = await fetchPage(true);
     } catch (error) {
-      if (cursor || !preferredDirectory) throw error;
+      // sinceCursor(差分)経路のdirectoryフォールバックはしない: 失敗はキャッシュ層が
+      // 全文取得(こちらは従来どおりフォールバックあり)へ切り替える。
+      if (cursor || sinceCursor || !preferredDirectory) throw error;
       data = await fetchPage(false);
     }
     const messages: RunnerSessionMessage[] = (Array.isArray(data?.messages) ? data.messages : [])
@@ -545,6 +560,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
             ? { kind: item.kind }
             : {}),
           itemId: String(item.itemId || "").trim() || undefined,
+          replacesItemId: String(item.replacesItemId || "").trim() || undefined,
           inheritedFromParent: item.inheritedFromParent === true || undefined,
           commandExecution,
         }];
@@ -561,6 +577,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       elapsedMs: Math.max(0, Date.now() - startedAt),
       messageCount: messages.length,
       olderPageAvailable: Boolean(data?.olderCursor),
+      hasSinceCursor: Boolean(sinceCursor),
+      moreAfter: data?.moreAfter === true,
       diagnostics: data?.diagnostics,
       ...responseByteMeta,
     });
@@ -578,6 +596,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       hasRunningTurn: liveState?.hasRunningTurn === true,
       runningTurn: liveState?.runningTurn || null,
       olderCursor: String(data?.olderCursor || "").trim() || null,
+      latestCursor: String(data?.latestCursor || "").trim() || null,
+      ...(sinceCursor ? { moreAfter: data?.moreAfter === true } : {}),
       ...(!liveState && livePromise
         ? { liveStatePromise: livePromise.then((value) => value ? toRunnerSessionLiveState(value) : null) }
         : {}),
