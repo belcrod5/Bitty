@@ -45,6 +45,10 @@ type UseDirectorySessionTreeControllerArgs = {
   directorySessionPrefetchConcurrency: number;
   registeredDirectories: RegisteredDirectoryEntry[];
   selectedDirectoryPath: string;
+  // 永続設定(runner接続先・登録ディレクトリ)ロード完了前は同期サイクルを開始せず、
+  // intentを保留してロード完了時にdrainする(起動直後のensureが空ターゲット・
+  // 未認証状態で走って失敗確定するのを防ぐ)。既定trueで既存テスト・呼び出しに影響しない。
+  bootstrapReady?: boolean;
 };
 
 type RegisteredSyncIntent = {
@@ -130,6 +134,7 @@ export function useDirectorySessionTreeController({
   directorySessionPrefetchConcurrency,
   registeredDirectories,
   selectedDirectoryPath,
+  bootstrapReady = true,
 }: UseDirectorySessionTreeControllerArgs) {
   const initialTargets = buildTargetSnapshot(registeredDirectories);
   const [directorySessionSync, setDirectorySessionSync] = useState<DirectorySessionSyncState>(
@@ -143,6 +148,8 @@ export function useDirectorySessionTreeController({
   const registeredDirectoriesRef = useRef(initialTargets.targets);
   const selectedDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
   selectedDirectoryPathRef.current = normalizeDirectoryPath(selectedDirectoryPath);
+  const bootstrapReadyRef = useRef(bootstrapReady);
+  bootstrapReadyRef.current = bootstrapReady;
   const registeredTargetKeyRef = useRef(initialTargets.key);
   const registeredDirectoryPathByIdRef = useRef(
     new Map(initialTargets.targets.map((directory) => [directory.id, directory.path]))
@@ -652,14 +659,35 @@ export function useDirectorySessionTreeController({
     });
   }, [directorySessionPrefetchConcurrency, loadFirstPage]);
 
+  const buildOrderedSyncTargets = useCallback(() => {
+    const targetSnapshot = buildTargetSnapshot(registeredDirectoriesRef.current);
+    const selectedPath = selectedDirectoryPathRef.current;
+    const targets = [...targetSnapshot.targets].sort((a, b) => {
+      const aSelected = a.path === selectedPath ? 1 : 0;
+      const bSelected = b.path === selectedPath ? 1 : 0;
+      return bSelected - aSelected;
+    });
+    return { key: targetSnapshot.key, targets };
+  }, []);
+
   const startSyncDrain = useCallback(() => {
+    // ブートストラップ前はintentを保留したまま開始しない(bootstrapReadyのeffectがdrainする)。
+    if (!bootstrapReadyRef.current) return Promise.resolve();
     if (syncDrainPromiseRef.current) return syncDrainPromiseRef.current;
     let drain: Promise<void>;
     drain = (async () => {
       while (queuedSyncIntentRef.current) {
         const intent = queuedSyncIntentRef.current;
         queuedSyncIntentRef.current = null;
-        await runSyncCycle(intent);
+        // ターゲットは実行時点の登録ディレクトリで再構築する(保留中にロードされた
+        // ディレクトリ・enqueue後の変更を取り込む)。
+        const ordered = buildOrderedSyncTargets();
+        await runSyncCycle({
+          ...intent,
+          targetKey: ordered.key,
+          targetRevision: targetRevisionRef.current,
+          targets: ordered.targets,
+        });
       }
     })().finally(() => {
       activeSyncIntentRef.current = null;
@@ -668,13 +696,13 @@ export function useDirectorySessionTreeController({
     });
     syncDrainPromiseRef.current = drain;
     return drain;
-  }, [runSyncCycle]);
+  }, [buildOrderedSyncTargets, runSyncCycle]);
 
   const enqueueRegisteredSync = useCallback((
     mode: "ensure" | "refresh",
     reason: DirectorySessionSyncReason
   ) => {
-    const targetSnapshot = buildTargetSnapshot(registeredDirectoriesRef.current);
+    const targetSnapshot = buildOrderedSyncTargets();
     const active = activeSyncIntentRef.current;
     if (
       active &&
@@ -686,22 +714,23 @@ export function useDirectorySessionTreeController({
       return syncDrainPromiseRef.current || Promise.resolve();
     }
     const queued = queuedSyncIntentRef.current;
-    const selectedPath = selectedDirectoryPathRef.current;
-    const targets = [...targetSnapshot.targets].sort((a, b) => {
-      const aSelected = a.path === selectedPath ? 1 : 0;
-      const bSelected = b.path === selectedPath ? 1 : 0;
-      return bSelected - aSelected;
-    });
     queuedSyncIntentRef.current = {
       mode: queued?.mode === "refresh" || mode === "refresh" ? "refresh" : "ensure",
       reasons: new Set([...(queued?.reasons || []), reason]),
       targetKey: targetSnapshot.key,
       targetRevision: targetRevisionRef.current,
-      targets,
+      targets: targetSnapshot.targets,
     };
     return startSyncDrain();
-  }, [startSyncDrain]);
+  }, [buildOrderedSyncTargets, startSyncDrain]);
   enqueueRegisteredSyncRef.current = enqueueRegisteredSync;
+
+  // ブートストラップ完了時、保留中のintentをdrainする(起動前に積まれたscreen_mount等の
+  // ensureがロード後の登録ディレクトリで追随する)。
+  useEffect(() => {
+    if (!bootstrapReady) return;
+    if (queuedSyncIntentRef.current) void startSyncDrain();
+  }, [bootstrapReady, startSyncDrain]);
 
   const ensureRegisteredDirectorySessions = useCallback((
     reason: DirectorySessionSyncReason

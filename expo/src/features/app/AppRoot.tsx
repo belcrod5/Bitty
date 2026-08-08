@@ -83,6 +83,7 @@ import { useLlmTraceStateController } from "./hooks/useLlmTraceStateController";
 import { useAppDrawerSessionController } from "./hooks/useAppDrawerSessionController";
 import { useDrawerSessionHighlight } from "./hooks/useDrawerSessionHighlight";
 import { useDirectorySessionTreeController } from "./hooks/useDirectorySessionTreeController";
+import { useDirectorySessionSyncRecoveryController } from "./hooks/useDirectorySessionSyncRecoveryController";
 import { useDirectoryIdentityReconciliation } from "./hooks/useDirectoryIdentityReconciliation";
 import { useSessionMarkReadController } from "./hooks/useSessionMarkReadController";
 import { useSessionRelayLossRecoveryController } from "./hooks/useSessionRelayLossRecoveryController";
@@ -2903,6 +2904,13 @@ export default function App() {
     directorySessionPrefetchConcurrency: DIRECTORY_SESSION_PREFETCH_CONCURRENCY,
     registeredDirectories,
     selectedDirectoryPath: normalizedLlmDirectoryForRequest(),
+    bootstrapReady: settingsLoaded,
+  });
+  useDirectorySessionSyncRecoveryController({
+    runnerWebSocketManager,
+    directorySessionSync,
+    ensureRegisteredDirectorySessions,
+    logSessionDiag,
   });
 
   function removeRegisteredDirectory(directoryId: string) {
