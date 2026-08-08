@@ -46,6 +46,7 @@ const workspaceDirectory = {
 let persistedFile: Record<string, unknown> = {};
 
 beforeEach(() => {
+  jest.clearAllMocks();
   persistedFile = {};
   mockReadPersistedSettingsField.mockImplementation(async (field: string) => persistedFile[field]);
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
@@ -226,6 +227,69 @@ describe("useSkiaMiniChatSessions", () => {
     // 既存カードの位置は動かさず、新カードは空きセルへ。
     expect(result.current.sessions[0]).toMatchObject({ col: 0, row: 0 });
     expect(result.current.sessions[1]).toMatchObject({ col: 1, row: 0 });
+  });
+
+  it("stays read-only and skips ingest when the persisted board state fails to load", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockReadPersistedSettingsField.mockRejectedValue(new Error("read failed"));
+    mockConversation([session(2), session(1)]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    await flush();
+
+    // 読込失敗中に初期化・保存すると保存済みの位置と除外リストが全損するため、
+    // ボードは空のまま・書込なしで留まる。
+    expect(result.current.sessions).toEqual([]);
+    expect(mockMutatePersistedSettings).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("does not ingest or advance the watermark while directory sync is partially failed", async () => {
+    const watermarkMs = new Date(session(3).updatedAt).getTime();
+    persistedFile.skiaBoardState = {
+      cards: [{ sessionId: "session-3", col: 0, row: 0 }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: watermarkMs,
+    };
+    // 一部ディレクトリ失敗中は候補が欠けている可能性があるため取り込まない
+    // (取り込むとウォーターマークが復旧前のセッションを追い越して取りこぼす)。
+    mockConversation([session(4), session(3)], {
+      directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: "partial_error" },
+    });
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    await flush();
+
+    expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["session-3"]);
+    const savedState = persistedFile.skiaBoardState as {
+      cards: Array<{ sessionId: string }>;
+      ingestedUpdatedAtMs: number;
+    };
+    expect(savedState.cards.map((card) => card.sessionId)).toEqual(["session-3"]);
+    expect(savedState.ingestedUpdatedAtMs).toBe(watermarkMs);
+  });
+
+  it("retries persisting after a failed write on the next state change", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockMutatePersistedSettings.mockRejectedValueOnce(new Error("write failed"));
+    mockConversation([session(1)]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    await flush();
+    // 初回書込は失敗し、ファイルには何も残らない。
+    expect(persistedFile.skiaBoardState).toBeUndefined();
+
+    await act(async () => {
+      result.current.moveBoardCard("session-1", 2, 2);
+    });
+    await flush();
+
+    // 次のステート変化で失敗分も含めて保存し直す。
+    const savedState = persistedFile.skiaBoardState as {
+      cards: Array<{ sessionId: string; col: number; row: number }>;
+    };
+    expect(savedState.cards).toEqual([{ sessionId: "session-1", col: 2, row: 2 }]);
+    warnSpy.mockRestore();
   });
 
   it("keeps removed sessions excluded from re-stacking and persists the exclusion", async () => {

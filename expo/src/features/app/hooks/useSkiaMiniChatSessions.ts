@@ -104,12 +104,13 @@ export function useSkiaMiniChatSessions() {
         if (cancelled) return;
         lastPersistedBoardStateRef.current = state;
         setBoardState(state);
+        setBoardStateLoaded(true);
       })
       .catch((error) => {
+        // 読込失敗時はロード完了にしない(ingest・書込を止める)。完了扱いにすると
+        // null初期化→保存の上書きで、保存済みのカード位置と除外リストが全損する。
+        // 次回マウント(再入場・再起動)で読み込みを再試行する。
         console.warn("[skia_board] failed to read persisted board state", error);
-      })
-      .finally(() => {
-        if (!cancelled) setBoardStateLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -123,13 +124,12 @@ export function useSkiaMiniChatSessions() {
     registeredDirectories,
   ]);
 
-  // 積み上げ取り込みは同期が完結した状態(全ディレクトリの候補が揃った状態)でのみ行う。
-  // 読込途中に取り込むと、ウォーターマークが未読込ディレクトリの新規セッションを
-  // 追い越して取りこぼすため。
+  // 積み上げ取り込みは全ディレクトリの候補が揃った状態でのみ行う。読込途中や
+  // 一部失敗(partial_error)中に取り込むと、ウォーターマークが未読込・失敗中
+  // ディレクトリの新規セッションを追い越し、復旧後も永遠に取りこぼすため。
   const directorySyncSettled = (
     directorySessionSync.phase === "idle"
     || directorySessionSync.phase === "complete"
-    || directorySessionSync.phase === "partial_error"
   );
   useEffect(() => {
     if (!boardStateLoaded || !directorySyncSettled) return;
@@ -142,10 +142,14 @@ export function useSkiaMiniChatSessions() {
   useEffect(() => {
     if (!boardStateLoaded || !boardState) return;
     if (boardState === lastPersistedBoardStateRef.current) return;
-    lastPersistedBoardStateRef.current = boardState;
-    void writePersistedSkiaBoardState(boardState).catch((error) => {
-      console.warn("[skia_board] failed to persist board state", error);
-    });
+    // 記録は書込成功後に更新する(失敗時は次のステート変化で差分ごと再保存される)。
+    writePersistedSkiaBoardState(boardState)
+      .then(() => {
+        lastPersistedBoardStateRef.current = boardState;
+      })
+      .catch((error) => {
+        console.warn("[skia_board] failed to persist board state", error);
+      });
   }, [boardState, boardStateLoaded]);
 
   // ボード搭載カードのうち、候補(取得済みセッション)が存在するものだけを表示・

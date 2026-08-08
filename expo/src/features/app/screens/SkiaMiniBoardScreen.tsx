@@ -200,6 +200,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const pinchBoardX = useSharedValue(0);
   const pinchBoardY = useSharedValue(0);
   const activeCardIndex = useSharedValue(-1);
+  const activeCardSessionId = useSharedValue("");
   const selectedCardIndex = useSharedValue(-1);
   const touchSequenceHadMultiplePointers = useSharedValue(false);
 
@@ -256,12 +257,13 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   }, [openSessionHistoryPopup, selectedCardIndex, selectedSessionId, sessions]);
 
   // ドラッグ終了時に画面座標をグリッド単位へ戻してボードステートへ保存する。
-  const commitCardPosition = useCallback((index: number, x: number, y: number) => {
-    const session = sessions[index];
-    if (!session) return;
+  // ドラッグ中に候補が増減してindexがずれても別セッションを上書きしないよう、
+  // 対象はドラッグ開始時に捕捉したsessionIdで確定する。
+  const commitCardPosition = useCallback((sessionId: string, x: number, y: number) => {
+    if (!sessionId) return;
     const grid = gridFromCardPosition(x, y, cardWidth);
-    moveBoardCard(session.sessionId, grid.col, grid.row);
-  }, [cardWidth, moveBoardCard, sessions]);
+    moveBoardCard(sessionId, grid.col, grid.row);
+  }, [cardWidth, moveBoardCard]);
 
   const confirmRemoveCard = useCallback((index: number) => {
     const session = sessions[index];
@@ -287,6 +289,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const boardScale = useDerivedValue(() => [{ scale: scale.value }]);
 
   const gestures = useMemo(() => {
+    // worklet内でindex→sessionIdを引くための軽量スナップショット(文字列のみ)。
+    const sessionIds = sessions.map((session) => session.sessionId);
     const drag = Gesture.Pan()
       .maxPointers(2)
       .onTouchesDown((event) => {
@@ -300,6 +304,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
         activeCardIndex.value = -1;
+        activeCardSessionId.value = "";
 
         for (let index = sessions.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
@@ -312,6 +317,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           ) {
             if (selectedCardIndex.value === index) {
               activeCardIndex.value = index;
+              activeCardSessionId.value = sessionIds[index] || "";
               gestureStartX.value = position.x;
               gestureStartY.value = position.y;
             } else {
@@ -345,11 +351,13 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
       })
       .onFinalize(() => {
         const index = activeCardIndex.value;
+        const sessionId = activeCardSessionId.value;
         activeCardIndex.value = -1;
-        if (index < 0) return;
+        activeCardSessionId.value = "";
+        if (index < 0 || !sessionId) return;
         const position = positions.value[index];
         if (!position) return;
-        runOnJS(commitCardPosition)(index, position.x, position.y);
+        runOnJS(commitCardPosition)(sessionId, position.x, position.y);
       });
 
     const tap = Gesture.Tap()
@@ -375,10 +383,12 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
       });
 
     // カード長押しで削除確認(OKでボードから外し、除外リストへ)。
+    // 選択済みカードの保持はドラッグ意図(activeCardIndex>=0)なので発火させない。
     const longPress = Gesture.LongPress()
       .minDuration(500)
       .onStart((event) => {
         if (touchSequenceHadMultiplePointers.value) return;
+        if (activeCardIndex.value >= 0) return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
         for (let index = sessions.length - 1; index >= 0; index -= 1) {
@@ -419,6 +429,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     return Gesture.Simultaneous(drag, pinch, tap, longPress);
   }, [
     activeCardIndex,
+    activeCardSessionId,
     boardX,
     boardY,
     cardWidth,
@@ -433,7 +444,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     positions,
     scale,
     selectedCardIndex,
-    sessions.length,
+    sessions,
     touchSequenceHadMultiplePointers,
   ]);
 

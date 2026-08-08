@@ -171,6 +171,27 @@ test("long-pressing a card asks for confirmation before removing it", async () =
   alertSpy.mockRestore();
 });
 
+test("suppresses the remove dialog while holding a drag-armed card", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  await render(
+    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+  );
+
+  const registry = gestureRegistry();
+  // 選択済みカードに触れている間(ドラッグ待機)は長押し削除を発火させない。
+  await act(async () => {
+    fireCardTap();
+  });
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 30, y: 30 });
+    registry.LongPress.onStart({ x: 30, y: 30 });
+  });
+
+  expect(alertSpy).not.toHaveBeenCalled();
+  alertSpy.mockRestore();
+});
+
 test("commits the dragged card position back to the board state", async () => {
   await render(
     <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
