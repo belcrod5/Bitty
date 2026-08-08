@@ -13,6 +13,7 @@ import { ChatScreen } from "./ChatScreen";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useChatDiagnostics } from "../contexts/ChatDiagnosticsContext";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
+import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { styles } from "../styles";
@@ -24,6 +25,12 @@ import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import { miniBoardStyles } from "./MiniBoardScreen.styles";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
+import {
+  buildPanelHydrationRequestMark,
+  decidePanelHydration,
+  snapshotHoldsAssignedSession,
+  type PanelHydrationRequestMark,
+} from "../utils/panelAssignmentHydration";
 
 const MINI_BOARD_SOURCE_LABEL = "registered_directories";
 const MINI_BOARD_PREVIEW_PANEL_IDS = [
@@ -77,11 +84,6 @@ function createMiniBoardCycleId() {
   return `mini-board-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffffff).toString(36).padStart(4, "0")}`;
 }
 
-function getMiniBoardTimeValue(value: unknown) {
-  const time = new Date(String(value || "")).getTime();
-  return Number.isFinite(time) ? time : 0;
-}
-
 function parseMiniBoardMarkerColor(raw: unknown): DirectoryMarkerColor {
   const value = String(raw || "").trim().toLowerCase();
   if (value === "gray" || value === "red" || value === "yellow" || value === "green" || value === "black") return value;
@@ -130,15 +132,20 @@ export function MiniBoardScreen() {
     copyPanelSnapshot,
     hydratePanelFromSessionHistory,
   } = usePanelRuntimeController();
+  const { getSnapshot } = usePanelRuntimeStore();
   const logSessionDiagRef = useRef(logSessionDiag);
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
+  const getSnapshotRef = useRef(getSnapshot);
   const openPopupPanelIdRef = useRef<MiniBoardPopupPanelId | null>(null);
   const colorFilterPickerAnimRef = useRef(new Animated.Value(0));
   const colorFilterPickerAnimationIdRef = useRef(0);
   const miniBoardCycleIdRef = useRef(createMiniBoardCycleId());
   const previewCardRefs = useRef<Record<string, View | null>>({});
-  const hydratedSessionSignatureRef = useRef("");
+  // 同一マウント内で発行済みのhydrate要求(進行中含む)のパネル別記録。
+  // アンマウントでリセットされるが、再入場時は共有ストアのsnapshot鮮度
+  // (decidePanelHydration)で差分だけ再取得される。
+  const lastRequestedHydrationByPanelRef = useRef<Record<string, PanelHydrationRequestMark>>({});
   const [panelHydrationById, setPanelHydrationById] = useState<Record<MiniBoardPreviewPanelId, MiniBoardPanelHydrationState>>(() => (
     MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
       acc[panelId] = {
@@ -161,8 +168,18 @@ export function MiniBoardScreen() {
     logSessionDiagRef.current = logSessionDiag;
     clearPanelSnapshotRef.current = clearPanelSnapshot;
     hydratePanelFromSessionHistoryRef.current = hydratePanelFromSessionHistory;
+    getSnapshotRef.current = getSnapshot;
     openPopupPanelIdRef.current = openPopupPanelId;
   });
+
+  // ポップアップパネルのsnapshotだけを後始末する(closePopupと同じ扱い)。
+  // previewパネルのsnapshotは共有ストアに保持し、再入場時の全量再取得を避ける。
+  const clearPopupPanelSnapshots = () => {
+    MINI_BOARD_POPUP_PANEL_IDS.forEach((panelId) => {
+      if (!String(getSnapshotRef.current(panelId).selectedSessionId || "").trim()) return;
+      clearPanelSnapshotRef.current(panelId);
+    });
+  };
 
   const allRegisteredDirectorySessionCandidates = useMemo(() => {
     return collectRegisteredDirectorySessions(registeredDirectories, directorySessionsById);
@@ -204,13 +221,6 @@ export function MiniBoardScreen() {
       },
     ],
   }), []);
-  const registeredDirectorySessionHydrateSignature = useMemo(() => (
-    MINI_BOARD_PANEL_ASSIGNMENT.map((assignment) => {
-      const entry = registeredDirectorySessionCandidates[assignment.sessionIndex];
-      if (!entry) return `${assignment.panelId}:`;
-      return `${assignment.panelId}:${entry.sessionId}:${entry.directory}:${getMiniBoardTimeValue(entry.updatedAt)}`;
-    }).join("|")
-  ), [registeredDirectorySessionCandidates]);
   const candidateDebugSnapshot = useMemo(() => ({
     source: MINI_BOARD_SOURCE_LABEL,
     registeredDirectoryCount: registeredDirectories.length,
@@ -353,8 +363,9 @@ export function MiniBoardScreen() {
         screen: "mini_board",
         source: MINI_BOARD_SOURCE_LABEL,
       }, { throttleMs: 0 });
-      const resetPanel = clearPanelSnapshotRef.current;
-      MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => resetPanel(panelId));
+      // previewパネルの全クリアは廃止(再入場時の全量再取得の原因)。
+      // ポップアップだけ後始末する。
+      clearPopupPanelSnapshots();
     };
   }, []);
 
@@ -389,8 +400,9 @@ export function MiniBoardScreen() {
     let cancelled = false;
     const anyDirectoryLoading = directorySessionSync.phase === "loading";
     if (registeredDirectorySessionCandidates.length <= 0) {
-      hydratedSessionSignatureRef.current = "";
-      MINI_BOARD_PREVIEW_PANEL_IDS.forEach((panelId) => clearPanelSnapshotRef.current(panelId));
+      // 候補ゼロ(フィルター全解除・読込中など)でもpreviewのsnapshotは破棄しない。
+      // 表示はpanelHydrationByIdのstatusで制御され、候補が戻れば
+      // decidePanelHydrationの条件付き再検証で変化したパネルだけ再取得される。
       setPanelHydrationById(
         MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
           acc[panelId] = {
@@ -419,64 +431,115 @@ export function MiniBoardScreen() {
         cancelled = true;
       };
     }
-    if (hydratedSessionSignatureRef.current === registeredDirectorySessionHydrateSignature) {
+    // パネル単位で「割当変化 or updatedAt前進」だけをhydrate対象にする。
+    // ライブ応答中や鮮度十分なsnapshotを持つパネルは再取得しない。
+    const panelPlans = MINI_BOARD_PANEL_ASSIGNMENT.map((assignment) => {
+      const candidate = registeredDirectorySessionCandidates[assignment.sessionIndex] || null;
+      if (!candidate) return { assignment, candidate: null, snapshot: null, decision: null };
+      const snapshot = getSnapshotRef.current(assignment.panelId);
+      return {
+        assignment,
+        candidate,
+        snapshot,
+        decision: decidePanelHydration({
+          panelId: assignment.panelId,
+          candidate,
+          lastRequested: lastRequestedHydrationByPanelRef.current[assignment.panelId] || null,
+          snapshot,
+        }),
+      };
+    });
+    for (const plan of panelPlans) {
+      if (plan.candidate) continue;
+      const panelId = plan.assignment.panelId;
+      delete lastRequestedHydrationByPanelRef.current[panelId];
+      if (!String(getSnapshotRef.current(panelId).selectedSessionId || "").trim()) continue;
+      clearPanelSnapshotRef.current(panelId);
+      logSessionDiagRef.current("mini_board_hydrate_panel_insufficient_candidates", {
+        miniBoardCycleId: miniBoardCycleIdRef.current,
+        panelId,
+        requestedSessionIndex: plan.assignment.sessionIndex,
+        candidateCount: registeredDirectorySessionCandidates.length,
+      }, { throttleMs: 0 });
+    }
+    setPanelHydrationById((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const plan of panelPlans) {
+        const panelId = plan.assignment.panelId;
+        const target: MiniBoardPanelHydrationState | null = !plan.candidate
+          ? {
+            status: "error",
+            sessionId: "",
+            message: `最新${plan.assignment.sessionIndex + 1}件目の履歴が不足`,
+          }
+          : plan.decision?.action === "hydrate"
+            ? { status: "loading", sessionId: "", message: "セッション取得中" }
+            // skip時のready化はhydrate完了済みsnapshot(またはライブ配信中)に限る。
+            // isHydrating中にreadyへ早期遷移すると、タップ時にcopyPanelSnapshotが
+            // 未完成のsnapshotをポップアップへ複製してしまう(完了時の反映はrun側)。
+            : snapshotHoldsAssignedSession(plan.snapshot, plan.candidate.sessionId) &&
+              !plan.snapshot?.isHydrating &&
+              ((plan.snapshot?.conversationMessages.length || 0) > 0 || plan.snapshot?.isResponding)
+              ? { status: "ready", sessionId: plan.candidate.sessionId, message: "" }
+              // hydrate進行中(already_requested)や失敗直後は直前の表示を維持
+              : null;
+        if (!target) continue;
+        const current = prev[panelId];
+        if (
+          current &&
+          current.status === target.status &&
+          current.sessionId === target.sessionId &&
+          current.message === target.message
+        ) continue;
+        next[panelId] = target;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+    const hydrateTargets = panelPlans.flatMap((plan) => (
+      plan.candidate && plan.decision?.action === "hydrate"
+        ? [{ assignment: plan.assignment, candidate: plan.candidate }]
+        : []
+    ));
+    if (hydrateTargets.length <= 0) {
       logSessionDiagRef.current("mini_board_hydrate_skipped_same_candidates", {
         miniBoardCycleId: miniBoardCycleIdRef.current,
         source: MINI_BOARD_SOURCE_LABEL,
         candidateCount: registeredDirectorySessionCandidates.length,
-        candidateSignature: registeredDirectorySessionHydrateSignature,
+        panelDecisions: panelPlans.map((plan) => ({
+          panelId: plan.assignment.panelId,
+          action: plan.decision?.action || "no_candidate",
+          reason: plan.decision?.reason || "",
+        })),
       }, { throttleMs: 0 });
       return () => {
         cancelled = true;
       };
     }
-    setPanelHydrationById(
-      MINI_BOARD_PREVIEW_PANEL_IDS.reduce((acc, panelId) => {
-        acc[panelId] = {
-          status: "loading",
-          sessionId: "",
-          message: "セッション取得中",
-        };
-        return acc;
-      }, {} as Record<MiniBoardPreviewPanelId, MiniBoardPanelHydrationState>)
-    );
     const run = async () => {
       const selectedByPanel: Record<string, string> = {};
       logSessionDiagRef.current("mini_board_hydrate_sessions_start", {
         miniBoardCycleId: miniBoardCycleIdRef.current,
         source: MINI_BOARD_SOURCE_LABEL,
-        candidates: registeredDirectorySessionCandidates.slice(0, 8).map((item) => ({
-          sessionId: item.sessionId,
-          directory: item.directory,
-          directoryDisplayName: item.directoryDisplayName,
-          cwd: item.cwd,
-          updatedAt: item.updatedAt,
-          contextUsedPct: item.contextUsedPct,
-          modelRef: item.modelRef,
-          reasoningEffort: item.reasoningEffort,
+        panelDecisions: panelPlans.map((plan) => ({
+          panelId: plan.assignment.panelId,
+          action: plan.decision?.action || "no_candidate",
+          reason: plan.decision?.reason || "",
+        })),
+        candidates: hydrateTargets.slice(0, 8).map(({ candidate }) => ({
+          sessionId: candidate.sessionId,
+          directory: candidate.directory,
+          directoryDisplayName: candidate.directoryDisplayName,
+          cwd: candidate.cwd,
+          updatedAt: candidate.updatedAt,
+          contextUsedPct: candidate.contextUsedPct,
+          modelRef: candidate.modelRef,
+          reasoningEffort: candidate.reasoningEffort,
         })),
       }, { throttleMs: 0 });
-      for (const assignment of MINI_BOARD_PANEL_ASSIGNMENT) {
+      for (const { assignment, candidate } of hydrateTargets) {
         const panelId = assignment.panelId;
-        const candidate = registeredDirectorySessionCandidates[assignment.sessionIndex];
-        if (!candidate) {
-          clearPanelSnapshotRef.current(panelId);
-          setPanelHydrationById((prev) => ({
-            ...prev,
-            [panelId]: {
-              status: "error",
-              sessionId: "",
-              message: `最新${assignment.sessionIndex + 1}件目の履歴が不足`,
-            },
-          }));
-          logSessionDiagRef.current("mini_board_hydrate_panel_insufficient_candidates", {
-            miniBoardCycleId: miniBoardCycleIdRef.current,
-            panelId,
-            requestedSessionIndex: assignment.sessionIndex,
-            candidateCount: registeredDirectorySessionCandidates.length,
-          }, { throttleMs: 0 });
-          continue;
-        }
         logSessionDiagRef.current("mini_board_hydrate_candidate_request", {
           miniBoardCycleId: miniBoardCycleIdRef.current,
           panelId,
@@ -489,6 +552,10 @@ export function MiniBoardScreen() {
           requestedModelRef: candidate.modelRef,
           requestedReasoningEffort: candidate.reasoningEffort,
         }, { throttleMs: 0 });
+        // 発行記録は失敗時も残し、同じupdatedAtのままでのホットリトライを防ぐ
+        // (updatedAtが前進すれば再試行される)。
+        const requestMark = buildPanelHydrationRequestMark(panelId, candidate);
+        lastRequestedHydrationByPanelRef.current[panelId] = requestMark;
         const hydrationResult = await hydratePanelFromSessionHistoryRef.current({
           panelId,
           sessionId: candidate.sessionId,
@@ -501,38 +568,34 @@ export function MiniBoardScreen() {
           reasoningEffort: candidate.reasoningEffort,
           contextUsedPct: candidate.contextUsedPct,
         });
-        if (cancelled) return;
         if (hydrationResult === "superseded") return;
-        const ok = hydrationResult === "applied";
-        logSessionDiagRef.current("mini_board_hydrate_candidate_result", {
-          miniBoardCycleId: miniBoardCycleIdRef.current,
-          panelId,
-          requestedSessionId: candidate.sessionId,
-          ok,
-        }, { throttleMs: 0 });
-        if (!ok) {
-          clearPanelSnapshotRef.current(panelId);
+        // この要求がまだ最新(後続runが再要求していない)なら、effectがキャンセル済み
+        // でも結果を反映する。後続runはalready_requestedでこのパネルをスキップして
+        // loading表示を維持しているため、ここで反映しないとスケルトンが固着する。
+        const stillCurrentRequest =
+          lastRequestedHydrationByPanelRef.current[panelId] === requestMark;
+        if (stillCurrentRequest) {
+          const ok = hydrationResult === "applied";
+          logSessionDiagRef.current("mini_board_hydrate_candidate_result", {
+            miniBoardCycleId: miniBoardCycleIdRef.current,
+            panelId,
+            requestedSessionId: candidate.sessionId,
+            ok,
+          }, { throttleMs: 0 });
+          if (ok) {
+            selectedByPanel[panelId] = candidate.sessionId;
+          } else {
+            clearPanelSnapshotRef.current(panelId);
+          }
           setPanelHydrationById((prev) => ({
             ...prev,
-            [panelId]: {
-              status: "error",
-              sessionId: candidate.sessionId,
-              message: "セッション読み込み失敗",
-            },
+            [panelId]: ok
+              ? { status: "ready", sessionId: candidate.sessionId, message: "" }
+              : { status: "error", sessionId: candidate.sessionId, message: "セッション読み込み失敗" },
           }));
-          continue;
         }
-        selectedByPanel[panelId] = candidate.sessionId;
-        setPanelHydrationById((prev) => ({
-          ...prev,
-          [panelId]: {
-            status: "ready",
-            sessionId: candidate.sessionId,
-            message: "",
-          },
-        }));
+        if (cancelled) return;
       }
-      hydratedSessionSignatureRef.current = registeredDirectorySessionHydrateSignature;
       logSessionDiagRef.current("mini_board_hydrate_sessions_done", {
         miniBoardCycleId: miniBoardCycleIdRef.current,
         selectedByPanel,
@@ -548,7 +611,6 @@ export function MiniBoardScreen() {
     registeredDirectories,
     directorySessionSync.phase,
     registeredDirectorySessionCandidates,
-    registeredDirectorySessionHydrateSignature,
     selectedColorFilters.length,
   ]);
 
@@ -700,7 +762,7 @@ export function MiniBoardScreen() {
           style={[styles.debugBackButton, miniBoardStyles.menuButton]}
           onPress={() => {
             setOpenPopupPanelId(null);
-            MINI_BOARD_ALL_PANEL_IDS.forEach((panelId) => clearPanelSnapshot(panelId));
+            clearPopupPanelSnapshots();
             openDrawer();
           }}
           accessibilityRole="button"

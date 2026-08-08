@@ -6637,7 +6637,12 @@ export default function App() {
     if (!targetPanelId) return;
     invalidatePanelHydration(targetPanelId);
     const sourceSnapshot = resolvePanelSnapshotForDisplay(sourcePanelId);
-    const copiedSnapshot = createPanelRuntimeSnapshot(targetPanelId, sourceSnapshot);
+    // コピー先(ポップアップ等)にはhydrate完了を書き込む経路が無いため、
+    // isHydratingを引き継ぐとスケルトン表示のまま固着する。コピー時点の内容を
+    // 確定表示として扱う。
+    const copiedSnapshot = createPanelRuntimeSnapshot(targetPanelId, sourceSnapshot, {
+      isHydrating: false,
+    });
     const copiedLastMessage = copiedSnapshot.conversationMessages.length > 0
       ? copiedSnapshot.conversationMessages[copiedSnapshot.conversationMessages.length - 1]
       : null;
@@ -7164,7 +7169,12 @@ export default function App() {
         selectedDirectoryPath: restoredDirectory,
         selectedDirectoryDisplayName: restoredDirectoryDisplayName,
         selectedSessionTitle,
-        selectedSessionUpdatedAt: updatedAtHint,
+        // hint未指定の呼び出し元(resume-sync / relay-loss回復など)でも既知updatedAtを
+        // 潰さない。空に落とすと次回ボード入場時の条件付き再検証(decidePanelHydration)が
+        // 常にsnapshot_staleになり全量再取得へ退行する。
+        selectedSessionUpdatedAt: updatedAtHint ||
+          String(restored.updatedAt || "").trim() ||
+          panelSnapshotForReconciliation.selectedSessionUpdatedAt,
         selectedSessionMarkerColor,
         modelRef: panelModelRef,
         reasoningEffort: panelReasoningEffort,
