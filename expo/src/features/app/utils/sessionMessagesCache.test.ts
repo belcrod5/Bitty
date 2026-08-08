@@ -108,6 +108,7 @@ describe("session cache file serialization", () => {
     })],
     latestCursor: "cursor-1",
     olderCursor: "older-1",
+    trimmed: false,
   };
 
   it("round-trips rows and cursors through JSONL", () => {
@@ -116,8 +117,16 @@ describe("session cache file serialization", () => {
     expect(parsed).not.toBeNull();
     expect(parsed?.latestCursor).toBe("cursor-1");
     expect(parsed?.olderCursor).toBe("older-1");
+    expect(parsed?.trimmed).toBe(false);
     expect(parsed?.rows).toHaveLength(2);
     expect(parsed?.rows[1]?.commandExecution).toEqual({ command: "ls -la", status: "completed", exitCode: 0 });
+  });
+
+  it("round-trips the trimmed flag", () => {
+    const text = serializeSessionCacheFile("session-1", { ...cache, olderCursor: null, trimmed: true }, 1_000);
+    const parsed = parseSessionCacheFile(text, "session-1");
+    expect(parsed?.trimmed).toBe(true);
+    expect(parsed?.olderCursor).toBeNull();
   });
 
   it("rejects a file for another session", () => {
@@ -139,7 +148,7 @@ describe("session cache file serialization", () => {
 
   it("rejects an empty rows file and a missing latestCursor", () => {
     expect(parseSessionCacheFile(
-      serializeSessionCacheFile("session-1", { rows: [], latestCursor: "cursor-1", olderCursor: null }, 0),
+      serializeSessionCacheFile("session-1", { rows: [], latestCursor: "cursor-1", olderCursor: null, trimmed: false }, 0),
       "session-1",
     )).toBeNull();
     expect(parseSessionCacheFile(

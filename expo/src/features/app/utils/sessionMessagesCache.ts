@@ -24,6 +24,9 @@ export type CachedSessionMessages = {
   // 全文取得時に得た olderCursor(古い方向のページング用)。トリムで古い行を破棄したら
   // キャッシュ内の最古行とカーソル位置がずれるため null に無効化する。
   olderCursor: string | null;
+  // トリムで古い行を破棄済みか。trueのエントリは次のセッションオープン時に全文取得へ
+  // 切り替えてolderCursorを取り直す(でないとキャッシュ生存中olderページング不能が続く)。
+  trimmed: boolean;
 };
 
 export type SessionCacheIndexEntry = {
@@ -127,6 +130,7 @@ type SessionCacheFileHeader = {
   sessionId: string;
   latestCursor: string;
   olderCursor: string | null;
+  trimmed: boolean;
   savedAtMs: number;
 };
 
@@ -141,6 +145,7 @@ export function serializeSessionCacheFile(
     sessionId,
     latestCursor: cache.latestCursor,
     olderCursor: cache.olderCursor,
+    trimmed: cache.trimmed === true,
     savedAtMs,
   };
   const lines = [JSON.stringify(header)];
@@ -219,6 +224,7 @@ export function parseSessionCacheFile(
     rows,
     latestCursor,
     olderCursor: String(header.olderCursor || "").trim() || null,
+    trimmed: header.trimmed === true,
   };
 }
 

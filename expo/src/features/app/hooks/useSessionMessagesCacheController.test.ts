@@ -1,4 +1,5 @@
 const mockFiles = new Map<string, string>();
+let mockWriteError: Error | null = null;
 
 jest.mock("expo-file-system/legacy", () => ({
   cacheDirectory: "file:///cache/",
@@ -9,6 +10,11 @@ jest.mock("expo-file-system/legacy", () => ({
     return value;
   }),
   writeAsStringAsync: jest.fn(async (path: string, value: string) => {
+    if (mockWriteError) {
+      const error = mockWriteError;
+      mockWriteError = null;
+      throw error;
+    }
     mockFiles.set(path, value);
   }),
   moveAsync: jest.fn(async ({ from, to }: { from: string; to: string }) => {
@@ -97,6 +103,7 @@ function makeController(
 
 beforeEach(() => {
   mockFiles.clear();
+  mockWriteError = null;
   jest.clearAllMocks();
 });
 
@@ -456,5 +463,144 @@ describe("persistence", () => {
     await controller.flushPendingWrites();
 
     expect(mockFiles.has(`${CACHE_DIR}orphan-session.jsonl`)).toBe(false);
+  });
+
+  it("cleans up orphan .pending files left by interrupted writes at startup", async () => {
+    mockFiles.set(`${CACHE_DIR}index.json`, JSON.stringify({ version: 1, sessions: {} }));
+    mockFiles.set(`${CACHE_DIR}${SESSION_ID}.jsonl.pending`, "partial write");
+    mockFiles.set(`${CACHE_DIR}index.json.pending`, "partial index");
+    const fetchMock = jest.fn().mockResolvedValueOnce(makeResult({
+      messages: [row("a", "first")],
+      latestCursor: "cursor-1",
+    }));
+    const controller = makeController(fetchMock);
+
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+
+    expect(mockFiles.has(`${CACHE_DIR}${SESSION_ID}.jsonl.pending`)).toBe(false);
+    expect(mockFiles.has(`${CACHE_DIR}index.json.pending`)).toBe(false);
+  });
+
+  it("restores pending writes after a flush failure so a later flush persists them", async () => {
+    const fetchMock = jest.fn().mockResolvedValueOnce(makeResult({
+      messages: [row("a", "first")],
+      latestCursor: "cursor-1",
+    }));
+    const controller = makeController(fetchMock);
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+
+    mockWriteError = new Error("disk full");
+    await controller.flushPendingWrites();
+    expect(mockFiles.has(`${CACHE_DIR}${SESSION_ID}.jsonl`)).toBe(false);
+
+    await controller.flushPendingWrites();
+    expect(mockFiles.has(`${CACHE_DIR}${SESSION_ID}.jsonl`)).toBe(true);
+    const persisted = parseSessionCacheFile(mockFiles.get(`${CACHE_DIR}${SESSION_ID}.jsonl`) || "", SESSION_ID);
+    expect(persisted?.rows.map((item) => item.itemId)).toEqual(["a"]);
+  });
+});
+
+describe("trimmed sessions", () => {
+  const bigRows = [row("a", "x".repeat(300)), row("b", "y".repeat(300)), row("c", "z".repeat(300))];
+
+  it("refetches the full history on the next open to restore olderCursor, then resumes deltas", async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(makeResult({
+        messages: bigRows,
+        latestCursor: "cursor-1",
+        olderCursor: "older-1",
+      }))
+      .mockResolvedValueOnce(makeResult({
+        messages: [row("s", "small")],
+        latestCursor: "cursor-2",
+        olderCursor: "older-2",
+      }))
+      .mockResolvedValueOnce(makeResult({
+        messages: [],
+        latestCursor: "cursor-2",
+        moreAfter: false,
+      }));
+    const controller = makeController(fetchMock, { maxSessionBytes: 800 });
+
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+
+    // トリム済みエントリは次のオープンで全文取得に切り替え、olderCursorを取り直す。
+    const second = await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, SESSION_ID, "/workspace");
+    expect(second.olderCursor).toBe("older-2");
+
+    // 全文結果が上限内ならtrimmed解除され、以降は差分に戻る。
+    const third = await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    expect(fetchMock).toHaveBeenNthCalledWith(3, SESSION_ID, "/workspace", { sinceCursor: "cursor-2" });
+    expect(third.olderCursor).toBe("older-2");
+  });
+
+  it("persists the trimmed flag so a fresh controller also refetches in full", async () => {
+    const fetchMock1 = jest.fn().mockResolvedValueOnce(makeResult({
+      messages: bigRows,
+      latestCursor: "cursor-1",
+      olderCursor: "older-1",
+    }));
+    const controller1 = makeController(fetchMock1, { maxSessionBytes: 800 });
+    await controller1.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    await controller1.flushPendingWrites();
+
+    const fetchMock2 = jest.fn().mockResolvedValueOnce(makeResult({
+      messages: [row("s", "small")],
+      latestCursor: "cursor-2",
+      olderCursor: "older-2",
+    }));
+    const controller2 = makeController(fetchMock2, { maxSessionBytes: 800 });
+    const restored = await controller2.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+
+    expect(fetchMock2).toHaveBeenCalledWith(SESSION_ID, "/workspace");
+    expect(restored.olderCursor).toBe("older-2");
+  });
+});
+
+describe("empty sessions", () => {
+  it("does not persist a session with zero rows", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(makeResult({
+      messages: [],
+      latestCursor: "cursor-1",
+    }));
+    const controller = makeController(fetchMock);
+
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    await controller.flushPendingWrites();
+
+    expect(mockFiles.has(`${CACHE_DIR}${SESSION_ID}.jsonl`)).toBe(false);
+    const index = JSON.parse(mockFiles.get(`${CACHE_DIR}index.json`) || "{}");
+    expect(Object.keys(index.sessions || {})).toEqual([]);
+
+    // 2回目も全量取得のまま(sinceCursorなし)。
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, SESSION_ID, "/workspace");
+  });
+
+  it("drops an existing cache entry when the session becomes empty", async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(makeResult({
+        messages: [row("a", "first")],
+        latestCursor: "cursor-1",
+      }))
+      .mockRejectedValueOnce(new Error("request timeout (12000ms)"))
+      .mockResolvedValueOnce(makeResult({
+        messages: [],
+        latestCursor: "cursor-2",
+      }));
+    const controller = makeController(fetchMock);
+
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    await controller.flushPendingWrites();
+    expect(mockFiles.has(`${CACHE_DIR}${SESSION_ID}.jsonl`)).toBe(true);
+
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    await controller.flushPendingWrites();
+
+    expect(mockFiles.has(`${CACHE_DIR}${SESSION_ID}.jsonl`)).toBe(false);
+    fetchMock.mockResolvedValueOnce(makeResult({ messages: [row("n", "new")], latestCursor: "cursor-3" }));
+    await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace");
+    expect(fetchMock).toHaveBeenLastCalledWith(SESSION_ID, "/workspace");
   });
 });

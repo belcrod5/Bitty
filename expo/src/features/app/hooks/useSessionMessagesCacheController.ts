@@ -67,6 +67,9 @@ type MemoryEntry = {
   rows: RunnerSessionMessage[];
   latestCursor: string;
   olderCursor: string | null;
+  // トリム済み(古い行破棄済み)エントリ。次のセッションオープンで全文取得に切り替えて
+  // olderCursorを取り直す(キャッシュ生存中olderページング不能が続くのを防ぐ)。
+  trimmed: boolean;
   updatedAtMs: number;
   bytes: number;
 };
@@ -187,6 +190,14 @@ export function createSessionMessagesCacheController(
         try {
           const names = await FileSystem.readDirectoryAsync(dir);
           for (const name of names) {
+            // 書き込み途中にkillされた .pending は常にゴミ(pending→moveの2段書き込みで、
+            // moveまで完了したファイルだけが有効)なので無条件に削除する。
+            if (name.endsWith(".pending")) {
+              try {
+                await FileSystem.deleteAsync(`${dir}${name}`, { idempotent: true });
+              } catch {}
+              continue;
+            }
             if (!name.endsWith(".jsonl")) continue;
             const sessionId = name.slice(0, -".jsonl".length);
             if (!index.sessions[sessionId]) {
@@ -251,6 +262,12 @@ export function createSessionMessagesCacheController(
       }
       await writeIndexFile(dir);
     }).catch((error) => {
+      // 失敗した書き込みは失わず戻す(次のupdateEntry/touch起点のflushで再試行される)。
+      // ここでscheduleFlushはしない: 恒常的なIO障害でのリトライループを避ける。
+      for (const sessionId of sessionIds) {
+        if (entries.has(sessionId)) pendingWrites.add(sessionId);
+      }
+      indexDirty = indexDirty || wasDirty;
       diag("session_messages_cache_write_failed", { message: errorMessage(error) });
     });
   }
@@ -289,6 +306,7 @@ export function createSessionMessagesCacheController(
       rows: parsed.rows,
       latestCursor: parsed.latestCursor,
       olderCursor: parsed.olderCursor,
+      trimmed: parsed.trimmed,
       updatedAtMs: indexEntry?.updatedAtMs || 0,
       bytes: indexEntry?.bytes || 0,
     };
@@ -310,6 +328,7 @@ export function createSessionMessagesCacheController(
       latestCursor,
       // 古い行を破棄したらキャッシュ最古行とカーソル位置がずれるため olderCursor は無効化。
       olderCursor: trimResult.trimmed ? null : olderCursor,
+      trimmed: trimResult.trimmed,
       updatedAtMs: nowMs,
       bytes: trimResult.bytes,
     };
@@ -374,6 +393,14 @@ export function createSessionMessagesCacheController(
     if (!latestCursor) {
       // 旧サーバー(latestCursor無し): キャッシュを更新せず全量挙動のまま。
       diag("session_messages_cache_store_skipped", { sessionId, reason: "missing_latest_cursor" });
+      return result;
+    }
+    if (result.messages.length <= 0) {
+      // 空セッションは保存しない(0行ファイルはロード時に必ず破棄されるため、書き込み→
+      // 破棄のチャーンになるだけ)。既存エントリが残っていれば空になったので消す。
+      if (entries.has(sessionId) || index?.sessions[sessionId]) {
+        await discardEntry(sessionId, "empty_session");
+      }
       return result;
     }
     updateEntry(sessionId, result.messages, latestCursor, result.olderCursor);
@@ -468,6 +495,12 @@ export function createSessionMessagesCacheController(
     if (!entry || !entry.latestCursor || entry.rows.length <= 0) {
       diag("session_messages_cache_miss", { sessionId });
       return fetchFullAndStore(sessionId, directoryRaw, "cache_miss");
+    }
+    if (entry.trimmed) {
+      // トリム済みエントリはolderCursorを失っている。差分を続けるとolderページング不能が
+      // キャッシュ破棄まで続くため、オープン時に全文で取り直してエントリを置き換える。
+      diag("session_messages_cache_trimmed_refresh", { sessionId });
+      return fetchFullAndStore(sessionId, directoryRaw, "trimmed_refresh");
     }
     try {
       return await fetchDeltaAndMerge(sessionId, directoryRaw, entry);
