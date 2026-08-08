@@ -19,7 +19,7 @@ type UseWaitingApprovalResumeActionControllerArgs = {
   normalizedLlmDirectoryForRequest: () => string;
   sessionRuntimeStatusByIdRef: MutableRefObject<Record<string, SessionRuntimeStatus>>;
   selectedSessionWaitingApproval: boolean;
-  reloadActiveSession: (source?: "mini_board" | "drawer" | "session_modal") => void;
+  reloadActiveSession: (source?: "board" | "drawer" | "session_modal") => void;
   rememberSessionRuntimeStatus: (
     sessionIdRaw: unknown,
     status: Omit<SessionRuntimeStatus, "updatedAtMs">
@@ -90,7 +90,7 @@ export function useWaitingApprovalResumeActionController({
     );
     if (!waitingApprovalExpected) {
       showChatBottomToast("assistant", "承認待ち状態を再確認するため、セッションを再読み込みします。");
-      reloadActiveSession("mini_board");
+      reloadActiveSession("board");
       return;
     }
     rememberSessionRuntimeStatus(sessionId, {

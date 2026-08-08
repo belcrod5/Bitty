@@ -277,7 +277,7 @@ export function useReadyDrivenResumeSyncController({
     if (!inputs.settingsLoaded) return;
     if (!inputs.codexWsUrl.trim()) return;
     // チャット(会話)を表示できるボード画面のみ再同期する。
-    if (inputs.activeScreen !== "mini_board" && inputs.activeScreen !== "skia_board") return;
+    if (inputs.activeScreen !== "skia_board") return;
     const now = Date.now();
     pruneRespondingAtBackground(now);
     const selectedSessionId = parseOptionalSessionId(

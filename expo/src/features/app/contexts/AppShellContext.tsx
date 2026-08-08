@@ -10,7 +10,7 @@ export type AppShellContextValue = {
   closeDrawer: () => void;
   openDebugScreen: () => void;
   openAudioLabScreen: () => void;
-  openMiniBoardScreen: () => void;
+  openSkiaBoardScreen: () => void;
   openCloudflareTunnelMonitorScreen: () => void;
 };
 

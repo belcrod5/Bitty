@@ -107,7 +107,7 @@ export function useYouTubePlayerDisplay(options: UseYouTubePlayerDisplayOptions)
   const hasInlineYouTubeTarget = hasConversationInlineYouTubeTarget || hasStreamInlineYouTubeTarget;
 
   const showFloatingYouTubePlayer = useMemo(() => {
-    if (activeScreen !== "mini_board") return false;
+    if (activeScreen !== "skia_board") return false;
     if (!youtubeEmbedHtml) return false;
     if (!youtubePlayerVideoId) return false;
     if (!hasInlineYouTubeTarget) return false;
@@ -131,7 +131,7 @@ export function useYouTubePlayerDisplay(options: UseYouTubePlayerDisplayOptions)
 
   const showYouTubeOverlayPlayer = useMemo(
     () => (
-      activeScreen === "mini_board" &&
+      activeScreen === "skia_board" &&
       !!youtubeEmbedHtml &&
       !!youtubePlayerVideoId &&
       (showFloatingYouTubePlayer || !hasInlineYouTubeTarget)

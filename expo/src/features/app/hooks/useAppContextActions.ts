@@ -49,7 +49,7 @@ type UseAppContextActionsArgs = {
   setSystemPrompt: Dispatch<SetStateAction<string>>;
   sendReplyRequest: () => Promise<void>;
   sendReplyTranscript: () => Promise<void>;
-  reloadActiveSession: (source?: "mini_board" | "drawer" | "session_modal") => void;
+  reloadActiveSession: (source?: "board" | "drawer" | "session_modal") => void;
   loadDirectoryExplorer: (path: string) => Promise<void>;
   upsertRegisteredDirectory: (pathRaw: unknown) => void;
   setDirectorySelectOpen: Dispatch<SetStateAction<boolean>>;
@@ -174,9 +174,6 @@ export function useAppContextActions({
   }, [setActiveScreen]);
   const openAudioLabScreen = useCallback(() => {
     setActiveScreen("audio_lab");
-  }, [setActiveScreen]);
-  const openMiniBoardScreen = useCallback(() => {
-    setActiveScreen("mini_board");
   }, [setActiveScreen]);
   const openCloudflareTunnelMonitorScreen = useCallback(() => {
     setActiveScreen("cloudflare_tunnel_monitor");
@@ -308,7 +305,7 @@ export function useAppContextActions({
     void sendReplyTranscript();
   }, [sendReplyTranscript]);
   const reloadSelectedSessionFromContext = useCallback(() => {
-    reloadActiveSession("mini_board");
+    reloadActiveSession("board");
   }, [reloadActiveSession]);
   const goDirectoryParentFromContext = useCallback(() => {
     void loadDirectoryExplorer(directoryExplorerParentPath);
@@ -442,7 +439,6 @@ export function useAppContextActions({
     closeDrawer,
     openDebugScreen,
     openAudioLabScreen,
-    openMiniBoardScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeRunnerUrl,

@@ -66,13 +66,12 @@ import {
   type RunnerMediaFile,
 } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
-import { formatRelativeUpdatedAt } from "../utils/formatting";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
 type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker";
-type ChatScreenMode = "mini_board" | "mini_board_popup";
+type ChatScreenMode = "mini_board_popup";
 type ChatScreenProps = {
   mode?: ChatScreenMode;
   panelId?: string;
@@ -102,7 +101,7 @@ function normalizeChatPanelId(panelIdRaw: unknown) {
 
 function isPanelScopedChatView(mode: ChatScreenMode, panelIdRaw: unknown) {
   const panelId = normalizeChatPanelId(panelIdRaw);
-  return (mode === "mini_board" || mode === "mini_board_popup") && !!panelId;
+  return mode === "mini_board_popup" && !!panelId;
 }
 
 const CHAT_ESTIMATED_ITEM_SIZE = 120;
@@ -155,9 +154,7 @@ export function ChatScreen({
   showPopupMessagesSkeleton = false,
 }: ChatScreenProps) {
   const panelId = normalizeChatPanelId(panelIdRaw);
-  const isMiniBoardPreviewMode = mode === "mini_board";
   const isMiniBoardPopupMode = mode === "mini_board_popup";
-  const isMiniBoardMode = isMiniBoardPreviewMode || isMiniBoardPopupMode;
   const isPanelRuntimeView = isPanelScopedChatView(mode, panelId);
   const { getSnapshot } = usePanelRuntimeStore();
   const {
@@ -369,7 +366,6 @@ export function ChatScreen({
   const miniInheritedSourceMessages = panelSnapshot.inheritedConversationMessages;
   const miniSourceDirectoryDisplayName = panelSnapshot.selectedDirectoryDisplayName;
   const miniSourceSessionTitle = panelSnapshot.selectedSessionTitle;
-  const miniSourceSessionUpdatedAt = panelSnapshot.selectedSessionUpdatedAt;
   const miniSourceSessionMarkerColor = panelSnapshot.selectedSessionMarkerColor;
   const panelContextUsedPct = panelSnapshot.contextUsedPct !== null &&
     typeof panelSnapshot.contextUsedPct !== "undefined" &&
@@ -570,12 +566,12 @@ export function ChatScreen({
     ? hasComposerTextForView && !llmSessionRestoreLoadingForView && !!String(codexWsUrl || "").trim()
     : baseCanSendForView;
   const selectedSessionExecutionFactForView = useMemo(() => {
-    if (!isMiniBoardMode) return selectedSessionExecutionFact;
+    if (!isMiniBoardPopupMode) return selectedSessionExecutionFact;
     const panelSessionId = String(panelSnapshot.selectedSessionId || "").trim();
     const factSessionId = String(selectedSessionExecutionFact?.sessionId || "").trim();
     if (!panelSessionId || !factSessionId || panelSessionId !== factSessionId) return null;
     return selectedSessionExecutionFact;
-  }, [isMiniBoardMode, panelSnapshot.selectedSessionId, selectedSessionExecutionFact]);
+  }, [isMiniBoardPopupMode, panelSnapshot.selectedSessionId, selectedSessionExecutionFact]);
 
   const miniMessages = useMemo(
     () => miniSourceMessages
@@ -587,7 +583,7 @@ export function ChatScreen({
     ? miniSourceMessages[miniSourceMessages.length - 1]
     : null;
   const miniBoardLastSourceMessagePreview = String(miniBoardLastSourceMessage?.content || "").slice(0, 80);
-  const miniBoardSnapshotLogKey = isMiniBoardMode
+  const miniBoardSnapshotLogKey = isMiniBoardPopupMode
     ? [
       miniBoardCycleId,
       panelId,
@@ -951,7 +947,7 @@ export function ChatScreen({
     maybeSettleChatListToBottom();
   }, [maybeSettleChatListToBottom]);
   useEffect(() => {
-    if (!isMiniBoardMode) return;
+    if (!isMiniBoardPopupMode) return;
     if (miniBoardMountLoggedRef.current) return;
     miniBoardMountLoggedRef.current = true;
     logSessionDiag("mini_board_chat_screen_first_effect", {
@@ -975,7 +971,7 @@ export function ChatScreen({
       }, { throttleMs: 0 });
     };
   }, [
-    isMiniBoardMode,
+    isMiniBoardPopupMode,
     logSessionDiag,
     miniBoardCycleId,
     miniSourceMessages.length,
@@ -991,7 +987,7 @@ export function ChatScreen({
     panelSnapshot.selectedSessionTitle,
   ]);
   useEffect(() => {
-    if (!isMiniBoardMode) return;
+    if (!isMiniBoardPopupMode) return;
     const nextSessionId = String(panelSnapshot.selectedSessionId || "").trim();
     const prevSessionId = String(miniBoardPrevSessionIdRef.current || "").trim();
     if (prevSessionId && prevSessionId !== nextSessionId) {
@@ -1004,9 +1000,9 @@ export function ChatScreen({
       }, { throttleMs: 0 });
     }
     miniBoardPrevSessionIdRef.current = nextSessionId;
-  }, [isMiniBoardMode, logSessionDiag, miniBoardCycleId, panelId, panelSnapshot.selectedDirectoryPath, panelSnapshot.selectedSessionId]);
+  }, [isMiniBoardPopupMode, logSessionDiag, miniBoardCycleId, panelId, panelSnapshot.selectedDirectoryPath, panelSnapshot.selectedSessionId]);
   useEffect(() => {
-    if (!isMiniBoardMode) return;
+    if (!isMiniBoardPopupMode) return;
     logSessionDiag("mini_board_panel_snapshot_applied", {
       miniBoardCycleId,
       panelId,
@@ -1025,7 +1021,7 @@ export function ChatScreen({
       miniMessageCount: miniMessages.length,
     }, { throttleMs: 0 });
   }, [
-    isMiniBoardMode,
+    isMiniBoardPopupMode,
     logSessionDiag,
     miniBoardCycleId,
     miniBoardLastSourceMessage?.id,
@@ -1497,10 +1493,6 @@ export function ChatScreen({
     if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) return "不明";
     return formatElapsedHhMmSs(Math.max(0, executionNowMs - startedAtMs));
   })();
-  const miniBoardUpdatedAtLabel = isMiniBoardPreviewMode
-    ? formatRelativeUpdatedAt(miniSourceSessionUpdatedAt, executionNowMs)
-    : "";
-
   const footerSelectEstimatedHeight = (
     (footerSelectOpen === "model" ? modelOptions.length : thinkOptions.length) * 34
   ) + 8;
@@ -1755,89 +1747,6 @@ export function ChatScreen({
       </View>
     );
   };
-
-  if (isMiniBoardPreviewMode) {
-    return (
-      <View style={[styles.chatScreen, styles.miniBoardPreviewChatScreen]}>
-        {replyLoadingForView ? (
-          <View pointerEvents="none" style={styles.miniChatRespondingBadge}>
-            <BouncingDotsIndicator dotSize={6} gap={5} jumpHeight={6} />
-          </View>
-        ) : null}
-        <View style={[styles.chatHeader, styles.miniBoardPreviewChatHeader]}>
-          <View style={[styles.chatHeaderLeft, styles.miniBoardPreviewChatHeaderLeft]}>
-            <View style={[styles.chatDirectoryHeaderButton, styles.miniBoardPreviewChatDirectoryButton]}>
-              <View style={[styles.chatDirectoryHeaderPrimaryRow, styles.miniBoardPreviewChatDirectoryPrimaryRow]}>
-                {directoryHeaderMarkerColorHex ? (
-                  <View
-                    style={[
-                      styles.chatDirectoryHeaderMarkerDot,
-                      styles.miniBoardPreviewChatMarkerDot,
-                      { backgroundColor: directoryHeaderMarkerColorHex },
-                    ]}
-                  />
-                ) : null}
-                <Text style={[styles.chatDirectoryHeaderButtonText, styles.miniBoardPreviewChatTitle]} numberOfLines={1}>
-                  {selectedDirectoryDisplayNameForView || "Directory"}
-                </Text>
-              </View>
-              <Text style={[styles.chatDirectoryHeaderSessionTitleText, styles.miniBoardPreviewChatSubtitle]} numberOfLines={1}>
-                {selectedSessionTitleForView || "Session"}
-              </Text>
-            </View>
-          </View>
-          <View style={[styles.chatHeaderRight, styles.miniBoardPreviewChatHeaderRight]}>
-            <View style={[styles.chatContextWrap, styles.miniBoardPreviewChatContextWrap]}>
-              <Text style={[styles.chatContextPctText, styles.miniBoardPreviewChatContextPctText]}>
-                {chatContextPctTextForView}
-              </Text>
-            </View>
-          </View>
-        </View>
-        <View style={[styles.chatScroll, styles.miniBoardPreviewChatScroll]}>
-          <ScrollView
-            style={[styles.chatScroll, styles.miniBoardPreviewChatScroll]}
-            contentContainerStyle={[styles.chatScrollContent, styles.miniBoardPreviewChatScrollContent]}
-            showsVerticalScrollIndicator={false}
-            scrollEnabled={isMiniBoardPopupMode}
-          >
-            {miniMessages.length <= 0 ? (
-              <Text style={[styles.chatEmpty, styles.miniBoardPreviewChatEmpty]}>まだ会話がありません。</Text>
-            ) : (
-              miniMessages.map((message) => (
-                <View key={message.id} style={[styles.chatMessageGroup, styles.miniBoardPreviewChatMessageGroup]}>
-                  <View style={[styles.chatBubble, styles.miniBoardPreviewChatBubble]}>
-                    {message.kind === "internal_context" || message.kind === "unclassified_context" ? (
-                      <InternalContextMessage
-                        content={message.content}
-                        unclassified={message.kind === "unclassified_context"}
-                        textStyle={[styles.chatBubbleText, styles.miniBoardPreviewChatBubbleText]}
-                        onLocalFileLinkPress={openChatFileLinkContextMenu}
-                        onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}
-                      />
-                    ) : (
-                      <MarkdownText
-                        content={message.content}
-                        tone="assistant"
-                        textStyle={[styles.chatBubbleText, styles.miniBoardPreviewChatBubbleText]}
-                        onLocalFileLinkPress={openChatFileLinkContextMenu}
-                        onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}
-                      />
-                    )}
-                  </View>
-                </View>
-              ))
-            )}
-          </ScrollView>
-        </View>
-        {miniBoardUpdatedAtLabel ? (
-          <View pointerEvents="none" style={styles.miniBoardPreviewUpdatedAtBadge}>
-            <Text style={styles.miniBoardPreviewUpdatedAtText}>{miniBoardUpdatedAtLabel}</Text>
-          </View>
-        ) : null}
-      </View>
-    );
-  }
 
   if (!hasSelectedDirectoryForView) {
     return (
@@ -2342,10 +2251,10 @@ export function ChatScreen({
                   if (shouldStopLlmTurn) {
                     logSessionDiag("chat_stop_llm_pressed", {
                       panelId: String(panelId || "").trim() || undefined,
-                      sessionId: isMiniBoardMode
+                      sessionId: isMiniBoardPopupMode
                         ? (String(panelSnapshot.selectedSessionId || "").trim() || undefined)
                         : undefined,
-                      directory: isMiniBoardMode
+                      directory: isMiniBoardPopupMode
                         ? (String(panelSnapshot.selectedDirectoryPath || "").trim() || undefined)
                         : undefined,
                       route: isPanelRuntimeView ? "cancelReplyRequestForPanel" : "stopLlmTurn",

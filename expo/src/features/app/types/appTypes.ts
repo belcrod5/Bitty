@@ -251,7 +251,7 @@ export type GitChangedFilesDirectoryState = {
   error: string;
 };
 
-export type AppScreen = "mini_board" | "skia_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
+export type AppScreen = "skia_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
 export type SlashCommandName = "/status" | "/compact";
 
 export type UiSfxKey =

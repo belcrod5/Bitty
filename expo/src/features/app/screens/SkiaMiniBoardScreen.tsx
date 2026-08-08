@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Platform,
   StyleSheet,
   Text,
@@ -7,6 +8,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import {
   Canvas,
   Circle,
@@ -35,16 +37,25 @@ import {
 const CARD_HEIGHT = 154;
 const CARD_GAP = 18;
 const BOARD_PADDING = 18;
-const MIN_SCALE = 0.5;
+const MIN_SCALE = 0.25;
 const MAX_SCALE = 2.5;
 
 type CardPosition = { x: number; y: number };
 
-function createCardPositions(cardWidth: number): CardPosition[] {
-  return Array.from({ length: 6 }, (_, index) => ({
-    x: BOARD_PADDING + (index % 2) * (cardWidth + CARD_GAP),
-    y: BOARD_PADDING + Math.floor(index / 2) * (CARD_HEIGHT + CARD_GAP),
-  }));
+// ボードステートのグリッド単位座標(col/row)と画面座標の相互変換。
+// cardWidthに依存する部分をここに閉じ込め、保存値は回転などで壊れない。
+function cardPositionFromGrid(col: number, row: number, cardWidth: number): CardPosition {
+  return {
+    x: BOARD_PADDING + col * (cardWidth + CARD_GAP),
+    y: BOARD_PADDING + row * (CARD_HEIGHT + CARD_GAP),
+  };
+}
+
+function gridFromCardPosition(x: number, y: number, cardWidth: number) {
+  return {
+    col: (x - BOARD_PADDING) / (cardWidth + CARD_GAP),
+    row: (y - BOARD_PADDING) / (CARD_HEIGHT + CARD_GAP),
+  };
 }
 
 function fitText(text: string, font: SkFont, maxWidth: number) {
@@ -115,34 +126,33 @@ function MiniChatCard({
         <Circle cx={18} cy={21} r={5} color={markerColor(session.markerColor)} />
         <SkiaText
           x={31}
-          y={26}
+          y={25}
           text={fitText(session.directoryName, bodyFont, cardWidth - 47)}
           font={bodyFont}
           color="#64748b"
         />
         <SkiaText
           x={16}
-          y={56}
+          y={55}
           text={fitText(session.title, titleFont, contentWidth)}
           font={titleFont}
           color="#172033"
         />
         <SkiaText
           x={16}
-          y={84}
+          y={83}
           text={fitText(session.lastMessageContent || "メッセージを読み込み中…", bodyFont, contentWidth)}
           font={bodyFont}
           color="#64748b"
         />
         <Line p1={{ x: 16, y: 105 }} p2={{ x: cardWidth - 16, y: 105 }} color="#e2e8f0" strokeWidth={1} />
-        <SkiaText x={16} y={130} text={session.updatedAtLabel} font={bodyFont} color="#64748b" />
+        <SkiaText x={16} y={129} text={session.updatedAtLabel} font={bodyFont} color="#64748b" />
       </Group>
     </Group>
   );
 }
 
 type SkiaMiniBoardScreenProps = {
-  onClose: () => void;
   openSessionHistoryPopup: (params: {
     sessionId: string;
     source: LlmSessionSource;
@@ -151,7 +161,7 @@ type SkiaMiniBoardScreenProps = {
   }) => void;
 };
 
-export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMiniBoardScreenProps) {
+export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardScreenProps) {
   const { width: windowWidth } = useWindowDimensions();
   const { openDrawer } = useAppShell();
   const {
@@ -159,6 +169,9 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
     hydratingPanelCount,
     panelHydrationErrorCount,
     sessions,
+    moveBoardCard,
+    removeBoardSession,
+    tidyBoard,
   } = useSkiaMiniChatSessions();
   const syncStatusText =
     directorySync.phase === "loading"
@@ -177,7 +190,7 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [viewportWidth, setViewportWidth] = useState(windowWidth);
   const cardWidth = Math.max(150, Math.min(270, (viewportWidth - BOARD_PADDING * 2 - CARD_GAP) / 2));
-  const positions = useSharedValue<CardPosition[]>(createCardPositions(cardWidth));
+  const positions = useSharedValue<CardPosition[]>([]);
   const boardX = useSharedValue(0);
   const boardY = useSharedValue(0);
   const scale = useSharedValue(1);
@@ -191,17 +204,33 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
   const touchSequenceHadMultiplePointers = useSharedValue(false);
 
   const fontFamily = Platform.select({ ios: "Hiragino Sans", android: "sans-serif", default: "Arial" });
-  const titleFont = useMemo(() => matchFont({ fontFamily, fontSize: 15, fontWeight: "bold" }), [fontFamily]);
-  const bodyFont = useMemo(() => matchFont({ fontFamily, fontSize: 11 }), [fontFamily]);
+  const titleFont = useMemo(() => matchFont({ fontFamily, fontSize: 13, fontWeight: "bold" }), [fontFamily]);
+  const bodyFont = useMemo(() => matchFont({ fontFamily, fontSize: 10 }), [fontFamily]);
 
+  // ボードステート(col/row)から画面座標を再構築する。ドラッグ中はSharedValueのみが
+  // 動き、ドラッグ終了時のcommitでステートへ反映されるため、同値の再適用になる。
+  const positionsKey = useMemo(() => (
+    sessions.map((session) => `${session.sessionId}:${session.col}:${session.row}`).join("|")
+  ), [sessions]);
+  // 描画前(useLayoutEffect)に反映し、原点に一瞬固まって見えるフレームを避ける。
+  const appliedPositionsKeyRef = useRef("");
+  useLayoutEffect(() => {
+    const key = `${cardWidth}|${positionsKey}`;
+    if (appliedPositionsKeyRef.current === key) return;
+    appliedPositionsKeyRef.current = key;
+    positions.value = sessions.map((session) => (
+      cardPositionFromGrid(session.col, session.row, cardWidth)
+    ));
+  }, [cardWidth, positions, positionsKey, sessions]);
+
+  // カードの並び(搭載セッション)が変わったら、indexベースの選択をクリアする。
+  const sessionIdsKey = useMemo(() => (
+    sessions.map((session) => session.sessionId).join("|")
+  ), [sessions]);
   useEffect(() => {
-    positions.value = createCardPositions(cardWidth);
-    boardX.value = 0;
-    boardY.value = 0;
-    scale.value = 1;
     selectedCardIndex.value = -1;
     setSelectedSessionId("");
-  }, [boardX, boardY, cardWidth, positions, scale, selectedCardIndex]);
+  }, [selectedCardIndex, sessionIdsKey]);
 
   const handleCardTap = useCallback((index: number) => {
     if (index < 0) {
@@ -212,8 +241,7 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
     const session = sessions[index];
     if (!session) return;
     if (selectedSessionId === session.sessionId) {
-      // プレビュー用パネル(skia_mini_preview_N)はインデックス割当で担当セッションが
-      // 入れ替わるため直接開かず、ドロワーと同じ専用パネルのポップアップで開く
+      // プレビュー用パネルは直接開かず、ドロワーと同じ専用パネルのポップアップで開く
       // (毎オープン時にJSONLからhydrateされ、常に最新の本文になる)。
       openSessionHistoryPopup({
         sessionId: session.sessionId,
@@ -226,6 +254,31 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
     selectedCardIndex.value = index;
     setSelectedSessionId(session.sessionId);
   }, [openSessionHistoryPopup, selectedCardIndex, selectedSessionId, sessions]);
+
+  // ドラッグ終了時に画面座標をグリッド単位へ戻してボードステートへ保存する。
+  const commitCardPosition = useCallback((index: number, x: number, y: number) => {
+    const session = sessions[index];
+    if (!session) return;
+    const grid = gridFromCardPosition(x, y, cardWidth);
+    moveBoardCard(session.sessionId, grid.col, grid.row);
+  }, [cardWidth, moveBoardCard, sessions]);
+
+  const confirmRemoveCard = useCallback((index: number) => {
+    const session = sessions[index];
+    if (!session) return;
+    Alert.alert(
+      "カードを削除",
+      `「${session.title || session.sessionId}」をボードから外しますか?\n外したセッションは自動では再追加されません。`,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: () => removeBoardSession(session.sessionId),
+        },
+      ]
+    );
+  }, [removeBoardSession, sessions]);
 
   const boardTranslate = useDerivedValue(() => [
     { translateX: boardX.value },
@@ -291,7 +344,12 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
         boardY.value = gestureStartY.value + event.translationY;
       })
       .onFinalize(() => {
+        const index = activeCardIndex.value;
         activeCardIndex.value = -1;
+        if (index < 0) return;
+        const position = positions.value[index];
+        if (!position) return;
+        runOnJS(commitCardPosition)(index, position.x, position.y);
       });
 
     const tap = Gesture.Tap()
@@ -316,6 +374,28 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
         runOnJS(handleCardTap)(-1);
       });
 
+    // カード長押しで削除確認(OKでボードから外し、除外リストへ)。
+    const longPress = Gesture.LongPress()
+      .minDuration(500)
+      .onStart((event) => {
+        if (touchSequenceHadMultiplePointers.value) return;
+        const x = (event.x - boardX.value) / scale.value;
+        const y = (event.y - boardY.value) / scale.value;
+        for (let index = sessions.length - 1; index >= 0; index -= 1) {
+          const position = positions.value[index];
+          if (
+            position
+            && x >= position.x
+            && x <= position.x + cardWidth
+            && y >= position.y
+            && y <= position.y + CARD_HEIGHT
+          ) {
+            runOnJS(confirmRemoveCard)(index);
+            return;
+          }
+        }
+      });
+
     const pinch = Gesture.Pinch()
       .onBegin(() => {
         touchSequenceHadMultiplePointers.value = true;
@@ -336,12 +416,14 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
         boardY.value = event.focalY - pinchBoardY.value * nextScale;
       });
 
-    return Gesture.Simultaneous(drag, pinch, tap);
+    return Gesture.Simultaneous(drag, pinch, tap, longPress);
   }, [
     activeCardIndex,
     boardX,
     boardY,
     cardWidth,
+    commitCardPosition,
+    confirmRemoveCard,
     gestureStartScale,
     gestureStartX,
     gestureStartY,
@@ -355,8 +437,8 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
     touchSequenceHadMultiplePointers,
   ]);
 
+  // カード位置には触らず、パン・ズームだけを初期化する(整頓ボタンとの差別化)。
   const resetViewport = () => {
-    positions.value = createCardPositions(cardWidth);
     boardX.value = 0;
     boardY.value = 0;
     scale.value = 1;
@@ -382,14 +464,19 @@ export function SkiaMiniBoardScreen({ onClose, openSessionHistoryPopup }: SkiaMi
           <Text style={screenStyles.headerButtonText}>☰</Text>
         </TouchableOpacity>
         <View style={screenStyles.headerTitleBlock}>
-          <Text style={screenStyles.headerTitle}>Skia Board</Text>
-          <Text style={screenStyles.headerSubtitle}>タップで選択・再タップで開く・選択後にドラッグ</Text>
+          <Text style={screenStyles.headerTitle}>Board</Text>
+          <Text style={screenStyles.headerSubtitle}>タップで選択・再タップで開く・選択後にドラッグ・長押しで削除</Text>
         </View>
+        <TouchableOpacity
+          style={screenStyles.headerActionButton}
+          onPress={tidyBoard}
+          accessibilityRole="button"
+          accessibilityLabel="カードをグリッドに整頓"
+        >
+          <Ionicons name="grid-outline" size={16} color="#334155" />
+        </TouchableOpacity>
         <TouchableOpacity style={screenStyles.resetButton} onPress={resetViewport}>
           <Text style={screenStyles.resetButtonText}>Reset</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={screenStyles.backButton} onPress={onClose}>
-          <Text style={screenStyles.backButtonText}>戻る</Text>
         </TouchableOpacity>
       </View>
 
@@ -474,6 +561,14 @@ const screenStyles = StyleSheet.create({
     fontSize: 10,
     marginTop: 2,
   },
+  headerActionButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#e8eef6",
+  },
   resetButton: {
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -482,17 +577,6 @@ const screenStyles = StyleSheet.create({
   },
   resetButtonText: {
     color: "#334155",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  backButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: "#27364b",
-  },
-  backButtonText: {
-    color: "#ffffff",
     fontSize: 12,
     fontWeight: "700",
   },

@@ -23,7 +23,7 @@ jest.mock("expo-file-system/legacy", () => ({
 }));
 
 jest.mock("../utils/persistedSettingsFile", () => ({
-  LOCATION_BACKGROUND_FIELDS: [],
+  PRESERVED_SETTINGS_FIELDS: ["skiaBoardState"],
   mutatePersistedSettings: jest.fn(),
   readPersistedSettings: jest.fn(),
 }));
@@ -175,6 +175,19 @@ test("does not overwrite settings after their initial read fails", async () => {
     "[settings] failed to read persisted settings",
     expect.any(Error)
   );
+});
+
+test("autosave preserves externally owned fields instead of rebuilding them", async () => {
+  await renderPersistenceController();
+
+  expect(mockMutatePersistedSettings).toHaveBeenCalled();
+  const mutate = mockMutatePersistedSettings.mock.calls[0][0];
+  const boardState = { cards: [{ sessionId: "session-1", col: 0, row: 0 }] };
+  const next = mutate({ skiaBoardState: boardState, runnerUrl: "stale-url" });
+
+  // 所有者(Skiaボード等)が直接書いたフィールドは保持し、それ以外はReact stateから再構築。
+  expect(next.skiaBoardState).toEqual(boardState);
+  expect(next.runnerUrl).toBe("http://default-runner");
 });
 
 test("does not delete credentials after their initial read fails", async () => {

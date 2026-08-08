@@ -38,7 +38,6 @@ import { PushNotificationRegistrar } from "./components/PushNotificationRegistra
 import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
 import { DebugScreen } from "./screens/DebugScreen";
 import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
-import { MiniBoardScreen } from "./screens/MiniBoardScreen";
 import { SkiaMiniBoardScreen } from "./screens/SkiaMiniBoardScreen";
 import {
   DEFAULT_STT_PROVIDER,
@@ -753,7 +752,7 @@ export default function App() {
     runnerUrl: effectiveCloudflareRunnerUrl,
     credentials: cloudflareAccessCredentials,
   });
-  const [activeScreen, setActiveScreen] = useState<AppScreen>("mini_board");
+  const [activeScreen, setActiveScreen] = useState<AppScreen>("skia_board");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSessionPrefetchRequestedForOpenRef = useRef(false);
   const [modelRef, setModelRef] = useState<string>(DEFAULT_MODEL_REF);
@@ -3248,7 +3247,7 @@ export default function App() {
     }
   }
 
-  const reloadActiveSession = useCallback((source: "mini_board" | "drawer" | "session_modal" = "mini_board") => {
+  const reloadActiveSession = useCallback((source: "board" | "drawer" | "session_modal" = "board") => {
     const sessionId = parseOptionalSessionId(selectedLlmSessionIdRef.current || selectedLlmSessionId);
     if (!sessionId) return;
     const directory = normalizedLlmDirectoryForRequest();
@@ -3637,7 +3636,7 @@ export default function App() {
     const threadId = parseOptionalSessionId(params.threadId || sessionId);
     const previewText = String(params.previewText || "").replace(/\s+/g, " ").trim().slice(0, 240);
     if (!sessionId || !threadId || !previewText) return;
-    if (activeScreen === "mini_board") {
+    if (activeScreen === "skia_board") {
       const activeSessionId = parseOptionalSessionId(
         selectedLlmSessionId || llmConversationSessionIdRef.current
       );
@@ -4690,7 +4689,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (activeScreen !== "mini_board") return;
+    if (activeScreen !== "skia_board") return;
     if (appStateRef.current !== "active") return;
     if (!runnerToken.trim()) return;
     for (const directory of registeredDirectories) {
@@ -4701,7 +4700,7 @@ export default function App() {
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextState) => {
       if (nextState !== "active") return;
-      if (activeScreen !== "mini_board") return;
+      if (activeScreen !== "skia_board") return;
       if (!runnerToken.trim()) return;
       for (const directory of registeredDirectories) {
         void refreshGitChangedFiles(directory.path, { force: true });
@@ -4927,7 +4926,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeScreen !== "mini_board") return;
+    if (activeScreen !== "skia_board") return;
     if (chatNearBottomRef.current) return;
     const last = conversationMessages[conversationMessages.length - 1];
     if (!last) return;
@@ -4936,7 +4935,7 @@ export default function App() {
   }, [activeScreen, conversationMessages, markConversationMessageToasted, showChatBottomToast]);
 
   useEffect(() => {
-    if (activeScreen !== "mini_board") return;
+    if (activeScreen !== "skia_board") return;
     if (!replyLoading) return;
     if (chatNearBottomRef.current) return;
     const nextReply = String(reply || "").trim();
@@ -4946,13 +4945,13 @@ export default function App() {
   }, [activeScreen, reply, replyLoading, shouldShowReplyPreviewToast, showChatBottomToast]);
 
   useEffect(() => {
-    if (activeScreen === "mini_board") return;
+    if (activeScreen === "skia_board") return;
     hideChatBottomToast();
   }, [activeScreen, hideChatBottomToast]);
 
   const shouldKeepAwake = (
     Platform.OS === "ios" &&
-    activeScreen === "mini_board" &&
+    activeScreen === "skia_board" &&
     (
       replyLoading ||
       sttLoading ||
@@ -5012,7 +5011,7 @@ export default function App() {
   }, [streamReplyYouTubeVideoIds, runnerToken, runnerUrl]);
 
   useEffect(() => {
-    if (activeScreen !== "mini_board") return;
+    if (activeScreen !== "skia_board") return;
     if (!latestAssistantYouTubeMessage) return;
     if (!latestAssistantYouTubeMessage.videoIds.length) return;
     if (lastAutoOpenedYouTubeMessageIdRef.current === latestAssistantYouTubeMessage.id) return;
@@ -5126,7 +5125,7 @@ export default function App() {
     const shouldRunFaceTracking = (
       Platform.OS === "ios" &&
       faceTrackingEnabled &&
-      activeScreen === "mini_board" &&
+      activeScreen === "skia_board" &&
       (
         autoRecordingEnabled ||
         (sttProvider === "ios_native_direct" && directNativeSttEnabled)
@@ -5831,7 +5830,6 @@ export default function App() {
     closeDrawer,
     openDebugScreen,
     openAudioLabScreen,
-    openMiniBoardScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeRunnerUrl,
@@ -6025,7 +6023,7 @@ export default function App() {
     closeDrawer,
     openDebugScreen,
     openAudioLabScreen,
-    openMiniBoardScreen,
+    openSkiaBoardScreen,
     openCloudflareTunnelMonitorScreen,
   });
   const appSettingsContextValue = useAppSettingsContextValue({
@@ -6454,7 +6452,6 @@ export default function App() {
     selectedSessionHeaderTitle,
     ttsPlaybackMessageId,
   ]);
-  const miniBoardPanelRuntimeSnapshotSignatureRef = useRef("");
   useEffect(() => {
     const selectedSessionId = String(activeConversationSnapshot.selectedSessionId || "").trim();
     if (!selectedSessionId) return;
@@ -6581,56 +6578,6 @@ export default function App() {
     invalidatePanelHydration,
     logSessionDiag,
   });
-  useEffect(() => {
-    const watchedPanelIds = [
-      "mini_preview_1",
-      "mini_preview_2",
-      "mini_preview_3",
-      "mini_preview_4",
-      "mini_preview_5",
-      "mini_preview_6",
-      "mini_popup_1",
-      "mini_popup_2",
-      "mini_popup_3",
-      "mini_popup_4",
-      "mini_popup_5",
-      "mini_popup_6",
-    ];
-    const runtimeByPanel = watchedPanelIds.map((panelId) => {
-      const entry = panelRuntimeEntriesById[panelId];
-      const snapshot = entry?.snapshot;
-      const snapshotMessages = Array.isArray(snapshot?.conversationMessages) ? snapshot.conversationMessages : [];
-      const snapshotLastMessage = snapshotMessages.length > 0
-        ? snapshotMessages[snapshotMessages.length - 1]
-        : null;
-      return {
-        panelId,
-        hasSnapshot: !!entry?.snapshot,
-        entrySessionId: String(entry?.sessionId || "").trim(),
-        snapshotSessionId: String(snapshot?.selectedSessionId || "").trim(),
-        snapshotDirectoryPath: String(snapshot?.selectedDirectoryPath || "").trim(),
-        snapshotIsResponding: Boolean(snapshot?.isResponding),
-        snapshotIsHydrating: Boolean(snapshot?.isHydrating),
-        snapshotContextUsedPct: Number.isFinite(Number(snapshot?.contextUsedPct)) ? Number(snapshot?.contextUsedPct) : null,
-        snapshotMessageCount: snapshotMessages.length,
-        snapshotLastMessageId: String(snapshotLastMessage?.id || "").trim(),
-        snapshotLastMessageRole: String(snapshotLastMessage?.role || "").trim(),
-        snapshotLastMessageContentLength: String(snapshotLastMessage?.content || "").length,
-      };
-    });
-    const runtimeSignature = JSON.stringify({ runtimeByPanel });
-    if (miniBoardPanelRuntimeSnapshotSignatureRef.current === runtimeSignature) return;
-    miniBoardPanelRuntimeSnapshotSignatureRef.current = runtimeSignature;
-    logSessionDiag("mini_board_panel_runtime_state_snapshot", {
-      runtimeByPanel,
-    }, {
-      throttleMs: 2000,
-      throttleKey: "mini_board_panel_runtime_state_snapshot",
-    });
-  }, [
-    logSessionDiag,
-    panelRuntimeEntriesById,
-  ]);
   const copyPanelSnapshot = useCallback((sourcePanelIdRaw: string, targetPanelIdRaw: string) => {
     const sourcePanelId = normalizeRuntimePanelId(sourcePanelIdRaw);
     const targetPanelId = normalizeRuntimePanelId(targetPanelIdRaw);
@@ -7623,7 +7570,7 @@ export default function App() {
   }, []);
   const visibleCompletionNotificationSessionIds = useMemo(() => {
     const ids: string[] = [];
-    if (activeScreen === "mini_board") {
+    if (activeScreen === "skia_board") {
       const activeSessionId = parseOptionalSessionId(
         selectedLlmSessionId || llmConversationSessionIdRef.current
       );
@@ -7659,7 +7606,6 @@ export default function App() {
     formatSessionUpdatedAt,
     closeDrawer,
     openDebugScreen,
-    openMiniBoardScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     openDirectoryExplorer,
@@ -7712,7 +7658,7 @@ export default function App() {
         open={drawerOpen}
         onOpen={openDrawer}
         onClose={closeDrawer}
-        swipeEnabled={activeScreen === "mini_board" || activeScreen === "skia_board"}
+        swipeEnabled={activeScreen === "skia_board"}
         swipeEdgeWidth={DRAWER_SWIPE_EDGE_WIDTH}
         swipeMinDistance={DRAWER_SWIPE_MIN_DISTANCE}
         swipeMinVelocity={DRAWER_SWIPE_MIN_VELOCITY}
@@ -7726,13 +7672,10 @@ export default function App() {
       <SafeAreaView style={styles.safeArea}>
       {activeScreen === "debug" ? (
         <DebugScreen />
-      ) : activeScreen === "mini_board" ? (
-        <MiniBoardScreen />
       ) : activeScreen === "cloudflare_tunnel_monitor" ? (
         <CloudflareTunnelMonitorScreen />
       ) : activeScreen === "skia_board" ? (
         <SkiaMiniBoardScreen
-          onClose={openMiniBoardScreen}
           openSessionHistoryPopup={openSessionHistoryPopup}
         />
       ) : (

@@ -61,6 +61,16 @@ export const LOCATION_BACKGROUND_FIELDS = [
   "locationScheduleLastStates",
 ] as const;
 
+// Skiaボードのボードステート(utils/skiaBoardState.ts)の保存フィールド。
+export const SKIA_BOARD_STATE_FIELD = "skiaBoardState";
+
+// React側の設定stateから再構築されず、所有者(バックグラウンド位置タスク・Skiaボード)が
+// mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
+export const PRESERVED_SETTINGS_FIELDS = [
+  ...LOCATION_BACKGROUND_FIELDS,
+  SKIA_BOARD_STATE_FIELD,
+] as const;
+
 // Reads a single field from the persisted settings JSON without going through React
 // context. Returns undefined only when the file is missing. Read and parse failures
 // remain errors so callers cannot mistake unavailable persisted data for defaults.

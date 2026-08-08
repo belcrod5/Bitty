@@ -26,7 +26,6 @@ type UseAppDrawerSessionControllerArgs = {
   formatSessionUpdatedAt: (updatedAt: string) => string;
   closeDrawer: () => void;
   openDebugScreen: () => void;
-  openMiniBoardScreen: () => void;
   openCloudflareTunnelMonitorScreen: () => void;
   openSkiaBoardScreen: () => void;
   openDirectoryExplorer: () => void;
@@ -71,7 +70,6 @@ export function useAppDrawerSessionController({
   formatSessionUpdatedAt,
   closeDrawer,
   openDebugScreen,
-  openMiniBoardScreen,
   openCloudflareTunnelMonitorScreen,
   openSkiaBoardScreen,
   openDirectoryExplorer,
@@ -89,10 +87,6 @@ export function useAppDrawerSessionController({
     closeDrawer();
     openDebugScreen();
   }, [closeDrawer, openDebugScreen]);
-  const handleOpenMiniBoard = useCallback(() => {
-    closeDrawer();
-    openMiniBoardScreen();
-  }, [closeDrawer, openMiniBoardScreen]);
   const handleOpenCloudflareTunnelMonitor = useCallback(() => {
     closeDrawer();
     openCloudflareTunnelMonitorScreen();
@@ -193,7 +187,6 @@ export function useAppDrawerSessionController({
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
     onOpenDebug: handleOpenDebug,
-    onOpenMiniBoard: handleOpenMiniBoard,
     onOpenCloudflareTunnelMonitor: handleOpenCloudflareTunnelMonitor,
     onOpenSkiaBoard: handleOpenSkiaBoard,
     onOpenDirectoryExplorer: handleOpenDirectoryExplorer,
@@ -219,7 +212,6 @@ export function useAppDrawerSessionController({
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
     handleOpenDebug,
-    handleOpenMiniBoard,
     handleOpenCloudflareTunnelMonitor,
     handleOpenSkiaBoard,
     handleOpenDirectoryExplorer,

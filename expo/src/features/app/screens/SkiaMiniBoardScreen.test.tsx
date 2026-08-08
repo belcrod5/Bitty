@@ -1,5 +1,6 @@
 import React from "react";
-import { act, render } from "@testing-library/react-native";
+import { Alert } from "react-native";
+import { act, fireEvent, render } from "@testing-library/react-native";
 import { SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 
 // Skia Canvasはjest環境で描画できないため、レイアウトに影響しないスタブへ置換する。
@@ -19,6 +20,14 @@ jest.mock("@shopify/react-native-skia", () => {
   };
 });
 
+jest.mock("@expo/vector-icons", () => {
+  const ReactModule = require("react");
+  const { Text } = require("react-native");
+  return {
+    Ionicons: ({ name }: { name: string }) => ReactModule.createElement(Text, null, name),
+  };
+});
+
 // 公式mockのuseSharedValueはrender毎に新オブジェクトを返し、実物と異なり
 // deps比較で毎render変化してしまうため、実物同様に同一参照を維持する。
 jest.mock("react-native-reanimated", () => {
@@ -30,7 +39,7 @@ jest.mock("react-native-reanimated", () => {
   };
 });
 
-// ジェスチャ定義のコールバックを捕捉し、テストからタップを直接発火できるようにする。
+// ジェスチャ定義のコールバックを捕捉し、テストからタップ等を直接発火できるようにする。
 jest.mock("react-native-gesture-handler", () => {
   const registry: Record<string, Record<string, (...args: unknown[]) => unknown>> = {};
   (globalThis as Record<string, unknown>).__skiaBoardGestureRegistry = registry;
@@ -50,6 +59,7 @@ jest.mock("react-native-gesture-handler", () => {
       Pan: () => makeChain("Pan"),
       Tap: () => makeChain("Tap"),
       Pinch: () => makeChain("Pinch"),
+      LongPress: () => makeChain("LongPress"),
       Simultaneous: (...gestures: unknown[]) => gestures,
     },
     GestureDetector: ({ children }: { children?: React.ReactNode }) => children,
@@ -60,6 +70,10 @@ jest.mock("../contexts/AppShellContext", () => ({
   useAppShell: () => ({ openDrawer: jest.fn() }),
 }));
 
+const mockMoveBoardCard = jest.fn();
+const mockRemoveBoardSession = jest.fn();
+const mockTidyBoard = jest.fn();
+
 jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
   useSkiaMiniChatSessions: () => ({
     directorySync: { phase: "idle", completedCount: 0, totalCount: 0, failedCount: 0 },
@@ -67,7 +81,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     panelHydrationErrorCount: 0,
     sessions: [
       {
-        panelId: "skia_mini_preview_1",
+        panelId: "skia_mini_preview_session-1",
         sessionId: "session-1",
         directory: "/workspace",
         source: "appserver",
@@ -76,25 +90,36 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
         lastMessageContent: "hello",
         updatedAtLabel: "1分前",
         markerColor: "none",
+        col: 0,
+        row: 0,
       },
     ],
+    moveBoardCard: mockMoveBoardCard,
+    removeBoardSession: mockRemoveBoardSession,
+    tidyBoard: mockTidyBoard,
   }),
 }));
 
-function fireCardTap() {
-  const registry = (globalThis as Record<string, unknown>)
+beforeEach(() => {
+  mockMoveBoardCard.mockClear();
+  mockRemoveBoardSession.mockClear();
+  mockTidyBoard.mockClear();
+});
+
+function gestureRegistry() {
+  return (globalThis as Record<string, unknown>)
     .__skiaBoardGestureRegistry as Record<string, Record<string, (...args: unknown[]) => unknown>>;
-  // カード0は (18, 18) 起点なので (30, 30) のタップで命中する。
-  registry.Tap.onEnd({ x: 30, y: 30 }, true);
+}
+
+function fireCardTap() {
+  // カード0は col=0,row=0 → (18, 18) 起点なので (30, 30) のタップで命中する。
+  gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, true);
 }
 
 test("opens the tapped card session via the shared session history popup", async () => {
   const openSessionHistoryPopup = jest.fn();
   await render(
-    <SkiaMiniBoardScreen
-      onClose={jest.fn()}
-      openSessionHistoryPopup={openSessionHistoryPopup}
-    />
+    <SkiaMiniBoardScreen openSessionHistoryPopup={openSessionHistoryPopup} />
   );
 
   // 1タップ目は選択のみ。
@@ -113,4 +138,59 @@ test("opens the tapped card session via the shared session history popup", async
     source: "appserver",
     origin: "skia_board",
   });
+});
+
+test("tidies board cards without touching the viewport", async () => {
+  const screen = await render(
+    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await fireEvent.press(screen.getByLabelText("カードをグリッドに整頓"));
+
+  expect(mockTidyBoard).toHaveBeenCalledTimes(1);
+});
+
+test("long-pressing a card asks for confirmation before removing it", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  await render(
+    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
+  });
+
+  expect(alertSpy).toHaveBeenCalled();
+  expect(mockRemoveBoardSession).not.toHaveBeenCalled();
+
+  // 確認ダイアログの「削除」でボードステートから外す。
+  const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+  const removeAction = actions.find((action) => action.text === "削除");
+  removeAction?.onPress?.();
+  expect(mockRemoveBoardSession).toHaveBeenCalledWith("session-1");
+  alertSpy.mockRestore();
+});
+
+test("commits the dragged card position back to the board state", async () => {
+  await render(
+    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+  );
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    fireCardTap();
+  });
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 30, y: 30 });
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 50 });
+    registry.Pan.onFinalize();
+  });
+
+  expect(mockMoveBoardCard).toHaveBeenCalledTimes(1);
+  const [sessionId, col, row] = mockMoveBoardCard.mock.calls[0];
+  expect(sessionId).toBe("session-1");
+  // (18+40, 18+50) がグリッド単位へ変換されて保存される(cardWidth依存のため値は正のグリッド量)。
+  expect(col).toBeGreaterThan(0);
+  expect(row).toBeCloseTo(50 / (154 + 18), 5);
 });
