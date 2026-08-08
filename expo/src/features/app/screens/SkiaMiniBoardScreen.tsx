@@ -201,6 +201,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const pinchBoardY = useSharedValue(0);
   const activeCardIndex = useSharedValue(-1);
   const activeCardSessionId = useSharedValue("");
+  const activeCardX = useSharedValue(0);
+  const activeCardY = useSharedValue(0);
   const selectedCardIndex = useSharedValue(-1);
   const touchSequenceHadMultiplePointers = useSharedValue(false);
 
@@ -258,7 +260,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
 
   // ドラッグ終了時に画面座標をグリッド単位へ戻してボードステートへ保存する。
   // ドラッグ中に候補が増減してindexがずれても別セッションを上書きしないよう、
-  // 対象はドラッグ開始時に捕捉したsessionIdで確定する。
+  // 対象と座標はドラッグ開始時のカードに紐づけ、候補の増減後もindexから引き直さない。
   const commitCardPosition = useCallback((sessionId: string, x: number, y: number) => {
     if (!sessionId) return;
     const grid = gridFromCardPosition(x, y, cardWidth);
@@ -320,6 +322,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
               activeCardSessionId.value = sessionIds[index] || "";
               gestureStartX.value = position.x;
               gestureStartY.value = position.y;
+              activeCardX.value = position.x;
+              activeCardY.value = position.y;
             } else {
               gestureStartX.value = boardX.value;
               gestureStartY.value = boardY.value;
@@ -338,11 +342,15 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         if (touchSequenceHadMultiplePointers.value) return;
         const index = activeCardIndex.value;
         if (index >= 0) {
+          const nextX = gestureStartX.value + event.translationX / scale.value;
+          const nextY = gestureStartY.value + event.translationY / scale.value;
           const nextPositions = positions.value.slice();
           nextPositions[index] = {
-            x: gestureStartX.value + event.translationX / scale.value,
-            y: gestureStartY.value + event.translationY / scale.value,
+            x: nextX,
+            y: nextY,
           };
+          activeCardX.value = nextX;
+          activeCardY.value = nextY;
           positions.value = nextPositions;
           return;
         }
@@ -352,12 +360,12 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
       .onFinalize(() => {
         const index = activeCardIndex.value;
         const sessionId = activeCardSessionId.value;
+        const x = activeCardX.value;
+        const y = activeCardY.value;
         activeCardIndex.value = -1;
         activeCardSessionId.value = "";
         if (index < 0 || !sessionId) return;
-        const position = positions.value[index];
-        if (!position) return;
-        runOnJS(commitCardPosition)(sessionId, position.x, position.y);
+        runOnJS(commitCardPosition)(sessionId, x, y);
       });
 
     const tap = Gesture.Tap()
@@ -430,6 +438,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   }, [
     activeCardIndex,
     activeCardSessionId,
+    activeCardX,
+    activeCardY,
     boardX,
     boardY,
     cardWidth,

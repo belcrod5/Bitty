@@ -321,6 +321,7 @@ export function useDirectorySessionTreeController({
     if (
       mode === "ensure" &&
       hasUsableTree(current) &&
+      !current?.error &&
       Date.now() - Number(current?.fetchedAtMs || 0) < directorySessionPrefetchTtlMs
     ) {
       return Promise.resolve({

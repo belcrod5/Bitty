@@ -73,27 +73,27 @@ jest.mock("../contexts/AppShellContext", () => ({
 const mockMoveBoardCard = jest.fn();
 const mockRemoveBoardSession = jest.fn();
 const mockTidyBoard = jest.fn();
+const mockDefaultSession = {
+  panelId: "skia_mini_preview_session-1",
+  sessionId: "session-1",
+  directory: "/workspace",
+  source: "appserver",
+  title: "Title 1",
+  directoryName: "Workspace",
+  lastMessageContent: "hello",
+  updatedAtLabel: "1分前",
+  markerColor: "none",
+  col: 0,
+  row: 0,
+};
+let mockSessions = [mockDefaultSession];
 
 jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
   useSkiaMiniChatSessions: () => ({
     directorySync: { phase: "idle", completedCount: 0, totalCount: 0, failedCount: 0 },
     hydratingPanelCount: 0,
     panelHydrationErrorCount: 0,
-    sessions: [
-      {
-        panelId: "skia_mini_preview_session-1",
-        sessionId: "session-1",
-        directory: "/workspace",
-        source: "appserver",
-        title: "Title 1",
-        directoryName: "Workspace",
-        lastMessageContent: "hello",
-        updatedAtLabel: "1分前",
-        markerColor: "none",
-        col: 0,
-        row: 0,
-      },
-    ],
+    sessions: mockSessions,
     moveBoardCard: mockMoveBoardCard,
     removeBoardSession: mockRemoveBoardSession,
     tidyBoard: mockTidyBoard,
@@ -104,6 +104,7 @@ beforeEach(() => {
   mockMoveBoardCard.mockClear();
   mockRemoveBoardSession.mockClear();
   mockTidyBoard.mockClear();
+  mockSessions = [mockDefaultSession];
 });
 
 function gestureRegistry() {
@@ -214,4 +215,41 @@ test("commits the dragged card position back to the board state", async () => {
   // (18+40, 18+50) がグリッド単位へ変換されて保存される(cardWidth依存のため値は正のグリッド量)。
   expect(col).toBeGreaterThan(0);
   expect(row).toBeCloseTo(50 / (154 + 18), 5);
+});
+
+test("commits the active card coordinates when sessions reorder during a drag", async () => {
+  mockSessions = ["a", "b", "c"].map((id, row) => ({
+    ...mockSessions[0],
+    panelId: `skia_mini_preview_${id}`,
+    sessionId: id,
+    title: id.toUpperCase(),
+    row,
+  }));
+  const screen = await render(
+    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await act(async () => {
+    // Bはrow=1なので、ボード座標(30, 200)で選択・ドラッグを開始する。
+    gestureRegistry().Tap.onEnd({ x: 30, y: 200 }, true);
+  });
+  await act(async () => {
+    gestureRegistry().Pan.onTouchesDown({ numberOfTouches: 1 });
+    gestureRegistry().Pan.onBegin({ x: 30, y: 200 });
+    gestureRegistry().Pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 50 });
+  });
+
+  mockSessions = mockSessions.slice(1);
+  await act(async () => {
+    screen.rerender(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  });
+  await act(async () => {
+    gestureRegistry().Pan.onFinalize();
+  });
+
+  expect(mockMoveBoardCard).toHaveBeenCalledTimes(1);
+  const [sessionId, col, row] = mockMoveBoardCard.mock.calls[0];
+  expect(sessionId).toBe("b");
+  expect(col).toBeGreaterThan(0);
+  expect(row).toBeCloseTo(1 + 50 / (154 + 18), 5);
 });

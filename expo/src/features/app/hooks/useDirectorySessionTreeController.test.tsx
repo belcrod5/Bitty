@@ -512,17 +512,21 @@ test("caps registered directory fetches at the shared global concurrency", async
   });
 });
 
-test("refresh preserves usable data and reports a terminal partial error", async () => {
-  const fetchSessionHistory = jest.fn(async () => {
-    throw new Error("runner offline");
-  });
+test("ensure retries a failed refresh even when preserved data is still fresh", async () => {
+  const fetchSessionHistory = jest.fn()
+    .mockRejectedValueOnce(new Error("runner offline"))
+    .mockResolvedValue({
+      latestSessionId: "session-1",
+      nextCursor: "",
+      entries: [session()],
+    });
   const { result } = await renderHook(() => useTestController({
     fetchSessionHistory,
     initialTrees: {
       workspace: {
         ...emptyState,
         loaded: true,
-        fetchedAtMs: 1,
+        fetchedAtMs: Date.now(),
         entries: [session()],
       },
     },
@@ -543,6 +547,17 @@ test("refresh preserves usable data and reports a terminal partial error", async
     failedCount: 1,
     usableCountAfterCycle: 1,
     progress: 1,
+  });
+
+  await act(async () => {
+    await result.current.controller.ensureRegisteredDirectorySessions("auth_recovery");
+  });
+
+  expect(fetchSessionHistory).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.error).toBe("");
+  expect(result.current.controller.directorySessionSync).toMatchObject({
+    phase: "complete",
+    succeededCount: 1,
   });
 });
 
