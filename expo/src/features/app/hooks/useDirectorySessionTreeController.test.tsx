@@ -296,6 +296,94 @@ test("does not let a stale child fetch overwrite a read completed while loading"
   }));
 });
 
+test("defers a pre-bootstrap ensure and drains it with the directories loaded later", async () => {
+  const fetchSessionHistory = jest.fn(async () => ({
+    latestSessionId: "session-1",
+    nextCursor: "",
+    entries: [session()],
+  }));
+  const { result, rerender } = await renderHook((props: {
+    bootstrapReady: boolean;
+    registeredDirectories: typeof workspaceDirectory[];
+  }) => {
+    const [directorySessionsById, setDirectorySessionsById] = useState<
+      Record<string, DirectorySessionTreeState>
+    >({});
+    const controller = useDirectorySessionTreeController({
+      directorySessionsById,
+      setDirectorySessionsById,
+      setExpandedDirectoryIds: jest.fn(),
+      fetchSessionHistory,
+      fetchSessionChildHistory: jest.fn(async () => []),
+      emptyDirectorySessionTreeState: emptyState,
+      directorySessionPageSize: 5,
+      directorySessionPrefetchTtlMs: 60_000,
+      directorySessionPrefetchConcurrency: 2,
+      registeredDirectories: props.registeredDirectories,
+      selectedDirectoryPath: "/workspace",
+      bootstrapReady: props.bootstrapReady,
+    });
+    return { controller };
+  }, {
+    initialProps: {
+      bootstrapReady: false,
+      registeredDirectories: [] as typeof workspaceDirectory[],
+    },
+  });
+
+  // 設定ロード前のensureは同期サイクルを開始しない(空ターゲット・未認証で失敗確定させない)。
+  await act(async () => {
+    void result.current.controller.ensureRegisteredDirectorySessions("screen_mount");
+    await Promise.resolve();
+  });
+  expect(fetchSessionHistory).not.toHaveBeenCalled();
+  expect(result.current.controller.directorySessionSync.phase).toBe("idle");
+
+  // 設定ロード完了(登録ディレクトリ+bootstrapReadyが同じcommitで入る)で
+  // 保留intentがロード後のターゲットでdrainされる。
+  await rerender({ bootstrapReady: true, registeredDirectories: [workspaceDirectory] });
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(fetchSessionHistory).toHaveBeenCalledTimes(1);
+  expect(fetchSessionHistory).toHaveBeenCalledWith("/workspace", expect.objectContaining({ limit: 5 }));
+  expect(result.current.controller.directorySessionSync).toMatchObject({
+    phase: "complete",
+    succeededCount: 1,
+  });
+});
+
+test("a failed directory fetch is retried by the next ensure instead of being pinned", async () => {
+  const fetchSessionHistory = jest.fn()
+    .mockRejectedValueOnce(new Error("runner_ws_inactive"))
+    .mockResolvedValue({
+      latestSessionId: "session-1",
+      nextCursor: "",
+      entries: [session()],
+    });
+  const { result } = await renderHook(() => useTestController({ fetchSessionHistory }));
+
+  await act(async () => {
+    await result.current.controller.ensureRegisteredDirectorySessions("screen_mount");
+  });
+  expect(result.current.controller.directorySessionSync).toMatchObject({
+    phase: "error",
+    failedCount: 1,
+  });
+
+  // 失敗ツリーはTTL固定されないため、次のensure契機で失敗分だけ再取得される。
+  await act(async () => {
+    await result.current.controller.ensureRegisteredDirectorySessions("auth_recovery");
+  });
+  expect(fetchSessionHistory).toHaveBeenCalledTimes(2);
+  expect(result.current.controller.directorySessionSync).toMatchObject({
+    phase: "complete",
+    succeededCount: 1,
+  });
+});
+
 test("joins duplicate registered ensure requests into one fetch cycle", async () => {
   const fetchResult = deferred<{
     latestSessionId: string;
@@ -424,17 +512,21 @@ test("caps registered directory fetches at the shared global concurrency", async
   });
 });
 
-test("refresh preserves usable data and reports a terminal partial error", async () => {
-  const fetchSessionHistory = jest.fn(async () => {
-    throw new Error("runner offline");
-  });
+test("ensure retries a failed refresh even when preserved data is still fresh", async () => {
+  const fetchSessionHistory = jest.fn()
+    .mockRejectedValueOnce(new Error("runner offline"))
+    .mockResolvedValue({
+      latestSessionId: "session-1",
+      nextCursor: "",
+      entries: [session()],
+    });
   const { result } = await renderHook(() => useTestController({
     fetchSessionHistory,
     initialTrees: {
       workspace: {
         ...emptyState,
         loaded: true,
-        fetchedAtMs: 1,
+        fetchedAtMs: Date.now(),
         entries: [session()],
       },
     },
@@ -455,6 +547,17 @@ test("refresh preserves usable data and reports a terminal partial error", async
     failedCount: 1,
     usableCountAfterCycle: 1,
     progress: 1,
+  });
+
+  await act(async () => {
+    await result.current.controller.ensureRegisteredDirectorySessions("auth_recovery");
+  });
+
+  expect(fetchSessionHistory).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.error).toBe("");
+  expect(result.current.controller.directorySessionSync).toMatchObject({
+    phase: "complete",
+    succeededCount: 1,
   });
 });
 

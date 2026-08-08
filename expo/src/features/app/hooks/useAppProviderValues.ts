@@ -27,7 +27,7 @@ export function useAppShellContextValue(args: AppShellContextValue): AppShellCon
     closeDrawer,
     openDebugScreen,
     openAudioLabScreen,
-    openMiniBoardScreen,
+    openSkiaBoardScreen,
     openCloudflareTunnelMonitorScreen,
   } = args;
 
@@ -41,10 +41,10 @@ export function useAppShellContextValue(args: AppShellContextValue): AppShellCon
       closeDrawer,
       openDebugScreen,
       openAudioLabScreen,
-      openMiniBoardScreen,
+      openSkiaBoardScreen,
       openCloudflareTunnelMonitorScreen,
     }),
-    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openDebugScreen, openAudioLabScreen, openMiniBoardScreen, openCloudflareTunnelMonitorScreen]
+    [activeScreen, drawerOpen, setActiveScreen, setDrawerOpen, openDrawer, closeDrawer, openDebugScreen, openAudioLabScreen, openSkiaBoardScreen, openCloudflareTunnelMonitorScreen]
   );
 }
 

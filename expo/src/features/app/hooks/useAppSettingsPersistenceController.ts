@@ -25,8 +25,8 @@ import {
 } from "../utils/secureRunnerCredentials";
 import { normalizeCodexWsInputs } from "../../codex/client/helpers";
 import {
-  LOCATION_BACKGROUND_FIELDS,
   mutatePersistedSettings,
+  PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
 } from "../utils/persistedSettingsFile";
 
@@ -645,7 +645,7 @@ export function useAppSettingsPersistenceController({
       if (writableAtArm.settings) {
         void mutatePersistedSettings((current) => {
           const next: Record<string, unknown> = buildPersistedSettingsPayload();
-          for (const field of LOCATION_BACKGROUND_FIELDS) {
+          for (const field of PRESERVED_SETTINGS_FIELDS) {
             if (field in current) next[field] = current[field];
           }
           return next;

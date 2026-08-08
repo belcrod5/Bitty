@@ -2,11 +2,6 @@ import { appCommonStyles } from "./appCommonStyles";
 import { chatComposerStyles } from "./chatComposerStyles";
 import { chatMessageStyles } from "./chatMessageStyles";
 
-const MINI_BOARD_PAPER = "#fbfaf7";
-const MINI_BOARD_INK = "#151515";
-const MINI_BOARD_SUB = "#575650";
-const MINI_BOARD_MUTED = "#8d8b83";
-
 export const appLayoutStyles = {
   ...appCommonStyles,
   drawerPopupOverlayHost: {
@@ -131,142 +126,6 @@ export const appLayoutStyles = {
     paddingBottom: 10,
     gap: 8,
     backgroundColor: "#ffffff",
-  },
-  miniBoardPreviewChatScreen: {
-    position: "relative",
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
-    gap: 0,
-    backgroundColor: MINI_BOARD_PAPER,
-  },
-  miniBoardPreviewChatHeader: {
-    position: "relative",
-    alignItems: "flex-start",
-    marginBottom: 0,
-    minHeight: 32,
-    backgroundColor: MINI_BOARD_PAPER,
-  },
-  miniBoardPreviewChatHeaderLeft: {
-    paddingRight: 44,
-  },
-  miniBoardPreviewChatHeaderRight: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-  },
-  miniBoardPreviewChatDirectoryButton: {
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    borderRadius: 0,
-  },
-  miniBoardPreviewChatDirectoryPrimaryRow: {
-    alignItems: "baseline",
-    gap: 7,
-  },
-  miniBoardPreviewChatMarkerDot: {
-    width: 8,
-    height: 8,
-    borderColor: "rgba(21, 21, 17, 0.14)",
-  },
-  miniBoardPreviewChatTitle: {
-    color: MINI_BOARD_INK,
-    fontSize: 15,
-    lineHeight: 17,
-    fontWeight: "700",
-    letterSpacing: 0,
-  },
-  miniBoardPreviewChatSubtitle: {
-    marginTop: 6,
-    paddingLeft: 15,
-    color: MINI_BOARD_MUTED,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "500",
-    letterSpacing: 0,
-  },
-  miniBoardPreviewChatContextWrap: {
-    gap: 0,
-  },
-  miniBoardPreviewChatContextRingWrap: {
-    width: 40,
-    height: 18,
-    overflow: "hidden",
-  },
-  miniBoardPreviewChatContextPctButton: {
-    left: -2,
-    top: -2,
-    width: 44,
-    height: 22,
-    borderRadius: 0,
-    backgroundColor: MINI_BOARD_PAPER,
-  },
-  miniBoardPreviewChatContextPctText: {
-    minWidth: 34,
-    color: MINI_BOARD_SUB,
-    fontSize: 11,
-    lineHeight: 13,
-    fontWeight: "600",
-    textAlign: "right",
-    letterSpacing: 0,
-  },
-  miniBoardPreviewChatScroll: {
-    marginTop: 15,
-    backgroundColor: MINI_BOARD_PAPER,
-  },
-  miniBoardPreviewChatMessageGroup: {
-    marginBottom: 8,
-    gap: 0,
-  },
-  miniBoardPreviewChatBubble: {
-    maxWidth: "100%",
-    width: "100%",
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    borderRadius: 0,
-    backgroundColor: "transparent",
-  },
-  miniBoardPreviewChatBubbleText: {
-    color: MINI_BOARD_SUB,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: "500",
-    letterSpacing: 0,
-  },
-  miniBoardPreviewChatEmpty: {
-    color: MINI_BOARD_MUTED,
-    fontSize: 12,
-    lineHeight: 18,
-    paddingVertical: 0,
-  },
-  miniChatRespondingBadge: {
-    position: "absolute",
-    left: 4,
-    bottom: 4,
-    zIndex: 30,
-    elevation: 30,
-    width: 34,
-    height: 34,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  miniBoardPreviewUpdatedAtBadge: {
-    position: "absolute",
-    right: -5,
-    bottom: -8,
-    zIndex: 32,
-    elevation: 32,
-    borderRadius: 999,
-    backgroundColor: "rgba(251, 250, 247, 0.92)",
-    paddingLeft: 3,
-    paddingTop: 3,
-  },
-  miniBoardPreviewUpdatedAtText: {
-    color: MINI_BOARD_MUTED,
-    fontSize: 10,
-    lineHeight: 12,
-    fontWeight: "700",
-    letterSpacing: 0,
   },
   chatKeyboardAvoiding: {
     flex: 1,
@@ -895,9 +754,6 @@ export const appLayoutStyles = {
     height: 38,
     borderRadius: 14,
     backgroundColor: "#e5e7eb",
-  },
-  miniBoardPreviewChatScrollContent: {
-    paddingBottom: 0,
   },
   chatSessionRestoreOverlay: {
     position: "absolute",

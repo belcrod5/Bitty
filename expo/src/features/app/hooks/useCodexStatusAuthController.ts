@@ -95,7 +95,7 @@ export function useCodexStatusAuthController({
   setCodexAuthSwitchError,
   onAuthSwitchStarted,
 }: UseCodexStatusAuthControllerArgs) {
-  const isCodexStatusScreenActive = activeScreen === "mini_board";
+  const isCodexStatusScreenActive = activeScreen === "skia_board";
 
   const applyCodexCliStatusSnapshot = useCallback((snapshot: CodexCliStatusSnapshot) => {
     const parsedAt = Date.parse(snapshot.fetchedAt);

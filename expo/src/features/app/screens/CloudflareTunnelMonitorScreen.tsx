@@ -234,7 +234,7 @@ function ConnectionEventCard({
 }
 
 export function CloudflareTunnelMonitorScreen() {
-  const { openMiniBoardScreen, openDrawer } = useAppShell();
+  const { openSkiaBoardScreen, openDrawer } = useAppShell();
   const {
     runnerUrl,
     runnerToken,
@@ -359,7 +359,7 @@ export function CloudflareTunnelMonitorScreen() {
           <TouchableOpacity
             style={screenStyles.menuButton}
             onPress={() => {
-              openMiniBoardScreen();
+              openSkiaBoardScreen();
               openDrawer();
             }}
           >

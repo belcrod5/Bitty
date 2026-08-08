@@ -16,7 +16,7 @@ type UseRunnerHttpAuthBootstrapArgs = {
 };
 
 // HTTP counterpart of the runner WebSocket bootstrapReady gate. Runner HTTP
-// requests triggered before persisted settings finish loading (e.g. MiniBoard
+// requests triggered before persisted settings finish loading (e.g. board
 // effects fired by the registered-directories commit) would otherwise capture
 // an empty bearer token in their closures: callers await the barrier, then
 // read the live URL/token from a per-render ref.

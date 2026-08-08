@@ -38,7 +38,7 @@ function panelEntry(sessionId: string, directory = "/repo", isResponding = false
 function baseArgs(overrides: Partial<Parameters<typeof useReadyDrivenResumeSyncController>[0]> = {}) {
   return {
     settingsLoaded: true,
-    activeScreen: "mini_board" as const,
+    activeScreen: "skia_board" as const,
     codexWsUrl: "ws://127.0.0.1:8788/runner-ws",
     drawerSessionPopupPanelId: "",
     runnerWebSocketManager: new FakeRunnerWebSocketManager() as unknown as RunnerWebSocketManager,

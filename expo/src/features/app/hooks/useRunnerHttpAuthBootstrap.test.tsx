@@ -25,7 +25,7 @@ describe("useRunnerHttpAuthBootstrap", () => {
       onSettingsLoadedOnceRef,
     });
 
-    // Fired before settings load (like MiniBoard effects): must not resolve
+    // Fired before settings load (like board effects): must not resolve
     // with the empty startup token.
     const earlyCall = result.current();
     const settled = jest.fn();

@@ -27,7 +27,7 @@ export function useCodexStatusRefreshEffects({
   refreshCodexAuthProfiles,
 }: UseCodexStatusRefreshEffectsArgs) {
   const codexAuthRefreshKeyRef = useRef("");
-  const isCodexStatusScreenActive = activeScreen === "mini_board";
+  const isCodexStatusScreenActive = activeScreen === "skia_board";
 
   useEffect(() => {
     if (!isCodexStatusScreenActive) return;

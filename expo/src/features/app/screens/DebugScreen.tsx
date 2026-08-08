@@ -6,14 +6,14 @@ import { DebugSpeechControlsPanel } from "../components/DebugSpeechControlsPanel
 import { styles } from "../styles";
 
 export function DebugScreen() {
-  const { openMiniBoardScreen, openDrawer, openAudioLabScreen } = useAppShell();
+  const { openSkiaBoardScreen, openDrawer, openAudioLabScreen } = useAppShell();
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.debugHeaderRow}>
         <TouchableOpacity
           style={styles.debugBackButton}
           onPress={() => {
-            openMiniBoardScreen();
+            openSkiaBoardScreen();
             openDrawer();
           }}
         >
