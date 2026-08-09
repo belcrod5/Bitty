@@ -45,6 +45,25 @@ test.each([
   expect(onPathRemoved).toHaveBeenCalledWith(target);
 });
 
+test("keeps the path available when rename succeeds without changing its normalized path", async () => {
+  const onPathRemoved = jest.fn();
+  const hook = await renderMutations(onPathRemoved);
+  mockMutateWorkspaceFile.mockResolvedValue({
+    ok: true,
+    path: " docs\\guide.md ",
+    previousPath: "docs/guide.md",
+  });
+
+  await act(async () => {
+    await hook.result.current.renameFileTarget(
+      { path: "docs/guide.md", name: "guide.md" },
+      "guide.md"
+    );
+  });
+
+  expect(onPathRemoved).not.toHaveBeenCalled();
+});
+
 test("does not mark a path unavailable when the mutation fails", async () => {
   const onPathRemoved = jest.fn();
   const hook = await renderMutations(onPathRemoved);

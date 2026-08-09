@@ -6,6 +6,15 @@ const mockStartAutoRecordingMode = jest.fn();
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
 const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
+const mockMarkFileUnavailable = jest.fn();
+const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
+  renameTarget: null,
+  requestRename: jest.fn(),
+  cancelRename: jest.fn(),
+  renameFile: jest.fn(),
+  renameFileTarget: jest.fn(),
+  deleteFile: jest.fn(),
+}));
 
 jest.mock("@legendapp/list", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
@@ -56,14 +65,11 @@ jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({ RunnerWsConnection
 jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({ LocationScheduleSettings: () => null }));
 
 jest.mock("../hooks/useWorkspaceFileMutations", () => ({
-  useWorkspaceFileMutations: () => ({
-    renameTarget: null,
-    requestRename: jest.fn(),
-    cancelRename: jest.fn(),
-    renameFile: jest.fn(),
-    renameFileTarget: jest.fn(),
-    deleteFile: jest.fn(),
-  }),
+  useWorkspaceFileMutations: (params: unknown) => mockUseWorkspaceFileMutations(params),
+}));
+
+jest.mock("../contexts/SkiaBoardContext", () => ({
+  useSkiaBoard: () => ({ markFileUnavailable: mockMarkFileUnavailable }),
 }));
 
 jest.mock("../contexts/AppShellContext", () => ({
@@ -311,6 +317,18 @@ describe("ChatScreen auto recording panel target", () => {
     await fireEvent.press(screen.getByText("mic"));
 
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith(undefined);
+    await screen.unmount();
+  });
+
+  it("marks board files unavailable through the shared mutation callback", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const mutationParams = mockUseWorkspaceFileMutations.mock.calls[0]?.[0] as {
+      onPathRemoved?: (target: { path: string; name: string }) => void;
+    };
+
+    mutationParams.onPathRemoved?.({ path: "docs/guide.md", name: "guide.md" });
+
+    expect(mockMarkFileUnavailable).toHaveBeenCalledWith("/workspace", "docs/guide.md");
     await screen.unmount();
   });
 

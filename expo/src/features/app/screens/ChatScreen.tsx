@@ -39,6 +39,7 @@ import {
 import { useChatComposer } from "../contexts/ChatComposerContext";
 import { useChatVisual } from "../contexts/ChatVisualContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
+import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { ChatContextUsageMenu } from "../components/ChatContextUsageMenu";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { CommandExecutionRow } from "../components/CommandExecutionRow";
@@ -280,6 +281,7 @@ export function ChatScreen({
     sessionHistoryPagingById,
     loadOlderSessionHistory,
   } = useChatScreen();
+  const { markFileUnavailable } = useSkiaBoard();
   const popupHeaderDragStartPageYRef = useRef<number | null>(null);
   const popupHeaderPanResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_event, gestureState) => (
@@ -1315,6 +1317,7 @@ export function ChatScreen({
     rootDirectory: selectedDirectoryPathForView,
     refreshChangedFiles: gitChangedFiles.refresh,
     showInfoToast,
+    onPathRemoved: (target) => markFileUnavailable(selectedDirectoryPathForView, target.path),
   });
   const speakRunnerFileText = useCallback((textRaw: unknown, target: WorkspaceFileTarget) => {
     const text = String(textRaw || "").trim();

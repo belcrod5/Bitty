@@ -7,7 +7,10 @@ import {
   type WorkspaceFileMutationResult,
   type WorkspaceFileTarget,
 } from "../utils/workspaceFiles";
-import { isRunnerEditableTextFile } from "../utils/runnerFileContextMenu";
+import {
+  isRunnerEditableTextFile,
+  normalizeRunnerPath,
+} from "../utils/runnerFileContextMenu";
 
 type UseWorkspaceFileMutationsParams = {
   runnerUrl: string;
@@ -78,7 +81,9 @@ export function useWorkspaceFileMutations({
         name: nextName,
       });
       setRenameTarget(null);
-      onPathRemoved?.(target);
+      if (normalizeRunnerPath(result.path) !== normalizeRunnerPath(target.path)) {
+        onPathRemoved?.(target);
+      }
       showInfoToast(`名前を変更しました: ${result.path}`);
       await refreshAfterMutationWithAlert(result);
     } catch (err) {
