@@ -281,7 +281,13 @@ export function ChatScreen({
     sessionHistoryPagingById,
     loadOlderSessionHistory,
   } = useChatScreen();
-  const { markFileUnavailable } = useSkiaBoard();
+  const {
+    addFile: addSkiaBoardFile,
+    removeFile: removeSkiaBoardFile,
+    hasFile: hasSkiaBoardFile,
+    markFileUnavailable,
+    loaded: skiaBoardLoaded,
+  } = useSkiaBoard();
   const popupHeaderDragStartPageYRef = useRef<number | null>(null);
   const popupHeaderPanResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_event, gestureState) => (
@@ -1310,6 +1316,7 @@ export function ChatScreen({
     requestEdit: requestChatFileEdit,
     cancelEdit: cancelChatFileEdit,
     writeFileContent: writeChatFileContent,
+    autoSaveFileContent: autoSaveChatFileContent,
     deleteFile: deleteChatFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -1366,17 +1373,28 @@ export function ChatScreen({
       onRequestEdit: requestChatFileEdit,
       onRequestDelete: deleteChatFile,
       onRenameFile: renameChatFileTarget,
+      skiaBoard: skiaBoardLoaded
+        ? {
+          addFile: addSkiaBoardFile,
+          removeFile: removeSkiaBoardFile,
+          hasFile: hasSkiaBoardFile,
+        }
+        : undefined,
     });
   }, [
+    addSkiaBoardFile,
     deleteChatFile,
     getPathLabel,
+    hasSkiaBoardFile,
     renameChatFileTarget,
+    removeSkiaBoardFile,
     requestChatFileRename,
     requestChatFileEdit,
     runnerToken,
     runnerUrl,
     selectedDirectoryPathForView,
     showInfoToast,
+    skiaBoardLoaded,
     speakRunnerFileText,
   ]);
   const readSelectedMessageText = useCallback((message: ConversationMessage, selectedTextRaw: unknown) => {
@@ -2134,8 +2152,8 @@ export function ChatScreen({
         <RunnerFileViewer target={approvalDialogPending ? null : runnerFileViewerTarget}
           runnerUrl={runnerUrl}
           runnerToken={runnerToken}
-          rootDirectory={selectedDirectoryPathForView}
           onRequestClose={() => setRunnerFileViewerTarget(null)}
+          onAutoSave={autoSaveChatFileContent}
         />
         <WorkspaceFileRenameDialog
           target={approvalDialogPending ? null : chatFileRenameTarget}

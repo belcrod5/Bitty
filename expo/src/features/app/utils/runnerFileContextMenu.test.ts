@@ -2,6 +2,8 @@ import { Alert } from "react-native";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
   getRunnerFileViewerKind,
+  getRunnerFileViewerLocation,
+  isRunnerEditableTextFile,
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
 } from "./runnerFileContextMenu";
@@ -28,12 +30,14 @@ function flushPromises() {
 
 function openContextMenuButtons(params: {
   filePath: string;
+  rootDir?: string;
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
-  getSkiaBoardAction?: (target: { path: string; name: string }) => {
-    text: "Skiaボードへ追加" | "Skiaボードから除外";
-    onPress: () => void;
+  skiaBoard?: {
+    hasFile: (rootDirectory: string, path: string) => boolean;
+    addFile?: (file: { rootDir: string; path: string; name: string }) => void;
+    removeFile?: (rootDirectory: string, path: string) => void;
   };
 }): AlertButton[] {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
@@ -42,13 +46,13 @@ function openContextMenuButtons(params: {
     fileNameRaw: "",
     runnerUrl: "http://runner.test",
     runnerToken: "token",
-    rootDir: "project",
+    rootDir: params.rootDir || "project",
     getPathLabel: (pathRaw) => String(pathRaw || ""),
     showInfoToast: params.showInfoToast || (() => {}),
     onOpenMedia: () => {},
     onOpenFile: params.onOpenFile,
     onSpeakText: params.onSpeakText,
-    getSkiaBoardAction: params.getSkiaBoardAction,
+    skiaBoard: params.skiaBoard,
   });
   expect(alertSpy).toHaveBeenCalledTimes(1);
   const buttons = (alertSpy.mock.calls[0][2] || []) as AlertButton[];
@@ -65,14 +69,21 @@ test("getRunnerFileViewerKind detects supported extensions case-insensitively", 
   expect(getRunnerFileViewerKind("docs/index.html")).toBe("html");
   expect(getRunnerFileViewerKind("docs/INDEX.HTM")).toBe("html");
   expect(getRunnerFileViewerKind("diagrams/ARCHITECTURE.DRAWIO")).toBe("drawio");
+  expect(getRunnerFileViewerKind("tasks/TODAY.CHECKLIST")).toBe("checklist");
   expect(getRunnerFileViewerKind("docs/readme.md")).toBeNull();
   expect(getRunnerFileViewerKind("Makefile")).toBeNull();
   expect(getRunnerFileViewerKind("")).toBeNull();
 });
 
+test("routes checklist files only to the dedicated viewer", () => {
+  expect(getRunnerFileViewerKind("tasks/today.checklist")).toBe("checklist");
+  expect(isRunnerEditableTextFile("tasks/today.checklist")).toBe(false);
+});
+
 test.each([
   ["docs/report.html", "html"],
   ["diagrams/architecture.drawio", "drawio"],
+  ["tasks/today.checklist", "checklist"],
 ] as const)("shows an open button for %s and passes its viewer kind", (filePath, kind) => {
   const onOpenFile = jest.fn();
   const buttons = openContextMenuButtons({ filePath, onOpenFile });
@@ -83,6 +94,67 @@ test.each([
     kind,
     path: filePath,
     name: filePath,
+    rootDirectory: "project",
+  });
+});
+
+test.each([
+  ["/work/other/tasks/today.checklist", "checklist"],
+  ["/work/other/report.html", "html"],
+] as const)("opens root-external absolute %s from its safe file location", (filePath, kind) => {
+  const onOpenFile = jest.fn();
+  const buttons = openContextMenuButtons({
+    filePath,
+    rootDir: "/work/current",
+    onOpenFile,
+  });
+  buttons.find((button) => button.text === "開く")?.onPress?.();
+  expect(onOpenFile).toHaveBeenCalledWith({
+    kind,
+    path: filePath,
+    name: filePath,
+    rootDirectory: filePath.slice(0, filePath.lastIndexOf("/")),
+  });
+});
+
+test("keeps relative viewer paths with normalized POSIX and Windows roots", () => {
+  expect(getRunnerFileViewerLocation("docs/report.html", "/work/current")).toEqual({
+    path: "docs/report.html",
+    rootDirectory: "/work/current",
+  });
+  expect(getRunnerFileViewerLocation("report.html", "/")).toEqual({
+    path: "report.html",
+    rootDirectory: "/",
+  });
+  expect(getRunnerFileViewerLocation("report.html", "C:/")).toEqual({
+    path: "report.html",
+    rootDirectory: "C:/",
+  });
+});
+
+test("keeps absolute paths owned by POSIX or Windows drive roots", () => {
+  expect(getRunnerFileViewerLocation("/report.html", "/")).toEqual({
+    path: "/report.html",
+    rootDirectory: "/",
+  });
+  expect(getRunnerFileViewerLocation("/work/current/report.html", "/work/current")).toEqual({
+    path: "/work/current/report.html",
+    rootDirectory: "/work/current",
+  });
+  expect(getRunnerFileViewerLocation("C:/report.html", "C:/")).toEqual({
+    path: "C:/report.html",
+    rootDirectory: "C:/",
+  });
+});
+
+test("uses the correct POSIX or drive root for external root-level files", () => {
+  expect(getRunnerFileViewerLocation("/report.html", "/work/current")).toEqual({
+    path: "/report.html",
+    rootDirectory: "/",
+  });
+  expect(getRunnerFileViewerLocation("D:/report.html", "C:/work/current")).toEqual({
+    path: "D:/report.html",
+    rootDirectory: "D:/",
   });
 });
 
@@ -209,20 +281,46 @@ test("keeps existing menu items for media and shell script files", () => {
 });
 
 test("appends the caller's Skia board action to the existing file menu", () => {
-  const onPress = jest.fn();
-  const getSkiaBoardAction = jest.fn(() => ({
-    text: "Skiaボードへ追加" as const,
-    onPress,
-  }));
+  const addFile = jest.fn();
   const buttons = openContextMenuButtons({
     filePath: "docs/readme.md",
-    getSkiaBoardAction,
+    skiaBoard: { hasFile: () => false, addFile },
   });
 
-  expect(getSkiaBoardAction).toHaveBeenCalledWith({
+  buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
+  expect(addFile).toHaveBeenCalledWith({
+    rootDir: "project",
     path: "docs/readme.md",
     name: "docs/readme.md",
   });
+});
+
+test("passes the same external absolute location to open and Skia board actions", () => {
+  const onOpenFile = jest.fn();
+  const hasFile = jest.fn(() => false);
+  const addFile = jest.fn();
+  const buttons = openContextMenuButtons({
+    filePath: "/external/tasks/today.checklist",
+    rootDir: "/workspace",
+    onOpenFile,
+    skiaBoard: { hasFile, addFile },
+  });
+
+  buttons.find((button) => button.text === "開く")?.onPress?.();
   buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
-  expect(onPress).toHaveBeenCalledTimes(1);
+  expect(onOpenFile).toHaveBeenCalledWith({
+    kind: "checklist",
+    path: "/external/tasks/today.checklist",
+    name: "/external/tasks/today.checklist",
+    rootDirectory: "/external/tasks",
+  });
+  expect(hasFile).toHaveBeenCalledWith(
+    "/external/tasks",
+    "/external/tasks/today.checklist",
+  );
+  expect(addFile).toHaveBeenCalledWith({
+    rootDir: "/external/tasks",
+    path: "/external/tasks/today.checklist",
+    name: "/external/tasks/today.checklist",
+  });
 });

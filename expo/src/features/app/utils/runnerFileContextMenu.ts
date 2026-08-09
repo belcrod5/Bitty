@@ -37,6 +37,7 @@ const RUNNER_FILE_VIEWER_KIND_BY_EXTENSION: Record<string, RunnerFileViewerKind>
   html: "html",
   htm: "html",
   drawio: "drawio",
+  checklist: "checklist",
 };
 
 const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
@@ -54,10 +55,11 @@ const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
 
 export type RunnerMediaKind = "video" | "image";
 
-export type RunnerFileViewerKind = "html" | "drawio";
+export type RunnerFileViewerKind = "html" | "drawio" | "checklist";
 
 export type RunnerFileViewerTarget = WorkspaceFileTarget & {
   kind: RunnerFileViewerKind;
+  rootDirectory: string;
 };
 
 export type RunnerMediaItem = {
@@ -151,9 +153,10 @@ type OpenRunnerFileContextMenuParams = {
   onRequestDelete?: (target: WorkspaceFileTarget) => void;
   onRenameFile?: RenameRunnerMediaFile;
   mediaItems?: RunnerMediaItem[];
-  getSkiaBoardAction?: (target: WorkspaceFileTarget) => {
-    text: "Skiaボードへ追加" | "Skiaボードから除外";
-    onPress: () => void;
+  skiaBoard?: {
+    hasFile: (rootDirectory: string, path: string) => boolean;
+    addFile?: (file: { rootDir: string; path: string; name: string }) => void;
+    removeFile?: (rootDirectory: string, path: string) => void;
   };
 };
 
@@ -176,11 +179,12 @@ export function openRunnerFileContextMenu({
   onRequestDelete,
   onRenameFile,
   mediaItems,
-  getSkiaBoardAction,
+  skiaBoard,
 }: OpenRunnerFileContextMenuParams) {
   const filePath = normalizeRunnerPath(filePathRaw);
   const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
   if (!filePath) return;
+  const fileLocation = getRunnerFileViewerLocation(filePath, rootDir);
   const isShellScript = allowExecute && filePath.toLowerCase().endsWith(".sh");
   const mediaKind = getRunnerMediaKind(filePath);
   const copyPathAction = () => {
@@ -276,7 +280,7 @@ export function openRunnerFileContextMenu({
         onRequestDelete,
         onRenameFile,
         mediaItems: items,
-        getSkiaBoardAction,
+        skiaBoard,
       });
     };
     onOpenMedia({
@@ -370,8 +374,9 @@ export function openRunnerFileContextMenu({
         onPress: () => {
           onOpenFile({
             kind: viewerKind,
-            path: filePath,
+            path: fileLocation.path,
             name: fileName,
+            rootDirectory: fileLocation.rootDirectory,
           });
         },
       });
@@ -423,9 +428,24 @@ export function openRunnerFileContextMenu({
       onPress: deleteAction,
     });
   }
-  const skiaBoardAction = getSkiaBoardAction?.({ path: filePath, name: fileName });
-  if (skiaBoardAction) {
-    buttons.push(skiaBoardAction);
+  if (skiaBoard) {
+    const onBoard = skiaBoard.hasFile(fileLocation.rootDirectory, fileLocation.path);
+    if ((onBoard && skiaBoard.removeFile) || (!onBoard && skiaBoard.addFile)) {
+      buttons.push({
+        text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
+        onPress: () => {
+          if (onBoard) {
+            skiaBoard.removeFile?.(fileLocation.rootDirectory, fileLocation.path);
+          } else {
+            skiaBoard.addFile?.({
+              rootDir: fileLocation.rootDirectory,
+              path: fileLocation.path,
+              name: fileName,
+            });
+          }
+        },
+      });
+    }
   }
   buttons.push({
     text: "キャンセル",
@@ -439,8 +459,11 @@ export function normalizeRunnerPath(value: unknown) {
 }
 
 function normalizeRunnerDirectoryPath(value: unknown) {
-  const normalized = normalizeRunnerPath(value).replace(/\/+$/, "");
-  return normalized || ".";
+  const normalized = normalizeRunnerPath(value);
+  if (/^\/+$/u.test(normalized)) return "/";
+  const driveRoot = /^([a-zA-Z]:)\/+$/u.exec(normalized);
+  if (driveRoot) return `${driveRoot[1]}/`;
+  return normalized.replace(/\/+$/, "") || ".";
 }
 
 function normalizeRunnerComparablePath(value: unknown) {
@@ -475,8 +498,34 @@ function isAbsoluteRunnerPath(pathRaw: unknown) {
 function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
   const targetPath = normalizeRunnerComparablePath(pathRaw);
   const directory = normalizeRunnerComparablePath(directoryRaw);
-  if (!directory || directory === "." || directory === "/") return true;
+  if (!directory || directory === ".") return true;
+  if (directory === "/") return targetPath.startsWith("/");
+  if (/^[a-zA-Z]:\/$/u.test(directory)) {
+    return targetPath.toLowerCase().startsWith(directory.toLowerCase());
+  }
   return targetPath === directory || targetPath.startsWith(`${directory}/`);
+}
+
+export function getRunnerFileViewerLocation(pathRaw: unknown, rootDirectoryRaw: unknown) {
+  const path = normalizeRunnerPath(pathRaw);
+  const rootDirectory = normalizeRunnerDirectoryPath(rootDirectoryRaw);
+  if (!isAbsoluteRunnerPath(path) || isRunnerPathInsideDirectory(path, rootDirectory)) {
+    return { path, rootDirectory };
+  }
+  const separatorIndex = path.lastIndexOf("/");
+  if (separatorIndex < 0 || separatorIndex === path.length - 1) {
+    return { path, rootDirectory };
+  }
+  const parentPath = path.slice(0, separatorIndex);
+  const locationRoot = separatorIndex === 0
+    ? "/"
+    : /^[a-zA-Z]:$/u.test(parentPath)
+      ? `${parentPath}/`
+      : parentPath;
+  return {
+    path,
+    rootDirectory: locationRoot,
+  };
 }
 
 function getRunnerScriptExecutionWarning(filePath: string, rootDir: string) {

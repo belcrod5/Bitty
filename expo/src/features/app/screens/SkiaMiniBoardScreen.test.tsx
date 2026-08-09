@@ -85,6 +85,7 @@ jest.mock("../components/WorkspaceTextFileEditor", () => ({ WorkspaceTextFileEdi
 const mockMoveBoardCard = jest.fn();
 const mockRemoveBoardSession = jest.fn();
 const mockRemoveBoardFile = jest.fn();
+const mockHasBoardFile = jest.fn(() => true);
 const mockMarkBoardFileUnavailable = jest.fn();
 const mockTidyBoard = jest.fn();
 const mockDefaultSession = {
@@ -114,6 +115,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     moveBoardCard: mockMoveBoardCard,
     removeBoardSession: mockRemoveBoardSession,
     removeBoardFile: mockRemoveBoardFile,
+    hasBoardFile: mockHasBoardFile,
     markBoardFileUnavailable: mockMarkBoardFileUnavailable,
     tidyBoard: mockTidyBoard,
   }),
@@ -123,6 +125,7 @@ beforeEach(() => {
   mockMoveBoardCard.mockClear();
   mockRemoveBoardSession.mockClear();
   mockRemoveBoardFile.mockClear();
+  mockHasBoardFile.mockClear();
   mockMarkBoardFileUnavailable.mockClear();
   mockTidyBoard.mockClear();
   mockSessions = [mockDefaultSession];

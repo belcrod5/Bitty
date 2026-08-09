@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -9,13 +9,20 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { WebView } from "react-native-webview";
+import { ChecklistFileViewer } from "./ChecklistFileViewer";
+import { parseChecklistFile, type ChecklistItem } from "../utils/checklistFile";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
 import {
   RUNNER_FILE_HTTP_TIMEOUT_MS,
   type RunnerFileViewerKind,
   type RunnerFileViewerTarget,
 } from "../utils/runnerFileContextMenu";
+import type {
+  WorkspaceFileTarget,
+  WorkspaceFileWriteResult,
+} from "../utils/workspaceFiles";
 
 const DRAWIO_VIEWER_SCRIPT_URL =
   "https://viewer.diagrams.net/js/viewer-static.min.js";
@@ -24,9 +31,15 @@ type RunnerFileViewerProps = {
   target: RunnerFileViewerTarget | null;
   runnerUrl: string;
   runnerToken: string;
-  rootDirectory: string;
   onRequestClose: () => void;
+  onAutoSave: (
+    target: WorkspaceFileTarget,
+    content: string,
+    expectedVersion: string,
+  ) => Promise<WorkspaceFileWriteResult>;
 };
+
+type WebRunnerFileViewerKind = Exclude<RunnerFileViewerKind, "checklist">;
 
 function escapeHtmlAttribute(value: string) {
   return value
@@ -37,7 +50,7 @@ function escapeHtmlAttribute(value: string) {
     .replace(/>/g, "&gt;");
 }
 
-export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: string) {
+export function buildRunnerFileViewerHtml(kind: WebRunnerFileViewerKind, content: string) {
   switch (kind) {
     case "html":
       return content;
@@ -80,17 +93,24 @@ export function RunnerFileViewer({
   target,
   runnerUrl,
   runnerToken,
-  rootDirectory,
   onRequestClose,
+  onAutoSave,
 }: RunnerFileViewerProps) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [content, setContent] = useState("");
+  const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
+  const [version, setVersion] = useState("");
+  const [checklistSaving, setChecklistSaving] = useState(false);
 
   const targetPath = target?.path || "";
+  const targetKind = target?.kind || null;
+  const targetRootDirectory = target?.rootDirectory || "";
 
   useEffect(() => {
     setContent("");
+    setChecklistItems([]);
+    setVersion("");
     setLoadError("");
     if (!targetPath) return;
     let cancelled = false;
@@ -98,13 +118,18 @@ export function RunnerFileViewer({
     fetchRunnerTextFileContent({
       runnerUrl,
       runnerToken,
-      rootDir: rootDirectory,
+      rootDir: targetRootDirectory,
       path: targetPath,
       timeoutMs: RUNNER_FILE_HTTP_TIMEOUT_MS,
     })
       .then((result) => {
         if (cancelled) return;
-        setContent(result.content);
+        if (targetKind === "checklist") {
+          setChecklistItems(parseChecklistFile(result.content));
+        } else {
+          setContent(result.content);
+        }
+        setVersion(result.version);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -117,7 +142,15 @@ export function RunnerFileViewer({
     return () => {
       cancelled = true;
     };
-  }, [rootDirectory, runnerToken, runnerUrl, targetPath]);
+  }, [runnerToken, runnerUrl, targetKind, targetPath, targetRootDirectory]);
+
+  useEffect(() => {
+    setChecklistSaving(false);
+  }, [targetKind, targetPath]);
+
+  const requestClose = useCallback(() => {
+    if (!checklistSaving) onRequestClose();
+  }, [checklistSaving, onRequestClose]);
 
   if (!target) {
     return null;
@@ -128,40 +161,60 @@ export function RunnerFileViewer({
       visible
       animationType="slide"
       presentationStyle="fullScreen"
-      onRequestClose={onRequestClose}
+      onRequestClose={requestClose}
+      testID="runner-file-viewer-modal"
     >
-      <SafeAreaView style={viewerStyles.root}>
-        <View style={viewerStyles.header}>
-          <View style={viewerStyles.titleWrap}>
-            <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "ファイル"}</Text>
-            <Text style={viewerStyles.path} numberOfLines={1}>{targetPath}</Text>
+      <GestureHandlerRootView style={viewerStyles.root} testID="runner-file-viewer-gesture-root">
+        <SafeAreaView style={viewerStyles.root}>
+          <View style={viewerStyles.header}>
+            <View style={viewerStyles.titleWrap}>
+              <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "ファイル"}</Text>
+              <Text style={viewerStyles.path} numberOfLines={1}>{targetPath}</Text>
+            </View>
+            <TouchableOpacity
+              style={viewerStyles.closeButton}
+              onPress={requestClose}
+              disabled={checklistSaving}
+              accessibilityRole="button"
+              accessibilityLabel={checklistSaving
+                ? "保存中はファイルビューアーを閉じられません"
+                : "ファイルビューアーを閉じる"}
+              accessibilityState={{ disabled: checklistSaving }}
+              testID="runner-file-viewer-close"
+            >
+              {checklistSaving ? (
+                <ActivityIndicator size="small" color="#94a3b8" />
+              ) : (
+                <Ionicons name="close" size={24} color="#e2e8f0" />
+              )}
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={viewerStyles.closeButton}
-            onPress={onRequestClose}
-            accessibilityRole="button"
-            accessibilityLabel="ファイルビューアーを閉じる"
-          >
-            <Ionicons name="close" size={24} color="#e2e8f0" />
-          </TouchableOpacity>
-        </View>
-        {loading ? (
-          <View style={viewerStyles.centerArea}>
-            <ActivityIndicator size="large" color="#38bdf8" />
-          </View>
-        ) : loadError ? (
-          <View style={viewerStyles.centerArea}>
-            <Text style={viewerStyles.errorText}>{loadError}</Text>
-          </View>
-        ) : (
-          <WebView
-            style={viewerStyles.webview}
-            originWhitelist={["*"]}
-            source={{ html: buildRunnerFileViewerHtml(target.kind, content) }}
-            setSupportMultipleWindows={false}
-          />
-        )}
-      </SafeAreaView>
+          {loading ? (
+            <View style={viewerStyles.centerArea}>
+              <ActivityIndicator size="large" color="#38bdf8" />
+            </View>
+          ) : loadError ? (
+            <View style={viewerStyles.centerArea}>
+              <Text style={viewerStyles.errorText}>{loadError}</Text>
+            </View>
+          ) : target.kind === "checklist" ? (
+            <ChecklistFileViewer
+              target={target}
+              initialItems={checklistItems}
+              initialVersion={version}
+              onSave={onAutoSave}
+              onSavingChange={setChecklistSaving}
+            />
+          ) : (
+            <WebView
+              style={viewerStyles.webview}
+              originWhitelist={["*"]}
+              source={{ html: buildRunnerFileViewerHtml(target.kind, content) }}
+              setSupportMultipleWindows={false}
+            />
+          )}
+        </SafeAreaView>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

@@ -138,7 +138,7 @@ export function useWorkspaceFileMutations({
     showInfoToast,
   ]);
 
-  const writeFileContent = useCallback(async (
+  const persistFileContent = useCallback(async (
     target: WorkspaceFileTarget,
     content: string,
     expectedVersion: string,
@@ -147,25 +147,43 @@ export function useWorkspaceFileMutations({
       const result = await writeWorkspaceTextFile({
         runnerUrl,
         runnerToken,
-        rootDirectory,
+        rootDirectory: target.rootDirectory || rootDirectory,
         path: target.path,
         content,
         expectedVersion,
       });
-      showInfoToast(`保存しました: ${result.path || target.path}`);
-      await refreshAfterMutationWithAlert(result);
+      return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Alert.alert("保存失敗", message || "ファイルの保存に失敗しました。");
       throw err;
     }
   }, [
-    refreshAfterMutationWithAlert,
     rootDirectory,
     runnerToken,
     runnerUrl,
-    showInfoToast,
   ]);
+
+  const writeFileContent = useCallback(async (
+    target: WorkspaceFileTarget,
+    content: string,
+    expectedVersion: string,
+  ) => {
+    const result = await persistFileContent(target, content, expectedVersion);
+    showInfoToast(`保存しました: ${result.path || target.path}`);
+    await refreshAfterMutationWithAlert(result);
+    return result;
+  }, [persistFileContent, refreshAfterMutationWithAlert, showInfoToast]);
+
+  const autoSaveFileContent = useCallback(async (
+    target: WorkspaceFileTarget,
+    content: string,
+    expectedVersion: string,
+  ) => {
+    const result = await persistFileContent(target, content, expectedVersion);
+    await refreshAfterMutationWithAlert(result);
+    return result;
+  }, [persistFileContent, refreshAfterMutationWithAlert]);
 
   const deleteFile = useCallback(async (target: WorkspaceFileTarget) => {
     try {
@@ -202,6 +220,7 @@ export function useWorkspaceFileMutations({
     requestEdit: setEditTarget,
     cancelEdit: () => setEditTarget(null),
     writeFileContent,
+    autoSaveFileContent,
     createFileDirectory,
     requestCreateFile: setCreateFileDirectory,
     cancelCreateFile: () => setCreateFileDirectory(null),

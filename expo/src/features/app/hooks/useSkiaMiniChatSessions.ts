@@ -76,6 +76,7 @@ export function useSkiaMiniChatSessions() {
     moveCard: moveBoardCard,
     removeSession: removeBoardSession,
     removeFile: removeBoardFile,
+    hasFile: hasBoardFile,
     markFileUnavailable: markBoardFileUnavailable,
     tidyCards: tidyBoard,
   } = useSkiaBoard();
@@ -262,6 +263,7 @@ export function useSkiaMiniChatSessions() {
     moveBoardCard,
     removeBoardSession,
     removeBoardFile,
+    hasBoardFile,
     markBoardFileUnavailable,
     tidyBoard,
   };

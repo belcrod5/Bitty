@@ -217,6 +217,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     moveBoardCard,
     removeBoardSession,
     removeBoardFile,
+    hasBoardFile,
     markBoardFileUnavailable,
     tidyBoard,
   } = useSkiaMiniChatSessions();
@@ -396,6 +397,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     requestEdit,
     cancelEdit,
     writeFileContent,
+    autoSaveFileContent,
     deleteFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -439,15 +441,16 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
       onRequestEdit: requestEdit,
       onRequestDelete: deleteFile,
       onRenameFile: renameFileTarget,
-      getSkiaBoardAction: () => ({
-        text: "Skiaボードから除外",
-        onPress: () => removeBoardFile(file.rootDir, file.path),
-      }),
+      skiaBoard: {
+        hasFile: hasBoardFile,
+        removeFile: removeBoardFile,
+      },
     });
   }, [
     deleteFile,
     fileMenuRootDir,
     getPathLabel,
+    hasBoardFile,
     pendingFileMenu,
     removeBoardFile,
     renameFileTarget,
@@ -720,8 +723,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         target={runnerFileViewerTarget}
         runnerUrl={runnerUrl}
         runnerToken={runnerToken}
-        rootDirectory={fileMenuRootDir}
         onRequestClose={() => setRunnerFileViewerTarget(null)}
+        onAutoSave={autoSaveFileContent}
       />
       <WorkspaceFileRenameDialog
         target={renameTarget}

@@ -475,24 +475,8 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       onRequestDelete: deleteFile,
       onRenameFile: renameFileTarget,
       mediaItems,
-      getSkiaBoardAction: skiaBoardLoaded
-        ? (target) => {
-          const onBoard = hasFile(selectedDirectoryPath, target.path);
-          return {
-            text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
-            onPress: () => {
-              if (onBoard) {
-                removeFile(selectedDirectoryPath, target.path);
-              } else {
-                addFile({
-                  rootDir: selectedDirectoryPath,
-                  path: target.path,
-                  name: target.name,
-                });
-              }
-            },
-          };
-        }
+      skiaBoard: skiaBoardLoaded
+        ? { addFile, removeFile, hasFile }
         : undefined,
     });
   }, [

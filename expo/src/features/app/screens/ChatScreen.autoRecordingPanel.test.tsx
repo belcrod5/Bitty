@@ -1,11 +1,15 @@
 import React from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
+import { Alert } from "react-native";
 import { ChatScreen } from "./ChatScreen";
 
 const mockStartAutoRecordingMode = jest.fn();
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
 const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
+const mockAddSkiaBoardFile = jest.fn();
+const mockRemoveSkiaBoardFile = jest.fn();
+const mockHasSkiaBoardFile = jest.fn(() => false);
 const mockMarkFileUnavailable = jest.fn();
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   renameTarget: null,
@@ -52,7 +56,18 @@ jest.mock("../components/ChatContextUsageMenu", () => ({ ChatContextUsageMenu: (
 jest.mock("../components/CodexStatusSummaryMenu", () => ({ CodexStatusSummaryMenu: () => null }));
 jest.mock("../components/CommandExecutionRow", () => ({ CommandExecutionRow: () => null }));
 jest.mock("../components/BouncingDotsIndicator", () => ({ BouncingDotsIndicator: () => null }));
-jest.mock("../components/MarkdownText", () => ({ MarkdownText: () => null }));
+jest.mock("../components/MarkdownText", () => {
+  const ReactModule = jest.requireActual<typeof React>("react");
+  const { TouchableOpacity } = jest.requireActual("react-native") as typeof import("react-native");
+  return {
+    MarkdownText: ({ onLocalFileLinkPress }: {
+      onLocalFileLinkPress?: (path: string) => void;
+    }) => ReactModule.createElement(TouchableOpacity, {
+      testID: "local-file-link",
+      onPress: () => onLocalFileLinkPress?.("/external/tasks/today.checklist"),
+    }),
+  };
+});
 jest.mock("../components/PixelRobotIndicator", () => ({ PixelRobotIndicator: () => null }));
 jest.mock("../components/SlashCommandSelectMenu", () => ({ SlashCommandSelectMenu: () => null }));
 jest.mock("../components/TtsWaveformPlayer", () => ({ TtsWaveformPlayer: () => null }));
@@ -69,7 +84,13 @@ jest.mock("../hooks/useWorkspaceFileMutations", () => ({
 }));
 
 jest.mock("../contexts/SkiaBoardContext", () => ({
-  useSkiaBoard: () => ({ markFileUnavailable: mockMarkFileUnavailable }),
+  useSkiaBoard: () => ({
+    addFile: mockAddSkiaBoardFile,
+    removeFile: mockRemoveSkiaBoardFile,
+    hasFile: mockHasSkiaBoardFile,
+    markFileUnavailable: mockMarkFileUnavailable,
+    loaded: true,
+  }),
 }));
 
 jest.mock("../contexts/AppShellContext", () => ({
@@ -329,6 +350,45 @@ describe("ChatScreen auto recording panel target", () => {
     mutationParams.onPathRemoved?.({ path: "docs/guide.md", name: "guide.md" });
 
     expect(mockMarkFileUnavailable).toHaveBeenCalledWith("/workspace", "docs/guide.md");
+    await screen.unmount();
+  });
+
+  it("adds and removes an external chat file link with its owning root", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const message = mockLegendListProps.current?.data?.[0];
+    const row = await render(mockLegendListProps.current?.renderItem?.({ item: message, index: 0 }));
+
+    await fireEvent.press(row.getByTestId("local-file-link"));
+    const menuCall = alertSpy.mock.calls.find((call) => call[0] === "today.checklist");
+    const actions = (menuCall?.[2] || []) as Array<{ text: string; onPress?: () => void }>;
+    actions.find((action) => action.text === "Skiaボードへ追加")?.onPress?.();
+
+    expect(mockHasSkiaBoardFile).toHaveBeenCalledWith(
+      "/external/tasks",
+      "/external/tasks/today.checklist",
+    );
+    expect(mockAddSkiaBoardFile).toHaveBeenCalledWith({
+      rootDir: "/external/tasks",
+      path: "/external/tasks/today.checklist",
+      name: "today.checklist",
+    });
+
+    mockHasSkiaBoardFile.mockReturnValueOnce(true);
+    await fireEvent.press(row.getByTestId("local-file-link"));
+    const menuCalls = alertSpy.mock.calls.filter((call) => call[0] === "today.checklist");
+    const removeActions = (menuCalls[menuCalls.length - 1]?.[2] || []) as Array<{
+      text: string;
+      onPress?: () => void;
+    }>;
+    removeActions.find((action) => action.text === "Skiaボードから除外")?.onPress?.();
+    expect(mockRemoveSkiaBoardFile).toHaveBeenCalledWith(
+      "/external/tasks",
+      "/external/tasks/today.checklist",
+    );
+
+    alertSpy.mockRestore();
+    await row.unmount();
     await screen.unmount();
   });
 

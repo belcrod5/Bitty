@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useWorkspaceFileMutations } from "./useWorkspaceFileMutations";
-import { mutateWorkspaceFile } from "../utils/workspaceFiles";
+import { mutateWorkspaceFile, writeWorkspaceTextFile } from "../utils/workspaceFiles";
 
 jest.mock("../utils/workspaceFiles", () => ({
   createWorkspaceTextFile: jest.fn(),
@@ -9,20 +9,24 @@ jest.mock("../utils/workspaceFiles", () => ({
 }));
 
 const mockMutateWorkspaceFile = mutateWorkspaceFile as jest.MockedFunction<typeof mutateWorkspaceFile>;
+const mockWriteWorkspaceTextFile = writeWorkspaceTextFile as jest.MockedFunction<
+  typeof writeWorkspaceTextFile
+>;
 
-async function renderMutations(onPathRemoved: jest.Mock) {
+async function renderMutations(onPathRemoved: jest.Mock, showInfoToast = jest.fn()) {
   return await renderHook(() => useWorkspaceFileMutations({
     runnerUrl: "http://localhost:8787",
     runnerToken: "token",
     rootDirectory: "/workspace",
     refreshChangedFiles: jest.fn(),
-    showInfoToast: jest.fn(),
+    showInfoToast,
     onPathRemoved,
   }));
 }
 
 beforeEach(() => {
   mockMutateWorkspaceFile.mockReset();
+  mockWriteWorkspaceTextFile.mockReset();
 });
 
 test.each([
@@ -77,4 +81,81 @@ test("does not mark a path unavailable when the mutation fails", async () => {
   });
 
   expect(onPathRemoved).not.toHaveBeenCalled();
+});
+
+test.each(["/work/other/tasks", "/", "D:/"])(
+  "writes viewer content with its location root %s instead of the current chat root",
+  async (targetRootDirectory) => {
+    const targetPath = targetRootDirectory === "/"
+      ? "/today.checklist"
+      : `${targetRootDirectory.replace(/\/$/u, "")}/today.checklist`;
+    const hook = await renderMutations(jest.fn());
+    mockWriteWorkspaceTextFile.mockResolvedValue({
+      ok: true,
+      path: targetPath,
+      version: "version-2",
+    });
+
+    await act(async () => {
+      await hook.result.current.writeFileContent(
+        {
+          path: targetPath,
+          name: "today.checklist",
+          rootDirectory: targetRootDirectory,
+        },
+        "- [x] A\n",
+        "version-1",
+      );
+    });
+
+    expect(mockWriteWorkspaceTextFile).toHaveBeenCalledWith(expect.objectContaining({
+      rootDirectory: targetRootDirectory,
+      path: targetPath,
+    }));
+  },
+);
+
+test("falls back to the current root when a save target has no location root", async () => {
+  const showInfoToast = jest.fn();
+  const hook = await renderMutations(jest.fn(), showInfoToast);
+  mockWriteWorkspaceTextFile.mockResolvedValue({
+    ok: true,
+    path: "docs/note.md",
+    version: "version-2",
+  });
+
+  await act(async () => {
+    await hook.result.current.writeFileContent(
+      { path: "docs/note.md", name: "note.md" },
+      "after",
+      "version-1",
+    );
+  });
+
+  expect(mockWriteWorkspaceTextFile).toHaveBeenCalledWith(expect.objectContaining({
+    rootDirectory: "/workspace",
+    path: "docs/note.md",
+  }));
+  expect(showInfoToast).toHaveBeenCalledWith("保存しました: docs/note.md");
+});
+
+test("auto-saves without showing the manual save success toast", async () => {
+  const showInfoToast = jest.fn();
+  const hook = await renderMutations(jest.fn(), showInfoToast);
+  mockWriteWorkspaceTextFile.mockResolvedValue({
+    ok: true,
+    path: "tasks/today.checklist",
+    version: "version-2",
+  });
+
+  await act(async () => {
+    await hook.result.current.autoSaveFileContent(
+      { path: "tasks/today.checklist", name: "today.checklist" },
+      "- [x] A\n",
+      "version-1",
+    );
+  });
+
+  expect(mockWriteWorkspaceTextFile).toHaveBeenCalledTimes(1);
+  expect(showInfoToast).not.toHaveBeenCalled();
 });
