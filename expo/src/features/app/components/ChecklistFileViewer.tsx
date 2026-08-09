@@ -287,7 +287,22 @@ export function ChecklistFileViewer({
 
   const deleteItem = useCallback((index: number) => {
     if (interactionDisabled) return;
-    void saveItems(items.filter((_item, itemIndex) => itemIndex !== index));
+    const item = items[index];
+    if (!item) return;
+    Alert.alert(
+      "項目を削除しますか？",
+      item.text,
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: () => {
+            void saveItems(items.filter((_item, itemIndex) => itemIndex !== index));
+          },
+        },
+      ],
+    );
   }, [interactionDisabled, items, saveItems]);
 
   const startEdit = useCallback((item: ChecklistViewItem) => {

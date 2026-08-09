@@ -13,13 +13,13 @@ const mockWriteWorkspaceTextFile = writeWorkspaceTextFile as jest.MockedFunction
   typeof writeWorkspaceTextFile
 >;
 
-async function renderMutations(onPathRemoved: jest.Mock) {
+async function renderMutations(onPathRemoved: jest.Mock, showInfoToast = jest.fn()) {
   return await renderHook(() => useWorkspaceFileMutations({
     runnerUrl: "http://localhost:8787",
     runnerToken: "token",
     rootDirectory: "/workspace",
     refreshChangedFiles: jest.fn(),
-    showInfoToast: jest.fn(),
+    showInfoToast,
     onPathRemoved,
   }));
 }
@@ -116,7 +116,8 @@ test.each(["/work/other/tasks", "/", "D:/"])(
 );
 
 test("falls back to the current root when a save target has no location root", async () => {
-  const hook = await renderMutations(jest.fn());
+  const showInfoToast = jest.fn();
+  const hook = await renderMutations(jest.fn(), showInfoToast);
   mockWriteWorkspaceTextFile.mockResolvedValue({
     ok: true,
     path: "docs/note.md",
@@ -135,4 +136,26 @@ test("falls back to the current root when a save target has no location root", a
     rootDirectory: "/workspace",
     path: "docs/note.md",
   }));
+  expect(showInfoToast).toHaveBeenCalledWith("保存しました: docs/note.md");
+});
+
+test("auto-saves without showing the manual save success toast", async () => {
+  const showInfoToast = jest.fn();
+  const hook = await renderMutations(jest.fn(), showInfoToast);
+  mockWriteWorkspaceTextFile.mockResolvedValue({
+    ok: true,
+    path: "tasks/today.checklist",
+    version: "version-2",
+  });
+
+  await act(async () => {
+    await hook.result.current.autoSaveFileContent(
+      { path: "tasks/today.checklist", name: "today.checklist" },
+      "- [x] A\n",
+      "version-1",
+    );
+  });
+
+  expect(mockWriteWorkspaceTextFile).toHaveBeenCalledTimes(1);
+  expect(showInfoToast).not.toHaveBeenCalled();
 });

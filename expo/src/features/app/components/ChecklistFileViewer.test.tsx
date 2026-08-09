@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { Animated } from "react-native";
+import { Alert, Animated } from "react-native";
 import { ChecklistFileViewer } from "./ChecklistFileViewer";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
@@ -53,6 +53,10 @@ beforeEach(() => {
   checklistGestures().length = 0;
 });
 
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 const target = {
   kind: "checklist" as const,
   path: "tasks/today.checklist",
@@ -61,6 +65,7 @@ const target = {
 };
 
 test("auto-saves toggles and uses the returned version for the next action", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   const onSave = jest.fn()
     .mockResolvedValueOnce({ ok: true, path: target.path, version: "version-2" })
     .mockResolvedValueOnce({ ok: true, path: target.path, version: "version-3" });
@@ -87,11 +92,69 @@ test("auto-saves toggles and uses the returned version for the next action", asy
   await waitFor(() => expect(view.getByText("保存済み")).toBeTruthy());
 
   await fireEvent.press(view.getByTestId("checklist-delete-1"));
+  expect(onSave).toHaveBeenCalledTimes(1);
+  expect(alertSpy).toHaveBeenCalledWith(
+    "項目を削除しますか？",
+    "B",
+    expect.any(Array),
+  );
+  const deleteButtons = alertSpy.mock.calls[0]?.[2] || [];
+  deleteButtons.find((button) => button.text === "キャンセル")?.onPress?.();
+  expect(onSave).toHaveBeenCalledTimes(1);
+
+  await fireEvent.press(view.getByTestId("checklist-delete-1"));
+  const confirmButtons = alertSpy.mock.calls[1]?.[2] || [];
+  await act(async () => {
+    confirmButtons.find((button) => button.text === "削除")?.onPress?.();
+  });
   await waitFor(() => expect(onSave).toHaveBeenNthCalledWith(
     2,
     target,
     "- [x] A\n",
     "version-2",
+  ));
+});
+
+test("confirms bulk deletion and only saves after destructive confirmation", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const onSave = jest.fn().mockResolvedValue({
+    ok: true,
+    path: target.path,
+    version: "version-2",
+  });
+  const view = await render(
+    <ChecklistFileViewer
+      target={target}
+      initialItems={[
+        { checked: true, text: "A" },
+        { checked: false, text: "B" },
+        { checked: true, text: "C" },
+      ]}
+      initialVersion="version-1"
+      onSave={onSave}
+      onSavingChange={jest.fn()}
+    />
+  );
+
+  await fireEvent.press(view.getByTestId("checklist-delete-checked"));
+  expect(alertSpy).toHaveBeenCalledWith(
+    "チェック済みを削除しますか？",
+    "2件の項目を削除します。",
+    expect.any(Array),
+  );
+  const cancelButtons = alertSpy.mock.calls[0]?.[2] || [];
+  cancelButtons.find((button) => button.text === "キャンセル")?.onPress?.();
+  expect(onSave).not.toHaveBeenCalled();
+
+  await fireEvent.press(view.getByTestId("checklist-delete-checked"));
+  const confirmButtons = alertSpy.mock.calls[1]?.[2] || [];
+  await act(async () => {
+    confirmButtons.find((button) => button.text === "削除")?.onPress?.();
+  });
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+    target,
+    "- [ ] B\n",
+    "version-1",
   ));
 });
 

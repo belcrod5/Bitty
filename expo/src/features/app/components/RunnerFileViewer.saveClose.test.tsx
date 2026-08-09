@@ -58,7 +58,7 @@ test("blocks both close controls until an auto-save finishes", async () => {
       runnerUrl="http://runner.test"
       runnerToken="token"
       onRequestClose={onRequestClose}
-      onSave={onSave}
+      onAutoSave={onSave}
     />
   );
 
@@ -122,7 +122,7 @@ test.each(["/", "D:/"])("uses the root-level location %s for both read and save"
       runnerUrl="http://runner.test"
       runnerToken="token"
       onRequestClose={jest.fn()}
-      onSave={onSave}
+      onAutoSave={onSave}
     />
   );
 

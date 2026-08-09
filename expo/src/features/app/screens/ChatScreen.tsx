@@ -1316,6 +1316,7 @@ export function ChatScreen({
     requestEdit: requestChatFileEdit,
     cancelEdit: cancelChatFileEdit,
     writeFileContent: writeChatFileContent,
+    autoSaveFileContent: autoSaveChatFileContent,
     deleteFile: deleteChatFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -2152,7 +2153,7 @@ export function ChatScreen({
           runnerUrl={runnerUrl}
           runnerToken={runnerToken}
           onRequestClose={() => setRunnerFileViewerTarget(null)}
-          onSave={writeChatFileContent}
+          onAutoSave={autoSaveChatFileContent}
         />
         <WorkspaceFileRenameDialog
           target={approvalDialogPending ? null : chatFileRenameTarget}

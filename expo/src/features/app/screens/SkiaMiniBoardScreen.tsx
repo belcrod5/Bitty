@@ -397,6 +397,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     requestEdit,
     cancelEdit,
     writeFileContent,
+    autoSaveFileContent,
     deleteFile,
   } = useWorkspaceFileMutations({
     runnerUrl,
@@ -723,7 +724,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         runnerUrl={runnerUrl}
         runnerToken={runnerToken}
         onRequestClose={() => setRunnerFileViewerTarget(null)}
-        onSave={writeFileContent}
+        onAutoSave={autoSaveFileContent}
       />
       <WorkspaceFileRenameDialog
         target={renameTarget}

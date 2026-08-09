@@ -32,7 +32,7 @@ type RunnerFileViewerProps = {
   runnerUrl: string;
   runnerToken: string;
   onRequestClose: () => void;
-  onSave: (
+  onAutoSave: (
     target: WorkspaceFileTarget,
     content: string,
     expectedVersion: string,
@@ -94,7 +94,7 @@ export function RunnerFileViewer({
   runnerUrl,
   runnerToken,
   onRequestClose,
-  onSave,
+  onAutoSave,
 }: RunnerFileViewerProps) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -202,7 +202,7 @@ export function RunnerFileViewer({
               target={target}
               initialItems={checklistItems}
               initialVersion={version}
-              onSave={onSave}
+              onSave={onAutoSave}
               onSavingChange={setChecklistSaving}
             />
           ) : (
