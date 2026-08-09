@@ -9,6 +9,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { WebView } from "react-native-webview";
 import { ChecklistFileViewer } from "./ChecklistFileViewer";
 import { parseChecklistFile, type ChecklistItem } from "../utils/checklistFile";
@@ -163,55 +164,57 @@ export function RunnerFileViewer({
       onRequestClose={requestClose}
       testID="runner-file-viewer-modal"
     >
-      <SafeAreaView style={viewerStyles.root}>
-        <View style={viewerStyles.header}>
-          <View style={viewerStyles.titleWrap}>
-            <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "ファイル"}</Text>
-            <Text style={viewerStyles.path} numberOfLines={1}>{targetPath}</Text>
+      <GestureHandlerRootView style={viewerStyles.root} testID="runner-file-viewer-gesture-root">
+        <SafeAreaView style={viewerStyles.root}>
+          <View style={viewerStyles.header}>
+            <View style={viewerStyles.titleWrap}>
+              <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "ファイル"}</Text>
+              <Text style={viewerStyles.path} numberOfLines={1}>{targetPath}</Text>
+            </View>
+            <TouchableOpacity
+              style={viewerStyles.closeButton}
+              onPress={requestClose}
+              disabled={checklistSaving}
+              accessibilityRole="button"
+              accessibilityLabel={checklistSaving
+                ? "保存中はファイルビューアーを閉じられません"
+                : "ファイルビューアーを閉じる"}
+              accessibilityState={{ disabled: checklistSaving }}
+              testID="runner-file-viewer-close"
+            >
+              {checklistSaving ? (
+                <ActivityIndicator size="small" color="#94a3b8" />
+              ) : (
+                <Ionicons name="close" size={24} color="#e2e8f0" />
+              )}
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={viewerStyles.closeButton}
-            onPress={requestClose}
-            disabled={checklistSaving}
-            accessibilityRole="button"
-            accessibilityLabel={checklistSaving
-              ? "保存中はファイルビューアーを閉じられません"
-              : "ファイルビューアーを閉じる"}
-            accessibilityState={{ disabled: checklistSaving }}
-            testID="runner-file-viewer-close"
-          >
-            {checklistSaving ? (
-              <ActivityIndicator size="small" color="#94a3b8" />
-            ) : (
-              <Ionicons name="close" size={24} color="#e2e8f0" />
-            )}
-          </TouchableOpacity>
-        </View>
-        {loading ? (
-          <View style={viewerStyles.centerArea}>
-            <ActivityIndicator size="large" color="#38bdf8" />
-          </View>
-        ) : loadError ? (
-          <View style={viewerStyles.centerArea}>
-            <Text style={viewerStyles.errorText}>{loadError}</Text>
-          </View>
-        ) : target.kind === "checklist" ? (
-          <ChecklistFileViewer
-            target={target}
-            initialItems={checklistItems}
-            initialVersion={version}
-            onSave={onSave}
-            onSavingChange={setChecklistSaving}
-          />
-        ) : (
-          <WebView
-            style={viewerStyles.webview}
-            originWhitelist={["*"]}
-            source={{ html: buildRunnerFileViewerHtml(target.kind, content) }}
-            setSupportMultipleWindows={false}
-          />
-        )}
-      </SafeAreaView>
+          {loading ? (
+            <View style={viewerStyles.centerArea}>
+              <ActivityIndicator size="large" color="#38bdf8" />
+            </View>
+          ) : loadError ? (
+            <View style={viewerStyles.centerArea}>
+              <Text style={viewerStyles.errorText}>{loadError}</Text>
+            </View>
+          ) : target.kind === "checklist" ? (
+            <ChecklistFileViewer
+              target={target}
+              initialItems={checklistItems}
+              initialVersion={version}
+              onSave={onSave}
+              onSavingChange={setChecklistSaving}
+            />
+          ) : (
+            <WebView
+              style={viewerStyles.webview}
+              originWhitelist={["*"]}
+              source={{ html: buildRunnerFileViewerHtml(target.kind, content) }}
+              setSupportMultipleWindows={false}
+            />
+          )}
+        </SafeAreaView>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

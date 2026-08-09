@@ -2,15 +2,29 @@ import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { RunnerFileViewer } from "./RunnerFileViewer";
 
 const mockFetchRunnerTextFileContent = jest.fn();
+const mockGestureHandlerRootView = jest.fn();
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("react-native-webview", () => ({ WebView: () => null }));
+jest.mock("react-native-gesture-handler", () => {
+  const actual = jest.requireActual("react-native-gesture-handler");
+  const ReactModule = jest.requireActual("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
+  return {
+    ...actual,
+    GestureHandlerRootView: ({ children, ...props }: { children?: React.ReactNode }) => {
+      mockGestureHandlerRootView(props);
+      return ReactModule.createElement(View, props, children);
+    },
+  };
+});
 jest.mock("../utils/runnerFileContent", () => ({
   fetchRunnerTextFileContent: (...args: unknown[]) => mockFetchRunnerTextFileContent(...args),
 }));
 
 beforeEach(() => {
   mockFetchRunnerTextFileContent.mockReset();
+  mockGestureHandlerRootView.mockClear();
 });
 
 test("blocks both close controls until an auto-save finishes", async () => {
@@ -49,6 +63,8 @@ test("blocks both close controls until an auto-save finishes", async () => {
   );
 
   const toggle = await view.findByTestId("checklist-toggle-0");
+  expect(view.getByTestId("runner-file-viewer-gesture-root")).toBeTruthy();
+  expect(mockGestureHandlerRootView).toHaveBeenCalled();
   expect(mockFetchRunnerTextFileContent).toHaveBeenCalledWith(expect.objectContaining({
     rootDir: "/work/other/tasks",
     path: "today.checklist",

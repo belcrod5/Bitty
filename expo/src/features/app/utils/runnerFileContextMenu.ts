@@ -153,9 +153,10 @@ type OpenRunnerFileContextMenuParams = {
   onRequestDelete?: (target: WorkspaceFileTarget) => void;
   onRenameFile?: RenameRunnerMediaFile;
   mediaItems?: RunnerMediaItem[];
-  getSkiaBoardAction?: (target: WorkspaceFileTarget) => {
-    text: "Skiaボードへ追加" | "Skiaボードから除外";
-    onPress: () => void;
+  skiaBoard?: {
+    hasFile: (rootDirectory: string, path: string) => boolean;
+    addFile?: (file: { rootDir: string; path: string; name: string }) => void;
+    removeFile?: (rootDirectory: string, path: string) => void;
   };
 };
 
@@ -178,7 +179,7 @@ export function openRunnerFileContextMenu({
   onRequestDelete,
   onRenameFile,
   mediaItems,
-  getSkiaBoardAction,
+  skiaBoard,
 }: OpenRunnerFileContextMenuParams) {
   const filePath = normalizeRunnerPath(filePathRaw);
   const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
@@ -279,7 +280,7 @@ export function openRunnerFileContextMenu({
         onRequestDelete,
         onRenameFile,
         mediaItems: items,
-        getSkiaBoardAction,
+        skiaBoard,
       });
     };
     onOpenMedia({
@@ -427,13 +428,24 @@ export function openRunnerFileContextMenu({
       onPress: deleteAction,
     });
   }
-  const skiaBoardAction = getSkiaBoardAction?.({
-    path: fileLocation.path,
-    name: fileName,
-    rootDirectory: fileLocation.rootDirectory,
-  });
-  if (skiaBoardAction) {
-    buttons.push(skiaBoardAction);
+  if (skiaBoard) {
+    const onBoard = skiaBoard.hasFile(fileLocation.rootDirectory, fileLocation.path);
+    if ((onBoard && skiaBoard.removeFile) || (!onBoard && skiaBoard.addFile)) {
+      buttons.push({
+        text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
+        onPress: () => {
+          if (onBoard) {
+            skiaBoard.removeFile?.(fileLocation.rootDirectory, fileLocation.path);
+          } else {
+            skiaBoard.addFile?.({
+              rootDir: fileLocation.rootDirectory,
+              path: fileLocation.path,
+              name: fileName,
+            });
+          }
+        },
+      });
+    }
   }
   buttons.push({
     text: "キャンセル",

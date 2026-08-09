@@ -1372,24 +1372,11 @@ export function ChatScreen({
       onRequestEdit: requestChatFileEdit,
       onRequestDelete: deleteChatFile,
       onRenameFile: renameChatFileTarget,
-      getSkiaBoardAction: skiaBoardLoaded
-        ? (target) => {
-          const rootDirectory = target.rootDirectory || selectedDirectoryPathForView;
-          const onBoard = hasSkiaBoardFile(rootDirectory, target.path);
-          return {
-            text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
-            onPress: () => {
-              if (onBoard) {
-                removeSkiaBoardFile(rootDirectory, target.path);
-              } else {
-                addSkiaBoardFile({
-                  rootDir: rootDirectory,
-                  path: target.path,
-                  name: target.name,
-                });
-              }
-            },
-          };
+      skiaBoard: skiaBoardLoaded
+        ? {
+          addFile: addSkiaBoardFile,
+          removeFile: removeSkiaBoardFile,
+          hasFile: hasSkiaBoardFile,
         }
         : undefined,
     });

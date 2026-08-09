@@ -7,7 +7,6 @@ import {
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
 } from "./runnerFileContextMenu";
-import type { WorkspaceFileTarget } from "./workspaceFiles";
 
 jest.mock("expo-clipboard", () => ({
   setStringAsync: jest.fn(() => Promise.resolve()),
@@ -35,9 +34,10 @@ function openContextMenuButtons(params: {
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
-  getSkiaBoardAction?: (target: WorkspaceFileTarget) => {
-    text: "Skiaボードへ追加" | "Skiaボードから除外";
-    onPress: () => void;
+  skiaBoard?: {
+    hasFile: (rootDirectory: string, path: string) => boolean;
+    addFile?: (file: { rootDir: string; path: string; name: string }) => void;
+    removeFile?: (rootDirectory: string, path: string) => void;
   };
 }): AlertButton[] {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
@@ -52,7 +52,7 @@ function openContextMenuButtons(params: {
     onOpenMedia: () => {},
     onOpenFile: params.onOpenFile,
     onSpeakText: params.onSpeakText,
-    getSkiaBoardAction: params.getSkiaBoardAction,
+    skiaBoard: params.skiaBoard,
   });
   expect(alertSpy).toHaveBeenCalledTimes(1);
   const buttons = (alertSpy.mock.calls[0][2] || []) as AlertButton[];
@@ -281,48 +281,46 @@ test("keeps existing menu items for media and shell script files", () => {
 });
 
 test("appends the caller's Skia board action to the existing file menu", () => {
-  const onPress = jest.fn();
-  const getSkiaBoardAction = jest.fn(() => ({
-    text: "Skiaボードへ追加" as const,
-    onPress,
-  }));
+  const addFile = jest.fn();
   const buttons = openContextMenuButtons({
     filePath: "docs/readme.md",
-    getSkiaBoardAction,
+    skiaBoard: { hasFile: () => false, addFile },
   });
 
-  expect(getSkiaBoardAction).toHaveBeenCalledWith({
+  buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
+  expect(addFile).toHaveBeenCalledWith({
+    rootDir: "project",
     path: "docs/readme.md",
     name: "docs/readme.md",
-    rootDirectory: "project",
   });
-  buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
-  expect(onPress).toHaveBeenCalledTimes(1);
 });
 
 test("passes the same external absolute location to open and Skia board actions", () => {
   const onOpenFile = jest.fn();
-  const getSkiaBoardAction = jest.fn(() => ({
-    text: "Skiaボードへ追加" as const,
-    onPress: jest.fn(),
-  }));
+  const hasFile = jest.fn(() => false);
+  const addFile = jest.fn();
   const buttons = openContextMenuButtons({
     filePath: "/external/tasks/today.checklist",
     rootDir: "/workspace",
     onOpenFile,
-    getSkiaBoardAction,
+    skiaBoard: { hasFile, addFile },
   });
 
   buttons.find((button) => button.text === "開く")?.onPress?.();
+  buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
   expect(onOpenFile).toHaveBeenCalledWith({
     kind: "checklist",
     path: "/external/tasks/today.checklist",
     name: "/external/tasks/today.checklist",
     rootDirectory: "/external/tasks",
   });
-  expect(getSkiaBoardAction).toHaveBeenCalledWith({
+  expect(hasFile).toHaveBeenCalledWith(
+    "/external/tasks",
+    "/external/tasks/today.checklist",
+  );
+  expect(addFile).toHaveBeenCalledWith({
+    rootDir: "/external/tasks",
     path: "/external/tasks/today.checklist",
     name: "/external/tasks/today.checklist",
-    rootDirectory: "/external/tasks",
   });
 });
