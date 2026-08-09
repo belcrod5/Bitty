@@ -35,7 +35,6 @@ type RunnerFileViewerProps = {
     target: WorkspaceFileTarget,
     content: string,
     expectedVersion: string,
-    rootDirectory: string,
   ) => Promise<WorkspaceFileWriteResult>;
 };
 

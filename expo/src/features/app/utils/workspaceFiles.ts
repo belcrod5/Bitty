@@ -42,6 +42,7 @@ export type WorkspaceFileWriteResult = WorkspaceFileMutationResult & {
 export type WorkspaceFileTarget = {
   path: string;
   name: string;
+  rootDirectory?: string;
 };
 
 function timestampForFileName() {

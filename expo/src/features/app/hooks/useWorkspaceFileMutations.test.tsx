@@ -83,25 +83,53 @@ test("does not mark a path unavailable when the mutation fails", async () => {
   expect(onPathRemoved).not.toHaveBeenCalled();
 });
 
-test("writes viewer content with the file location root instead of the current chat root", async () => {
+test.each(["/work/other/tasks", "/", "D:/"])(
+  "writes viewer content with its location root %s instead of the current chat root",
+  async (targetRootDirectory) => {
+    const hook = await renderMutations(jest.fn());
+    mockWriteWorkspaceTextFile.mockResolvedValue({
+      ok: true,
+      path: "today.checklist",
+      version: "version-2",
+    });
+
+    await act(async () => {
+      await hook.result.current.writeFileContent(
+        {
+          path: "today.checklist",
+          name: "today.checklist",
+          rootDirectory: targetRootDirectory,
+        },
+        "- [x] A\n",
+        "version-1",
+      );
+    });
+
+    expect(mockWriteWorkspaceTextFile).toHaveBeenCalledWith(expect.objectContaining({
+      rootDirectory: targetRootDirectory,
+      path: "today.checklist",
+    }));
+  },
+);
+
+test("falls back to the current root when a save target has no location root", async () => {
   const hook = await renderMutations(jest.fn());
   mockWriteWorkspaceTextFile.mockResolvedValue({
     ok: true,
-    path: "today.checklist",
+    path: "docs/note.md",
     version: "version-2",
   });
 
   await act(async () => {
     await hook.result.current.writeFileContent(
-      { path: "today.checklist", name: "today.checklist" },
-      "- [x] A\n",
+      { path: "docs/note.md", name: "note.md" },
+      "after",
       "version-1",
-      "/work/other/tasks",
     );
   });
 
   expect(mockWriteWorkspaceTextFile).toHaveBeenCalledWith(expect.objectContaining({
-    rootDirectory: "/work/other/tasks",
-    path: "today.checklist",
+    rootDirectory: "/workspace",
+    path: "docs/note.md",
   }));
 });

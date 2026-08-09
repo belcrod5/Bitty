@@ -38,7 +38,6 @@ type ChecklistFileViewerProps = {
     target: RunnerFileViewerTarget,
     content: string,
     expectedVersion: string,
-    rootDirectory: string,
   ) => Promise<WorkspaceFileWriteResult>;
   onSavingChange: (saving: boolean) => void;
 };
@@ -252,7 +251,6 @@ export function ChecklistFileViewer({
         target,
         serializeChecklistFile(nextItems),
         versionRef.current,
-        target.rootDirectory,
       );
       versionRef.current = result.version;
       return true;

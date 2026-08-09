@@ -443,8 +443,11 @@ export function normalizeRunnerPath(value: unknown) {
 }
 
 function normalizeRunnerDirectoryPath(value: unknown) {
-  const normalized = normalizeRunnerPath(value).replace(/\/+$/, "");
-  return normalized || ".";
+  const normalized = normalizeRunnerPath(value);
+  if (/^\/+$/u.test(normalized)) return "/";
+  const driveRoot = /^([a-zA-Z]:)\/+$/u.exec(normalized);
+  if (driveRoot) return `${driveRoot[1]}/`;
+  return normalized.replace(/\/+$/, "") || ".";
 }
 
 function normalizeRunnerComparablePath(value: unknown) {
@@ -479,7 +482,11 @@ function isAbsoluteRunnerPath(pathRaw: unknown) {
 function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
   const targetPath = normalizeRunnerComparablePath(pathRaw);
   const directory = normalizeRunnerComparablePath(directoryRaw);
-  if (!directory || directory === "." || directory === "/") return true;
+  if (!directory || directory === ".") return true;
+  if (directory === "/") return targetPath.startsWith("/");
+  if (/^[a-zA-Z]:\/$/u.test(directory)) {
+    return targetPath.toLowerCase().startsWith(directory.toLowerCase());
+  }
   return targetPath === directory || targetPath.startsWith(`${directory}/`);
 }
 
@@ -493,9 +500,15 @@ export function getRunnerFileViewerLocation(pathRaw: unknown, rootDirectoryRaw: 
   if (separatorIndex < 0 || separatorIndex === path.length - 1) {
     return { path, rootDirectory };
   }
+  const parentPath = path.slice(0, separatorIndex);
+  const locationRoot = separatorIndex === 0
+    ? "/"
+    : /^[a-zA-Z]:$/u.test(parentPath)
+      ? `${parentPath}/`
+      : parentPath;
   return {
     path: path.slice(separatorIndex + 1),
-    rootDirectory: separatorIndex === 0 ? "/" : path.slice(0, separatorIndex),
+    rootDirectory: locationRoot,
   };
 }
 

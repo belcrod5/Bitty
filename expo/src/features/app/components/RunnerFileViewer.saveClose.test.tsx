@@ -9,6 +9,10 @@ jest.mock("../utils/runnerFileContent", () => ({
   fetchRunnerTextFileContent: (...args: unknown[]) => mockFetchRunnerTextFileContent(...args),
 }));
 
+beforeEach(() => {
+  mockFetchRunnerTextFileContent.mockReset();
+});
+
 test("blocks both close controls until an auto-save finishes", async () => {
   mockFetchRunnerTextFileContent.mockResolvedValue({
     path: "tasks/today.checklist",
@@ -55,7 +59,6 @@ test("blocks both close controls until an auto-save finishes", async () => {
     expect.objectContaining({ path: "today.checklist", rootDirectory: "/work/other/tasks" }),
     "- [x] A\n",
     "version-1",
-    "/work/other/tasks",
   );
 
   const savingClose = view.getByTestId("runner-file-viewer-close");
@@ -76,4 +79,44 @@ test("blocks both close controls until an auto-save finishes", async () => {
 
   await fireEvent.press(view.getByTestId("runner-file-viewer-close"));
   expect(onRequestClose).toHaveBeenCalledTimes(1);
+});
+
+test.each(["/", "D:/"])("uses the root-level location %s for both read and save", async (rootDirectory) => {
+  mockFetchRunnerTextFileContent.mockResolvedValue({
+    path: "root.checklist",
+    content: "- [ ] A\n",
+    totalBytes: 8,
+    version: "version-1",
+  });
+  const onSave = jest.fn().mockResolvedValue({
+    ok: true,
+    path: "root.checklist",
+    version: "version-2",
+  });
+  const target = {
+    kind: "checklist" as const,
+    path: "root.checklist",
+    name: "root.checklist",
+    rootDirectory,
+  };
+  const view = await render(
+    <RunnerFileViewer
+      target={target}
+      runnerUrl="http://runner.test"
+      runnerToken="token"
+      onRequestClose={jest.fn()}
+      onSave={onSave}
+    />
+  );
+
+  await fireEvent.press(await view.findByTestId("checklist-toggle-0"));
+  expect(mockFetchRunnerTextFileContent).toHaveBeenCalledWith(expect.objectContaining({
+    rootDir: rootDirectory,
+    path: "root.checklist",
+  }));
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+    target,
+    "- [x] A\n",
+    "version-1",
+  ));
 });

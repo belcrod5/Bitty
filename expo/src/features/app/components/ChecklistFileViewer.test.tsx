@@ -34,7 +34,6 @@ test("auto-saves toggles and uses the returned version for the next action", asy
     target,
     "- [x] A\n- [ ] B\n",
     "version-1",
-    "/work/other",
   ));
   await waitFor(() => expect(view.getByText("保存済み")).toBeTruthy());
 
@@ -44,7 +43,6 @@ test("auto-saves toggles and uses the returned version for the next action", asy
     target,
     "- [x] A\n",
     "version-2",
-    "/work/other",
   ));
 });
 
@@ -70,7 +68,6 @@ test("edits text inline and adds one item for each nonempty input line", async (
     target,
     "- [ ] 変更後\n",
     "version-1",
-    "/work/other",
   ));
   await waitFor(() => expect(view.getByText("変更後")).toBeTruthy());
 
@@ -81,7 +78,6 @@ test("edits text inline and adds one item for each nonempty input line", async (
     target,
     "- [ ] 変更後\n- [ ] 追加1\n- [ ] 追加2\n",
     "version-2",
-    "/work/other",
   ));
 });
 
@@ -160,7 +156,6 @@ test("reorders with the drag handle accessibility actions and keeps bounds", asy
     target,
     "- [ ] B\n- [ ] A\n",
     "version-1",
-    "/work/other",
   ));
 });
 

@@ -142,13 +142,12 @@ export function useWorkspaceFileMutations({
     target: WorkspaceFileTarget,
     content: string,
     expectedVersion: string,
-    targetRootDirectory = rootDirectory,
   ) => {
     try {
       const result = await writeWorkspaceTextFile({
         runnerUrl,
         runnerToken,
-        rootDirectory: targetRootDirectory,
+        rootDirectory: target.rootDirectory || rootDirectory,
         path: target.path,
         content,
         expectedVersion,

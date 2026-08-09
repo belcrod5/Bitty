@@ -116,14 +116,44 @@ test.each([
   });
 });
 
-test("keeps relative and root-owned absolute viewer locations unchanged", () => {
+test("keeps relative viewer paths with normalized POSIX and Windows roots", () => {
   expect(getRunnerFileViewerLocation("docs/report.html", "/work/current")).toEqual({
     path: "docs/report.html",
     rootDirectory: "/work/current",
   });
+  expect(getRunnerFileViewerLocation("report.html", "/")).toEqual({
+    path: "report.html",
+    rootDirectory: "/",
+  });
+  expect(getRunnerFileViewerLocation("report.html", "C:/")).toEqual({
+    path: "report.html",
+    rootDirectory: "C:/",
+  });
+});
+
+test("keeps absolute paths owned by POSIX or Windows drive roots", () => {
+  expect(getRunnerFileViewerLocation("/report.html", "/")).toEqual({
+    path: "/report.html",
+    rootDirectory: "/",
+  });
   expect(getRunnerFileViewerLocation("/work/current/report.html", "/work/current")).toEqual({
     path: "/work/current/report.html",
     rootDirectory: "/work/current",
+  });
+  expect(getRunnerFileViewerLocation("C:/report.html", "C:/")).toEqual({
+    path: "C:/report.html",
+    rootDirectory: "C:/",
+  });
+});
+
+test("uses the correct POSIX or drive root for external root-level files", () => {
+  expect(getRunnerFileViewerLocation("/report.html", "/work/current")).toEqual({
+    path: "report.html",
+    rootDirectory: "/",
+  });
+  expect(getRunnerFileViewerLocation("D:/report.html", "C:/work/current")).toEqual({
+    path: "report.html",
+    rootDirectory: "D:/",
   });
 });
 
