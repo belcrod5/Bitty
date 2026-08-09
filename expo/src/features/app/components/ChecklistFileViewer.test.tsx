@@ -1,8 +1,57 @@
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
-import { Animated, PanResponder } from "react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { Animated } from "react-native";
 import { ChecklistFileViewer } from "./ChecklistFileViewer";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
+jest.mock("react-native-gesture-handler", () => {
+  const gestures: Array<Record<string, (...args: any[]) => unknown>> = [];
+  (globalThis as Record<string, unknown>).__checklistGestures = gestures;
+  return {
+    Gesture: {
+      Pan: () => {
+        const callbacks: Record<string, (...args: any[]) => unknown> = {};
+        gestures.push(callbacks);
+        const chain = {
+          enabled: () => chain,
+          activeOffsetY: () => chain,
+          failOffsetX: () => chain,
+          runOnJS: () => chain,
+          onBegin: (callback: (...args: any[]) => unknown) => {
+            callbacks.onBegin = callback;
+            return chain;
+          },
+          onUpdate: (callback: (...args: any[]) => unknown) => {
+            callbacks.onUpdate = callback;
+            return chain;
+          },
+          onEnd: (callback: (...args: any[]) => unknown) => {
+            callbacks.onEnd = callback;
+            return chain;
+          },
+          onFinalize: (callback: (...args: any[]) => unknown) => {
+            callbacks.onFinalize = callback;
+            return chain;
+          },
+        };
+        return chain;
+      },
+    },
+    GestureDetector: ({ children }: { children?: React.ReactNode }) => children,
+  };
+});
+
+function checklistGestures() {
+  return (globalThis as Record<string, unknown>).__checklistGestures as Array<{
+    onBegin?: () => void;
+    onUpdate?: (event: { translationY: number }) => void;
+    onEnd?: (event: { translationY: number }) => void;
+    onFinalize?: () => void;
+  }>;
+}
+
+beforeEach(() => {
+  checklistGestures().length = 0;
+});
 
 const target = {
   kind: "checklist" as const,
@@ -159,16 +208,7 @@ test("reorders with the drag handle accessibility actions and keeps bounds", asy
   ));
 });
 
-test("resets the dragged row translation before saving the reordered list", async () => {
-  const createPanResponder = jest.spyOn(PanResponder, "create").mockImplementation((config) => ({
-    panHandlers: {
-      onResponderRelease: (event: unknown) => config.onPanResponderRelease?.(
-        event as never,
-        { dy: 68 } as never,
-      ),
-    },
-    getInteractionHandle: () => null,
-  } as ReturnType<typeof PanResponder.create>));
+test("reorders through the handle gesture callback sequence and restores scrolling", async () => {
   const setValue = jest.spyOn(Animated.Value.prototype, "setValue");
   const onSave = jest.fn().mockResolvedValue({
     ok: true,
@@ -189,12 +229,30 @@ test("resets the dragged row translation before saving the reordered list", asyn
         onSavingChange={jest.fn()}
       />
     );
+    const gesture = checklistGestures()[0];
 
-    await fireEvent(view.getByTestId("checklist-drag-0"), "responderRelease", {});
+    await act(async () => {
+      gesture.onBegin?.();
+    });
+    expect(view.getByTestId("checklist-list").props.scrollEnabled).toBe(false);
+
+    await act(async () => {
+      gesture.onUpdate?.({ translationY: 68 });
+      gesture.onEnd?.({ translationY: 68 });
+      gesture.onFinalize?.();
+    });
+    expect(setValue).toHaveBeenCalledWith(68);
     expect(setValue).toHaveBeenCalledWith(0);
-    expect(setValue.mock.invocationCallOrder[0]).toBeLessThan(onSave.mock.invocationCallOrder[0]);
+    const resetCallIndex = setValue.mock.calls.findIndex(([value]) => value === 0);
+    expect(setValue.mock.invocationCallOrder[resetCallIndex])
+      .toBeLessThan(onSave.mock.invocationCallOrder[0]);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+      target,
+      "- [ ] B\n- [ ] A\n",
+      "version-1",
+    ));
+    await waitFor(() => expect(view.getByTestId("checklist-list").props.scrollEnabled).toBe(true));
   } finally {
-    createPanResponder.mockRestore();
     setValue.mockRestore();
   }
 });

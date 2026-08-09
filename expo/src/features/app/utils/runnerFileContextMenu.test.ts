@@ -7,6 +7,7 @@ import {
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
 } from "./runnerFileContextMenu";
+import type { WorkspaceFileTarget } from "./workspaceFiles";
 
 jest.mock("expo-clipboard", () => ({
   setStringAsync: jest.fn(() => Promise.resolve()),
@@ -34,7 +35,7 @@ function openContextMenuButtons(params: {
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
-  getSkiaBoardAction?: (target: { path: string; name: string }) => {
+  getSkiaBoardAction?: (target: WorkspaceFileTarget) => {
     text: "Skiaボードへ追加" | "Skiaボードから除外";
     onPress: () => void;
   };
@@ -293,7 +294,35 @@ test("appends the caller's Skia board action to the existing file menu", () => {
   expect(getSkiaBoardAction).toHaveBeenCalledWith({
     path: "docs/readme.md",
     name: "docs/readme.md",
+    rootDirectory: "project",
   });
   buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
   expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+test("passes the same external absolute location to open and Skia board actions", () => {
+  const onOpenFile = jest.fn();
+  const getSkiaBoardAction = jest.fn(() => ({
+    text: "Skiaボードへ追加" as const,
+    onPress: jest.fn(),
+  }));
+  const buttons = openContextMenuButtons({
+    filePath: "/external/tasks/today.checklist",
+    rootDir: "/workspace",
+    onOpenFile,
+    getSkiaBoardAction,
+  });
+
+  buttons.find((button) => button.text === "開く")?.onPress?.();
+  expect(onOpenFile).toHaveBeenCalledWith({
+    kind: "checklist",
+    path: "/external/tasks/today.checklist",
+    name: "/external/tasks/today.checklist",
+    rootDirectory: "/external/tasks",
+  });
+  expect(getSkiaBoardAction).toHaveBeenCalledWith({
+    path: "/external/tasks/today.checklist",
+    name: "/external/tasks/today.checklist",
+    rootDirectory: "/external/tasks",
+  });
 });

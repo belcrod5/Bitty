@@ -281,7 +281,13 @@ export function ChatScreen({
     sessionHistoryPagingById,
     loadOlderSessionHistory,
   } = useChatScreen();
-  const { markFileUnavailable } = useSkiaBoard();
+  const {
+    addFile: addSkiaBoardFile,
+    removeFile: removeSkiaBoardFile,
+    hasFile: hasSkiaBoardFile,
+    markFileUnavailable,
+    loaded: skiaBoardLoaded,
+  } = useSkiaBoard();
   const popupHeaderDragStartPageYRef = useRef<number | null>(null);
   const popupHeaderPanResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_event, gestureState) => (
@@ -1366,17 +1372,41 @@ export function ChatScreen({
       onRequestEdit: requestChatFileEdit,
       onRequestDelete: deleteChatFile,
       onRenameFile: renameChatFileTarget,
+      getSkiaBoardAction: skiaBoardLoaded
+        ? (target) => {
+          const rootDirectory = target.rootDirectory || selectedDirectoryPathForView;
+          const onBoard = hasSkiaBoardFile(rootDirectory, target.path);
+          return {
+            text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
+            onPress: () => {
+              if (onBoard) {
+                removeSkiaBoardFile(rootDirectory, target.path);
+              } else {
+                addSkiaBoardFile({
+                  rootDir: rootDirectory,
+                  path: target.path,
+                  name: target.name,
+                });
+              }
+            },
+          };
+        }
+        : undefined,
     });
   }, [
+    addSkiaBoardFile,
     deleteChatFile,
     getPathLabel,
+    hasSkiaBoardFile,
     renameChatFileTarget,
+    removeSkiaBoardFile,
     requestChatFileRename,
     requestChatFileEdit,
     runnerToken,
     runnerUrl,
     selectedDirectoryPathForView,
     showInfoToast,
+    skiaBoardLoaded,
     speakRunnerFileText,
   ]);
   const readSelectedMessageText = useCallback((message: ConversationMessage, selectedTextRaw: unknown) => {

@@ -5,7 +5,6 @@ import {
   Animated,
   FlatList,
   KeyboardAvoidingView,
-  PanResponder,
   Platform,
   StyleSheet,
   Text,
@@ -14,6 +13,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
   moveChecklistItem,
   serializeChecklistFile,
@@ -56,6 +56,7 @@ type ChecklistRowProps = {
   onCancelEdit: () => void;
   onDelete: () => void;
   onDrop: (fromIndex: number, toIndex: number) => void;
+  onDraggingChange: (dragging: boolean) => void;
 };
 
 function ChecklistRow({
@@ -72,26 +73,31 @@ function ChecklistRow({
   onCancelEdit,
   onDelete,
   onDrop,
+  onDraggingChange,
 }: ChecklistRowProps) {
   const dragY = useRef(new Animated.Value(0)).current;
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => !disabled,
-    onMoveShouldSetPanResponder: (_event, gesture) => (
-      !disabled && Math.abs(gesture.dy) > 3
-    ),
-    onPanResponderMove: (_event, gesture) => {
-      dragY.setValue(gesture.dy);
-    },
-    onPanResponderRelease: (_event, gesture) => {
-      const offset = Math.round(gesture.dy / CHECKLIST_ROW_HEIGHT);
+  const dragGesture = useMemo(() => Gesture.Pan()
+    .enabled(!disabled)
+    .activeOffsetY([-3, 3])
+    .failOffsetX([-12, 12])
+    .runOnJS(true)
+    .onBegin(() => {
+      onDraggingChange(true);
+    })
+    .onUpdate((event) => {
+      dragY.setValue(event.translationY);
+    })
+    .onEnd((event) => {
+      const offset = Math.round(event.translationY / CHECKLIST_ROW_HEIGHT);
       const toIndex = Math.max(0, Math.min(itemCount - 1, index + offset));
       dragY.setValue(0);
+      onDraggingChange(false);
       if (toIndex !== index) onDrop(index, toIndex);
-    },
-    onPanResponderTerminate: () => {
+    })
+    .onFinalize(() => {
       dragY.setValue(0);
-    },
-  }), [disabled, dragY, index, itemCount, onDrop]);
+      onDraggingChange(false);
+    }), [disabled, dragY, index, itemCount, onDraggingChange, onDrop]);
 
   return (
     <Animated.View
@@ -169,28 +175,29 @@ function ChecklistRow({
 
       {!editing ? (
         <>
-          <View
-            style={[styles.iconButton, disabled ? styles.disabled : null]}
-            accessibilityRole="adjustable"
-            accessibilityLabel={`${item.text}を並べ替え`}
-            accessibilityState={{ disabled }}
-            accessibilityActions={[
-              { name: "decrement", label: "上へ移動" },
-              { name: "increment", label: "下へ移動" },
-            ]}
-            onAccessibilityAction={(event) => {
-              if (disabled) return;
-              const actionName = event.nativeEvent.actionName;
-              if (actionName !== "increment" && actionName !== "decrement") return;
-              const offset = actionName === "increment" ? 1 : -1;
-              const toIndex = Math.max(0, Math.min(itemCount - 1, index + offset));
-              if (toIndex !== index) onDrop(index, toIndex);
-            }}
-            testID={`checklist-drag-${index}`}
-            {...panResponder.panHandlers}
-          >
-            <Ionicons name="reorder-three" size={28} color="#64748b" />
-          </View>
+          <GestureDetector gesture={dragGesture}>
+            <View
+              style={[styles.iconButton, disabled ? styles.disabled : null]}
+              accessibilityRole="adjustable"
+              accessibilityLabel={`${item.text}を並べ替え`}
+              accessibilityState={{ disabled }}
+              accessibilityActions={[
+                { name: "decrement", label: "上へ移動" },
+                { name: "increment", label: "下へ移動" },
+              ]}
+              onAccessibilityAction={(event) => {
+                if (disabled) return;
+                const actionName = event.nativeEvent.actionName;
+                if (actionName !== "increment" && actionName !== "decrement") return;
+                const offset = actionName === "increment" ? 1 : -1;
+                const toIndex = Math.max(0, Math.min(itemCount - 1, index + offset));
+                if (toIndex !== index) onDrop(index, toIndex);
+              }}
+              testID={`checklist-drag-${index}`}
+            >
+              <Ionicons name="reorder-three" size={28} color="#64748b" />
+            </View>
+          </GestureDetector>
           <TouchableOpacity
             style={styles.iconButton}
             onPress={onDelete}
@@ -221,6 +228,7 @@ export function ChecklistFileViewer({
   const [items, setItems] = useState<ChecklistViewItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [editText, setEditText] = useState("");
   const [newItemText, setNewItemText] = useState("");
 
@@ -231,6 +239,7 @@ export function ChecklistFileViewer({
     itemsRef.current = nextItems;
     setItems(nextItems);
     setEditingId(null);
+    setDragging(false);
     setEditText("");
     setNewItemText("");
     savingRef.current = false;
@@ -385,12 +394,13 @@ export function ChecklistFileViewer({
       </View>
 
       <FlatList
+        testID="checklist-list"
         style={styles.list}
         contentContainerStyle={items.length === 0 ? styles.emptyList : styles.listContent}
         data={items}
         keyExtractor={(item) => String(item.id)}
         keyboardShouldPersistTaps="handled"
-        scrollEnabled={!saving}
+        scrollEnabled={!saving && !dragging}
         renderItem={({ item, index }) => (
           <ChecklistRow
             item={item}
@@ -409,6 +419,7 @@ export function ChecklistFileViewer({
             }}
             onDelete={() => deleteItem(index)}
             onDrop={dropItem}
+            onDraggingChange={setDragging}
           />
         )}
         ListEmptyComponent={(

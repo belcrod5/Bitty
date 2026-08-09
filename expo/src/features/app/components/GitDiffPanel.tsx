@@ -477,15 +477,16 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       mediaItems,
       getSkiaBoardAction: skiaBoardLoaded
         ? (target) => {
-          const onBoard = hasFile(selectedDirectoryPath, target.path);
+          const rootDirectory = target.rootDirectory || selectedDirectoryPath;
+          const onBoard = hasFile(rootDirectory, target.path);
           return {
             text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
             onPress: () => {
               if (onBoard) {
-                removeFile(selectedDirectoryPath, target.path);
+                removeFile(rootDirectory, target.path);
               } else {
                 addFile({
-                  rootDir: selectedDirectoryPath,
+                  rootDir: rootDirectory,
                   path: target.path,
                   name: target.name,
                 });

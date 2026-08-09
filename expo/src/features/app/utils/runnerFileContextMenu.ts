@@ -183,6 +183,7 @@ export function openRunnerFileContextMenu({
   const filePath = normalizeRunnerPath(filePathRaw);
   const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
   if (!filePath) return;
+  const fileLocation = getRunnerFileViewerLocation(filePath, rootDir);
   const isShellScript = allowExecute && filePath.toLowerCase().endsWith(".sh");
   const mediaKind = getRunnerMediaKind(filePath);
   const copyPathAction = () => {
@@ -370,12 +371,11 @@ export function openRunnerFileContextMenu({
       buttons.push({
         text: "開く",
         onPress: () => {
-          const location = getRunnerFileViewerLocation(filePath, rootDir);
           onOpenFile({
             kind: viewerKind,
-            path: location.path,
+            path: fileLocation.path,
             name: fileName,
-            rootDirectory: location.rootDirectory,
+            rootDirectory: fileLocation.rootDirectory,
           });
         },
       });
@@ -427,7 +427,11 @@ export function openRunnerFileContextMenu({
       onPress: deleteAction,
     });
   }
-  const skiaBoardAction = getSkiaBoardAction?.({ path: filePath, name: fileName });
+  const skiaBoardAction = getSkiaBoardAction?.({
+    path: fileLocation.path,
+    name: fileName,
+    rootDirectory: fileLocation.rootDirectory,
+  });
   if (skiaBoardAction) {
     buttons.push(skiaBoardAction);
   }
