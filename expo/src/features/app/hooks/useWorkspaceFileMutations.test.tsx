@@ -86,17 +86,20 @@ test("does not mark a path unavailable when the mutation fails", async () => {
 test.each(["/work/other/tasks", "/", "D:/"])(
   "writes viewer content with its location root %s instead of the current chat root",
   async (targetRootDirectory) => {
+    const targetPath = targetRootDirectory === "/"
+      ? "/today.checklist"
+      : `${targetRootDirectory.replace(/\/$/u, "")}/today.checklist`;
     const hook = await renderMutations(jest.fn());
     mockWriteWorkspaceTextFile.mockResolvedValue({
       ok: true,
-      path: "today.checklist",
+      path: targetPath,
       version: "version-2",
     });
 
     await act(async () => {
       await hook.result.current.writeFileContent(
         {
-          path: "today.checklist",
+          path: targetPath,
           name: "today.checklist",
           rootDirectory: targetRootDirectory,
         },
@@ -107,7 +110,7 @@ test.each(["/work/other/tasks", "/", "D:/"])(
 
     expect(mockWriteWorkspaceTextFile).toHaveBeenCalledWith(expect.objectContaining({
       rootDirectory: targetRootDirectory,
-      path: "today.checklist",
+      path: targetPath,
     }));
   },
 );

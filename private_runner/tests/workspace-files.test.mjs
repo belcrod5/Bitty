@@ -188,6 +188,37 @@ test("overwrites text file content only inside the selected root", async () => {
   });
 });
 
+test("reads and writes an external absolute path when workspace root has the same file name", async () => {
+  await withTempDir(async (workspaceRoot) => {
+    await withTempDir(async (externalRoot) => {
+      const fileName = "same-name.checklist";
+      const workspaceFile = path.join(workspaceRoot, fileName);
+      const externalFile = path.join(externalRoot, fileName);
+      await writeFile(workspaceFile, "- [ ] workspace\n");
+      await writeFile(externalFile, "- [ ] external\n");
+      const service = createWorkspaceFilesService({
+        workspaceRoot,
+        maxUploadBytes: 1024,
+      });
+
+      const opened = await service.readTextFile({
+        rootDir: externalRoot,
+        path: externalFile,
+      });
+      assert.equal(opened.content, "- [ ] external\n");
+
+      await service.writeTextFile({
+        rootDir: externalRoot,
+        path: externalFile,
+        content: "- [x] external\n",
+        expectedVersion: opened.version,
+      });
+      assert.equal(await readFile(externalFile, "utf8"), "- [x] external\n");
+      assert.equal(await readFile(workspaceFile, "utf8"), "- [ ] workspace\n");
+    });
+  });
+});
+
 test("rejects a text write when the file changed after it was opened", async () => {
   await withTempDir(async (workspaceRoot) => {
     const projectRoot = path.join(workspaceRoot, "project");

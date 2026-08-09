@@ -110,7 +110,7 @@ test.each([
   buttons.find((button) => button.text === "開く")?.onPress?.();
   expect(onOpenFile).toHaveBeenCalledWith({
     kind,
-    path: filePath.split("/").pop(),
+    path: filePath,
     name: filePath,
     rootDirectory: filePath.slice(0, filePath.lastIndexOf("/")),
   });
@@ -148,11 +148,11 @@ test("keeps absolute paths owned by POSIX or Windows drive roots", () => {
 
 test("uses the correct POSIX or drive root for external root-level files", () => {
   expect(getRunnerFileViewerLocation("/report.html", "/work/current")).toEqual({
-    path: "report.html",
+    path: "/report.html",
     rootDirectory: "/",
   });
   expect(getRunnerFileViewerLocation("D:/report.html", "C:/work/current")).toEqual({
-    path: "report.html",
+    path: "D:/report.html",
     rootDirectory: "D:/",
   });
 });

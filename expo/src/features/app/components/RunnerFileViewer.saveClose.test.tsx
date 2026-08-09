@@ -93,9 +93,10 @@ test.each(["/", "D:/"])("uses the root-level location %s for both read and save"
     path: "root.checklist",
     version: "version-2",
   });
+  const targetPath = rootDirectory === "/" ? "/root.checklist" : `${rootDirectory}root.checklist`;
   const target = {
     kind: "checklist" as const,
-    path: "root.checklist",
+    path: targetPath,
     name: "root.checklist",
     rootDirectory,
   };
@@ -112,7 +113,7 @@ test.each(["/", "D:/"])("uses the root-level location %s for both read and save"
   await fireEvent.press(await view.findByTestId("checklist-toggle-0"));
   expect(mockFetchRunnerTextFileContent).toHaveBeenCalledWith(expect.objectContaining({
     rootDir: rootDirectory,
-    path: "root.checklist",
+    path: targetPath,
   }));
   await waitFor(() => expect(onSave).toHaveBeenCalledWith(
     target,

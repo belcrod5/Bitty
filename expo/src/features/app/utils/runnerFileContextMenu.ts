@@ -507,7 +507,7 @@ export function getRunnerFileViewerLocation(pathRaw: unknown, rootDirectoryRaw: 
       ? `${parentPath}/`
       : parentPath;
   return {
-    path: path.slice(separatorIndex + 1),
+    path,
     rootDirectory: locationRoot,
   };
 }
