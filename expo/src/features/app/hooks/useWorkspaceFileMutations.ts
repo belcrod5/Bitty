@@ -154,6 +154,7 @@ export function useWorkspaceFileMutations({
       });
       showInfoToast(`保存しました: ${result.path || target.path}`);
       await refreshAfterMutationWithAlert(result);
+      return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Alert.alert("保存失敗", message || "ファイルの保存に失敗しました。");

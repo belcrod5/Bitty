@@ -10,12 +10,18 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
+import { ChecklistFileViewer } from "./ChecklistFileViewer";
+import { parseChecklistFile, type ChecklistItem } from "../utils/checklistFile";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
 import {
   RUNNER_FILE_HTTP_TIMEOUT_MS,
   type RunnerFileViewerKind,
   type RunnerFileViewerTarget,
 } from "../utils/runnerFileContextMenu";
+import type {
+  WorkspaceFileTarget,
+  WorkspaceFileWriteResult,
+} from "../utils/workspaceFiles";
 
 const DRAWIO_VIEWER_SCRIPT_URL =
   "https://viewer.diagrams.net/js/viewer-static.min.js";
@@ -26,7 +32,14 @@ type RunnerFileViewerProps = {
   runnerToken: string;
   rootDirectory: string;
   onRequestClose: () => void;
+  onSave: (
+    target: WorkspaceFileTarget,
+    content: string,
+    expectedVersion: string,
+  ) => Promise<WorkspaceFileWriteResult>;
 };
+
+type WebRunnerFileViewerKind = Exclude<RunnerFileViewerKind, "checklist">;
 
 function escapeHtmlAttribute(value: string) {
   return value
@@ -37,7 +50,7 @@ function escapeHtmlAttribute(value: string) {
     .replace(/>/g, "&gt;");
 }
 
-export function buildRunnerFileViewerHtml(kind: RunnerFileViewerKind, content: string) {
+export function buildRunnerFileViewerHtml(kind: WebRunnerFileViewerKind, content: string) {
   switch (kind) {
     case "html":
       return content;
@@ -82,15 +95,21 @@ export function RunnerFileViewer({
   runnerToken,
   rootDirectory,
   onRequestClose,
+  onSave,
 }: RunnerFileViewerProps) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [content, setContent] = useState("");
+  const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
+  const [version, setVersion] = useState("");
 
   const targetPath = target?.path || "";
+  const targetKind = target?.kind || null;
 
   useEffect(() => {
     setContent("");
+    setChecklistItems([]);
+    setVersion("");
     setLoadError("");
     if (!targetPath) return;
     let cancelled = false;
@@ -104,7 +123,12 @@ export function RunnerFileViewer({
     })
       .then((result) => {
         if (cancelled) return;
-        setContent(result.content);
+        if (targetKind === "checklist") {
+          setChecklistItems(parseChecklistFile(result.content));
+        } else {
+          setContent(result.content);
+        }
+        setVersion(result.version);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -117,7 +141,7 @@ export function RunnerFileViewer({
     return () => {
       cancelled = true;
     };
-  }, [rootDirectory, runnerToken, runnerUrl, targetPath]);
+  }, [rootDirectory, runnerToken, runnerUrl, targetKind, targetPath]);
 
   if (!target) {
     return null;
@@ -153,6 +177,13 @@ export function RunnerFileViewer({
           <View style={viewerStyles.centerArea}>
             <Text style={viewerStyles.errorText}>{loadError}</Text>
           </View>
+        ) : target.kind === "checklist" ? (
+          <ChecklistFileViewer
+            target={target}
+            initialItems={checklistItems}
+            initialVersion={version}
+            onSave={onSave}
+          />
         ) : (
           <WebView
             style={viewerStyles.webview}

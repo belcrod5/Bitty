@@ -35,6 +35,10 @@ export type WorkspaceFileMutationResult = {
   name?: string;
 };
 
+export type WorkspaceFileWriteResult = WorkspaceFileMutationResult & {
+  version: string;
+};
+
 export type WorkspaceFileTarget = {
   path: string;
   name: string;
@@ -366,7 +370,7 @@ export async function writeWorkspaceTextFile({
   path: string;
   content: string;
   expectedVersion: string;
-}): Promise<WorkspaceFileMutationResult> {
+}): Promise<WorkspaceFileWriteResult> {
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
   const targetPath = String(path || "").trim();
@@ -397,10 +401,15 @@ export async function writeWorkspaceTextFile({
     if (!response.ok) {
       throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
     }
+    const version = String(data?.version || "").trim();
+    if (!version) {
+      throw new Error("保存後のファイルバージョンを取得できませんでした。");
+    }
     return {
       ok: Boolean(data?.ok),
       path: String(data?.path || targetPath),
       directory: data?.directory ? String(data.directory) : undefined,
+      version,
     };
   } catch (error) {
     if (error && typeof error === "object" && "name" in error && error.name === "AbortError") {

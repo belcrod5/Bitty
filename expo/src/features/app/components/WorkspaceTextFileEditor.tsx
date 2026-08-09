@@ -14,7 +14,10 @@ import {
 } from "react-native";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
 import { RUNNER_FILE_HTTP_TIMEOUT_MS } from "../utils/runnerFileContextMenu";
-import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import type {
+  WorkspaceFileTarget,
+  WorkspaceFileWriteResult,
+} from "../utils/workspaceFiles";
 
 type WorkspaceTextFileEditorProps = {
   target: WorkspaceFileTarget | null;
@@ -22,7 +25,11 @@ type WorkspaceTextFileEditorProps = {
   runnerToken: string;
   rootDirectory: string;
   onClose: () => void;
-  onSave: (target: WorkspaceFileTarget, content: string, expectedVersion: string) => Promise<void>;
+  onSave: (
+    target: WorkspaceFileTarget,
+    content: string,
+    expectedVersion: string,
+  ) => Promise<WorkspaceFileWriteResult>;
 };
 
 export function WorkspaceTextFileEditor({

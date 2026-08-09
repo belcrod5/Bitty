@@ -16,7 +16,7 @@ test("reads a file version and sends it back as the write precondition", async (
     .mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, path: "project/note.md" }),
+      json: async () => ({ ok: true, path: "project/note.md", version: "saved-version" }),
     });
   global.fetch = fetchMock as typeof fetch;
 
@@ -27,7 +27,7 @@ test("reads a file version and sends it back as the write precondition", async (
     path: "project/note.md",
     timeoutMs: 1000,
   });
-  await writeWorkspaceTextFile({
+  const saved = await writeWorkspaceTextFile({
     runnerUrl: "http://runner.test",
     runnerToken: "token",
     rootDirectory: "project",
@@ -38,4 +38,22 @@ test("reads a file version and sends it back as the write precondition", async (
 
   const writeBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
   expect(writeBody.expectedVersion).toBe("opened-version");
+  expect(saved.version).toBe("saved-version");
+});
+
+test("rejects a write response without the next version", async () => {
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true, path: "project/note.md" }),
+  }) as typeof fetch;
+
+  await expect(writeWorkspaceTextFile({
+    runnerUrl: "http://runner.test",
+    runnerToken: "token",
+    rootDirectory: "project",
+    path: "project/note.md",
+    content: "after",
+    expectedVersion: "opened-version",
+  })).rejects.toThrow("保存後のファイルバージョンを取得できませんでした。");
 });

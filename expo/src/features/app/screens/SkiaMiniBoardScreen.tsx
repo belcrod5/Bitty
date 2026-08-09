@@ -722,6 +722,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         runnerToken={runnerToken}
         rootDirectory={fileMenuRootDir}
         onRequestClose={() => setRunnerFileViewerTarget(null)}
+        onSave={writeFileContent}
       />
       <WorkspaceFileRenameDialog
         target={renameTarget}

@@ -37,6 +37,7 @@ const RUNNER_FILE_VIEWER_KIND_BY_EXTENSION: Record<string, RunnerFileViewerKind>
   html: "html",
   htm: "html",
   drawio: "drawio",
+  checklist: "checklist",
 };
 
 const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
@@ -54,7 +55,7 @@ const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
 
 export type RunnerMediaKind = "video" | "image";
 
-export type RunnerFileViewerKind = "html" | "drawio";
+export type RunnerFileViewerKind = "html" | "drawio" | "checklist";
 
 export type RunnerFileViewerTarget = WorkspaceFileTarget & {
   kind: RunnerFileViewerKind;

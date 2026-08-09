@@ -15,7 +15,11 @@ test("saves with the version returned when the file was opened", async () => {
     totalBytes: 6,
     version: "opened-version",
   });
-  const onSave = jest.fn().mockResolvedValue(undefined);
+  const onSave = jest.fn().mockResolvedValue({
+    ok: true,
+    path: "project/note.md",
+    version: "saved-version",
+  });
   const onClose = jest.fn();
   const view = await render(
     <WorkspaceTextFileEditor

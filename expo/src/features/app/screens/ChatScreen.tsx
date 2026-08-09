@@ -2136,6 +2136,7 @@ export function ChatScreen({
           runnerToken={runnerToken}
           rootDirectory={selectedDirectoryPathForView}
           onRequestClose={() => setRunnerFileViewerTarget(null)}
+          onSave={writeChatFileContent}
         />
         <WorkspaceFileRenameDialog
           target={approvalDialogPending ? null : chatFileRenameTarget}

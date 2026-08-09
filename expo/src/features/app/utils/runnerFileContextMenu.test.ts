@@ -2,6 +2,7 @@ import { Alert } from "react-native";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
   getRunnerFileViewerKind,
+  isRunnerEditableTextFile,
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
 } from "./runnerFileContextMenu";
@@ -65,14 +66,21 @@ test("getRunnerFileViewerKind detects supported extensions case-insensitively", 
   expect(getRunnerFileViewerKind("docs/index.html")).toBe("html");
   expect(getRunnerFileViewerKind("docs/INDEX.HTM")).toBe("html");
   expect(getRunnerFileViewerKind("diagrams/ARCHITECTURE.DRAWIO")).toBe("drawio");
+  expect(getRunnerFileViewerKind("tasks/TODAY.CHECKLIST")).toBe("checklist");
   expect(getRunnerFileViewerKind("docs/readme.md")).toBeNull();
   expect(getRunnerFileViewerKind("Makefile")).toBeNull();
   expect(getRunnerFileViewerKind("")).toBeNull();
 });
 
+test("routes checklist files only to the dedicated viewer", () => {
+  expect(getRunnerFileViewerKind("tasks/today.checklist")).toBe("checklist");
+  expect(isRunnerEditableTextFile("tasks/today.checklist")).toBe(false);
+});
+
 test.each([
   ["docs/report.html", "html"],
   ["diagrams/architecture.drawio", "drawio"],
+  ["tasks/today.checklist", "checklist"],
 ] as const)("shows an open button for %s and passes its viewer kind", (filePath, kind) => {
   const onOpenFile = jest.fn();
   const buttons = openContextMenuButtons({ filePath, onOpenFile });
