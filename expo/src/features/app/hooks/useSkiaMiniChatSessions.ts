@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
@@ -7,17 +7,10 @@ import {
   decidePanelHydration,
   type PanelHydrationRequestMark,
 } from "../utils/panelAssignmentHydration";
-import {
-  ingestSkiaBoardSessions,
-  moveSkiaBoardCard,
-  readPersistedSkiaBoardState,
-  removeSkiaBoardSession,
-  tidySkiaBoardCards,
-  writePersistedSkiaBoardState,
-  type SkiaBoardState,
-} from "../utils/skiaBoardState";
+import { skiaBoardCardId } from "../utils/skiaBoardState";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
+import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import type { LlmSessionSource } from "./useLlmSessionExplorer";
 
 // パネルIDはセッションごとに固定(インデックス割当だと並び替えで担当が入れ替わり、
@@ -27,6 +20,8 @@ export function skiaMiniChatPanelId(sessionId: string) {
 }
 
 export type SkiaMiniChatSession = {
+  kind: "session";
+  cardId: string;
   panelId: string;
   sessionId: string;
   directory: string;
@@ -39,6 +34,19 @@ export type SkiaMiniChatSession = {
   col: number;
   row: number;
 };
+
+export type SkiaMiniBoardFile = {
+  kind: "file";
+  cardId: string;
+  rootDir: string;
+  path: string;
+  name: string;
+  unavailable?: boolean;
+  col: number;
+  row: number;
+};
+
+export type SkiaMiniBoardItem = SkiaMiniChatSession | SkiaMiniBoardFile;
 
 export function formatSkiaMiniChatUpdatedAt(raw: unknown, nowMs = Date.now()) {
   const updatedAtMs = new Date(String(raw || "")).getTime();
@@ -63,6 +71,14 @@ export function useSkiaMiniChatSessions() {
   } = useConversation();
   const { getSnapshot } = usePanelRuntimeStore();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
+  const {
+    state: boardState,
+    moveCard: moveBoardCard,
+    removeSession: removeBoardSession,
+    removeFile: removeBoardFile,
+    markFileUnavailable: markBoardFileUnavailable,
+    tidyCards: tidyBoard,
+  } = useSkiaBoard();
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
   const getSnapshotRef = useRef(getSnapshot);
@@ -74,9 +90,6 @@ export function useSkiaMiniChatSessions() {
   const [hydratingPanelCount, setHydratingPanelCount] = useState(0);
   const [panelHydrationErrorCount, setPanelHydrationErrorCount] = useState(0);
   const [nowMs, setNowMs] = useState(Date.now());
-  const [boardState, setBoardState] = useState<SkiaBoardState | null>(null);
-  const [boardStateLoaded, setBoardStateLoaded] = useState(false);
-  const lastPersistedBoardStateRef = useRef<SkiaBoardState | null>(null);
 
   useEffect(() => {
     clearPanelSnapshotRef.current = clearPanelSnapshot;
@@ -96,61 +109,12 @@ export function useSkiaMiniChatSessions() {
     };
   }, [ensureRegisteredDirectorySessions]);
 
-  // 保存済みボードステートの読み込み(初回マウント時)。
-  useEffect(() => {
-    let cancelled = false;
-    readPersistedSkiaBoardState()
-      .then((state) => {
-        if (cancelled) return;
-        lastPersistedBoardStateRef.current = state;
-        setBoardState(state);
-        setBoardStateLoaded(true);
-      })
-      .catch((error) => {
-        // 読込失敗時はロード完了にしない(ingest・書込を止める)。完了扱いにすると
-        // null初期化→保存の上書きで、保存済みのカード位置と除外リストが全損する。
-        // 次回マウント(再入場・再起動)で読み込みを再試行する。
-        console.warn("[skia_board] failed to read persisted board state", error);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const sessionCandidates = useMemo(() => (
     collectRegisteredDirectorySessions(registeredDirectories, directorySessionsById)
   ), [
     directorySessionsById,
     registeredDirectories,
   ]);
-
-  // 積み上げ取り込みは全ディレクトリの候補が揃った状態でのみ行う。読込途中や
-  // 一部失敗(partial_error)中に取り込むと、ウォーターマークが未読込・失敗中
-  // ディレクトリの新規セッションを追い越し、復旧後も永遠に取りこぼすため。
-  const directorySyncSettled = (
-    directorySessionSync.phase === "idle"
-    || directorySessionSync.phase === "complete"
-  );
-  useEffect(() => {
-    if (!boardStateLoaded || !directorySyncSettled) return;
-    setBoardState((prev) => ingestSkiaBoardSessions(prev, sessionCandidates));
-  }, [boardStateLoaded, directorySyncSettled, sessionCandidates]);
-
-  // ステート変化(追加・移動・整頓・削除)を端末ローカルへ保存する。
-  // ドラッグ中はSharedValueのみが動き、ステート更新はドラッグ終了時なので
-  // フレーム毎の書き込みは発生しない。
-  useEffect(() => {
-    if (!boardStateLoaded || !boardState) return;
-    if (boardState === lastPersistedBoardStateRef.current) return;
-    // 記録は書込成功後に更新する(失敗時は次のステート変化で差分ごと再保存される)。
-    writePersistedSkiaBoardState(boardState)
-      .then(() => {
-        lastPersistedBoardStateRef.current = boardState;
-      })
-      .catch((error) => {
-        console.warn("[skia_board] failed to persist board state", error);
-      });
-  }, [boardState, boardStateLoaded]);
 
   // ボード搭載カードのうち、候補(取得済みセッション)が存在するものだけを表示・
   // hydrate対象にする。取得ウィンドウ外のカードは位置だけ保持して再登場を待つ。
@@ -159,6 +123,7 @@ export function useSkiaMiniChatSessions() {
       sessionCandidates.map((candidate) => [candidate.sessionId, candidate])
     );
     return (boardState?.cards || []).flatMap((card) => {
+      if (card.kind !== "session") return [];
       const candidate = candidatesBySessionId.get(card.sessionId);
       return candidate ? [{ card, candidate, panelId: skiaMiniChatPanelId(card.sessionId) }] : [];
     });
@@ -241,6 +206,8 @@ export function useSkiaMiniChatSessions() {
         : [];
       const lastMessage = messages[messages.length - 1];
       return {
+        kind: "session",
+        cardId: skiaBoardCardId(card),
         panelId,
         sessionId: candidate.sessionId,
         directory: candidate.directory,
@@ -269,25 +236,33 @@ export function useSkiaMiniChatSessions() {
     sessionTitleOverridesById,
   ]);
 
-  const moveBoardCard = useCallback((sessionId: string, col: number, row: number) => {
-    setBoardState((prev) => (prev ? moveSkiaBoardCard(prev, sessionId, col, row) : prev));
-  }, []);
-
-  const removeBoardSession = useCallback((sessionId: string) => {
-    setBoardState((prev) => (prev ? removeSkiaBoardSession(prev, sessionId) : prev));
-  }, []);
-
-  const tidyBoard = useCallback(() => {
-    setBoardState((prev) => (prev ? tidySkiaBoardCards(prev) : prev));
-  }, []);
+  const files = useMemo<SkiaMiniBoardFile[]>(() => (boardState?.cards || []).flatMap((card) => (
+    card.kind === "file"
+      ? [{ ...card, cardId: skiaBoardCardId(card) }]
+      : []
+  )), [boardState]);
+  const items = useMemo<SkiaMiniBoardItem[]>(() => {
+    const sessionsByCardId = new Map(sessions.map((session) => [session.cardId, session]));
+    const filesByCardId = new Map(files.map((file) => [file.cardId, file]));
+    return (boardState?.cards || []).flatMap((card) => {
+      const cardId = skiaBoardCardId(card);
+      const item = card.kind === "session"
+        ? sessionsByCardId.get(cardId)
+        : filesByCardId.get(cardId);
+      return item ? [item] : [];
+    });
+  }, [boardState, files, sessions]);
 
   return {
     directorySync: directorySessionSync,
     hydratingPanelCount,
     panelHydrationErrorCount,
     sessions,
+    items,
     moveBoardCard,
     removeBoardSession,
+    removeBoardFile,
+    markBoardFileUnavailable,
     tidyBoard,
   };
 }

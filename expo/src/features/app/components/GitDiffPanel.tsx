@@ -17,6 +17,7 @@ import { GitDiffRunningJobsSection } from "./GitDiffRunningJobsSection";
 import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "./WorkspaceTextFileEditor";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
+import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import { buildGitDiffFileTree, type GitDiffFileTreeNode } from "../utils/gitDiffFileTree";
 import { normalizeGitChangedFilePaths } from "../utils/gitChangedFiles";
 import {
@@ -105,6 +106,13 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   onSpeakText,
   logSessionDiag,
 }: GitDiffPanelProps) {
+  const {
+    addFile,
+    removeFile,
+    hasFile,
+    markFileUnavailable,
+    loaded: skiaBoardLoaded,
+  } = useSkiaBoard();
   const hasEverBeenVisibleRef = useRef(visible);
   if (visible) hasEverBeenVisibleRef.current = true;
   const [gitPanelTab, setGitPanelTab] = useState<GitPanelTab>("diff");
@@ -407,6 +415,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     reloadDirectory: reloadExplorerDirectory,
     refreshChangedFiles: refreshGitChangedFiles,
     showInfoToast,
+    onPathRemoved: (target) => markFileUnavailable(selectedDirectoryPath, target.path),
   });
 
   const stagedFiles = useMemo(
@@ -466,10 +475,31 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       onRequestDelete: deleteFile,
       onRenameFile: renameFileTarget,
       mediaItems,
+      getSkiaBoardAction: skiaBoardLoaded
+        ? (target) => {
+          const onBoard = hasFile(selectedDirectoryPath, target.path);
+          return {
+            text: onBoard ? "Skiaボードから除外" : "Skiaボードへ追加",
+            onPress: () => {
+              if (onBoard) {
+                removeFile(selectedDirectoryPath, target.path);
+              } else {
+                addFile({
+                  rootDir: selectedDirectoryPath,
+                  path: target.path,
+                  name: target.name,
+                });
+              }
+            },
+          };
+        }
+        : undefined,
     });
   }, [
+    addFile,
     explorerNodesByPath,
     getPathLabel,
+    hasFile,
     onOpenMedia,
     onOpenFile,
     onSpeakText,
@@ -477,10 +507,12 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     renameFileTarget,
     requestRename,
     requestEdit,
+    removeFile,
     runnerToken,
     runnerUrl,
     selectedDirectoryPath,
     showInfoToast,
+    skiaBoardLoaded,
     stagedFiles,
     unstagedFiles,
   ]);

@@ -7,7 +7,10 @@ import {
   type WorkspaceFileMutationResult,
   type WorkspaceFileTarget,
 } from "../utils/workspaceFiles";
-import { isRunnerEditableTextFile } from "../utils/runnerFileContextMenu";
+import {
+  isRunnerEditableTextFile,
+  normalizeRunnerPath,
+} from "../utils/runnerFileContextMenu";
 
 type UseWorkspaceFileMutationsParams = {
   runnerUrl: string;
@@ -16,6 +19,7 @@ type UseWorkspaceFileMutationsParams = {
   reloadDirectory?: (path: string) => Promise<void>;
   refreshChangedFiles: () => void | Promise<void>;
   showInfoToast: (textRaw: unknown) => void;
+  onPathRemoved?: (target: WorkspaceFileTarget) => void;
 };
 
 function getParentPath(pathRaw: unknown) {
@@ -33,6 +37,7 @@ export function useWorkspaceFileMutations({
   reloadDirectory,
   refreshChangedFiles,
   showInfoToast,
+  onPathRemoved,
 }: UseWorkspaceFileMutationsParams) {
   const [renameTarget, setRenameTarget] = useState<WorkspaceFileTarget | null>(null);
   const [editTarget, setEditTarget] = useState<WorkspaceFileTarget | null>(null);
@@ -76,6 +81,9 @@ export function useWorkspaceFileMutations({
         name: nextName,
       });
       setRenameTarget(null);
+      if (normalizeRunnerPath(result.path) !== normalizeRunnerPath(target.path)) {
+        onPathRemoved?.(target);
+      }
       showInfoToast(`名前を変更しました: ${result.path}`);
       await refreshAfterMutationWithAlert(result);
     } catch (err) {
@@ -86,6 +94,7 @@ export function useWorkspaceFileMutations({
   }, [
     refreshAfterMutationWithAlert,
     rootDirectory,
+    onPathRemoved,
     runnerToken,
     runnerUrl,
     showInfoToast,
@@ -167,6 +176,7 @@ export function useWorkspaceFileMutations({
         path: target.path,
         operation: "delete",
       });
+      onPathRemoved?.(target);
       showInfoToast(`削除しました: ${result.path || target.path}`);
       await refreshAfterMutationWithAlert(result);
     } catch (err) {
@@ -175,6 +185,7 @@ export function useWorkspaceFileMutations({
     }
   }, [
     refreshAfterMutationWithAlert,
+    onPathRemoved,
     rootDirectory,
     runnerToken,
     runnerUrl,

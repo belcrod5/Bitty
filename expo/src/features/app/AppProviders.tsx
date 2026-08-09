@@ -55,6 +55,7 @@ import {
   DebugSpeechProvider,
   type DebugSpeechContextValue,
 } from "./contexts/DebugSpeechContext";
+import { SkiaBoardProvider } from "./contexts/SkiaBoardContext";
 
 type AppProvidersProps = {
   appShell: AppShellContextValue;
@@ -106,7 +107,7 @@ export function AppProviders({
                           <DebugRuntimeProvider value={debugRuntime}>
                             <DebugConversationProvider value={debugConversation}>
                               <DebugSpeechProvider value={debugSpeech}>
-                                {children}
+                                <SkiaBoardProvider>{children}</SkiaBoardProvider>
                               </DebugSpeechProvider>
                             </DebugConversationProvider>
                           </DebugRuntimeProvider>

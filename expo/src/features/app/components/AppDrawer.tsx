@@ -28,6 +28,7 @@ import type {
   RegisteredDirectoryEntry,
   SessionChildTreeState,
 } from "../types/directorySessions";
+import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 
 export type {
   DirectoryMarkerColor,
@@ -126,6 +127,7 @@ export const AppDrawer = memo(function AppDrawer({
   onMarkSessionUnread,
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
+  const { addSession, removeSession, hasSession, loaded: skiaBoardLoaded } = useSkiaBoard();
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
@@ -595,6 +597,28 @@ export const AppDrawer = memo(function AppDrawer({
               >
                 <Text style={styles.modalOptionText}>未読にする</Text>
               </TouchableOpacity>
+              {skiaBoardLoaded ? (
+                <TouchableOpacity
+                  style={styles.modalOption}
+                  onPress={() => {
+                    if (sessionContextMenuTarget) {
+                      const sessionId = sessionContextMenuTarget.sessionId;
+                      if (hasSession(sessionId)) {
+                        removeSession(sessionId);
+                      } else {
+                        addSession(sessionId);
+                      }
+                    }
+                    setSessionContextMenuTarget(null);
+                  }}
+                >
+                  <Text style={styles.modalOptionText}>
+                    {sessionContextMenuTarget && hasSession(sessionContextMenuTarget.sessionId)
+                      ? "Skiaボードから除外"
+                      : "Skiaボードへ追加"}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
             </Pressable>
           </Pressable>
         </Modal>

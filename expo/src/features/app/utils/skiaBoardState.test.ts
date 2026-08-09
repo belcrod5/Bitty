@@ -1,9 +1,14 @@
 import {
+  addSkiaBoardFile,
+  addSkiaBoardSession,
   findFreeSkiaBoardCell,
   ingestSkiaBoardSessions,
+  markSkiaBoardFileUnavailable,
   moveSkiaBoardCard,
   parseSkiaBoardState,
   removeSkiaBoardSession,
+  removeSkiaBoardFile,
+  skiaBoardCardId,
   skiaBoardGridPosition,
   tidySkiaBoardCards,
   type SkiaBoardState,
@@ -26,6 +31,14 @@ function updatedAtMs(index: number) {
   return new Date(candidate(index).updatedAt).getTime();
 }
 
+function sessionCard(sessionId: string, col: number, row: number) {
+  return { kind: "session" as const, sessionId, col, row };
+}
+
+function boardedSessionIds(state: SkiaBoardState | null | undefined) {
+  return (state?.cards || []).flatMap((card) => card.kind === "session" ? [card.sessionId] : []);
+}
+
 describe("ingestSkiaBoardSessions", () => {
   it("initializes with the latest six candidates and a watermark over all candidates", () => {
     const state = ingestSkiaBoardSessions(
@@ -33,7 +46,7 @@ describe("ingestSkiaBoardSessions", () => {
       Array.from({ length: 8 }, (_, index) => candidate(8 - index))
     );
 
-    expect(state?.cards.map((card) => card.sessionId)).toEqual([
+    expect(boardedSessionIds(state)).toEqual([
       "session-8",
       "session-7",
       "session-6",
@@ -53,7 +66,7 @@ describe("ingestSkiaBoardSessions", () => {
 
   it("stacks only unboarded, unexcluded candidates newer than the watermark", () => {
     const state: SkiaBoardState = {
-      cards: [{ sessionId: "session-3", col: 0.4, row: 0.1 }],
+      cards: [sessionCard("session-3", 0.4, 0.1)],
       excludedSessionIds: ["session-5"],
       ingestedUpdatedAtMs: updatedAtMs(3),
     };
@@ -67,7 +80,7 @@ describe("ingestSkiaBoardSessions", () => {
     ]);
 
     expect(next).not.toBe(state);
-    expect(next?.cards.map((card) => card.sessionId)).toEqual([
+    expect(boardedSessionIds(next)).toEqual([
       "session-3",
       "session-4",
       "session-6",
@@ -82,7 +95,7 @@ describe("ingestSkiaBoardSessions", () => {
 
   it("returns the same reference when nothing changes", () => {
     const state: SkiaBoardState = {
-      cards: [{ sessionId: "session-2", col: 0, row: 0 }],
+      cards: [sessionCard("session-2", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: updatedAtMs(2),
     };
@@ -94,13 +107,13 @@ describe("findFreeSkiaBoardCell", () => {
   it("skips cells overlapped by free-form card positions", () => {
     // (0.3, 0.2) のカードは row0/row1 の4セルに部分的に重なる → 次の空きは(0,2)。
     const cell = findFreeSkiaBoardCell([
-      { sessionId: "a", col: 0.3, row: 0.2 },
-      { sessionId: "b", col: 1, row: 0 },
+      sessionCard("a", 0.3, 0.2),
+      sessionCard("b", 1, 0),
     ]);
     expect(cell).toEqual({ col: 0, row: 2 });
 
     // グリッドに揃ったカードだけなら隣のセルが空きになる。
-    expect(findFreeSkiaBoardCell([{ sessionId: "a", col: 0, row: 0 }])).toEqual({ col: 1, row: 0 });
+    expect(findFreeSkiaBoardCell([sessionCard("a", 0, 0)])).toEqual({ col: 1, row: 0 });
   });
 });
 
@@ -108,15 +121,15 @@ describe("removeSkiaBoardSession", () => {
   it("removes the card and prevents automatic re-addition", () => {
     const state: SkiaBoardState = {
       cards: [
-        { sessionId: "session-1", col: 0, row: 0 },
-        { sessionId: "session-2", col: 1, row: 0 },
+        sessionCard("session-1", 0, 0),
+        sessionCard("session-2", 1, 0),
       ],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: updatedAtMs(2),
     };
 
     const removed = removeSkiaBoardSession(state, "session-2");
-    expect(removed.cards.map((card) => card.sessionId)).toEqual(["session-1"]);
+    expect(boardedSessionIds(removed)).toEqual(["session-1"]);
     expect(removed.excludedSessionIds).toEqual(["session-2"]);
 
     // 除外済みセッションはupdatedAtが前進しても再追加されない。
@@ -124,12 +137,12 @@ describe("removeSkiaBoardSession", () => {
       { sessionId: "session-2", updatedAt: "2026-07-01T00:00:00.000Z" },
       candidate(1),
     ]);
-    expect(reIngested?.cards.map((card) => card.sessionId)).toEqual(["session-1"]);
+    expect(boardedSessionIds(reIngested)).toEqual(["session-1"]);
   });
 
   it("returns the same reference for a session that is not on the board", () => {
     const state: SkiaBoardState = {
-      cards: [{ sessionId: "session-1", col: 0, row: 0 }],
+      cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
     };
@@ -137,25 +150,93 @@ describe("removeSkiaBoardSession", () => {
   });
 });
 
-describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
-  it("moves a card to a free-form grid position", () => {
+describe("manual board cards", () => {
+  it("re-adds an excluded session and uses the first free cell", () => {
     const state: SkiaBoardState = {
-      cards: [{ sessionId: "session-1", col: 0, row: 0 }],
+      cards: [sessionCard("session-1", 0, 0)],
+      excludedSessionIds: ["session-2"],
+      ingestedUpdatedAtMs: updatedAtMs(2),
+    };
+    const added = addSkiaBoardSession(state, "session-2");
+    expect(boardedSessionIds(added)).toEqual(["session-1", "session-2"]);
+    expect(added.cards[1]).toMatchObject({ col: 1, row: 0 });
+    expect(added.excludedSessionIds).toEqual([]);
+  });
+
+  it("adds and removes files by root directory and path", () => {
+    const state: SkiaBoardState = {
+      cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
     };
-    const moved = moveSkiaBoardCard(state, "session-1", 1.25, -0.5);
+    const added = addSkiaBoardFile(state, {
+      rootDir: "/workspace",
+      path: "docs/guide.md",
+      name: "guide.md",
+    });
+    expect(added.cards[1]).toMatchObject({
+      kind: "file",
+      rootDir: "/workspace",
+      path: "docs/guide.md",
+      col: 1,
+      row: 0,
+    });
+    expect(skiaBoardCardId(added.cards[1])).toBe("file:/workspace\ndocs/guide.md");
+    expect(removeSkiaBoardFile(added, "/workspace", "docs/guide.md").cards).toEqual(state.cards);
+  });
+
+  it("keeps a moved or deleted file card in place and marks it unavailable", () => {
+    const state: SkiaBoardState = {
+      cards: [{
+        kind: "file",
+        rootDir: "/workspace",
+        path: "docs/guide.md",
+        name: "guide.md",
+        col: 0.4,
+        row: 2.1,
+      }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    };
+
+    const unavailable = markSkiaBoardFileUnavailable(state, "/workspace", "docs/guide.md");
+    expect(unavailable.cards[0]).toEqual({ ...state.cards[0], unavailable: true });
+    expect(markSkiaBoardFileUnavailable(unavailable, "/workspace", "docs/guide.md")).toBe(unavailable);
+    expect(markSkiaBoardFileUnavailable(state, "/workspace", "missing.md")).toBe(state);
+
+    // 同じパスが再作成されてExplorerから追加された場合は、位置を保って利用可能に戻す。
+    const restored = addSkiaBoardFile(unavailable, {
+      rootDir: "/workspace",
+      path: "docs/guide.md",
+      name: "guide restored.md",
+    });
+    expect(restored.cards[0]).toEqual({
+      ...state.cards[0],
+      name: "guide restored.md",
+      unavailable: false,
+    });
+  });
+});
+
+describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
+  it("moves a card to a free-form grid position", () => {
+    const state: SkiaBoardState = {
+      cards: [sessionCard("session-1", 0, 0)],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    };
+    const moved = moveSkiaBoardCard(state, "session:session-1", 1.25, -0.5);
     expect(moved.cards[0]).toMatchObject({ col: 1.25, row: -0.5 });
-    expect(moveSkiaBoardCard(moved, "session-1", 1.25, -0.5)).toBe(moved);
+    expect(moveSkiaBoardCard(moved, "session:session-1", 1.25, -0.5)).toBe(moved);
     expect(moveSkiaBoardCard(moved, "unknown", 0, 0)).toBe(moved);
   });
 
   it("tidies cards back onto the grid in board order", () => {
     const state: SkiaBoardState = {
       cards: [
-        { sessionId: "session-1", col: 2.4, row: 5 },
-        { sessionId: "session-2", col: -1, row: 0.2 },
-        { sessionId: "session-3", col: 0.5, row: 0.5 },
+        sessionCard("session-1", 2.4, 5),
+        sessionCard("session-2", -1, 0.2),
+        sessionCard("session-3", 0.5, 0.5),
       ],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
@@ -174,13 +255,29 @@ describe("parseSkiaBoardState", () => {
   it("round-trips a serialized board state", () => {
     const state: SkiaBoardState = {
       cards: [
-        { sessionId: "session-1", col: 0.25, row: 1.5 },
-        { sessionId: "session-2", col: 1, row: 0 },
+        sessionCard("session-1", 0.25, 1.5),
+        sessionCard("session-2", 1, 0),
       ],
       excludedSessionIds: ["session-9"],
       ingestedUpdatedAtMs: updatedAtMs(2),
     };
     expect(parseSkiaBoardState(JSON.parse(JSON.stringify(state)))).toEqual(state);
+  });
+
+  it("preserves the unavailable status of file cards", () => {
+    expect(parseSkiaBoardState({
+      cards: [{
+        kind: "file",
+        rootDir: "/workspace",
+        path: "deleted.md",
+        name: "deleted.md",
+        col: 1,
+        row: 2,
+        unavailable: true,
+      }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    })?.cards[0]).toMatchObject({ kind: "file", unavailable: true });
   });
 
   it("drops malformed cards and rejects empty or invalid payloads", () => {
@@ -197,7 +294,7 @@ describe("parseSkiaBoardState", () => {
       excludedSessionIds: ["", "session-3", "session-3"],
       ingestedUpdatedAtMs: "not-a-number",
     })).toEqual({
-      cards: [{ sessionId: "session-1", col: 0, row: 0 }],
+      cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: ["session-3"],
       ingestedUpdatedAtMs: 0,
     });

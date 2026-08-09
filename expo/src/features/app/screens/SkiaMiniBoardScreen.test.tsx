@@ -69,11 +69,27 @@ jest.mock("react-native-gesture-handler", () => {
 jest.mock("../contexts/AppShellContext", () => ({
   useAppShell: () => ({ openDrawer: jest.fn() }),
 }));
+jest.mock("../contexts/ChatScreenContext", () => ({
+  useChatScreen: () => ({
+    runnerUrl: "http://localhost:8787",
+    runnerToken: "token",
+    sanitizeTextForTts: (text: string) => text,
+    handleAssistantAudioButtonPress: jest.fn(),
+  }),
+}));
+jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => null }));
+jest.mock("../components/RunnerFileViewer", () => ({ RunnerFileViewer: () => null }));
+jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
+jest.mock("../components/WorkspaceTextFileEditor", () => ({ WorkspaceTextFileEditor: () => null }));
 
 const mockMoveBoardCard = jest.fn();
 const mockRemoveBoardSession = jest.fn();
+const mockRemoveBoardFile = jest.fn();
+const mockMarkBoardFileUnavailable = jest.fn();
 const mockTidyBoard = jest.fn();
 const mockDefaultSession = {
+  kind: "session" as const,
+  cardId: "session:session-1",
   panelId: "skia_mini_preview_session-1",
   sessionId: "session-1",
   directory: "/workspace",
@@ -94,8 +110,11 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     hydratingPanelCount: 0,
     panelHydrationErrorCount: 0,
     sessions: mockSessions,
+    items: mockSessions,
     moveBoardCard: mockMoveBoardCard,
     removeBoardSession: mockRemoveBoardSession,
+    removeBoardFile: mockRemoveBoardFile,
+    markBoardFileUnavailable: mockMarkBoardFileUnavailable,
     tidyBoard: mockTidyBoard,
   }),
 }));
@@ -103,6 +122,8 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 beforeEach(() => {
   mockMoveBoardCard.mockClear();
   mockRemoveBoardSession.mockClear();
+  mockRemoveBoardFile.mockClear();
+  mockMarkBoardFileUnavailable.mockClear();
   mockTidyBoard.mockClear();
   mockSessions = [mockDefaultSession];
 });
@@ -172,6 +193,58 @@ test("long-pressing a card asks for confirmation before removing it", async () =
   alertSpy.mockRestore();
 });
 
+test("shows the shared file menu and removes a file card from it", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ndocs/readme.md",
+    rootDir: "/workspace",
+    path: "docs/readme.md",
+    name: "readme.md",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
+  });
+
+  const menuCall = alertSpy.mock.calls.find((call) => call[0] === "readme.md");
+  const actions = (menuCall?.[2] || []) as Array<{ text: string; onPress?: () => void }>;
+  actions.find((action) => action.text === "Skiaボードから除外")?.onPress?.();
+  expect(mockRemoveBoardFile).toHaveBeenCalledWith("/workspace", "docs/readme.md");
+  alertSpy.mockRestore();
+});
+
+test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ndocs/missing.md",
+    rootDir: "/workspace",
+    path: "docs/missing.md",
+    name: "missing.md",
+    unavailable: true,
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
+  });
+
+  const messageCall = alertSpy.mock.calls.find((call) => (
+    call[0] === "missing.md" && call[1] === "ファイルが削除または移動されました。"
+  ));
+  expect(messageCall).toBeTruthy();
+  const actions = (messageCall?.[2] || []) as Array<{ text: string; onPress?: () => void }>;
+  actions.find((action) => action.text === "Skiaボードから除外")?.onPress?.();
+  expect(mockRemoveBoardFile).toHaveBeenCalledWith("/workspace", "docs/missing.md");
+  alertSpy.mockRestore();
+});
+
 test("suppresses the remove dialog while holding a drag-armed card", async () => {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await render(
@@ -210,8 +283,8 @@ test("commits the dragged card position back to the board state", async () => {
   });
 
   expect(mockMoveBoardCard).toHaveBeenCalledTimes(1);
-  const [sessionId, col, row] = mockMoveBoardCard.mock.calls[0];
-  expect(sessionId).toBe("session-1");
+  const [cardId, col, row] = mockMoveBoardCard.mock.calls[0];
+  expect(cardId).toBe("session:session-1");
   // (18+40, 18+50) がグリッド単位へ変換されて保存される(cardWidth依存のため値は正のグリッド量)。
   expect(col).toBeGreaterThan(0);
   expect(row).toBeCloseTo(50 / (154 + 18), 5);
@@ -221,6 +294,7 @@ test("commits the active card coordinates when sessions reorder during a drag", 
   mockSessions = ["a", "b", "c"].map((id, row) => ({
     ...mockSessions[0],
     panelId: `skia_mini_preview_${id}`,
+    cardId: `session:${id}`,
     sessionId: id,
     title: id.toUpperCase(),
     row,
@@ -248,8 +322,8 @@ test("commits the active card coordinates when sessions reorder during a drag", 
   });
 
   expect(mockMoveBoardCard).toHaveBeenCalledTimes(1);
-  const [sessionId, col, row] = mockMoveBoardCard.mock.calls[0];
-  expect(sessionId).toBe("b");
+  const [cardId, col, row] = mockMoveBoardCard.mock.calls[0];
+  expect(cardId).toBe("session:b");
   expect(col).toBeGreaterThan(0);
   expect(row).toBeCloseTo(1 + 50 / (154 + 18), 5);
 });
