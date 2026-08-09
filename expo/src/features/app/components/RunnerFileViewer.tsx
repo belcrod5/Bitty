@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -102,6 +102,7 @@ export function RunnerFileViewer({
   const [content, setContent] = useState("");
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [version, setVersion] = useState("");
+  const [checklistSaving, setChecklistSaving] = useState(false);
 
   const targetPath = target?.path || "";
   const targetKind = target?.kind || null;
@@ -143,6 +144,14 @@ export function RunnerFileViewer({
     };
   }, [rootDirectory, runnerToken, runnerUrl, targetKind, targetPath]);
 
+  useEffect(() => {
+    setChecklistSaving(false);
+  }, [targetKind, targetPath]);
+
+  const requestClose = useCallback(() => {
+    if (!checklistSaving) onRequestClose();
+  }, [checklistSaving, onRequestClose]);
+
   if (!target) {
     return null;
   }
@@ -152,7 +161,8 @@ export function RunnerFileViewer({
       visible
       animationType="slide"
       presentationStyle="fullScreen"
-      onRequestClose={onRequestClose}
+      onRequestClose={requestClose}
+      testID="runner-file-viewer-modal"
     >
       <SafeAreaView style={viewerStyles.root}>
         <View style={viewerStyles.header}>
@@ -162,11 +172,20 @@ export function RunnerFileViewer({
           </View>
           <TouchableOpacity
             style={viewerStyles.closeButton}
-            onPress={onRequestClose}
+            onPress={requestClose}
+            disabled={checklistSaving}
             accessibilityRole="button"
-            accessibilityLabel="ファイルビューアーを閉じる"
+            accessibilityLabel={checklistSaving
+              ? "保存中はファイルビューアーを閉じられません"
+              : "ファイルビューアーを閉じる"}
+            accessibilityState={{ disabled: checklistSaving }}
+            testID="runner-file-viewer-close"
           >
-            <Ionicons name="close" size={24} color="#e2e8f0" />
+            {checklistSaving ? (
+              <ActivityIndicator size="small" color="#94a3b8" />
+            ) : (
+              <Ionicons name="close" size={24} color="#e2e8f0" />
+            )}
           </TouchableOpacity>
         </View>
         {loading ? (
@@ -183,6 +202,7 @@ export function RunnerFileViewer({
             initialItems={checklistItems}
             initialVersion={version}
             onSave={onSave}
+            onSavingChange={setChecklistSaving}
           />
         ) : (
           <WebView

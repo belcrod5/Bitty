@@ -39,6 +39,7 @@ type ChecklistFileViewerProps = {
     content: string,
     expectedVersion: string,
   ) => Promise<WorkspaceFileWriteResult>;
+  onSavingChange: (saving: boolean) => void;
 };
 
 type ChecklistRowProps = {
@@ -84,17 +85,11 @@ function ChecklistRow({
     onPanResponderRelease: (_event, gesture) => {
       const offset = Math.round(gesture.dy / CHECKLIST_ROW_HEIGHT);
       const toIndex = Math.max(0, Math.min(itemCount - 1, index + offset));
-      Animated.spring(dragY, {
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
+      dragY.setValue(0);
       if (toIndex !== index) onDrop(index, toIndex);
     },
     onPanResponderTerminate: () => {
-      Animated.spring(dragY, {
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
+      dragY.setValue(0);
     },
   }), [disabled, dragY, index, itemCount, onDrop]);
 
@@ -178,6 +173,19 @@ function ChecklistRow({
             style={[styles.iconButton, disabled ? styles.disabled : null]}
             accessibilityRole="adjustable"
             accessibilityLabel={`${item.text}を並べ替え`}
+            accessibilityState={{ disabled }}
+            accessibilityActions={[
+              { name: "decrement", label: "上へ移動" },
+              { name: "increment", label: "下へ移動" },
+            ]}
+            onAccessibilityAction={(event) => {
+              if (disabled) return;
+              const actionName = event.nativeEvent.actionName;
+              if (actionName !== "increment" && actionName !== "decrement") return;
+              const offset = actionName === "increment" ? 1 : -1;
+              const toIndex = Math.max(0, Math.min(itemCount - 1, index + offset));
+              if (toIndex !== index) onDrop(index, toIndex);
+            }}
             testID={`checklist-drag-${index}`}
             {...panResponder.panHandlers}
           >
@@ -204,6 +212,7 @@ export function ChecklistFileViewer({
   initialItems,
   initialVersion,
   onSave,
+  onSavingChange,
 }: ChecklistFileViewerProps) {
   const nextIdRef = useRef(1);
   const savingRef = useRef(false);
@@ -226,12 +235,14 @@ export function ChecklistFileViewer({
     setNewItemText("");
     savingRef.current = false;
     setSaving(false);
-  }, [initialItems, initialVersion, target.path]);
+    onSavingChange(false);
+  }, [initialItems, initialVersion, onSavingChange, target.path]);
 
   const saveItems = useCallback(async (nextItems: ChecklistViewItem[]) => {
     if (savingRef.current) return false;
     const previousItems = itemsRef.current;
     savingRef.current = true;
+    onSavingChange(true);
     itemsRef.current = nextItems;
     setItems(nextItems);
     setSaving(true);
@@ -250,8 +261,9 @@ export function ChecklistFileViewer({
     } finally {
       savingRef.current = false;
       setSaving(false);
+      onSavingChange(false);
     }
-  }, [onSave, target]);
+  }, [onSave, onSavingChange, target]);
 
   const interactionDisabled = saving || editingId !== null;
   const checkedCount = items.filter((item) => item.checked).length;

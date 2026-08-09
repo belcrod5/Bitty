@@ -1,4 +1,5 @@
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { Animated, PanResponder } from "react-native";
 import { ChecklistFileViewer } from "./ChecklistFileViewer";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
@@ -18,6 +19,7 @@ test("auto-saves toggles and uses the returned version for the next action", asy
       ]}
       initialVersion="version-1"
       onSave={onSave}
+      onSavingChange={jest.fn()}
     />
   );
 
@@ -49,6 +51,7 @@ test("edits text inline and adds one item for each nonempty input line", async (
       initialItems={[{ checked: false, text: "変更前" }]}
       initialVersion="version-1"
       onSave={onSave}
+      onSavingChange={jest.fn()}
     />
   );
 
@@ -81,6 +84,7 @@ test("rolls back an optimistic change when auto-save fails", async () => {
       initialItems={[{ checked: false, text: "A" }]}
       initialVersion="version-1"
       onSave={onSave}
+      onSavingChange={jest.fn()}
     />
   );
 
@@ -104,6 +108,7 @@ test("does not start a second write while the current version is still saving", 
       ]}
       initialVersion="version-1"
       onSave={onSave}
+      onSavingChange={jest.fn()}
     />
   );
 
@@ -113,4 +118,78 @@ test("does not start a second write while the current version is still saving", 
 
   resolveSave?.({ ok: true, path: target.path, version: "version-2" });
   await waitFor(() => expect(view.getByText("保存済み")).toBeTruthy());
+});
+
+test("reorders with the drag handle accessibility actions and keeps bounds", async () => {
+  const onSave = jest.fn().mockResolvedValue({
+    ok: true,
+    path: target.path,
+    version: "version-2",
+  });
+  const view = await render(
+    <ChecklistFileViewer
+      target={target}
+      initialItems={[
+        { checked: false, text: "A" },
+        { checked: false, text: "B" },
+      ]}
+      initialVersion="version-1"
+      onSave={onSave}
+      onSavingChange={jest.fn()}
+    />
+  );
+
+  await fireEvent(view.getByTestId("checklist-drag-0"), "accessibilityAction", {
+    nativeEvent: { actionName: "decrement" },
+  });
+  expect(onSave).not.toHaveBeenCalled();
+
+  await fireEvent(view.getByTestId("checklist-drag-0"), "accessibilityAction", {
+    nativeEvent: { actionName: "increment" },
+  });
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+    target,
+    "- [ ] B\n- [ ] A\n",
+    "version-1",
+  ));
+});
+
+test("resets the dragged row translation before saving the reordered list", async () => {
+  const createPanResponder = jest.spyOn(PanResponder, "create").mockImplementation((config) => ({
+    panHandlers: {
+      onResponderRelease: (event: unknown) => config.onPanResponderRelease?.(
+        event as never,
+        { dy: 68 } as never,
+      ),
+    },
+    getInteractionHandle: () => null,
+  } as ReturnType<typeof PanResponder.create>));
+  const setValue = jest.spyOn(Animated.Value.prototype, "setValue");
+  const onSave = jest.fn().mockResolvedValue({
+    ok: true,
+    path: target.path,
+    version: "version-2",
+  });
+
+  try {
+    const view = await render(
+      <ChecklistFileViewer
+        target={target}
+        initialItems={[
+          { checked: false, text: "A" },
+          { checked: false, text: "B" },
+        ]}
+        initialVersion="version-1"
+        onSave={onSave}
+        onSavingChange={jest.fn()}
+      />
+    );
+
+    await fireEvent(view.getByTestId("checklist-drag-0"), "responderRelease", {});
+    expect(setValue).toHaveBeenCalledWith(0);
+    expect(setValue.mock.invocationCallOrder[0]).toBeLessThan(onSave.mock.invocationCallOrder[0]);
+  } finally {
+    createPanResponder.mockRestore();
+    setValue.mockRestore();
+  }
 });
