@@ -4,7 +4,7 @@ import {
   SKIA_BOARD_STATE_FIELD,
 } from "./persistedSettingsFile";
 
-// Skiaボードの「ボードステート」(搭載カードの自由配置・除外リスト・取り込み境界)の
+// Skiaボードの「ボードステート」(セッション/ファイルカードの自由配置・除外リスト・取り込み境界)の
 // 純ロジック。永続化は設定JSONの SKIA_BOARD_STATE_FIELD に保存し、設定オートセーブ
 // からは PRESERVED_SETTINGS_FIELDS 経由で保護される。
 //
@@ -16,11 +16,25 @@ import {
 export const SKIA_BOARD_COLUMN_COUNT = 2;
 const INITIAL_BOARD_CARD_COUNT = 6;
 
-export type SkiaBoardCard = {
-  sessionId: string;
+type SkiaBoardCardPosition = {
   col: number;
   row: number;
 };
+
+export type SkiaBoardSessionCard = SkiaBoardCardPosition & {
+  kind: "session";
+  sessionId: string;
+};
+
+export type SkiaBoardFileCard = SkiaBoardCardPosition & {
+  kind: "file";
+  rootDir: string;
+  path: string;
+  name: string;
+  unavailable?: boolean;
+};
+
+export type SkiaBoardCard = SkiaBoardSessionCard | SkiaBoardFileCard;
 
 export type SkiaBoardState = {
   cards: SkiaBoardCard[];
@@ -32,6 +46,16 @@ export type SkiaBoardSessionCandidate = {
   sessionId: string;
   updatedAt?: unknown;
 };
+
+export function skiaBoardCardId(card: SkiaBoardCard): string {
+  return card.kind === "session"
+    ? `session:${card.sessionId}`
+    : `file:${card.rootDir}\n${card.path}`;
+}
+
+export function skiaBoardFileId(rootDirRaw: unknown, pathRaw: unknown): string {
+  return `file:${String(rootDirRaw || "").trim()}\n${String(pathRaw || "").trim().replace(/\\/g, "/")}`;
+}
 
 function updatedAtMs(value: unknown) {
   const time = new Date(String(value || "")).getTime();
@@ -62,18 +86,44 @@ export function parseSkiaBoardState(raw: unknown): SkiaBoardState | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   const cardsRaw = Array.isArray(record.cards) ? record.cards : [];
-  const seenSessionIds = new Set<string>();
+  const seenCardIds = new Set<string>();
   const cards: SkiaBoardCard[] = [];
   for (const cardRaw of cardsRaw) {
     if (!cardRaw || typeof cardRaw !== "object" || Array.isArray(cardRaw)) continue;
     const card = cardRaw as Record<string, unknown>;
-    const sessionId = String(card.sessionId || "").trim();
     const col = Number(card.col);
     const row = Number(card.row);
-    if (!sessionId || seenSessionIds.has(sessionId)) continue;
     if (!Number.isFinite(col) || !Number.isFinite(row)) continue;
-    seenSessionIds.add(sessionId);
-    cards.push({ sessionId, col, row });
+    if (card.kind === "file") {
+      const rootDir = String(card.rootDir || "").trim();
+      const path = String(card.path || "").trim().replace(/\\/g, "/");
+      if (!rootDir || !path) continue;
+      const name = String(card.name || "").trim()
+        || path.split("/").filter(Boolean).pop()
+        || path;
+      const parsed: SkiaBoardFileCard = {
+        kind: "file",
+        rootDir,
+        path,
+        name,
+        col,
+        row,
+        ...(card.unavailable === true ? { unavailable: true } : {}),
+      };
+      const id = skiaBoardCardId(parsed);
+      if (seenCardIds.has(id)) continue;
+      seenCardIds.add(id);
+      cards.push(parsed);
+      continue;
+    }
+    // kind の無い既存保存データは session カードとして移行する。
+    const sessionId = String(card.sessionId || "").trim();
+    if (!sessionId) continue;
+    const parsed: SkiaBoardSessionCard = { kind: "session", sessionId, col, row };
+    const id = skiaBoardCardId(parsed);
+    if (seenCardIds.has(id)) continue;
+    seenCardIds.add(id);
+    cards.push(parsed);
   }
   const excludedSessionIds = Array.from(new Set(
     (Array.isArray(record.excludedSessionIds) ? record.excludedSessionIds : [])
@@ -104,6 +154,7 @@ export function ingestSkiaBoardSessions(
     if (candidates.length <= 0) return null;
     return {
       cards: candidates.slice(0, INITIAL_BOARD_CARD_COUNT).map((candidate, index) => ({
+        kind: "session" as const,
         sessionId: candidate.sessionId,
         ...skiaBoardGridPosition(index),
       })),
@@ -114,7 +165,32 @@ export function ingestSkiaBoardSessions(
       ),
     };
   }
-  const boardedSessionIds = new Set(state.cards.map((card) => card.sessionId));
+  if (
+    state.cards.some((card) => card.kind === "file")
+    && !state.cards.some((card) => card.kind === "session")
+    && state.excludedSessionIds.length === 0
+    && state.ingestedUpdatedAtMs === 0
+  ) {
+    const cards = state.cards.slice();
+    for (const candidate of candidates.slice(0, INITIAL_BOARD_CARD_COUNT)) {
+      cards.push({
+        kind: "session",
+        sessionId: candidate.sessionId,
+        ...findFreeSkiaBoardCell(cards),
+      });
+    }
+    return {
+      ...state,
+      cards,
+      ingestedUpdatedAtMs: candidates.reduce(
+        (max, candidate) => Math.max(max, updatedAtMs(candidate.updatedAt)),
+        0
+      ),
+    };
+  }
+  const boardedSessionIds = new Set(state.cards.flatMap((card) => (
+    card.kind === "session" ? [card.sessionId] : []
+  )));
   const excludedSessionIds = new Set(state.excludedSessionIds);
   const additions = candidates
     .filter((candidate) => (
@@ -127,7 +203,11 @@ export function ingestSkiaBoardSessions(
   if (additions.length <= 0) return state;
   const cards = state.cards.slice();
   for (const candidate of additions) {
-    cards.push({ sessionId: candidate.sessionId, ...findFreeSkiaBoardCell(cards) });
+    cards.push({
+      kind: "session",
+      sessionId: candidate.sessionId,
+      ...findFreeSkiaBoardCell(cards),
+    });
   }
   return {
     ...state,
@@ -141,12 +221,12 @@ export function ingestSkiaBoardSessions(
 
 export function moveSkiaBoardCard(
   state: SkiaBoardState,
-  sessionId: string,
+  cardId: string,
   col: number,
   row: number
 ): SkiaBoardState {
   if (!Number.isFinite(col) || !Number.isFinite(row)) return state;
-  const index = state.cards.findIndex((card) => card.sessionId === sessionId);
+  const index = state.cards.findIndex((card) => skiaBoardCardId(card) === cardId);
   if (index < 0) return state;
   const current = state.cards[index];
   if (current.col === col && current.row === row) return state;
@@ -157,14 +237,96 @@ export function moveSkiaBoardCard(
 
 // カードをボードから外し、以後の自動再追加を除外リストで防ぐ。
 export function removeSkiaBoardSession(state: SkiaBoardState, sessionId: string): SkiaBoardState {
-  if (!state.cards.some((card) => card.sessionId === sessionId)) return state;
+  if (!state.cards.some((card) => card.kind === "session" && card.sessionId === sessionId)) return state;
   return {
     ...state,
-    cards: state.cards.filter((card) => card.sessionId !== sessionId),
+    cards: state.cards.filter((card) => card.kind !== "session" || card.sessionId !== sessionId),
     excludedSessionIds: state.excludedSessionIds.includes(sessionId)
       ? state.excludedSessionIds
       : [...state.excludedSessionIds, sessionId],
   };
+}
+
+export function addSkiaBoardSession(state: SkiaBoardState, sessionIdRaw: unknown): SkiaBoardState {
+  const sessionId = String(sessionIdRaw || "").trim();
+  if (!sessionId) return state;
+  const alreadyAdded = state.cards.some(
+    (card) => card.kind === "session" && card.sessionId === sessionId
+  );
+  const excludedSessionIds = state.excludedSessionIds.filter((id) => id !== sessionId);
+  if (alreadyAdded) {
+    return excludedSessionIds.length === state.excludedSessionIds.length
+      ? state
+      : { ...state, excludedSessionIds };
+  }
+  return {
+    ...state,
+    cards: [
+      ...state.cards,
+      { kind: "session", sessionId, ...findFreeSkiaBoardCell(state.cards) },
+    ],
+    excludedSessionIds,
+  };
+}
+
+export function addSkiaBoardFile(
+  state: SkiaBoardState,
+  file: { rootDir: string; path: string; name: string }
+): SkiaBoardState {
+  const rootDir = String(file.rootDir || "").trim();
+  const path = String(file.path || "").trim().replace(/\\/g, "/");
+  if (!rootDir || !path) return state;
+  const id = skiaBoardFileId(rootDir, path);
+  const existingIndex = state.cards.findIndex((card) => skiaBoardCardId(card) === id);
+  if (existingIndex >= 0) {
+    const existing = state.cards[existingIndex];
+    if (existing.kind !== "file" || !existing.unavailable) return state;
+    const cards = state.cards.slice();
+    cards[existingIndex] = {
+      ...existing,
+      name: String(file.name || "").trim() || path.split("/").filter(Boolean).pop() || path,
+      unavailable: false,
+    };
+    return { ...state, cards };
+  }
+  return {
+    ...state,
+    cards: [
+      ...state.cards,
+      {
+        kind: "file",
+        rootDir,
+        path,
+        name: String(file.name || "").trim() || path.split("/").filter(Boolean).pop() || path,
+        ...findFreeSkiaBoardCell(state.cards),
+      },
+    ],
+  };
+}
+
+export function markSkiaBoardFileUnavailable(
+  state: SkiaBoardState,
+  rootDir: string,
+  path: string
+): SkiaBoardState {
+  const id = skiaBoardFileId(rootDir, path);
+  const index = state.cards.findIndex((card) => skiaBoardCardId(card) === id);
+  if (index < 0) return state;
+  const card = state.cards[index];
+  if (card.kind !== "file" || card.unavailable) return state;
+  const cards = state.cards.slice();
+  cards[index] = { ...card, unavailable: true };
+  return { ...state, cards };
+}
+
+export function removeSkiaBoardFile(
+  state: SkiaBoardState,
+  rootDir: string,
+  path: string
+): SkiaBoardState {
+  const id = skiaBoardFileId(rootDir, path);
+  if (!state.cards.some((card) => skiaBoardCardId(card) === id)) return state;
+  return { ...state, cards: state.cards.filter((card) => skiaBoardCardId(card) !== id) };
 }
 
 // 現在の並び順のままグリッドへ整列する(ビューポートは触らない)。

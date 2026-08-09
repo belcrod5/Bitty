@@ -1,3 +1,4 @@
+import React, { type PropsWithChildren } from "react";
 import { act, renderHook } from "@testing-library/react-native";
 import type { DirectorySessionTreeState } from "../components/AppDrawer";
 import { useConversation } from "../contexts/ConversationContext";
@@ -13,6 +14,7 @@ import {
   useSkiaMiniChatSessions,
 } from "./useSkiaMiniChatSessions";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
+import { SkiaBoardProvider } from "../contexts/SkiaBoardContext";
 
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: jest.fn(),
@@ -132,6 +134,10 @@ async function flush() {
   });
 }
 
+function BoardWrapper({ children }: PropsWithChildren) {
+  return <SkiaBoardProvider>{children}</SkiaBoardProvider>;
+}
+
 describe("useSkiaMiniChatSessions", () => {
   it("formats recent updates in seconds and minutes", () => {
     const now = new Date("2026-06-23T00:01:30.000Z").getTime();
@@ -150,7 +156,7 @@ describe("useSkiaMiniChatSessions", () => {
       }
     );
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(ensureRegisteredDirectorySessions).toHaveBeenCalledTimes(1);
@@ -199,7 +205,7 @@ describe("useSkiaMiniChatSessions", () => {
     };
     mockConversation([session(2), session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(result.current.sessions.map((item) => [item.sessionId, item.col, item.row])).toEqual([
@@ -217,7 +223,7 @@ describe("useSkiaMiniChatSessions", () => {
     // session-2 はウォーターマークより古いので流入しない。session-4 は新しいので積み上げ。
     mockConversation([session(4), session(3), session(2)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual([
@@ -234,7 +240,7 @@ describe("useSkiaMiniChatSessions", () => {
     mockReadPersistedSettingsField.mockRejectedValue(new Error("read failed"));
     mockConversation([session(2), session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     // 読込失敗中に初期化・保存すると保存済みの位置と除外リストが全損するため、
@@ -257,7 +263,7 @@ describe("useSkiaMiniChatSessions", () => {
       directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: "partial_error" },
     });
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["session-3"]);
@@ -274,13 +280,13 @@ describe("useSkiaMiniChatSessions", () => {
     mockMutatePersistedSettings.mockRejectedValueOnce(new Error("write failed"));
     mockConversation([session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
     // 初回書込は失敗し、ファイルには何も残らない。
     expect(persistedFile.skiaBoardState).toBeUndefined();
 
     await act(async () => {
-      result.current.moveBoardCard("session-1", 2, 2);
+      result.current.moveBoardCard("session:session-1", 2, 2);
     });
     await flush();
 
@@ -288,14 +294,19 @@ describe("useSkiaMiniChatSessions", () => {
     const savedState = persistedFile.skiaBoardState as {
       cards: Array<{ sessionId: string; col: number; row: number }>;
     };
-    expect(savedState.cards).toEqual([{ sessionId: "session-1", col: 2, row: 2 }]);
+    expect(savedState.cards).toEqual([{
+      kind: "session",
+      sessionId: "session-1",
+      col: 2,
+      row: 2,
+    }]);
     warnSpy.mockRestore();
   });
 
   it("keeps removed sessions excluded from re-stacking and persists the exclusion", async () => {
     mockConversation([session(2), session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
     expect(result.current.sessions).toHaveLength(2);
 
@@ -315,11 +326,11 @@ describe("useSkiaMiniChatSessions", () => {
 
   it("persists moved and tidied card positions", async () => {
     mockConversation([session(2), session(1)]);
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     await act(async () => {
-      result.current.moveBoardCard("session-2", 2.5, 3.5);
+      result.current.moveBoardCard("session:session-2", 2.5, 3.5);
     });
     await flush();
     let savedState = persistedFile.skiaBoardState as { cards: Array<{ sessionId: string; col: number; row: number }> };
@@ -349,7 +360,7 @@ describe("useSkiaMiniChatSessions", () => {
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
     mockConversation([session(2), session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(result.current.hydratingPanelCount).toBe(0);
@@ -380,7 +391,7 @@ describe("useSkiaMiniChatSessions", () => {
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
     mockConversation([session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
@@ -410,7 +421,7 @@ describe("useSkiaMiniChatSessions", () => {
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
     mockConversation([session(2)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions());
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
     expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
@@ -426,12 +437,14 @@ describe("useSkiaMiniChatSessions", () => {
       )),
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
 
-    const { result, rerender } = await renderHook((candidate: LlmSessionHistoryEntry) => {
-      mockConversation([candidate]);
-      return useSkiaMiniChatSessions();
-    }, { initialProps: session(1) });
+    mockConversation([session(1)]);
+    const { result, rerender } = await renderHook(
+      (_candidate: LlmSessionHistoryEntry) => useSkiaMiniChatSessions(),
+      { initialProps: session(1), wrapper: BoardWrapper }
+    );
     await flush();
 
+    mockConversation([session(2)]);
     await rerender(session(2));
     await act(async () => {
       await Promise.resolve();

@@ -151,6 +151,10 @@ type OpenRunnerFileContextMenuParams = {
   onRequestDelete?: (target: WorkspaceFileTarget) => void;
   onRenameFile?: RenameRunnerMediaFile;
   mediaItems?: RunnerMediaItem[];
+  getSkiaBoardAction?: (target: WorkspaceFileTarget) => {
+    text: "Skiaボードへ追加" | "Skiaボードから除外";
+    onPress: () => void;
+  };
 };
 
 export function openRunnerFileContextMenu({
@@ -172,6 +176,7 @@ export function openRunnerFileContextMenu({
   onRequestDelete,
   onRenameFile,
   mediaItems,
+  getSkiaBoardAction,
 }: OpenRunnerFileContextMenuParams) {
   const filePath = normalizeRunnerPath(filePathRaw);
   const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
@@ -271,6 +276,7 @@ export function openRunnerFileContextMenu({
         onRequestDelete,
         onRenameFile,
         mediaItems: items,
+        getSkiaBoardAction,
       });
     };
     onOpenMedia({
@@ -416,6 +422,10 @@ export function openRunnerFileContextMenu({
       style: "destructive",
       onPress: deleteAction,
     });
+  }
+  const skiaBoardAction = getSkiaBoardAction?.({ path: filePath, name: fileName });
+  if (skiaBoardAction) {
+    buttons.push(skiaBoardAction);
   }
   buttons.push({
     text: "キャンセル",

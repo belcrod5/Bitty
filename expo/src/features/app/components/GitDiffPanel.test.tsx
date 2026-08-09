@@ -1,5 +1,6 @@
 import React from "react";
 import { fireEvent, render } from "@testing-library/react-native";
+import { Alert } from "react-native";
 
 // The real @expo/vector-icons module pulls in expo-font -> expo-asset, which is not
 // hoisted to a resolvable path under this workspace's node_modules layout. GitDiffPanel
@@ -13,6 +14,19 @@ jest.mock("@expo/vector-icons", () => {
     Ionicons: (props: Record<string, unknown>) => React.createElement(Text, props, "icon"),
   };
 });
+const mockAddFile = jest.fn();
+const mockRemoveFile = jest.fn();
+const mockHasFile = jest.fn(() => false);
+const mockMarkFileUnavailable = jest.fn();
+jest.mock("../contexts/SkiaBoardContext", () => ({
+  useSkiaBoard: () => ({
+    addFile: mockAddFile,
+    removeFile: mockRemoveFile,
+    hasFile: mockHasFile,
+    markFileUnavailable: mockMarkFileUnavailable,
+    loaded: true,
+  }),
+}));
 
 import { GitDiffPanel } from "./GitDiffPanel";
 
@@ -74,4 +88,24 @@ test("shows the changed file tree collapsed by default and expands on tap", asyn
   await fireEvent.press(panel.getByLabelText("aフォルダーを開閉"));
 
   expect(panel.getByText("b.ts")).toBeTruthy();
+});
+
+test("adds a file to the Skia board from the file context menu", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const panel = await renderPanel({
+    visible: true,
+    gitChangedFilesUnstaged: ["README.md"],
+  });
+
+  await fireEvent.press(panel.getByLabelText("README.mdのメニューを表示"));
+  const menuCall = alertSpy.mock.calls.find((call) => call[0] === "README.md");
+  const actions = (menuCall?.[2] || []) as Array<{ text: string; onPress?: () => void }>;
+  actions.find((action) => action.text === "Skiaボードへ追加")?.onPress?.();
+
+  expect(mockAddFile).toHaveBeenCalledWith({
+    rootDir: "/work/bitty",
+    path: "README.md",
+    name: "README.md",
+  });
+  alertSpy.mockRestore();
 });

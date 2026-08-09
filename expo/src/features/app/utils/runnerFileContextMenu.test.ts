@@ -31,6 +31,10 @@ function openContextMenuButtons(params: {
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
+  getSkiaBoardAction?: (target: { path: string; name: string }) => {
+    text: "Skiaボードへ追加" | "Skiaボードから除外";
+    onPress: () => void;
+  };
 }): AlertButton[] {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   openRunnerFileContextMenu({
@@ -44,6 +48,7 @@ function openContextMenuButtons(params: {
     onOpenMedia: () => {},
     onOpenFile: params.onOpenFile,
     onSpeakText: params.onSpeakText,
+    getSkiaBoardAction: params.getSkiaBoardAction,
   });
   expect(alertSpy).toHaveBeenCalledTimes(1);
   const buttons = (alertSpy.mock.calls[0][2] || []) as AlertButton[];
@@ -201,4 +206,23 @@ test("keeps existing menu items for media and shell script files", () => {
   expect(shellButtons.some((button) => button.text === "実行する")).toBe(true);
   expect(shellButtons.some((button) => button.text === "ファイル内容をコピー")).toBe(true);
   expect(shellButtons.some((button) => button.text === "開く")).toBe(false);
+});
+
+test("appends the caller's Skia board action to the existing file menu", () => {
+  const onPress = jest.fn();
+  const getSkiaBoardAction = jest.fn(() => ({
+    text: "Skiaボードへ追加" as const,
+    onPress,
+  }));
+  const buttons = openContextMenuButtons({
+    filePath: "docs/readme.md",
+    getSkiaBoardAction,
+  });
+
+  expect(getSkiaBoardAction).toHaveBeenCalledWith({
+    path: "docs/readme.md",
+    name: "docs/readme.md",
+  });
+  buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
+  expect(onPress).toHaveBeenCalledTimes(1);
 });
