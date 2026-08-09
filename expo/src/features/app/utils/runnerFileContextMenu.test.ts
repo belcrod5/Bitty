@@ -2,6 +2,7 @@ import { Alert } from "react-native";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
   getRunnerFileViewerKind,
+  getRunnerFileViewerLocation,
   isRunnerEditableTextFile,
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
@@ -29,6 +30,7 @@ function flushPromises() {
 
 function openContextMenuButtons(params: {
   filePath: string;
+  rootDir?: string;
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
@@ -43,7 +45,7 @@ function openContextMenuButtons(params: {
     fileNameRaw: "",
     runnerUrl: "http://runner.test",
     runnerToken: "token",
-    rootDir: "project",
+    rootDir: params.rootDir || "project",
     getPathLabel: (pathRaw) => String(pathRaw || ""),
     showInfoToast: params.showInfoToast || (() => {}),
     onOpenMedia: () => {},
@@ -91,6 +93,37 @@ test.each([
     kind,
     path: filePath,
     name: filePath,
+    rootDirectory: "project",
+  });
+});
+
+test.each([
+  ["/work/other/tasks/today.checklist", "checklist"],
+  ["/work/other/report.html", "html"],
+] as const)("opens root-external absolute %s from its safe file location", (filePath, kind) => {
+  const onOpenFile = jest.fn();
+  const buttons = openContextMenuButtons({
+    filePath,
+    rootDir: "/work/current",
+    onOpenFile,
+  });
+  buttons.find((button) => button.text === "開く")?.onPress?.();
+  expect(onOpenFile).toHaveBeenCalledWith({
+    kind,
+    path: filePath.split("/").pop(),
+    name: filePath,
+    rootDirectory: filePath.slice(0, filePath.lastIndexOf("/")),
+  });
+});
+
+test("keeps relative and root-owned absolute viewer locations unchanged", () => {
+  expect(getRunnerFileViewerLocation("docs/report.html", "/work/current")).toEqual({
+    path: "docs/report.html",
+    rootDirectory: "/work/current",
+  });
+  expect(getRunnerFileViewerLocation("/work/current/report.html", "/work/current")).toEqual({
+    path: "/work/current/report.html",
+    rootDirectory: "/work/current",
   });
 });
 

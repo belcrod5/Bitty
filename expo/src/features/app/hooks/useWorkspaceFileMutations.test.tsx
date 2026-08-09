@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useWorkspaceFileMutations } from "./useWorkspaceFileMutations";
-import { mutateWorkspaceFile } from "../utils/workspaceFiles";
+import { mutateWorkspaceFile, writeWorkspaceTextFile } from "../utils/workspaceFiles";
 
 jest.mock("../utils/workspaceFiles", () => ({
   createWorkspaceTextFile: jest.fn(),
@@ -9,6 +9,9 @@ jest.mock("../utils/workspaceFiles", () => ({
 }));
 
 const mockMutateWorkspaceFile = mutateWorkspaceFile as jest.MockedFunction<typeof mutateWorkspaceFile>;
+const mockWriteWorkspaceTextFile = writeWorkspaceTextFile as jest.MockedFunction<
+  typeof writeWorkspaceTextFile
+>;
 
 async function renderMutations(onPathRemoved: jest.Mock) {
   return await renderHook(() => useWorkspaceFileMutations({
@@ -23,6 +26,7 @@ async function renderMutations(onPathRemoved: jest.Mock) {
 
 beforeEach(() => {
   mockMutateWorkspaceFile.mockReset();
+  mockWriteWorkspaceTextFile.mockReset();
 });
 
 test.each([
@@ -77,4 +81,27 @@ test("does not mark a path unavailable when the mutation fails", async () => {
   });
 
   expect(onPathRemoved).not.toHaveBeenCalled();
+});
+
+test("writes viewer content with the file location root instead of the current chat root", async () => {
+  const hook = await renderMutations(jest.fn());
+  mockWriteWorkspaceTextFile.mockResolvedValue({
+    ok: true,
+    path: "today.checklist",
+    version: "version-2",
+  });
+
+  await act(async () => {
+    await hook.result.current.writeFileContent(
+      { path: "today.checklist", name: "today.checklist" },
+      "- [x] A\n",
+      "version-1",
+      "/work/other/tasks",
+    );
+  });
+
+  expect(mockWriteWorkspaceTextFile).toHaveBeenCalledWith(expect.objectContaining({
+    rootDirectory: "/work/other/tasks",
+    path: "today.checklist",
+  }));
 });

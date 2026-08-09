@@ -30,12 +30,12 @@ type RunnerFileViewerProps = {
   target: RunnerFileViewerTarget | null;
   runnerUrl: string;
   runnerToken: string;
-  rootDirectory: string;
   onRequestClose: () => void;
   onSave: (
     target: WorkspaceFileTarget,
     content: string,
     expectedVersion: string,
+    rootDirectory: string,
   ) => Promise<WorkspaceFileWriteResult>;
 };
 
@@ -93,7 +93,6 @@ export function RunnerFileViewer({
   target,
   runnerUrl,
   runnerToken,
-  rootDirectory,
   onRequestClose,
   onSave,
 }: RunnerFileViewerProps) {
@@ -106,6 +105,7 @@ export function RunnerFileViewer({
 
   const targetPath = target?.path || "";
   const targetKind = target?.kind || null;
+  const targetRootDirectory = target?.rootDirectory || "";
 
   useEffect(() => {
     setContent("");
@@ -118,7 +118,7 @@ export function RunnerFileViewer({
     fetchRunnerTextFileContent({
       runnerUrl,
       runnerToken,
-      rootDir: rootDirectory,
+      rootDir: targetRootDirectory,
       path: targetPath,
       timeoutMs: RUNNER_FILE_HTTP_TIMEOUT_MS,
     })
@@ -142,7 +142,7 @@ export function RunnerFileViewer({
     return () => {
       cancelled = true;
     };
-  }, [rootDirectory, runnerToken, runnerUrl, targetKind, targetPath]);
+  }, [runnerToken, runnerUrl, targetKind, targetPath, targetRootDirectory]);
 
   useEffect(() => {
     setChecklistSaving(false);

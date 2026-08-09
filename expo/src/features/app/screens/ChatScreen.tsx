@@ -2134,7 +2134,6 @@ export function ChatScreen({
         <RunnerFileViewer target={approvalDialogPending ? null : runnerFileViewerTarget}
           runnerUrl={runnerUrl}
           runnerToken={runnerToken}
-          rootDirectory={selectedDirectoryPathForView}
           onRequestClose={() => setRunnerFileViewerTarget(null)}
           onSave={writeChatFileContent}
         />

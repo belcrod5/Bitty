@@ -33,20 +33,30 @@ test("blocks both close controls until an auto-save finishes", async () => {
     <RunnerFileViewer
       target={{
         kind: "checklist",
-        path: "tasks/today.checklist",
+        path: "today.checklist",
         name: "today.checklist",
+        rootDirectory: "/work/other/tasks",
       }}
       runnerUrl="http://runner.test"
       runnerToken="token"
-      rootDirectory="project"
       onRequestClose={onRequestClose}
       onSave={onSave}
     />
   );
 
   const toggle = await view.findByTestId("checklist-toggle-0");
+  expect(mockFetchRunnerTextFileContent).toHaveBeenCalledWith(expect.objectContaining({
+    rootDir: "/work/other/tasks",
+    path: "today.checklist",
+  }));
   await fireEvent.press(toggle);
   await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+  expect(onSave).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "today.checklist", rootDirectory: "/work/other/tasks" }),
+    "- [x] A\n",
+    "version-1",
+    "/work/other/tasks",
+  );
 
   const savingClose = view.getByTestId("runner-file-viewer-close");
   expect(savingClose.props.accessibilityState.disabled).toBe(true);

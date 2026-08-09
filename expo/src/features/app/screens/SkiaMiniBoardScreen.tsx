@@ -720,7 +720,6 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         target={runnerFileViewerTarget}
         runnerUrl={runnerUrl}
         runnerToken={runnerToken}
-        rootDirectory={fileMenuRootDir}
         onRequestClose={() => setRunnerFileViewerTarget(null)}
         onSave={writeFileContent}
       />

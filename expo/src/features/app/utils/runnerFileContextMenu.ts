@@ -59,6 +59,7 @@ export type RunnerFileViewerKind = "html" | "drawio" | "checklist";
 
 export type RunnerFileViewerTarget = WorkspaceFileTarget & {
   kind: RunnerFileViewerKind;
+  rootDirectory: string;
 };
 
 export type RunnerMediaItem = {
@@ -369,10 +370,12 @@ export function openRunnerFileContextMenu({
       buttons.push({
         text: "開く",
         onPress: () => {
+          const location = getRunnerFileViewerLocation(filePath, rootDir);
           onOpenFile({
             kind: viewerKind,
-            path: filePath,
+            path: location.path,
             name: fileName,
+            rootDirectory: location.rootDirectory,
           });
         },
       });
@@ -478,6 +481,22 @@ function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
   const directory = normalizeRunnerComparablePath(directoryRaw);
   if (!directory || directory === "." || directory === "/") return true;
   return targetPath === directory || targetPath.startsWith(`${directory}/`);
+}
+
+export function getRunnerFileViewerLocation(pathRaw: unknown, rootDirectoryRaw: unknown) {
+  const path = normalizeRunnerPath(pathRaw);
+  const rootDirectory = normalizeRunnerDirectoryPath(rootDirectoryRaw);
+  if (!isAbsoluteRunnerPath(path) || isRunnerPathInsideDirectory(path, rootDirectory)) {
+    return { path, rootDirectory };
+  }
+  const separatorIndex = path.lastIndexOf("/");
+  if (separatorIndex < 0 || separatorIndex === path.length - 1) {
+    return { path, rootDirectory };
+  }
+  return {
+    path: path.slice(separatorIndex + 1),
+    rootDirectory: separatorIndex === 0 ? "/" : path.slice(0, separatorIndex),
+  };
 }
 
 function getRunnerScriptExecutionWarning(filePath: string, rootDir: string) {
