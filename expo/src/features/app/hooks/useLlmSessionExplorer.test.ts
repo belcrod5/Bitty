@@ -427,3 +427,44 @@ describe("buildLlmSessionHistoryEntry", () => {
     expect(entry.contextUsedPct).toBe(42);
   });
 });
+
+test("paginates one directory subagent sequence, deduplicates it, and groups every parent", async () => {
+  const firstPage = Array.from({ length: 50 }, (_, index) => ({
+    threadId: `child-a-${index}`,
+    parentThreadId: "parent-a",
+    sourceKind: "subAgent",
+    cwd: "/workspace",
+    threadStatusType: "active",
+  }));
+  mockListCodexAppServerThreads
+    .mockResolvedValueOnce({
+      data: firstPage as never,
+      nextCursor: "page-2",
+      backwardsCursor: "",
+    })
+    .mockResolvedValueOnce({
+      data: [
+        firstPage[0],
+        { threadId: "child-b", parentThreadId: "parent-b", sourceKind: "subAgent", cwd: "/workspace", threadStatusType: "idle" },
+      ] as never,
+      nextCursor: "",
+      backwardsCursor: "",
+    });
+  const { result } = await renderExplorerHook();
+
+  const grouped = await result.current.fetchSessionChildrenHistory(
+    ["parent-a", "parent-b"],
+    "/workspace",
+    { includeRunnerSnapshots: false }
+  );
+
+  expect(mockListCodexAppServerThreads).toHaveBeenCalledTimes(2);
+  expect(mockListCodexAppServerThreads.mock.calls[1][0]).toEqual(expect.objectContaining({ cursor: "page-2" }));
+  expect(grouped["parent-a"]).toHaveLength(50);
+  expect(grouped["parent-a"][0]).toEqual(
+    expect.objectContaining({ sessionId: "child-a-0", threadStatusType: "active" })
+  );
+  expect(grouped["parent-b"]).toEqual([
+    expect.objectContaining({ sessionId: "child-b", threadStatusType: "idle" }),
+  ]);
+});

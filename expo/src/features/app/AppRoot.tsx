@@ -929,7 +929,7 @@ export default function App() {
     fetchRunnerSessionMessages,
     fetchLatestSessionIdForDirectory,
     fetchSessionHistory,
-    fetchSessionChildHistory,
+    fetchSessionChildrenHistory,
     markRunnerSessionRead,
     loadDirectoryExplorer,
     openDirectoryExplorer: primeDirectoryExplorer,
@@ -2791,7 +2791,9 @@ export default function App() {
   const {
     getConversationRuntimeSnapshot,
     finalizeConversationRuntimeAfterRelayLoss,
+    ensureConversationRuntimeRequestForRelay,
     upsertConversationRuntimeSnapshot,
+    updateConversationRuntimeRequestStatus,
   } = useConversationRuntimeStoreController();
 
   const rememberSessionRuntimeStatus = useCallback((
@@ -2901,16 +2903,18 @@ export default function App() {
     ensureRegisteredDirectorySessions,
     loadMoreDirectorySessionTree,
     loadSessionChildTree,
+    loadSessionChildTreesForSessions,
     prepareDirectorySessionTargetChange,
     toggleDirectoryExpanded,
     refreshDirectorySessionTree,
     refreshRegisteredDirectorySessions,
+    refreshSessionChildTreesAtBoundary,
   } = useDirectorySessionTreeController({
     directorySessionsById,
     setDirectorySessionsById,
     setExpandedDirectoryIds,
     fetchSessionHistory,
-    fetchSessionChildHistory,
+    fetchSessionChildrenHistory,
     emptyDirectorySessionTreeState: EMPTY_DIRECTORY_SESSION_TREE_STATE,
     directorySessionPageSize: DIRECTORY_SESSION_PAGE_SIZE,
     directorySessionPrefetchTtlMs: DIRECTORY_SESSION_PREFETCH_TTL_MS,
@@ -2925,6 +2929,19 @@ export default function App() {
     ensureRegisteredDirectorySessions,
     logSessionDiag,
   });
+  const handleSessionStreamBoundary = useCallback((sessionIdRaw: string) => {
+    const sessionId = parseOptionalSessionId(sessionIdRaw);
+    if (!sessionId) return;
+    void refreshSessionChildTreesAtBoundary(sessionId, "parent_progress");
+  }, [refreshSessionChildTreesAtBoundary]);
+  useEffect(() => runnerWebSocketManager.subscribe(
+    { channel: "llm", op: "turn_completed_notification" },
+    (message) => {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
+      const completedSessionId = parseOptionalSessionId(message.threadId || message.sessionId || payload.threadId || payload.sessionId);
+      if (completedSessionId) void refreshSessionChildTreesAtBoundary(completedSessionId, "child_completed");
+    }
+  ), [refreshSessionChildTreesAtBoundary, runnerWebSocketManager]);
 
   function removeRegisteredDirectory(directoryId: string) {
     const target = registeredDirectories.find((item) => item.id === directoryId);
@@ -4081,6 +4098,9 @@ export default function App() {
     onApprovalRequest: handleRuntimeApprovalRequest,
     onApprovalRequestResolved: handleRuntimeApprovalResolved,
     onAssistantTurnCompleted: handleRelayAssistantTurnCompleted,
+    onRuntimeStatus: updateConversationRuntimeRequestStatus,
+    ensureRuntimeRequestForRelay: ensureConversationRuntimeRequestForRelay,
+    onSessionStreamBoundary: handleSessionStreamBoundary,
     // observer強奪(別スレッドのrunning turnがobserverを奪う)時の補償:
     // clean closeされる側のセッションはresume_missを出せないため、
     // 「あとで再同期が必要」マーカーに積んで次のready遷移・G2再取得判定で拾う(M-4)。
@@ -5699,6 +5719,7 @@ export default function App() {
       sessionRuntimeStatusByIdRef.current[parseOptionalSessionId(sessionIdRaw)]
     ),
     onLlmMessageCompleted: handleLlmMessageCompleted,
+    onSessionStreamBoundary: handleSessionStreamBoundary,
   });
 
   const {
@@ -6263,27 +6284,9 @@ export default function App() {
     if (!directory) return;
     removeRegisteredDirectory(directory.id);
   }, [registeredDirectories]);
-  const loadSessionChildrenFromContext = useCallback(async (
-    sessionIdRaw: string,
-    directoryPathRaw: string
-  ) => {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
-    const directoryPath = parseLlmDirectory(directoryPathRaw || normalizedLlmDirectoryForRequest());
-    if (!sessionId || !directoryPath) return;
-    const directory = registeredDirectories.find((item) => {
-      const state = directorySessionsById[item.id];
-      return getCachedDirectorySessions(state).some(
-        (entry) => parseOptionalSessionId(entry.sessionId) === sessionId
-      );
-    }) || registeredDirectories.find((item) => parseLlmDirectory(item.path) === directoryPath);
-    if (!directory) return;
-    await loadSessionChildTree(directory.id, directoryPath, sessionId);
-  }, [
-    directorySessionsById,
-    loadSessionChildTree,
-    normalizedLlmDirectoryForRequest,
-    registeredDirectories,
-  ]);
+  const loadSessionChildrenFromContext = useCallback((sessionId: string, directoryPath: string) => (
+    loadSessionChildTreesForSessions([sessionId], directoryPath)
+  ), [loadSessionChildTreesForSessions]);
   const openSessionHistoryEntryFromContext = useCallback((params: {
     sessionId: string;
     source: LlmSessionSource;
@@ -6347,6 +6350,7 @@ export default function App() {
     ensureRegisteredDirectorySessions,
     refreshRegisteredDirectorySessions,
     loadSessionChildren: loadSessionChildrenFromContext,
+    loadSessionChildrenBatch: loadSessionChildTreesForSessions,
     openSessionHistoryEntry: openSessionHistoryEntryFromContext,
     markSessionRead: markSessionReadFromContext,
     markSelectedSessionUnread: markSelectedSessionUnreadFromContext,
@@ -6528,6 +6532,9 @@ export default function App() {
       contextUsedPct: runtimeSnapshot.contextUsedPct,
       isResponding: runtimeSnapshot.isResponding,
       requestStartedAtMs: runtimeRequestStartedAtMs,
+      runtimeStatus: runtimeSnapshot.request?.status || "",
+      runtimeStatusDetail: runtimeSnapshot.request?.statusDetail || "",
+      runtimeActivityTrail: runtimeSnapshot.activityTrail,
       selectedThreadStatusType: runtimeSnapshot.selectedThreadStatusType,
     });
   }, [createPanelRuntimeSnapshot, getConversationRuntimeSnapshot]);

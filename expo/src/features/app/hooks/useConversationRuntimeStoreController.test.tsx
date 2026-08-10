@@ -45,6 +45,215 @@ function panelSnapshot(
 }
 
 describe("useConversationRuntimeStoreController conditional terminal update", () => {
+  it("updates an active request status without replacing its panel conversation", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        conversationMessages: [message("existing", "existing response")],
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: activeRequest(100),
+      });
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: web_search"
+      );
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      isResponding: true,
+      conversationMessages: [message("existing", "existing response")],
+      request: {
+        status: "tool_running",
+        statusDetail: "tool start: web_search",
+        startedAtMs: 100,
+      },
+      activityTrail: ["thinking", "web"],
+    });
+  });
+
+  it("keeps the latest four activity transitions and preserves them after completion", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: activeRequest(100),
+      });
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: file_open"
+      );
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: read_file"
+      );
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "model_generating",
+        "delta:native"
+      );
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: web_search"
+      );
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "model_processing",
+        "agent message completed"
+      );
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")?.activityTrail).toEqual([
+      "reading",
+      "writing",
+      "web",
+      "thinking",
+    ]);
+
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        isResponding: false,
+        selectedThreadStatusType: "idle",
+        expectedRequestStartedAtMs: 100,
+        clearRespondingRequestStartedAtMs: 100,
+      });
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      isResponding: false,
+      request: null,
+      activityTrail: ["reading", "writing", "web", "thinking"],
+    });
+  });
+
+  it("starts a fresh trail for a new request", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: activeRequest(100),
+      });
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: web_search"
+      );
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: {
+          ...activeRequest(200),
+          status: "model_generating",
+        },
+      });
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")?.activityTrail).toEqual(["writing"]);
+  });
+
+  it("creates a shared request for a restored relay and keeps newer identities", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+    await act(() => {
+      result.current.ensureConversationRuntimeRequestForRelay({
+        sessionId: "session-1",
+        startedAtMs: 200,
+        reason: "session_restored_running_turn",
+      });
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: web_search"
+      );
+      result.current.ensureConversationRuntimeRequestForRelay({
+        sessionId: "session-1",
+        startedAtMs: 100,
+        reason: "stale relay",
+      });
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      isResponding: true,
+      activityTrail: ["thinking", "web"],
+      request: {
+        requestId: "relay-session-1-200-1",
+        startedAtMs: 200,
+      },
+    });
+  });
+
+  it("reactivates a terminal relay when the same running turn is reattached", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+    await act(() => {
+      result.current.ensureConversationRuntimeRequestForRelay({
+        sessionId: "session-1",
+        startedAtMs: 200,
+        reason: "session_restored_running_turn",
+      });
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: web_search"
+      );
+      result.current.finalizeConversationRuntimeAfterRelayLoss("session-1", "relay lost");
+      result.current.ensureConversationRuntimeRequestForRelay({
+        sessionId: "session-1",
+        startedAtMs: 200,
+        reason: "session_restored_running_turn",
+      });
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      isResponding: true,
+      activityTrail: ["thinking", "web", "thinking"],
+      request: {
+        requestId: "relay-session-1-200-2",
+        requestSeq: 2,
+        lifecycle: "active",
+        startedAtMs: 200,
+      },
+    });
+  });
+
+  it("terminalizes relay loss so every retained activity becomes completed", async () => {
+    const { result } = await renderHook(() => useConversationRuntimeStoreController());
+    await act(() => {
+      result.current.upsertConversationRuntimeSnapshot({
+        sessionId: "session-1",
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: activeRequest(100),
+      });
+      result.current.updateConversationRuntimeRequestStatus(
+        "session-1",
+        "tool_running",
+        "tool start: web_search"
+      );
+      result.current.finalizeConversationRuntimeAfterRelayLoss("session-1", "relay lost");
+    });
+
+    expect(result.current.getConversationRuntimeSnapshot("session-1")).toMatchObject({
+      isResponding: false,
+      selectedThreadStatusType: "idle",
+      activityTrail: ["thinking", "web"],
+      request: {
+        lifecycle: "error",
+        status: "error",
+        statusDetail: "relay lost",
+      },
+    });
+  });
+
   it("advances executionGeneration for execution changes but not message-only updates", async () => {
     const { result } = await renderHook(() => useConversationRuntimeStoreController());
 

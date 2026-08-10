@@ -85,12 +85,25 @@ test("deduplicates the same turn across execution origins", async () => {
   assert.equal(harness.sends.length, 1);
 });
 
-test("does nothing without a thread id or completed agent text", async () => {
+test("requires a thread id but broadcasts text-free completion boundaries without pushing", async () => {
   const harness = createHarness();
   await harness.notifier.notifyTurnCompleted(completion({ threadId: "" }));
-  await harness.notifier.notifyTurnCompleted(completion({ agentMessageText: "  " }));
   assert.equal(harness.broadcasts.length, 0);
+
+  await harness.notifier.notifyTurnCompleted(completion({ agentMessageText: "  " }));
+  assert.equal(harness.broadcasts.length, 1);
+  assert.equal(harness.broadcasts[0].previewText, "");
   assert.equal(harness.sends.length, 0);
+});
+
+test("a text-free lifecycle boundary does not suppress a later same-turn push", async () => {
+  const harness = createHarness();
+  await harness.notifier.notifyTurnCompleted(completion({ agentMessageText: "" }));
+  await harness.notifier.notifyTurnCompleted(completion({ agentMessageText: "finished later" }));
+
+  assert.equal(harness.broadcasts.length, 1);
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.aps.alert.body, "summary: finished later");
 });
 
 test("broadcasts without APNs when push is disabled", async () => {

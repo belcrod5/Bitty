@@ -533,6 +533,9 @@ export function normalizeThreadListEntry(raw: unknown): CodexThreadListEntry | n
       extractContextUsedPctFromUnknown(item, firstString(item.modelProvider, item.provider)) ??
       extractContextUsedPctFromUnknown((item as any)?.thread, firstString(item.modelProvider, item.provider))
     ),
+    threadStatusType: normalizeCodexThreadStatusType(
+      item.status ?? (item as any)?.thread?.status
+    ),
   };
 }
 

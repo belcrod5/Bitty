@@ -56,7 +56,7 @@ function useTestController(params: {
   initialTrees?: Record<string, DirectorySessionTreeState>;
   concurrency?: number;
   fetchSessionHistory: jest.Mock;
-  fetchSessionChildHistory?: jest.Mock;
+  fetchSessionChildrenHistory?: jest.Mock;
   selectedDirectoryPath?: string;
 }) {
   const [directorySessionsById, setDirectorySessionsById] = useState<
@@ -67,7 +67,7 @@ function useTestController(params: {
     setDirectorySessionsById,
     setExpandedDirectoryIds: jest.fn(),
     fetchSessionHistory: params.fetchSessionHistory,
-    fetchSessionChildHistory: params.fetchSessionChildHistory || jest.fn(async () => []),
+    fetchSessionChildrenHistory: params.fetchSessionChildrenHistory || jest.fn(async () => ({})),
     emptyDirectorySessionTreeState: emptyState,
     directorySessionPageSize: 5,
     directorySessionPrefetchTtlMs: 60_000,
@@ -99,7 +99,7 @@ test("does not let a stale directory fetch overwrite a read mutation made while 
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory: jest.fn(() => fetchResult.promise),
-      fetchSessionChildHistory: jest.fn(async () => []),
+      fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
       directorySessionPrefetchTtlMs: 1,
@@ -173,7 +173,7 @@ test("applies a read completed while an unknown load-more page is in flight", as
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory: jest.fn(() => fetchResult.promise),
-      fetchSessionChildHistory: jest.fn(async () => []),
+      fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
       directorySessionPrefetchTtlMs: 1,
@@ -242,7 +242,9 @@ test("does not let a stale child fetch overwrite a read completed while loading"
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory: jest.fn(),
-      fetchSessionChildHistory: jest.fn(() => childResult.promise),
+      fetchSessionChildrenHistory: jest.fn(async (parentIds: string[]) => ({
+        [parentIds[0]]: await childResult.promise,
+      })),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
       directorySessionPrefetchTtlMs: 1,
@@ -314,7 +316,7 @@ test("defers a pre-bootstrap ensure and drains it with the directories loaded la
       setDirectorySessionsById,
       setExpandedDirectoryIds: jest.fn(),
       fetchSessionHistory,
-      fetchSessionChildHistory: jest.fn(async () => []),
+      fetchSessionChildrenHistory: jest.fn(async () => ({})),
       emptyDirectorySessionTreeState: emptyState,
       directorySessionPageSize: 5,
       directorySessionPrefetchTtlMs: 60_000,
@@ -861,21 +863,20 @@ test("hands a released fetch slot to its waiter before admitting a new caller", 
   expect(maxActive).toBe(2);
 });
 
-test("clears a superseded child loading state when first-page refresh starts", async () => {
-  const childFetch = deferred<LlmSessionHistoryEntry[]>();
+test("keeps and applies a child load across an unrelated first-page generation change", async () => {
+  const childFetch = deferred<Record<string, LlmSessionHistoryEntry[]>>();
   const firstPageFetch = deferred<{
     latestSessionId: string;
     nextCursor: string;
     entries: LlmSessionHistoryEntry[];
   }>();
-  const fetchSessionChildHistory = jest.fn()
-    .mockImplementationOnce(() => childFetch.promise)
-    .mockResolvedValueOnce([]);
+  const fetchSessionChildrenHistory = jest.fn()
+    .mockImplementationOnce(() => childFetch.promise);
   const fetchSessionHistory = jest.fn(() => firstPageFetch.promise);
   const parent = session("", "parent");
   const { result } = await renderHook(() => useTestController({
     fetchSessionHistory,
-    fetchSessionChildHistory,
+    fetchSessionChildrenHistory,
     initialTrees: {
       workspace: {
         ...emptyState,
@@ -903,26 +904,205 @@ test("clears a superseded child loading state when first-page refresh starts", a
   });
   expect(
     result.current.directorySessionsById.workspace.childrenByParentId.parent.loading
-  ).toBe(false);
+  ).toBe(true);
 
   firstPageFetch.resolve({
     latestSessionId: "parent",
     nextCursor: "",
     entries: [parent],
   });
-  childFetch.resolve([]);
+  childFetch.resolve({ parent: [{
+    ...session("", "child"),
+    parentSessionId: "parent",
+    source: "subagent",
+  }] });
   await act(async () => {
     await Promise.all([childLoading, refresh]);
-    await result.current.controller.loadSessionChildTree(
-      "workspace",
-      "/workspace",
-      "parent"
+  });
+  expect(fetchSessionChildrenHistory).toHaveBeenCalledTimes(1);
+  expect(
+    result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].sessionId
+  ).toBe("child");
+});
+
+test("discards a child load after its registered directory path changes", async () => {
+  const childFetch = deferred<Record<string, LlmSessionHistoryEntry[]>>();
+  const movedDirectory = { ...workspaceDirectory, path: "/moved" };
+  const { result } = await renderHook(() => {
+    const [registeredDirectories, setRegisteredDirectories] = useState([workspaceDirectory]);
+    const value = useTestController({
+      registeredDirectories,
+      fetchSessionHistory: jest.fn(() => new Promise(() => {})),
+      fetchSessionChildrenHistory: jest.fn(() => childFetch.promise),
+      initialTrees: {
+        workspace: {
+          ...emptyState,
+          loaded: true,
+          entries: [session("", "parent")],
+        },
+      },
+    });
+    return {
+      ...value,
+      move: () => {
+        value.controller.prepareDirectorySessionTargetChange({
+          nextRegisteredDirectories: [movedDirectory],
+          transitions: [{
+            kind: "replace",
+            directoryId: "workspace",
+            fromPath: "/workspace",
+            toPath: "/moved",
+          }],
+        });
+        setRegisteredDirectories([movedDirectory]);
+      },
+    };
+  });
+
+  let loading!: Promise<void>;
+  await act(async () => {
+    loading = result.current.controller.loadSessionChildTree("workspace", "/workspace", "parent");
+    await Promise.resolve();
+    result.current.move();
+    childFetch.resolve({ parent: [{
+      ...session("", "stale-child"),
+      parentSessionId: "parent",
+      source: "subagent",
+    }] });
+    await loading;
+  });
+
+  expect(result.current.directorySessionsById.workspace?.childrenByParentId.parent).toBeUndefined();
+});
+
+test("loads multiple parent child trees with one grouped request", async () => {
+  const fetchSessionChildrenHistory = jest.fn(async (parentIds: string[]) => Object.fromEntries(
+    parentIds.map((parentId) => [parentId, [{
+      ...session("", `child-${parentId}`),
+      parentSessionId: parentId,
+      source: "subagent" as const,
+    }]])
+  ));
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(),
+    fetchSessionChildrenHistory,
+    initialTrees: {
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        entries: [session("", "parent-a"), session("", "parent-b")],
+      },
+    },
+  }));
+
+  await act(async () => {
+    await result.current.controller.loadSessionChildTreesForSessions(
+      ["parent-a", "parent-b"],
+      "/workspace"
     );
   });
-  expect(fetchSessionChildHistory).toHaveBeenCalledTimes(2);
-  expect(
-    result.current.directorySessionsById.workspace.childrenByParentId.parent.loading
-  ).toBe(false);
+
+  expect(fetchSessionChildrenHistory).toHaveBeenCalledTimes(1);
+  expect(fetchSessionChildrenHistory.mock.calls[0][0]).toEqual(["parent-a", "parent-b"]);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId["parent-a"].entries[0].sessionId)
+    .toBe("child-parent-a");
+  expect(result.current.directorySessionsById.workspace.childrenByParentId["parent-b"].entries[0].sessionId)
+    .toBe("child-parent-b");
+});
+
+test("refreshes a cached parent on child completion and coalesces duplicate boundaries", async () => {
+  const firstRefresh = deferred<Record<string, LlmSessionHistoryEntry[]>>();
+  const child = {
+    ...session("", "child"),
+    parentSessionId: "parent",
+    source: "subagent" as const,
+    threadStatusType: "active" as const,
+  };
+  const fetchSessionChildrenHistory = jest.fn()
+    .mockImplementationOnce(() => firstRefresh.promise)
+    .mockResolvedValueOnce({ parent: [{ ...child, threadStatusType: "idle" }] });
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(),
+    fetchSessionChildrenHistory,
+    initialTrees: {
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        entries: [session("", "parent")],
+        childrenByParentId: {
+          parent: { loading: false, loaded: true, error: "", entries: [child] },
+        },
+      },
+    },
+  }));
+
+  let first!: Promise<void>;
+  let duplicate!: Promise<void>;
+  await act(async () => {
+    first = result.current.controller.refreshSessionChildTreesAtBoundary("child", "child_completed");
+    duplicate = result.current.controller.refreshSessionChildTreesAtBoundary("child", "child_completed");
+    void result.current.controller.refreshSessionChildTreesAtBoundary("child", "child_completed");
+    await Promise.resolve();
+  });
+  expect(fetchSessionChildrenHistory).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    firstRefresh.resolve({ parent: [child] });
+    await Promise.all([first, duplicate]);
+  });
+
+  expect(fetchSessionChildrenHistory).toHaveBeenCalledTimes(2);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId.parent.entries[0].threadStatusType)
+    .toBe("idle");
+});
+
+test("runs one final child refresh after a boundary arrives during the queued refresh", async () => {
+  const initialRefresh = deferred<Record<string, LlmSessionHistoryEntry[]>>();
+  const trailingRefresh = deferred<Record<string, LlmSessionHistoryEntry[]>>();
+  const child = {
+    ...session("", "child"),
+    parentSessionId: "parent",
+    source: "subagent" as const,
+  };
+  const fetchSessionChildrenHistory = jest.fn()
+    .mockImplementationOnce(() => initialRefresh.promise)
+    .mockImplementationOnce(() => trailingRefresh.promise)
+    .mockResolvedValueOnce({ parent: [{ ...child, threadStatusType: "idle" }] });
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(),
+    fetchSessionChildrenHistory,
+    initialTrees: {
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        entries: [session("", "parent")],
+        childrenByParentId: {
+          parent: { loading: false, loaded: true, error: "", entries: [child] },
+        },
+      },
+    },
+  }));
+
+  let first!: Promise<void>;
+  let queued!: Promise<void>;
+  await act(async () => {
+    first = result.current.controller.refreshSessionChildTreesAtBoundary("child", "child_completed");
+    queued = result.current.controller.refreshSessionChildTreesAtBoundary("child", "child_completed");
+    await Promise.resolve();
+  });
+  initialRefresh.resolve({ parent: [child] });
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(fetchSessionChildrenHistory).toHaveBeenCalledTimes(2);
+
+  await act(async () => {
+    void result.current.controller.refreshSessionChildTreesAtBoundary("child", "child_completed");
+    trailingRefresh.resolve({ parent: [child] });
+    await Promise.all([first, queued]);
+  });
+  expect(fetchSessionChildrenHistory).toHaveBeenCalledTimes(3);
 });
 
 test("keeps a read mutation when another directory fetch completes in the same batch", async () => {

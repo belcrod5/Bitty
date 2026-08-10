@@ -4,7 +4,7 @@ import {
   readCodexAppServerThread,
   type CodexThreadListEntry,
 } from "../../codex/codexAppServerClient";
-import type { CodexCommandExecutionInfo } from "../../codex/client/types";
+import type { CodexCommandExecutionInfo, CodexThreadStatusType } from "../../codex/client/types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { parseContextUsageUsedPct } from "../utils/formatting";
 import { clampContextUsedPct } from "../utils/sessionRestore";
@@ -43,6 +43,7 @@ export type LlmSessionHistoryEntry = {
   contextUsedPct: number | null;
   modelRef: string;
   reasoningEffort: string;
+  threadStatusType?: CodexThreadStatusType;
 };
 
 export type RunnerSessionReadResult = {
@@ -244,6 +245,7 @@ export function buildLlmSessionHistoryEntry(
       : clampContextUsedPct(item.contextUsedPct),
     modelRef: String(snapshot?.modelRef || "").trim(),
     reasoningEffort: String(snapshot?.reasoningEffort || "").trim(),
+    threadStatusType: item.threadStatusType || "unknown",
   };
 }
 
@@ -780,13 +782,18 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     runnerWebSocketManager,
   ]);
 
-  const fetchSessionChildHistory = useCallback(async (
-    parentSessionIdRaw: unknown,
+  const fetchSessionChildrenHistory = useCallback(async (
+    parentSessionIdsRaw: unknown[],
     directoryRaw?: unknown,
     historyOptions?: Pick<FetchSessionHistoryOptions, "limit" | "includeRunnerSnapshots">,
-  ): Promise<LlmSessionHistoryEntry[]> => {
-    const parentSessionId = parseOptionalSessionId(parentSessionIdRaw);
-    if (!parentSessionId) return [];
+  ): Promise<Record<string, LlmSessionHistoryEntry[]>> => {
+    const parentSessionIds = Array.from(new Set(
+      (Array.isArray(parentSessionIdsRaw) ? parentSessionIdsRaw : [])
+        .map(parseOptionalSessionId)
+        .filter(Boolean)
+    ));
+    if (parentSessionIds.length <= 0) return {};
+    const parentSessionIdSet = new Set(parentSessionIds);
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
     const limit = Number.isFinite(Number(historyOptions?.limit))
       ? Math.max(1, Math.min(100, Math.floor(Number(historyOptions?.limit))))
@@ -799,22 +806,41 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const startedAt = Date.now();
     emitSessionDiag("session_child_history_fetch_start", {
       directory,
-      parentSessionId,
+      parentSessionIds,
       limit,
       includeRunnerSnapshots,
     });
-    const listed = await listCodexAppServerThreads({
-      wsUrl: targetCodexWsUrl,
-      wsToken: codexWsToken.trim(),
-      cwd: directory,
-      limit,
-      sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
-      timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
-      runnerWebSocketManager,
-    });
-    const directChildren = listed.data.filter(
-      (item) => parseOptionalSessionId(item.parentThreadId) === parentSessionId
-    );
+    const listedThreads: CodexThreadListEntry[] = [];
+    const seenThreadIds = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor = "";
+    let pageCount = 0;
+    while (true) {
+      const listed = await listCodexAppServerThreads({
+        wsUrl: targetCodexWsUrl,
+        wsToken: codexWsToken.trim(),
+        cwd: directory,
+        limit,
+        cursor,
+        sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
+        timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+        runnerWebSocketManager,
+      });
+      pageCount += 1;
+      for (const item of listed.data) {
+        const threadId = parseOptionalSessionId(item.threadId);
+        if (!threadId || seenThreadIds.has(threadId)) continue;
+        seenThreadIds.add(threadId);
+        listedThreads.push(item);
+      }
+      const nextCursor = String(listed.nextCursor || "").trim();
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    const directChildren = listedThreads.filter((item) => (
+      parentSessionIdSet.has(parseOptionalSessionId(item.parentThreadId))
+    ));
     const runnerSnapshotMap = includeRunnerSnapshots
       ? await fetchRunnerSessionSnapshotMap(
         directory,
@@ -822,7 +848,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       ).catch((error) => {
         emitSessionDiag("runner_session_snapshot_map_failed", {
           directory,
-          parentSessionId,
+          parentSessionIds,
           elapsedMs: Math.max(0, Date.now() - startedAt),
           message: error instanceof Error ? error.message : String(error),
         });
@@ -834,14 +860,18 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     );
     emitSessionDiag("session_child_history_fetch_done", {
       directory,
-      parentSessionId,
+      parentSessionIds,
       elapsedMs: Math.max(0, Date.now() - startedAt),
-      threadCountRaw: listed.data.length,
+      pageCount,
+      threadCountRaw: listedThreads.length,
       directChildCount: directChildren.length,
       threadCountDeduped: sessions.length,
       runnerSnapshotCount: runnerSnapshotMap.size,
     });
-    return sessions;
+    return Object.fromEntries(parentSessionIds.map((parentSessionId) => [
+      parentSessionId,
+      sessions.filter((session) => session.parentSessionId === parentSessionId),
+    ]));
   }, [
     codexWsToken,
     codexWsUrl,
@@ -967,7 +997,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionMessages,
     fetchLatestSessionIdForDirectory,
     fetchSessionHistory,
-    fetchSessionChildHistory,
+    fetchSessionChildrenHistory,
     markRunnerSessionRead,
     loadDirectoryExplorer,
     openDirectoryExplorer,

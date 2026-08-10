@@ -3,6 +3,7 @@ import type { ApprovalRequest } from "../../codex/approvalFlow";
 import type { ConversationMessage } from "../types/appTypes";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
 import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
+import { resolveSessionActivity, type SessionActivity } from "../utils/statusIcons";
 
 export type ConversationRuntimeSnapshot = {
   sessionId: string;
@@ -13,6 +14,7 @@ export type ConversationRuntimeSnapshot = {
   isResponding: boolean;
   selectedThreadStatusType: string;
   request: ConversationRuntimeRequestSnapshot | null;
+  activityTrail: SessionActivity[];
   executionGeneration: number;
   updatedAtMs: number;
 };
@@ -129,6 +131,13 @@ type ConversationRuntimeSnapshotInput = {
   request?: ConversationRuntimeRequestSnapshotInput | null;
 };
 
+type ConversationRuntimeRelayAttachment = {
+  sessionId: string;
+  sourcePanelId?: string;
+  startedAtMs: number;
+  reason: string;
+};
+
 function normalizeSessionId(raw: unknown) {
   return String(raw || "").trim();
 }
@@ -226,6 +235,7 @@ export function useConversationRuntimeStoreController() {
       pendingApproval: cloneApprovalRequest(snapshot.pendingApproval),
       conversationMessages: cloneConversationMessages(snapshot.conversationMessages),
       request: cloneRequestSnapshot(snapshot.request),
+      activityTrail: [...snapshot.activityTrail],
     };
   }, []);
 
@@ -275,6 +285,17 @@ export function useConversationRuntimeStoreController() {
       threadStatusType: nextThreadStatusType,
       isResponding: nextIsResponding,
     });
+    const previousTurnStartedAtMs = normalizeStartedAtMs(previous?.request?.startedAtMs);
+    const nextTurnStartedAtMs = normalizeStartedAtMs(nextRequest?.startedAtMs);
+    let activityTrail = nextTurnStartedAtMs !== null && nextTurnStartedAtMs !== previousTurnStartedAtMs
+      ? []
+      : [...(previous?.activityTrail || [])];
+    const nextActivity = nextRequest && isConversationRuntimeRequestResponding(nextRequest)
+      ? resolveSessionActivity(nextRequest.status, nextRequest.statusDetail)
+      : null;
+    if (nextActivity && activityTrail[activityTrail.length - 1] !== nextActivity) {
+      activityTrail = [...activityTrail, nextActivity].slice(-4);
+    }
     const previousRequestKey = previous?.request
       ? [
         previous.request.requestId,
@@ -317,6 +338,7 @@ export function useConversationRuntimeStoreController() {
       isResponding: nextIsResponding,
       selectedThreadStatusType,
       request: nextRequest,
+      activityTrail,
       executionGeneration: (previous?.executionGeneration || 0) + (executionChanged ? 1 : 0),
       updatedAtMs: Date.now(),
     };
@@ -330,8 +352,67 @@ export function useConversationRuntimeStoreController() {
       pendingApproval: cloneApprovalRequest(next.pendingApproval),
       conversationMessages: cloneConversationMessages(next.conversationMessages),
       request: cloneRequestSnapshot(next.request),
+      activityTrail: [...next.activityTrail],
     };
   }, []);
+
+  const updateConversationRuntimeRequestStatus = useCallback((
+    sessionIdRaw: unknown,
+    statusRaw: unknown,
+    statusDetailRaw: unknown
+  ) => {
+    const sessionId = normalizeSessionId(sessionIdRaw);
+    const request = runtimeBySessionIdRef.current[sessionId]?.request;
+    if (!sessionId || !request || !isConversationRuntimeRequestResponding(request)) return null;
+    return upsertConversationRuntimeSnapshot({
+      sessionId,
+      request: {
+        ...request,
+        status: String(statusRaw || "").trim() || "unknown",
+        statusDetail: String(statusDetailRaw || "").trim(),
+        updatedAtMs: Date.now(),
+      },
+    });
+  }, [upsertConversationRuntimeSnapshot]);
+
+  const ensureConversationRuntimeRequestForRelay = useCallback((
+    input: ConversationRuntimeRelayAttachment
+  ) => {
+    const sessionId = normalizeSessionId(input.sessionId);
+    const startedAtMs = normalizeStartedAtMs(input.startedAtMs);
+    if (!sessionId || startedAtMs === null) return null;
+    const previous = runtimeBySessionIdRef.current[sessionId];
+    const previousStartedAtMs = normalizeStartedAtMs(previous?.request?.startedAtMs);
+    if (
+      previousStartedAtMs !== null && (
+        previousStartedAtMs > startedAtMs || (
+          previousStartedAtMs === startedAtMs &&
+          isConversationRuntimeRequestResponding(previous?.request)
+        )
+      )
+    ) {
+      return getConversationRuntimeSnapshot(sessionId);
+    }
+    const requestSeq = Math.max(0, Number(previous?.request?.requestSeq) || 0) + 1;
+    return upsertConversationRuntimeSnapshot({
+      sessionId,
+      isResponding: true,
+      selectedThreadStatusType: "active",
+      request: {
+        requestId: `relay-${sessionId}-${startedAtMs}-${requestSeq}`,
+        requestSeq,
+        sessionId,
+        sourcePanelId: String(input.sourcePanelId || "relay").trim() || "relay",
+        threadId: sessionId,
+        lifecycle: "active",
+        status: "model_processing",
+        statusDetail: String(input.reason || "relay attached").trim() || "relay attached",
+        startedAtMs,
+        updatedAtMs: Date.now(),
+        completedAtMs: null,
+      },
+    });
+  }, [getConversationRuntimeSnapshot, upsertConversationRuntimeSnapshot]);
 
   const finalizeConversationRuntimeAfterRelayLoss = useCallback((sessionIdRaw: unknown, reasonRaw: string) => {
     const sessionId = normalizeSessionId(sessionIdRaw);
@@ -363,6 +444,16 @@ export function useConversationRuntimeStoreController() {
       conversationMessages: messages,
       isResponding: false,
       selectedThreadStatusType: "idle",
+      request: previous?.request
+        ? {
+          ...previous.request,
+          lifecycle: "error",
+          status: "error",
+          statusDetail: detail,
+          updatedAtMs: Date.now(),
+          completedAtMs: Date.now(),
+        }
+        : null,
     });
     return snapshot ? {
       snapshot,
@@ -374,6 +465,8 @@ export function useConversationRuntimeStoreController() {
   return {
     getConversationRuntimeSnapshot,
     finalizeConversationRuntimeAfterRelayLoss,
+    ensureConversationRuntimeRequestForRelay,
     upsertConversationRuntimeSnapshot,
+    updateConversationRuntimeRequestStatus,
   };
 }

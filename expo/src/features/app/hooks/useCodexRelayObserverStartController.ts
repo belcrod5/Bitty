@@ -8,6 +8,7 @@ import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManag
 import type { ConversationMessage, SessionRuntimeStatus } from "../types/appTypes";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
 import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
+import { resolveCodexItemRuntimeStatus } from "../utils/statusIcons";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
 type CodexRelayObserverRef = MutableRefObject<{ threadId: string; panelId?: string; close: () => void } | null>;
@@ -120,6 +121,14 @@ type UseCodexRelayObserverStartControllerArgs = {
     directory: string;
     reason: string;
   }) => void | Promise<void>;
+  onRuntimeStatus?: (threadId: string, status: LlmUiStatus, detail: string) => void;
+  ensureRuntimeRequestForRelay?: (params: {
+    sessionId: string;
+    sourcePanelId?: string;
+    startedAtMs: number;
+    reason: string;
+  }) => unknown;
+  onSessionStreamBoundary?: (sessionId: string) => void | Promise<void>;
 };
 
 function findLatestAssistantMessage(messages: ConversationMessage[]) {
@@ -182,6 +191,9 @@ export function useCodexRelayObserverStartController({
   onApprovalRequestResolved,
   onObserverPreempted,
   onAssistantTurnCompleted,
+  onRuntimeStatus,
+  ensureRuntimeRequestForRelay,
+  onSessionStreamBoundary,
 }: UseCodexRelayObserverStartControllerArgs) {
   const startCodexRelayObserverForSession = useCallback((threadIdRaw: unknown, options?: StartCodexRelayObserverOptions) => {
     const threadId = parseOptionalSessionId(threadIdRaw);
@@ -634,7 +646,20 @@ export function useCodexRelayObserverStartController({
         onEvent: (method, params) => {
           const active = codexRelayObserverRef.current;
           if (!active || active.threadId !== threadId) return;
+          if (method === "item/completed") {
+            void onSessionStreamBoundary?.(threadId);
+          }
           const payload = params && typeof params === "object" ? params as Record<string, unknown> : {};
+          const itemRuntimeStatus = method === "item/started" || method === "item/completed"
+            ? resolveCodexItemRuntimeStatus(
+              (payload as any)?.item,
+              method === "item/started" ? "started" : "completed"
+            )
+            : null;
+          if (itemRuntimeStatus) {
+            settleRelayAgentMessages(itemRuntimeStatus.status, itemRuntimeStatus.detail, true, "active");
+            onRuntimeStatus?.(threadId, itemRuntimeStatus.status, itemRuntimeStatus.detail);
+          }
           const threadStatus = method === "thread/status/changed"
             ? deriveCodexSessionStateFromSnapshot({
               status: payload.status ?? (payload as any)?.thread?.status,
@@ -724,6 +749,7 @@ export function useCodexRelayObserverStartController({
             "active",
             agentMessageUiIdByItemId.get(itemId)
           );
+          onRuntimeStatus?.(threadId, "model_processing", "agent message completed");
         },
         onTurnCompleted: () => {
           const active = codexRelayObserverRef.current;
@@ -795,6 +821,14 @@ export function useCodexRelayObserverStartController({
         },
         onApprovalRequestResolved,
       });
+      if (startedAtMs && startedAtMs > 0) {
+        ensureRuntimeRequestForRelay?.({
+          sessionId: threadId,
+          sourcePanelId: targetPanelId || undefined,
+          startedAtMs: Math.floor(startedAtMs),
+          reason: observerReason,
+        });
+      }
       codexRelayObserverRef.current = {
         threadId,
         panelId: isSessionRuntimeObserver ? undefined : targetPanelId || undefined,
@@ -838,6 +872,9 @@ export function useCodexRelayObserverStartController({
     onApprovalRequestResolved,
     onObserverPreempted,
     onAssistantTurnCompleted,
+    onRuntimeStatus,
+    ensureRuntimeRequestForRelay,
+    onSessionStreamBoundary,
     parseLlmDirectory,
     parseOptionalSessionId,
     rememberSessionRuntimeStatus,

@@ -30,19 +30,20 @@ export function createTurnCompletionNotifier({
   log = console,
   now = Date.now,
 }) {
-  const notifiedAtByTurn = new Map();
+  const broadcastedAtByTurn = new Map();
+  const pushedAtByTurn = new Map();
 
-  function rememberTurn(key, nowMs) {
-    for (const [existingKey, notifiedAt] of notifiedAtByTurn) {
-      if (nowMs - notifiedAt >= DEDUP_TTL_MS) notifiedAtByTurn.delete(existingKey);
+  function rememberTurn(map, key, nowMs) {
+    for (const [existingKey, notifiedAt] of map) {
+      if (nowMs - notifiedAt >= DEDUP_TTL_MS) map.delete(existingKey);
     }
-    if (notifiedAtByTurn.has(key)) return false;
-    notifiedAtByTurn.set(key, nowMs);
-    if (notifiedAtByTurn.size > DEDUP_MAX_ENTRIES) {
-      const oldest = [...notifiedAtByTurn.entries()]
+    if (map.has(key)) return false;
+    map.set(key, nowMs);
+    if (map.size > DEDUP_MAX_ENTRIES) {
+      const oldest = [...map.entries()]
         .sort((left, right) => left[1] - right[1])
-        .slice(0, notifiedAtByTurn.size - DEDUP_MAX_ENTRIES);
-      for (const [oldestKey] of oldest) notifiedAtByTurn.delete(oldestKey);
+        .slice(0, map.size - DEDUP_MAX_ENTRIES);
+      for (const [oldestKey] of oldest) map.delete(oldestKey);
     }
     return true;
   }
@@ -105,19 +106,24 @@ export function createTurnCompletionNotifier({
     const threadId = String(threadIdRaw || "").trim();
     const turnId = String(turnIdRaw || "").trim();
     const previewText = compactLlmCompletionPreview(agentMessageText);
-    if (!threadId || !previewText) return;
-    if (!rememberTurn(`${threadId}|${turnId || "-"}`, Number(now()))) return;
+    if (!threadId) return;
+    const turnKey = `${threadId}|${turnId || "-"}`;
+    const nowMs = Number(now());
 
-    try {
-      broadcast({
-        sessionId: String(sessionId || threadId),
-        threadId,
-        previewText,
-        completedAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      log.warn(`[push] turn completion broadcast failed origin=${origin || "unknown"}: ${errorMessage(error)}`);
+    if (rememberTurn(broadcastedAtByTurn, turnKey, nowMs)) {
+      try {
+        broadcast({
+          sessionId: String(sessionId || threadId),
+          threadId,
+          previewText,
+          completedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        log.warn(`[push] turn completion broadcast failed origin=${origin || "unknown"}: ${errorMessage(error)}`);
+      }
     }
+    if (!previewText) return;
+    if (!rememberTurn(pushedAtByTurn, turnKey, nowMs)) return;
     await sendPush({ sessionId, threadId, turnId, previewText, directory, origin });
   }
 

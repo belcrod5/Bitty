@@ -115,6 +115,7 @@ function mockConversation(entries: LlmSessionHistoryEntry[], overrides: Record<s
     formatSessionUpdatedAt: (value: string) => value,
     directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
     ensureRegisteredDirectorySessions: jest.fn().mockResolvedValue(undefined),
+    loadSessionChildrenBatch: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as ReturnType<typeof useConversation>);
 }
@@ -192,6 +193,134 @@ describe("useSkiaMiniChatSessions", () => {
     // 初期化されたボードステートが永続化される。
     const savedState = persistedFile.skiaBoardState as { cards: Array<{ sessionId: string }> };
     expect(savedState.cards).toHaveLength(6);
+  });
+
+  it("projects unread, activity, and cached subagent counts onto cards", async () => {
+    const parent = { ...session(1), lastReadAt: "2026-05-01T00:00:00.000Z" };
+    const childState = {
+      loading: false,
+      loaded: true,
+      error: "",
+      entries: [
+        { ...session(2), sessionId: "child-running", parentSessionId: parent.sessionId, threadStatusType: "active" as const },
+        { ...session(3), sessionId: "child-done", parentSessionId: parent.sessionId, threadStatusType: "idle" as const },
+      ],
+    };
+    mockUsePanelRuntimeStore.mockReturnValue({
+      getSnapshot: () => ({
+        selectedSessionId: parent.sessionId,
+        isResponding: true,
+        runtimeStatus: "tool_running",
+        runtimeStatusDetail: "tool start: web_search",
+        runtimeActivityTrail: ["thinking", "reading", "web"],
+        conversationMessages: [{
+          role: "assistant",
+          content: "searching",
+          llmStatus: "tool_running",
+          llmStatusDetail: "tool start: file_edit",
+        }],
+      }),
+      getKnownPanelIds: () => [],
+    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    mockConversation([parent], {
+      directorySessionsById: {
+        workspace: {
+          ...tree([parent]),
+          childrenByParentId: { [parent.sessionId]: childState },
+        },
+      },
+    });
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(result.current.sessions[0]).toMatchObject({
+      unread: true,
+      activityTrail: [
+        { kind: "thinking", active: false },
+        { kind: "reading", active: false },
+        { kind: "web", active: true },
+      ],
+      subagentLoading: false,
+      subagentRunningCount: 1,
+      subagentTotalCount: 2,
+    });
+  });
+
+  it("prefers the shared post-message runtime thinking status over stale message activity", async () => {
+    const parent = session(1);
+    mockUsePanelRuntimeStore.mockReturnValue({
+      getSnapshot: () => ({
+        selectedSessionId: parent.sessionId,
+        isResponding: true,
+        runtimeStatus: "model_processing",
+        runtimeStatusDetail: "agent message completed",
+        runtimeActivityTrail: ["web", "thinking"],
+        conversationMessages: [{
+          role: "assistant",
+          content: "intermediate answer",
+          llmStatus: "tool_running",
+          llmStatusDetail: "tool start: web_search",
+        }],
+      }),
+      getKnownPanelIds: () => [],
+    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    mockConversation([parent], {
+      directorySessionsById: {
+        workspace: {
+          ...tree([parent]),
+          childrenByParentId: {
+            [parent.sessionId]: { loading: false, loaded: true, error: "", entries: [] },
+          },
+        },
+      },
+    });
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(result.current.sessions[0].activityTrail).toEqual([
+      { kind: "web", active: false },
+      { kind: "thinking", active: true },
+    ]);
+  });
+
+  it("marks every retained activity as completed when the turn is idle", async () => {
+    const parent = session(1);
+    mockUsePanelRuntimeStore.mockReturnValue({
+      getSnapshot: () => ({
+        selectedSessionId: parent.sessionId,
+        isResponding: false,
+        runtimeActivityTrail: ["reading", "writing", "web", "thinking"],
+        conversationMessages: [],
+      }),
+      getKnownPanelIds: () => [],
+    } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    mockConversation([parent]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(result.current.sessions[0].activityTrail).toEqual([
+      { kind: "reading", active: false },
+      { kind: "writing", active: false },
+      { kind: "web", active: false },
+      { kind: "thinking", active: false },
+    ]);
+  });
+
+  it("requests missing child trees once per directory", async () => {
+    const loadSessionChildrenBatch = jest.fn().mockResolvedValue(undefined);
+    mockConversation([session(2), session(1)], { loadSessionChildrenBatch });
+
+    await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(loadSessionChildrenBatch).toHaveBeenCalledTimes(1);
+    expect(loadSessionChildrenBatch).toHaveBeenCalledWith(
+      ["session-2", "session-1"],
+      "/workspace"
+    );
   });
 
   it("restores persisted card positions instead of re-initializing", async () => {

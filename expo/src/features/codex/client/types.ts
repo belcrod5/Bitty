@@ -180,6 +180,7 @@ export type CodexThreadListEntry = {
   createdAt: string;
   updatedAt: string;
   contextUsedPct: number | null;
+  threadStatusType?: CodexThreadStatusType;
 };
 
 export type CodexThreadListResult = {
