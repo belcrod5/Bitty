@@ -317,3 +317,46 @@ test("bootstrap copies a missing runner token from main without overwriting a lo
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+test("bootstrap refuses a runner token path that escapes the repository", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "bitty-bootstrap-runner-token-boundary-"));
+  const mainRoot = join(repoRoot, "main/repo");
+  const worktreeRoot = join(repoRoot, "worktrees/repo");
+  const fakeBin = join(repoRoot, "bin");
+  const escapedSource = join(repoRoot, "main/escaped-token");
+  const escapedTarget = join(repoRoot, "worktrees/escaped-token");
+  mkdirSync(join(mainRoot, "private_runner"), { recursive: true });
+  mkdirSync(join(worktreeRoot, "private_runner"), { recursive: true });
+  mkdirSync(fakeBin);
+  writeFileSync(join(mainRoot, "private_runner/.env"), "RUNNER_TOKEN_FILE=../escaped-token\n");
+  writeFileSync(escapedSource, "must-not-copy\n");
+  writeFileSync(join(worktreeRoot, "private_runner/package.json"), "{}\n");
+  writeFileSync(join(fakeBin, "npm"), "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(join(fakeBin, "npm"), 0o755);
+
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "scripts/worktree/bootstrap-local.sh",
+        "--repo-root",
+        worktreeRoot,
+        "--env",
+        "--private-runner",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          BITTY_MAIN_REPO_ROOT: mainRoot,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+        },
+      }
+    );
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.match(result.stderr, /refusing runner token path outside repository/);
+    assert.throws(() => readFileSync(escapedTarget), { code: "ENOENT" });
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});

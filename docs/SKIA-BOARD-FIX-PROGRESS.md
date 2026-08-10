@@ -93,7 +93,8 @@ must remain unchanged.
   - PASS.
 - Independent read-only reviews after fixes, token-handoff follow-up, and card-spacing
   compaction
-  - APPROVE with no remaining findings.
+  - The final PR review found one repository-boundary issue in a custom Runner token
+    path. Paths containing a `..` component are now refused, with regression coverage.
 - `BITTY_MAIN_REPO_ROOT=/Volumes/SSD-500GB-SanDisk/work/bitty-public ./scripts/worktree/bootstrap-local.sh --repo-root /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/skia-board-interactions --env --expo --ios-native`
   - PASS. Local `.env`, Expo dependencies, iOS workspace, and Pods are ready.
 - `BITTY_MAIN_REPO_ROOT=/Volumes/SSD-500GB-SanDisk/work/bitty-public ./scripts/worktree/bootstrap-local.sh --repo-root /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/skia-board-interactions --env --private-runner`
@@ -101,7 +102,10 @@ must remain unchanged.
     `npm install` reported one existing high-severity dependency advisory; dependency
     versions were not changed in this task.
 - `node --test private_runner/tests/run-local-script.test.mjs`
-  - PASS, 7 tests. Includes missing-token copy and local-token preservation coverage.
+  - PASS, 8 tests. Includes missing-token copy, local-token preservation, and rejection
+    of token paths that escape the repository.
+- GitHub PR #58
+  - Opened from `fix/skia-board-interactions`; CI passed.
 - No lint script is defined in `expo/package.json`; lint was not run.
 
 ## Manual device verification
@@ -136,6 +140,7 @@ threshold, supported file second-tap opening, long-press file menu, Tidy/Reset, 
   invalid values default to 1 and cannot make an otherwise empty payload valid.
 - The canvas remains full bleed, while only the status pill is bottom-safe-area-aware.
   Header/menu actions and separate minus/plus controls have non-overlapping 44pt targets.
-- Device-level gesture feel, menu placement, and safe-area appearance still need manual
-  verification on an iPhone build from this worktree.
-- No commit, push, PR, or merge is authorized yet.
+- Device-level gesture feel, menu placement, card spacing, and safe-area appearance were
+  manually verified by the user on an iPhone build from this worktree.
+- Commit `5980615` was pushed and PR #58 was opened. Merge remains pending the final
+  review of the repository-boundary follow-up.

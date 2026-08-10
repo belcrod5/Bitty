@@ -148,6 +148,10 @@ copy_local_runner_token() {
   if [[ "${token_file}" == /* ]]; then
     return 0
   fi
+  if [[ "/${token_file}/" == *"/../"* ]]; then
+    echo "[bootstrap-local] refusing runner token path outside repository: ${token_file}" >&2
+    return 0
+  fi
 
   local source_path="${MAIN_REPO_ROOT}/${token_file}"
   local target_path="${REPO_ROOT}/${token_file}"
