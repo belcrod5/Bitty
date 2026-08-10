@@ -4,6 +4,7 @@ import {
   getRunnerFileViewerKind,
   getRunnerFileViewerLocation,
   isRunnerEditableTextFile,
+  openRunnerFile,
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
 } from "./runnerFileContextMenu";
@@ -170,6 +171,56 @@ test("hides the open button for unsupported files", () => {
     onOpenFile,
   });
   expect(buttons.some((button) => button.text === "開く")).toBe(false);
+});
+
+test("opens files directly with the same viewer and media behavior as the context menu", () => {
+  const onOpenFile = jest.fn();
+  const onOpenMedia = jest.fn();
+  const common = {
+    fileNameRaw: "",
+    runnerUrl: "http://runner.test",
+    runnerToken: "token",
+    rootDir: "/workspace",
+    getPathLabel: (pathRaw: unknown) => String(pathRaw || ""),
+    showInfoToast: jest.fn(),
+    onOpenMedia,
+    onOpenFile,
+  };
+
+  expect(openRunnerFile({ ...common, filePathRaw: "tasks/today.checklist" })).toBe(true);
+  expect(onOpenFile).toHaveBeenCalledWith({
+    kind: "checklist",
+    path: "tasks/today.checklist",
+    name: "tasks/today.checklist",
+    rootDirectory: "/workspace",
+  });
+
+  expect(openRunnerFile({ ...common, filePathRaw: "images/map.png" })).toBe(true);
+  expect(onOpenMedia).toHaveBeenCalledWith(expect.objectContaining({
+    kind: "image",
+    path: "images/map.png",
+    runnerToken: "token",
+  }));
+});
+
+test("shows an explicit fallback when a file type has no default open behavior", () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+
+  expect(openRunnerFile({
+    filePathRaw: "docs/readme.md",
+    fileNameRaw: "readme.md",
+    runnerUrl: "http://runner.test",
+    runnerToken: "token",
+    rootDir: "/workspace",
+    getPathLabel: (pathRaw) => String(pathRaw || ""),
+    showInfoToast: jest.fn(),
+    onOpenMedia: jest.fn(),
+    onOpenFile: jest.fn(),
+  })).toBe(false);
+  expect(alertSpy).toHaveBeenCalledWith(
+    "開けません",
+    "readme.md に対応する表示方法がありません。",
+  );
 });
 
 test("shows a speak button for text files and passes fetched content to onSpeakText", async () => {

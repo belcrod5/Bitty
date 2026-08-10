@@ -14,6 +14,10 @@ import {
 //   これ以下のセッションは自動追加しない(過去分の一括流入防止)。
 
 export const SKIA_BOARD_COLUMN_COUNT = 2;
+export const SKIA_BOARD_DEFAULT_TEXT_SCALE = 1;
+export const SKIA_BOARD_MIN_TEXT_SCALE = 0.8;
+export const SKIA_BOARD_MAX_TEXT_SCALE = 1.2;
+export const SKIA_BOARD_TEXT_SCALE_STEP = 0.1;
 const INITIAL_BOARD_CARD_COUNT = 6;
 
 type SkiaBoardCardPosition = {
@@ -40,6 +44,7 @@ export type SkiaBoardState = {
   cards: SkiaBoardCard[];
   excludedSessionIds: string[];
   ingestedUpdatedAtMs: number;
+  cardTextScale: number;
 };
 
 export type SkiaBoardSessionCandidate = {
@@ -67,6 +72,18 @@ export function skiaBoardGridPosition(index: number): { col: number; row: number
     col: index % SKIA_BOARD_COLUMN_COUNT,
     row: Math.floor(index / SKIA_BOARD_COLUMN_COUNT),
   };
+}
+
+export function normalizeSkiaBoardTextScale(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return SKIA_BOARD_DEFAULT_TEXT_SCALE;
+  }
+  const numeric = value;
+  const stepped = Math.round(numeric / SKIA_BOARD_TEXT_SCALE_STEP) * SKIA_BOARD_TEXT_SCALE_STEP;
+  return Math.max(
+    SKIA_BOARD_MIN_TEXT_SCALE,
+    Math.min(SKIA_BOARD_MAX_TEXT_SCALE, Number(stepped.toFixed(1)))
+  );
 }
 
 // 既存カードと重ならない最初のグリッドセルを返す(新規カードの自動配置)。
@@ -131,18 +148,24 @@ export function parseSkiaBoardState(raw: unknown): SkiaBoardState | null {
       .filter((value) => !!value)
   ));
   const ingestedUpdatedAtMsRaw = Number(record.ingestedUpdatedAtMs);
-  if (cards.length <= 0 && excludedSessionIds.length <= 0) return null;
+  const hasStoredTextScale = (
+    typeof record.cardTextScale === "number"
+    && Number.isFinite(record.cardTextScale)
+  );
+  if (cards.length <= 0 && excludedSessionIds.length <= 0 && !hasStoredTextScale) return null;
   return {
     cards,
     excludedSessionIds,
     ingestedUpdatedAtMs: Number.isFinite(ingestedUpdatedAtMsRaw)
       ? Math.max(0, ingestedUpdatedAtMsRaw)
       : 0,
+    cardTextScale: normalizeSkiaBoardTextScale(record.cardTextScale),
   };
 }
 
 // 候補セッションをボードへ取り込む。変化がなければ同一参照を返す(永続化抑制)。
-// - 保存済みステートが無い場合: 最新 INITIAL_BOARD_CARD_COUNT 件でグリッド初期化。
+// - 保存済みカード/除外/ウォーターマークが無い場合: 最新 INITIAL_BOARD_CARD_COUNT 件で
+//   グリッド初期化。文字倍率だけが保存済みなら、その値は引き継ぐ。
 //   ウォーターマークは全候補の最大updatedAtにし、既存の過去分が後から流れ込まない。
 // - 以降: 未搭載・未除外かつ updatedAt がウォーターマークより新しい候補だけを
 //   空きセルへ追加する。既存カードの位置は動かさない。
@@ -150,8 +173,13 @@ export function ingestSkiaBoardSessions(
   state: SkiaBoardState | null,
   candidates: readonly SkiaBoardSessionCandidate[]
 ): SkiaBoardState | null {
-  if (!state) {
-    if (candidates.length <= 0) return null;
+  const needsInitialSessions = !state || (
+    state.cards.length === 0
+    && state.excludedSessionIds.length === 0
+    && state.ingestedUpdatedAtMs === 0
+  );
+  if (needsInitialSessions) {
+    if (candidates.length <= 0) return state;
     return {
       cards: candidates.slice(0, INITIAL_BOARD_CARD_COUNT).map((candidate, index) => ({
         kind: "session" as const,
@@ -163,6 +191,7 @@ export function ingestSkiaBoardSessions(
         (max, candidate) => Math.max(max, updatedAtMs(candidate.updatedAt)),
         0
       ),
+      cardTextScale: state?.cardTextScale ?? SKIA_BOARD_DEFAULT_TEXT_SCALE,
     };
   }
   if (
@@ -329,16 +358,37 @@ export function removeSkiaBoardFile(
   return { ...state, cards: state.cards.filter((card) => skiaBoardCardId(card) !== id) };
 }
 
-// 現在の並び順のままグリッドへ整列する(ビューポートは触らない)。
-export function tidySkiaBoardCards(state: SkiaBoardState): SkiaBoardState {
+// 表示中カードを現在のボード順で先に詰め、非表示カードは保持したまま後ろへ送る。
+// 全カードへ重複しないrow-major座標を振るため、非表示カードの再登場時も重ならない。
+export function tidySkiaBoardCards(
+  state: SkiaBoardState,
+  visibleCardIds: readonly string[] = state.cards.map(skiaBoardCardId)
+): SkiaBoardState {
+  const visibleIds = new Set(visibleCardIds);
+  const orderedCards = [
+    ...state.cards.filter((card) => visibleIds.has(skiaBoardCardId(card))),
+    ...state.cards.filter((card) => !visibleIds.has(skiaBoardCardId(card))),
+  ];
   let changed = false;
-  const cards = state.cards.map((card, index) => {
+  const cards = orderedCards.map((card, index) => {
     const position = skiaBoardGridPosition(index);
-    if (card.col === position.col && card.row === position.row) return card;
+    if (
+      card === state.cards[index]
+      && card.col === position.col
+      && card.row === position.row
+    ) return card;
     changed = true;
     return { ...card, ...position };
   });
   return changed ? { ...state, cards } : state;
+}
+
+export function setSkiaBoardCardTextScale(
+  state: SkiaBoardState,
+  value: unknown
+): SkiaBoardState {
+  const cardTextScale = normalizeSkiaBoardTextScale(value);
+  return cardTextScale === state.cardTextScale ? state : { ...state, cardTextScale };
 }
 
 export async function readPersistedSkiaBoardState(): Promise<SkiaBoardState | null> {

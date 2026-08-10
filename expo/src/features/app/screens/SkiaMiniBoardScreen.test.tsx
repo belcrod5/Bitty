@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert } from "react-native";
+import { Alert, StyleSheet } from "react-native";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 
@@ -78,7 +78,15 @@ jest.mock("../contexts/ChatScreenContext", () => ({
   }),
 }));
 jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => null }));
-jest.mock("../components/RunnerFileViewer", () => ({ RunnerFileViewer: () => null }));
+jest.mock("../components/RunnerFileViewer", () => {
+  const ReactModule = require("react");
+  const { Text } = require("react-native");
+  return {
+    RunnerFileViewer: ({ target }: { target?: { path?: string } | null }) => (
+      target ? ReactModule.createElement(Text, { testID: "runner-file-target" }, target.path) : null
+    ),
+  };
+});
 jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
 jest.mock("../components/WorkspaceTextFileEditor", () => ({ WorkspaceTextFileEditor: () => null }));
 
@@ -88,6 +96,7 @@ const mockRemoveBoardFile = jest.fn();
 const mockHasBoardFile = jest.fn(() => true);
 const mockMarkBoardFileUnavailable = jest.fn();
 const mockTidyBoard = jest.fn();
+const mockSetBoardCardTextScale = jest.fn();
 const mockDefaultSession = {
   kind: "session" as const,
   cardId: "session:session-1",
@@ -112,6 +121,8 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     panelHydrationErrorCount: 0,
     sessions: mockSessions,
     items: mockSessions,
+    cardTextScale: 1,
+    setBoardCardTextScale: mockSetBoardCardTextScale,
     moveBoardCard: mockMoveBoardCard,
     removeBoardSession: mockRemoveBoardSession,
     removeBoardFile: mockRemoveBoardFile,
@@ -128,6 +139,7 @@ beforeEach(() => {
   mockHasBoardFile.mockClear();
   mockMarkBoardFileUnavailable.mockClear();
   mockTidyBoard.mockClear();
+  mockSetBoardCardTextScale.mockClear();
   mockSessions = [mockDefaultSession];
 });
 
@@ -170,6 +182,7 @@ test("tidies board cards without touching the viewport", async () => {
     <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
   );
 
+  await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
   await fireEvent.press(screen.getByLabelText("カードをグリッドに整頓"));
 
   expect(mockTidyBoard).toHaveBeenCalledTimes(1);
@@ -220,6 +233,96 @@ test("shows the shared file menu and removes a file card from it", async () => {
   alertSpy.mockRestore();
 });
 
+test("opens a supported file on its second tap without opening the context menu", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ntasks/today.checklist",
+    rootDir: "/workspace",
+    path: "tasks/today.checklist",
+    name: "today.checklist",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  await act(async () => {
+    fireCardTap();
+  });
+  await act(async () => {
+    fireCardTap();
+  });
+
+  expect(screen.getByTestId("runner-file-target").props.children).toBe("tasks/today.checklist");
+  expect(alertSpy).not.toHaveBeenCalledWith("today.checklist", expect.anything(), expect.anything());
+  alertSpy.mockRestore();
+});
+
+test("keeps an explicit fallback for unsupported file types on second tap", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ndocs/readme.md",
+    rootDir: "/workspace",
+    path: "docs/readme.md",
+    name: "readme.md",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  await act(async () => {
+    fireCardTap();
+  });
+  await act(async () => {
+    fireCardTap();
+  });
+
+  expect(alertSpy).toHaveBeenCalledWith(
+    "開けません",
+    "readme.md に対応する表示方法がありません。",
+  );
+  alertSpy.mockRestore();
+});
+
+test("shows only transparent navigation controls in the header and adjusts card text", async () => {
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  expect(screen.queryByText("Board")).toBeNull();
+  expect(screen.queryByText(/タップで選択/)).toBeNull();
+  expect(StyleSheet.flatten(screen.getByLabelText("ナビゲーションを開く").props.style)).toMatchObject({
+    width: 44,
+    height: 44,
+  });
+  await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
+  expect(StyleSheet.flatten(screen.getByLabelText("カードをグリッドに整頓").props.style)).toMatchObject({
+    minHeight: 44,
+  });
+  expect(StyleSheet.flatten(screen.getByLabelText("カード文字を小さくする").props.style)).toMatchObject({
+    width: 44,
+    height: 44,
+  });
+  expect(StyleSheet.flatten(screen.getByLabelText("カード文字を大きくする").props.style)).toMatchObject({
+    width: 44,
+    height: 44,
+  });
+  await fireEvent.press(screen.getByLabelText("カード文字を大きくする"));
+
+  expect(mockSetBoardCardTextScale).toHaveBeenCalledWith(1.1);
+});
+
+test("keeps the canvas full bleed while the status pill observes the bottom safe area", async () => {
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-status-safe-area").props.style)).toMatchObject({
+    position: "absolute",
+    bottom: 0,
+  });
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-status-pill").props.style)).toMatchObject({
+    marginBottom: 14,
+  });
+});
+
 test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {
   mockSessions = [{
     kind: "file",
@@ -248,14 +351,14 @@ test("shows a moved-or-deleted message instead of file actions for an unavailabl
   alertSpy.mockRestore();
 });
 
-test("suppresses the remove dialog while holding a drag-armed card", async () => {
+test("long-pressing a selected card still opens its context menu", async () => {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await render(
     <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
   );
 
   const registry = gestureRegistry();
-  // 選択済みカードに触れている間(ドラッグ待機)は長押し削除を発火させない。
+  // Panはtouch-downではactiveにならないため、移動許容内の長押しが優先される。
   await act(async () => {
     fireCardTap();
   });
@@ -265,7 +368,8 @@ test("suppresses the remove dialog while holding a drag-armed card", async () =>
     registry.LongPress.onStart({ x: 30, y: 30 });
   });
 
-  expect(alertSpy).not.toHaveBeenCalled();
+  expect(alertSpy).toHaveBeenCalled();
+  expect(registry.Pan.minDistance).toBe(10);
   alertSpy.mockRestore();
 });
 
@@ -281,6 +385,7 @@ test("commits the dragged card position back to the board state", async () => {
   await act(async () => {
     registry.Pan.onTouchesDown({ numberOfTouches: 1 });
     registry.Pan.onBegin({ x: 30, y: 30 });
+    registry.Pan.onStart();
     registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 50 });
     registry.Pan.onFinalize();
   });
@@ -290,7 +395,7 @@ test("commits the dragged card position back to the board state", async () => {
   expect(cardId).toBe("session:session-1");
   // (18+40, 18+50) がグリッド単位へ変換されて保存される(cardWidth依存のため値は正のグリッド量)。
   expect(col).toBeGreaterThan(0);
-  expect(row).toBeCloseTo(50 / (154 + 18), 5);
+  expect(row).toBeCloseTo(50 / (112 + 18), 5);
 });
 
 test("commits the active card coordinates when sessions reorder during a drag", async () => {
@@ -313,6 +418,7 @@ test("commits the active card coordinates when sessions reorder during a drag", 
   await act(async () => {
     gestureRegistry().Pan.onTouchesDown({ numberOfTouches: 1 });
     gestureRegistry().Pan.onBegin({ x: 30, y: 200 });
+    gestureRegistry().Pan.onStart();
     gestureRegistry().Pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 50 });
   });
 
@@ -328,5 +434,5 @@ test("commits the active card coordinates when sessions reorder during a drag", 
   const [cardId, col, row] = mockMoveBoardCard.mock.calls[0];
   expect(cardId).toBe("session:b");
   expect(col).toBeGreaterThan(0);
-  expect(row).toBeCloseTo(1 + 50 / (154 + 18), 5);
+  expect(row).toBeCloseTo(1 + 50 / (112 + 18), 5);
 });

@@ -82,7 +82,18 @@ BITTY_MAIN_REPO_ROOT=/absolute/path/to/main-repo \
   ./scripts/worktree/bootstrap-local.sh --repo-root /absolute/path/to/worktree --env --private-runner
 test -f /absolute/path/to/worktree/.env
 test -d /absolute/path/to/worktree/private_runner/node_modules
+(
+  cd /absolute/path/to/worktree
+  set -a
+  source private_runner/.env
+  set +a
+  test -s "${RUNNER_TOKEN_FILE:-private_runner/logs/runner-token}"
+)
 ```
+
+`--private-runner` はworktree側のRunner tokenファイルが無い、または空の場合だけ、
+main側の同じ相対パスからコピーする。既存のworktree側tokenは上書きしない。
+`RUNNER_TOKEN_FILE` が `private_runner/.env` にある場合は、その相対パスを使う。
 
 iOS実機ビルドを案内する前の確認：
 
@@ -94,7 +105,8 @@ test -d /absolute/path/to/worktree/expo/node_modules
 test -d /absolute/path/to/worktree/expo/ios/Bitty.xcworkspace
 ```
 
-* `private_runner/restart.sh` は、ローカル `.env` と `private_runner/node_modules` を準備する
+* `private_runner/restart-keep-token.sh` は、ローカル `.env`、`private_runner/node_modules`、
+  既存Runner tokenを準備し、クライアントとのペアリングを維持して再起動する
 * `scripts/ios/build-expo-ios-device.sh` は、ローカル `.env`、`expo/node_modules`、`expo/ios/Bitty.xcworkspace`、必要なPodsを準備する
 
 ローカル `.env` の値はログに表示しない。表示してよいのは、コピーした相対パスや初期化対象名だけにする。
@@ -114,13 +126,13 @@ worktree側の修正を確認する場合は、メインリポジトリ側では
 
 ```sh
 cd ${BITTY_WORKTREE_ROOT}/<branch-name>
-./private_runner/restart.sh --mode full
+./private_runner/restart-keep-token.sh --mode full
 ```
 
 チャット表示例：
 
 ```md
-サーバー再起動: [private_runner/restart.sh](/absolute/path/to/worktree/private_runner/restart.sh)
+サーバー再起動（Runner token維持）: [private_runner/restart-keep-token.sh](/absolute/path/to/worktree/private_runner/restart-keep-token.sh)
 ```
 
 iOS実機アプリで確認する場合：
@@ -886,7 +898,7 @@ worktreeを削除する前に、必ずメインリポジトリ側のサーバー
 
 ```sh
 cd /absolute/path/to/main
-./private_runner/restart.sh --mode full
+./private_runner/restart-keep-token.sh --mode full
 ```
 
 チャット表示例：
@@ -896,10 +908,10 @@ cd /absolute/path/to/main
 
 ```sh
 cd /absolute/path/to/main
-./private_runner/restart.sh --mode full
+./private_runner/restart-keep-token.sh --mode full
 ```
 
-メイン側サーバーへ切替: [private_runner/restart.sh](/absolute/path/to/main/private_runner/restart.sh)
+メイン側サーバーへ切替（Runner token維持）: [private_runner/restart-keep-token.sh](/absolute/path/to/main/private_runner/restart-keep-token.sh)
 ````
 
 最初に未保存変更がないことを確認する。

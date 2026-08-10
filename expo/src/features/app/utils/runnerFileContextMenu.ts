@@ -134,7 +134,7 @@ export async function startRunnerShellScript({
   };
 }
 
-type OpenRunnerFileContextMenuParams = {
+export type RunnerFileActionParams = {
   filePathRaw: unknown;
   fileNameRaw?: unknown;
   runnerUrl: string;
@@ -160,7 +160,91 @@ type OpenRunnerFileContextMenuParams = {
   };
 };
 
-export function openRunnerFileContextMenu({
+type RunnerFileOpenPresentation =
+  | { kind: RunnerMediaKind; buttonText: string }
+  | { kind: "viewer"; buttonText: string; viewerKind: RunnerFileViewerKind };
+
+function getRunnerFileOpenPresentation(
+  filePath: string,
+  canOpenViewer: boolean,
+): RunnerFileOpenPresentation | null {
+  const mediaKind = getRunnerMediaKind(filePath);
+  if (mediaKind) {
+    return {
+      kind: mediaKind,
+      buttonText: mediaKind === "video" ? "再生" : "表示",
+    };
+  }
+  const viewerKind = getRunnerFileViewerKind(filePath);
+  return canOpenViewer && viewerKind
+    ? { kind: "viewer", buttonText: "開く", viewerKind }
+    : null;
+}
+
+export function openRunnerFile(params: RunnerFileActionParams): boolean {
+  const filePath = normalizeRunnerPath(params.filePathRaw);
+  const fileName = String(params.fileNameRaw || "").trim()
+    || params.getPathLabel(filePath)
+    || filePath
+    || "file";
+  const presentation = getRunnerFileOpenPresentation(filePath, Boolean(params.onOpenFile));
+  if (!presentation) {
+    Alert.alert("開けません", `${fileName} に対応する表示方法がありません。`);
+    return false;
+  }
+  if (presentation.kind === "viewer") {
+    if (!params.onOpenFile) return false;
+    const location = getRunnerFileViewerLocation(filePath, params.rootDir);
+    params.onOpenFile({
+      kind: presentation.viewerKind,
+      path: location.path,
+      name: fileName,
+      rootDirectory: location.rootDirectory,
+    });
+    return true;
+  }
+
+  const currentItem = buildRunnerMediaItem({
+    runnerUrl: params.runnerUrl,
+    rootDir: params.rootDir,
+    path: filePath,
+    name: fileName,
+  });
+  const runnerToken = String(params.runnerToken || "").trim();
+  if (!currentItem || !runnerToken) {
+    Alert.alert("表示失敗", "Runner URL または Runner Token が未設定です。");
+    return false;
+  }
+  const items = normalizeRunnerMediaItems(params.mediaItems, currentItem);
+  const initialIndex = items.findIndex((item) => normalizeRunnerPath(item.path) === filePath);
+  params.onOpenMedia({
+    ...currentItem,
+    runnerToken,
+    items,
+    initialIndex: initialIndex >= 0 ? initialIndex : 0,
+    renameFile: params.onRenameFile,
+    openContextMenuForItem: (itemRaw, options) => {
+      const item = buildRunnerMediaItem({
+        runnerUrl: params.runnerUrl,
+        rootDir: params.rootDir,
+        path: itemRaw.path,
+        name: itemRaw.name,
+      });
+      if (!item) return;
+      openRunnerFileContextMenu({
+        ...params,
+        filePathRaw: item.path,
+        fileNameRaw: item.name,
+        onRequestRename: options?.onRequestRename ?? params.onRequestRename,
+        mediaItems: items,
+      });
+    },
+  });
+  return true;
+}
+
+export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
+  const {
   filePathRaw,
   fileNameRaw,
   runnerUrl,
@@ -170,23 +254,20 @@ export function openRunnerFileContextMenu({
   allowMutate = false,
   getPathLabel,
   showInfoToast,
-  onOpenMedia,
   onOpenFile,
   onSpeakText,
   onShellScriptStarted,
   onRequestRename,
   onRequestEdit,
   onRequestDelete,
-  onRenameFile,
-  mediaItems,
   skiaBoard,
-}: OpenRunnerFileContextMenuParams) {
+  } = params;
   const filePath = normalizeRunnerPath(filePathRaw);
   const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
   if (!filePath) return;
   const fileLocation = getRunnerFileViewerLocation(filePath, rootDir);
   const isShellScript = allowExecute && filePath.toLowerCase().endsWith(".sh");
-  const mediaKind = getRunnerMediaKind(filePath);
+  const openPresentation = getRunnerFileOpenPresentation(filePath, Boolean(onOpenFile));
   const copyPathAction = () => {
     void Clipboard.setStringAsync(filePath)
       .then(() => {
@@ -236,61 +317,6 @@ export function openRunnerFileContextMenu({
         const message = err instanceof Error ? err.message : String(err);
         Alert.alert("読み上げ失敗", message || "ファイル内容の取得に失敗しました。");
       });
-  };
-  const openMediaAction = () => {
-    const currentItem = buildRunnerMediaItem({
-      runnerUrl,
-      rootDir,
-      path: filePath,
-      name: fileName,
-    });
-    if (!currentItem || !String(runnerToken || "").trim()) {
-      Alert.alert("表示失敗", "Runner URL または Runner Token が未設定です。");
-      return;
-    }
-    const items = normalizeRunnerMediaItems(mediaItems, currentItem);
-    const initialIndex = items.findIndex((item) => normalizeRunnerPath(item.path) === filePath);
-    const openContextMenuForItem = (
-      itemRaw: RunnerMediaItem,
-      options?: RunnerMediaContextMenuOptions,
-    ) => {
-      const item = buildRunnerMediaItem({
-        runnerUrl,
-        rootDir,
-        path: itemRaw.path,
-        name: itemRaw.name,
-      });
-      if (!item) return;
-      openRunnerFileContextMenu({
-        filePathRaw: item.path,
-        fileNameRaw: item.name,
-        runnerUrl,
-        runnerToken,
-        rootDir,
-        allowExecute,
-        allowMutate,
-        getPathLabel,
-        showInfoToast,
-        onOpenMedia,
-        onOpenFile,
-        onSpeakText,
-        onShellScriptStarted,
-        onRequestRename: options?.onRequestRename ?? onRequestRename,
-        onRequestEdit,
-        onRequestDelete,
-        onRenameFile,
-        mediaItems: items,
-        skiaBoard,
-      });
-    };
-    onOpenMedia({
-      ...currentItem,
-      runnerToken: String(runnerToken || "").trim(),
-      items,
-      initialIndex: initialIndex >= 0 ? initialIndex : 0,
-      renameFile: onRenameFile,
-      openContextMenuForItem,
-    });
   };
   const executeAction = () => {
     const warning = getRunnerScriptExecutionWarning(filePath, rootDir);
@@ -361,23 +387,19 @@ export function openRunnerFileContextMenu({
       onPress: copyPathAction,
     },
   ];
-  if (mediaKind) {
+  if (openPresentation && openPresentation.kind !== "viewer") {
     buttons.push({
-      text: mediaKind === "video" ? "再生" : "表示",
-      onPress: openMediaAction,
+      text: openPresentation.buttonText,
+      onPress: () => {
+        openRunnerFile(params);
+      },
     });
   } else {
-    const viewerKind = getRunnerFileViewerKind(filePath);
-    if (onOpenFile && viewerKind) {
+    if (openPresentation) {
       buttons.push({
-        text: "開く",
+        text: openPresentation.buttonText,
         onPress: () => {
-          onOpenFile({
-            kind: viewerKind,
-            path: fileLocation.path,
-            name: fileName,
-            rootDirectory: fileLocation.rootDirectory,
-          });
+          openRunnerFile(params);
         },
       });
     }

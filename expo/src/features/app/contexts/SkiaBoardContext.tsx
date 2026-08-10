@@ -19,6 +19,8 @@ import {
   readPersistedSkiaBoardState,
   removeSkiaBoardFile,
   removeSkiaBoardSession,
+  setSkiaBoardCardTextScale,
+  SKIA_BOARD_DEFAULT_TEXT_SCALE,
   skiaBoardFileId,
   tidySkiaBoardCards,
   writePersistedSkiaBoardState,
@@ -37,7 +39,8 @@ type SkiaBoardContextValue = {
   markFileUnavailable: (rootDir: string, path: string) => void;
   hasFile: (rootDir: string, path: string) => boolean;
   moveCard: (cardId: string, col: number, row: number) => void;
-  tidyCards: () => void;
+  tidyCards: (visibleCardIds: readonly string[]) => void;
+  setCardTextScale: (scale: number) => void;
 };
 
 const SkiaBoardContext = createContext<SkiaBoardContextValue | null>(null);
@@ -100,6 +103,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
         cards: [],
         excludedSessionIds: [],
         ingestedUpdatedAtMs: 0,
+        cardTextScale: SKIA_BOARD_DEFAULT_TEXT_SCALE,
       };
       return update(initialized);
     });
@@ -123,8 +127,11 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const moveCard = useCallback((cardId: string, col: number, row: number) => {
     updateLoadedState((current) => moveSkiaBoardCard(current, cardId, col, row));
   }, [updateLoadedState]);
-  const tidyCards = useCallback(() => {
-    updateLoadedState(tidySkiaBoardCards);
+  const tidyCards = useCallback((visibleCardIds: readonly string[]) => {
+    updateLoadedState((current) => tidySkiaBoardCards(current, visibleCardIds));
+  }, [updateLoadedState]);
+  const setCardTextScale = useCallback((scale: number) => {
+    updateLoadedState((current) => setSkiaBoardCardTextScale(current, scale));
   }, [updateLoadedState]);
 
   const sessionIds = useMemo(() => new Set((state?.cards || []).flatMap((card) => (
@@ -151,6 +158,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     hasFile,
     moveCard,
     tidyCards,
+    setCardTextScale,
   }), [
     addFile,
     addSession,
@@ -162,6 +170,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     removeFile,
     removeSession,
     state,
+    setCardTextScale,
     tidyCards,
   ]);
 
