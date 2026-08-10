@@ -23,6 +23,7 @@ import {
   Text as SkiaText,
   type SkFont,
 } from "@shopify/react-native-skia";
+import { collectGraphemes } from "unicode-segmenter/grapheme";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
   runOnJS,
@@ -82,20 +83,92 @@ function gridFromCardPosition(x: number, y: number, cardWidth: number) {
   };
 }
 
-function fitText(text: string, font: SkFont, maxWidth: number) {
-  if (font.getTextWidth(text) <= maxWidth) return text;
-  const characters = Array.from(text);
-  let low = 0;
-  let high = characters.length;
+function fittingPrefixEnd(
+  characters: readonly string[],
+  start: number,
+  end: number,
+  font: SkFont,
+  maxWidth: number,
+  suffix = ""
+) {
+  let low = start;
+  let high = end;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (font.getTextWidth(`${characters.slice(0, middle).join("")}…`) <= maxWidth) {
+    if (font.getTextWidth(`${characters.slice(start, middle).join("")}${suffix}`) <= maxWidth) {
       low = middle;
     } else {
       high = middle - 1;
     }
   }
-  return `${characters.slice(0, low).join("")}…`;
+  return low;
+}
+
+function fitText(text: string, font: SkFont, maxWidth: number) {
+  if (font.getTextWidth(text) <= maxWidth) return text;
+  const characters = collectGraphemes(text);
+  const end = fittingPrefixEnd(characters, 0, characters.length, font, maxWidth, "…");
+  return `${characters.slice(0, end).join("")}…`;
+}
+
+function fittingSuffixStart(
+  characters: readonly string[],
+  start: number,
+  end: number,
+  font: SkFont,
+  maxWidth: number,
+  prefix = ""
+) {
+  let low = start;
+  let high = end;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (font.getTextWidth(`${prefix}${characters.slice(middle, end).join("")}`) <= maxWidth) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
+}
+
+export function fitTailTextLines(text: string, font: SkFont, maxWidth: number) {
+  const characters = collectGraphemes(text);
+  if (characters.length === 0) return [];
+  if (font.getTextWidth(text) <= maxWidth) return [text];
+
+  let firstLineEnd = fittingPrefixEnd(characters, 0, characters.length, font, maxWidth);
+  if (firstLineEnd === 0) firstLineEnd = 1;
+  if (firstLineEnd === characters.length) return [text];
+  const firstLine = characters.slice(0, firstLineEnd).join("");
+  const secondLine = characters.slice(firstLineEnd).join("");
+  if (font.getTextWidth(secondLine) <= maxWidth) {
+    return [
+      firstLine,
+      secondLine,
+    ];
+  }
+
+  let lastLineStart = fittingSuffixStart(
+    characters,
+    0,
+    characters.length,
+    font,
+    maxWidth
+  );
+  if (lastLineStart === characters.length) lastLineStart -= 1;
+  const firstLineStart = fittingSuffixStart(
+    characters,
+    0,
+    lastLineStart,
+    font,
+    maxWidth,
+    "…"
+  );
+  return [
+    `…${characters.slice(firstLineStart, lastLineStart).join("")}`,
+    characters.slice(lastLineStart).join(""),
+  ];
 }
 
 function markerColor(color: SkiaMiniChatSession["markerColor"]) {
@@ -164,6 +237,11 @@ function BoardCard({
     return [{ translateX: position.x }, { translateY: position.y }];
   });
   const contentWidth = cardWidth - 32;
+  const messageLines = item.kind === "session"
+    ? fitTailTextLines(item.lastMessageContent || "メッセージを読み込み中…", bodyFont, contentWidth)
+    : [];
+  const messageLineHeight = bodyFont.getSize() * 1.25;
+  const messageFirstBaseline = messageLines.length === 1 ? 69 : 69 - messageLineHeight / 2;
   const subagentText = item.kind !== "session"
     ? ""
     : item.subagentLoading
@@ -219,21 +297,28 @@ function BoardCard({
           font={titleFont}
           color="#172033"
         />
-        <SkiaText
-          x={16}
-          y={69}
-          text={fitText(
-            item.kind === "session"
-              ? item.lastMessageContent || "メッセージを読み込み中…"
-              : item.unavailable
-                ? "ファイルが削除または移動されました"
-                : item.path,
-            bodyFont,
-            contentWidth
-          )}
-          font={bodyFont}
-          color="#64748b"
-        />
+        {item.kind === "session" ? messageLines.map((line, index) => (
+          <SkiaText
+            key={index}
+            x={16}
+            y={messageFirstBaseline + index * messageLineHeight}
+            text={line}
+            font={bodyFont}
+            color="#64748b"
+          />
+        )) : (
+          <SkiaText
+            x={16}
+            y={69}
+            text={fitText(
+              item.unavailable ? "ファイルが削除または移動されました" : item.path,
+              bodyFont,
+              contentWidth
+            )}
+            font={bodyFont}
+            color="#64748b"
+          />
+        )}
         <Line p1={{ x: 16, y: 88 }} p2={{ x: cardWidth - 16, y: 88 }} color="#e2e8f0" strokeWidth={1} />
         <SkiaText
           x={16}

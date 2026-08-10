@@ -1,7 +1,7 @@
 import React from "react";
 import { Alert, StyleSheet } from "react-native";
 import { act, fireEvent, render } from "@testing-library/react-native";
-import { SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
+import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 
 // Skia Canvasはjest環境で描画できないため、レイアウトに影響しないスタブへ置換する。
 jest.mock("@shopify/react-native-skia", () => {
@@ -14,7 +14,7 @@ jest.mock("@shopify/react-native-skia", () => {
     accessibilityLabel: color,
   });
   const TextStub = ({ text }: { text: string }) =>
-    ReactModule.createElement(View, { testID: `skia-text:${text}` });
+    ReactModule.createElement(View, { testID: `skia-text:${text}`, accessibilityLabel: text });
   return {
     Canvas: Stub,
     Circle: Stub,
@@ -23,7 +23,10 @@ jest.mock("@shopify/react-native-skia", () => {
     Path: PathStub,
     RoundedRect: Stub,
     Text: TextStub,
-    matchFont: () => ({ getTextWidth: () => 10 }),
+    matchFont: () => ({
+      getTextWidth: (text: string) => Array.from(text).length * 5,
+      getSize: () => 9,
+    }),
   };
 });
 
@@ -167,6 +170,63 @@ function fireCardTap() {
   // カード0は col=0,row=0 → (18, 18) 起点なので (30, 30) のタップで命中する。
   gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, true);
 }
+
+test("keeps complete two-line text and truncates only its leading side", () => {
+  const font = {
+    getTextWidth: (text: string) => Array.from(text).length,
+  } as Parameters<typeof fitTailTextLines>[1];
+
+  expect(fitTailTextLines("おはよう", font, 5)).toEqual(["おはよう"]);
+  expect(fitTailTextLines("abcdefgh", font, 5)).toEqual(["abcde", "fgh"]);
+  expect(fitTailTextLines("abcdefghijkl", font, 5)).toEqual(["…defg", "hijkl"]);
+  expect(fitTailTextLines("abcdefghijkl", font, 6)).toEqual(["abcdef", "ghijkl"]);
+  expect(fitTailTextLines("", font, 5)).toEqual([]);
+  expect(fitTailTextLines("a", font, 0)).toEqual(["a"]);
+  expect(fitTailTextLines("abc", font, 0)).toEqual(["…", "c"]);
+  expect(fitTailTextLines("xe\u0301yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x❤️yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x👨‍👩‍👧‍👦yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x👍🏽yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x🇯🇵yz", font, 2)).toEqual(["…", "yz"]);
+});
+
+test("finds the visible suffix without measuring every character candidate", () => {
+  let measurementCount = 0;
+  const font = {
+    getTextWidth: (text: string) => {
+      measurementCount += 1;
+      return Array.from(text).length;
+    },
+  } as Parameters<typeof fitTailTextLines>[1];
+
+  expect(fitTailTextLines(`${"a".repeat(10_000)}tail`, font, 10)).toEqual([
+    "…aaaaaaaaa",
+    "aaaaaatail",
+  ]);
+  expect(measurementCount).toBeLessThan(100);
+});
+
+test("keeps the latest message tail visible as streaming content grows", async () => {
+  mockSessions = [{
+    ...mockDefaultSession,
+    lastMessageContent: `${"older ".repeat(100)}FIRST_TAIL`,
+  }];
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  expect(screen.getByLabelText(/^…/)).toBeTruthy();
+  expect(screen.getByLabelText(/FIRST_TAIL$/)).toBeTruthy();
+
+  mockSessions = [{
+    ...mockDefaultSession,
+    lastMessageContent: `${"older ".repeat(100)}FIRST_TAIL SECOND_TAIL`,
+  }];
+  await act(async () => {
+    screen.rerender(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  });
+
+  expect(screen.queryByLabelText(/FIRST_TAIL$/)).toBeNull();
+  expect(screen.getByLabelText(/SECOND_TAIL$/)).toBeTruthy();
+});
 
 test("opens the tapped card session via the shared session history popup", async () => {
   const openSessionHistoryPopup = jest.fn();
