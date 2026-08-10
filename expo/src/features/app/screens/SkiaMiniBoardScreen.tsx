@@ -23,6 +23,7 @@ import {
   Text as SkiaText,
   type SkFont,
 } from "@shopify/react-native-skia";
+import { collectGraphemes } from "unicode-segmenter/grapheme";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
   runOnJS,
@@ -105,7 +106,7 @@ function fittingPrefixEnd(
 
 function fitText(text: string, font: SkFont, maxWidth: number) {
   if (font.getTextWidth(text) <= maxWidth) return text;
-  const characters = Array.from(text);
+  const characters = collectGraphemes(text);
   const end = fittingPrefixEnd(characters, 0, characters.length, font, maxWidth, "…");
   return `${characters.slice(0, end).join("")}…`;
 }
@@ -132,7 +133,7 @@ function fittingSuffixStart(
 }
 
 export function fitTailTextLines(text: string, font: SkFont, maxWidth: number) {
-  const characters = Array.from(text);
+  const characters = collectGraphemes(text);
   if (characters.length === 0) return [];
   if (font.getTextWidth(text) <= maxWidth) return [text];
 

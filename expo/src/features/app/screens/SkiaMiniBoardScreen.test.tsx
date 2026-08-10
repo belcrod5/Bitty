@@ -183,6 +183,11 @@ test("keeps complete two-line text and truncates only its leading side", () => {
   expect(fitTailTextLines("", font, 5)).toEqual([]);
   expect(fitTailTextLines("a", font, 0)).toEqual(["a"]);
   expect(fitTailTextLines("abc", font, 0)).toEqual(["…", "c"]);
+  expect(fitTailTextLines("xe\u0301yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x❤️yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x👨‍👩‍👧‍👦yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x👍🏽yz", font, 2)).toEqual(["…", "yz"]);
+  expect(fitTailTextLines("x🇯🇵yz", font, 2)).toEqual(["…", "yz"]);
 });
 
 test("finds the visible suffix without measuring every character candidate", () => {
