@@ -30,6 +30,11 @@ describe("normalizeThreadListEntry", () => {
       sourceKind: "subAgentThreadSpawn",
     });
   });
+
+  it("keeps list status for aggregate running counts", () => {
+    expect(normalizeThreadListEntry({ id: "running", status: "active" })?.threadStatusType).toBe("active");
+    expect(normalizeThreadListEntry({ id: "done", thread: { status: "idle" } })?.threadStatusType).toBe("idle");
+  });
 });
 
 describe("takeResolvedApprovalRequest", () => {

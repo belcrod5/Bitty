@@ -32,3 +32,23 @@ it("builds an immutable panel snapshot while preserving optional scroll state", 
   expect(snapshot.conversationMessages).not.toBe(base.conversationMessages);
   expect(snapshot.conversationMessages[0]?.ttsWaveform).not.toBe(base.conversationMessages[0]?.ttsWaveform);
 });
+
+it("projects shared runtime status independently from conversation message content", () => {
+  const snapshot = buildPanelRuntimeSnapshot({
+    panelId: "panel-1",
+    base,
+    patch: {
+      isResponding: true,
+      runtimeStatus: "tool_running",
+      runtimeStatusDetail: "tool start: file_edit",
+      runtimeActivityTrail: ["thinking", "writing"],
+    },
+    isCompactRunning: () => false,
+  });
+
+  expect(snapshot.runtimeStatus).toBe("tool_running");
+  expect(snapshot.runtimeStatusDetail).toBe("tool start: file_edit");
+  expect(snapshot.runtimeActivityTrail).toEqual(["thinking", "writing"]);
+  expect(snapshot.runtimeActivityTrail).not.toBe(base.runtimeActivityTrail);
+  expect(snapshot.conversationMessages).toHaveLength(1);
+});

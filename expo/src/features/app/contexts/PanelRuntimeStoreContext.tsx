@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { ConversationMessage } from "../types/appTypes";
+import type { SessionActivity } from "../utils/statusIcons";
 
 export type PanelRuntimeMarkerColor = "none" | "gray" | "red" | "yellow" | "green" | "black";
 
@@ -16,6 +17,9 @@ export type PanelRuntimeSnapshot = {
   reasoningEffort: string;
   contextUsedPct: number | null;
   isResponding: boolean;
+  runtimeStatus?: string;
+  runtimeStatusDetail?: string;
+  runtimeActivityTrail?: SessionActivity[];
   isHydrating?: boolean;
   requestStartedAtMs?: number;
   inheritedConversationMessages: ConversationMessage[];

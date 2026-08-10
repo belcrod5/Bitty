@@ -9,13 +9,20 @@ jest.mock("@shopify/react-native-skia", () => {
   const { View } = require("react-native");
   const Stub = ({ children }: { children?: React.ReactNode }) =>
     ReactModule.createElement(View, null, children);
+  const PathStub = ({ color }: { color: string }) => ReactModule.createElement(View, {
+    testID: "skia-icon-path",
+    accessibilityLabel: color,
+  });
+  const TextStub = ({ text }: { text: string }) =>
+    ReactModule.createElement(View, { testID: `skia-text:${text}` });
   return {
     Canvas: Stub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
+    Path: PathStub,
     RoundedRect: Stub,
-    Text: Stub,
+    Text: TextStub,
     matchFont: () => ({ getTextWidth: () => 10 }),
   };
 });
@@ -109,6 +116,14 @@ const mockDefaultSession = {
   lastMessageContent: "hello",
   updatedAtLabel: "1分前",
   markerColor: "none",
+  unread: false,
+  activityTrail: [] as Array<{
+    kind: "reading" | "writing" | "thinking" | "web";
+    active: boolean;
+  }>,
+  subagentLoading: false,
+  subagentRunningCount: 0,
+  subagentTotalCount: 0,
   col: 0,
   row: 0,
 };
@@ -321,6 +336,36 @@ test("keeps the canvas full bleed while the status pill observes the bottom safe
   expect(StyleSheet.flatten(screen.getByTestId("skia-board-status-pill").props.style)).toMatchObject({
     marginBottom: 14,
   });
+});
+
+test("renders the four retained vector activities and an ASCII subagent count", async () => {
+  mockSessions = [{
+    ...mockDefaultSession,
+    unread: false,
+    activityTrail: [
+      { kind: "reading", active: false },
+      { kind: "writing", active: false },
+      { kind: "web", active: false },
+      { kind: "thinking", active: true },
+    ],
+    subagentLoading: false,
+    subagentRunningCount: 1,
+    subagentTotalCount: 2,
+  }];
+
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  const icons = screen.getAllByTestId("skia-icon-path");
+  expect(icons).toHaveLength(5);
+  expect(icons.map((icon) => icon.props.accessibilityLabel)).toEqual([
+    "#94a3b8",
+    "#94a3b8",
+    "#94a3b8",
+    "#f97316",
+    "#64748b",
+  ]);
+  expect(screen.getByTestId("skia-text:1/2")).toBeTruthy();
+  expect(screen.queryByTestId("skia-text:× 1/2")).toBeNull();
 });
 
 test("shows a moved-or-deleted message instead of file actions for an unavailable card", async () => {

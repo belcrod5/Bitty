@@ -70,6 +70,14 @@ export function buildPanelRuntimeSnapshot(params: {
       Array.isArray(patch.conversationMessages) ? patch.conversationMessages : base.conversationMessages
     ),
   };
+  const runtimeStatus = String(patch.runtimeStatus ?? base.runtimeStatus ?? "").trim();
+  const runtimeStatusDetail = String(patch.runtimeStatusDetail ?? base.runtimeStatusDetail ?? "").trim();
+  const runtimeActivityTrail = Array.isArray(patch.runtimeActivityTrail)
+    ? patch.runtimeActivityTrail
+    : base.runtimeActivityTrail;
+  if (runtimeStatus) snapshot.runtimeStatus = runtimeStatus;
+  if (runtimeStatusDetail) snapshot.runtimeStatusDetail = runtimeStatusDetail;
+  if (runtimeActivityTrail) snapshot.runtimeActivityTrail = [...runtimeActivityTrail];
   const requestStartedAtMs = Number(patch.requestStartedAtMs ?? base.requestStartedAtMs ?? 0);
   if (snapshot.isResponding && Number.isFinite(requestStartedAtMs) && requestStartedAtMs > 0) {
     snapshot.requestStartedAtMs = requestStartedAtMs;

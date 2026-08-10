@@ -15,6 +15,8 @@ import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerCon
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import type { LlmSessionSource } from "./useLlmSessionExplorer";
+import { isLlmSessionUnread } from "../utils/llmSession";
+import type { SessionActivity } from "../utils/statusIcons";
 
 // パネルIDはセッションごとに固定(インデックス割当だと並び替えで担当が入れ替わり、
 // 全パネルの再hydrateを誘発するため)。
@@ -33,6 +35,11 @@ export type SkiaMiniChatSession = {
   directoryName: string;
   lastMessageContent: string;
   updatedAtLabel: string;
+  unread: boolean;
+  activityTrail: Array<{ kind: SessionActivity; active: boolean }>;
+  subagentLoading: boolean;
+  subagentRunningCount: number;
+  subagentTotalCount: number;
   markerColor: DirectoryMarkerColor;
   col: number;
   row: number;
@@ -71,6 +78,7 @@ export function useSkiaMiniChatSessions() {
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     ensureRegisteredDirectorySessions,
+    loadSessionChildrenBatch,
   } = useConversation();
   const { getSnapshot } = usePanelRuntimeStore();
   const { clearPanelSnapshot, hydratePanelFromSessionHistory } = usePanelRuntimeController();
@@ -133,6 +141,25 @@ export function useSkiaMiniChatSessions() {
       return candidate ? [{ card, candidate, panelId: skiaMiniChatPanelId(card.sessionId) }] : [];
     });
   }, [boardState, sessionCandidates]);
+
+  const childStateByParentId = useMemo(() => new Map(
+    Object.values(directorySessionsById).flatMap((state) => (
+      Object.entries(state.childrenByParentId)
+    ))
+  ), [directorySessionsById]);
+
+  useEffect(() => {
+    const parentIdsByDirectory = new Map<string, string[]>();
+    for (const { candidate } of assignedSessions) {
+      if (childStateByParentId.has(candidate.sessionId)) continue;
+      const parentIds = parentIdsByDirectory.get(candidate.directory) || [];
+      parentIds.push(candidate.sessionId);
+      parentIdsByDirectory.set(candidate.directory, parentIds);
+    }
+    for (const [directory, parentIds] of parentIdsByDirectory) {
+      void loadSessionChildrenBatch(parentIds, directory);
+    }
+  }, [assignedSessions, childStateByParentId, loadSessionChildrenBatch]);
 
   useEffect(() => {
     const generation = hydrationGenerationRef.current + 1;
@@ -210,6 +237,8 @@ export function useSkiaMiniChatSessions() {
         ? snapshot.conversationMessages
         : [];
       const lastMessage = messages[messages.length - 1];
+      const childState = childStateByParentId.get(candidate.sessionId);
+      const runtimeActivityTrail = snapshot.runtimeActivityTrail || [];
       return {
         kind: "session",
         cardId: skiaBoardCardId(card),
@@ -228,6 +257,16 @@ export function useSkiaMiniChatSessions() {
           ? String(lastMessage?.content || "メッセージなし").replace(/\s+/g, " ").trim()
           : "",
         updatedAtLabel: formatSkiaMiniChatUpdatedAt(candidate.updatedAt, nowMs),
+        unread: isLlmSessionUnread(candidate),
+        activityTrail: runtimeActivityTrail.map((kind, index) => ({
+          kind,
+          active: snapshot.isResponding && index === runtimeActivityTrail.length - 1,
+        })),
+        subagentLoading: !childState?.loaded,
+        subagentRunningCount: (childState?.entries || []).filter(
+          (entry) => entry.threadStatusType === "active"
+        ).length,
+        subagentTotalCount: childState?.entries.length || 0,
         markerColor: sessionMarkerColorsById[candidate.sessionId] || "none",
         col: card.col,
         row: card.row,
@@ -235,6 +274,7 @@ export function useSkiaMiniChatSessions() {
     })
   ), [
     assignedSessions,
+    childStateByParentId,
     getSnapshot,
     nowMs,
     sessionMarkerColorsById,

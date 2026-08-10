@@ -130,6 +130,7 @@ function createHarness() {
     uploadCodexWsPreflightLog: jest.fn(async () => "ok"),
     trimForInline: (value: string) => value,
     reportError: jest.fn(),
+    onSessionStreamBoundary: jest.fn(),
   };
 
   return {
@@ -262,6 +263,68 @@ beforeEach(() => {
 });
 
 describe("useCodexReplyRequest onAgentMessageCompleted", () => {
+  test("reports item completion as a non-delta session boundary", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+
+    await act(async () => {
+      harness.getTurnOptions().onThreadIdResolved("thread-1");
+      harness.getTurnOptions().onEvent("item/completed", { item: { type: "agentMessage" } });
+    });
+
+    expect(harness.options.onSessionStreamBoundary).toHaveBeenCalledWith("thread-1");
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
+      await sendPromise;
+    });
+  });
+
+  test("projects real Codex item starts into the shared runtime status", async () => {
+    const harness = createHarness();
+    const updateConversationRuntimeRequest = jest.fn();
+    (harness.options as any).updateConversationRuntimeRequest = updateConversationRuntimeRequest;
+    const { sendPromise } = await startRequest(harness);
+
+    const cases = [
+      [{ type: "commandExecution", commandActions: [{ type: "read", command: "cat README" }] }, "tool start: read_file"],
+      [{ type: "fileChange", changes: [] }, "tool start: file_edit"],
+      [{ type: "webSearch", query: "latest news" }, "tool start: web_search"],
+      [{ type: "dynamicToolCall", toolName: "brave_search", arguments: { query: "latest news" } }, "tool start: brave_search"],
+    ] as const;
+    await act(async () => {
+      harness.getTurnOptions().onThreadIdResolved("thread-1");
+      for (const [item] of cases) {
+        harness.getTurnOptions().onEvent("item/started", { item });
+      }
+    });
+
+    for (const [, statusDetail] of cases) {
+      expect(updateConversationRuntimeRequest).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "thread-1",
+        lifecycle: "active",
+        status: "tool_running",
+        statusDetail,
+      }));
+    }
+    expect(harness.writeCalls[harness.writeCalls.length - 1]?.options).toMatchObject({ isResponding: true });
+
+    await act(async () => {
+      harness.getTurnOptions().onEvent("item/completed", {
+        item: { type: "webSearch", query: "latest news" },
+      });
+    });
+    expect(updateConversationRuntimeRequest).toHaveBeenLastCalledWith(expect.objectContaining({
+      lifecycle: "active",
+      status: "model_processing",
+      statusDetail: "webSearch completed",
+    }));
+
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
+      await sendPromise;
+    });
+  });
+
   test("settles the agentMessage bubble as completed while the turn keeps running", async () => {
     const harness = createHarness();
     const { sendPromise } = await startRequest(harness);
@@ -655,7 +718,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
   test("queued-during-compact send ignores the watermark when the session is waiting on approval", async () => {
     const { options } = createOptions();
     (options as { transcript: string }).transcript = "queued while waiting approval";
-    const startCodexRelayObserverForSession = jest.fn(() => true);
+    const startCodexRelayObserverForSession = jest.fn((_threadId: string, _options?: Record<string, unknown>) => true);
     (options as any).startCodexRelayObserverForSession = startCodexRelayObserverForSession;
     // 承認待ち中: pending approvalはseq≦watermarkだとサーバーが再送しないため、
     // queue経路のobserverもwatermarkを使わずreplayさせる必要がある。
@@ -691,8 +754,10 @@ describe("useCodexReplyRequest send acceptance contract", () => {
   test("queued-during-compact send keeps the watermark when the session is not waiting on approval", async () => {
     const { options } = createOptions();
     (options as { transcript: string }).transcript = "queued message";
-    const startCodexRelayObserverForSession = jest.fn(() => true);
+    const startCodexRelayObserverForSession = jest.fn((_threadId: string, _options?: Record<string, unknown>) => true);
+    const updateConversationRuntimeRequest = jest.fn();
     (options as any).startCodexRelayObserverForSession = startCodexRelayObserverForSession;
+    (options as any).updateConversationRuntimeRequest = updateConversationRuntimeRequest;
     (options as any).getSessionRuntimeStatus = jest.fn(() => ({
       hasRunningTurn: true,
       hasPendingAssistant: false,
@@ -720,6 +785,18 @@ describe("useCodexReplyRequest send acceptance contract", () => {
         ignoreWatermark: false,
       })
     );
+    const runtimeRequest = updateConversationRuntimeRequest.mock.calls[0]?.[0];
+    const relayOptions = startCodexRelayObserverForSession.mock.calls[0]?.[1];
+    expect(runtimeRequest).toMatchObject({
+      requestId: expect.stringMatching(/^reply-/),
+      requestSeq: 1,
+      sessionId: "thread-1",
+      sourcePanelId: "panel-1",
+      lifecycle: "active",
+      status: "model_processing",
+      statusDetail: "queued after compact",
+    });
+    expect(runtimeRequest.startedAtMs).toBe(relayOptions?.startedAtMs);
   });
 
   test("gate-blocked send keeps the composer and reports the rejection", async () => {

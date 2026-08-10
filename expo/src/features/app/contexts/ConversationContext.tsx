@@ -61,6 +61,10 @@ export type ConversationContextValue = {
     sessionId: string,
     directory: string
   ) => Promise<void>;
+  loadSessionChildrenBatch: (
+    sessionIds: string[],
+    directory: string
+  ) => Promise<void>;
   openSessionHistoryEntry: (params: {
     sessionId: string;
     source: LlmSessionSource;

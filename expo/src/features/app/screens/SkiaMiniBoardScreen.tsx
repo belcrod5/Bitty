@@ -18,6 +18,7 @@ import {
   Group,
   Line,
   matchFont,
+  Path,
   RoundedRect,
   Text as SkiaText,
   type SkFont,
@@ -106,6 +107,39 @@ function markerColor(color: SkiaMiniChatSession["markerColor"]) {
   return "#cbd5e1";
 }
 
+type BoardFooterIconKind = SkiaMiniChatSession["activityTrail"][number]["kind"] | "subagent";
+
+const BOARD_FOOTER_ICON_PATHS: Record<BoardFooterIconKind, string> = {
+  reading: "M0.8 1.5C2.6 1.5 4.1 2 5.5 3.1C6.9 2 8.4 1.5 10.2 1.5V9.4C8.4 9.4 6.9 9.8 5.5 10.6C4.1 9.8 2.6 9.4 0.8 9.4ZM5.5 3.1V10.6",
+  writing: "M1 10L1.8 7.2L7.8 1.2L10.3 3.7L4.3 9.7ZM7.1 1.9L9.6 4.4M1.8 7.2L4.3 9.7",
+  thinking: "M3.4 7.2C1.2 5.4 2.3 1.5 5.5 1.5S9.8 5.4 7.6 7.2C7.1 7.6 7 8 7 8.5H4C4 8 3.9 7.6 3.4 7.2ZM4 10.5H7M5.5 0V0.4M1 2L1.8 2.7M10 2L9.2 2.7",
+  web: "M5.5 0.8A4.7 4.7 0 1 0 5.5 10.2A4.7 4.7 0 1 0 5.5 0.8ZM0.8 5.5H10.2M5.5 0.8C3.5 2.8 3.5 8.2 5.5 10.2M5.5 0.8C7.5 2.8 7.5 8.2 5.5 10.2",
+  subagent: "M5.5 1A2.1 2.1 0 1 0 5.5 5.2A2.1 2.1 0 1 0 5.5 1ZM1.2 10.5C1.5 7.7 3 6.4 5.5 6.4S9.5 7.7 9.8 10.5",
+};
+
+function BoardFooterIcon({
+  kind,
+  x,
+  color,
+}: {
+  kind: BoardFooterIconKind;
+  x: number;
+  color: string;
+}) {
+  return (
+    <Group transform={[{ translateX: x }, { translateY: 90.5 }]}>
+      <Path
+        path={BOARD_FOOTER_ICON_PATHS[kind]}
+        color={color}
+        style="stroke"
+        strokeWidth={1.2}
+        strokeCap="round"
+        strokeJoin="round"
+      />
+    </Group>
+  );
+}
+
 type BoardCardProps = {
   cardWidth: number;
   index: number;
@@ -130,6 +164,16 @@ function BoardCard({
     return [{ translateX: position.x }, { translateY: position.y }];
   });
   const contentWidth = cardWidth - 32;
+  const subagentText = item.kind !== "session"
+    ? ""
+    : item.subagentLoading
+      ? "..."
+      : `${item.subagentRunningCount}/${item.subagentTotalCount}`;
+  const subagentTextWidth = subagentText ? bodyFont.getTextWidth(subagentText) : 0;
+  const subagentIconX = cardWidth - 30 - subagentTextWidth;
+  const footerRightStart = item.kind === "session"
+    ? subagentIconX - (item.activityTrail.length > 0 ? item.activityTrail.length * 15 + 8 : 8)
+    : cardWidth - 16;
 
   return (
     <Group transform={transform}>
@@ -145,6 +189,9 @@ function BoardCard({
         style="stroke"
         strokeWidth={selected ? 2.5 : 1}
       />
+      {item.kind === "session" && item.unread ? (
+        <Circle cx={cardWidth - 12} cy={12} r={4} color="#2563eb" />
+      ) : null}
       <Group clip={{ x: 10, y: 8, width: cardWidth - 20, height: CARD_HEIGHT - 16 }}>
         <Circle
           cx={18}
@@ -191,10 +238,38 @@ function BoardCard({
         <SkiaText
           x={16}
           y={100}
-          text={item.kind === "session" ? item.updatedAtLabel : item.unavailable ? "FILE NOT FOUND" : "FILE"}
+          text={fitText(
+            item.kind === "session" ? item.updatedAtLabel : item.unavailable ? "FILE NOT FOUND" : "FILE",
+            bodyFont,
+            Math.max(20, footerRightStart - 24)
+          )}
           font={bodyFont}
           color="#64748b"
         />
+        {item.kind === "session" ? item.activityTrail.map((activity, index) => (
+          <BoardFooterIcon
+            key={`${activity.kind}:${index}`}
+            kind={activity.kind}
+            x={footerRightStart + index * 15}
+            color={activity.active ? "#f97316" : "#94a3b8"}
+          />
+        )) : null}
+        {item.kind === "session" ? (
+          <>
+            <BoardFooterIcon
+              kind="subagent"
+              x={subagentIconX}
+              color="#64748b"
+            />
+            <SkiaText
+              x={cardWidth - 16 - subagentTextWidth}
+              y={100}
+              text={subagentText}
+              font={bodyFont}
+              color="#64748b"
+            />
+          </>
+        ) : null}
       </Group>
     </Group>
   );

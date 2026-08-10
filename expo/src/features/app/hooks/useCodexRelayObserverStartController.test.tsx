@@ -71,6 +71,9 @@ function createHarness(initialConversation: ConversationMessage[]) {
     onAssistantTurnCompleted: (params: { messageId: string; text: string }) => {
       completedCalls.push({ messageId: params.messageId, text: params.text });
     },
+    onRuntimeStatus: jest.fn(),
+    ensureRuntimeRequestForRelay: jest.fn(),
+    onSessionStreamBoundary: jest.fn(),
   };
 
   return {
@@ -112,6 +115,74 @@ describe("useCodexRelayObserverStartController relay loss recovery", () => {
       expect.any(String)
     );
     expect(harness.options.clearCodexRelayObserverForMiss).toHaveBeenCalledWith("thread-1", "/workspace");
+  });
+
+  test("reports replayed item completion as a non-delta session boundary", async () => {
+    const harness = await startObserver("session_restored_running_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onEvent("item/completed", { item: { type: "agentMessage" } });
+    });
+
+    expect(harness.options.onSessionStreamBoundary).toHaveBeenCalledWith("thread-1");
+  });
+
+  test("projects replayed real Codex item starts into the shared runtime status", async () => {
+    const harness = await startObserver("session_restored_running_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onEvent("item/started", {
+        item: { type: "webSearch", query: "latest news" },
+      });
+    });
+
+    expect(harness.options.onRuntimeStatus).toHaveBeenCalledWith(
+      "thread-1",
+      "tool_running",
+      "tool start: web_search"
+    );
+
+    await act(async () => {
+      harness.getObserverOptions().onEvent("item/started", {
+        item: { type: "dynamicToolCall", toolName: "brave_search", arguments: { query: "latest news" } },
+      });
+    });
+    expect(harness.options.onRuntimeStatus).toHaveBeenLastCalledWith(
+      "thread-1",
+      "tool_running",
+      "tool start: brave_search"
+    );
+
+    await act(async () => {
+      harness.getObserverOptions().onEvent("item/completed", {
+        item: { type: "webSearch", query: "latest news" },
+      });
+    });
+    expect(harness.options.onRuntimeStatus).toHaveBeenLastCalledWith(
+      "thread-1",
+      "model_processing",
+      "webSearch completed"
+    );
+  });
+
+  test("registers restored running turns at the relay attachment boundary", async () => {
+    const harness = createHarness([]);
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: 1234,
+      });
+    });
+
+    expect(harness.options.ensureRuntimeRequestForRelay).toHaveBeenCalledWith({
+      sessionId: "thread-1",
+      sourcePanelId: undefined,
+      startedAtMs: 1234,
+      reason: "session_restored_running_turn",
+    });
   });
 
   test("relay_closed on a session runtime observer routes into the same recovery and closes the observer", async () => {
@@ -402,6 +473,28 @@ describe("useCodexRelayObserverStartController relay watermark", () => {
 });
 
 describe("useCodexRelayObserverStartController message ids", () => {
+  test("returns shared runtime to thinking after an intermediate agent message completes", async () => {
+    const harness = createHarness([]);
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+      harness.getObserverOptions().onAgentMessageCompleted("intermediate answer", { itemId: "msg_aaa" });
+    });
+
+    expect(harness.options.onRuntimeStatus).toHaveBeenLastCalledWith(
+      "thread-1",
+      "model_processing",
+      "agent message completed"
+    );
+    expect(harness.getSessionConversation()).toEqual([
+      expect.objectContaining({ content: "intermediate answer", llmStatus: "model_generating" }),
+    ]);
+  });
+
   test("multi-item turns keep a thread/read-compatible TTS target across rehydration", async () => {
     const threadId = "thread-1";
     // 走行中ターンの復元直後: thread/read由来の安定IDを持つ会話が表示されている。

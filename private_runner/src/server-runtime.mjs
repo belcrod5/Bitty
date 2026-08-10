@@ -11342,7 +11342,7 @@ async function sendApprovalRequestPush(relay, rpcId, method, params) {
 }
 
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
-  if (!payload?.threadId || !payload?.previewText) return false;
+  if (!payload?.threadId) return false;
   if (typeof runnerWsActiveClients === "undefined") return false;
   let sent = 0;
   for (const client of Array.from(runnerWsActiveClients)) {

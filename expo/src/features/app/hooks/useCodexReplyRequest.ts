@@ -14,6 +14,7 @@ import type { CalendarToolResult } from "../../calendar/calendarToolSpecs";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
+import { resolveCodexItemRuntimeStatus } from "../utils/statusIcons";
 import { settleRunningCommandExecution } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
@@ -152,6 +153,7 @@ type UseCodexReplyRequestOptions<
   reportError: (raw: unknown, scope?: string) => void;
   updateConversationRuntimeRequest?: (input: ConversationRuntimeRequestSnapshotInput) => void;
   onLlmMessageCompleted?: (completion: LlmMessageCompletion) => void | Promise<void>;
+  onSessionStreamBoundary?: (sessionId: string) => void | Promise<void>;
   startCodexRelayObserverForSession?: (
     threadIdRaw: unknown,
     options?: {
@@ -575,6 +577,7 @@ export function useCodexReplyRequest<
     if (clearInput) {
       current.setTranscript("");
     }
+    let replyRequestStartedAt = Date.now();
     if (requestThreadKey) {
       try {
         const queued = await enqueueRunnerCodexTurn({
@@ -629,9 +632,22 @@ export function useCodexReplyRequest<
             selectedThreadStatusType: "active",
             sessionId: requestThreadKey,
           });
+          current.updateConversationRuntimeRequest?.({
+            requestId: requestTraceId,
+            requestSeq,
+            sessionId: requestThreadKey,
+            sourcePanelId: requestPanelId,
+            threadId: requestThreadKey,
+            lifecycle: "active",
+            status: "model_processing",
+            statusDetail: "queued after compact",
+            startedAtMs: replyRequestStartedAt,
+            updatedAtMs: Date.now(),
+            completedAtMs: null,
+          });
           current.startCodexRelayObserverForSession?.(requestThreadKey, {
             directory: requestDirectory || undefined,
-            startedAtMs: Date.now(),
+            startedAtMs: replyRequestStartedAt,
             reason: "codex_queue_turn",
             panelId: requestPanelId,
             // 承認待ち中のqueue: pending approvalはseq≦watermarkだとサーバーが
@@ -665,6 +681,8 @@ export function useCodexReplyRequest<
         }, { throttleMs: 0 });
       }
     }
+    // compact queue probing time is not part of a directly dispatched turn.
+    replyRequestStartedAt = Date.now();
     const getConversationMessagesForPanel = (panelId: string): TMessage[] => {
       const normalizedPanelId = normalizePanelId(panelId);
       if (typeof current.getPanelConversationMessages === "function") {
@@ -707,7 +725,6 @@ export function useCodexReplyRequest<
       }
       return state.cancelledRequestSeq === requestSeq;
     };
-    const replyRequestStartedAt = Date.now();
     let finalUiSettled = false;
     let trackedThreadId = requestThreadId || requestUiSessionId;
     const panelStreamingAssistantMessageId = `assistant-stream-${requestTraceId}`;
@@ -1209,6 +1226,12 @@ export function useCodexReplyRequest<
           }
           if (!method) return;
           if (!isActiveRequest() || isCancelledRequest()) return;
+          if (method === "item/completed") {
+            const boundarySessionId = String(
+              trackedThreadId || requestThreadId || requestUiSessionId || ""
+            ).trim();
+            if (boundarySessionId) void current.onSessionStreamBoundary?.(boundarySessionId);
+          }
           if (trackedThreadId) {
             const inFlightState = inFlightByThreadRef.current[trackedThreadId];
             if (inFlightState && inFlightState.requestSeq === requestSeq) {
@@ -1230,7 +1253,16 @@ export function useCodexReplyRequest<
               status: payload.status ?? (payload as any)?.thread?.status,
             })
             : null;
+          const itemRuntimeStatus = method === "item/started" || method === "item/completed"
+            ? resolveCodexItemRuntimeStatus(
+              (payload as any)?.item,
+              method === "item/started" ? "started" : "completed"
+            )
+            : null;
           const nextPanelStatus = (() => {
+            if (itemRuntimeStatus) {
+              return { ...itemRuntimeStatus, threadStatusType: "active" };
+            }
             if (method === "thread/status/changed") {
               if (threadStatus?.sessionState === "waiting_on_approval") {
                 return {
@@ -1271,6 +1303,14 @@ export function useCodexReplyRequest<
               sessionId: String(trackedThreadId || requestThreadId || requestUiSessionId || "").trim(),
             };
             if (hasLiveAgentMessages()) {
+              setConversationMessagesForPanel(
+                requestPanelId,
+                panelConversationDraft.length > 0
+                  ? panelConversationDraft
+                  : getConversationMessagesForPanel(requestPanelId),
+                buildPanelConversationWriteOptions(writeOptions)
+              );
+            } else if (!nextPanelReply) {
               setConversationMessagesForPanel(
                 requestPanelId,
                 panelConversationDraft.length > 0
