@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
@@ -7,7 +7,10 @@ import {
   decidePanelHydration,
   type PanelHydrationRequestMark,
 } from "../utils/panelAssignmentHydration";
-import { skiaBoardCardId } from "../utils/skiaBoardState";
+import {
+  SKIA_BOARD_DEFAULT_TEXT_SCALE,
+  skiaBoardCardId,
+} from "../utils/skiaBoardState";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
@@ -78,7 +81,8 @@ export function useSkiaMiniChatSessions() {
     removeFile: removeBoardFile,
     hasFile: hasBoardFile,
     markFileUnavailable: markBoardFileUnavailable,
-    tidyCards: tidyBoard,
+    tidyCards,
+    setCardTextScale: setBoardCardTextScale,
   } = useSkiaBoard();
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
@@ -253,6 +257,9 @@ export function useSkiaMiniChatSessions() {
       return item ? [item] : [];
     });
   }, [boardState, files, sessions]);
+  const tidyBoard = useCallback(() => {
+    tidyCards(items.map((item) => item.cardId));
+  }, [items, tidyCards]);
 
   return {
     directorySync: directorySessionSync,
@@ -260,6 +267,8 @@ export function useSkiaMiniChatSessions() {
     panelHydrationErrorCount,
     sessions,
     items,
+    cardTextScale: boardState?.cardTextScale ?? SKIA_BOARD_DEFAULT_TEXT_SCALE,
+    setBoardCardTextScale,
     moveBoardCard,
     removeBoardSession,
     removeBoardFile,

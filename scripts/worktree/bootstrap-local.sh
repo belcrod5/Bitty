@@ -85,7 +85,7 @@ require_main_repo_root() {
 }
 
 MAIN_REPO_ROOT=""
-if [[ "${DO_ENV}" == "1" || "${DO_IOS_NATIVE}" == "1" ]]; then
+if [[ "${DO_ENV}" == "1" || "${DO_PRIVATE_RUNNER}" == "1" || "${DO_IOS_NATIVE}" == "1" ]]; then
   MAIN_REPO_ROOT="$(require_main_repo_root)"
 fi
 
@@ -129,6 +129,39 @@ copy_local_env_files() {
     } >> "${REPO_ROOT}/.env"
     echo "[bootstrap-local] ensured BITTY_MAIN_REPO_ROOT in .env"
   fi
+}
+
+copy_local_runner_token() {
+  if [[ "${MAIN_REPO_ROOT}" == "${REPO_ROOT}" ]]; then
+    return 0
+  fi
+
+  local token_file="private_runner/logs/runner-token"
+  if [[ -f "${REPO_ROOT}/private_runner/.env" ]]; then
+    token_file="$(
+      unset RUNNER_TOKEN_FILE
+      # shellcheck disable=SC1091
+      source "${REPO_ROOT}/private_runner/.env"
+      printf '%s' "${RUNNER_TOKEN_FILE:-private_runner/logs/runner-token}"
+    )"
+  fi
+  if [[ "${token_file}" == /* ]]; then
+    return 0
+  fi
+
+  local source_path="${MAIN_REPO_ROOT}/${token_file}"
+  local target_path="${REPO_ROOT}/${token_file}"
+  if [[ -s "${target_path}" ]]; then
+    return 0
+  fi
+  if [[ ! -r "${source_path}" || ! -s "${source_path}" ]]; then
+    echo "[bootstrap-local] reusable runner token not found: ${token_file}" >&2
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${target_path}")"
+  cp -p "${source_path}" "${target_path}"
+  echo "[bootstrap-local] copied ${token_file}"
 }
 
 ensure_npm_install() {
@@ -229,6 +262,7 @@ if [[ "${DO_ENV}" == "1" ]]; then
   copy_local_env_files
 fi
 if [[ "${DO_PRIVATE_RUNNER}" == "1" ]]; then
+  copy_local_runner_token
   ensure_npm_install "${REPO_ROOT}/private_runner" "private_runner"
 fi
 if [[ "${DO_EXPO}" == "1" ]]; then

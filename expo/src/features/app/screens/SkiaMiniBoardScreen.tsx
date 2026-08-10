@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Modal,
   Platform,
+  Pressable,
+  SafeAreaView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -37,6 +40,7 @@ import {
 } from "../hooks/useSkiaMiniChatSessions";
 import {
   normalizeRunnerPath,
+  openRunnerFile,
   openRunnerFileContextMenu,
   type RunnerFileViewerTarget,
   type RunnerMediaFile,
@@ -47,8 +51,13 @@ import { RunnerFileViewer } from "../components/RunnerFileViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import {
+  SKIA_BOARD_MAX_TEXT_SCALE,
+  SKIA_BOARD_MIN_TEXT_SCALE,
+  SKIA_BOARD_TEXT_SCALE_STEP,
+} from "../utils/skiaBoardState";
 
-const CARD_HEIGHT = 154;
+const CARD_HEIGHT = 112;
 const CARD_GAP = 18;
 const BOARD_PADDING = 18;
 const MIN_SCALE = 0.25;
@@ -158,14 +167,14 @@ function BoardCard({
         />
         <SkiaText
           x={16}
-          y={55}
+          y={49}
           text={fitText(item.kind === "session" ? item.title : item.name, titleFont, contentWidth)}
           font={titleFont}
           color="#172033"
         />
         <SkiaText
           x={16}
-          y={83}
+          y={69}
           text={fitText(
             item.kind === "session"
               ? item.lastMessageContent || "メッセージを読み込み中…"
@@ -178,10 +187,10 @@ function BoardCard({
           font={bodyFont}
           color="#64748b"
         />
-        <Line p1={{ x: 16, y: 105 }} p2={{ x: cardWidth - 16, y: 105 }} color="#e2e8f0" strokeWidth={1} />
+        <Line p1={{ x: 16, y: 88 }} p2={{ x: cardWidth - 16, y: 88 }} color="#e2e8f0" strokeWidth={1} />
         <SkiaText
           x={16}
-          y={129}
+          y={100}
           text={item.kind === "session" ? item.updatedAtLabel : item.unavailable ? "FILE NOT FOUND" : "FILE"}
           font={bodyFont}
           color="#64748b"
@@ -214,6 +223,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     hydratingPanelCount,
     panelHydrationErrorCount,
     items,
+    cardTextScale,
+    setBoardCardTextScale,
     moveBoardCard,
     removeBoardSession,
     removeBoardFile,
@@ -236,8 +247,12 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
                 ? `${items.length}件を表示・一部更新失敗`
                 : `${items.length}件を表示`;
   const [selectedCardId, setSelectedCardId] = useState("");
+  const [boardMenuOpen, setBoardMenuOpen] = useState(false);
   const [fileMenuRootDir, setFileMenuRootDir] = useState("");
-  const [pendingFileMenu, setPendingFileMenu] = useState<Extract<SkiaMiniBoardItem, { kind: "file" }> | null>(null);
+  const [pendingFileAction, setPendingFileAction] = useState<{
+    item: Extract<SkiaMiniBoardItem, { kind: "file" }>;
+    action: "open" | "menu";
+  } | null>(null);
   const [runnerMedia, setRunnerMedia] = useState<RunnerMediaFile | null>(null);
   const [runnerFileViewerTarget, setRunnerFileViewerTarget] = useState<RunnerFileViewerTarget | null>(null);
   const [viewportWidth, setViewportWidth] = useState(windowWidth);
@@ -257,10 +272,18 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const activeCardY = useSharedValue(0);
   const selectedCardIndex = useSharedValue(-1);
   const touchSequenceHadMultiplePointers = useSharedValue(false);
+  const panStartScreenX = useSharedValue(0);
+  const panStartScreenY = useSharedValue(0);
 
   const fontFamily = Platform.select({ ios: "Hiragino Sans", android: "sans-serif", default: "Arial" });
-  const titleFont = useMemo(() => matchFont({ fontFamily, fontSize: 12, fontWeight: "bold" }), [fontFamily]);
-  const bodyFont = useMemo(() => matchFont({ fontFamily, fontSize: 9 }), [fontFamily]);
+  const titleFont = useMemo(
+    () => matchFont({ fontFamily, fontSize: 12 * cardTextScale, fontWeight: "bold" }),
+    [cardTextScale, fontFamily]
+  );
+  const bodyFont = useMemo(
+    () => matchFont({ fontFamily, fontSize: 9 * cardTextScale }),
+    [cardTextScale, fontFamily]
+  );
 
   // ボードステート(col/row)から画面座標を再構築する。ドラッグ中はSharedValueのみが
   // 動き、ドラッグ終了時のcommitでステートへ反映されるため、同値の再適用になる。
@@ -315,7 +338,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           return;
         }
         setFileMenuRootDir(item.rootDir);
-        setPendingFileMenu(item);
+        setPendingFileAction({ item, action: "open" });
         return;
       }
       selectedCardIndex.value = index;
@@ -375,7 +398,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
       return;
     }
     setFileMenuRootDir(item.rootDir);
-    setPendingFileMenu(item);
+    setPendingFileAction({ item, action: "menu" });
   }, [confirmRemoveCard, items, showUnavailableFileMenu]);
 
   const showInfoToast = useCallback((textRaw: unknown) => {
@@ -421,10 +444,11 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   }, [handleAssistantAudioButtonPress, sanitizeTextForTts, showInfoToast]);
 
   useEffect(() => {
-    const file = pendingFileMenu;
+    const pending = pendingFileAction;
+    const file = pending?.item;
     if (!file || fileMenuRootDir !== file.rootDir) return;
-    setPendingFileMenu(null);
-    openRunnerFileContextMenu({
+    setPendingFileAction(null);
+    const params = {
       filePathRaw: file.path,
       fileNameRaw: file.name,
       runnerUrl,
@@ -445,13 +469,18 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         hasFile: hasBoardFile,
         removeFile: removeBoardFile,
       },
-    });
+    };
+    if (pending.action === "open") {
+      openRunnerFile(params);
+    } else {
+      openRunnerFileContextMenu(params);
+    }
   }, [
     deleteFile,
     fileMenuRootDir,
     getPathLabel,
     hasBoardFile,
-    pendingFileMenu,
+    pendingFileAction,
     removeBoardFile,
     renameFileTarget,
     requestEdit,
@@ -473,6 +502,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     const cardIds = items.map((item) => item.cardId);
     const drag = Gesture.Pan()
       .maxPointers(2)
+      .minDistance(10)
       .onTouchesDown((event) => {
         if (event.numberOfTouches === 1) {
           touchSequenceHadMultiplePointers.value = false;
@@ -481,10 +511,14 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         }
       })
       .onBegin((event) => {
-        const x = (event.x - boardX.value) / scale.value;
-        const y = (event.y - boardY.value) / scale.value;
+        panStartScreenX.value = event.x;
+        panStartScreenY.value = event.y;
         activeCardIndex.value = -1;
         activeCardId.value = "";
+      })
+      .onStart(() => {
+        const x = (panStartScreenX.value - boardX.value) / scale.value;
+        const y = (panStartScreenY.value - boardY.value) / scale.value;
 
         for (let index = items.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
@@ -568,13 +602,12 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         runOnJS(handleCardTap)(-1);
       });
 
-    // カード長押しで削除確認(OKでボードから外し、除外リストへ)。
-    // 選択済みカードの保持はドラッグ意図(activeCardIndex>=0)なので発火させない。
+    // 長押しの移動許容内ではpanがactiveにならないため、選択状態に関係なく
+    // コンテキストメニューを開ける。閾値を越えた場合だけpanがdragを所有する。
     const longPress = Gesture.LongPress()
       .minDuration(500)
       .onStart((event) => {
         if (touchSequenceHadMultiplePointers.value) return;
-        if (activeCardIndex.value >= 0) return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
         for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -633,6 +666,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     selectedCardIndex,
     items,
     openCardContextMenu,
+    panStartScreenX,
+    panStartScreenY,
     touchSequenceHadMultiplePointers,
   ]);
 
@@ -658,26 +693,27 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
 
   return (
     <View style={screenStyles.screen}>
-      <View style={screenStyles.header}>
-        <TouchableOpacity style={screenStyles.headerButton} onPress={openDrawer}>
-          <Text style={screenStyles.headerButtonText}>☰</Text>
-        </TouchableOpacity>
-        <View style={screenStyles.headerTitleBlock}>
-          <Text style={screenStyles.headerTitle}>Board</Text>
-          <Text style={screenStyles.headerSubtitle}>タップで選択・再タップで開く・選択後にドラッグ・長押しでメニュー</Text>
+      <SafeAreaView style={screenStyles.headerSafeArea}>
+        <View style={screenStyles.header}>
+          <TouchableOpacity
+            style={screenStyles.headerButton}
+            onPress={openDrawer}
+            accessibilityRole="button"
+            accessibilityLabel="ナビゲーションを開く"
+          >
+            <Text style={screenStyles.headerButtonText}>☰</Text>
+          </TouchableOpacity>
+          <View style={screenStyles.headerSpacer} />
+          <TouchableOpacity
+            style={screenStyles.headerButton}
+            onPress={() => setBoardMenuOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="ボードメニューを開く"
+          >
+            <Ionicons name="ellipsis-horizontal" size={22} color="#334155" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={screenStyles.headerActionButton}
-          onPress={tidyBoard}
-          accessibilityRole="button"
-          accessibilityLabel="カードをグリッドに整頓"
-        >
-          <Ionicons name="grid-outline" size={16} color="#334155" />
-        </TouchableOpacity>
-        <TouchableOpacity style={screenStyles.resetButton} onPress={resetViewport}>
-          <Text style={screenStyles.resetButtonText}>Reset</Text>
-        </TouchableOpacity>
-      </View>
+      </SafeAreaView>
 
       <GestureDetector gesture={gestures}>
         <View
@@ -710,11 +746,85 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         </View>
       </GestureDetector>
 
-      <View pointerEvents="none" style={screenStyles.statusPill}>
-        <Text style={screenStyles.statusText}>
-          {syncStatusText}
-        </Text>
-      </View>
+      <SafeAreaView
+        pointerEvents="none"
+        style={screenStyles.statusSafeArea}
+        testID="skia-board-status-safe-area"
+      >
+        <View style={screenStyles.statusPill} testID="skia-board-status-pill">
+          <Text style={screenStyles.statusText}>
+            {syncStatusText}
+          </Text>
+        </View>
+      </SafeAreaView>
+      <Modal
+        visible={boardMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBoardMenuOpen(false)}
+      >
+        <Pressable style={screenStyles.menuBackdrop} onPress={() => setBoardMenuOpen(false)}>
+          <SafeAreaView style={screenStyles.menuSafeArea}>
+            <Pressable style={screenStyles.menuPanel} onPress={() => {}}>
+              <TouchableOpacity
+                style={screenStyles.menuAction}
+                onPress={() => {
+                  setBoardMenuOpen(false);
+                  tidyBoard();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="カードをグリッドに整頓"
+              >
+                <Ionicons name="grid-outline" size={17} color="#334155" />
+                <Text style={screenStyles.menuActionText}>Tidy</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={screenStyles.menuAction}
+                onPress={() => {
+                  setBoardMenuOpen(false);
+                  resetViewport();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="表示位置とズームをリセット"
+              >
+                <Ionicons name="locate-outline" size={17} color="#334155" />
+                <Text style={screenStyles.menuActionText}>Reset</Text>
+              </TouchableOpacity>
+              <View style={screenStyles.menuDivider} />
+              <View style={screenStyles.fontScaleRow}>
+                <Text style={screenStyles.menuActionText}>Card text</Text>
+                <TouchableOpacity
+                  style={screenStyles.fontScaleButton}
+                  onPress={() => setBoardCardTextScale(cardTextScale - SKIA_BOARD_TEXT_SCALE_STEP)}
+                  disabled={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE}
+                  accessibilityRole="button"
+                  accessibilityLabel="カード文字を小さくする"
+                >
+                  <Ionicons
+                    name="remove"
+                    size={17}
+                    color={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE ? "#94a3b8" : "#334155"}
+                  />
+                </TouchableOpacity>
+                <Text style={screenStyles.fontScaleValue}>{Math.round(cardTextScale * 100)}%</Text>
+                <TouchableOpacity
+                  style={screenStyles.fontScaleButton}
+                  onPress={() => setBoardCardTextScale(cardTextScale + SKIA_BOARD_TEXT_SCALE_STEP)}
+                  disabled={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE}
+                  accessibilityRole="button"
+                  accessibilityLabel="カード文字を大きくする"
+                >
+                  <Ionicons
+                    name="add"
+                    size={17}
+                    color={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE ? "#94a3b8" : "#334155"}
+                  />
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </SafeAreaView>
+        </Pressable>
+      </Modal>
       <RunnerMediaViewer
         media={runnerMedia}
         onRequestClose={() => setRunnerMedia(null)}
@@ -748,77 +858,115 @@ const screenStyles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#eef2f7",
   },
+  headerSafeArea: {
+    backgroundColor: "transparent",
+  },
   header: {
-    minHeight: 62,
+    minHeight: 54,
     paddingHorizontal: 12,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: "#ffffff",
-    borderBottomColor: "#d8e0ea",
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    backgroundColor: "transparent",
   },
   headerButton: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#e8eef6",
+    backgroundColor: "transparent",
   },
   headerButtonText: {
     color: "#27364b",
     fontSize: 20,
     fontWeight: "700",
   },
-  headerTitleBlock: {
+  headerSpacer: {
     flex: 1,
-  },
-  headerTitle: {
-    color: "#172033",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  headerSubtitle: {
-    color: "#64748b",
-    fontSize: 10,
-    marginTop: 2,
-  },
-  headerActionButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#e8eef6",
-  },
-  resetButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: "#e8eef6",
-  },
-  resetButtonText: {
-    color: "#334155",
-    fontSize: 12,
-    fontWeight: "700",
   },
   canvasHost: {
     flex: 1,
     overflow: "hidden",
   },
   statusPill: {
-    position: "absolute",
-    left: 14,
-    bottom: 14,
+    marginLeft: 14,
+    marginBottom: 14,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 16,
     backgroundColor: "rgba(23, 32, 51, 0.84)",
   },
+  statusSafeArea: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "flex-start",
+  },
   statusText: {
     color: "#ffffff",
     fontSize: 11,
     fontWeight: "700",
+  },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
+  menuSafeArea: {
+    flex: 1,
+    alignItems: "flex-end",
+    paddingHorizontal: 12,
+    paddingTop: 6,
+  },
+  menuPanel: {
+    width: 220,
+    padding: 8,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 8,
+  },
+  menuAction: {
+    minHeight: 44,
+    paddingHorizontal: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  menuActionText: {
+    color: "#334155",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  menuDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: 5,
+    backgroundColor: "#e2e8f0",
+  },
+  fontScaleRow: {
+    minHeight: 44,
+    paddingLeft: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  fontScaleButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f1f5f9",
+  },
+  fontScaleValue: {
+    minWidth: 35,
+    color: "#64748b",
+    fontSize: 11,
+    textAlign: "center",
   },
 });

@@ -350,6 +350,54 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
+  it("tidies visible cards without gaps and keeps hidden cards after them", async () => {
+    persistedFile.skiaBoardState = {
+      cards: [
+        { sessionId: "session-2", col: 3, row: 3 },
+        { sessionId: "session-9", col: 4, row: 4 },
+        { sessionId: "session-1", col: 5, row: 5 },
+      ],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: new Date(session(9).updatedAt).getTime(),
+      cardTextScale: 1,
+    };
+    mockConversation([session(2), session(1)]);
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    await act(async () => {
+      result.current.tidyBoard();
+    });
+    await flush();
+
+    const savedState = persistedFile.skiaBoardState as {
+      cards: Array<{ sessionId: string; col: number; row: number }>;
+    };
+    expect(savedState.cards.map((card) => [card.sessionId, card.col, card.row])).toEqual([
+      ["session-2", 0, 0],
+      ["session-1", 1, 0],
+      ["session-9", 0, 1],
+    ]);
+    expect(result.current.sessions.map((item) => [item.sessionId, item.col, item.row])).toEqual([
+      ["session-2", 0, 0],
+      ["session-1", 1, 0],
+    ]);
+  });
+
+  it("persists card text scale in the existing board state", async () => {
+    mockConversation([session(1)]);
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    await act(async () => {
+      result.current.setBoardCardTextScale(1.1);
+    });
+    await flush();
+
+    expect(result.current.cardTextScale).toBe(1.1);
+    expect((persistedFile.skiaBoardState as { cardTextScale: number }).cardTextScale).toBe(1.1);
+  });
+
   it("settles failed panel hydration separately from directory sync", async () => {
     const clearPanelSnapshot = jest.fn();
     mockUsePanelRuntimeController.mockReturnValue({

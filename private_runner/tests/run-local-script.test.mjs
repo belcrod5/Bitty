@@ -212,15 +212,107 @@ test("Cloudflare tunnel startup and preflight are explicit opt-in", async () => 
 
 test("bootstrap uses a standalone clone as its own main repository", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "bitty-standalone-clone-"));
+  const fakeBin = join(repoRoot, "bin");
   mkdirSync(join(repoRoot, ".git"));
+  mkdirSync(join(repoRoot, "private_runner"));
+  mkdirSync(fakeBin);
+  writeFileSync(join(repoRoot, "private_runner/package.json"), "{}\n");
+  writeFileSync(join(fakeBin, "npm"), "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(join(fakeBin, "npm"), 0o755);
 
   try {
     const result = spawnSync(
       "bash",
-      ["scripts/worktree/bootstrap-local.sh", "--repo-root", repoRoot, "--env"],
-      { encoding: "utf8" }
+      [
+        "scripts/worktree/bootstrap-local.sh",
+        "--repo-root",
+        repoRoot,
+        "--env",
+        "--private-runner",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      }
     );
     assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap copies a missing runner token from main without overwriting a local token", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "bitty-bootstrap-runner-token-"));
+  const mainRoot = join(repoRoot, "main");
+  const worktreeRoot = join(repoRoot, "worktree");
+  const fakeBin = join(repoRoot, "bin");
+  const relativeTokenPath = "private_runner/custom/runner-token";
+  const mainTokenPath = join(mainRoot, relativeTokenPath);
+  const worktreeTokenPath = join(worktreeRoot, relativeTokenPath);
+  mkdirSync(join(mainRoot, "private_runner/custom"), { recursive: true });
+  mkdirSync(join(worktreeRoot, "private_runner"), { recursive: true });
+  mkdirSync(fakeBin);
+  writeFileSync(join(mainRoot, "private_runner/.env"), `RUNNER_TOKEN_FILE=${relativeTokenPath}\n`);
+  writeFileSync(mainTokenPath, "main-runner-token\n", { mode: 0o600 });
+  writeFileSync(join(worktreeRoot, "private_runner/package.json"), "{}\n");
+  writeFileSync(join(fakeBin, "npm"), "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(join(fakeBin, "npm"), 0o755);
+
+  const run = () => spawnSync(
+    "bash",
+    [
+      "scripts/worktree/bootstrap-local.sh",
+      "--repo-root",
+      worktreeRoot,
+      "--env",
+      "--private-runner",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BITTY_MAIN_REPO_ROOT: mainRoot,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
+    }
+  );
+
+  try {
+    const copied = run();
+    assert.equal(copied.status, 0, `stdout=${copied.stdout}\nstderr=${copied.stderr}`);
+    assert.match(copied.stdout, /copied private_runner\/custom\/runner-token/);
+    assert.equal(readFileSync(worktreeTokenPath, "utf8"), "main-runner-token\n");
+
+    writeFileSync(worktreeTokenPath, "local-runner-token\n");
+    const preserved = run();
+    assert.equal(preserved.status, 0, `stdout=${preserved.stdout}\nstderr=${preserved.stderr}`);
+    assert.equal(readFileSync(worktreeTokenPath, "utf8"), "local-runner-token\n");
+
+    writeFileSync(worktreeTokenPath, "");
+    const replacedEmpty = run();
+    assert.equal(
+      replacedEmpty.status,
+      0,
+      `stdout=${replacedEmpty.stdout}\nstderr=${replacedEmpty.stderr}`
+    );
+    assert.equal(readFileSync(worktreeTokenPath, "utf8"), "main-runner-token\n");
+
+    rmSync(worktreeTokenPath);
+    rmSync(mainTokenPath);
+    const missingSource = run();
+    assert.equal(
+      missingSource.status,
+      0,
+      `stdout=${missingSource.stdout}\nstderr=${missingSource.stderr}`
+    );
+    assert.match(missingSource.stderr, /reusable runner token not found/);
+    assert.throws(() => readFileSync(worktreeTokenPath), { code: "ENOENT" });
+
+    writeFileSync(mainTokenPath, "");
+    writeFileSync(worktreeTokenPath, "");
+    const emptySource = run();
+    assert.equal(emptySource.status, 0, `stdout=${emptySource.stdout}\nstderr=${emptySource.stderr}`);
+    assert.equal(readFileSync(worktreeTokenPath, "utf8"), "");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

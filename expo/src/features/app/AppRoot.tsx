@@ -7663,7 +7663,7 @@ export default function App() {
     () => <AppDrawer {...appDrawerProps} />,
     [appDrawerProps]
   );
-
+  const ActiveScreenContainer = activeScreen === "skia_board" ? View : SafeAreaView;
   return (
     <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
@@ -7709,7 +7709,8 @@ export default function App() {
         overlayStyle={styles.appDrawerOverlay}
         renderDrawerContent={renderAppDrawerContent}
       >
-      <SafeAreaView style={styles.safeArea}>
+      <View style={styles.safeArea}>
+      <ActiveScreenContainer style={styles.safeArea}>
       {activeScreen === "debug" ? (
         <DebugScreen />
       ) : activeScreen === "cloudflare_tunnel_monitor" ? (
@@ -7721,6 +7722,8 @@ export default function App() {
       ) : (
         <AudioLabScreen />
       )}
+      </ActiveScreenContainer>
+      <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>
       <AppOverlays
         composerFullscreenOpen={composerFullscreenOpen}
         closeComposerFullscreen={closeComposerFullscreen}
@@ -7738,6 +7741,7 @@ export default function App() {
         onDecide={calendarWriteController.decide}
       />
       </SafeAreaView>
+      </View>
         </Drawer>
         {drawerSessionPopupPanelId ? (
           <DrawerSessionPopupHost

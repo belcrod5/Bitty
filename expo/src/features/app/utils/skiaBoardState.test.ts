@@ -5,11 +5,13 @@ import {
   ingestSkiaBoardSessions,
   markSkiaBoardFileUnavailable,
   moveSkiaBoardCard,
+  normalizeSkiaBoardTextScale,
   parseSkiaBoardState,
   removeSkiaBoardSession,
   removeSkiaBoardFile,
   skiaBoardCardId,
   skiaBoardGridPosition,
+  setSkiaBoardCardTextScale,
   tidySkiaBoardCards,
   type SkiaBoardState,
 } from "./skiaBoardState";
@@ -64,11 +66,37 @@ describe("ingestSkiaBoardSessions", () => {
     expect(ingestSkiaBoardSessions(null, [])).toBeNull();
   });
 
+  it("initializes latest-first from a scale-only persisted state and preserves its scale", () => {
+    const scaleOnlyState = parseSkiaBoardState({
+      cards: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1.2,
+    });
+
+    const state = ingestSkiaBoardSessions(
+      scaleOnlyState,
+      Array.from({ length: 8 }, (_, index) => candidate(8 - index))
+    );
+
+    expect(boardedSessionIds(state)).toEqual([
+      "session-8",
+      "session-7",
+      "session-6",
+      "session-5",
+      "session-4",
+      "session-3",
+    ]);
+    expect(state?.ingestedUpdatedAtMs).toBe(updatedAtMs(8));
+    expect(state?.cardTextScale).toBe(1.2);
+  });
+
   it("stacks only unboarded, unexcluded candidates newer than the watermark", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-3", 0.4, 0.1)],
       excludedSessionIds: ["session-5"],
       ingestedUpdatedAtMs: updatedAtMs(3),
+      cardTextScale: 1,
     };
 
     const next = ingestSkiaBoardSessions(state, [
@@ -98,6 +126,7 @@ describe("ingestSkiaBoardSessions", () => {
       cards: [sessionCard("session-2", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: updatedAtMs(2),
+      cardTextScale: 1,
     };
     expect(ingestSkiaBoardSessions(state, [candidate(2), candidate(1)])).toBe(state);
   });
@@ -126,6 +155,7 @@ describe("removeSkiaBoardSession", () => {
       ],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: updatedAtMs(2),
+      cardTextScale: 1,
     };
 
     const removed = removeSkiaBoardSession(state, "session-2");
@@ -145,6 +175,7 @@ describe("removeSkiaBoardSession", () => {
       cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
     };
     expect(removeSkiaBoardSession(state, "session-9")).toBe(state);
   });
@@ -156,6 +187,7 @@ describe("manual board cards", () => {
       cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: ["session-2"],
       ingestedUpdatedAtMs: updatedAtMs(2),
+      cardTextScale: 1,
     };
     const added = addSkiaBoardSession(state, "session-2");
     expect(boardedSessionIds(added)).toEqual(["session-1", "session-2"]);
@@ -168,6 +200,7 @@ describe("manual board cards", () => {
       cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
     };
     const added = addSkiaBoardFile(state, {
       rootDir: "/workspace",
@@ -197,6 +230,7 @@ describe("manual board cards", () => {
       }],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
     };
 
     const unavailable = markSkiaBoardFileUnavailable(state, "/workspace", "docs/guide.md");
@@ -224,6 +258,7 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
       cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
     };
     const moved = moveSkiaBoardCard(state, "session:session-1", 1.25, -0.5);
     expect(moved.cards[0]).toMatchObject({ col: 1.25, row: -0.5 });
@@ -240,6 +275,7 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
       ],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
     };
     const tidied = tidySkiaBoardCards(state);
     expect(tidied.cards.map((card) => [card.col, card.row])).toEqual([
@@ -248,6 +284,50 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
       [0, 1],
     ]);
     expect(tidySkiaBoardCards(tidied)).toBe(tidied);
+  });
+
+  it("compacts visible cards first and retains hidden cards after them", () => {
+    const state: SkiaBoardState = {
+      cards: [
+        sessionCard("visible-1", 4, 4),
+        sessionCard("hidden", 5, 5),
+        sessionCard("visible-2", 6, 6),
+      ],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+
+    const tidied = tidySkiaBoardCards(state, ["session:visible-1", "session:visible-2"]);
+
+    expect(tidied.cards.map((card) => [skiaBoardCardId(card), card.col, card.row])).toEqual([
+      ["session:visible-1", 0, 0],
+      ["session:visible-2", 1, 0],
+      ["session:hidden", 0, 1],
+    ]);
+  });
+});
+
+describe("card text scale", () => {
+  it("normalizes persisted values to the safe 0.8-1.2 range in 0.1 steps", () => {
+    expect(normalizeSkiaBoardTextScale(undefined)).toBe(1);
+    expect(normalizeSkiaBoardTextScale(null)).toBe(1);
+    expect(normalizeSkiaBoardTextScale("")).toBe(1);
+    expect(normalizeSkiaBoardTextScale(0.01)).toBe(0.8);
+    expect(normalizeSkiaBoardTextScale(0.86)).toBe(0.9);
+    expect(normalizeSkiaBoardTextScale(1.14)).toBe(1.1);
+    expect(normalizeSkiaBoardTextScale(9)).toBe(1.2);
+  });
+
+  it("updates the existing board state without adding separate persistence", () => {
+    const state: SkiaBoardState = {
+      cards: [sessionCard("session-1", 0, 0)],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+    expect(setSkiaBoardCardTextScale(state, 1.08).cardTextScale).toBe(1.1);
+    expect(setSkiaBoardCardTextScale(state, 1)).toBe(state);
   });
 });
 
@@ -260,6 +340,7 @@ describe("parseSkiaBoardState", () => {
       ],
       excludedSessionIds: ["session-9"],
       ingestedUpdatedAtMs: updatedAtMs(2),
+      cardTextScale: 1.1,
     };
     expect(parseSkiaBoardState(JSON.parse(JSON.stringify(state)))).toEqual(state);
   });
@@ -297,6 +378,31 @@ describe("parseSkiaBoardState", () => {
       cards: [sessionCard("session-1", 0, 0)],
       excludedSessionIds: ["session-3"],
       ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
     });
+  });
+
+  it("restores and bounds card text scale from the board payload", () => {
+    expect(parseSkiaBoardState({
+      cards: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 4,
+    })?.cardTextScale).toBe(1.2);
+    expect(parseSkiaBoardState({
+      cards: [sessionCard("session-1", 0, 0)],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    })?.cardTextScale).toBe(1);
+    expect(parseSkiaBoardState({
+      cards: [],
+      excludedSessionIds: [],
+      cardTextScale: null,
+    })).toBeNull();
+    expect(parseSkiaBoardState({
+      cards: [],
+      excludedSessionIds: [],
+      cardTextScale: "",
+    })).toBeNull();
   });
 });
