@@ -12,6 +12,7 @@ import { useConversation } from "./ConversationContext";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 import {
   addSkiaBoardFile,
+  addSkiaBoardSection,
   addSkiaBoardSession,
   ingestSkiaBoardSessions,
   markSkiaBoardFileUnavailable,
@@ -19,13 +20,16 @@ import {
   readPersistedSkiaBoardState,
   removeSkiaBoardFile,
   removeSkiaBoardSession,
+  removeSkiaBoardSection,
   setSkiaBoardCardTextScale,
   SKIA_BOARD_DEFAULT_TEXT_SCALE,
   skiaBoardFileId,
   tidySkiaBoardCards,
+  updateSkiaBoardSection,
   writePersistedSkiaBoardState,
   type SkiaBoardFileCard,
   type SkiaBoardState,
+  type SkiaBoardSection,
 } from "../utils/skiaBoardState";
 
 type SkiaBoardContextValue = {
@@ -39,6 +43,9 @@ type SkiaBoardContextValue = {
   markFileUnavailable: (rootDir: string, path: string) => void;
   hasFile: (rootDir: string, path: string) => boolean;
   moveCard: (cardId: string, col: number, row: number) => void;
+  addSection: (section: SkiaBoardSection) => void;
+  updateSection: (sectionId: string, update: Partial<Omit<SkiaBoardSection, "id">>) => void;
+  removeSection: (sectionId: string) => void;
   tidyCards: (visibleCardIds: readonly string[]) => void;
   setCardTextScale: (scale: number) => void;
 };
@@ -101,6 +108,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     setState((current) => {
       const initialized = current || ingestSkiaBoardSessions(null, sessionCandidates) || {
         cards: [],
+        sections: [],
         excludedSessionIds: [],
         ingestedUpdatedAtMs: 0,
         cardTextScale: SKIA_BOARD_DEFAULT_TEXT_SCALE,
@@ -126,6 +134,18 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   }, [updateLoadedState]);
   const moveCard = useCallback((cardId: string, col: number, row: number) => {
     updateLoadedState((current) => moveSkiaBoardCard(current, cardId, col, row));
+  }, [updateLoadedState]);
+  const addSection = useCallback((section: SkiaBoardSection) => {
+    updateLoadedState((current) => addSkiaBoardSection(current, section));
+  }, [updateLoadedState]);
+  const updateSection = useCallback((
+    sectionId: string,
+    update: Partial<Omit<SkiaBoardSection, "id">>
+  ) => {
+    updateLoadedState((current) => updateSkiaBoardSection(current, sectionId, update));
+  }, [updateLoadedState]);
+  const removeSection = useCallback((sectionId: string) => {
+    updateLoadedState((current) => removeSkiaBoardSection(current, sectionId));
   }, [updateLoadedState]);
   const tidyCards = useCallback((visibleCardIds: readonly string[]) => {
     updateLoadedState((current) => tidySkiaBoardCards(current, visibleCardIds));
@@ -157,6 +177,9 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     markFileUnavailable,
     hasFile,
     moveCard,
+    addSection,
+    updateSection,
+    removeSection,
     tidyCards,
     setCardTextScale,
   }), [
@@ -167,6 +190,9 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     loaded,
     markFileUnavailable,
     moveCard,
+    addSection,
+    updateSection,
+    removeSection,
     removeFile,
     removeSession,
     state,

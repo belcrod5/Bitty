@@ -3,8 +3,12 @@ import {
   readPersistedSettingsField,
   SKIA_BOARD_STATE_FIELD,
 } from "./persistedSettingsFile";
+import {
+  SKIA_BOARD_MIN_SECTION_COL_SPAN,
+  SKIA_BOARD_MIN_SECTION_ROW_SPAN,
+} from "./skiaBoardSectionGeometry";
 
-// Skiaボードの「ボードステート」(セッション/ファイルカードの自由配置・除外リスト・取り込み境界)の
+// Skiaボードの「ボードステート」(カードと独立セクションの自由配置・除外リスト・取り込み境界)の
 // 純ロジック。永続化は設定JSONの SKIA_BOARD_STATE_FIELD に保存し、設定オートセーブ
 // からは PRESERVED_SETTINGS_FIELDS 経由で保護される。
 //
@@ -40,8 +44,55 @@ export type SkiaBoardFileCard = SkiaBoardCardPosition & {
 
 export type SkiaBoardCard = SkiaBoardSessionCard | SkiaBoardFileCard;
 
+export type SkiaBoardSection = {
+  id: string;
+  label: string;
+  col: number;
+  row: number;
+  colSpan: number;
+  rowSpan: number;
+  color: string;
+  opacity: number;
+  borderOnly: boolean;
+};
+
+function parseSkiaBoardSection(raw: unknown): SkiaBoardSection | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const section = raw as Record<string, unknown>;
+  const id = String(section.id || "").trim();
+  const col = Number(section.col);
+  const row = Number(section.row);
+  const colSpan = Number(section.colSpan);
+  const rowSpan = Number(section.rowSpan);
+  const color = String(section.color || "").trim();
+  const opacity = Number(section.opacity);
+  if (
+    !id
+    || !Number.isFinite(col)
+    || !Number.isFinite(row)
+    || !Number.isFinite(colSpan)
+    || !Number.isFinite(rowSpan)
+    || colSpan < SKIA_BOARD_MIN_SECTION_COL_SPAN
+    || rowSpan < SKIA_BOARD_MIN_SECTION_ROW_SPAN
+    || !/^#[0-9a-f]{6}$/i.test(color)
+    || !Number.isFinite(opacity)
+  ) return null;
+  return {
+    id,
+    label: String(section.label || "").trim() || "セクション",
+    col,
+    row,
+    colSpan,
+    rowSpan,
+    color,
+    opacity: Math.max(0, Math.min(1, opacity)),
+    borderOnly: section.borderOnly === true,
+  };
+}
+
 export type SkiaBoardState = {
   cards: SkiaBoardCard[];
+  sections: SkiaBoardSection[];
   excludedSessionIds: string[];
   ingestedUpdatedAtMs: number;
   cardTextScale: number;
@@ -147,14 +198,29 @@ export function parseSkiaBoardState(raw: unknown): SkiaBoardState | null {
       .map((value) => String(value || "").trim())
       .filter((value) => !!value)
   ));
+  const sectionsRaw = Array.isArray(record.sections) ? record.sections : [];
+  const seenSectionIds = new Set<string>();
+  const sections: SkiaBoardSection[] = [];
+  for (const sectionRaw of sectionsRaw) {
+    const section = parseSkiaBoardSection(sectionRaw);
+    if (!section || seenSectionIds.has(section.id)) continue;
+    seenSectionIds.add(section.id);
+    sections.push(section);
+  }
   const ingestedUpdatedAtMsRaw = Number(record.ingestedUpdatedAtMs);
   const hasStoredTextScale = (
     typeof record.cardTextScale === "number"
     && Number.isFinite(record.cardTextScale)
   );
-  if (cards.length <= 0 && excludedSessionIds.length <= 0 && !hasStoredTextScale) return null;
+  if (
+    cards.length <= 0
+    && sections.length <= 0
+    && excludedSessionIds.length <= 0
+    && !hasStoredTextScale
+  ) return null;
   return {
     cards,
+    sections,
     excludedSessionIds,
     ingestedUpdatedAtMs: Number.isFinite(ingestedUpdatedAtMsRaw)
       ? Math.max(0, ingestedUpdatedAtMsRaw)
@@ -181,12 +247,14 @@ export function ingestSkiaBoardSessions(
   if (needsInitialSessions) {
     if (candidates.length <= 0) return state;
     return {
+      ...state,
       cards: candidates.slice(0, INITIAL_BOARD_CARD_COUNT).map((candidate, index) => ({
         kind: "session" as const,
         sessionId: candidate.sessionId,
         ...skiaBoardGridPosition(index),
       })),
       excludedSessionIds: [],
+      sections: state?.sections || [],
       ingestedUpdatedAtMs: candidates.reduce(
         (max, candidate) => Math.max(max, updatedAtMs(candidate.updatedAt)),
         0
@@ -262,6 +330,48 @@ export function moveSkiaBoardCard(
   const cards = state.cards.slice();
   cards[index] = { ...current, col, row };
   return { ...state, cards };
+}
+
+export function addSkiaBoardSection(
+  state: SkiaBoardState,
+  section: SkiaBoardSection
+): SkiaBoardState {
+  const parsed = parseSkiaBoardSection(section);
+  if (!parsed || state.sections.some((current) => current.id === parsed.id)) return state;
+  return { ...state, sections: [...state.sections, parsed] };
+}
+
+export function updateSkiaBoardSection(
+  state: SkiaBoardState,
+  sectionId: string,
+  update: Partial<Omit<SkiaBoardSection, "id">>
+): SkiaBoardState {
+  const index = state.sections.findIndex((section) => section.id === sectionId);
+  if (index < 0) return state;
+  const current = state.sections[index];
+  const next = parseSkiaBoardSection({ ...current, ...update, id: current.id });
+  if (!next) return state;
+  if (
+    current.label === next.label
+    && current.col === next.col
+    && current.row === next.row
+    && current.colSpan === next.colSpan
+    && current.rowSpan === next.rowSpan
+    && current.color === next.color
+    && current.opacity === next.opacity
+    && current.borderOnly === next.borderOnly
+  ) return state;
+  const sections = state.sections.slice();
+  sections[index] = next;
+  return { ...state, sections };
+}
+
+export function removeSkiaBoardSection(
+  state: SkiaBoardState,
+  sectionId: string
+): SkiaBoardState {
+  if (!state.sections.some((section) => section.id === sectionId)) return state;
+  return { ...state, sections: state.sections.filter((section) => section.id !== sectionId) };
 }
 
 // カードをボードから外し、以後の自動再追加を除外リストで防ぐ。

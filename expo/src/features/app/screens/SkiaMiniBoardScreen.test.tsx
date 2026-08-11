@@ -2,6 +2,7 @@ import React from "react";
 import { Alert, StyleSheet } from "react-native";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
+import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 
 // Skia Canvasはjest環境で描画できないため、レイアウトに影響しないスタブへ置換する。
 jest.mock("@shopify/react-native-skia", () => {
@@ -101,6 +102,9 @@ jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenam
 jest.mock("../components/WorkspaceTextFileEditor", () => ({ WorkspaceTextFileEditor: () => null }));
 
 const mockMoveBoardCard = jest.fn();
+const mockAddBoardSection = jest.fn();
+const mockUpdateBoardSection = jest.fn();
+const mockRemoveBoardSection = jest.fn();
 const mockRemoveBoardSession = jest.fn();
 const mockRemoveBoardFile = jest.fn();
 const mockHasBoardFile = jest.fn(() => true);
@@ -131,6 +135,29 @@ const mockDefaultSession = {
   row: 0,
 };
 let mockSessions = [mockDefaultSession];
+let mockSections: Array<{
+  id: string;
+  label: string;
+  col: number;
+  row: number;
+  colSpan: number;
+  rowSpan: number;
+  color: string;
+  opacity: number;
+  borderOnly: boolean;
+}> = [];
+
+function mockSectionAt(x: number, y: number, width: number, height: number) {
+  const id = "section:1";
+  return {
+    id,
+    label: "計画",
+    ...gridFromSectionRect({ id, x, y, width, height }, 270),
+    color: "#3b82f6",
+    opacity: 0.2,
+    borderOnly: false,
+  };
+}
 
 jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
   useSkiaMiniChatSessions: () => ({
@@ -139,9 +166,13 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     panelHydrationErrorCount: 0,
     sessions: mockSessions,
     items: mockSessions,
+    sections: mockSections,
     cardTextScale: 1,
     setBoardCardTextScale: mockSetBoardCardTextScale,
     moveBoardCard: mockMoveBoardCard,
+    addBoardSection: mockAddBoardSection,
+    updateBoardSection: mockUpdateBoardSection,
+    removeBoardSection: mockRemoveBoardSection,
     removeBoardSession: mockRemoveBoardSession,
     removeBoardFile: mockRemoveBoardFile,
     hasBoardFile: mockHasBoardFile,
@@ -152,6 +183,9 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 
 beforeEach(() => {
   mockMoveBoardCard.mockClear();
+  mockAddBoardSection.mockClear();
+  mockUpdateBoardSection.mockClear();
+  mockRemoveBoardSection.mockClear();
   mockRemoveBoardSession.mockClear();
   mockRemoveBoardFile.mockClear();
   mockHasBoardFile.mockClear();
@@ -159,6 +193,7 @@ beforeEach(() => {
   mockTidyBoard.mockClear();
   mockSetBoardCardTextScale.mockClear();
   mockSessions = [mockDefaultSession];
+  mockSections = [];
 });
 
 function gestureRegistry() {
@@ -540,4 +575,162 @@ test("commits the active card coordinates when sessions reorder during a drag", 
   expect(cardId).toBe("session:b");
   expect(col).toBeGreaterThan(0);
   expect(row).toBeCloseTo(1 + 50 / (112 + 18), 5);
+});
+
+test("creates a section by dragging blank board space from the section tool", async () => {
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText("セクションを作成"));
+  });
+  await act(async () => {
+    const pan = gestureRegistry().Pan;
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 350, y: 300 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 160, translationY: 100 });
+    pan.onFinalize();
+  });
+
+  expect(mockAddBoardSection).toHaveBeenCalledTimes(1);
+  expect(mockAddBoardSection.mock.calls[0][0]).toMatchObject({
+    label: "セクション",
+    ...gridFromSectionRect({ id: "draft", x: 350, y: 300, width: 160, height: 100 }, 270),
+    color: "#3b82f6",
+    opacity: 0.2,
+    borderOnly: false,
+  });
+  expect(screen.getByLabelText("選択と移動").props.accessibilityState).toEqual({ selected: true });
+});
+
+test("does not create a section over a card or after a multi-touch sequence", async () => {
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const pan = gestureRegistry().Pan;
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText("セクションを作成"));
+  });
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 30, y: 30 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 120, translationY: 100 });
+    pan.onFinalize();
+  });
+  expect(mockAddBoardSection).not.toHaveBeenCalled();
+
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 350, y: 300 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 120, translationY: 100 });
+    pan.onTouchesDown({ numberOfTouches: 2 });
+    pan.onFinalize();
+  });
+  expect(mockAddBoardSection).not.toHaveBeenCalled();
+});
+
+test("moves and resizes only the selected section", async () => {
+  mockSections = [mockSectionAt(300, 250, 200, 150)];
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Tap.onEnd({ x: 380, y: 320 }, true);
+  });
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 380, y: 320 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 30 });
+    registry.Pan.onFinalize();
+  });
+  expect(mockUpdateBoardSection).toHaveBeenLastCalledWith(
+    "section:1",
+    gridFromSectionRect({ id: "section:1", x: 340, y: 280, width: 200, height: 150 }, 270)
+  );
+
+  mockUpdateBoardSection.mockClear();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 540, y: 430 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 60, translationY: 50 });
+    registry.Pan.onFinalize();
+  });
+  expect(mockUpdateBoardSection).toHaveBeenLastCalledWith(
+    "section:1",
+    gridFromSectionRect({ id: "section:1", x: 340, y: 280, width: 260, height: 200 }, 270)
+  );
+});
+
+test("restores a moved section when a second pointer turns the drag into a pinch", async () => {
+  mockSections = [mockSectionAt(300, 250, 200, 150)];
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const pan = gestureRegistry().Pan;
+  await act(async () => {
+    gestureRegistry().Tap.onEnd({ x: 380, y: 320 }, true);
+  });
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 380, y: 320 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 30 });
+    pan.onTouchesDown({ numberOfTouches: 2 });
+    pan.onFinalize();
+  });
+  expect(mockUpdateBoardSection).not.toHaveBeenCalled();
+
+  // 復元済みなら元の右下端(500, 400)からリサイズが始まる。
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 500, y: 400 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 60, translationY: 50 });
+    pan.onFinalize();
+  });
+  expect(mockUpdateBoardSection).toHaveBeenCalledWith(
+    "section:1",
+    gridFromSectionRect({ id: "section:1", x: 300, y: 250, width: 260, height: 200 }, 270)
+  );
+});
+
+test("edits section label, color, opacity, and border-only mode from long press", async () => {
+  mockSections = [mockSectionAt(300, 250, 200, 150)];
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 380, y: 320 });
+  });
+  await act(async () => {
+    fireEvent.changeText(screen.getByLabelText("セクションのラベル"), "実装");
+  });
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText("背景色 #22c55e"));
+  });
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText("透明度を上げる"));
+  });
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText("ボーダーのみ"));
+  });
+  await act(async () => {
+    fireEvent.press(screen.getByText("保存"));
+  });
+
+  expect(mockUpdateBoardSection).toHaveBeenCalledWith("section:1", {
+    label: "実装",
+    color: "#22c55e",
+    opacity: 0.3,
+    borderOnly: true,
+  });
+});
+
+test("cards receive hits before an overlapping background section", async () => {
+  mockSections = [{ ...mockSectionAt(0, 0, 400, 300), label: "背景" }];
+  const openSessionHistoryPopup = jest.fn();
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={openSessionHistoryPopup} />);
+  await act(async () => {
+    fireCardTap();
+  });
+  await act(async () => {
+    fireCardTap();
+  });
+  expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
 });
