@@ -54,11 +54,13 @@ export async function registerPushDevice({
   runnerToken,
   deviceId,
   apnsToken,
+  directories,
 }: {
   runnerUrl: string;
   runnerToken: string;
   deviceId: string;
   apnsToken: string;
+  directories: string[];
 }): Promise<boolean> {
   const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
   const token = String(runnerToken || "").trim();
@@ -69,7 +71,7 @@ export async function registerPushDevice({
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ deviceId, apnsToken }),
+    body: JSON.stringify({ deviceId, apnsToken, directories }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -86,6 +88,6 @@ export function resolveForegroundNotificationBehavior() {
     shouldShowBanner: false,
     shouldShowList: false,
     shouldPlaySound: false,
-    shouldSetBadge: false,
+    shouldSetBadge: true,
   };
 }

@@ -40,6 +40,7 @@ export type DirectorySessionSyncReason =
   | "screen_mount"
   | "manual_refresh"
   | "auth_recovery"
+  | "read_reconcile"
   | "session_completed"
   | "registered_targets_changed";
 

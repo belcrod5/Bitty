@@ -2,6 +2,8 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 
+const MAX_DEVICE_DIRECTORIES = 100;
+
 // JSON-file persistence for registered APNs device tokens, keyed by deviceId.
 // Mirrors the atomic write pattern used by llm-cli-session-index.mjs (write to a
 // temp file, then rename) so a crash mid-write cannot corrupt the store.
@@ -17,7 +19,12 @@ export function createPushDeviceStore(storePath) {
     const env = String(raw?.env || "").trim().toLowerCase() === "production" ? "production" : "sandbox";
     const registeredAt = String(raw?.registeredAt || "").trim() || new Date().toISOString();
     const lastSeenAt = String(raw?.lastSeenAt || "").trim() || registeredAt;
-    return { deviceId, apnsToken, env, registeredAt, lastSeenAt };
+    const directories = Array.from(new Set(
+      (Array.isArray(raw?.directories) ? raw.directories : [])
+        .map((directory) => String(directory || "").trim())
+        .filter(Boolean)
+    )).slice(0, MAX_DEVICE_DIRECTORIES);
+    return { deviceId, apnsToken, env, directories, registeredAt, lastSeenAt };
   }
 
   async function load() {
@@ -60,7 +67,7 @@ export function createPushDeviceStore(storePath) {
     const parentDir = path.dirname(storePath);
     await fs.mkdir(parentDir, { recursive: true });
     const payload = {
-      version: 1,
+      version: 2,
       updatedAt: new Date().toISOString(),
       devices: Array.from(byDeviceId.values()),
     };
@@ -75,7 +82,7 @@ export function createPushDeviceStore(storePath) {
     return op;
   }
 
-  async function upsertDevice({ deviceId, apnsToken, env }) {
+  async function upsertDevice({ deviceId, apnsToken, env, directories }) {
     await ensureLoaded();
     const id = String(deviceId || "").trim();
     const existing = byDeviceId.get(id);
@@ -84,6 +91,7 @@ export function createPushDeviceStore(storePath) {
       deviceId,
       apnsToken,
       env,
+      directories,
       registeredAt: existing?.registeredAt || now,
       lastSeenAt: now,
     });

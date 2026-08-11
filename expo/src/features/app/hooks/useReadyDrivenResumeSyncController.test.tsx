@@ -61,6 +61,7 @@ function baseArgs(overrides: Partial<Parameters<typeof useReadyDrivenResumeSyncC
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
     hydratePanelFromSessionHistoryRef: { current: jest.fn().mockResolvedValue("applied" as const) },
     fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue(""),
+    markSessionReadAsync: jest.fn(),
     logSessionDiag: jest.fn(),
     ...overrides,
   };
@@ -95,6 +96,7 @@ function unstableClone(args: ReturnType<typeof baseArgs>): ReturnType<typeof bas
 describe("useReadyDrivenResumeSyncController", () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    AppState.currentState = "active";
   });
 
   afterEach(() => {
@@ -156,7 +158,24 @@ describe("useReadyDrivenResumeSyncController", () => {
     expect(args.selectSpecificLlmSession).toHaveBeenCalledTimes(1);
   });
 
-  it("skips the selected session while its live relay observer is alive", async () => {
+  it("does not resync or mark visible sessions while the app is backgrounded", async () => {
+    AppState.currentState = "background";
+    const args = baseArgs({
+      drawerSessionPopupPanelId: "drawer_session_popup",
+      panelRuntimeEntriesByIdRef: {
+        current: { drawer_session_popup: panelEntry("session-2", "/repo") },
+      },
+    });
+    const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
+    await renderHook(() => useReadyDrivenResumeSyncController(args));
+    await act(async () => manager.setState("ready", 1));
+    await advance(READY_DEBOUNCE_MS);
+    expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+    expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+    expect(args.markSessionReadAsync).not.toHaveBeenCalled();
+  });
+
+  it("skips the selected session without marking a Skia board selection read", async () => {
     const args = baseArgs({
       codexRelayObserverRef: { current: { threadId: "session-1", close: jest.fn() } },
     });
@@ -171,6 +190,7 @@ describe("useReadyDrivenResumeSyncController", () => {
     // observer自身がready時にlastRelaySeqでrelay/resumeを送る(第一経路)ため、
     // ここからの全文再取得はしない。
     expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+    expect(args.markSessionReadAsync).not.toHaveBeenCalled();
   });
 
   it("skips the selected session while a turn request is in flight (turn.ts owns the seq resume)", async () => {
@@ -264,6 +284,11 @@ describe("useReadyDrivenResumeSyncController", () => {
         directory: "/repo",
       })
     );
+    expect(args.markSessionReadAsync).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-2",
+      directory: "/repo",
+      readTrigger: "visible_resume",
+    }));
   });
 
   it("applies one rate-limit slot per session across the selected chat and all its panels", async () => {
@@ -293,6 +318,11 @@ describe("useReadyDrivenResumeSyncController", () => {
         sessionId: "session-1",
       })
     );
+    expect(args.markSessionReadAsync).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      directory: "/repo",
+      readTrigger: "visible_resume",
+    }));
   });
 
   it("includes sessions that were responding at background transition", async () => {
@@ -332,6 +362,35 @@ describe("useReadyDrivenResumeSyncController", () => {
         sessionId: "session-3",
       })
     );
+    expect(args.markSessionReadAsync).not.toHaveBeenCalled();
+  });
+
+  it("marks an actually visible popup read when its live observer resumes", async () => {
+    const args = baseArgs({
+      drawerSessionPopupPanelId: "drawer_session_popup",
+      codexRelayObserverRef: { current: { threadId: "session-3", close: jest.fn() } },
+      panelRuntimeEntriesByIdRef: {
+        current: {
+          drawer_session_popup: panelEntry("session-3", "/repo", true),
+        },
+      },
+    });
+    const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
+
+    await renderHook(() => useReadyDrivenResumeSyncController(args));
+    await act(async () => {
+      manager.setState("ready", 1);
+    });
+    await advance(READY_DEBOUNCE_MS);
+
+    // live observer自身が内容を復旧するため履歴hydrateは不要だが、実際に開いている
+    // popupは閲覧済み。Skia previewは同じlive observer経路でも既読化しない。
+    expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+    expect(args.markSessionReadAsync).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-3",
+      directory: "/repo",
+      readTrigger: "visible_resume",
+    }));
   });
 
   it("defers while a session restore is in flight and retries", async () => {
@@ -459,6 +518,7 @@ describe("useReadyDrivenResumeSyncController", () => {
       expect.objectContaining({ panelId: "panel-b", sessionId: "session-5", directory: "/repo" })
     );
     expect(args.selectSpecificLlmSession).not.toHaveBeenCalled();
+    expect(args.markSessionReadAsync).not.toHaveBeenCalled();
   });
 
   it("fires the ready-driven resync even when re-renders follow the ready transition", async () => {

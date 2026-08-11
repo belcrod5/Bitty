@@ -66,6 +66,38 @@ test("marks a session with credentials resolved after render", async () => {
   fetchMock.mockRestore();
 });
 
+test("marks a canonical directory with one scoped request", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({
+      scope: "directory",
+      status: "full",
+      directory: "/canonical/workspace",
+      source: "all",
+      lastReadAt: "2026-08-10T02:00:00.000Z",
+      selectedCount: 205,
+      foundCount: 205,
+      updatedCount: 201,
+      stores: {
+        acp: { status: "success", selectedCount: 5, foundCount: 5, updatedCount: 4 },
+        cli: { status: "success", selectedCount: 205, foundCount: 205, updatedCount: 201 },
+      },
+    }),
+  } as unknown as Response);
+  const { result } = await renderExplorerHook();
+
+  const response = await result.current.markRunnerDirectoryRead("/workspace");
+  expect(response).toMatchObject({ status: "full", directory: "/canonical/workspace", selectedCount: 205 });
+  const request = fetchMock.mock.calls[0]?.[1];
+  expect(JSON.parse(String(request?.body))).toEqual({
+    scope: "directory",
+    directory: "/workspace",
+    source: "all",
+  });
+  fetchMock.mockRestore();
+});
+
 describe("fetchRunnerSessionMessages", () => {
   afterEach(() => {
     jest.restoreAllMocks();

@@ -79,6 +79,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
       "dir-1": directoryState(loadedSessions),
     },
     directoryReadProgressByPath: {},
+    directoryUnreadCountByPath: {},
     directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
     sessionTitleOverridesById: {
       "loaded-restore": "Restore title override",
@@ -136,6 +137,47 @@ test("shows progress for a directory read operation", async () => {
   });
 
   expect(drawer.getByText("既読にしています 1/4")).toBeTruthy();
+});
+
+test("shows the authoritative 66 unread total when 55 sessions are outside the loaded rows", async () => {
+  const registeredDirectories = [
+    ["downloads", "/downloads", "Downloads", 10, 0],
+    ["gogcli", "/gogcli", "gogcli", 2, 2],
+    ["pta", "/pta", "pta", 1, 1],
+    ["test", "/test_folder", "test_folder", 42, 0],
+    ["collabo", "/collabo_link", "collabo_link", 4, 3],
+    ["relief", "/relief-box2", "relief-box2", 7, 5],
+  ] as const;
+  const directoryUnreadCountByPath = Object.fromEntries(
+    registeredDirectories.map(([, path, , unreadCount]) => [path, unreadCount])
+  );
+  const loadedUnreadCount = registeredDirectories.reduce((sum, entry) => sum + entry[4], 0);
+
+  const drawer = await renderDrawer({
+    expandedDirectoryIds: [],
+    registeredDirectories: registeredDirectories.map(([id, path, displayName]) => ({
+      id,
+      path,
+      displayName,
+      markerColor: "none",
+    })),
+    directoryUnreadCountByPath,
+    directorySessionsById: Object.fromEntries(registeredDirectories.map(([id, path, , , visibleUnread]) => [
+      id,
+      directoryState(Array.from({ length: 5 }, (_, index) => session({
+        sessionId: `${id}-${index}`,
+        directory: path,
+        cwd: path,
+        updatedAt: index < visibleUnread ? "2026-06-18T00:00:00.000Z" : "2026-06-17T00:00:00.000Z",
+      }))),
+    ])),
+  });
+
+  expect(Object.values(directoryUnreadCountByPath).reduce((sum, count) => sum + count, 0)).toBe(66);
+  expect(66 - loadedUnreadCount).toBe(55);
+  expect(drawer.getByLabelText("Downloadsの未読 10件")).toBeTruthy();
+  expect(drawer.getByLabelText("test_folderの未読 42件")).toBeTruthy();
+  expect(drawer.getByLabelText("relief-box2の未読 7件")).toBeTruthy();
 });
 
 test("shows one aggregate progress bar for registered directory session sync", async () => {

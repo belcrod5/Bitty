@@ -29,7 +29,12 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
           }
         }
         for (const notification of notifications) {
-          for (const listener of listeners) listener(notification.method, notification.params);
+          const paramsWithOwner = {
+            threadId: params.threadId,
+            turnId: "turn-1",
+            ...notification.params,
+          };
+          for (const listener of listeners) listener(notification.method, paramsWithOwner);
         }
         return { turn: { id: "turn-1" } };
       }
@@ -111,6 +116,36 @@ test("captures the final agent message and removes its notification listener", a
     < client.calls.findIndex((call) => call.method === "turn/start"), true);
   assert.equal(client.calls.filter((call) => call.kind === "listener-removed").length, 1);
   assert.equal(client.listeners.size, 0);
+});
+
+test("ignores child subagent events until the requested parent thread and turn complete", async () => {
+  const client = fakeClient([
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "child-thread", turnId: "child-turn", delta: "child answer" },
+    },
+    {
+      method: "turn/completed",
+      params: { threadId: "child-thread", turnId: "child-turn", turn: { status: "completed" } },
+    },
+    {
+      method: "item/agentMessage/delta",
+      params: { delta: "parent answer" },
+    },
+    {
+      method: "turn/completed",
+      params: { turn: { status: "completed" } },
+    },
+  ]);
+
+  const result = await executeCodexTurn({
+    client,
+    clientName: "queued-turn",
+    inputText: "run",
+    cwd: "/work/project",
+  });
+
+  assert.equal(result.lastAgentMessageText, "parent answer");
 });
 
 test("treats an interrupted turn as failure and still removes its listener", async () => {

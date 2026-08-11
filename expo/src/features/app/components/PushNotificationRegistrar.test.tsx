@@ -3,14 +3,20 @@ import { render, waitFor } from "@testing-library/react-native";
 import * as Notifications from "expo-notifications";
 import { PushNotificationRegistrar } from "./PushNotificationRegistrar";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { useConversation } from "../contexts/ConversationContext";
 import { useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { getOrCreatePushDeviceId, registerPushDevice } from "../utils/pushNotifications";
-import { registerApprovalNotificationCategories, setPendingPushSessionId } from "../utils/pushApprovalNotifications";
+import { registerApprovalNotificationCategories, setPendingPushSessionTarget } from "../utils/pushApprovalNotifications";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
+import {
+  reconcileReceivedSessionNotification,
+  syncUnreadBadgeCount,
+} from "../utils/sessionReadNotifications";
 
 type NotificationResponseListener = (response: unknown) => void;
 
 let capturedResponseListener: NotificationResponseListener | null = null;
+let capturedReceivedListener: ((notification: unknown) => void) | null = null;
 
 jest.mock("expo-notifications", () => ({
   setNotificationHandler: jest.fn(),
@@ -18,13 +24,19 @@ jest.mock("expo-notifications", () => ({
   requestPermissionsAsync: jest.fn(),
   getDevicePushTokenAsync: jest.fn(),
   addNotificationResponseReceivedListener: jest.fn(),
+  addNotificationReceivedListener: jest.fn(),
   getLastNotificationResponse: jest.fn(() => null),
   clearLastNotificationResponse: jest.fn(),
+  setBadgeCountAsync: jest.fn(),
   DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
 }));
 
 jest.mock("../contexts/AppSettingsContext", () => ({
   useAppSettings: jest.fn(),
+}));
+
+jest.mock("../contexts/ConversationContext", () => ({
+  useConversation: jest.fn(),
 }));
 
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
@@ -42,22 +54,38 @@ jest.mock("../utils/pushNotifications", () => ({
   })),
 }));
 
-jest.mock("../utils/pushApprovalNotifications", () => ({
-  registerApprovalNotificationCategories: jest.fn(async () => {}),
-  setPendingPushSessionId: jest.fn(),
-}));
+jest.mock("../utils/pushApprovalNotifications", () => {
+  const actual = jest.requireActual("../utils/pushApprovalNotifications");
+  return {
+    ...actual,
+    registerApprovalNotificationCategories: jest.fn(async () => {}),
+    setPendingPushSessionTarget: jest.fn(),
+  };
+});
 
 jest.mock("../utils/pushApprovalActions", () => ({
   handlePushApprovalAction: jest.fn(async () => {}),
 }));
 
+jest.mock("../utils/sessionReadNotifications", () => ({
+  notificationFailureReason: jest.fn(() => "error"),
+  reconcileReceivedSessionNotification: jest.fn(async () => {}),
+  syncUnreadBadgeCount: jest.fn(async () => ({
+    unreadCount: 0,
+    directoryCounts: [],
+  })),
+}));
+
 const mockUseAppSettings = useAppSettings as jest.Mock;
+const mockUseConversation = useConversation as jest.Mock;
 const mockUseRunnerWebSocketSnapshot = useRunnerWebSocketSnapshot as jest.Mock;
 const mockGetOrCreatePushDeviceId = getOrCreatePushDeviceId as jest.Mock;
 const mockRegisterPushDevice = registerPushDevice as jest.Mock;
 const mockRegisterApprovalNotificationCategories = registerApprovalNotificationCategories as jest.Mock;
-const mockSetPendingPushSessionId = setPendingPushSessionId as jest.Mock;
+const mockSetPendingPushSessionTarget = setPendingPushSessionTarget as jest.Mock;
 const mockHandlePushApprovalAction = handlePushApprovalAction as jest.Mock;
+const mockReconcileReceivedSessionNotification = reconcileReceivedSessionNotification as jest.Mock;
+const mockSyncUnreadBadgeCount = syncUnreadBadgeCount as jest.Mock;
 const mockAddNotificationResponseReceivedListener =
   Notifications.addNotificationResponseReceivedListener as jest.Mock;
 
@@ -71,10 +99,15 @@ describe("PushNotificationRegistrar", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     capturedResponseListener = null;
+    capturedReceivedListener = null;
     // clearAllMocks does not reset return values configured with mockReturnValue.
     (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(null);
     mockAddNotificationResponseReceivedListener.mockImplementation((listener: NotificationResponseListener) => {
       capturedResponseListener = listener;
+      return { remove: jest.fn() };
+    });
+    (Notifications.addNotificationReceivedListener as jest.Mock).mockImplementation((listener) => {
+      capturedReceivedListener = listener;
       return { remove: jest.fn() };
     });
     mockUseAppSettings.mockReturnValue({
@@ -83,6 +116,12 @@ describe("PushNotificationRegistrar", () => {
       faceIdRequiredForApproval: false,
     });
     mockUseRunnerWebSocketSnapshot.mockReturnValue({ connected: true });
+    mockUseConversation.mockReturnValue({
+      registeredDirectories: [
+        { id: "one", path: "/repo/one" },
+        { id: "two", path: "/repo/two" },
+      ],
+    });
     (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValue({
       granted: true,
       canAskAgain: true,
@@ -104,8 +143,22 @@ describe("PushNotificationRegistrar", () => {
         runnerToken: "runner-token",
         deviceId: "device-1",
         apnsToken: "apns-token-1",
+        directories: ["/repo/one", "/repo/two"],
       });
     });
+  });
+
+  it("publishes the same canonical snapshot used for the iOS badge", async () => {
+    const snapshot = {
+      unreadCount: 66,
+      directoryCounts: [{ directory: "/repo/one", unreadCount: 66 }],
+    };
+    mockSyncUnreadBadgeCount.mockResolvedValueOnce(snapshot);
+    const onUnreadCountSnapshot = jest.fn();
+
+    await render(<PushNotificationRegistrar onUnreadCountSnapshot={onUnreadCountSnapshot} />);
+
+    await waitFor(() => expect(onUnreadCountSnapshot).toHaveBeenCalledWith(snapshot));
   });
 
   it("requests permission when not yet determined and can ask again", async () => {
@@ -159,6 +212,26 @@ describe("PushNotificationRegistrar", () => {
     expect(mockRegisterPushDevice).toHaveBeenCalledTimes(1);
   });
 
+  it("re-registers when the registered directory subscription changes", async () => {
+    const { rerender } = await render(<PushNotificationRegistrar />);
+    await waitFor(() => {
+      expect(mockRegisterPushDevice).toHaveBeenCalledTimes(1);
+    });
+    mockUseConversation.mockReturnValue({
+      registeredDirectories: [
+        { id: "one", path: "/repo/one" },
+        { id: "three", path: "/repo/three" },
+      ],
+    });
+    await rerender(<PushNotificationRegistrar />);
+    await waitFor(() => {
+      expect(mockRegisterPushDevice).toHaveBeenCalledTimes(2);
+    });
+    expect(mockRegisterPushDevice).toHaveBeenLastCalledWith(expect.objectContaining({
+      directories: ["/repo/one", "/repo/three"],
+    }));
+  });
+
   it("re-registers when the APNs token changes on a subsequent connection cycle", async () => {
     const { rerender } = await render(<PushNotificationRegistrar />);
     await waitFor(() => {
@@ -186,6 +259,7 @@ describe("PushNotificationRegistrar", () => {
       runnerToken: "runner-token-2",
       deviceId: "device-1",
       apnsToken: "apns-token-2",
+      directories: ["/repo/one", "/repo/two"],
     });
   });
 
@@ -217,14 +291,37 @@ describe("PushNotificationRegistrar", () => {
         request: {
           content: {
             categoryIdentifier: "TURN_COMPLETED",
-            data: { sessionId: "session-abc", turnId: "turn-1" },
+            data: null,
           },
+          trigger: { type: "push", payload: { sessionId: "session-abc", directory: "/repo/one", turnId: "turn-1" } },
         },
       },
     });
 
-    expect(mockSetPendingPushSessionId).toHaveBeenCalledWith("session-abc");
+    expect(mockSetPendingPushSessionTarget).toHaveBeenCalledWith({
+      sessionId: "session-abc",
+      directory: "/repo/one",
+    });
     expect(mockHandlePushApprovalAction).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an incoming foreground notification against canonical server state", async () => {
+    const snapshot = {
+      unreadCount: 1,
+      directoryCounts: [{ directory: "/repo/one", unreadCount: 1 }],
+    };
+    mockReconcileReceivedSessionNotification.mockResolvedValueOnce(snapshot);
+    const onUnreadCountSnapshot = jest.fn();
+    await render(<PushNotificationRegistrar onUnreadCountSnapshot={onUnreadCountSnapshot} />);
+    const notification = { request: { identifier: "received-1", content: {} } };
+    capturedReceivedListener?.(notification);
+    expect(mockReconcileReceivedSessionNotification).toHaveBeenCalledWith({
+      notification,
+      runnerUrl: "https://runner.example.com",
+      runnerToken: "runner-token",
+      directories: ["/repo/one", "/repo/two"],
+    });
+    await waitFor(() => expect(onUnreadCountSnapshot).toHaveBeenCalledWith(snapshot));
   });
 
   it("delegates the deny action to handlePushApprovalAction immediately", async () => {
@@ -236,8 +333,9 @@ describe("PushNotificationRegistrar", () => {
         request: {
           content: {
             categoryIdentifier: "APPROVAL_REQUEST",
-            data: { approvalId: "relay-1:rpc-2", sessionId: "session-abc" },
+            data: {},
           },
+          trigger: { type: "push", payload: { approvalId: "relay-1:rpc-2", sessionId: "session-abc" } },
         },
       },
     });
@@ -247,7 +345,7 @@ describe("PushNotificationRegistrar", () => {
       actionIdentifier: "deny",
       approvalId: "relay-1:rpc-2",
     });
-    expect(mockSetPendingPushSessionId).not.toHaveBeenCalled();
+    expect(mockSetPendingPushSessionTarget).not.toHaveBeenCalled();
   });
 
   it("delegates the approve action to handlePushApprovalAction immediately", async () => {
@@ -294,6 +392,49 @@ describe("PushNotificationRegistrar", () => {
       approvalId: "relay-1:rpc-9",
     });
     expect(Notifications.clearLastNotificationResponse).toHaveBeenCalled();
+  });
+
+  it("opens the target session from a cold-start completion tap and clears the response", async () => {
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue({
+      actionIdentifier: Notifications.DEFAULT_ACTION_IDENTIFIER,
+      notification: {
+        request: {
+          identifier: "completion-cold-start",
+          content: {
+            categoryIdentifier: "TURN_COMPLETED",
+            data: null,
+          },
+          trigger: { type: "push", payload: { sessionId: "session-cold", directory: "/repo/cold" } },
+        },
+      },
+    });
+
+    await render(<PushNotificationRegistrar />);
+
+    expect(mockSetPendingPushSessionTarget).toHaveBeenCalledWith({
+      sessionId: "session-cold",
+      directory: "/repo/cold",
+    });
+    expect(Notifications.clearLastNotificationResponse).toHaveBeenCalled();
+    expect(mockHandlePushApprovalAction).not.toHaveBeenCalled();
+  });
+
+  it("retains a cold-start response whose metadata cannot be handled", async () => {
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue({
+      actionIdentifier: Notifications.DEFAULT_ACTION_IDENTIFIER,
+      notification: {
+        request: {
+          identifier: "invalid-cold-start",
+          content: { categoryIdentifier: "TURN_COMPLETED", data: null },
+          trigger: { type: "push", payload: { directory: "/repo/cold" } },
+        },
+      },
+    });
+
+    await render(<PushNotificationRegistrar />);
+
+    expect(mockSetPendingPushSessionTarget).not.toHaveBeenCalled();
+    expect(Notifications.clearLastNotificationResponse).not.toHaveBeenCalled();
   });
 
   it("does not respond twice when the same response arrives via both the listener and getLastNotificationResponse", async () => {

@@ -8,6 +8,36 @@ export const APPROVAL_REQUEST_CATEGORY = "APPROVAL_REQUEST";
 export const APPROVE_ACTION = "approve";
 export const DENY_ACTION = "deny";
 
+export type NotificationMetadata = {
+  sessionId: string;
+  directory: string;
+  turnId: string;
+  approvalId: string;
+};
+
+export function normalizeNotificationMetadata(
+  request: Pick<Notifications.NotificationRequest, "content" | "trigger">
+): NotificationMetadata {
+  const contentData = request?.content?.data && typeof request.content.data === "object"
+    ? request.content.data as Record<string, unknown>
+    : {};
+  const trigger = request?.trigger && typeof request.trigger === "object"
+    ? request.trigger as unknown as Record<string, unknown>
+    : {};
+  const triggerPayload = trigger.payload && typeof trigger.payload === "object"
+    ? trigger.payload as Record<string, unknown>
+    : {};
+  const value = (field: keyof NotificationMetadata) => (
+    String(contentData[field] || "").trim() || String(triggerPayload[field] || "").trim()
+  );
+  return {
+    sessionId: value("sessionId"),
+    directory: value("directory"),
+    turnId: value("turnId"),
+    approvalId: value("approvalId"),
+  };
+}
+
 // Registers (or re-registers) the two notification categories used by push notifications.
 // TURN_COMPLETED has no actions -- tap-to-open is handled entirely by the response listener.
 // APPROVAL_REQUEST exposes "approve"/"deny" action buttons.
@@ -46,19 +76,42 @@ export async function registerApprovalNotificationCategories(faceIdRequired: boo
   ]);
 }
 
-// Module-level holder for "which session should we navigate to once the app is ready" set by
-// the notification response listener's default-tap branch (see PushNotificationRegistrar.tsx).
-// A plain variable (not React state) because the tap can happen before any provider has
-// mounted -- see usePendingPushSessionNavigationController.ts, which polls this on settings-load
-// and app-foreground.
-let pendingPushSessionId = "";
+export type PendingPushSessionTarget = {
+  sessionId: string;
+  directory: string;
+  sequence: number;
+};
 
-export function setPendingPushSessionId(sessionId: string): void {
-  pendingPushSessionId = String(sessionId || "").trim();
+let pendingPushSessionTarget: PendingPushSessionTarget | null = null;
+let pendingPushSequence = 0;
+const pendingPushListeners = new Set<() => void>();
+
+export function setPendingPushSessionTarget(params: {
+  sessionId: unknown;
+  directory?: unknown;
+}): void {
+  const sessionId = String(params?.sessionId || "").trim();
+  if (!sessionId) return;
+  pendingPushSequence += 1;
+  pendingPushSessionTarget = {
+    sessionId,
+    directory: String(params?.directory || "").trim(),
+    sequence: pendingPushSequence,
+  };
+  for (const listener of pendingPushListeners) listener();
 }
 
-export function consumePendingPushSessionId(): string {
-  const sessionId = pendingPushSessionId;
-  pendingPushSessionId = "";
-  return sessionId;
+export function getPendingPushSessionTarget(): PendingPushSessionTarget | null {
+  return pendingPushSessionTarget;
+}
+
+export function clearPendingPushSessionTarget(target: PendingPushSessionTarget): boolean {
+  if (pendingPushSessionTarget?.sequence !== target.sequence) return false;
+  pendingPushSessionTarget = null;
+  return true;
+}
+
+export function subscribePendingPushSessionTarget(listener: () => void): () => void {
+  pendingPushListeners.add(listener);
+  return () => pendingPushListeners.delete(listener);
 }

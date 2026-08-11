@@ -1,7 +1,11 @@
 import { useCallback, useRef, useState } from "react";
-import type { DirectoryReadProgress, DirectorySessionTreeState } from "../types/directorySessions";
-import type { LlmSessionSource, RunnerSessionReadResult } from "./useLlmSessionExplorer";
-import { isLlmSessionUnread, parseOptionalSessionId } from "../utils/llmSession";
+import type { DirectoryLoadOutcome, DirectoryReadProgress } from "../types/directorySessions";
+import type {
+  LlmSessionSource,
+  RunnerDirectoryReadResult,
+  RunnerSessionReadResult,
+} from "./useLlmSessionExplorer";
+import { parseOptionalSessionId } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
 
 type MarkReadParams = {
@@ -9,6 +13,7 @@ type MarkReadParams = {
   directory: string;
   source?: LlmSessionSource;
   perfTraceId?: string;
+  readTrigger?: "notification_open" | "drawer_open" | "visible_resume" | "visible_completion";
   restoreRequestSeq: number;
 };
 
@@ -18,30 +23,28 @@ type SessionReadOptions = {
   lastReadAt?: unknown;
 };
 
-const DIRECTORY_READ_CONCURRENCY = 4;
-
 type UseSessionMarkReadControllerArgs = {
   markRunnerSessionRead: (
     sessionIdRaw: unknown,
     opts?: SessionReadOptions
   ) => Promise<RunnerSessionReadResult>;
-  fetchSessionHistory: (
-    directoryPath: string,
-    options?: {
-      limit?: number;
-      cursor?: string;
-      includeRunnerSnapshots?: boolean;
-      includeSubagents?: boolean;
-    }
-  ) => Promise<{
-    latestSessionId: string;
-    nextCursor: string;
-    entries: DirectorySessionTreeState["entries"];
-  }>;
+  markRunnerDirectoryRead: (directory: unknown) => Promise<RunnerDirectoryReadResult>;
   normalizedLlmDirectoryForRequest: () => string;
   applySessionLastReadAtByIdToDirectoryTrees: (
-    lastReadAtBySessionId: Map<string, string>
+    lastReadAtBySessionId: Map<string, string>,
+    directory?: string
   ) => void;
+  applyDirectoryLastReadAtToDirectoryTrees: (directory: string, lastReadAt: string) => void;
+  reconcileDirectorySessionTree: (
+    directory: string,
+    requestedDirectory?: string
+  ) => Promise<DirectoryLoadOutcome>;
+  onSessionReadStateCommitted?: (result: {
+    sessionId: string;
+    directory: string;
+    isRead: boolean;
+  }) => void;
+  onDirectoryReadStateCommitted?: (result: RunnerDirectoryReadResult) => Promise<void>;
   showChatBottomToast: (role: "user" | "assistant", rawText: string) => void;
   logSessionDiag: (
     event: string,
@@ -64,13 +67,18 @@ function runnerSessionReadTargetFound(result: RunnerSessionReadResult): boolean 
 
 export function useSessionMarkReadController({
   markRunnerSessionRead,
-  fetchSessionHistory,
+  markRunnerDirectoryRead,
   normalizedLlmDirectoryForRequest,
   applySessionLastReadAtByIdToDirectoryTrees,
+  applyDirectoryLastReadAtToDirectoryTrees,
+  reconcileDirectorySessionTree,
+  onSessionReadStateCommitted,
+  onDirectoryReadStateCommitted,
   showChatBottomToast,
   logSessionDiag,
 }: UseSessionMarkReadControllerArgs) {
   const pendingSessionReadByIdRef = useRef(new Map<string, Promise<RunnerSessionReadResult>>());
+  const pendingDirectoryReadsRef = useRef(new Set<Promise<RunnerDirectoryReadResult>>());
   const directoryReadInFlightPathsRef = useRef(new Set<string>());
   const [directoryReadProgressByPath, setDirectoryReadProgressByPath] = useState<
     Record<string, DirectoryReadProgress>
@@ -79,14 +87,25 @@ export function useSessionMarkReadController({
     sessionId: string,
     options: SessionReadOptions
   ) => {
+    const previousDirectoryReads = [...pendingDirectoryReadsRef.current];
     const run = async () => {
+      await Promise.all(previousDirectoryReads.map((promise) => promise.then(
+        () => undefined,
+        () => undefined
+      )));
       const result = await markRunnerSessionRead(sessionId, options);
       const lastReadAt = String(result?.lastReadAt || "").trim();
       if (!lastReadAt) throw new Error("Runnerから既読日時が返されませんでした");
       if (!runnerSessionReadTargetFound(result)) {
         throw new Error("Runnerで対象セッションの既読状態を更新できませんでした");
       }
-      applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, lastReadAt]]));
+      const directory = String(result.directory || "").trim();
+      applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, lastReadAt]]), directory);
+      onSessionReadStateCommitted?.({
+        sessionId,
+        directory,
+        isRead: String(options.lastReadAt || "").trim() !== new Date(0).toISOString(),
+      });
       return result;
     };
     const previous = pendingSessionReadByIdRef.current.get(sessionId);
@@ -102,6 +121,7 @@ export function useSessionMarkReadController({
   }, [
     applySessionLastReadAtByIdToDirectoryTrees,
     markRunnerSessionRead,
+    onSessionReadStateCommitted,
   ]);
 
   const markSessionReadAsync = useCallback(({
@@ -109,6 +129,7 @@ export function useSessionMarkReadController({
     directory,
     source,
     perfTraceId,
+    readTrigger,
     restoreRequestSeq,
   }: MarkReadParams) => {
     const markReadStartedAt = Date.now();
@@ -121,6 +142,7 @@ export function useSessionMarkReadController({
         logSessionDiag("session_open_perf_mark_read_async_done", {
           traceId: perfTraceId || undefined,
           sessionId,
+          readTrigger: readTrigger || "unknown",
           elapsedMs: Math.max(0, Date.now() - markReadStartedAt),
           updated: asyncMarkReadResult?.updated === true,
           acpUpdated: asyncMarkReadResult?.acpUpdated === true,
@@ -135,6 +157,7 @@ export function useSessionMarkReadController({
         logSessionDiag("session_open_perf_mark_read_async_error", {
           traceId: perfTraceId || undefined,
           sessionId,
+          readTrigger: readTrigger || "unknown",
           elapsedMs: Math.max(0, Date.now() - markReadStartedAt),
           message: err instanceof Error ? err.message : String(err),
         }, {
@@ -219,91 +242,60 @@ export function useSessionMarkReadController({
       ...prev,
       [directory]: { completed: 0, total: 0 },
     }));
+    let directoryRequest: Promise<RunnerDirectoryReadResult> | null = null;
     try {
-      const sessionsById = new Map<string, DirectorySessionTreeState["entries"][number]>();
-      let cursor = "";
-      const seenCursors = new Set<string>();
-      do {
-        if (cursor) seenCursors.add(cursor);
-        const result = await fetchSessionHistory(directory, {
-          limit: 100,
-          cursor,
-          includeRunnerSnapshots: true,
-          includeSubagents: true,
-        });
-        for (const entry of result.entries) {
-          const sessionId = parseOptionalSessionId(entry.sessionId);
-          if (!sessionId || sessionsById.has(sessionId)) continue;
-          sessionsById.set(sessionId, entry);
-        }
-        const nextCursor = String(result.nextCursor || "").trim();
-        cursor = nextCursor && !seenCursors.has(nextCursor) ? nextCursor : "";
-      } while (cursor);
-
-      const unreadSessions = [...sessionsById.values()].filter((entry) => (
-        parseOptionalSessionId(entry.sessionId) && isLlmSessionUnread(entry)
-      ));
-      if (unreadSessions.length <= 0) {
-        showChatBottomToast("assistant", "既読にする未読セッションはありません。");
-        return true;
-      }
-      setDirectoryReadProgressByPath((prev) => ({
-        ...prev,
-        [directory]: { completed: 0, total: unreadSessions.length },
-      }));
-      let nextSessionIndex = 0;
-      let completedCount = 0;
-      const failures: unknown[] = [];
-      const workers = Array.from({
-        length: Math.min(DIRECTORY_READ_CONCURRENCY, unreadSessions.length),
-      }, async () => {
-        while (nextSessionIndex < unreadSessions.length) {
-          const index = nextSessionIndex;
-          nextSessionIndex += 1;
-          const entry = unreadSessions[index];
-          const sessionId = parseOptionalSessionId(entry?.sessionId);
+      const previousSessionReads = [...pendingSessionReadByIdRef.current.values()];
+      directoryRequest = Promise.all(previousSessionReads.map((promise) => promise.then(
+        () => undefined,
+        () => undefined
+      ))).then(async () => {
+        const result = await markRunnerDirectoryRead(directory);
+        const lastReadAt = String(result.lastReadAt || "").trim();
+        if (!lastReadAt) throw new Error("Runnerから既読日時が返されませんでした");
+        setDirectoryReadProgressByPath((prev) => ({
+          ...prev,
+          [directory]: { completed: result.foundCount, total: result.selectedCount },
+        }));
+        let reconcileFailure = "";
+        if (result.status === "full") {
+          applyDirectoryLastReadAtToDirectoryTrees(result.directory, lastReadAt);
+        } else {
           try {
-            await startSessionReadMutation(sessionId, {
-              source: "all",
-              directory: parseLlmDirectory(entry?.directory || directory),
-            });
-            completedCount += 1;
-          } catch (reason) {
-            failures.push(reason);
-          } finally {
-            setDirectoryReadProgressByPath((prev) => {
-              const current = prev[directory];
-              if (!current) return prev;
-              return {
-                ...prev,
-                [directory]: {
-                  ...current,
-                  completed: Math.min(current.total, current.completed + 1),
-                },
-              };
-            });
+            const outcome = await reconcileDirectorySessionTree(result.directory, directory);
+            if (outcome.status !== "success") {
+              reconcileFailure = outcome.status === "failed"
+                ? "正本の再取得に失敗しました"
+                : `正本の再取得が${outcome.status}になりました`;
+            }
+          } catch {
+            reconcileFailure = "正本の再取得に失敗しました";
           }
         }
+        await onDirectoryReadStateCommitted?.(result);
+        if (reconcileFailure) throw new Error(reconcileFailure);
+        return result;
       });
-      await Promise.all(workers);
-      if (failures.length > 0) {
-        const firstFailure = failures[0];
-        const message = firstFailure instanceof Error
-          ? firstFailure.message
-          : String(firstFailure);
-        showChatBottomToast(
-          "assistant",
-          `${completedCount}件を既読にしました。${failures.length}件は失敗しました: ${message}`
-        );
-        return false;
+      pendingDirectoryReadsRef.current.add(directoryRequest);
+      const result = await directoryRequest;
+      if (result.status === "full") {
+        showChatBottomToast("assistant", result.selectedCount > 0
+          ? `${result.foundCount}件を既読にしました。`
+          : "既読にするセッションはありません。");
+        return true;
       }
-      showChatBottomToast("assistant", `${completedCount}件を既読にしました。`);
-      return true;
+      showChatBottomToast(
+        "assistant",
+        result.status === "partial"
+          ? `${result.updatedCount}件を既読にしました。一部ストアの失敗後、表示を正本に再同期しました。`
+          : "既読化できませんでした。表示を正本に再同期しました。"
+      );
+      return false;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      showChatBottomToast("assistant", `一括既読化に失敗しました: ${message}`);
+      showChatBottomToast("assistant", `一括既読処理を完了できませんでした: ${message}`);
       return false;
     } finally {
+      if (directoryRequest) pendingDirectoryReadsRef.current.delete(directoryRequest);
       directoryReadInFlightPathsRef.current.delete(directory);
       setDirectoryReadProgressByPath((prev) => {
         if (!prev[directory]) return prev;
@@ -313,10 +305,12 @@ export function useSessionMarkReadController({
       });
     }
   }, [
-    fetchSessionHistory,
+    applyDirectoryLastReadAtToDirectoryTrees,
+    markRunnerDirectoryRead,
     normalizedLlmDirectoryForRequest,
+    onDirectoryReadStateCommitted,
+    reconcileDirectorySessionTree,
     showChatBottomToast,
-    startSessionReadMutation,
   ]);
 
   return {

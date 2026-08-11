@@ -14,6 +14,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     sessionRootBindingEnabled,
     workspaceRoot,
   } = deps;
+  const fileSystem = deps.fileSystem || fs;
 
   let acpSessionStoreLoadPromise = null;
   let acpSessionStoreWriteQueue = Promise.resolve();
@@ -28,7 +29,7 @@ export function createLlmAcpSessionStore(deps = {}) {
       ? path.resolve(normalized)
       : path.resolve(workspaceRoot, normalized);
     try {
-      return await fs.realpath(absolute);
+      return await fileSystem.realpath(absolute);
     } catch {
       return absolute;
     }
@@ -54,12 +55,12 @@ export function createLlmAcpSessionStore(deps = {}) {
     }
   }
 
-  function buildAcpSessionStorePayload() {
+  function buildAcpSessionStorePayload(lastReadAtBySessionId = acpSessionLastReadAtBySessionId) {
     const sessions = {};
     const orderedEntries = Array.from(acpSessionRootBySessionId.entries()).sort((a, b) => a[0].localeCompare(b[0]));
     for (const [sessionId, rootRelativePath] of orderedEntries) {
       const updatedAt = normalizeSessionUpdatedAt(acpSessionUpdatedAtBySessionId.get(sessionId)) || new Date(0).toISOString();
-      const lastReadAt = normalizeSessionUpdatedAt(acpSessionLastReadAtBySessionId.get(sessionId));
+      const lastReadAt = normalizeSessionUpdatedAt(lastReadAtBySessionId.get(sessionId));
       sessions[sessionId] = {
         directory: rootRelativePath,
         rootRelativePath,
@@ -85,7 +86,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     if (!sessionRootBindingEnabled) return;
     let parsed = {};
     try {
-      const raw = await fs.readFile(acpSessionStorePath, "utf8");
+      const raw = await fileSystem.readFile(acpSessionStorePath, "utf8");
       parsed = raw ? JSON.parse(raw) : {};
     } catch (err) {
       if (!err || typeof err !== "object" || err.code !== "ENOENT") {
@@ -108,7 +109,10 @@ export function createLlmAcpSessionStore(deps = {}) {
         continue;
       }
       if (!sessionId) continue;
-      const rootRelativePath = normalizeSessionRootRelativePath(value?.rootRelativePath || value?.directory);
+      const storedRoot = normalizeSessionRootRelativePath(value?.rootRelativePath || value?.directory);
+      const rootRelativePath = path.isAbsolute(storedRoot)
+        ? await resolveDirectoryIdentity(storedRoot)
+        : storedRoot;
       const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt) || fallbackUpdatedAt;
       const lastReadAt = normalizeSessionUpdatedAt(value?.lastReadAt);
       acpSessionRootBySessionId.set(sessionId, rootRelativePath);
@@ -131,14 +135,14 @@ export function createLlmAcpSessionStore(deps = {}) {
     await acpSessionStoreLoadPromise;
   }
 
-  async function persistAcpSessionStore() {
+  async function persistAcpSessionStore(lastReadAtBySessionId = acpSessionLastReadAtBySessionId) {
     if (!sessionRootBindingEnabled) return;
     const parentDir = path.dirname(acpSessionStorePath);
-    await fs.mkdir(parentDir, { recursive: true });
-    const payload = buildAcpSessionStorePayload();
+    await fileSystem.mkdir(parentDir, { recursive: true });
+    const payload = buildAcpSessionStorePayload(lastReadAtBySessionId);
     const tmpPath = acpSessionStorePath + "." + randomUUID() + ".tmp";
-    await fs.writeFile(tmpPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
-    await fs.rename(tmpPath, acpSessionStorePath);
+    await fileSystem.writeFile(tmpPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+    await fileSystem.rename(tmpPath, acpSessionStorePath);
   }
 
   async function resolveSessionIdForRootDir(requestedSessionId, rootRelativePath) {
@@ -207,25 +211,38 @@ export function createLlmAcpSessionStore(deps = {}) {
     await op;
   }
 
-  async function listAcpSessionsForDirectory(requestedDirectory) {
+  async function listAcpSessionsForDirectories(requestedDirectories) {
     await ensureAcpSessionStoreLoaded();
-    const sessions = [];
-    const requestedRoot = await resolveDirectoryIdentity(requestedDirectory);
-    for (const [sessionId, directory] of acpSessionRootBySessionId.entries()) {
-      if (!path.isAbsolute(directory) || path.resolve(directory) !== requestedRoot) continue;
-      const updatedAt = normalizeSessionUpdatedAt(acpSessionUpdatedAtBySessionId.get(sessionId)) || new Date(0).toISOString();
-      const lastReadAt = normalizeSessionUpdatedAt(acpSessionLastReadAtBySessionId.get(sessionId));
-      sessions.push({
-        sessionId,
-        directory: requestedRoot,
-        cwd: requestedRoot,
-        updatedAt,
-        lastReadAt: lastReadAt || "",
-        source: "acp",
-      });
-    }
-    sessions.sort(compareSessionHistoryEntries);
-    return sessions;
+    const requestedRoots = await Promise.all(
+      (Array.isArray(requestedDirectories) ? requestedDirectories : [])
+        .map((directory) => resolveDirectoryIdentity(directory)),
+    );
+    const rootsBySessionId = new Map(acpSessionRootBySessionId);
+    const updatedAtBySessionId = new Map(acpSessionUpdatedAtBySessionId);
+    const lastReadAtBySessionId = new Map(acpSessionLastReadAtBySessionId);
+    return requestedRoots.map((requestedRoot) => {
+      const sessions = [];
+      for (const [sessionId, directory] of rootsBySessionId.entries()) {
+        if (!path.isAbsolute(directory) || path.resolve(directory) !== requestedRoot) continue;
+        const updatedAt = normalizeSessionUpdatedAt(updatedAtBySessionId.get(sessionId)) || new Date(0).toISOString();
+        const lastReadAt = normalizeSessionUpdatedAt(lastReadAtBySessionId.get(sessionId));
+        sessions.push({
+          sessionId,
+          directory: requestedRoot,
+          cwd: requestedRoot,
+          updatedAt,
+          lastReadAt: lastReadAt || "",
+          source: "acp",
+        });
+      }
+      sessions.sort(compareSessionHistoryEntries);
+      return { directory: requestedRoot, sessions };
+    });
+  }
+
+  async function listAcpSessionsForDirectory(requestedDirectory) {
+    const [result] = await listAcpSessionsForDirectories([requestedDirectory]);
+    return result?.sessions || [];
   }
 
   async function migrateAcpSessionDirectoryIdentity(sourceDirectory, targetDirectory) {
@@ -250,27 +267,65 @@ export function createLlmAcpSessionStore(deps = {}) {
     return await op;
   }
 
-  async function markAcpSessionRead(sessionId, lastReadAt) {
+  async function markAcpSessionsRead(sessionIds, lastReadAt) {
     const startedAtMs = Date.now();
-    let updated = false;
-    let entryFound = false;
+    const results = (Array.isArray(sessionIds) ? sessionIds : []).map((sessionId) => ({
+      sessionId,
+      updated: false,
+      entryFound: false,
+    }));
     await ensureAcpSessionStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
-      if (!acpSessionRootBySessionId.has(sessionId)) return;
-      entryFound = true;
-      const previous = normalizeSessionUpdatedAt(acpSessionLastReadAtBySessionId.get(sessionId));
-      if (previous === lastReadAt) return;
-      acpSessionLastReadAtBySessionId.set(sessionId, lastReadAt);
-      updated = true;
-      await persistAcpSessionStore();
+      const nextLastReadAtBySessionId = new Map(acpSessionLastReadAtBySessionId);
+      let changed = false;
+      for (const result of results) {
+        if (!acpSessionRootBySessionId.has(result.sessionId)) continue;
+        result.entryFound = true;
+        const previous = normalizeSessionUpdatedAt(nextLastReadAtBySessionId.get(result.sessionId));
+        if (previous === lastReadAt) continue;
+        nextLastReadAtBySessionId.set(result.sessionId, lastReadAt);
+        result.updated = true;
+        changed = true;
+      }
+      if (!changed) return;
+      await persistAcpSessionStore(nextLastReadAtBySessionId);
+      acpSessionLastReadAtBySessionId.clear();
+      for (const entry of nextLastReadAtBySessionId) acpSessionLastReadAtBySessionId.set(...entry);
     });
     acpSessionStoreWriteQueue = op.catch(() => {});
     await op;
-    return {
-      updated,
-      entryFound,
-      elapsedMs: Math.max(0, Date.now() - startedAtMs),
-    };
+    const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+    return results.map((result) => ({ ...result, elapsedMs }));
+  }
+
+  async function markAcpDirectoryRead(directory, lastReadAt) {
+    const startedAtMs = Date.now();
+    await ensureAcpSessionStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const nextLastReadAtBySessionId = new Map(acpSessionLastReadAtBySessionId);
+      const selectedSessionIds = [];
+      const updatedSessionIds = [];
+      for (const [sessionId, sessionDirectory] of acpSessionRootBySessionId.entries()) {
+        if (!path.isAbsolute(sessionDirectory) || path.resolve(sessionDirectory) !== directory) continue;
+        selectedSessionIds.push(sessionId);
+        const previous = normalizeSessionUpdatedAt(nextLastReadAtBySessionId.get(sessionId));
+        if (previous === lastReadAt) continue;
+        nextLastReadAtBySessionId.set(sessionId, lastReadAt);
+        updatedSessionIds.push(sessionId);
+      }
+      if (updatedSessionIds.length > 0) {
+        await persistAcpSessionStore(nextLastReadAtBySessionId);
+        acpSessionLastReadAtBySessionId.clear();
+        for (const entry of nextLastReadAtBySessionId) acpSessionLastReadAtBySessionId.set(...entry);
+      }
+      return {
+        selectedSessionIds,
+        updatedSessionIds,
+        elapsedMs: Math.max(0, Date.now() - startedAtMs),
+      };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
   }
 
   async function getAcpSessionStoreStats() {
@@ -284,8 +339,10 @@ export function createLlmAcpSessionStore(deps = {}) {
   return {
     bindSessionToRootDir,
     getAcpSessionStoreStats,
+    listAcpSessionsForDirectories,
     listAcpSessionsForDirectory,
-    markAcpSessionRead,
+    markAcpDirectoryRead,
+    markAcpSessionsRead,
     migrateAcpSessionDirectoryIdentity,
     resolveSessionIdForRootDir,
   };

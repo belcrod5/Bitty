@@ -4,9 +4,12 @@ import {
   APPROVE_ACTION,
   DENY_ACTION,
   TURN_COMPLETED_CATEGORY,
-  consumePendingPushSessionId,
+  clearPendingPushSessionTarget,
+  getPendingPushSessionTarget,
+  normalizeNotificationMetadata,
   registerApprovalNotificationCategories,
-  setPendingPushSessionId,
+  setPendingPushSessionTarget,
+  subscribePendingPushSessionTarget,
 } from "./pushApprovalNotifications";
 
 jest.mock("expo-notifications", () => ({
@@ -14,6 +17,51 @@ jest.mock("expo-notifications", () => ({
 }));
 
 const mockSetNotificationCategoryAsync = Notifications.setNotificationCategoryAsync as jest.Mock;
+
+describe("normalizeNotificationMetadata", () => {
+  it("reads actual iOS remote serializer root fields from trigger.payload", () => {
+    expect(normalizeNotificationMetadata({
+      content: { data: null },
+      trigger: {
+        type: "push",
+        payload: {
+          sessionId: "session-root",
+          directory: "/root",
+          turnId: "turn-root",
+          approvalId: "approval-root",
+          secret: "ignored",
+        },
+      },
+    } as unknown as Notifications.NotificationRequest)).toEqual({
+      sessionId: "session-root",
+      directory: "/root",
+      turnId: "turn-root",
+      approvalId: "approval-root",
+    });
+  });
+
+  it("prefers content.data per field and falls back only for missing fields", () => {
+    expect(normalizeNotificationMetadata({
+      content: {
+        data: { sessionId: "session-data", directory: "", turnId: "turn-data" },
+      },
+      trigger: {
+        type: "push",
+        payload: {
+          sessionId: "session-root",
+          directory: "/root",
+          turnId: "turn-root",
+          approvalId: "approval-root",
+        },
+      },
+    } as unknown as Notifications.NotificationRequest)).toEqual({
+      sessionId: "session-data",
+      directory: "/root",
+      turnId: "turn-data",
+      approvalId: "approval-root",
+    });
+  });
+});
 
 describe("registerApprovalNotificationCategories", () => {
   beforeEach(() => {
@@ -68,19 +116,29 @@ describe("registerApprovalNotificationCategories", () => {
   });
 });
 
-describe("pending push session id holder", () => {
-  it("returns empty string when nothing is pending", () => {
-    expect(consumePendingPushSessionId()).toBe("");
+describe("pending push session target store", () => {
+  beforeEach(() => {
+    const target = getPendingPushSessionTarget();
+    if (target) clearPendingPushSessionTarget(target);
   });
 
-  it("stores and consumes (clearing) a pending session id", () => {
-    setPendingPushSessionId("session-123");
-    expect(consumePendingPushSessionId()).toBe("session-123");
-    expect(consumePendingPushSessionId()).toBe("");
+  it("retains the target until the matching intent is cleared", () => {
+    setPendingPushSessionTarget({ sessionId: "session-123", directory: "/repo" });
+    const target = getPendingPushSessionTarget();
+    expect(target).toEqual(expect.objectContaining({ sessionId: "session-123", directory: "/repo" }));
+    expect(clearPendingPushSessionTarget(target!)).toBe(true);
+    expect(getPendingPushSessionTarget()).toBeNull();
   });
 
-  it("trims and ignores a blank session id", () => {
-    setPendingPushSessionId("   ");
-    expect(consumePendingPushSessionId()).toBe("");
+  it("does not let an older completion clear a newer intent and notifies subscribers", () => {
+    const listener = jest.fn();
+    const unsubscribe = subscribePendingPushSessionTarget(listener);
+    setPendingPushSessionTarget({ sessionId: "old", directory: "/old" });
+    const old = getPendingPushSessionTarget()!;
+    setPendingPushSessionTarget({ sessionId: "new", directory: "/new" });
+    expect(clearPendingPushSessionTarget(old)).toBe(false);
+    expect(getPendingPushSessionTarget()).toEqual(expect.objectContaining({ sessionId: "new" }));
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe();
   });
 });
