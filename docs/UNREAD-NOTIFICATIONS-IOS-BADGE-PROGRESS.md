@@ -1,8 +1,9 @@
 # 未読・通知・iOSバッジ修正 進捗
 
-- 状態: DEVICE_VALIDATED / READY_TO_PUBLISH
+- 状態: PUBLISHED / CI_PASSED / AWAITING_GITHUB_REVIEW
 - ブランチ: `fix/unread-notifications-ios-badge`
 - ベース: `origin/main` (`58447e5`)
+- Pull Request: [#61](https://github.com/belcrod5/Bitty/pull/61)
 - worktree: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/fix/unread-notifications-ios-badge`
 
 ## 対象
@@ -42,9 +43,9 @@
 - [x] CLI subagent rolloutをtop-level unread / badge / pushから除外
 - [x] 子subagentのturn eventを親turn完了として扱わないownership検証
 - [x] ユーザー実機確認（再実装後）
-- [ ] コミット / push / Pull Request
+- [x] コミット / push / Pull Request
 - [x] 初回差分の別エージェントレビュー（実機失敗後に承認撤回）
-- [ ] CI確認
+- [x] CI確認
 
 ## 初回調査・初回実装メモ（承認撤回済み）
 
@@ -197,6 +198,7 @@
 - 変更したRunner `.mjs` 9ファイルの `node --check` 成功
 - `git diff --check` 成功
 - `sol/high`固定差分レビュー: `APPROVED`、High / Medium / Lowの未解決findingなし
+- GitHub Actions `CI/checks`: 成功
 - サーバーのstart / stop / restart、app build / install、API data mutationは実行していない
 
 ## 初回実装の自動検証（実機要件を証明しない）
@@ -215,8 +217,8 @@
 
 ## 次工程
 
-- commit / push / Pull Request
-- CI確認
+- GitHub Pull Requestレビュー
+- merge
 
 ## レビュー
 
