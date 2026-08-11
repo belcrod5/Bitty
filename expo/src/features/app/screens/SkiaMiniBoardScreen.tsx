@@ -52,36 +52,63 @@ import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { RunnerFileViewer } from "../components/RunnerFileViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
+import {
+  SkiaBoardSectionDraft,
+  SkiaBoardSectionOverlay,
+  SkiaBoardSectionRegion,
+} from "../components/SkiaBoardSection";
+import { SkiaBoardSectionEditor } from "../components/SkiaBoardSectionEditor";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
   SKIA_BOARD_MIN_TEXT_SCALE,
   SKIA_BOARD_TEXT_SCALE_STEP,
 } from "../utils/skiaBoardState";
+import {
+  cardPositionFromGrid,
+  gridFromCardPosition,
+  gridFromSectionRect,
+  pointIsInsideSection,
+  sectionRectFromGrid,
+  sectionDragActionAtPoint,
+  sectionRectFromPoints,
+  SKIA_BOARD_CARD_GAP as CARD_GAP,
+  SKIA_BOARD_CARD_HEIGHT as CARD_HEIGHT,
+  SKIA_BOARD_MIN_SECTION_SIZE,
+  SKIA_BOARD_MIN_CARD_WIDTH,
+  SKIA_BOARD_PADDING as BOARD_PADDING,
+  transformSectionRect,
+  type SkiaBoardSectionDragAction,
+  type SkiaBoardSectionRect,
+} from "../utils/skiaBoardSectionGeometry";
 
-const CARD_HEIGHT = 112;
-const CARD_GAP = 18;
-const BOARD_PADDING = 18;
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 2.5;
+const DEFAULT_SECTION_COLOR = "#3b82f6";
 
 type CardPosition = { x: number; y: number };
-
-// ボードステートのグリッド単位座標(col/row)と画面座標の相互変換。
-// cardWidthに依存する部分をここに閉じ込め、保存値は回転などで壊れない。
-function cardPositionFromGrid(col: number, row: number, cardWidth: number): CardPosition {
-  return {
-    x: BOARD_PADDING + col * (cardWidth + CARD_GAP),
-    y: BOARD_PADDING + row * (CARD_HEIGHT + CARD_GAP),
-  };
-}
-
-function gridFromCardPosition(x: number, y: number, cardWidth: number) {
-  return {
-    col: (x - BOARD_PADDING) / (cardWidth + CARD_GAP),
-    row: (y - BOARD_PADDING) / (CARD_HEIGHT + CARD_GAP),
-  };
-}
+type ActiveSectionGesture = {
+  index: number;
+  sectionId: string;
+  action: SkiaBoardSectionDragAction | "create" | "blocked" | "";
+  start: SkiaBoardSectionRect;
+  current: SkiaBoardSectionRect;
+};
+const EMPTY_SECTION_RECT: SkiaBoardSectionRect = {
+  id: "",
+  x: 0,
+  y: 0,
+  width: 0,
+  height: 0,
+};
+const EMPTY_ACTIVE_SECTION_GESTURE: ActiveSectionGesture = {
+  index: -1,
+  sectionId: "",
+  action: "",
+  start: EMPTY_SECTION_RECT,
+  current: EMPTY_SECTION_RECT,
+};
+const EMPTY_DRAFT_SECTION: SkiaBoardSectionRect = { ...EMPTY_SECTION_RECT, id: "draft" };
 
 function fittingPrefixEnd(
   characters: readonly string[],
@@ -383,9 +410,13 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     hydratingPanelCount,
     panelHydrationErrorCount,
     items,
+    sections,
     cardTextScale,
     setBoardCardTextScale,
     moveBoardCard,
+    addBoardSection,
+    updateBoardSection,
+    removeBoardSection,
     removeBoardSession,
     removeBoardFile,
     hasBoardFile,
@@ -407,6 +438,9 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
                 ? `${items.length}件を表示・一部更新失敗`
                 : `${items.length}件を表示`;
   const [selectedCardId, setSelectedCardId] = useState("");
+  const [selectedSectionId, setSelectedSectionId] = useState("");
+  const [editingSectionId, setEditingSectionId] = useState("");
+  const [tool, setTool] = useState<"select" | "section">("select");
   const [boardMenuOpen, setBoardMenuOpen] = useState(false);
   const [fileMenuRootDir, setFileMenuRootDir] = useState("");
   const [pendingFileAction, setPendingFileAction] = useState<{
@@ -416,8 +450,13 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const [runnerMedia, setRunnerMedia] = useState<RunnerMediaFile | null>(null);
   const [runnerFileViewerTarget, setRunnerFileViewerTarget] = useState<RunnerFileViewerTarget | null>(null);
   const [viewportWidth, setViewportWidth] = useState(windowWidth);
-  const cardWidth = Math.max(150, Math.min(270, (viewportWidth - BOARD_PADDING * 2 - CARD_GAP) / 2));
+  const cardWidth = Math.max(
+    SKIA_BOARD_MIN_CARD_WIDTH,
+    Math.min(270, (viewportWidth - BOARD_PADDING * 2 - CARD_GAP) / 2)
+  );
   const positions = useSharedValue<CardPosition[]>([]);
+  const sectionRects = useSharedValue<SkiaBoardSectionRect[]>([]);
+  const draftSection = useSharedValue<SkiaBoardSectionRect>(EMPTY_DRAFT_SECTION);
   const boardX = useSharedValue(0);
   const boardY = useSharedValue(0);
   const scale = useSharedValue(1);
@@ -431,6 +470,9 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const activeCardX = useSharedValue(0);
   const activeCardY = useSharedValue(0);
   const selectedCardIndex = useSharedValue(-1);
+  const selectedSectionIndex = useSharedValue(-1);
+  const activeSectionGesture = useSharedValue<ActiveSectionGesture>(EMPTY_ACTIVE_SECTION_GESTURE);
+  const toolMode = useSharedValue<"select" | "section">("select");
   const touchSequenceHadMultiplePointers = useSharedValue(false);
   const panStartScreenX = useSharedValue(0);
   const panStartScreenY = useSharedValue(0);
@@ -443,6 +485,10 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const bodyFont = useMemo(
     () => matchFont({ fontFamily, fontSize: 9 * cardTextScale }),
     [cardTextScale, fontFamily]
+  );
+  const sectionLabelFont = useMemo(
+    () => matchFont({ fontFamily, fontSize: 12, fontWeight: "bold" }),
+    [fontFamily]
   );
 
   // ボードステート(col/row)から画面座標を再構築する。ドラッグ中はSharedValueのみが
@@ -461,12 +507,38 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     ));
   }, [cardWidth, items, positions, positionsKey]);
 
+  const renderedSectionRects = useMemo(
+    () => sections.map((section) => sectionRectFromGrid(section, cardWidth)),
+    [cardWidth, sections]
+  );
+  useLayoutEffect(() => {
+    sectionRects.value = renderedSectionRects;
+    selectedSectionIndex.value = sections.findIndex((section) => section.id === selectedSectionId);
+  }, [
+    renderedSectionRects,
+    sectionRects,
+    sections,
+    selectedSectionId,
+    selectedSectionIndex,
+  ]);
+
   // カードの並び(搭載セッション)が変わったら、indexベースの選択をクリアする。
   const cardIdsKey = useMemo(() => items.map((item) => item.cardId).join("|"), [items]);
   useEffect(() => {
     selectedCardIndex.value = -1;
     setSelectedCardId("");
   }, [cardIdsKey, selectedCardIndex]);
+
+  const selectTool = useCallback((next: "select" | "section") => {
+    toolMode.value = next;
+    setTool(next);
+    if (next === "section") {
+      selectedCardIndex.value = -1;
+      selectedSectionIndex.value = -1;
+      setSelectedCardId("");
+      setSelectedSectionId("");
+    }
+  }, [selectedCardIndex, selectedSectionIndex, toolMode]);
 
   const showUnavailableFileMenu = useCallback((item: Extract<SkiaMiniBoardItem, { kind: "file" }>) => {
     Alert.alert(
@@ -491,6 +563,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     }
     const item = items[index];
     if (!item) return;
+    selectedSectionIndex.value = -1;
+    setSelectedSectionId("");
     if (item.kind === "file") {
       if (selectedCardId === item.cardId) {
         if (item.unavailable) {
@@ -518,7 +592,21 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     }
     selectedCardIndex.value = index;
     setSelectedCardId(item.cardId);
-  }, [items, openSessionHistoryPopup, selectedCardId, selectedCardIndex, showUnavailableFileMenu]);
+  }, [
+    items,
+    openSessionHistoryPopup,
+    selectedCardId,
+    selectedCardIndex,
+    selectedSectionIndex,
+    showUnavailableFileMenu,
+  ]);
+
+  const handleSectionTap = useCallback((index: number) => {
+    selectedCardIndex.value = -1;
+    setSelectedCardId("");
+    selectedSectionIndex.value = index;
+    setSelectedSectionId(sections[index]?.id || "");
+  }, [sections, selectedCardIndex, selectedSectionIndex]);
 
   // ドラッグ終了時に画面座標をグリッド単位へ戻してボードステートへ保存する。
   // ドラッグ中に候補が増減してindexがずれても別セッションを上書きしないよう、
@@ -528,6 +616,32 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     const grid = gridFromCardPosition(x, y, cardWidth);
     moveBoardCard(cardId, grid.col, grid.row);
   }, [cardWidth, moveBoardCard]);
+
+  const commitSectionRect = useCallback((sectionId: string, rect: SkiaBoardSectionRect) => {
+    if (!sectionId) return;
+    updateBoardSection(sectionId, gridFromSectionRect(rect, cardWidth));
+  }, [cardWidth, updateBoardSection]);
+
+  const commitNewSection = useCallback((rect: SkiaBoardSectionRect) => {
+    if (
+      rect.width < SKIA_BOARD_MIN_SECTION_SIZE
+      || rect.height < SKIA_BOARD_MIN_SECTION_SIZE
+    ) return;
+    const id = `section:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const grid = gridFromSectionRect(rect, cardWidth);
+    addBoardSection({
+      id,
+      label: "セクション",
+      ...grid,
+      color: DEFAULT_SECTION_COLOR,
+      opacity: 0.2,
+      borderOnly: false,
+    });
+    setSelectedSectionId(id);
+    setSelectedCardId("");
+    toolMode.value = "select";
+    setTool("select");
+  }, [addBoardSection, cardWidth, toolMode]);
 
   const confirmRemoveCard = useCallback((index: number) => {
     const item = items[index];
@@ -560,6 +674,32 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     setFileMenuRootDir(item.rootDir);
     setPendingFileAction({ item, action: "menu" });
   }, [confirmRemoveCard, items, showUnavailableFileMenu]);
+
+  const openSectionContextMenu = useCallback((index: number) => {
+    const section = sections[index];
+    if (!section) return;
+    selectedCardIndex.value = -1;
+    selectedSectionIndex.value = index;
+    setSelectedCardId("");
+    setSelectedSectionId(section.id);
+    setEditingSectionId(section.id);
+  }, [sections, selectedCardIndex, selectedSectionIndex]);
+
+  const confirmRemoveSection = useCallback((section: { id: string }) => {
+    setEditingSectionId("");
+    Alert.alert("セクションを削除", "このセクションをボードから削除しますか?", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: () => {
+          removeBoardSection(section.id);
+          setSelectedSectionId("");
+          selectedSectionIndex.value = -1;
+        },
+      },
+    ]);
+  }, [removeBoardSection, selectedSectionIndex]);
 
   const showInfoToast = useCallback((textRaw: unknown) => {
     const text = String(textRaw || "").trim();
@@ -675,6 +815,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         panStartScreenY.value = event.y;
         activeCardIndex.value = -1;
         activeCardId.value = "";
+        activeSectionGesture.value = EMPTY_ACTIVE_SECTION_GESTURE;
       })
       .onStart(() => {
         const x = (panStartScreenX.value - boardX.value) / scale.value;
@@ -689,7 +830,9 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
             && y >= position.y
             && y <= position.y + CARD_HEIGHT
           ) {
-            if (selectedCardIndex.value === index) {
+            if (toolMode.value === "section") {
+              activeSectionGesture.value = { ...activeSectionGesture.value, action: "blocked" };
+            } else if (selectedCardIndex.value === index) {
               activeCardIndex.value = index;
               activeCardId.value = cardIds[index] || "";
               gestureStartX.value = position.x;
@@ -704,6 +847,34 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           }
         }
 
+        if (toolMode.value === "section") {
+          const start = { id: "draft", x, y, width: 0, height: 0 };
+          activeSectionGesture.value = {
+            index: -1,
+            sectionId: "",
+            action: "create",
+            start,
+            current: start,
+          };
+          draftSection.value = start;
+          return;
+        }
+
+        const selectedIndex = selectedSectionIndex.value;
+        const selectedRect = sectionRects.value[selectedIndex];
+        if (selectedRect) {
+          const action = sectionDragActionAtPoint(selectedRect, x, y, scale.value);
+          if (action) {
+            activeSectionGesture.value = {
+              index: selectedIndex,
+              sectionId: selectedRect.id,
+              action,
+              start: selectedRect,
+              current: selectedRect,
+            };
+            return;
+          }
+        }
         gestureStartX.value = boardX.value;
         gestureStartY.value = boardY.value;
       })
@@ -726,6 +897,35 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           positions.value = nextPositions;
           return;
         }
+        const sectionGesture = activeSectionGesture.value;
+        const sectionAction = sectionGesture.action;
+        if (sectionAction === "blocked") return;
+        if (sectionAction === "create") {
+          draftSection.value = {
+            id: "draft",
+            ...sectionRectFromPoints(
+              sectionGesture.start.x,
+              sectionGesture.start.y,
+              sectionGesture.start.x + event.translationX / scale.value,
+              sectionGesture.start.y + event.translationY / scale.value
+            ),
+          };
+          return;
+        }
+        const sectionIndex = sectionGesture.index;
+        if (sectionIndex >= 0 && sectionAction) {
+          const nextRect = transformSectionRect(
+            sectionGesture.start,
+            sectionAction as SkiaBoardSectionDragAction,
+            event.translationX / scale.value,
+            event.translationY / scale.value
+          );
+          const nextSections = sectionRects.value.slice();
+          nextSections[sectionIndex] = nextRect;
+          sectionRects.value = nextSections;
+          activeSectionGesture.value = { ...sectionGesture, current: nextRect };
+          return;
+        }
         boardX.value = gestureStartX.value + event.translationX;
         boardY.value = gestureStartY.value + event.translationY;
       })
@@ -734,16 +934,39 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         const cardId = activeCardId.value;
         const x = activeCardX.value;
         const y = activeCardY.value;
+        const sectionGesture = activeSectionGesture.value;
         activeCardIndex.value = -1;
         activeCardId.value = "";
-        if (index < 0 || !cardId) return;
-        runOnJS(commitCardPosition)(cardId, x, y);
+        if (touchSequenceHadMultiplePointers.value) {
+          if (sectionGesture.index >= 0) {
+            const restoredSections = sectionRects.value.slice();
+            restoredSections[sectionGesture.index] = sectionGesture.start;
+            sectionRects.value = restoredSections;
+          }
+          activeSectionGesture.value = EMPTY_ACTIVE_SECTION_GESTURE;
+          draftSection.value = EMPTY_DRAFT_SECTION;
+          return;
+        }
+        if (index >= 0 && cardId) {
+          runOnJS(commitCardPosition)(cardId, x, y);
+          return;
+        }
+        const { action, sectionId, current } = sectionGesture;
+        const rect = action === "create" ? draftSection.value : current;
+        activeSectionGesture.value = EMPTY_ACTIVE_SECTION_GESTURE;
+        draftSection.value = EMPTY_DRAFT_SECTION;
+        if (action === "create") {
+          runOnJS(commitNewSection)(rect);
+        } else if (sectionId) {
+          runOnJS(commitSectionRect)(sectionId, rect);
+        }
       });
 
     const tap = Gesture.Tap()
       .maxDistance(8)
       .onEnd((event, success) => {
         if (!success || touchSequenceHadMultiplePointers.value) return;
+        if (toolMode.value === "section") return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
         for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -759,6 +982,14 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
             return;
           }
         }
+        for (let index = sectionRects.value.length - 1; index >= 0; index -= 1) {
+          const section = sectionRects.value[index];
+          if (section && pointIsInsideSection(section, x, y)) {
+            runOnJS(handleSectionTap)(index);
+            return;
+          }
+        }
+        runOnJS(handleSectionTap)(-1);
         runOnJS(handleCardTap)(-1);
       });
 
@@ -767,7 +998,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     const longPress = Gesture.LongPress()
       .minDuration(500)
       .onStart((event) => {
-        if (touchSequenceHadMultiplePointers.value) return;
+        if (touchSequenceHadMultiplePointers.value || toolMode.value === "section") return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
         for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -780,6 +1011,13 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
             && y <= position.y + CARD_HEIGHT
           ) {
             runOnJS(openCardContextMenu)(index);
+            return;
+          }
+        }
+        for (let index = sectionRects.value.length - 1; index >= 0; index -= 1) {
+          const section = sectionRects.value[index];
+          if (section && pointIsInsideSection(section, x, y)) {
+            runOnJS(openSectionContextMenu)(index);
             return;
           }
         }
@@ -811,24 +1049,33 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     activeCardId,
     activeCardX,
     activeCardY,
+    activeSectionGesture,
     boardX,
     boardY,
     cardWidth,
     commitCardPosition,
+    commitNewSection,
+    commitSectionRect,
+    draftSection,
     gestureStartScale,
     gestureStartX,
     gestureStartY,
     handleCardTap,
+    handleSectionTap,
+    items,
+    openCardContextMenu,
+    openSectionContextMenu,
     pinchBoardX,
     pinchBoardY,
     positions,
     scale,
     selectedCardIndex,
-    items,
-    openCardContextMenu,
+    selectedSectionIndex,
+    sectionRects,
     panStartScreenX,
     panStartScreenY,
     touchSequenceHadMultiplePointers,
+    toolMode,
   ]);
 
   // カード位置には触らず、パン・ズームだけを初期化する(整頓ボタンとの差別化)。
@@ -837,7 +1084,9 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     boardY.value = 0;
     scale.value = 1;
     selectedCardIndex.value = -1;
+    selectedSectionIndex.value = -1;
     setSelectedCardId("");
+    setSelectedSectionId("");
   };
 
   const gridLines = useMemo(() => {
@@ -850,6 +1099,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     }
     return lines;
   }, []);
+  const editingSection = sections.find((section) => section.id === editingSectionId) || null;
 
   return (
     <View style={screenStyles.screen}>
@@ -888,6 +1138,35 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
                 {gridLines.map((line) => (
                   <Line key={line.key} p1={line.p1} p2={line.p2} color="#dce4ed" strokeWidth={1} />
                 ))}
+                {sections.map((section, index) => (
+                  <SkiaBoardSectionRegion
+                    key={section.id}
+                    index={index}
+                    sections={sectionRects}
+                    section={section}
+                    initialRect={renderedSectionRects[index]}
+                    selected={section.id === selectedSectionId}
+                  />
+                ))}
+                <SkiaBoardSectionDraft draft={draftSection} color={DEFAULT_SECTION_COLOR} />
+              </Group>
+            </Group>
+            {sections.map((section, index) => (
+              <SkiaBoardSectionOverlay
+                key={section.id}
+                index={index}
+                sections={sectionRects}
+                section={section}
+                initialRect={renderedSectionRects[index]}
+                selected={section.id === selectedSectionId}
+                boardX={boardX}
+                boardY={boardY}
+                scale={scale}
+                labelFont={sectionLabelFont}
+              />
+            ))}
+            <Group transform={boardTranslate}>
+              <Group transform={boardScale}>
                 {items.map((item, index) => (
                   <BoardCard
                     key={item.cardId}
@@ -905,6 +1184,29 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           </Canvas>
         </View>
       </GestureDetector>
+
+      <SafeAreaView pointerEvents="box-none" style={screenStyles.toolsSafeArea}>
+        <View style={screenStyles.tools}>
+          <TouchableOpacity
+            style={[screenStyles.toolButton, tool === "select" && screenStyles.toolButtonSelected]}
+            onPress={() => selectTool("select")}
+            accessibilityRole="button"
+            accessibilityState={{ selected: tool === "select" }}
+            accessibilityLabel="選択と移動"
+          >
+            <Ionicons name="navigate-outline" size={21} color={tool === "select" ? "#ffffff" : "#334155"} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[screenStyles.toolButton, tool === "section" && screenStyles.toolButtonSelected]}
+            onPress={() => selectTool("section")}
+            accessibilityRole="button"
+            accessibilityState={{ selected: tool === "section" }}
+            accessibilityLabel="セクションを作成"
+          >
+            <Ionicons name="scan-outline" size={22} color={tool === "section" ? "#ffffff" : "#334155"} />
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
 
       <SafeAreaView
         pointerEvents="none"
@@ -985,6 +1287,17 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           </SafeAreaView>
         </Pressable>
       </Modal>
+      <SkiaBoardSectionEditor
+        section={editingSection}
+        onClose={() => setEditingSectionId("")}
+        onSave={(update) => {
+          if (editingSectionId) updateBoardSection(editingSectionId, update);
+          setEditingSectionId("");
+        }}
+        onDelete={() => {
+          if (editingSection) confirmRemoveSection(editingSection);
+        }}
+      />
       <RunnerMediaViewer
         media={runnerMedia}
         onRequestClose={() => setRunnerMedia(null)}
@@ -1047,6 +1360,36 @@ const screenStyles = StyleSheet.create({
   canvasHost: {
     flex: 1,
     overflow: "hidden",
+  },
+  toolsSafeArea: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+  },
+  tools: {
+    marginBottom: 12,
+    padding: 5,
+    borderRadius: 14,
+    flexDirection: "row",
+    gap: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.96)",
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  toolButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toolButtonSelected: {
+    backgroundColor: "#2563eb",
   },
   statusPill: {
     marginLeft: 14,

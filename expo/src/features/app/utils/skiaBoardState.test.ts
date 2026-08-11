@@ -1,5 +1,6 @@
 import {
   addSkiaBoardFile,
+  addSkiaBoardSection,
   addSkiaBoardSession,
   findFreeSkiaBoardCell,
   ingestSkiaBoardSessions,
@@ -9,10 +10,12 @@ import {
   parseSkiaBoardState,
   removeSkiaBoardSession,
   removeSkiaBoardFile,
+  removeSkiaBoardSection,
   skiaBoardCardId,
   skiaBoardGridPosition,
   setSkiaBoardCardTextScale,
   tidySkiaBoardCards,
+  updateSkiaBoardSection,
   type SkiaBoardState,
 } from "./skiaBoardState";
 
@@ -35,6 +38,20 @@ function updatedAtMs(index: number) {
 
 function sessionCard(sessionId: string, col: number, row: number) {
   return { kind: "session" as const, sessionId, col, row };
+}
+
+function section(id = "section:1") {
+  return {
+    id,
+    label: "計画",
+    col: 0.5,
+    row: 1.25,
+    colSpan: 2.5,
+    rowSpan: 1.75,
+    color: "#3b82f6",
+    opacity: 0.2,
+    borderOnly: false,
+  };
 }
 
 function boardedSessionIds(state: SkiaBoardState | null | undefined) {
@@ -69,6 +86,7 @@ describe("ingestSkiaBoardSessions", () => {
   it("initializes latest-first from a scale-only persisted state and preserves its scale", () => {
     const scaleOnlyState = parseSkiaBoardState({
       cards: [],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1.2,
@@ -94,6 +112,7 @@ describe("ingestSkiaBoardSessions", () => {
   it("stacks only unboarded, unexcluded candidates newer than the watermark", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-3", 0.4, 0.1)],
+      sections: [],
       excludedSessionIds: ["session-5"],
       ingestedUpdatedAtMs: updatedAtMs(3),
       cardTextScale: 1,
@@ -124,6 +143,7 @@ describe("ingestSkiaBoardSessions", () => {
   it("returns the same reference when nothing changes", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-2", 0, 0)],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: updatedAtMs(2),
       cardTextScale: 1,
@@ -153,6 +173,7 @@ describe("removeSkiaBoardSession", () => {
         sessionCard("session-1", 0, 0),
         sessionCard("session-2", 1, 0),
       ],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: updatedAtMs(2),
       cardTextScale: 1,
@@ -173,6 +194,7 @@ describe("removeSkiaBoardSession", () => {
   it("returns the same reference for a session that is not on the board", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -185,6 +207,7 @@ describe("manual board cards", () => {
   it("re-adds an excluded session and uses the first free cell", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: ["session-2"],
       ingestedUpdatedAtMs: updatedAtMs(2),
       cardTextScale: 1,
@@ -198,6 +221,7 @@ describe("manual board cards", () => {
   it("adds and removes files by root directory and path", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -228,6 +252,7 @@ describe("manual board cards", () => {
         col: 0.4,
         row: 2.1,
       }],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -256,6 +281,7 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
   it("moves a card to a free-form grid position", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -273,6 +299,7 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
         sessionCard("session-2", -1, 0.2),
         sessionCard("session-3", 0.5, 0.5),
       ],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -293,6 +320,7 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
         sessionCard("hidden", 5, 5),
         sessionCard("visible-2", 6, 6),
       ],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -305,6 +333,88 @@ describe("moveSkiaBoardCard / tidySkiaBoardCards", () => {
       ["session:visible-2", 1, 0],
       ["session:hidden", 0, 1],
     ]);
+  });
+});
+
+describe("board sections", () => {
+  const state: SkiaBoardState = {
+    cards: [],
+    sections: [],
+    excludedSessionIds: [],
+    ingestedUpdatedAtMs: 0,
+    cardTextScale: 1,
+  };
+
+  it("adds, edits, moves, and removes an independent section", () => {
+    const added = addSkiaBoardSection(state, section());
+    expect(added.sections).toEqual([section()]);
+    expect(addSkiaBoardSection(added, section())).toBe(added);
+
+    const updated = updateSkiaBoardSection(added, "section:1", {
+      label: "実装",
+      col: -0.25,
+      colSpan: 3.5,
+      color: "#22c55e",
+      opacity: 0.6,
+      borderOnly: true,
+    });
+    expect(updated.sections[0]).toEqual({
+      ...section(),
+      label: "実装",
+      col: -0.25,
+      colSpan: 3.5,
+      color: "#22c55e",
+      opacity: 0.6,
+      borderOnly: true,
+    });
+    expect(removeSkiaBoardSection(updated, "section:1").sections).toEqual([]);
+  });
+
+  it("rejects invalid section updates and preserves other board state", () => {
+    const added = addSkiaBoardSection(state, section());
+    expect(addSkiaBoardSection(state, {
+      ...section("section:tiny"),
+      colSpan: Number.EPSILON,
+      rowSpan: Number.EPSILON,
+    })).toBe(state);
+    expect(updateSkiaBoardSection(added, "section:1", { colSpan: 0 })).toBe(added);
+    expect(updateSkiaBoardSection(added, "section:1", { color: "blue" })).toBe(added);
+    expect(updateSkiaBoardSection(added, "section:1", {
+      colSpan: Number.EPSILON,
+      rowSpan: Number.EPSILON,
+    })).toBe(added);
+    expect(updateSkiaBoardSection(added, "missing", { label: "none" })).toBe(added);
+    expect(removeSkiaBoardSection(added, "missing")).toBe(added);
+  });
+
+  it("migrates old payloads and sanitizes persisted sections", () => {
+    expect(parseSkiaBoardState({
+      cards: [],
+      sections: [
+        { ...section(), label: "", opacity: 3 },
+        { ...section(), col: 9 },
+        { ...section("section:bad"), color: "red" },
+        {
+          ...section("section:tiny"),
+          colSpan: Number.EPSILON,
+          rowSpan: Number.EPSILON,
+        },
+      ],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    })?.sections).toEqual([{ ...section(), label: "セクション", opacity: 1 }]);
+    expect(parseSkiaBoardState({
+      cards: [sessionCard("session-1", 0, 0)],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    })?.sections).toEqual([]);
+  });
+
+  it("keeps sections when sessions are initially ingested", () => {
+    const sectionOnly = { ...state, sections: [section()] };
+    const ingested = ingestSkiaBoardSessions(sectionOnly, [candidate(1)]);
+    expect(ingested?.sections).toEqual([section()]);
+    expect(boardedSessionIds(ingested)).toEqual(["session-1"]);
   });
 });
 
@@ -322,6 +432,7 @@ describe("card text scale", () => {
   it("updates the existing board state without adding separate persistence", () => {
     const state: SkiaBoardState = {
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -338,6 +449,7 @@ describe("parseSkiaBoardState", () => {
         sessionCard("session-1", 0.25, 1.5),
         sessionCard("session-2", 1, 0),
       ],
+      sections: [],
       excludedSessionIds: ["session-9"],
       ingestedUpdatedAtMs: updatedAtMs(2),
       cardTextScale: 1.1,
@@ -356,6 +468,7 @@ describe("parseSkiaBoardState", () => {
         row: 2,
         unavailable: true,
       }],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
     })?.cards[0]).toMatchObject({ kind: "file", unavailable: true });
@@ -372,10 +485,12 @@ describe("parseSkiaBoardState", () => {
         { sessionId: "", col: 0, row: 0 },
         { sessionId: "session-2", col: Number.NaN, row: 0 },
       ],
+      sections: [],
       excludedSessionIds: ["", "session-3", "session-3"],
       ingestedUpdatedAtMs: "not-a-number",
     })).toEqual({
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: ["session-3"],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 1,
@@ -385,22 +500,26 @@ describe("parseSkiaBoardState", () => {
   it("restores and bounds card text scale from the board payload", () => {
     expect(parseSkiaBoardState({
       cards: [],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
       cardTextScale: 4,
     })?.cardTextScale).toBe(1.2);
     expect(parseSkiaBoardState({
       cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
     })?.cardTextScale).toBe(1);
     expect(parseSkiaBoardState({
       cards: [],
+      sections: [],
       excludedSessionIds: [],
       cardTextScale: null,
     })).toBeNull();
     expect(parseSkiaBoardState({
       cards: [],
+      sections: [],
       excludedSessionIds: [],
       cardTextScale: "",
     })).toBeNull();
