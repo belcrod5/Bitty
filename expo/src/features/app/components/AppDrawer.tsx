@@ -46,6 +46,7 @@ export type AppDrawerProps = {
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
   directoryReadProgressByPath: Record<string, DirectoryReadProgress>;
+  directoryUnreadCountByPath: Record<string, number>;
   directorySessionSync: DirectorySessionSyncState;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, DirectoryMarkerColor>;
@@ -108,6 +109,7 @@ export const AppDrawer = memo(function AppDrawer({
   expandedDirectoryIds,
   directorySessionsById,
   directoryReadProgressByPath,
+  directoryUnreadCountByPath,
   directorySessionSync,
   sessionTitleOverridesById,
   sessionMarkerColorsById,
@@ -180,6 +182,7 @@ export const AppDrawer = memo(function AppDrawer({
     const selectedDirectory = selectedDirectoryPath === directory.path;
     const sessionState = directorySessionsById[directory.id];
     const readProgress = directoryReadProgressByPath[directory.path];
+    const unreadCount = directoryUnreadCountByPath[directory.path] || 0;
     const directoryLabel = String(directory.displayName || "").trim() || directory.path;
     const sessionEntries = sessionState?.entries || [];
     const baseVisibleSessionEntries = expanded
@@ -216,6 +219,7 @@ export const AppDrawer = memo(function AppDrawer({
       showLoadMoreSessions: expanded || (!!normalizedSearchQuery && directoryMatches),
       sessionState,
       readProgress,
+      unreadCount,
       visibleSessionEntries,
       shouldShowSessionBlock: (
         expanded ||
@@ -226,6 +230,7 @@ export const AppDrawer = memo(function AppDrawer({
   }), [
     directorySessionsById,
     directoryReadProgressByPath,
+    directoryUnreadCountByPath,
     expandedSet,
     normalizedSearchQuery,
     registeredDirectories,
@@ -448,6 +453,7 @@ export const AppDrawer = memo(function AppDrawer({
               showLoadMoreSessions,
               sessionState,
               readProgress,
+              unreadCount,
               visibleSessionEntries,
               shouldShowSessionBlock,
             }) => {
@@ -480,6 +486,14 @@ export const AppDrawer = memo(function AppDrawer({
                         {directory.path}
                       </Text>
                     </TouchableOpacity>
+                    {unreadCount > 0 ? (
+                      <View
+                        style={styles.appDrawerUnreadCountBadge}
+                        accessibilityLabel={`${directoryLabel}の未読 ${unreadCount}件`}
+                      >
+                        <Text style={styles.appDrawerUnreadCountText}>{unreadCount}</Text>
+                      </View>
+                    ) : null}
                     <TouchableOpacity
                       style={styles.appDrawerExpandButton}
                       onPress={() => onToggleDirectoryExpanded(directory.id, directory.path)}

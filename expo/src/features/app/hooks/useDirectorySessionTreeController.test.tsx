@@ -1161,3 +1161,222 @@ test("keeps a read mutation when another directory fetch completes in the same b
   expect(result.current.directorySessionsById.first.entries[0].lastReadAt)
     .toBe("2026-07-29T02:00:00.000Z");
 });
+
+test("applies canonical directory read state to loaded and in-flight tree entries", async () => {
+  const pending = deferred<{
+    latestSessionId: string;
+    nextCursor: string;
+    entries: LlmSessionHistoryEntry[];
+  }>();
+  const canonicalSession = { ...session("", "canonical"), directory: "/workspace" };
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(() => pending.promise),
+    initialTrees: {
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        fetchedAtMs: 1,
+        entries: [canonicalSession],
+        childrenByParentId: {
+          canonical: {
+            loading: false,
+            loaded: true,
+            error: "",
+            entries: [{ ...session("", "child"), directory: "/workspace" }],
+          },
+        },
+      },
+    },
+  }));
+  let refresh!: Promise<unknown>;
+  await act(async () => {
+    refresh = result.current.controller.refreshDirectorySessionTree(
+      workspaceDirectory,
+      "manual_refresh"
+    );
+    await Promise.resolve();
+    result.current.controller.applyDirectoryLastReadAtToDirectoryTrees(
+      "/workspace",
+      "2026-07-29T02:00:00.000Z"
+    );
+    pending.resolve({ latestSessionId: "canonical", nextCursor: "", entries: [canonicalSession] });
+    await refresh;
+  });
+  expect(result.current.directorySessionsById.workspace.entries[0].lastReadAt)
+    .toBe("2026-07-29T02:00:00.000Z");
+});
+
+test("scopes a singular read mutation by canonical directory when session ids are reused", async () => {
+  const directories = ["first", "second"].map((id) => ({
+    id,
+    path: `/${id}`,
+    displayName: id,
+    markerColor: "none" as const,
+  }));
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(),
+    registeredDirectories: directories,
+    initialTrees: {
+      first: {
+        ...emptyState,
+        loaded: true,
+        entries: [{ ...session("", "shared"), directory: "/first" }],
+      },
+      second: {
+        ...emptyState,
+        loaded: true,
+        entries: [{ ...session("", "shared"), directory: "/second" }],
+      },
+    },
+  }));
+
+  await act(async () => {
+    result.current.controller.applySessionLastReadAtByIdToDirectoryTrees(
+      new Map([["shared", "2026-07-29T02:00:00.000Z"]]),
+      "/first"
+    );
+  });
+
+  expect(result.current.directorySessionsById.first.entries[0].lastReadAt)
+    .toBe("2026-07-29T02:00:00.000Z");
+  expect(result.current.directorySessionsById.second.entries[0].lastReadAt).toBe("");
+});
+
+test("reconciles an unloaded alias tree after the directory response is canonicalized", async () => {
+  const aliasDirectory = { ...workspaceDirectory, path: "/workspace-alias" };
+  const fetchSessionHistory = jest.fn(async () => ({
+    latestSessionId: "",
+    nextCursor: "",
+    entries: [],
+  }));
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory,
+    registeredDirectories: [aliasDirectory],
+    selectedDirectoryPath: aliasDirectory.path,
+  }));
+
+  await act(async () => {
+    await result.current.controller.reconcileDirectorySessionTree(
+      "/workspace",
+      "/workspace-alias"
+    );
+  });
+
+  expect(fetchSessionHistory).toHaveBeenCalledWith("/workspace-alias", {
+    limit: 5,
+    includeRunnerSnapshots: true,
+  });
+});
+
+test("directory read reconciliation discards loaded children and replaces roots authoritatively", async () => {
+  const authoritative = { ...session("2026-07-29T03:00:00.000Z", "authoritative") };
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(async () => ({
+      latestSessionId: "authoritative",
+      nextCursor: "next-page",
+      entries: [authoritative],
+    })),
+    initialTrees: {
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        entries: [session("", "stale-root")],
+        childrenByParentId: {
+          "stale-root": {
+            loading: false,
+            loaded: true,
+            error: "",
+            entries: [{ ...session("", "stale-child"), parentSessionId: "stale-root" }],
+          },
+        },
+      },
+    },
+  }));
+
+  let outcome!: Awaited<ReturnType<typeof result.current.controller.reconcileDirectorySessionTree>>;
+  await act(async () => {
+    outcome = await result.current.controller.reconcileDirectorySessionTree("/workspace");
+  });
+
+  expect(outcome.status).toBe("success");
+  expect(result.current.directorySessionsById.workspace.entries).toEqual([authoritative]);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId).toEqual({});
+  expect(result.current.directorySessionsById.workspace.nextCursor).toBe("next-page");
+});
+
+test("directory read reconciliation returns failure and leaves no stale roots or children", async () => {
+  const { result } = await renderHook(() => useTestController({
+    fetchSessionHistory: jest.fn(async () => { throw new Error("network down"); }),
+    initialTrees: {
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        entries: [session("", "stale-root")],
+        childrenByParentId: {
+          "stale-root": {
+            loading: false,
+            loaded: true,
+            error: "",
+            entries: [{ ...session("", "stale-child"), parentSessionId: "stale-root" }],
+          },
+        },
+      },
+    },
+  }));
+
+  let outcome!: Awaited<ReturnType<typeof result.current.controller.reconcileDirectorySessionTree>>;
+  await act(async () => {
+    outcome = await result.current.controller.reconcileDirectorySessionTree("/workspace");
+  });
+
+  expect(outcome.status).toBe("failed");
+  expect(result.current.directorySessionsById.workspace.entries).toEqual([]);
+  expect(result.current.directorySessionsById.workspace.childrenByParentId).toEqual({});
+  expect(result.current.directorySessionsById.workspace.error).toBe("network down");
+});
+
+test("directory read reconciliation propagates superseded identity changes", async () => {
+  const pending = deferred<{
+    latestSessionId: string;
+    nextCursor: string;
+    entries: LlmSessionHistoryEntry[];
+  }>();
+  const movedDirectory = { ...workspaceDirectory, path: "/moved" };
+  const { result } = await renderHook(() => {
+    const [registeredDirectories, setRegisteredDirectories] = useState([workspaceDirectory]);
+    const value = useTestController({
+      fetchSessionHistory: jest.fn(() => pending.promise),
+      registeredDirectories,
+      initialTrees: {
+        workspace: { ...emptyState, loaded: true, entries: [session()] },
+      },
+    });
+    return {
+      ...value,
+      move: () => {
+        value.controller.prepareDirectorySessionTargetChange({
+          nextRegisteredDirectories: [movedDirectory],
+          transitions: [{
+            kind: "replace",
+            directoryId: "workspace",
+            fromPath: "/workspace",
+            toPath: "/moved",
+          }],
+        });
+        setRegisteredDirectories([movedDirectory]);
+      },
+    };
+  });
+
+  let reconciliation!: ReturnType<typeof result.current.controller.reconcileDirectorySessionTree>;
+  await act(async () => {
+    reconciliation = result.current.controller.reconcileDirectorySessionTree("/workspace");
+    await Promise.resolve();
+    result.current.move();
+    pending.resolve({ latestSessionId: "", nextCursor: "", entries: [] });
+  });
+  await expect(reconciliation).resolves.toMatchObject({
+    status: "superseded",
+    reason: "path_changed",
+  });
+});

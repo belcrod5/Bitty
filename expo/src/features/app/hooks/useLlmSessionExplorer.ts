@@ -57,6 +57,25 @@ export type RunnerSessionReadResult = {
   diagnostics: Record<string, unknown> | null;
 };
 
+export type RunnerDirectoryReadResult = {
+  scope: "directory";
+  status: "full" | "partial" | "failed";
+  directory: string;
+  source: string;
+  lastReadAt: string;
+  selectedCount: number;
+  foundCount: number;
+  updatedCount: number;
+  stores: Record<"acp" | "cli", {
+    status: "success" | "failed" | "skipped";
+    selectedCount: number;
+    foundCount: number;
+    updatedCount: number;
+    reason?: string;
+  }>;
+  diagnostics: Record<string, unknown> | null;
+};
+
 export type RunnerSessionMessageRole = "user" | "assistant";
 export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
@@ -985,6 +1004,84 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     normalizedLlmDirectoryForRequest,
   ]);
 
+  const markRunnerDirectoryRead = useCallback(async (
+    directoryRaw: unknown,
+    opts?: { source?: LlmSessionSource; lastReadAt?: unknown },
+  ): Promise<RunnerDirectoryReadResult> => {
+    const { baseUrl: targetLlmUrl, token } = await getRunnerHttpAuth();
+    if (!targetLlmUrl || !token) {
+      throw new Error("Aux Server URL または Runner Token が未設定です");
+    }
+    const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
+    const sourceRaw = String(opts?.source || "").trim().toLowerCase();
+    const source = sourceRaw === "acp" || sourceRaw === "cli" || sourceRaw === "all"
+      ? sourceRaw
+      : "all";
+    const requestedLastReadAt = String(opts?.lastReadAt || "").trim();
+    const startedAt = Date.now();
+    const url = new URL(`${targetLlmUrl}/sessions/read`);
+    try {
+      const { response, data } = await fetchJsonWithTimeout(url.toString(), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          scope: "directory",
+          directory,
+          source,
+          lastReadAt: requestedLastReadAt || undefined,
+        }),
+      }, RUNNER_SESSIONS_HTTP_TIMEOUT_MS);
+      if (!response.ok) {
+        throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
+      }
+      const status = String(data?.status || "");
+      if (status !== "full" && status !== "partial" && status !== "failed") {
+        throw new Error("Runnerから正しい一括既読結果が返されませんでした");
+      }
+      const diagnostics = data?.diagnostics && typeof data.diagnostics === "object"
+        ? data.diagnostics as Record<string, unknown>
+        : null;
+      const canonicalDirectory = String(data?.directory || directory).trim();
+      emitSessionDiag("directory_mark_read_done", {
+        directory: canonicalDirectory,
+        source,
+        status,
+        selectedCount: Number(data?.selectedCount || 0),
+        updatedCount: Number(data?.updatedCount || 0),
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        serverDiagnostics: diagnostics || undefined,
+      });
+      return {
+        scope: "directory",
+        status,
+        directory: canonicalDirectory,
+        source: String(data?.source || source),
+        lastReadAt: String(data?.lastReadAt || "").trim(),
+        selectedCount: Number(data?.selectedCount || 0),
+        foundCount: Number(data?.foundCount || 0),
+        updatedCount: Number(data?.updatedCount || 0),
+        stores: data?.stores as RunnerDirectoryReadResult["stores"],
+        diagnostics,
+      };
+    } catch (err) {
+      emitSessionDiag("directory_mark_read_error", {
+        directory,
+        source,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        message: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }, [
+    emitSessionDiag,
+    fetchJsonWithTimeout,
+    getRunnerHttpAuth,
+    normalizedLlmDirectoryForRequest,
+  ]);
+
   return {
     directoryExplorerPath,
     directoryExplorerRootPath,
@@ -999,6 +1096,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchSessionHistory,
     fetchSessionChildrenHistory,
     markRunnerSessionRead,
+    markRunnerDirectoryRead,
     loadDirectoryExplorer,
     openDirectoryExplorer,
   };

@@ -90,3 +90,18 @@ test("registrations persist across store instances (same file)", async () => {
     assert.equal(devices[0].apnsToken, "token-1");
   });
 });
+
+test("stores a bounded deduplicated directory subscription with the device", async () => {
+  await withTempStorePath(async (storePath) => {
+    const store = createPushDeviceStore(storePath);
+    const record = await store.upsertDevice({
+      deviceId: "device-1",
+      apnsToken: "token-1",
+      directories: ["/one", "/one", "/two"],
+    });
+    assert.deepEqual(record.directories, ["/one", "/two"]);
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8"));
+    assert.equal(persisted.version, 2);
+    assert.deepEqual(persisted.devices[0].directories, ["/one", "/two"]);
+  });
+});

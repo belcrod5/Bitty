@@ -11,6 +11,7 @@ function createHarness(overrides = {}) {
   const sends = [];
   const removals = [];
   const warnings = [];
+  const logs = [];
   const devices = overrides.devices || [
     { deviceId: "device-1", apnsToken: "token-1", env: "sandbox" },
   ];
@@ -29,11 +30,18 @@ function createHarness(overrides = {}) {
       async listDevices() { return devices; },
       async removeDevice(deviceId) { removals.push(deviceId); },
     },
+    getPushUnreadSnapshot: overrides.getPushUnreadSnapshot || (async ({ directorySets }) => ({
+      targetUnread: true,
+      unreadCounts: directorySets.map(() => 0),
+    })),
     broadcast(payload) { broadcasts.push(payload); },
-    log: { warn(message) { warnings.push(String(message)); } },
+    log: {
+      log(message) { logs.push(String(message)); },
+      warn(message) { warnings.push(String(message)); },
+    },
     now: overrides.now || Date.now,
   });
-  return { notifier, broadcasts, sends, removals, warnings };
+  return { notifier, broadcasts, sends, removals, warnings, logs };
 }
 
 function completion(overrides = {}) {
@@ -58,6 +66,7 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
     {
       sessionId: "session-1",
       threadId: "thread-1",
+      directory: "/work/project-a",
       previewText: "finished successfully",
       completedAt: "ignored",
     }
@@ -73,8 +82,108 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
       "thread-id": "session-1",
     },
     sessionId: "session-1",
+    directory: "/work/project-a",
     turnId: "turn-1",
   });
+  assert.deepEqual(harness.logs, [
+    "[push] turn completion push sent devices=1/1 session=session-1",
+  ]);
+});
+
+test("sets an absolute badge from each device directory subscription", async () => {
+  const snapshotCalls = [];
+  const harness = createHarness({
+    devices: [{
+      deviceId: "device-1",
+      apnsToken: "token-1",
+      env: "sandbox",
+      directories: ["/one", "/two"],
+    }, {
+      deviceId: "device-2",
+      apnsToken: "token-2",
+      env: "sandbox",
+      directories: ["/two", "/one"],
+    }],
+    getPushUnreadSnapshot: async (request) => {
+      snapshotCalls.push(request);
+      return { targetUnread: true, unreadCounts: [7] };
+    },
+  });
+  await harness.notifier.notifyTurnCompleted(completion());
+  assert.deepEqual(snapshotCalls, [{
+    directorySets: [["/one", "/two"]],
+    targetSessionId: "session-1",
+    targetDirectory: "/work/project-a",
+  }]);
+  assert.equal(harness.sends.length, 2);
+  assert.equal(harness.sends[0].payload.aps.badge, 7);
+  assert.equal(harness.sends[1].payload.aps.badge, 7);
+});
+
+test("uses the snapshot-resolved directory when completion metadata has no cwd", async () => {
+  const snapshotCalls = [];
+  const harness = createHarness({
+    devices: [{
+      deviceId: "device-1",
+      apnsToken: "token-1",
+      env: "sandbox",
+      directories: ["/registered/project-a"],
+    }],
+    getPushUnreadSnapshot: async (request) => {
+      snapshotCalls.push(request);
+      return {
+        directory: "/registered/project-a",
+        targetUnread: true,
+        unreadCounts: [3],
+      };
+    },
+  });
+
+  await harness.notifier.notifyTurnCompleted(completion({ directory: "" }));
+
+  assert.deepEqual(snapshotCalls, [{
+    directorySets: [["/registered/project-a"]],
+    targetSessionId: "session-1",
+    targetDirectory: "",
+  }]);
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.directory, "/registered/project-a");
+  assert.equal(harness.sends[0].payload.aps.alert.title, "project-a");
+  assert.equal(harness.sends[0].payload.aps.badge, 3);
+});
+
+test("suppresses completion when the exact unread snapshot fails", async () => {
+  const harness = createHarness({
+    devices: [{
+      deviceId: "device-1",
+      apnsToken: "token-1",
+      env: "sandbox",
+      directories: ["/one"],
+    }],
+    getPushUnreadSnapshot: async () => { throw new Error("snapshot failed"); },
+  });
+  await harness.notifier.notifyTurnCompleted(completion());
+  assert.equal(harness.sends.length, 0);
+  assert.match(harness.warnings.join("\n"), /snapshot failed/);
+});
+
+test("suppresses a stale completion push when the target becomes read during summarization", async () => {
+  let releaseSummary;
+  const summaryPending = new Promise((resolve) => { releaseSummary = resolve; });
+  let unread = true;
+  const harness = createHarness({
+    pushSummarizer: { async summarize() { return await summaryPending; } },
+    getPushUnreadSnapshot: async (request) => {
+      assert.equal(request.targetSessionId, "session-1");
+      assert.equal(request.targetDirectory, "/work/project-a");
+      return { targetUnread: unread, unreadCounts: [] };
+    },
+  });
+  const notifying = harness.notifier.notifyTurnCompleted(completion());
+  unread = false;
+  releaseSummary("summary");
+  await notifying;
+  assert.equal(harness.sends.length, 0);
 });
 
 test("deduplicates the same turn across execution origins", async () => {
@@ -144,6 +253,7 @@ test("contains device-store, summarizer, broadcast, and APNs failures", async (t
         async listDevices() { return [{ deviceId: "device-1", apnsToken: "token-1", env: "sandbox" }]; },
         async removeDevice() {},
       },
+      getPushUnreadSnapshot: async () => ({ targetUnread: true, unreadCounts: [] }),
       broadcast() { throw new Error("broadcast failed"); },
       log: { warn(message) { warnings.push(String(message)); } },
     });

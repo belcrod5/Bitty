@@ -1,5 +1,6 @@
 const SESSION_SUMMARY_MAX_IDS = 100;
 const SESSION_SUMMARY_READ_WORKERS = 6;
+const UNREAD_COUNT_MAX_DIRECTORIES = 100;
 
 function newerTimestamp(first, second) {
   const firstMs = Date.parse(String(first || ""));
@@ -30,15 +31,29 @@ export function createLlmSessionService(deps = {}) {
   const {
     compareSessionHistoryEntries,
     findCliSessionIndexEntriesBySessionIds,
+    listAcpSessionsForDirectories,
     listAcpSessionsForDirectory,
+    listCliSessionsForDirectories,
     listCliSessionsForDirectory,
     makeApiError,
+    markAcpDirectoryRead,
+    markAcpSessionsRead,
+    markCliDirectoryRead,
+    markCliSessionsRead,
     normalizeLlmExecutionSessionId,
     normalizeSessionListLimit,
     normalizeSessionSource,
+    normalizeSessionUpdatedAt,
     readCliSessionSummaryFromRolloutFile,
     resolveCanonicalDirectoryIdentity,
   } = deps;
+  let readMutationQueue = Promise.resolve();
+
+  function enqueueReadMutation(run) {
+    const mutation = readMutationQueue.then(run, run);
+    readMutationQueue = mutation.catch(() => {});
+    return mutation;
+  }
 
   async function readCliSummary(entry) {
     const filePath = String(entry?.filePath || "").trim();
@@ -124,6 +139,178 @@ export function createLlmSessionService(deps = {}) {
     return ids;
   }
 
+  async function performLlmSessionsRead(rawSessionIds, opts = {}) {
+    const startedAtMs = Date.now();
+    const sessionIds = normalizeRequestedSessionIds(rawSessionIds);
+    const directory = await resolveCanonicalDirectoryIdentity(opts?.directory);
+    const source = normalizeSessionSource(opts?.source, "all");
+    const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
+    let acpResults = [];
+    let cliResults = [];
+
+    if (sessionIds.length > 0 && (source === "acp" || source === "all")) {
+      acpResults = await markAcpSessionsRead(sessionIds, lastReadAt);
+    }
+    if (sessionIds.length > 0 && (source === "cli" || source === "all")) {
+      cliResults = await markCliSessionsRead(sessionIds, { directory, lastReadAt });
+    }
+
+    const acpById = new Map(acpResults.map((result) => [result.sessionId, result]));
+    const cliById = new Map(cliResults.map((result) => [result.sessionId, result]));
+    const diagnostics = {
+      totalMs: Math.max(0, Date.now() - startedAtMs),
+      acpPhaseMs: Math.max(0, Number(acpResults[0]?.elapsedMs || 0)),
+      cliLookupMs: Math.max(0, Number(cliResults[0]?.lookupMs || 0)),
+      cliRewriteMs: Math.max(0, Number(cliResults[0]?.rewriteMs || 0)),
+      cliPersistMs: Math.max(0, Number(cliResults[0]?.persistMs || 0)),
+    };
+    return {
+      directory,
+      source,
+      lastReadAt,
+      results: sessionIds.map((sessionId) => {
+        const acpResult = acpById.get(sessionId);
+        const cliResult = cliById.get(sessionId);
+        const acpUpdated = Boolean(acpResult?.updated);
+        const cliUpdated = Boolean(cliResult?.updated);
+        return {
+          sessionId,
+          directory,
+          source,
+          lastReadAt,
+          updated: acpUpdated || cliUpdated,
+          acpUpdated,
+          cliUpdated,
+          diagnostics: {
+            ...diagnostics,
+            acpEntryFound: Boolean(acpResult?.entryFound),
+            cliEntryFound: Boolean(cliResult?.entryFound),
+          },
+        };
+      }),
+      diagnostics,
+    };
+  }
+
+  async function markLlmSessionsRead(rawSessionIds, opts = {}) {
+    return await enqueueReadMutation(() => performLlmSessionsRead(rawSessionIds, opts));
+  }
+
+  async function markLlmSessionRead(rawSessionId, opts = {}) {
+    const sessionId = normalizeLlmExecutionSessionId(rawSessionId);
+    if (!sessionId) throw makeApiError(400, "invalid_session_id", "sessionId is required");
+    const batch = await markLlmSessionsRead([sessionId], opts);
+    return batch.results[0];
+  }
+
+  function storeFailureReason(error) {
+    const code = String(error?.code || "").trim().toLowerCase();
+    if (/^[a-z0-9_]{1,64}$/.test(code)) return code;
+    const name = String(error?.name || "").trim().toLowerCase();
+    return /^[a-z0-9_]{1,64}$/.test(name) ? name : "store_error";
+  }
+
+  async function performLlmDirectoryRead(rawDirectory, opts = {}) {
+    const startedAtMs = Date.now();
+    if (typeof rawDirectory !== "string" || !rawDirectory.trim()) {
+      throw makeApiError(400, "invalid_directory", "directory is required");
+    }
+    const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
+    const source = normalizeSessionSource(opts?.source, "all");
+    const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
+    const stores = [
+      {
+        name: "acp",
+        enabled: source === "acp" || source === "all",
+        run: () => markAcpDirectoryRead(directory, lastReadAt),
+      },
+      {
+        name: "cli",
+        enabled: source === "cli" || source === "all",
+        run: () => markCliDirectoryRead(directory, { lastReadAt }),
+      },
+    ];
+    const settled = await Promise.all(stores.map(async (store) => {
+      if (!store.enabled) {
+        return {
+          name: store.name,
+          status: "skipped",
+          selectedSessionIds: [],
+          updatedSessionIds: [],
+          elapsedMs: 0,
+        };
+      }
+      try {
+        return { name: store.name, status: "success", ...await store.run() };
+      } catch (error) {
+        return {
+          name: store.name,
+          status: "failed",
+          reason: storeFailureReason(error),
+          selectedSessionIds: [],
+          updatedSessionIds: [],
+          elapsedMs: Math.max(0, Date.now() - startedAtMs),
+        };
+      }
+    }));
+    const requested = settled.filter((store) => store.status !== "skipped");
+    const succeeded = requested.filter((store) => store.status === "success");
+    const selectedSessionIds = new Set(succeeded.flatMap((store) => store.selectedSessionIds));
+    const updatedSessionIds = new Set(succeeded.flatMap((store) => store.updatedSessionIds));
+    const status = succeeded.length === requested.length
+      ? "full"
+      : succeeded.length > 0 ? "partial" : "failed";
+    return {
+      scope: "directory",
+      status,
+      directory,
+      source,
+      lastReadAt,
+      selectedCount: selectedSessionIds.size,
+      foundCount: selectedSessionIds.size,
+      updatedCount: updatedSessionIds.size,
+      stores: Object.fromEntries(settled.map((store) => [store.name, {
+        status: store.status,
+        selectedCount: store.selectedSessionIds.length,
+        foundCount: store.selectedSessionIds.length,
+        updatedCount: store.updatedSessionIds.length,
+        ...(store.reason ? { reason: store.reason } : {}),
+      }])),
+      diagnostics: {
+        totalMs: Math.max(0, Date.now() - startedAtMs),
+        acpMs: Math.max(0, Number(settled.find((store) => store.name === "acp")?.elapsedMs || 0)),
+        cliMs: Math.max(0, Number(settled.find((store) => store.name === "cli")?.elapsedMs || 0)),
+      },
+    };
+  }
+
+  async function markLlmDirectoryRead(rawDirectory, opts = {}) {
+    return await enqueueReadMutation(() => performLlmDirectoryRead(rawDirectory, opts));
+  }
+
+  async function markLlmSessionReadRequest(rawBody) {
+    const body = rawBody && typeof rawBody === "object" ? rawBody : {};
+    const directoryScope = body.scope === "directory";
+    if (body.scope !== undefined && !directoryScope) {
+      throw makeApiError(400, "invalid_read_scope", "scope must be directory");
+    }
+    if (directoryScope && (body.sessionId !== undefined || body.sessionIds !== undefined)) {
+      throw makeApiError(
+        400,
+        "conflicting_read_targets",
+        "directory scope cannot include sessionId or sessionIds",
+      );
+    }
+    const options = {
+      directory: body.directory,
+      source: body.source,
+      lastReadAt: body.lastReadAt,
+    };
+    if (directoryScope) return await markLlmDirectoryRead(body.directory, options);
+    if (body.sessionIds !== undefined) return await markLlmSessionsRead(body.sessionIds, options);
+    return await markLlmSessionRead(body.sessionId, options);
+  }
+
   async function getLlmSessionSummaries(rawBody) {
     const body = rawBody && typeof rawBody === "object" ? rawBody : {};
     const rawDirectory = String(body.directory || "").trim();
@@ -189,13 +376,176 @@ export function createLlmSessionService(deps = {}) {
     return { directory, sessions, missingSessionIds };
   }
 
+  function isMergedSessionUnread(session) {
+    const updatedAtMs = Date.parse(String(session?.updatedAt || ""));
+    const lastReadAtMs = Date.parse(String(session?.lastReadAt || ""));
+    return Number.isFinite(updatedAtMs) && (
+      !Number.isFinite(lastReadAtMs) || updatedAtMs > lastReadAtMs
+    );
+  }
+
+  async function normalizeUnreadDirectories(rawDirectories) {
+    if (!Array.isArray(rawDirectories)) {
+      throw makeApiError(400, "invalid_directories", "directories must be an array");
+    }
+    if (rawDirectories.length > UNREAD_COUNT_MAX_DIRECTORIES) {
+      throw makeApiError(400, "too_many_directories", "", {
+        max: UNREAD_COUNT_MAX_DIRECTORIES,
+      });
+    }
+    const directories = [];
+    const seenDirectories = new Set();
+    for (let index = 0; index < rawDirectories.length; index += 1) {
+      if (typeof rawDirectories[index] !== "string" || !rawDirectories[index].trim()) {
+        throw makeApiError(400, "invalid_directory", "directory must be a non-empty string", { index });
+      }
+      const directory = await resolveCanonicalDirectoryIdentity(rawDirectories[index]);
+      if (seenDirectories.has(directory)) continue;
+      seenDirectories.add(directory);
+      directories.push(directory);
+    }
+    return directories;
+  }
+
+  function mergeSessionGroups(directories, acpGroups, cliGroups) {
+    return directories.map((directory, index) => {
+      const sessionsById = new Map();
+      const sessions = [
+        ...(acpGroups[index]?.sessions || []),
+        ...(cliGroups[index]?.sessions || []),
+      ];
+      for (const session of sessions) {
+        const sessionId = String(session?.sessionId || "").trim();
+        if (!sessionId) continue;
+        const existing = sessionsById.get(sessionId);
+        sessionsById.set(sessionId, {
+          updatedAt: newerTimestamp(existing?.updatedAt, session?.updatedAt),
+          lastReadAt: newerTimestamp(existing?.lastReadAt, session?.lastReadAt),
+        });
+      }
+      return { directory, sessionsById };
+    });
+  }
+
+  async function loadUnreadSessionSnapshot(directories) {
+    const cliGroups = await listCliSessionsForDirectories(directories, {
+      forceRefresh: true,
+      useRolloutMtime: true,
+      includeSubagents: false,
+    });
+    const acpGroups = await listAcpSessionsForDirectories(directories);
+    return mergeSessionGroups(directories, acpGroups, cliGroups);
+  }
+
+  async function getPushUnreadSnapshot({ directorySets, targetSessionId, targetDirectory }) {
+    if (!Array.isArray(directorySets)) {
+      throw makeApiError(400, "invalid_directory_sets", "directorySets must be an array");
+    }
+    const sessionId = normalizeLlmExecutionSessionId(targetSessionId);
+    if (!sessionId) throw makeApiError(400, "invalid_session_id", "sessionId is required");
+    const canonicalDirectorySets = await Promise.all(
+      directorySets.map((directories) => normalizeUnreadDirectories(directories)),
+    );
+    const [requestedDirectory] = String(targetDirectory || "").trim()
+      ? await normalizeUnreadDirectories([targetDirectory])
+      : [];
+    const allDirectories = [];
+    const seenDirectories = new Set();
+    for (const candidate of [...canonicalDirectorySets.flat(), requestedDirectory].filter(Boolean)) {
+      if (seenDirectories.has(candidate)) continue;
+      seenDirectories.add(candidate);
+      allDirectories.push(candidate);
+    }
+    const mergedGroups = allDirectories.length > 0
+      ? await loadUnreadSessionSnapshot(allDirectories)
+      : [];
+    const sessionsByDirectory = new Map(
+      mergedGroups.map((group) => [group.directory, group.sessionsById]),
+    );
+    let directory = requestedDirectory || "";
+    let target = directory ? sessionsByDirectory.get(directory)?.get(sessionId) : undefined;
+    if (!directory) {
+      const matches = mergedGroups.filter((group) => group.sessionsById.has(sessionId));
+      if (matches.length === 1) {
+        directory = matches[0].directory;
+        target = matches[0].sessionsById.get(sessionId);
+      }
+    }
+    const unreadCountByDirectorySet = new Map();
+    const unreadCounts = canonicalDirectorySets.map((directories) => {
+      const key = [...directories].sort().join("\u0000");
+      if (unreadCountByDirectorySet.has(key)) return unreadCountByDirectorySet.get(key);
+      let unreadCount = 0;
+      for (const selectedDirectory of directories) {
+        for (const session of sessionsByDirectory.get(selectedDirectory)?.values() || []) {
+          if (isMergedSessionUnread(session)) unreadCount += 1;
+        }
+      }
+      unreadCountByDirectorySet.set(key, unreadCount);
+      return unreadCount;
+    });
+    return {
+      directory,
+      sessionId,
+      targetFound: Boolean(target),
+      targetUnread: isMergedSessionUnread(target),
+      directorySets: canonicalDirectorySets,
+      unreadCounts,
+    };
+  }
+
+  async function getSessionUnreadState(rawSessionId, rawDirectory) {
+    const sessionId = normalizeLlmExecutionSessionId(rawSessionId);
+    if (!sessionId) throw makeApiError(400, "invalid_session_id", "sessionId is required");
+    const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
+    const [group] = await loadUnreadSessionSnapshot([directory]);
+    const session = group?.sessionsById.get(sessionId);
+    return {
+      directory,
+      sessionId,
+      found: Boolean(session),
+      unread: isMergedSessionUnread(session),
+      updatedAt: String(session?.updatedAt || ""),
+      lastReadAt: String(session?.lastReadAt || ""),
+    };
+  }
+
+  async function countUnreadSessions(rawDirectories) {
+    const directories = await normalizeUnreadDirectories(rawDirectories);
+    if (directories.length === 0) {
+      return { directories: [], directoryCounts: [], unreadCount: 0 };
+    }
+    const groups = await loadUnreadSessionSnapshot(directories);
+    const directoryCounts = groups.map((group) => {
+      let unreadCount = 0;
+      for (const session of group.sessionsById.values()) {
+        if (isMergedSessionUnread(session)) unreadCount += 1;
+      }
+      return { directory: group.directory, unreadCount };
+    });
+    return {
+      directories,
+      directoryCounts,
+      unreadCount: directoryCounts.reduce((sum, item) => sum + item.unreadCount, 0),
+    };
+  }
+
   return {
+    countUnreadSessions,
     getLlmSessionSummaries,
+    getPushUnreadSnapshot,
+    getSessionUnreadState,
     listLlmSessions,
+    markLlmDirectoryRead,
+    markLlmSessionRead,
+    markLlmSessionReadRequest,
+    markLlmSessionsRead,
+    normalizeRequestedSessionIds,
   };
 }
 
 export const __TESTING__ = {
   SESSION_SUMMARY_MAX_IDS,
   SESSION_SUMMARY_READ_WORKERS,
+  UNREAD_COUNT_MAX_DIRECTORIES,
 };

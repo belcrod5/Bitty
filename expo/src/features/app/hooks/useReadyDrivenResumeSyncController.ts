@@ -71,6 +71,13 @@ type UseReadyDrivenResumeSyncControllerArgs = {
     diagnosticCycleId?: string;
   }) => Promise<"applied" | "superseded" | "failed">>;
   fetchLatestSessionIdForDirectory: (directoryRaw?: unknown) => Promise<string>;
+  markSessionReadAsync: (params: {
+    sessionId: string;
+    directory: string;
+    source?: "all";
+    readTrigger?: "visible_resume";
+    restoreRequestSeq: number;
+  }) => void;
   logSessionDiag: LogSessionDiag;
 };
 
@@ -114,6 +121,7 @@ export function useReadyDrivenResumeSyncController({
   selectSpecificLlmSession,
   hydratePanelFromSessionHistoryRef,
   fetchLatestSessionIdForDirectory,
+  markSessionReadAsync,
   logSessionDiag,
 }: UseReadyDrivenResumeSyncControllerArgs) {
   // 購読コールバック(React外)から最新値を読むためのref群。
@@ -248,7 +256,8 @@ export function useReadyDrivenResumeSyncController({
     sessionId: string,
     panel: { panelId: string; directory: string },
     diagnosticCycleId: string,
-    logContext: Record<string, unknown>
+    logContext: Record<string, unknown>,
+    markRead: boolean
   ) => (
     hydratePanelFromSessionHistoryRef.current({
       panelId: panel.panelId,
@@ -256,6 +265,15 @@ export function useReadyDrivenResumeSyncController({
       directory: panel.directory,
       diagnosticCycleId,
     }).then((result) => {
+      if (result === "applied" && markRead) {
+        markSessionReadAsync({
+          sessionId,
+          directory: panel.directory,
+          source: "all",
+          readTrigger: "visible_resume",
+          restoreRequestSeq: Date.now(),
+        });
+      }
       logSessionDiag("resume_sync_panel_done", {
         ...logContext,
         sessionId,
@@ -270,12 +288,13 @@ export function useReadyDrivenResumeSyncController({
         message: error instanceof Error ? error.message : String(error),
       }, { throttleMs: 0, throttleKey: `resume_sync_panel_failed:${sessionId}:${panel.panelId}` });
     })
-  ), [hydratePanelFromSessionHistoryRef, logSessionDiag]);
+  ), [hydratePanelFromSessionHistoryRef, logSessionDiag, markSessionReadAsync]);
 
   const runResumeSyncPass = useCallback(async (reason: string, generation: number) => {
     const inputs = inputsRef.current;
     if (!inputs.settingsLoaded) return;
     if (!inputs.codexWsUrl.trim()) return;
+    if (AppState.currentState !== "active") return;
     // チャット(会話)を表示できるボード画面のみ再同期する。
     if (inputs.activeScreen !== "skia_board") return;
     const now = Date.now();
@@ -314,7 +333,18 @@ export function useReadyDrivenResumeSyncController({
     // observerが生きているセッションはライブ経路(seq resume)が回復を担う。
     // ここで再同期済みマークだけ消費しておく。
     for (const skip of plan.skipped) {
-      if (skip.reason === "live_observer") consumeRespondingAtBackground(skip.sessionId);
+      if (skip.reason !== "live_observer") continue;
+      consumeRespondingAtBackground(skip.sessionId);
+      if (!skip.panelId || skip.panelId !== inputs.drawerSessionPopupPanelId) continue;
+      const panel = panelEntries.find((entry) => entry.panelId === skip.panelId && entry.directory);
+      if (!panel) continue;
+      markSessionReadAsync({
+        sessionId: skip.sessionId,
+        directory: panel.directory,
+        source: "all",
+        readTrigger: "visible_resume",
+        restoreRequestSeq: generation,
+      });
     }
     const directory = normalizedLlmDirectoryForRequest();
     const work: Promise<unknown>[] = [];
@@ -359,7 +389,13 @@ export function useReadyDrivenResumeSyncController({
       }
       const diagnosticCycleId = `resume-sync-${generation}-${now.toString(36)}`;
       for (const panel of target.panels) {
-        work.push(resyncPanel(target.sessionId, panel, diagnosticCycleId, logContext));
+        work.push(resyncPanel(
+          target.sessionId,
+          panel,
+          diagnosticCycleId,
+          logContext,
+          panel.panelId === inputs.drawerSessionPopupPanelId
+        ));
       }
     }
     // 選択セッションが無い場合は最新セッションへフォールバック(旧resume経路の互換)。
@@ -406,6 +442,7 @@ export function useReadyDrivenResumeSyncController({
     llmSessionRestoreInFlightRef,
     llmSessionRestoreLoadingRef,
     logSessionDiag,
+    markSessionReadAsync,
     normalizedLlmDirectoryForRequest,
     pruneRespondingAtBackground,
     replyLoadingRef,
@@ -587,7 +624,13 @@ export function useReadyDrivenResumeSyncController({
     }
     const diagnosticCycleId = `session-resync-${now.toString(36)}`;
     for (const entry of panelEntries) {
-      void resyncPanel(sessionId, { panelId: entry.panelId, directory: entry.directory }, diagnosticCycleId, logContext);
+      void resyncPanel(
+        sessionId,
+        { panelId: entry.panelId, directory: entry.directory },
+        diagnosticCycleId,
+        logContext,
+        entry.panelId === inputsRef.current.drawerSessionPopupPanelId
+      );
     }
     return true;
   }, [

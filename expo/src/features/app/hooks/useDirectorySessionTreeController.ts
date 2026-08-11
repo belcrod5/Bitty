@@ -94,7 +94,10 @@ function applyReadOverrides(
 ) {
   if (lastReadAtBySessionId.size <= 0) return entries;
   return entries.map((entry) => {
-    const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
+    const directory = normalizeDirectoryPath(entry.directory);
+    const lastReadAt = lastReadAtBySessionId.get(`\u0000session:${directory}:${entry.sessionId}`)
+      || lastReadAtBySessionId.get(entry.sessionId)
+      || lastReadAtBySessionId.get(`\u0000directory:${normalizeDirectoryPath(entry.directory)}`);
     return !lastReadAt || lastReadAt === entry.lastReadAt ? entry : { ...entry, lastReadAt };
   });
 }
@@ -197,12 +200,14 @@ export function useDirectorySessionTreeController({
   }, []);
 
   const applySessionLastReadAtByIdToDirectoryTrees = useCallback((
-    lastReadAtBySessionId: Map<string, string>
+    lastReadAtBySessionId: Map<string, string>,
+    directoryRaw?: string
   ) => {
     if (lastReadAtBySessionId.size <= 0) return;
+    const directory = normalizeDirectoryPath(directoryRaw);
     for (const readOverrides of readOverridesByActiveFetchRef.current) {
       for (const [sessionId, lastReadAt] of lastReadAtBySessionId) {
-        readOverrides.set(sessionId, lastReadAt);
+        readOverrides.set(directory ? `\u0000session:${directory}:${sessionId}` : sessionId, lastReadAt);
       }
     }
     const currentTrees = directorySessionsByIdRef.current;
@@ -211,6 +216,7 @@ export function useDirectorySessionTreeController({
       Object.entries(currentTrees).map(([directoryId, state]) => {
         let entryChanged = false;
         const entries = state.entries.map((entry) => {
+          if (directory && normalizeDirectoryPath(entry.directory) !== directory) return entry;
           const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
           if (!lastReadAt || lastReadAt === entry.lastReadAt) return entry;
           entryChanged = true;
@@ -221,6 +227,7 @@ export function useDirectorySessionTreeController({
           Object.entries(state.childrenByParentId).map(([parentId, child]) => {
             let currentChildChanged = false;
             const childEntries = child.entries.map((entry) => {
+              if (directory && normalizeDirectoryPath(entry.directory) !== directory) return entry;
               const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
               if (!lastReadAt || lastReadAt === entry.lastReadAt) return entry;
               currentChildChanged = true;
@@ -239,6 +246,35 @@ export function useDirectorySessionTreeController({
       })
     );
     if (changed) commitTrees(nextTrees);
+  }, [commitTrees]);
+
+  const applyDirectoryLastReadAtToDirectoryTrees = useCallback((
+    directoryRaw: string,
+    lastReadAt: string
+  ) => {
+    const directory = normalizeDirectoryPath(directoryRaw);
+    if (!directory || !lastReadAt) return;
+    const overrideKey = `\u0000directory:${directory}`;
+    for (const readOverrides of readOverridesByActiveFetchRef.current) {
+      readOverrides.set(overrideKey, lastReadAt);
+    }
+    const rewriteEntries = (entries: DirectorySessionTreeState["entries"]) => entries.map((entry) => (
+      normalizeDirectoryPath(entry.directory) === directory && entry.lastReadAt !== lastReadAt
+        ? { ...entry, lastReadAt }
+        : entry
+    ));
+    const currentTrees = directorySessionsByIdRef.current;
+    const nextTrees = Object.fromEntries(Object.entries(currentTrees).map(([directoryId, state]) => [
+      directoryId,
+      {
+        ...state,
+        entries: rewriteEntries(state.entries),
+        childrenByParentId: Object.fromEntries(Object.entries(state.childrenByParentId).map(
+          ([parentId, child]) => [parentId, { ...child, entries: rewriteEntries(child.entries) }]
+        )),
+      },
+    ]));
+    commitTrees(nextTrees);
   }, [commitTrees]);
 
   const acquireFetchSlot = useCallback(async () => {
@@ -302,7 +338,7 @@ export function useDirectorySessionTreeController({
     const key = `${directory.id}\u0000${directoryPath}`;
     const joined = inFlightByKeyRef.current.get(key);
     if (joined) {
-      if (reason !== "session_completed") return joined;
+      if (reason !== "session_completed" && reason !== "read_reconcile") return joined;
       const queued = refreshAfterActiveByKeyRef.current.get(key);
       if (queued) return queued;
       let refreshAfterActive!: Promise<DirectoryLoadOutcome>;
@@ -436,6 +472,44 @@ export function useDirectorySessionTreeController({
     directory: RegisteredDirectoryEntry,
     reason: DirectorySessionSyncReason
   ) => loadFirstPage(directory, "refresh", reason), [loadFirstPage]);
+
+  const reconcileDirectorySessionTree = useCallback((
+    directoryRaw: string,
+    requestedDirectoryRaw?: string
+  ) => {
+    const directoryPaths = new Set([
+      normalizeDirectoryPath(directoryRaw),
+      normalizeDirectoryPath(requestedDirectoryRaw),
+    ].filter(Boolean));
+    const target = registeredDirectoriesRef.current.find((directory) => (
+      directoryPaths.has(normalizeDirectoryPath(directory.path))
+      || directorySessionsByIdRef.current[directory.id]?.entries.some(
+        (entry) => directoryPaths.has(normalizeDirectoryPath(entry.directory))
+      )
+    ));
+    if (!target) {
+      return Promise.resolve<DirectoryLoadOutcome>({
+        status: "skipped",
+        directoryId: "",
+        directoryPath: normalizeDirectoryPath(directoryRaw),
+        reason: "not_registered",
+        hasUsableData: false,
+      });
+    }
+    nextGeneration(target.id);
+    supersededReasonByDirectoryIdRef.current.set(target.id, "newer_request");
+    const currentTrees = directorySessionsByIdRef.current;
+    commitTrees({
+      ...currentTrees,
+      [target.id]: { ...emptyDirectorySessionTreeState, childrenByParentId: {} },
+    });
+    return refreshDirectorySessionTree(target, "read_reconcile");
+  }, [
+    commitTrees,
+    emptyDirectorySessionTreeState,
+    nextGeneration,
+    refreshDirectorySessionTree,
+  ]);
 
   const loadMoreDirectorySessionTree = useCallback(async (
     directoryId: string,
@@ -921,12 +995,14 @@ export function useDirectorySessionTreeController({
     directorySessionSync,
     ensureDirectorySessionTree,
     ensureRegisteredDirectorySessions,
+    applyDirectoryLastReadAtToDirectoryTrees,
     applySessionLastReadAtByIdToDirectoryTrees,
     loadMoreDirectorySessionTree,
     loadSessionChildTree,
     loadSessionChildTreesForSessions,
     refreshSessionChildTreesAtBoundary,
     prepareDirectorySessionTargetChange,
+    reconcileDirectorySessionTree,
     refreshDirectorySessionTree,
     refreshRegisteredDirectorySessions,
     toggleDirectoryExpanded,
