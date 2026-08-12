@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Modal,
   SafeAreaView,
   StyleSheet,
   Text,
@@ -13,6 +12,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import type { MarkdownStyle } from "react-native-enriched-markdown";
 import { MermaidView } from "./MermaidView";
+import { AppModal } from "./AppModal";
 
 type MermaidCodeBlockProps = {
   chart: string;
@@ -56,7 +56,7 @@ export function MermaidCodeBlock({ chart, codeBlockStyle }: MermaidCodeBlockProp
           {chart}
         </Text>
       </View>
-      <Modal
+      <AppModal
         visible={modalVisible}
         animationType="slide"
         presentationStyle="fullScreen"
@@ -77,7 +77,7 @@ export function MermaidCodeBlock({ chart, codeBlockStyle }: MermaidCodeBlockProp
             </TouchableOpacity>
           </View>
         </SafeAreaView>
-      </Modal>
+      </AppModal>
     </View>
   );
 }

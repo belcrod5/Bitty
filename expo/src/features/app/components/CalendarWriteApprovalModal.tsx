@@ -1,5 +1,6 @@
-import { Modal, Text, TouchableOpacity, View } from "react-native";
+import { Text, TouchableOpacity, View } from "react-native";
 import type { CalendarWriteConfirmation } from "../../calendar/calendarToolHandler";
+import { AppModal } from "./AppModal";
 
 function formatCalendarDate(value: string, allDay: boolean, timeZone: string | null) {
   const date = new Date(value);
@@ -26,7 +27,7 @@ export function CalendarWriteApprovalModal(props: {
 }) {
   const value = props.request?.view;
   return (
-    <Modal visible={!!props.request} transparent animationType="fade" onRequestClose={() => props.onDecide(false)}>
+    <AppModal visible={!!props.request} transparent animationType="fade" onRequestClose={() => props.onDecide(false)}>
       <View style={{ flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(0,0,0,0.45)" }}>
         <View style={{ backgroundColor: "white", borderRadius: 12, padding: 20, gap: 12 }}>
           <Text style={{ fontWeight: "700", fontSize: 18 }}>カレンダーの変更を確認</Text>
@@ -42,6 +43,6 @@ export function CalendarWriteApprovalModal(props: {
           </View>
         </View>
       </View>
-    </Modal>
+    </AppModal>
   );
 }

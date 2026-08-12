@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import * as Clipboard from "expo-clipboard";
+import * as Clipboard from "../clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import { Alert, AppState } from "react-native";
 import { parseSttProvider, type SttProvider } from "../../stt/sttConfig";

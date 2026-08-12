@@ -1,4 +1,4 @@
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import { useAudioInputRouteController } from "./useAudioInputRouteController";
 
 jest.mock("react", () => ({

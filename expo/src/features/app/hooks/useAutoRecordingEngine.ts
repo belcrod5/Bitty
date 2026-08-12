@@ -1,5 +1,5 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import type { AppStateStatus } from "react-native";
 import { shouldAllowAutoCaptureDuringTts } from "../utils/autoAudioPolicy";
 

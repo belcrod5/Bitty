@@ -1,5 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import type { StreamTtsControlState } from "../types/appTypes";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";

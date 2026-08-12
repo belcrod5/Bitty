@@ -1,5 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import type { RecordingTuning } from "../utils/audioConfig";
 
 type AudioModeSwitchOptions = {

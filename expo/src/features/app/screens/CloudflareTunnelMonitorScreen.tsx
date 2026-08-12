@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import {
+  CameraView,
+  supportsCamera,
+  useCameraPermissions,
+  type BarcodeScanningResult,
+} from "../camera";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { RouteDebugPanel } from "./RouteDebugPanel";
@@ -387,7 +392,7 @@ export function CloudflareTunnelMonitorScreen() {
             </TouchableOpacity>
           </View>
           {pairingStatus ? <Text style={screenStyles.meta}>{pairingStatus}</Text> : null}
-          <View style={screenStyles.buttonRow}>
+          {supportsCamera ? <View style={screenStyles.buttonRow}>
             <TouchableOpacity
               style={screenStyles.button}
               onPress={async () => {
@@ -404,7 +409,7 @@ export function CloudflareTunnelMonitorScreen() {
             >
               <Text style={screenStyles.buttonText}>Pairing QRを読む</Text>
             </TouchableOpacity>
-          </View>
+          </View> : null}
           {showConnectionSettings ? (
             <View style={screenStyles.detailBox}>
               <Text style={screenStyles.meta}>Runner URL: {runnerUrl || "-"}</Text>
@@ -432,7 +437,7 @@ export function CloudflareTunnelMonitorScreen() {
           ) : null}
         </View>
 
-        {scanning ? (
+        {supportsCamera && scanning ? (
           <View style={screenStyles.cameraCard}>
             <CameraView
               style={screenStyles.camera}

@@ -1,0 +1,47 @@
+require 'pathname'
+
+ws_dir = Pathname.new(__dir__)
+ws_dir = ws_dir.parent until
+  File.exist?("#{ws_dir}/node_modules/react-native-macos/scripts/react_native_pods.rb") ||
+  ws_dir.expand_path.to_s == '/'
+require "#{ws_dir}/node_modules/expo/scripts/autolinking"
+require "#{ws_dir}/node_modules/react-native-macos/scripts/react_native_pods.rb"
+
+prepare_react_native_project!
+
+target 'bitty-macOS' do
+  platform :macos, '14.0'
+  ENV['BITTY_BUILDING_MACOS'] = '1'
+  ENV['ENRICHED_MARKDOWN_ENABLE_MATH'] = '0'
+  use_expo_modules!
+
+  config_command = [
+    'node',
+    '--no-warnings',
+    '--eval',
+    'require(\'expo/bin/autolinking\')',
+    'expo-modules-autolinking',
+    'react-native-config',
+    '--json',
+    '--platform',
+    'ios'
+  ]
+  use_native_modules!(config_command)
+
+  react_native_path = '../node_modules/react-native-macos'
+
+  use_react_native!(
+    :path => react_native_path,
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(installer, react_native_path)
+
+    installer.pods_project.targets
+      .find { |target| target.name == 'ReactCodegen' }
+      &.build_configurations
+      &.each { |configuration| configuration.build_settings['BITTY_BUILDING_MACOS'] = '1' }
+  end
+end

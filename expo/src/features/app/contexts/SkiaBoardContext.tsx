@@ -45,6 +45,8 @@ type SkiaBoardContextValue = {
 
 const SkiaBoardContext = createContext<SkiaBoardContextValue | null>(null);
 
+type SkiaBoardStateUpdate = (current: SkiaBoardState | null) => SkiaBoardState | null;
+
 export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const {
     registeredDirectories,
@@ -53,28 +55,58 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   } = useConversation();
   const [state, setState] = useState<SkiaBoardState | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const persistenceWritableRef = useRef(false);
+  const persistenceRecoveryInFlightRef = useRef(false);
+  const pendingStateUpdatesRef = useRef<SkiaBoardStateUpdate[]>([]);
   const lastPersistedStateRef = useRef<SkiaBoardState | null>(null);
+  const mountedRef = useRef(false);
 
   const sessionCandidates = useMemo(() => (
     collectRegisteredDirectorySessions(registeredDirectories, directorySessionsById)
   ), [directorySessionsById, registeredDirectories]);
 
-  useEffect(() => {
-    let cancelled = false;
-    readPersistedSkiaBoardState()
-      .then((persisted) => {
-        if (cancelled) return;
-        lastPersistedStateRef.current = persisted;
-        setState(persisted);
-        setLoaded(true);
-      })
-      .catch((error) => {
-        console.warn("[skia_board] failed to read persisted board state", error);
-      });
-    return () => {
-      cancelled = true;
-    };
+  const recoverPersistence = useCallback(async () => {
+    if (persistenceWritableRef.current || persistenceRecoveryInFlightRef.current) return;
+    persistenceRecoveryInFlightRef.current = true;
+    try {
+      const persisted = await readPersistedSkiaBoardState();
+      if (!mountedRef.current) return;
+      const recovered = pendingStateUpdatesRef.current.reduce(
+        (current, update) => update(current),
+        persisted
+      );
+      pendingStateUpdatesRef.current = [];
+      lastPersistedStateRef.current = persisted;
+      persistenceWritableRef.current = true;
+      setState(recovered);
+      setLoaded(true);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      console.warn("[skia_board] failed to read persisted board state", error);
+      // Keep the board usable in memory. Each later board mutation retries this read;
+      // queued mutations are applied to the saved state only after it becomes readable.
+      setLoaded(true);
+    } finally {
+      persistenceRecoveryInFlightRef.current = false;
+    }
   }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void recoverPersistence();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [recoverPersistence]);
+
+  const updateLoadedState = useCallback((update: SkiaBoardStateUpdate) => {
+    if (!loaded) return;
+    if (!persistenceWritableRef.current) {
+      pendingStateUpdatesRef.current.push(update);
+    }
+    setState(update);
+    if (!persistenceWritableRef.current) void recoverPersistence();
+  }, [loaded, recoverPersistence]);
 
   const directorySyncSettled = (
     directorySessionSync.phase === "idle"
@@ -82,11 +114,16 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   );
   useEffect(() => {
     if (!loaded || !directorySyncSettled) return;
-    setState((current) => ingestSkiaBoardSessions(current, sessionCandidates));
-  }, [directorySyncSettled, loaded, sessionCandidates]);
+    updateLoadedState((current) => ingestSkiaBoardSessions(current, sessionCandidates));
+  }, [directorySyncSettled, loaded, sessionCandidates, updateLoadedState]);
 
   useEffect(() => {
-    if (!loaded || !state || state === lastPersistedStateRef.current) return;
+    if (
+      !loaded
+      || !persistenceWritableRef.current
+      || !state
+      || state === lastPersistedStateRef.current
+    ) return;
     writePersistedSkiaBoardState(state)
       .then(() => {
         lastPersistedStateRef.current = state;
@@ -96,9 +133,8 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
       });
   }, [loaded, state]);
 
-  const updateLoadedState = useCallback((update: (current: SkiaBoardState) => SkiaBoardState) => {
-    if (!loaded) return;
-    setState((current) => {
+  const updateInitializedState = useCallback((update: (current: SkiaBoardState) => SkiaBoardState) => {
+    updateLoadedState((current) => {
       const initialized = current || ingestSkiaBoardSessions(null, sessionCandidates) || {
         cards: [],
         excludedSessionIds: [],
@@ -107,32 +143,32 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
       };
       return update(initialized);
     });
-  }, [loaded, sessionCandidates]);
+  }, [sessionCandidates, updateLoadedState]);
 
   const addSession = useCallback((sessionId: string) => {
-    updateLoadedState((current) => addSkiaBoardSession(current, sessionId));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => addSkiaBoardSession(current, sessionId));
+  }, [updateInitializedState]);
   const removeSession = useCallback((sessionId: string) => {
-    updateLoadedState((current) => removeSkiaBoardSession(current, sessionId));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => removeSkiaBoardSession(current, sessionId));
+  }, [updateInitializedState]);
   const addFile = useCallback((file: Pick<SkiaBoardFileCard, "rootDir" | "path" | "name">) => {
-    updateLoadedState((current) => addSkiaBoardFile(current, file));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => addSkiaBoardFile(current, file));
+  }, [updateInitializedState]);
   const removeFile = useCallback((rootDir: string, path: string) => {
-    updateLoadedState((current) => removeSkiaBoardFile(current, rootDir, path));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => removeSkiaBoardFile(current, rootDir, path));
+  }, [updateInitializedState]);
   const markFileUnavailable = useCallback((rootDir: string, path: string) => {
-    updateLoadedState((current) => markSkiaBoardFileUnavailable(current, rootDir, path));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => markSkiaBoardFileUnavailable(current, rootDir, path));
+  }, [updateInitializedState]);
   const moveCard = useCallback((cardId: string, col: number, row: number) => {
-    updateLoadedState((current) => moveSkiaBoardCard(current, cardId, col, row));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => moveSkiaBoardCard(current, cardId, col, row));
+  }, [updateInitializedState]);
   const tidyCards = useCallback((visibleCardIds: readonly string[]) => {
-    updateLoadedState((current) => tidySkiaBoardCards(current, visibleCardIds));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => tidySkiaBoardCards(current, visibleCardIds));
+  }, [updateInitializedState]);
   const setCardTextScale = useCallback((scale: number) => {
-    updateLoadedState((current) => setSkiaBoardCardTextScale(current, scale));
-  }, [updateLoadedState]);
+    updateInitializedState((current) => setSkiaBoardCardTextScale(current, scale));
+  }, [updateInitializedState]);
 
   const sessionIds = useMemo(() => new Set((state?.cards || []).flatMap((card) => (
     card.kind === "session" ? [card.sessionId] : []

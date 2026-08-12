@@ -1,4 +1,4 @@
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 
 export type TtsProvider = "elevenlabs" | "google" | "aivisspeech";
 export type RecordingQualityPreset = "low" | "medium" | "high";

@@ -1,5 +1,5 @@
 import { useEffect, type MutableRefObject } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import { AppState, type AppStateStatus } from "react-native";
 import type { StreamTtsControlState } from "../types/appTypes";
 

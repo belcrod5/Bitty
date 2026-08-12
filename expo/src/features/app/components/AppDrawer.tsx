@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   InputAccessoryView,
   Keyboard,
-  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -20,6 +19,7 @@ import type { PopupChatSourceRect } from "./popupChatTypes";
 import { styles } from "../styles";
 import { isLlmSessionUnread } from "../utils/llmSession";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
+import { AppModal } from "./AppModal";
 import type {
   DirectoryMarkerColor,
   DirectoryReadProgress,
@@ -537,7 +537,7 @@ export const AppDrawer = memo(function AppDrawer({
             })
           )}
         </View>
-        <Modal
+        <AppModal
           visible={directoryContextMenuTarget !== null}
           transparent
           animationType="fade"
@@ -558,8 +558,8 @@ export const AppDrawer = memo(function AppDrawer({
               </TouchableOpacity>
             </Pressable>
           </Pressable>
-        </Modal>
-        <Modal
+        </AppModal>
+        <AppModal
           visible={sessionContextMenuTarget !== null}
           transparent
           animationType="fade"
@@ -597,31 +597,31 @@ export const AppDrawer = memo(function AppDrawer({
               >
                 <Text style={styles.modalOptionText}>未読にする</Text>
               </TouchableOpacity>
-              {skiaBoardLoaded ? (
-                <TouchableOpacity
-                  style={styles.modalOption}
-                  onPress={() => {
-                    if (sessionContextMenuTarget) {
-                      const sessionId = sessionContextMenuTarget.sessionId;
-                      if (hasSession(sessionId)) {
-                        removeSession(sessionId);
-                      } else {
-                        addSession(sessionId);
-                      }
+              <TouchableOpacity
+                testID="app-drawer-skia-board-session-action"
+                style={[styles.modalOption, !skiaBoardLoaded && styles.buttonDisabled]}
+                disabled={!skiaBoardLoaded}
+                onPress={() => {
+                  if (sessionContextMenuTarget) {
+                    const sessionId = sessionContextMenuTarget.sessionId;
+                    if (hasSession(sessionId)) {
+                      removeSession(sessionId);
+                    } else {
+                      addSession(sessionId);
                     }
-                    setSessionContextMenuTarget(null);
-                  }}
-                >
-                  <Text style={styles.modalOptionText}>
-                    {sessionContextMenuTarget && hasSession(sessionContextMenuTarget.sessionId)
-                      ? "Skiaボードから除外"
-                      : "Skiaボードへ追加"}
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
+                  }
+                  setSessionContextMenuTarget(null);
+                }}
+              >
+                <Text style={styles.modalOptionText}>
+                  {sessionContextMenuTarget && hasSession(sessionContextMenuTarget.sessionId)
+                    ? "Skiaボードから除外"
+                    : "Skiaボードへ追加"}
+                </Text>
+              </TouchableOpacity>
             </Pressable>
           </Pressable>
-        </Modal>
+        </AppModal>
       </ScrollView>
       {Platform.OS === "ios" ? (
         <InputAccessoryView nativeID={APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID} backgroundColor="#f8fafc">

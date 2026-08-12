@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import * as Clipboard from "expo-clipboard";
+import * as Clipboard from "../clipboard";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 
 type RouteDebugProbe = {

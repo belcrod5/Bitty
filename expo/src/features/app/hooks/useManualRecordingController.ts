@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import {
   buildRecordingOptions,
   clampRecordingProgressUpdateIntervalMs,

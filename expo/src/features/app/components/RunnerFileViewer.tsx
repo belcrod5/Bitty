@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Modal,
   SafeAreaView,
   StyleSheet,
   Text,
@@ -23,6 +22,7 @@ import type {
   WorkspaceFileTarget,
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
+import { AppModal } from "./AppModal";
 
 const DRAWIO_VIEWER_SCRIPT_URL =
   "https://viewer.diagrams.net/js/viewer-static.min.js";
@@ -157,7 +157,7 @@ export function RunnerFileViewer({
   }
 
   return (
-    <Modal
+    <AppModal
       visible
       animationType="slide"
       presentationStyle="fullScreen"
@@ -215,7 +215,7 @@ export function RunnerFileViewer({
           )}
         </SafeAreaView>
       </GestureHandlerRootView>
-    </Modal>
+    </AppModal>
   );
 }
 

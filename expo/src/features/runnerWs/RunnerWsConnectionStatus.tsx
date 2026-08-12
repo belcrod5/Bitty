@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentProps } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRunnerWebSocketSnapshot } from "./RunnerWebSocketContext";
 import {
@@ -8,6 +8,7 @@ import {
   type NetworkUsageCounter,
 } from "../ws/networkUsageMetrics";
 import { formatBytesCompact } from "../app/utils/formatting";
+import { AppModal } from "../app/components/AppModal";
 
 type RunnerWsConnectionStatusProps = {
   turnState?: string;
@@ -158,7 +159,7 @@ export function RunnerWsConnectionStatus({
         {rttLabel ? <Text style={styles.rttText}>{rttLabel}</Text> : null}
         <Text style={styles.chevron}>›</Text>
       </Pressable>
-      <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
+      <AppModal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
         <View style={styles.backdrop}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
           <View style={styles.sheet}>
@@ -191,7 +192,7 @@ export function RunnerWsConnectionStatus({
             </Pressable>
           </View>
         </View>
-      </Modal>
+      </AppModal>
     </>
   );
 }

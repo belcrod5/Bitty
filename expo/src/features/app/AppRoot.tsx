@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import {
   GestureHandlerRootView,
 } from "react-native-gesture-handler";
-import { KeyboardProvider } from "react-native-keyboard-controller";
+import { KeyboardProvider } from "./keyboardController";
 import {
   Alert,
   AppState,
@@ -14,15 +14,15 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Drawer } from "react-native-drawer-layout";
-import { Audio } from "expo-av";
+import { Audio } from "./audio";
 import Constants from "expo-constants";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { WebView } from "react-native-webview";
 import { styles } from "./styles";
 import { AppProviders } from "./AppProviders";
-import { AudioLabScreen } from "./components/AudioLabScreen";
 import { AppDrawer } from "./components/AppDrawer";
+import { AppDrawerLayout } from "./components/AppDrawerLayout";
+import { AppScreenContent } from "./components/AppScreenContent";
 import type {
   DirectorySessionTreeState,
   RegisteredDirectoryEntry,
@@ -36,9 +36,6 @@ import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
-import { DebugScreen } from "./screens/DebugScreen";
-import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
-import { SkiaMiniBoardScreen } from "./screens/SkiaMiniBoardScreen";
 import {
   DEFAULT_STT_PROVIDER,
   type SttProvider,
@@ -7670,7 +7667,6 @@ export default function App() {
     () => <AppDrawer {...appDrawerProps} />,
     [appDrawerProps]
   );
-  const ActiveScreenContainer = activeScreen === "skia_board" ? View : SafeAreaView;
   return (
     <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
@@ -7701,7 +7697,7 @@ export default function App() {
         debugSpeech={debugSpeechContextValue}
       >
       <KeyboardProvider>
-        <Drawer
+        <AppDrawerLayout
         open={drawerOpen}
         onOpen={openDrawer}
         onClose={closeDrawer}
@@ -7717,19 +7713,10 @@ export default function App() {
         renderDrawerContent={renderAppDrawerContent}
       >
       <View style={styles.safeArea}>
-      <ActiveScreenContainer style={styles.safeArea}>
-      {activeScreen === "debug" ? (
-        <DebugScreen />
-      ) : activeScreen === "cloudflare_tunnel_monitor" ? (
-        <CloudflareTunnelMonitorScreen />
-      ) : activeScreen === "skia_board" ? (
-        <SkiaMiniBoardScreen
-          openSessionHistoryPopup={openSessionHistoryPopup}
-        />
-      ) : (
-        <AudioLabScreen />
-      )}
-      </ActiveScreenContainer>
+      <AppScreenContent
+        activeScreen={activeScreen}
+        openSessionHistoryPopup={openSessionHistoryPopup}
+      />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>
       <AppOverlays
         composerFullscreenOpen={composerFullscreenOpen}
@@ -7749,7 +7736,7 @@ export default function App() {
       />
       </SafeAreaView>
       </View>
-        </Drawer>
+        </AppDrawerLayout>
         {drawerSessionPopupPanelId ? (
           <DrawerSessionPopupHost
             origin={drawerSessionPopupOrigin}

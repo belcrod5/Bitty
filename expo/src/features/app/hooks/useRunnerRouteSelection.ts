@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import * as Network from "expo-network";
+import * as Network from "../networkState";
 
 const ROUTE_RECHECK_DEBOUNCE_MS = 500;
 const NETWORK_STABILIZE_RECHECK_DELAYS_MS = [500, 2000, 5000];
