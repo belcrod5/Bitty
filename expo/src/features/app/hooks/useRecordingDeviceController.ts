@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 
 export function useRecordingDeviceController() {
   const ensureMicReady = useCallback(async () => {

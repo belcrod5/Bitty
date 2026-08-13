@@ -1,19 +1,24 @@
-import { act, renderHook } from "@testing-library/react-native";
+import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { AppState } from "react-native";
 import {
   dismissReadDirectoryNotifications,
   dismissReadSessionNotifications,
   reconcileReadDirectoryNotifications,
-  syncUnreadBadgeCount,
+  setUnreadBadgeCount,
 } from "../utils/sessionReadNotifications";
+import { syncUnreadSessionCounts } from "../utils/sessionUnreadState";
 import { useSessionNotificationLifecycleController } from "./useSessionNotificationLifecycleController";
 
 jest.mock("../utils/sessionReadNotifications", () => ({
   dismissReadDirectoryNotifications: jest.fn(async () => {}),
   dismissReadSessionNotifications: jest.fn(async () => {}),
-  notificationFailureReason: jest.fn(() => "error"),
   reconcileReadDirectoryNotifications: jest.fn(async () => {}),
-  syncUnreadBadgeCount: jest.fn(async () => ({
+  setUnreadBadgeCount: jest.fn(async () => {}),
+}));
+
+jest.mock("../utils/sessionUnreadState", () => ({
+  notificationFailureReason: jest.fn(() => "error"),
+  syncUnreadSessionCounts: jest.fn(async () => ({
     unreadCount: 0,
     directoryCounts: [{ directory: "/repo", unreadCount: 0 }],
   })),
@@ -22,31 +27,58 @@ jest.mock("../utils/sessionReadNotifications", () => ({
 const mockDismissDirectory = dismissReadDirectoryNotifications as jest.Mock;
 const mockDismiss = dismissReadSessionNotifications as jest.Mock;
 const mockReconcileDirectory = reconcileReadDirectoryNotifications as jest.Mock;
-const mockSyncBadge = syncUnreadBadgeCount as jest.Mock;
+const mockSetBadge = setUnreadBadgeCount as jest.Mock;
+const mockSyncUnread = syncUnreadSessionCounts as jest.Mock;
+let runnerConnectionState = "ready";
+let runnerSnapshotListener: (() => void) | null = null;
+const runnerWebSocketManager = {
+  getSnapshot: () => ({ connectionState: runnerConnectionState }),
+  subscribeSnapshot: (listener: () => void) => {
+    runnerSnapshotListener = listener;
+    return () => {
+      if (runnerSnapshotListener === listener) runnerSnapshotListener = null;
+    };
+  },
+};
 
 function renderController({
   popup = "",
   popupDirectory = "/repo",
   popupIsHydrating = false,
 } = {}) {
+  const getPopupSessionTarget = () => ({
+    sessionId: popup,
+    directory: popupDirectory,
+    isHydrating: popupIsHydrating,
+  });
+  const getRunnerHttpAuth = async () => ({ baseUrl: "https://runner", token: "token" });
+  const normalizedLlmDirectoryForRequest = () => "/fallback";
+  const registeredDirectoryPaths = ["/repo"];
   return renderHook(() => useSessionNotificationLifecycleController({
-    getPopupSessionTarget: () => ({
-      sessionId: popup,
-      directory: popupDirectory,
-      isHydrating: popupIsHydrating,
-    }),
-    getRunnerHttpAuth: async () => ({ baseUrl: "https://runner", token: "token" }),
-    normalizedLlmDirectoryForRequest: () => "/fallback",
-    registeredDirectoryPaths: ["/repo"],
+    getPopupSessionTarget,
+    getRunnerHttpAuth,
+    normalizedLlmDirectoryForRequest,
+    registeredDirectoryPaths,
+    runnerWebSocketManager,
   }));
 }
 
 describe("useSessionNotificationLifecycleController", () => {
   const originalAppStateDescriptor = Object.getOwnPropertyDescriptor(AppState, "currentState");
+  let appStateListener: ((state: string) => void) | null = null;
+  let removeAppStateListener: jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockSyncBadge.mockResolvedValue({
+    appStateListener = null;
+    runnerConnectionState = "ready";
+    runnerSnapshotListener = null;
+    removeAppStateListener = jest.fn();
+    jest.spyOn(AppState, "addEventListener").mockImplementation((_, listener) => {
+      appStateListener = listener as (state: string) => void;
+      return { remove: removeAppStateListener };
+    });
+    mockSyncUnread.mockResolvedValue({
       unreadCount: 0,
       directoryCounts: [{ directory: "/repo", unreadCount: 0 }],
     });
@@ -63,6 +95,50 @@ describe("useSessionNotificationLifecycleController", () => {
     }
   });
 
+  it("owns initial and active-resume unread synchronization", async () => {
+    const { rerender } = await renderController();
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    expect(mockSetBadge).toHaveBeenLastCalledWith(0);
+
+    await rerender(undefined);
+    expect(mockSyncUnread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      appStateListener?.("background");
+    });
+    expect(mockSyncUnread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      appStateListener?.("active");
+    });
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(2));
+  });
+
+  it("waits for a connection and synchronizes again after reconnect", async () => {
+    runnerConnectionState = "reconnecting";
+    await renderController();
+    expect(mockSyncUnread).not.toHaveBeenCalled();
+
+    await act(async () => {
+      appStateListener?.("active");
+    });
+    expect(mockSyncUnread).not.toHaveBeenCalled();
+
+    await act(async () => {
+      runnerConnectionState = "ready";
+      runnerSnapshotListener?.();
+    });
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      runnerConnectionState = "reconnecting";
+      runnerSnapshotListener?.();
+      runnerConnectionState = "ready";
+      runnerSnapshotListener?.();
+    });
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(2));
+  });
+
   it("does not treat a selected Skia board card as a visible chat", async () => {
     const { result } = await renderController();
     const markRead = jest.fn();
@@ -76,7 +152,7 @@ describe("useSessionNotificationLifecycleController", () => {
     });
     expect(handled).toBe(false);
     expect(markRead).not.toHaveBeenCalled();
-    expect(mockSyncBadge).toHaveBeenCalled();
+    expect(mockSyncUnread).toHaveBeenCalled();
   });
 
   it("marks a visible popup completion read even when another session is selected", async () => {
@@ -112,7 +188,7 @@ describe("useSessionNotificationLifecycleController", () => {
     });
     expect(handled).toBe(false);
     expect(markRead).not.toHaveBeenCalled();
-    expect(mockSyncBadge).toHaveBeenCalled();
+    expect(mockSyncUnread).toHaveBeenCalled();
   });
 
   it("does not auto-read a popup until its history hydration has applied", async () => {
@@ -133,7 +209,7 @@ describe("useSessionNotificationLifecycleController", () => {
     });
     expect(handled).toBe(false);
     expect(markRead).not.toHaveBeenCalled();
-    expect(mockSyncBadge).toHaveBeenCalled();
+    expect(mockSyncUnread).toHaveBeenCalled();
   });
 
   it("auto-reads a popup completion when canonical directory and session id both match", async () => {
@@ -162,7 +238,7 @@ describe("useSessionNotificationLifecycleController", () => {
       handled = result.current.handleForegroundSessionCompletion({ sessionId: "other-session" });
     });
     expect(handled).toBe(false);
-    expect(mockSyncBadge).toHaveBeenCalledWith({
+    expect(mockSyncUnread).toHaveBeenCalledWith({
       runnerUrl: "https://runner",
       runnerToken: "token",
       directories: ["/repo"],
@@ -183,15 +259,17 @@ describe("useSessionNotificationLifecycleController", () => {
       directory: "/canonical",
       isRead: true,
     });
-    expect(mockSyncBadge).toHaveBeenCalled();
+    expect(mockSyncUnread).toHaveBeenCalled();
   });
 
   it("dismisses a canonical directory only on full success and syncs badge once", async () => {
-    mockSyncBadge.mockResolvedValue({
+    mockSyncUnread.mockResolvedValue({
       unreadCount: 0,
       directoryCounts: [{ directory: "/canonical", unreadCount: 0 }],
     });
     const { result } = await renderController();
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    mockSyncUnread.mockClear();
     await act(async () => {
       await result.current.handleDirectoryReadStateCommitted({
         status: "full",
@@ -200,16 +278,19 @@ describe("useSessionNotificationLifecycleController", () => {
     });
     expect(mockDismissDirectory).toHaveBeenCalledWith("/canonical");
     expect(mockReconcileDirectory).not.toHaveBeenCalled();
-    expect(mockSyncBadge).toHaveBeenCalledTimes(1);
+    expect(mockSyncUnread).toHaveBeenCalledTimes(1);
+    expect(mockSetBadge).toHaveBeenCalledWith(0);
     expect(result.current.directoryUnreadCountByPath).toEqual({ "/canonical": 0 });
   });
 
   it("keeps partial directory reads authoritative instead of optimistically clearing the count", async () => {
-    mockSyncBadge.mockResolvedValue({
+    mockSyncUnread.mockResolvedValue({
       unreadCount: 3,
       directoryCounts: [{ directory: "/canonical", unreadCount: 3 }],
     });
     const { result } = await renderController();
+    await waitFor(() => expect(mockSyncUnread).toHaveBeenCalledTimes(1));
+    mockSyncUnread.mockClear();
     await act(async () => {
       result.current.applyUnreadCountSnapshot({
         unreadCount: 7,
@@ -228,7 +309,7 @@ describe("useSessionNotificationLifecycleController", () => {
       runnerToken: "token",
       directory: "/canonical",
     });
-    expect(mockSyncBadge).toHaveBeenCalledTimes(1);
+    expect(mockSyncUnread).toHaveBeenCalledTimes(1);
     expect(result.current.directoryUnreadCountByPath).toEqual({ "/canonical": 3 });
   });
 });

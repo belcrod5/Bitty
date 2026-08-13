@@ -1,4 +1,10 @@
-import { Circle, Group, RoundedRect, Text as SkiaText, type SkFont } from "@shopify/react-native-skia";
+import {
+  Circle,
+  Group,
+  Paragraph,
+  RoundedRect,
+  type SkParagraph,
+} from "@shopify/react-native-skia";
 import { useDerivedValue, type SharedValue } from "react-native-reanimated";
 import type { SkiaBoardSection as Section } from "../utils/skiaBoardState";
 import type { SkiaBoardSectionRect } from "../utils/skiaBoardSectionGeometry";
@@ -53,23 +59,21 @@ export function SkiaBoardSectionRegion({
 export function SkiaBoardSectionOverlay({
   index,
   sections,
-  section,
   initialRect,
   selected,
   boardX,
   boardY,
   scale,
-  labelFont,
+  labelParagraph,
 }: {
   index: number;
   sections: SharedValue<SkiaBoardSectionRect[]>;
-  section: Section;
   initialRect: SkiaBoardSectionRect;
   selected: boolean;
   boardX: SharedValue<number>;
   boardY: SharedValue<number>;
   scale: SharedValue<number>;
-  labelFont: SkFont;
+  labelParagraph: SkParagraph;
 }) {
   const left = useDerivedValue(() => {
     const current = sections.value[index] || initialRect;
@@ -87,15 +91,14 @@ export function SkiaBoardSectionOverlay({
     const current = sections.value[index] || initialRect;
     return boardY.value + (current.y + current.height) * scale.value;
   });
-  const labelY = useDerivedValue(() => top.value - 7);
+  const labelY = useDerivedValue(() => top.value - 22);
   return (
     <>
-      <SkiaText
+      <Paragraph
         x={left}
         y={labelY}
-        text={section.label}
-        font={labelFont}
-        color={selected ? "#1d4ed8" : "#475569"}
+        width={1000}
+        paragraph={labelParagraph}
       />
       {selected ? (
         <>

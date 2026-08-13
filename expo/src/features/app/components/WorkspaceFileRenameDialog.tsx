@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -10,6 +9,7 @@ import {
   View,
 } from "react-native";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { AppModal } from "./AppModal";
 
 type WorkspaceFileRenameDialogProps = {
   target: WorkspaceFileTarget | null;
@@ -48,7 +48,7 @@ export function WorkspaceFileRenameDialog({
   };
 
   return (
-    <Modal
+    <AppModal
       visible={target !== null}
       transparent
       animationType="fade"
@@ -95,7 +95,7 @@ export function WorkspaceFileRenameDialog({
           </View>
         </Pressable>
       </Pressable>
-    </Modal>
+    </AppModal>
   );
 }
 

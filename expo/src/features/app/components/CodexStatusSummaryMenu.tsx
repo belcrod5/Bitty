@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Dimensions, Modal, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { Dimensions, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { styles } from "../styles";
 import type { CodexAuthProfileEntry } from "../types/appTypes";
+import { AppModal } from "./AppModal";
 
 type AnchorRect = {
   x: number;
@@ -151,7 +152,7 @@ export function CodexStatusSummaryMenu({
           </Text>
         </TouchableOpacity>
       </View>
-      <Modal
+      <AppModal
         visible={previewOpen && !dismissed}
         transparent
         animationType="fade"
@@ -229,7 +230,7 @@ export function CodexStatusSummaryMenu({
             </Text>
           </Pressable>
         </Pressable>
-      </Modal>
+      </AppModal>
     </>
   );
 }

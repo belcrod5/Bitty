@@ -1,0 +1,12 @@
+diff --git a/node_modules/expo-secure-store/ios/ExpoSecureStore.podspec b/node_modules/expo-secure-store/ios/ExpoSecureStore.podspec
+index 317a34a..87f92a1 100644
+--- a/node_modules/expo-secure-store/ios/ExpoSecureStore.podspec
++++ b/node_modules/expo-secure-store/ios/ExpoSecureStore.podspec
+@@ -11,6 +11,7 @@ Pod::Spec.new do |s|
+   s.platforms      = {
+     :ios => '15.1',
+     :tvos => '15.1',
++    :osx => '14.0',
+   }
+   s.swift_version  = '5.9'
+   s.source         = { git: 'https://github.com/expo/expo.git' }

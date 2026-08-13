@@ -7,12 +7,13 @@ import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 const mockAddSession = jest.fn();
 const mockRemoveSession = jest.fn();
 const mockHasSession = jest.fn(() => false);
+let mockSkiaBoardLoaded = true;
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
     addSession: mockAddSession,
     removeSession: mockRemoveSession,
     hasSession: mockHasSession,
-    loaded: true,
+    loaded: mockSkiaBoardLoaded,
   }),
 }));
 
@@ -108,6 +109,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   mockHasSession.mockReturnValue(false);
+  mockSkiaBoardLoaded = true;
 });
 
 test("opens the board from the left navigation", async () => {
@@ -127,6 +129,18 @@ test("adds a long-pressed session to the Skia board", async () => {
   await fireEvent.press(drawer.getByText("Skiaボードへ追加"));
 
   expect(mockAddSession).toHaveBeenCalledWith("loaded-search");
+});
+
+test("keeps the Skia board action available while persisted board state is unavailable", async () => {
+  mockSkiaBoardLoaded = false;
+  const drawer = await renderDrawer();
+  const user = userEvent.setup();
+
+  await user.longPress(drawer.getByText("Fix drawer search"));
+
+  expect(drawer.getByText("Skiaボードへ追加")).toBeTruthy();
+  await fireEvent.press(drawer.getByTestId("app-drawer-skia-board-session-action"));
+  expect(mockAddSession).not.toHaveBeenCalled();
 });
 
 test("shows progress for a directory read operation", async () => {

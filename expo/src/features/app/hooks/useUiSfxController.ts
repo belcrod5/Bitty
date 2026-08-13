@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import type { UiSfxKey } from "../types/appTypes";
 
 type UseUiSfxControllerOptions = {

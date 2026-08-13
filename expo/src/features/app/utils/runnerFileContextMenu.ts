@@ -1,5 +1,5 @@
 import { Alert } from "react-native";
-import * as Clipboard from "expo-clipboard";
+import * as Clipboard from "../clipboard";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import type { WorkspaceFileTarget } from "./workspaceFiles";
 

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Image,
-  Modal,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -10,7 +9,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { ResizeMode, Video } from "expo-av";
+import { ResizeMode, Video } from "../audio";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GestureViewer,
@@ -20,6 +19,7 @@ import {
 import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
 import type { RunnerMediaFile, RunnerMediaItem } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { AppModal } from "./AppModal";
 
 type RunnerMediaViewerProps = {
   media: RunnerMediaFile | null;
@@ -201,7 +201,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
   }
 
   return (
-    <Modal
+    <AppModal
       visible
       animationType="slide"
       presentationStyle="fullScreen"
@@ -277,7 +277,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
           onRename={renameMediaFile}
         />
       </SafeAreaView>
-    </Modal>
+    </AppModal>
   );
 }
 

@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "moduleSuffixes": [".macos", ".native", ""]
+  },
+  "files": ["./App.tsx"]
+}

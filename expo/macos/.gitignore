@@ -1,0 +1,9 @@
+# CocoaPods
+Pods/
+
+# Generated native build artifacts
+build/
+
+# Local Xcode environment
+.xcode.env.local
+xcuserdata/

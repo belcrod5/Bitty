@@ -14,6 +14,7 @@ import {
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import * as Location from "expo-location";
 
+import type { LocationScheduleSettingsProps } from "./LocationScheduleSettings.contract";
 import type { ReasoningEffort } from "../app/utils/settingsParsers";
 import {
   DEFAULT_LOCATION_RADIUS_METERS,
@@ -27,16 +28,7 @@ import { OptionSelectField } from "./OptionSelectField";
 import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
 import { requestCalendarPermission } from "../calendar/calendarService";
 
-type Props = {
-  currentCwd: string;
-  currentModelRef: string;
-  currentReasoningEffort: ReasoningEffort;
-  directories: readonly { path: string; displayName: string }[];
-  modelOptions: readonly { value: string; label: string }[];
-  thinkOptions: readonly ReasoningEffort[];
-};
-
-function newRule(props: Props): LocationScheduleRule {
+function newRule(props: LocationScheduleSettingsProps): LocationScheduleRule {
   return {
     id: `rule_${Date.now()}_${Math.floor(Math.random() * 100_000)}`,
     enabled: false,
@@ -55,7 +47,7 @@ function newRule(props: Props): LocationScheduleRule {
   };
 }
 
-export function LocationScheduleSettings(props: Props) {
+export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
   const [visible, setVisible] = useState(false);
   const [rules, setRules] = useState<LocationScheduleRule[]>([]);
   const [busy, setBusy] = useState(false);

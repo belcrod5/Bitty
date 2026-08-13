@@ -1,6 +1,6 @@
 import { useEffect, type MutableRefObject } from "react";
 import { deactivateKeepAwake } from "expo-keep-awake";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import type { IosFaceTrackingSession } from "../../faceTracking/iosFaceTrackingClient";
 import type { StreamTtsControlState } from "../types/appTypes";
 

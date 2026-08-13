@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import {
   GestureHandlerRootView,
 } from "react-native-gesture-handler";
-import { KeyboardProvider } from "react-native-keyboard-controller";
+import { KeyboardProvider } from "./keyboardController";
 import {
   Alert,
   AppState,
@@ -14,15 +14,15 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Drawer } from "react-native-drawer-layout";
-import { Audio } from "expo-av";
+import { Audio } from "./audio";
 import Constants from "expo-constants";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { WebView } from "react-native-webview";
 import { styles } from "./styles";
 import { AppProviders } from "./AppProviders";
-import { AudioLabScreen } from "./components/AudioLabScreen";
 import { AppDrawer } from "./components/AppDrawer";
+import { AppDrawerLayout } from "./components/AppDrawerLayout";
+import { AppScreenContent } from "./components/AppScreenContent";
 import type {
   DirectorySessionTreeState,
   RegisteredDirectoryEntry,
@@ -36,9 +36,6 @@ import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
-import { DebugScreen } from "./screens/DebugScreen";
-import { CloudflareTunnelMonitorScreen } from "./screens/CloudflareTunnelMonitorScreen";
-import { SkiaMiniBoardScreen } from "./screens/SkiaMiniBoardScreen";
 import {
   DEFAULT_STT_PROVIDER,
   type SttProvider,
@@ -356,9 +353,6 @@ const DEFAULT_LLM_DIRECTORY = "llm_root";
 const DEFAULT_DIRECTORY_UI_STATE: PersistedDirectoryUiState = {
   expandedDirectoryIds: [],
 };
-const DRAWER_SWIPE_EDGE_WIDTH = 48;
-const DRAWER_SWIPE_MIN_DISTANCE = 28;
-const DRAWER_SWIPE_MIN_VELOCITY = 280;
 const STATUS_DOT_GIF = require("../../../assets/images/robot-indicator.gif");
 const WAVEFORM_DOT_GIF = require("../../../assets/images/waveform-dots.gif");
 const PIXEL_STATUS_ANIMATIONS: Record<PixelStatusIconKey, ImageSourcePropType> = {
@@ -2960,6 +2954,10 @@ export default function App() {
       selectLlmDirectory(nextRegisteredDirectories[0]?.path || DEFAULT_LLM_DIRECTORY);
     }
   }
+  const registeredDirectoryPaths = useMemo(
+    () => registeredDirectories.map((directory) => directory.path),
+    [registeredDirectories]
+  );
   const sessionNotificationLifecycle = useSessionNotificationLifecycleController({
     getPopupSessionTarget: () => ({
       sessionId: parseOptionalSessionId(panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.selectedSessionId),
@@ -2968,7 +2966,8 @@ export default function App() {
     }),
     getRunnerHttpAuth,
     normalizedLlmDirectoryForRequest,
-    registeredDirectoryPaths: registeredDirectories.map((directory) => directory.path),
+    registeredDirectoryPaths,
+    runnerWebSocketManager,
   });
   const {
     markSessionReadAsync,
@@ -7675,7 +7674,6 @@ export default function App() {
     () => <AppDrawer {...appDrawerProps} />,
     [appDrawerProps]
   );
-  const ActiveScreenContainer = activeScreen === "skia_board" ? View : SafeAreaView;
   return (
     <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
@@ -7706,35 +7704,20 @@ export default function App() {
         debugSpeech={debugSpeechContextValue}
       >
       <KeyboardProvider>
-        <Drawer
+        <AppDrawerLayout
         open={drawerOpen}
         onOpen={openDrawer}
         onClose={closeDrawer}
-        swipeEnabled={activeScreen === "skia_board"}
-        swipeEdgeWidth={DRAWER_SWIPE_EDGE_WIDTH}
-        swipeMinDistance={DRAWER_SWIPE_MIN_DISTANCE}
-        swipeMinVelocity={DRAWER_SWIPE_MIN_VELOCITY}
-        keyboardDismissMode="on-drag"
-        drawerType="front"
-        drawerPosition="left"
         drawerStyle={styles.appDrawerPanel}
         overlayStyle={styles.appDrawerOverlay}
         renderDrawerContent={renderAppDrawerContent}
+        swipeEnabled={activeScreen === "skia_board"}
       >
       <View style={styles.safeArea}>
-      <ActiveScreenContainer style={styles.safeArea}>
-      {activeScreen === "debug" ? (
-        <DebugScreen />
-      ) : activeScreen === "cloudflare_tunnel_monitor" ? (
-        <CloudflareTunnelMonitorScreen />
-      ) : activeScreen === "skia_board" ? (
-        <SkiaMiniBoardScreen
-          openSessionHistoryPopup={openSessionHistoryPopup}
-        />
-      ) : (
-        <AudioLabScreen />
-      )}
-      </ActiveScreenContainer>
+      <AppScreenContent
+        activeScreen={activeScreen}
+        openSessionHistoryPopup={openSessionHistoryPopup}
+      />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>
       <AppOverlays
         composerFullscreenOpen={composerFullscreenOpen}
@@ -7754,7 +7737,7 @@ export default function App() {
       />
       </SafeAreaView>
       </View>
-        </Drawer>
+        </AppDrawerLayout>
         {drawerSessionPopupPanelId ? (
           <DrawerSessionPopupHost
             origin={drawerSessionPopupOrigin}

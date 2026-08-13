@@ -1,5 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 
 type RecordingStatusSource = "callback" | "watchdog";
 type AutoRecordingStatus = Awaited<ReturnType<Audio.Recording["getStatusAsync"]>>;

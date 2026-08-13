@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Image, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { styles } from "../styles";
 import { CircularProgressRing } from "./CircularProgressRing";
 import { getNetworkUsageSnapshot } from "../../ws/networkUsageMetrics";
 import { formatBytesCompact } from "../utils/formatting";
+import { AppModal } from "./AppModal";
 
 const WAVEFORM_DOT_GIF = require("../../../../assets/images/waveform-dots.gif");
 
@@ -91,7 +92,7 @@ export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
           </TouchableOpacity>
         </View>
       </Pressable>
-      <Modal
+      <AppModal
         visible={usageOpen}
         transparent
         animationType="slide"
@@ -117,7 +118,7 @@ export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
             </Text>
           </View>
         </View>
-      </Modal>
+      </AppModal>
     </View>
   );
 }

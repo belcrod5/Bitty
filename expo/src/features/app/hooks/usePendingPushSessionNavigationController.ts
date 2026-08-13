@@ -5,26 +5,14 @@ import {
   getPendingPushSessionTarget,
   subscribePendingPushSessionTarget,
 } from "../utils/pushApprovalNotifications";
-import type { LlmSessionSource } from "./useLlmSessionExplorer";
-
-type UsePendingPushSessionNavigationControllerArgs = {
-  settingsLoaded: boolean;
-  normalizedLlmDirectoryForRequest: () => string;
-  closeDrawer: () => void;
-  openSessionHistoryPopup: (params: {
-    sessionId: string;
-    source: LlmSessionSource;
-    directory?: string;
-    origin?: "drawer" | "skia_board";
-  }) => Promise<boolean>;
-};
+import type { PendingPushSessionNavigationControllerArgs } from "./usePendingPushSessionNavigationController.contract";
 
 export function usePendingPushSessionNavigationController({
   settingsLoaded,
   normalizedLlmDirectoryForRequest,
   closeDrawer,
   openSessionHistoryPopup,
-}: UsePendingPushSessionNavigationControllerArgs) {
+}: PendingPushSessionNavigationControllerArgs) {
   const navigationInFlightRef = useRef(false);
   const navigatePendingRef = useRef<() => void>(() => {});
 

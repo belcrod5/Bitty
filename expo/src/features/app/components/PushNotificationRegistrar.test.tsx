@@ -10,7 +10,6 @@ import { registerApprovalNotificationCategories, setPendingPushSessionTarget } f
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
 import {
   reconcileReceivedSessionNotification,
-  syncUnreadBadgeCount,
 } from "../utils/sessionReadNotifications";
 
 type NotificationResponseListener = (response: unknown) => void;
@@ -70,10 +69,6 @@ jest.mock("../utils/pushApprovalActions", () => ({
 jest.mock("../utils/sessionReadNotifications", () => ({
   notificationFailureReason: jest.fn(() => "error"),
   reconcileReceivedSessionNotification: jest.fn(async () => {}),
-  syncUnreadBadgeCount: jest.fn(async () => ({
-    unreadCount: 0,
-    directoryCounts: [],
-  })),
 }));
 
 const mockUseAppSettings = useAppSettings as jest.Mock;
@@ -85,7 +80,6 @@ const mockRegisterApprovalNotificationCategories = registerApprovalNotificationC
 const mockSetPendingPushSessionTarget = setPendingPushSessionTarget as jest.Mock;
 const mockHandlePushApprovalAction = handlePushApprovalAction as jest.Mock;
 const mockReconcileReceivedSessionNotification = reconcileReceivedSessionNotification as jest.Mock;
-const mockSyncUnreadBadgeCount = syncUnreadBadgeCount as jest.Mock;
 const mockAddNotificationResponseReceivedListener =
   Notifications.addNotificationResponseReceivedListener as jest.Mock;
 
@@ -146,19 +140,6 @@ describe("PushNotificationRegistrar", () => {
         directories: ["/repo/one", "/repo/two"],
       });
     });
-  });
-
-  it("publishes the same canonical snapshot used for the iOS badge", async () => {
-    const snapshot = {
-      unreadCount: 66,
-      directoryCounts: [{ directory: "/repo/one", unreadCount: 66 }],
-    };
-    mockSyncUnreadBadgeCount.mockResolvedValueOnce(snapshot);
-    const onUnreadCountSnapshot = jest.fn();
-
-    await render(<PushNotificationRegistrar onUnreadCountSnapshot={onUnreadCountSnapshot} />);
-
-    await waitFor(() => expect(onUnreadCountSnapshot).toHaveBeenCalledWith(snapshot));
   });
 
   it("requests permission when not yet determined and can ask again", async () => {

@@ -4,7 +4,6 @@ import {
   Alert,
   Animated,
   Image,
-  Modal,
   PanResponder,
   Platform,
   Pressable,
@@ -18,14 +17,15 @@ import {
   View,
 } from "react-native";
 import { LegendList, type LegendListRef } from "@legendapp/list";
-import * as Clipboard from "expo-clipboard";
+import * as Clipboard from "../clipboard";
 import { Ionicons } from "@expo/vector-icons";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView } from "../keyboardController";
 import { WebView } from "react-native-webview";
 import { isIosFaceTrackingAvailable } from "../../faceTracking/iosFaceTrackingClient";
 import type { ConversationMessage } from "../types/appTypes";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { styles } from "../styles";
+import { AppModal } from "../components/AppModal";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useConversation } from "../contexts/ConversationContext";
@@ -2397,7 +2397,7 @@ export function ChatScreen({
             onSwitchAuthProfile={onSwitchCodexAuthProfile}
           />
         </View>
-        <Modal
+        <AppModal
           visible={popupComposerFullscreenOpen && !approvalDialogPending}
           animationType="slide"
           presentationStyle="fullScreen"
@@ -2444,8 +2444,8 @@ export function ChatScreen({
               </View>
             </KeyboardAvoidingView>
           </SafeAreaView>
-        </Modal>
-        <Modal
+        </AppModal>
+        <AppModal
           visible={footerSelectOpen !== null && !approvalDialogPending}
           transparent
           animationType="fade"
@@ -2498,8 +2498,8 @@ export function ChatScreen({
                   })}
             </Pressable>
           </Pressable>
-        </Modal>
-        <Modal
+        </AppModal>
+        <AppModal
           visible={directoryMenuOpen && !approvalDialogPending}
           transparent
           animationType="fade"
@@ -2694,7 +2694,7 @@ export function ChatScreen({
               )}
             </Pressable>
           </Pressable>
-        </Modal>
+        </AppModal>
         </View>
       </KeyboardAvoidingView>
       <SlashCommandSelectMenu

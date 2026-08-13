@@ -14,7 +14,7 @@ import {
   type MarkdownStyle,
   type TextContextMenuItem,
 } from "react-native-enriched-markdown";
-import * as Clipboard from "expo-clipboard";
+import * as Clipboard from "../clipboard";
 import { styles } from "../styles";
 import {
   prepareMarkdownForDisplay,

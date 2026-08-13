@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
-import { Audio } from "expo-av";
+import { Audio } from "../audio";
 import type { StreamTtsControlState } from "../types/appTypes";
 import { shouldAllowAutoCaptureDuringTts } from "../utils/autoAudioPolicy";
 

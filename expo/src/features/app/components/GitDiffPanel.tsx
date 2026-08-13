@@ -34,6 +34,7 @@ import {
   type WorkspaceFileTarget,
   type WorkspaceUploadSource,
 } from "../utils/workspaceFiles";
+import { supportsWorkspaceFilePicking } from "../utils/workspaceUploadPicker";
 
 type GitPanelTab = "diff" | "explorer" | "running";
 type ExplorerEntryKind = "dir" | "file";
@@ -560,18 +561,20 @@ export const GitDiffPanel = memo(function GitDiffPanel({
             requestCreateFile(targetDirectory);
           },
         },
-        {
-          text: "写真からアップロード",
-          onPress: () => {
-            void uploadFileToDirectory(targetDirectory, "photos");
+        ...(supportsWorkspaceFilePicking ? [
+          {
+            text: "写真からアップロード",
+            onPress: () => {
+              void uploadFileToDirectory(targetDirectory, "photos");
+            },
           },
-        },
-        {
-          text: "ファイルからアップロード",
-          onPress: () => {
-            void uploadFileToDirectory(targetDirectory, "files");
+          {
+            text: "ファイルからアップロード",
+            onPress: () => {
+              void uploadFileToDirectory(targetDirectory, "files");
+            },
           },
-        },
+        ] : []),
         {
           text: "クリップボードから貼り付け",
           onPress: () => {

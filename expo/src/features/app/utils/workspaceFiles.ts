@@ -1,7 +1,6 @@
-import * as Clipboard from "expo-clipboard";
-import * as DocumentPicker from "expo-document-picker";
+import * as Clipboard from "../clipboard";
 import { File as ExpoFile, Paths } from "expo-file-system";
-import * as ImagePicker from "expo-image-picker";
+import { pickWorkspaceUploadAsset } from "./workspaceUploadPicker";
 
 const WORKSPACE_UPLOAD_TIMEOUT_MS = 60_000;
 const WORKSPACE_MUTATION_TIMEOUT_MS = 12_000;
@@ -75,45 +74,6 @@ function validateAssetSize(size?: number) {
   }
 }
 
-async function pickPhoto(): Promise<WorkspaceUploadAsset | null> {
-  const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ["images"],
-    allowsMultipleSelection: false,
-    quality: 1,
-  });
-  if (result.canceled) return null;
-  const asset = result.assets[0];
-  if (!asset?.uri) return null;
-  validateAssetSize(asset.fileSize);
-  const mimeType = String(asset.mimeType || "image/png").trim() || "image/png";
-  return {
-    uri: asset.uri,
-    name: String(asset.fileName || "").trim()
-      || `photo-${timestampForFileName()}.${fileExtensionForMimeType(mimeType)}`,
-    mimeType,
-    size: asset.fileSize,
-  };
-}
-
-async function pickFile(): Promise<WorkspaceUploadAsset | null> {
-  const result = await DocumentPicker.getDocumentAsync({
-    type: "*/*",
-    copyToCacheDirectory: true,
-    multiple: false,
-  });
-  if (result.canceled) return null;
-  const asset = result.assets[0];
-  if (!asset?.uri) return null;
-  validateAssetSize(asset.size);
-  return {
-    uri: asset.uri,
-    name: String(asset.name || "").trim() || `file-${timestampForFileName()}`,
-    mimeType: String(asset.mimeType || "application/octet-stream").trim()
-      || "application/octet-stream",
-    size: asset.size,
-  };
-}
-
 async function createClipboardAsset(): Promise<WorkspaceUploadAsset | null> {
   if (await Clipboard.hasImageAsync()) {
     const image = await Clipboard.getImageAsync({ format: "png" });
@@ -160,9 +120,16 @@ async function createClipboardAsset(): Promise<WorkspaceUploadAsset | null> {
 async function selectWorkspaceUploadAsset(
   source: WorkspaceUploadSource
 ): Promise<WorkspaceUploadAsset | null> {
-  if (source === "photos") return pickPhoto();
-  if (source === "files") return pickFile();
-  return createClipboardAsset();
+  if (source === "clipboard") return createClipboardAsset();
+  const asset = await pickWorkspaceUploadAsset(source);
+  if (!asset) return null;
+  validateAssetSize(asset.size);
+  return {
+    ...asset,
+    name: asset.name || (source === "photos"
+      ? `photo-${timestampForFileName()}.${fileExtensionForMimeType(asset.mimeType)}`
+      : `file-${timestampForFileName()}`),
+  };
 }
 
 export async function uploadWorkspaceFile({

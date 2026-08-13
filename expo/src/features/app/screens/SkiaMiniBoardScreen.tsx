@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -15,20 +14,22 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   Canvas,
   Circle,
+  FontWeight,
   Group,
   Line,
-  matchFont,
+  Paragraph,
   Path,
   RoundedRect,
-  Text as SkiaText,
-  type SkFont,
+  Skia,
 } from "@shopify/react-native-skia";
 import { collectGraphemes } from "unicode-segmenter/grapheme";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
+  Easing,
   runOnJS,
   useDerivedValue,
   useSharedValue,
+  withTiming,
   type SharedValue,
 } from "react-native-reanimated";
 import { useAppShell } from "../contexts/AppShellContext";
@@ -52,6 +53,7 @@ import { RunnerMediaViewer } from "../components/RunnerMediaViewer";
 import { RunnerFileViewer } from "../components/RunnerFileViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
+import { AppModal } from "../components/AppModal";
 import {
   SkiaBoardSectionDraft,
   SkiaBoardSectionOverlay,
@@ -84,6 +86,66 @@ import {
 
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 2.5;
+const ZOOM_ANIMATION = {
+  duration: 100,
+  easing: Easing.out(Easing.cubic),
+};
+
+// SkiaのTextは1つのtypefaceだけを使うため、日本語や絵文字へフォールバックできない。
+// ParagraphにシステムのFontMgrを使わせ、Appleプラットフォーム共通のfallbackを有効にする。
+const BOARD_FONT_FAMILIES = Platform.select({
+  android: ["sans-serif"],
+  default: [".AppleSystemUIFont"],
+});
+
+type BoardTextStyle = {
+  color: string;
+  fontSize: number;
+  bold?: boolean;
+};
+
+function createBoardParagraph(
+  text: string,
+  width: number,
+  style: BoardTextStyle
+) {
+  const builder = Skia.ParagraphBuilder.Make({ maxLines: 1, ellipsis: "…" });
+  builder.pushStyle({
+    color: Skia.Color(style.color),
+    fontFamilies: BOARD_FONT_FAMILIES,
+    fontSize: style.fontSize,
+    ...(style.bold ? { fontStyle: { weight: FontWeight.Bold } } : {}),
+  });
+  builder.addText(text);
+  const paragraph = builder.build();
+  paragraph.layout(width);
+  return paragraph;
+}
+
+function BoardText({
+  x,
+  y,
+  width,
+  text,
+  color,
+  fontSize,
+  bold,
+}: BoardTextStyle & { x: number; y: number; width: number; text: string }) {
+  const paragraph = useMemo(
+    () => createBoardParagraph(text, width, { color, fontSize, bold }),
+    [bold, color, fontSize, text, width]
+  );
+  return <Paragraph x={x} y={y} width={width} paragraph={paragraph} />;
+}
+
+function paragraphTextWidth(text: string, fontSize: number) {
+  const paragraph = createBoardParagraph(text, 100_000, { color: "#000000", fontSize });
+  try {
+    return paragraph.getLongestLine();
+  } finally {
+    paragraph.dispose();
+  }
+}
 const DEFAULT_SECTION_COLOR = "#3b82f6";
 
 type CardPosition = { x: number; y: number };
@@ -114,7 +176,7 @@ function fittingPrefixEnd(
   characters: readonly string[],
   start: number,
   end: number,
-  font: SkFont,
+  font: { getTextWidth: (text: string) => number },
   maxWidth: number,
   suffix = ""
 ) {
@@ -131,18 +193,11 @@ function fittingPrefixEnd(
   return low;
 }
 
-function fitText(text: string, font: SkFont, maxWidth: number) {
-  if (font.getTextWidth(text) <= maxWidth) return text;
-  const characters = collectGraphemes(text);
-  const end = fittingPrefixEnd(characters, 0, characters.length, font, maxWidth, "…");
-  return `${characters.slice(0, end).join("")}…`;
-}
-
 function fittingSuffixStart(
   characters: readonly string[],
   start: number,
   end: number,
-  font: SkFont,
+  font: { getTextWidth: (text: string) => number },
   maxWidth: number,
   prefix = ""
 ) {
@@ -159,7 +214,11 @@ function fittingSuffixStart(
   return low;
 }
 
-export function fitTailTextLines(text: string, font: SkFont, maxWidth: number) {
+export function fitTailTextLines(
+  text: string,
+  font: { getTextWidth: (text: string) => number },
+  maxWidth: number
+) {
   const characters = collectGraphemes(text);
   if (characters.length === 0) return [];
   if (font.getTextWidth(text) <= maxWidth) return [text];
@@ -246,8 +305,8 @@ type BoardCardProps = {
   positions: SharedValue<CardPosition[]>;
   item: SkiaMiniBoardItem;
   selected: boolean;
-  titleFont: SkFont;
-  bodyFont: SkFont;
+  titleFontSize: number;
+  bodyFontSize: number;
 };
 
 function BoardCard({
@@ -256,25 +315,41 @@ function BoardCard({
   positions,
   item,
   selected,
-  titleFont,
-  bodyFont,
+  titleFontSize,
+  bodyFontSize,
 }: BoardCardProps) {
   const transform = useDerivedValue(() => {
     const position = positions.value[index] || { x: 0, y: 0 };
     return [{ translateX: position.x }, { translateY: position.y }];
   });
   const contentWidth = cardWidth - 32;
-  const messageLines = item.kind === "session"
-    ? fitTailTextLines(item.lastMessageContent || "メッセージを読み込み中…", bodyFont, contentWidth)
-    : [];
-  const messageLineHeight = bodyFont.getSize() * 1.25;
+  const messageContent = item.kind === "session"
+    ? item.lastMessageContent.replace(/\s+/g, " ").trim() || "メッセージを読み込み中…"
+    : "";
+  const messageLines = useMemo(() => {
+    if (!messageContent) return [];
+    const widths = new Map<string, number>();
+    return fitTailTextLines(messageContent, {
+      getTextWidth: (text) => {
+        const cached = widths.get(text);
+        if (cached !== undefined) return cached;
+        const width = paragraphTextWidth(text, bodyFontSize);
+        widths.set(text, width);
+        return width;
+      },
+    }, contentWidth);
+  }, [bodyFontSize, contentWidth, messageContent]);
+  const messageLineHeight = bodyFontSize * 1.25;
   const messageFirstBaseline = messageLines.length === 1 ? 69 : 69 - messageLineHeight / 2;
   const subagentText = item.kind !== "session"
     ? ""
     : item.subagentLoading
       ? "..."
       : `${item.subagentRunningCount}/${item.subagentTotalCount}`;
-  const subagentTextWidth = subagentText ? bodyFont.getTextWidth(subagentText) : 0;
+  const subagentTextWidth = useMemo(
+    () => subagentText ? paragraphTextWidth(subagentText, bodyFontSize) : 0,
+    [bodyFontSize, subagentText]
+  );
   const subagentIconX = cardWidth - 30 - subagentTextWidth;
   const footerRightStart = item.kind === "session"
     ? subagentIconX - (item.activityTrail.length > 0 ? item.activityTrail.length * 15 + 8 : 8)
@@ -304,58 +379,52 @@ function BoardCard({
           r={5}
           color={item.kind === "session" ? markerColor(item.markerColor) : "#2563eb"}
         />
-        <SkiaText
+        <BoardText
           x={31}
-          y={25}
-          text={fitText(
-            item.kind === "session"
-              ? item.directoryName
-              : item.rootDir.split("/").filter(Boolean).pop() || item.rootDir,
-            bodyFont,
-            cardWidth - 47
-          )}
-          font={bodyFont}
+          y={14}
+          width={cardWidth - 47}
+          text={item.kind === "session"
+            ? item.directoryName
+            : item.rootDir.split("/").filter(Boolean).pop() || item.rootDir}
+          fontSize={bodyFontSize}
           color="#64748b"
         />
-        <SkiaText
+        <BoardText
           x={16}
-          y={49}
-          text={fitText(item.kind === "session" ? item.title : item.name, titleFont, contentWidth)}
-          font={titleFont}
+          y={34}
+          width={contentWidth}
+          text={item.kind === "session" ? item.title : item.name}
+          fontSize={titleFontSize}
+          bold
           color="#172033"
         />
         {item.kind === "session" ? messageLines.map((line, index) => (
-          <SkiaText
+          <BoardText
             key={index}
             x={16}
-            y={messageFirstBaseline + index * messageLineHeight}
+            y={messageFirstBaseline + index * messageLineHeight - bodyFontSize}
+            width={contentWidth}
             text={line}
-            font={bodyFont}
+            fontSize={bodyFontSize}
             color="#64748b"
           />
         )) : (
-          <SkiaText
+          <BoardText
             x={16}
-            y={69}
-            text={fitText(
-              item.unavailable ? "ファイルが削除または移動されました" : item.path,
-              bodyFont,
-              contentWidth
-            )}
-            font={bodyFont}
+            y={69 - bodyFontSize}
+            width={contentWidth}
+            text={item.unavailable ? "ファイルが削除または移動されました" : item.path}
+            fontSize={bodyFontSize}
             color="#64748b"
           />
         )}
         <Line p1={{ x: 16, y: 88 }} p2={{ x: cardWidth - 16, y: 88 }} color="#e2e8f0" strokeWidth={1} />
-        <SkiaText
+        <BoardText
           x={16}
-          y={100}
-          text={fitText(
-            item.kind === "session" ? item.updatedAtLabel : item.unavailable ? "FILE NOT FOUND" : "FILE",
-            bodyFont,
-            Math.max(20, footerRightStart - 24)
-          )}
-          font={bodyFont}
+          y={100 - bodyFontSize}
+          width={Math.max(20, footerRightStart - 24)}
+          text={item.kind === "session" ? item.updatedAtLabel : item.unavailable ? "FILE NOT FOUND" : "FILE"}
+          fontSize={bodyFontSize}
           color="#64748b"
         />
         {item.kind === "session" ? item.activityTrail.map((activity, index) => (
@@ -373,11 +442,12 @@ function BoardCard({
               x={subagentIconX}
               color="#64748b"
             />
-            <SkiaText
+            <BoardText
               x={cardWidth - 16 - subagentTextWidth}
-              y={100}
+              y={100 - bodyFontSize}
+              width={subagentTextWidth + 1}
               text={subagentText}
-              font={bodyFont}
+              fontSize={bodyFontSize}
               color="#64748b"
             />
           </>
@@ -477,18 +547,15 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   const panStartScreenX = useSharedValue(0);
   const panStartScreenY = useSharedValue(0);
 
-  const fontFamily = Platform.select({ ios: "Hiragino Sans", android: "sans-serif", default: "Arial" });
-  const titleFont = useMemo(
-    () => matchFont({ fontFamily, fontSize: 12 * cardTextScale, fontWeight: "bold" }),
-    [cardTextScale, fontFamily]
-  );
-  const bodyFont = useMemo(
-    () => matchFont({ fontFamily, fontSize: 9 * cardTextScale }),
-    [cardTextScale, fontFamily]
-  );
-  const sectionLabelFont = useMemo(
-    () => matchFont({ fontFamily, fontSize: 12, fontWeight: "bold" }),
-    [fontFamily]
+  const titleFontSize = 12 * cardTextScale;
+  const bodyFontSize = 9 * cardTextScale;
+  const sectionLabelParagraphs = useMemo(
+    () => sections.map((section) => createBoardParagraph(section.label, 1000, {
+      color: section.id === selectedSectionId ? "#1d4ed8" : "#475569",
+      fontSize: 12,
+      bold: true,
+    })),
+    [sections, selectedSectionId]
   );
 
   // ボードステート(col/row)から画面座標を再構築する。ドラッグ中はSharedValueのみが
@@ -1033,14 +1100,23 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
         pinchBoardY.value = (event.focalY - boardY.value) / scale.value;
       })
       .onUpdate((event) => {
-        if (event.numberOfPointers < 2) return;
+        const shouldAnimateZoom = Platform.OS === "macos" && event.numberOfPointers === 1;
+        if (event.numberOfPointers < 2 && !shouldAnimateZoom) return;
         const nextScale = Math.max(
           MIN_SCALE,
           Math.min(MAX_SCALE, gestureStartScale.value * event.scale)
         );
-        scale.value = nextScale;
-        boardX.value = event.focalX - pinchBoardX.value * nextScale;
-        boardY.value = event.focalY - pinchBoardY.value * nextScale;
+        const nextBoardX = event.focalX - pinchBoardX.value * nextScale;
+        const nextBoardY = event.focalY - pinchBoardY.value * nextScale;
+        if (!shouldAnimateZoom) {
+          scale.value = nextScale;
+          boardX.value = nextBoardX;
+          boardY.value = nextBoardY;
+          return;
+        }
+        scale.value = withTiming(nextScale, ZOOM_ANIMATION);
+        boardX.value = withTiming(nextBoardX, ZOOM_ANIMATION);
+        boardY.value = withTiming(nextBoardY, ZOOM_ANIMATION);
       });
 
     return Gesture.Simultaneous(drag, pinch, tap, longPress);
@@ -1101,6 +1177,80 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
   }, []);
   const editingSection = sections.find((section) => section.id === editingSectionId) || null;
 
+  const boardMenuPanelContent = (
+    <>
+      <TouchableOpacity
+        style={screenStyles.menuAction}
+        onPress={() => {
+          setBoardMenuOpen(false);
+          tidyBoard();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="カードをグリッドに整頓"
+      >
+        <Ionicons name="grid-outline" size={17} color="#334155" />
+        <Text style={screenStyles.menuActionText}>Tidy</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={screenStyles.menuAction}
+        onPress={() => {
+          setBoardMenuOpen(false);
+          resetViewport();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="表示位置とズームをリセット"
+      >
+        <Ionicons name="locate-outline" size={17} color="#334155" />
+        <Text style={screenStyles.menuActionText}>Reset</Text>
+      </TouchableOpacity>
+      <View style={screenStyles.menuDivider} />
+      <View style={screenStyles.fontScaleRow}>
+        <Text style={screenStyles.menuActionText}>Card text</Text>
+        <TouchableOpacity
+          style={screenStyles.fontScaleButton}
+          onPress={() => setBoardCardTextScale(cardTextScale - SKIA_BOARD_TEXT_SCALE_STEP)}
+          disabled={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE}
+          accessibilityRole="button"
+          accessibilityLabel="カード文字を小さくする"
+        >
+          <Ionicons
+            name="remove"
+            size={17}
+            color={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE ? "#94a3b8" : "#334155"}
+          />
+        </TouchableOpacity>
+        <Text style={screenStyles.fontScaleValue}>{Math.round(cardTextScale * 100)}%</Text>
+        <TouchableOpacity
+          style={screenStyles.fontScaleButton}
+          onPress={() => setBoardCardTextScale(cardTextScale + SKIA_BOARD_TEXT_SCALE_STEP)}
+          disabled={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE}
+          accessibilityRole="button"
+          accessibilityLabel="カード文字を大きくする"
+        >
+          <Ionicons
+            name="add"
+            size={17}
+            color={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE ? "#94a3b8" : "#334155"}
+          />
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+  const boardMenu = (
+    <View style={screenStyles.menuBackdrop}>
+      <Pressable
+        accessibilityLabel="ボードメニューを閉じる"
+        onPress={() => setBoardMenuOpen(false)}
+        style={StyleSheet.absoluteFill}
+      />
+      <SafeAreaView pointerEvents="box-none" style={screenStyles.menuSafeArea}>
+        <View style={screenStyles.menuPanel}>
+          {boardMenuPanelContent}
+        </View>
+      </SafeAreaView>
+    </View>
+  );
+
   return (
     <View style={screenStyles.screen}>
       <SafeAreaView style={screenStyles.headerSafeArea}>
@@ -1156,13 +1306,12 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
                 key={section.id}
                 index={index}
                 sections={sectionRects}
-                section={section}
                 initialRect={renderedSectionRects[index]}
                 selected={section.id === selectedSectionId}
                 boardX={boardX}
                 boardY={boardY}
                 scale={scale}
-                labelFont={sectionLabelFont}
+                labelParagraph={sectionLabelParagraphs[index]}
               />
             ))}
             <Group transform={boardTranslate}>
@@ -1175,8 +1324,8 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
                     positions={positions}
                     item={item}
                     selected={item.cardId === selectedCardId}
-                    titleFont={titleFont}
-                    bodyFont={bodyFont}
+                    titleFontSize={titleFontSize}
+                    bodyFontSize={bodyFontSize}
                   />
                 ))}
               </Group>
@@ -1219,74 +1368,14 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
           </Text>
         </View>
       </SafeAreaView>
-      <Modal
+      <AppModal
         visible={boardMenuOpen}
         transparent
         animationType="fade"
         onRequestClose={() => setBoardMenuOpen(false)}
       >
-        <Pressable style={screenStyles.menuBackdrop} onPress={() => setBoardMenuOpen(false)}>
-          <SafeAreaView style={screenStyles.menuSafeArea}>
-            <Pressable style={screenStyles.menuPanel} onPress={() => {}}>
-              <TouchableOpacity
-                style={screenStyles.menuAction}
-                onPress={() => {
-                  setBoardMenuOpen(false);
-                  tidyBoard();
-                }}
-                accessibilityRole="button"
-                accessibilityLabel="カードをグリッドに整頓"
-              >
-                <Ionicons name="grid-outline" size={17} color="#334155" />
-                <Text style={screenStyles.menuActionText}>Tidy</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={screenStyles.menuAction}
-                onPress={() => {
-                  setBoardMenuOpen(false);
-                  resetViewport();
-                }}
-                accessibilityRole="button"
-                accessibilityLabel="表示位置とズームをリセット"
-              >
-                <Ionicons name="locate-outline" size={17} color="#334155" />
-                <Text style={screenStyles.menuActionText}>Reset</Text>
-              </TouchableOpacity>
-              <View style={screenStyles.menuDivider} />
-              <View style={screenStyles.fontScaleRow}>
-                <Text style={screenStyles.menuActionText}>Card text</Text>
-                <TouchableOpacity
-                  style={screenStyles.fontScaleButton}
-                  onPress={() => setBoardCardTextScale(cardTextScale - SKIA_BOARD_TEXT_SCALE_STEP)}
-                  disabled={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE}
-                  accessibilityRole="button"
-                  accessibilityLabel="カード文字を小さくする"
-                >
-                  <Ionicons
-                    name="remove"
-                    size={17}
-                    color={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE ? "#94a3b8" : "#334155"}
-                  />
-                </TouchableOpacity>
-                <Text style={screenStyles.fontScaleValue}>{Math.round(cardTextScale * 100)}%</Text>
-                <TouchableOpacity
-                  style={screenStyles.fontScaleButton}
-                  onPress={() => setBoardCardTextScale(cardTextScale + SKIA_BOARD_TEXT_SCALE_STEP)}
-                  disabled={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE}
-                  accessibilityRole="button"
-                  accessibilityLabel="カード文字を大きくする"
-                >
-                  <Ionicons
-                    name="add"
-                    size={17}
-                    color={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE ? "#94a3b8" : "#334155"}
-                  />
-                </TouchableOpacity>
-              </View>
-            </Pressable>
-          </SafeAreaView>
-        </Pressable>
-      </Modal>
+        {boardMenu}
+      </AppModal>
       <SkiaBoardSectionEditor
         section={editingSection}
         onClose={() => setEditingSectionId("")}

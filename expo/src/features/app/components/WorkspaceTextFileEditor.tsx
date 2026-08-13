@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   SafeAreaView,
   StyleSheet,
@@ -18,6 +17,7 @@ import type {
   WorkspaceFileTarget,
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
+import { AppModal } from "./AppModal";
 
 type WorkspaceTextFileEditorProps = {
   target: WorkspaceFileTarget | null;
@@ -113,7 +113,7 @@ export function WorkspaceTextFileEditor({
   }, [content, dirty, onClose, onSave, saving, target, version]);
 
   return (
-    <Modal
+    <AppModal
       visible={target !== null}
       animationType="slide"
       onRequestClose={requestClose}
@@ -179,7 +179,7 @@ export function WorkspaceTextFileEditor({
           )}
         </KeyboardAvoidingView>
       </SafeAreaView>
-    </Modal>
+    </AppModal>
   );
 }
 

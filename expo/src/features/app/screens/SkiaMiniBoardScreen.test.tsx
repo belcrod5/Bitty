@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, StyleSheet } from "react-native";
+import { Alert, Platform, StyleSheet } from "react-native";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
@@ -14,8 +14,13 @@ jest.mock("@shopify/react-native-skia", () => {
     testID: "skia-icon-path",
     accessibilityLabel: color,
   });
-  const TextStub = ({ text }: { text: string }) =>
-    ReactModule.createElement(View, { testID: `skia-text:${text}`, accessibilityLabel: text });
+  const ParagraphStub = ({ paragraph }: { paragraph: { text: string; rendered?: boolean } }) => {
+    paragraph.rendered = true;
+    return ReactModule.createElement(View, {
+      testID: `skia-text:${paragraph.text}`,
+      accessibilityLabel: paragraph.text,
+    });
+  };
   return {
     Canvas: Stub,
     Circle: Stub,
@@ -23,11 +28,55 @@ jest.mock("@shopify/react-native-skia", () => {
     Line: Stub,
     Path: PathStub,
     RoundedRect: Stub,
-    Text: TextStub,
-    matchFont: () => ({
-      getTextWidth: (text: string) => Array.from(text).length * 5,
-      getSize: () => 9,
-    }),
+    FontWeight: { Bold: 700 },
+    Paragraph: ParagraphStub,
+    Skia: {
+      Color: (color: string) => color,
+      ParagraphBuilder: {
+        Make: () => {
+          let text = "";
+          return {
+            pushStyle: (style: { fontStyle?: unknown }) => {
+              if (
+                Object.prototype.hasOwnProperty.call(style, "fontStyle")
+                && style.fontStyle === undefined
+              ) {
+                throw new Error("Value is undefined, expected an Object");
+              }
+              const target = globalThis as Record<string, unknown>;
+              const styles = target.__skiaBoardParagraphStyles as unknown[] | undefined;
+              target.__skiaBoardParagraphStyles = [...(styles || []), style];
+            },
+            addText: (next: string) => { text += next; },
+            build: () => {
+              const firstLine = text.split(/\r?\n/, 1)[0] || "";
+              const paragraph: {
+                text: string;
+                rendered?: boolean;
+                layout: () => undefined;
+                getLongestLine: () => number;
+                dispose: () => void;
+              } = {
+                text: firstLine,
+                layout: () => undefined,
+                getLongestLine: () => Array.from(firstLine).length * 5,
+                dispose: () => undefined,
+              };
+              paragraph.dispose = () => {
+                const target = globalThis as Record<string, unknown>;
+                target.__skiaBoardDisposedParagraphs =
+                  Number(target.__skiaBoardDisposedParagraphs || 0) + 1;
+                if (paragraph.rendered) {
+                  target.__skiaBoardDisposedRenderedParagraphs =
+                    Number(target.__skiaBoardDisposedRenderedParagraphs || 0) + 1;
+                }
+              };
+              return paragraph;
+            },
+          };
+        },
+      },
+    },
   };
 });
 
@@ -41,12 +90,14 @@ jest.mock("@expo/vector-icons", () => {
 
 // 公式mockのuseSharedValueはrender毎に新オブジェクトを返し、実物と異なり
 // deps比較で毎render変化してしまうため、実物同様に同一参照を維持する。
+jest.mock("react-native-worklets", () => require("react-native-worklets/src/mock"));
 jest.mock("react-native-reanimated", () => {
   const actualMock = require("react-native-reanimated/mock");
   const ReactModule = require("react");
   return {
     ...actualMock,
     useSharedValue: (init: unknown) => ReactModule.useRef({ value: init }).current,
+    withTiming: jest.fn(actualMock.withTiming),
   };
 });
 
@@ -182,6 +233,9 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  (globalThis as Record<string, unknown>).__skiaBoardParagraphStyles = [];
+  (globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs = 0;
+  (globalThis as Record<string, unknown>).__skiaBoardDisposedRenderedParagraphs = 0;
   mockMoveBoardCard.mockClear();
   mockAddBoardSection.mockClear();
   mockUpdateBoardSection.mockClear();
@@ -196,6 +250,28 @@ beforeEach(() => {
   mockSections = [];
 });
 
+test("renders Japanese and emoji through system-fallback paragraphs", async () => {
+  mockSessions = [{
+    ...mockDefaultSession,
+    directoryName: "日本語の作業場所",
+    title: "進捗確認 👍🏽",
+    lastMessageContent: "文字化けせず表示 👨‍👩‍👧‍👦",
+  }];
+
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  expect(screen.getByLabelText("日本語の作業場所")).toBeTruthy();
+  expect(screen.getByLabelText("進捗確認 👍🏽")).toBeTruthy();
+  expect(screen.getByLabelText("文字化けせず表示 👨‍👩‍👧‍👦")).toBeTruthy();
+  const styles = (globalThis as Record<string, unknown>)
+    .__skiaBoardParagraphStyles as Array<{ fontFamilies?: string[]; fontStyle?: unknown }>;
+  expect(styles.length).toBeGreaterThan(0);
+  expect(styles.every((style) => style.fontFamilies?.[0] === ".AppleSystemUIFont")).toBe(true);
+  expect(styles.some((style) => !("fontStyle" in style))).toBe(true);
+  expect(styles.some((style) => style.fontStyle !== undefined)).toBe(true);
+  expect((globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs).not.toBe(0);
+});
+
 function gestureRegistry() {
   return (globalThis as Record<string, unknown>)
     .__skiaBoardGestureRegistry as Record<string, Record<string, (...args: unknown[]) => unknown>>;
@@ -205,6 +281,36 @@ function fireCardTap() {
   // カード0は col=0,row=0 → (18, 18) 起点なので (30, 30) のタップで命中する。
   gestureRegistry().Tap.onEnd({ x: 30, y: 30 }, true);
 }
+
+test("animates mouse-wheel zoom but keeps two-pointer pinch direct", async () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const { withTiming } = require("react-native-reanimated") as { withTiming: jest.Mock };
+  withTiming.mockClear();
+
+  gestureRegistry().Pinch.onStart({ focalX: 100, focalY: 50 });
+  gestureRegistry().Pinch.onUpdate({
+    focalX: 100,
+    focalY: 50,
+    numberOfPointers: 1,
+    scale: 1.04,
+  });
+  expect(withTiming.mock.calls.map(([target]) => target)).toEqual([1.04, -4, -2]);
+
+  withTiming.mockClear();
+  gestureRegistry().Pinch.onStart({ focalX: 100, focalY: 50 });
+  gestureRegistry().Pinch.onUpdate({
+    focalX: 100,
+    focalY: 50,
+    numberOfPointers: 2,
+    scale: 1.04,
+  });
+  expect(withTiming).not.toHaveBeenCalled();
+  if (platformDescriptor) {
+    Object.defineProperty(Platform, "OS", platformDescriptor);
+  }
+});
 
 test("keeps complete two-line text and truncates only its leading side", () => {
   const font = {
@@ -263,6 +369,17 @@ test("keeps the latest message tail visible as streaming content grows", async (
   expect(screen.getByLabelText(/SECOND_TAIL$/)).toBeTruthy();
 });
 
+test("keeps the latest hard-line tail visible", async () => {
+  mockSessions = [{
+    ...mockDefaultSession,
+    lastMessageContent: `${"older ".repeat(100)}\nLATEST_TAIL`,
+  }];
+
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  expect(screen.getByLabelText(/LATEST_TAIL$/)).toBeTruthy();
+});
+
 test("opens the tapped card session via the shared session history popup", async () => {
   const openSessionHistoryPopup = jest.fn();
   await render(
@@ -296,6 +413,18 @@ test("tidies board cards without touching the viewport", async () => {
   await fireEvent.press(screen.getByLabelText("カードをグリッドに整頓"));
 
   expect(mockTidyBoard).toHaveBeenCalledTimes(1);
+});
+
+test("keeps board menu actions clickable through the shared modal", async () => {
+  const screen = await render(
+    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
+
+  expect(screen.getByLabelText("カードをグリッドに整頓")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("カード文字を大きくする"));
+  expect(mockSetBoardCardTextScale).toHaveBeenCalledWith(1.1);
 });
 
 test("long-pressing a card asks for confirmation before removing it", async () => {
@@ -692,9 +821,23 @@ test("restores a moved section when a second pointer turns the drag into a pinch
   );
 });
 
+test("does not dispose a rendered paragraph when a section label changes", async () => {
+  mockSections = [mockSectionAt(300, 250, 200, 150)];
+  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+
+  mockSections = [{ ...mockSections[0], label: "実装" }];
+  await act(async () => {
+    screen.rerender(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  });
+
+  expect(screen.getByLabelText("実装")).toBeTruthy();
+  expect((globalThis as Record<string, unknown>).__skiaBoardDisposedRenderedParagraphs).toBe(0);
+});
+
 test("edits section label, color, opacity, and border-only mode from long press", async () => {
   mockSections = [mockSectionAt(300, 250, 200, 150)];
   const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.getByLabelText("計画")).toBeTruthy();
   await act(async () => {
     gestureRegistry().LongPress.onStart({ x: 380, y: 320 });
   });

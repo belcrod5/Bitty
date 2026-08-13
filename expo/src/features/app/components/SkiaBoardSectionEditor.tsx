@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  Modal,
+  Keyboard,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { AppModal } from "./AppModal";
 import type { SkiaBoardSection } from "../utils/skiaBoardState";
 
 export const SKIA_BOARD_SECTION_COLORS = [
@@ -46,10 +47,15 @@ export function SkiaBoardSectionEditor({
   }, [section]);
   const opacityPercent = Math.round(opacity * 100);
   return (
-    <Modal visible={!!section} transparent animationType="fade" onRequestClose={onClose}>
+    <AppModal visible={!!section} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <SafeAreaView style={styles.safeArea}>
-          <Pressable style={styles.panel} onPress={() => {}}>
+          <Pressable
+            style={styles.panel}
+            onPress={() => {}}
+            onTouchStart={Keyboard.dismiss}
+            testID="skia-board-section-editor-panel"
+          >
             <Text style={styles.title}>セクション</Text>
             <TextInput
               value={label}
@@ -58,6 +64,7 @@ export function SkiaBoardSectionEditor({
               selectTextOnFocus
               style={styles.input}
               accessibilityLabel="セクションのラベル"
+              onTouchStart={(event) => event.stopPropagation()}
             />
             <Text style={styles.caption}>背景色</Text>
             <View style={styles.colors}>
@@ -128,7 +135,7 @@ export function SkiaBoardSectionEditor({
           </Pressable>
         </SafeAreaView>
       </Pressable>
-    </Modal>
+    </AppModal>
   );
 }
 

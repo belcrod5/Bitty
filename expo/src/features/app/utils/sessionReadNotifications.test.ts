@@ -2,11 +2,11 @@ import * as Notifications from "expo-notifications";
 import {
   dismissReadDirectoryNotifications,
   dismissReadSessionNotifications,
-  fetchUnreadSessionCounts,
   reconcileReceivedSessionNotification,
   reconcileReadDirectoryNotifications,
   syncUnreadBadgeCount,
 } from "./sessionReadNotifications";
+import { fetchUnreadSessionCounts } from "./sessionUnreadState";
 
 jest.mock("expo-notifications", () => ({
   dismissNotificationAsync: jest.fn(),

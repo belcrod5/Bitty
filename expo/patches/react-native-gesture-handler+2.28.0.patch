@@ -1,0 +1,226 @@
+diff --git a/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m b/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m
+index dd61b99..3873ecf 100644
+--- a/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m
++++ b/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m
+@@ -10,6 +10,8 @@
+
+ #import "RNPinchHandler.h"
+
++#import <math.h>
++
+ #if !TARGET_OS_TV
+
+ #if TARGET_OS_OSX
+@@ -19,6 +21,10 @@ @interface RNBetterPinchRecognizer : NSMagnificationGestureRecognizer {
+ }
+
+ @property (nonatomic, readonly) CGFloat velocity;
++@property (nonatomic, readonly) CGPoint focalPoint;
++@property (nonatomic, readonly) BOOL smoothsScaleUpdates;
++
++- (BOOL)handleCommandWheelEvent:(NSEvent *)event;
+ #else
+ @interface RNBetterPinchRecognizer : UIPinchGestureRecognizer
+ #endif
+@@ -29,6 +35,14 @@ - (id)initWithGestureHandler:(RNGestureHandler *)gestureHandler;
+
+ @implementation RNBetterPinchRecognizer {
+   __weak RNGestureHandler *_gestureHandler;
++#if TARGET_OS_OSX
++  BOOL _commandWheelActive;
++  CGFloat _commandWheelScale;
++  CGPoint _commandWheelFocalPoint;
++  BOOL _commandWheelHasPreciseDeltas;
++  NSUInteger _commandWheelGeneration;
++  id _commandWheelMonitor;
++#endif
+ }
+
+ - (id)initWithGestureHandler:(RNGestureHandler *)gestureHandler
+@@ -39,10 +53,29 @@ - (id)initWithGestureHandler:(RNGestureHandler *)gestureHandler
+ #if TARGET_OS_OSX
+   prevMagnification = 0;
+   prevTime = 0;
++  __weak RNBetterPinchRecognizer *weakSelf = self;
++  _commandWheelMonitor = [NSEvent
++      addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel
++                                  handler:^NSEvent *(NSEvent *event) {
++                                    RNBetterPinchRecognizer *recognizer = weakSelf;
++                                    if (recognizer != nil && [recognizer handleCommandWheelEvent:event]) {
++                                      return nil;
++                                    }
++                                    return event;
++                                  }];
+ #endif
+   return self;
+ }
+
++#if TARGET_OS_OSX
++- (void)dealloc
++{
++  if (_commandWheelMonitor != nil) {
++    [NSEvent removeMonitor:_commandWheelMonitor];
++  }
++}
++#endif
++
+ - (void)handleGesture:(UIGestureRecognizer *)recognizer
+ {
+   if (self.state == UIGestureRecognizerStateBegan) {
+@@ -76,6 +109,132 @@ - (void)interactionsCancelled:(NSSet *)touches withEvent:(UIEvent *)event
+ }
+
+ #if TARGET_OS_OSX
++- (CGPoint)focalPoint
++{
++  return _commandWheelActive ? _commandWheelFocalPoint : [self locationInView:self.view];
++}
++
++- (BOOL)smoothsScaleUpdates
++{
++  return _commandWheelActive && !_commandWheelHasPreciseDeltas;
++}
++
++- (BOOL)beginCommandWheelWithEvent:(NSEvent *)event
++{
++  if (_commandWheelActive) {
++    return YES;
++  }
++  if (self.state != NSGestureRecognizerStatePossible || self.view == nil) {
++    return NO;
++  }
++
++  _commandWheelActive = YES;
++  _commandWheelScale = 1;
++  _commandWheelFocalPoint = [self.view convertPoint:event.locationInWindow fromView:nil];
++  _commandWheelHasPreciseDeltas = event.hasPreciseScrollingDeltas;
++  prevMagnification = 1;
++  prevTime = event.timestamp;
++  [_gestureHandler setCurrentPointerTypeToMouse];
++  self.state = NSGestureRecognizerStateBegan;
++  [self interactionsBegan:[NSSet setWithObject:event] withEvent:event];
++  return YES;
++}
++
++- (void)updateCommandWheelWithEvent:(NSEvent *)event delta:(CGFloat)delta
++{
++  _commandWheelFocalPoint = [self.view convertPoint:event.locationInWindow fromView:nil];
++
++  // Precise trackpad deltas are measured in scrolling points, while a mouse
++  // wheel reports accelerated ticks. Keep discrete steps small enough for the
++  // UI-thread transform animation to bridge adjacent events without a jump.
++  CGFloat sensitivity = event.hasPreciseScrollingDeltas ? 0.01 : 0.02;
++  CGFloat maximumExponent = event.hasPreciseScrollingDeltas ? 0.35 : 0.12;
++  CGFloat exponent = MAX(-maximumExponent, MIN(maximumExponent, delta * sensitivity));
++  _commandWheelScale *= exp(exponent);
++  self.magnification = _commandWheelScale;
++
++  NSTimeInterval elapsed = event.timestamp - prevTime;
++  _velocity = elapsed > 0 ? (self.magnification - prevMagnification) / (elapsed * 1000) : 0;
++  prevMagnification = self.magnification;
++  prevTime = event.timestamp;
++
++  if (self.state == NSGestureRecognizerStateChanged) {
++    [self handleGesture:self];
++  } else {
++    self.state = NSGestureRecognizerStateChanged;
++  }
++  [self interactionsMoved:[NSSet setWithObject:event] withEvent:event];
++}
++
++- (void)finishCommandWheelWithEvent:(NSEvent *)event cancelled:(BOOL)cancelled
++{
++  if (!_commandWheelActive) {
++    return;
++  }
++  self.state = cancelled ? NSGestureRecognizerStateCancelled : NSGestureRecognizerStateEnded;
++  if (cancelled) {
++    [self interactionsCancelled:[NSSet setWithObject:event] withEvent:event];
++  } else {
++    [self interactionsEnded:[NSSet setWithObject:event] withEvent:event];
++  }
++  _commandWheelActive = NO;
++  _commandWheelGeneration++;
++}
++
++- (BOOL)isEventInsideView:(NSEvent *)event
++{
++  NSView *view = self.view;
++  NSView *contentView = event.window.contentView;
++  if (view == nil || contentView == nil || view.window != event.window) {
++    return NO;
++  }
++
++  CGPoint contentPoint = [contentView convertPoint:event.locationInWindow fromView:nil];
++  NSView *hitView = [contentView hitTest:contentPoint];
++  return hitView == view || [hitView isDescendantOf:view];
++}
++
++- (BOOL)handleCommandWheelEvent:(NSEvent *)event
++{
++  BOOL commandPressed = (event.modifierFlags & NSEventModifierFlagCommand) != 0;
++  if (!commandPressed || !self.enabled || ![self isEventInsideView:event]) {
++    if (_commandWheelActive) {
++      [self finishCommandWheelWithEvent:event cancelled:YES];
++    }
++    return NO;
++  }
++
++  NSEventPhase phase = event.phase != NSEventPhaseNone ? event.phase : event.momentumPhase;
++  BOOL phaseLessTick = phase == NSEventPhaseNone;
++  if (![self beginCommandWheelWithEvent:event]) {
++    return NO;
++  }
++
++  CGFloat delta = event.scrollingDeltaY;
++  if (fabs(delta) > 0.0001) {
++    [self updateCommandWheelWithEvent:event delta:delta];
++  }
++
++  BOOL cancelled = (phase & NSEventPhaseCancelled) != 0;
++  BOOL ended = cancelled || (phase & NSEventPhaseEnded) != 0;
++  if (ended) {
++    [self finishCommandWheelWithEvent:event cancelled:cancelled];
++  } else if (phaseLessTick) {
++    // Traditional mouse wheels often omit phases entirely. Keep their ticks in
++    // one short gesture so AppKit can deliver the active state before ending it.
++    NSUInteger generation = ++_commandWheelGeneration;
++    __weak RNBetterPinchRecognizer *weakSelf = self;
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++      RNBetterPinchRecognizer *recognizer = weakSelf;
++      if (recognizer != nil && recognizer->_commandWheelActive &&
++          recognizer->_commandWheelGeneration == generation) {
++        [recognizer finishCommandWheelWithEvent:event cancelled:NO];
++      }
++    });
++  }
++  return YES;
++}
++
+ - (void)magnifyWithEvent:(NSEvent *)event
+ {
+   [super magnifyWithEvent:event];
+@@ -129,6 +288,11 @@ - (void)touchesCancelled:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)ev
+
+ - (void)reset
+ {
++#if TARGET_OS_OSX
++  _commandWheelActive = NO;
++  _commandWheelScale = 1;
++  _commandWheelGeneration++;
++#endif
+   [_gestureHandler.pointerTracker reset];
+   [super reset];
+   [_gestureHandler reset];
+@@ -155,9 +319,9 @@ - (instancetype)initWithTag:(NSNumber *)tag
+ - (RNGestureHandlerEventExtraData *)eventExtraData:(NSMagnificationGestureRecognizer *)recognizer
+ {
+   return [RNGestureHandlerEventExtraData forPinch:recognizer.magnification
+-                                   withFocalPoint:[recognizer locationInView:recognizer.view]
++                                   withFocalPoint:((RNBetterPinchRecognizer *)recognizer).focalPoint
+                                      withVelocity:((RNBetterPinchRecognizer *)recognizer).velocity
+-                              withNumberOfTouches:2
++                              withNumberOfTouches:((RNBetterPinchRecognizer *)recognizer).smoothsScaleUpdates ? 1 : 2
+                                   withPointerType:RNGestureHandlerMouse];
+ }
+ #else

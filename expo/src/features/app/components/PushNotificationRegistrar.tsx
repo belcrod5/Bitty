@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from "react";
-import { AppState } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useConversation } from "../contexts/ConversationContext";
@@ -13,11 +12,10 @@ import {
 } from "../utils/pushApprovalNotifications";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
 import {
-  notificationFailureReason,
   reconcileReceivedSessionNotification,
-  syncUnreadBadgeCount,
-  type UnreadSessionCountSnapshot,
 } from "../utils/sessionReadNotifications";
+import { notificationFailureReason } from "../utils/sessionUnreadState";
+import type { PushNotificationRegistrarProps } from "./PushNotificationRegistrar.contract";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => resolveForegroundNotificationBehavior(),
@@ -37,9 +35,7 @@ Notifications.setNotificationHandler({
 // still reach the JS listener, but handlePushApprovalAction deliberately no-ops on them.
 export function PushNotificationRegistrar({
   onUnreadCountSnapshot,
-}: {
-  onUnreadCountSnapshot?: (snapshot: UnreadSessionCountSnapshot) => void;
-}) {
+}: PushNotificationRegistrarProps) {
   const { runnerUrl, runnerToken, faceIdRequiredForApproval } = useAppSettings();
   const { registeredDirectories } = useConversation();
   const { connected } = useRunnerWebSocketSnapshot();
@@ -128,27 +124,6 @@ export function PushNotificationRegistrar({
       cancelled = true;
     };
   }, [connected, directories, directoriesKey, runnerUrl, runnerToken]);
-
-  useEffect(() => {
-    if (!connected || !runnerUrl.trim() || !runnerToken.trim()) return;
-    const syncBadge = () => {
-      void syncUnreadBadgeCount({ runnerUrl, runnerToken, directories }).then(
-        (snapshot) => {
-          if (snapshot) onUnreadCountSnapshot?.(snapshot);
-        },
-        (error) => {
-          console.warn("[push] badge sync failed", {
-            failureCount: 1,
-            reason: notificationFailureReason(error),
-          });
-        });
-    };
-    syncBadge();
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") syncBadge();
-    });
-    return () => subscription.remove();
-  }, [connected, directories, onUnreadCountSnapshot, runnerToken, runnerUrl]);
 
   useEffect(() => {
     if (!runnerUrl.trim() || !runnerToken.trim()) return;

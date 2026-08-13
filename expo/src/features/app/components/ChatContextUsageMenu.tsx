@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Modal, Pressable, Text, TouchableOpacity, View } from "react-native";
+import { Pressable, Text, TouchableOpacity, View } from "react-native";
 import { styles } from "../styles";
 import { CircularProgressRing } from "./CircularProgressRing";
+import { AppModal } from "./AppModal";
 
 type ChatContextUsageMenuProps = {
   dismissed?: boolean;
@@ -49,7 +50,7 @@ export function ChatContextUsageMenu({
           <Text style={styles.chatContextPctText}>{contextPctText}</Text>
         </TouchableOpacity>
       </View>
-      <Modal
+      <AppModal
         visible={menuOpen && !dismissed}
         transparent
         animationType="fade"
@@ -72,7 +73,7 @@ export function ChatContextUsageMenu({
             </TouchableOpacity>
           </Pressable>
         </Pressable>
-      </Modal>
+      </AppModal>
     </>
   );
 }

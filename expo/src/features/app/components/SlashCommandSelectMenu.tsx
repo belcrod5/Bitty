@@ -1,5 +1,6 @@
-import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { styles } from "../styles";
+import { AppModal } from "./AppModal";
 
 export type SlashCommandOption = {
   command: string;
@@ -52,9 +53,9 @@ export function SlashCommandSelectMenu({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <AppModal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       {content}
-    </Modal>
+    </AppModal>
   );
 }
 

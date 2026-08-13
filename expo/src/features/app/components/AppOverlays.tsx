@@ -2,7 +2,6 @@ import { useEffect, useState, type RefObject } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import {
   ActivityIndicator,
-  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -12,13 +11,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView } from "../keyboardController";
 import type { ApprovalAction } from "../../codex/approvalFlow";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useConversation } from "../contexts/ConversationContext";
 import type { ApprovalDialogViewState } from "../hooks/useApprovalRequestController";
 import { styles } from "../styles";
 import { SlashCommandSelectMenu, type SlashCommandOption } from "./SlashCommandSelectMenu";
+import { AppModal } from "./AppModal";
 
 const APPROVAL_MODAL_PRESENT_DELAY_MS = 350;
 
@@ -103,7 +103,7 @@ export function AppOverlays({
   return (
     <>
       {/* Only an explicit button may resolve an approval request. */}
-      <Modal
+      <AppModal
         visible={!!approvalDialog?.visible && approvalPresentationReady}
         transparent
         animationType="fade"
@@ -165,8 +165,8 @@ export function AppOverlays({
             </View>
           </View>
         </View>
-      </Modal>
-      <Modal
+      </AppModal>
+      <AppModal
         visible={composerFullscreenOpen && !approvalDialogPending}
         animationType="slide"
         presentationStyle="fullScreen"
@@ -207,14 +207,14 @@ export function AppOverlays({
             </View>
           </KeyboardAvoidingView>
         </SafeAreaView>
-      </Modal>
+      </AppModal>
       <SlashCommandSelectMenu
         visible={slashCommandSelectOpen && !approvalDialogPending}
         options={slashCommandOptions}
         onClose={() => setSlashCommandSelectOpen(false)}
         onSelect={onSelectSlashCommand}
       />
-      <Modal visible={modelSelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setModelSelectOpen(false)}>
+      <AppModal visible={modelSelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setModelSelectOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setModelSelectOpen(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>LLM Model</Text>
@@ -234,8 +234,8 @@ export function AppOverlays({
             })}
           </Pressable>
         </Pressable>
-      </Modal>
-      <Modal visible={directorySelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setDirectorySelectOpen(false)}>
+      </AppModal>
+      <AppModal visible={directorySelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setDirectorySelectOpen(false)}>
         <Pressable style={styles.directoryExplorerBackdrop} onPress={() => setDirectorySelectOpen(false)}>
           <Pressable style={styles.directoryExplorerCard} onPress={() => {}}>
             <View style={styles.directoryExplorerHeader}>
@@ -325,8 +325,8 @@ export function AppOverlays({
             </View>
           </Pressable>
         </Pressable>
-      </Modal>
-      <Modal visible={thinkSelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setThinkSelectOpen(false)}>
+      </AppModal>
+      <AppModal visible={thinkSelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setThinkSelectOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setThinkSelectOpen(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>Think</Text>
@@ -346,7 +346,7 @@ export function AppOverlays({
             })}
           </Pressable>
         </Pressable>
-      </Modal>
+      </AppModal>
     </>
   );
 }

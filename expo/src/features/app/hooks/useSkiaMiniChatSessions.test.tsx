@@ -14,7 +14,7 @@ import {
   useSkiaMiniChatSessions,
 } from "./useSkiaMiniChatSessions";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
-import { SkiaBoardProvider } from "../contexts/SkiaBoardContext";
+import { SkiaBoardProvider, useSkiaBoard } from "../contexts/SkiaBoardContext";
 
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: jest.fn(),
@@ -364,18 +364,65 @@ describe("useSkiaMiniChatSessions", () => {
     expect(result.current.sessions[1]).toMatchObject({ col: 1, row: 0 });
   });
 
-  it("stays read-only and skips ingest when the persisted board state fails to load", async () => {
+  it("stays usable in memory without overwriting storage when persisted state fails to load", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     mockReadPersistedSettingsField.mockRejectedValue(new Error("read failed"));
     mockConversation([session(2), session(1)]);
 
-    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    const { result } = await renderHook(() => ({
+      board: useSkiaBoard(),
+      preview: useSkiaMiniChatSessions(),
+    }), { wrapper: BoardWrapper });
     await flush();
 
-    // 読込失敗中に初期化・保存すると保存済みの位置と除外リストが全損するため、
-    // ボードは空のまま・書込なしで留まる。
-    expect(result.current.sessions).toEqual([]);
+    expect(result.current.board.loaded).toBe(true);
+    expect(result.current.preview.sessions.map((item) => item.sessionId)).toEqual([
+      "session-2",
+      "session-1",
+    ]);
+
+    await act(async () => {
+      result.current.board.removeSession("session-2");
+    });
+    expect(result.current.preview.sessions.map((item) => item.sessionId)).toEqual(["session-1"]);
+
+    // 読み取れなかった保存済みの位置と除外リストを上書きしない。
     expect(mockMutatePersistedSettings).not.toHaveBeenCalled();
+    expect(mockReadPersistedSettingsField.mock.calls.length).toBeGreaterThanOrEqual(2);
+    warnSpy.mockRestore();
+  });
+
+  it("replays an add onto persisted state after a failed read recovers", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    persistedFile.skiaBoardState = {
+      cards: [{ sessionId: "session-9", col: 0, row: 0 }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: new Date(session(9).updatedAt).getTime(),
+      cardTextScale: 1,
+    };
+    mockReadPersistedSettingsField.mockRejectedValueOnce(new Error("read failed"));
+    mockConversation([session(2), session(1)], {
+      // Keep automatic ingest out of this recovery boundary: the user action below
+      // is the queued transformation whose replay order this test fixes.
+      directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: "partial_error" },
+    });
+
+    const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
+    await flush();
+    expect(result.current.loaded).toBe(true);
+    expect(mockMutatePersistedSettings).not.toHaveBeenCalled();
+
+    await act(async () => {
+      result.current.addSession("session-2");
+    });
+    await flush();
+
+    const savedState = persistedFile.skiaBoardState as {
+      cards: Array<{ sessionId: string }>;
+    };
+    expect(savedState.cards.map((card) => card.sessionId)).toEqual(["session-9", "session-2"]);
+    expect(mockReadPersistedSettingsField).toHaveBeenCalledTimes(2);
+    expect(mockMutatePersistedSettings).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
