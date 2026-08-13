@@ -71,6 +71,8 @@ async function withService(fn) {
 
 test("validates rules with the normal model parser and enabled-region limit", () => {
   assert.equal(parseLocationScheduleRules([rule()], "Asia/Tokyo", parseCodexOptions)[0].model, "gpt-5.6-sol");
+  assert.equal(parseLocationScheduleRules([rule({ reasoningEffort: "max" })], "Asia/Tokyo", parseCodexOptions)[0].reasoningEffort, "max");
+  assert.equal(parseLocationScheduleRules([rule({ reasoningEffort: "ultra" })], "Asia/Tokyo", parseCodexOptions)[0].reasoningEffort, "ultra");
   assert.throws(
     () => parseLocationScheduleRules(Array.from({ length: 21 }, (_, index) => rule({ id: `r${index}` })), "Asia/Tokyo", parseCodexOptions),
     /at most 20/

@@ -1,9 +1,9 @@
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type CodexApprovalPolicy = "on-request" | "never";
 
 export function isReasoningEffort(raw: unknown): raw is ReasoningEffort {
   const value = String(raw || "").trim().toLowerCase();
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra";
 }
 
 type ModelOption = {

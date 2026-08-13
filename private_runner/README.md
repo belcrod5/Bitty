@@ -62,7 +62,7 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 
 ## モデル / think 設定
 - `OPENAI_CODEX_MODEL` は既定 `openai-codex/gpt-5.4-mini`
-- `OPENAI_CODEX_REASONING_EFFORT` で think 強度を指定可能（`none|low|medium|high|xhigh`）
+- `OPENAI_CODEX_REASONING_EFFORT` で think 強度を指定可能（`none|low|medium|high|xhigh|max|ultra`）
 - `OPENAI_CODEX_OAUTH_PROFILE` で利用する OAuth profile を選択可能（既定 `default`）
 
 実運用で確認した互換:
@@ -259,7 +259,7 @@ npm run ios
 - `Runner Token` は Pairing QR の token。固定token検証時だけ、`RUNNER_TOKEN_MODE=env` にして `.env` の `RUNNER_TOKEN` と同じ値を使う
 - Appには次のUXオプションがあります:
   - `LLM Model` プルダウンで `openai-codex/gpt-5.6-sol` / `openai-codex/gpt-5.6-terra` / `openai-codex/gpt-5.6-luna` / `openai-codex/gpt-5.4-mini` / `openai-codex/gpt-5.4` / `openai-codex/gpt-5.3-codex` / `openai-codex/gpt-5.3-codex-spark` を選択
-  - `Think` プルダウンで `low|medium|high|xhigh` を選択
+  - `Think` プルダウンで `low|medium|high|xhigh|max|ultra` を選択
   - 上記2つの設定は端末内に保存され次回起動時に復元
   - `TTS Provider` を `elevenlabs` / `google` / `aivisspeech` で切替
   - `Load Voices (/voices)` で選択中 provider の音声一覧取得
@@ -356,7 +356,7 @@ npm run ios
 ```
 - `messages` は任意。指定した場合は会話履歴（古い順）として利用され、`transcript` 単体より優先されます。
 - `modelRef` は任意。省略時は `.env` の `OPENAI_CODEX_MODEL`（既定 `openai-codex/gpt-5.4-mini`）
-- `reasoningEffort` は任意。`none|low|medium|high|xhigh` を指定可能。省略時は `.env` の `OPENAI_CODEX_REASONING_EFFORT`
+- `reasoningEffort` は任意。`none|low|medium|high|xhigh|max|ultra` を指定可能。省略時は `.env` の `OPENAI_CODEX_REASONING_EFFORT`
 - `fileTools` は任意。既定 `true`（`/reply` でも file tools を使います）。`false` の場合は通常会話モードのみ。
 - `rootDir` は任意。省略時は `.env` の `LLM_FILE_ROOT`（既定: `llm_root`）
 - `rootDir` は workspace 内のみ指定可能。workspace 外は拒否されます。

@@ -41,6 +41,24 @@ function buildRestoredResult(
 }
 
 describe("buildRestoredSessionState", () => {
+  it.each(["max", "ultra"] as const)("restores %s reasoning effort from the session", (restoredEffort) => {
+    const restored = buildRestoredResult([]);
+    restored.reasoningEffort = restoredEffort;
+
+    const state = buildRestoredSessionState({
+      restored,
+      buildConversationMessage: buildConversationMessageStub,
+      modelOptions: [],
+      modelRef: "",
+      reasoningEffort: "high",
+      prevEffectiveSessionId: "previous-thread",
+      nextSessionId: "thread-1",
+    });
+
+    expect(state.nextReasoningEffort).toBe(restoredEffort);
+    expect(state.thinkChanged).toBe(true);
+  });
+
   it("preserves goal context as an assistant-only display kind", () => {
     const restored = buildRestoredResult([
       {
