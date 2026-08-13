@@ -1,5 +1,5 @@
 import { useCallback, type MutableRefObject } from "react";
-import { Audio } from "../audio";
+import { Audio, supportsAudioRecording } from "../audio";
 import type { RecordingTuning } from "../utils/audioConfig";
 
 type AudioModeSwitchOptions = {
@@ -209,6 +209,10 @@ export function useAudioLabProbeController(options: UseAudioLabProbeControllerOp
   ]);
 
   const startAudioLabProbe = useCallback(async () => {
+    if (!supportsAudioRecording) {
+      reportError("録音機能はこの端末では利用できません。", "audio-lab:start");
+      return;
+    }
     if (audioLabActionInFlightRef.current) return;
     if (audioLabRecordingRef.current || audioLabSoundRef.current || audioLabRunning) return;
     if (manualRecording) {

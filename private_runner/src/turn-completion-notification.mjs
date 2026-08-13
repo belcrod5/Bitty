@@ -26,6 +26,7 @@ export function createTurnCompletionNotifier({
   apnsClient,
   pushSummarizer,
   pushDeviceStore,
+  getPushUnreadSnapshot,
   broadcast,
   log = console,
   now = Date.now,
@@ -69,18 +70,51 @@ export function createTurnCompletionNotifier({
     if (!summary) return;
 
     const id = String(sessionId || threadId || "");
-    const payload = {
+    const directorySets = [];
+    const directorySetIndexByKey = new Map();
+    for (const device of devices) {
+      if (!Array.isArray(device.directories) || device.directories.length <= 0) continue;
+      const key = [...device.directories].sort().join("\u0000");
+      if (directorySetIndexByKey.has(key)) continue;
+      directorySetIndexByKey.set(key, directorySets.length);
+      directorySets.push(device.directories);
+    }
+    let unreadSnapshot;
+    try {
+      unreadSnapshot = await getPushUnreadSnapshot({
+        directorySets,
+        targetSessionId: id,
+        targetDirectory: directory,
+      });
+    } catch (error) {
+      log.warn(`[push] unread snapshot failed session=${id}: ${errorMessage(error)}`);
+      return;
+    }
+    if (!unreadSnapshot?.targetUnread) return;
+    const payloadDirectory = String(unreadSnapshot.directory || directory || "").trim();
+    const basePayload = {
       aps: {
-        alert: { title: derivePushDirectoryTitle(directory) || "タスク完了", body: summary },
+        alert: { title: derivePushDirectoryTitle(payloadDirectory) || "タスク完了", body: summary },
         sound: "default",
         category: "TURN_COMPLETED",
         "thread-id": id,
       },
       sessionId: id,
+      directory: payloadDirectory,
       turnId: String(turnId || ""),
     };
-    await Promise.all(devices.map(async (device) => {
+    const sentResults = await Promise.all(devices.map(async (device) => {
       try {
+        const directoryKey = Array.isArray(device.directories) && device.directories.length > 0
+          ? [...device.directories].sort().join("\u0000")
+          : "";
+        const directorySetIndex = directorySetIndexByKey.get(directoryKey);
+        const badge = directorySetIndex === undefined
+          ? undefined
+          : unreadSnapshot.unreadCounts?.[directorySetIndex];
+        const payload = Number.isFinite(Number(badge))
+          ? { ...basePayload, aps: { ...basePayload.aps, badge: Math.max(0, Math.floor(Number(badge))) } }
+          : basePayload;
         const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
         if (result?.status === 410) {
           await pushDeviceStore.removeDevice(device.deviceId);
@@ -89,10 +123,16 @@ export function createTurnCompletionNotifier({
             `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
           );
         }
+        return Boolean(result?.ok);
       } catch (error) {
         log.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(error)}`);
+        return false;
       }
     }));
+    const sentCount = sentResults.filter(Boolean).length;
+    if (sentCount > 0) {
+      log.log?.(`[push] turn completion push sent devices=${sentCount}/${devices.length} session=${id}`);
+    }
   }
 
   async function notifyTurnCompleted({
@@ -115,6 +155,7 @@ export function createTurnCompletionNotifier({
         broadcast({
           sessionId: String(sessionId || threadId),
           threadId,
+          directory: String(directory || "").trim(),
           previewText,
           completedAt: new Date().toISOString(),
         });

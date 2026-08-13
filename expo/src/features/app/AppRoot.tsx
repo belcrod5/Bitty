@@ -89,6 +89,7 @@ import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
 import { useReadyDrivenResumeSyncController } from "./hooks/useReadyDrivenResumeSyncController";
 import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
+import { useSessionNotificationLifecycleController } from "./hooks/useSessionNotificationLifecycleController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
@@ -282,7 +283,7 @@ import {
 import {
   createSessionRestorePerfContext,
   logSessionRestoreError,
-  finalizeSessionRestoreReadAndLog,
+  logSessionRestoreDone,
   logSessionRestoreMessagesHydrated,
   logSessionRestoreStart,
   logSessionRestoreStateApplyQueued,
@@ -352,9 +353,6 @@ const DEFAULT_LLM_DIRECTORY = "llm_root";
 const DEFAULT_DIRECTORY_UI_STATE: PersistedDirectoryUiState = {
   expandedDirectoryIds: [],
 };
-const DRAWER_SWIPE_EDGE_WIDTH = 48;
-const DRAWER_SWIPE_MIN_DISTANCE = 28;
-const DRAWER_SWIPE_MIN_VELOCITY = 280;
 const STATUS_DOT_GIF = require("../../../assets/images/robot-indicator.gif");
 const WAVEFORM_DOT_GIF = require("../../../assets/images/waveform-dots.gif");
 const PIXEL_STATUS_ANIMATIONS: Record<PixelStatusIconKey, ImageSourcePropType> = {
@@ -927,6 +925,7 @@ export default function App() {
     fetchLatestSessionIdForDirectory,
     fetchSessionHistory,
     fetchSessionChildrenHistory,
+    markRunnerDirectoryRead,
     markRunnerSessionRead,
     loadDirectoryExplorer,
     openDirectoryExplorer: primeDirectoryExplorer,
@@ -2895,13 +2894,13 @@ export default function App() {
   }
 
   const {
-    applySessionLastReadAtByIdToDirectoryTrees,
+    applyDirectoryLastReadAtToDirectoryTrees, applySessionLastReadAtByIdToDirectoryTrees,
     directorySessionSync,
     ensureRegisteredDirectorySessions,
     loadMoreDirectorySessionTree,
     loadSessionChildTree,
     loadSessionChildTreesForSessions,
-    prepareDirectorySessionTargetChange,
+    prepareDirectorySessionTargetChange, reconcileDirectorySessionTree,
     toggleDirectoryExpanded,
     refreshDirectorySessionTree,
     refreshRegisteredDirectorySessions,
@@ -2955,6 +2954,21 @@ export default function App() {
       selectLlmDirectory(nextRegisteredDirectories[0]?.path || DEFAULT_LLM_DIRECTORY);
     }
   }
+  const registeredDirectoryPaths = useMemo(
+    () => registeredDirectories.map((directory) => directory.path),
+    [registeredDirectories]
+  );
+  const sessionNotificationLifecycle = useSessionNotificationLifecycleController({
+    getPopupSessionTarget: () => ({
+      sessionId: parseOptionalSessionId(panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.selectedSessionId),
+      directory: String(panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.selectedDirectoryPath || "").trim(),
+      isHydrating: panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.isHydrating === true,
+    }),
+    getRunnerHttpAuth,
+    normalizedLlmDirectoryForRequest,
+    registeredDirectoryPaths,
+    runnerWebSocketManager,
+  });
   const {
     markSessionReadAsync,
     markSessionUnread,
@@ -2962,13 +2976,16 @@ export default function App() {
     markDirectorySessionsRead,
     directoryReadProgressByPath,
   } = useSessionMarkReadController({
-    markRunnerSessionRead,
-    fetchSessionHistory,
+    markRunnerDirectoryRead, markRunnerSessionRead,
     normalizedLlmDirectoryForRequest,
-    applySessionLastReadAtByIdToDirectoryTrees,
+    applyDirectoryLastReadAtToDirectoryTrees, applySessionLastReadAtByIdToDirectoryTrees,
+    reconcileDirectorySessionTree,
+    onDirectoryReadStateCommitted: sessionNotificationLifecycle.handleDirectoryReadStateCommitted,
+    onSessionReadStateCommitted: sessionNotificationLifecycle.handleSessionReadStateCommitted,
     showChatBottomToast,
     logSessionDiag,
   });
+  sessionNotificationLifecycle.markSessionReadAsyncRef.current = markSessionReadAsync;
   settingsLoadedSessionRecoveryRef.current = () => {
     void refreshRegisteredDirectorySessions("auth_recovery");
   };
@@ -3237,21 +3254,20 @@ export default function App() {
       }
       restoreSucceeded = true;
       switchedSessionId = resolvedSessionId;
-      finalizeSessionRestoreReadAndLog({
-        markSessionReadAsync,
-        resolvedSessionId,
-        directory,
-        source: opts?.source,
-        perf,
-        restoreRequestSeq,
+      logSessionRestoreDone({
         logSessionDiag,
+        restoreRequestSeq,
+        source: String(opts?.source || "unknown"),
+        directory,
         targetSessionId: nextSessionId,
         restoreStartedAt,
+        resolvedSessionId,
         restoredMessageCount: restoredMessages.length,
         hasRunningTurn,
         hasPendingAssistant,
         codexRelayAttached,
         restoredInFlight,
+        perf,
       });
       return true;
     } catch (err) {
@@ -3312,6 +3328,7 @@ export default function App() {
       source: source || "all",
       directory,
       perfTraceId: "mini_board_popup",
+      readTrigger: source === "notification" ? "notification_open" : "drawer_open",
       restoreRequestSeq: Date.now(),
     });
   }, [
@@ -3670,20 +3687,11 @@ export default function App() {
     const sessionId = parseOptionalSessionId(params.sessionId || params.threadId);
     const threadId = parseOptionalSessionId(params.threadId || sessionId);
     const previewText = String(params.previewText || "").replace(/\s+/g, " ").trim().slice(0, 240);
-    if (!sessionId || !threadId || !previewText) return;
-    if (activeScreen === "skia_board") {
-      const activeSessionId = parseOptionalSessionId(
-        selectedLlmSessionId || llmConversationSessionIdRef.current
-      );
-      if (activeSessionId && activeSessionId === sessionId) return;
-    }
-    if (drawerSessionPopupPanelId) {
-      const popupEntry = panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId];
-      const popupSessionId = parseOptionalSessionId(
-        popupEntry?.snapshot?.selectedSessionId
-      );
-      if (popupSessionId && popupSessionId === sessionId) return;
-    }
+    if (!sessionId || !threadId) return;
+    if (sessionNotificationLifecycle.handleForegroundSessionCompletion({ sessionId, directory: params.directory })) return;
+    // Text-free lifecycle boundaries still own read/badge reconciliation. Only the local
+    // completion card requires preview text.
+    if (!previewText) return;
     const context = resolveSessionHistoryContext(sessionId);
     const completedAtMs = Number.isFinite(Number(params.completedAtMs))
       ? Math.floor(Number(params.completedAtMs))
@@ -3701,10 +3709,8 @@ export default function App() {
       return [nextNotification, ...next].slice(0, 3);
     });
   }, [
-    activeScreen,
-    drawerSessionPopupPanelId,
+    sessionNotificationLifecycle,
     resolveSessionHistoryContext,
-    selectedLlmSessionId,
   ]);
   const {
     handleApprovalRequest,
@@ -4934,6 +4940,7 @@ export default function App() {
     selectSpecificLlmSession,
     hydratePanelFromSessionHistoryRef,
     fetchLatestSessionIdForDirectory,
+    markSessionReadAsync,
     logSessionDiag,
   });
   observerPreemptedHandlerRef.current = markSessionRespondingForResync;
@@ -4960,15 +4967,6 @@ export default function App() {
       reason: `late_live_${params.reason}`,
     });
   }, [requestSessionResync, wasRespondingAtBackground]);
-
-  // Push-notification tap-to-open: consumes the pending session id set by
-  // PushNotificationRegistrar's response listener (see pushApprovalNotifications.ts) once
-  // settings are loaded, and again whenever the app returns to foreground.
-  usePendingPushSessionNavigationController({
-    settingsLoaded,
-    normalizedLlmDirectoryForRequest,
-    selectSpecificLlmSession,
-  });
 
   useEffect(() => {
     return () => {
@@ -7531,7 +7529,7 @@ export default function App() {
     setDrawerPopupHighlightSessionId,
     startNewPanelSession,
   ]);
-  const openSessionHistoryPopup = useCallback((params: {
+  const openSessionHistoryPopup = useCallback(async (params: {
     sessionId: string;
     source: LlmSessionSource;
     directory?: string;
@@ -7541,7 +7539,7 @@ export default function App() {
     const sessionId = parseOptionalSessionId(params.sessionId);
     if (!sessionId) {
       showChatBottomToast("assistant", "セッションIDが不明なため開けませんでした。");
-      return;
+      return false;
     }
     const context = resolveSessionHistoryContext(sessionId);
     const directoryRaw = String(params.directory || "").trim();
@@ -7552,7 +7550,7 @@ export default function App() {
         sessionId,
         source: params.source,
       }, { throttleMs: 0 });
-      return;
+      return false;
     }
     const cycleId = `drawer-session-popup-${Date.now().toString(36)}`;
     setDrawerSessionPopupSourceRect(params.sourceRect || null);
@@ -7560,7 +7558,8 @@ export default function App() {
     setDrawerSessionPopupOrigin(params.origin || "drawer");
     setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
     setDrawerPopupHighlightSessionId(sessionId);
-    void hydratePanelFromSessionHistory({
+    try {
+      const result = await hydratePanelFromSessionHistory({
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
       sessionId,
       directory,
@@ -7572,22 +7571,24 @@ export default function App() {
       modelRef: context?.modelRef,
       reasoningEffort: context?.reasoningEffort,
       contextUsedPct: context?.contextUsedPct,
-    }).then((result) => {
-      if (result === "superseded") return;
+      });
+      if (result === "superseded") return false;
       if (result === "failed") {
         showChatBottomToast("assistant", "セッションをポップアップに読み込めませんでした。");
         clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
         setDrawerSessionPopupPanelId("");
         setDrawerPopupHighlightSessionId("");
-        return;
+        return false;
       }
       markSessionReadFromContext(sessionId, params.source, directory);
-    }).catch((err) => {
+      return true;
+    } catch (err) {
       showChatBottomToast("assistant", `セッション読込に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
       clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
       setDrawerSessionPopupPanelId("");
       setDrawerPopupHighlightSessionId("");
-    });
+      return false;
+    }
   }, [
     clearPanelSnapshot,
     hydratePanelFromSessionHistory,
@@ -7597,6 +7598,12 @@ export default function App() {
     setDrawerPopupHighlightSessionId,
     showChatBottomToast,
   ]);
+  usePendingPushSessionNavigationController({
+    settingsLoaded,
+    normalizedLlmDirectoryForRequest,
+    closeDrawer,
+    openSessionHistoryPopup,
+  });
   const openCompletedLlmSession = useCallback((sessionIdRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
@@ -7641,7 +7648,7 @@ export default function App() {
     registeredDirectories,
     expandedDirectoryIds,
     directorySessionsById,
-    directoryReadProgressByPath,
+    directoryReadProgressByPath, directoryUnreadCountByPath: sessionNotificationLifecycle.directoryUnreadCountByPath,
     directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
@@ -7701,16 +7708,10 @@ export default function App() {
         open={drawerOpen}
         onOpen={openDrawer}
         onClose={closeDrawer}
-        swipeEnabled={activeScreen === "skia_board"}
-        swipeEdgeWidth={DRAWER_SWIPE_EDGE_WIDTH}
-        swipeMinDistance={DRAWER_SWIPE_MIN_DISTANCE}
-        swipeMinVelocity={DRAWER_SWIPE_MIN_VELOCITY}
-        keyboardDismissMode="on-drag"
-        drawerType="front"
-        drawerPosition="left"
         drawerStyle={styles.appDrawerPanel}
         overlayStyle={styles.appDrawerOverlay}
         renderDrawerContent={renderAppDrawerContent}
+        swipeEnabled={activeScreen === "skia_board"}
       >
       <View style={styles.safeArea}>
       <AppScreenContent
@@ -7760,7 +7761,7 @@ export default function App() {
             onDismiss={dismissLlmCompletionNotification}
           />
         </SafeAreaView>
-        <PushNotificationRegistrar />
+        <PushNotificationRegistrar onUnreadCountSnapshot={sessionNotificationLifecycle.applyUnreadCountSnapshot} />
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>

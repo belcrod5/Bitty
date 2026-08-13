@@ -91,6 +91,9 @@ export function useSkiaMiniChatSessions() {
     markFileUnavailable: markBoardFileUnavailable,
     tidyCards,
     setCardTextScale: setBoardCardTextScale,
+    addSection: addBoardSection,
+    updateSection: updateBoardSection,
+    removeSection: removeBoardSection,
   } = useSkiaBoard();
   const clearPanelSnapshotRef = useRef(clearPanelSnapshot);
   const hydratePanelFromSessionHistoryRef = useRef(hydratePanelFromSessionHistory);
@@ -307,9 +310,13 @@ export function useSkiaMiniChatSessions() {
     panelHydrationErrorCount,
     sessions,
     items,
+    sections: boardState?.sections || [],
     cardTextScale: boardState?.cardTextScale ?? SKIA_BOARD_DEFAULT_TEXT_SCALE,
     setBoardCardTextScale,
     moveBoardCard,
+    addBoardSection,
+    updateBoardSection,
+    removeBoardSection,
     removeBoardSession,
     removeBoardFile,
     hasBoardFile,

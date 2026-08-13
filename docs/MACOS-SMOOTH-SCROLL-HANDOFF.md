@@ -20,29 +20,28 @@ at each call site.
 
 ## Start here
 
-This work exists only as an uncommitted dirty-worktree diff. At the time of this
-handoff:
+The macOS implementation and all four dependency patches are tracked in commit
+`6372697e824c60e7b25bb8de94e91d7d157166f7`. The current worktree also contains the
+uncommitted follow-up that integrates `origin/main` at
+`23d1f4dd094ab49f90b1627627fca6da06784f23` and resolves the diff-audit blockers.
+`docs/REACT-NATIVE-MACOS-DIFF-AUDIT.md` remains intentionally untracked until that
+follow-up is reviewed.
 
-- worktree `HEAD` and merge base with `origin/main`:
-  `58447e573e227d370a3b991e3f2259f3eaff308c`;
-- `origin/main`: `23d1f4dd094ab49f90b1627627fca6da06784f23`;
-- the two dependency patches and both macOS handoff documents are untracked;
-- many other macOS-port files in the same worktree are also modified or untracked.
-
-Continue in the exact worktree above. Do not create a clean checkout and assume it
-contains these changes. Before editing, run:
+Continue in the exact worktree above and inspect its current merge/worktree state
+before editing:
 
 ```sh
 cd /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/feat/react-native-macos
 git status --short
+git log --oneline --decorate -5
 sed -n '1,260p' expo/patches/react-native-macos+0.81.9.patch
 sed -n '1,360p' expo/patches/react-native-gesture-handler+2.28.0.patch
 ```
 
 For this task, change only the owning dependency source, its matching patch-package
 file, and the smallest regression-test/documentation surface required by the result.
-Treat all other dirty changes as user-owned. In particular, do not commit, reset,
-discard, or broadly reformat them.
+Treat the audit-remediation diff and all unrelated changes as user-owned. In
+particular, do not commit, reset, discard, or broadly reformat them.
 
 Read the [stability progress record](REACT-NATIVE-MACOS-STABILITY-PROGRESS.md) before
 starting. Its verification results are historical evidence for the current dirty
@@ -390,7 +389,8 @@ npm test -- --runTestsByPath \
   src/features/app/screens/ChatScreen.autoRecordingPanel.test.tsx \
   src/features/app/screens/SkiaMiniBoardScreen.test.tsx \
   --runInBand
-npx tsc --noEmit
+npm run typecheck
+npm run typecheck:macos
 ```
 
 Build macOS Debug arm64 without signing. Keep derived data outside the repository so
@@ -410,9 +410,8 @@ xcodebuild \
   build
 ```
 
-Run `git diff --check` from the worktree root. Because the handoff documents and
-dependency patches may still be untracked, also inspect `git status --short` and use
-the no-index check described in the final section for any untracked Markdown file.
+Run `git diff --check` from the worktree root and inspect `git status --short` so an
+untracked audit document is not omitted from the review.
 
 ### Manual macOS matrix
 
@@ -468,35 +467,19 @@ The task is complete only when:
 
 Do not mark optimized frame pacing verified while Release/Profile is blocked.
 
-## Known blocker outside this task
+## Previous Release blocker
 
-macOS Release and therefore the scheme's Profile action currently reach an existing
-`react-native-enriched-markdown` `BOOL`-to-`bool` narrowing error. Do not conflate or
-silently fix it with input changes. Debug can validate compilation and behavior, but
-it cannot close the optimized frame-pacing question. Record that part as blocked
-until a separate upstream-compatible dependency fix lands.
+The audit-remediation diff restores the Expo-era `react-native-enriched-markdown`
+version and disables unused Math support in the Expo plugin configuration. This is
+intended to remove the earlier `BOOL`-to-`bool` Release error without a dependency
+source patch. A successful Release/Profile build must still be recorded before using
+optimized frame-pacing results.
 
 ## Documentation-only check
 
-For a documentation-only edit, do not run code tests or native builds. The two files
-are currently untracked, so ordinary `git diff --check` does not inspect their
-contents. Run:
+For a documentation-only edit, do not run code tests or native builds. The handoff
+documents are tracked, so run:
 
 ```sh
 git diff --check
-
-for target_file in \
-  docs/MACOS-SMOOTH-SCROLL-HANDOFF.md \
-  docs/REACT-NATIVE-MACOS-STABILITY-PROGRESS.md
-do
-  check_output="$(git diff --no-index --check -- /dev/null "$target_file" 2>&1)"
-  check_status=$?
-  if [ "$check_status" -ne 1 ] || [ -n "$check_output" ]; then
-    printf '%s\n' "$check_output"
-    exit 1
-  fi
-done
 ```
-
-For `git diff --no-index`, status `1` with no diagnostic output is expected: the file
-differs from `/dev/null` and has no whitespace error.

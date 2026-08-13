@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentProps } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Pressable,
@@ -6,9 +6,11 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { Drawer } from "react-native-drawer-layout";
+import type { AppDrawerLayoutProps } from "./AppDrawerLayout.contract";
 
-type AppDrawerLayoutProps = ComponentProps<typeof Drawer>;
+// react-native-drawer-layout 4.2.2はmacOSでクリック領域と表示幅がずれ、
+// 開閉がカクつき、閉じた領域から背面へ入力が抜けるため、このlayoutで代替する。
+// ライブラリ更新時に標準Drawerを再検証し、解消後はこの実装を削除する。
 
 const TRANSITION_DURATION_MS = 220;
 
@@ -16,12 +18,15 @@ export function AppDrawerLayout({
   children,
   drawerStyle,
   onClose,
+  onOpen,
   onTransitionEnd,
   onTransitionStart,
   open,
   overlayAccessibilityLabel = "ナビゲーションを閉じる",
   overlayStyle,
   renderDrawerContent,
+  // macOS代替layoutはedge swipeを実装しないが、開閉条件の所有者をcallerに保つため契約は共有する。
+  swipeEnabled: _swipeEnabled,
   style,
 }: AppDrawerLayoutProps) {
   const { width: windowWidth } = useWindowDimensions();
@@ -40,10 +45,11 @@ export function AppDrawerLayout({
     animation.start(({ finished }) => {
       if (!finished) return;
       if (!open) setMounted(false);
+      if (open) onOpen();
       onTransitionEnd?.(!open);
     });
     return () => animation.stop();
-  }, [onTransitionEnd, onTransitionStart, open, progress]);
+  }, [onOpen, onTransitionEnd, onTransitionStart, open, progress]);
 
   return (
     <View style={[layoutStyles.root, style]}>

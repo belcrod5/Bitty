@@ -1,9 +1,10 @@
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
+import type { PickWorkspaceUploadAsset } from "./workspaceUploadPicker.contract";
 
 export const supportsWorkspaceFilePicking = true;
 
-export async function pickWorkspaceUploadAsset(source: "photos" | "files") {
+export const pickWorkspaceUploadAsset: PickWorkspaceUploadAsset = async (source) => {
   if (source === "photos") {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
@@ -36,4 +37,4 @@ export async function pickWorkspaceUploadAsset(source: "photos" | "files") {
       || "application/octet-stream",
     size: asset.size,
   };
-}
+};

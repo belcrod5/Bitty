@@ -12,22 +12,188 @@ function createService(overrides = {}) {
       Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
     ),
     findCliSessionIndexEntriesBySessionIds: async () => [],
+    listAcpSessionsForDirectories: async (directories) => (
+      directories.map((directory) => ({ directory, sessions: [] }))
+    ),
     listAcpSessionsForDirectory: async () => [],
+    listCliSessionsForDirectories: async (directories) => (
+      directories.map((directory) => ({ directory, sessions: [] }))
+    ),
     listCliSessionsForDirectory: async () => [],
     makeApiError: (apiStatus, error, message, details = {}) => Object.assign(
       new Error(message || error),
       { apiStatus, apiPayload: { error, message, ...details } },
     ),
+    markAcpDirectoryRead: async () => ({ selectedSessionIds: [], updatedSessionIds: [] }),
+    markAcpSessionsRead: async () => [],
+    markCliDirectoryRead: async () => ({ selectedSessionIds: [], updatedSessionIds: [] }),
+    markCliSessionsRead: async () => [],
     normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
     normalizeSessionListLimit: (value) => Math.max(1, Math.min(100, Number(value) || 20)),
     normalizeSessionSource: (value, fallback) => (
       ["acp", "cli", "all"].includes(value) ? value : fallback
     ),
+    normalizeSessionUpdatedAt: (value) => String(value || "").trim(),
     readCliSessionSummaryFromRolloutFile: async () => ({}),
     resolveCanonicalDirectoryIdentity: async (value) => `/canonical${value}`,
     ...overrides,
   });
 }
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((nextResolve) => { resolve = nextResolve; });
+  return { promise, resolve };
+}
+
+test("batch read updates each store once and singular read keeps the existing response shape", async () => {
+  const acpCalls = [];
+  const cliCalls = [];
+  const service = createService({
+    markAcpSessionsRead: async (sessionIds, lastReadAt) => {
+      acpCalls.push({ sessionIds, lastReadAt });
+      return sessionIds.map((sessionId) => ({
+        sessionId,
+        updated: sessionId === "acp-only",
+        entryFound: sessionId === "acp-only",
+        elapsedMs: 3,
+      }));
+    },
+    markCliSessionsRead: async (sessionIds, options) => {
+      cliCalls.push({ sessionIds, options });
+      return sessionIds.map((sessionId) => ({
+        sessionId,
+        updated: sessionId === "cli-only",
+        entryFound: sessionId === "cli-only",
+        lookupMs: 4,
+        rewriteMs: 0,
+        persistMs: 5,
+      }));
+    },
+  });
+
+  const batch = await service.markLlmSessionsRead(
+    ["acp-only", "missing", "cli-only", "acp-only"],
+    { directory: "/repo", source: "all", lastReadAt: "2026-08-10T01:00:00.000Z" },
+  );
+  assert.deepEqual(batch.results.map((result) => ({
+    sessionId: result.sessionId,
+    updated: result.updated,
+    acpFound: result.diagnostics.acpEntryFound,
+    cliFound: result.diagnostics.cliEntryFound,
+  })), [
+    { sessionId: "acp-only", updated: true, acpFound: true, cliFound: false },
+    { sessionId: "missing", updated: false, acpFound: false, cliFound: false },
+    { sessionId: "cli-only", updated: true, acpFound: false, cliFound: true },
+  ]);
+  assert.equal(acpCalls.length, 1);
+  assert.equal(cliCalls.length, 1);
+  assert.deepEqual(acpCalls[0].sessionIds, ["acp-only", "missing", "cli-only"]);
+  assert.deepEqual(cliCalls[0].options, {
+    directory: "/canonical/repo",
+    lastReadAt: "2026-08-10T01:00:00.000Z",
+  });
+
+  const singular = await service.markLlmSessionRead("cli-only", {
+    directory: "/repo",
+    source: "cli",
+    lastReadAt: "2026-08-10T02:00:00.000Z",
+  });
+  assert.equal(singular.sessionId, "cli-only");
+  assert.equal(singular.source, "cli");
+  assert.equal(singular.updated, true);
+  assert.equal(singular.diagnostics.cliEntryFound, true);
+});
+
+test("directory read returns bounded unique counts and canonical full success", async () => {
+  const calls = [];
+  const service = createService({
+    markAcpDirectoryRead: async (directory, lastReadAt) => {
+      calls.push({ store: "acp", directory, lastReadAt });
+      return {
+        selectedSessionIds: ["shared", "acp-only"],
+        updatedSessionIds: ["shared"],
+        elapsedMs: 2,
+      };
+    },
+    markCliDirectoryRead: async (directory, { lastReadAt }) => {
+      calls.push({ store: "cli", directory, lastReadAt });
+      return {
+        selectedSessionIds: ["shared", ...Array.from({ length: 101 }, (_, index) => `cli-${index}`)],
+        updatedSessionIds: ["shared", "cli-0"],
+        elapsedMs: 3,
+      };
+    },
+  });
+  const result = await service.markLlmDirectoryRead("/alias", {
+    lastReadAt: "2026-08-10T03:00:00.000Z",
+  });
+  assert.equal(result.status, "full");
+  assert.equal(result.directory, "/canonical/alias");
+  assert.equal(result.selectedCount, 103);
+  assert.equal(result.updatedCount, 2);
+  assert.equal("sessionIds" in result, false);
+  assert.deepEqual(calls.map(({ store, directory }) => ({ store, directory })), [
+    { store: "acp", directory: "/canonical/alias" },
+    { store: "cli", directory: "/canonical/alias" },
+  ]);
+});
+
+test("directory read isolates one store failure as partial", async () => {
+  const service = createService({
+    markAcpDirectoryRead: async () => {
+      const error = new Error("secret path must not escape");
+      error.code = "EACCES";
+      throw error;
+    },
+    markCliDirectoryRead: async () => ({
+      selectedSessionIds: ["cli-only"],
+      updatedSessionIds: ["cli-only"],
+      elapsedMs: 1,
+    }),
+  });
+  const result = await service.markLlmDirectoryRead("/repo");
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.stores.acp, {
+    status: "failed",
+    selectedCount: 0,
+    foundCount: 0,
+    updatedCount: 0,
+    reason: "eacces",
+  });
+  assert.equal(JSON.stringify(result).includes("secret path"), false);
+});
+
+test("a later mark-unread waits for the earlier directory mutation", async () => {
+  const directoryGate = deferred();
+  const directoryStarted = deferred();
+  const calls = [];
+  const service = createService({
+    markAcpDirectoryRead: async () => {
+      calls.push("directory-start");
+      directoryStarted.resolve();
+      await directoryGate.promise;
+      calls.push("directory-end");
+      return { selectedSessionIds: ["target"], updatedSessionIds: ["target"] };
+    },
+    markCliDirectoryRead: async () => ({ selectedSessionIds: [], updatedSessionIds: [] }),
+    markAcpSessionsRead: async (sessionIds) => {
+      calls.push("unread");
+      return sessionIds.map((sessionId) => ({ sessionId, updated: true, entryFound: true }));
+    },
+  });
+  const directoryRead = service.markLlmDirectoryRead("/repo");
+  const laterUnread = service.markLlmSessionRead("target", {
+    directory: "/repo",
+    source: "acp",
+    lastReadAt: new Date(0).toISOString(),
+  });
+  await directoryStarted.promise;
+  assert.deepEqual(calls, ["directory-start"]);
+  directoryGate.resolve();
+  await Promise.all([directoryRead, laterUnread]);
+  assert.deepEqual(calls, ["directory-start", "directory-end", "unread"]);
+});
 
 test("summary lookup reads and returns only requested sessions in request order", async () => {
   const indexRequests = [];
@@ -152,4 +318,296 @@ test("summary lookup rejects non-array and oversized session id requests", async
     }),
     (error) => error.apiPayload?.error === "too_many_session_ids",
   );
+});
+
+test("counts exact unread sessions across canonical directories without ACP/CLI double counting", async () => {
+  const cliListCalls = [];
+  const service = createService({
+    listAcpSessionsForDirectories: async (directories) => directories.map((directory) => ({
+      directory,
+      sessions: directory.endsWith("/one") ? [
+        { sessionId: "shared", updatedAt: "2026-08-10T02:00:00.000Z", lastReadAt: "" },
+        { sessionId: "read", updatedAt: "2026-08-10T01:00:00.000Z", lastReadAt: "2026-08-10T03:00:00.000Z" },
+      ] : [],
+    })),
+    listCliSessionsForDirectories: async (directories, options) => {
+      cliListCalls.push({ directories, options });
+      return directories.map((directory) => ({
+        directory,
+        sessions: directory.endsWith("/one") ? [
+          { sessionId: "shared", updatedAt: "2026-08-10T01:00:00.000Z", lastReadAt: "2026-08-10T03:00:00.000Z" },
+          { sessionId: "cli-unread", updatedAt: "2026-08-10T04:00:00.000Z", lastReadAt: "2026-08-10T02:00:00.000Z" },
+        ] : [
+          { sessionId: "other-directory", updatedAt: "2026-08-10T04:00:00.000Z", lastReadAt: "" },
+        ],
+      }));
+    },
+  });
+
+  const result = await service.countUnreadSessions(["/one", "/one", "/two"]);
+  assert.deepEqual(result.directories, ["/canonical/one", "/canonical/two"]);
+  assert.deepEqual(result.directoryCounts, [
+    { directory: "/canonical/one", unreadCount: 1 },
+    { directory: "/canonical/two", unreadCount: 1 },
+  ]);
+  assert.equal(result.unreadCount, 2);
+  assert.deepEqual(cliListCalls, [{
+    directories: ["/canonical/one", "/canonical/two"],
+    options: { forceRefresh: true, useRolloutMtime: true, includeSubagents: false },
+  }]);
+});
+
+test("counts only top-level chats and suppresses subagent push targets", async () => {
+  let parentLastReadAt = "";
+  const service = createService({
+    listCliSessionsForDirectories: async (directories, options) => {
+      assert.equal(options.includeSubagents, false);
+      return directories.map((directory) => ({
+        directory,
+        sessions: [{
+          sessionId: "parent",
+          updatedAt: "2026-08-11T01:00:00.000Z",
+          lastReadAt: parentLastReadAt,
+        }],
+      }));
+    },
+  });
+
+  assert.equal((await service.countUnreadSessions(["/repo"])).unreadCount, 1);
+  const childTarget = await service.getPushUnreadSnapshot({
+    directorySets: [["/repo"]],
+    targetSessionId: "child-subagent",
+    targetDirectory: "/repo",
+  });
+  assert.equal(childTarget.targetFound, false);
+  assert.equal(childTarget.targetUnread, false);
+  assert.deepEqual(childTarget.unreadCounts, [1]);
+
+  parentLastReadAt = "2026-08-11T02:00:00.000Z";
+  assert.equal((await service.countUnreadSessions(["/repo"])).unreadCount, 0);
+});
+
+test("returns one canonical directory count for aliases from the same snapshot", async () => {
+  const cliCalls = [];
+  const service = createService({
+    resolveCanonicalDirectoryIdentity: async () => "/canonical/repo",
+    listCliSessionsForDirectories: async (directories, options) => {
+      cliCalls.push({ directories, options });
+      return directories.map((directory) => ({
+        directory,
+        sessions: [{
+          sessionId: "unread",
+          updatedAt: "2026-08-10T04:00:00.000Z",
+          lastReadAt: "",
+        }],
+      }));
+    },
+  });
+
+  assert.deepEqual(await service.countUnreadSessions(["/repo", "/repo-alias"]), {
+    directories: ["/canonical/repo"],
+    directoryCounts: [{ directory: "/canonical/repo", unreadCount: 1 }],
+    unreadCount: 1,
+  });
+  assert.deepEqual(cliCalls, [{
+    directories: ["/canonical/repo"],
+    options: { forceRefresh: true, useRolloutMtime: true, includeSubagents: false },
+  }]);
+});
+
+test("checks one target session from merged ACP/CLI truth", async () => {
+  const service = createService({
+    listAcpSessionsForDirectories: async (directories) => directories.map((directory) => ({
+      directory,
+      sessions: [{
+        sessionId: "target",
+        updatedAt: "2026-08-10T02:00:00.000Z",
+        lastReadAt: "2026-08-10T01:00:00.000Z",
+      }],
+    })),
+    listCliSessionsForDirectories: async (directories, options) => {
+      assert.deepEqual(options, { forceRefresh: true, useRolloutMtime: true, includeSubagents: false });
+      return directories.map((directory) => ({
+        directory,
+        sessions: [{
+          sessionId: "target",
+          updatedAt: "2026-08-10T03:00:00.000Z",
+          lastReadAt: "2026-08-10T04:00:00.000Z",
+        }],
+      }));
+    },
+  });
+  assert.deepEqual(await service.getSessionUnreadState("target", "/repo"), {
+    directory: "/canonical/repo",
+    sessionId: "target",
+    found: true,
+    unread: false,
+    updatedAt: "2026-08-10T03:00:00.000Z",
+    lastReadAt: "2026-08-10T04:00:00.000Z",
+  });
+  assert.equal((await service.getSessionUnreadState("missing", "/repo")).found, false);
+});
+
+test("derives push target state and deduplicated device counts from one forced snapshot", async () => {
+  const cliCalls = [];
+  const acpCalls = [];
+  let signalAcpSnapshot;
+  let releaseAcpSnapshot;
+  const acpSnapshotStarted = new Promise((resolve) => { signalAcpSnapshot = resolve; });
+  const acpSnapshotGate = new Promise((resolve) => { releaseAcpSnapshot = resolve; });
+  let boundaryLastReadAt = "";
+  const service = createService({
+    listCliSessionsForDirectories: async (directories, options) => {
+      cliCalls.push({ directories, options });
+      return directories.map((directory) => ({
+        directory,
+        sessions: directory.endsWith("/device") ? [{
+          sessionId: "read-at-boundary",
+          updatedAt: "2026-08-10T03:00:00.000Z",
+          lastReadAt: "",
+        }, {
+          sessionId: "device-unread",
+          updatedAt: "2026-08-10T04:00:00.000Z",
+          lastReadAt: "",
+        }] : [{
+          sessionId: "target",
+          updatedAt: "2026-08-10T05:00:00.000Z",
+          lastReadAt: "2026-08-10T01:00:00.000Z",
+        }],
+      }));
+    },
+    listAcpSessionsForDirectories: async (directories) => {
+      acpCalls.push(directories);
+      signalAcpSnapshot();
+      await acpSnapshotGate;
+      return directories.map((directory) => ({
+        directory,
+        sessions: directory.endsWith("/device") ? [{
+          sessionId: "read-at-boundary",
+          updatedAt: "2026-08-10T03:00:00.000Z",
+          lastReadAt: boundaryLastReadAt,
+        }] : [],
+      }));
+    },
+  });
+
+  const snapshotPending = service.getPushUnreadSnapshot({
+    directorySets: [["/device"], ["/device", "/device"]],
+    targetSessionId: "target",
+    targetDirectory: "/target-outside-device-set",
+  });
+  await acpSnapshotStarted;
+  boundaryLastReadAt = "2026-08-10T06:00:00.000Z";
+  releaseAcpSnapshot();
+  const result = await snapshotPending;
+
+  assert.deepEqual(cliCalls, [{
+    directories: ["/canonical/device", "/canonical/target-outside-device-set"],
+    options: { forceRefresh: true, useRolloutMtime: true, includeSubagents: false },
+  }]);
+  assert.deepEqual(acpCalls, [["/canonical/device", "/canonical/target-outside-device-set"]]);
+  assert.equal(result.targetUnread, true);
+  assert.deepEqual(result.directorySets, [["/canonical/device"], ["/canonical/device"]]);
+  assert.deepEqual(result.unreadCounts, [1, 1]);
+});
+
+test("resolves a missing push directory from the registered-directory snapshot", async () => {
+  const cliCalls = [];
+  const service = createService({
+    listCliSessionsForDirectories: async (directories, options) => {
+      cliCalls.push({ directories, options });
+      return directories.map((directory) => ({
+        directory,
+        sessions: directory.endsWith("/two") ? [{
+          sessionId: "target",
+          updatedAt: "2026-08-10T05:00:00.000Z",
+          lastReadAt: "",
+        }] : [],
+      }));
+    },
+  });
+
+  const result = await service.getPushUnreadSnapshot({
+    directorySets: [["/one", "/two"]],
+    targetSessionId: "target",
+    targetDirectory: "",
+  });
+
+  assert.deepEqual(cliCalls, [{
+    directories: ["/canonical/one", "/canonical/two"],
+    options: { forceRefresh: true, useRolloutMtime: true, includeSubagents: false },
+  }]);
+  assert.equal(result.directory, "/canonical/two");
+  assert.equal(result.targetFound, true);
+  assert.equal(result.targetUnread, true);
+  assert.deepEqual(result.unreadCounts, [1]);
+});
+
+test("suppresses a directory-less push target that is missing or ambiguous", async () => {
+  const service = createService({
+    listCliSessionsForDirectories: async (directories) => directories.map((directory) => ({
+      directory,
+      sessions: [{
+        sessionId: "ambiguous",
+        updatedAt: "2026-08-10T05:00:00.000Z",
+        lastReadAt: "",
+      }],
+    })),
+  });
+
+  const ambiguous = await service.getPushUnreadSnapshot({
+    directorySets: [["/one", "/two"]],
+    targetSessionId: "ambiguous",
+    targetDirectory: "",
+  });
+  assert.equal(ambiguous.directory, "");
+  assert.equal(ambiguous.targetFound, false);
+  assert.equal(ambiguous.targetUnread, false);
+
+  const missing = await service.getPushUnreadSnapshot({
+    directorySets: [["/one", "/two"]],
+    targetSessionId: "missing",
+    targetDirectory: "",
+  });
+  assert.equal(missing.directory, "");
+  assert.equal(missing.targetFound, false);
+  assert.equal(missing.targetUnread, false);
+});
+
+test("rejects malformed and oversized unread-count directory requests", async () => {
+  const service = createService();
+  await assert.rejects(
+    service.countUnreadSessions("/workspace"),
+    (error) => error.apiPayload?.error === "invalid_directories",
+  );
+  await assert.rejects(
+    service.countUnreadSessions(Array.from(
+      { length: __TESTING__.UNREAD_COUNT_MAX_DIRECTORIES + 1 },
+      (_, index) => `/workspace-${index}`,
+    )),
+    (error) => error.apiPayload?.error === "too_many_directories",
+  );
+});
+
+test("returns zero for an empty directory count without loading either session store", async () => {
+  let acpLoads = 0;
+  let cliLoads = 0;
+  const service = createService({
+    listAcpSessionsForDirectories: async () => {
+      acpLoads += 1;
+      return [];
+    },
+    listCliSessionsForDirectories: async () => {
+      cliLoads += 1;
+      return [];
+    },
+  });
+
+  assert.deepEqual(await service.countUnreadSessions([]), {
+    directories: [],
+    directoryCounts: [],
+    unreadCount: 0,
+  });
+  assert.equal(acpLoads, 0);
+  assert.equal(cliLoads, 0);
 });

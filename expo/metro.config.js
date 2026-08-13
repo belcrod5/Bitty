@@ -21,14 +21,13 @@ const originalGetModulesRunBeforeMainModule =
   config.serializer.getModulesRunBeforeMainModule;
 
 config.serializer.getModulesRunBeforeMainModule = () => {
+  const modules = originalGetModulesRunBeforeMainModule();
   try {
-    return [
-      require.resolve("react-native/Libraries/Core/InitializeCore"),
+    modules.unshift(
       require.resolve("react-native-macos/Libraries/Core/InitializeCore"),
-    ];
+    );
   } catch {}
-
-  return originalGetModulesRunBeforeMainModule();
+  return modules;
 };
 
 module.exports = config;

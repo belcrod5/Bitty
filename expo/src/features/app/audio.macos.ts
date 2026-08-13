@@ -1,5 +1,12 @@
 import { Image, NativeEventEmitter, NativeModules } from "react-native";
-import type { AVPlaybackStatus, AVPlaybackStatusToSet } from "expo-av";
+import type {
+  Audio as ExpoAudio,
+  AudioMode,
+  AVPlaybackStatus,
+  AVPlaybackStatusToSet,
+  ResizeMode as ExpoResizeMode,
+  VideoProps,
+} from "expo-av";
 
 type PlaybackSource = number | { uri?: string };
 type PlaybackStatusHandler = ((status: AVPlaybackStatus) => void) | null;
@@ -132,20 +139,31 @@ class UnsupportedRecording {
   }
 }
 
-export const Audio = {
-  Recording: UnsupportedRecording,
-  RecordingOptionsPresets: {
-    HIGH_QUALITY: { android: {}, ios: {}, web: {} },
-  },
-  Sound: MacOSSound,
-  async requestPermissionsAsync() {
+export class Audio {
+  static Recording = UnsupportedRecording as unknown as { new(): ExpoAudio.Recording };
+  static RecordingOptionsPresets: { HIGH_QUALITY: ExpoAudio.RecordingOptions } = {
+    HIGH_QUALITY: {} as ExpoAudio.RecordingOptions,
+  };
+  static Sound = MacOSSound;
+
+  static async requestPermissionsAsync() {
     return { granted: false };
-  },
-  async setAudioModeAsync() {},
-};
+  }
 
-export const ResizeMode = { CONTAIN: "contain" } as const;
+  static async setAudioModeAsync(_mode: Partial<AudioMode>) {}
+}
 
-export function Video() {
+export namespace Audio {
+  export type Sound = MacOSSound;
+  export type Recording = ExpoAudio.Recording;
+  export type RecordingOptions = ExpoAudio.RecordingOptions;
+  export type RecordingStatus = ExpoAudio.RecordingStatus;
+}
+
+export const supportsAudioRecording = false;
+
+export const ResizeMode = { CONTAIN: "contain" as ExpoResizeMode } as const;
+
+export function Video(_props: VideoProps) {
   return null;
 }

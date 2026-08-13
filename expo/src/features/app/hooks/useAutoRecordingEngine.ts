@@ -1,5 +1,5 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { Audio } from "../audio";
+import { Audio, supportsAudioRecording } from "../audio";
 import type { AppStateStatus } from "react-native";
 import { shouldAllowAutoCaptureDuringTts } from "../utils/autoAudioPolicy";
 
@@ -474,6 +474,10 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
   ]);
 
   const startAutoRecordingMode = useCallback(async (panelIdRaw?: string) => {
+    if (!supportsAudioRecording) {
+      reportError("録音機能はこの端末では利用できません。", "auto:start-mode");
+      return;
+    }
     if (autoRecordingEnabledRef.current) return;
     if (audioLabRecordingRef.current || audioLabSoundRef.current || audioLabRunning) {
       reportError("Audio Lab実行中はAuto Recordingを開始できません。", "auto:start-mode");

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { createLlmSessionHistoryPageReader } from "./llm-session-history-page-reader.mjs";
+import { parseLlmSessionRelationship } from "./llm-session-metadata.mjs";
 
 
 export function createLlmSessionRolloutReaders(deps) {
@@ -274,15 +275,7 @@ export function createLlmSessionRolloutReaders(deps) {
           }
           if (String(parsed?.type || "") === "session_meta") {
             const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : {};
-            const source = payload?.source && typeof payload.source === "object" ? payload.source : {};
-            isSubagent = Boolean(
-              source?.subagent
-              || source?.subAgent
-              || String(payload?.thread_source || "").trim().toLowerCase() === "subagent"
-              || payload?.parent_thread_id
-              || payload?.forked_from_id
-            );
-            parentSessionId = String(payload?.parent_thread_id || payload?.forked_from_id || "").trim();
+            ({ isSubagent, parentSessionId } = parseLlmSessionRelationship(payload));
             if (!isSubagent) {
               const result = { isSubagent: false, parentSessionId: "", boundaryTimestamp: "", workingDirectory: "" };
               sessionHeaderCache.clear();

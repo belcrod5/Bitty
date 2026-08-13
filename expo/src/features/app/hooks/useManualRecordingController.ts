@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Audio } from "../audio";
+import { Audio, supportsAudioRecording } from "../audio";
 import {
   buildRecordingOptions,
   clampRecordingProgressUpdateIntervalMs,
@@ -47,6 +47,10 @@ export function useManualRecordingController(options: UseManualRecordingControll
   const [recordingSec, setRecordingSec] = useState(0);
 
   const startRecording = useCallback(async () => {
+    if (!supportsAudioRecording) {
+      reportError("録音機能はこの端末では利用できません。", "recording:start");
+      return;
+    }
     if (audioLabRecordingActive || audioLabPlaybackActive || audioLabRunning) {
       reportError("Audio Lab実行中は手動録音できません。", "manual:start");
       return;

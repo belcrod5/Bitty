@@ -18,6 +18,7 @@ type UseAppDrawerSessionControllerArgs = {
   expandedDirectoryIds: string[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
   directoryReadProgressByPath: Record<string, DirectoryReadProgress>;
+  directoryUnreadCountByPath: Record<string, number>;
   directorySessionSync: DirectorySessionSyncState;
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, RegisteredDirectoryEntry["markerColor"]>;
@@ -62,6 +63,7 @@ export function useAppDrawerSessionController({
   expandedDirectoryIds,
   directorySessionsById,
   directoryReadProgressByPath,
+  directoryUnreadCountByPath,
   directorySessionSync,
   sessionTitleOverridesById,
   sessionMarkerColorsById,
@@ -178,9 +180,10 @@ export function useAppDrawerSessionController({
     highlightedSessionId,
     registeredDirectories,
     expandedDirectoryIds,
-      directorySessionsById,
-      directoryReadProgressByPath,
-      directorySessionSync,
+    directorySessionsById,
+    directoryReadProgressByPath,
+    directoryUnreadCountByPath,
+    directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     llmSessionRestoreLoading,
@@ -205,6 +208,7 @@ export function useAppDrawerSessionController({
     expandedDirectoryIds,
     directorySessionsById,
     directoryReadProgressByPath,
+    directoryUnreadCountByPath,
     directorySessionSync,
     sessionTitleOverridesById,
     sessionMarkerColorsById,

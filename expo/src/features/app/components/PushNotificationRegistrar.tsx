@@ -1,10 +1,21 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as Notifications from "expo-notifications";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { useConversation } from "../contexts/ConversationContext";
 import { useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { getOrCreatePushDeviceId, registerPushDevice, resolveForegroundNotificationBehavior } from "../utils/pushNotifications";
-import { registerApprovalNotificationCategories, setPendingPushSessionId } from "../utils/pushApprovalNotifications";
+import {
+  APPROVAL_REQUEST_CATEGORY,
+  normalizeNotificationMetadata,
+  registerApprovalNotificationCategories,
+  setPendingPushSessionTarget,
+} from "../utils/pushApprovalNotifications";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
+import {
+  reconcileReceivedSessionNotification,
+} from "../utils/sessionReadNotifications";
+import { notificationFailureReason } from "../utils/sessionUnreadState";
+import type { PushNotificationRegistrarProps } from "./PushNotificationRegistrar.contract";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => resolveForegroundNotificationBehavior(),
@@ -22,9 +33,16 @@ Notifications.setNotificationHandler({
 // context has loaded. Background actions (deny / Face-ID-OFF approve) are answered natively
 // by the bitty-push-approval module; when the app process happens to be alive their events
 // still reach the JS listener, but handlePushApprovalAction deliberately no-ops on them.
-export function PushNotificationRegistrar() {
+export function PushNotificationRegistrar({
+  onUnreadCountSnapshot,
+}: PushNotificationRegistrarProps) {
   const { runnerUrl, runnerToken, faceIdRequiredForApproval } = useAppSettings();
+  const { registeredDirectories } = useConversation();
   const { connected } = useRunnerWebSocketSnapshot();
+  const directories = useMemo(() => Array.from(new Set(
+    registeredDirectories.map((directory) => String(directory.path || "").trim()).filter(Boolean)
+  )).sort(), [registeredDirectories]);
+  const directoriesKey = directories.join("\u0000");
   const lastRegisteredKeyRef = useRef("");
   // Guards against processing the same response twice: a cold-start Face-ID approve press
   // (foreground action) can surface both through the response listener and through
@@ -37,26 +55,27 @@ export function PushNotificationRegistrar() {
   }, [faceIdRequiredForApproval]);
 
   useEffect(() => {
-    const processResponse = (response: Notifications.NotificationResponse) => {
+    const processResponse = (response: Notifications.NotificationResponse): boolean => {
       const request = response.notification.request;
       const responseKey = `${String(request.identifier || "")}:${String(response.actionIdentifier || "")}`;
-      if (processedResponseKeysRef.current.has(responseKey)) return;
-      processedResponseKeysRef.current.add(responseKey);
-
-      const content = request.content;
-      const data = (content.data || {}) as Record<string, unknown>;
-      const categoryIdentifier = String(content.categoryIdentifier || "");
-      const sessionId = String(data.sessionId || "").trim();
-      const approvalId = String(data.approvalId || "").trim();
+      const { sessionId, directory, approvalId } = normalizeNotificationMetadata(request);
+      const categoryIdentifier = String(request.content.categoryIdentifier || "");
 
       if (response.actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER) {
+        if (!sessionId) return false;
+        if (processedResponseKeysRef.current.has(responseKey)) return true;
+        processedResponseKeysRef.current.add(responseKey);
         // Plain tap: the app is guaranteed to be foregrounded by iOS. Stash the session id for
         // usePendingPushSessionNavigationController (AppRoot.tsx) to pick up once ready.
-        if (sessionId) setPendingPushSessionId(sessionId);
-        return;
+        setPendingPushSessionTarget({ sessionId, directory });
+        return true;
       }
 
+      if (categoryIdentifier !== APPROVAL_REQUEST_CATEGORY || !approvalId) return false;
+      if (processedResponseKeysRef.current.has(responseKey)) return true;
+      processedResponseKeysRef.current.add(responseKey);
       void handlePushApprovalAction({ categoryIdentifier, actionIdentifier: response.actionIdentifier, approvalId });
+      return true;
     };
 
     const subscription = Notifications.addNotificationResponseReceivedListener(processResponse);
@@ -64,8 +83,7 @@ export function PushNotificationRegistrar() {
     // this listener exists. The native side retains it as the "last response"; pick it up
     // here and clear it so a later remount cannot replay it.
     const lastResponse = Notifications.getLastNotificationResponse();
-    if (lastResponse) {
-      processResponse(lastResponse);
+    if (lastResponse && processResponse(lastResponse)) {
       Notifications.clearLastNotificationResponse();
     }
     return () => subscription.remove();
@@ -89,10 +107,10 @@ export function PushNotificationRegistrar() {
         const apnsToken = String(pushToken?.data || "").trim();
         if (!apnsToken || cancelled) return;
 
-        const registrationKey = `${deviceId}:${apnsToken}`;
+        const registrationKey = `${deviceId}:${apnsToken}:${directoriesKey}`;
         if (lastRegisteredKeyRef.current === registrationKey) return;
 
-        await registerPushDevice({ runnerUrl, runnerToken, deviceId, apnsToken });
+        await registerPushDevice({ runnerUrl, runnerToken, deviceId, apnsToken, directories });
         if (!cancelled) lastRegisteredKeyRef.current = registrationKey;
       } catch (error) {
         console.warn(
@@ -105,7 +123,29 @@ export function PushNotificationRegistrar() {
     return () => {
       cancelled = true;
     };
-  }, [connected, runnerUrl, runnerToken]);
+  }, [connected, directories, directoriesKey, runnerUrl, runnerToken]);
+
+  useEffect(() => {
+    if (!runnerUrl.trim() || !runnerToken.trim()) return;
+    const subscription = Notifications.addNotificationReceivedListener((notification) => {
+      void reconcileReceivedSessionNotification({
+        notification,
+        runnerUrl,
+        runnerToken,
+        directories,
+      }).then(
+        (snapshot) => {
+          if (snapshot) onUnreadCountSnapshot?.(snapshot);
+        },
+        (error) => {
+          console.warn("[push] foreground notification reconcile failed", {
+            failureCount: 1,
+            reason: notificationFailureReason(error),
+          });
+        });
+    });
+    return () => subscription.remove();
+  }, [directories, onUnreadCountSnapshot, runnerToken, runnerUrl]);
 
   return null;
 }

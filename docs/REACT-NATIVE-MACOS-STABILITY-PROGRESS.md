@@ -65,13 +65,13 @@ preserving the working iPhone behavior and avoiding scattered `Platform.OS` bran
 - Prefer `.macos.ts` or native macOS implementations over call-site platform branches.
 - Fix shared causes once at the lowest owning boundary.
 - Preserve all unrelated work already present in this dirty worktree.
-- Do not rely on merging `main` as a fix; its single pending commit does not change the
-  affected Skia or persistence paths.
+- The pending `main` notification lifecycle change is integrated in the current
+  audit-remediation worktree; it does not replace macOS boundary fixes.
 
 ## Verification record
 
-These entries record checks run while completing the listed items against the current
-uncommitted macOS-port diff. They are historical evidence, not proof that a later
+These entries record checks run before the macOS implementation was committed as
+`6372697`. They are historical evidence, not proof that a later
 smooth-scrolling change still passes. Rerun the handoff's validation gate after any
 code change.
 

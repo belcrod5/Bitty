@@ -6,3 +6,4 @@ build/
 
 # Local Xcode environment
 .xcode.env.local
+xcuserdata/

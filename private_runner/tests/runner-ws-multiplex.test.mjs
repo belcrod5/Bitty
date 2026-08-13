@@ -31,6 +31,7 @@ function createRelayForRunnerWsTest() {
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
+    currentTurnId: "",
     currentTurnStartSeq: 0,
     lastAgentMessageText: "",
     assistantThinkingPrefixSent: false,
@@ -428,7 +429,7 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
 
   __TESTING__.handleCodexRelayUpstreamMessage(
     relay,
-    JSON.stringify({ jsonrpc: "2.0", id: 4, result: {} }),
+    JSON.stringify({ jsonrpc: "2.0", id: 4, result: { turn: { id: "turn-notification" } } }),
     false,
     { endpoint: "/runner-ws", remote: "test" }
   );
@@ -437,7 +438,7 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
     JSON.stringify({
       jsonrpc: "2.0",
       method: "item/agentMessage/delta",
-      params: { threadId, delta: "pong" },
+      params: { threadId, turnId: "turn-notification", delta: "pong" },
     }),
     false,
     { endpoint: "/runner-ws", remote: "test" }
@@ -497,6 +498,77 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
     assert.equal(message.sessionId, "session-1");
     assert.equal(message.threadId, threadId);
   }
+});
+
+test("runner-ws does not complete or notify the parent from a child subagent turn", (t) => {
+  const threadId = `thread-parent-${Date.now()}-${Math.random()}`;
+  const relay = createRelayForRunnerWsTest();
+  const owner = createEnvelopeClientForRunnerWsTest();
+  const notificationClient = createRunnerWsConnectionForTest();
+  notificationClient.sent.length = 0;
+  t.after(() => notificationClient.close());
+  __TESTING__.attachClientToCodexRelay(relay, owner, { envelopeMode: true });
+
+  __TESTING__.forwardCodexRelayClientData(relay, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 41,
+    method: "turn/start",
+    params: { threadId, prompt: "hello" },
+  }), false, {
+    requestId: "parent-request",
+    operationId: "parent-operation",
+    sessionId: threadId,
+    threadId,
+    endpoint: "/runner-ws",
+    remote: "test",
+  });
+  __TESTING__.handleCodexRelayUpstreamMessage(relay, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 41,
+    result: { turn: { id: "parent-turn" } },
+  }), false, { endpoint: "/runner-ws", remote: "test" });
+
+  for (const payload of [
+    { method: "item/agentMessage/delta", params: { threadId, turnId: "child-turn", delta: "child answer" } },
+    { method: "turn/completed", params: { threadId, turnId: "child-turn", status: "completed" } },
+  ]) {
+    __TESTING__.handleCodexRelayUpstreamMessage(
+      relay,
+      JSON.stringify({ jsonrpc: "2.0", ...payload }),
+      false,
+      { endpoint: "/runner-ws", remote: "test" },
+    );
+  }
+
+  assert.equal(relay.turnCompleted, false);
+  assert.equal(relay.lastAgentMessageText, "");
+  assert.equal(notificationClient.sent.some((message) => message.op === "turn_completed_notification"), false);
+  assert.equal(owner.sent.some((message) => (
+    message.op === "rpc"
+    && String(message.payload?.params?.turnId || message.payload?.params?.turn?.id || "") === "child-turn"
+  )), false);
+
+  for (const payload of [
+    { method: "item/agentMessage/delta", params: { threadId, turnId: "parent-turn", delta: "parent answer" } },
+    { method: "turn/completed", params: { threadId, turnId: "parent-turn", status: "completed" } },
+  ]) {
+    __TESTING__.handleCodexRelayUpstreamMessage(
+      relay,
+      JSON.stringify({ jsonrpc: "2.0", ...payload }),
+      false,
+      { endpoint: "/runner-ws", remote: "test" },
+    );
+  }
+
+  const completions = notificationClient.sent.filter((message) => message.op === "turn_completed_notification");
+  assert.equal(completions.length, 1);
+  assert.match(completions[0].payload.previewText, /parent answer$/);
+  assert.deepEqual(
+    owner.sent
+      .filter((message) => message.op === "rpc" && message.payload?.params?.turnId === "parent-turn")
+      .map((message) => message.payload.method),
+    ["item/agentMessage/delta", "turn/completed"],
+  );
 });
 
 test("runner-ws duplicate initialize on a reused relay returns cached result", () => {
@@ -794,7 +866,7 @@ test("runner-ws thread/read rider does not steal notification identity from the 
     JSON.stringify({
       jsonrpc: "2.0",
       method: "item/agentMessage/delta",
-      params: { threadId: "thread-1", delta: "pong" },
+      params: { threadId: "thread-1", turnId: "turn-1", delta: "pong" },
     }),
     false,
     { endpoint: "/runner-ws", remote: "test" }
@@ -804,7 +876,7 @@ test("runner-ws thread/read rider does not steal notification identity from the 
     JSON.stringify({
       jsonrpc: "2.0",
       method: "turn/completed",
-      params: { threadId: "thread-1", status: "completed" },
+      params: { threadId: "thread-1", turnId: "turn-1", status: "completed" },
     }),
     false,
     { endpoint: "/runner-ws", remote: "test" }

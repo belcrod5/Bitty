@@ -33,7 +33,12 @@ import { createCalendarScheduleRuntime } from "./calendar-schedule-runtime.mjs";
 import { createCalendarRelayService } from "./calendar-relay-service.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
-import { executeCodexTurn, extractCodexAgentMessageText } from "./codex-turn-execution.mjs";
+import {
+  codexTurnEventMatches,
+  executeCodexTurn,
+  extractCodexAgentMessageText,
+  getCodexTurnEventIdentity,
+} from "./codex-turn-execution.mjs";
 import {
   createLocationScheduleService,
   LocationScheduleStoreUnavailableError,
@@ -502,6 +507,7 @@ const SESSIONS_LIST_DEFAULT_LIMIT = Math.max(
   1,
   Math.min(SESSIONS_LIST_MAX_LIMIT, Number(process.env.SESSIONS_LIST_DEFAULT_LIMIT || 200))
 );
+const SESSION_READ_BODY_MAX_BYTES = 32 * 1024;
 const SESSION_MESSAGES_PAGE_SIZE = 20;
 const SESSION_ROLLOUT_MAX_READ_BYTES = Math.max(
   128 * 1024,
@@ -582,6 +588,18 @@ function isApiError(err) {
 
 function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
+}
+
+function writeJsonRequestError(res, err, fallbackError) {
+  if (isApiError(err)) return json(res, err.apiStatus, err.apiPayload);
+  const message = errorMessage(err);
+  if (err instanceof SyntaxError || message === "request body is too large") {
+    return json(res, 400, {
+      error: message === "request body is too large" ? "request_body_too_large" : "invalid_json",
+      message,
+    });
+  }
+  return json(res, 500, { error: fallbackError, message });
 }
 
 function formatDateForFilename(date = new Date()) {
@@ -1093,8 +1111,10 @@ function normalizeSessionUpdatedAt(rawUpdatedAt) {
 const {
   bindSessionToRootDir,
   getAcpSessionStoreStats,
+  listAcpSessionsForDirectories,
   listAcpSessionsForDirectory,
-  markAcpSessionRead,
+  markAcpDirectoryRead,
+  markAcpSessionsRead,
   migrateAcpSessionDirectoryIdentity,
   resolveSessionIdForRootDir,
 } = createLlmAcpSessionStore({
@@ -1304,8 +1324,10 @@ const {
   findCliSessionIndexEntriesBySessionIds,
   findCliSessionIndexEntryBySessionId,
   getCliSessionIndexStats,
+  listCliSessionsForDirectories,
   listCliSessionsForDirectory,
-  markCliSessionRead,
+  markCliDirectoryRead,
+  markCliSessionsRead,
   resolveCliSessionEntryDirectory,
   upsertCliSessionIndexEntryFromRolloutFile,
 } = createLlmCliSessionIndex({
@@ -1323,17 +1345,28 @@ const {
 });
 
 const {
+  countUnreadSessions,
   getLlmSessionSummaries,
+  getPushUnreadSnapshot,
+  getSessionUnreadState,
   listLlmSessions,
+  markLlmSessionReadRequest,
 } = createLlmSessionService({
   compareSessionHistoryEntries,
   findCliSessionIndexEntriesBySessionIds,
+  listAcpSessionsForDirectories,
   listAcpSessionsForDirectory,
+  listCliSessionsForDirectories,
   listCliSessionsForDirectory,
   makeApiError,
+  markAcpDirectoryRead,
+  markAcpSessionsRead,
+  markCliDirectoryRead,
+  markCliSessionsRead,
   normalizeLlmExecutionSessionId,
   normalizeSessionListLimit,
   normalizeSessionSource,
+  normalizeSessionUpdatedAt,
   readCliSessionSummaryFromRolloutFile,
   resolveCanonicalDirectoryIdentity,
 });
@@ -1360,6 +1393,7 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
   apnsClient,
   pushSummarizer,
   pushDeviceStore,
+  getPushUnreadSnapshot,
   broadcast: (payload) => broadcastRunnerWsTurnCompletedNotification(null, payload),
 });
 const calendarToolService = createCalendarToolService({
@@ -1441,60 +1475,6 @@ const locationScheduleService = createLocationScheduleService({
     }
     : undefined,
 });
-
-async function markLlmSessionRead(rawSessionId, opts = {}) {
-  const startedAtMs = Date.now();
-  const sessionId = normalizeLlmExecutionSessionId(rawSessionId);
-  if (!sessionId) {
-    throw makeApiError(400, "invalid_session_id", "sessionId is required");
-  }
-  const directory = await resolveCanonicalDirectoryIdentity(opts?.directory);
-  const source = normalizeSessionSource(opts?.source, "all");
-  const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
-  let acpUpdated = false;
-  let cliUpdated = false;
-  let acpPhaseMs = 0;
-  let cliLookupMs = 0;
-  let cliRewriteMs = 0;
-  let cliPersistMs = 0;
-  let acpEntryFound = false;
-  let cliEntryFound = false;
-
-  if (source === "acp" || source === "all") {
-    const acpResult = await markAcpSessionRead(sessionId, lastReadAt);
-    acpUpdated = Boolean(acpResult?.updated);
-    acpEntryFound = Boolean(acpResult?.entryFound);
-    acpPhaseMs = Math.max(0, Number(acpResult?.elapsedMs || 0));
-  }
-
-  if (source === "cli" || source === "all") {
-    const cliResult = await markCliSessionRead(sessionId, { directory, lastReadAt });
-    cliUpdated = Boolean(cliResult?.updated);
-    cliLookupMs = Math.max(0, Number(cliResult?.lookupMs || 0));
-    cliRewriteMs = Math.max(0, Number(cliResult?.rewriteMs || 0));
-    cliPersistMs = Math.max(0, Number(cliResult?.persistMs || 0));
-    cliEntryFound = Boolean(cliResult?.entryFound);
-  }
-
-  return {
-    sessionId,
-    directory,
-    source,
-    lastReadAt,
-    updated: acpUpdated || cliUpdated,
-    acpUpdated,
-    cliUpdated,
-    diagnostics: {
-      totalMs: Math.max(0, Date.now() - startedAtMs),
-      acpPhaseMs,
-      cliLookupMs,
-      cliRewriteMs,
-      cliPersistMs,
-      acpEntryFound,
-      cliEntryFound,
-    },
-  };
-}
 
 const {
   appendAppConversationToCliRollout,
@@ -6914,7 +6894,7 @@ function createCodexRpcClient({ signal, upstreamUrl = CODEX_WS_PROXY_UPSTREAM_UR
   const notificationListeners = new Set();
   const serverRequestHandlers = new Set();
   const finishCompletionWaiters = () => {
-    for (const finish of completionWaiters) finish();
+    for (const waiter of completionWaiters) waiter.finish();
     completionWaiters.clear();
   };
   const close = (code = 1000, reason = "closed") => {
@@ -6967,7 +6947,7 @@ function createCodexRpcClient({ signal, upstreamUrl = CODEX_WS_PROXY_UPSTREAM_UR
     }
     if (message?.method) {
       if (message.method === "turn/completed" || message.method === "turn/interrupted") {
-        finishCompletionWaiters();
+        for (const waiter of [...completionWaiters]) waiter.handle(message.params ?? {});
       }
       for (const listener of notificationListeners) {
         try {
@@ -7014,16 +6994,34 @@ function createCodexRpcClient({ signal, upstreamUrl = CODEX_WS_PROXY_UPSTREAM_UR
     });
   };
   const notify = (method, params = {}) => send({ method, params });
-  const waitForTurnCompletion = () => new Promise((resolve) => {
+  const waitForTurnCompletion = () => {
     let timer = null;
+    let expected = null;
+    const pending = [];
+    let resolvePromise;
+    const promise = new Promise((resolve) => { resolvePromise = resolve; });
     const finish = () => {
-      if (!completionWaiters.delete(finish)) return;
+      if (!completionWaiters.delete(waiter)) return;
       if (timer) clearTimeout(timer);
-      resolve();
+      resolvePromise();
     };
-    completionWaiters.add(finish);
+    const handle = (params) => {
+      if (!expected) {
+        pending.push(params);
+        return;
+      }
+      if (codexTurnEventMatches(params, expected)) finish();
+    };
+    const expect = (identity) => {
+      expected = identity;
+      if (pending.some((params) => codexTurnEventMatches(params, expected))) finish();
+      pending.length = 0;
+    };
+    const waiter = { finish, handle };
+    completionWaiters.add(waiter);
     timer = setTimeout(finish, NEAR_UNLIMITED_TIMEOUT_MS);
-  });
+    return { promise, expect };
+  };
   if (signal) {
     if (signal.aborted) close(1000, "aborted");
     signal.addEventListener("abort", () => close(1000, "aborted"), { once: true });
@@ -8611,7 +8609,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, enabled: false });
     }
     try {
-      const body = await readJsonBody(req);
+      const body = await readJsonBody(req, 32 * 1024);
       const deviceId = String(body?.deviceId || "").trim();
       const apnsToken = String(body?.apnsToken || "").trim();
       if (!deviceId || !apnsToken) {
@@ -8620,15 +8618,43 @@ const server = http.createServer(async (req, res) => {
           message: "deviceId and apnsToken are required",
         });
       }
+      const rawDirectories = body?.directories === undefined ? [] : body.directories;
+      if (!Array.isArray(rawDirectories) || rawDirectories.length > 100) {
+        return json(res, 400, {
+          error: "invalid_directories",
+          message: "directories must be an array with at most 100 entries",
+        });
+      }
+      const directories = [];
+      const seenDirectories = new Set();
+      for (let index = 0; index < rawDirectories.length; index += 1) {
+        const rawDirectory = rawDirectories[index];
+        if (typeof rawDirectory !== "string" || !rawDirectory.trim()) {
+          return json(res, 400, {
+            error: "invalid_directory",
+            message: "directory must be a non-empty string",
+            index,
+          });
+        }
+        const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
+        if (seenDirectories.has(directory)) continue;
+        seenDirectories.add(directory);
+        directories.push(directory);
+      }
       const env = String(body?.env || "").trim().toLowerCase() === "production" ? "production" : APNS_ENV;
-      const record = await pushDeviceStore.upsertDevice({ deviceId, apnsToken, env });
+      const record = await pushDeviceStore.upsertDevice({ deviceId, apnsToken, env, directories });
       return json(res, 200, {
         ok: true,
         enabled: true,
-        device: { deviceId: record.deviceId, env: record.env, registeredAt: record.registeredAt },
+        device: {
+          deviceId: record.deviceId,
+          env: record.env,
+          directories: record.directories,
+          registeredAt: record.registeredAt,
+        },
       });
     } catch (err) {
-      return json(res, 500, { error: "push_device_register_failed", message: errorMessage(err) });
+      return writeJsonRequestError(res, err, "push_device_register_failed");
     }
   }
 
@@ -8814,6 +8840,35 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  const sessionStateRequest = req.method === "POST" && (
+    pathname === "/sessions/unread-count"
+      ? {
+        error: "session_unread_count_failed",
+        run: (body) => countUnreadSessions(body?.directories),
+      }
+      : pathname === "/sessions/unread-state" ? {
+        error: "session_unread_state_failed",
+        run: (body) => getSessionUnreadState(body?.sessionId, body?.directory),
+      } : null
+  );
+  if (sessionStateRequest) {
+    if (!RUNNER_TOKEN) {
+      return json(res, 500, {
+        error: "runner_token_missing",
+        message: "RUNNER_TOKEN is required",
+      });
+    }
+    if (parseAuthToken(req) !== RUNNER_TOKEN) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    try {
+      const body = await readJsonBody(req, 32 * 1024);
+      return json(res, 200, { ok: true, ...await sessionStateRequest.run(body) });
+    } catch (err) {
+      return writeJsonRequestError(res, err, sessionStateRequest.error);
+    }
+  }
+
   if (req.method === "POST" && pathname === "/sessions/read") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -8827,14 +8882,10 @@ const server = http.createServer(async (req, res) => {
     try {
       const routeStartedAtMs = Date.now();
       const bodyReadStartedAtMs = Date.now();
-      const body = await readJsonBody(req);
+      const body = await readJsonBody(req, SESSION_READ_BODY_MAX_BYTES);
       const bodyReadMs = Math.max(0, Date.now() - bodyReadStartedAtMs);
       const markReadStartedAtMs = Date.now();
-      const payload = await markLlmSessionRead(body?.sessionId, {
-        directory: body?.directory,
-        source: body?.source,
-        lastReadAt: body?.lastReadAt,
-      });
+      const payload = await markLlmSessionReadRequest(body);
       const markReadMs = Math.max(0, Date.now() - markReadStartedAtMs);
       const routeTotalMs = Math.max(0, Date.now() - routeStartedAtMs);
       const diagnostics = payload?.diagnostics && typeof payload.diagnostics === "object"
@@ -8851,13 +8902,7 @@ const server = http.createServer(async (req, res) => {
         },
       });
     } catch (err) {
-      if (isApiError(err)) {
-        return json(res, err.apiStatus, err.apiPayload);
-      }
-      return json(res, 500, {
-        error: "session_read_failed",
-        message: errorMessage(err),
-      });
+      return writeJsonRequestError(res, err, "session_read_failed");
     }
   }
 
@@ -11210,6 +11255,7 @@ function createCodexRelayContext(params) {
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
+    currentTurnId: "",
     currentTurnStartSeq: 0,
     lastAgentMessageText: "",
     assistantThinkingPrefixSent: false,
@@ -11371,6 +11417,10 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
   const params = rpcPayload.params && typeof rpcPayload.params === "object"
     ? rpcPayload.params
     : {};
+  if (!codexTurnEventMatches(params, {
+    threadId: relay.threadId,
+    turnId: relay.currentTurnId,
+  })) return;
   if (method === "turn/started") {
     relay.lastAgentMessageText = "";
     return;
@@ -11556,6 +11606,14 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       : "";
     if (resultCwd) relay.threadCwd = resultCwd;
   }
+  if (
+    responseRpcMethod === "turn/start" &&
+    meta?.hasResult &&
+    !meta?.hasError
+  ) {
+    const startedTurnId = getCodexTurnEventIdentity(rpcPayload?.result).turnId;
+    if (startedTurnId) relay.currentTurnId = startedTurnId;
+  }
   const calendarDynamicItem = isCalendarDynamicItem(rpcPayload);
   if (meta && (meta.method || meta.id !== null)) {
     if (meta.threadId && shouldBindRelayThreadFromUpstreamMethod(meta.method)) {
@@ -11577,16 +11635,20 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
         }
       }
     }
-    if (meta.method === "turn/completed") {
+    const ownsCurrentTurn = codexTurnEventMatches(rpcPayload?.params, {
+      threadId: relay.threadId,
+      turnId: relay.currentTurnId,
+    });
+    if (meta.method === "turn/completed" && ownsCurrentTurn) {
       relay.turnStatus = String(meta.threadStatus || "");
       if (isTerminalTurnStatus(meta.threadStatus) || !meta.threadStatus) {
         relay.turnCompleted = true;
       }
-    } else if (meta.method === "turn/started") {
+    } else if (meta.method === "turn/started" && ownsCurrentTurn) {
       relay.turnStarted = true;
       relay.turnCompleted = false;
       relay.currentTurnStartSeq = relay.lastSeq + 1;
-    } else if (meta.threadStatus) {
+    } else if (meta.threadStatus && ownsCurrentTurn) {
       relay.turnStatus = String(meta.threadStatus || "");
       if (isTerminalTurnStatus(meta.threadStatus)) {
         relay.turnCompleted = true;
@@ -11620,7 +11682,15 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       text,
       responseRpcMethod
     );
-    outgoingTexts = normalizeCodexRelayAssistantThinkingRpcTexts(relay, normalizedThreadText);
+    const method = String(rpcPayload?.method || "").trim();
+    const turnScoped = method.startsWith("item/") || method.startsWith("turn/");
+    const ownsCurrentTurn = codexTurnEventMatches(rpcPayload?.params, {
+      threadId: relay.threadId,
+      turnId: relay.currentTurnId,
+    });
+    outgoingTexts = turnScoped && relay.currentTurnId && !ownsCurrentTurn
+      ? []
+      : normalizeCodexRelayAssistantThinkingRpcTexts(relay, normalizedThreadText);
   }
   if (!isBinary) {
     const subscribers = Array.from(relay.clients);

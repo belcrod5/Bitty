@@ -7,6 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
+  type ComponentType,
   type ReactNode,
 } from "react";
 import {
@@ -14,19 +16,34 @@ import {
   StyleSheet,
   View,
   useWindowDimensions,
-  type ModalProps,
-  type NativeSyntheticEvent,
 } from "react-native";
+import type { KeyEvent } from "react-native-macos/Libraries/Types/CoreEventTypes";
+import type { AppModalProps } from "./AppModal.contract";
+
+// React Native macOS 0.81.9の標準Modalは、表示時にFabricのcreateNode周辺で
+// Exception in HostFunctionが発生するため、同じReactツリー内のoverlayで代替する。
+// ライブラリ更新時に標準Modalを再検証し、解消後はこの実装を削除する。
 
 type ModalHost = {
   remove: (id: string) => void;
-  render: (id: string, content: ReactNode) => void;
+  render: (id: string, entry: ModalEntry) => void;
+};
+
+type ModalEntry = {
+  content: ReactNode;
+  onRequestClose?: () => void;
 };
 
 const ModalHostContext = createContext<ModalHost | null>(null);
+const MacOSHostView = View as ComponentType<
+  ComponentProps<typeof View> & {
+    keyDownEvents?: { key: string }[];
+    onKeyDownCapture?: (event: KeyEvent) => void;
+  }
+>;
 
 export function AppModalHost({ children }: { children: ReactNode }) {
-  const [modals, setModals] = useState<Map<string, ReactNode>>(() => new Map());
+  const [modals, setModals] = useState<Map<string, ModalEntry>>(() => new Map());
   const remove = useCallback((id: string) => {
     setModals((current) => {
       if (!current.has(id)) return current;
@@ -35,25 +52,34 @@ export function AppModalHost({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
-  const render = useCallback((id: string, content: ReactNode) => {
+  const render = useCallback((id: string, entry: ModalEntry) => {
     setModals((current) => {
       const next = new Map(current);
-      next.set(id, content);
+      next.set(id, entry);
       return next;
     });
   }, []);
   const host = useMemo(() => ({ remove, render }), [remove, render]);
+  const topModal = [...modals.values()].at(-1);
 
   return (
     <ModalHostContext.Provider value={host}>
-      <View style={styles.host}>
+      <MacOSHostView
+        keyDownEvents={modals.size > 0 ? [{ key: "Escape" }] : undefined}
+        onKeyDownCapture={modals.size > 0 ? (event) => {
+          if (event.nativeEvent.key !== "Escape") return;
+          event.stopPropagation();
+          topModal?.onRequestClose?.();
+        } : undefined}
+        style={styles.host}
+      >
         {children}
-        {[...modals].map(([id, content]) => (
+        {[...modals].map(([id, entry]) => (
           <View key={id} style={StyleSheet.absoluteFill}>
-            {content}
+            {entry.content}
           </View>
         ))}
-      </View>
+      </MacOSHostView>
     </ModalHostContext.Provider>
   );
 }
@@ -63,12 +89,15 @@ export function AppModal({
   backdropColor,
   children,
   onDismiss,
+  onRequestClose,
   onShow,
+  presentationStyle: _presentationStyle,
+  statusBarTranslucent: _statusBarTranslucent,
   style,
   testID,
   transparent,
   visible = true,
-}: ModalProps) {
+}: AppModalProps) {
   const host = useContext(ModalHostContext);
   const id = useId();
   const { height } = useWindowDimensions();
@@ -90,7 +119,7 @@ export function AppModal({
     animation.start(({ finished }) => {
       if (!finished) return;
       if (visible) {
-        onShow?.({ nativeEvent: null } as NativeSyntheticEvent<null>);
+        onShow?.();
       } else {
         setMounted(false);
         onDismiss?.();
@@ -124,8 +153,8 @@ export function AppModal({
       host?.remove(id);
       return;
     }
-    host.render(id, content);
-  }, [content, host, id]);
+    host.render(id, { content, onRequestClose });
+  }, [content, host, id, onRequestClose]);
 
   useEffect(() => () => host?.remove(id), [host, id]);
 

@@ -1,7 +1,5 @@
+import type { PickWorkspaceUploadAsset } from "./workspaceUploadPicker.contract";
+
 export const supportsWorkspaceFilePicking = false;
 
-export async function pickWorkspaceUploadAsset(
-  _source: "photos" | "files"
-): Promise<null> {
-  return null;
-}
+export const pickWorkspaceUploadAsset: PickWorkspaceUploadAsset = async () => null;

@@ -64,6 +64,39 @@ function firstNonEmptyString(...values) {
   return "";
 }
 
+export function getCodexTurnEventIdentity(paramsRaw) {
+  const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw : {};
+  return {
+    threadId: firstNonEmptyString(
+      params.threadId,
+      params.thread_id,
+      params.sessionId,
+      params.session_id,
+      params.thread?.id,
+      params.turn?.threadId,
+      params.turn?.thread_id,
+      params.turn?.thread?.id,
+    ),
+    turnId: firstNonEmptyString(
+      params.turnId,
+      params.turn_id,
+      params.turn?.id,
+      params.turn?.turnId,
+    ),
+  };
+}
+
+export function codexTurnEventMatches(params, expected) {
+  const actual = getCodexTurnEventIdentity(params);
+  const threadId = String(expected?.threadId || "").trim();
+  const turnId = String(expected?.turnId || "").trim();
+  return Boolean(
+    threadId && turnId &&
+    actual.threadId === threadId &&
+    actual.turnId === turnId
+  );
+}
+
 export function extractCodexAgentMessageText(itemRaw) {
   if (!itemRaw || typeof itemRaw !== "object" || Array.isArray(itemRaw)) return "";
   const item = itemRaw;
@@ -169,7 +202,10 @@ export async function executeCodexTurn({
 
   let lastAgentMessageText = "";
   let turnCompleted = false;
-  const removeNotificationListener = client.addNotificationListener((method, params) => {
+  let expectedTurnId = "";
+  const notificationsBeforeTurnStarted = [];
+  const applyOwnedNotification = (method, params) => {
+    if (!codexTurnEventMatches(params, { threadId: activeThreadId, turnId: expectedTurnId })) return;
     if (method === "turn/completed") {
       const status = String(params?.turn?.status || params?.status || "").trim().toLowerCase();
       turnCompleted = SUCCESSFUL_TURN_STATUSES.has(status);
@@ -182,6 +218,13 @@ export async function executeCodexTurn({
     if (method !== "item/completed" || String(params?.item?.type || "").trim() !== "agentMessage") return;
     const completedText = extractCodexAgentMessageText(params.item);
     if (completedText) lastAgentMessageText = completedText;
+  };
+  const removeNotificationListener = client.addNotificationListener((method, params) => {
+    if (!expectedTurnId) {
+      notificationsBeforeTurnStarted.push({ method, params });
+      return;
+    }
+    applyOwnedNotification(method, params);
   });
   try {
     const completion = client.waitForTurnCompletion();
@@ -203,8 +246,14 @@ export async function executeCodexTurn({
     if (VALID_EFFORTS.has(normalizedEffort)) params.effort = normalizedEffort;
     const started = await client.request("turn/start", params, 30000);
     const turnId = String(started?.turn?.id || "").trim();
+    if (!turnId) throw new Error("turn id was not returned from app-server");
+    expectedTurnId = turnId;
+    completion?.expect?.({ threadId: activeThreadId, turnId });
+    for (const notification of notificationsBeforeTurnStarted.splice(0)) {
+      applyOwnedNotification(notification.method, notification.params);
+    }
     onTurnStarted?.({ threadId: activeThreadId, turnId });
-    await completion;
+    await (completion?.promise || completion);
     if (!turnCompleted) throw new Error("Codex turn ended without completing");
     return { threadId: activeThreadId, turnId, lastAgentMessageText };
   } finally {

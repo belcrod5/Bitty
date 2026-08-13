@@ -34,12 +34,12 @@ jest.mock("expo-crypto", () => ({
 }));
 
 describe("resolveForegroundNotificationBehavior", () => {
-  it("suppresses all foreground presentation so the in-app card is the single source of truth", () => {
+  it("suppresses foreground presentation but applies the server absolute badge", () => {
     expect(resolveForegroundNotificationBehavior()).toEqual({
       shouldShowBanner: false,
       shouldShowList: false,
       shouldPlaySound: false,
-      shouldSetBadge: false,
+      shouldSetBadge: true,
     });
   });
 });
@@ -106,6 +106,7 @@ describe("registerPushDevice", () => {
       runnerToken: "token",
       deviceId: "device-1",
       apnsToken: "apns-1",
+      directories: [],
     });
     expect(result).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -123,6 +124,7 @@ describe("registerPushDevice", () => {
       runnerToken: "secret-token",
       deviceId: "device-1",
       apnsToken: "apns-token-1",
+      directories: ["/one", "/two"],
     });
 
     expect(result).toBe(true);
@@ -134,7 +136,11 @@ describe("registerPushDevice", () => {
           authorization: "Bearer secret-token",
           "content-type": "application/json",
         }),
-        body: JSON.stringify({ deviceId: "device-1", apnsToken: "apns-token-1" }),
+        body: JSON.stringify({
+          deviceId: "device-1",
+          apnsToken: "apns-token-1",
+          directories: ["/one", "/two"],
+        }),
       })
     );
   });
@@ -153,6 +159,7 @@ describe("registerPushDevice", () => {
         runnerToken: "bad-token",
         deviceId: "device-1",
         apnsToken: "apns-token-1",
+        directories: [],
       })
     ).rejects.toThrow("unauthorized");
   });

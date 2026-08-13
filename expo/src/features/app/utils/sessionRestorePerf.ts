@@ -1,5 +1,3 @@
-import type { LlmSessionSource } from "../hooks/useLlmSessionExplorer";
-
 type SessionDiagLogger = (
   event: string,
   payload?: Record<string, unknown>,
@@ -9,14 +7,6 @@ type SessionDiagLogger = (
     throttleKey?: string;
   }
 ) => void;
-
-type MarkSessionReadAsyncArgs = {
-  sessionId: string;
-  directory: string;
-  source?: LlmSessionSource;
-  perfTraceId: string;
-  restoreRequestSeq: number;
-};
 
 export type SessionRestorePerfContext = {
   traceId: string;
@@ -187,10 +177,6 @@ export function logSessionRestoreStateApplyQueued({
   });
 }
 
-export function markSessionRestoreReadDone(perf: SessionRestorePerfContext) {
-  perf.markReadDoneAt = Date.now();
-}
-
 export function logSessionRestoreDone({
   logSessionDiag,
   restoreRequestSeq,
@@ -285,61 +271,5 @@ export function logSessionRestoreError({
   }, {
     throttleMs: 0,
     throttleKey: `session_open_perf_restore_error:${perf.traceId}`,
-  });
-}
-
-export function finalizeSessionRestoreReadAndLog({
-  markSessionReadAsync,
-  resolvedSessionId,
-  directory,
-  source,
-  perf,
-  restoreRequestSeq,
-  logSessionDiag,
-  targetSessionId,
-  restoreStartedAt,
-  restoredMessageCount,
-  hasRunningTurn,
-  hasPendingAssistant,
-  codexRelayAttached,
-  restoredInFlight,
-}: {
-  markSessionReadAsync: (args: MarkSessionReadAsyncArgs) => void;
-  resolvedSessionId: string;
-  directory: string;
-  source?: LlmSessionSource;
-  perf: SessionRestorePerfContext;
-  restoreRequestSeq: number;
-  logSessionDiag: SessionDiagLogger;
-  targetSessionId: string;
-  restoreStartedAt: number;
-  restoredMessageCount: number;
-  hasRunningTurn: boolean;
-  hasPendingAssistant: boolean;
-  codexRelayAttached: boolean;
-  restoredInFlight: boolean;
-}) {
-  markSessionReadAsync({
-    sessionId: resolvedSessionId,
-    directory,
-    source,
-    perfTraceId: perf.traceId,
-    restoreRequestSeq,
-  });
-  markSessionRestoreReadDone(perf);
-  logSessionRestoreDone({
-    logSessionDiag,
-    restoreRequestSeq,
-    source: String(source || "unknown"),
-    directory,
-    targetSessionId,
-    restoreStartedAt,
-    resolvedSessionId,
-    restoredMessageCount,
-    hasRunningTurn,
-    hasPendingAssistant,
-    codexRelayAttached,
-    restoredInFlight,
-    perf,
   });
 }

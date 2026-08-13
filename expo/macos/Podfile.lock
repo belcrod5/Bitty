@@ -2364,7 +2364,7 @@ PODS:
     - React-perflogger (= 0.81.9)
     - React-utils (= 0.81.9)
     - SocketRocket
-  - ReactNativeEnrichedMarkdown (0.7.4):
+  - ReactNativeEnrichedMarkdown (0.5.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -3027,7 +3027,7 @@ SPEC CHECKSUMS:
   ReactAppDependencyProvider: db0eebc7a9e85c8976d5ea10706d790753a53889
   ReactCodegen: b70cc4acc2bdfe4f7bb765db75b3c6fd14c7aa39
   ReactCommon: bc273d1cfc32a36ea662e81293e0961de8c21c77
-  ReactNativeEnrichedMarkdown: 2934750e32fd0de2bdab0e4b95a282aa8cf55a47
+  ReactNativeEnrichedMarkdown: 94837c8b694278592ae5e3703f151ff605e9d26b
   RNGestureHandler: 3a73f098d74712952870e948b3d9cf7b6cae9961
   RNReanimated: d60fc0b1c70e8413d16e506897ca7f2a27f697be
   RNSVG: 4dd2d79b3cb224bcb3ae666a2adda2ede9d3772f
