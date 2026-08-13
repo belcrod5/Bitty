@@ -116,7 +116,7 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     const modelRef = String(raw?.modelRef || "").trim();
     if (!modelRef) throw new Error(`rules[${index}].modelRef is required`);
     const requestedEffort = String(raw?.reasoningEffort || "").trim().toLowerCase();
-    if (!["low", "medium", "high", "xhigh"].includes(requestedEffort)) {
+    if (!["low", "medium", "high", "xhigh", "max", "ultra"].includes(requestedEffort)) {
       throw new Error(`rules[${index}].reasoningEffort is invalid`);
     }
     let codexOptions;

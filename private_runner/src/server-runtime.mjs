@@ -1001,7 +1001,7 @@ function normalizeReasoningEffort(raw, opts = {}) {
   const value = String(raw || "").trim().toLowerCase();
   if (!value) return "";
   if (value === "minimal") return "low";
-  if (value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+  if (value === "none" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
     return value;
   }
   if (warnInvalid) {
@@ -1022,7 +1022,7 @@ function resolveCodexRequestOptions(rawModelRef, rawReasoningEffort) {
   }
   const normalizedReasoning = normalizeReasoningEffort(reasoningInput, { warnInvalid: false });
   if (!normalizedReasoning) {
-    throw new Error("reasoningEffort must be one of: none, low, medium, high, xhigh");
+    throw new Error("reasoningEffort must be one of: none, low, medium, high, xhigh, max, ultra");
   }
   return {
     modelInfo,
@@ -6781,7 +6781,7 @@ function compactCodexInputPreview(value, maxChars = 160) {
 
 function normalizeCodexQueueEffort(value) {
   const effort = String(value || "").trim().toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(effort) ? effort : "";
+  return ["low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) ? effort : "";
 }
 
 function normalizeCodexQueueApprovalPolicy(value) {

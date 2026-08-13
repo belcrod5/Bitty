@@ -276,7 +276,7 @@ function createReplyTraceId(requestSeq: number): string {
 
 function normalizeReasoningEffort(raw: unknown, fallback: ReasoningEffort): ReasoningEffort {
   const value = String(raw || "").trim().toLowerCase();
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
     return value;
   }
   return fallback;

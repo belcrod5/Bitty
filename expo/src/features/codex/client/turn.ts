@@ -1119,7 +1119,7 @@ export function startCodexAppServerTurn(
         turnStartParams.model = model;
       }
       const effort = String(options.effort || "").trim();
-      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh") {
+      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max" || effort === "ultra") {
         turnStartParams.effort = effort;
       }
       const turnStarted = await sendRequestWhenAdmitted<CodexTurnStartResponse>(
