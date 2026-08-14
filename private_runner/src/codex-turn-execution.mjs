@@ -116,7 +116,7 @@ export function extractCodexAgentMessageText(itemRaw) {
   return chunks.join("").trim();
 }
 
-export async function executeCodexTurn({
+export async function startCodexTurn({
   client,
   clientName,
   threadId = "",
@@ -132,9 +132,6 @@ export async function executeCodexTurn({
   const directory = String(cwd || "").trim();
   let activeThreadId = String(threadId || "").trim();
   if (!text) throw new Error("inputText is required");
-  if (typeof client?.addNotificationListener !== "function") {
-    throw new Error("client.addNotificationListener is required");
-  }
   if (calendarSchedule && (activeThreadId || typeof client.addServerRequestHandler !== "function")) {
     throw new Error("calendar_api_failed");
   }
@@ -164,48 +161,83 @@ export async function executeCodexTurn({
     }));
   }
 
-  if (activeThreadId) {
-    const resumed = await client.request("thread/resume", {
-      threadId: activeThreadId,
-      cwd: directory || undefined,
-      persistExtendedHistory: false,
-    }, 30000).catch(() => null);
-    activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
-  } else {
-    let started;
-    try {
-      started = await client.request("thread/start", {
-      cwd: directory || undefined,
-      serviceName: clientName,
-      approvalPolicy,
-      experimentalRawEvents: false,
-      persistExtendedHistory: false,
-      ...(calendarSchedule ? {
-        dynamicTools: calendarSchedule.dynamicTools,
-        config: {
-          web_search: "disabled",
-          apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
-        },
-        developerInstructions: CALENDAR_DEVELOPER_INSTRUCTIONS,
-      } : {}),
-      }, 30000);
-    } catch (error) {
-      if (calendarSchedule) throw dynamicToolsFailure("thread_start");
-      throw error;
+  try {
+    if (activeThreadId) {
+      const resumed = await client.request("thread/resume", {
+        threadId: activeThreadId,
+        cwd: directory || undefined,
+        persistExtendedHistory: false,
+      }, 30000).catch(() => null);
+      activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
+    } else {
+      let started;
+      try {
+        started = await client.request("thread/start", {
+          cwd: directory || undefined,
+          serviceName: clientName,
+          approvalPolicy,
+          experimentalRawEvents: false,
+          persistExtendedHistory: false,
+          ...(calendarSchedule ? {
+            dynamicTools: calendarSchedule.dynamicTools,
+            config: {
+              web_search: "disabled",
+              apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
+            },
+            developerInstructions: CALENDAR_DEVELOPER_INSTRUCTIONS,
+          } : {}),
+        }, 30000);
+      } catch (error) {
+        if (calendarSchedule) throw dynamicToolsFailure("thread_start");
+        throw error;
+      }
+      activeThreadId = String(started?.thread?.id || "").trim();
     }
-    activeThreadId = String(started?.thread?.id || "").trim();
+    if (!activeThreadId) throw new Error("thread id was not returned from app-server");
+    if (calendarSchedule) {
+      await requireNoMcpServers(client, activeThreadId);
+    }
+
+    const params = {
+      threadId: activeThreadId,
+      input: [{ type: "text", text }],
+      cwd: directory || undefined,
+      approvalPolicy,
+      ...(calendarSchedule ? {
+        sandboxPolicy: {
+          type: "externalSandbox",
+          networkAccess: "restricted",
+        },
+      } : {}),
+    };
+    const normalizedModel = String(model || "").trim();
+    if (normalizedModel) params.model = normalizedModel;
+    const normalizedEffort = String(effort || "").trim().toLowerCase();
+    if (VALID_EFFORTS.has(normalizedEffort)) params.effort = normalizedEffort;
+    const started = await client.request("turn/start", params, 30000);
+    const turnId = String(started?.turn?.id || "").trim();
+    if (!turnId) throw new Error("turn id was not returned from app-server");
+    onTurnStarted?.({ threadId: activeThreadId, turnId });
+    return { threadId: activeThreadId, turnId, cleanup: removeServerRequestHandler };
+  } catch (error) {
+    removeServerRequestHandler();
+    throw error;
   }
-  if (!activeThreadId) throw new Error("thread id was not returned from app-server");
-  if (calendarSchedule) {
-    await requireNoMcpServers(client, activeThreadId);
+}
+
+export async function executeCodexTurn(options) {
+  const { client } = options;
+  if (typeof client?.addNotificationListener !== "function") {
+    throw new Error("client.addNotificationListener is required");
   }
 
   let lastAgentMessageText = "";
   let turnCompleted = false;
+  let expectedThreadId = "";
   let expectedTurnId = "";
   const notificationsBeforeTurnStarted = [];
   const applyOwnedNotification = (method, params) => {
-    if (!codexTurnEventMatches(params, { threadId: activeThreadId, turnId: expectedTurnId })) return;
+    if (!codexTurnEventMatches(params, { threadId: expectedThreadId, turnId: expectedTurnId })) return;
     if (method === "turn/completed") {
       const status = String(params?.turn?.status || params?.status || "").trim().toLowerCase();
       turnCompleted = SUCCESSFUL_TURN_STATUSES.has(status);
@@ -226,38 +258,22 @@ export async function executeCodexTurn({
     }
     applyOwnedNotification(method, params);
   });
+  let cleanupStartedTurn = () => {};
   try {
     const completion = client.waitForTurnCompletion();
-    const params = {
-      threadId: activeThreadId,
-      input: [{ type: "text", text }],
-      cwd: directory || undefined,
-      approvalPolicy,
-      ...(calendarSchedule ? {
-        sandboxPolicy: {
-          type: "externalSandbox",
-          networkAccess: "restricted",
-        },
-      } : {}),
-    };
-    const normalizedModel = String(model || "").trim();
-    if (normalizedModel) params.model = normalizedModel;
-    const normalizedEffort = String(effort || "").trim().toLowerCase();
-    if (VALID_EFFORTS.has(normalizedEffort)) params.effort = normalizedEffort;
-    const started = await client.request("turn/start", params, 30000);
-    const turnId = String(started?.turn?.id || "").trim();
-    if (!turnId) throw new Error("turn id was not returned from app-server");
-    expectedTurnId = turnId;
-    completion?.expect?.({ threadId: activeThreadId, turnId });
+    const started = await startCodexTurn(options);
+    expectedThreadId = started.threadId;
+    expectedTurnId = started.turnId;
+    cleanupStartedTurn = started.cleanup;
+    completion?.expect?.({ threadId: expectedThreadId, turnId: expectedTurnId });
     for (const notification of notificationsBeforeTurnStarted.splice(0)) {
       applyOwnedNotification(notification.method, notification.params);
     }
-    onTurnStarted?.({ threadId: activeThreadId, turnId });
     await (completion?.promise || completion);
     if (!turnCompleted) throw new Error("Codex turn ended without completing");
-    return { threadId: activeThreadId, turnId, lastAgentMessageText };
+    return { threadId: expectedThreadId, turnId: expectedTurnId, lastAgentMessageText };
   } finally {
     removeNotificationListener();
-    removeServerRequestHandler();
+    cleanupStartedTurn();
   }
 }

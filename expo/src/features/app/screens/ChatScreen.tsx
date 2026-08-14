@@ -69,6 +69,7 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
+import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
 type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker";
@@ -2653,6 +2654,16 @@ export function ChatScreen({
                     </Text>
                   </TouchableOpacity>
                   <LocationScheduleSettings
+                    currentCwd={selectedDirectoryPathForView}
+                    currentModelRef={normalizedModelRefForView}
+                    currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
+                    directories={registeredDirectories}
+                    modelOptions={modelOptions}
+                    thinkOptions={thinkOptions}
+                  />
+                  <CodexScheduleSettings
+                    runnerUrl={runnerUrl}
+                    runnerToken={runnerToken}
                     currentCwd={selectedDirectoryPathForView}
                     currentModelRef={normalizedModelRefForView}
                     currentReasoningEffort={reasoningEffortForView as ReasoningEffort}

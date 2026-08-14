@@ -60,7 +60,7 @@
         "expo-calendar",
         {
           "calendarPermission": "Codexとの会話で予定を読み取り、確認後に予定を作成・更新・削除するためにカレンダーへアクセスします。",
-          "remindersPermission": false
+          "remindersPermission": "カレンダー機能の初期化時にリマインダーのアクセス状態を確認するために使用します。リマインダーの読み書きは行いません。"
         }
       ],
       "expo-background-task"
@@ -86,6 +86,8 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "アプリを閉じている間も設定した場所への出入りを検知するために位置情報を使用します。",
         "NSCalendarsUsageDescription": "Codexとの会話で予定を読み取り、確認後に予定を作成・更新・削除するためにカレンダーへアクセスします。",
         "NSCalendarsFullAccessUsageDescription": "Codexとの会話で予定を読み取り、確認後に予定を作成・更新・削除するためにカレンダーへアクセスします。",
+        "NSRemindersUsageDescription": "カレンダー機能の初期化時にリマインダーのアクセス状態を確認するために使用します。リマインダーの読み書きは行いません。",
+        "NSRemindersFullAccessUsageDescription": "カレンダー機能の初期化時にリマインダーのアクセス状態を確認するために使用します。リマインダーの読み書きは行いません。",
         "UIBackgroundModes": [
           "remote-notification"
         ]

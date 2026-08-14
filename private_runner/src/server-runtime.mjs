@@ -39,6 +39,9 @@ import {
   extractCodexAgentMessageText,
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
+import { createNormalCodexTurnStarter } from "./codex-relay-initiator.mjs";
+import { createCodexScheduleService } from "./codex-schedule-service.mjs";
+import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
 import {
   createLocationScheduleService,
   LocationScheduleStoreUnavailableError,
@@ -499,6 +502,14 @@ const PUSH_DEVICE_STORE_PATH = path.resolve(
 const LOCATION_SCHEDULE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.LOCATION_SCHEDULE_STORE_PATH || "private_runner/logs/location_schedules.json"
+);
+const CODEX_SCHEDULE_DEFINITIONS_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  "private_runner/logs/codex_schedules.json"
+);
+const CODEX_SCHEDULE_RUNTIME_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  "private_runner/logs/codex_schedule_runtime.json"
 );
 const PUSH_SUMMARY_MODEL_REF = String(process.env.PUSH_SUMMARY_MODEL || "openai-codex/gpt-5.6-luna").trim();
 const PUSH_ENABLED = Boolean(APNS_KEY_PATH && APNS_KEY_ID && APPLE_TEAM_ID);
@@ -7217,6 +7228,32 @@ async function runRunnerInitiatedTurn({
   }
 }
 
+const startNormalCodexTurn = createNormalCodexTurnStarter({
+  createRelay: createCodexRelayWithUpstream,
+  attachClient: attachClientToCodexRelay,
+  forwardClientData: forwardCodexRelayClientData,
+  removeClient: removeClientFromRelay,
+  cleanupDetachedRelay: cleanupOrScheduleDetachedRelay,
+});
+const codexScheduleService = createCodexScheduleService({
+  definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
+  runtimePath: CODEX_SCHEDULE_RUNTIME_PATH,
+  parseCodexOptions: resolveCodexRequestOptions,
+  validateCwd: async (cwd) => {
+    const resolved = path.resolve(String(cwd || "").trim());
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
+  },
+  startNormalCodexTurn,
+});
+const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
+  service: codexScheduleService,
+  runnerToken: RUNNER_TOKEN,
+  parseAuthToken,
+  readJsonBody,
+  json,
+});
+
 async function runCodexQueuedTurn(turn) {
   const abortController = new AbortController();
   markCodexQueuedTurn(turn, {
@@ -8597,6 +8634,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (await calendarHttpHandler(req, res, reqUrl)) return;
+  if (await codexScheduleHttpHandler(req, res, pathname)) return;
 
   if (req.method === "POST" && pathname === "/push/devices") {
     if (!RUNNER_TOKEN) {
@@ -9582,12 +9620,20 @@ runnerWsServer.on("connection", (ws, req) => {
     if (hasIdentity && identityMatch.reason === "relay_identity_mismatch") {
       return { relay: null, error: "runner_ws_llm_identity_collision" };
     }
-    const relay = createCodexRelayWithUpstream({
-      endpoint: RUNNER_WS_PATH,
-      remote,
-      upstreamUrl: CODEX_WS_PROXY_UPSTREAM_URL,
-      protocols,
-    });
+    let relay;
+    try {
+      relay = createCodexRelayWithUpstream({
+        endpoint: RUNNER_WS_PATH,
+        remote,
+        upstreamUrl: CODEX_WS_PROXY_UPSTREAM_URL,
+        protocols,
+      });
+    } catch (error) {
+      if (error?.code === "codex_relay_capacity") {
+        return { relay: null, error: "codex_relay_capacity" };
+      }
+      throw error;
+    }
     if (useSharedThreadlessRelay) {
       relay.runnerWsSharedThreadless = true;
       void appendCodexWsProxyDebug("runner_ws_llm_shared_relay_created", {
@@ -11043,10 +11089,37 @@ function pickBestRelayForThread(threadIdRaw) {
 function cleanupNoClientRelaysForThread(threadIdRaw, currentRelay, reason = "duplicate_thread_relay") {
   const threadId = String(threadIdRaw || "").trim();
   if (!threadId) return;
+  const protectedRelay = Array.from(codexWsRelaysById.values()).find((relay) => (
+    relay &&
+    !relay.closed &&
+    relay !== currentRelay &&
+    String(relay.threadId || "").trim() === threadId &&
+    relay.pendingApprovalRequestIds instanceof Set &&
+    relay.pendingApprovalRequestIds.size > 0
+  ));
+  const currentHasPendingApproval = currentRelay?.pendingApprovalRequestIds instanceof Set
+    && currentRelay.pendingApprovalRequestIds.size > 0;
+  if (protectedRelay && currentRelay && !currentRelay.closed && !currentHasPendingApproval) {
+    void appendCodexWsProxyDebug("duplicate_thread_relay_rejected", {
+      relayId: currentRelay.relayId,
+      canonicalRelayId: protectedRelay.relayId,
+      threadId,
+      reason,
+    });
+    cleanupCodexRelay(currentRelay, `${reason}_pending_canonical`);
+    codexWsRelayIdByThreadId.set(threadId, protectedRelay.relayId);
+    return;
+  }
+  if (protectedRelay && currentHasPendingApproval) {
+    const canonical = pickBestRelayForThread(threadId);
+    if (canonical) codexWsRelayIdByThreadId.set(threadId, canonical.relayId);
+    return;
+  }
   for (const relay of Array.from(codexWsRelaysById.values())) {
     if (!relay || relay.closed || relay === currentRelay) continue;
     if (String(relay.threadId || "").trim() !== threadId) continue;
     if (relay.clients.size > 0) continue;
+    if (relay.pendingApprovalRequestIds instanceof Set && relay.pendingApprovalRequestIds.size > 0) continue;
     void appendCodexWsProxyDebug("duplicate_thread_relay_cleanup", {
       relayId: relay.relayId,
       currentRelayId: currentRelay?.relayId || "",
@@ -11081,6 +11154,13 @@ function removeClientFromRelay(relay, clientWs) {
 
 function cleanupOrScheduleDetachedRelay(relay, reason = "client_detached") {
   if (!relay || relay.closed || relay.clients.size > 0) return;
+  if (relay.pendingApprovalRequestIds instanceof Set && relay.pendingApprovalRequestIds.size > 0) {
+    if (relay.cleanupTimer) {
+      clearTimeout(relay.cleanupTimer);
+      relay.cleanupTimer = null;
+    }
+    return;
+  }
   if (!relay.turnStarted && !relay.turnCompleted) {
     if (runnerWsLlmRelayIdentities.has(relay)) {
       scheduleCodexRelayCleanup(relay, reason);
@@ -11143,6 +11223,7 @@ function scheduleCodexRelayCleanup(relay, reason) {
     clearTimeout(relay.cleanupTimer);
     relay.cleanupTimer = null;
   }
+  if (relay.pendingApprovalRequestIds instanceof Set && relay.pendingApprovalRequestIds.size > 0) return;
   const ttlMs = relay.turnCompleted
     ? CODEX_WS_RELAY_COMPLETED_TTL_MS
     : CODEX_WS_RELAY_IDLE_TTL_MS;
@@ -11237,6 +11318,29 @@ function attachClientToCodexRelay(relay, clientWs, options = {}) {
   return replayed;
 }
 
+function ensureCodexRelayCapacity() {
+  const candidates = Array.from(codexWsRelaysById.values())
+    .filter((relay) => (
+      relay &&
+      !relay.closed &&
+      relay.clients.size === 0 &&
+      (!(relay.pendingApprovalRequestIds instanceof Set) || relay.pendingApprovalRequestIds.size === 0)
+    ))
+    .sort((a, b) => a.updatedAtMs - b.updatedAtMs);
+  for (const stale of candidates) {
+    if (codexWsRelaysById.size < CODEX_WS_RELAY_MAX_ACTIVE) break;
+    cleanupCodexRelay(stale, "relay_limit");
+  }
+  if (codexWsRelaysById.size >= CODEX_WS_RELAY_MAX_ACTIVE) {
+    const error = new Error("Codex relay capacity is exhausted");
+    error.code = "codex_relay_capacity";
+    throw error;
+  }
+}
+
+// Registers an upstream that has already passed synchronous admission. Production
+// callers create relays through createCodexRelayWithUpstream so capacity is checked
+// before a WebSocket is allocated.
 function createCodexRelayContext(params) {
   const relayId = createCodexWsRelayId();
   const relay = {
@@ -11285,15 +11389,6 @@ function createCodexRelayContext(params) {
     closed: false,
   };
   codexWsRelaysById.set(relayId, relay);
-  if (codexWsRelaysById.size > CODEX_WS_RELAY_MAX_ACTIVE) {
-    const candidates = Array.from(codexWsRelaysById.values())
-      .filter((item) => item !== relay && item.clients.size === 0)
-      .sort((a, b) => a.updatedAtMs - b.updatedAtMs);
-    for (const stale of candidates) {
-      if (codexWsRelaysById.size <= CODEX_WS_RELAY_MAX_ACTIVE) break;
-      cleanupCodexRelay(stale, "relay_limit");
-    }
-  }
   return relay;
 }
 
@@ -11349,7 +11444,7 @@ async function sendApprovalRequestPush(relay, rpcId, method, params) {
   if (!relay?.pendingApprovalRequestIds?.has?.(rpcId)) return;
 
   const approvalId = `${relay.relayId}:${rpcId}`;
-  const sessionId = String(relay.runnerWsLlmSessionId || relay.threadId || "");
+  const sessionId = String(relay.threadId || relay.runnerWsLlmSessionId || "");
   const body = buildApprovalPushBody(method, params);
   const payload = {
     aps: {
@@ -11360,6 +11455,7 @@ async function sendApprovalRequestPush(relay, rpcId, method, params) {
     },
     approvalId,
     sessionId,
+    directory: String(relay.threadCwd || ""),
   };
 
   let sentCount = 0;
@@ -11612,7 +11708,11 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     !meta?.hasError
   ) {
     const startedTurnId = getCodexTurnEventIdentity(rpcPayload?.result).turnId;
-    if (startedTurnId) relay.currentTurnId = startedTurnId;
+    if (startedTurnId) {
+      relay.currentTurnId = startedTurnId;
+      relay.turnStarted = true;
+      relay.turnCompleted = false;
+    }
   }
   const calendarDynamicItem = isCalendarDynamicItem(rpcPayload);
   if (meta && (meta.method || meta.id !== null)) {
@@ -11624,6 +11724,10 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       if (Number.isInteger(approvalRpcId)) {
         const isNewApprovalRequest = !relay.pendingApprovalRequestIds.has(approvalRpcId);
         relay.pendingApprovalRequestIds.add(approvalRpcId);
+        if (relay.cleanupTimer) {
+          clearTimeout(relay.cleanupTimer);
+          relay.cleanupTimer = null;
+        }
         // Fire exactly once per (relay, rpcId): only on first sighting of this approval id,
         // never on a replayed/duplicate upstream message for the same request.
         if (isNewApprovalRequest) {
@@ -11861,6 +11965,7 @@ function createCodexRelayWithUpstream(params = {}) {
   if (CODEX_WS_PROXY_UPSTREAM_TOKEN) {
     upstreamHeaders.authorization = `Bearer ${CODEX_WS_PROXY_UPSTREAM_TOKEN}`;
   }
+  ensureCodexRelayCapacity();
   const upstreamWs = new WebSocket(upstreamUrl, protocols, {
     headers: upstreamHeaders,
   });
@@ -11898,6 +12003,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   const requestThreadId = String(params.threadId || "").trim();
   const requestTurnId = String(params.turnId || "").trim();
   const requestClientWs = params.clientWs || null;
+  let answeredApproval = false;
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
@@ -12037,9 +12143,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
         bindCodexRelayThreadMapping(relay, meta.threadId);
       }
     }
-    if (!meta.method && Number.isInteger(meta.id)) {
-      relay.pendingApprovalRequestIds.delete(Number(meta.id));
-    }
+    answeredApproval = !meta.method && Number.isInteger(meta.id)
+      ? relay.pendingApprovalRequestIds.delete(Number(meta.id))
+      : false;
     handleCalendarClientTurnLifecycle(relay, meta, {
       ws: requestClientWs,
       operationId: requestOperationId,
@@ -12076,9 +12182,13 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       relay.upstreamInitializedNotificationForwarded = true;
     }
     relay.pendingToUpstream.push({ data, isBinary });
+    if (answeredApproval && relay.pendingApprovalRequestIds.size === 0) {
+      cleanupOrScheduleDetachedRelay(relay, "approval_answered");
+    }
     return;
   }
   if (relay.upstreamWs.readyState !== WebSocket.OPEN) {
+    if (answeredApproval) relay.pendingApprovalRequestIds.add(Number(meta.id));
     logForwardState("dropped_upstream_not_open");
     return;
   }
@@ -12090,6 +12200,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     relay.upstreamInitializedNotificationForwarded = true;
   }
   relay.upstreamWs.send(data, { binary: isBinary });
+  if (answeredApproval && relay.pendingApprovalRequestIds.size === 0) {
+    cleanupOrScheduleDetachedRelay(relay, "approval_answered");
+  }
 }
 
 codexProxyWsServer.on("connection", (clientWs, req) => {
@@ -12112,11 +12225,6 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   const resumeFromSeq = Number.isFinite(resumeFromSeqRaw)
     ? Math.max(0, Math.floor(resumeFromSeqRaw))
     : 0;
-  const upstreamHeaders = {};
-  if (CODEX_WS_PROXY_UPSTREAM_TOKEN) {
-    upstreamHeaders.authorization = `Bearer ${CODEX_WS_PROXY_UPSTREAM_TOKEN}`;
-  }
-
   let relay = null;
   if (resumeThreadId) {
     const mappedRelayId = codexWsRelayIdByThreadId.get(resumeThreadId) || "";
@@ -12160,20 +12268,22 @@ codexProxyWsServer.on("connection", (clientWs, req) => {
   }
 
   if (!relay) {
-    const upstreamWs = new WebSocket(upstreamUrl, protocols, {
-      headers: upstreamHeaders,
-    });
-    relay = createCodexRelayContext({
-      endpoint: reqUrl.pathname,
-      remote,
-      upstreamUrl,
-      upstreamWs,
-    });
-    attachCodexRelayUpstreamHandlers(relay, {
-      remote,
-      endpoint: reqUrl.pathname,
-      upstreamUrl,
-    });
+    try {
+      relay = createCodexRelayWithUpstream({
+        endpoint: reqUrl.pathname,
+        remote,
+        upstreamUrl,
+        protocols,
+      });
+    } catch (error) {
+      if (error?.code !== "codex_relay_capacity") throw error;
+      sendRelayControl(clientWs, {
+        type: "runner_relay_server_busy",
+        reason: "codex_relay_capacity",
+      });
+      safeWsClose(clientWs, 1013, "server_busy");
+      return;
+    }
   }
 
   if (RUNNER_LOG_REQUESTS) {
@@ -12364,6 +12474,9 @@ if (!RUNNER_SKIP_SERVER_START) {
   void locationScheduleService.start().catch((error) => {
     console.warn(`[location-schedule] initialization failed: ${errorMessage(error)}`);
   });
+  void codexScheduleService.start().catch((error) => {
+    console.warn(`[codex-schedule] initialization failed: ${errorMessage(error)}`);
+  });
 
   server.listen(PORT, HOST, () => {
     console.log(
@@ -12389,10 +12502,13 @@ export const __TESTING__ = {
   apnsClient,
   pushSummarizer,
   locationScheduleService,
+  codexScheduleService,
   turnCompletionNotifier,
   sendApprovalRequestPush,
   derivePushDirectoryTitle,
   codexWsRelaysById,
+  CODEX_WS_RELAY_MAX_ACTIVE,
+  startNormalCodexTurn,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
   parseCodexRpcMeta,
@@ -12405,6 +12521,8 @@ export const __TESTING__ = {
   handleCodexRelayUpstreamMessage,
   cleanupOrScheduleDetachedRelay,
   cleanupCodexRelay,
+  cleanupNoClientRelaysForThread,
+  ensureCodexRelayCapacity,
   createCodexRelayContext,
   calendarCapabilityMatches: calendarScheduleRuntime.capabilityMatches,
   calendarScheduleConnectionOptions: calendarScheduleRuntime.connectionOptions,

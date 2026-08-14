@@ -184,6 +184,119 @@ test("runner-ws LLM identity index keeps exact pre-turn pairs recoverable after 
   assert.equal(__TESTING__.runnerWsLlmRelayIdentities.has(relay), false);
 });
 
+test("pending approvals suspend detached cleanup until the final response is forwarded", () => {
+  const sent = [];
+  const relay = __TESTING__.createCodexRelayContext({
+    endpoint: "/codex-ws",
+    remote: "test",
+    upstreamUrl: "ws://upstream.test",
+    upstreamWs: { readyState: 1, send(data) { sent.push(String(data)); }, close() {} },
+  });
+  relay.upstreamOpen = true;
+  relay.turnStarted = true;
+  relay.pendingApprovalRequestIds.add(41);
+  relay.cleanupTimer = setTimeout(() => {}, 60_000);
+
+  __TESTING__.cleanupOrScheduleDetachedRelay(relay, "test_detached");
+  assert.equal(relay.closed, false);
+  assert.equal(relay.cleanupTimer, null);
+
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 41, result: { decision: "accept" } }),
+    false,
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(relay.pendingApprovalRequestIds.size, 0);
+  assert.ok(relay.cleanupTimer);
+
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("duplicate thread cleanup preserves the pending relay and rejects the new duplicate", () => {
+  const upstream = () => ({ readyState: 1, send() {}, close() {} });
+  const canonical = __TESTING__.createCodexRelayContext({
+    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+  });
+  canonical.threadId = "thread-pending-canonical";
+  canonical.pendingApprovalRequestIds.add(7);
+  const duplicate = __TESTING__.createCodexRelayContext({
+    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+  });
+  duplicate.threadId = canonical.threadId;
+
+  __TESTING__.cleanupNoClientRelaysForThread(canonical.threadId, duplicate, "test_duplicate");
+  assert.equal(canonical.closed, false);
+  assert.equal(duplicate.closed, true);
+  assert.equal(__TESTING__.pickBestRelayForThread(canonical.threadId), canonical);
+
+  __TESTING__.cleanupCodexRelay(canonical, "test_cleanup");
+});
+
+test("relay admission is a hard cap when every relay is connected or approval-protected", () => {
+  const created = [];
+  const makeUpstream = () => ({ readyState: 1, send() {}, close() {} });
+  let capacityError = null;
+  try {
+    while (!capacityError) {
+      try {
+        __TESTING__.ensureCodexRelayCapacity();
+        const relay = __TESTING__.createCodexRelayContext({
+          endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: makeUpstream(),
+        });
+        if (created.length === 0) relay.pendingApprovalRequestIds.add(1);
+        else relay.clients.add({ readyState: 1, send() {} });
+        created.push(relay);
+      } catch (error) {
+        capacityError = error;
+      }
+    }
+    const sizeAtCapacity = __TESTING__.codexWsRelaysById.size;
+    assert.equal(capacityError?.code, "codex_relay_capacity");
+    assert.throws(() => __TESTING__.ensureCodexRelayCapacity(), { code: "codex_relay_capacity" });
+    assert.equal(__TESTING__.codexWsRelaysById.size, sizeAtCapacity);
+    assert.equal(created[0].closed, false);
+  } finally {
+    for (const relay of created) __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+  }
+});
+
+test("relay admission evicts only the oldest eligible relay from a mixed set", () => {
+  const created = [];
+  const makeUpstream = () => ({ readyState: 1, send() {}, close() {} });
+  const create = (updatedAtMs) => {
+    const relay = __TESTING__.createCodexRelayContext({
+      endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: makeUpstream(),
+    });
+    relay.updatedAtMs = updatedAtMs;
+    created.push(relay);
+    return relay;
+  };
+
+  try {
+    const pending = create(1);
+    pending.pendingApprovalRequestIds.add(1);
+    const connected = create(2);
+    connected.clients.add({ readyState: 1, send() {} });
+    const oldestEligible = create(3);
+    const newerEligible = create(4);
+    while (created.length < __TESTING__.CODEX_WS_RELAY_MAX_ACTIVE) {
+      const filler = create(100 + created.length);
+      filler.clients.add({ readyState: 1, send() {} });
+    }
+
+    __TESTING__.ensureCodexRelayCapacity();
+
+    assert.equal(oldestEligible.closed, true);
+    assert.equal(newerEligible.closed, false);
+    assert.equal(pending.closed, false);
+    assert.equal(connected.closed, false);
+    assert.equal(__TESTING__.codexWsRelaysById.size, __TESTING__.CODEX_WS_RELAY_MAX_ACTIVE - 1);
+  } finally {
+    for (const relay of created) __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+  }
+});
+
 test("runner-ws LLM identity allows multiple operations on one relay without rebinding IDs", () => {
   const relay = __TESTING__.createCodexRelayContext({
     endpoint: "/runner-ws",

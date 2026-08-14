@@ -1,0 +1,204 @@
+import { useMemo } from "react";
+import {
+  Alert,
+  Modal,
+  SafeAreaView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+
+import { OptionSelectField } from "../app/components/OptionSelectField";
+import type { ReasoningEffort } from "../app/utils/settingsParsers";
+import {
+  CODEX_SCHEDULE_REPEAT_OPTIONS,
+  codexScheduleRepeatToRrule,
+  codexScheduleRruleToRepeat,
+  codexScheduleStartLocalFromDate,
+  dateFromCodexScheduleStartLocal,
+  type CodexSchedule,
+  type CodexScheduleRepeat,
+} from "./codexScheduleTypes";
+
+type Props = {
+  schedule: CodexSchedule | null;
+  directories: readonly { path: string; displayName: string }[];
+  modelOptions: readonly { value: string; label: string }[];
+  thinkOptions: readonly ReasoningEffort[];
+  onChange: (schedule: CodexSchedule) => void;
+  onClose: () => void;
+  onDelete: (id: string) => void;
+};
+
+function combineDate(current: Date, selected: Date) {
+  return new Date(selected.getFullYear(), selected.getMonth(), selected.getDate(), current.getHours(), current.getMinutes());
+}
+
+function combineTime(current: Date, selected: Date) {
+  return new Date(current.getFullYear(), current.getMonth(), current.getDate(), selected.getHours(), selected.getMinutes());
+}
+
+export function CodexScheduleEditor({
+  schedule,
+  directories,
+  modelOptions,
+  thinkOptions,
+  onChange,
+  onClose,
+  onDelete,
+}: Props) {
+  const startDate = useMemo(
+    () => schedule ? dateFromCodexScheduleStartLocal(schedule.startLocal) : new Date(),
+    [schedule],
+  );
+  if (!schedule) return null;
+
+  const update = (patch: Partial<CodexSchedule>) => onChange({ ...schedule, ...patch });
+  const cwdOptions = [
+    ...directories.map((directory) => ({ value: directory.path, label: directory.displayName || directory.path })),
+    ...(!directories.some((directory) => directory.path === schedule.cwd) && schedule.cwd
+      ? [{ value: schedule.cwd, label: `登録解除済み: ${schedule.cwd}` }]
+      : []),
+  ];
+  const models = [
+    ...modelOptions,
+    ...(!modelOptions.some((option) => option.value === schedule.modelRef) && schedule.modelRef
+      ? [{ value: schedule.modelRef, label: schedule.modelRef }]
+      : []),
+  ];
+
+  const finish = onClose;
+
+  return (
+    <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={finish}>
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="編集を閉じる" onPress={finish}>
+            <Text style={styles.headerAction}>完了</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>スケジュール編集</Text>
+          <View style={styles.headerSpacer} />
+        </View>
+        <KeyboardAwareScrollView
+          testID="codex-schedule-editor-scroll"
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          bottomOffset={24}
+        >
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>基本</Text>
+            <View style={styles.switchRow}>
+              <Text style={styles.label}>有効</Text>
+              <Switch accessibilityLabel="スケジュールを有効にする" value={schedule.enabled} onValueChange={(enabled) => update({ enabled })} />
+            </View>
+            <TextInput accessibilityLabel="スケジュール名" style={styles.input} value={schedule.name} maxLength={100} onChangeText={(name) => update({ name })} placeholder="名前" />
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>日時</Text>
+            <Text style={styles.label}>開始日</Text>
+            <DateTimePicker
+              accessibilityLabel="開始日"
+              value={startDate}
+              mode="date"
+              display="compact"
+              onChange={(_event, selected) => selected && update({ startLocal: codexScheduleStartLocalFromDate(combineDate(startDate, selected)) })}
+            />
+            <Text style={styles.label}>時刻</Text>
+            <DateTimePicker
+              accessibilityLabel="開始時刻"
+              value={startDate}
+              mode="time"
+              display="compact"
+              minuteInterval={1}
+              onChange={(_event, selected) => selected && update({ startLocal: codexScheduleStartLocalFromDate(combineTime(startDate, selected)) })}
+            />
+            <Text style={styles.label}>繰り返し</Text>
+            <OptionSelectField
+              title="繰り返し"
+              options={CODEX_SCHEDULE_REPEAT_OPTIONS}
+              selectedValue={codexScheduleRruleToRepeat(schedule.rrule)}
+              onSelect={(repeat) => update({ rrule: codexScheduleRepeatToRrule(repeat as CodexScheduleRepeat) })}
+            />
+            <Text style={styles.timeZone}>{schedule.timeZone}</Text>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="現在のタイムゾーンを使用"
+              style={styles.secondaryButton}
+              onPress={() => update({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" })}
+            >
+              <Text style={styles.secondaryText}>現在のタイムゾーンを使用</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>実行</Text>
+            <Text style={styles.label}>ディレクトリ</Text>
+            <OptionSelectField title="ディレクトリ" options={cwdOptions} selectedValue={schedule.cwd} onSelect={(cwd) => update({ cwd })} />
+            <Text style={styles.label}>モデル</Text>
+            <OptionSelectField title="モデル" options={models} selectedValue={schedule.modelRef} onSelect={(modelRef) => update({ modelRef })} />
+            <Text style={styles.label}>思考レベル</Text>
+            <OptionSelectField
+              title="思考レベル"
+              options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
+              selectedValue={schedule.reasoningEffort}
+              onSelect={(reasoningEffort) => update({ reasoningEffort: reasoningEffort as CodexSchedule["reasoningEffort"] })}
+            />
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>プロンプト</Text>
+            <TextInput
+              accessibilityLabel="プロンプト"
+              style={[styles.input, styles.prompt]}
+              value={schedule.prompt}
+              maxLength={24_000}
+              multiline
+              textAlignVertical="top"
+              onChangeText={(prompt) => update({ prompt })}
+            />
+            <Text style={styles.count}>{schedule.prompt.length.toLocaleString()} / 24,000</Text>
+          </View>
+
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="スケジュールを削除"
+            style={styles.deleteButton}
+            onPress={() => Alert.alert("スケジュールを削除しますか？", schedule.name, [
+              { text: "キャンセル", style: "cancel" },
+              { text: "削除", style: "destructive", onPress: () => onDelete(schedule.id) },
+            ])}
+          >
+            <Text style={styles.deleteText}>スケジュールを削除</Text>
+          </TouchableOpacity>
+        </KeyboardAwareScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: "#f1f5f9" },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#cbd5e1", backgroundColor: "#fff" },
+  headerAction: { color: "#2563eb", fontSize: 16, minWidth: 48 },
+  headerSpacer: { width: 48 },
+  title: { fontSize: 17, fontWeight: "700", color: "#0f172a" },
+  content: { padding: 16, paddingBottom: 60, gap: 16 },
+  section: { padding: 14, gap: 10, backgroundColor: "#fff", borderRadius: 12 },
+  sectionTitle: { fontSize: 13, fontWeight: "700", color: "#64748b", textTransform: "uppercase" },
+  switchRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  label: { fontSize: 13, fontWeight: "600", color: "#475569" },
+  input: { minHeight: 42, borderWidth: 1, borderColor: "#cbd5e1", borderRadius: 8, paddingHorizontal: 10, color: "#0f172a" },
+  prompt: { minHeight: 150, paddingTop: 10 },
+  count: { color: "#64748b", textAlign: "right", fontSize: 12 },
+  timeZone: { color: "#334155" },
+  secondaryButton: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8, backgroundColor: "#e2e8f0" },
+  secondaryText: { color: "#0f172a", fontWeight: "600" },
+  deleteButton: { minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: "#fff" },
+  deleteText: { color: "#dc2626", fontWeight: "700" },
+});
