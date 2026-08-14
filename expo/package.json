@@ -21,6 +21,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
     "@legendapp/list": "^2.0.19",
+    "@react-native-community/datetimepicker": "8.4.4",
     "@shopify/react-native-skia": "2.4.21",
     "expo": "~54.0.34",
     "expo-av": "~16.0.8",

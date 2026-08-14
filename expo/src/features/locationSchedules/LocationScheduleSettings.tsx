@@ -24,7 +24,7 @@ import {
 } from "./locationScheduleRules";
 import { loadLocationSchedules, saveAndActivateLocationSchedules } from "./locationScheduleRuntime";
 import { LocationMapPicker, type LocationMapPickerTarget } from "./LocationMapPicker";
-import { OptionSelectField } from "./OptionSelectField";
+import { OptionSelectField } from "../app/components/OptionSelectField";
 import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
 import { requestCalendarPermission } from "../calendar/calendarService";
 

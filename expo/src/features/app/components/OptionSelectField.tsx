@@ -18,15 +18,27 @@ type Props = {
   options: readonly OptionSelectItem[];
   selectedValue: string;
   onSelect: (value: string) => void;
+  accessibilityLabel?: string;
 };
 
-export function OptionSelectField({ title, options, selectedValue, onSelect }: Props) {
+export function OptionSelectField({
+  title,
+  options,
+  selectedValue,
+  onSelect,
+  accessibilityLabel = title,
+}: Props) {
   const [open, setOpen] = useState(false);
   const selected = options.find((option) => option.value === selectedValue);
 
   return (
     <>
-      <TouchableOpacity style={styles.field} onPress={() => setOpen(true)}>
+      <TouchableOpacity
+        accessibilityLabel={accessibilityLabel}
+        accessibilityRole="button"
+        style={styles.field}
+        onPress={() => setOpen(true)}
+      >
         <Text style={styles.fieldText} numberOfLines={1}>
           {selected?.label ?? selectedValue}
         </Text>
@@ -41,6 +53,7 @@ export function OptionSelectField({ title, options, selectedValue, onSelect }: P
                 const isSelected = option.value === selectedValue;
                 return (
                   <TouchableOpacity
+                    accessibilityRole="button"
                     key={option.value}
                     style={[styles.option, isSelected && styles.optionSelected]}
                     onPress={() => {

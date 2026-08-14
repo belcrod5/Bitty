@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { executeCodexTurn } from "../src/codex-turn-execution.mjs";
+import { executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
 import { calendarScheduleDynamicTools } from "../src/calendar-tool-service.mjs";
 
 function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) {
@@ -77,6 +77,26 @@ test("starts an ordinary new thread and forwards configured turn options", async
     model: "gpt-5.6-sol",
     effort: "high",
   });
+});
+
+test("starts a turn without requiring or waiting for completion APIs", async () => {
+  const client = fakeClient([]);
+  delete client.addNotificationListener;
+  delete client.waitForTurnCompletion;
+
+  const result = await startCodexTurn({
+    client,
+    clientName: "scheduled-turn",
+    inputText: "run checks",
+    cwd: "/work/project",
+    model: "gpt-5.6-sol",
+    effort: "high",
+  });
+
+  assert.equal(result.threadId, "thread-new");
+  assert.equal(result.turnId, "turn-1");
+  assert.equal(typeof result.cleanup, "function");
+  assert.equal(client.calls.filter((call) => call.method === "turn/start").length, 1);
 });
 
 test("resumes a queued turn's existing thread through the same operation", async () => {
@@ -262,6 +282,7 @@ test("calendar schedules fail closed before turn/start when MCP status is not em
     /calendar_api_failed/
   );
   assert.equal(client.calls.some((call) => call.method === "turn/start"), false);
+  assert.equal(client.serverRequestHandlers.size, 0);
 });
 
 test("calendar thread-start incompatibility is explicit and never falls back", async () => {
@@ -284,6 +305,7 @@ test("calendar thread-start incompatibility is explicit and never falls back", a
   );
   assert.equal(client.calls.filter((call) => call.method === "thread/start").length, 1);
   assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
+  assert.equal(client.serverRequestHandlers.size, 0);
 });
 
 test("calendar schedules fail clearly when namespace tools are unavailable", async () => {

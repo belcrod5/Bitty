@@ -87,6 +87,7 @@ test("sends exactly one push for a new approval request with the command in the 
   assert.equal(calls[0].payload.aps["interruption-level"], "time-sensitive");
   assert.equal(calls[0].payload.approvalId, "relay-approval-test:42");
   assert.equal(calls[0].payload.sessionId, "thread-1");
+  assert.equal(calls[0].payload.directory, "");
 });
 
 test("falls back to a generic file-change label when no command is present", async (t) => {
@@ -207,6 +208,28 @@ test("uses the relay's working-directory basename as the approval push title", a
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].payload.aps.alert.title, "test_folder");
+  assert.equal(calls[0].payload.directory, "/Volumes/SSD-500GB-SanDisk/work/test_folder");
+});
+
+test("prefers the confirmed thread id over the transport session id", async (t) => {
+  await pushDeviceStore.upsertDevice({ deviceId: "device-session", apnsToken: "token-session", env: "sandbox" });
+  const calls = [];
+  const originalSendToDevice = apnsClient.sendToDevice;
+  apnsClient.sendToDevice = async (token, payload) => {
+    calls.push({ token, payload });
+    return { ok: true, status: 200 };
+  };
+  t.after(async () => {
+    apnsClient.sendToDevice = originalSendToDevice;
+    await pushDeviceStore.removeDevice("device-session");
+  });
+
+  const relay = makeRelay({ runnerWsLlmSessionId: "transport-session" });
+  handleCodexRelayUpstreamMessage(relay, approvalMessage(22, { command: "npm test" }), false);
+  await flush();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.sessionId, "thread-1");
 });
 
 test("captures the session cwd from client thread/start / turn/start RPCs", () => {
