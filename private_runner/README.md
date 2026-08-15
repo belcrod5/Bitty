@@ -622,6 +622,31 @@ npm run ios
 - `brave_search.sh` は引数 `query`（必須）のみを受け取り、`count=5` / `country=JP` / `search_lang=jp` を固定で Brave Search API を呼びます。
 - APIキーは runner の環境変数 `BRAVE_API_KEY`（または互換 `BRAVE_SEARCH_API_KEY`）からのみ読み取ります。
 
+## Codex schedule API / CLI
+
+予定一覧とiOSの一括保存は従来どおり `GET /codex-schedules` と
+`PUT /codex-schedules` を使います。一件単位の操作は同じrevisionとstoreに対して次を使います。
+
+- `POST /codex-schedules`: `Idempotency-Key` UUIDを予定IDとして一件作成
+- `PATCH /codex-schedules/:id`: mutable fieldだけを部分更新
+- `DELETE /codex-schedules/:id`: `{ "baseRevision": ... }` で一件削除
+
+同じMac上のCodexからはBearer tokenを引数へ出さない専用CLIを使います。CLIは
+`private_runner/.env` の `RUNNER_TOKEN_FILE` と `RUNNER_PORT`（次点 `PORT`）を読み、
+`http://127.0.0.1` だけへ接続します。token fileは所有者だけが読めるmode 600にしてください。
+
+```bash
+node private_runner/tools/codex-schedules.mjs list
+node private_runner/tools/codex-schedules.mjs create < create-request.json
+node private_runner/tools/codex-schedules.mjs update <schedule-id> < update-request.json
+node private_runner/tools/codex-schedules.mjs delete <schedule-id> < delete-request.json
+```
+
+mutation JSONはstdinまたは`--file /path/to/request.json`のどちらか一方から渡します。
+createのJSONには`baseRevision`, `schedule`と、再試行に使う任意の`requestId` UUIDを入れます。
+応答を失ったcreateは、出力された同じ`requestId`、元の`baseRevision`、同じscheduleで再試行します。
+revision conflictでは自動上書きせず、`list`で再取得して変更内容を見直してください。
+
 ## テスト（mock）
 ```bash
 RUNNER_MOCK=1 RUNNER_TOKEN=test node private_runner/server.mjs

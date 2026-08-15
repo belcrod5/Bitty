@@ -29,6 +29,12 @@ const DEFINITION_KEYS = new Set([
   "id", "name", "enabled", "startLocal", "timeZone", "rrule",
   "cwd", "modelRef", "reasoningEffort", "prompt",
 ]);
+const CREATE_DEFINITION_KEYS = new Set([
+  "name", "enabled", "startLocal", "timeZone", "rrule",
+  "cwd", "modelRef", "reasoningEffort", "prompt",
+]);
+
+export const CODEX_SCHEDULE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class CodexScheduleStoreUnavailableError extends Error {
   constructor(message) {
@@ -43,6 +49,24 @@ export class CodexScheduleRevisionConflictError extends Error {
     super("Codex schedule revision conflict");
     this.name = "CodexScheduleRevisionConflictError";
     this.code = "CODEX_SCHEDULE_REVISION_CONFLICT";
+    this.revision = revision;
+  }
+}
+
+export class CodexScheduleNotFoundError extends Error {
+  constructor() {
+    super("Codex schedule was not found");
+    this.name = "CodexScheduleNotFoundError";
+    this.code = "CODEX_SCHEDULE_NOT_FOUND";
+  }
+}
+
+export class CodexScheduleIdempotencyConflictError extends Error {
+  constructor(id, revision) {
+    super("Idempotency key is already used by a different Codex schedule");
+    this.name = "CodexScheduleIdempotencyConflictError";
+    this.code = "CODEX_SCHEDULE_IDEMPOTENCY_CONFLICT";
+    this.id = id;
     this.revision = revision;
   }
 }
@@ -100,7 +124,7 @@ function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields =
   const value = requireObject(raw, `schedules[${index}]`);
   if (strictStoredFields) onlyKeys(value, DEFINITION_KEYS, `schedules[${index}]`);
   const id = requireString(value.id, `schedules[${index}].id`).trim();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+  if (!CODEX_SCHEDULE_UUID_PATTERN.test(id)) {
     throw new Error(`schedules[${index}].id is invalid`);
   }
   const name = requireString(value.name, `schedules[${index}].name`).trim();
@@ -314,20 +338,12 @@ export function createCodexScheduleService({
     }
   }
 
-  async function persistBoth(nextDefinitions, nextRuntime) {
-    nextDefinitions.updatedAt = iso(now());
-    nextRuntime.updatedAt = nextDefinitions.updatedAt;
+  async function persistBoth(definitionsText, runtimeText) {
     let definitionsTemporaryPath;
     let runtimeTemporaryPath;
     try {
-      definitionsTemporaryPath = await writeTemporary(
-        definitionsPath,
-        encoded(nextDefinitions, CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES, "definitions store"),
-      );
-      runtimeTemporaryPath = await writeTemporary(
-        runtimePath,
-        encoded(nextRuntime, CODEX_SCHEDULE_RUNTIME_MAX_BYTES, "runtime store"),
-      );
+      definitionsTemporaryPath = await writeTemporary(definitionsPath, definitionsText);
+      runtimeTemporaryPath = await writeTemporary(runtimePath, runtimeText);
       await fileSystem.rename(definitionsTemporaryPath, definitionsPath);
       definitionsTemporaryPath = null;
       await fileSystem.rename(runtimeTemporaryPath, runtimePath);
@@ -385,7 +401,13 @@ export function createCodexScheduleService({
         const at = now();
         definitionsStore = { version: 1, revision: 0, schedules: [], updatedAt: iso(at) };
         runtimeStore = { version: 1, definitionsRevision: 0, runtimes: {}, updatedAt: iso(at) };
-        await persistBoth(definitionsStore, runtimeStore);
+        const definitionsText = encoded(
+          definitionsStore,
+          CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
+          "definitions store",
+        );
+        const runtimeText = encoded(runtimeStore, CODEX_SCHEDULE_RUNTIME_MAX_BYTES, "runtime store");
+        await persistBoth(definitionsText, runtimeText);
         loaded = true;
         return;
       }
@@ -610,6 +632,56 @@ export function createCodexScheduleService({
     return serialize(async () => buildSnapshot(definitionsStore.schedules, runtimeStore));
   }
 
+  async function commitNormalizedDefinitions(schedules, at) {
+    const previousDefinitions = new Map(
+      definitionsStore.schedules.map((definition) => [definition.id, definition]),
+    );
+    const runtimes = {};
+    for (const definition of schedules) {
+      const previousDefinition = previousDefinitions.get(definition.id);
+      const previousRuntime = runtimeStore.runtimes[definition.id];
+      const changedTrigger = triggerChanged(previousDefinition, definition);
+      let nextOccurrenceAt = previousRuntime?.nextOccurrenceAt ?? null;
+      if (changedTrigger) {
+        nextOccurrenceAt = definition.enabled
+          ? codexScheduleOccurrenceAfter(definition, at, false)
+          : null;
+        if (definition.rrule === null && definition.enabled && !nextOccurrenceAt) {
+          throw new Error(`schedule ${definition.id} one-time start must be in the future`);
+        }
+      }
+      runtimes[definition.id] = {
+        definitionHash: codexScheduleDefinitionHash(definition),
+        nextOccurrenceAt: definition.enabled ? nextOccurrenceAt : null,
+        lastDispatch: clone(previousRuntime?.lastDispatch ?? null),
+      };
+    }
+    const updatedAt = iso(at);
+    const nextRevision = definitionsStore.revision + 1;
+    const nextDefinitions = {
+      version: 1,
+      revision: nextRevision,
+      schedules,
+      updatedAt,
+    };
+    const nextRuntime = {
+      version: 1,
+      definitionsRevision: nextRevision,
+      runtimes,
+      updatedAt,
+    };
+    const definitionsText = encoded(
+      nextDefinitions,
+      CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
+      "definitions store",
+    );
+    const runtimeText = encoded(nextRuntime, CODEX_SCHEDULE_RUNTIME_MAX_BYTES, "runtime store");
+    await persistBoth(definitionsText, runtimeText);
+    definitionsStore = nextDefinitions;
+    runtimeStore = nextRuntime;
+    return buildSnapshot(schedules, nextRuntime);
+  }
+
   async function replaceSchedules(payload) {
     const result = await serialize(async () => {
       const body = requireObject(payload, "request");
@@ -623,46 +695,135 @@ export function createCodexScheduleService({
         parseCodexOptions,
         validateCwd,
       });
-      const at = now();
-      const previousDefinitions = new Map(definitionsStore.schedules.map((definition) => [definition.id, definition]));
-      const runtimes = {};
-      for (const definition of schedules) {
-        const previousDefinition = previousDefinitions.get(definition.id);
-        const previousRuntime = runtimeStore.runtimes[definition.id];
-        const changedTrigger = triggerChanged(previousDefinition, definition);
-        let nextOccurrenceAt = previousRuntime?.nextOccurrenceAt ?? null;
-        if (changedTrigger) {
-          nextOccurrenceAt = definition.enabled
-            ? codexScheduleOccurrenceAfter(definition, at, false)
-            : null;
-          const oneTimeMustBeFuture = definition.rrule === null && definition.enabled;
-          if (oneTimeMustBeFuture && !nextOccurrenceAt) {
-            throw new Error(`schedule ${definition.id} one-time start must be in the future`);
-          }
+      return commitNormalizedDefinitions(schedules, now());
+    });
+    armTimer();
+    void evaluate().catch(() => {});
+    return result;
+  }
+
+  async function createSchedule(payload, idempotencyKey) {
+    let committed = false;
+    const result = await serialize(async () => {
+      const body = requireObject(payload, "request");
+      onlyKeys(body, new Set(["baseRevision", "schedule"]), "request");
+      if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) {
+        throw new Error("baseRevision must be a non-negative integer");
+      }
+      if (!CODEX_SCHEDULE_UUID_PATTERN.test(String(idempotencyKey || ""))) {
+        throw new Error("idempotency key is invalid");
+      }
+      const input = requireObject(body.schedule, "schedule");
+      onlyKeys(input, CREATE_DEFINITION_KEYS, "schedule");
+      const schedule = normalizeDefinition(
+        { ...input, id: idempotencyKey },
+        0,
+        parseCodexOptions,
+        true,
+      );
+      const existing = definitionsStore.schedules.find((item) => item.id === idempotencyKey);
+      if (existing) {
+        if (JSON.stringify(existing) === JSON.stringify(schedule)) {
+          const snapshot = buildSnapshot(definitionsStore.schedules, runtimeStore);
+          return {
+            created: false,
+            revision: snapshot.revision,
+            schedule: snapshot.schedules.find((item) => item.id === idempotencyKey),
+          };
         }
-        runtimes[definition.id] = {
-          definitionHash: codexScheduleDefinitionHash(definition),
-          nextOccurrenceAt: definition.enabled ? nextOccurrenceAt : null,
-          lastDispatch: clone(previousRuntime?.lastDispatch ?? null),
+        throw new CodexScheduleIdempotencyConflictError(idempotencyKey, definitionsStore.revision);
+      }
+      if (body.baseRevision !== definitionsStore.revision) {
+        throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
+      }
+      if (definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
+        throw new Error("schedules must contain at most 100 entries");
+      }
+      await validateCwd(schedule.cwd);
+      const snapshot = await commitNormalizedDefinitions(
+        [...definitionsStore.schedules, schedule],
+        now(),
+      );
+      committed = true;
+      return {
+        created: true,
+        revision: snapshot.revision,
+        schedule: snapshot.schedules.find((item) => item.id === idempotencyKey),
+      };
+    });
+    if (committed) {
+      armTimer();
+      void evaluate().catch(() => {});
+    }
+    return result;
+  }
+
+  async function patchSchedule(id, payload) {
+    let committed = false;
+    const result = await serialize(async () => {
+      if (!CODEX_SCHEDULE_UUID_PATTERN.test(String(id || ""))) {
+        throw new Error("schedule id is invalid");
+      }
+      const body = requireObject(payload, "request");
+      onlyKeys(body, new Set(["baseRevision", "patch"]), "request");
+      if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) {
+        throw new Error("baseRevision must be a non-negative integer");
+      }
+      const patch = requireObject(body.patch, "patch");
+      onlyKeys(patch, CREATE_DEFINITION_KEYS, "patch");
+      const patchKeys = Object.keys(patch);
+      if (patchKeys.length === 0) throw new Error("patch must not be empty");
+      const index = definitionsStore.schedules.findIndex((schedule) => schedule.id === id);
+      if (index < 0) throw new CodexScheduleNotFoundError();
+      const current = definitionsStore.schedules[index];
+      const schedule = normalizeDefinition({ ...current, ...patch }, index, parseCodexOptions, true);
+      if (patchKeys.every((key) => current[key] === schedule[key])) {
+        const snapshot = buildSnapshot(definitionsStore.schedules, runtimeStore);
+        return {
+          updated: false,
+          revision: snapshot.revision,
+          schedule: snapshot.schedules.find((item) => item.id === id),
         };
       }
-      const nextRevision = definitionsStore.revision + 1;
-      const nextDefinitions = {
-        version: 1,
-        revision: nextRevision,
-        schedules,
-        updatedAt: iso(at),
+      if (body.baseRevision !== definitionsStore.revision) {
+        throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
+      }
+      await validateCwd(schedule.cwd);
+      const schedules = [...definitionsStore.schedules];
+      schedules[index] = schedule;
+      const snapshot = await commitNormalizedDefinitions(schedules, now());
+      committed = true;
+      return {
+        updated: true,
+        revision: snapshot.revision,
+        schedule: snapshot.schedules.find((item) => item.id === id),
       };
-      const nextRuntime = {
-        version: 1,
-        definitionsRevision: nextRevision,
-        runtimes,
-        updatedAt: iso(at),
-      };
-      await persistBoth(nextDefinitions, nextRuntime);
-      definitionsStore = nextDefinitions;
-      runtimeStore = nextRuntime;
-      return buildSnapshot(schedules, nextRuntime);
+    });
+    if (committed) {
+      armTimer();
+      void evaluate().catch(() => {});
+    }
+    return result;
+  }
+
+  async function deleteSchedule(id, payload) {
+    const result = await serialize(async () => {
+      if (!CODEX_SCHEDULE_UUID_PATTERN.test(String(id || ""))) {
+        throw new Error("schedule id is invalid");
+      }
+      const body = requireObject(payload, "request");
+      onlyKeys(body, new Set(["baseRevision"]), "request");
+      if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0) {
+        throw new Error("baseRevision must be a non-negative integer");
+      }
+      const index = definitionsStore.schedules.findIndex((schedule) => schedule.id === id);
+      if (index < 0) throw new CodexScheduleNotFoundError();
+      if (body.baseRevision !== definitionsStore.revision) {
+        throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
+      }
+      const schedules = definitionsStore.schedules.filter((schedule) => schedule.id !== id);
+      const snapshot = await commitNormalizedDefinitions(schedules, now());
+      return { deleted: true, id, revision: snapshot.revision };
     });
     armTimer();
     void evaluate().catch(() => {});
@@ -695,6 +856,9 @@ export function createCodexScheduleService({
     stop,
     evaluate,
     replaceSchedules,
+    createSchedule,
+    patchSchedule,
+    deleteSchedule,
     snapshot,
     whenIdle,
     get activeStartCount() { return activeStarts; },
