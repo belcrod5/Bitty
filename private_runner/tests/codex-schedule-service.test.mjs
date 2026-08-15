@@ -8,6 +8,8 @@ import { createCodexScheduleHttpHandler } from "../src/codex-schedule-http.mjs";
 import {
   CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
   CODEX_SCHEDULE_RUNTIME_MAX_BYTES,
+  CodexScheduleIdempotencyConflictError,
+  CodexScheduleNotFoundError,
   CodexScheduleRevisionConflictError,
   CodexScheduleStoreUnavailableError,
   codexScheduleDefinitionHash,
@@ -15,6 +17,7 @@ import {
 } from "../src/codex-schedule-service.mjs";
 
 const ID_A = "11111111-1111-4111-8111-111111111111";
+const ID_B = "22222222-2222-4222-8222-222222222222";
 
 function clock(initial = "2026-08-13T00:00:00.000Z") {
   let current = new Date(initial);
@@ -150,6 +153,265 @@ test("replacement is atomic, serialized, and preserves action-only next occurren
     error instanceof CodexScheduleRevisionConflictError && error.revision === 3);
   assert.deepEqual(await harness.service.snapshot(), { revision: 3, schedules: [] });
   assert.equal(harness.service.timerArmed, false);
+});
+
+test("item create, patch, and delete share revision and preserve idempotent retries", async (t) => {
+  const harness = await makeHarness();
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const input = { ...definition(), id: undefined };
+  delete input.id;
+
+  const created = await harness.service.createSchedule({ baseRevision: 0, schedule: input }, ID_A);
+  assert.equal(created.created, true);
+  assert.equal(created.revision, 1);
+  assert.equal(created.schedule.id, ID_A);
+  await harness.service.snapshot();
+  const timerCountAfterCreate = harness.timers.length;
+
+  const retried = await harness.service.createSchedule({ baseRevision: 0, schedule: input }, ID_A);
+  assert.equal(retried.created, false);
+  assert.equal(retried.revision, 1);
+  await harness.service.snapshot();
+  assert.equal(harness.timers.length, timerCountAfterCreate);
+  await assert.rejects(
+    harness.service.createSchedule({
+      baseRevision: 1,
+      schedule: { ...input, name: "Different" },
+    }, ID_A),
+    CodexScheduleIdempotencyConflictError,
+  );
+
+  const updated = await harness.service.patchSchedule(ID_A, {
+    baseRevision: 1,
+    patch: { prompt: "Updated action" },
+  });
+  assert.equal(updated.updated, true);
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.schedule.nextOccurrenceAt, created.schedule.nextOccurrenceAt);
+  await harness.service.snapshot();
+  const timerCountAfterPatch = harness.timers.length;
+
+  const noOp = await harness.service.patchSchedule(ID_A, {
+    baseRevision: 0,
+    patch: { prompt: "Updated action" },
+  });
+  assert.equal(noOp.updated, false);
+  assert.equal(noOp.revision, 2);
+  await harness.service.snapshot();
+  assert.equal(harness.timers.length, timerCountAfterPatch);
+  await assert.rejects(
+    harness.service.patchSchedule(ID_A, { baseRevision: 0, patch: { enabled: false } }),
+    CodexScheduleRevisionConflictError,
+  );
+
+  const deleted = await harness.service.deleteSchedule(ID_A, { baseRevision: 2 });
+  assert.deepEqual(deleted, { deleted: true, id: ID_A, revision: 3 });
+  assert.deepEqual(await harness.service.snapshot(), { revision: 3, schedules: [] });
+  await assert.rejects(
+    harness.service.deleteSchedule(ID_A, { baseRevision: 3 }),
+    CodexScheduleNotFoundError,
+  );
+  await assert.rejects(
+    harness.service.createSchedule({ baseRevision: 0, schedule: input }, ID_A),
+    CodexScheduleRevisionConflictError,
+  );
+});
+
+test("item mutations are strict and competing revisions serialize", async (t) => {
+  const harness = await makeHarness();
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const withoutId = ({ id: _id, ...schedule }) => schedule;
+  await assert.rejects(
+    harness.service.createSchedule({
+      baseRevision: 0,
+      schedule: { ...withoutId(definition()), unknown: true },
+    }, ID_A),
+    /not supported/,
+  );
+  await harness.service.createSchedule({ baseRevision: 0, schedule: withoutId(definition()) }, ID_A);
+  await assert.rejects(
+    harness.service.patchSchedule(ID_A, { baseRevision: 1, patch: {} }),
+    /must not be empty/,
+  );
+  await assert.rejects(
+    harness.service.patchSchedule(ID_A, { baseRevision: 1, patch: { id: ID_B } }),
+    /not supported/,
+  );
+
+  const patch = harness.service.patchSchedule(ID_A, {
+    baseRevision: 1,
+    patch: { name: "Winner" },
+  });
+  const create = harness.service.createSchedule({
+    baseRevision: 1,
+    schedule: withoutId(definition({ name: "Second" })),
+  }, ID_B);
+  assert.equal((await patch).revision, 2);
+  await assert.rejects(create, CodexScheduleRevisionConflictError);
+});
+
+test("oversized normalized candidates stay validation failures without latching the store", async (t) => {
+  const harness = await makeHarness();
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  await harness.service.snapshot();
+  const schedules = Array.from({ length: 100 }, (_, index) => definition({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    name: `schedule ${index}`,
+    prompt: "\u0000".repeat(24_000),
+  }));
+  await assert.rejects(
+    harness.service.replaceSchedules({ baseRevision: 0, schedules }),
+    (error) => !(error instanceof CodexScheduleStoreUnavailableError) && /size limit/.test(error.message),
+  );
+  assert.deepEqual(await harness.service.snapshot(), { revision: 0, schedules: [] });
+  const saved = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
+  assert.equal(saved.revision, 1);
+});
+
+test("oversized POST and PATCH candidates leave files and service healthy", async (t) => {
+  const largeSchedules = Array.from({ length: 99 }, (_, index) => definition({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    name: `schedule ${index}`,
+    prompt: "\u0000".repeat(14_000),
+  }));
+
+  const post = await makeHarness();
+  t.after(() => fs.rm(post.directory, { recursive: true, force: true }));
+  await post.service.replaceSchedules({ baseRevision: 0, schedules: largeSchedules });
+  const postDefinitions = await fs.readFile(post.definitionsPath, "utf8");
+  const postRuntime = await fs.readFile(post.runtimePath, "utf8");
+  const largeCreate = { ...definition({ prompt: "\u0000".repeat(14_000) }) };
+  delete largeCreate.id;
+  await assert.rejects(
+    post.service.createSchedule({ baseRevision: 1, schedule: largeCreate }, ID_A),
+    (error) => !(error instanceof CodexScheduleStoreUnavailableError) && /size limit/.test(error.message),
+  );
+  assert.equal(await fs.readFile(post.definitionsPath, "utf8"), postDefinitions);
+  assert.equal(await fs.readFile(post.runtimePath, "utf8"), postRuntime);
+  assert.equal((await post.service.snapshot()).revision, 1);
+  assert.equal((await post.service.patchSchedule(largeSchedules[0].id, {
+    baseRevision: 1,
+    patch: { name: "small edit" },
+  })).revision, 2);
+
+  const patch = await makeHarness();
+  t.after(() => fs.rm(patch.directory, { recursive: true, force: true }));
+  await patch.service.replaceSchedules({ baseRevision: 0, schedules: largeSchedules });
+  await assert.rejects(
+    patch.service.patchSchedule(largeSchedules[0].id, {
+      baseRevision: 1,
+      patch: { prompt: "\u0000".repeat(24_000) },
+    }),
+    (error) => !(error instanceof CodexScheduleStoreUnavailableError) && /size limit/.test(error.message),
+  );
+  assert.equal((await patch.service.snapshot()).revision, 1);
+  const smallCreate = { ...definition({ name: "small create" }) };
+  delete smallCreate.id;
+  assert.equal((await patch.service.createSchedule({
+    baseRevision: 1,
+    schedule: smallCreate,
+  }, ID_A)).revision, 2);
+});
+
+test("actual definition-store I/O failure still latches service unavailable", async (t) => {
+  let failRename = false;
+  const fileSystem = {
+    ...fs,
+    rename: async (source, target) => {
+      if (failRename && target.endsWith("codex_schedules.json")) {
+        const error = new Error("simulated rename failure");
+        error.code = "EIO";
+        throw error;
+      }
+      await fs.rename(source, target);
+    },
+  };
+  const harness = await makeHarness({ fileSystem });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  await harness.service.snapshot();
+  failRename = true;
+  await assert.rejects(
+    harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] }),
+    CodexScheduleStoreUnavailableError,
+  );
+  await assert.rejects(harness.service.snapshot(), CodexScheduleStoreUnavailableError);
+});
+
+test("real HTTP handler maps oversized PUT, POST, and PATCH to 400 without poisoning GET", async (t) => {
+  async function request(service, { method, pathname = "/codex-schedules", body, headers = {} }) {
+    const responses = [];
+    const handler = createCodexScheduleHttpHandler({
+      service,
+      runnerToken: "secret",
+      parseAuthToken: (req) => req.auth,
+      readJsonBody: async (req) => req.body,
+      json: (_res, status, payload) => responses.push({ status, payload }),
+    });
+    await handler({ method, auth: "secret", body, headers }, {}, pathname);
+    return responses[0];
+  }
+
+  const largeSchedules = Array.from({ length: 99 }, (_, index) => definition({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    name: `schedule ${index}`,
+    prompt: "\u0000".repeat(14_000),
+  }));
+  const cases = [];
+
+  const put = await makeHarness();
+  t.after(() => fs.rm(put.directory, { recursive: true, force: true }));
+  cases.push({
+    harness: put,
+    request: {
+      method: "PUT",
+      body: {
+        baseRevision: 0,
+        schedules: Array.from({ length: 100 }, (_, index) => definition({
+          id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+          name: `schedule ${index}`,
+          prompt: "\u0000".repeat(24_000),
+        })),
+      },
+    },
+    revision: 0,
+  });
+
+  const post = await makeHarness();
+  t.after(() => fs.rm(post.directory, { recursive: true, force: true }));
+  await post.service.replaceSchedules({ baseRevision: 0, schedules: largeSchedules });
+  const largeCreate = { ...definition({ prompt: "\u0000".repeat(14_000) }) };
+  delete largeCreate.id;
+  cases.push({
+    harness: post,
+    request: {
+      method: "POST",
+      headers: { "idempotency-key": ID_A },
+      body: { baseRevision: 1, schedule: largeCreate },
+    },
+    revision: 1,
+  });
+
+  const patch = await makeHarness();
+  t.after(() => fs.rm(patch.directory, { recursive: true, force: true }));
+  await patch.service.replaceSchedules({ baseRevision: 0, schedules: largeSchedules });
+  cases.push({
+    harness: patch,
+    request: {
+      method: "PATCH",
+      pathname: `/codex-schedules/${largeSchedules[0].id}`,
+      body: { baseRevision: 1, patch: { prompt: "\u0000".repeat(24_000) } },
+    },
+    revision: 1,
+  });
+
+  for (const item of cases) {
+    const mutation = await request(item.harness.service, item.request);
+    assert.equal(mutation.status, 400);
+    assert.equal(mutation.payload.error, "invalid_codex_schedules");
+    const get = await request(item.harness.service, { method: "GET" });
+    assert.equal(get.status, 200);
+    assert.equal(get.payload.revision, item.revision);
+  }
 });
 
 test("trigger edits, disable, and re-enable always calculate strictly from save time", async (t) => {
