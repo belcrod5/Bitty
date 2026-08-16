@@ -85,9 +85,9 @@ PODS:
   - FBLazyVector (0.81.9)
   - fmt (12.1.0)
   - glog (0.3.5)
-  - hermes-engine (0.81.5):
-    - hermes-engine/Pre-built (= 0.81.5)
-  - hermes-engine/Pre-built (0.81.5)
+  - hermes-engine (0.81.6):
+    - hermes-engine/Pre-built (= 0.81.6)
+  - hermes-engine/Pre-built (0.81.6)
   - RCT-Folly (2024.11.18.00):
     - boost
     - DoubleConversion
@@ -1801,7 +1801,7 @@ PODS:
     - React-RCTFBReactNativeSpec
     - ReactCommon/turbomodule/core
     - SocketRocket
-  - react-native-skia (2.4.21):
+  - react-native-skia (2.2.12):
     - boost
     - DoubleConversion
     - fast_float
@@ -2961,7 +2961,7 @@ SPEC CHECKSUMS:
   FBLazyVector: 3cde5aa3abeda29fd70560e5a3e3199e6add163f
   fmt: 4cf0c5ec5864511c96d8d4bd7b03c3c69040af06
   glog: 0b31c25149b9d350b2666c7d459229861a00ec07
-  hermes-engine: 9f4dfe93326146a1c99eb535b1cb0b857a3cd172
+  hermes-engine: 7219f6e751ad6ec7f3d7ec121830ee34dae40749
   RCT-Folly: a3d9b23289a456c318f4814703664bdc33c771cc
   RCTDeprecation: ae9e1391708bf992a2a94fb724b0923015be995b
   RCTRequired: eb7a65dfaf816b64d40e1c96e4fc597bfa28bedc
@@ -2995,7 +2995,7 @@ SPEC CHECKSUMS:
   React-logger: 19586e18cb370047633039b018d365953598739e
   React-Mapbuffer: 45ec5cdca592f4dc6522c59b8f4575abf573e0b1
   React-microtasksnativemodule: a0f271cefc1bae9ff0cb8f4237b9f7481cd97543
-  react-native-skia: d9a291e9c2127a9ecdbd9bc7b8e75ae14f4a5e6c
+  react-native-skia: 665cd52db7ad3d41e2a59c84e9c097343745c088
   react-native-webview: 4cbb7f05f2c50671a7dcff4012d3e85faad271e4
   React-NativeModulesApple: 02b57ec4dced7eb81bedcccdad1ca62fee961c4d
   React-oscompat: 66d4c9c770c0690b00c652a568f30b4713104ebf
