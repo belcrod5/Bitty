@@ -56,7 +56,19 @@ export type SkiaMiniBoardFile = {
   row: number;
 };
 
-export type SkiaMiniBoardItem = SkiaMiniChatSession | SkiaMiniBoardFile;
+export type SkiaMiniBoardDirectory = {
+  kind: "directory";
+  cardId: string;
+  directory: string;
+  name: string;
+  col: number;
+  row: number;
+};
+
+export type SkiaMiniBoardItem =
+  | SkiaMiniChatSession
+  | SkiaMiniBoardFile
+  | SkiaMiniBoardDirectory;
 
 export function formatSkiaMiniChatUpdatedAt(raw: unknown, nowMs = Date.now()) {
   const updatedAtMs = new Date(String(raw || "")).getTime();
@@ -86,6 +98,7 @@ export function useSkiaMiniChatSessions() {
     state: boardState,
     moveCard: moveBoardCard,
     removeSession: removeBoardSession,
+    removeDirectory: removeBoardDirectory,
     removeFile: removeBoardFile,
     hasFile: hasBoardFile,
     markFileUnavailable: markBoardFileUnavailable,
@@ -284,22 +297,16 @@ export function useSkiaMiniChatSessions() {
     sessionTitleOverridesById,
   ]);
 
-  const files = useMemo<SkiaMiniBoardFile[]>(() => (boardState?.cards || []).flatMap((card) => (
-    card.kind === "file"
-      ? [{ ...card, cardId: skiaBoardCardId(card) }]
-      : []
-  )), [boardState]);
   const items = useMemo<SkiaMiniBoardItem[]>(() => {
     const sessionsByCardId = new Map(sessions.map((session) => [session.cardId, session]));
-    const filesByCardId = new Map(files.map((file) => [file.cardId, file]));
     return (boardState?.cards || []).flatMap((card) => {
       const cardId = skiaBoardCardId(card);
       const item = card.kind === "session"
         ? sessionsByCardId.get(cardId)
-        : filesByCardId.get(cardId);
+        : { ...card, cardId };
       return item ? [item] : [];
     });
-  }, [boardState, files, sessions]);
+  }, [boardState, sessions]);
   const tidyBoard = useCallback(() => {
     tidyCards(items.map((item) => item.cardId));
   }, [items, tidyCards]);
@@ -318,6 +325,7 @@ export function useSkiaMiniChatSessions() {
     updateBoardSection,
     removeBoardSection,
     removeBoardSession,
+    removeBoardDirectory,
     removeBoardFile,
     hasBoardFile,
     markBoardFileUnavailable,

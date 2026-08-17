@@ -42,7 +42,16 @@ export type SkiaBoardFileCard = SkiaBoardCardPosition & {
   unavailable?: boolean;
 };
 
-export type SkiaBoardCard = SkiaBoardSessionCard | SkiaBoardFileCard;
+export type SkiaBoardDirectoryCard = SkiaBoardCardPosition & {
+  kind: "directory";
+  directory: string;
+  name: string;
+};
+
+export type SkiaBoardCard =
+  | SkiaBoardSessionCard
+  | SkiaBoardFileCard
+  | SkiaBoardDirectoryCard;
 
 export type SkiaBoardSection = {
   id: string;
@@ -104,9 +113,13 @@ export type SkiaBoardSessionCandidate = {
 };
 
 export function skiaBoardCardId(card: SkiaBoardCard): string {
-  return card.kind === "session"
-    ? `session:${card.sessionId}`
-    : `file:${card.rootDir}\n${card.path}`;
+  if (card.kind === "session") return `session:${card.sessionId}`;
+  if (card.kind === "directory") return skiaBoardDirectoryId(card.directory);
+  return `file:${card.rootDir}\n${card.path}`;
+}
+
+export function skiaBoardDirectoryId(directoryRaw: unknown): string {
+  return `directory:${String(directoryRaw || "").trim()}`;
 }
 
 export function skiaBoardFileId(rootDirRaw: unknown, pathRaw: unknown): string {
@@ -184,6 +197,26 @@ export function parseSkiaBoardState(raw: unknown): SkiaBoardState | null {
       cards.push(parsed);
       continue;
     }
+    if (card.kind === "directory") {
+      const directory = String(card.directory || "").trim();
+      if (!directory) continue;
+      const name = String(card.name || "").trim()
+        || directory.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop()
+        || directory;
+      const parsed: SkiaBoardDirectoryCard = {
+        kind: "directory",
+        directory,
+        name,
+        col,
+        row,
+      };
+      const id = skiaBoardCardId(parsed);
+      if (seenCardIds.has(id)) continue;
+      seenCardIds.add(id);
+      cards.push(parsed);
+      continue;
+    }
+    if (card.kind !== undefined && card.kind !== "session") continue;
     // kind の無い既存保存データは session カードとして移行する。
     const sessionId = String(card.sessionId || "").trim();
     if (!sessionId) continue;
@@ -263,7 +296,7 @@ export function ingestSkiaBoardSessions(
     };
   }
   if (
-    state.cards.some((card) => card.kind === "file")
+    state.cards.length > 0
     && !state.cards.some((card) => card.kind === "session")
     && state.excludedSessionIds.length === 0
     && state.ingestedUpdatedAtMs === 0
@@ -441,6 +474,35 @@ export function addSkiaBoardFile(
       },
     ],
   };
+}
+
+export function addSkiaBoardDirectory(
+  state: SkiaBoardState,
+  target: { directory: string; name: string }
+): SkiaBoardState {
+  const directory = String(target.directory || "").trim();
+  if (!directory) return state;
+  const id = skiaBoardDirectoryId(directory);
+  if (state.cards.some((card) => skiaBoardCardId(card) === id)) return state;
+  const name = String(target.name || "").trim()
+    || directory.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop()
+    || directory;
+  return {
+    ...state,
+    cards: [
+      ...state.cards,
+      { kind: "directory", directory, name, ...findFreeSkiaBoardCell(state.cards) },
+    ],
+  };
+}
+
+export function removeSkiaBoardDirectory(
+  state: SkiaBoardState,
+  directory: string
+): SkiaBoardState {
+  const id = skiaBoardDirectoryId(directory);
+  if (!state.cards.some((card) => skiaBoardCardId(card) === id)) return state;
+  return { ...state, cards: state.cards.filter((card) => skiaBoardCardId(card) !== id) };
 }
 
 export function markSkiaBoardFileUnavailable(

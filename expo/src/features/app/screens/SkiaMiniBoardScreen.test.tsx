@@ -157,6 +157,7 @@ const mockAddBoardSection = jest.fn();
 const mockUpdateBoardSection = jest.fn();
 const mockRemoveBoardSection = jest.fn();
 const mockRemoveBoardSession = jest.fn();
+const mockRemoveBoardDirectory = jest.fn();
 const mockRemoveBoardFile = jest.fn();
 const mockHasBoardFile = jest.fn(() => true);
 const mockMarkBoardFileUnavailable = jest.fn();
@@ -225,6 +226,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     updateBoardSection: mockUpdateBoardSection,
     removeBoardSection: mockRemoveBoardSection,
     removeBoardSession: mockRemoveBoardSession,
+    removeBoardDirectory: mockRemoveBoardDirectory,
     removeBoardFile: mockRemoveBoardFile,
     hasBoardFile: mockHasBoardFile,
     markBoardFileUnavailable: mockMarkBoardFileUnavailable,
@@ -241,6 +243,7 @@ beforeEach(() => {
   mockUpdateBoardSection.mockClear();
   mockRemoveBoardSection.mockClear();
   mockRemoveBoardSession.mockClear();
+  mockRemoveBoardDirectory.mockClear();
   mockRemoveBoardFile.mockClear();
   mockHasBoardFile.mockClear();
   mockMarkBoardFileUnavailable.mockClear();
@@ -258,7 +261,7 @@ test("renders Japanese and emoji through system-fallback paragraphs", async () =
     lastMessageContent: "文字化けせず表示 👨‍👩‍👧‍👦",
   }];
 
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(screen.getByLabelText("日本語の作業場所")).toBeTruthy();
   expect(screen.getByLabelText("進捗確認 👍🏽")).toBeTruthy();
@@ -285,7 +288,7 @@ function fireCardTap() {
 test("animates mouse-wheel zoom but keeps two-pointer pinch direct", async () => {
   const platformDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   const { withTiming } = require("react-native-reanimated") as { withTiming: jest.Mock };
   withTiming.mockClear();
 
@@ -352,7 +355,7 @@ test("keeps the latest message tail visible as streaming content grows", async (
     ...mockDefaultSession,
     lastMessageContent: `${"older ".repeat(100)}FIRST_TAIL`,
   }];
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(screen.getByLabelText(/^…/)).toBeTruthy();
   expect(screen.getByLabelText(/FIRST_TAIL$/)).toBeTruthy();
@@ -362,7 +365,7 @@ test("keeps the latest message tail visible as streaming content grows", async (
     lastMessageContent: `${"older ".repeat(100)}FIRST_TAIL SECOND_TAIL`,
   }];
   await act(async () => {
-    screen.rerender(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+    screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   });
 
   expect(screen.queryByLabelText(/FIRST_TAIL$/)).toBeNull();
@@ -375,7 +378,7 @@ test("keeps the latest hard-line tail visible", async () => {
     lastMessageContent: `${"older ".repeat(100)}\nLATEST_TAIL`,
   }];
 
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(screen.getByLabelText(/LATEST_TAIL$/)).toBeTruthy();
 });
@@ -383,7 +386,7 @@ test("keeps the latest hard-line tail visible", async () => {
 test("opens the tapped card session via the shared session history popup", async () => {
   const openSessionHistoryPopup = jest.fn();
   await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={openSessionHistoryPopup} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={openSessionHistoryPopup} />
   );
 
   // 1タップ目は選択のみ。
@@ -404,9 +407,34 @@ test("opens the tapped card session via the shared session history popup", async
   });
 });
 
+test("opens a new session from a directory card on its second tap", async () => {
+  const onStartNewSessionInDirectory = jest.fn();
+  mockSessions = [{
+    kind: "directory",
+    cardId: "directory:/workspace/projects/bitty",
+    directory: "/workspace/projects/bitty",
+    name: "Bitty",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const screen = await render(
+    <SkiaMiniBoardScreen
+      onStartNewSessionInDirectory={onStartNewSessionInDirectory}
+      openSessionHistoryPopup={jest.fn()}
+    />
+  );
+
+  expect(screen.getByLabelText("Bitty")).toBeTruthy();
+  expect(screen.getByLabelText("/workspace/projects/bitty")).toBeTruthy();
+  await act(async () => { fireCardTap(); });
+  expect(onStartNewSessionInDirectory).not.toHaveBeenCalled();
+  await act(async () => { fireCardTap(); });
+  expect(onStartNewSessionInDirectory).toHaveBeenCalledWith("/workspace/projects/bitty");
+});
+
 test("tidies board cards without touching the viewport", async () => {
   const screen = await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
   await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
@@ -417,7 +445,7 @@ test("tidies board cards without touching the viewport", async () => {
 
 test("keeps board menu actions clickable through the shared modal", async () => {
   const screen = await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
   await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
@@ -430,7 +458,7 @@ test("keeps board menu actions clickable through the shared modal", async () => 
 test("long-pressing a card asks for confirmation before removing it", async () => {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
   await act(async () => {
@@ -448,6 +476,30 @@ test("long-pressing a card asks for confirmation before removing it", async () =
   alertSpy.mockRestore();
 });
 
+test("long-pressing a directory card removes its shortcut after confirmation", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  mockSessions = [{
+    kind: "directory",
+    cardId: "directory:/workspace",
+    directory: "/workspace",
+    name: "Workspace",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
+  });
+  const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+  actions.find((action) => action.text === "削除")?.onPress?.();
+
+  expect(mockRemoveBoardDirectory).toHaveBeenCalledWith("/workspace");
+  alertSpy.mockRestore();
+});
+
 test("shows the shared file menu and removes a file card from it", async () => {
   mockSessions = [{
     kind: "file",
@@ -459,7 +511,7 @@ test("shows the shared file menu and removes a file card from it", async () => {
     row: 0,
   } as unknown as typeof mockDefaultSession];
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   await act(async () => {
     gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
@@ -483,7 +535,7 @@ test("opens a supported file on its second tap without opening the context menu"
     row: 0,
   } as unknown as typeof mockDefaultSession];
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   await act(async () => {
     fireCardTap();
@@ -508,7 +560,7 @@ test("keeps an explicit fallback for unsupported file types on second tap", asyn
     row: 0,
   } as unknown as typeof mockDefaultSession];
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   await act(async () => {
     fireCardTap();
@@ -525,7 +577,7 @@ test("keeps an explicit fallback for unsupported file types on second tap", asyn
 });
 
 test("shows only transparent navigation controls in the header and adjusts card text", async () => {
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(screen.queryByText("Board")).toBeNull();
   expect(screen.queryByText(/タップで選択/)).toBeNull();
@@ -551,7 +603,7 @@ test("shows only transparent navigation controls in the header and adjusts card 
 });
 
 test("keeps the canvas full bleed while the status pill observes the bottom safe area", async () => {
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(StyleSheet.flatten(screen.getByTestId("skia-board-status-safe-area").props.style)).toMatchObject({
     position: "absolute",
@@ -577,7 +629,7 @@ test("renders the four retained vector activities and an ASCII subagent count", 
     subagentTotalCount: 2,
   }];
 
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   const icons = screen.getAllByTestId("skia-icon-path");
   expect(icons).toHaveLength(5);
@@ -604,7 +656,7 @@ test("shows a moved-or-deleted message instead of file actions for an unavailabl
     row: 0,
   } as unknown as typeof mockDefaultSession];
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   await act(async () => {
     gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
@@ -623,7 +675,7 @@ test("shows a moved-or-deleted message instead of file actions for an unavailabl
 test("long-pressing a selected card still opens its context menu", async () => {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
   const registry = gestureRegistry();
@@ -644,7 +696,7 @@ test("long-pressing a selected card still opens its context menu", async () => {
 
 test("commits the dragged card position back to the board state", async () => {
   await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
   const registry = gestureRegistry();
@@ -677,7 +729,7 @@ test("commits the active card coordinates when sessions reorder during a drag", 
     row,
   }));
   const screen = await render(
-    <SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
 
   await act(async () => {
@@ -693,7 +745,7 @@ test("commits the active card coordinates when sessions reorder during a drag", 
 
   mockSessions = mockSessions.slice(1);
   await act(async () => {
-    screen.rerender(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+    screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   });
   await act(async () => {
     gestureRegistry().Pan.onFinalize();
@@ -707,7 +759,7 @@ test("commits the active card coordinates when sessions reorder during a drag", 
 });
 
 test("creates a section by dragging blank board space from the section tool", async () => {
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   await act(async () => {
     fireEvent.press(screen.getByLabelText("セクションを作成"));
   });
@@ -732,7 +784,7 @@ test("creates a section by dragging blank board space from the section tool", as
 });
 
 test("does not create a section over a card or after a multi-touch sequence", async () => {
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   const pan = gestureRegistry().Pan;
   await act(async () => {
     fireEvent.press(screen.getByLabelText("セクションを作成"));
@@ -759,7 +811,7 @@ test("does not create a section over a card or after a multi-touch sequence", as
 
 test("moves and resizes only the selected section", async () => {
   mockSections = [mockSectionAt(300, 250, 200, 150)];
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   const registry = gestureRegistry();
   await act(async () => {
     registry.Tap.onEnd({ x: 380, y: 320 }, true);
@@ -792,7 +844,7 @@ test("moves and resizes only the selected section", async () => {
 
 test("restores a moved section when a second pointer turns the drag into a pinch", async () => {
   mockSections = [mockSectionAt(300, 250, 200, 150)];
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   const pan = gestureRegistry().Pan;
   await act(async () => {
     gestureRegistry().Tap.onEnd({ x: 380, y: 320 }, true);
@@ -823,11 +875,11 @@ test("restores a moved section when a second pointer turns the drag into a pinch
 
 test("does not dispose a rendered paragraph when a section label changes", async () => {
   mockSections = [mockSectionAt(300, 250, 200, 150)];
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   mockSections = [{ ...mockSections[0], label: "実装" }];
   await act(async () => {
-    screen.rerender(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+    screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   });
 
   expect(screen.getByLabelText("実装")).toBeTruthy();
@@ -836,7 +888,7 @@ test("does not dispose a rendered paragraph when a section label changes", async
 
 test("edits section label, color, opacity, and border-only mode from long press", async () => {
   mockSections = [mockSectionAt(300, 250, 200, 150)];
-  const screen = await render(<SkiaMiniBoardScreen openSessionHistoryPopup={jest.fn()} />);
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
   expect(screen.getByLabelText("計画")).toBeTruthy();
   await act(async () => {
     gestureRegistry().LongPress.onStart({ x: 380, y: 320 });
@@ -868,7 +920,7 @@ test("edits section label, color, opacity, and border-only mode from long press"
 test("cards receive hits before an overlapping background section", async () => {
   mockSections = [{ ...mockSectionAt(0, 0, 400, 300), label: "背景" }];
   const openSessionHistoryPopup = jest.fn();
-  await render(<SkiaMiniBoardScreen openSessionHistoryPopup={openSessionHistoryPopup} />);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={openSessionHistoryPopup} />);
   await act(async () => {
     fireCardTap();
   });
