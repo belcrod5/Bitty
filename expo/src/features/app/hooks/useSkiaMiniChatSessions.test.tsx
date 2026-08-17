@@ -343,6 +343,60 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
+  it("projects a persisted directory shortcut as a board item", async () => {
+    persistedFile.skiaBoardState = {
+      cards: [{
+        kind: "directory",
+        directory: "/workspace/projects/bitty",
+        name: "Bitty",
+        col: 1.5,
+        row: 2.25,
+      }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    };
+    mockConversation([]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(result.current.items).toEqual([{
+      kind: "directory",
+      cardId: "directory:/workspace/projects/bitty",
+      directory: "/workspace/projects/bitty",
+      name: "Bitty",
+      col: 1.5,
+      row: 2.25,
+    }]);
+  });
+
+  it("adds, recognizes, persists, and removes a directory through the board context", async () => {
+    mockConversation([]);
+    const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
+    await flush();
+
+    await act(async () => {
+      result.current.addDirectory({ directory: "/workspace/projects/bitty", name: "Bitty" });
+    });
+    await flush();
+
+    expect(result.current.hasDirectory("/workspace/projects/bitty")).toBe(true);
+    expect((persistedFile.skiaBoardState as { cards: unknown[] }).cards).toEqual([{
+      kind: "directory",
+      directory: "/workspace/projects/bitty",
+      name: "Bitty",
+      col: 0,
+      row: 0,
+    }]);
+
+    await act(async () => {
+      result.current.removeDirectory("/workspace/projects/bitty");
+    });
+    await flush();
+
+    expect(result.current.hasDirectory("/workspace/projects/bitty")).toBe(false);
+  });
+
   it("stacks only sessions newer than the ingest watermark", async () => {
     persistedFile.skiaBoardState = {
       cards: [{ sessionId: "session-3", col: 0, row: 0 }],

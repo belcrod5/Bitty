@@ -7,9 +7,15 @@ import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 const mockAddSession = jest.fn();
 const mockRemoveSession = jest.fn();
 const mockHasSession = jest.fn(() => false);
+const mockAddDirectory = jest.fn();
+const mockRemoveDirectory = jest.fn();
+const mockHasDirectory = jest.fn(() => false);
 let mockSkiaBoardLoaded = true;
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
+    addDirectory: mockAddDirectory,
+    removeDirectory: mockRemoveDirectory,
+    hasDirectory: mockHasDirectory,
     addSession: mockAddSession,
     removeSession: mockRemoveSession,
     hasSession: mockHasSession,
@@ -109,6 +115,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   mockHasSession.mockReturnValue(false);
+  mockHasDirectory.mockReturnValue(false);
   mockSkiaBoardLoaded = true;
 });
 
@@ -141,6 +148,35 @@ test("keeps the Skia board action available while persisted board state is unava
   expect(drawer.getByText("Skiaボードへ追加")).toBeTruthy();
   await fireEvent.press(drawer.getByTestId("app-drawer-skia-board-session-action"));
   expect(mockAddSession).not.toHaveBeenCalled();
+});
+
+test("adds and removes a long-pressed directory shortcut on the Skia board", async () => {
+  const drawer = await renderDrawer();
+  const user = userEvent.setup();
+
+  await user.longPress(drawer.getByText("Bitty"));
+  await fireEvent.press(drawer.getByTestId("app-drawer-skia-board-directory-action"));
+  expect(mockAddDirectory).toHaveBeenCalledWith({
+    directory: "/work/bitty",
+    name: "Bitty",
+  });
+
+  mockHasDirectory.mockReturnValue(true);
+  await user.longPress(drawer.getByText("Bitty"));
+  expect(drawer.getByText("Skiaボードから除外")).toBeTruthy();
+  await fireEvent.press(drawer.getByTestId("app-drawer-skia-board-directory-action"));
+  expect(mockRemoveDirectory).toHaveBeenCalledWith("/work/bitty");
+});
+
+test("disables the directory board action until persisted state has loaded", async () => {
+  mockSkiaBoardLoaded = false;
+  const drawer = await renderDrawer();
+  const user = userEvent.setup();
+
+  await user.longPress(drawer.getByText("Bitty"));
+  await fireEvent.press(drawer.getByTestId("app-drawer-skia-board-directory-action"));
+
+  expect(mockAddDirectory).not.toHaveBeenCalled();
 });
 
 test("shows progress for a directory read operation", async () => {

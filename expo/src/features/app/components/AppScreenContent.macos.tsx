@@ -8,11 +8,14 @@ import type { AppScreen } from "../types/appTypes";
 
 type AppScreenContentProps = {
   activeScreen: AppScreen;
+  onStartNewSessionInDirectory:
+    ComponentProps<typeof SkiaMiniBoardScreen>["onStartNewSessionInDirectory"];
   openSessionHistoryPopup: ComponentProps<typeof SkiaMiniBoardScreen>["openSessionHistoryPopup"];
 };
 
 export function AppScreenContent({
   activeScreen,
+  onStartNewSessionInDirectory,
   openSessionHistoryPopup,
 }: AppScreenContentProps) {
   const boardVisible = activeScreen === "skia_board";
@@ -24,7 +27,10 @@ export function AppScreenContent({
         pointerEvents={boardVisible ? "auto" : "none"}
         style={[styles.screen, !boardVisible && styles.hiddenBoard]}
       >
-        <SkiaMiniBoardScreen openSessionHistoryPopup={openSessionHistoryPopup} />
+        <SkiaMiniBoardScreen
+          onStartNewSessionInDirectory={onStartNewSessionInDirectory}
+          openSessionHistoryPopup={openSessionHistoryPopup}
+        />
       </View>
       {!boardVisible ? (
         <SafeAreaView style={styles.screen}>

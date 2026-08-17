@@ -354,6 +354,22 @@ function BoardCard({
   const footerRightStart = item.kind === "session"
     ? subagentIconX - (item.activityTrail.length > 0 ? item.activityTrail.length * 15 + 8 : 8)
     : cardWidth - 16;
+  const header = item.kind === "session"
+    ? item.directoryName
+    : item.kind === "file"
+      ? item.rootDir.split("/").filter(Boolean).pop() || item.rootDir
+      : "ディレクトリ";
+  const title = item.kind === "session" ? item.title : item.name;
+  const detail = item.kind === "session"
+    ? ""
+    : item.kind === "file"
+      ? item.unavailable ? "ファイルが削除または移動されました" : item.path
+      : item.directory;
+  const footer = item.kind === "session"
+    ? item.updatedAtLabel
+    : item.kind === "file"
+      ? item.unavailable ? "FILE NOT FOUND" : "FILE"
+      : "NEW SESSION";
 
   return (
     <Group transform={transform}>
@@ -383,9 +399,7 @@ function BoardCard({
           x={31}
           y={14}
           width={cardWidth - 47}
-          text={item.kind === "session"
-            ? item.directoryName
-            : item.rootDir.split("/").filter(Boolean).pop() || item.rootDir}
+          text={header}
           fontSize={bodyFontSize}
           color="#64748b"
         />
@@ -393,7 +407,7 @@ function BoardCard({
           x={16}
           y={34}
           width={contentWidth}
-          text={item.kind === "session" ? item.title : item.name}
+          text={title}
           fontSize={titleFontSize}
           bold
           color="#172033"
@@ -413,7 +427,7 @@ function BoardCard({
             x={16}
             y={69 - bodyFontSize}
             width={contentWidth}
-            text={item.unavailable ? "ファイルが削除または移動されました" : item.path}
+            text={detail}
             fontSize={bodyFontSize}
             color="#64748b"
           />
@@ -423,7 +437,7 @@ function BoardCard({
           x={16}
           y={100 - bodyFontSize}
           width={Math.max(20, footerRightStart - 24)}
-          text={item.kind === "session" ? item.updatedAtLabel : item.unavailable ? "FILE NOT FOUND" : "FILE"}
+          text={footer}
           fontSize={bodyFontSize}
           color="#64748b"
         />
@@ -458,6 +472,7 @@ function BoardCard({
 }
 
 type SkiaMiniBoardScreenProps = {
+  onStartNewSessionInDirectory: (directory: string) => void;
   openSessionHistoryPopup: (params: {
     sessionId: string;
     source: LlmSessionSource;
@@ -466,7 +481,10 @@ type SkiaMiniBoardScreenProps = {
   }) => void;
 };
 
-export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardScreenProps) {
+export function SkiaMiniBoardScreen({
+  onStartNewSessionInDirectory,
+  openSessionHistoryPopup,
+}: SkiaMiniBoardScreenProps) {
   const { width: windowWidth } = useWindowDimensions();
   const { openDrawer } = useAppShell();
   const {
@@ -488,6 +506,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     updateBoardSection,
     removeBoardSection,
     removeBoardSession,
+    removeBoardDirectory,
     removeBoardFile,
     hasBoardFile,
     markBoardFileUnavailable,
@@ -646,6 +665,15 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
       setSelectedCardId(item.cardId);
       return;
     }
+    if (item.kind === "directory") {
+      if (selectedCardId === item.cardId) {
+        onStartNewSessionInDirectory(item.directory);
+        return;
+      }
+      selectedCardIndex.value = index;
+      setSelectedCardId(item.cardId);
+      return;
+    }
     if (selectedCardId === item.cardId) {
       // プレビュー用パネルは直接開かず、ドロワーと同じ専用パネルのポップアップで開く
       // (毎オープン時にJSONLからhydrateされ、常に最新の本文になる)。
@@ -661,6 +689,7 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
     setSelectedCardId(item.cardId);
   }, [
     items,
+    onStartNewSessionInDirectory,
     openSessionHistoryPopup,
     selectedCardId,
     selectedCardIndex,
@@ -712,25 +741,34 @@ export function SkiaMiniBoardScreen({ openSessionHistoryPopup }: SkiaMiniBoardSc
 
   const confirmRemoveCard = useCallback((index: number) => {
     const item = items[index];
-    if (!item || item.kind !== "session") return;
+    if (!item || item.kind === "file") return;
+    const label = item.kind === "session" ? item.title || item.sessionId : item.name;
     Alert.alert(
       "カードを削除",
-      `「${item.title || item.sessionId}」をボードから外しますか?\n外したセッションは自動では再追加されません。`,
+      item.kind === "session"
+        ? `「${label}」をボードから外しますか?\n外したセッションは自動では再追加されません。`
+        : `「${label}」をボードから外しますか?`,
       [
         { text: "キャンセル", style: "cancel" },
         {
           text: "削除",
           style: "destructive",
-          onPress: () => removeBoardSession(item.sessionId),
+          onPress: () => {
+            if (item.kind === "session") {
+              removeBoardSession(item.sessionId);
+            } else {
+              removeBoardDirectory(item.directory);
+            }
+          },
         },
       ]
     );
-  }, [items, removeBoardSession]);
+  }, [items, removeBoardDirectory, removeBoardSession]);
 
   const openCardContextMenu = useCallback((index: number) => {
     const item = items[index];
     if (!item) return;
-    if (item.kind === "session") {
+    if (item.kind !== "file") {
       confirmRemoveCard(index);
       return;
     }

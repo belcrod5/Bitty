@@ -11,6 +11,7 @@ import {
 import { useConversation } from "./ConversationContext";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
 import {
+  addSkiaBoardDirectory,
   addSkiaBoardFile,
   addSkiaBoardSection,
   addSkiaBoardSession,
@@ -18,15 +19,18 @@ import {
   markSkiaBoardFileUnavailable,
   moveSkiaBoardCard,
   readPersistedSkiaBoardState,
+  removeSkiaBoardDirectory,
   removeSkiaBoardFile,
   removeSkiaBoardSession,
   removeSkiaBoardSection,
   setSkiaBoardCardTextScale,
   SKIA_BOARD_DEFAULT_TEXT_SCALE,
+  skiaBoardDirectoryId,
   skiaBoardFileId,
   tidySkiaBoardCards,
   updateSkiaBoardSection,
   writePersistedSkiaBoardState,
+  type SkiaBoardDirectoryCard,
   type SkiaBoardFileCard,
   type SkiaBoardState,
   type SkiaBoardSection,
@@ -38,6 +42,9 @@ type SkiaBoardContextValue = {
   addSession: (sessionId: string) => void;
   removeSession: (sessionId: string) => void;
   hasSession: (sessionId: string) => boolean;
+  addDirectory: (target: Pick<SkiaBoardDirectoryCard, "directory" | "name">) => void;
+  removeDirectory: (directory: string) => void;
+  hasDirectory: (directory: string) => boolean;
   addFile: (file: Pick<SkiaBoardFileCard, "rootDir" | "path" | "name">) => void;
   removeFile: (rootDir: string, path: string) => void;
   markFileUnavailable: (rootDir: string, path: string) => void;
@@ -159,6 +166,12 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const removeSession = useCallback((sessionId: string) => {
     updateInitializedState((current) => removeSkiaBoardSession(current, sessionId));
   }, [updateInitializedState]);
+  const addDirectory = useCallback((target: Pick<SkiaBoardDirectoryCard, "directory" | "name">) => {
+    updateInitializedState((current) => addSkiaBoardDirectory(current, target));
+  }, [updateInitializedState]);
+  const removeDirectory = useCallback((directory: string) => {
+    updateInitializedState((current) => removeSkiaBoardDirectory(current, directory));
+  }, [updateInitializedState]);
   const addFile = useCallback((file: Pick<SkiaBoardFileCard, "rootDir" | "path" | "name">) => {
     updateInitializedState((current) => addSkiaBoardFile(current, file));
   }, [updateInitializedState]);
@@ -193,10 +206,17 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const sessionIds = useMemo(() => new Set((state?.cards || []).flatMap((card) => (
     card.kind === "session" ? [card.sessionId] : []
   ))), [state]);
+  const directoryIds = useMemo(() => new Set((state?.cards || []).flatMap((card) => (
+    card.kind === "directory" ? [skiaBoardDirectoryId(card.directory)] : []
+  ))), [state]);
   const fileIds = useMemo(() => new Set((state?.cards || []).flatMap((card) => (
     card.kind === "file" && !card.unavailable ? [skiaBoardFileId(card.rootDir, card.path)] : []
   ))), [state]);
   const hasSession = useCallback((sessionId: string) => sessionIds.has(sessionId), [sessionIds]);
+  const hasDirectory = useCallback(
+    (directory: string) => directoryIds.has(skiaBoardDirectoryId(directory)),
+    [directoryIds]
+  );
   const hasFile = useCallback(
     (rootDir: string, path: string) => fileIds.has(skiaBoardFileId(rootDir, path)),
     [fileIds]
@@ -208,6 +228,9 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     addSession,
     removeSession,
     hasSession,
+    addDirectory,
+    removeDirectory,
+    hasDirectory,
     addFile,
     removeFile,
     markFileUnavailable,
@@ -219,8 +242,10 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     tidyCards,
     setCardTextScale,
   }), [
+    addDirectory,
     addFile,
     addSession,
+    hasDirectory,
     hasFile,
     hasSession,
     loaded,
@@ -229,6 +254,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     addSection,
     updateSection,
     removeSection,
+    removeDirectory,
     removeFile,
     removeSession,
     state,

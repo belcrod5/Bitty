@@ -1,4 +1,5 @@
 import {
+  addSkiaBoardDirectory,
   addSkiaBoardFile,
   addSkiaBoardSection,
   addSkiaBoardSession,
@@ -8,10 +9,12 @@ import {
   moveSkiaBoardCard,
   normalizeSkiaBoardTextScale,
   parseSkiaBoardState,
+  removeSkiaBoardDirectory,
   removeSkiaBoardSession,
   removeSkiaBoardFile,
   removeSkiaBoardSection,
   skiaBoardCardId,
+  skiaBoardDirectoryId,
   skiaBoardGridPosition,
   setSkiaBoardCardTextScale,
   tidySkiaBoardCards,
@@ -150,6 +153,27 @@ describe("ingestSkiaBoardSessions", () => {
     };
     expect(ingestSkiaBoardSessions(state, [candidate(2), candidate(1)])).toBe(state);
   });
+
+  it("initializes sessions alongside an existing directory shortcut", () => {
+    const state: SkiaBoardState = {
+      cards: [{
+        kind: "directory",
+        directory: "/workspace",
+        name: "Workspace",
+        col: 0,
+        row: 0,
+      }],
+      sections: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+
+    const next = ingestSkiaBoardSessions(state, [candidate(1)]);
+
+    expect(next?.cards).toHaveLength(2);
+    expect(next?.cards[1]).toMatchObject({ kind: "session", sessionId: "session-1" });
+  });
 });
 
 describe("findFreeSkiaBoardCell", () => {
@@ -240,6 +264,39 @@ describe("manual board cards", () => {
     });
     expect(skiaBoardCardId(added.cards[1])).toBe("file:/workspace\ndocs/guide.md");
     expect(removeSkiaBoardFile(added, "/workspace", "docs/guide.md").cards).toEqual(state.cards);
+  });
+
+  it("adds and removes a directory shortcut by directory identity", () => {
+    const state: SkiaBoardState = {
+      cards: [sessionCard("session-1", 0, 0)],
+      sections: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+    const added = addSkiaBoardDirectory(state, {
+      directory: "/workspace/projects/bitty",
+      name: "Bitty",
+    });
+
+    expect(added.cards[1]).toEqual({
+      kind: "directory",
+      directory: "/workspace/projects/bitty",
+      name: "Bitty",
+      col: 1,
+      row: 0,
+    });
+    expect(skiaBoardCardId(added.cards[1])).toBe("directory:/workspace/projects/bitty");
+    expect(skiaBoardDirectoryId(" /workspace/projects/bitty ")).toBe(
+      "directory:/workspace/projects/bitty"
+    );
+    expect(addSkiaBoardDirectory(added, {
+      directory: "/workspace/projects/bitty",
+      name: "Renamed",
+    })).toBe(added);
+    expect(removeSkiaBoardDirectory(added, "/workspace/projects/bitty").cards).toEqual(
+      state.cards
+    );
   });
 
   it("keeps a moved or deleted file card in place and marks it unavailable", () => {
@@ -472,6 +529,31 @@ describe("parseSkiaBoardState", () => {
       excludedSessionIds: [],
       ingestedUpdatedAtMs: 0,
     })?.cards[0]).toMatchObject({ kind: "file", unavailable: true });
+  });
+
+  it("restores valid directory cards and drops malformed or unknown card kinds", () => {
+    expect(parseSkiaBoardState({
+      cards: [
+        {
+          kind: "directory",
+          directory: "/workspace/projects/bitty",
+          name: "Bitty",
+          col: 1,
+          row: 2,
+        },
+        { kind: "directory", directory: "", name: "Missing", col: 0, row: 0 },
+        { kind: "future", sessionId: "must-not-migrate", col: 0, row: 0 },
+      ],
+      sections: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    })?.cards).toEqual([{
+      kind: "directory",
+      directory: "/workspace/projects/bitty",
+      name: "Bitty",
+      col: 1,
+      row: 2,
+    }]);
   });
 
   it("drops malformed cards and rejects empty or invalid payloads", () => {

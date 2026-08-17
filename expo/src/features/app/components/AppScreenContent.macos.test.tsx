@@ -38,6 +38,7 @@ test("keeps the native Skia surface mounted while visiting Current Settings", as
   const screen = await render(
     <AppScreenContent
       activeScreen="skia_board"
+      onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
   );
@@ -46,6 +47,7 @@ test("keeps the native Skia surface mounted while visiting Current Settings", as
   await screen.rerender(
     <AppScreenContent
       activeScreen="debug"
+      onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
   );
@@ -54,6 +56,7 @@ test("keeps the native Skia surface mounted while visiting Current Settings", as
   await screen.rerender(
     <AppScreenContent
       activeScreen="skia_board"
+      onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
   );

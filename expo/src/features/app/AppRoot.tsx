@@ -7716,6 +7716,7 @@ export default function App() {
       <View style={styles.safeArea}>
       <AppScreenContent
         activeScreen={activeScreen}
+        onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
         openSessionHistoryPopup={openSessionHistoryPopup}
       />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>

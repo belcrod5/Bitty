@@ -129,7 +129,15 @@ export const AppDrawer = memo(function AppDrawer({
   onMarkSessionUnread,
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
-  const { addSession, removeSession, hasSession, loaded: skiaBoardLoaded } = useSkiaBoard();
+  const {
+    addDirectory,
+    removeDirectory,
+    hasDirectory,
+    addSession,
+    removeSession,
+    hasSession,
+    loaded: skiaBoardLoaded,
+  } = useSkiaBoard();
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
@@ -142,6 +150,7 @@ export const AppDrawer = memo(function AppDrawer({
   } | null>(null);
   const [directoryContextMenuTarget, setDirectoryContextMenuTarget] = useState<{
     directoryPath: string;
+    directoryName: string;
   } | null>(null);
   const formatThinkTag = (reasoningEffortRaw: unknown) => {
     const reasoningEffort = String(reasoningEffortRaw || "").trim().toLowerCase();
@@ -470,6 +479,7 @@ export const AppDrawer = memo(function AppDrawer({
                         setSessionContextMenuTarget(null);
                         setDirectoryContextMenuTarget({
                           directoryPath: directory.path,
+                          directoryName: directoryLabel,
                         });
                       }}
                     >
@@ -569,6 +579,28 @@ export const AppDrawer = memo(function AppDrawer({
                 }}
               >
                 <Text style={styles.modalOptionText}>このディレクトリの未読をすべて既読にする</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="app-drawer-skia-board-directory-action"
+                style={[styles.modalOption, !skiaBoardLoaded && styles.buttonDisabled]}
+                disabled={!skiaBoardLoaded}
+                onPress={() => {
+                  if (directoryContextMenuTarget) {
+                    const { directoryPath, directoryName } = directoryContextMenuTarget;
+                    if (hasDirectory(directoryPath)) {
+                      removeDirectory(directoryPath);
+                    } else {
+                      addDirectory({ directory: directoryPath, name: directoryName });
+                    }
+                  }
+                  setDirectoryContextMenuTarget(null);
+                }}
+              >
+                <Text style={styles.modalOptionText}>
+                  {directoryContextMenuTarget && hasDirectory(directoryContextMenuTarget.directoryPath)
+                    ? "Skiaボードから除外"
+                    : "Skiaボードへ追加"}
+                </Text>
               </TouchableOpacity>
             </Pressable>
           </Pressable>
