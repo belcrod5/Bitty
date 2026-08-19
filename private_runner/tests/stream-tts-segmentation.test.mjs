@@ -9,6 +9,7 @@ process.env.STREAM_TTS_MAX_CHARS = "1000";
 const {
   takeNextStreamTtsSegment,
   findStreamTtsSplitIndex,
+  sanitizeStreamTtsText,
   resolveStreamTtsSegmentTargetChars,
   fetchTtsWithTimeout,
   startLlmStreamJob,
@@ -32,6 +33,21 @@ function collectSegments(text, maxChars = STREAM_TTS_SEGMENT_MAX_CHARS) {
 test("splits at punctuation boundaries as before for normal text", () => {
   const segments = collectSegments("こんにちは。今日は良い天気ですね、散歩に行きましょう。");
   assert.deepEqual(segments, ["こんにちは。", "今日は良い天気ですね、", "散歩に行きましょう。"]);
+});
+
+test("removes Japanese and ASCII sentence punctuation from provider text", () => {
+  assert.equal(
+    sanitizeStreamTtsText("こんにちは。今日は、sunny. Let's walk, together."),
+    "こんにちは今日はsunny Let's walk together"
+  );
+});
+
+test("uses removable punctuation as boundaries without losing text", () => {
+  const text = "一。二、three.four,five";
+  const segments = collectSegments(text);
+  assert.deepEqual(segments, ["一。", "二、", "three.", "four,", "five"]);
+  assert.equal(segments.join(""), text);
+  assert.deepEqual(segments.map(sanitizeStreamTtsText), ["一", "二", "three", "four", "five"]);
 });
 
 test("waits for more streamed input when no boundary and below max chars", () => {
