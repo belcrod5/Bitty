@@ -1035,7 +1035,7 @@ export function startCodexAppServerTurn(
           const resumed = await sendRequestWhenAdmitted<CodexThreadResumeResponse>("thread/resume", {
             threadId: activeThreadId,
             cwd: cwd || undefined,
-            persistExtendedHistory: false,
+            excludeTurns: true,
           }, PRE_TURN_RPC_TIMEOUT_MS);
           activeThreadId = String(resumed?.thread?.id || activeThreadId || "").trim();
           emitLog({
