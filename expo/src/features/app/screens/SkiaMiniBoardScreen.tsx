@@ -1014,6 +1014,14 @@ export function SkiaMiniBoardScreen({
           touchSequenceHadMultiplePointers.value = true;
         }
       })
+      .onTouchesMove((event) => {
+        // ピンチが2本→1本になった後(ピンチ終了後)に残った指が動いたら、2本指時代の
+        // 速度サンプルを無効化する。古い速度が残り指のドラッグ後の離しで慣性として
+        // 流れ込むのを防ぐ(速度サンプル自体もnumberOfPointers>=2でしか更新されない)。
+        if (touchSequenceHadMultiplePointers.value && event.numberOfTouches < 2) {
+          pinchMomentum.value = EMPTY_PINCH_MOMENTUM;
+        }
+      })
       .onTouchesUp((event) => {
         // ピンチの慣性は全指が離れた時点で開始する(onTouchesUpのnumberOfTouchesは
         // 残っている指の数)。片指が残っている間はカメラを動かさない。

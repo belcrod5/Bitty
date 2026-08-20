@@ -459,6 +459,49 @@ test("pinch inertia does not start while a finger stays down or after a stale re
   nowSpy.mockRestore();
 });
 
+test("moving the remaining finger after a pinch discards its stale momentum", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  let now = 1000;
+  const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    // 2本→1本(ピンチ終了)後に残った指が動くと、2本指時代の速度サンプルは破棄され、
+    // staleness時間内に全指を離しても古い速度で慣性が始まらない。
+    registry.Pan.onTouchesUp({ numberOfTouches: 1 });
+    registry.Pan.onTouchesMove({ numberOfTouches: 1 });
+    now += 16;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0 });
+    registry.Pan.onFinalize();
+  });
+
+  expect(withDecay).not.toHaveBeenCalled();
+
+  // 2本指のままの動き(通常のピンチ)ではサンプルは破棄されず、離せば慣性が始まる。
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    registry.Pan.onTouchesMove({ numberOfTouches: 2 });
+    now += 16;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0 });
+    registry.Pan.onFinalize();
+  });
+  expect(withDecay).toHaveBeenCalledTimes(3);
+  nowSpy.mockRestore();
+});
+
 test("keeps complete two-line text and truncates only its leading side", () => {
   const font = {
     getTextWidth: (text: string) => Array.from(text).length,
