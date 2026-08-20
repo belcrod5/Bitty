@@ -1148,9 +1148,10 @@ export function SkiaMiniBoardScreen({
         boardX.value = gestureStartX.value + event.translationX;
         boardY.value = gestureStartY.value + event.translationY;
       })
-      .onEnd((event) => {
-        // ボードのパンだけ慣性を付ける(カードドラッグ・セクション操作・ピンチ系列は除く)。
-        if (touchSequenceHadMultiplePointers.value) return;
+      .onEnd((event, success) => {
+        // ボードのパンだけ慣性を付ける(カードドラッグ・セクション操作・ピンチ系列・
+        // システム割込みでキャンセルされた場合は除く)。
+        if (!success || touchSequenceHadMultiplePointers.value) return;
         if (activeCardIndex.value >= 0 || activeSectionGesture.value.action) return;
         startCameraInertia(event.x, event.y, event.velocityX, event.velocityY, 0);
       })
@@ -1250,6 +1251,9 @@ export function SkiaMiniBoardScreen({
 
     const pinch = Gesture.Pinch()
       .onBegin(() => {
+        // macOSのホイールズーム(1ポインタ)はPanのタッチイベントを発生させないため、
+        // ここでも慣性を止める(タッチ端末ではonTouchesDown済みで冪等)。
+        stopCameraInertia();
         touchSequenceHadMultiplePointers.value = true;
       })
       .onStart((event) => {

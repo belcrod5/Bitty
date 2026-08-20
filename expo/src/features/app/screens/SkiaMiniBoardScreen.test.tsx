@@ -348,22 +348,34 @@ test("board pan release continues with camera decay until a new touch stops it",
   await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   const pan = gestureRegistry().Pan;
+
+  // システム割込みでキャンセルされた終了(success=false)では慣性を開始しない。
   await act(async () => {
     pan.onTouchesDown({ numberOfTouches: 1 });
     pan.onBegin({ x: 350, y: 300 });
     pan.onStart();
     pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 20 });
-    pan.onEnd({ x: 390, y: 320, velocityX: 500, velocityY: -250 });
+    pan.onEnd({ x: 390, y: 320, velocityX: 500, velocityY: -250 }, false);
+    pan.onFinalize();
+  });
+  expect(withDecay).not.toHaveBeenCalled();
+
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 350, y: 300 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 20 });
+    pan.onEnd({ x: 390, y: 320, velocityX: 500, velocityY: -250 }, true);
     pan.onFinalize();
   });
   expect(withDecay.mock.calls.map(([config]) => config.velocity)).toEqual([500, -250]);
 
-  // 慣性中に画面へ触れたらfocal X/Y(scaleは減衰していないが同経路で停止)を止める。
+  // 慣性中に画面へ触れたら減衰アニメーションを停止する。
   cancelAnimation.mockClear();
   await act(async () => {
     pan.onTouchesDown({ numberOfTouches: 1 });
   });
-  expect(cancelAnimation).toHaveBeenCalledTimes(3);
+  expect(cancelAnimation).toHaveBeenCalled();
 });
 
 test("card drags do not gain inertia", async () => {
@@ -380,7 +392,7 @@ test("card drags do not gain inertia", async () => {
     pan.onBegin({ x: 30, y: 30 });
     pan.onStart();
     pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 50 });
-    pan.onEnd({ x: 70, y: 80, velocityX: 400, velocityY: 400 });
+    pan.onEnd({ x: 70, y: 80, velocityX: 400, velocityY: 400 }, true);
     pan.onFinalize();
   });
 
