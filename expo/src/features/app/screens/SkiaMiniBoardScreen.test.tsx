@@ -568,7 +568,8 @@ test("pinch release decays focal and scale together with the scale clamped", asy
     registry.Pinch.onBegin();
     registry.Pinch.onStart({ focalX: 100, focalY: 50 });
     now += 100;
-    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    // focalの連続移動量(50px)が採用ゲート(24px)を超えるフリック相当の動き。
+    registry.Pinch.onUpdate({ focalX: 130, focalY: 90, numberOfPointers: 2, scale: 1.2 });
     now += 16;
     registry.Pan.onTouchesUp({ numberOfTouches: 0 });
     registry.Pan.onFinalize();
@@ -576,10 +577,68 @@ test("pinch release decays focal and scale together with the scale clamped", asy
 
   // focal X/Yとscaleの3本が同経路で減衰し、scaleはMIN/MAX内に収まる。
   expect(withDecay).toHaveBeenCalledTimes(3);
-  expect(withDecay.mock.calls[0][0].velocity).toBeCloseTo(100, 5);
-  expect(withDecay.mock.calls[1][0].velocity).toBeCloseTo(100, 5);
+  expect(withDecay.mock.calls[0][0].velocity).toBeCloseTo(300, 5);
+  expect(withDecay.mock.calls[1][0].velocity).toBeCloseTo(400, 5);
   expect(withDecay.mock.calls[2][0].velocity).toBeCloseTo(2, 5);
   expect(withDecay.mock.calls[2][0].clamp).toEqual([0.25, 2.5]);
+  nowSpy.mockRestore();
+});
+
+test("a short release jolt after stationary fingers does not start inertia", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  let now = 1000;
+  const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    // ひとしきり動かした後…
+    registry.Pinch.onUpdate({ focalX: 150, focalY: 100, numberOfPointers: 2, scale: 1.5 });
+    // 指を止める(300msイベントなし)→ 連続移動量はリセットされる。
+    now += 300;
+    registry.Pinch.onUpdate({ focalX: 151, focalY: 100, numberOfPointers: 2, scale: 1.5 });
+    // 離し際の指の転がり: 瞬間速度は高い(4px/8ms=500px/s)が累積移動量はわずか。
+    now += 8;
+    registry.Pinch.onUpdate({ focalX: 155, focalY: 100, numberOfPointers: 2, scale: 1.5 });
+    now += 8;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 155, y: 100 }] });
+    registry.Pan.onFinalize();
+  });
+
+  expect(withDecay).not.toHaveBeenCalled();
+  nowSpy.mockRestore();
+});
+
+test("an implausible focal jump is discarded from the velocity samples", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  let now = 1000;
+  const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    registry.Pinch.onUpdate({ focalX: 150, focalY: 100, numberOfPointers: 2, scale: 1.5 });
+    // 100px/8ms=12500px/s は指では出せない=focal点のジャンプ。サンプルに採用しない。
+    now += 8;
+    registry.Pinch.onUpdate({ focalX: 250, focalY: 100, numberOfPointers: 2, scale: 1.5 });
+    now += 8;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 250, y: 100 }] });
+    registry.Pan.onFinalize();
+  });
+
+  expect(withDecay).not.toHaveBeenCalled();
   nowSpy.mockRestore();
 });
 

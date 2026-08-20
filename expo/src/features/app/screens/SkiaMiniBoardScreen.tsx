@@ -107,22 +107,37 @@ const PINCH_REMAINING_TOUCH_SLOP = 10;
 // フリック(数百px/s以上)だけを通すための下限。scaleも同様の趣旨の下限。
 const CAMERA_INERTIA_MIN_SPEED = 50;
 const CAMERA_INERTIA_MIN_SCALE_SPEED = 0.5;
+// 離し際の指の転がりは「静止→ごく短い高速移動」で、瞬間速度はしきい値を超えうる。
+// フリックとの構造的な違いは連続した移動量なので、連続サンプル列(間隔<=64ms)内の
+// 累積移動量がこの値に満たない成分は慣性へ採用しない。
+const PINCH_MOMENTUM_MIN_FOCAL_TRAVEL = 24;
+const PINCH_MOMENTUM_MIN_SCALE_TRAVEL = 0.08;
+// 指では物理的に出せない速度(px/s)のfocal移動は座標系のジャンプとみなし、
+// 速度サンプルとして採用せず基準位置だけを更新する。
+const PINCH_FOCAL_JUMP_SPEED = 5000;
 
 // ピンチ中に計測した直近のカメラ速度(focal移動とスケール変化)。
+// focalDistance/scaleDistanceは連続サンプル列内の累積移動量(ギャップでリセット)。
 type PinchMomentum = {
   focalX: number;
   focalY: number;
+  scale: number;
   velocityX: number;
   velocityY: number;
   scaleVelocity: number;
+  focalDistance: number;
+  scaleDistance: number;
   at: number;
 };
 const EMPTY_PINCH_MOMENTUM: PinchMomentum = {
   focalX: 0,
   focalY: 0,
+  scale: 1,
   velocityX: 0,
   velocityY: 0,
   scaleVelocity: 0,
+  focalDistance: 0,
+  scaleDistance: 0,
   at: 0,
 };
 
@@ -1156,14 +1171,19 @@ export function SkiaMiniBoardScreen({
         if (!touchSequenceHadMultiplePointers.value) return;
         const momentum = pinchMomentum.value;
         if (Date.now() - momentum.at > PINCH_MOMENTUM_MAX_AGE_MS) return;
+        // 離し際の指の転がり(静止→ごく短い高速移動)を弾く: 連続した動きの累積量が
+        // 十分ある成分だけを慣性へ採用する。フリックは離す前に大きく動いているので通る。
+        const focalValid = momentum.focalDistance >= PINCH_MOMENTUM_MIN_FOCAL_TRAVEL;
+        const scaleValid = momentum.scaleDistance >= PINCH_MOMENTUM_MIN_SCALE_TRAVEL;
+        if (!focalValid && !scaleValid) return;
         // 慣性のanchor計算が最新のカメラ値を見るよう、未反映の目標値を先に適用する。
         flushGestureTargets();
         startCameraInertia(
           momentum.focalX,
           momentum.focalY,
-          momentum.velocityX,
-          momentum.velocityY,
-          momentum.scaleVelocity
+          focalValid ? momentum.velocityX : 0,
+          focalValid ? momentum.velocityY : 0,
+          scaleValid ? momentum.scaleVelocity : 0
         );
       })
       .onBegin((event) => {
@@ -1407,6 +1427,7 @@ export function SkiaMiniBoardScreen({
           ...EMPTY_PINCH_MOMENTUM,
           focalX: event.focalX,
           focalY: event.focalY,
+          scale: scale.value,
           at: Date.now(),
         };
       })
@@ -1422,22 +1443,44 @@ export function SkiaMiniBoardScreen({
         if (!shouldAnimateZoom) {
           // 全指が離れた時の慣性用に、focal移動とscale変化の速度を計測しておく。
           // 1フレームの生値はブレるため、直前の速度と50%ずつ混ぜて滑らかにする。
+          // あわせて連続サンプル列内の累積移動量を記録する(離し際スパイクの判別用)。
           const previous = pinchMomentum.value;
           const now = Date.now();
           const dtSeconds = (now - previous.at) / 1000;
           if (dtSeconds > 0) {
-            const blend = dtSeconds > 0.064 ? 1 : 0.5;
-            const mix = (previousVelocity: number, nextVelocity: number) =>
-              previousVelocity + (nextVelocity - previousVelocity) * blend;
-            pinchMomentum.value = {
-              focalX: event.focalX,
-              focalY: event.focalY,
-              velocityX: mix(previous.velocityX, (event.focalX - previous.focalX) / dtSeconds),
-              velocityY: mix(previous.velocityY, (event.focalY - previous.focalY) / dtSeconds),
-              // scaleの適用はフレーム反映ループに遅延されるため、直前の目標値を基準にする。
-              scaleVelocity: mix(previous.scaleVelocity, (nextScale - cameraTargetScale.value) / dtSeconds),
-              at: now,
-            };
+            const stepX = event.focalX - previous.focalX;
+            const stepY = event.focalY - previous.focalY;
+            const scaleStep = nextScale - previous.scale;
+            const stepDistance = Math.sqrt(stepX * stepX + stepY * stepY);
+            if (stepDistance / dtSeconds > PINCH_FOCAL_JUMP_SPEED) {
+              // 指では出せない速度のfocal移動=座標系のジャンプ。速度・累積量には
+              // 採用せず、次のサンプルの基準だけを更新する。
+              pinchMomentum.value = {
+                ...EMPTY_PINCH_MOMENTUM,
+                focalX: event.focalX,
+                focalY: event.focalY,
+                scale: nextScale,
+                at: now,
+              };
+            } else {
+              // 前サンプルから64ms超のギャップ=指が止まっていた。速度も累積量も
+              // 引き継がず、この瞬間からの動きとして数え直す。
+              const gap = dtSeconds > 0.064;
+              const blend = gap ? 1 : 0.5;
+              const mix = (previousVelocity: number, nextVelocity: number) =>
+                previousVelocity + (nextVelocity - previousVelocity) * blend;
+              pinchMomentum.value = {
+                focalX: event.focalX,
+                focalY: event.focalY,
+                scale: nextScale,
+                velocityX: mix(previous.velocityX, stepX / dtSeconds),
+                velocityY: mix(previous.velocityY, stepY / dtSeconds),
+                scaleVelocity: mix(previous.scaleVelocity, scaleStep / dtSeconds),
+                focalDistance: (gap ? 0 : previous.focalDistance) + stepDistance,
+                scaleDistance: (gap ? 0 : previous.scaleDistance) + Math.abs(scaleStep),
+                at: now,
+              };
+            }
           }
           cameraTargetScale.value = nextScale;
           cameraTargetX.value = nextBoardX;
