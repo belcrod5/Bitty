@@ -19,6 +19,7 @@ type UseTtsPlaybackStateControllerOptions = {
   streamCurrentChunkEstimatedDurationMsRef: MutableRefObject<number | null>;
   streamAudioQueueGenerationRef: MutableRefObject<number>;
   streamAudioEnqueueChainRef: MutableRefObject<Promise<void>>;
+  clearPreloadedStreamAudioRef: MutableRefObject<() => void>;
   ttsPlayingRef: MutableRefObject<boolean>;
   ttsPlaybackWantedRef: MutableRefObject<boolean>;
   ttsPlaybackRunIdRef: MutableRefObject<number>;
@@ -50,6 +51,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
     streamCurrentChunkEstimatedDurationMsRef,
     streamAudioQueueGenerationRef,
     streamAudioEnqueueChainRef,
+    clearPreloadedStreamAudioRef,
     ttsPlayingRef,
     ttsPlaybackWantedRef,
     ttsPlaybackRunIdRef,
@@ -160,6 +162,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
 
   const clearStreamAudioQueue = useCallback((clearOptions?: { bumpGeneration?: boolean }) => {
     const bumpGeneration = clearOptions?.bumpGeneration ?? true;
+    clearPreloadedStreamAudioRef.current();
     streamAudioQueueRef.current = [];
     streamCurrentChunkStartedAtRef.current = 0;
     streamCurrentChunkEstimatedDurationMsRef.current = null;
@@ -169,6 +172,7 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
       streamAudioEnqueueChainRef.current = Promise.resolve();
     }
   }, [
+    clearPreloadedStreamAudioRef,
     setStreamAudioQueueSize,
     streamAudioEnqueueChainRef,
     streamAudioQueueGenerationRef,

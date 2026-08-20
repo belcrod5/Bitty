@@ -34,12 +34,6 @@ function createRelayForRunnerWsTest() {
     currentTurnId: "",
     currentTurnStartSeq: 0,
     lastAgentMessageText: "",
-    assistantThinkingPrefixSent: false,
-    assistantThinkingBodyText: "",
-    assistantThinkingBodyTextByItemId: new Map(),
-    assistantThinkingCurrentItemId: "",
-    assistantThinkingTurnActive: false,
-    assistantThinkingTurnId: "",
     pendingApprovalRequestIds: new Set(),
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
@@ -611,6 +605,66 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
     assert.equal(message.sessionId, "session-1");
     assert.equal(message.threadId, threadId);
   }
+});
+
+test("runner-ws forwards assistant text without adding content", () => {
+  const threadId = `thread-assistant-text-${Date.now()}-${Math.random()}`;
+  const turnId = "turn-assistant-text";
+  const relay = createRelayForRunnerWsTest();
+  const client = createEnvelopeClientForRunnerWsTest();
+  relay.threadId = threadId;
+  relay.currentTurnId = turnId;
+  __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
+  client.sent.length = 0;
+
+  const delta = {
+    jsonrpc: "2.0",
+    method: "item/agentMessage/delta",
+    params: { threadId, turnId, delta: "回答です" },
+  };
+  const completed = {
+    jsonrpc: "2.0",
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: { id: "agent-message", type: "agentMessage", text: "回答です" },
+    },
+  };
+  for (const payload of [delta, completed]) {
+    __TESTING__.handleCodexRelayUpstreamMessage(
+      relay,
+      JSON.stringify(payload),
+      false,
+      { endpoint: "/runner-ws", remote: "test" },
+    );
+  }
+
+  __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 27, method: "thread/read", params: { threadId } }),
+    false,
+    { requestId: "thread-read", operationId: "operation", sessionId: threadId },
+  );
+  const threadRead = {
+    jsonrpc: "2.0",
+    id: 27,
+    result: {
+      thread: {
+        id: threadId,
+        turns: [{ items: [{ type: "agentMessage", text: "履歴の回答" }] }],
+      },
+    },
+  };
+  __TESTING__.handleCodexRelayUpstreamMessage(
+    relay,
+    JSON.stringify(threadRead),
+    false,
+    { endpoint: "/runner-ws", remote: "test" },
+  );
+
+  const forwarded = client.sent.filter((message) => message.channel === "llm" && message.op === "rpc");
+  assert.deepEqual(forwarded.map((message) => message.payload), [delta, completed, threadRead]);
 });
 
 test("runner-ws does not complete or notify the parent from a child subagent turn", (t) => {
