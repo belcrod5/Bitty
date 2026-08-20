@@ -25,7 +25,7 @@ function createOptions(queue: StreamAudioQueueItem[]) {
     }),
     upsertStreamSegment: jest.fn(),
     setTtsUiStatus: jest.fn(),
-    playPreparedStreamAudioAndWait: jest.fn(async () => {}),
+    playPreparedStreamAudioAndWait: jest.fn(async () => true),
     setReplyDebug: jest.fn(),
     shouldProjectTtsDebugToActiveSession: jest.fn(() => false),
     reportError: jest.fn(),

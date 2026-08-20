@@ -26,7 +26,7 @@ type UseProcessStreamAudioQueueControllerOptions = {
     updates?: Partial<StreamSegment>
   ) => void;
   setTtsUiStatus: (value: TtsUiStatus) => void;
-  playPreparedStreamAudioAndWait: (item: StreamAudioQueueItem) => Promise<void>;
+  playPreparedStreamAudioAndWait: (item: StreamAudioQueueItem) => Promise<boolean>;
   setReplyDebug: (value: string | ((prev: string) => string)) => void;
   shouldProjectTtsDebugToActiveSession: () => boolean;
   reportError: (error: unknown, context?: string) => void;
@@ -82,7 +82,8 @@ export function useProcessStreamAudioQueueController(
             : null
         );
         try {
-          await playPreparedStreamAudioAndWait(next);
+          const played = await playPreparedStreamAudioAndWait(next);
+          if (!played) continue;
         } finally {
           streamCurrentChunkStartedAtRef.current = 0;
           streamCurrentChunkEstimatedDurationMsRef.current = null;

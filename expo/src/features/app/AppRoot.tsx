@@ -1234,6 +1234,7 @@ export default function App() {
   const waitingApprovalResumeCooldownUntilMsRef = useRef(0);
   const codexHandshakeProbeSocketRef = useRef<WebSocket | null>(null);
   const streamAudioQueueRef = useRef<StreamAudioQueueItem[]>([]);
+  const clearPreloadedStreamAudioRef = useRef<() => void>(() => {});
   const streamAudioQueueGenerationRef = useRef(0);
   const streamAudioEnqueueChainRef = useRef<Promise<void>>(Promise.resolve());
   const streamAudioWaveformBarsRef = useRef<number[][]>([]);
@@ -3482,6 +3483,7 @@ export default function App() {
     streamCurrentChunkEstimatedDurationMsRef,
     streamAudioQueueGenerationRef,
     streamAudioEnqueueChainRef,
+    clearPreloadedStreamAudioRef,
     ttsPlayingRef,
     ttsPlaybackWantedRef,
     ttsPlaybackRunIdRef,
@@ -3533,13 +3535,18 @@ export default function App() {
     syncTtsPlaybackWantedFromPipeline,
     setTtsSoundWithRef,
   });
-  const playPreparedStreamAudioAndWait = usePlayPreparedStreamAudioController({
+  const {
+    clearPreloadedStreamAudio,
+    playPreparedStreamAudioAndWait,
+    preloadStreamAudio,
+  } = usePlayPreparedStreamAudioController({
     fixedMediaVolume: FIXED_MEDIA_VOLUME,
     ttsStopInFlightRef,
     ttsPlaybackRunIdRef,
     ttsPlaybackProgressUiAtRef,
     ttsPlaybackTransitionInFlightRef,
     ttsPlaybackLastPlayingAtRef,
+    streamAudioQueueRef,
     setTtsPlaybackWanted,
     setTtsPlayingWithReason,
     setTtsUiStatus,
@@ -3549,6 +3556,7 @@ export default function App() {
     waitForPlaybackToFinish,
     markTtsPlaybackStopped,
   });
+  clearPreloadedStreamAudioRef.current = clearPreloadedStreamAudio;
   const playTtsAudio = usePlayTtsAudioController({
     fixedMediaVolume: FIXED_MEDIA_VOLUME,
     ttsStopInFlightRef,
@@ -3611,11 +3619,13 @@ export default function App() {
     streamAudioEnqueueChainRef,
     streamTtsSuppressedRef,
     streamAudioQueueRef,
+    streamAudioQueueProcessingRef,
     streamSocketRef,
     streamTtsControlRef,
     setTtsPlaybackWanted,
     setTtsUiStatus,
     setStreamAudioQueueSize,
+    preloadStreamAudio,
     processStreamAudioQueue,
     setReplyDebug,
     shouldProjectTtsDebugToActiveSession,
