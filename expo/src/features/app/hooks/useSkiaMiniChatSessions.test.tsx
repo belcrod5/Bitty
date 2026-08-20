@@ -140,10 +140,32 @@ function BoardWrapper({ children }: PropsWithChildren) {
 }
 
 describe("useSkiaMiniChatSessions", () => {
-  it("formats recent updates in seconds and minutes", () => {
+  it("formats recent updates in minutes without a seconds label", () => {
     const now = new Date("2026-06-23T00:01:30.000Z").getTime();
-    expect(formatSkiaMiniChatUpdatedAt("2026-06-23T00:01:18.000Z", now)).toBe("12秒前");
+    // 秒表示はラベルが毎秒変わりカードの再レンダリングを誘発するため分単位に丸める。
+    expect(formatSkiaMiniChatUpdatedAt("2026-06-23T00:01:18.000Z", now)).toBe("1分未満");
     expect(formatSkiaMiniChatUpdatedAt("2026-06-23T00:00:00.000Z", now)).toBe("1分前");
+    expect(formatSkiaMiniChatUpdatedAt("2026-06-22T23:00:00.000Z", now)).toBe("1時間前");
+  });
+
+  it("keeps item identity across minute ticks while card content is unchanged", async () => {
+    jest.useFakeTimers();
+    try {
+      mockConversation(Array.from({ length: 3 }, (_, index) => session(index + 1)));
+      const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+      await flush();
+
+      const itemsBefore = result.current.items;
+      expect(itemsBefore.length).toBeGreaterThan(0);
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+
+      // ラベル(n日前)が変わらない限り、tickでitems(配列と要素)のidentityは保たれる。
+      expect(result.current.items).toBe(itemsBefore);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("initializes the board with the latest six sessions on a grid", async () => {
