@@ -745,9 +745,11 @@ export function SkiaMiniBoardScreen({
     [cardIdsKey]
   );
   // runOnJS側のハンドラは最新itemsをrefで参照し、itemsのidentity変化でハンドラ
-  // (ひいてはgestures)が再構築されないようにする。
+  // (ひいてはgestures)が再構築されないようにする。positionsの再構築(下の
+  // useLayoutEffect)と同じpaint前タイミングで更新し、キュー済みのtap/longPressが
+  // 「新しいpositionsのindex」で「古いitems」を引く窓を作らない。
   const itemsRef = useRef(items);
-  useEffect(() => {
+  useLayoutEffect(() => {
     itemsRef.current = items;
   }, [items]);
 
