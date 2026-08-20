@@ -95,6 +95,10 @@ const ZOOM_ANIMATION = {
 };
 // 指を止めてから離した場合など、この時間より古いピンチ速度では慣性を開始しない。
 const PINCH_MOMENTUM_MAX_AGE_MS = 120;
+// ピンチ終了(2本→1本)後の残り指の許容移動量。2本の指は完全同時には離れず微小な
+// moveがほぼ必ず入るため、この範囲内なら速度サンプルを保持する。超えたら意図的な
+// ドラッグとみなして破棄する(PanのminDistance=10と整合)。
+const PINCH_REMAINING_TOUCH_SLOP = 10;
 
 // ピンチ中に計測した直近のカメラ速度(focal移動とスケール変化)。
 type PinchMomentum = {
@@ -599,6 +603,10 @@ export function SkiaMiniBoardScreen({
   const cameraAnchorX = useSharedValue(0);
   const cameraAnchorY = useSharedValue(0);
   const pinchMomentum = useSharedValue<PinchMomentum>(EMPTY_PINCH_MOMENTUM);
+  // ピンチ終了後に残った指の基準位置(スロップ判定用)。x/yはtracked=trueの時のみ有効。
+  const remainingTouchTracked = useSharedValue(false);
+  const remainingTouchStartX = useSharedValue(0);
+  const remainingTouchStartY = useSharedValue(0);
 
   const stopCameraInertia = useCallback(() => {
     "worklet";
@@ -1008,6 +1016,7 @@ export function SkiaMiniBoardScreen({
       .onTouchesDown((event) => {
         // 慣性中に画面へ触れたら、その場でカメラを止める。
         stopCameraInertia();
+        remainingTouchTracked.value = false;
         if (event.numberOfTouches === 1) {
           touchSequenceHadMultiplePointers.value = false;
         } else if (event.numberOfTouches > 1) {
@@ -1015,10 +1024,26 @@ export function SkiaMiniBoardScreen({
         }
       })
       .onTouchesMove((event) => {
-        // ピンチが2本→1本になった後(ピンチ終了後)に残った指が動いたら、2本指時代の
-        // 速度サンプルを無効化する。古い速度が残り指のドラッグ後の離しで慣性として
-        // 流れ込むのを防ぐ(速度サンプル自体もnumberOfPointers>=2でしか更新されない)。
-        if (touchSequenceHadMultiplePointers.value && event.numberOfTouches < 2) {
+        // ピンチが2本→1本になった後(ピンチ終了後)、残った指の累積移動がスロップを
+        // 超えたら2本指時代の速度サンプルを破棄する(意図的なドラッグと判定)。
+        // 2本の指は完全同時には離れず離し際に微小なmoveがほぼ必ず入るため、
+        // スロップ内の動きではサンプルを保持し、通常のピンチ離しの慣性を殺さない。
+        // (速度サンプル自体はnumberOfPointers>=2でしか更新されない。)
+        if (!touchSequenceHadMultiplePointers.value || event.numberOfTouches >= 2) return;
+        const touch = event.changedTouches[0] || event.allTouches[0];
+        if (!touch) return;
+        if (!remainingTouchTracked.value) {
+          remainingTouchTracked.value = true;
+          remainingTouchStartX.value = touch.x;
+          remainingTouchStartY.value = touch.y;
+          return;
+        }
+        const deltaX = touch.x - remainingTouchStartX.value;
+        const deltaY = touch.y - remainingTouchStartY.value;
+        if (
+          deltaX * deltaX + deltaY * deltaY
+          > PINCH_REMAINING_TOUCH_SLOP * PINCH_REMAINING_TOUCH_SLOP
+        ) {
           pinchMomentum.value = EMPTY_PINCH_MOMENTUM;
         }
       })
@@ -1339,6 +1364,9 @@ export function SkiaMiniBoardScreen({
     pinchBoardY,
     pinchMomentum,
     positions,
+    remainingTouchTracked,
+    remainingTouchStartX,
+    remainingTouchStartY,
     scale,
     startCameraInertia,
     stopCameraInertia,

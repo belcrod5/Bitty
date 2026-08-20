@@ -459,7 +459,7 @@ test("pinch inertia does not start while a finger stays down or after a stale re
   nowSpy.mockRestore();
 });
 
-test("moving the remaining finger after a pinch discards its stale momentum", async () => {
+test("dragging the remaining finger past the slop discards pinch momentum, tiny release wobble keeps it", async () => {
   const { withDecay } = reanimatedMocks();
   withDecay.mockClear();
   let now = 1000;
@@ -467,25 +467,42 @@ test("moving the remaining finger after a pinch discards its stale momentum", as
   await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   const registry = gestureRegistry();
-  await act(async () => {
+  const pinchThenDropToOneFinger = () => {
     registry.Pan.onTouchesDown({ numberOfTouches: 1 });
     registry.Pan.onTouchesDown({ numberOfTouches: 2 });
     registry.Pinch.onBegin();
     registry.Pinch.onStart({ focalX: 100, focalY: 50 });
     now += 100;
     registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
-    // 2本→1本(ピンチ終了)後に残った指が動くと、2本指時代の速度サンプルは破棄され、
-    // staleness時間内に全指を離しても古い速度で慣性が始まらない。
-    registry.Pan.onTouchesUp({ numberOfTouches: 1 });
-    registry.Pan.onTouchesMove({ numberOfTouches: 1 });
+    // 2本→1本(ピンチ終了)。
+    registry.Pan.onTouchesUp({ numberOfTouches: 1, changedTouches: [{ x: 108, y: 58 }] });
+  };
+
+  // ① 離し際の微小移動(スロップ10px以内)ではサンプルを保持し、慣性が発動する。
+  await act(async () => {
+    pinchThenDropToOneFinger();
+    registry.Pan.onTouchesMove({ numberOfTouches: 1, changedTouches: [{ x: 110, y: 60 }] });
+    registry.Pan.onTouchesMove({ numberOfTouches: 1, changedTouches: [{ x: 114, y: 63 }] });
     now += 16;
-    registry.Pan.onTouchesUp({ numberOfTouches: 0 });
+    registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 114, y: 63 }] });
     registry.Pan.onFinalize();
   });
+  expect(withDecay).toHaveBeenCalledTimes(3);
 
+  // ② スロップを超える移動(意図的なドラッグ)ではサンプルを破棄し、慣性は発動しない。
+  withDecay.mockClear();
+  await act(async () => {
+    pinchThenDropToOneFinger();
+    registry.Pan.onTouchesMove({ numberOfTouches: 1, changedTouches: [{ x: 110, y: 60 }] });
+    registry.Pan.onTouchesMove({ numberOfTouches: 1, changedTouches: [{ x: 135, y: 60 }] });
+    now += 16;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 135, y: 60 }] });
+    registry.Pan.onFinalize();
+  });
   expect(withDecay).not.toHaveBeenCalled();
 
-  // 2本指のままの動き(通常のピンチ)ではサンプルは破棄されず、離せば慣性が始まる。
+  // ③ 2本指のままの動き(通常のピンチ/フリック)ではサンプルは破棄されず、慣性が始まる。
+  withDecay.mockClear();
   await act(async () => {
     registry.Pan.onTouchesDown({ numberOfTouches: 1 });
     registry.Pan.onTouchesDown({ numberOfTouches: 2 });
@@ -493,9 +510,9 @@ test("moving the remaining finger after a pinch discards its stale momentum", as
     registry.Pinch.onStart({ focalX: 100, focalY: 50 });
     now += 100;
     registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
-    registry.Pan.onTouchesMove({ numberOfTouches: 2 });
+    registry.Pan.onTouchesMove({ numberOfTouches: 2, changedTouches: [{ x: 110, y: 60 }] });
     now += 16;
-    registry.Pan.onTouchesUp({ numberOfTouches: 0 });
+    registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 110, y: 60 }] });
     registry.Pan.onFinalize();
   });
   expect(withDecay).toHaveBeenCalledTimes(3);
