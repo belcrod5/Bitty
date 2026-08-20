@@ -178,6 +178,16 @@ jest.mock("react-native-reanimated", () => {
     // 「減衰中に新しいタッチで止める」流れを検証できるよう完了させない。
     withDecay: jest.fn(() => 0),
     cancelAnimation: jest.fn(),
+    // フレーム反映ループ: コールバックを捕捉してテストから任意タイミングで実行でき、
+    // setActive(起動・停止)の呼び出しも検証できるようにする。
+    useFrameCallback: (callback: () => void) => {
+      const target = globalThis as Record<string, unknown>;
+      target.__skiaBoardFrameCallback = callback;
+      if (!target.__skiaBoardFrameLoopSetActive) {
+        target.__skiaBoardFrameLoopSetActive = jest.fn();
+      }
+      return { setActive: target.__skiaBoardFrameLoopSetActive, isActive: false, callbackId: -1 };
+    },
   };
 });
 
@@ -471,6 +481,55 @@ test("slow releases below the inertia thresholds do not start camera decay", asy
   });
   expect(withDecay).not.toHaveBeenCalled();
   nowSpy.mockRestore();
+});
+
+test("the gesture frame loop starts on the first touch and stops at finalize", async () => {
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  const setActive = (globalThis as Record<string, unknown>)
+    .__skiaBoardFrameLoopSetActive as jest.Mock;
+  setActive.mockClear();
+
+  const pan = gestureRegistry().Pan;
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+  });
+  expect(setActive).toHaveBeenLastCalledWith(true);
+
+  await act(async () => {
+    pan.onBegin({ x: 350, y: 300 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 20 });
+    pan.onEnd({ x: 390, y: 320, velocityX: 0, velocityY: 0 }, true);
+    pan.onFinalize();
+  });
+  expect(setActive).toHaveBeenLastCalledWith(false);
+});
+
+test("a board pan leaves the camera at its final position for later hit-testing", async () => {
+  const openSessionHistoryPopup = jest.fn();
+  await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={openSessionHistoryPopup} />
+  );
+
+  // 目標値はonFinalizeのflushで必ずカメラへ反映される(フレームコールバック未実行でも)。
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 350, y: 300 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 130, translationY: 130 });
+    registry.Pan.onEnd({ x: 480, y: 430, velocityX: 0, velocityY: 0 }, true);
+    registry.Pan.onFinalize();
+  });
+
+  // カード0はワールド座標(18,18)起点。ボードが(130,130)動いた後は画面(160,160)で命中する。
+  await act(async () => {
+    registry.Tap.onEnd({ x: 160, y: 160 }, true);
+  });
+  await act(async () => {
+    registry.Tap.onEnd({ x: 160, y: 160 }, true);
+  });
+  expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
 });
 
 test("card drags do not gain inertia", async () => {

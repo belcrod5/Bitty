@@ -33,6 +33,7 @@ import {
   runOnJS,
   useAnimatedReaction,
   useDerivedValue,
+  useFrameCallback,
   useSharedValue,
   withDecay,
   withTiming,
@@ -688,6 +689,72 @@ export function SkiaMiniBoardScreen({
     [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale]
   );
 
+  // ドラッグ・ピンチの入力反映のフレーム駆動化。タッチイベントはvsyncと位相が揃わず、
+  // onUpdateで直接カメラへ反映すると「更新0回のフレーム」と「2回のフレーム」が混ざって
+  // ガクつく(慣性=withDecayが滑らかなのはフレーム駆動のため)。onUpdateは目標値を
+  // 書くだけにし、毎フレーム1回ここでboardX/boardY/scaleとドラッグ中カード座標へ
+  // 反映して、カメラ更新経路を慣性と同じフレーム駆動に揃える。
+  const cameraTargetX = useSharedValue(0);
+  const cameraTargetY = useSharedValue(0);
+  const cameraTargetScale = useSharedValue(1);
+  const cameraTargetDirty = useSharedValue(false);
+  const cardDragDirty = useSharedValue(false);
+  const gestureFrameLoopRequested = useSharedValue(false);
+
+  const flushGestureTargets = useCallback(() => {
+    "worklet";
+    if (cameraTargetDirty.value) {
+      cameraTargetDirty.value = false;
+      boardX.value = cameraTargetX.value;
+      boardY.value = cameraTargetY.value;
+      scale.value = cameraTargetScale.value;
+    }
+    if (cardDragDirty.value) {
+      cardDragDirty.value = false;
+      const index = activeCardIndex.value;
+      if (index >= 0) {
+        const x = activeCardX.value;
+        const y = activeCardY.value;
+        positions.modify((value) => {
+          value[index] = { x, y };
+          return value;
+        });
+      }
+    }
+  }, [
+    activeCardIndex,
+    activeCardX,
+    activeCardY,
+    boardX,
+    boardY,
+    cameraTargetDirty,
+    cameraTargetScale,
+    cameraTargetX,
+    cameraTargetY,
+    cardDragDirty,
+    positions,
+    scale,
+  ]);
+
+  const gestureFrameLoop = useFrameCallback(flushGestureTargets, false);
+  const setGestureFrameLoopActive = useCallback((active: boolean) => {
+    gestureFrameLoop.setActive(active);
+  }, [gestureFrameLoop]);
+  const requestGestureFrameLoop = useCallback(() => {
+    "worklet";
+    if (gestureFrameLoopRequested.value) return;
+    gestureFrameLoopRequested.value = true;
+    runOnJS(setGestureFrameLoopActive)(true);
+  }, [gestureFrameLoopRequested, setGestureFrameLoopActive]);
+  const releaseGestureFrameLoop = useCallback(() => {
+    "worklet";
+    // 停止前に未反映の目標値を適用し、最終フレームの座標整合を保証する。
+    flushGestureTargets();
+    if (!gestureFrameLoopRequested.value) return;
+    gestureFrameLoopRequested.value = false;
+    runOnJS(setGestureFrameLoopActive)(false);
+  }, [flushGestureTargets, gestureFrameLoopRequested, setGestureFrameLoopActive]);
+
   const titleFontSize = 12 * cardTextScale;
   const bodyFontSize = 9 * cardTextScale;
   const sectionLabelParagraphs = useMemo(
@@ -1049,6 +1116,11 @@ export function SkiaMiniBoardScreen({
         remainingTouchTracked.value = false;
         if (event.numberOfTouches === 1) {
           touchSequenceHadMultiplePointers.value = false;
+          // シーケンス開始: 目標値を現在のカメラへ同期し、フレーム反映ループを起動。
+          cameraTargetX.value = boardX.value;
+          cameraTargetY.value = boardY.value;
+          cameraTargetScale.value = scale.value;
+          requestGestureFrameLoop();
         } else if (event.numberOfTouches > 1) {
           touchSequenceHadMultiplePointers.value = true;
         }
@@ -1084,6 +1156,8 @@ export function SkiaMiniBoardScreen({
         if (!touchSequenceHadMultiplePointers.value) return;
         const momentum = pinchMomentum.value;
         if (Date.now() - momentum.at > PINCH_MOMENTUM_MAX_AGE_MS) return;
+        // 慣性のanchor計算が最新のカメラ値を見るよう、未反映の目標値を先に適用する。
+        flushGestureTargets();
         startCameraInertia(
           momentum.focalX,
           momentum.focalY,
@@ -1100,6 +1174,7 @@ export function SkiaMiniBoardScreen({
         activeSectionGesture.value = EMPTY_ACTIVE_SECTION_GESTURE;
       })
       .onStart(() => {
+        flushGestureTargets();
         const x = (panStartScreenX.value - boardX.value) / scale.value;
         const y = (panStartScreenY.value - boardY.value) / scale.value;
 
@@ -1169,13 +1244,11 @@ export function SkiaMiniBoardScreen({
         if (index >= 0) {
           const nextX = gestureStartX.value + event.translationX / scale.value;
           const nextY = gestureStartY.value + event.translationY / scale.value;
+          // 目標値だけ更新し、positionsへの反映はフレーム反映ループが毎フレーム1回行う。
           activeCardX.value = nextX;
           activeCardY.value = nextY;
-          // 毎フレームの配列コピーを避け、対象要素だけ書き換えて更新を通知する。
-          positions.modify((value) => {
-            value[index] = { x: nextX, y: nextY };
-            return value;
-          });
+          cardDragDirty.value = true;
+          requestGestureFrameLoop();
           return;
         }
         const sectionGesture = activeSectionGesture.value;
@@ -1208,10 +1281,13 @@ export function SkiaMiniBoardScreen({
           activeSectionGesture.value = { ...sectionGesture, current: nextRect };
           return;
         }
-        boardX.value = gestureStartX.value + event.translationX;
-        boardY.value = gestureStartY.value + event.translationY;
+        cameraTargetX.value = gestureStartX.value + event.translationX;
+        cameraTargetY.value = gestureStartY.value + event.translationY;
+        cameraTargetDirty.value = true;
+        requestGestureFrameLoop();
       })
       .onEnd((event, success) => {
+        flushGestureTargets();
         // ボードのパンだけ慣性を付ける(カードドラッグ・セクション操作・ピンチ系列・
         // システム割込みでキャンセルされた場合は除く)。
         if (!success || touchSequenceHadMultiplePointers.value) return;
@@ -1219,6 +1295,8 @@ export function SkiaMiniBoardScreen({
         startCameraInertia(event.x, event.y, event.velocityX, event.velocityY, 0);
       })
       .onFinalize(() => {
+        // 未反映の目標値を適用してからループを止める(最終座標の整合)。
+        releaseGestureFrameLoop();
         const index = activeCardIndex.value;
         const cardId = activeCardId.value;
         const x = activeCardX.value;
@@ -1320,6 +1398,8 @@ export function SkiaMiniBoardScreen({
         touchSequenceHadMultiplePointers.value = true;
       })
       .onStart((event) => {
+        // 直前のパンの未反映目標値を適用してから、現在のカメラ値を基準にする。
+        flushGestureTargets();
         gestureStartScale.value = scale.value;
         pinchBoardX.value = (event.focalX - boardX.value) / scale.value;
         pinchBoardY.value = (event.focalY - boardY.value) / scale.value;
@@ -1354,13 +1434,16 @@ export function SkiaMiniBoardScreen({
               focalY: event.focalY,
               velocityX: mix(previous.velocityX, (event.focalX - previous.focalX) / dtSeconds),
               velocityY: mix(previous.velocityY, (event.focalY - previous.focalY) / dtSeconds),
-              scaleVelocity: mix(previous.scaleVelocity, (nextScale - scale.value) / dtSeconds),
+              // scaleの適用はフレーム反映ループに遅延されるため、直前の目標値を基準にする。
+              scaleVelocity: mix(previous.scaleVelocity, (nextScale - cameraTargetScale.value) / dtSeconds),
               at: now,
             };
           }
-          scale.value = nextScale;
-          boardX.value = nextBoardX;
-          boardY.value = nextBoardY;
+          cameraTargetScale.value = nextScale;
+          cameraTargetX.value = nextBoardX;
+          cameraTargetY.value = nextBoardY;
+          cameraTargetDirty.value = true;
+          requestGestureFrameLoop();
           return;
         }
         scale.value = withTiming(nextScale, ZOOM_ANIMATION);
@@ -1385,7 +1468,15 @@ export function SkiaMiniBoardScreen({
     gestureStartScale,
     gestureStartX,
     gestureStartY,
+    cameraTargetDirty,
+    cameraTargetScale,
+    cameraTargetX,
+    cameraTargetY,
+    cardDragDirty,
     cardIds,
+    flushGestureTargets,
+    releaseGestureFrameLoop,
+    requestGestureFrameLoop,
     handleCardTap,
     handleSectionTap,
     openCardContextMenu,
