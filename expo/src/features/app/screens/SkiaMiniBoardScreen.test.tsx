@@ -26,22 +26,80 @@ jest.mock("@shopify/react-native-skia", () => {
       accessibilityLabel: paragraph.text,
     });
   };
+  // createPictureへ描いた内容(テキストとアイコン)を記録し、Pictureスタブが
+  // ParagraphStub/PathStubと同じtestIDのViewとして描画する。
+  const createPictureStub = (cb: (canvas: unknown) => void) => {
+    const recorded = { texts: [] as string[], iconColors: [] as string[] };
+    cb({
+      save: () => undefined,
+      restore: () => undefined,
+      translate: () => undefined,
+      clipRect: () => undefined,
+      drawRRect: () => undefined,
+      drawCircle: () => undefined,
+      drawLine: () => undefined,
+      drawPath: (_path: unknown, paint: { color?: string }) => {
+        recorded.iconColors.push(String(paint.color));
+      },
+      drawParagraph: (text: string) => {
+        recorded.texts.push(text);
+      },
+    });
+    return recorded;
+  };
+  const PictureStub = ({ picture }: { picture?: { texts: string[]; iconColors: string[] } }) =>
+    ReactModule.createElement(View, null, [
+      ...(picture?.texts || []).map((text: string, index: number) =>
+        ReactModule.createElement(View, {
+          key: `text-${index}`,
+          testID: `skia-text:${text}`,
+          accessibilityLabel: text,
+        })),
+      ...(picture?.iconColors || []).map((color: string, index: number) =>
+        ReactModule.createElement(View, {
+          key: `icon-${index}`,
+          testID: "skia-icon-path",
+          accessibilityLabel: color,
+        })),
+    ]);
   return {
     Canvas: Stub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
     Path: PathStub,
+    Picture: PictureStub,
     RoundedRect: Stub,
     FontWeight: { Bold: 700 },
+    PaintStyle: { Fill: 0, Stroke: 1 },
+    StrokeCap: { Butt: 0, Round: 1, Square: 2 },
+    StrokeJoin: { Miter: 0, Round: 1, Bevel: 2 },
+    ClipOp: { Difference: 0, Intersect: 1 },
     Paragraph: ParagraphStub,
+    createPicture: createPictureStub,
     Skia: {
       Color: (color: string) => color,
+      Paint: () => {
+        const paint = {
+          color: undefined as string | undefined,
+          setColor: (color: string) => { paint.color = color; },
+          setAlphaf: () => undefined,
+          setAntiAlias: () => undefined,
+          setStyle: () => undefined,
+          setStrokeWidth: () => undefined,
+          setStrokeCap: () => undefined,
+          setStrokeJoin: () => undefined,
+        };
+        return paint;
+      },
+      RRectXY: (rect: unknown, rx: number, ry: number) => ({ rect, rx, ry }),
+      XYWHRect: (x: number, y: number, width: number, height: number) => ({ x, y, width, height }),
       Path: {
         Make: () => ({
           moveTo: () => undefined,
           lineTo: () => undefined,
         }),
+        MakeFromSVGString: (svg: string) => ({ svg, dispose: () => undefined }),
       },
       ParagraphBuilder: {
         Make: () => {
@@ -66,11 +124,13 @@ jest.mock("@shopify/react-native-skia", () => {
                 rendered?: boolean;
                 layout: () => undefined;
                 getLongestLine: () => number;
+                paint: (canvas: { drawParagraph?: (text: string) => void }) => void;
                 dispose: () => void;
               } = {
                 text: firstLine,
                 layout: () => undefined,
                 getLongestLine: () => Array.from(firstLine).length * 5,
+                paint: (canvas) => { canvas.drawParagraph?.(firstLine); },
                 dispose: () => undefined,
               };
               paragraph.dispose = () => {

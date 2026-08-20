@@ -13,14 +13,17 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import {
   Canvas,
-  Circle,
+  ClipOp,
+  createPicture,
   FontWeight,
   Group,
-  Line,
-  Paragraph,
+  PaintStyle,
   Path,
-  RoundedRect,
+  Picture,
   Skia,
+  StrokeCap,
+  StrokeJoin,
+  type SkPaint,
 } from "@shopify/react-native-skia";
 import { collectGraphemes } from "unicode-segmenter/grapheme";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -147,22 +150,6 @@ function createBoardParagraph(
   const paragraph = builder.build();
   paragraph.layout(width);
   return paragraph;
-}
-
-function BoardText({
-  x,
-  y,
-  width,
-  text,
-  color,
-  fontSize,
-  bold,
-}: BoardTextStyle & { x: number; y: number; width: number; text: string }) {
-  const paragraph = useMemo(
-    () => createBoardParagraph(text, width, { color, fontSize, bold }),
-    [bold, color, fontSize, text, width]
-  );
-  return <Paragraph x={x} y={y} width={width} paragraph={paragraph} />;
 }
 
 function paragraphTextWidth(text: string, fontSize: number) {
@@ -303,29 +290,6 @@ const BOARD_FOOTER_ICON_PATHS: Record<BoardFooterIconKind, string> = {
   subagent: "M5.5 1A2.1 2.1 0 1 0 5.5 5.2A2.1 2.1 0 1 0 5.5 1ZM1.2 10.5C1.5 7.7 3 6.4 5.5 6.4S9.5 7.7 9.8 10.5",
 };
 
-function BoardFooterIcon({
-  kind,
-  x,
-  color,
-}: {
-  kind: BoardFooterIconKind;
-  x: number;
-  color: string;
-}) {
-  return (
-    <Group transform={[{ translateX: x }, { translateY: 90.5 }]}>
-      <Path
-        path={BOARD_FOOTER_ICON_PATHS[kind]}
-        color={color}
-        style="stroke"
-        strokeWidth={1.2}
-        strokeCap="round"
-        strokeJoin="round"
-      />
-    </Group>
-  );
-}
-
 type BoardCardProps = {
   cardWidth: number;
   index: number;
@@ -397,103 +361,144 @@ function BoardCard({
     : item.kind === "file"
       ? item.unavailable ? "FILE NOT FOUND" : "FILE"
       : "NEW SESSION";
+  const isSession = item.kind === "session";
+  const markerFill = isSession ? markerColor(item.markerColor) : "#2563eb";
+  const showUnread = isSession && item.unread;
+  const activityTrail = isSession ? item.activityTrail : [];
+  // 配列の参照はitemsの再構築ごとに変わるため、内容ベースのキーでPicture再生成を判定する。
+  const activityTrailKey = activityTrail
+    .map((activity) => `${activity.kind}:${activity.active ? 1 : 0}`)
+    .join("|");
+
+  // カード内容(位置transform以外)は変わった時だけSkPictureへ焼き直す。パン・ズーム中の
+  // 毎フレーム再生がカード1枚あたり save/concat/drawPicture の約3コマンドに減り、
+  // ベクタ再生なのでズームしても劣化しない。選択枠もキーに含める(選択変更時のみ再生成)。
+  const picture = useMemo(() => createPicture((canvas) => {
+    const fillPaint = (color: string, alpha?: number) => {
+      const paint = Skia.Paint();
+      paint.setAntiAlias(true);
+      paint.setColor(Skia.Color(color));
+      if (alpha !== undefined) paint.setAlphaf(alpha);
+      return paint;
+    };
+    const strokePaint = (color: string, width: number) => {
+      const paint = fillPaint(color);
+      paint.setStyle(PaintStyle.Stroke);
+      paint.setStrokeWidth(width);
+      return paint;
+    };
+    const drawCardRect = (x: number, y: number, paint: SkPaint) => {
+      canvas.drawRRect(
+        Skia.RRectXY(Skia.XYWHRect(x, y, cardWidth, CARD_HEIGHT), 14, 14),
+        paint
+      );
+    };
+    const drawText = (
+      text: string,
+      x: number,
+      y: number,
+      width: number,
+      style: BoardTextStyle
+    ) => {
+      const paragraph = createBoardParagraph(text, width, style);
+      paragraph.paint(canvas, x, y);
+      paragraph.dispose();
+    };
+    const drawFooterIcon = (kind: BoardFooterIconKind, x: number, color: string) => {
+      const path = Skia.Path.MakeFromSVGString(BOARD_FOOTER_ICON_PATHS[kind]);
+      if (!path) return;
+      const paint = strokePaint(color, 1.2);
+      paint.setStrokeCap(StrokeCap.Round);
+      paint.setStrokeJoin(StrokeJoin.Round);
+      canvas.save();
+      canvas.translate(x, 90.5);
+      canvas.drawPath(path, paint);
+      canvas.restore();
+      path.dispose();
+    };
+
+    drawCardRect(2, 4, fillPaint("#cbd5e1", 0.42));
+    drawCardRect(0, 0, fillPaint("#ffffff"));
+    drawCardRect(0, 0, strokePaint(selected ? "#2563eb" : "#d7dee8", selected ? 2.5 : 1));
+    if (showUnread) {
+      canvas.drawCircle(cardWidth - 12, 12, 4, fillPaint("#2563eb"));
+    }
+    canvas.save();
+    canvas.clipRect(
+      Skia.XYWHRect(10, 8, cardWidth - 20, CARD_HEIGHT - 16),
+      ClipOp.Intersect,
+      true
+    );
+    canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
+    drawText(header, 31, 14, cardWidth - 47, { fontSize: bodyFontSize, color: "#64748b" });
+    drawText(title, 16, 34, contentWidth, { fontSize: titleFontSize, bold: true, color: "#172033" });
+    if (isSession) {
+      messageLines.forEach((line, lineIndex) => {
+        drawText(
+          line,
+          16,
+          messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize,
+          contentWidth,
+          { fontSize: bodyFontSize, color: "#64748b" }
+        );
+      });
+    } else {
+      drawText(detail, 16, 69 - bodyFontSize, contentWidth, {
+        fontSize: bodyFontSize,
+        color: "#64748b",
+      });
+    }
+    canvas.drawLine(16, 88, cardWidth - 16, 88, strokePaint("#e2e8f0", 1));
+    drawText(footer, 16, 100 - bodyFontSize, Math.max(20, footerRightStart - 24), {
+      fontSize: bodyFontSize,
+      color: "#64748b",
+    });
+    activityTrail.forEach((activity, iconIndex) => {
+      drawFooterIcon(
+        activity.kind,
+        footerRightStart + iconIndex * 15,
+        activity.active ? "#f97316" : "#94a3b8"
+      );
+    });
+    if (isSession) {
+      drawFooterIcon("subagent", subagentIconX, "#64748b");
+      drawText(
+        subagentText,
+        cardWidth - 16 - subagentTextWidth,
+        100 - bodyFontSize,
+        subagentTextWidth + 1,
+        { fontSize: bodyFontSize, color: "#64748b" }
+      );
+    }
+    canvas.restore();
+    // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
+  }, Skia.XYWHRect(-2, -2, cardWidth + 8, CARD_HEIGHT + 10)), [
+    // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
+    activityTrailKey,
+    bodyFontSize,
+    cardWidth,
+    contentWidth,
+    detail,
+    footer,
+    footerRightStart,
+    header,
+    isSession,
+    markerFill,
+    messageFirstBaseline,
+    messageLineHeight,
+    messageLines,
+    selected,
+    showUnread,
+    subagentIconX,
+    subagentText,
+    subagentTextWidth,
+    title,
+    titleFontSize,
+  ]);
 
   return (
     <Group transform={transform}>
-      <RoundedRect x={2} y={4} width={cardWidth} height={CARD_HEIGHT} r={14} color="#cbd5e1" opacity={0.42} />
-      <RoundedRect x={0} y={0} width={cardWidth} height={CARD_HEIGHT} r={14} color="#ffffff" />
-      <RoundedRect
-        x={0}
-        y={0}
-        width={cardWidth}
-        height={CARD_HEIGHT}
-        r={14}
-        color={selected ? "#2563eb" : "#d7dee8"}
-        style="stroke"
-        strokeWidth={selected ? 2.5 : 1}
-      />
-      {item.kind === "session" && item.unread ? (
-        <Circle cx={cardWidth - 12} cy={12} r={4} color="#2563eb" />
-      ) : null}
-      <Group clip={{ x: 10, y: 8, width: cardWidth - 20, height: CARD_HEIGHT - 16 }}>
-        <Circle
-          cx={18}
-          cy={21}
-          r={5}
-          color={item.kind === "session" ? markerColor(item.markerColor) : "#2563eb"}
-        />
-        <BoardText
-          x={31}
-          y={14}
-          width={cardWidth - 47}
-          text={header}
-          fontSize={bodyFontSize}
-          color="#64748b"
-        />
-        <BoardText
-          x={16}
-          y={34}
-          width={contentWidth}
-          text={title}
-          fontSize={titleFontSize}
-          bold
-          color="#172033"
-        />
-        {item.kind === "session" ? messageLines.map((line, index) => (
-          <BoardText
-            key={index}
-            x={16}
-            y={messageFirstBaseline + index * messageLineHeight - bodyFontSize}
-            width={contentWidth}
-            text={line}
-            fontSize={bodyFontSize}
-            color="#64748b"
-          />
-        )) : (
-          <BoardText
-            x={16}
-            y={69 - bodyFontSize}
-            width={contentWidth}
-            text={detail}
-            fontSize={bodyFontSize}
-            color="#64748b"
-          />
-        )}
-        <Line p1={{ x: 16, y: 88 }} p2={{ x: cardWidth - 16, y: 88 }} color="#e2e8f0" strokeWidth={1} />
-        <BoardText
-          x={16}
-          y={100 - bodyFontSize}
-          width={Math.max(20, footerRightStart - 24)}
-          text={footer}
-          fontSize={bodyFontSize}
-          color="#64748b"
-        />
-        {item.kind === "session" ? item.activityTrail.map((activity, index) => (
-          <BoardFooterIcon
-            key={`${activity.kind}:${index}`}
-            kind={activity.kind}
-            x={footerRightStart + index * 15}
-            color={activity.active ? "#f97316" : "#94a3b8"}
-          />
-        )) : null}
-        {item.kind === "session" ? (
-          <>
-            <BoardFooterIcon
-              kind="subagent"
-              x={subagentIconX}
-              color="#64748b"
-            />
-            <BoardText
-              x={cardWidth - 16 - subagentTextWidth}
-              y={100 - bodyFontSize}
-              width={subagentTextWidth + 1}
-              text={subagentText}
-              fontSize={bodyFontSize}
-              color="#64748b"
-            />
-          </>
-        ) : null}
-      </Group>
+      <Picture picture={picture} />
     </Group>
   );
 }
