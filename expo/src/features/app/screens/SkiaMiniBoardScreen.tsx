@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Platform,
@@ -300,7 +300,9 @@ type BoardCardProps = {
   bodyFontSize: number;
 };
 
-function BoardCard({
+// item(内容が変わった時だけidentityが変わる)以外のpropsは安定しているため、
+// memoで「内容が変わったカードだけ」再レンダリングされる。
+const BoardCard = memo(function BoardCard({
   cardWidth,
   index,
   positions,
@@ -501,7 +503,7 @@ function BoardCard({
       <Picture picture={picture} />
     </Group>
   );
-}
+});
 
 type SkiaMiniBoardScreenProps = {
   onStartNewSessionInDirectory: (directory: string) => void;
@@ -724,6 +726,20 @@ export function SkiaMiniBoardScreen({
     selectedCardIndex.value = -1;
     setSelectedCardId("");
   }, [cardIdsKey, selectedCardIndex]);
+  // worklet内でindex→cardIdを引くための軽量スナップショット(文字列のみ)。
+  // itemsのidentityではなくカード集合キーに依存させ、内容だけの更新(ラベル・
+  // メッセージ等)ではgesturesが再構築されないようにする。
+  const cardIds = useMemo(
+    () => items.map((item) => item.cardId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cardIdsKeyがitemsのカード集合を代表する
+    [cardIdsKey]
+  );
+  // runOnJS側のハンドラは最新itemsをrefで参照し、itemsのidentity変化でハンドラ
+  // (ひいてはgestures)が再構築されないようにする。
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   const selectTool = useCallback((next: "select" | "section") => {
     toolMode.value = next;
@@ -757,7 +773,7 @@ export function SkiaMiniBoardScreen({
       setSelectedCardId("");
       return;
     }
-    const item = items[index];
+    const item = itemsRef.current[index];
     if (!item) return;
     selectedSectionIndex.value = -1;
     setSelectedSectionId("");
@@ -798,7 +814,6 @@ export function SkiaMiniBoardScreen({
     selectedCardIndex.value = index;
     setSelectedCardId(item.cardId);
   }, [
-    items,
     onStartNewSessionInDirectory,
     openSessionHistoryPopup,
     selectedCardId,
@@ -850,7 +865,7 @@ export function SkiaMiniBoardScreen({
   }, [addBoardSection, cardWidth, toolMode]);
 
   const confirmRemoveCard = useCallback((index: number) => {
-    const item = items[index];
+    const item = itemsRef.current[index];
     if (!item || item.kind === "file") return;
     const label = item.kind === "session" ? item.title || item.sessionId : item.name;
     Alert.alert(
@@ -873,10 +888,10 @@ export function SkiaMiniBoardScreen({
         },
       ]
     );
-  }, [items, removeBoardDirectory, removeBoardSession]);
+  }, [removeBoardDirectory, removeBoardSession]);
 
   const openCardContextMenu = useCallback((index: number) => {
-    const item = items[index];
+    const item = itemsRef.current[index];
     if (!item) return;
     if (item.kind !== "file") {
       confirmRemoveCard(index);
@@ -888,7 +903,7 @@ export function SkiaMiniBoardScreen({
     }
     setFileMenuRootDir(item.rootDir);
     setPendingFileAction({ item, action: "menu" });
-  }, [confirmRemoveCard, items, showUnavailableFileMenu]);
+  }, [confirmRemoveCard, showUnavailableFileMenu]);
 
   const openSectionContextMenu = useCallback((index: number) => {
     const section = sections[index];
@@ -1013,8 +1028,6 @@ export function SkiaMiniBoardScreen({
   const boardScale = useDerivedValue(() => [{ scale: scale.value }]);
 
   const gestures = useMemo(() => {
-    // worklet内でindex→cardIdを引くための軽量スナップショット(文字列のみ)。
-    const cardIds = items.map((item) => item.cardId);
     const drag = Gesture.Pan()
       .maxPointers(2)
       .minDistance(10)
@@ -1078,7 +1091,7 @@ export function SkiaMiniBoardScreen({
         const x = (panStartScreenX.value - boardX.value) / scale.value;
         const y = (panStartScreenY.value - boardY.value) / scale.value;
 
-        for (let index = items.length - 1; index >= 0; index -= 1) {
+        for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
           if (
             position
@@ -1233,7 +1246,7 @@ export function SkiaMiniBoardScreen({
         if (toolMode.value === "section") return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
-        for (let index = items.length - 1; index >= 0; index -= 1) {
+        for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
           if (
             position
@@ -1265,7 +1278,7 @@ export function SkiaMiniBoardScreen({
         if (touchSequenceHadMultiplePointers.value || toolMode.value === "section") return;
         const x = (event.x - boardX.value) / scale.value;
         const y = (event.y - boardY.value) / scale.value;
-        for (let index = items.length - 1; index >= 0; index -= 1) {
+        for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
           if (
             position
@@ -1360,9 +1373,9 @@ export function SkiaMiniBoardScreen({
     gestureStartScale,
     gestureStartX,
     gestureStartY,
+    cardIds,
     handleCardTap,
     handleSectionTap,
-    items,
     openCardContextMenu,
     openSectionContextMenu,
     pinchBoardX,
