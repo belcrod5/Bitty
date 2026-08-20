@@ -1492,6 +1492,12 @@ export function SkiaMiniBoardScreen({
         scale.value = withTiming(nextScale, ZOOM_ANIMATION);
         boardX.value = withTiming(nextBoardX, ZOOM_ANIMATION);
         boardY.value = withTiming(nextBoardY, ZOOM_ANIMATION);
+      })
+      .onFinalize(() => {
+        // パンより先にピンチだけが終わる系列(3本指等)でもループを止め、常駐を防ぐ。
+        // multiポインタ系列中はパンがカメラを動かさないため、2本→1本でここが先に
+        // 呼ばれても実害はない(ピンチが続けばonUpdateの再要求で自己回復する)。
+        releaseGestureFrameLoop();
       });
 
     return Gesture.Simultaneous(drag, pinch, tap, longPress);

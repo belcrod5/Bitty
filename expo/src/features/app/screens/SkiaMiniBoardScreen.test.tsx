@@ -532,6 +532,63 @@ test("a board pan leaves the camera at its final position for later hit-testing"
   expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
 });
 
+test("the frame callback applies pending camera targets mid-drag", async () => {
+  const openSessionHistoryPopup = jest.fn();
+  await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={openSessionHistoryPopup} />
+  );
+
+  const registry = gestureRegistry();
+  const frameCallback = (globalThis as Record<string, unknown>)
+    .__skiaBoardFrameCallback as () => void;
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 350, y: 300 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 130, translationY: 130 });
+    // onUpdateは目標値を書くだけで、フレームコールバックがカメラへ反映する。
+    frameCallback();
+  });
+
+  // finalizeのflushを経ずに、カード0(ワールド18,18)がボード移動(130,130)後の
+  // 画面(160,160)で命中する=フレーム経路で反映済み。
+  await act(async () => {
+    registry.Tap.onEnd({ x: 160, y: 160 }, true);
+  });
+  await act(async () => {
+    registry.Tap.onEnd({ x: 160, y: 160 }, true);
+  });
+  expect(openSessionHistoryPopup).toHaveBeenCalledTimes(1);
+});
+
+test("the frame loop stops when a pinch outlives the pan gesture", async () => {
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  const setActive = (globalThis as Record<string, unknown>)
+    .__skiaBoardFrameLoopSetActive as jest.Mock;
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    // 3本指等でパンだけ先に終了するケース。
+    registry.Pan.onFinalize();
+  });
+  setActive.mockClear();
+  await act(async () => {
+    registry.Pinch.onUpdate({ focalX: 120, focalY: 70, numberOfPointers: 2, scale: 1.3 });
+  });
+  expect(setActive).toHaveBeenLastCalledWith(true);
+
+  // ピンチのfinalizeでループが止まり、常駐しない。
+  await act(async () => {
+    registry.Pinch.onFinalize();
+  });
+  expect(setActive).toHaveBeenLastCalledWith(false);
+});
+
 test("card drags do not gain inertia", async () => {
   const { withDecay } = reanimatedMocks();
   withDecay.mockClear();
