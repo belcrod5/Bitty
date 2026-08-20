@@ -438,6 +438,41 @@ test("board pan release continues with camera decay until a new touch stops it",
   expect(cancelAnimation).toHaveBeenCalled();
 });
 
+test("slow releases below the inertia thresholds do not start camera decay", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  let now = 1000;
+  const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  // パン: 指を止めて離した程度の速度(≈36px/s < 50px/s)では滑らない。
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 350, y: 300 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 20 });
+    registry.Pan.onEnd({ x: 390, y: 320, velocityX: 30, velocityY: 20 }, true);
+    registry.Pan.onFinalize();
+  });
+  expect(withDecay).not.toHaveBeenCalled();
+
+  // ピンチ: focal 10px/s・scale 0.1/s の低速リリースでも滑らない。
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    registry.Pinch.onUpdate({ focalX: 101, focalY: 51, numberOfPointers: 2, scale: 1.01 });
+    now += 16;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 101, y: 51 }] });
+    registry.Pan.onFinalize();
+  });
+  expect(withDecay).not.toHaveBeenCalled();
+  nowSpy.mockRestore();
+});
+
 test("card drags do not gain inertia", async () => {
   const { withDecay } = reanimatedMocks();
   withDecay.mockClear();
@@ -562,6 +597,7 @@ test("dragging the remaining finger past the slop discards pinch momentum, tiny 
   expect(withDecay).not.toHaveBeenCalled();
 
   // ③ 2本指のままの動き(通常のピンチ/フリック)ではサンプルは破棄されず、慣性が始まる。
+  // (mockのwithDecayはscale値を0へ潰すため、しきい値を確実に超えるscale変化を使う。)
   withDecay.mockClear();
   await act(async () => {
     registry.Pan.onTouchesDown({ numberOfTouches: 1 });
@@ -569,7 +605,7 @@ test("dragging the remaining finger past the slop discards pinch momentum, tiny 
     registry.Pinch.onBegin();
     registry.Pinch.onStart({ focalX: 100, focalY: 50 });
     now += 100;
-    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 2 });
     registry.Pan.onTouchesMove({ numberOfTouches: 2, changedTouches: [{ x: 110, y: 60 }] });
     now += 16;
     registry.Pan.onTouchesUp({ numberOfTouches: 0, changedTouches: [{ x: 110, y: 60 }] });

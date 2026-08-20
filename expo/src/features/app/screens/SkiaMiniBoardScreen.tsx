@@ -102,6 +102,10 @@ const PINCH_MOMENTUM_MAX_AGE_MS = 120;
 // moveがほぼ必ず入るため、この範囲内なら速度サンプルを保持する。超えたら意図的な
 // ドラッグとみなして破棄する(PanのminDistance=10と整合)。
 const PINCH_REMAINING_TOUCH_SLOP = 10;
+// 慣性を開始する最低速度。指を止めて離した時のジッター(数十px/s)では滑らせず、
+// フリック(数百px/s以上)だけを通すための下限。scaleも同様の趣旨の下限。
+const CAMERA_INERTIA_MIN_SPEED = 50;
+const CAMERA_INERTIA_MIN_SCALE_SPEED = 0.5;
 
 // ピンチ中に計測した直近のカメラ速度(focal移動とスケール変化)。
 type PinchMomentum = {
@@ -632,7 +636,13 @@ export function SkiaMiniBoardScreen({
     scaleVelocity: number
   ) => {
     "worklet";
-    if (!velocityX && !velocityY && !scaleVelocity) return;
+    // 指を止めて離した時の測定ジッター程度の速度では滑らせない(フリックとの区別)。
+    // しきい値未満の成分は0として扱い、パン・ピンチ共通で同じ判定を通す。
+    const hasPanVelocity =
+      velocityX * velocityX + velocityY * velocityY
+      >= CAMERA_INERTIA_MIN_SPEED * CAMERA_INERTIA_MIN_SPEED;
+    const hasScaleVelocity = Math.abs(scaleVelocity) >= CAMERA_INERTIA_MIN_SCALE_SPEED;
+    if (!hasPanVelocity && !hasScaleVelocity) return;
     const settle = (finished?: boolean) => {
       if (finished) {
         cameraInertiaCount.value = Math.max(0, cameraInertiaCount.value - 1);
@@ -642,10 +652,10 @@ export function SkiaMiniBoardScreen({
     cameraAnchorY.value = (focalY - boardY.value) / scale.value;
     cameraFocalX.value = focalX;
     cameraFocalY.value = focalY;
-    cameraInertiaCount.value = scaleVelocity ? 3 : 2;
-    cameraFocalX.value = withDecay({ velocity: velocityX }, settle);
-    cameraFocalY.value = withDecay({ velocity: velocityY }, settle);
-    if (scaleVelocity) {
+    cameraInertiaCount.value = hasScaleVelocity ? 3 : 2;
+    cameraFocalX.value = withDecay({ velocity: hasPanVelocity ? velocityX : 0 }, settle);
+    cameraFocalY.value = withDecay({ velocity: hasPanVelocity ? velocityY : 0 }, settle);
+    if (hasScaleVelocity) {
       scale.value = withDecay(
         { velocity: scaleVelocity, clamp: [MIN_SCALE, MAX_SCALE] },
         settle
