@@ -10,10 +10,15 @@ jest.mock("@shopify/react-native-skia", () => {
   const { View } = require("react-native");
   const Stub = ({ children }: { children?: React.ReactNode }) =>
     ReactModule.createElement(View, null, children);
-  const PathStub = ({ color }: { color: string }) => ReactModule.createElement(View, {
-    testID: "skia-icon-path",
-    accessibilityLabel: color,
-  });
+  // 文字列パス=アイコン。グリッド等のPathオブジェクト描画はアイコン数の検証に含めない。
+  const PathStub = ({ path, color }: { path: unknown; color: string }) => (
+    typeof path === "string"
+      ? ReactModule.createElement(View, {
+          testID: "skia-icon-path",
+          accessibilityLabel: color,
+        })
+      : null
+  );
   const ParagraphStub = ({ paragraph }: { paragraph: { text: string; rendered?: boolean } }) => {
     paragraph.rendered = true;
     return ReactModule.createElement(View, {
@@ -32,6 +37,12 @@ jest.mock("@shopify/react-native-skia", () => {
     Paragraph: ParagraphStub,
     Skia: {
       Color: (color: string) => color,
+      Path: {
+        Make: () => ({
+          moveTo: () => undefined,
+          lineTo: () => undefined,
+        }),
+      },
       ParagraphBuilder: {
         Make: () => {
           let text = "";
@@ -96,8 +107,17 @@ jest.mock("react-native-reanimated", () => {
   const ReactModule = require("react");
   return {
     ...actualMock,
-    useSharedValue: (init: unknown) => ReactModule.useRef({ value: init }).current,
+    useSharedValue: (init: unknown) => ReactModule.useRef({
+      value: init,
+      modify(modifier: (value: unknown) => unknown) {
+        this.value = modifier(this.value);
+      },
+    }).current,
     withTiming: jest.fn(actualMock.withTiming),
+    // 実mockのwithDecayは即座にcallback(true)で完了扱いになるため、
+    // 「減衰中に新しいタッチで止める」流れを検証できるよう完了させない。
+    withDecay: jest.fn(() => 0),
+    cancelAnimation: jest.fn(),
   };
 });
 
@@ -313,6 +333,118 @@ test("animates mouse-wheel zoom but keeps two-pointer pinch direct", async () =>
   if (platformDescriptor) {
     Object.defineProperty(Platform, "OS", platformDescriptor);
   }
+});
+
+function reanimatedMocks() {
+  return require("react-native-reanimated") as {
+    withDecay: jest.Mock;
+    cancelAnimation: jest.Mock;
+  };
+}
+
+test("board pan release continues with camera decay until a new touch stops it", async () => {
+  const { withDecay, cancelAnimation } = reanimatedMocks();
+  withDecay.mockClear();
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  const pan = gestureRegistry().Pan;
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 350, y: 300 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 20 });
+    pan.onEnd({ x: 390, y: 320, velocityX: 500, velocityY: -250 });
+    pan.onFinalize();
+  });
+  expect(withDecay.mock.calls.map(([config]) => config.velocity)).toEqual([500, -250]);
+
+  // 慣性中に画面へ触れたらfocal X/Y(scaleは減衰していないが同経路で停止)を止める。
+  cancelAnimation.mockClear();
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+  });
+  expect(cancelAnimation).toHaveBeenCalledTimes(3);
+});
+
+test("card drags do not gain inertia", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  await act(async () => {
+    fireCardTap();
+  });
+  const pan = gestureRegistry().Pan;
+  await act(async () => {
+    pan.onTouchesDown({ numberOfTouches: 1 });
+    pan.onBegin({ x: 30, y: 30 });
+    pan.onStart();
+    pan.onUpdate({ numberOfPointers: 1, translationX: 40, translationY: 50 });
+    pan.onEnd({ x: 70, y: 80, velocityX: 400, velocityY: 400 });
+    pan.onFinalize();
+  });
+
+  expect(mockMoveBoardCard).toHaveBeenCalledTimes(1);
+  expect(withDecay).not.toHaveBeenCalled();
+});
+
+test("pinch release decays focal and scale together with the scale clamped", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  let now = 1000;
+  const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    now += 16;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0 });
+    registry.Pan.onFinalize();
+  });
+
+  // focal X/Yとscaleの3本が同経路で減衰し、scaleはMIN/MAX内に収まる。
+  expect(withDecay).toHaveBeenCalledTimes(3);
+  expect(withDecay.mock.calls[0][0].velocity).toBeCloseTo(100, 5);
+  expect(withDecay.mock.calls[1][0].velocity).toBeCloseTo(100, 5);
+  expect(withDecay.mock.calls[2][0].velocity).toBeCloseTo(2, 5);
+  expect(withDecay.mock.calls[2][0].clamp).toEqual([0.25, 2.5]);
+  nowSpy.mockRestore();
+});
+
+test("pinch inertia does not start while a finger stays down or after a stale release", async () => {
+  const { withDecay } = reanimatedMocks();
+  withDecay.mockClear();
+  let now = 1000;
+  const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+
+  const registry = gestureRegistry();
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 2 });
+    registry.Pinch.onBegin();
+    registry.Pinch.onStart({ focalX: 100, focalY: 50 });
+    now += 100;
+    registry.Pinch.onUpdate({ focalX: 110, focalY: 60, numberOfPointers: 2, scale: 1.2 });
+    // 片指が残っている間は慣性を開始しない。
+    registry.Pan.onTouchesUp({ numberOfTouches: 1 });
+  });
+  expect(withDecay).not.toHaveBeenCalled();
+
+  // 指を置いたまま時間が経った後の離しでは、古い速度で滑り出さない。
+  await act(async () => {
+    now += 500;
+    registry.Pan.onTouchesUp({ numberOfTouches: 0 });
+    registry.Pan.onFinalize();
+  });
+  expect(withDecay).not.toHaveBeenCalled();
+  nowSpy.mockRestore();
 });
 
 test("keeps complete two-line text and truncates only its leading side", () => {

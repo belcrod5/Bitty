@@ -25,10 +25,13 @@ import {
 import { collectGraphemes } from "unicode-segmenter/grapheme";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import {
+  cancelAnimation,
   Easing,
   runOnJS,
+  useAnimatedReaction,
   useDerivedValue,
   useSharedValue,
+  withDecay,
   withTiming,
   type SharedValue,
 } from "react-native-reanimated";
@@ -89,6 +92,26 @@ const MAX_SCALE = 2.5;
 const ZOOM_ANIMATION = {
   duration: 100,
   easing: Easing.out(Easing.cubic),
+};
+// 指を止めてから離した場合など、この時間より古いピンチ速度では慣性を開始しない。
+const PINCH_MOMENTUM_MAX_AGE_MS = 120;
+
+// ピンチ中に計測した直近のカメラ速度(focal移動とスケール変化)。
+type PinchMomentum = {
+  focalX: number;
+  focalY: number;
+  velocityX: number;
+  velocityY: number;
+  scaleVelocity: number;
+  at: number;
+};
+const EMPTY_PINCH_MOMENTUM: PinchMomentum = {
+  focalX: 0,
+  focalY: 0,
+  velocityX: 0,
+  velocityY: 0,
+  scaleVelocity: 0,
+  at: 0,
 };
 
 // SkiaのTextは1つのtypefaceだけを使うため、日本語や絵文字へフォールバックできない。
@@ -566,6 +589,80 @@ export function SkiaMiniBoardScreen({
   const panStartScreenX = useSharedValue(0);
   const panStartScreenY = useSharedValue(0);
 
+  // カメラ慣性: パン・ピンチ共通の1経路。画面上の基準点(focal)とscaleをwithDecayで
+  // 減衰させ、boardX/boardY = focal - anchor * scale の関係で追従させる。anchorは
+  // 慣性開始時のfocalが指すボード座標なので、scaleが減衰してもfocal点のズーム
+  // 不変性が保たれる。パンはscale速度0の特殊ケースにすぎない。
+  const cameraInertiaCount = useSharedValue(0);
+  const cameraFocalX = useSharedValue(0);
+  const cameraFocalY = useSharedValue(0);
+  const cameraAnchorX = useSharedValue(0);
+  const cameraAnchorY = useSharedValue(0);
+  const pinchMomentum = useSharedValue<PinchMomentum>(EMPTY_PINCH_MOMENTUM);
+
+  const stopCameraInertia = useCallback(() => {
+    "worklet";
+    if (cameraInertiaCount.value === 0) return;
+    cameraInertiaCount.value = 0;
+    cancelAnimation(cameraFocalX);
+    cancelAnimation(cameraFocalY);
+    cancelAnimation(scale);
+  }, [cameraFocalX, cameraFocalY, cameraInertiaCount, scale]);
+
+  const startCameraInertia = useCallback((
+    focalX: number,
+    focalY: number,
+    velocityX: number,
+    velocityY: number,
+    scaleVelocity: number
+  ) => {
+    "worklet";
+    if (!velocityX && !velocityY && !scaleVelocity) return;
+    const settle = (finished?: boolean) => {
+      if (finished) {
+        cameraInertiaCount.value = Math.max(0, cameraInertiaCount.value - 1);
+      }
+    };
+    cameraAnchorX.value = (focalX - boardX.value) / scale.value;
+    cameraAnchorY.value = (focalY - boardY.value) / scale.value;
+    cameraFocalX.value = focalX;
+    cameraFocalY.value = focalY;
+    cameraInertiaCount.value = scaleVelocity ? 3 : 2;
+    cameraFocalX.value = withDecay({ velocity: velocityX }, settle);
+    cameraFocalY.value = withDecay({ velocity: velocityY }, settle);
+    if (scaleVelocity) {
+      scale.value = withDecay(
+        { velocity: scaleVelocity, clamp: [MIN_SCALE, MAX_SCALE] },
+        settle
+      );
+    }
+  }, [
+    boardX,
+    boardY,
+    cameraAnchorX,
+    cameraAnchorY,
+    cameraFocalX,
+    cameraFocalY,
+    cameraInertiaCount,
+    scale,
+  ]);
+
+  // 慣性中だけfocal/scaleの減衰からカメラ位置を導出する。
+  useAnimatedReaction(
+    () => (cameraInertiaCount.value > 0
+      ? {
+          x: cameraFocalX.value - cameraAnchorX.value * scale.value,
+          y: cameraFocalY.value - cameraAnchorY.value * scale.value,
+        }
+      : null),
+    (position) => {
+      if (!position) return;
+      boardX.value = position.x;
+      boardY.value = position.y;
+    },
+    [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale]
+  );
+
   const titleFontSize = 12 * cardTextScale;
   const bodyFontSize = 9 * cardTextScale;
   const sectionLabelParagraphs = useMemo(
@@ -909,11 +1006,28 @@ export function SkiaMiniBoardScreen({
       .maxPointers(2)
       .minDistance(10)
       .onTouchesDown((event) => {
+        // 慣性中に画面へ触れたら、その場でカメラを止める。
+        stopCameraInertia();
         if (event.numberOfTouches === 1) {
           touchSequenceHadMultiplePointers.value = false;
         } else if (event.numberOfTouches > 1) {
           touchSequenceHadMultiplePointers.value = true;
         }
+      })
+      .onTouchesUp((event) => {
+        // ピンチの慣性は全指が離れた時点で開始する(onTouchesUpのnumberOfTouchesは
+        // 残っている指の数)。片指が残っている間はカメラを動かさない。
+        if (event.numberOfTouches > 0) return;
+        if (!touchSequenceHadMultiplePointers.value) return;
+        const momentum = pinchMomentum.value;
+        if (Date.now() - momentum.at > PINCH_MOMENTUM_MAX_AGE_MS) return;
+        startCameraInertia(
+          momentum.focalX,
+          momentum.focalY,
+          momentum.velocityX,
+          momentum.velocityY,
+          momentum.scaleVelocity
+        );
       })
       .onBegin((event) => {
         panStartScreenX.value = event.x;
@@ -992,14 +1106,13 @@ export function SkiaMiniBoardScreen({
         if (index >= 0) {
           const nextX = gestureStartX.value + event.translationX / scale.value;
           const nextY = gestureStartY.value + event.translationY / scale.value;
-          const nextPositions = positions.value.slice();
-          nextPositions[index] = {
-            x: nextX,
-            y: nextY,
-          };
           activeCardX.value = nextX;
           activeCardY.value = nextY;
-          positions.value = nextPositions;
+          // 毎フレームの配列コピーを避け、対象要素だけ書き換えて更新を通知する。
+          positions.modify((value) => {
+            value[index] = { x: nextX, y: nextY };
+            return value;
+          });
           return;
         }
         const sectionGesture = activeSectionGesture.value;
@@ -1025,14 +1138,21 @@ export function SkiaMiniBoardScreen({
             event.translationX / scale.value,
             event.translationY / scale.value
           );
-          const nextSections = sectionRects.value.slice();
-          nextSections[sectionIndex] = nextRect;
-          sectionRects.value = nextSections;
+          sectionRects.modify((value) => {
+            value[sectionIndex] = nextRect;
+            return value;
+          });
           activeSectionGesture.value = { ...sectionGesture, current: nextRect };
           return;
         }
         boardX.value = gestureStartX.value + event.translationX;
         boardY.value = gestureStartY.value + event.translationY;
+      })
+      .onEnd((event) => {
+        // ボードのパンだけ慣性を付ける(カードドラッグ・セクション操作・ピンチ系列は除く)。
+        if (touchSequenceHadMultiplePointers.value) return;
+        if (activeCardIndex.value >= 0 || activeSectionGesture.value.action) return;
+        startCameraInertia(event.x, event.y, event.velocityX, event.velocityY, 0);
       })
       .onFinalize(() => {
         const index = activeCardIndex.value;
@@ -1136,6 +1256,12 @@ export function SkiaMiniBoardScreen({
         gestureStartScale.value = scale.value;
         pinchBoardX.value = (event.focalX - boardX.value) / scale.value;
         pinchBoardY.value = (event.focalY - boardY.value) / scale.value;
+        pinchMomentum.value = {
+          ...EMPTY_PINCH_MOMENTUM,
+          focalX: event.focalX,
+          focalY: event.focalY,
+          at: Date.now(),
+        };
       })
       .onUpdate((event) => {
         const shouldAnimateZoom = Platform.OS === "macos" && event.numberOfPointers === 1;
@@ -1147,6 +1273,24 @@ export function SkiaMiniBoardScreen({
         const nextBoardX = event.focalX - pinchBoardX.value * nextScale;
         const nextBoardY = event.focalY - pinchBoardY.value * nextScale;
         if (!shouldAnimateZoom) {
+          // 全指が離れた時の慣性用に、focal移動とscale変化の速度を計測しておく。
+          // 1フレームの生値はブレるため、直前の速度と50%ずつ混ぜて滑らかにする。
+          const previous = pinchMomentum.value;
+          const now = Date.now();
+          const dtSeconds = (now - previous.at) / 1000;
+          if (dtSeconds > 0) {
+            const blend = dtSeconds > 0.064 ? 1 : 0.5;
+            const mix = (previousVelocity: number, nextVelocity: number) =>
+              previousVelocity + (nextVelocity - previousVelocity) * blend;
+            pinchMomentum.value = {
+              focalX: event.focalX,
+              focalY: event.focalY,
+              velocityX: mix(previous.velocityX, (event.focalX - previous.focalX) / dtSeconds),
+              velocityY: mix(previous.velocityY, (event.focalY - previous.focalY) / dtSeconds),
+              scaleVelocity: mix(previous.scaleVelocity, (nextScale - scale.value) / dtSeconds),
+              at: now,
+            };
+          }
           scale.value = nextScale;
           boardX.value = nextBoardX;
           boardY.value = nextBoardY;
@@ -1181,8 +1325,11 @@ export function SkiaMiniBoardScreen({
     openSectionContextMenu,
     pinchBoardX,
     pinchBoardY,
+    pinchMomentum,
     positions,
     scale,
+    startCameraInertia,
+    stopCameraInertia,
     selectedCardIndex,
     selectedSectionIndex,
     sectionRects,
@@ -1194,6 +1341,7 @@ export function SkiaMiniBoardScreen({
 
   // カード位置には触らず、パン・ズームだけを初期化する(整頓ボタンとの差別化)。
   const resetViewport = () => {
+    stopCameraInertia();
     boardX.value = 0;
     boardY.value = 0;
     scale.value = 1;
@@ -1203,15 +1351,18 @@ export function SkiaMiniBoardScreen({
     setSelectedSectionId("");
   };
 
-  const gridLines = useMemo(() => {
-    const lines: Array<{ key: string; p1: { x: number; y: number }; p2: { x: number; y: number } }> = [];
+  // グリッド線46本を1つのPathへまとめ、Skiaの描画ノード数を減らす。
+  const gridPath = useMemo(() => {
+    const path = Skia.Path.Make();
     for (let x = 0; x <= 900; x += 40) {
-      lines.push({ key: `x-${x}`, p1: { x, y: 0 }, p2: { x, y: 900 } });
+      path.moveTo(x, 0);
+      path.lineTo(x, 900);
     }
     for (let y = 0; y <= 900; y += 40) {
-      lines.push({ key: `y-${y}`, p1: { x: 0, y }, p2: { x: 900, y } });
+      path.moveTo(0, y);
+      path.lineTo(900, y);
     }
-    return lines;
+    return path;
   }, []);
   const editingSection = sections.find((section) => section.id === editingSectionId) || null;
 
@@ -1323,9 +1474,7 @@ export function SkiaMiniBoardScreen({
           <Canvas style={StyleSheet.absoluteFill}>
             <Group transform={boardTranslate}>
               <Group transform={boardScale}>
-                {gridLines.map((line) => (
-                  <Line key={line.key} p1={line.p1} p2={line.p2} color="#dce4ed" strokeWidth={1} />
-                ))}
+                <Path path={gridPath} color="#dce4ed" style="stroke" strokeWidth={1} />
                 {sections.map((section, index) => (
                   <SkiaBoardSectionRegion
                     key={section.id}
