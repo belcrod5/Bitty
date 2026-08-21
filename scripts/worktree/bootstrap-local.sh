@@ -84,10 +84,7 @@ require_main_repo_root() {
   cd "${BITTY_MAIN_REPO_ROOT}" && pwd -P
 }
 
-MAIN_REPO_ROOT=""
-if [[ "${DO_ENV}" == "1" || "${DO_PRIVATE_RUNNER}" == "1" || "${DO_IOS_NATIVE}" == "1" ]]; then
-  MAIN_REPO_ROOT="$(require_main_repo_root)"
-fi
+MAIN_REPO_ROOT="$(require_main_repo_root)"
 
 copy_local_env_files() {
   if [[ "${MAIN_REPO_ROOT}" == "${REPO_ROOT}" ]]; then
@@ -129,6 +126,45 @@ copy_local_env_files() {
     } >> "${REPO_ROOT}/.env"
     echo "[bootstrap-local] ensured BITTY_MAIN_REPO_ROOT in .env"
   fi
+}
+
+share_private_runner_logs() {
+  if [[ "${MAIN_REPO_ROOT}" == "${REPO_ROOT}" ]]; then
+    return 0
+  fi
+
+  local main_logs="${MAIN_REPO_ROOT}/private_runner/logs"
+  local worktree_runner_dir="${REPO_ROOT}/private_runner"
+  local worktree_logs="${worktree_runner_dir}/logs"
+  local main_logs_real=""
+  local linked_logs_real=""
+
+  mkdir -p "${main_logs}" "${worktree_runner_dir}"
+  main_logs_real="$(cd "${main_logs}" && pwd -P)"
+
+  if [[ -L "${worktree_logs}" ]]; then
+    if linked_logs_real="$(cd "${worktree_logs}" 2>/dev/null && pwd -P)" &&
+      [[ "${linked_logs_real}" == "${main_logs_real}" ]]; then
+      return 0
+    fi
+    echo "[bootstrap-local] refusing to replace private_runner/logs symlink: ${worktree_logs}" >&2
+    exit 1
+  fi
+
+  if [[ -e "${worktree_logs}" ]]; then
+    if [[ ! -d "${worktree_logs}" ]]; then
+      echo "[bootstrap-local] refusing to replace non-directory path: ${worktree_logs}" >&2
+      exit 1
+    fi
+    if find "${worktree_logs}" -mindepth 1 -print -quit | grep -q .; then
+      echo "[bootstrap-local] refusing to replace non-empty private_runner/logs: ${worktree_logs}" >&2
+      exit 1
+    fi
+    rmdir "${worktree_logs}"
+  fi
+
+  ln -s "${main_logs_real}" "${worktree_logs}"
+  echo "[bootstrap-local] linked private_runner/logs to main repository"
 }
 
 copy_local_runner_token() {
@@ -265,6 +301,7 @@ ensure_ios_pods() {
 if [[ "${DO_ENV}" == "1" ]]; then
   copy_local_env_files
 fi
+share_private_runner_logs
 if [[ "${DO_PRIVATE_RUNNER}" == "1" ]]; then
   copy_local_runner_token
   ensure_npm_install "${REPO_ROOT}/private_runner" "private_runner"

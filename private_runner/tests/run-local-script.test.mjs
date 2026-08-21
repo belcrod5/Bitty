@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -236,6 +238,69 @@ test("bootstrap uses a standalone clone as its own main repository", () => {
       }
     );
     assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap shares worktree runner data with main and is idempotent", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "bitty-bootstrap-shared-runner-data-"));
+  const mainRoot = join(repoRoot, "main");
+  const worktreeRoot = join(repoRoot, "worktree");
+  const mainLogs = join(mainRoot, "private_runner/logs");
+  const worktreeLogs = join(worktreeRoot, "private_runner/logs");
+  mkdirSync(join(mainRoot, "private_runner"), { recursive: true });
+  mkdirSync(join(worktreeRoot, "private_runner"), { recursive: true });
+
+  const run = () => spawnSync(
+    "bash",
+    ["scripts/worktree/bootstrap-local.sh", "--repo-root", worktreeRoot],
+    {
+      encoding: "utf8",
+      env: { ...process.env, BITTY_MAIN_REPO_ROOT: mainRoot },
+    }
+  );
+
+  try {
+    const linked = run();
+    assert.equal(linked.status, 0, `stdout=${linked.stdout}\nstderr=${linked.stderr}`);
+    assert.equal(lstatSync(worktreeLogs).isSymbolicLink(), true);
+    assert.equal(realpathSync(worktreeLogs), realpathSync(mainLogs));
+
+    writeFileSync(join(mainLogs, "codex_schedules.json"), "{}\n");
+    assert.equal(readFileSync(join(worktreeLogs, "codex_schedules.json"), "utf8"), "{}\n");
+
+    const repeated = run();
+    assert.equal(repeated.status, 0, `stdout=${repeated.stdout}\nstderr=${repeated.stderr}`);
+    assert.equal(realpathSync(worktreeLogs), realpathSync(mainLogs));
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap preserves and rejects an existing non-empty worktree runner data directory", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "bitty-bootstrap-runner-data-conflict-"));
+  const mainRoot = join(repoRoot, "main");
+  const worktreeRoot = join(repoRoot, "worktree");
+  const worktreeLogs = join(worktreeRoot, "private_runner/logs");
+  const existingStore = join(worktreeLogs, "codex_schedules.json");
+  mkdirSync(join(mainRoot, "private_runner"), { recursive: true });
+  mkdirSync(worktreeLogs, { recursive: true });
+  writeFileSync(existingStore, "existing\n");
+
+  try {
+    const result = spawnSync(
+      "bash",
+      ["scripts/worktree/bootstrap-local.sh", "--repo-root", worktreeRoot],
+      {
+        encoding: "utf8",
+        env: { ...process.env, BITTY_MAIN_REPO_ROOT: mainRoot },
+      }
+    );
+    assert.equal(result.status, 1, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.match(result.stderr, /refusing to replace non-empty private_runner\/logs/);
+    assert.equal(lstatSync(worktreeLogs).isDirectory(), true);
+    assert.equal(readFileSync(existingStore, "utf8"), "existing\n");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

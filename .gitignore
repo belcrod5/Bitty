@@ -55,8 +55,8 @@ private_runner/.env
 private_runner/.codex-home/
 private_runner/auth-cache/
 private_runner/*.log
-private_runner/logs/
-private_runner/private_runner/logs/
+private_runner/logs
+private_runner/private_runner/logs
 docs/*.trace/
 docs/clipboard-*.txt
 

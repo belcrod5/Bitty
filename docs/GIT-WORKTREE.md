@@ -72,6 +72,17 @@ worktree側でサーバー再起動やiOS実機ビルドを行う場合、ユー
 ローカル初期化でメインリポジトリ側のファイルを参照する場合は、対象worktreeの `.env` または実行環境に `BITTY_MAIN_REPO_ROOT` を明示する。自動推測はしない。
 `scripts/worktree/bootstrap-local.sh --env` は、main側の `.env` コピー後も対象worktree側の `.env` に `BITTY_MAIN_REPO_ROOT` を保持する。
 
+`scripts/worktree/bootstrap-local.sh` は追加の引数なしで、worktree側の `private_runner/logs` をmain側の同じディレクトリへ向けたシンボリックリンクにする。これにより、セッション既読状態、Codex／位置スケジュール、Push端末登録、Runner tokenなどのRunner永続データを、どのworktreeからサーバーを起動しても共有する。
+
+```text
+<worktree>/private_runner/logs
+  -> <main>/private_runner/logs
+```
+
+この処理は冪等であり、正しいリンクが既にあれば何もしない。リンク先が異なる場合、またはworktree側に空でない実ディレクトリがある場合は、既存データを上書きせず初期化を停止する。既存データの統合や削除は自動で行わない。
+
+共有データを同時に更新すると、JSON store、実行状態、PID、ログが競合するため、同じmainを共有するPrivate Runnerは同時に複数起動しない。別worktreeで確認するときは、現在のRunnerを停止してから対象worktreeのRunnerを起動する。
+
 ユーザー検証用コマンドを提示する前に、親エージェントは対象worktreeで必要なローカル初期化を実行し、`.env` と対象の依存ディレクトリが存在することを確認する。
 ユーザーに初回実行時の `.env` コピーや `npm install` を任せない。
 
@@ -91,9 +102,7 @@ test -d /absolute/path/to/worktree/private_runner/node_modules
 )
 ```
 
-`--private-runner` はworktree側のRunner tokenファイルが無い、または空の場合だけ、
-main側の同じ相対パスからコピーする。既存のworktree側tokenは上書きしない。
-`RUNNER_TOKEN_FILE` が `private_runner/.env` にある場合は、その相対パスを使う。
+`--private-runner` は共有された既存Runner tokenを維持する。`RUNNER_TOKEN_FILE` が共有ディレクトリ外の相対パスへ変更されている場合は、worktree側のtokenが無い、または空の場合だけmain側からコピーし、既存tokenは上書きしない。
 
 iOS実機ビルドを案内する前の確認：
 
@@ -504,6 +513,7 @@ BRANCH="fix/login-validation"
 WORKTREE_ROOT="${BITTY_WORKTREE_ROOT:-../bitty-worktree}"
 WORKTREE_PATH="${WORKTREE_ROOT}/${BRANCH}"
 BASE_BRANCH="origin/main"
+MAIN_REPO_ROOT="$(pwd -P)"
 
 親ディレクトリを作成する。
 
@@ -515,6 +525,16 @@ git worktree add \
   -b "$BRANCH" \
   "$WORKTREE_PATH" \
   "$BASE_BRANCH"
+
+ローカル設定を初期化する。この処理でRunner共有データのシンボリックリンクも自動作成される。共有専用の追加引数は不要。
+
+```sh
+BITTY_MAIN_REPO_ROOT="$MAIN_REPO_ROOT" \
+  "$WORKTREE_PATH/scripts/worktree/bootstrap-local.sh" \
+  --repo-root "$WORKTREE_PATH" \
+  --env
+test -L "$WORKTREE_PATH/private_runner/logs"
+```
 
 作成結果を確認する。
 
