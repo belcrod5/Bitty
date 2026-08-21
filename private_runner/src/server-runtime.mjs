@@ -2931,7 +2931,7 @@ function sanitizeTtsInputText(raw) {
 }
 
 function sanitizeStreamTtsText(raw) {
-  return sanitizeTtsInputText(raw).replace(/[。、\r\n]/g, "").trim();
+  return sanitizeTtsInputText(raw).replace(/[。、.,\r\n]/g, "").trim();
 }
 
 function normalizeStreamTtsMode(raw) {
@@ -6532,38 +6532,6 @@ function buildMockReplyFromRequest(req) {
   return `[mock] ${req.messages.length > 0 ? req.messages[req.messages.length - 1]?.content || "" : req.transcript}`;
 }
 
-const ASSISTANT_THINKING_PREFIX = "思考中...\n\n";
-
-function prependAssistantThinkingText(rawText) {
-  const text = String(rawText || "");
-  if (text.startsWith("思考中...")) return text;
-  return text ? `${ASSISTANT_THINKING_PREFIX}${text}` : ASSISTANT_THINKING_PREFIX;
-}
-
-function stripAssistantThinkingPrefix(rawText) {
-  const text = String(rawText || "");
-  if (text.startsWith(ASSISTANT_THINKING_PREFIX)) {
-    return text.slice(ASSISTANT_THINKING_PREFIX.length);
-  }
-  if (text.startsWith("思考中...")) {
-    return text.slice("思考中...".length).replace(/^\s+/, "");
-  }
-  return text;
-}
-
-function appendAssistantThinkingBodyText(baseRaw, additionRaw) {
-  const base = String(baseRaw || "");
-  const addition = String(additionRaw || "");
-  if (!base) return prependAssistantThinkingText(addition);
-  if (!addition) return base;
-  if (addition.startsWith(base)) return addition;
-  const additionBody = stripAssistantThinkingPrefix(addition);
-  if (!additionBody) return base;
-  if (base.endsWith(additionBody)) return base;
-  const separator = base.endsWith("\n") || additionBody.startsWith("\n") ? "" : "\n\n";
-  return `${base}${separator}${additionBody}`;
-}
-
 function buildReplyHttpPayload(result) {
   const payload = {
     reply: result.reply,
@@ -6615,8 +6583,7 @@ async function runReplyUsecase(req, opts = {}) {
   };
 
   if (RUNNER_MOCK) {
-    const mockReplyRaw = buildMockReplyFromRequest(effectiveReq);
-    const reply = prependAssistantThinkingText(mockReplyRaw);
+    const reply = buildMockReplyFromRequest(effectiveReq);
     const sessionId = effectiveSessionId;
     const lastUserText = String(extractLastUserText({
       transcript: effectiveReq.transcript,
@@ -6676,7 +6643,7 @@ async function runReplyUsecase(req, opts = {}) {
     cwd: validatedRoot.rootReal,
     directory: validatedRoot.rootReal,
     userText: lastUserText,
-    assistantText: prependAssistantThinkingText(String(fileResult.reply || "").trim()),
+    assistantText: String(fileResult.reply || "").trim(),
     contextUsage: fileResult.contextUsage || null,
     modelRef: effectiveReq.codexOptions.modelInfo.modelRef,
     reasoningEffort: effectiveReq.codexOptions.reasoningEffort,
@@ -6684,7 +6651,7 @@ async function runReplyUsecase(req, opts = {}) {
     console.error("[session-rollout] append failed", err);
   });
   if (stream && onMode) onMode("file_tools_pseudo");
-  const reply = prependAssistantThinkingText(fileResult.reply);
+  const reply = fileResult.reply;
   if (stream && onText) {
     const chunks = splitPseudoTextDeltas(reply);
     for (const chunk of chunks) {
@@ -10848,79 +10815,6 @@ function isCodexRelayThreadMismatch(relayThreadIdRaw, eventThreadIdRaw) {
   return Boolean(relayThreadId && eventThreadId && relayThreadId !== eventThreadId);
 }
 
-function setCodexAgentMessageText(item, text) {
-  if (!item || typeof item !== "object") return false;
-  item.text = text;
-  if (item.message && typeof item.message === "object") {
-    item.message.text = text;
-  }
-  return true;
-}
-
-function normalizeCodexAgentMessageItemAssistantThinking(item) {
-  if (!item || typeof item !== "object" || Array.isArray(item)) return 0;
-  if (String(item.type || "").trim() !== "agentMessage") return 0;
-  const text = extractCodexAgentMessageText(item);
-  if (!text || text.startsWith("思考中...")) return 0;
-  setCodexAgentMessageText(item, prependAssistantThinkingText(text));
-  return 1;
-}
-
-function normalizeCodexTurnAssistantThinkingMessages(turn) {
-  if (!turn || typeof turn !== "object" || Array.isArray(turn)) return 0;
-  let normalized = 0;
-  const itemLists = [
-    Array.isArray(turn.items) ? turn.items : null,
-    Array.isArray(turn.output) ? turn.output : null,
-  ].filter(Boolean);
-  for (const items of itemLists) {
-    for (const item of items) {
-      normalized += normalizeCodexAgentMessageItemAssistantThinking(item);
-    }
-  }
-  return normalized;
-}
-
-function normalizeCodexThreadAssistantThinkingMessages(thread) {
-  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return 0;
-  const turns = Array.isArray(thread.turns) ? thread.turns : [];
-  let normalized = 0;
-  for (const turn of turns) {
-    normalized += normalizeCodexTurnAssistantThinkingMessages(turn);
-  }
-  return normalized;
-}
-
-function normalizeCodexThreadReadAssistantThinkingRpcText(textRaw, responseRpcMethod) {
-  const method = String(responseRpcMethod || "").trim();
-  if (method !== "thread/read" && method !== "thread/resume") return String(textRaw || "");
-  const text = String(textRaw || "");
-  if (!text) return text;
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return text;
-  }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return text;
-  const result = payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
-    ? payload.result
-    : null;
-  if (!result) return text;
-  const candidates = [
-    result.thread,
-    result.data && typeof result.data === "object" && !Array.isArray(result.data) ? result.data.thread : null,
-    result.data,
-    result,
-  ];
-  let normalized = 0;
-  for (const candidate of candidates) {
-    normalized += normalizeCodexThreadAssistantThinkingMessages(candidate);
-  }
-  if (normalized <= 0) return text;
-  return JSON.stringify(payload);
-}
-
 function getCodexTurnStartedId(payload) {
   const params = payload?.params && typeof payload.params === "object" ? payload.params : {};
   return pickFirstNonEmptyString(
@@ -10929,117 +10823,6 @@ function getCodexTurnStartedId(payload) {
     params.turn?.id,
     params.turn?.turnId
   );
-}
-
-function getCodexAgentMessageItemIdFromParams(params) {
-  return pickFirstNonEmptyString(
-    params?.item?.id,
-    params?.itemId,
-    params?.item_id
-  );
-}
-
-function normalizeCodexRelayAssistantThinkingRpcTexts(relay, textRaw) {
-  const text = String(textRaw || "");
-  if (!relay || !text) return [text];
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return [text];
-  }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [text];
-  const method = String(payload.method || "").trim();
-  const params = payload.params && typeof payload.params === "object" ? payload.params : null;
-  if (method === "turn/started") {
-    const turnId = getCodexTurnStartedId(payload);
-    if (
-      relay.assistantThinkingTurnActive &&
-      (!turnId || String(relay.assistantThinkingTurnId || "") === turnId)
-    ) {
-      return [text];
-    }
-    relay.assistantThinkingTurnId = turnId || "";
-    relay.assistantThinkingTurnActive = true;
-    relay.assistantThinkingBodyText = "";
-    relay.assistantThinkingBodyTextByItemId = new Map();
-    relay.assistantThinkingCurrentItemId = "";
-    relay.assistantThinkingPrefixSent = false;
-    return [text];
-  }
-  if (method === "turn/completed") {
-    relay.assistantThinkingTurnActive = false;
-    return [text];
-  }
-  if (method === "item/started") {
-    const item = params?.item && typeof params.item === "object" ? params.item : null;
-    if (String(item?.type || "").trim() === "agentMessage") {
-      const itemId = getCodexAgentMessageItemIdFromParams(params);
-      if (itemId) {
-        relay.assistantThinkingCurrentItemId = itemId;
-        if (!(relay.assistantThinkingBodyTextByItemId instanceof Map)) {
-          relay.assistantThinkingBodyTextByItemId = new Map();
-        }
-        if (!relay.assistantThinkingBodyTextByItemId.has(itemId)) {
-          relay.assistantThinkingBodyTextByItemId.set(itemId, "");
-        }
-      }
-    }
-    return [text];
-  }
-  if (method === "item/agentMessage/delta") {
-    if (!params || typeof params.delta !== "string") return [text];
-    const delta = String(params.delta || "");
-    if (!delta) return [text];
-    if (!(relay.assistantThinkingBodyTextByItemId instanceof Map)) {
-      relay.assistantThinkingBodyTextByItemId = new Map();
-    }
-    const itemId = getCodexAgentMessageItemIdFromParams(params) ||
-      String(relay.assistantThinkingCurrentItemId || "").trim() ||
-      "__agent_message__";
-    if (!relay.assistantThinkingBodyTextByItemId.has(itemId)) {
-      relay.assistantThinkingBodyTextByItemId.set(itemId, "");
-    }
-    if (relay.assistantThinkingPrefixSent) {
-      const nextItemText = `${String(relay.assistantThinkingBodyTextByItemId.get(itemId) || "")}${delta}`;
-      relay.assistantThinkingBodyTextByItemId.set(itemId, nextItemText);
-      relay.assistantThinkingBodyText = nextItemText;
-      return [text];
-    }
-    relay.assistantThinkingPrefixSent = true;
-    if (delta.startsWith("思考中...")) {
-      const nextItemText = `${String(relay.assistantThinkingBodyTextByItemId.get(itemId) || "")}${delta}`;
-      relay.assistantThinkingBodyTextByItemId.set(itemId, nextItemText);
-      relay.assistantThinkingBodyText = nextItemText;
-      return [text];
-    }
-    params.delta = prependAssistantThinkingText(delta);
-    const nextItemText = `${String(relay.assistantThinkingBodyTextByItemId.get(itemId) || "")}${String(params.delta || "")}`;
-    relay.assistantThinkingBodyTextByItemId.set(itemId, nextItemText);
-    relay.assistantThinkingBodyText = nextItemText;
-    return [JSON.stringify(payload)];
-  }
-  if (method !== "item/completed") return [text];
-  const item = params?.item && typeof params.item === "object" ? params.item : null;
-  if (String(item?.type || "").trim() !== "agentMessage") return [text];
-  const agentText = extractCodexAgentMessageText(item);
-  if (!agentText) return [text];
-  if (!(relay.assistantThinkingBodyTextByItemId instanceof Map)) {
-    relay.assistantThinkingBodyTextByItemId = new Map();
-  }
-  const itemId = getCodexAgentMessageItemIdFromParams(params) ||
-    String(relay.assistantThinkingCurrentItemId || "").trim() ||
-    "__agent_message__";
-  const priorBodyText = String(relay.assistantThinkingBodyTextByItemId.get(itemId) || "");
-  const normalizedText = priorBodyText
-    ? appendAssistantThinkingBodyText(priorBodyText, agentText)
-    : (relay.assistantThinkingPrefixSent ? agentText : prependAssistantThinkingText(agentText));
-  relay.assistantThinkingBodyTextByItemId.set(itemId, normalizedText);
-  relay.assistantThinkingBodyText = normalizedText;
-  relay.assistantThinkingPrefixSent = true;
-  if (normalizedText === agentText) return [text];
-  setCodexAgentMessageText(item, normalizedText);
-  return [JSON.stringify(payload)];
 }
 
 function pickBestRelayForThread(threadIdRaw) {
@@ -11362,12 +11145,6 @@ function createCodexRelayContext(params) {
     currentTurnId: "",
     currentTurnStartSeq: 0,
     lastAgentMessageText: "",
-    assistantThinkingPrefixSent: false,
-    assistantThinkingBodyText: "",
-    assistantThinkingBodyTextByItemId: new Map(),
-    assistantThinkingCurrentItemId: "",
-    assistantThinkingTurnActive: false,
-    assistantThinkingTurnId: "",
     pendingApprovalRequestIds: new Set(),
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
@@ -11782,10 +11559,6 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   let outgoingTexts = [];
   if (!isBinary) {
     const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
-    const normalizedThreadText = normalizeCodexThreadReadAssistantThinkingRpcText(
-      text,
-      responseRpcMethod
-    );
     const method = String(rpcPayload?.method || "").trim();
     const turnScoped = method.startsWith("item/") || method.startsWith("turn/");
     const ownsCurrentTurn = codexTurnEventMatches(rpcPayload?.params, {
@@ -11794,7 +11567,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     });
     outgoingTexts = turnScoped && relay.currentTurnId && !ownsCurrentTurn
       ? []
-      : normalizeCodexRelayAssistantThinkingRpcTexts(relay, normalizedThreadText);
+      : [text];
   }
   if (!isBinary) {
     const subscribers = Array.from(relay.clients);
@@ -12548,6 +12321,8 @@ export const __TESTING__ = {
   runGitDiffTool,
   extractYouTubeVideoIdsFromToolResult,
   parseHttpBearerToken,
+  normalizeReplyExecutionRequest,
+  runReplyUsecase,
   runCodexWithFileTools,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,
@@ -12566,6 +12341,7 @@ export const __TESTING__ = {
   startLlmStreamJob,
   takeNextStreamTtsSegment,
   findStreamTtsSplitIndex,
+  sanitizeStreamTtsText,
   resolveStreamTtsSegmentTargetChars,
   fetchTtsWithTimeout,
   STREAM_TTS_SEGMENT_MAX_CHARS,

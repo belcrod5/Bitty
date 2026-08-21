@@ -74,12 +74,28 @@ export function formatSkiaMiniChatUpdatedAt(raw: unknown, nowMs = Date.now()) {
   const updatedAtMs = new Date(String(raw || "")).getTime();
   if (!Number.isFinite(updatedAtMs)) return "-";
   const elapsedSeconds = Math.max(0, Math.floor((nowMs - updatedAtMs) / 1000));
-  if (elapsedSeconds < 60) return `${elapsedSeconds}秒前`;
+  // 秒表示はラベルが毎秒変わり、カードの再レンダリング(Picture再生成)を毎秒
+  // 引き起こすため分単位に丸める(tickも60秒間隔)。
+  if (elapsedSeconds < 60) return "1分未満";
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   if (elapsedMinutes < 60) return `${elapsedMinutes}分前`;
   const elapsedHours = Math.floor(elapsedMinutes / 60);
   if (elapsedHours < 24) return `${elapsedHours}時間前`;
   return `${Math.floor(elapsedHours / 24)}日前`;
+}
+
+// tickによる再構築時、内容が同一のカードは同じオブジェクトを使い回すための比較。
+// activityTrail(毎回新しい配列)だけ内容比較し、他のフィールドは浅い比較で足りる。
+function sameBoardSession(a: SkiaMiniChatSession, b: SkiaMiniChatSession) {
+  return (Object.keys(a) as Array<keyof SkiaMiniChatSession>).every((key) => (
+    key === "activityTrail"
+      ? a.activityTrail.length === b.activityTrail.length
+        && a.activityTrail.every((activity, index) => (
+          activity.kind === b.activityTrail[index].kind
+          && activity.active === b.activityTrail[index].active
+        ))
+      : a[key] === b[key]
+  ));
 }
 
 export function useSkiaMiniChatSessions() {
@@ -128,7 +144,9 @@ export function useSkiaMiniChatSessions() {
 
   useEffect(() => {
     void ensureRegisteredDirectorySessions("screen_mount");
-    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    // ラベルは分単位なので60秒間隔で十分。1秒tickは毎秒の全体再レンダリングで
+    // ボードを周期的にガクつかせていた。
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
     return () => {
       hydrationGenerationRef.current += 1;
       clearInterval(timer);
@@ -246,8 +264,17 @@ export function useSkiaMiniChatSessions() {
     });
   }, [assignedSessions, sessionTitleOverridesById]);
 
-  const sessions = useMemo<SkiaMiniChatSession[]>(() => (
-    assignedSessions.map(({ card, candidate, panelId }) => {
+  // 再構築時、内容が変わっていないカードは前回のオブジェクト(と配列)を使い回す。
+  // itemのidentityが保たれることで、React.memoされたカードの再レンダリングと
+  // Picture再生成が「内容が実際に変わったカードだけ」に限定される。
+  const sessionReuseRef = useRef<{ byCardId: Map<string, SkiaMiniChatSession>; list: SkiaMiniChatSession[] }>({
+    byCardId: new Map(),
+    list: [],
+  });
+  const sessions = useMemo<SkiaMiniChatSession[]>(() => {
+    const previous = sessionReuseRef.current;
+    const nextByCardId = new Map<string, SkiaMiniChatSession>();
+    const list = assignedSessions.map(({ card, candidate, panelId }) => {
       const snapshot = getSnapshot(panelId);
       const messages = snapshot.selectedSessionId === candidate.sessionId
         ? snapshot.conversationMessages
@@ -255,7 +282,7 @@ export function useSkiaMiniChatSessions() {
       const lastMessage = messages[messages.length - 1];
       const childState = childStateByParentId.get(candidate.sessionId);
       const runtimeActivityTrail = snapshot.runtimeActivityTrail || [];
-      return {
+      const built: SkiaMiniChatSession = {
         kind: "session",
         cardId: skiaBoardCardId(card),
         panelId,
@@ -287,8 +314,17 @@ export function useSkiaMiniChatSessions() {
         col: card.col,
         row: card.row,
       };
-    })
-  ), [
+      const cached = previous.byCardId.get(built.cardId);
+      const reused = cached && sameBoardSession(cached, built) ? cached : built;
+      nextByCardId.set(built.cardId, reused);
+      return reused;
+    });
+    const sameList = previous.list.length === list.length
+      && list.every((session, index) => session === previous.list[index]);
+    const result = sameList ? previous.list : list;
+    sessionReuseRef.current = { byCardId: nextByCardId, list: result };
+    return result;
+  }, [
     assignedSessions,
     childStateByParentId,
     getSnapshot,
@@ -297,15 +333,27 @@ export function useSkiaMiniChatSessions() {
     sessionTitleOverridesById,
   ]);
 
+  // file/directoryカードも、元のboardStateカードが同一参照なら同じitemを使い回す。
+  const boardItemReuseRef = useRef(new Map<string, { source: unknown; item: SkiaMiniBoardItem }>());
   const items = useMemo<SkiaMiniBoardItem[]>(() => {
     const sessionsByCardId = new Map(sessions.map((session) => [session.cardId, session]));
-    return (boardState?.cards || []).flatMap((card) => {
+    const previous = boardItemReuseRef.current;
+    const next = new Map<string, { source: unknown; item: SkiaMiniBoardItem }>();
+    const list = (boardState?.cards || []).flatMap((card) => {
       const cardId = skiaBoardCardId(card);
-      const item = card.kind === "session"
-        ? sessionsByCardId.get(cardId)
+      if (card.kind === "session") {
+        const item = sessionsByCardId.get(cardId);
+        return item ? [item] : [];
+      }
+      const cached = previous.get(cardId);
+      const item: SkiaMiniBoardItem = cached && cached.source === card
+        ? cached.item
         : { ...card, cardId };
-      return item ? [item] : [];
+      next.set(cardId, { source: card, item });
+      return [item];
     });
+    boardItemReuseRef.current = next;
+    return list;
   }, [boardState, sessions]);
   const tidyBoard = useCallback(() => {
     tidyCards(items.map((item) => item.cardId));

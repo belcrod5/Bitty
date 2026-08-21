@@ -12,11 +12,13 @@ type UseEnqueueStreamAudioControllerOptions = {
   streamAudioEnqueueChainRef: MutableRefObject<Promise<void>>;
   streamTtsSuppressedRef: MutableRefObject<boolean>;
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
+  streamAudioQueueProcessingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   setTtsPlaybackWanted: (next: boolean, reason: string, payload?: Record<string, unknown>) => void;
   setTtsUiStatus: (value: "idle" | "queued" | "synthesizing" | "playing" | "error") => void;
   setStreamAudioQueueSize: (value: number) => void;
+  preloadStreamAudio: (item: StreamAudioQueueItem) => void;
   processStreamAudioQueue: () => Promise<void>;
   setReplyDebug: (value: string | ((prev: string) => string)) => void;
   shouldProjectTtsDebugToActiveSession: () => boolean;
@@ -52,11 +54,13 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     streamAudioEnqueueChainRef,
     streamTtsSuppressedRef,
     streamAudioQueueRef,
+    streamAudioQueueProcessingRef,
     streamSocketRef,
     streamTtsControlRef,
     setTtsPlaybackWanted,
     setTtsUiStatus,
     setStreamAudioQueueSize,
+    preloadStreamAudio,
     processStreamAudioQueue,
     setReplyDebug,
     shouldProjectTtsDebugToActiveSession,
@@ -94,6 +98,12 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
         });
         setTtsUiStatus("queued");
         setStreamAudioQueueSize(streamAudioQueueRef.current.length);
+        if (
+          streamAudioQueueProcessingRef.current &&
+          streamAudioQueueRef.current.length === 1
+        ) {
+          preloadStreamAudio(prepared);
+        }
         void processStreamAudioQueue();
       })
       .catch((e) => {
@@ -106,6 +116,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
       });
   }, [
     processStreamAudioQueue,
+    preloadStreamAudio,
     setReplyDebug,
     shouldProjectTtsDebugToActiveSession,
     setStreamAudioQueueSize,
@@ -113,6 +124,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     setTtsUiStatus,
     streamAudioEnqueueChainRef,
     streamAudioQueueGenerationRef,
+    streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamSocketRef,
     streamTtsControlRef,
