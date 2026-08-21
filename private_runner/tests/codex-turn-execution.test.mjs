@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
+import { createCodexBackend, executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
 import { calendarScheduleDynamicTools } from "../src/calendar-tool-service.mjs";
 
 function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) {
@@ -97,6 +97,77 @@ test("starts a turn without requiring or waiting for completion APIs", async () 
   assert.equal(result.turnId, "turn-1");
   assert.equal(typeof result.cleanup, "function");
   assert.equal(client.calls.filter((call) => call.method === "turn/start").length, 1);
+});
+
+test("Codex Backend maps native turn events without changing App Server RPCs", async () => {
+  const client = fakeClient([
+    { method: "item/agentMessage/delta", params: { itemId: "message-1", delta: "partial" } },
+    {
+      method: "item/completed",
+      params: { item: { id: "message-1", type: "agentMessage", content: [{ type: "text", text: "final" }] } },
+    },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  client.close = () => { client.closed = true; };
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const events = [];
+  const result = await backend.startTurn({
+    runId: "run-1",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request",
+    signal: new AbortController().signal,
+    resolveSession: async (sessionRef) => events.push({ type: "session.resolved", payload: { sessionRef } }),
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  assert.deepEqual(events.map((event) => event.type), [
+    "session.resolved",
+    "turn.started",
+    "item.started",
+    "content.delta",
+    "item.completed",
+  ]);
+  assert.deepEqual(client.calls.find((call) => call.method === "turn/start")?.params.input, [
+    { type: "text", text: "run checks" },
+  ]);
+  assert.equal(client.closed, true);
+});
+
+test("Codex Backend compacts through the existing App Server methods", async () => {
+  const client = fakeClient([]);
+  client.close = () => {};
+  const request = client.request.bind(client);
+  client.request = async (method, params) => {
+    const result = await request(method, params);
+    if (method === "thread/compact/start") {
+      for (const listener of client.listeners) listener("thread/compacted", { threadId: params.threadId });
+    }
+    return result;
+  };
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+
+  assert.deepEqual(await backend.compactSession({
+    sessionRef: { backendId: "codex", nativeSessionId: "thread-existing" },
+  }), {
+    sessionRef: { backendId: "codex", nativeSessionId: "thread-existing" },
+    method: "thread/compact/start",
+    accepted: true,
+  });
+  assert.deepEqual(client.calls.filter((call) => call.kind === "request").map((call) => call.method), [
+    "initialize", "thread/read", "thread/resume", "thread/compact/start",
+  ]);
 });
 
 test("resumes a queued turn's existing thread through the same operation", async () => {

@@ -31,6 +31,7 @@ import {
   CodexRunnerWsJsonRpcIdMapper,
   createCodexRunnerWsLogicalId,
 } from "./runnerWsJsonRpcIds";
+import { getAgentBackendStatus } from "../../agent/client";
 
 function isCompactItem(itemRaw: unknown) {
   if (!itemRaw || typeof itemRaw !== "object") return false;
@@ -90,6 +91,8 @@ export async function compactCodexAppServerThread(options: {
   }) => void;
   onEvent?: (method: string, params: unknown) => void;
   runnerWebSocketManager?: RunnerWebSocketManager;
+  backendId?: string;
+  rawFallbackBackendId?: string;
 }): Promise<CodexThreadCompactResult> {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
   const wsUrl = normalized.wsUrl;
@@ -103,6 +106,37 @@ export async function compactCodexAppServerThread(options: {
     : NEAR_UNLIMITED_TIMEOUT_MS;
   if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
   if (!threadId) throw new Error("threadId is empty");
+  if (runnerWebSocketManager && options.backendId) {
+    const backendId = String(options.backendId || "codex");
+    let status = null;
+    try {
+      status = await getAgentBackendStatus(runnerWebSocketManager, backendId);
+    } catch (error) {
+      if (backendId !== options.rawFallbackBackendId) throw error;
+    }
+    if (status?.readiness?.ready && status.capabilities?.operations?.compact === true) {
+      const handoff = await runnerWebSocketManager.request({
+        channel: "agent",
+        op: "session.handoff",
+        payload: { sessionRef: { backendId, nativeSessionId: threadId }, targetMode: "neutral" },
+      }, { timeoutMs: 30_000 });
+      if (handoff.op === "error") throw new Error(String((handoff.payload as any)?.message || "Session handoff failed"));
+      const response = await runnerWebSocketManager.request({
+        channel: "agent",
+        op: "session.compact",
+        payload: { sessionRef: { backendId, nativeSessionId: threadId } },
+      }, { timeoutMs });
+      if (response.op === "error") throw new Error(String((response.payload as any)?.message || "Session compact failed"));
+      return {
+        threadId,
+        method: String((response.payload as any)?.method || "thread/compact/start") as CodexThreadCompactResult["method"],
+        accepted: true,
+      };
+    }
+    if (backendId !== options.rawFallbackBackendId) {
+      throw new Error(status?.readiness?.reason || "Selected Agent Backend does not support compaction");
+    }
+  }
 
   const ws = useRunnerWsManager ? null : createWebSocketWithOptionalAuth(wsUrl, wsToken);
   const wsLabel = wsToken ? `${wsUrl} (token)` : `${wsUrl} (no-token)`;

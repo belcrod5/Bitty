@@ -22,6 +22,27 @@ export function createLlmAcpSessionStore(deps = {}) {
   const acpSessionUpdatedAtBySessionId = new Map();
   const acpSessionLastReadAtBySessionId = new Map();
   const acpLatestSessionByRootRelativePath = new Map();
+  const agentOperations = new Map();
+  const agentOperationsClaimedHere = new Set();
+  const agentSessionBindings = new Map();
+  const agentSessionModes = new Map();
+  const agentWorkspaces = new Map();
+  const agentProcessEpoch = String(deps.agentProcessEpoch || randomUUID()).trim();
+  const agentOperationMaxEntries = Math.max(1, Number(deps.agentOperationMaxEntries || 1000));
+  const agentOperationTtlMs = Math.max(60_000, Number(deps.agentOperationTtlMs || 24 * 60 * 60 * 1000));
+  const agentWorkspaceMaxEntries = Math.max(1, Number(deps.agentWorkspaceMaxEntries || 1000));
+
+  function agentOperationKey(subjectId, clientOperationId) {
+    return JSON.stringify([String(subjectId || ""), String(clientOperationId || "")]);
+  }
+
+  function agentWorkspaceKey(subjectId, canonicalRoot) {
+    return `${subjectId}\u0000${canonicalRoot}`;
+  }
+
+  function agentSessionKey(backendId, nativeSessionId) {
+    return JSON.stringify([String(backendId || "").trim(), String(nativeSessionId || "").trim()]);
+  }
 
   async function resolveDirectoryIdentity(rawDirectory) {
     const normalized = normalizeSessionRootRelativePath(rawDirectory);
@@ -75,15 +96,28 @@ export function createLlmAcpSessionStore(deps = {}) {
       latestByDirectory[directory] = sessionId;
     }
     return {
-      version: 3,
+      version: 5,
       updatedAt: new Date().toISOString(),
       sessions,
       latestByDirectory,
+      agentOperations: Array.from(agentOperations.values())
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((entry) => ({ ...entry })),
+      agentSessionBindings: Array.from(agentSessionBindings.values())
+        .sort((a, b) => agentSessionKey(a.backendId, a.nativeSessionId)
+          .localeCompare(agentSessionKey(b.backendId, b.nativeSessionId)))
+        .map((entry) => ({ ...entry })),
+      agentSessionModes: Array.from(agentSessionModes.values())
+        .sort((a, b) => agentSessionKey(a.backendId, a.nativeSessionId)
+          .localeCompare(agentSessionKey(b.backendId, b.nativeSessionId)))
+        .map((entry) => ({ ...entry, ...(entry.lease ? { lease: { ...entry.lease } } : {}) })),
+      agentWorkspaces: Array.from(agentWorkspaces.values())
+        .sort((a, b) => agentWorkspaceKey(a.subjectId, a.canonicalRoot).localeCompare(agentWorkspaceKey(b.subjectId, b.canonicalRoot)))
+        .map((entry) => ({ ...entry })),
     };
   }
 
   async function loadAcpSessionStore() {
-    if (!sessionRootBindingEnabled) return;
     let parsed = {};
     try {
       const raw = await fileSystem.readFile(acpSessionStorePath, "utf8");
@@ -97,6 +131,11 @@ export function createLlmAcpSessionStore(deps = {}) {
     acpSessionUpdatedAtBySessionId.clear();
     acpSessionLastReadAtBySessionId.clear();
     acpLatestSessionByRootRelativePath.clear();
+    agentOperations.clear();
+    agentOperationsClaimedHere.clear();
+    agentSessionBindings.clear();
+    agentSessionModes.clear();
+    agentWorkspaces.clear();
     const sessions = parsed && typeof parsed === "object" && parsed.sessions && typeof parsed.sessions === "object"
       ? parsed.sessions
       : {};
@@ -122,10 +161,96 @@ export function createLlmAcpSessionStore(deps = {}) {
       }
     }
     rebuildAcpLatestSessionByRootRelativePath();
+    for (const value of Array.isArray(parsed?.agentOperations) ? parsed.agentOperations : []) {
+      const subjectId = String(value?.subjectId || "").trim();
+      const clientOperationId = String(value?.clientOperationId || "").trim();
+      const requestHash = String(value?.requestHash || "").trim();
+      const runId = String(value?.runId || "").trim();
+      const status = ["pending", "completed"].includes(value?.status) ? value.status : "";
+      const createdAt = normalizeSessionUpdatedAt(value?.createdAt);
+      const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt);
+      if (!subjectId || !clientOperationId || !requestHash || !runId || !status || !createdAt || !updatedAt) continue;
+      agentOperations.set(agentOperationKey(subjectId, clientOperationId), {
+        subjectId,
+        clientOperationId,
+        requestHash,
+        runId,
+        status,
+        createdAt,
+        updatedAt,
+        ...(status === "completed" && value?.result && typeof value.result === "object"
+          ? { result: value.result }
+          : {}),
+      });
+    }
+    for (const value of Array.isArray(parsed?.agentSessionBindings) ? parsed.agentSessionBindings : []) {
+      const backendId = String(value?.backendId || "").trim();
+      const nativeSessionId = String(value?.nativeSessionId || "").trim();
+      const canonicalCwd = String(value?.canonicalCwd || "").trim();
+      const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt);
+      if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd) || !updatedAt) continue;
+      agentSessionBindings.set(agentSessionKey(backendId, nativeSessionId), {
+        backendId,
+        nativeSessionId,
+        canonicalCwd: path.resolve(canonicalCwd),
+        updatedAt,
+      });
+    }
+    for (const value of Array.isArray(parsed?.agentSessionModes) ? parsed.agentSessionModes : []) {
+      const backendId = String(value?.backendId || "").trim();
+      const nativeSessionId = String(value?.nativeSessionId || "").trim();
+      const mode = value?.mode === "neutral" ? "neutral" : value?.mode === "raw" ? "raw" : "";
+      const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt);
+      if (!backendId || !nativeSessionId || !mode || !updatedAt) continue;
+      let lease = null;
+      if (value?.lease && typeof value.lease === "object") {
+        const owner = String(value.lease.owner || "").trim();
+        const runId = String(value.lease.runId || "").trim();
+        const processEpoch = String(value.lease.processEpoch || "").trim();
+        const generation = Number(value.lease.generation);
+        const acquiredAt = normalizeSessionUpdatedAt(value.lease.acquiredAt);
+        if (owner && runId && processEpoch && Number.isInteger(generation) && generation > 0 && acquiredAt) {
+          lease = {
+            owner,
+            runId,
+            processEpoch,
+            generation,
+            acquiredAt,
+            state: processEpoch === agentProcessEpoch && value.lease.state === "active" ? "active" : "recovering",
+            ...(String(value.lease.nativeProcessIdentity || "").trim()
+              ? { nativeProcessIdentity: String(value.lease.nativeProcessIdentity).trim() }
+              : {}),
+          };
+        }
+      }
+      agentSessionModes.set(agentSessionKey(backendId, nativeSessionId), {
+        backendId,
+        nativeSessionId,
+        mode,
+        generation: Math.max(0, Number.isInteger(Number(value?.generation)) ? Number(value.generation) : 0),
+        lease,
+        updatedAt,
+      });
+    }
+    for (const value of Array.isArray(parsed?.agentWorkspaces) ? parsed.agentWorkspaces : []) {
+      const canonicalRoot = String(value?.canonicalRoot || "").trim();
+      const subjectId = String(value?.subjectId || "").trim();
+      const identity = String(value?.identity || "").trim();
+      const approvedAt = normalizeSessionUpdatedAt(value?.approvedAt);
+      const revokedAt = normalizeSessionUpdatedAt(value?.revokedAt);
+      if (!path.isAbsolute(canonicalRoot) || !subjectId || !identity || !approvedAt || revokedAt) continue;
+      const resolvedRoot = path.resolve(canonicalRoot);
+      agentWorkspaces.set(agentWorkspaceKey(subjectId, resolvedRoot), {
+        canonicalRoot: resolvedRoot,
+        subjectId,
+        identity,
+        approvedAt,
+        revokedAt: "",
+      });
+    }
   }
 
-  async function ensureAcpSessionStoreLoaded() {
-    if (!sessionRootBindingEnabled) return;
+  async function ensureAgentMetadataStoreLoaded() {
     if (!acpSessionStoreLoadPromise) {
       acpSessionStoreLoadPromise = loadAcpSessionStore().catch((err) => {
         acpSessionStoreLoadPromise = null;
@@ -135,8 +260,12 @@ export function createLlmAcpSessionStore(deps = {}) {
     await acpSessionStoreLoadPromise;
   }
 
-  async function persistAcpSessionStore(lastReadAtBySessionId = acpSessionLastReadAtBySessionId) {
+  async function ensureAcpSessionStoreLoaded() {
     if (!sessionRootBindingEnabled) return;
+    await ensureAgentMetadataStoreLoaded();
+  }
+
+  async function persistAcpSessionStore(lastReadAtBySessionId = acpSessionLastReadAtBySessionId) {
     const parentDir = path.dirname(acpSessionStorePath);
     await fileSystem.mkdir(parentDir, { recursive: true });
     const payload = buildAcpSessionStorePayload(lastReadAtBySessionId);
@@ -217,9 +346,9 @@ export function createLlmAcpSessionStore(deps = {}) {
       (Array.isArray(requestedDirectories) ? requestedDirectories : [])
         .map((directory) => resolveDirectoryIdentity(directory)),
     );
-    const rootsBySessionId = new Map(acpSessionRootBySessionId);
-    const updatedAtBySessionId = new Map(acpSessionUpdatedAtBySessionId);
-    const lastReadAtBySessionId = new Map(acpSessionLastReadAtBySessionId);
+    const rootsBySessionId = sessionRootBindingEnabled ? new Map(acpSessionRootBySessionId) : new Map();
+    const updatedAtBySessionId = sessionRootBindingEnabled ? new Map(acpSessionUpdatedAtBySessionId) : new Map();
+    const lastReadAtBySessionId = sessionRootBindingEnabled ? new Map(acpSessionLastReadAtBySessionId) : new Map();
     return requestedRoots.map((requestedRoot) => {
       const sessions = [];
       for (const [sessionId, directory] of rootsBySessionId.entries()) {
@@ -246,6 +375,7 @@ export function createLlmAcpSessionStore(deps = {}) {
   }
 
   async function migrateAcpSessionDirectoryIdentity(sourceDirectory, targetDirectory) {
+    if (!sessionRootBindingEnabled) return { migratedSessions: 0 };
     const source = normalizeSessionRootRelativePath(sourceDirectory);
     const target = await resolveDirectoryIdentity(targetDirectory);
     if (path.isAbsolute(source)) return { migratedSessions: 0 };
@@ -274,6 +404,7 @@ export function createLlmAcpSessionStore(deps = {}) {
       updated: false,
       entryFound: false,
     }));
+    if (!sessionRootBindingEnabled) return results.map((result) => ({ ...result, elapsedMs: 0 }));
     await ensureAcpSessionStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
       const nextLastReadAtBySessionId = new Map(acpSessionLastReadAtBySessionId);
@@ -300,6 +431,7 @@ export function createLlmAcpSessionStore(deps = {}) {
 
   async function markAcpDirectoryRead(directory, lastReadAt) {
     const startedAtMs = Date.now();
+    if (!sessionRootBindingEnabled) return { selectedSessionIds: [], updatedSessionIds: [], elapsedMs: 0 };
     await ensureAcpSessionStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
       const nextLastReadAtBySessionId = new Map(acpSessionLastReadAtBySessionId);
@@ -331,19 +463,390 @@ export function createLlmAcpSessionStore(deps = {}) {
   async function getAcpSessionStoreStats() {
     await ensureAcpSessionStoreLoaded();
     return {
-      directories: acpLatestSessionByRootRelativePath.size,
-      sessions: acpSessionRootBySessionId.size,
+      directories: sessionRootBindingEnabled ? acpLatestSessionByRootRelativePath.size : 0,
+      sessions: sessionRootBindingEnabled ? acpSessionRootBySessionId.size : 0,
+      agentOperations: agentOperations.size,
     };
+  }
+
+  function pruneAgentOperations(nowMs) {
+    const terminal = Array.from(agentOperations.entries())
+      .filter(([, entry]) => entry.status === "completed")
+      .sort((a, b) => a[1].updatedAt.localeCompare(b[1].updatedAt));
+    for (const [key, entry] of terminal) {
+      if (Date.parse(entry.updatedAt) + agentOperationTtlMs > nowMs && agentOperations.size < agentOperationMaxEntries) {
+        continue;
+      }
+      agentOperations.delete(key);
+    }
+  }
+
+  async function claimAgentOperation(subjectIdRaw, clientOperationIdRaw, requestHashRaw, runIdRaw) {
+    const subjectId = String(subjectIdRaw || "").trim();
+    const clientOperationId = String(clientOperationIdRaw || "").trim();
+    const requestHash = String(requestHashRaw || "").trim();
+    const runId = String(runIdRaw || "").trim();
+    if (!subjectId || !clientOperationId || !requestHash || !runId) throw new TypeError("invalid agent operation");
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentOperationKey(subjectId, clientOperationId);
+      const existing = agentOperations.get(key);
+      if (existing) {
+        if (existing.requestHash !== requestHash) return { status: "conflict" };
+        if (existing.status === "pending" && !agentOperationsClaimedHere.has(key)) {
+          return { status: "unknown", runId: existing.runId };
+        }
+        return { status: "existing", runId: existing.runId, result: existing.result };
+      }
+      const nowMs = Date.now();
+      pruneAgentOperations(nowMs);
+      if (agentOperations.size >= agentOperationMaxEntries) {
+        throw new Error("agent operation store capacity reached");
+      }
+      const nowIso = new Date(nowMs).toISOString();
+      agentOperations.set(key, {
+        subjectId,
+        clientOperationId,
+        requestHash,
+        runId,
+        status: "pending",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+      agentOperationsClaimedHere.add(key);
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentOperations.delete(key);
+        agentOperationsClaimedHere.delete(key);
+        throw error;
+      }
+      return { status: "claimed", runId };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function completeAgentOperation(subjectIdRaw, clientOperationIdRaw, result) {
+    const subjectId = String(subjectIdRaw || "").trim();
+    const clientOperationId = String(clientOperationIdRaw || "").trim();
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const entry = agentOperations.get(agentOperationKey(subjectId, clientOperationId));
+      if (!entry || entry.status !== "pending") return false;
+      const previous = { ...entry };
+      entry.status = "completed";
+      entry.updatedAt = new Date().toISOString();
+      entry.result = result;
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        Object.assign(entry, previous);
+        delete entry.result;
+        throw error;
+      }
+      return true;
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function getAgentSessionBinding(sessionRef) {
+    await ensureAgentMetadataStoreLoaded();
+    const key = agentSessionKey(sessionRef?.backendId, sessionRef?.nativeSessionId);
+    const binding = agentSessionBindings.get(key);
+    return binding ? { ...binding } : null;
+  }
+
+  async function bindAgentSession(sessionRef, canonicalCwdRaw, modeRaw) {
+    const backendId = String(sessionRef?.backendId || "").trim();
+    const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
+    const rawCwd = String(canonicalCwdRaw || "").trim();
+    const canonicalCwd = rawCwd ? path.resolve(rawCwd) : "";
+    const mode = modeRaw === "raw" ? "raw" : modeRaw === "neutral" ? "neutral" : "";
+    if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd) || !mode) {
+      throw new TypeError("invalid agent session binding");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(backendId, nativeSessionId);
+      const existingBinding = agentSessionBindings.get(key);
+      if (existingBinding && existingBinding.canonicalCwd !== canonicalCwd) {
+        return { status: "cwd_conflict", binding: { ...existingBinding } };
+      }
+      const existingMode = agentSessionModes.get(key);
+      if (existingMode && existingMode.mode !== mode) {
+        return { status: "mode_conflict", mode: existingMode.mode, lease: existingMode.lease };
+      }
+      if (existingBinding && existingMode) {
+        return { status: "bound", binding: { ...existingBinding }, mode };
+      }
+      const nowIso = new Date().toISOString();
+      const previousBinding = existingBinding ? { ...existingBinding } : null;
+      const previousMode = existingMode
+        ? { ...existingMode, ...(existingMode.lease ? { lease: { ...existingMode.lease } } : {}) }
+        : null;
+      const binding = { backendId, nativeSessionId, canonicalCwd, updatedAt: nowIso };
+      const modeEntry = existingMode || { backendId, nativeSessionId, mode, lease: null, updatedAt: nowIso };
+      modeEntry.updatedAt = nowIso;
+      agentSessionBindings.set(key, binding);
+      agentSessionModes.set(key, modeEntry);
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        if (previousBinding) agentSessionBindings.set(key, previousBinding);
+        else agentSessionBindings.delete(key);
+        if (previousMode) agentSessionModes.set(key, previousMode);
+        else agentSessionModes.delete(key);
+        throw error;
+      }
+      return { status: "bound", binding: { ...binding }, mode };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function getAgentSessionMode(sessionRef) {
+    await ensureAgentMetadataStoreLoaded();
+    const entry = agentSessionModes.get(agentSessionKey(sessionRef?.backendId, sessionRef?.nativeSessionId));
+    return entry ? { ...entry, ...(entry.lease ? { lease: { ...entry.lease } } : {}) } : null;
+  }
+
+  async function handoffAgentSessionMode(sessionRef, targetModeRaw) {
+    const backendId = String(sessionRef?.backendId || "").trim();
+    const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
+    const targetMode = targetModeRaw === "raw" ? "raw" : targetModeRaw === "neutral" ? "neutral" : "";
+    if (!backendId || !nativeSessionId || !targetMode) throw new TypeError("invalid agent session mode");
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(backendId, nativeSessionId);
+      const existing = agentSessionModes.get(key);
+      if (existing?.lease) return { status: "busy", mode: existing.mode, lease: { ...existing.lease } };
+      if (existing?.mode === targetMode) return { status: "unchanged", mode: targetMode };
+      const previous = existing ? { ...existing } : null;
+      const next = {
+        backendId,
+        nativeSessionId,
+        mode: targetMode,
+        lease: null,
+        updatedAt: new Date().toISOString(),
+      };
+      agentSessionModes.set(key, next);
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        if (previous) agentSessionModes.set(key, previous);
+        else agentSessionModes.delete(key);
+        throw error;
+      }
+      return { status: "changed", mode: targetMode };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function acquireAgentSessionLease({ sessionRef, mode: modeRaw, owner, runId, nativeProcessIdentity = "" }) {
+    const backendId = String(sessionRef?.backendId || "").trim();
+    const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
+    const mode = modeRaw === "raw" ? "raw" : modeRaw === "neutral" ? "neutral" : "";
+    const normalizedOwner = String(owner || "").trim();
+    const normalizedRunId = String(runId || "").trim();
+    if (!backendId || !nativeSessionId || !mode || !normalizedOwner || !normalizedRunId) {
+      throw new TypeError("invalid agent session lease");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(backendId, nativeSessionId);
+      const existing = agentSessionModes.get(key);
+      if (existing && existing.mode !== mode) return { status: "mode_conflict", mode: existing.mode };
+      if (existing?.lease) {
+        const lease = existing.lease;
+        if (
+          lease.state === "active" && lease.processEpoch === agentProcessEpoch &&
+          lease.owner === normalizedOwner && lease.runId === normalizedRunId
+        ) return { status: "existing", lease: { ...lease } };
+        return { status: lease.state === "recovering" ? "recovering" : "busy", lease: { ...lease } };
+      }
+      const previous = existing ? { ...existing } : null;
+      const generation = Math.max(0, Number(existing?.generation || 0)) + 1;
+      const nowIso = new Date().toISOString();
+      const lease = {
+        owner: normalizedOwner,
+        runId: normalizedRunId,
+        processEpoch: agentProcessEpoch,
+        acquiredAt: nowIso,
+        generation,
+        state: "active",
+        ...(String(nativeProcessIdentity || "").trim()
+          ? { nativeProcessIdentity: String(nativeProcessIdentity).trim() }
+          : {}),
+      };
+      agentSessionModes.set(key, {
+        backendId,
+        nativeSessionId,
+        mode,
+        generation,
+        lease,
+        updatedAt: nowIso,
+      });
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        if (previous) agentSessionModes.set(key, previous);
+        else agentSessionModes.delete(key);
+        throw error;
+      }
+      return { status: "acquired", lease: { ...lease } };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function settleAgentSessionLease(sessionRef, generationRaw, nextState) {
+    const generation = Number(generationRaw);
+    if (!Number.isInteger(generation) || generation <= 0 || !["released", "recovering"].includes(nextState)) {
+      throw new TypeError("invalid agent session lease settlement");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(sessionRef?.backendId, sessionRef?.nativeSessionId);
+      const existing = agentSessionModes.get(key);
+      if (!existing?.lease || existing.lease.generation !== generation) return { status: "stale" };
+      const previous = { ...existing, lease: { ...existing.lease } };
+      const nowIso = new Date().toISOString();
+      existing.updatedAt = nowIso;
+      if (nextState === "released") existing.lease = null;
+      else existing.lease = { ...existing.lease, state: "recovering" };
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentSessionModes.set(key, previous);
+        throw error;
+      }
+      return { status: nextState };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function updateAgentSessionLeaseIdentity(sessionRef, generationRaw, nativeProcessIdentityRaw) {
+    const generation = Number(generationRaw);
+    const nativeProcessIdentity = String(nativeProcessIdentityRaw || "").trim();
+    if (!Number.isInteger(generation) || generation <= 0 || !nativeProcessIdentity || nativeProcessIdentity.length > 4096) {
+      throw new TypeError("invalid native process identity");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(sessionRef?.backendId, sessionRef?.nativeSessionId);
+      const existing = agentSessionModes.get(key);
+      if (!existing?.lease || existing.lease.generation !== generation || existing.lease.state !== "active") {
+        return { status: "stale" };
+      }
+      const previous = { ...existing, lease: { ...existing.lease } };
+      existing.lease = { ...existing.lease, nativeProcessIdentity };
+      existing.updatedAt = new Date().toISOString();
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentSessionModes.set(key, previous);
+        throw error;
+      }
+      return { status: "updated" };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function listAgentWorkspaces(subjectIdRaw) {
+    const subjectId = String(subjectIdRaw || "").trim();
+    await ensureAgentMetadataStoreLoaded();
+    return Array.from(agentWorkspaces.values())
+      .filter((entry) => entry.subjectId === subjectId && !entry.revokedAt)
+      .sort((a, b) => a.canonicalRoot.localeCompare(b.canonicalRoot))
+      .map((entry) => ({ ...entry }));
+  }
+
+  async function approveAgentWorkspace(subjectIdRaw, canonicalRootRaw, identityRaw) {
+    const subjectId = String(subjectIdRaw || "").trim();
+    const rawRoot = String(canonicalRootRaw || "").trim();
+    const canonicalRoot = rawRoot ? path.resolve(rawRoot) : "";
+    const identity = String(identityRaw || "").trim();
+    if (!subjectId || !path.isAbsolute(canonicalRoot) || !identity || identity.length > 256) {
+      throw new TypeError("invalid agent workspace");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentWorkspaceKey(subjectId, canonicalRoot);
+      const previous = agentWorkspaces.get(key);
+      if (!previous && agentWorkspaces.size >= agentWorkspaceMaxEntries) {
+        throw new Error("agent workspace store capacity reached");
+      }
+      const next = {
+        canonicalRoot,
+        subjectId,
+        identity,
+        approvedAt: new Date().toISOString(),
+        revokedAt: "",
+      };
+      agentWorkspaces.set(key, next);
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        if (previous) agentWorkspaces.set(key, previous);
+        else agentWorkspaces.delete(key);
+        throw error;
+      }
+      return { ...next };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function revokeAgentWorkspace(subjectIdRaw, canonicalRootRaw) {
+    const subjectId = String(subjectIdRaw || "").trim();
+    const rawRoot = String(canonicalRootRaw || "").trim();
+    const canonicalRoot = rawRoot ? path.resolve(rawRoot) : "";
+    if (!subjectId || !canonicalRoot) throw new TypeError("invalid agent workspace");
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentWorkspaceKey(subjectId, canonicalRoot);
+      const existing = agentWorkspaces.get(key);
+      if (!existing || existing.subjectId !== subjectId || existing.revokedAt) return null;
+      const previous = { ...existing };
+      const revoked = { ...existing, revokedAt: new Date().toISOString() };
+      agentWorkspaces.delete(key);
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentWorkspaces.set(key, previous);
+        throw error;
+      }
+      return revoked;
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
   }
 
   return {
     bindSessionToRootDir,
+    bindAgentSession,
+    claimAgentOperation,
+    completeAgentOperation,
+    acquireAgentSessionLease,
     getAcpSessionStoreStats,
+    getAgentSessionBinding,
+    getAgentSessionMode,
+    handoffAgentSessionMode,
+    listAgentWorkspaces,
     listAcpSessionsForDirectories,
     listAcpSessionsForDirectory,
     markAcpDirectoryRead,
     markAcpSessionsRead,
     migrateAcpSessionDirectoryIdentity,
+    approveAgentWorkspace,
+    revokeAgentWorkspace,
     resolveSessionIdForRootDir,
+    settleAgentSessionLease,
+    updateAgentSessionLeaseIdentity,
   };
 }

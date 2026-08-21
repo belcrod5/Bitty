@@ -1,4 +1,4 @@
-export type ApprovalSource = "codex-app-server";
+export type ApprovalSource = "agent-backend" | "codex-app-server";
 
 export type ApprovalAction =
   | "approve_once"

@@ -15,6 +15,7 @@ import {
 } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
+import { readAgentHistory } from "../../agent/client";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
@@ -139,6 +140,8 @@ type UseLlmSessionExplorerOptions = {
   defaultLlmDirectory: string;
   nearUnlimitedTimeoutMs: number;
   runnerWebSocketManager?: RunnerWebSocketManager;
+  llmBackend: string;
+  rawFallbackBackendId: string;
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
 };
 
@@ -279,6 +282,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     defaultLlmDirectory,
     nearUnlimitedTimeoutMs,
     runnerWebSocketManager,
+    llmBackend,
+    rawFallbackBackendId,
     onSessionDiagLog,
   } = options;
 
@@ -493,6 +498,66 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     if (cursor && sinceCursor) {
       throw new Error("cursor と sinceCursor は同時に指定できません");
     }
+    if (runnerWebSocketManager) {
+      let neutral;
+      try {
+        neutral = await readAgentHistory(runnerWebSocketManager, {
+          backendId: llmBackend,
+          nativeSessionId: sessionId,
+          cursor: cursor || undefined,
+          sinceCursor: sinceCursor || undefined,
+          limit: 500,
+        });
+      } catch (error) {
+        if (llmBackend !== rawFallbackBackendId) throw error;
+        neutral = null;
+      }
+      if (neutral?.sessionRef) {
+        const items = Array.isArray(neutral.items) ? neutral.items : [];
+        const messages: RunnerSessionMessage[] = items.flatMap((raw) => {
+          const item = raw && typeof raw === "object" ? raw as JsonRecord : {};
+          const role = String(item.role || "");
+          if (role !== "user" && role !== "assistant") return [];
+          const blocks = Array.isArray(item.content) ? item.content as JsonRecord[] : [];
+          const content = blocks
+            .filter((block) => block?.type === "text" || block?.type === "reasoning")
+            .map((block) => String(block.text || ""))
+            .join("\n");
+          const tool = blocks.find((block) => block?.type === "tool");
+          if (!content && !tool) return [];
+          return [{
+            role,
+            content,
+            at: String(item.createdAt || ""),
+            itemId: String(item.id || "") || undefined,
+            ...(tool ? {
+              commandExecution: {
+                command: String(tool.inputSummary || tool.name || "tool"),
+                status: String(tool.status || "") === "failed" ? "failed" as const : "completed" as const,
+              },
+            } : {}),
+          }];
+        });
+        return {
+          threadId: sessionId,
+          sourceKind: "agent",
+          cwd: preferredDirectory,
+          updatedAt: messages.at(-1)?.at || "",
+          modelRef: "",
+          reasoningEffort: "",
+          latestToolLabel: "",
+          messages,
+          contextUsedPct: null,
+          threadStatusType: "idle",
+          hasRunningTurn: false,
+          runningTurn: null,
+          olderCursor: String(neutral.olderCursor || "") || null,
+          latestCursor: String(neutral.newerCursor || "") || null,
+          ...(sinceCursor ? { moreAfter: neutral.moreAfter === true } : {}),
+        };
+      }
+      if (llmBackend !== rawFallbackBackendId) throw new Error("Selected Agent Backend is unavailable");
+    }
     const { baseUrl, token } = await getRunnerHttpAuth();
     if (!baseUrl || !token) throw new Error("Aux Server URL または Runner Token が未設定です");
     const startedAt = Date.now();
@@ -510,6 +575,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         threadId: sessionId,
         timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
         runnerWebSocketManager,
+        backendId: llmBackend,
+        rawFallbackBackendId,
       }).catch((error) => {
         emitSessionDiag("app_server_thread_metadata_failed", {
           sessionId,
@@ -629,8 +696,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     emitSessionDiag,
     fetchTextWithTimeout,
     getRunnerHttpAuth,
+    llmBackend,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
   ]);
 
@@ -646,9 +715,11 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
+      backendId: llmBackend,
+      rawFallbackBackendId,
     });
     return parseOptionalSessionId(listed.data[0]?.threadId);
-  }, [codexWsToken, codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, runnerWebSocketManager]);
+  }, [codexWsToken, codexWsUrl, llmBackend, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, rawFallbackBackendId, runnerWebSocketManager]);
 
   const loadDirectoryExplorer = useCallback(async (pathRaw?: unknown) => {
     const targetLlmUrl = auxServerBaseUrl();
@@ -761,6 +832,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         : [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
+      backendId: llmBackend,
+      rawFallbackBackendId,
     });
     const listedSessionIds = listed.data
       .map((item) => parseOptionalSessionId(item.threadId))
@@ -796,8 +869,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     codexWsUrl,
     emitSessionDiag,
     fetchRunnerSessionSnapshotMap,
+    llmBackend,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
   ]);
 
@@ -844,6 +919,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
         timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
         runnerWebSocketManager,
+        backendId: llmBackend,
+        rawFallbackBackendId,
       });
       pageCount += 1;
       for (const item of listed.data) {
@@ -896,8 +973,10 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     codexWsUrl,
     emitSessionDiag,
     fetchRunnerSessionSnapshotMap,
+    llmBackend,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
   ]);
 

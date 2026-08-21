@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
+import { Alert } from "react-native";
 import {
   deriveCodexSessionStateFromSnapshot,
   enqueueRunnerCodexTurn,
@@ -62,6 +63,7 @@ type UseCodexReplyRequestOptions<
   codexWsUrl: string;
   codexWsToken: string;
   runnerWebSocketManager?: RunnerWebSocketManager;
+  llmBackend: string;
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
@@ -171,6 +173,7 @@ type UseCodexReplyRequestOptions<
 };
 
 type ReplyRequestSessionSnapshot = {
+  backendId?: string;
   sessionId?: string;
   threadId?: string;
   directory?: string;
@@ -397,6 +400,7 @@ export function useCodexReplyRequest<
     const targetCodexWsUrl = current.codexWsUrl.trim();
     const clearInput = typeof transcriptOverride === "undefined";
     const requestSnapshot = requestOptions?.sessionSnapshot;
+    const requestBackendId = String(requestSnapshot?.backendId || current.llmBackend || "codex").trim() || "codex";
     const requestUiSessionId = String(requestSnapshot?.sessionId || "").trim();
     const requestThreadId = String(
       requestSnapshot?.threadId || ""
@@ -1136,6 +1140,20 @@ export function useCodexReplyRequest<
         wsUrl: targetCodexWsUrl,
         wsToken: current.codexWsToken.trim(),
         runnerWebSocketManager: current.runnerWebSocketManager,
+        preferNeutralAgent: true,
+        backendId: requestBackendId,
+        rawFallbackBackendId: "codex",
+        confirmWorkspaceAdmission: ({ canonicalRoot, warning }) => new Promise((resolve) => {
+          Alert.alert(
+            "Workspace access",
+            `${canonicalRoot}\n\n${warning}`,
+            [
+              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+              { text: "Allow", onPress: () => resolve(true) },
+            ],
+            { cancelable: false },
+          );
+        }),
         traceId: requestTraceId,
         inputText: effectiveTranscript,
         cwd: requestDirectory || undefined,

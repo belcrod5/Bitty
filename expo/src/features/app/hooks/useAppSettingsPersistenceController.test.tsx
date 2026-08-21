@@ -89,6 +89,7 @@ function createArgs() {
     setCloudflareRunnerWsUrl: setter,
     setLocalRunnerUrl: setter,
     setLocalRunnerWsUrl: setter,
+    setLlmBackend: setter,
     setLlmDirectory: setter,
     setRegisteredDirectories: setter,
     setSessionTitleOverridesById: setter,

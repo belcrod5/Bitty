@@ -6,6 +6,7 @@ export type PanelRuntimeMarkerColor = "none" | "gray" | "red" | "yellow" | "gree
 
 export type PanelRuntimeSnapshot = {
   panelId: string;
+  backendId?: string;
   selectedSessionId: string;
   selectedDirectoryPath: string;
   selectedDirectoryDisplayName: string;

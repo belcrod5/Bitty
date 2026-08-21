@@ -84,6 +84,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCloudflareRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerWsUrl: Dispatch<SetStateAction<string>>;
+  setLlmBackend: Dispatch<SetStateAction<LlmBackend>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
   setSessionTitleOverridesById: Dispatch<SetStateAction<Record<string, string>>>;
@@ -169,6 +170,7 @@ export function useAppSettingsPersistenceController({
   setCloudflareRunnerWsUrl,
   setLocalRunnerUrl,
   setLocalRunnerWsUrl,
+  setLlmBackend,
   setLlmDirectory,
   setRegisteredDirectories,
   setSessionTitleOverridesById,
@@ -388,6 +390,8 @@ export function useAppSettingsPersistenceController({
     if (legacyCloudflareAccessClientSecret) {
       setCloudflareAccessClientSecret(legacyCloudflareAccessClientSecret);
     }
+    const savedBackend = String(parsed.llmBackend || "").trim();
+    setLlmBackend(savedBackend && savedBackend !== "codex_app_server" ? savedBackend : "codex");
     setLlmDirectory(parseLlmDirectory(parsed.llmDirectory));
     const parsedRegisteredDirectories = parseRegisteredDirectories(parsed.registeredDirectories);
     setRegisteredDirectories(parsedRegisteredDirectories);
@@ -490,6 +494,7 @@ export function useAppSettingsPersistenceController({
     setCloudflareRunnerWsUrl,
     setExpandedDirectoryIds,
     setFaceTrackingEnabledWithRef,
+    setLlmBackend,
     setLlmDirectory,
     setLlmToolLogCompact,
     setLocalRunnerUrl,

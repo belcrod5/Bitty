@@ -1,5 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { getAgentBackendStatuses, type BackendStatus } from "../../agent/client";
+import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useDebugRuntime } from "../contexts/DebugRuntimeContext";
 import { styles } from "../styles";
@@ -9,6 +11,9 @@ import {
 } from "../utils/urlResolvers";
 
 export function DebugConnectionPanel() {
+  const runnerWebSocketManager = useRunnerWebSocketManager();
+  const runnerWebSocketSnapshot = useRunnerWebSocketSnapshot();
+  const [agentBackends, setAgentBackends] = useState<BackendStatus[]>([]);
   const {
     codexWsProbeLoading,
     probeCurrentWs,
@@ -37,6 +42,7 @@ export function DebugConnectionPanel() {
   } = useDebugRuntime();
   const {
     runnerUrl,
+    llmBackend,
     llmDirectory,
     codexWsUrl,
     codexWsToken,
@@ -50,6 +56,7 @@ export function DebugConnectionPanel() {
     modelRef,
     reasoningEffort,
     changeRunnerUrl,
+    selectLlmBackend,
     changeLlmDirectory,
     changeCodexWsUrl,
     changeCodexWsToken,
@@ -73,6 +80,22 @@ export function DebugConnectionPanel() {
     changeCodexWsUrl(suggested);
   }, [changeCodexWsUrl, runnerUrl]);
 
+  useEffect(() => {
+    if (runnerWebSocketSnapshot.connectionState !== "ready") {
+      setAgentBackends([]);
+      return;
+    }
+    let active = true;
+    void getAgentBackendStatuses(runnerWebSocketManager)
+      .then((backends) => { if (active) setAgentBackends(backends); })
+      .catch(() => { if (active) setAgentBackends([]); });
+    return () => { active = false; };
+  }, [runnerWebSocketManager, runnerWebSocketSnapshot.connectionState, runnerWebSocketSnapshot.generation]);
+
+  const backendOptions = agentBackends.length > 0
+    ? agentBackends
+    : [{ backendId: llmBackend || "codex", readiness: { ready: false, reason: "Backend status unavailable" } }];
+
   return (
     <>
       <Text style={styles.label}>Aux Server URL (stt/tts/logs)</Text>
@@ -86,14 +109,24 @@ export function DebugConnectionPanel() {
 
       <Text style={styles.label}>LLM Transport</Text>
       <View style={styles.providerRow}>
-        <View style={[styles.providerButton, styles.providerButtonSelected]}>
-          <Text style={[styles.providerButtonText, styles.providerButtonTextSelected]}>
-            codex app-server via runner-ws / codex-ws
-          </Text>
-        </View>
+        {backendOptions.map((backend) => {
+          const backendId = String(backend.backendId || "");
+          const selected = backendId === llmBackend;
+          return (
+            <TouchableOpacity
+              key={backendId}
+              style={[styles.providerButton, selected && styles.providerButtonSelected]}
+              onPress={() => selectLlmBackend(backendId)}
+            >
+              <Text style={[styles.providerButtonText, selected && styles.providerButtonTextSelected]}>
+                {backendId}{backend.readiness?.ready ? "" : " (unavailable)"}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
       <Text style={styles.hint}>
-        現在のLLM接続先: Codex app-server (JSON-RPC over WebSocket、runner-ws は envelope)
+        Agent Backend: {llmBackend || "未設定"}。Runnerが公開した一覧とcapabilityだけを使用します。
       </Text>
       <Text style={styles.hint}>
         executionEnvironment: {executionEnvironment} / expoGo: {String(isExpoGo)}

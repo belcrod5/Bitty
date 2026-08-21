@@ -10,7 +10,6 @@ function createArgs(sendResult: SendReplyRequestResult) {
     closeCodexRelayObserver: jest.fn(),
     logSessionDiag: jest.fn(),
     sendReplyRequestFromCodex: jest.fn(async () => sendResult),
-    llmBackend: "codex_app_server",
     cancelReplyRequestFromCodex: jest.fn(async () => true),
     suspendReplyRequestFromCodex: jest.fn(() => true),
   };

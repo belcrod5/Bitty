@@ -1,0 +1,670 @@
+import { randomUUID } from "node:crypto";
+
+import {
+  AGENT_PROTOCOL_VERSION,
+  AGENT_TERMINAL_EVENT_TYPES,
+  agentError,
+  createAgentEvent,
+  hashAgentOperationRequest,
+  normalizeAgentStartRequest,
+  normalizeAgentSessionRef,
+  serializeAgentError,
+} from "./agent-protocol.mjs";
+
+const DEFAULT_REPLAY_LIMIT = 512;
+
+function sessionKey(sessionRef) {
+  return `${sessionRef.backendId}\u0000${sessionRef.nativeSessionId}`;
+}
+
+function createEventStream(service, runId) {
+  return {
+    [Symbol.asyncIterator]() {
+      const buffered = [];
+      let wake = null;
+      let done = false;
+      const subscription = service.subscribe(runId, {
+        afterSequence: 0,
+        onEvent(event) {
+          buffered.push(event);
+          if (AGENT_TERMINAL_EVENT_TYPES.has(event.type)) done = true;
+          wake?.();
+          wake = null;
+        },
+      });
+      return {
+        async next() {
+          while (buffered.length === 0 && !done) {
+            await new Promise((resolve) => { wake = resolve; });
+          }
+          if (buffered.length > 0) return { value: buffered.shift(), done: false };
+          subscription.unsubscribe();
+          return { value: undefined, done: true };
+        },
+        async return() {
+          done = true;
+          subscription.unsubscribe();
+          wake?.();
+          return { value: undefined, done: true };
+        },
+      };
+    },
+  };
+}
+
+export function createAgentService({
+  backends,
+  operationStore,
+  sessionStore,
+  workspaceAdmission,
+  resolveCanonicalCwd,
+  replayLimit = DEFAULT_REPLAY_LIMIT,
+  runRetentionMs = 24 * 60 * 60 * 1000,
+  now = () => new Date().toISOString(),
+  generateRunId = () => `agent_run_${randomUUID()}`,
+} = {}) {
+  const registry = new Map();
+  for (const backend of backends || []) {
+    const backendId = String(backend?.backendId || "").trim();
+    if (!backendId || registry.has(backendId)) throw new TypeError("Agent Backend IDs must be unique and non-empty");
+    registry.set(backendId, backend);
+  }
+  if (registry.size === 0) throw new TypeError("At least one Agent Backend is required");
+  if (typeof operationStore?.claim !== "function" || typeof operationStore?.complete !== "function") {
+    throw new TypeError("A durable operationStore is required");
+  }
+  if (
+    typeof sessionStore?.bind !== "function" ||
+    typeof sessionStore?.getBinding !== "function" ||
+    typeof sessionStore?.getMode !== "function" ||
+    typeof sessionStore?.acquire !== "function" ||
+    typeof sessionStore?.settle !== "function" ||
+    typeof sessionStore?.updateIdentity !== "function" ||
+    typeof sessionStore?.handoff !== "function"
+  ) throw new TypeError("A durable sessionStore is required");
+  if (typeof resolveCanonicalCwd !== "function") throw new TypeError("resolveCanonicalCwd is required");
+
+  const runs = new Map();
+  const activeRunBySession = new Map();
+  const recoveryBySession = new Map();
+  let admissionQueue = Promise.resolve();
+
+  async function admitStart(run) {
+    const previous = admissionQueue;
+    let release;
+    admissionQueue = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await run();
+    } finally {
+      release();
+    }
+  }
+
+  function getRun(runIdRaw) {
+    const runId = String(runIdRaw || "").trim();
+    const run = runs.get(runId);
+    if (!run) throw agentError("turn_rejected", "run was not found");
+    return run;
+  }
+
+  function publish(run, type, payload = {}) {
+    if (run.terminal) return null;
+    const event = createAgentEvent({
+      type,
+      runId: run.runId,
+      sessionRef: run.sessionRef,
+      sequence: ++run.sequence,
+      at: now(),
+      payload,
+    });
+    run.events.push(event);
+    if (run.events.length > replayLimit) run.events.shift();
+    for (const subscriber of run.subscribers) subscriber(event);
+    return event;
+  }
+
+  async function bindResolvedSession(run, sessionRefRaw) {
+    const resolved = normalizeAgentSessionRef(sessionRefRaw);
+    if (!resolved || resolved.backendId !== run.backendId) {
+      throw agentError("protocol_error", "Backend resolved an invalid session", { backendId: run.backendId });
+    }
+    if (run.sessionRef && sessionKey(run.sessionRef) !== sessionKey(resolved)) {
+      throw agentError("protocol_error", "Backend changed the requested session", { backendId: run.backendId });
+    }
+    const key = sessionKey(resolved);
+    const activeRunId = activeRunBySession.get(key);
+    if (activeRunId && activeRunId !== run.runId) {
+      throw agentError("session_busy", "session already has an active turn", { backendId: run.backendId });
+    }
+    if (run.sessionResolved) throw agentError("protocol_error", "Backend resolved the session more than once", { backendId: run.backendId });
+    const binding = await sessionStore.bind(resolved, run.cwd, "neutral");
+    if (binding?.status === "cwd_conflict") {
+      throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: run.backendId });
+    }
+    if (binding?.status === "mode_conflict") {
+      throw agentError("session_busy", "session is owned by the compatibility transport", { backendId: run.backendId });
+    }
+    if (!run.lease) {
+      const acquired = await sessionStore.acquire({
+        sessionRef: resolved,
+        mode: "neutral",
+        owner: "agent-service",
+        runId: run.runId,
+      });
+      if (acquired?.status !== "acquired" && acquired?.status !== "existing") {
+        throw agentError("session_busy", "session already has an active or recovering turn", { backendId: run.backendId });
+      }
+      run.lease = acquired.lease;
+    }
+    run.sessionRef = resolved;
+    run.sessionKey = key;
+    run.sessionResolved = true;
+    activeRunBySession.set(key, run.runId);
+    publish(run, "session.resolved", { sessionRef: resolved });
+  }
+
+  async function recoverSessionLease(sessionRef, backend) {
+    const key = sessionKey(sessionRef);
+    const existingRecovery = recoveryBySession.get(key);
+    if (existingRecovery) return await existingRecovery;
+    const recovery = recoverSessionLeaseOnce(sessionRef, backend);
+    recoveryBySession.set(key, recovery);
+    try {
+      return await recovery;
+    } finally {
+      if (recoveryBySession.get(key) === recovery) recoveryBySession.delete(key);
+    }
+  }
+
+  async function recoverSessionLeaseOnce(sessionRef, backend) {
+    const mode = await sessionStore.getMode(sessionRef);
+    if (mode?.lease?.state !== "recovering") return mode;
+    if (typeof backend.recoverSession !== "function") {
+      throw agentError("session_busy", "session recovery is not supported", { backendId: sessionRef.backendId });
+    }
+    const recovered = await backend.recoverSession({
+      sessionRef,
+      lease: mode.lease,
+      binding: await sessionStore.getBinding(sessionRef),
+    });
+    if (recovered?.nativeActivity !== "stopped") {
+      throw agentError("session_busy", "native session activity could not be stopped safely", { backendId: sessionRef.backendId });
+    }
+    const settled = await sessionStore.settle(sessionRef, mode.lease.generation, "released");
+    if (settled?.status !== "released") {
+      throw agentError("session_busy", "session recovery changed concurrently", { backendId: sessionRef.backendId });
+    }
+    return await sessionStore.getMode(sessionRef);
+  }
+
+  async function finish(run, outcome, error = null) {
+    if (run.terminal) return run.result;
+    run.state = "finalizing";
+    for (const request of run.activeActions.values()) {
+      publish(run, "action.resolved", {
+        requestId: request.requestId,
+        outcome: outcome === "completed" ? "expired" : "cancelled",
+      });
+    }
+    run.activeActions.clear();
+    const nativeActivity = String(error?.nativeActivity || "");
+    const nativeKnownStopped = outcome === "completed" || outcome === "interrupted" || nativeActivity === "stopped" || nativeActivity === "not_started";
+    const finalOutcome = run.cancelRequested && nativeKnownStopped ? "interrupted" : outcome;
+    const result = {
+      runId: run.runId,
+      ...(run.sessionRef ? { sessionRef: run.sessionRef } : {}),
+      outcome: finalOutcome,
+      ...(error && finalOutcome === "failed" ? { error: serializeAgentError(error, run.backendId) } : {}),
+    };
+    const terminalType = finalOutcome === "completed"
+      ? "turn.completed"
+      : finalOutcome === "interrupted" ? "turn.interrupted" : "turn.failed";
+    if (run.lease && run.sessionRef) {
+      await sessionStore.settle(run.sessionRef, run.lease.generation, nativeKnownStopped ? "released" : "recovering").catch(() => {});
+    }
+    publish(run, terminalType, result);
+    run.terminal = true;
+    run.state = finalOutcome;
+    run.result = result;
+    if (run.sessionKey && activeRunBySession.get(run.sessionKey) === run.runId) {
+      activeRunBySession.delete(run.sessionKey);
+    }
+    run.resolveCompletion(result);
+    await operationStore.complete(run.subjectId, run.clientOperationId, result).catch(() => {});
+    const retentionTimer = setTimeout(() => {
+      if (runs.get(run.runId) === run && run.terminal) runs.delete(run.runId);
+    }, Math.max(60_000, Number(runRetentionMs) || 24 * 60 * 60 * 1000));
+    retentionTimer.unref?.();
+    return result;
+  }
+
+  function emitFromBackend(run, type, payload = {}) {
+    if (AGENT_TERMINAL_EVENT_TYPES.has(type) || type === "turn.accepted") {
+      throw agentError("protocol_error", `Backend cannot emit ${type}`, { backendId: run.backendId });
+    }
+    if (type === "session.resolved") throw agentError("protocol_error", "Backend must resolve sessions through resolveSession", { backendId: run.backendId });
+    if (type === "provider.event") {
+      const keys = Object.keys(payload || {});
+      let serialized = "";
+      try { serialized = JSON.stringify(payload); } catch {}
+      if (
+        payload?.backendId !== run.backendId || typeof payload?.nativeType !== "string" ||
+        keys.some((key) => !["backendId", "nativeType", "data"].includes(key)) ||
+        !serialized || serialized.length > 16 * 1024
+      ) throw agentError("protocol_error", "Backend emitted an invalid provider diagnostic", { backendId: run.backendId });
+    }
+    if (type === "turn.started") {
+      if (!run.sessionResolved || run.nativeStarted) {
+        throw agentError("protocol_error", "Backend emitted turn.started out of order", { backendId: run.backendId });
+      }
+      run.nativeStarted = true;
+    } else if (!run.nativeStarted && type !== "provider.event") {
+      throw agentError("protocol_error", `Backend emitted ${type} before turn.started`, { backendId: run.backendId });
+    }
+    if (type === "item.started") {
+      const itemId = String(payload?.itemId || "").trim();
+      if (!itemId || run.startedItems.has(itemId)) throw agentError("protocol_error", "Backend started an invalid item", { backendId: run.backendId });
+      run.startedItems.add(itemId);
+    } else if (type === "content.delta") {
+      const itemId = String(payload?.itemId || "").trim();
+      if (!run.startedItems.has(itemId) || run.completedItems.has(itemId)) throw agentError("protocol_error", "Backend emitted a delta outside an active item", { backendId: run.backendId });
+    } else if (type === "item.completed") {
+      const itemId = String(payload?.itemId || "").trim();
+      if (!run.startedItems.has(itemId) || run.completedItems.has(itemId)) throw agentError("protocol_error", "Backend completed an invalid item", { backendId: run.backendId });
+      run.completedItems.add(itemId);
+    } else if (type === "tool.started") {
+      const toolCallId = String(payload?.toolCallId || "").trim();
+      if (!toolCallId || run.startedTools.has(toolCallId)) throw agentError("protocol_error", "Backend started an invalid tool", { backendId: run.backendId });
+      run.startedTools.add(toolCallId);
+    } else if (type === "tool.completed") {
+      const toolCallId = String(payload?.toolCallId || "").trim();
+      if (!run.startedTools.has(toolCallId) || run.completedTools.has(toolCallId)) throw agentError("protocol_error", "Backend completed an invalid tool", { backendId: run.backendId });
+      run.completedTools.add(toolCallId);
+    }
+    if (type === "action.requested") {
+      const requestId = String(payload?.requestId || "").trim();
+      if (!requestId || run.activeActions.has(requestId)) {
+        throw agentError("protocol_error", "Backend emitted an invalid action request", { backendId: run.backendId });
+      }
+      run.activeActions.set(requestId, { ...payload, requestId });
+    }
+    if (type === "action.resolved") {
+      const requestId = String(payload?.requestId || "").trim();
+      if (!run.activeActions.delete(requestId)) {
+        throw agentError("protocol_error", "Backend resolved an inactive action", { backendId: run.backendId });
+      }
+    }
+    publish(run, type, payload);
+  }
+
+  async function execute(run, backend, request) {
+    try {
+      const backendResult = await backend.startTurn({
+        ...request,
+        runId: run.runId,
+        signal: run.abortController.signal,
+        resolveSession: (sessionRef) => bindResolvedSession(run, sessionRef),
+        setNativeProcessIdentity: async (identity) => {
+          if (!run.sessionRef || !run.lease) {
+            throw agentError("protocol_error", "Backend reported process identity before session resolution", { backendId: run.backendId });
+          }
+          const updated = await sessionStore.updateIdentity(run.sessionRef, run.lease.generation, identity);
+          if (updated?.status !== "updated") {
+            throw agentError("session_busy", "session lease changed while starting native process", { backendId: run.backendId });
+          }
+        },
+        emit: (type, payload) => emitFromBackend(run, type, payload),
+      });
+      if (!run.sessionResolved && backendResult?.sessionRef) await bindResolvedSession(run, backendResult.sessionRef);
+      if (!run.nativeStarted) throw agentError("protocol_error", "Backend completed before turn.started", { backendId: run.backendId });
+      await finish(run, backendResult?.outcome === "interrupted" ? "interrupted" : "completed");
+    } catch (error) {
+      await finish(run, "failed", error);
+    }
+  }
+
+  async function startTurn(rawRequest, context = {}) {
+    const subjectId = String(context.subjectId || "").trim();
+    if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
+    const request = normalizeAgentStartRequest(rawRequest);
+    const backend = registry.get(request.backendId);
+    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable", { backendId: request.backendId });
+    const status = await backend.getStatus();
+    if (!status?.available || !status?.readiness?.ready) {
+      throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", {
+        backendId: request.backendId,
+      });
+    }
+    if (request.policyProfileId) {
+      const profiles = status?.capabilities?.action?.policyProfiles || [];
+      if (!profiles.some((profile) => profile?.id === request.policyProfileId)) {
+        throw agentError("capability_unsupported", "policy profile is not supported", { backendId: request.backendId });
+      }
+    }
+    if (request.model && status?.capabilities?.model?.select !== true) {
+      throw agentError("capability_unsupported", "model selection is not supported", { backendId: request.backendId });
+    }
+    if (request.effort && status?.capabilities?.model?.effort !== true) {
+      throw agentError("capability_unsupported", "effort selection is not supported", { backendId: request.backendId });
+    }
+    const storedCwd = request.sessionRef
+      ? (await sessionStore.getBinding(request.sessionRef))?.canonicalCwd || await backend.resolveSessionCwd(request.sessionRef)
+      : request.cwd;
+    const canonicalCwd = await resolveCanonicalCwd(storedCwd);
+    if (request.sessionRef && request.cwd) {
+      const requestedCwd = await resolveCanonicalCwd(request.cwd);
+      if (requestedCwd !== canonicalCwd) {
+        throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: request.backendId });
+      }
+    }
+    if (status?.capabilities?.workspace?.admission === true) {
+      if (typeof workspaceAdmission?.assertAllowed !== "function") {
+        throw agentError("backend_unavailable", "workspace admission is unavailable", { backendId: request.backendId });
+      }
+      await workspaceAdmission.assertAllowed(subjectId, canonicalCwd);
+    }
+    if (request.sessionRef) await recoverSessionLease(request.sessionRef, backend);
+    return await admitStart(async () => {
+      const acceptedRequest = { ...request, cwd: canonicalCwd };
+      const requestHash = hashAgentOperationRequest(acceptedRequest);
+      if (request.sessionRef && activeRunBySession.has(sessionKey(request.sessionRef))) {
+        const active = runs.get(activeRunBySession.get(sessionKey(request.sessionRef)));
+        if (active?.subjectId === subjectId && active?.clientOperationId === request.clientOperationId) {
+          if (active.requestHash !== requestHash) {
+            throw agentError("operation_conflict", "clientOperationId has different input");
+          }
+          return {
+            runId: active.runId,
+            events: createEventStream(service, active.runId),
+            completion: active.completion,
+          };
+        }
+        throw agentError("session_busy", "session already has an active turn", { backendId: request.backendId });
+      }
+
+      const proposedRunId = generateRunId();
+      let preAcquiredLease = null;
+      if (request.sessionRef) {
+        const mode = await sessionStore.getMode(request.sessionRef);
+        if (!mode) {
+          const bound = await sessionStore.bind(
+            request.sessionRef,
+            canonicalCwd,
+            backend.defaultDiscoveredSessionMode === "raw" ? "raw" : "neutral",
+          );
+          if (bound?.status !== "bound") {
+            throw agentError("session_busy", "session mode could not be established", { backendId: request.backendId });
+          }
+        }
+        const resolvedMode = await sessionStore.getMode(request.sessionRef);
+        if (resolvedMode?.mode !== "neutral") {
+          throw agentError("session_busy", "session requires an explicit neutral handoff", { backendId: request.backendId });
+        }
+        const acquired = await sessionStore.acquire({
+          sessionRef: request.sessionRef,
+          mode: "neutral",
+          owner: "agent-service",
+          runId: proposedRunId,
+        });
+        if (acquired?.status !== "acquired" && acquired?.status !== "existing") {
+          throw agentError("session_busy", "session already has an active or recovering turn", { backendId: request.backendId });
+        }
+        preAcquiredLease = acquired.lease;
+      }
+      let claim;
+      try {
+        claim = await operationStore.claim(subjectId, request.clientOperationId, requestHash, proposedRunId);
+      } catch (error) {
+        if (preAcquiredLease && request.sessionRef) {
+          await sessionStore.settle(request.sessionRef, preAcquiredLease.generation, "released").catch(() => {});
+        }
+        throw error;
+      }
+      if (claim?.status !== "claimed" && preAcquiredLease && request.sessionRef) {
+        await sessionStore.settle(request.sessionRef, preAcquiredLease.generation, "released").catch(() => {});
+        preAcquiredLease = null;
+      }
+      if (claim?.status === "conflict") throw agentError("operation_conflict", "clientOperationId has different input");
+      if (claim?.status === "unknown") throw agentError("operation_status_unknown", "previous operation status is unknown");
+      if (claim?.status === "existing") {
+        const existing = runs.get(String(claim.runId || ""));
+        if (!existing && claim.result) {
+          return {
+            runId: String(claim.runId || claim.result.runId || ""),
+            result: claim.result,
+            events: { async *[Symbol.asyncIterator]() {} },
+            completion: Promise.resolve(claim.result),
+          };
+        }
+        if (!existing) throw agentError("operation_status_unknown", "previous operation is no longer replayable");
+        return {
+          runId: existing.runId,
+          events: createEventStream(service, existing.runId),
+          completion: existing.completion,
+        };
+      }
+
+      let resolveCompletion;
+      const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+      const run = {
+        runId: proposedRunId,
+        backendId: request.backendId,
+        subjectId,
+        clientOperationId: request.clientOperationId,
+        requestHash,
+        sessionRef: request.sessionRef,
+        sessionResolved: Boolean(request.sessionRef),
+        sessionKey: request.sessionRef ? sessionKey(request.sessionRef) : "",
+        cwd: canonicalCwd,
+        lease: preAcquiredLease,
+        sequence: 0,
+        events: [],
+        subscribers: new Set(),
+        activeActions: new Map(),
+        startedItems: new Set(),
+        completedItems: new Set(),
+        startedTools: new Set(),
+        completedTools: new Set(),
+        abortController: new AbortController(),
+        state: "running",
+        nativeStarted: false,
+        cancelRequested: false,
+        terminal: false,
+        result: null,
+        completion,
+        resolveCompletion,
+      };
+      runs.set(run.runId, run);
+      if (run.sessionKey) activeRunBySession.set(run.sessionKey, run.runId);
+      publish(run, "turn.accepted", { backendId: run.backendId });
+      if (run.sessionResolved) publish(run, "session.resolved", { sessionRef: run.sessionRef });
+      queueMicrotask(() => void execute(run, backend, acceptedRequest));
+      return { runId: run.runId, events: createEventStream(service, run.runId), completion };
+    });
+  }
+
+  async function interrupt(runId) {
+    const run = getRun(runId);
+    if (run.terminal) return { status: "already_terminal", result: run.result };
+    if (!run.cancelRequested) {
+      run.cancelRequested = true;
+      run.state = "cancelling";
+      run.abortController.abort();
+      await registry.get(run.backendId).interrupt?.({ runId: run.runId });
+    }
+    return { status: "cancelling", runId: run.runId };
+  }
+
+  async function respondToAction({ runId, requestId, decision, result }) {
+    const run = getRun(runId);
+    const normalizedRequestId = String(requestId || "").trim();
+    if (run.terminal || !run.activeActions.has(normalizedRequestId)) {
+      throw agentError("action_expired", "action request is no longer active", { backendId: run.backendId });
+    }
+    const action = run.activeActions.get(normalizedRequestId);
+    const normalizedDecision = String(decision || "").trim();
+    if (!Array.isArray(action?.decisions) || !action.decisions.includes(normalizedDecision)) {
+      throw agentError("turn_rejected", "action decision is not supported", { backendId: run.backendId });
+    }
+    if (normalizedDecision === "result") {
+      let serialized;
+      try {
+        serialized = JSON.stringify(result);
+      } catch {
+        throw agentError("turn_rejected", "action result must be JSON serializable", { backendId: run.backendId });
+      }
+      if (!serialized || serialized.length > 1024 * 1024) {
+        throw agentError("turn_rejected", "action result is invalid or too large", { backendId: run.backendId });
+      }
+    }
+    await registry.get(run.backendId).respondToAction({
+      runId: run.runId,
+      requestId: normalizedRequestId,
+      decision: normalizedDecision,
+      ...(normalizedDecision === "result" ? { result } : {}),
+    });
+  }
+
+  function subscribe(runId, { afterSequence = 0, onEvent } = {}) {
+    const run = getRun(runId);
+    if (typeof onEvent !== "function") throw new TypeError("onEvent is required");
+    if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+      throw agentError("turn_rejected", "afterSequence must be a non-negative integer");
+    }
+    const oldestSequence = run.events[0]?.sequence || 0;
+    const resumeMiss = afterSequence > 0 && oldestSequence > afterSequence + 1;
+    if (!resumeMiss) {
+      for (const event of run.events) {
+        if (event.sequence > afterSequence) onEvent(event);
+      }
+    }
+    if (!run.terminal) run.subscribers.add(onEvent);
+    return {
+      resumeMiss,
+      activeActions: Array.from(run.activeActions.values()),
+      unsubscribe: () => run.subscribers.delete(onEvent),
+    };
+  }
+
+  async function getStatuses() {
+    return await Promise.all(Array.from(registry.values(), (backend) => backend.getStatus()));
+  }
+
+  async function handoffSession({ sessionRef: rawSessionRef, targetMode = "neutral", cwd = "" }) {
+    const sessionRef = normalizeAgentSessionRef(rawSessionRef);
+    const backend = registry.get(sessionRef.backendId);
+    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
+    if (targetMode !== "neutral" && targetMode !== "raw") throw agentError("turn_rejected", "targetMode is invalid");
+    if (targetMode === "raw" && backend.defaultDiscoveredSessionMode !== "raw") {
+      throw agentError("capability_unsupported", "raw compatibility mode is not supported", { backendId: sessionRef.backendId });
+    }
+    if (targetMode === "neutral") {
+      const status = await backend.getStatus();
+      if (!status?.readiness?.ready) {
+        throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", {
+          backendId: sessionRef.backendId,
+        });
+      }
+    }
+    const existingBinding = await sessionStore.getBinding(sessionRef);
+    await recoverSessionLease(sessionRef, backend);
+    const canonicalCwd = existingBinding?.canonicalCwd || await backend.resolveSessionCwd(sessionRef);
+    if (cwd) {
+      const requested = await resolveCanonicalCwd(cwd);
+      if (requested !== canonicalCwd) throw agentError("session_cwd_mismatch", "session cwd does not match");
+    }
+    if (!existingBinding) {
+      const bound = await sessionStore.bind(
+        sessionRef,
+        canonicalCwd,
+        backend.defaultDiscoveredSessionMode === "raw" ? "raw" : "neutral",
+      );
+      if (bound?.status !== "bound") throw agentError("session_busy", "session could not be bound");
+    }
+    const handedOff = await sessionStore.handoff(sessionRef, targetMode);
+    if (handedOff?.status === "busy") throw agentError("session_busy", "session has an active or recovering turn");
+    return { sessionRef, canonicalCwd, mode: handedOff.mode };
+  }
+
+  async function cancelRunsInWorkspace({ subjectId, canonicalRoot }) {
+    const root = String(canonicalRoot || "");
+    const candidates = Array.from(runs.values()).filter((run) => (
+      !run.terminal && run.subjectId === subjectId &&
+      (run.cwd === root || run.cwd.startsWith(`${root}/`))
+    ));
+    await Promise.all(candidates.map((run) => interrupt(run.runId).catch(() => {})));
+  }
+
+  async function compactSession({ sessionRef: rawSessionRef }) {
+    const sessionRef = normalizeAgentSessionRef(rawSessionRef);
+    const backend = registry.get(sessionRef.backendId);
+    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
+    const status = await backend.getStatus();
+    if (status?.capabilities?.operations?.compact !== true || typeof backend.compactSession !== "function") {
+      throw agentError("capability_unsupported", "session compaction is not supported", { backendId: sessionRef.backendId });
+    }
+    await recoverSessionLease(sessionRef, backend);
+    return await admitStart(async () => {
+      if ((await sessionStore.getMode(sessionRef))?.mode !== "neutral") {
+        throw agentError("session_busy", "session requires an explicit neutral handoff", { backendId: sessionRef.backendId });
+      }
+      const runId = `agent_compact_${randomUUID()}`;
+      const acquired = await sessionStore.acquire({ sessionRef, mode: "neutral", owner: "agent-service", runId });
+      if (acquired?.status !== "acquired") {
+        throw agentError("session_busy", "session already has an active or recovering operation", { backendId: sessionRef.backendId });
+      }
+      try {
+        const result = await backend.compactSession({ sessionRef, runId });
+        await sessionStore.settle(sessionRef, acquired.lease.generation, "released");
+        return result;
+      } catch (error) {
+        const stopped = error?.nativeActivity === "stopped" || error?.nativeActivity === "not_started";
+        await sessionStore.settle(sessionRef, acquired.lease.generation, stopped ? "released" : "recovering").catch(() => {});
+        throw error;
+      }
+    });
+  }
+
+  const service = {
+    protocolVersion: AGENT_PROTOCOL_VERSION,
+    startTurn,
+    interrupt,
+    respondToAction,
+    subscribe,
+    getStatuses,
+    handoffSession,
+    compactSession,
+    cancelRunsInWorkspace,
+    async listSessions(options) {
+      const backend = registry.get(String(options?.backendId || ""));
+      if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
+      const status = await backend.getStatus();
+      if (!status?.readiness?.ready) {
+        throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId });
+      }
+      if (status?.capabilities?.session?.list !== true) {
+        throw agentError("capability_unsupported", "session listing is not supported", { backendId: backend.backendId });
+      }
+      const requestedCwd = String(options?.cwd || "").trim();
+      if (!requestedCwd) throw agentError("turn_rejected", "cwd is required");
+      const cwd = await resolveCanonicalCwd(requestedCwd);
+      return await backend.listSessions({ ...options, cwd });
+    },
+    async readHistory(options) {
+      const sessionRef = normalizeAgentSessionRef(options?.sessionRef);
+      const backend = registry.get(sessionRef.backendId);
+      if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
+      const status = await backend.getStatus();
+      if (!status?.readiness?.ready) {
+        throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId });
+      }
+      if (status?.capabilities?.session?.history?.read !== true) {
+        throw agentError("capability_unsupported", "session history is not supported", { backendId: backend.backendId });
+      }
+      const page = await backend.readHistory({ ...options, sessionRef });
+      return { ...page, sessionRef };
+    },
+  };
+  return service;
+}

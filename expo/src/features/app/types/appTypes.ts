@@ -100,7 +100,7 @@ export type LlmDeltaEntry = {
   text: string;
 };
 
-export type LlmBackend = "codex_app_server";
+export type LlmBackend = string;
 export type AudioContainer = "wav" | "mp3" | "ogg" | "m4a" | "unknown";
 
 export type TtsDebugStats = {
@@ -296,6 +296,7 @@ export type SessionSwitchQueuedSend = {
 };
 
 export type ReplyRequestSessionSnapshot = {
+  backendId?: string;
   sessionId?: string;
   threadId?: string;
   directory?: string;

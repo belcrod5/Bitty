@@ -82,6 +82,25 @@ function createRunnerWsConnectionForTest() {
   return ws;
 }
 
+test("runner-ws advertises and negotiates the provider-neutral agent protocol", async () => {
+  const ws = createRunnerWsConnectionForTest();
+  assert.equal(ws.sent[0].op, "ready");
+  assert.equal(ws.sent[0].payload.channels.includes("agent"), true);
+
+  ws.emit("message", JSON.stringify({
+    channel: "agent",
+    op: "agent.hello",
+    requestId: "hello-1",
+  }), false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const ready = ws.sent.find((message) => message.channel === "agent" && message.op === "agent.ready");
+  assert.equal(ready.requestId, "hello-1");
+  assert.equal(ready.payload.protocolVersion, 1);
+  assert.equal(ready.payload.backends.some((backend) => backend.backendId === "codex"), true);
+  ws.close();
+});
+
 test("runner-ws LLM relay keys prefer thread, then session, then operation", () => {
   assert.equal(
     __TESTING__.resolveRunnerWsLlmRelayKey({

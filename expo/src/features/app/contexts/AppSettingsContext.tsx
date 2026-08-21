@@ -7,6 +7,7 @@ import type {
   TtsProvider,
 } from "../utils/audioConfig";
 import type { ReasoningEffort } from "../utils/settingsParsers";
+import type { LlmBackend } from "../types/appTypes";
 
 export type ModelOption = {
   label: string;
@@ -22,6 +23,7 @@ export type RunnerPairingResult = {
 
 export type AppSettingsContextValue = {
   runnerUrl: string;
+  llmBackend: LlmBackend;
   llmDirectory: string;
   codexWsUrl: string;
   codexWsToken: string;
@@ -59,6 +61,7 @@ export type AppSettingsContextValue = {
   autoSpeakAfterReply: boolean;
   faceIdRequiredForApproval: boolean;
   changeRunnerUrl: (value: string) => void;
+  selectLlmBackend: (value: LlmBackend) => void;
   changeLlmDirectory: (value: string) => void;
   changeCodexWsUrl: (value: string) => void;
   changeCodexWsToken: (value: string) => void;

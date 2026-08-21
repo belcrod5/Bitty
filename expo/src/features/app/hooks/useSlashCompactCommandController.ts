@@ -16,6 +16,8 @@ type UseSlashCompactCommandControllerArgs = {
   codexWsToken: string;
   nearUnlimitedTimeoutMs: number;
   runnerWebSocketManager?: RunnerWebSocketManager;
+  llmBackend: string;
+  rawFallbackBackendId: string;
   normalizedLlmDirectoryForRequest: () => string;
   fetchRunnerSessionContextUsedPct: (sessionId: string, directory: string) => Promise<number | null>;
   setReplyDebug: Dispatch<SetStateAction<string>>;
@@ -40,6 +42,8 @@ export function useSlashCompactCommandController({
   codexWsToken,
   nearUnlimitedTimeoutMs,
   runnerWebSocketManager,
+  llmBackend,
+  rawFallbackBackendId,
   normalizedLlmDirectoryForRequest,
   fetchRunnerSessionContextUsedPct,
   setReplyDebug,
@@ -107,6 +111,8 @@ export function useSlashCompactCommandController({
         threadId,
         timeoutMs: nearUnlimitedTimeoutMs,
         runnerWebSocketManager,
+        backendId: String(targetSnapshot?.backendId || llmBackend).trim() || llmBackend,
+        rawFallbackBackendId,
         onLog: (entry) => {
           const suffix = [
             entry.method ? `method=${entry.method}` : "",
@@ -209,9 +215,11 @@ export function useSlashCompactCommandController({
     codexWsToken,
     codexWsUrl,
     fetchRunnerSessionContextUsedPct,
+    llmBackend,
     logSessionDiag,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
     setReplyDebug,
     setCodexCompactRunning,

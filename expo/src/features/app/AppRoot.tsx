@@ -341,7 +341,7 @@ import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 
 const DEFAULT_RUNNER_URL = "http://127.0.0.1:8788";
-const DEFAULT_LLM_BACKEND: LlmBackend = "codex_app_server";
+const DEFAULT_LLM_BACKEND: LlmBackend = "codex";
 const DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/runner-ws";
 const NEAR_UNLIMITED_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24h
 const EXPO_EXECUTION_ENVIRONMENT = String(
@@ -706,7 +706,7 @@ function parseExpandedDirectoryIds(raw: unknown, directories: RegisteredDirector
 
 export default function App() {
   const [runnerUrl, setRunnerUrl] = useState(DEFAULT_RUNNER_URL);
-  const [llmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
+  const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
   const [codexWsUrl, setCodexWsUrl] = useState(DEFAULT_CODEX_WS_URL);
   const [codexWsToken, setCodexWsToken] = useState("");
@@ -939,6 +939,8 @@ export default function App() {
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     runnerWebSocketManager,
+    llmBackend,
+    rawFallbackBackendId: "codex",
     onSessionDiagLog: handleSessionDiagLog,
   });
   // /session-messages のメモリ+ファイルキャッシュ。キャッシュがあれば sinceCursor 差分
@@ -4806,6 +4808,7 @@ export default function App() {
     localRunnerUrl,
     localRunnerWsUrl,
     llmBackend,
+    setLlmBackend,
     llmDirectory,
     registeredDirectories,
     sessionTitleOverridesById,
@@ -5536,6 +5539,8 @@ export default function App() {
     codexWsToken: effectiveCodexWsToken,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     runnerWebSocketManager,
+    llmBackend,
+    rawFallbackBackendId: "codex",
     normalizedLlmDirectoryForRequest,
     fetchRunnerSessionContextUsedPct,
     setReplyDebug,
@@ -5626,6 +5631,7 @@ export default function App() {
     codexWsUrl,
     codexWsToken: effectiveCodexWsToken,
     runnerWebSocketManager,
+    llmBackend,
     modelRef,
     reasoningEffort,
     codexApprovalPolicy,
@@ -5738,12 +5744,12 @@ export default function App() {
     closeCodexRelayObserver,
     logSessionDiag,
     sendReplyRequestFromCodex,
-    llmBackend,
     cancelReplyRequestFromCodex,
     suspendReplyRequestFromCodex,
   });
 
   type WriteSessionSnapshot = {
+    backendId?: string;
     sessionId?: string;
     threadId?: string;
     directory?: string;
@@ -5795,6 +5801,7 @@ export default function App() {
       throttleKey: `panel_write_session_snapshot_resolved:${panelId}:${Date.now()}`,
     });
     return {
+      backendId: String(snapshot.backendId || llmBackend || "codex").trim() || "codex",
       sessionId,
       threadId,
       directory,
@@ -6093,6 +6100,7 @@ export default function App() {
   });
   const appSettingsContextValue = useAppSettingsContextValue({
     runnerUrl,
+    llmBackend,
     llmDirectory,
     codexWsUrl,
     codexWsToken,
@@ -6130,6 +6138,7 @@ export default function App() {
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
     changeRunnerUrl,
+    selectLlmBackend: setLlmBackend,
     changeLlmDirectory,
     changeCodexWsUrl,
     changeCodexWsToken,
@@ -6410,14 +6419,26 @@ export default function App() {
     panelIdRaw: string,
     baseSnapshot: PanelRuntimeSnapshot,
     patch: PanelRuntimeSnapshotPatch = {}
-  ): PanelRuntimeSnapshot => buildPanelRuntimeSnapshot({
-    panelId: panelIdRaw,
-    base: baseSnapshot,
-    patch,
-    isCompactRunning: isCodexCompactRunning,
-  }), [isCodexCompactRunning]);
+  ): PanelRuntimeSnapshot => {
+    const snapshot = buildPanelRuntimeSnapshot({
+      panelId: panelIdRaw,
+      base: baseSnapshot,
+      patch,
+      isCompactRunning: isCodexCompactRunning,
+    });
+    const selectedSessionChanged = Boolean(
+      patch.selectedSessionId && patch.selectedSessionId !== baseSnapshot.selectedSessionId
+    );
+    return {
+      ...snapshot,
+      backendId: selectedSessionChanged
+        ? (String(llmBackend || "codex").trim() || "codex")
+        : (String(snapshot.backendId || llmBackend || "codex").trim() || "codex"),
+    };
+  }, [isCodexCompactRunning, llmBackend]);
   const createEmptyPanelRuntimeSnapshot = useCallback((panelIdRaw: string): PanelRuntimeSnapshot => ({
     panelId: normalizeRuntimePanelId(panelIdRaw),
+    backendId: String(llmBackend || "codex").trim() || "codex",
     selectedSessionId: "",
     selectedDirectoryPath: normalizedLlmDirectoryForRequest(),
     selectedDirectoryDisplayName: String(selectedDirectoryDisplayName || "").trim(),
@@ -6437,6 +6458,7 @@ export default function App() {
     scrollNearBottom: true,
     ttsPlaybackMessageId: "",
   }), [
+    llmBackend,
     modelRef,
     normalizedLlmDirectoryForRequest,
     reasoningEffort,
@@ -7436,7 +7458,7 @@ export default function App() {
     faceTrackingEnabled,
     faceTrackingLooking,
     hasComposerText,
-    canStopLlmTurn: llmBackend === "codex_app_server" && replyLoading,
+    canStopLlmTurn: replyLoading,
     stopDirectNativeStt: stopDirectNativeSttFromComposerContext,
     stopAutoRecordingMode: stopAutoRecordingModeFromComposerContext,
     stopRecording: stopRecordingFromComposerContext,

@@ -53,7 +53,6 @@ type UseSendReplyRequestControllerArgs<TSttMeta> = {
     transcriptOverride?: string,
     options?: ReplyRequestOptions<TSttMeta>
   ) => Promise<SendReplyRequestResult>;
-  llmBackend: string;
   cancelReplyRequestFromCodex: (options?: { panelId?: string }) => Promise<boolean>;
   suspendReplyRequestFromCodex: (reason?: string, options?: { panelId?: string }) => boolean;
 };
@@ -65,7 +64,6 @@ export function useSendReplyRequestController<TSttMeta>({
   closeCodexRelayObserver,
   logSessionDiag,
   sendReplyRequestFromCodex,
-  llmBackend,
   cancelReplyRequestFromCodex,
   suspendReplyRequestFromCodex,
 }: UseSendReplyRequestControllerArgs<TSttMeta>) {
@@ -156,18 +154,16 @@ export function useSendReplyRequestController<TSttMeta>({
   ]);
 
   const cancelCodexTurnRequestGuarded = useCallback(async (options?: { panelId?: string }) => {
-    if (llmBackend !== "codex_app_server") return;
     const targetPanelId = normalizeWritePanelId(options?.panelId);
     if (!targetPanelId) return;
     await cancelReplyRequestFromCodex(options);
-  }, [cancelReplyRequestFromCodex, llmBackend]);
+  }, [cancelReplyRequestFromCodex]);
 
   const suspendCodexTurnRequestForSessionSwitchGuarded = useCallback((options?: { panelId?: string }) => {
-    if (llmBackend !== "codex_app_server") return false;
     const targetPanelId = normalizeWritePanelId(options?.panelId);
     if (!targetPanelId) return false;
     return suspendReplyRequestFromCodex("session_switch", options);
-  }, [llmBackend, suspendReplyRequestFromCodex]);
+  }, [suspendReplyRequestFromCodex]);
 
   return {
     sendReplyRequestWithSessionGuard,

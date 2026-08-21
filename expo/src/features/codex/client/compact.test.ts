@@ -262,3 +262,31 @@ test("manager mode treats cached initialize success as normal and completes comp
   expect(manager.unsubscribeCalls).toBe(2);
   expect(manager.disconnect).not.toHaveBeenCalled();
 });
+
+test("neutral compact uses capability, handoff, and the Agent operation", async () => {
+  const request = jest.fn()
+    .mockResolvedValueOnce({
+      channel: "agent", op: "agent.ready",
+      payload: {
+        protocolVersion: 1,
+        backends: [{ backendId: "codex", readiness: { ready: true }, capabilities: { operations: { compact: true } } }],
+      },
+    })
+    .mockResolvedValueOnce({ channel: "agent", op: "session.handoff.completed", payload: {} })
+    .mockResolvedValueOnce({
+      channel: "agent", op: "session.compact.completed",
+      payload: { method: "thread/compact/start", accepted: true },
+    });
+  const manager = { request } as unknown as RunnerWebSocketManager;
+
+  await expect(compactCodexAppServerThread({
+    wsUrl: "ws://127.0.0.1:8788/codex-ws",
+    threadId: "thread-1",
+    runnerWebSocketManager: manager,
+    backendId: "codex",
+    rawFallbackBackendId: "codex",
+  })).resolves.toEqual({ threadId: "thread-1", method: "thread/compact/start", accepted: true });
+  expect(request.mock.calls.map((call) => call[0].op)).toEqual([
+    "agent.hello", "session.handoff", "session.compact",
+  ]);
+});

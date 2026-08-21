@@ -25,6 +25,8 @@ function renderExplorerHook(overrides: {
     normalizedLlmDirectoryForRequest: () => "/workspace",
     defaultLlmDirectory: "/workspace",
     nearUnlimitedTimeoutMs: 60_000,
+    llmBackend: "codex",
+    rawFallbackBackendId: "codex",
     onSessionDiagLog: overrides.onSessionDiagLog,
   }));
 }

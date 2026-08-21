@@ -51,6 +51,10 @@ export type CodexAppServerLogEntry = {
 };
 
 export type CodexAppServerTurnOptions = {
+  backendId?: string;
+  preferNeutralAgent?: boolean;
+  rawFallbackBackendId?: string;
+  confirmWorkspaceAdmission?: (request: { canonicalRoot: string; warning: string }) => Promise<boolean>;
   wsUrl: string;
   wsToken?: string;
   traceId?: string;
