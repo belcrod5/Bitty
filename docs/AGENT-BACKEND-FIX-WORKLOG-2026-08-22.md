@@ -455,3 +455,15 @@ busyで即失敗する。Codexはcompact queue(raw固有)へ退避されるが�
 
 関連: Claude権限承認ポップアップ(--permission-mode dontAsk固定の解消)はmain側
 `docs/タスクリスト.checklist`へ将来タスクとして追加済み。
+
+## §19 compact中送信の上流化(§18のクライアント待機を置き換え)
+
+§18のクライアント側待機は下流対応(アプリ終了でメッセージ消失・他送信元を救えない)
+だったため、runner側の根本対応へ置き換えた:
+
+1. **store**: 同一モードへの`handoff`はlease保持中でもno-op成功(`unchanged`)。leaseガードは「実行中のモード反転」防止が目的で、no-opをbusyにする理由がない。これで送信前handoffがcompactと衝突しなくなる。
+2. **agent-service**: turn.startで「compact操作(runId接頭辞`agent_compact_`)がleaseを保持中」ならsession_busyにせずrunを受理し、execute側で圧縮完了(lease解放)をポーリング待機(`compactLeasePollMs`=500ms、上限`compactWaitTimeoutMs`=10分)してから実行。待機中のinterruptはbackend未起動のままinterruptedで確定。
+3. **admitStartの保持時間短縮**: compactSessionが排他(admitStart)を圧縮の全時間保持しており、圧縮中は全セッションのturn受理までブロックされていた(潜在バグ)。排他は受理判定+lease取得のみに縮小。
+4. クライアント側待機(§18)は削除。runner側で受理されるためアプリを閉じても実行される。
+
+検証: runner **497 passed / 1 skipped**・Expo **119 suites / 869 tests**・tsc passed。

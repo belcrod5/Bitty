@@ -43,7 +43,7 @@ function sessionStore() {
       if (entry.mode !== mode) return { status: "mode_conflict", mode: entry.mode };
       if (entry.lease) return { status: "busy", lease: entry.lease };
       entry.generation += 1;
-      entry.lease = { generation: entry.generation, owner, runId };
+      entry.lease = { generation: entry.generation, owner, runId, state: "active" };
       modes.set(key(sessionRef), entry);
       return { status: "acquired", lease: entry.lease };
     },
@@ -62,6 +62,8 @@ function sessionStore() {
     },
     async handoff(ref, mode) {
       const entry = modes.get(key(ref)) || { lease: null, generation: 0 };
+      // 実storeと同じ: 同一モードへのhandoffはlease保持中でもno-op成功
+      if (entry.mode === mode) return { status: "unchanged", mode };
       if (entry.lease) return { status: "busy", mode: entry.mode, lease: entry.lease };
       entry.mode = mode;
       modes.set(key(ref), entry);
@@ -143,6 +145,113 @@ test("emits one ordered lifecycle and resolves completion to the terminal payloa
     () => service.subscribe(run.runId, { afterSequence: Number.NaN, onEvent() {} }),
     (error) => error.code === "turn_rejected",
   );
+});
+
+test("accepts a turn during an active compact and executes it after the lease is released", async () => {
+  const store = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-1" };
+  let releaseCompact;
+  const compactGate = new Promise((resolve) => { releaseCompact = resolve; });
+  const turnStartedAt = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { ...status().capabilities, operations: { compact: true } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit }) {
+      turnStartedAt.push(Date.now());
+      emit("turn.started", {});
+      emit("item.started", { itemId: "item-1", itemType: "assistant" });
+      emit("item.completed", { itemId: "item-1", revision: 1 });
+      return { outcome: "completed" };
+    },
+    async compactSession() {
+      await compactGate;
+      return { sessionRef, accepted: true };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd,
+    compactLeasePollMs: 10,
+    compactWaitTimeoutMs: 2000,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+  await store.bind(sessionRef, "/workspace", "neutral");
+
+  const compactPromise = service.compactSession({ sessionRef });
+  // compactがleaseを取るまで待つ
+  while (!(await store.getMode(sessionRef))?.lease) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  // compact中の送信はsession_busyにならず受理され、圧縮完了後に実行される
+  const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "user-1" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(turnStartedAt.length, 0);
+
+  releaseCompact();
+  await compactPromise;
+  const result = await run.completion;
+  assert.equal(result.outcome, "completed");
+  assert.equal(turnStartedAt.length, 1);
+  // turn終了後はleaseが解放されている
+  assert.equal((await store.getMode(sessionRef))?.lease, null);
+});
+
+test("interrupting a turn that waits for compaction settles it as interrupted", async () => {
+  const store = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-1" };
+  let releaseCompact;
+  const compactGate = new Promise((resolve) => { releaseCompact = resolve; });
+  let backendTurnStarted = false;
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { ...status().capabilities, operations: { compact: true } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn() {
+      backendTurnStarted = true;
+      return { outcome: "completed" };
+    },
+    async compactSession() {
+      await compactGate;
+      return { sessionRef, accepted: true };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd,
+    compactLeasePollMs: 10,
+    compactWaitTimeoutMs: 2000,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+  await store.bind(sessionRef, "/workspace", "neutral");
+
+  const compactPromise = service.compactSession({ sessionRef });
+  while (!(await store.getMode(sessionRef))?.lease) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "user-1" });
+  await service.interrupt(run.runId);
+  const result = await run.completion;
+  assert.equal(result.outcome, "interrupted");
+  assert.equal(backendTurnStarted, false);
+
+  releaseCompact();
+  await compactPromise;
 });
 
 function listBackend(backendId, { sessions, listError, listSupported = true } = {}) {

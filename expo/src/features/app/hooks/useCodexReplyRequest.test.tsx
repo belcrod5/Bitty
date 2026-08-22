@@ -1047,15 +1047,15 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
   });
 
-  test("compact queue非対応Backendはcompact完了を待ってからdispatchする", async () => {
+  test("compact queue非対応Backendのcompact中送信はクライアントで待たずdispatchする", async () => {
+    // compact中の受理と実行待ちはrunner側(agent-serviceのcompact lease待ち)の責務。
+    // クライアントで待つとアプリ終了時にメッセージが失われる。
     const { options } = createOptions();
-    // 2回目のポーリングまでcompact実行中 → その後解除
-    let compactPolls = 0;
     Object.assign(options, {
       transcript: "hello",
       llmBackend: "claude",
       modelRef: "sonnet",
-      isCodexCompactRunning: (threadId: string) => threadId === "thread-1" && ++compactPolls <= 2,
+      isCodexCompactRunning: (threadId: string) => threadId === "thread-1",
       modelOptions: [{
         modelId: "sonnet",
         backendId: "claude",
@@ -1077,8 +1077,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       });
     });
 
-    // compact中のsession leaseと衝突するsession_busyを避けて、解除後に1回だけ送信される
-    expect(compactPolls).toBeGreaterThanOrEqual(3);
     expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
   });

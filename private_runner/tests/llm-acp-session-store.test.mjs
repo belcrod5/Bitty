@@ -466,6 +466,10 @@ test("persists one session mode and generation-checked lease across restarts", a
     runId: "run-1",
   });
   assert.equal(acquired.status, "acquired");
+  // 同一モードへのhandoffはno-op: lease保持中(compact/turn実行中)でも成功する
+  assert.equal((await first.handoffAgentSessionMode(ref, "neutral")).status, "unchanged");
+  // モード反転はlease保持中は従来どおりbusy
+  assert.equal((await first.handoffAgentSessionMode(ref, "raw")).status, "busy");
   assert.equal((await first.updateAgentSessionLeaseIdentity(
     ref,
     acquired.lease.generation,

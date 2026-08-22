@@ -692,8 +692,10 @@ export function createLlmAcpSessionStore(deps = {}) {
     const op = acpSessionStoreWriteQueue.then(async () => {
       const key = agentSessionKey(backendId, nativeSessionId);
       const existing = agentSessionModes.get(key);
-      if (existing?.lease) return { status: "busy", mode: existing.mode, lease: { ...existing.lease } };
+      // 同一モードへのhandoffはモード遷移を伴わないno-op。lease保持中(turn/compact
+      // 実行中)でも成功にする。leaseガードは「実行中のモード反転」を防ぐためのもの。
       if (existing?.mode === targetMode) return { status: "unchanged", mode: targetMode };
+      if (existing?.lease) return { status: "busy", mode: existing.mode, lease: { ...existing.lease } };
       const previous = existing ? { ...existing } : null;
       const next = {
         backendId,

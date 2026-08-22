@@ -88,6 +88,8 @@ export function createAgentService({
   resolveCanonicalCwd,
   replayLimit = DEFAULT_REPLAY_LIMIT,
   runRetentionMs = 24 * 60 * 60 * 1000,
+  compactWaitTimeoutMs = 10 * 60 * 1000,
+  compactLeasePollMs = 500,
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
 } = {}) {
@@ -348,8 +350,53 @@ export function createAgentService({
     publish(run, type, payload);
   }
 
+  // compact操作のrunId接頭辞(compactSessionのrunId生成と一致させる)
+  const COMPACT_RUN_PREFIX = "agent_compact_";
+
+  async function compactHoldsSessionLease(sessionRef) {
+    const lease = (await sessionStore.getMode(sessionRef))?.lease;
+    return String(lease?.owner || "") === "agent-service"
+      && String(lease?.runId || "").startsWith(COMPACT_RUN_PREFIX)
+      && String(lease?.state || "") === "active";
+  }
+
+  // compact実行中に受理したrunのlease取得待ち。圧縮完了(lease解放)後に自分の
+  // leaseを取って返す。中断は"interrupted"、compact以外の保持者やタイムアウトはthrow。
+  async function waitForCompactLeaseRelease(run) {
+    const deadlineMs = Date.now() + compactWaitTimeoutMs;
+    while (true) {
+      if (run.cancelRequested) return "interrupted";
+      const acquired = await sessionStore.acquire({
+        sessionRef: run.sessionRef,
+        mode: "neutral",
+        owner: "agent-service",
+        runId: run.runId,
+      });
+      if (acquired?.status === "acquired" || acquired?.status === "existing") return acquired.lease;
+      if (!(await compactHoldsSessionLease(run.sessionRef))) {
+        const error = agentError("session_busy", "session already has an active or recovering turn", { backendId: run.backendId });
+        error.nativeActivity = "not_started";
+        throw error;
+      }
+      if (Date.now() >= deadlineMs) {
+        const error = agentError("timeout", "session compaction did not finish before the queued turn", { backendId: run.backendId });
+        error.nativeActivity = "not_started";
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, compactLeasePollMs));
+    }
+  }
+
   async function execute(run, backend, request) {
     try {
+      if (run.sessionRef && !run.lease) {
+        const awaited = await waitForCompactLeaseRelease(run);
+        if (awaited === "interrupted") {
+          await finish(run, "interrupted");
+          return;
+        }
+        run.lease = awaited;
+      }
       const backendResult = await backend.startTurn({
         ...request,
         runId: run.runId,
@@ -460,10 +507,16 @@ export function createAgentService({
           owner: "agent-service",
           runId: proposedRunId,
         });
-        if (acquired?.status !== "acquired" && acquired?.status !== "existing") {
+        if (acquired?.status === "acquired" || acquired?.status === "existing") {
+          preAcquiredLease = acquired.lease;
+        } else if (await compactHoldsSessionLease(request.sessionRef)) {
+          // compact操作がleaseを保持中の送信は落とさずrunとして受理し、
+          // execute側で圧縮完了(lease解放)を待ってから実行する
+          // (compact queueを持たないBackendでもcompact中の送信が成立する)。
+          preAcquiredLease = null;
+        } else {
           throw agentError("session_busy", "session already has an active or recovering turn", { backendId: request.backendId });
         }
-        preAcquiredLease = acquired.lease;
       }
       let claim;
       try {
@@ -658,7 +711,9 @@ export function createAgentService({
       throw agentError("capability_unsupported", "session compaction is not supported", { backendId: sessionRef.backendId });
     }
     await recoverSessionLease(sessionRef, backend);
-    return await admitStart(async () => {
+    // admitStart(排他)は受理判定+lease取得だけに使う。圧縮本体まで排他内で
+    // 実行すると、圧縮中は全セッションのturn受理までブロックされてしまう。
+    const admitted = await admitStart(async () => {
       if ((await sessionStore.getMode(sessionRef))?.mode !== "neutral") {
         throw agentError("session_busy", "session requires an explicit neutral handoff", { backendId: sessionRef.backendId });
       }
@@ -667,16 +722,17 @@ export function createAgentService({
       if (acquired?.status !== "acquired") {
         throw agentError("session_busy", "session already has an active or recovering operation", { backendId: sessionRef.backendId });
       }
-      try {
-        const result = await backend.compactSession({ sessionRef, runId });
-        await sessionStore.settle(sessionRef, acquired.lease.generation, "released");
-        return result;
-      } catch (error) {
-        const stopped = error?.nativeActivity === "stopped" || error?.nativeActivity === "not_started";
-        await sessionStore.settle(sessionRef, acquired.lease.generation, stopped ? "released" : "recovering").catch(() => {});
-        throw error;
-      }
+      return { runId, lease: acquired.lease };
     });
+    try {
+      const result = await backend.compactSession({ sessionRef, runId: admitted.runId });
+      await sessionStore.settle(sessionRef, admitted.lease.generation, "released");
+      return result;
+    } catch (error) {
+      const stopped = error?.nativeActivity === "stopped" || error?.nativeActivity === "not_started";
+      await sessionStore.settle(sessionRef, admitted.lease.generation, stopped ? "released" : "recovering").catch(() => {});
+      throw error;
+    }
   }
 
   const service = {
