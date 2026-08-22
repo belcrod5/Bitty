@@ -142,7 +142,11 @@ type UseCodexReplyRequestOptions<
   startLlmRequest: (status: LlmUiStatus, detail?: string) => void;
   finishLlmRequest: (status: LlmUiStatus, detail?: string) => void;
   parseContextUsageUsedPct: (raw: unknown) => number | null;
-  fetchRunnerSessionContextUsedPct: (sessionId: string, directory: string) => Promise<number | null>;
+  fetchRunnerSessionContextUsedPct: (
+    sessionId: string,
+    directory: string,
+    options?: { backendId?: string }
+  ) => Promise<number | null>;
   extractYouTubeVideoIds: (text: string) => string[];
   stripYouTubeTags: (text: string) => string;
   fetchYouTubeVideoMetadata: (videoIds: string[]) => Promise<void>;
@@ -1537,7 +1541,8 @@ export function useCodexReplyRequest<
       if (contextUsedPct === null) {
         contextUsedPct = await current.fetchRunnerSessionContextUsedPct(
           result.threadId,
-          requestDirectory
+          requestDirectory,
+          { backendId: requestBackendId }
         ).catch(() => null);
       }
       latestContextUsedPct = contextUsedPct;

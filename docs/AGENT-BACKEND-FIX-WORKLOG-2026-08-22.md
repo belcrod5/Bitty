@@ -467,3 +467,25 @@ busyで即失敗する。Codexはcompact queue(raw固有)へ退避されるが�
 4. クライアント側待機(§18)は削除。runner側で受理されるためアプリを閉じても実行される。
 
 検証: runner **497 passed / 1 skipped**・Expo **119 suites / 869 tests**・tsc passed。
+
+## §20 /compact後のcontext length未反映(即時+永続)
+
+実機報告: Claudeで/compactを実行してもcontext lengthが更新されず、開き直しても
+表示されない(永続的に反映されない)。原因は2つ:
+
+1. **runner**: `transcriptContextUsage`がcompact境界に当たると無条件でnullを返し、
+   次turnまで復元不能だった。境界レコードにはCLI自身が圧縮後トークン数を
+   `compactMetadata.postTokens`として記録している(実測2.1.238)ため、境界より
+   新しいusageが無い間はpostTokens+学習済みwindowから復元する。postTokensが無い
+   旧形式の境界のみ従来どおり非表示。これで開き直し(readHistory neutral)でも
+   圧縮後の%が永続的に出る。
+2. **Expo**: /compact完了後のポーリング(`fetchRunnerSessionContextUsedPct`)が
+   Codex rollout専用のHTTP `/session-messages`だけを見ており、Claudeセッションは
+   `found: false`で常にnullだった。backendIdが分かる場合はBackend中立の
+   `readAgentHistory`(readHistoryのcontextUsage)を優先し、legacy HTTPはフォール
+   バックへ降格。/compactコントローラとturn完了後のフォールバック照会の両方が
+   backendIdを渡す。新Backend追加時はreadHistoryがcontextUsageを返せば自動で反映
+   される(インターフェイス駆動、クライアント側にBackend分岐なし)。
+
+検証: runner **497 passed / 1 skipped**・Expo **119 suites / 871 tests**・
+tsc / typecheck:macos passed。反映はrunner再起動が必要。

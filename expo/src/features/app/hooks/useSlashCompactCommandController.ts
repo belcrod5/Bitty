@@ -19,7 +19,11 @@ type UseSlashCompactCommandControllerArgs = {
   llmBackend: string;
   rawFallbackBackendId: string;
   normalizedLlmDirectoryForRequest: () => string;
-  fetchRunnerSessionContextUsedPct: (sessionId: string, directory: string) => Promise<number | null>;
+  fetchRunnerSessionContextUsedPct: (
+    sessionId: string,
+    directory: string,
+    options?: { backendId?: string }
+  ) => Promise<number | null>;
   setReplyDebug: Dispatch<SetStateAction<string>>;
   appendSlashCommandResult: (commandText: string, assistantText: string, options?: RunSlashCompactOptions) => void;
   appendSlashCommandProgress: (commandText: string, assistantText: string, options?: RunSlashCompactOptions) => void;
@@ -80,6 +84,7 @@ export function useSlashCompactCommandController({
       targetSnapshot?.directory ||
       normalizedLlmDirectoryForRequest()
     ).trim();
+    const targetBackendId = String(targetSnapshot?.backendId || llmBackend).trim() || llmBackend;
     logSessionDiag?.("slash_compact_target_resolved", {
       panelId: targetConversationId || undefined,
       sessionId: String(targetSnapshot?.sessionId || "").trim() || undefined,
@@ -111,7 +116,7 @@ export function useSlashCompactCommandController({
         threadId,
         timeoutMs: nearUnlimitedTimeoutMs,
         runnerWebSocketManager,
-        backendId: String(targetSnapshot?.backendId || llmBackend).trim() || llmBackend,
+        backendId: targetBackendId,
         rawFallbackBackendId,
         onLog: (entry) => {
           const suffix = [
@@ -177,7 +182,8 @@ export function useSlashCompactCommandController({
         }
         const nextContextUsedPct = await fetchRunnerSessionContextUsedPct(
           threadId,
-          targetDirectory
+          targetDirectory,
+          { backendId: targetBackendId }
         ).catch(() => null);
         if (nextContextUsedPct === null) continue;
         contextUsedPct = nextContextUsedPct;

@@ -483,7 +483,7 @@ test("Claude compactSession fails closed on a non-success result", async () => {
   }), (error) => error.code === "turn_failed" && error.nativeActivity === "stopped");
 });
 
-test("Claude history restores context usage from the learned window and skips it across a compact boundary", async (t) => {
+test("Claude history restores context usage from the learned window and from compact boundary postTokens", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-context-restore-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
   const project = path.join(tempRoot, "project");
@@ -519,13 +519,25 @@ test("Claude history restores context usage from the learned window and skips it
   // (2+99990+8+0) / 200000 = 50%
   assert.deepEqual(history.contextUsage, { usedPct: 50, totalTokens: 100000, contextWindowTokens: 200000 });
 
-  // /compact境界の後に新しいusageが無い間は、圧縮前の値を出さない
-  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "system", subtype: "compact_boundary", cwd })}`);
+  // /compact境界の後に新しいusageが無い間は、圧縮前の値ではなく境界レコードの
+  // compactMetadata.postTokens(圧縮後トークン数)から復元する
+  await fs.appendFile(transcript, `\n${JSON.stringify({
+    type: "system", subtype: "compact_boundary", cwd,
+    compactMetadata: { trigger: "manual", preTokens: 100000, postTokens: 1000 },
+  })}`);
   const afterCompact = await backend.readHistory({
     sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
     limit: 10,
   });
-  assert.equal(afterCompact.contextUsage, undefined);
+  assert.deepEqual(afterCompact.contextUsage, { usedPct: 1, totalTokens: 1000, contextWindowTokens: 200000 });
+
+  // postTokensが無い旧形式の境界では復元しない(次turnの実測まで非表示)
+  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "system", subtype: "compact_boundary", cwd })}`);
+  const afterLegacyCompact = await backend.readHistory({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+    limit: 10,
+  });
+  assert.equal(afterLegacyCompact.contextUsage, undefined);
 });
 
 test("Claude no-output watchdog pauses while a tool is running", async () => {

@@ -480,11 +480,25 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
 
   const fetchRunnerSessionContextUsedPct = useCallback(async (
     sessionIdRaw: unknown,
-    directoryRaw?: unknown
+    directoryRaw?: unknown,
+    options?: { backendId?: string }
   ): Promise<number | null> => {
+    // backendIdが分かる場合はBackend中立のreadHistory(contextUsage付き)を優先する。
+    // legacy HTTP snapshotはCodex rollout専用で、他Backendのセッションを見つけられない。
+    const backendId = String(options?.backendId || "").trim();
+    const sessionId = parseOptionalSessionId(sessionIdRaw);
+    if (backendId && sessionId && runnerWebSocketManager) {
+      const neutral = await readAgentHistory(runnerWebSocketManager, {
+        backendId,
+        nativeSessionId: sessionId,
+        limit: 1,
+      }).catch(() => null);
+      const usedPct = parseContextUsageUsedPct(neutral?.contextUsage);
+      if (usedPct !== null) return usedPct;
+    }
     const snapshot = await fetchRunnerSessionSnapshot(sessionIdRaw, directoryRaw);
     return snapshot.contextUsedPct;
-  }, [fetchRunnerSessionSnapshot]);
+  }, [fetchRunnerSessionSnapshot, runnerWebSocketManager]);
 
   const fetchRunnerSessionMessages = useCallback(async (
     sessionIdRaw: unknown,

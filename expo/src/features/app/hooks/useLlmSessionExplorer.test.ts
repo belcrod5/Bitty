@@ -365,6 +365,61 @@ describe("fetchRunnerSessionMessages", () => {
   });
 });
 
+describe("fetchRunnerSessionContextUsedPct", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockReadAgentHistory.mockReset();
+  });
+
+  it("prefers the backend-neutral history contextUsage when a backendId is known", async () => {
+    mockReadAgentHistory.mockResolvedValue({
+      sessionRef: { backendId: "claude", nativeSessionId: "thread-1" },
+      items: [],
+      contextUsage: { usedPct: 7, totalTokens: 14000, contextWindowTokens: 200000 },
+    });
+    const fetchMock = jest.spyOn(global, "fetch");
+    const { result } = await renderExplorerHook({
+      runnerWebSocketManager: {} as never,
+    });
+
+    const usedPct = await result.current.fetchRunnerSessionContextUsedPct("thread-1", "/workspace", {
+      backendId: "claude",
+    });
+
+    expect(usedPct).toBe(7);
+    expect(mockReadAgentHistory).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      backendId: "claude",
+      nativeSessionId: "thread-1",
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the legacy snapshot endpoint when the neutral history has no contextUsage", async () => {
+    mockReadAgentHistory.mockResolvedValue({
+      sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
+      items: [],
+    });
+    const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        found: true,
+        contextUsage: { usedPct: 42 },
+      }),
+    } as unknown as Response);
+    const { result } = await renderExplorerHook({
+      runnerWebSocketManager: {} as never,
+    });
+
+    const usedPct = await result.current.fetchRunnerSessionContextUsedPct("thread-1", "/workspace", {
+      backendId: "codex",
+    });
+
+    expect(usedPct).toBe(42);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
 describe("fetchSessionHistory runner snapshot failures", () => {
   afterEach(() => {
     jest.restoreAllMocks();

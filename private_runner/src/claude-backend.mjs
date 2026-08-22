@@ -695,20 +695,25 @@ export function createClaudeBackend({
   }
 
   // transcript末尾のusage(メイン会話のみ)からcontext使用率を復元する。
-  // 直近が/compact境界より前のusageなら、次turnまで実測が無いため復元しない。
+  // /compact境界より新しいusageが無い間は、境界レコードのcompactMetadata.postTokens
+  // (CLI自身が記録する圧縮後トークン数)から復元する。
   async function transcriptContextUsage(records) {
     if (!modelInfoStore?.get) return null;
-    let usage = null;
+    let totalTokens = 0;
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const value = records[index]?.value;
-      if (String(value?.subtype || "") === "compact_boundary") return null;
+      if (String(value?.subtype || "") === "compact_boundary") {
+        totalTokens = Math.max(0, Math.floor(Number(value?.compactMetadata?.postTokens) || 0));
+        break;
+      }
       if (value?.isSidechain === true) continue;
-      const candidate = value?.message?.usage;
-      if (candidate && typeof candidate === "object") { usage = candidate; break; }
+      const usage = value?.message?.usage;
+      if (usage && typeof usage === "object") {
+        totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
+          .reduce((sum, key) => sum + Math.max(0, Number(usage[key]) || 0), 0);
+        break;
+      }
     }
-    if (!usage) return null;
-    const totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
-      .reduce((sum, key) => sum + Math.max(0, Number(usage[key]) || 0), 0);
     const modelId = transcriptModelId(records);
     if (totalTokens <= 0 || !modelId) return null;
     const info = await Promise.resolve(modelInfoStore.get("claude", modelId)).catch(() => null);
