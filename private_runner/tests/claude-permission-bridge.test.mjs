@@ -315,3 +315,20 @@ test("claude permission prompt shim exits when stdin closes", async (t) => {
   const code = await exitPromise;
   assert.equal(code, 0);
 });
+
+test("claude permission prompt shim denies when it cannot connect to the bridge socket", async (t) => {
+  const socketDirectory = await tempSocketDirectory(t);
+  // 存在しないsocketパスを与え、shimの接続失敗パス(fail closed)を実spawnで検証する。
+  const missingSocketPath = path.join(socketDirectory, "does-not-exist.sock");
+  const child = spawnShim({ BITTY_PERMISSION_SOCKET: missingSocketPath, BITTY_PERMISSION_TOKEN: "unused-token" });
+  t.after(() => child.kill());
+
+  const callReply = readJsonRpcLines(child, 1);
+  child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "tools/call",
+    params: { name: "approval_prompt", arguments: { tool_name: "Write", input: {}, tool_use_id: "tool-1" } },
+  })}\n`);
+  const [call] = await callReply;
+  const body = JSON.parse(call.result.content[0].text);
+  assert.equal(body.behavior, "deny");
+});

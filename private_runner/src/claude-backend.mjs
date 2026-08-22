@@ -227,6 +227,15 @@ export function createClaudeBackend({
     return policyProfileId === "claude-on-request";
   }
 
+  // 未知のpolicyProfileIdはturn開始の早い段階(activeRuns登録より前)で弾く。
+  // ここを通過した後のpermissionArgs()は、policyProfileIdが空/claude-dont-ask/
+  // claude-on-requestのいずれかであることを前提にできる。
+  function assertPolicyProfileId(policyProfileId) {
+    if (policyProfileId && !isInteractivePermissionProfile(policyProfileId) && policyProfileId !== "claude-dont-ask") {
+      throw agentError("capability_unsupported", "Claude permission profile is not supported", { backendId: "claude" });
+    }
+  }
+
   // profile → argv断片。--safe-modeは共通argvから外し、ここで各profileの責務として
   // 個別に持つ(スパイク実測: --safe-modeは明示的な--mcp-configも無効化するため、
   // interactiveでは使えない。§4.2)。
@@ -247,9 +256,6 @@ export function createClaudeBackend({
         "--mcp-config", JSON.stringify(mcpConfig),
         "--permission-prompt-tool", CLAUDE_PERMISSION_TOOL_NAME,
       ];
-    }
-    if (policyProfileId && policyProfileId !== "claude-dont-ask") {
-      throw agentError("capability_unsupported", "Claude permission profile is not supported", { backendId: "claude" });
     }
     return ["--safe-mode", "--permission-mode", "dontAsk"];
   }
@@ -279,6 +285,7 @@ export function createClaudeBackend({
     if (selectedEffort && !CLAUDE_EFFORT_OPTIONS.includes(selectedEffort)) {
       throw agentError("turn_rejected", `Claude effort must be one of: ${CLAUDE_EFFORT_OPTIONS.join(", ")}`, { backendId: "claude" });
     }
+    assertPolicyProfileId(policyProfileId);
     const blocks = Array.isArray(input?.blocks) ? input.blocks : [];
     if (blocks.some((block) => block?.type !== "text")) {
       throw agentError("capability_unsupported", "Claude v1 accepts text input only", { backendId: "claude" });

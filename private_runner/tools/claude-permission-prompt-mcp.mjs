@@ -94,7 +94,7 @@ async function handleRequest(message) {
     });
     return;
   }
-  if (method === "tools/call") {
+  if (method === "tools/call" && params?.name === "approval_prompt") {
     const args = params?.arguments || {};
     const { decision, message: denyMessage } = await requestApproval(
       String(args.tool_name || ""),

@@ -46,6 +46,10 @@ export async function createClaudePermissionBridge({
 
   // onRequest呼び出し中(=まだ回答を書いていない)接続。close()時に全てdenyへ倒す。
   const pendingConnections = new Set();
+  // この bridge が受理した全接続。allowHalfOpen:trueのため、完全な行を送って
+  // いない/応答を読み切っていない接続のfdは自然終了を待つとprocess終了まで
+  // 残り得る。close()で漏れなく破棄できるよう、応答済みかどうかに関わらず追跡する。
+  const connections = new Set();
 
   function writeDecision(socket, decision, message) {
     if (socket.destroyed) return;
@@ -59,6 +63,11 @@ export async function createClaudePermissionBridge({
   // しまい、onRequestの解決を待って書くはずの応答が書けなくなる。承認待ちが長い
   // (無期限)ケースで特に破綻するため、明示的にhalf-openを許可する。
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+    connections.add(socket);
+    socket.on("close", () => {
+      connections.delete(socket);
+      pendingConnections.delete(socket);
+    });
     let buffer = "";
     let handled = false;
     socket.on("data", (chunk) => {
@@ -123,6 +132,11 @@ export async function createClaudePermissionBridge({
     // 既存接続の完全なclose(EOF往復)を待たない: shim側が読み切らなくてもrunnerの
     // 終了処理をハングさせない。socket unlinkは既存fdの動作へ影響しない。
     server.close();
+    // 直前のwriteDecisionが書いたバイト列はdestroy時点で既にkernelの送信バッファへ
+    // 渡っているため相手には届く。応答済み・未応答問わず残った接続を破棄しfdを
+    // process終了より前に確実に手放す。
+    for (const socket of connections) socket.destroy();
+    connections.clear();
     await fs.unlink(socketPath).catch(() => {});
   }
 
