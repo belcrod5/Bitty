@@ -3,7 +3,7 @@
 - 設計書: `docs/CLAUDE-PERMISSION-PROMPT-DESIGN.md`
 - ブランチ: `feat/claude-permission-prompt`
 - worktree: `${BITTY_WORKTREE_ROOT}/feat/claude-permission-prompt`
-- 状態: IMPLEMENTATION_COMPLETED(ローカルコミット済み・ユーザー確認待ち)
+- 状態: MERGE_APPROVAL_REQUIRED手前(実機検証待ち。コードレビューAPPROVE・指摘反映済み・ローカルコミットのみ)
 
 ## チェックリスト
 
@@ -17,7 +17,7 @@
 - [x] 実装2: claude-permission-prompt-mcp.mjs(shim)+ テスト
 - [x] 実装3: claude-backend.mjs変更 + テスト
 - [x] 全テスト通過(private_runner/tests、523 pass / 0 fail / 1 skip。node_modules未導入だったためnpm ciを実施)
-- [ ] コードレビュー(実装と別のサブエージェント)
+- [x] コードレビュー(Fableサブエージェント: APPROVE。Medium1/Low2/Suggestion1をb34b737で反映)
 - [x] ローカルコミット(ここで停止しユーザー確認)
 - [ ] ユーザー実機検証(設計書§6の6項目)
 - [ ] push / PR作成(ユーザー承認後)
