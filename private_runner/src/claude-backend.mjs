@@ -4,11 +4,20 @@ import { promises as fs } from "node:fs";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import { agentError } from "./agent/agent-protocol.mjs";
+import { createClaudePermissionBridge } from "./claude-permission-bridge.mjs";
 
 const execFile = promisify(execFileCallback);
 const MINIMUM_VERSION = "2.1.214";
+// interactive profile(claude-on-request)がCLIへ渡すpermission-prompt-tool。
+// shimはtools/list上でこの完全修飾名(mcp__<server>__<tool>)として現れる。
+const CLAUDE_PERMISSION_TOOL_NAME = "mcp__bitty_permission__approval_prompt";
+const CLAUDE_PERMISSION_SHIM_PATH = fileURLToPath(new URL("../tools/claude-permission-prompt-mcp.mjs", import.meta.url));
+// interactive時のみ設定するCLI側MCPタイムアウト。承認待ちは無期限になり得るため、
+// turnTimeoutと同桁の大きな値でclient側タイムアウトを無効化する(§4.5)。
+const CLAUDE_PERMISSION_MCP_TIMEOUT_MS = String(24 * 60 * 60 * 1000);
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -178,11 +187,14 @@ export function createClaudeBackend({
         session: { resume: true, list: true, history: { read: true, delta: false } },
         turn: { interrupt: true },
         action: {
-          kinds: [],
-          decisions: [],
-          policyProfiles: [{ id: "claude-dont-ask", label: "Deny unapproved tools", interactive: false, decisions: [] }],
+          kinds: ["permission"],
+          decisions: ["allow", "deny"],
+          policyProfiles: [
+            { id: "claude-on-request", label: "Ask before tool use", interactive: true, decisions: ["allow", "deny"] },
+            { id: "claude-dont-ask", label: "Deny unapproved tools", interactive: false, decisions: [] },
+          ],
         },
-        permission: { interactive: false },
+        permission: { interactive: true },
         model: { select: true, effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS, changeWithinSession: false, catalog: CLAUDE_MODELS },
         workspace: { projectCustomizations: false, admission: true },
         operations: { compact: true, schedule: false, compactQueue: false },
@@ -211,11 +223,35 @@ export function createClaudeBackend({
     state.cancelTimers.push(terminate, kill);
   }
 
-  function permissionArgs(policyProfileId) {
+  function isInteractivePermissionProfile(policyProfileId) {
+    return policyProfileId === "claude-on-request";
+  }
+
+  // profile → argv断片。--safe-modeは共通argvから外し、ここで各profileの責務として
+  // 個別に持つ(スパイク実測: --safe-modeは明示的な--mcp-configも無効化するため、
+  // interactiveでは使えない。§4.2)。
+  function permissionArgs(policyProfileId, bridge) {
+    if (isInteractivePermissionProfile(policyProfileId)) {
+      const mcpConfig = {
+        mcpServers: {
+          bitty_permission: {
+            command: process.execPath,
+            args: [CLAUDE_PERMISSION_SHIM_PATH],
+            env: { BITTY_PERMISSION_SOCKET: bridge.socketPath, BITTY_PERMISSION_TOKEN: bridge.token },
+          },
+        },
+      };
+      return [
+        "--setting-sources", "",
+        "--strict-mcp-config",
+        "--mcp-config", JSON.stringify(mcpConfig),
+        "--permission-prompt-tool", CLAUDE_PERMISSION_TOOL_NAME,
+      ];
+    }
     if (policyProfileId && policyProfileId !== "claude-dont-ask") {
       throw agentError("capability_unsupported", "Claude permission profile is not supported", { backendId: "claude" });
     }
-    return ["--permission-mode", "dontAsk"];
+    return ["--safe-mode", "--permission-mode", "dontAsk"];
   }
 
   async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, setNativeProcessIdentity, emit }) {
@@ -272,13 +308,7 @@ export function createClaudeBackend({
       error.nativeActivity = "not_started";
       throw error;
     }
-    const args = [
-      "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--safe-mode",
-      ...(requestedSessionId ? ["--resume", requestedSessionId] : ["--session-id", freshSessionId]),
-      ...(!requestedSessionId && selectedModel ? ["--model", selectedModel] : []),
-      ...(selectedEffort ? ["--effort", selectedEffort] : []),
-      ...permissionArgs(policyProfileId),
-    ];
+    const interactive = isInteractivePermissionProfile(policyProfileId);
     const state = {
       child: null,
       exited: false,
@@ -303,6 +333,13 @@ export function createClaudeBackend({
       processing: Promise.resolve(),
       processIdentity: null,
       exitPromise: null,
+      // interactive permission(claude-on-request)専用。respondToActionはactiveRuns
+      // 経由でこのstateへ辿り着き、pendingを解決してemitする(Codexと同じ形)。
+      pendingActions: new Map(),
+      bridge: null,
+      closed: false,
+      resetNoOutput: null,
+      emit,
     };
     activeRuns.set(runId, state);
     let noOutputTimer;
@@ -312,9 +349,10 @@ export function createClaudeBackend({
     const protocolFailure = new Promise((_, reject) => { rejectProtocol = reject; });
     const resetNoOutput = () => {
       clearTimeout(noOutputTimer);
-      // ローカルtool実行中(tool.started〜tool.completed間)はCLIが無出力になるのが
-      // 正常(5分超のビルド等)。その間はno-output監視を止め、turnTimerだけを上限とする。
-      if (state.runningToolIds.size > 0) return;
+      // ローカルtool実行中(tool.started〜tool.completed間)、または承認待ち中は
+      // CLIが無出力になるのが正常(5分超のビルド・無期限の承認待ち)。その間は
+      // no-output監視を止め、turnTimerだけを上限とする。
+      if (state.runningToolIds.size > 0 || state.pendingActions.size > 0) return;
       noOutputTimer = setTimeout(() => {
         const error = agentError("timeout", "Claude produced no output before timeout", { backendId: "claude" });
         error.nativeActivity = "unknown";
@@ -323,6 +361,55 @@ export function createClaudeBackend({
       }, noOutputTimeoutMs);
       noOutputTimer.unref?.();
     };
+    state.resetNoOutput = resetNoOutput;
+
+    // bridgeのonRequest callback。stdout処理チェーンとは独立に、CLIが承認委譲した
+    // ツール呼び出しごとに1回呼ばれる(§4.5)。
+    function handlePermissionRequest({ toolName, input, toolUseId }) {
+      return new Promise((resolve) => {
+        // system/init前(emitFromBackendの順序検査に触れる)、またはrun終了処理後
+        // (staleなpending/activeActionsを作らない)のrequestは登録・emitせず即deny。
+        if (!state.initialized || state.closed) {
+          resolve({ decision: "deny" });
+          return;
+        }
+        const requestId = `claude_action_${randomUUID()}`;
+        state.pendingActions.set(requestId, { resolve, toolName });
+        resetNoOutput();
+        let inputSummary;
+        try {
+          inputSummary = JSON.stringify(input ?? {});
+        } catch {
+          inputSummary = String(input ?? "");
+        }
+        const title = `${toolName}: ${inputSummary}`.replace(/\s+/g, " ").slice(0, 300);
+        emit("action.requested", {
+          requestId,
+          kind: "permission",
+          title,
+          toolCallId: toolUseId,
+          decisions: ["allow", "deny"],
+        });
+      });
+    }
+
+    if (interactive) {
+      try {
+        state.bridge = await createClaudePermissionBridge({ onRequest: handlePermissionRequest });
+      } catch (bridgeError) {
+        activeRuns.delete(runId);
+        const error = agentError("turn_failed", `Claude permission bridge could not be created: ${bridgeError.message}`, { backendId: "claude" });
+        error.nativeActivity = "not_started";
+        throw error;
+      }
+    }
+    const args = [
+      "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+      ...(requestedSessionId ? ["--resume", requestedSessionId] : ["--session-id", freshSessionId]),
+      ...(!requestedSessionId && selectedModel ? ["--model", selectedModel] : []),
+      ...(selectedEffort ? ["--effort", selectedEffort] : []),
+      ...permissionArgs(policyProfileId, state.bridge),
+    ];
 
     const startAssistant = () => {
       if (state.currentAssistant && !state.currentAssistant.completed) return state.currentAssistant;
@@ -511,7 +598,16 @@ export function createClaudeBackend({
     try {
       const child = spawnProcess(detected.binaryPath, args, {
         cwd,
-        env: safeEnvironment(environment),
+        // MCP_TOOL_TIMEOUT/MCP_TIMEOUTはBackendが所有する値であり、運用者環境からは
+        // 継承しない(safeEnvironment自体は変更しない)。承認待ちが長時間に及んでも
+        // CLI側のMCP tool呼び出しタイムアウトに殺されないための明示設定(§4.5)。
+        env: {
+          ...safeEnvironment(environment),
+          ...(interactive ? {
+            MCP_TOOL_TIMEOUT: CLAUDE_PERMISSION_MCP_TIMEOUT_MS,
+            MCP_TIMEOUT: CLAUDE_PERMISSION_MCP_TIMEOUT_MS,
+          } : {}),
+        },
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -629,6 +725,12 @@ export function createClaudeBackend({
       if (!error.nativeActivity) error.nativeActivity = !state.child ? "not_started" : state.exited ? "stopped" : "unknown";
       throw error;
     } finally {
+      // run終了処理の開始を先に確定させる: 以後に滑り込むbridge requestはstaleな
+      // pending/activeActionsを作らず即denyになる(handlePermissionRequestのガード)。
+      state.closed = true;
+      for (const pending of state.pendingActions.values()) pending.resolve({ decision: "deny" });
+      state.pendingActions.clear();
+      if (state.bridge) await state.bridge.close();
       clearTimeout(noOutputTimer);
       clearTimeout(turnTimer);
       for (const timer of state.cancelTimers) clearTimeout(timer);
@@ -952,8 +1054,15 @@ export function createClaudeBackend({
       state.cancelRequested = true;
       scheduleCancel(state);
     },
-    async respondToAction() {
-      throw agentError("capability_unsupported", "Claude interactive permission is not enabled", { backendId: "claude" });
+    async respondToAction({ runId, requestId, decision }) {
+      const state = activeRuns.get(runId);
+      const pending = state?.pendingActions.get(requestId);
+      if (!pending) throw agentError("action_expired", "Claude permission request is no longer active", { backendId: "claude" });
+      state.pendingActions.delete(requestId);
+      pending.resolve({ decision: decision === "allow" ? "allow" : "deny" });
+      // 抑止条件(pendingActions.size > 0)が解けるため、無出力監視を再開する。
+      state.resetNoOutput();
+      state.emit("action.resolved", { requestId, outcome: "answered", decision });
     },
     async recoverSession({ lease }) {
       let identity;

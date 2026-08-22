@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { promises as fs } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -196,9 +197,15 @@ test("Claude Backend uses one-shot stream-json, resolves native session, and nor
   assert.deepEqual(sessions, [{ backendId: "claude", nativeSessionId: SESSION_ID }]);
   assert.deepEqual(processIdentities, [JSON.stringify({ pid: 12345, startedAt })]);
   assert.equal(calls[0].binary, "/test/claude");
-  assert.deepEqual(calls[0].args.slice(0, 7), [
-    "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--safe-mode", "--session-id",
+  assert.deepEqual(calls[0].args.slice(0, 6), [
+    "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--session-id",
   ]);
+  // --safe-modeはprofile固有の断片(末尾)へ移った(§4.2)。同値性は順序不問の
+  // フラグ集合一致で確認する(--safe-modeの位置が動いても回帰ではない)。
+  assert.deepEqual(new Set(calls[0].args), new Set([
+    "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "--session-id", SESSION_ID, "--model", "haiku", "--safe-mode", "--permission-mode", "dontAsk",
+  ]));
   assert.equal(calls[0].args.includes("say hello"), false);
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf("--model"), calls[0].args.indexOf("--model") + 2), [
     "--model", "haiku",
@@ -737,4 +744,344 @@ test("Claude session list pages with a keyset cursor and rejects an invalid curs
     backend.listSessions({ cwd, limit: 2, cursor: "not-a-cursor" }),
     (error) => error.code === "turn_rejected",
   );
+});
+
+// --- interactive permission (claude-on-request) ---
+
+test("Claude Backend defaults to the dontAsk flag set when no policy profile is given", async () => {
+  const { backend, calls } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
+  ]);
+  await backend.startTurn({
+    runId: "run-default-profile",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  assert.equal(calls[0].args.includes("--safe-mode"), true);
+  const modeIndex = calls[0].args.indexOf("--permission-mode");
+  assert.deepEqual(calls[0].args.slice(modeIndex, modeIndex + 2), ["--permission-mode", "dontAsk"]);
+  assert.equal(calls[0].args.includes("--setting-sources"), false);
+  assert.equal(calls[0].args.includes("--permission-prompt-tool"), false);
+});
+
+test("Claude Backend claude-on-request builds interactive argv with an inline MCP config and no --safe-mode", async () => {
+  const { backend, calls } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
+  ]);
+  const result = await backend.startTurn({
+    runId: "run-interactive-argv",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    policyProfileId: "claude-on-request",
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  assert.equal(result.outcome, "completed");
+  const args = calls[0].args;
+  assert.equal(args.includes("--safe-mode"), false);
+  assert.equal(args.includes("--permission-mode"), false);
+  const settingSourcesIndex = args.indexOf("--setting-sources");
+  assert.ok(settingSourcesIndex >= 0);
+  assert.equal(args[settingSourcesIndex + 1], "");
+  assert.equal(args.includes("--strict-mcp-config"), true);
+  const promptToolIndex = args.indexOf("--permission-prompt-tool");
+  assert.equal(args[promptToolIndex + 1], "mcp__bitty_permission__approval_prompt");
+  const mcpConfig = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
+  const server = mcpConfig.mcpServers.bitty_permission;
+  assert.equal(server.command, process.execPath);
+  assert.equal(server.args.length, 1);
+  assert.ok(server.args[0].endsWith(path.join("tools", "claude-permission-prompt-mcp.mjs")));
+  assert.ok(server.env.BITTY_PERMISSION_SOCKET);
+  assert.ok(server.env.BITTY_PERMISSION_TOKEN);
+});
+
+test("Claude Backend sets MCP timeout env vars only for the interactive profile", async () => {
+  const interactiveRun = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
+  ]);
+  await interactiveRun.backend.startTurn({
+    runId: "run-mcp-timeout",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    policyProfileId: "claude-on-request",
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  assert.equal(interactiveRun.calls[0].options.env.MCP_TOOL_TIMEOUT, "86400000");
+  assert.equal(interactiveRun.calls[0].options.env.MCP_TIMEOUT, "86400000");
+
+  const dontAskRun = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
+  ]);
+  await dontAskRun.backend.startTurn({
+    runId: "run-no-mcp-timeout",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  assert.equal("MCP_TOOL_TIMEOUT" in dontAskRun.calls[0].options.env, false);
+  assert.equal("MCP_TIMEOUT" in dontAskRun.calls[0].options.env, false);
+});
+
+// interactive経路のテストは、CLIが子processとしてspawnするMCP shimの代わりに、
+// テストが直接permission bridgeのUnix socketへ話しかける(設計書§5)。
+function startInteractivePermissionRun(runId, overrides = {}) {
+  const calls = [];
+  const child = fakeChild([], { exitAfterInput: false });
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    runFile: async (file, args) => ({
+      stdout: file === "ps" ? "Thu Aug 21 12:34:56 2026\n" : args?.[0] === "--version" ? "2.1.214" : "",
+    }),
+    fileSystem: { ...fs, realpath: async (value) => value },
+    spawnProcess: (binary, args, options) => { calls.push({ binary, args, options }); return child; },
+    sessionStore: { getBinding: async () => null },
+    interruptGraceMs: 10,
+    generateSessionId: () => SESSION_ID,
+    ...overrides.backendOptions,
+  });
+  const events = [];
+  const waiters = [];
+  function emit(type, payload) {
+    const event = { type, payload };
+    events.push(event);
+    for (let index = waiters.length - 1; index >= 0; index -= 1) {
+      if (waiters[index].predicate(event)) {
+        waiters[index].resolve(event);
+        waiters.splice(index, 1);
+      }
+    }
+  }
+  function waitFor(predicate) {
+    const existing = events.find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve) => waiters.push({ predicate, resolve }));
+  }
+  const turn = backend.startTurn({
+    runId,
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "write it" }] },
+    policyProfileId: "claude-on-request",
+    resolveSession: async () => {},
+    setNativeProcessIdentity: async () => {},
+    emit,
+    ...overrides.startOptions,
+  });
+  return { backend, child, calls, events, waitFor, turn, runId };
+}
+
+async function waitForSpawn(calls) {
+  while (calls.length === 0) await new Promise((resolve) => setImmediate(resolve));
+  return calls[0];
+}
+
+function permissionBridgeEnv(args) {
+  const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
+  return config.mcpServers.bitty_permission.env;
+}
+
+// shimの代わりにテストがbridgeへ直接話しかけるためのnewline-JSON往復ヘルパー。
+function sendPermissionRequest(socketPath, payload) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let buffer = "";
+    socket.on("connect", () => socket.end(`${JSON.stringify(payload)}\n`));
+    socket.on("data", (chunk) => { buffer += chunk.toString("utf8"); });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      try {
+        resolve(JSON.parse(buffer.split("\n")[0] || ""));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+test("Claude Backend interactive permission: a bridge request before system/init is denied and not registered", async () => {
+  const run = startInteractivePermissionRun("run-pre-init");
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  const result = await sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "pre-init",
+  });
+  assert.equal(result.decision, "deny");
+  assert.equal(run.events.some((event) => event.type === "action.requested"), false);
+
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  await assert.rejects(run.turn);
+});
+
+test("Claude Backend interactive permission: allow unblocks the tool and emits action.resolved(answered)", async () => {
+  const run = startInteractivePermissionRun("run-allow");
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+
+  // stdout無しでpermission requestだけが先行するケース(tool.startedは送っていない)
+  const socketReply = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: { file_path: "a.txt" }, toolUseId: "tool-1",
+  });
+  const requested = await run.waitFor((event) => event.type === "action.requested");
+  assert.equal(requested.payload.kind, "permission");
+  assert.ok(requested.payload.title.startsWith("Write:"));
+  assert.ok(requested.payload.title.includes("a.txt"));
+  assert.equal(requested.payload.toolCallId, "tool-1");
+  assert.deepEqual(requested.payload.decisions, ["allow", "deny"]);
+
+  await run.backend.respondToAction({ runId: run.runId, requestId: requested.payload.requestId, decision: "allow" });
+  assert.deepEqual(await socketReply, { decision: "allow" });
+
+  const resolved = await run.waitFor((event) => event.type === "action.resolved");
+  assert.deepEqual(resolved.payload, { requestId: requested.payload.requestId, outcome: "answered", decision: "allow" });
+
+  await assert.rejects(
+    run.backend.respondToAction({ runId: run.runId, requestId: requested.payload.requestId, decision: "allow" }),
+    (error) => error.code === "action_expired",
+  );
+
+  run.child.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID })}\n`);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.deepEqual(await run.turn, { outcome: "completed", nativeTerminal: true });
+
+  // run終了時にbridgeがcloseされ、socketが消えている
+  await assert.rejects(fs.access(bridgeEnv.BITTY_PERMISSION_SOCKET));
+});
+
+test("Claude Backend interactive permission: deny keeps the turn running and reports the decision", async () => {
+  const run = startInteractivePermissionRun("run-deny");
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+
+  const socketReply = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Bash", input: { cmd: "rm -rf" }, toolUseId: "tool-2",
+  });
+  const requested = await run.waitFor((event) => event.type === "action.requested");
+  await run.backend.respondToAction({ runId: run.runId, requestId: requested.payload.requestId, decision: "deny" });
+  assert.deepEqual(await socketReply, { decision: "deny" });
+  const resolved = await run.waitFor((event) => event.type === "action.resolved");
+  assert.equal(resolved.payload.decision, "deny");
+
+  run.child.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID })}\n`);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.deepEqual(await run.turn, { outcome: "completed", nativeTerminal: true });
+});
+
+test("Claude Backend interactive permission: responding to an unknown requestId fails with action_expired", async () => {
+  const run = startInteractivePermissionRun("run-unknown-request");
+  await waitForSpawn(run.calls);
+  await assert.rejects(
+    run.backend.respondToAction({ runId: run.runId, requestId: "does-not-exist", decision: "allow" }),
+    (error) => error.code === "action_expired",
+  );
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  await assert.rejects(run.turn);
+});
+
+test("Claude Backend interactive permission: multiple pending requests resolve independently even out of order", async () => {
+  const run = startInteractivePermissionRun("run-multi-pending");
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+
+  const replyA = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: { file: "a" }, toolUseId: "tool-a",
+  });
+  const requestedA = await run.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "tool-a");
+  const replyB = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Bash", input: { cmd: "ls" }, toolUseId: "tool-b",
+  });
+  const requestedB = await run.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "tool-b");
+  assert.notEqual(requestedA.payload.requestId, requestedB.payload.requestId);
+
+  // 立てた順(A→B)と逆順(B→A)で回答しても、それぞれの接続へ正しく対応付く
+  await run.backend.respondToAction({ runId: run.runId, requestId: requestedB.payload.requestId, decision: "allow" });
+  assert.deepEqual(await replyB, { decision: "allow" });
+  await run.backend.respondToAction({ runId: run.runId, requestId: requestedA.payload.requestId, decision: "deny" });
+  assert.deepEqual(await replyA, { decision: "deny" });
+
+  run.child.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID })}\n`);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.deepEqual(await run.turn, { outcome: "completed", nativeTerminal: true });
+});
+
+test("Claude Backend interactive permission: no-output timeout is suppressed while pending and resumes after the answer", async () => {
+  const run = startInteractivePermissionRun("run-no-output-pending", {
+    backendOptions: { noOutputTimeoutMs: 100 },
+  });
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+
+  let settled = false;
+  run.turn.then(() => { settled = true; }, () => { settled = true; });
+
+  // stdout無しでpermission requestだけが先行するケース
+  const socketReply = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "tool-1",
+  });
+  const requested = await run.waitFor((event) => event.type === "action.requested");
+  // no-output timeoutの2倍以上、無出力のまま待っても承認待ち中は落ちない
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(settled, false);
+
+  await run.backend.respondToAction({ runId: run.runId, requestId: requested.payload.requestId, decision: "allow" });
+  await socketReply;
+
+  // 回答後は無出力監視が再開される: そのまま無出力だとtimeoutで落ちる
+  await assert.rejects(run.turn, (error) => error.code === "timeout");
+});
+
+test("Claude Backend interactive permission: a bridge request after run teardown is denied and the socket is gone", async () => {
+  const run = startInteractivePermissionRun("run-post-teardown");
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+  run.child.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID })}\n`);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  await run.turn;
+
+  await assert.rejects(sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "late",
+  }));
+  assert.equal(run.events.some((event) => event.type === "action.requested" && event.payload.toolCallId === "late"), false);
+});
+
+test("Claude Backend interactive permission: interrupting the run denies pending requests and closes the bridge", async () => {
+  const run = startInteractivePermissionRun("run-interrupt-pending");
+  const spawned = await waitForSpawn(run.calls);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+
+  const socketReply = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "tool-1",
+  });
+  await run.waitFor((event) => event.type === "action.requested");
+
+  await run.backend.interrupt({ runId: run.runId });
+  const result = await run.turn;
+  assert.equal(result.outcome, "interrupted");
+  assert.equal((await socketReply).decision, "deny");
+  await assert.rejects(fs.access(bridgeEnv.BITTY_PERMISSION_SOCKET));
 });
