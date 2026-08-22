@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+
+const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "runner-ws-threadless-"));
 
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_MOCK = "1";
 process.env.RUNNER_TOKEN = process.env.RUNNER_TOKEN || "test-token";
 process.env.RUNNER_LOG_REQUESTS = "0";
+process.env.ACP_SESSION_STORE_PATH = path.join(tempDir, "agent_sessions.json");
 // Point the upstream at a closed local port so relay creation never reaches a live server.
 process.env.CODEX_WS_PROXY_UPSTREAM_URL = "ws://127.0.0.1:59997";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+
+test.after(async () => {
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
 
 function createRunnerWsConnectionForTest() {
   const sent = [];
@@ -51,6 +61,14 @@ function trackNewRelays() {
 
 function pendingMethods(relay) {
   return relay.pendingToUpstream.map((item) => JSON.parse(String(item.data)).method || "");
+}
+
+async function waitFor(check, timeoutMs = 2000) {
+  const startedAt = Date.now();
+  while (!check()) {
+    if (Date.now() - startedAt >= timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 function cleanupRelays(relays) {
@@ -300,7 +318,7 @@ test("a solo initialize error re-arms forwarding without any parked initializes"
   cleanupRelays(created);
 });
 
-test("turn-owning RPC gets a dedicated relay with the operation's handshake replayed", () => {
+test("turn-owning RPC gets a dedicated relay with the operation's handshake replayed", async () => {
   const newRelays = trackNewRelays();
   const ws = createRunnerWsConnectionForTest();
   const listOp = { operationId: "op-list-3", sessionId: "session-list-3" };
@@ -332,6 +350,7 @@ test("turn-owning RPC gets a dedicated relay with the operation's handshake repl
     threadId: "thread-new-1",
     payload: { jsonrpc: "2.0", id: 503, method: "turn/start", params: { threadId: "thread-new-1", input: [] } },
   });
+  await waitFor(() => pendingMethods(dedicated).at(-1) === "turn/start");
   assert.equal(newRelays().length, 2, "turn/start must not create another relay");
   assert.equal(pendingMethods(dedicated).at(-1), "turn/start");
   assert.equal(pendingMethods(shared).includes("thread/start"), false);

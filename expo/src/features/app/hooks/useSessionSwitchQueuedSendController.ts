@@ -57,12 +57,7 @@ export function useSessionSwitchQueuedSendController({
     if (restoreRequestSeq <= 0) return false;
     const writePanelId = String(options?.panelId || "").trim();
     const sessionSnapshot = options?.sessionSnapshot
-      ? {
-        sessionId: String(options.sessionSnapshot.sessionId || "").trim() || undefined,
-        threadId: String(options.sessionSnapshot.threadId || "").trim() || undefined,
-        directory: String(options.sessionSnapshot.directory || "").trim() || undefined,
-        source: String(options.sessionSnapshot.source || "").trim() || undefined,
-      }
+      ? { ...options.sessionSnapshot }
       : undefined;
     sessionSwitchQueuedSendRef.current = {
       transcript: normalized,

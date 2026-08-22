@@ -40,6 +40,7 @@ type PanelConversationWriteOptions = {
   isResponding?: boolean;
   selectedThreadStatusType?: string;
   sessionId?: string;
+  sessionMaterialized?: boolean;
   adoptFromSessionId?: string;
   clearRespondingRequestStartedAtMs?: number | null;
 };
@@ -64,6 +65,14 @@ type UseCodexReplyRequestOptions<
   codexWsToken: string;
   runnerWebSocketManager?: RunnerWebSocketManager;
   llmBackend: string;
+  modelOptions?: readonly {
+    modelId: string;
+    backendId: string;
+    supportsReasoningEffort?: boolean;
+    effortOptions?: readonly ReasoningEffort[];
+    changeWithinSession?: boolean;
+    supportsCompactQueue?: boolean;
+  }[];
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
@@ -193,7 +202,8 @@ type ReplyRequestOptions<TSttMeta> = {
 export type SendReplyRequestRejectReason =
   | "empty_transcript"
   | "active_request"
-  | "missing_codex_ws_url";
+  | "missing_codex_ws_url"
+  | "model_backend_mismatch";
 
 // Contract: sendReplyRequest resolves void when the request was accepted
 // (slash-handled, queued, or dispatched as a turn) — the composer is cleared
@@ -412,10 +422,27 @@ export function useCodexReplyRequest<
     let requestThreadKey = requestThreadId || requestUiSessionId;
     const requestSessionAdoptionSourceId = requestThreadKey || requestUiSessionId;
     const requestModelRef = normalizeModelRef(requestSnapshot?.modelRef || current.modelRef);
-    const requestReasoningEffort = normalizeReasoningEffort(
-      requestSnapshot?.reasoningEffort,
-      current.reasoningEffort
+    const requestModelOption = current.modelOptions?.find(
+      (option) => option.modelId === requestModelRef && option.backendId === requestBackendId
     );
+    const modelBackendId = String(
+      requestModelOption?.backendId || current.modelOptions?.find((option) => option.modelId === requestModelRef)?.backendId || requestBackendId
+    ).trim() || requestBackendId;
+    const normalizedReasoningEffort = requestModelOption?.supportsReasoningEffort === false
+      ? ""
+      : normalizeReasoningEffort(requestSnapshot?.reasoningEffort, current.reasoningEffort);
+    // Backendがadvertiseしたeffort catalog外の値は送らず、Backend既定に任せる
+    // (例: Codexで保存したultraをClaude modelへ持ち込んだ場合)。
+    const requestModelEffortOptions = requestModelOption?.effortOptions?.length
+      ? requestModelOption.effortOptions
+      : null;
+    const requestReasoningEffort = requestModelEffortOptions && normalizedReasoningEffort &&
+      !requestModelEffortOptions.includes(normalizedReasoningEffort)
+      ? ""
+      : normalizedReasoningEffort;
+    const requestTurnModel = requestThreadId && requestModelOption?.changeWithinSession === false
+      ? ""
+      : requestModelRef;
     const compactRunningLocally = Boolean(
       requestThreadKey && current.isCodexCompactRunning?.(requestThreadKey)
     );
@@ -463,6 +490,15 @@ export function useCodexReplyRequest<
         transcriptChars: effectiveTranscript.length,
       }, { throttleMs: 0 });
       return;
+    }
+    if (modelBackendId !== requestBackendId) {
+      current.logSessionDiag("reply_http_send_skipped", {
+        reason: "model_backend_mismatch",
+        requestBackendId,
+        modelBackendId,
+        requestModelRef,
+      }, { throttleMs: 0 });
+      return { rejected: "model_backend_mismatch" };
     }
     // Send-gate liveness: an in-flight turn that stopped producing events (and is not
     // waiting on an approval) must not block this thread's sends forever. Interrupt it,
@@ -582,7 +618,10 @@ export function useCodexReplyRequest<
       current.setTranscript("");
     }
     let replyRequestStartedAt = Date.now();
-    if (requestThreadKey) {
+    // compact queue preflightはBackendのoperations.compact capabilityに従う。
+    // 非対応Backend(session)へCodex raw queue opを送らない。
+    const supportsCompactQueue = requestModelOption?.supportsCompactQueue !== false;
+    if (requestThreadKey && supportsCompactQueue) {
       try {
         const queued = await enqueueRunnerCodexTurn({
           wsUrl: targetCodexWsUrl,
@@ -863,6 +902,7 @@ export function useCodexReplyRequest<
       contextUsedPct: options?.contextUsedPct,
       isResponding: options?.isResponding ?? true,
       selectedThreadStatusType: options?.selectedThreadStatusType,
+      sessionMaterialized: options?.sessionMaterialized,
       adoptFromSessionId: options?.adoptFromSessionId,
       clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
     });
@@ -1160,8 +1200,10 @@ export function useCodexReplyRequest<
         threadId: requestThreadId || undefined,
         strictThreadResume: !!requestThreadId,
         serviceName: "expo-ios-client",
-        model: requestModelRef || undefined,
-        effort: requestModelRef ? requestReasoningEffort : undefined,
+        model: requestTurnModel || undefined,
+        // effort変更可否はmodel固定(changeWithinSession)とは別のcapability。
+        // Backendがeffort対応ならresumeでもturn単位で送る。
+        effort: requestReasoningEffort || undefined,
         approvalPolicy: current.codexApprovalPolicy,
         onCalendarToolCall: current.onCalendarToolCall,
         onCalendarRequestCancel: current.onCalendarRequestCancel,
@@ -1191,6 +1233,7 @@ export function useCodexReplyRequest<
               : getConversationMessagesForPanel(requestPanelId),
             buildPanelConversationWriteOptions({
               sessionId: resolvedThreadId,
+              sessionMaterialized: true,
               adoptFromSessionId: requestSessionAdoptionSourceId,
             })
           );
@@ -1575,6 +1618,7 @@ export function useCodexReplyRequest<
       const lastLiveAgentMessage = getLastLiveAgentMessage();
       const finalReplyForSpeech = current.stripYouTubeTags(lastLiveAgentMessage?.content || "");
       void current.onLlmMessageCompleted?.({
+        backendId: requestBackendId,
         sessionId: finalReplySessionId,
         threadId: String(result.threadId || finalReplySessionId).trim(),
         directory: requestDirectory,

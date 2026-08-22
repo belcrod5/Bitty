@@ -36,7 +36,7 @@ function baseArgs(overrides: Partial<Parameters<typeof useSessionStartupRecovery
     selectedLlmSessionId: "session-1",
     getLlmConversationSessionId: () => "",
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
-    fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue(""),
+    fetchLatestSessionForDirectory: jest.fn().mockResolvedValue(null),
     setLlmSessionRestoreError: jest.fn(),
     ...overrides,
   };
@@ -106,12 +106,12 @@ describe("useSessionStartupRecoveryController startup restore", () => {
   });
 
   it("re-runs after a latest-session fetch failure once the connection is ready again", async () => {
-    const fetchLatestSessionIdForDirectory = jest.fn()
+    const fetchLatestSessionForDirectory = jest.fn()
       .mockRejectedValueOnce(new Error("runner_ws_request_timeout"))
-      .mockResolvedValue("session-2");
+      .mockResolvedValue({ sessionId: "session-2", backendId: "claude" });
     const args = baseArgs({
       selectedLlmSessionId: "",
-      fetchLatestSessionIdForDirectory,
+      fetchLatestSessionForDirectory,
     });
     const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
 
@@ -131,7 +131,9 @@ describe("useSessionStartupRecoveryController startup restore", () => {
       manager.setConnectionState("ready");
     });
 
+    // all-backends一覧のidentity(backendId)を明示して復元する。
     expect(args.selectSpecificLlmSession).toHaveBeenCalledWith("session-2", {
+      backendId: "claude",
       source: "all",
       directory: "/workspace",
     });

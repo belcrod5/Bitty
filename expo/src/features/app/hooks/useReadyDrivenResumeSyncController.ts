@@ -70,7 +70,9 @@ type UseReadyDrivenResumeSyncControllerArgs = {
     directory: string;
     diagnosticCycleId?: string;
   }) => Promise<"applied" | "superseded" | "failed">>;
-  fetchLatestSessionIdForDirectory: (directoryRaw?: unknown) => Promise<string>;
+  fetchLatestSessionForDirectory: (
+    directoryRaw?: unknown
+  ) => Promise<{ sessionId: string; backendId: string } | null>;
   markSessionReadAsync: (params: {
     sessionId: string;
     directory: string;
@@ -120,7 +122,7 @@ export function useReadyDrivenResumeSyncController({
   hasActiveClientTurnForSession,
   selectSpecificLlmSession,
   hydratePanelFromSessionHistoryRef,
-  fetchLatestSessionIdForDirectory,
+  fetchLatestSessionForDirectory,
   markSessionReadAsync,
   logSessionDiag,
 }: UseReadyDrivenResumeSyncControllerArgs) {
@@ -145,6 +147,7 @@ export function useReadyDrivenResumeSyncController({
       sessionId: parseOptionalSessionId(entry?.snapshot?.selectedSessionId || entry?.sessionId),
       directory: String(entry?.snapshot?.selectedDirectoryPath || "").trim(),
       isResponding: entry?.snapshot?.isResponding === true,
+      sessionMaterialized: entry?.snapshot?.sessionMaterialized,
     }))
   ), [panelRuntimeEntriesByIdRef]);
 
@@ -409,11 +412,13 @@ export function useReadyDrivenResumeSyncController({
       !llmSessionRestoreLoadingRef.current
     ) {
       work.push((async () => {
-        const latestSessionId = await fetchLatestSessionIdForDirectory(directory);
-        if (!latestSessionId) return;
+        const latest = await fetchLatestSessionForDirectory(directory);
+        if (!latest) return;
+        const latestSessionId = latest.sessionId;
         if (!resyncRateLimiter.canResync(latestSessionId)) return;
         resyncRateLimiter.recordResync(latestSessionId);
         const restored = await selectSpecificLlmSession(latestSessionId, {
+          backendId: latest.backendId,
           source: "all",
           directory,
         });
@@ -421,6 +426,7 @@ export function useReadyDrivenResumeSyncController({
           reason,
           generation,
           latestSessionId,
+          backendId: latest.backendId,
           restored,
         }, { throttleMs: 0, throttleKey: `resume_sync_latest_session_done:${latestSessionId}` });
       })().catch((error) => {
@@ -436,7 +442,7 @@ export function useReadyDrivenResumeSyncController({
     codexRelayObserverRef,
     collectPanelEntries,
     consumeRespondingAtBackground,
-    fetchLatestSessionIdForDirectory,
+    fetchLatestSessionForDirectory,
     hasActiveClientTurnForSession,
     llmConversationSessionIdRef,
     llmSessionRestoreInFlightRef,
@@ -602,7 +608,7 @@ export function useReadyDrivenResumeSyncController({
     const isSelected = sessionId === selectedSessionId;
     // 同一セッションを表示する全可視パネルへ反映する(#40経路と同じ扱い)。
     const panelEntries = collectPanelEntries().filter((entry) => (
-      entry.sessionId === sessionId && Boolean(entry.directory)
+      entry.sessionId === sessionId && Boolean(entry.directory) && entry.sessionMaterialized !== false
     ));
     if (isSelected && (llmSessionRestoreInFlightRef.current || llmSessionRestoreLoadingRef.current)) {
       return scheduleRetry(RESUME_SYNC_RESTORE_BUSY_RETRY_MS, "restore_busy");

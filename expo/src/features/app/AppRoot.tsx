@@ -30,7 +30,6 @@ import type {
 import { AppOverlays } from "./components/AppOverlays";
 import {
   LlmCompletionNotifications,
-  type LlmCompletionNotification,
 } from "./components/LlmCompletionNotifications";
 import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
@@ -94,6 +93,8 @@ import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQu
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
 import { useWaitingApprovalResumeController } from "./hooks/useWaitingApprovalResumeController";
 import { useWaitingApprovalResumeActionController } from "./hooks/useWaitingApprovalResumeActionController";
+import { useAgentModelCatalog } from "./hooks/useAgentModelCatalog";
+import { useLlmCompletionNotifications } from "./hooks/useLlmCompletionNotifications";
 import { AUTO_BARGE_BASE_START_THRESHOLD_DB } from "./utils/autoBargeDetector";
 import { useAppSettingsPersistenceController } from "./hooks/useAppSettingsPersistenceController";
 import { useRunnerRouteSelection } from "./hooks/useRunnerRouteSelection";
@@ -339,9 +340,15 @@ import { buildApprovalCommandLabel } from "./utils/tooling";
 import { SETTINGS_FILE_NAME } from "./utils/persistedSettingsFile";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
+import {
+  DEFAULT_CODEX_APPROVAL_POLICY,
+  DEFAULT_LLM_BACKEND,
+  DEFAULT_MODEL_REF,
+  DEFAULT_REASONING_EFFORT,
+  THINK_OPTIONS,
+} from "./modelOptions";
 
 const DEFAULT_RUNNER_URL = "http://127.0.0.1:8788";
-const DEFAULT_LLM_BACKEND: LlmBackend = "codex";
 const DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/runner-ws";
 const NEAR_UNLIMITED_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24h
 const EXPO_EXECUTION_ENVIRONMENT = String(
@@ -403,21 +410,6 @@ const UI_SFX_MIN_INTERVAL_MS: Partial<Record<UiSfxKey, number>> = {
 };
 const PIXEL_ROBOT_IMAGE = require("../../../assets/images/robot-indicator.gif");
 const AUDIO_LAB_LOOP_ASSET = require("../../../assets/sfx/audio-lab-loop.wav");
-const MODEL_OPTIONS = [
-  { label: "ChatGPT 5.6 Sol", value: "gpt-5.6-sol" },
-  { label: "ChatGPT 5.6 Terra", value: "gpt-5.6-terra" },
-  { label: "ChatGPT 5.6 Luna", value: "gpt-5.6-luna" },
-  { label: "ChatGPT 5.5", value: "gpt-5.5" },
-  { label: "ChatGPT 5.4 mini", value: "gpt-5.4-mini" },
-  { label: "ChatGPT 5.4", value: "gpt-5.4" },
-  { label: "gpt-5.3-codex", value: "gpt-5.3-codex" },
-  { label: "Codex 5.3 Spark", value: "gpt-5.3-codex-spark" },
-  { label: "GPT-5.2", value: "gpt-5.2" },
-] as const;
-const DEFAULT_MODEL_REF = "gpt-5.6-sol";
-const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
-const DEFAULT_CODEX_APPROVAL_POLICY: CodexApprovalPolicy = "on-request";
-const THINK_OPTIONS: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const AUTO_STOP_SILENCE_MS = 850;
 const AUTO_MIN_SPEECH_MS = 700;
 const AUTO_MAX_SPEECH_MS = 20000;
@@ -721,7 +713,6 @@ export default function App() {
   const [cloudflareRunnerWsUrl, setCloudflareRunnerWsUrl] = useState("");
   const [localRunnerUrl, setLocalRunnerUrl] = useState("");
   const [localRunnerWsUrl, setLocalRunnerWsUrl] = useState("");
-  const [llmCompletionNotifications, setLlmCompletionNotifications] = useState<LlmCompletionNotification[]>([]);
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -753,9 +744,11 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSessionPrefetchRequestedForOpenRef = useRef(false);
   const [modelRef, setModelRef] = useState<string>(DEFAULT_MODEL_REF);
+  const [modelSelectOpen, setModelSelectOpen] = useState(false);
+  const modelOptions = useAgentModelCatalog({ runnerWebSocketManager,
+    backendId: llmBackend, modelId: modelRef, pickerOpen: modelSelectOpen });
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(DEFAULT_REASONING_EFFORT);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>(DEFAULT_CODEX_APPROVAL_POLICY);
-  const [modelSelectOpen, setModelSelectOpen] = useState(false);
   const [directorySelectOpen, setDirectorySelectOpen] = useState(false);
   const [thinkSelectOpen, setThinkSelectOpen] = useState(false);
   const [slashCommandSelectOpen, setSlashCommandSelectOpen] = useState(false);
@@ -769,6 +762,7 @@ export default function App() {
   );
   const [directorySessionsById, setDirectorySessionsById] = useState<Record<string, DirectorySessionTreeState>>({});
   const [selectedLlmSessionId, setSelectedLlmSessionId] = useState("");
+  const [selectedLlmSessionMaterialized, setSelectedLlmSessionMaterialized] = useState(false);
   const [llmSessionRestoreLoading, setLlmSessionRestoreLoading] = useState(false);
   const [llmSessionRestoreTargetId, setLlmSessionRestoreTargetId] = useState("");
   const [llmSessionRestoreError, setLlmSessionRestoreError] = useState("");
@@ -922,7 +916,7 @@ export default function App() {
     directoryExplorerError,
     fetchRunnerSessionContextUsedPct,
     fetchRunnerSessionMessages,
-    fetchLatestSessionIdForDirectory,
+    fetchLatestSessionForDirectory,
     fetchSessionHistory,
     fetchSessionChildrenHistory,
     markRunnerDirectoryRead,
@@ -939,7 +933,6 @@ export default function App() {
     defaultLlmDirectory: DEFAULT_LLM_DIRECTORY,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     runnerWebSocketManager,
-    llmBackend,
     rawFallbackBackendId: "codex",
     onSessionDiagLog: handleSessionDiagLog,
   });
@@ -1235,6 +1228,11 @@ export default function App() {
   const waitingApprovalResumeAttachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const waitingApprovalResumeCooldownUntilMsRef = useRef(0);
   const codexHandshakeProbeSocketRef = useRef<WebSocket | null>(null);
+  // ドロワーキャッシュからのセッションidentity解決(probe等、depsに載せたくない
+  // コールサイト用)。実体はresolveSessionHistoryContext定義後にrenderで代入する。
+  const resolveSessionHistoryContextRef = useRef<
+    (sessionId: unknown, backendId?: unknown) => { backendId: string } | null
+  >(() => null);
   const streamAudioQueueRef = useRef<StreamAudioQueueItem[]>([]);
   const clearPreloadedStreamAudioRef = useRef<() => void>(() => {});
   const streamAudioQueueGenerationRef = useRef(0);
@@ -1315,8 +1313,15 @@ export default function App() {
     selectedThreadStatusProbeSeqRef.current = probeSeq;
     let cancelled = false;
     const runProbe = () => {
+      // probeもセッションidentity({backendId, sessionId})で照会する。
+      // backendId未解決のままCodex固定で照会すると非Codexセッションが
+      // 常に「not found」になり、状態表示とresume判定が壊れる。
+      const probeBackendId = String(
+        resolveSessionHistoryContextRef.current(sessionId)?.backendId || llmBackend || "codex"
+      ).trim() || "codex";
       logSessionDiag("thread_status_probe_start", {
         sessionId,
+        backendId: probeBackendId,
         wsUrl: codexWsUrl.trim(),
       }, { throttleMs: 0 });
       void readCodexAppServerThread({
@@ -1325,6 +1330,8 @@ export default function App() {
         threadId: sessionId,
         timeoutMs: 25_000,
         runnerWebSocketManager,
+        backendId: probeBackendId,
+        rawFallbackBackendId: "codex",
       })
         .then((restored) => {
           if (cancelled || selectedThreadStatusProbeSeqRef.current !== probeSeq) return;
@@ -1354,6 +1361,7 @@ export default function App() {
   }, [
     effectiveCodexWsToken,
     codexWsUrl,
+    llmBackend,
     runnerWebSocketManager,
     selectedLlmSessionId,
     settingsLoaded,
@@ -2226,6 +2234,7 @@ export default function App() {
       forceStateSync: true,
       directory,
     });
+    setSelectedLlmSessionMaterialized(false);
     setSessionMarkerColorForSession(nextSessionId, "gray");
     setLlmSessionRestoreError("");
     setReplyDebug("new_session");
@@ -2286,7 +2295,8 @@ export default function App() {
     manualRecording: !!manualRecording,
     directNativeSttInterimText,
     composerInputFocused,
-    modelOptions: MODEL_OPTIONS,
+    llmBackend,
+    modelOptions,
     modelRef,
     reasoningEffort,
     normalizedLlmDirectoryForRequest,
@@ -2714,6 +2724,7 @@ export default function App() {
       },
     });
     rememberKnownCodexThreadId(next);
+    setSelectedLlmSessionMaterialized(true);
     return true;
   }
 
@@ -3068,6 +3079,15 @@ export default function App() {
   async function selectSpecificLlmSession(nextSessionIdRaw: unknown, opts?: SelectSpecificLlmSessionOptions) {
     const nextSessionId = parseOptionalSessionId(nextSessionIdRaw);
     if (!nextSessionId) return false;
+    // セッションのidentityは{backendId, sessionId}。呼び出し元がbackendIdを持たない
+    // 経路(起動復元・resume sync・リロード)は、ドロワーのキャッシュ済みentryから
+    // identityを解決する。グローバルllmBackendは最後のフォールバック。
+    const backendId = String(
+      opts?.backendId ||
+      resolveSessionHistoryContext(nextSessionId)?.backendId ||
+      llmBackend ||
+      "codex"
+    ).trim() || "codex";
     const {
       source,
       directory,
@@ -3127,7 +3147,8 @@ export default function App() {
       });
       if (!isLatestRestoreRequest()) return false;
       markSessionRestoreThreadReadStarted(perf);
-      const restored = await fetchRunnerSessionMessagesCached(nextSessionId, directory);
+      const restored = await fetchRunnerSessionMessagesCached(nextSessionId, directory, { backendId });
+      const restoredDirectory = parseLlmDirectory(restored.cwd || directory);
       logSessionRestoreThreadReadDone({
         logSessionDiag,
         perf,
@@ -3137,6 +3158,7 @@ export default function App() {
       if (!isLatestRestoreRequest()) return false;
       registerSessionHistoryPage(restored.threadId || nextSessionId, restored);
       const {
+        nextBackendId,
         restoredMessages,
         nextConversation,
         nextHistory,
@@ -3147,9 +3169,9 @@ export default function App() {
         thinkChanged,
         sessionSwitchToastText,
       } = buildRestoredSessionState({
-        restored,
+        restored: { ...restored, backendId: restored.backendId || backendId },
         buildConversationMessage,
-        modelOptions: MODEL_OPTIONS,
+        modelOptions,
         modelRef,
         reasoningEffort,
         prevEffectiveSessionId,
@@ -3184,6 +3206,9 @@ export default function App() {
       if (!isLatestRestoreRequest()) return false;
       if (modelChanged) {
         setModelRef(nextModelRef);
+      }
+      if (nextBackendId !== llmBackend) {
+        setLlmBackend(nextBackendId);
       }
       if (thinkChanged) {
         setReasoningEffort(nextReasoningEffort);
@@ -3220,7 +3245,7 @@ export default function App() {
         restoredMessages,
         nextConversation: nextConversationForRuntime,
         nextSessionId,
-        directory,
+        directory: restoredDirectory,
         effectiveContextUsedPct,
         restoreReplyRequestForThread,
         setReply,
@@ -3232,7 +3257,7 @@ export default function App() {
         restored,
         restoredMessages,
         nextSessionId,
-        directory,
+        directory: restoredDirectory,
         effectiveContextUsedPct,
         restoreReplyRequestForThread,
         setReply,
@@ -3245,17 +3270,18 @@ export default function App() {
         isCurrent: isLatestRestoreRequest,
       });
       adoptRestoredSessionDirectory({
-        directory,
+        directory: restoredDirectory,
         resolvedSessionId,
         nextSessionId,
         llmSessionDirectoryRef,
         setReplyDebug,
         rememberKnownCodexThreadId,
       });
-      if (normalizedLlmDirectoryForRequest() !== directory) {
-        setLlmDirectory(directory);
+      if (normalizedLlmDirectoryForRequest() !== restoredDirectory) {
+        setLlmDirectory(restoredDirectory);
       }
       restoreSucceeded = true;
+      setSelectedLlmSessionMaterialized(true);
       switchedSessionId = resolvedSessionId;
       logSessionRestoreDone({
         logSessionDiag,
@@ -3353,6 +3379,7 @@ export default function App() {
     markSessionUnread,
     normalizedLlmDirectoryForRequest,
     selectedLlmSessionId,
+    selectedLlmSessionMaterialized,
     showChatBottomToast,
   ]);
 
@@ -3677,8 +3704,9 @@ export default function App() {
     syncTtsPlaybackWantedFromPipeline,
   });
   synthesizeSpeechStreamDelegateRef.current = synthesizeSpeechStreamFromController;
-  const resolveSessionHistoryContext = useCallback((sessionId: unknown) => (
+  const resolveSessionHistoryContext = useCallback((sessionId: unknown, backendId?: unknown) => (
     resolveSessionHistoryContextValue({
+      backendId,
       sessionId,
       registeredDirectories,
       directorySessionsById,
@@ -3689,41 +3717,12 @@ export default function App() {
     registeredDirectories,
     sessionTitleOverridesById,
   ]);
-  const pushLlmCompletionNotification = useCallback((params: {
-    sessionId: string;
-    threadId: string;
-    directory?: string;
-    previewText: string;
-    completedAtMs?: number;
-  }) => {
-    const sessionId = parseOptionalSessionId(params.sessionId || params.threadId);
-    const threadId = parseOptionalSessionId(params.threadId || sessionId);
-    const previewText = String(params.previewText || "").replace(/\s+/g, " ").trim().slice(0, 240);
-    if (!sessionId || !threadId) return;
-    if (sessionNotificationLifecycle.handleForegroundSessionCompletion({ sessionId, directory: params.directory })) return;
-    // Text-free lifecycle boundaries still own read/badge reconciliation. Only the local
-    // completion card requires preview text.
-    if (!previewText) return;
-    const context = resolveSessionHistoryContext(sessionId);
-    const completedAtMs = Number.isFinite(Number(params.completedAtMs))
-      ? Math.floor(Number(params.completedAtMs))
-      : Date.now();
-    const nextNotification: LlmCompletionNotification = {
-      id: `${sessionId}:${completedAtMs}`,
-      sessionId,
-      threadId,
-      directoryName: context?.directoryDisplayName || String(params.directory || "").trim(),
-      previewText,
-      completedAt: new Date(completedAtMs).toISOString(),
-    };
-    setLlmCompletionNotifications((prev) => {
-      const next = prev.filter((item) => item.sessionId !== sessionId && item.id !== nextNotification.id);
-      return [nextNotification, ...next].slice(0, 3);
-    });
-  }, [
-    sessionNotificationLifecycle,
+  resolveSessionHistoryContextRef.current = resolveSessionHistoryContext;
+  const { notifications: llmCompletionNotifications, pushNotification: pushLlmCompletionNotification,
+    dismissNotification: dismissLlmCompletionNotification } = useLlmCompletionNotifications({
+    handleForegroundSessionCompletion: sessionNotificationLifecycle.handleForegroundSessionCompletion,
     resolveSessionHistoryContext,
-  ]);
+  });
   const {
     handleApprovalRequest,
     clearToolAutoApprovals,
@@ -4794,7 +4793,7 @@ export default function App() {
     settingsLoaded,
     setSettingsLoaded,
     settingsFileName: SETTINGS_FILE_NAME,
-    modelOptions: MODEL_OPTIONS,
+    modelOptions,
     defaultModelRef: DEFAULT_MODEL_REF,
     defaultReasoningEffort: DEFAULT_REASONING_EFFORT,
     defaultRecordingQualityPreset: DEFAULT_RECORDING_QUALITY_PRESET,
@@ -4815,6 +4814,7 @@ export default function App() {
     sessionMarkerColorsById,
     expandedDirectoryIds,
     selectedLlmSessionId,
+    selectedLlmSessionMaterialized,
     codexWsUrl,
     codexWsToken,
     modelRef,
@@ -4848,6 +4848,7 @@ export default function App() {
     setSessionMarkerColorsById,
     setExpandedDirectoryIds,
     setSelectedLlmSessionId,
+    setSelectedLlmSessionMaterialized,
     selectedLlmSessionIdRef,
     llmConversationSessionIdRef,
     rememberKnownCodexThreadId,
@@ -4916,7 +4917,7 @@ export default function App() {
     selectedLlmSessionId,
     getLlmConversationSessionId,
     selectSpecificLlmSession,
-    fetchLatestSessionIdForDirectory,
+    fetchLatestSessionForDirectory,
     setLlmSessionRestoreError,
   });
 
@@ -4952,7 +4953,7 @@ export default function App() {
     hasActiveClientTurnForSession,
     selectSpecificLlmSession,
     hydratePanelFromSessionHistoryRef,
-    fetchLatestSessionIdForDirectory,
+    fetchLatestSessionForDirectory,
     markSessionReadAsync,
     logSessionDiag,
   });
@@ -5632,6 +5633,7 @@ export default function App() {
     codexWsToken: effectiveCodexWsToken,
     runnerWebSocketManager,
     llmBackend,
+    modelOptions,
     modelRef,
     reasoningEffort,
     codexApprovalPolicy,
@@ -5977,6 +5979,10 @@ export default function App() {
     latestAssistantYouTubeVideoIds,
     ttsSpeed,
     ttsProvider,
+    llmBackend,
+    modelOptions,
+    modelRef,
+    modelBackendLocked: conversationMessages.length > 0 || selectedLlmSessionMaterialized,
     setDrawerOpen,
     setActiveScreen,
     setRunnerUrl,
@@ -5994,6 +6000,7 @@ export default function App() {
     setModelSelectOpen,
     setThinkSelectOpen,
     setModelRef,
+    setLlmBackend,
     setReasoningEffort,
     testHardcodedCodexWsConnection,
     testHardcodedCodexWsHandshakeOnly,
@@ -6119,7 +6126,7 @@ export default function App() {
     selectedModelLabel,
     modelRef,
     reasoningEffort,
-    modelOptions: MODEL_OPTIONS,
+    modelOptions,
     thinkOptions: THINK_OPTIONS,
     ttsProvider,
     sttProvider,
@@ -6138,7 +6145,6 @@ export default function App() {
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
     changeRunnerUrl,
-    selectLlmBackend: setLlmBackend,
     changeLlmDirectory,
     changeCodexWsUrl,
     changeCodexWsToken,
@@ -6302,6 +6308,7 @@ export default function App() {
     loadSessionChildTreesForSessions([sessionId], directoryPath)
   ), [loadSessionChildTreesForSessions]);
   const openSessionHistoryEntryFromContext = useCallback((params: {
+    backendId?: string;
     sessionId: string;
     source: LlmSessionSource;
     directory: string;
@@ -6309,6 +6316,7 @@ export default function App() {
     const sessionId = parseOptionalSessionId(params.sessionId);
     if (!sessionId) return;
     void selectSpecificLlmSession(sessionId, {
+      backendId: params.backendId,
       source: params.source || "all",
       directory: params.directory,
     });
@@ -6420,26 +6428,23 @@ export default function App() {
     baseSnapshot: PanelRuntimeSnapshot,
     patch: PanelRuntimeSnapshotPatch = {}
   ): PanelRuntimeSnapshot => {
-    const snapshot = buildPanelRuntimeSnapshot({
+    // backendIdはbuildPanelRuntimeSnapshotのpatch優先・base維持に委ねる。
+    // selectedSessionId変更時にグローバルllmBackendへ戻すと、local draftが
+    // native session IDへ確定した瞬間にpanel固有Providerが失われる。
+    // Backend切替が必要な入口(新規チャット・履歴hydrate・model選択)は
+    // patch.backendIdを明示する。
+    return buildPanelRuntimeSnapshot({
       panelId: panelIdRaw,
       base: baseSnapshot,
       patch,
       isCompactRunning: isCodexCompactRunning,
     });
-    const selectedSessionChanged = Boolean(
-      patch.selectedSessionId && patch.selectedSessionId !== baseSnapshot.selectedSessionId
-    );
-    return {
-      ...snapshot,
-      backendId: selectedSessionChanged
-        ? (String(llmBackend || "codex").trim() || "codex")
-        : (String(snapshot.backendId || llmBackend || "codex").trim() || "codex"),
-    };
-  }, [isCodexCompactRunning, llmBackend]);
+  }, [isCodexCompactRunning]);
   const createEmptyPanelRuntimeSnapshot = useCallback((panelIdRaw: string): PanelRuntimeSnapshot => ({
     panelId: normalizeRuntimePanelId(panelIdRaw),
     backendId: String(llmBackend || "codex").trim() || "codex",
     selectedSessionId: "",
+    sessionMaterialized: false,
     selectedDirectoryPath: normalizedLlmDirectoryForRequest(),
     selectedDirectoryDisplayName: String(selectedDirectoryDisplayName || "").trim(),
     selectedSessionTitle: "（ユーザーメッセージなし）",
@@ -6485,7 +6490,9 @@ export default function App() {
   });
   const activeConversationSnapshot = useMemo<PanelRuntimeSnapshot>(() => ({
     panelId: "",
+    backendId: String(llmBackend || "codex").trim() || "codex",
     selectedSessionId: String(selectedLlmSessionId || "").trim(),
+    sessionMaterialized: selectedLlmSessionMaterialized,
     selectedDirectoryPath: normalizedLlmDirectoryForRequest(),
     selectedDirectoryDisplayName: String(selectedDirectoryDisplayName || "").trim(),
     selectedSessionTitle: String(selectedSessionHeaderTitle || "").trim(),
@@ -6512,6 +6519,7 @@ export default function App() {
     chatViewportHeight,
     conversationMessages,
     llmDirectory,
+    llmBackend,
     modelRef,
     reasoningEffort,
     replyLoading,
@@ -6519,6 +6527,7 @@ export default function App() {
     selectedSessionMarkerColor,
     selectedSessionExecutionStatusType,
     selectedLlmSessionId,
+    selectedLlmSessionMaterialized,
     selectedSessionHeaderTitle,
     ttsPlaybackMessageId,
   ]);
@@ -6687,16 +6696,18 @@ export default function App() {
   }, [createPanelRuntimeSnapshot, invalidatePanelHydration, resolvePanelSnapshotForDisplay]);
   const updatePanelSettings = useCallback((
     panelIdRaw: string,
-    settings: { modelRef?: string; reasoningEffort?: string }
+    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string }
   ) => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
     if (!panelId) return;
     const nextModelRef = normalizeModelRef(settings?.modelRef);
+    const nextBackendId = String(settings?.backendId || "").trim();
     const nextReasoningEffort = String(settings?.reasoningEffort || "").trim();
-    if (!nextModelRef && !nextReasoningEffort) return;
+    if (!nextBackendId && !nextModelRef && !nextReasoningEffort) return;
     const baseSnapshot = resolvePanelSnapshotForDisplay(panelId);
     const nextSnapshot = createPanelRuntimeSnapshot(panelId, baseSnapshot, {
       panelId,
+      backendId: nextBackendId || String(baseSnapshot.backendId || llmBackend).trim() || "codex",
       modelRef: nextModelRef || normalizeModelRef(baseSnapshot.modelRef),
       reasoningEffort: nextReasoningEffort || String(baseSnapshot.reasoningEffort || "").trim(),
     });
@@ -6720,6 +6731,7 @@ export default function App() {
             sessionId: entry.sessionId || selectedSessionId,
             snapshot: {
               ...entry.snapshot,
+              backendId: nextSnapshot.backendId,
               modelRef: nextSnapshot.modelRef,
               reasoningEffort: nextSnapshot.reasoningEffort,
             },
@@ -6732,11 +6744,12 @@ export default function App() {
     logSessionDiag("panel_runtime_settings_updated", {
       panelId,
       sessionId: selectedSessionId || undefined,
+      backendId: nextSnapshot.backendId,
       modelRef: nextSnapshot.modelRef,
       reasoningEffort: nextSnapshot.reasoningEffort,
       syncedSameSessionPanelIds: syncedPanelIds,
     }, { throttleMs: 0 });
-  }, [createPanelRuntimeSnapshot, logSessionDiag, resolvePanelSnapshotForDisplay]);
+  }, [createPanelRuntimeSnapshot, llmBackend, logSessionDiag, resolvePanelSnapshotForDisplay]);
   const getPanelConversationMessagesForCodex = useCallback((panelIdRaw: string): ConversationMessage[] => {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
     const snapshot = resolvePanelSnapshotForDisplay(panelId);
@@ -6998,6 +7011,7 @@ export default function App() {
   appendAssistantEventMessageForApprovalRef.current = appendAssistantEventMessageForApproval;
   const hydratePanelFromSessionHistory = useCallback(async (params: {
     panelId: string;
+    backendId?: string;
     sessionId: string;
     directory: string;
     source?: LlmSessionSource;
@@ -7010,6 +7024,7 @@ export default function App() {
     contextUsedPct?: number | null;
   }) => {
     const panelId = normalizeRuntimePanelId(params?.panelId);
+    const backendId = String(params?.backendId || "codex").trim() || "codex";
     const sessionId = parseOptionalSessionId(params?.sessionId);
     const directoryRaw = String(params?.directory || "").trim();
     const directory = directoryRaw ? parseLlmDirectory(directoryRaw) : "";
@@ -7047,6 +7062,7 @@ export default function App() {
     setPanelRuntimeEntriesById((entries) => applyPanelHydrationStart({
       entries,
       panelId,
+      backendId,
       sessionId,
       emptySnapshot: createEmptyPanelRuntimeSnapshot(panelId),
       directory,
@@ -7068,7 +7084,7 @@ export default function App() {
       requestedReasoningEffortHint: reasoningEffortHint,
     }, { throttleMs: 0 });
     try {
-      const restored = await fetchRunnerSessionMessagesCached(sessionId, directory);
+      const restored = await fetchRunnerSessionMessagesCached(sessionId, directory, { backendId });
       const restoredSessionId = parseOptionalSessionId(restored.threadId);
       if (restoredSessionId && restoredSessionId !== sessionId) {
         throw new Error(`restored session mismatch: requested=${sessionId} received=${restoredSessionId}`);
@@ -7185,7 +7201,9 @@ export default function App() {
         nowMs: Date.now(),
       });
       const snapshot = createPanelRuntimeSnapshot(panelId, createEmptyPanelRuntimeSnapshot(panelId), {
+        backendId: String(restored.backendId || backendId).trim() || backendId,
         selectedSessionId: resolvedSessionId || sessionId,
+        sessionMaterialized: true,
         selectedDirectoryPath: restoredDirectory,
         selectedDirectoryDisplayName: restoredDirectoryDisplayName,
         selectedSessionTitle,
@@ -7562,6 +7580,7 @@ export default function App() {
     startNewPanelSession,
   ]);
   const openSessionHistoryPopup = useCallback(async (params: {
+    backendId?: string;
     sessionId: string;
     source: LlmSessionSource;
     directory?: string;
@@ -7573,7 +7592,8 @@ export default function App() {
       showChatBottomToast("assistant", "セッションIDが不明なため開けませんでした。");
       return false;
     }
-    const context = resolveSessionHistoryContext(sessionId);
+    const context = resolveSessionHistoryContext(sessionId, params.backendId);
+    const backendId = String(params.backendId || context?.backendId || "codex").trim() || "codex";
     const directoryRaw = String(params.directory || "").trim();
     const directory = context?.directory || (directoryRaw ? parseLlmDirectory(directoryRaw) : "");
     if (!directory) {
@@ -7593,6 +7613,7 @@ export default function App() {
     try {
       const result = await hydratePanelFromSessionHistory({
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
+      backendId,
       sessionId,
       directory,
       source: params.source,
@@ -7636,21 +7657,16 @@ export default function App() {
     closeDrawer,
     openSessionHistoryPopup,
   });
-  const openCompletedLlmSession = useCallback((sessionIdRaw: string) => {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
+  const openCompletedLlmSession = useCallback((sessionRef: { backendId: string; sessionId: string }) => {
+    const sessionId = parseOptionalSessionId(sessionRef.sessionId);
     if (!sessionId) return;
     closeDrawer();
     openSessionHistoryPopup({
+      backendId: String(sessionRef.backendId || "codex").trim() || "codex",
       sessionId,
       source: "all",
     });
-  }, [
-    closeDrawer,
-    openSessionHistoryPopup,
-  ]);
-  const dismissLlmCompletionNotification = useCallback((id: string) => {
-    setLlmCompletionNotifications((prev) => prev.filter((item) => item.id !== id));
-  }, []);
+  }, [closeDrawer, openSessionHistoryPopup]);
   const visibleCompletionNotificationSessionIds = useMemo(() => {
     const ids: string[] = [];
     if (activeScreen === "skia_board") {

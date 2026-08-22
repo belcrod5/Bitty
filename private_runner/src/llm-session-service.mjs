@@ -83,19 +83,62 @@ export function createLlmSessionService(deps = {}) {
     return serialized;
   }
 
+  // 一覧のページ継続はoffsetでなくkeyset(並び順キー={updatedAt, source, sessionId})。
+  // ページ間で新規セッションが増えても、既返却分の重複や取りこぼしが起きない。
+  function encodeSessionListPageCursor(entry) {
+    return Buffer.from(JSON.stringify({
+      updatedAt: String(entry?.updatedAt || ""),
+      source: String(entry?.source || ""),
+      sessionId: String(entry?.sessionId || ""),
+    }), "utf8").toString("base64url");
+  }
+
+  function decodeSessionListPageCursor(raw) {
+    try {
+      const value = JSON.parse(Buffer.from(String(raw || ""), "base64url").toString("utf8"));
+      const sessionId = String(value?.sessionId || "").trim();
+      if (!sessionId) return null;
+      return {
+        updatedAt: String(value?.updatedAt || ""),
+        source: String(value?.source || ""),
+        sessionId,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async function listLlmSessions(rawDirectory, opts = {}) {
     const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
     const source = normalizeSessionSource(opts?.source, "acp");
     const limit = normalizeSessionListLimit(opts?.limit);
+    const cursorRaw = String(opts?.cursor || "").trim();
+    const cursorKey = cursorRaw ? decodeSessionListPageCursor(cursorRaw) : null;
+    if (cursorRaw && !cursorKey) {
+      throw makeApiError(400, "invalid_session_list_cursor", "session list cursor is invalid");
+    }
     const sessions = [];
     if (source === "acp" || source === "all") {
       sessions.push(...await listAcpSessionsForDirectory(directory));
     }
     if (source === "cli" || source === "all") {
-      sessions.push(...await listCliSessionsForDirectory(directory));
+      // index側updatedAtはrollout先頭session_metaのtimestamp(=セッション開始時刻)で、
+      // resumeしても進まない。一覧はrollout実ファイルのmtimeとの新しい方で並べ、
+      // 最近使ったセッションが開始時刻順で下位に沈む(=欠落に見える)のを防ぐ。
+      // includeSubagents=falseはページング前に除外する(後段フィルタだとページサイズが崩れる)。
+      sessions.push(...await listCliSessionsForDirectory(directory, {
+        useRolloutMtime: true,
+        ...(opts?.includeSubagents === false ? { includeSubagents: false } : {}),
+      }));
     }
     sessions.sort(compareSessionHistoryEntries);
-    const limited = sessions.slice(0, limit);
+    const positioned = cursorKey
+      ? sessions.filter((item) => compareSessionHistoryEntries(item, cursorKey) > 0)
+      : sessions;
+    const limited = positioned.slice(0, limit);
+    const nextCursor = positioned.length > limited.length && limited.length > 0
+      ? encodeSessionListPageCursor(limited[limited.length - 1])
+      : "";
     const summaries = await mapWithWorkers(
       limited,
       SESSION_SUMMARY_READ_WORKERS,
@@ -108,7 +151,13 @@ export function createLlmSessionService(deps = {}) {
       source,
       limit,
       latestSessionId: String(limited[0]?.sessionId || "").trim(),
-      sessions: limited.map((item, index) => serializeSession(item, summaries[index])),
+      // 各項目のcursorは「この項目の位置」。all-backends合成層がページを
+      // 全体limitで切った時、Backendごとに実際に返した位置まで進めるために使う。
+      sessions: limited.map((item, index) => ({
+        ...serializeSession(item, summaries[index]),
+        cursor: encodeSessionListPageCursor(item),
+      })),
+      ...(nextCursor ? { cursor: nextCursor } : {}),
     };
   }
 

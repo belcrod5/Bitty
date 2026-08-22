@@ -500,6 +500,7 @@ export function normalizeThreadListEntry(raw: unknown): CodexThreadListEntry | n
   const threadId = firstString(item.id, item.threadId, (item as any)?.thread?.id);
   if (!threadId) return null;
   return {
+    backendId: "codex",
     threadId,
     parentThreadId: firstString(
       item.parentThreadId,
@@ -525,6 +526,7 @@ export function normalizeThreadListEntry(raw: unknown): CodexThreadListEntry | n
     ),
     preview: firstString(item.preview, item.title, item.summary),
     modelProvider: firstString(item.modelProvider, item.provider),
+    modelRef: firstString(item.model, item.modelRef),
     sourceKind: parseCodexSourceKind(explicitSourceKind || subAgentSourceKind || item.source),
     cwd: firstString(item.cwd, item.path, (item as any)?.thread?.cwd),
     createdAt: toIsoTimestamp(item.createdAt),

@@ -49,7 +49,7 @@ export function createTurnCompletionNotifier({
     return true;
   }
 
-  async function sendPush({ sessionId, threadId, turnId, previewText, directory, origin }) {
+  async function sendPush({ backendId, sessionId, threadId, turnId, previewText, directory, origin }) {
     if (!pushEnabled || !apnsClient || !pushSummarizer) return;
     let devices;
     try {
@@ -100,6 +100,7 @@ export function createTurnCompletionNotifier({
         "thread-id": id,
       },
       sessionId: id,
+      backendId: String(backendId || "codex").trim() || "codex",
       directory: payloadDirectory,
       turnId: String(turnId || ""),
     };
@@ -136,6 +137,7 @@ export function createTurnCompletionNotifier({
   }
 
   async function notifyTurnCompleted({
+    backendId = "codex",
     threadId: threadIdRaw,
     turnId: turnIdRaw,
     sessionId,
@@ -153,6 +155,7 @@ export function createTurnCompletionNotifier({
     if (rememberTurn(broadcastedAtByTurn, turnKey, nowMs)) {
       try {
         broadcast({
+          backendId: String(backendId || "codex").trim() || "codex",
           sessionId: String(sessionId || threadId),
           threadId,
           directory: String(directory || "").trim(),
@@ -165,7 +168,7 @@ export function createTurnCompletionNotifier({
     }
     if (!previewText) return;
     if (!rememberTurn(pushedAtByTurn, turnKey, nowMs)) return;
-    await sendPush({ sessionId, threadId, turnId, previewText, directory, origin });
+    await sendPush({ backendId, sessionId, threadId, turnId, previewText, directory, origin });
   }
 
   return { notifyTurnCompleted };

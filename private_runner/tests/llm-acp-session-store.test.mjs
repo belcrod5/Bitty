@@ -427,6 +427,63 @@ test("persists one session mode and generation-checked lease across restarts", a
   assert.equal((await restarted.handoffAgentSessionMode(ref, "raw")).status, "changed");
 });
 
+test("repairs only an idle same-mode binding from an authoritative native cwd", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-cwd-reconcile-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const options = (agentProcessEpoch) => ({
+    acpSessionStorePath: storePath,
+    agentProcessEpoch,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+  const store = createLlmAcpSessionStore(options("epoch-1"));
+  const rawRef = { backendId: "codex", nativeSessionId: "raw-thread" };
+  const activeRawRef = { backendId: "codex", nativeSessionId: "active-raw-thread" };
+  const neutralRef = { backendId: "codex", nativeSessionId: "neutral-thread" };
+  const oldCwd = path.join(tempRoot, "old");
+  const nativeCwd = path.join(tempRoot, "native");
+  await store.bindAgentSession(rawRef, oldCwd, "raw");
+  await store.bindAgentSession(activeRawRef, oldCwd, "raw");
+  await store.bindAgentSession(neutralRef, oldCwd, "neutral");
+  await store.acquireAgentSessionLease({
+    sessionRef: activeRawRef,
+    mode: "raw",
+    owner: "codex-relay",
+    runId: "active-run",
+  });
+
+  assert.equal((await store.bindAgentSession(rawRef, nativeCwd, "raw")).status, "cwd_conflict");
+  // mode遷移を伴うreconcileは拒否(neutralセッションへrawで要求)。
+  assert.equal((await store.bindAgentSession(
+    neutralRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "cwd_conflict");
+  // idleならmode据え置きでneutralもnative cwdへ収束できる。
+  assert.equal((await store.bindAgentSession(
+    neutralRef, nativeCwd, "neutral", { reconcileCwd: true },
+  )).status, "bound");
+  assert.equal((await store.getAgentSessionBinding(neutralRef)).canonicalCwd, nativeCwd);
+  assert.equal((await store.getAgentSessionMode(neutralRef)).mode, "neutral");
+  assert.equal((await store.bindAgentSession(
+    activeRawRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "cwd_conflict");
+  const restarted = createLlmAcpSessionStore(options("epoch-2"));
+  assert.equal((await restarted.getAgentSessionMode(activeRawRef)).lease.state, "recovering");
+  assert.equal((await restarted.bindAgentSession(
+    activeRawRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "cwd_conflict");
+  assert.equal((await store.bindAgentSession(
+    rawRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "bound");
+  assert.equal((await store.getAgentSessionBinding(rawRef)).canonicalCwd, nativeCwd);
+});
+
 test("stores workspace approvals without conversation or credential data", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-workspace-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

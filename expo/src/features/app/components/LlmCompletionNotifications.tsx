@@ -17,6 +17,7 @@ const LLM_COMPLETION_NOTIFICATION_EXPANDED_WIDTH = 300;
 
 export type LlmCompletionNotification = {
   id: string;
+  backendId: string;
   sessionId: string;
   threadId: string;
   directoryName: string;
@@ -27,7 +28,7 @@ export type LlmCompletionNotification = {
 type LlmCompletionNotificationsProps = {
   notifications: LlmCompletionNotification[];
   visibleSessionIds: string[];
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionRef: { backendId: string; sessionId: string }) => void;
   onDismiss: (id: string) => void;
 };
 
@@ -51,7 +52,7 @@ function LlmCompletionNotificationCard({
   onDismiss,
 }: {
   notification: LlmCompletionNotification;
-  onOpen: (sessionId: string) => void;
+  onOpen: (sessionRef: { backendId: string; sessionId: string }) => void;
   onDismiss: (id: string) => void;
 }) {
   const opacityRef = useRef(new Animated.Value(0));
@@ -96,7 +97,7 @@ function LlmCompletionNotificationCard({
         style={styles.llmCompletionNotificationCard}
         onPress={() => {
           onDismiss(notification.id);
-          onOpen(notification.sessionId);
+          onOpen({ backendId: notification.backendId, sessionId: notification.sessionId });
         }}
         accessibilityRole="button"
         accessibilityLabel="完了した LLM セッションを開く"

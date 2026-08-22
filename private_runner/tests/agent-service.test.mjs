@@ -25,9 +25,13 @@ function sessionStore() {
   const modes = new Map();
   const key = (ref) => `${ref.backendId}:${ref.nativeSessionId}`;
   return {
-    async bind(ref, canonicalCwd, mode) {
+    async bind(ref, canonicalCwd, mode, options = {}) {
       const existingMode = modes.get(key(ref));
       if (existingMode && existingMode.mode !== mode) return { status: "mode_conflict", mode: existingMode.mode };
+      const existingBinding = bindings.get(key(ref));
+      if (existingBinding && existingBinding.canonicalCwd !== canonicalCwd && options.reconcileCwd !== true) {
+        return { status: "cwd_conflict", binding: existingBinding };
+      }
       bindings.set(key(ref), { ...ref, canonicalCwd });
       modes.set(key(ref), existingMode || { mode, lease: null, generation: 0 });
       return { status: "bound", mode };
@@ -139,6 +143,291 @@ test("emits one ordered lifecycle and resolves completion to the terminal payloa
     () => service.subscribe(run.runId, { afterSequence: Number.NaN, onEvent() {} }),
     (error) => error.code === "turn_rejected",
   );
+});
+
+function listBackend(backendId, { sessions, listError, listSupported = true } = {}) {
+  return {
+    backendId,
+    getStatus: async () => ({
+      backendId,
+      available: true,
+      readiness: { ready: true },
+      capabilities: { session: { list: listSupported } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    startTurn: async () => ({ outcome: "completed" }),
+    listSessions: async () => {
+      if (listError) throw listError;
+      return { sessions };
+    },
+    readHistory: async () => ({ items: [] }),
+  };
+}
+
+test("all-backends session list merges every listing backend by updatedAt and keeps partial failures diagnosable", async () => {
+  const codexSessions = [
+    { sessionRef: { backendId: "codex", nativeSessionId: "codex-1" }, updatedAt: "2026-08-22T02:00:00.000Z" },
+  ];
+  const claudeSessions = [
+    { sessionRef: { backendId: "claude", nativeSessionId: "claude-1" }, updatedAt: "2026-08-22T03:00:00.000Z" },
+    { sessionRef: { backendId: "claude", nativeSessionId: "claude-2" }, updatedAt: "2026-08-22T01:00:00.000Z" },
+  ];
+  const service = createAgentService({
+    backends: [
+      listBackend("codex", { sessions: codexSessions }),
+      listBackend("claude", { sessions: claudeSessions }),
+      listBackend("nolist", { sessions: [], listSupported: false }),
+    ],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+
+  const merged = await service.listSessions({ cwd: "/workspace" });
+  assert.deepEqual(merged.sessions.map((session) => session.sessionRef.nativeSessionId), [
+    "claude-1", "codex-1", "claude-2",
+  ]);
+  assert.equal(merged.errors, undefined);
+
+  const scoped = await service.listSessions({ backendId: "codex", cwd: "/workspace" });
+  assert.deepEqual(scoped.sessions.map((session) => session.sessionRef.nativeSessionId), ["codex-1"]);
+
+  const failure = Object.assign(new Error("claude transcript scan failed"), { code: "history_unavailable" });
+  const partialService = createAgentService({
+    backends: [
+      listBackend("codex", { sessions: codexSessions }),
+      listBackend("claude", { listError: failure }),
+    ],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+  const partial = await partialService.listSessions({ backendId: "all", cwd: "/workspace" });
+  assert.deepEqual(partial.sessions.map((session) => session.sessionRef.nativeSessionId), ["codex-1"]);
+  assert.deepEqual(partial.errors, [{
+    code: "history_unavailable",
+    backendId: "claude",
+    retryable: false,
+    message: "claude transcript scan failed",
+  }]);
+
+  const allFailedService = createAgentService({
+    backends: [listBackend("claude", { listError: failure })],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+  await assert.rejects(
+    allFailedService.listSessions({ cwd: "/workspace" }),
+    (error) => /transcript scan failed/.test(error.message),
+  );
+
+  await assert.rejects(
+    service.listSessions({ cwd: "/workspace", cursor: "not-a-composite-cursor" }),
+    (error) => error.code === "turn_rejected" && /cursor is invalid/.test(error.message),
+  );
+});
+
+test("all-backends paging re-queries only backends that returned a cursor", async () => {
+  const calls = [];
+  function pagingBackend(backendId, pagesByCursor) {
+    return {
+      backendId,
+      getStatus: async () => ({
+        backendId,
+        available: true,
+        readiness: { ready: true },
+        capabilities: { session: { list: true } },
+      }),
+      resolveSessionCwd: async () => "/workspace",
+      startTurn: async () => ({ outcome: "completed" }),
+      listSessions: async ({ cursor }) => {
+        calls.push({ backendId, cursor: String(cursor || "") });
+        return pagesByCursor[String(cursor || "")];
+      },
+      readHistory: async () => ({ items: [] }),
+    };
+  }
+  const service = createAgentService({
+    backends: [
+      pagingBackend("codex", {
+        "": {
+          sessions: [{ sessionRef: { backendId: "codex", nativeSessionId: "codex-1" }, updatedAt: "2026-08-22T04:00:00.000Z" }],
+          cursor: "codex-p2",
+        },
+        "codex-p2": {
+          sessions: [{ sessionRef: { backendId: "codex", nativeSessionId: "codex-2" }, updatedAt: "2026-08-22T02:00:00.000Z" }],
+        },
+      }),
+      pagingBackend("claude", {
+        "": {
+          sessions: [{ sessionRef: { backendId: "claude", nativeSessionId: "claude-1" }, updatedAt: "2026-08-22T03:00:00.000Z" }],
+        },
+      }),
+    ],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+
+  // 項目別cursorが無いBackendは全体カット対象外(従来の合成のまま)
+  const page1 = await service.listSessions({ cwd: "/workspace", limit: 1 });
+  assert.deepEqual(page1.sessions.map((session) => session.sessionRef.nativeSessionId), ["codex-1", "claude-1"]);
+  assert.ok(page1.cursor);
+
+  const page2 = await service.listSessions({ cwd: "/workspace", limit: 1, cursor: page1.cursor });
+  assert.deepEqual(page2.sessions.map((session) => session.sessionRef.nativeSessionId), ["codex-2"]);
+  assert.equal(page2.cursor, undefined);
+  // cursorを返さなかった(=出し切った)Backendを2ページ目で先頭から再列挙しない
+  assert.deepEqual(calls, [
+    { backendId: "codex", cursor: "" },
+    { backendId: "claude", cursor: "" },
+    { backendId: "codex", cursor: "codex-p2" },
+  ]);
+});
+
+function keysetBackend(backendId, pagesByCursor) {
+  const item = (id, updatedAt) => ({
+    sessionRef: { backendId, nativeSessionId: id },
+    updatedAt,
+    cursor: `${backendId}@${id}`,
+  });
+  return {
+    backend: {
+      backendId,
+      getStatus: async () => ({
+        backendId,
+        available: true,
+        readiness: { ready: true },
+        capabilities: { session: { list: true } },
+      }),
+      resolveSessionCwd: async () => "/workspace",
+      startTurn: async () => ({ outcome: "completed" }),
+      listSessions: async ({ cursor }) => pagesByCursor[String(cursor || "")],
+      readHistory: async () => ({ items: [] }),
+    },
+    item,
+  };
+}
+
+test("all-backends first page is the global top-limit; deferred items arrive on later pages", async () => {
+  const codex = keysetBackend("codex", {});
+  const claude = keysetBackend("claude", {});
+  // codex: c1(04:00) > c2(02:00)、claude: l1(03:00) > l2(01:00)
+  const c1 = codex.item("c1", "2026-08-22T04:00:00.000Z");
+  const c2 = codex.item("c2", "2026-08-22T02:00:00.000Z");
+  const l1 = claude.item("l1", "2026-08-22T03:00:00.000Z");
+  const l2 = claude.item("l2", "2026-08-22T01:00:00.000Z");
+  Object.assign(codex.backend, {
+    listSessions: async ({ cursor }) => ({
+      "": { sessions: [c1, c2] },
+      "codex@c1": { sessions: [c2] },
+    })[String(cursor || "")],
+  });
+  Object.assign(claude.backend, {
+    listSessions: async ({ cursor }) => ({
+      "": { sessions: [l1, l2] },
+      "claude@l1": { sessions: [l2] },
+    })[String(cursor || "")],
+  });
+  const service = createAgentService({
+    backends: [codex.backend, claude.backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+
+  const page1 = await service.listSessions({ cwd: "/workspace", limit: 2 });
+  // 全体の新しい順トップ2だけを返す(古いl2やc2が新しい未返却項目より先に出ない)
+  assert.deepEqual(page1.sessions.map((session) => session.sessionRef.nativeSessionId), ["c1", "l1"]);
+  assert.equal(page1.sessions.every((session) => !("cursor" in session)), true);
+  assert.ok(page1.cursor);
+
+  const page2 = await service.listSessions({ cwd: "/workspace", limit: 2, cursor: page1.cursor });
+  assert.deepEqual(page2.sessions.map((session) => session.sessionRef.nativeSessionId), ["c2", "l2"]);
+  assert.equal(page2.cursor, undefined);
+});
+
+test("all-backends cut keeps a fully deferred backend at its current position", async () => {
+  const codex = keysetBackend("codex", {});
+  const claude = keysetBackend("claude", {});
+  const c1 = codex.item("c1", "2026-08-22T10:00:00.000Z");
+  const c2 = codex.item("c2", "2026-08-22T09:00:00.000Z");
+  const l1 = claude.item("l1", "2026-08-22T05:00:00.000Z");
+  const claudeCalls = [];
+  Object.assign(codex.backend, {
+    listSessions: async () => ({ sessions: [c1, c2] }),
+  });
+  Object.assign(claude.backend, {
+    listSessions: async ({ cursor }) => {
+      claudeCalls.push(String(cursor || ""));
+      return { sessions: [l1] };
+    },
+  });
+  const service = createAgentService({
+    backends: [codex.backend, claude.backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+
+  const page1 = await service.listSessions({ cwd: "/workspace", limit: 2 });
+  assert.deepEqual(page1.sessions.map((session) => session.sessionRef.nativeSessionId), ["c1", "c2"]);
+  assert.ok(page1.cursor);
+
+  // codexは出し切ったので再照会されず、claudeは先頭位置のまま2ページ目で返る
+  const page2 = await service.listSessions({ cwd: "/workspace", limit: 2, cursor: page1.cursor });
+  assert.deepEqual(page2.sessions.map((session) => session.sessionRef.nativeSessionId), ["l1"]);
+  assert.equal(page2.cursor, undefined);
+  assert.deepEqual(claudeCalls, ["", ""]);
+});
+
+test("rejects an effort outside the backend's advertised effort catalog before backend execution", async () => {
+  let starts = 0;
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: {
+        ...status().capabilities,
+        model: { select: true, effort: true, effortOptions: ["low", "medium", "high"] },
+      },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      starts += 1;
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      return { outcome: "completed" };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-effort",
+    now: () => "2026-08-21T00:00:00.000Z",
+  });
+
+  await assert.rejects(
+    service.startTurn(startRequest({ effort: "ultra" }), { subjectId: "user-1" }),
+    (error) => error.code === "capability_unsupported" && /effort value/.test(error.message),
+  );
+  assert.equal(starts, 0);
+
+  const run = await service.startTurn(startRequest({ effort: "high" }), { subjectId: "user-1" });
+  for await (const event of run.events) void event;
+  await run.completion;
+  assert.equal(starts, 1);
 });
 
 test("deduplicates a client operation and rejects conflicting reuse", async () => {
@@ -334,6 +623,160 @@ test("canonicalizes a discovered session cwd before binding it", async () => {
     sessionRef,
     cwd: "",
     clientOperationId: "discover-operation",
+  }), { subjectId: "subject" });
+
+  assert.equal((await run.completion).outcome, "completed");
+  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/workspace-real");
+});
+
+test("history returns native cwd and repairs an idle raw stale binding", async () => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-history" };
+  await sessions.bind(sessionRef, "/stale-workspace", "raw");
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { session: { history: { read: true } } },
+    }),
+    resolveSessionCwd: async () => "/workspace-link",
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd === "/workspace-link" ? "/workspace-real" : cwd,
+  });
+
+  const page = await service.readHistory({ sessionRef });
+
+  assert.equal(page.canonicalCwd, "/workspace-real");
+  assert.deepEqual(page.sessionRef, sessionRef);
+  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/workspace-real");
+});
+
+test("turn execution fails closed when native cwd disagrees with its binding", async () => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-mismatch" };
+  await sessions.bind(sessionRef, "/bound-workspace", "neutral");
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/native-workspace",
+    async startTurn() {
+      assert.fail("Backend turn must not start with a mismatched native cwd");
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  await assert.rejects(
+    service.startTurn(startRequest({
+      sessionRef,
+      cwd: "/native-workspace",
+      clientOperationId: "mismatch-operation",
+    }), { subjectId: "subject" }),
+    (error) => error.code === "session_cwd_mismatch",
+  );
+  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/bound-workspace");
+});
+
+test("history repairs an idle neutral stale binding toward the native cwd", async () => {
+  // native cwdはBackendの真実。idleなら(raw同様)neutral bindingもnativeへ収束させる。
+  // 収束先は常にbackend.resolveSessionCwdでありクライアント入力ではないため、
+  // requested cwd照合のfail-closed性は変わらない。
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-history-mismatch" };
+  await sessions.bind(sessionRef, "/bound-workspace", "neutral");
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { session: { history: { read: true } } },
+    }),
+    resolveSessionCwd: async () => "/native-workspace",
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  const page = await service.readHistory({ sessionRef });
+
+  assert.equal(page.canonicalCwd, "/native-workspace");
+  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/native-workspace");
+});
+
+test("history keeps a leased mismatched binding fail-closed", async () => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-history-leased" };
+  await sessions.bind(sessionRef, "/bound-workspace", "neutral");
+  await sessions.acquire({ sessionRef, mode: "neutral", owner: "agent-service", runId: "run-leased" });
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { session: { history: { read: true } } },
+    }),
+    resolveSessionCwd: async () => "/native-workspace",
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  await assert.rejects(
+    service.readHistory({ sessionRef }),
+    (error) => error.code === "session_cwd_mismatch",
+  );
+  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/bound-workspace");
+});
+
+test("resumes an existing session with the history-resolved cwd and the same model", async () => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-resume" };
+  const backend = {
+    backendId: "test",
+    defaultDiscoveredSessionMode: "neutral",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: {
+        session: { history: { read: true } },
+        model: { select: true },
+      },
+    }),
+    resolveSessionCwd: async () => "/workspace-link",
+    readHistory: async () => ({ items: [], modelId: "gpt-5" }),
+    async startTurn({ emit }) {
+      emit("turn.started", {});
+      return { outcome: "completed", sessionRef };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd === "/workspace-link" ? "/workspace-real" : cwd,
+    generateRunId: () => "resume-run",
+  });
+  const history = await service.readHistory({ sessionRef });
+
+  const run = await service.startTurn(startRequest({
+    sessionRef,
+    cwd: history.canonicalCwd,
+    model: "gpt-5",
+    clientOperationId: "resume-operation",
   }), { subjectId: "subject" });
 
   assert.equal((await run.completion).outcome, "completed");

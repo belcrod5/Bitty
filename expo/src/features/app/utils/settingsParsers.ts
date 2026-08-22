@@ -8,7 +8,8 @@ export function isReasoningEffort(raw: unknown): raw is ReasoningEffort {
 
 type ModelOption = {
   label?: string;
-  value: string;
+  modelId: string;
+  backendId?: string;
 };
 
 export function normalizeModelRef(raw: unknown) {
@@ -23,17 +24,17 @@ export function formatModelRefForDisplay(raw: unknown) {
   return normalizeModelRef(raw) || "-";
 }
 
-export function modelRefLabelForDisplay(raw: unknown, modelOptions: readonly ModelOption[]) {
+export function modelRefLabelForDisplay(raw: unknown, modelOptions: readonly ModelOption[], backendIdRaw?: unknown) {
   const value = normalizeModelRef(raw);
+  const backendId = String(backendIdRaw || "").trim();
   if (!value) return "-";
-  return modelOptions.find((item) => item.value === value)?.label || value;
+  return modelOptions.find((item) => item.modelId === value && (!backendId || item.backendId === backendId))?.label || value;
 }
 
-export function parseModelRef(raw: unknown, modelOptions: readonly ModelOption[], fallback: string) {
+export function parseModelRef(raw: unknown, _modelOptions: readonly ModelOption[], fallback: string) {
   const value = normalizeModelRef(raw);
   if (!value) return fallback;
-  if (modelOptions.some((item) => item.value === value)) return value;
-  return fallback;
+  return value;
 }
 
 export function parseReasoningEffort(raw: unknown, fallback: ReasoningEffort): ReasoningEffort {

@@ -6,6 +6,7 @@ import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 
 function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
   return {
+    backendId: "codex",
     sessionId: "session-default",
     parentSessionId: "",
     directory: "/work/bitty",
@@ -75,6 +76,7 @@ test("shows and opens the direct parent of the selected subagent", async () => {
 
   expect(onCloseMenu).toHaveBeenCalledTimes(1);
   expect(openSessionHistoryEntry).toHaveBeenCalledWith({
+    backendId: "codex",
     sessionId: "parent",
     source: "cli",
     directory: "/work/bitty",
@@ -128,6 +130,7 @@ test("opens a child with the child's own working directory", async () => {
   fireEvent.press(tree.getByText("Child task"));
 
   expect(openSessionHistoryEntry).toHaveBeenCalledWith({
+    backendId: "codex",
     sessionId: "child",
     source: "subagent",
     directory: "/work/bitty/child-worktree",

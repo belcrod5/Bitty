@@ -13,6 +13,8 @@ import {
 } from "../calendar/calendarToolHandler";
 
 const PROTOCOL_VERSION = 1;
+// sessions.listのprovider-neutralスコープ。session.list対応の全Backendを集約する。
+export const ALL_BACKENDS_SCOPE = "all";
 const EVENT_TYPES = new Set([
   "turn.accepted", "session.resolved", "turn.started", "item.started", "content.delta", "item.completed",
   "tool.started", "tool.completed", "action.requested", "action.resolved", "usage.updated",
@@ -24,9 +26,15 @@ export type BackendStatus = {
   readiness?: { ready?: boolean; reason?: string };
   capabilities?: {
     action?: { policyProfiles?: Array<{ id?: string; interactive?: boolean }> };
-    model?: { select?: boolean; effort?: boolean };
+    model?: {
+      select?: boolean;
+      effort?: boolean;
+      effortOptions?: string[];
+      changeWithinSession?: boolean;
+      catalog?: Array<{ modelId?: string; label?: string }>;
+    };
     workspace?: { admission?: boolean };
-    operations?: { compact?: boolean };
+    operations?: { compact?: boolean; schedule?: boolean };
   };
 };
 
@@ -425,13 +433,22 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
   cwd: string;
   cursor?: string;
   limit?: number;
+  includeSubagents?: boolean;
 }) {
-  const status = await getAgentBackendStatus(manager, options.backendId);
-  if (!status?.readiness?.ready) return null;
+  const backendId = String(options.backendId || "").trim();
+  if (backendId && backendId !== ALL_BACKENDS_SCOPE) {
+    const status = await getAgentBackendStatus(manager, backendId);
+    if (!status?.readiness?.ready) return null;
+  } else {
+    // all-backendsスコープはBackendごとのreadinessをserviceが個別に扱う。
+    // agent channel自体が使えない場合のみnull(raw fallback)へ落とす。
+    const statuses = await getAgentBackendStatuses(manager);
+    if (statuses.length === 0) return null;
+  }
   const response = await manager.request({
     channel: "agent",
     op: "sessions.list",
-    payload: options,
+    payload: { ...options, backendId },
   }, { timeoutMs: 30_000 });
   if (response.op === "error") throw new Error(String(object(response.payload).message || "Session list failed"));
   return object(response.payload);

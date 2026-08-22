@@ -17,6 +17,7 @@ export type PanelConversationWriteOptions = {
   isResponding?: boolean;
   selectedThreadStatusType?: string;
   sessionId?: string;
+  sessionMaterialized?: boolean;
   clearRespondingRequestStartedAtMs?: number | null;
   contextUsedPct?: number | null;
   adoptFromSessionId?: string;
@@ -108,6 +109,7 @@ export function usePanelConversationWriteController({
     const selectedSessionUpdatedAt = String(lastMessage?.at || "").trim() || new Date().toISOString();
     const nextSnapshot = createPanelRuntimeSnapshot(panelId, baseSnapshot, {
       selectedSessionId,
+      sessionMaterialized: options?.sessionMaterialized,
       selectedSessionUpdatedAt,
       contextUsedPct,
       isResponding,
@@ -172,6 +174,7 @@ export function usePanelConversationWriteController({
             snapshot: createPanelRuntimeSnapshot(entryPanelId, entry.snapshot, {
               modelRef: entry.snapshot.modelRef || baseSnapshot.modelRef,
               reasoningEffort: entry.snapshot.reasoningEffort || baseSnapshot.reasoningEffort,
+              sessionMaterialized: options?.sessionMaterialized,
               selectedSessionUpdatedAt,
               contextUsedPct,
               isResponding,

@@ -36,6 +36,7 @@ type UseAppDrawerSessionControllerArgs = {
   selectLlmDirectory: (directoryPath: string) => void;
   openNewSessionPopup: (params: { directory: string }) => void;
   openSessionHistoryPopup: (params: {
+    backendId: string;
     sessionId: string;
     source: LlmSessionSource;
     directory?: string;
@@ -128,6 +129,7 @@ export function useAppDrawerSessionController({
   }, [closeDrawer, openNewSessionPopup, selectLlmDirectory]);
 
   const handleSelectSessionHistoryEntry = useCallback((
+    backendId: string,
     sessionId: string,
     source: LlmSessionSource,
     directoryPath: string,
@@ -135,6 +137,7 @@ export function useAppDrawerSessionController({
   ) => {
     selectLlmDirectory(directoryPath);
     openSessionHistoryPopup({
+      backendId,
       sessionId,
       source,
       directory: directoryPath,

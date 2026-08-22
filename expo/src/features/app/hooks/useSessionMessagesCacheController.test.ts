@@ -154,6 +154,25 @@ describe("fetchRunnerSessionMessagesCached", () => {
     expect(fetchMock).toHaveBeenCalledWith(SESSION_ID, "/workspace", { cursor: "older-1" });
   });
 
+  it("keeps same-id sessions from different backends in separate cache entries", async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(makeResult({ messages: [row("codex", "codex")], latestCursor: "codex-1" }))
+      .mockResolvedValueOnce(makeResult({ messages: [row("claude", "claude")], latestCursor: "claude-1" }));
+    const controller = makeController(fetchMock);
+
+    const codex = await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace", {
+      backendId: "codex",
+    });
+    const claude = await controller.fetchRunnerSessionMessagesCached(SESSION_ID, "/workspace", {
+      backendId: "claude",
+    });
+
+    expect(codex.messages[0]?.content).toBe("codex");
+    expect(claude.messages[0]?.content).toBe("claude");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, SESSION_ID, "/workspace", { backendId: "codex" });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, SESSION_ID, "/workspace", { backendId: "claude" });
+  });
+
   it("applies replacement rows (itemId match and replacesItemId) from the delta", async () => {
     const fetchMock = jest.fn()
       .mockResolvedValueOnce(makeResult({

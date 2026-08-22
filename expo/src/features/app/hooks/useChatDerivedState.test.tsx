@@ -14,6 +14,7 @@ function baseParams(overrides: Partial<Parameters<typeof useChatDerivedState>[0]
     manualRecording: false,
     directNativeSttInterimText: "",
     composerInputFocused: false,
+    llmBackend: "codex",
     modelOptions: [],
     modelRef: "",
     reasoningEffort: "",

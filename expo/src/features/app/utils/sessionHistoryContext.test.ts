@@ -30,4 +30,24 @@ describe("resolveSessionHistoryContext", () => {
     expect(context?.directory).toBe("/workspace/bitty/subagent-worktree");
     expect(context?.directoryDisplayName).toBe("subagent-worktree");
   });
+
+  it("uses backend id to disambiguate identical native session ids", () => {
+    const context = resolveSessionHistoryContext({
+      backendId: "claude",
+      sessionId: "shared",
+      registeredDirectories: [{ id: "root", path: "/workspace", displayName: "Workspace" }],
+      directorySessionsById: {
+        root: {
+          entries: [
+            { backendId: "codex", sessionId: "shared", firstUserMessage: "Codex" },
+            { backendId: "claude", sessionId: "shared", firstUserMessage: "Claude" },
+          ],
+        },
+      },
+      sessionTitleOverridesById: {},
+    } as never);
+
+    expect(context?.backendId).toBe("claude");
+    expect(context?.sessionTitle).toBe("Claude");
+  });
 });

@@ -263,6 +263,42 @@ beforeEach(() => {
 });
 
 describe("useCodexReplyRequest onAgentMessageCompleted", () => {
+  test("keeps the request Backend on the foreground completion", async () => {
+    const harness = createHarness();
+    const onLlmMessageCompleted = jest.fn();
+    (harness.options as any).onLlmMessageCompleted = onLlmMessageCompleted;
+    const { result } = await renderHook(() => useCodexReplyRequest(harness.options as any));
+    let sendPromise: Promise<unknown> = Promise.resolve();
+
+    await act(async () => {
+      sendPromise = result.current.sendReplyRequest("hello", {
+        panelId: "panel-1",
+        sessionSnapshot: {
+          backendId: "claude",
+          threadId: "claude-session",
+          modelRef: "sonnet",
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      harness.resolveTurn({
+        threadId: "claude-session",
+        turnId: "turn-1",
+        reply: "done",
+        contextUsage: null,
+      });
+      await sendPromise;
+    });
+
+    expect(onLlmMessageCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      backendId: "claude",
+      sessionId: "claude-session",
+    }));
+  });
+
   test("reports item completion as a non-delta session boundary", async () => {
     const harness = createHarness();
     const { sendPromise } = await startRequest(harness);
@@ -273,6 +309,24 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     });
 
     expect(harness.options.onSessionStreamBoundary).toHaveBeenCalledWith("thread-1");
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
+      await sendPromise;
+    });
+  });
+
+  test("marks the panel session materialized when the first turn resolves a native ID", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+
+    await act(async () => {
+      harness.getTurnOptions().onThreadIdResolved("thread-1");
+    });
+
+    expect(harness.writeCalls[harness.writeCalls.length - 1]?.options).toMatchObject({
+      sessionId: "thread-1",
+      sessionMaterialized: true,
+    });
     await act(async () => {
       harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
       await sendPromise;
@@ -842,5 +896,187 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(options.setTranscript).not.toHaveBeenCalled();
     expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+  });
+
+  test("rejects a model whose backend does not match the saved session backend", async () => {
+    const { options } = createOptions();
+    Object.assign(options, {
+      transcript: "hello",
+      llmBackend: "claude",
+      modelRef: "sonnet",
+      modelOptions: [
+        { modelId: "gpt-5.6-sol", backendId: "codex" },
+        { modelId: "sonnet", backendId: "claude" },
+      ],
+    });
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await expect(result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { backendId: "codex", threadId: "thread-1", modelRef: "sonnet" },
+      })).resolves.toEqual({ rejected: "model_backend_mismatch" });
+    });
+    expect(options.setTranscript).not.toHaveBeenCalled();
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+  });
+
+  test("omits model and effort when resuming a backend that fixes the native session model", async () => {
+    const { options } = createOptions();
+    Object.assign(options, {
+      transcript: "hello",
+      llmBackend: "claude",
+      modelRef: "sonnet",
+      modelOptions: [{
+        modelId: "sonnet",
+        backendId: "claude",
+        supportsReasoningEffort: false,
+        changeWithinSession: false,
+      }],
+    });
+    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+      promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet", reasoningEffort: "high" },
+      });
+    });
+
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
+      backendId: "claude",
+      threadId: "thread-1",
+      model: undefined,
+      effort: undefined,
+    }));
+  });
+
+  test("model固定Backendのresumeでも、advertise済みeffortはturn単位で送られcatalog外はclampされる", async () => {
+    const claudeModelOption = {
+      modelId: "sonnet",
+      backendId: "claude",
+      supportsReasoningEffort: true,
+      effortOptions: ["low", "medium", "high", "xhigh", "max"],
+      changeWithinSession: false,
+      supportsCompactQueue: false,
+    };
+    {
+      const { options } = createOptions();
+      Object.assign(options, {
+        transcript: "hello",
+        llmBackend: "claude",
+        modelRef: "sonnet",
+        modelOptions: [claudeModelOption],
+      });
+      mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+        promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
+        interrupt: jest.fn(),
+      })) as never);
+      const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+      await act(async () => {
+        await result.current.sendReplyRequest(undefined, {
+          panelId: "panel-1",
+          sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet", reasoningEffort: "xhigh" },
+        });
+      });
+      expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
+        backendId: "claude",
+        threadId: "thread-1",
+        model: undefined,
+        effort: "xhigh",
+      }));
+    }
+    {
+      const { options } = createOptions();
+      Object.assign(options, {
+        transcript: "hello",
+        llmBackend: "claude",
+        modelRef: "sonnet",
+        modelOptions: [claudeModelOption],
+      });
+      mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+        promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-2", reply: "done", contextUsage: null }),
+        interrupt: jest.fn(),
+      })) as never);
+      const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+      await act(async () => {
+        await result.current.sendReplyRequest(undefined, {
+          panelId: "panel-1",
+          sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet", reasoningEffort: "ultra" },
+        });
+      });
+      expect(mockStartCodexAppServerTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+        backendId: "claude",
+        effort: undefined,
+      }));
+    }
+  });
+
+  test("compact queue非対応Backendのmaterializedセッション送信はCodex raw queueへ接続しない", async () => {
+    const { options } = createOptions();
+    Object.assign(options, {
+      transcript: "hello",
+      llmBackend: "claude",
+      modelRef: "sonnet",
+      modelOptions: [{
+        modelId: "sonnet",
+        backendId: "claude",
+        supportsReasoningEffort: false,
+        changeWithinSession: false,
+        supportsCompactQueue: false,
+      }],
+    });
+    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+      promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet" },
+      });
+    });
+
+    expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test("compact queue対応Backendのmaterializedセッション送信は従来どおりpreflightする", async () => {
+    const { options } = createOptions();
+    Object.assign(options, {
+      transcript: "hello",
+      modelRef: "gpt-5",
+      modelOptions: [{
+        modelId: "gpt-5",
+        backendId: "codex",
+        supportsReasoningEffort: true,
+        changeWithinSession: true,
+        supportsCompactQueue: true,
+      }],
+    });
+    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+      promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { backendId: "codex", threadId: "thread-1", modelRef: "gpt-5" },
+      });
+    });
+
+    expect(mockEnqueueRunnerCodexTurn).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueRunnerCodexTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-1",
+      onlyIfCompacting: true,
+    }));
   });
 });

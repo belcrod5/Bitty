@@ -86,6 +86,7 @@ export type StreamAudioQueueItem = {
 };
 
 export type SelectSpecificLlmSessionOptions = {
+  backendId?: string;
   source?: LlmSessionSource;
   directory?: string;
   // 復帰時の同一セッション再同期など「切替ではない再取得」で使う。
@@ -139,6 +140,7 @@ export type StreamTtsControlState = {
 };
 
 export type LlmMessageCompletion = {
+  backendId: string;
   sessionId: string;
   threadId: string;
   directory: string;

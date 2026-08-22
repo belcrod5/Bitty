@@ -47,7 +47,11 @@ export function buildPanelRuntimeSnapshot(params: {
   const isResponding = typeof patch.isResponding === "boolean" ? patch.isResponding : Boolean(base.isResponding);
   const snapshot: PanelRuntimeSnapshot = {
     panelId: normalizeRuntimePanelId(params.panelId),
+    backendId: String(patch.backendId ?? base.backendId ?? "codex").trim() || "codex",
     selectedSessionId,
+    sessionMaterialized: typeof patch.sessionMaterialized === "boolean"
+      ? patch.sessionMaterialized
+      : base.sessionMaterialized,
     selectedDirectoryPath: String(patch.selectedDirectoryPath ?? base.selectedDirectoryPath ?? "").trim(),
     selectedDirectoryDisplayName: String(patch.selectedDirectoryDisplayName ?? base.selectedDirectoryDisplayName ?? "").trim(),
     selectedSessionTitle: String(patch.selectedSessionTitle ?? base.selectedSessionTitle ?? "").trim(),

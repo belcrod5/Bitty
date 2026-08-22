@@ -25,8 +25,6 @@ function historyContent(message) {
 }
 
 export function createPrivateRunnerAgentRuntime({
-  neutralEnabled,
-  claudeEnabled,
   claudeBinary,
   runnerToken,
   dynamicTools,
@@ -64,16 +62,24 @@ export function createPrivateRunnerAgentRuntime({
       error.backendId = "codex";
       throw error;
     }
-    return resolveSessionDirectory(entry);
+    // cwdは実行identity。空のままresolveCanonicalCwdへ渡すとllm_rootへ
+    // フォールバックし、無関係なcwdでbinding照合されるためfail-closedにする。
+    const cwd = String(resolveSessionDirectory(entry) || "").trim();
+    if (!cwd) {
+      const error = new Error("Codex session cwd could not be resolved");
+      error.code = "session_not_found";
+      error.backendId = "codex";
+      throw error;
+    }
+    return cwd;
   }
 
   const codexBackend = createCodexBackend({
-    enabled: neutralEnabled,
     createClient: createCodexClient,
     resolveSessionCwd: resolveCodexSessionCwd,
     dynamicTools,
-    async listSessions({ cwd, limit }) {
-      const page = await listSessions(cwd, { source: "all", limit });
+    async listSessions({ cwd, limit, cursor, includeSubagents }) {
+      const page = await listSessions(cwd, { source: "all", limit, cursor, includeSubagents });
       return {
         sessions: page.sessions.map((session) => ({
           sessionRef: { backendId: "codex", nativeSessionId: session.sessionId },
@@ -85,7 +91,9 @@ export function createPrivateRunnerAgentRuntime({
           ...(session.parentSessionId
             ? { parentSessionRef: { backendId: "codex", nativeSessionId: session.parentSessionId } }
             : {}),
+          ...(session.cursor ? { cursor: String(session.cursor) } : {}),
         })),
+        ...(page.cursor ? { cursor: String(page.cursor) } : {}),
       };
     },
     async readHistory({ sessionRef, cursor, sinceCursor, limit }) {
@@ -108,7 +116,6 @@ export function createPrivateRunnerAgentRuntime({
     },
   });
   const claudeBackend = createClaudeBackend({
-    enabled: claudeEnabled,
     binary: claudeBinary,
     sessionStore,
   });

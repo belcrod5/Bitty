@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   AGENT_PROTOCOL_VERSION,
   AGENT_TERMINAL_EVENT_TYPES,
+  ALL_BACKENDS_SCOPE,
   agentError,
   createAgentEvent,
   hashAgentOperationRequest,
@@ -12,6 +13,33 @@ import {
 } from "./agent-protocol.mjs";
 
 const DEFAULT_REPLAY_LIMIT = 512;
+const COMPOSITE_SESSION_LIST_CURSOR_VERSION = 1;
+
+// all-backendsスコープの複合cursor。Backend固有cursorを共通層で解釈せず、
+// backendIdごとのopaque cursorをまとめて往復させる。
+function encodeCompositeSessionListCursor(cursorsByBackendId) {
+  return Buffer.from(JSON.stringify({
+    v: COMPOSITE_SESSION_LIST_CURSOR_VERSION,
+    backends: cursorsByBackendId,
+  })).toString("base64url");
+}
+
+function decodeCompositeSessionListCursor(value) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+    if (parsed?.v !== COMPOSITE_SESSION_LIST_CURSOR_VERSION) return null;
+    const backends = parsed.backends;
+    if (!backends || typeof backends !== "object" || Array.isArray(backends)) return null;
+    const cursors = {};
+    for (const [backendId, cursor] of Object.entries(backends)) {
+      if (typeof cursor !== "string") return null;
+      cursors[backendId] = cursor;
+    }
+    return cursors;
+  } catch {
+    return null;
+  }
+}
 
 function sessionKey(sessionRef) {
   return `${sessionRef.backendId}\u0000${sessionRef.nativeSessionId}`;
@@ -106,6 +134,28 @@ export function createAgentService({
     const run = runs.get(runId);
     if (!run) throw agentError("turn_rejected", "run was not found");
     return run;
+  }
+
+  async function resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle = false } = {}) {
+    const nativeCanonicalCwd = await resolveCanonicalCwd(await backend.resolveSessionCwd(sessionRef));
+    const binding = await sessionStore.getBinding(sessionRef);
+    if (!binding?.canonicalCwd) return nativeCanonicalCwd;
+    if (binding.canonicalCwd === nativeCanonicalCwd) return binding.canonicalCwd;
+    // native cwdはBackendが持つ真実。idle(lease無し)のbindingが食い違う場合は
+    // mode据え置きでnativeへ収束させる。requested cwdとの照合はfail-closedのまま。
+    if (reconcileIdle) {
+      const mode = await sessionStore.getMode(sessionRef);
+      if (mode?.mode && !mode.lease) {
+        const reconciled = await sessionStore.bind(
+          sessionRef,
+          nativeCanonicalCwd,
+          mode.mode,
+          { reconcileCwd: true },
+        );
+        if (reconciled?.status === "bound") return nativeCanonicalCwd;
+      }
+    }
+    throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: sessionRef.backendId });
   }
 
   function publish(run, type, payload = {}) {
@@ -348,10 +398,13 @@ export function createAgentService({
     if (request.effort && status?.capabilities?.model?.effort !== true) {
       throw agentError("capability_unsupported", "effort selection is not supported", { backendId: request.backendId });
     }
-    const storedCwd = request.sessionRef
-      ? (await sessionStore.getBinding(request.sessionRef))?.canonicalCwd || await backend.resolveSessionCwd(request.sessionRef)
-      : request.cwd;
-    const canonicalCwd = await resolveCanonicalCwd(storedCwd);
+    const effortOptions = status?.capabilities?.model?.effortOptions;
+    if (request.effort && Array.isArray(effortOptions) && effortOptions.length > 0 && !effortOptions.includes(request.effort)) {
+      throw agentError("capability_unsupported", "effort value is not supported", { backendId: request.backendId });
+    }
+    const canonicalCwd = request.sessionRef
+      ? await resolveNativeSessionCwd(request.sessionRef, backend)
+      : await resolveCanonicalCwd(request.cwd);
     if (request.sessionRef && request.cwd) {
       const requestedCwd = await resolveCanonicalCwd(request.cwd);
       if (requestedCwd !== canonicalCwd) {
@@ -567,9 +620,9 @@ export function createAgentService({
         });
       }
     }
-    const existingBinding = await sessionStore.getBinding(sessionRef);
     await recoverSessionLease(sessionRef, backend);
-    const canonicalCwd = existingBinding?.canonicalCwd || await backend.resolveSessionCwd(sessionRef);
+    const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle: true });
+    const existingBinding = await sessionStore.getBinding(sessionRef);
     if (cwd) {
       const requested = await resolveCanonicalCwd(cwd);
       if (requested !== canonicalCwd) throw agentError("session_cwd_mismatch", "session cwd does not match");
@@ -637,19 +690,98 @@ export function createAgentService({
     compactSession,
     cancelRunsInWorkspace,
     async listSessions(options) {
-      const backend = registry.get(String(options?.backendId || ""));
-      if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
-      const status = await backend.getStatus();
-      if (!status?.readiness?.ready) {
-        throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId });
-      }
-      if (status?.capabilities?.session?.list !== true) {
-        throw agentError("capability_unsupported", "session listing is not supported", { backendId: backend.backendId });
-      }
       const requestedCwd = String(options?.cwd || "").trim();
       if (!requestedCwd) throw agentError("turn_rejected", "cwd is required");
       const cwd = await resolveCanonicalCwd(requestedCwd);
-      return await backend.listSessions({ ...options, cwd });
+      const requestedBackendId = String(options?.backendId || "").trim();
+      if (requestedBackendId && requestedBackendId !== ALL_BACKENDS_SCOPE) {
+        const backend = registry.get(requestedBackendId);
+        if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
+        const status = await backend.getStatus();
+        if (!status?.readiness?.ready) {
+          throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId });
+        }
+        if (status?.capabilities?.session?.list !== true) {
+          throw agentError("capability_unsupported", "session listing is not supported", { backendId: backend.backendId });
+        }
+        return await backend.listSessions({ ...options, cwd });
+      }
+      // all-backends scope: session.list対応の全Backendを集約する。
+      // 一部Backendの失敗は他Backendの成功分を消さず、診断可能なerrorsとして返す。
+      const rawCursor = String(options?.cursor || "").trim();
+      const compositeCursor = rawCursor ? decodeCompositeSessionListCursor(rawCursor) : null;
+      if (rawCursor && !compositeCursor) {
+        throw agentError("turn_rejected", "session list cursor is invalid");
+      }
+      const results = await Promise.all(Array.from(registry.values(), async (backend) => {
+        try {
+          // 続きページでは、複合cursorに載っている(=まだ残りがある)Backendだけ照会する。
+          // 出し切ったBackendを再照会すると先頭ページを永遠に再列挙してしまう。
+          // 値は空文字も有効(前ページで1件も採用されなかったBackendは先頭位置のまま)。
+          if (compositeCursor && !(backend.backendId in compositeCursor)) return null;
+          const status = await backend.getStatus();
+          if (status?.capabilities?.session?.list !== true) return null;
+          if (!status?.readiness?.ready) {
+            return { backendId: backend.backendId, error: agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId }) };
+          }
+          const page = await backend.listSessions({
+            ...options,
+            cwd,
+            backendId: backend.backendId,
+            cursor: compositeCursor?.[backend.backendId] || "",
+          });
+          return { backendId: backend.backendId, page };
+        } catch (error) {
+          return { backendId: backend.backendId, error };
+        }
+      }));
+      const listed = results.filter(Boolean);
+      const failed = listed.filter((entry) => entry.error);
+      if (listed.length > 0 && failed.length === listed.length) throw failed[0].error;
+      const succeeded = listed.filter((entry) => !entry.error);
+      const merged = succeeded
+        .flatMap((entry) => (Array.isArray(entry.page?.sessions) ? entry.page.sessions : [])
+          .map((session) => ({ backendId: entry.backendId, session })))
+        .sort((a, b) => String(b.session?.updatedAt || "").localeCompare(String(a.session?.updatedAt || "")));
+      // 1ページ目から「全体の新しい順トップlimit」だけを返す。Backendごとのページは
+      // 時間範囲が揃わないため、単純合成だと古い項目が新しい未返却項目より先に出る。
+      // カットは全項目が位置cursor(session.cursor)を持つ時だけ行い、切った分は
+      // Backendごとのcursorを「実際に返した位置」までしか進めないことで次ページに回す。
+      const limit = Number(options?.limit);
+      const canCut = Number.isFinite(limit) && limit > 0 && merged.length > limit
+        && merged.every((item) => typeof item.session?.cursor === "string" && item.session.cursor);
+      const emitted = canCut ? merged.slice(0, limit) : merged;
+      const nextCursors = {};
+      for (const entry of succeeded) {
+        const pageCursor = String(entry.page?.cursor || "").trim();
+        if (!canCut) {
+          if (pageCursor) nextCursors[entry.backendId] = pageCursor;
+          continue;
+        }
+        const emittedOfBackend = emitted.filter((item) => item.backendId === entry.backendId);
+        const totalOfBackend = Array.isArray(entry.page?.sessions) ? entry.page.sessions.length : 0;
+        if (totalOfBackend > emittedOfBackend.length) {
+          // 未返却分が残っている: 最後に返した項目の位置(1件も返していなければ現位置のまま)
+          nextCursors[entry.backendId] = emittedOfBackend.length > 0
+            ? String(emittedOfBackend[emittedOfBackend.length - 1].session.cursor)
+            : String(compositeCursor?.[entry.backendId] || "");
+        } else if (pageCursor) {
+          nextCursors[entry.backendId] = pageCursor;
+        }
+      }
+      const sessions = emitted.map(({ session }) => {
+        const { cursor: _itemCursor, ...rest } = session;
+        return rest;
+      });
+      return {
+        sessions,
+        ...(Object.keys(nextCursors).length > 0
+          ? { cursor: encodeCompositeSessionListCursor(nextCursors) }
+          : {}),
+        ...(failed.length > 0
+          ? { errors: failed.map((entry) => serializeAgentError(entry.error, entry.backendId)) }
+          : {}),
+      };
     },
     async readHistory(options) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);
@@ -663,7 +795,8 @@ export function createAgentService({
         throw agentError("capability_unsupported", "session history is not supported", { backendId: backend.backendId });
       }
       const page = await backend.readHistory({ ...options, sessionRef });
-      return { ...page, sessionRef };
+      const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle: true });
+      return { ...page, sessionRef, canonicalCwd };
     },
   };
   return service;

@@ -1,7 +1,7 @@
-import { render } from "@testing-library/react-native";
+import { fireEvent, render, userEvent } from "@testing-library/react-native";
 import { ChatContextUsageMenu } from "./ChatContextUsageMenu";
 
-function renderMenu(contextPctText: string) {
+function renderMenu(contextPctText: string, onStartNewSession = jest.fn()) {
   return render(
     <ChatContextUsageMenu
       contextPctText={contextPctText}
@@ -9,7 +9,7 @@ function renderMenu(contextPctText: string) {
       progress={0}
       progressColor="#0284c7"
       trackColor="#dbeafe"
-      onStartNewSession={jest.fn()}
+      onStartNewSession={onStartNewSession}
     />
   );
 }
@@ -26,5 +26,16 @@ describe("ChatContextUsageMenu", () => {
     const { getByText } = await renderMenu("42%");
 
     expect(getByText("42%")).toBeTruthy();
+  });
+
+  it("starts a new chat from the context-usage long-press action", async () => {
+    const onStartNewSession = jest.fn();
+    const menu = await renderMenu("42%", onStartNewSession);
+    const user = userEvent.setup();
+
+    await user.longPress(menu.getByLabelText("コンテキスト使用量 42%"));
+    await fireEvent.press(menu.getByText("同じディレクトリーで新規セッション"));
+
+    expect(onStartNewSession).toHaveBeenCalledTimes(1);
   });
 });

@@ -58,7 +58,7 @@ export function PushNotificationRegistrar({
     const processResponse = (response: Notifications.NotificationResponse): boolean => {
       const request = response.notification.request;
       const responseKey = `${String(request.identifier || "")}:${String(response.actionIdentifier || "")}`;
-      const { sessionId, directory, approvalId } = normalizeNotificationMetadata(request);
+      const { backendId, sessionId, directory, approvalId } = normalizeNotificationMetadata(request);
       const categoryIdentifier = String(request.content.categoryIdentifier || "");
 
       if (response.actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER) {
@@ -67,7 +67,7 @@ export function PushNotificationRegistrar({
         processedResponseKeysRef.current.add(responseKey);
         // Plain tap: the app is guaranteed to be foregrounded by iOS. Stash the session id for
         // usePendingPushSessionNavigationController (AppRoot.tsx) to pick up once ready.
-        setPendingPushSessionTarget({ sessionId, directory });
+        setPendingPushSessionTarget({ ...(backendId ? { backendId } : {}), sessionId, directory });
         return true;
       }
 

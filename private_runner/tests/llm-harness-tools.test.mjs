@@ -104,7 +104,7 @@ test("Runner-initiated turns share the completion notification boundary", async 
   const source = await readFile(new URL("../src/server-runtime.mjs", import.meta.url), "utf8");
   assert.match(source, /executeTurn: \(request\) => \{\s*if \(request\.calendarMode === "read"\) \{\s*return calendarScheduleRuntime\.run\(\{\s*clientName: "private-runner-location-schedule",\s*origin: "location_schedule",\s*request,[\s\S]*?return runRunnerInitiatedTurn\(\{\s*clientName: "private-runner-location-schedule",\s*origin: "location_schedule",\s*request,/);
   assert.match(source, /await runRunnerInitiatedTurn\(\{\s*clientName: "private-runner-codex-queued-turn",\s*origin: "queued_turn",/);
-  assert.match(source, /turnCompletionNotifier\.notifyTurnCompleted\(\{\s*threadId: result\.threadId,\s*turnId: result\.turnId,\s*agentMessageText: result\.lastAgentMessageText,/);
+  assert.match(source, /turnCompletionNotifier\.notifyTurnCompleted\(\{\s*backendId: "codex",\s*threadId: result\.threadId,\s*turnId: result\.turnId,\s*agentMessageText: result\.lastAgentMessageText,/);
   assert.doesNotMatch(source, /sendTurnCompletedPush/);
 });
 

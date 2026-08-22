@@ -1,8 +1,10 @@
 import { act, renderHook } from "@testing-library/react-native";
-import { AppState } from "react-native";
+import { Alert, AppState } from "react-native";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsConnectionSnapshot, RunnerWsConnectionState } from "../../runnerWs/types";
+import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import { createResyncRateLimiter } from "../utils/resumeSync";
+import { useChatModelSelection } from "./useChatModelSelection";
 import { useReadyDrivenResumeSyncController } from "./useReadyDrivenResumeSyncController";
 
 const READY_DEBOUNCE_MS = 250;
@@ -28,10 +30,10 @@ class FakeRunnerWebSocketManager {
   }
 }
 
-function panelEntry(sessionId: string, directory = "/repo", isResponding = false) {
+function panelEntry(sessionId: string, directory = "/repo", isResponding = false, sessionMaterialized = true) {
   return {
     sessionId,
-    snapshot: { selectedSessionId: sessionId, selectedDirectoryPath: directory, isResponding },
+    snapshot: { selectedSessionId: sessionId, selectedDirectoryPath: directory, isResponding, sessionMaterialized },
   } as never;
 }
 
@@ -60,7 +62,7 @@ function baseArgs(overrides: Partial<Parameters<typeof useReadyDrivenResumeSyncC
     hasActiveClientTurnForSession: jest.fn().mockReturnValue(false),
     selectSpecificLlmSession: jest.fn().mockResolvedValue(true),
     hydratePanelFromSessionHistoryRef: { current: jest.fn().mockResolvedValue("applied" as const) },
-    fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue(""),
+    fetchLatestSessionForDirectory: jest.fn().mockResolvedValue(null),
     markSessionReadAsync: jest.fn(),
     logSessionDiag: jest.fn(),
     ...overrides,
@@ -83,8 +85,10 @@ function unstableClone(args: ReturnType<typeof baseArgs>): ReturnType<typeof bas
     selectSpecificLlmSession: ((...params: unknown[]) => (
       (args.selectSpecificLlmSession as unknown as (...p: unknown[]) => Promise<boolean>)(...params)
     )) as never,
-    fetchLatestSessionIdForDirectory: ((...params: unknown[]) => (
-      (args.fetchLatestSessionIdForDirectory as unknown as (...p: unknown[]) => Promise<string>)(...params)
+    fetchLatestSessionForDirectory: ((...params: unknown[]) => (
+      (args.fetchLatestSessionForDirectory as unknown as (
+        ...p: unknown[]
+      ) => Promise<{ sessionId: string; backendId: string } | null>)(...params)
     )) as never,
     normalizedLlmDirectoryForRequest: () => args.normalizedLlmDirectoryForRequest(),
     logSessionDiag: ((...params: unknown[]) => (
@@ -291,6 +295,87 @@ describe("useReadyDrivenResumeSyncController", () => {
     }));
   });
 
+  it("keeps a drawer-created local draft selectable after a ready transition", async () => {
+    const draftSnapshot: PanelRuntimeSnapshot = {
+      panelId: "drawer_session_popup",
+      backendId: "codex",
+      selectedSessionId: "local-draft",
+      sessionMaterialized: false,
+      selectedDirectoryPath: "/repo",
+      selectedDirectoryDisplayName: "repo",
+      selectedSessionTitle: "（ユーザーメッセージなし）",
+      selectedSessionUpdatedAt: "",
+      selectedSessionMarkerColor: "gray",
+      selectedThreadStatusType: "idle",
+      modelRef: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+      contextUsedPct: null,
+      isResponding: false,
+      inheritedConversationMessages: [],
+      conversationMessages: [],
+    };
+    const draftEntry = { sessionId: "local-draft", snapshot: draftSnapshot };
+    const args = baseArgs({
+      drawerSessionPopupPanelId: "drawer_session_popup",
+      panelRuntimeEntriesByIdRef: {
+        current: { drawer_session_popup: draftEntry },
+      },
+      selectedLlmSessionIdRef: { current: "" },
+      llmConversationSessionIdRef: { current: "" },
+      startupSessionRestoreAttemptedRef: { current: false },
+    });
+    const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
+    await renderHook(() => useReadyDrivenResumeSyncController(args));
+
+    await act(async () => manager.setState("ready", 1));
+    await advance(READY_DEBOUNCE_MS);
+
+    expect(args.hydratePanelFromSessionHistoryRef.current).not.toHaveBeenCalled();
+    expect(draftSnapshot.sessionMaterialized).toBe(false);
+
+    const updatePanelSettings = jest.fn();
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const modelOptions = [
+      {
+        selectionKey: "codex::gpt-5.6-sol",
+        backendId: "codex",
+        modelId: "gpt-5.6-sol",
+        label: "ChatGPT 5.6 Sol",
+        supportsReasoningEffort: true,
+        changeWithinSession: true,
+      },
+      {
+        selectionKey: "claude::sonnet",
+        backendId: "claude",
+        modelId: "sonnet",
+        label: "Claude Sonnet",
+        supportsReasoningEffort: false,
+        changeWithinSession: false,
+      },
+    ] as const;
+    const selection = await renderHook(() => useChatModelSelection({
+      isPanelRuntimeView: true,
+      panelId: "drawer_session_popup",
+      panelSnapshot: draftSnapshot,
+      conversationMessageCount: 0,
+      llmBackend: "codex",
+      modelRef: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+      selectedModelLabel: "ChatGPT 5.6 Sol",
+      modelOptions,
+      selectModel: jest.fn(),
+      updatePanelSettings,
+      closePicker: jest.fn(),
+    }));
+    await act(async () => selection.result.current.selectModelForView("claude::sonnet"));
+
+    expect(alert).not.toHaveBeenCalled();
+    expect(updatePanelSettings).toHaveBeenCalledWith("drawer_session_popup", {
+      backendId: "claude",
+      modelRef: "sonnet",
+    });
+  });
+
   it("applies one rate-limit slot per session across the selected chat and all its panels", async () => {
     const args = baseArgs({
       drawerSessionPopupPanelId: "drawer_session_popup",
@@ -440,7 +525,10 @@ describe("useReadyDrivenResumeSyncController", () => {
   it("falls back to the latest session when nothing is selected", async () => {
     const args = baseArgs({
       selectedLlmSessionIdRef: { current: "" },
-      fetchLatestSessionIdForDirectory: jest.fn().mockResolvedValue("session-9"),
+      fetchLatestSessionForDirectory: jest.fn().mockResolvedValue({
+        sessionId: "session-9",
+        backendId: "claude",
+      }),
     });
     const manager = args.runnerWebSocketManager as unknown as FakeRunnerWebSocketManager;
 
@@ -450,7 +538,9 @@ describe("useReadyDrivenResumeSyncController", () => {
     });
     await advance(READY_DEBOUNCE_MS);
 
+    // all-backends一覧のidentity(backendId)を明示して復元する。
     expect(args.selectSpecificLlmSession).toHaveBeenCalledWith("session-9", {
+      backendId: "claude",
       source: "all",
       directory: "/workspace",
     });

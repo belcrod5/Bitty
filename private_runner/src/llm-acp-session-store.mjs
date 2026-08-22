@@ -558,7 +558,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     return binding ? { ...binding } : null;
   }
 
-  async function bindAgentSession(sessionRef, canonicalCwdRaw, modeRaw) {
+  async function bindAgentSession(sessionRef, canonicalCwdRaw, modeRaw, options = {}) {
     const backendId = String(sessionRef?.backendId || "").trim();
     const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
     const rawCwd = String(canonicalCwdRaw || "").trim();
@@ -572,6 +572,25 @@ export function createLlmAcpSessionStore(deps = {}) {
       const key = agentSessionKey(backendId, nativeSessionId);
       const existingBinding = agentSessionBindings.get(key);
       if (existingBinding && existingBinding.canonicalCwd !== canonicalCwd) {
+        const existingMode = agentSessionModes.get(key);
+        // reconcileはmode据え置き(要求modeが既存modeと一致)かつidle(lease無し)のみ許す。
+        // native cwdへの収束は認めるが、mode遷移や実行中セッションの付け替えは認めない。
+        if (
+          options.reconcileCwd === true &&
+          existingMode?.mode === mode &&
+          !existingMode.lease
+        ) {
+          const previousBinding = { ...existingBinding };
+          const binding = { ...existingBinding, canonicalCwd, updatedAt: new Date().toISOString() };
+          agentSessionBindings.set(key, binding);
+          try {
+            await persistAcpSessionStore();
+          } catch (error) {
+            agentSessionBindings.set(key, previousBinding);
+            throw error;
+          }
+          return { status: "bound", binding: { ...binding }, mode };
+        }
         return { status: "cwd_conflict", binding: { ...existingBinding } };
       }
       const existingMode = agentSessionModes.get(key);

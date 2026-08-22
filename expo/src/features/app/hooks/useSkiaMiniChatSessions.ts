@@ -26,6 +26,7 @@ export function skiaMiniChatPanelId(sessionId: string) {
 
 export type SkiaMiniChatSession = {
   kind: "session";
+  backendId: string;
   cardId: string;
   panelId: string;
   sessionId: string;
@@ -234,6 +235,7 @@ export function useSkiaMiniChatSessions() {
       try {
         const result = await hydratePanelFromSessionHistoryRef.current({
           panelId,
+          backendId: candidate.backendId,
           sessionId: candidate.sessionId,
           directory: candidate.directory,
           source: candidate.source,
@@ -284,6 +286,7 @@ export function useSkiaMiniChatSessions() {
       const runtimeActivityTrail = snapshot.runtimeActivityTrail || [];
       const built: SkiaMiniChatSession = {
         kind: "session",
+        backendId: candidate.backendId,
         cardId: skiaBoardCardId(card),
         panelId,
         sessionId: candidate.sessionId,

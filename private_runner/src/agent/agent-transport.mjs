@@ -49,6 +49,7 @@ export function createAgentHttpHandler({
           cwd: String(reqUrl.searchParams.get("cwd") || "").trim(),
           cursor: String(reqUrl.searchParams.get("cursor") || "").trim(),
           limit: normalizeSessionListLimit(reqUrl.searchParams.get("limit")),
+          ...(reqUrl.searchParams.get("includeSubagents") === "false" ? { includeSubagents: false } : {}),
         }));
       } catch (error) {
         json(res, error?.code === "backend_unavailable" ? 404 : 400, { error: serializeAgentError(error) });

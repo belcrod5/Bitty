@@ -16,7 +16,7 @@ export function useSessionHistoryPagingController(options: {
   fetchPage: (
     sessionId: string,
     directory: string,
-    options: { cursor: string }
+    options: { backendId?: string; cursor: string }
   ) => Promise<RunnerSessionMessagesResult>;
   applyPage: (sessionId: string, page: RunnerSessionMessagesResult) => void;
 }) {
@@ -50,7 +50,12 @@ export function useSessionHistoryPagingController(options: {
     });
   }, [publish]);
 
-  const loadOlder = useCallback(async (params: { sessionId: string; directory: string; retry?: boolean }) => {
+  const loadOlder = useCallback(async (params: {
+    backendId?: string;
+    sessionId: string;
+    directory: string;
+    retry?: boolean;
+  }) => {
     const sessionId = String(params.sessionId || "").trim();
     const directory = String(params.directory || "").trim();
     const current = pageStateRef.current[sessionId];
@@ -59,7 +64,10 @@ export function useSessionHistoryPagingController(options: {
     const generation = current.generation;
     publish(sessionId, { ...current, loading: true, error: "", errorCode: "" });
     try {
-      const page = await fetchPage(sessionId, directory, { cursor });
+      const page = await fetchPage(sessionId, directory, {
+        ...(params.backendId ? { backendId: params.backendId } : {}),
+        cursor,
+      });
       const latest = pageStateRef.current[sessionId];
       if (!latest || latest.generation !== generation || latest.olderCursor !== cursor) return;
       applyPage(sessionId, page);

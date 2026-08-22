@@ -12,6 +12,7 @@ export type LlmRuntimeLimitsSnapshot = {
 };
 
 export type LlmSessionHistoryEntryLike = {
+  backendId?: string;
   sessionId: string;
   source: LlmSessionSource;
   updatedAt: string;
@@ -114,26 +115,28 @@ function pickPreferredSessionHistoryEntry(
 }
 
 export function dedupeSessionHistoryEntries<T extends LlmSessionHistoryEntryLike>(entries: T[]): T[] {
-  const bestBySessionId = new Map<string, T>();
+  const bestBySessionRef = new Map<string, T>();
   for (const entry of entries) {
     const sessionId = String(entry.sessionId || "").trim();
     if (!sessionId) continue;
-    const existing = bestBySessionId.get(sessionId);
+    const sessionRef = `${String(entry.backendId || "codex").trim() || "codex"}\u0000${sessionId}`;
+    const existing = bestBySessionRef.get(sessionRef);
     if (!existing) {
-      bestBySessionId.set(sessionId, entry);
+      bestBySessionRef.set(sessionRef, entry);
       continue;
     }
-    bestBySessionId.set(sessionId, pickPreferredSessionHistoryEntry(existing, entry) as T);
+    bestBySessionRef.set(sessionRef, pickPreferredSessionHistoryEntry(existing, entry) as T);
   }
   const out: T[] = [];
   const emitted = new Set<string>();
   for (const entry of entries) {
     const sessionId = String(entry.sessionId || "").trim();
-    if (!sessionId || emitted.has(sessionId)) continue;
-    const best = bestBySessionId.get(sessionId);
+    const sessionRef = `${String(entry.backendId || "codex").trim() || "codex"}\u0000${sessionId}`;
+    if (!sessionId || emitted.has(sessionRef)) continue;
+    const best = bestBySessionRef.get(sessionRef);
     if (best === entry) {
       out.push(entry);
-      emitted.add(sessionId);
+      emitted.add(sessionRef);
     }
   }
   return out;

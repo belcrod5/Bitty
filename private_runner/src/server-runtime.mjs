@@ -65,8 +65,6 @@ const HOST = process.env.HOST || "127.0.0.1";
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN || "";
 const RUNNER_MOCK = process.env.RUNNER_MOCK === "1";
 const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
-const AGENT_NEUTRAL_ENABLED = process.env.AGENT_NEUTRAL_ENABLED === "1";
-const AGENT_CLAUDE_ENABLED = process.env.AGENT_CLAUDE_ENABLED === "1";
 const AGENT_CLAUDE_BINARY = String(process.env.AGENT_CLAUDE_BINARY || "claude").trim() || "claude";
 const AGENT_PROCESS_EPOCH = randomUUID();
 const RUNNER_WS_PATH = "/runner-ws";
@@ -1641,8 +1639,23 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
   };
 }
 
+// Agent Backendへ渡すCodexセッションのcwdは実行identity(絶対パス)。
+// resolveCliSessionEntryDirectoryは一覧スコープ用のworkspace相対パスで、
+// workspace外のセッションでは空になり resolveCanonicalDirectoryIdentity の
+// llm_rootフォールバックへ誤解決される(session_cwd_mismatchの根本原因)。
+function resolveCliSessionEntryExecutionCwd(entry) {
+  const nativeCwd = String(entry?.cwd || "").trim();
+  if (nativeCwd) return toUnixPath(path.resolve(nativeCwd));
+  // 旧indexエントリ(cwd未記録)のみworkspace相対スコープから復元する。
+  // resolveCliSessionEntryDirectoryはcwd空だとprocess cwdを拾うため使わない。
+  const scopeDirectory = String(entry?.directory || "").trim();
+  if (scopeDirectory) {
+    return toUnixPath(path.resolve(WORKSPACE_ROOT, normalizeSessionRootRelativePath(scopeDirectory)));
+  }
+  return "";
+}
+
 const agentRuntime = createPrivateRunnerAgentRuntime({
-  neutralEnabled: AGENT_NEUTRAL_ENABLED, claudeEnabled: AGENT_CLAUDE_ENABLED,
   claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
   stores: {
     bindSession: bindAgentSession, getSessionBinding: getAgentSessionBinding, getSessionMode: getAgentSessionMode,
@@ -1652,14 +1665,14 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
     listWorkspaces: listAgentWorkspaces, approveWorkspace: approveAgentWorkspace, revokeWorkspace: revokeAgentWorkspace,
   },
   createCodexClient: ({ signal }) => createCodexRpcClient({ signal }), normalizeSessionId: normalizeLlmExecutionSessionId,
-  findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryDirectory,
+  findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
   listSessions: listLlmSessions, listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
 });
 const { service: agentService, httpHandler: agentHttpHandler } = agentRuntime;
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
-  enabled: AGENT_NEUTRAL_ENABLED, bindSession: bindAgentSession,
+  bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
   acquireLease: acquireAgentSessionLease,
   settleLease: settleAgentSessionLease,
@@ -7084,6 +7097,7 @@ async function runRunnerInitiatedTurn({
   try {
     const result = await executeCodexTurn({ client, clientName, onTurnStarted, ...request });
     void turnCompletionNotifier.notifyTurnCompleted({
+      backendId: "codex",
       threadId: result.threadId,
       turnId: result.turnId,
       agentMessageText: result.lastAgentMessageText,
@@ -7133,7 +7147,7 @@ async function runCodexQueuedTurn(turn) {
   codexRunningTurnByThreadId.set(turn.threadId, turn.queuedTurnId);
   const sessionRef = { backendId: "codex", nativeSessionId: turn.threadId };
   try {
-    const ownership = AGENT_NEUTRAL_ENABLED ? await getAgentSessionMode(sessionRef) : null;
+    const ownership = await getAgentSessionMode(sessionRef);
     if (ownership?.mode === "neutral") {
       const run = await agentService.startTurn({
         backendId: "codex",
@@ -7172,14 +7186,12 @@ async function runCodexQueuedTurn(turn) {
       if (result.outcome !== "completed") throw new Error(`queued Agent turn ${result.outcome}`);
     } else {
       let acquired = null;
-      if (AGENT_NEUTRAL_ENABLED) {
-        const canonicalCwd = await resolveCanonicalDirectoryIdentity(turn.cwd);
-        const bound = await bindAgentSession(sessionRef, canonicalCwd, "raw");
-        if (bound?.status !== "bound") throw new Error(`queued Codex session binding failed: ${bound?.status || "unknown"}`);
-        acquired = await acquireAgentSessionLease({ sessionRef, mode: "raw", owner: "codex-queue", runId: turn.queuedTurnId });
-        if (acquired?.status !== "acquired" && acquired?.status !== "existing") throw new Error("queued Codex session is busy");
-        turn.agentLease = acquired.lease;
-      }
+      const canonicalCwd = await resolveCanonicalDirectoryIdentity(turn.cwd);
+      const bound = await bindAgentSession(sessionRef, canonicalCwd, "raw");
+      if (bound?.status !== "bound") throw new Error(`queued Codex session binding failed: ${bound?.status || "unknown"}`);
+      acquired = await acquireAgentSessionLease({ sessionRef, mode: "raw", owner: "codex-queue", runId: turn.queuedTurnId });
+      if (acquired?.status !== "acquired" && acquired?.status !== "existing") throw new Error("queued Codex session is busy");
+      turn.agentLease = acquired.lease;
       try {
         await runRunnerInitiatedTurn({
           clientName: "private-runner-codex-queued-turn",
@@ -11127,6 +11139,7 @@ function createCodexRelayContext(params) {
     lastAgentMessageText: "",
     pendingApprovalRequestIds: new Set(),
     agentLease: null,
+    agentBindingReconciliation: null,
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
     requestMetaByRpcId: new Map(),
@@ -11303,6 +11316,7 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     relay.threadId
   );
   void turnCompletionNotifier.notifyTurnCompleted({
+    backendId: "codex",
     sessionId: threadId,
     threadId,
     turnId: getCodexTurnStartedId(rpcPayload) || "",
@@ -11452,16 +11466,26 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       bindCodexRelayThreadMapping(relay, resolvedThreadId, { allowSwitch: true });
       cleanupNoClientRelaysForThread(resolvedThreadId, relay, `upstream_${responseRpcMethod}`);
     }
-    // Fallback working-directory capture for push titles: the app-server echoes the
-    // thread's cwd in thread/start / thread/resume results even when the client request
-    // omitted it (see the client-side capture in forwardCodexRelayClientData).
+    // The native result is authoritative. A shared relay may still carry another
+    // session's cwd while thread/resume is in flight, so never bind from relay state.
     const resultCwd = typeof rpcPayload?.result?.thread?.cwd === "string"
       ? rpcPayload.result.thread.cwd.trim()
       : "";
     if (resultCwd) relay.threadCwd = resultCwd;
-    if (codexRawSessionOwnership.enabled && resolvedThreadId && relay.threadCwd) {
-      void codexRawSessionOwnership.bind(relay, resolvedThreadId, relay.threadCwd)
-        .catch((error) => console.warn(`[codex-ws-proxy] failed to bind raw session: ${errorMessage(error)}`));
+    if (resolvedThreadId && resultCwd) {
+      const previousReconciliation = relay.agentBindingReconciliation;
+      const leaseSettlement = relay.agentLeaseSettlement;
+      relay.agentBindingReconciliation = (async () => {
+        if (previousReconciliation) await previousReconciliation;
+        if (leaseSettlement) await leaseSettlement;
+        try {
+          await codexRawSessionOwnership.bind(relay, resolvedThreadId, resultCwd, { reconcileCwd: true });
+          return { error: null };
+        } catch (error) {
+          console.warn(`[codex-ws-proxy] failed to bind raw session: ${errorMessage(error)}`);
+          return { error };
+        }
+      })();
     }
   }
   if (responseRpcMethod === "turn/start" && meta?.hasError) codexRawSessionOwnership.settle(relay, "released", "turn");
@@ -11758,8 +11782,34 @@ function isCodexRelayIdentityBindingMethod(method) {
   return method === "initialize" || isCodexTurnOwningMethod(method);
 }
 
+function trackCodexRelayClientForward(relay, task) {
+  const queued = Promise.resolve(task);
+  const tail = queued.catch(() => {});
+  relay.clientForwardBusy = true;
+  relay.clientForwardQueue = tail;
+  void tail.finally(() => {
+    if (relay.clientForwardQueue === tail) relay.clientForwardBusy = false;
+  });
+  return queued;
+}
+
 function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (!relay || relay.closed) return;
+  if (params.clientForwardQueued !== true) {
+    const forwardQueued = () => forwardCodexRelayClientData(relay, data, isBinary, {
+      ...params,
+      clientForwardQueued: true,
+    });
+    if (relay.clientForwardBusy) {
+      const queued = (relay.clientForwardQueue || Promise.resolve()).then(forwardQueued);
+      return trackCodexRelayClientForward(relay, queued);
+    }
+    const forwarded = forwardQueued();
+    if (forwarded && typeof forwarded.then === "function") {
+      return trackCodexRelayClientForward(relay, forwarded);
+    }
+    return forwarded;
+  }
   const remote = String(params.remote || relay.remote || "unknown");
   const endpoint = String(params.endpoint || relay.endpoint || "/codex-ws");
   const requestId = String(params.requestId || "").trim();
@@ -11772,6 +11822,15 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (
+    meta?.method === "thread/start" ||
+    meta?.method === "thread/resume" ||
+    meta?.method === "turn/start"
+  ) {
+    const requestCwd = typeof rpcPayload?.params?.cwd === "string" ? rpcPayload.params.cwd.trim() : "";
+    if (meta.method === "thread/start" || meta.method === "thread/resume") relay.threadCwd = requestCwd;
+    else if (requestCwd) relay.threadCwd = requestCwd;
+  }
   const admission = codexRawSessionOwnership.intercept(
     relay, rpcPayload, meta?.method, params,
     (admittedParams) => forwardCodexRelayClientData(relay, data, isBinary, admittedParams),
@@ -11888,17 +11947,6 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
         sessionId: requestSessionId,
         threadId: requestThreadId,
       });
-    }
-    // Remember the session's working directory (the app sends cwd on thread/start,
-    // thread/resume, and turn/start) so push notifications can title themselves with the
-    // directory's trailing segment (see derivePushDirectoryTitle).
-    if (
-      meta.method === "thread/start" ||
-      meta.method === "thread/resume" ||
-      meta.method === "turn/start"
-    ) {
-      const requestCwd = typeof rpcPayload?.params?.cwd === "string" ? rpcPayload.params.cwd.trim() : "";
-      if (requestCwd) relay.threadCwd = requestCwd;
     }
     if (meta.threadId) {
       const allowSwitch = (
@@ -12305,6 +12353,8 @@ export const __TESTING__ = {
   listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,
+  resolveCliSessionEntryExecutionCwd,
+  WORKSPACE_ROOT,
   resolvePathWithinToolRoot,
   resolveWorkspaceShellScriptTarget,
   resolveClientFilePath,

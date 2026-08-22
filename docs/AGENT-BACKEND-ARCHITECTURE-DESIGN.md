@@ -190,16 +190,16 @@ BackendStatus = {
     turn: { interrupt },
     action: { kinds: ActionKind[], decisions: [...], policyProfiles: [...] },
     permission: { interactive },
-    model: { select, effort },
+    model: { select, effort, changeWithinSession, catalog: [{ modelId, label }] },
     workspace: { projectCustomizations, admission },
-    operations: { compact },
+    operations: { compact, schedule },
     event: { nativePayload },
     tool: { dynamic }
   }
 }
 ```
 
-Backendがstartup probeとversion判定を終えた具体値だけを返す。Codex quota表示とauth-profile mutationは汎用status/auth APIへ押し込まずCodex固有route/capabilityのまま維持する。
+`getStatus()`はCLI processやversion/auth probeを起動せず、Backendが所有する安定catalogとcapabilityを常時返す。Claudeのauthは未送信時`unknown`、readinessはoptimisticとし、binary未導入、version不足、未ログインは`startTurn`の送信時probeから明確なエラーとして返す。失敗したprobeは固定cacheにせず、CLI導入・更新後の次回送信で再試行する。Codex quota表示とauth-profile mutationは汎用status/auth APIへ押し込まずCodex固有route/capabilityのまま維持する。
 
 ## 3.2 SessionRefとstartTurn
 
@@ -304,7 +304,7 @@ item IDは同じnative recordに対してpaging/delta間でstableにする。con
 CodexのACP/CLI統合はCodex内、Claude catalog/transcript統合はClaude内で行う。
 history cursorとaction requestIdはopaqueである。Codex inode cursor、RPC ID、Claude transcript offset/permission tokenを共通層で解釈しない。
 decisionは`allow`、`deny`、対応可能なら`allow_for_session`とし、Backendがnative decisionへ変換する。
-model IDとeffort IDは共通層ではopaqueで、Backendが組を検証する。`listModels() -> [{ id, label?, efforts: [{ id, label? }] }]`は検証済みの組だけを返す。Codex既存reasoning effortとClaudeの`--effort`はともに`startTurn.effort`だけを入力元とし、別名parameterやProvider間のenum変換を共通層へ作らない。Claude v1はaccount別model catalogを推測せず、初期は`listModels=[]`、`model.select=false`、model/effort省略でnative defaultを使う。明示候補を実turnで検証できた場合だけ選択を開く。
+model IDとeffort IDは共通層ではopaqueで、Backendが組を検証する。Backendの`getStatus()`はmodel catalogと`model.effort`、`model.changeWithinSession`を公開し、Expoは`(backendId, modelId)`の組だけを選択・保存する。Codexの既存model/reasoning effort一覧はCodexBackend、Claude Code CLIの安定alias（`haiku`、`sonnet`、`opus`）はClaudeBackendだけが所有する。Claudeはeffort選択とnative session途中のmodel変更をadvertiseせず、resumeでは保存済みmodelを維持する。
 
 ## 3.4 capabilityとoptional operation
 
@@ -354,7 +354,7 @@ workspace admissionはProvider非依存の認証済みHTTP境界に一つだけ�
 validation/backend admissionに失敗したrequestはrunをacceptせずrequest errorを返す。一度acceptしてrunIdを返したrunは`turn.accepted`を最初に出し、session確定時だけ`session.resolved`、native turn開始時だけ`turn.started`を出し、最後はexactly one terminal eventとする。spawn失敗、auth失効、Codex `thread/start`失敗、`system/init`未到達でもterminalだけは保証し、未到達eventを捏造しない。
 terminalは`turn.completed|failed|interrupted`の一つで、terminal後にeventを発行しない。
 sequenceはrun内で1から単調増加し、bounded replayから`events.resume`できる。gapはresume missとしhistory再取得へ誘導する。
-rawとneutral clientを同じexecutionへfan-outして二重ownerにしない。Codex session ownership recordは`backendId/nativeSessionId`ごとにdurableな`mode: raw|neutral`とlease `{ owner, runId, processEpoch, acquiredAt, expiresAt, generation, nativeProcessIdentity? }?`を原子的に保持する。modeはclient transportと実行経路を選び、schedule/queueはmodeを変更せず同じleaseを取得する。raw modeでは現行relay initiator、neutral modeではAgentService/Backendへdispatchする。sessionなしのscheduleは移行flagで選ばれたdefault modeをturn開始時に固定する。
+rawとneutral clientを同じexecutionへfan-outして二重ownerにしない。Codex session ownership recordは`backendId/nativeSessionId`ごとにdurableな`mode: raw|neutral`とlease `{ owner, runId, processEpoch, acquiredAt, expiresAt, generation, nativeProcessIdentity? }?`を原子的に保持する。modeはclient transportと実行経路を選び、schedule/queueはmodeを変更せず同じleaseを取得する。raw modeでは現行relay initiator、neutral modeではAgentService/Backendへdispatchする。sessionなしのCodex scheduleは互換性維持のためraw modeで開始し、turn開始時にownershipを固定する。
 active leaseがあれば全入口の同時turnを`session_busy`で拒否する。mode handoffはactive turnと未回答actionがない時だけ行う。client disconnectはtransport detachだけでleaseを解放せず、現行Codexと同様にupstream turn、event replay、action stateを保持する。lease解放はnative terminal確認、native開始前の失敗、またはcancel/recovery後にnative activity停止を確認した場合だけgeneration一致で行い、modeは戻さない。upstream socket喪失等でterminalが不明ならleaseを`recovering`へ遷移する。
 runner再起動後の異なるprocessEpochも`recovering`として新規turnを拒否する。Codexはnative thread status、ClaudeはPIDだけでなくOSのprocess start identityを照合して残存processをcancel ladderで停止し、terminal/historyを照合してからleaseをclearする。expiryだけでは解放せず、native activityなしを確認できない間はfail closedにする。
 
@@ -405,11 +405,11 @@ v1はturn-per-processに固定し、shellを介さずbinary pathとargv配列を
 ```text
 fresh:
 claude -p --output-format stream-json --verbose --include-partial-messages
-  --safe-mode --session-id <uuid> [--model <id>] [--effort <level>] [permission flags]
+  --safe-mode --session-id <uuid> [--model <alias>] [permission flags]
 
 resume（bindingの同一cwd）:
 claude -p --output-format stream-json --verbose --include-partial-messages
-  --safe-mode --resume <id> [--model <id>] [--effort <level>] [permission flags]
+  --safe-mode --resume <id> [permission flags]
 ```
 
 resumeでは`--session-id`を併用しない。plain promptをstdinへwriteしてEOFし、argvへ本文を残さない。
@@ -427,10 +427,10 @@ local `2.1.199`はproject/worktree lookup修正の`2.1.223`より前であるた
 
 API keyを要求・注入せず、`--bare`も使わない。`--bare`はOAuth/keychain contextを無効にし得るためである。
 auth file/tokenをcopy、log、mutationしない。local loginを保つHOME/keychain context、必要なPATH、設定済み`CLAUDE_CONFIG_DIR`等だけを最小継承し、runnerの無関係なsecret envは除外する。
-`claude -p`はworkspace trust dialogをskipし、非bare実行はproject/localのsettings、hooks、MCPを読み得る。現行runnerには承認済みworkspace allowlistが存在しないため、Claude有効化前にworkspace admissionを追加する。認証済みユーザーの明示操作で選択したrootの`realpath`、承認時刻、失効状態だけを既存metadata storeの別namespaceへ保存し、fresh/resumeともcanonical cwdが有効root自身または配下である場合だけbindingとspawnを許可する。symlink解決後にcontainmentを再検査し、root失効後は既存bindingも起動不可にする。この制限はCodex raw互換へ遡及適用しない。
+`claude -p`はworkspace trust dialogをskipし、非bare実行はproject/localのsettings、hooks、MCPを読み得る。Claude送信はAgentServiceのworkspace admissionを通し、認証済みユーザーの明示操作で選択したrootの`realpath`、承認時刻、失効状態だけを既存metadata storeの別namespaceへ保存する。fresh/resumeともcanonical cwdが有効root自身または配下である場合だけbindingとspawnを許可する。symlink解決後にcontainmentを再検査し、root失効後は既存bindingも起動不可にする。この制限はCodex raw互換へ遡及適用しない。
 初期v1はOAuth/keychainを維持したままproject/local customizationを切る`--safe-mode`を必須にし、`BackendStatus.capabilities.workspace.projectCustomizations=false`を返す。managed policyは残り得るため、実効設定とpolicy適用結果をspikeで確認する。
 将来settings/hooks/MCPを有効にする場合は、session bindingとは別のexplicit workspace trust記録と`--setting-sources`等の選択を先にspike・設計する。trust状態を`SessionBinding`へ混ぜず、`--bare`も代替策として採用しない。
-startupで実行binaryのreal pathとversionを固定し、read-only auth status/readinessをprobeして`getStatus()`へ反映する。turnごとに別binaryへ解決し直さない。
+実行binaryのreal pathとversionは最初の`startTurn`で遅延probeする。対応済みbinaryの結果だけを後続turnで再利用し、未導入・version不足などの失敗はcacheを破棄して次回送信で再probeする。auth失敗はCLIのbounded stderr/resultから分類し、native内容をclientへ漏らさず送信単位の明確なエラーにする。
 
 ## 5.4 bounded stream-jsonと正規化
 
@@ -476,12 +476,12 @@ CLI version＋fixture＋probeでhistory capabilityをgateする。将来Agent SD
 
 - native resume、turn interrupt、policy permission: spike通過後に有効
 - history read: version/fixtureで確認済みの範囲だけ有効
-- model/effort: 初期はnative defaultのみで選択無効。候補を実turnで検証後だけ有効
+- model/effort: Backendが公開する安定alias（`haiku`、`sonnet`、`opus`）だけfresh sessionで選択可。effort選択とresume中のmodel変更は無効
 - project/local customization: 初期は`--safe-mode`で無効
 - interactive permission、compact、persistent live: 初期は無効
 
 今回、実Claude turnは実行していない。local `2.1.199`ではbinary/auth、argv、same-cwd lookup等の非production互換性だけを調べる。production候補`2.1.214`以上で新規session、resume、partial/fullと大容量stream末尾、subagent、正常/異常終了、SIGINT clean interrupt、SIGTERM/SIGKILL escalation、transcript、policy permissionを実測する。
-advertised capability、fixture、minimum version gateを確定し、通らない機能はcapability falseのままにする。`2.1.199`をproduction streamingへfallbackさせない。このspikeをClaude有効化のrelease gateとする。
+advertised capability、fixture、minimum version gateを確定し、通らない機能はcapability falseのままにする。対応下限未満をproduction streamingへfallbackさせず、送信時に明確なversion errorを返す。
 
 # 6. セッション・履歴管理方式
 
@@ -666,21 +666,21 @@ rollbackは移動commitのrevertだけで完結させ、data rollbackを不要�
 ## Phase 2: neutral protocol追加
 
 AgentServiceとservice内registryを追加し、CodexBackendへneutral `startTurn`/historyを接続する。schedule use caseとqueueはこのPhaseでAgentServiceへ接続し、compactだけはCodex optional operationのままにする。schedule/queueはsession modeを変更せずleaseだけを取り、既存raw sessionは現行relay execution、neutral sessionはBackend executionを使う。暗黙handoffはしない。raw pathはcontract外の`CodexRawRelayCompat`として並存させる。比較期間は一つのraw executionからcommon eventをshadow生成し、event type、ID相関、順序、文字数、terminal outcome、salted hashだけを比較する。本文、tool input/output、native payloadを永続化せず、neutral turnを別に開始したりclientへ二重配信したりしない。
-neutral admissionを止めるfeature flagを用意する。rawへrollbackする時は、(1)neutral新規受付停止、(2)bounded drain deadlineまでactive lease/action解消を待機、(3)残るrunへ通常cancel ladder、(4)native activity停止を確認できたsessionだけneutralからrawへbulk handoff、(5)raw client flag切替、の順に行う。停止を確認できないsessionは`recovering`のまま残してrollback対象から外し、modeを強制書換えしない。flagだけでmodeを無視しない。
+neutral protocolとBackend registryは常時有効とし、runtime feature flagでsession modeを迂回しない。rawへrollbackする必要がある時は、互換releaseのdeployまたは変更commitのrevertで新規neutral受付を止め、bounded drain deadlineまでactive lease/action解消を待ち、残るrunへ通常cancel ladderを行う。native activity停止を確認できたsessionだけhandoffし、停止を確認できないsessionは`recovering`のまま残してmodeを強制書換えしない。
 
 ## Phase 3: Expo単一client
 
 ExpoのsessionRef、startTurn、event、history、action応答を一つのAgent clientへ集約し、screen/hook/componentからCodex RPC名を除く。
-sessionをneutral clientで初めて再開する時はactive lease/未回答actionがないことをServerが確認してmodeを明示handoffする。接続時のprotocol handshakeでneutral非対応と判定した旧Serverにだけraw clientへ戻せるflagを維持し、Claude専用分岐は作らない。
+sessionをneutral clientで初めて再開する時はactive lease/未回答actionがないことをServerが確認してmodeを明示handoffする。raw Codex互換経路は既存Codex通信を維持するために残すが、ExpoのBackend/モデル選択元はBackend statusへ一本化し、Claude専用分岐は作らない。
 
 ## Phase 4: Claude spike
 
-local `2.1.199`は非production調査に限定する。`2.1.214`以上で新規、resume、大容量stream末尾、cancel、failure、transcript、permission、`--safe-mode`とmanaged policyの実効設定を実測し、advertised capability/fixture/version gateを確定する。workspace admissionもこのPhaseで実装・検証し、未通過ではClaudeを有効化しない。
+対応下限以上のClaude Code CLIで新規、resume、大容量stream末尾、cancel、failure、transcript、permission、`--safe-mode`とmanaged policyの実効設定をfixture化する。`getStatus()`はCLIを起動・probeせず常にcatalogを返し、CLI未導入、対応version未満、未ログインはClaudeを選択して送信した時にBackend内から明確なエラーとして返す。Runner全体は停止させない。
 
 ## Phase 5: ClaudeBackend追加
 
-process、parser、history adapterを追加し、registryへ一件登録する。defaultはCodexのまま、限定opt-inにする。
-rollbackはregistry/configからClaudeを無効化するだけとし、Claude transcriptを削除しない。
+process、parser、history adapterを追加し、registryへ常時登録する。defaultはCodexのままとし、Claude CLIプロセスはClaudeを選択して送信するまで起動しない。
+rollbackは互換releaseのdeployまたは変更commitのrevertと上記drain手順で行い、Claude transcriptを削除しない。
 
 ## Phase 6: compatibility整理
 
@@ -689,7 +689,7 @@ rollbackはregistry/configからClaudeを無効化するだけとし、Claude tr
 - production telemetryでraw利用が定めた観測期間ゼロ
 - Expo全経路がneutral contract test/E2Eを通過
 - reconnect、approval、compact、historyの同等性確認済み
-- raw rollback flagを不要とするreleaseを一度安定運用済み
+- raw互換経路を削除しても安全なreleaseを一度安定運用済み
 - protocol version別telemetryで旧wireの利用がゼロ
 
 legacy Responses `/reply*`はこの削除対象にも含めない。
@@ -790,4 +790,4 @@ Server route、Expo screen/component、CodexBackend、ClaudeBackendは変更し�
 # 最終判断
 
 Codex App Server固有責務を先に分離し、期限付きraw互換adapter、neutral protocol、Expo単一client、Claude追加の順で進める。raw互換adapterは`AgentBackend`共通contractへ含めず、neutral移行完了時に削除する。fake `createSession`、本文コピー、class継承、generic CLI Backend、下流provider分岐は採用しない。
-Claudeはturn単位process、native session/resume、bounded stream-json、段階kill、policy-only permissionから始める。実Claude turn未実行のため、spike通過を有効化条件とする。
+Claudeはturn単位process、native session/resume、bounded stream-json、段階kill、policy-only permissionから始める。fixture外の実Claude turn確認はdeploy前の検証項目とし、未導入・version不一致・未ログインはRunner停止ではなく送信単位のエラーに閉じる。

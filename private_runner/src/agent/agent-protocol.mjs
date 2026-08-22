@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
 export const AGENT_PROTOCOL_VERSION = 1;
+// sessions.listのprovider-neutralスコープ。backendId未指定と等価で、
+// session.list対応の全Backendを集約した一覧を返す。
+export const ALL_BACKENDS_SCOPE = "all";
 export const AGENT_EVENT_TYPES = new Set([
   "turn.accepted",
   "session.resolved",

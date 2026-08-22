@@ -16,6 +16,15 @@ const MAX_LINES = 20_000;
 const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 const MAX_TRANSCRIPT_FILES = 5000;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLAUDE_MODELS = [
+  { modelId: "haiku", label: "Claude Haiku" },
+  { modelId: "sonnet", label: "Claude Sonnet" },
+  { modelId: "opus", label: "Claude Opus" },
+  { modelId: "fable", label: "Claude Fable" },
+];
+const MODEL_ALIASES = new Set(CLAUDE_MODELS.map((model) => model.modelId));
+// Claude CLI `--effort` が受け付ける値。`ultra`はCLI helpに存在しないため含めない。
+const CLAUDE_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"];
 
 function versionTuple(value) {
   const match = String(value || "").match(/(\d+)\.(\d+)\.(\d+)/);
@@ -82,8 +91,15 @@ function cursorDecode(value) {
   }
 }
 
+function isClaudeAuthFailure(...values) {
+  return /not logged in|login required|authentication|oauth|unauthorized/i.test(values.map(String).join("\n"));
+}
+
+function claudeResultDiagnostic(result) {
+  try { return JSON.stringify(result).slice(0, MAX_STDERR_BYTES); } catch { return ""; }
+}
+
 export function createClaudeBackend({
-  enabled = false,
   binary = "claude",
   minimumVersion = MINIMUM_VERSION,
   environment = process.env,
@@ -122,51 +138,29 @@ export function createClaudeBackend({
 
   async function runtime() {
     if (!probePromise) probePromise = probe();
-    return await probePromise;
+    const detected = await probePromise;
+    if (!detected.supported) probePromise = null;
+    return detected;
   }
 
   async function getStatus() {
-    if (!enabled) {
-      return {
-        backendId: "claude",
-        available: false,
-        auth: { state: "unknown" },
-        readiness: { ready: false, reason: "Claude Backend is disabled" },
-        capabilities: {
-          session: { resume: false, list: false, history: { read: false, delta: false } },
-          turn: { interrupt: false },
-          action: { kinds: [], decisions: [], policyProfiles: [] },
-          permission: { interactive: false }, model: { select: false, effort: false },
-          workspace: { projectCustomizations: false, admission: true },
-          operations: { compact: false }, event: { nativePayload: false }, tool: { dynamic: false },
-        },
-      };
-    }
-    const detected = await runtime();
-    const ready = Boolean(detected.binaryPath) && detected.supported;
-    let reason = "";
-    if (!detected.binaryPath) reason = "Claude Code CLI was not found";
-    else if (!detected.supported) reason = `Claude Code ${minimumVersion} or newer is required`;
     return {
       backendId: "claude",
-      available: Boolean(detected.binaryPath),
-      auth: { state: detected.binaryPath ? "unknown" : "unavailable" },
-      runtime: { binaryPath: detected.binaryPath || undefined, version: detected.version || undefined },
-      readiness: { ready, ...(reason ? { reason } : {}) },
+      available: true,
+      auth: { state: "unknown" },
+      readiness: { ready: true },
       capabilities: {
-        session: { resume: ready, list: ready, history: { read: ready, delta: false } },
-        turn: { interrupt: ready },
+        session: { resume: true, list: true, history: { read: true, delta: false } },
+        turn: { interrupt: true },
         action: {
           kinds: [],
           decisions: [],
-          policyProfiles: ready
-            ? [{ id: "claude-dont-ask", label: "Deny unapproved tools", interactive: false, decisions: [] }]
-            : [],
+          policyProfiles: [{ id: "claude-dont-ask", label: "Deny unapproved tools", interactive: false, decisions: [] }],
         },
         permission: { interactive: false },
-        model: { select: false, effort: false },
+        model: { select: true, effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS, changeWithinSession: false, catalog: CLAUDE_MODELS },
         workspace: { projectCustomizations: false, admission: true },
-        operations: { compact: false },
+        operations: { compact: false, schedule: false },
         event: { nativePayload: false },
         tool: { dynamic: false },
       },
@@ -206,10 +200,24 @@ export function createClaudeBackend({
       throw error;
     }
     const detected = await runtime();
-    if (!enabled || !detected.binaryPath || !detected.supported) {
-      throw agentError(detected.binaryPath ? "backend_version_unsupported" : "backend_unavailable", "Claude Backend is not ready", { backendId: "claude" });
+    if (!detected.binaryPath) {
+      throw agentError("backend_unavailable", "Claude Code CLI is not installed or is not available on PATH", { backendId: "claude" });
     }
-    if (model || effort) throw agentError("capability_unsupported", "Claude model selection is not enabled", { backendId: "claude" });
+    if (!detected.supported) {
+      throw agentError(
+        "backend_version_unsupported",
+        `Claude Code CLI ${minimumVersion} or newer is required (detected: ${detected.version || "unknown"})`,
+        { backendId: "claude" },
+      );
+    }
+    const selectedModel = String(model || "").trim().toLowerCase();
+    if (selectedModel && !MODEL_ALIASES.has(selectedModel)) {
+      throw agentError("turn_rejected", `Claude model must be one of: ${CLAUDE_MODELS.map((item) => item.modelId).join(", ")}`, { backendId: "claude" });
+    }
+    const selectedEffort = String(effort || "").trim().toLowerCase();
+    if (selectedEffort && !CLAUDE_EFFORT_OPTIONS.includes(selectedEffort)) {
+      throw agentError("turn_rejected", `Claude effort must be one of: ${CLAUDE_EFFORT_OPTIONS.join(", ")}`, { backendId: "claude" });
+    }
     const blocks = Array.isArray(input?.blocks) ? input.blocks : [];
     if (blocks.some((block) => block?.type !== "text")) {
       throw agentError("capability_unsupported", "Claude v1 accepts text input only", { backendId: "claude" });
@@ -226,6 +234,12 @@ export function createClaudeBackend({
     if (!SESSION_ID_PATTERN.test(freshSessionId)) {
       throw agentError("session_not_found", "Claude session ID is invalid", { backendId: "claude" });
     }
+    if (requestedSessionId && selectedModel) {
+      const savedModel = transcriptModelId((await findTranscript(requestedSessionId))?.records || []);
+      if (savedModel && savedModel !== selectedModel) {
+        throw agentError("turn_rejected", "Claude model cannot be changed within an existing session", { backendId: "claude" });
+      }
+    }
     if (!requestedSessionId) await resolveSession({ backendId: "claude", nativeSessionId: freshSessionId });
     if (signal?.aborted) {
       const error = agentError("turn_failed", "Claude turn was interrupted before process launch", { backendId: "claude" });
@@ -235,6 +249,8 @@ export function createClaudeBackend({
     const args = [
       "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--safe-mode",
       ...(requestedSessionId ? ["--resume", requestedSessionId] : ["--session-id", freshSessionId]),
+      ...(!requestedSessionId && selectedModel ? ["--model", selectedModel] : []),
+      ...(selectedEffort ? ["--effort", selectedEffort] : []),
       ...permissionArgs(policyProfileId),
     ];
     const state = {
@@ -290,8 +306,9 @@ export function createClaudeBackend({
       emit("item.started", { itemId: assistant.itemId, itemType: "assistant" });
       return assistant;
     };
-    const completeAssistant = (text = "", nativeMessageId = "") => {
+    const completeAssistant = (text = "", nativeMessageId = "", allowEmpty = false) => {
       if (nativeMessageId && state.completedAssistantMessageIds.has(nativeMessageId)) return;
+      if (!text && !state.currentAssistant && !allowEmpty) return;
       const assistant = startAssistant();
       if (text && !assistant.textDeltaSeen) emit("content.delta", { itemId: assistant.itemId, contentIndex: 0, delta: text });
       assistant.completed = true;
@@ -372,8 +389,11 @@ export function createClaudeBackend({
           });
           return;
         }
-        for (const block of Array.isArray(message.message?.content) ? message.message.content : []) {
+        const blocks = Array.isArray(message.message?.content) ? message.message.content : [];
+        let hasToolUse = false;
+        for (const block of blocks) {
           if (block?.type !== "tool_use") continue;
+          hasToolUse = true;
           const toolCallId = String(block.id || "").trim();
           if (!toolCallId || state.startedToolIds.has(toolCallId)) continue;
           state.startedToolIds.add(toolCallId);
@@ -383,10 +403,10 @@ export function createClaudeBackend({
             inputSummary: JSON.stringify(block.input || {}).slice(0, 4096),
           });
         }
-        completeAssistant(
-          extractText(message.message?.content),
-          String(message.uuid || message.message?.id || "").trim(),
-        );
+        const text = extractText(blocks);
+        if (text || hasToolUse) {
+          completeAssistant(text, String(message.uuid || message.message?.id || "").trim(), hasToolUse);
+        }
         return;
       }
       if (type === "user") {
@@ -499,7 +519,14 @@ export function createClaudeBackend({
       await state.processing;
       if (state.cancelRequested) return { outcome: "interrupted", nativeTerminal: true };
       if (ended.code !== 0 || ended.signal) {
-        const error = agentError("turn_failed", "Claude process exited unsuccessfully", { backendId: "claude" });
+        const authFailed = isClaudeAuthFailure(state.stderr, claudeResultDiagnostic(state.result));
+        const error = agentError(
+          "turn_failed",
+          authFailed
+            ? "Claude Code CLI is not logged in. Run `claude auth login` and try again"
+            : "Claude Code CLI exited unsuccessfully",
+          { backendId: "claude" },
+        );
         error.nativeActivity = "stopped";
         throw error;
       }
@@ -509,7 +536,13 @@ export function createClaudeBackend({
         throw error;
       }
       if (state.result.is_error === true || String(state.result.subtype || "").includes("error")) {
-        const error = agentError("turn_failed", "Claude reported a failed result", { backendId: "claude" });
+        const error = agentError(
+          "turn_failed",
+          isClaudeAuthFailure(state.stderr, claudeResultDiagnostic(state.result))
+            ? "Claude Code CLI is not logged in. Run `claude auth login` and try again"
+            : "Claude reported a failed result",
+          { backendId: "claude" },
+        );
         error.nativeActivity = "stopped";
         throw error;
       }
@@ -588,6 +621,15 @@ export function createClaudeBackend({
     return "";
   }
 
+  function transcriptModelId(records) {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const modelId = String(records[index]?.value?.message?.model || records[index]?.value?.model || "").trim().toLowerCase();
+      if (MODEL_ALIASES.has(modelId)) return modelId;
+      for (const alias of MODEL_ALIASES) if (modelId.includes(alias)) return alias;
+    }
+    return "";
+  }
+
   async function findTranscript(sessionId) {
     if (!SESSION_ID_PATTERN.test(String(sessionId || ""))) return null;
     const suffix = `${sessionId}.jsonl`;
@@ -604,8 +646,20 @@ export function createClaudeBackend({
     return cwd;
   }
 
-  async function listSessions({ cwd, limit = 50 }) {
+  // 一覧の並び順キー(updatedAt desc → sessionId desc)。ページ継続cursorは
+  // このキーのkeysetで、entryがcursorより後(古い側)に並ぶ時だけ正を返す。
+  function compareListPageKeys(a, b) {
+    return String(b?.updatedAt || "").localeCompare(String(a?.updatedAt || ""))
+      || String(b?.sessionId || "").localeCompare(String(a?.sessionId || ""));
+  }
+
+  async function listSessions({ cwd, limit = 50, cursor = "" }) {
     const canonicalCwd = path.resolve(String(cwd || ""));
+    const cursorRaw = String(cursor || "").trim();
+    const cursorKey = cursorRaw ? cursorDecode(cursorRaw) : null;
+    if (cursorRaw && !String(cursorKey?.sessionId || "").trim()) {
+      throw agentError("turn_rejected", "session list cursor is invalid", { backendId: "claude" });
+    }
     const sessions = [];
     for (const file of await transcriptFiles()) {
       const transcript = await readTranscript(file).catch(() => null);
@@ -617,10 +671,25 @@ export function createClaudeBackend({
         canonicalCwd,
         updatedAt: transcript.stat.mtime.toISOString(),
         title: extractText(firstUser?.value?.message?.content).slice(0, 200),
+        modelId: transcriptModelId(transcript.records),
       });
     }
-    sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return { sessions: sessions.slice(0, Math.max(1, Math.min(200, Number(limit) || 50))) };
+    const pageKey = (session) => ({ updatedAt: session.updatedAt, sessionId: session.sessionRef.nativeSessionId });
+    sessions.sort((a, b) => compareListPageKeys(pageKey(a), pageKey(b)));
+    const positioned = cursorKey
+      ? sessions.filter((session) => compareListPageKeys(pageKey(session), {
+        updatedAt: String(cursorKey.updatedAt || ""),
+        sessionId: String(cursorKey.sessionId || ""),
+      }) > 0)
+      : sessions;
+    const page = positioned.slice(0, Math.max(1, Math.min(200, Number(limit) || 50)));
+    return {
+      // 各項目のcursorは「この項目の位置」。all-backends合成層のページ全体カット用。
+      sessions: page.map((session) => ({ ...session, cursor: cursorEncode(pageKey(session)) })),
+      ...(positioned.length > page.length && page.length > 0
+        ? { cursor: cursorEncode(pageKey(page[page.length - 1])) }
+        : {}),
+    };
   }
 
   async function readHistory({ sessionRef, cursor, sinceCursor, limit = 100 }) {
@@ -651,6 +720,7 @@ export function createClaudeBackend({
     const start = Math.max(0, end - pageLimit);
     return {
       items: display.slice(start, end),
+      modelId: transcriptModelId(transcript.records),
       olderCursor: start > 0 ? cursorEncode({ identity, offset: start }) : null,
       newerCursor: null,
     };
@@ -664,7 +734,7 @@ export function createClaudeBackend({
     resolveSessionCwd,
     listSessions,
     readHistory,
-    listModels: async () => [],
+    listModels: async () => CLAUDE_MODELS,
     async interrupt({ runId }) {
       const state = activeRuns.get(runId);
       if (!state || state.exited) return;

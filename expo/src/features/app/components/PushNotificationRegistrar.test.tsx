@@ -274,12 +274,13 @@ describe("PushNotificationRegistrar", () => {
             categoryIdentifier: "TURN_COMPLETED",
             data: null,
           },
-          trigger: { type: "push", payload: { sessionId: "session-abc", directory: "/repo/one", turnId: "turn-1" } },
+          trigger: { type: "push", payload: { backendId: "claude", sessionId: "session-abc", directory: "/repo/one", turnId: "turn-1" } },
         },
       },
     });
 
     expect(mockSetPendingPushSessionTarget).toHaveBeenCalledWith({
+      backendId: "claude",
       sessionId: "session-abc",
       directory: "/repo/one",
     });

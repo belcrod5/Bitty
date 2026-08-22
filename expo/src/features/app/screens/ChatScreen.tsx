@@ -58,7 +58,8 @@ import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
-import { modelRefLabelForDisplay, normalizeModelRef, type ReasoningEffort } from "../utils/settingsParsers";
+import type { ReasoningEffort } from "../utils/settingsParsers";
+import { useChatModelSelection } from "../hooks/useChatModelSelection";
 import { countGitChangedFiles } from "../utils/gitChangedFiles";
 import {
   normalizeRunnerPath,
@@ -170,6 +171,7 @@ export function ChatScreen({
     reasoningEffort,
     modelOptions,
     modelRef,
+    llmBackend,
     codexWsUrl,
     thinkOptions,
     selectModel,
@@ -396,17 +398,20 @@ export function ChatScreen({
       isCompactRunning: codexCompactRunningForView,
     })
     : (String(selectedThreadStatusType || "unknown").trim() || "unknown");
-  const modelRefForView = isPanelRuntimeView
-    ? (String(panelSnapshot.modelRef || "").trim() || modelRef)
-    : modelRef;
-  const normalizedModelRefForView = normalizeModelRef(modelRefForView) || modelRefForView;
-  const reasoningEffortForView = isPanelRuntimeView
-    ? (String(panelSnapshot.reasoningEffort || "").trim() || reasoningEffort)
-    : reasoningEffort;
-  const selectedModelLabelForView = useMemo(() => {
-    if (!isPanelRuntimeView) return selectedModelLabel || modelRefLabelForDisplay(modelRefForView, modelOptions);
-    return modelRefLabelForDisplay(modelRefForView, modelOptions);
-  }, [isPanelRuntimeView, modelOptions, modelRefForView, selectedModelLabel]);
+  const [footerSelectOpen, setFooterSelectOpen] = useState<ChatFooterSelectTarget | null>(null);
+  const { backendIdForView, normalizedModelRefForView, modelOptionForView,
+    selectableModelOptions, reasoningEffortSupportedForView, effortOptionsForView,
+    scheduleModelOptions,
+    scheduleModelRef, reasoningEffortForView, selectedModelLabelForView,
+    selectModelForView } = useChatModelSelection({
+    isPanelRuntimeView, panelId, panelSnapshot,
+    conversationMessageCount: isPanelRuntimeView
+      ? miniInheritedSourceMessages.length + miniSourceMessages.length
+      : conversationMessages.length,
+    llmBackend, modelRef, reasoningEffort, selectedModelLabel, modelOptions,
+    selectModel, updatePanelSettings,
+    closePicker: setFooterSelectOpen,
+  });
   const chatContextUsedPctForView = isPanelRuntimeView ? panelContextUsedPct : chatContextUsedPct;
   const chatContextPctTextForView = chatContextUsedPctForView === null ? "--" : `${chatContextUsedPctForView}%`;
   const chatContextRingProgressForView = chatContextUsedPctForView === null
@@ -438,6 +443,7 @@ export function ChatScreen({
     : String(selectedLlmSessionId || "").trim();
   const sessionHistoryPagingState = sessionHistoryPagingById[selectedSessionIdForView];
   const openSessionHistoryEntryForView = useCallback((params: {
+    backendId: string;
     sessionId: string;
     source: Parameters<typeof openSessionHistoryEntry>[0]["source"];
     directory: string;
@@ -452,6 +458,7 @@ export function ChatScreen({
     const diagnosticCycleId = `chat-subagent-${Date.now().toString(36)}`;
     void hydratePanelFromSessionHistory({
       panelId,
+      backendId: params.backendId,
       sessionId,
       directory,
       source: params.source,
@@ -497,7 +504,6 @@ export function ChatScreen({
   const [directorySessionTitleInput, setDirectorySessionTitleInput] = useState("");
   const [popupComposerFullscreenOpen, setPopupComposerFullscreenOpen] = useState(false);
   const [popupSlashCommandSelectOpen, setPopupSlashCommandSelectOpen] = useState(false);
-  const [footerSelectOpen, setFooterSelectOpen] = useState<ChatFooterSelectTarget | null>(null);
   const [footerSelectAnchor, setFooterSelectAnchor] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [executionNowTick, setExecutionNowTick] = useState(0);
   const [gitDiffPanelOpen, setGitDiffPanelOpen] = useState(false);
@@ -535,18 +541,20 @@ export function ChatScreen({
       || !selectedDirectoryPathForView
     ) return;
     void loadOlderSessionHistory({
+      backendId: backendIdForView,
       sessionId: selectedSessionIdForView,
       directory: selectedDirectoryPathForView,
     });
-  }, [loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
+  }, [backendIdForView, loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
   const retryOlderSessionHistory = useCallback(() => {
     if (!selectedSessionIdForView || !selectedDirectoryPathForView) return;
     void loadOlderSessionHistory({
+      backendId: backendIdForView,
       sessionId: selectedSessionIdForView,
       directory: selectedDirectoryPathForView,
       retry: true,
     });
-  }, [loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
+  }, [backendIdForView, loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
   const popupComposerFullscreenInputRef = useRef<TextInput | null>(null);
   const [panelTranscript, setPanelTranscript] = useState("");
   const [panelComposerFocused, setPanelComposerFocused] = useState(false);
@@ -1112,14 +1120,6 @@ export function ChatScreen({
     panelSnapshot.selectedSessionId,
     sendReplyRequestForPanelWithTranscript,
   ]);
-  const selectModelForView = useCallback((nextModelRef: string) => {
-    if (isPanelRuntimeView) {
-      updatePanelSettings(panelId, { modelRef: nextModelRef });
-    } else {
-      selectModel(nextModelRef);
-    }
-    setFooterSelectOpen(null);
-  }, [isPanelRuntimeView, panelId, selectModel, updatePanelSettings]);
   const selectThinkOptionForView = useCallback((nextReasoningEffort: ReasoningEffort) => {
     if (isPanelRuntimeView) {
       updatePanelSettings(panelId, { reasoningEffort: nextReasoningEffort });
@@ -1516,7 +1516,7 @@ export function ChatScreen({
     return formatElapsedHhMmSs(Math.max(0, executionNowMs - startedAtMs));
   })();
   const footerSelectEstimatedHeight = (
-    (footerSelectOpen === "model" ? modelOptions.length : thinkOptions.length) * 34
+    (footerSelectOpen === "model" ? selectableModelOptions.length : effortOptionsForView.length) * 34
   ) + 8;
   const footerSelectTop = Math.max(8, footerSelectAnchor.y - footerSelectEstimatedHeight - 6);
   const gitDiffBranchName = String(gitChangedFiles.branchName || "").trim() || "HEAD";
@@ -2373,7 +2373,7 @@ export function ChatScreen({
                 <Text style={styles.chatFooterSettingsText}>{selectedModelLabelForView}</Text>
               </TouchableOpacity>
             </View>
-            <View ref={thinkSelectTriggerRef} collapsable={false}>
+            {reasoningEffortSupportedForView ? <View ref={thinkSelectTriggerRef} collapsable={false}>
               <TouchableOpacity
                 onPress={() => openFooterSelect("think")}
                 accessibilityRole="button"
@@ -2381,7 +2381,7 @@ export function ChatScreen({
               >
                 <Text style={styles.chatFooterSettingsText}>{reasoningEffortForView || "-"}</Text>
               </TouchableOpacity>
-            </View>
+            </View> : null}
           </View>
           <CodexStatusSummaryMenu
             dismissed={approvalDialogPending}
@@ -2465,14 +2465,14 @@ export function ChatScreen({
               onPress={() => {}}
             >
               {footerSelectOpen === "model"
-                ? modelOptions.map((item: { label: string; value: string }) => {
-                    const selected = item.value === normalizedModelRefForView;
+                ? selectableModelOptions.map((item) => {
+                    const selected = item.backendId === backendIdForView && item.modelId === normalizedModelRefForView;
                     return (
                       <TouchableOpacity
-                        key={item.value}
+                        key={item.selectionKey}
                         style={[styles.chatFooterSelectOption, selected && styles.chatFooterSelectOptionSelected]}
                         onPress={() => {
-                          selectModelForView(item.value);
+                          selectModelForView(item.selectionKey);
                         }}
                       >
                         <Text style={[styles.chatFooterSelectOptionText, selected && styles.chatFooterSelectOptionTextSelected]}>
@@ -2481,7 +2481,7 @@ export function ChatScreen({
                       </TouchableOpacity>
                     );
                   })
-                : thinkOptions.map((item) => {
+                : reasoningEffortSupportedForView ? effortOptionsForView.map((item) => {
                     const selected = item === reasoningEffortForView;
                     return (
                       <TouchableOpacity
@@ -2496,7 +2496,7 @@ export function ChatScreen({
                         </Text>
                       </TouchableOpacity>
                     );
-                  })}
+                  }) : null}
             </Pressable>
           </Pressable>
         </AppModal>
@@ -2655,20 +2655,20 @@ export function ChatScreen({
                   </TouchableOpacity>
                   <LocationScheduleSettings
                     currentCwd={selectedDirectoryPathForView}
-                    currentModelRef={normalizedModelRefForView}
+                    currentModelRef={scheduleModelRef}
                     currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
                     directories={registeredDirectories}
-                    modelOptions={modelOptions}
+                    modelOptions={scheduleModelOptions}
                     thinkOptions={thinkOptions}
                   />
                   <CodexScheduleSettings
                     runnerUrl={runnerUrl}
                     runnerToken={runnerToken}
                     currentCwd={selectedDirectoryPathForView}
-                    currentModelRef={normalizedModelRefForView}
+                    currentModelRef={scheduleModelRef}
                     currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
                     directories={registeredDirectories}
-                    modelOptions={modelOptions}
+                    modelOptions={scheduleModelOptions}
                     thinkOptions={thinkOptions}
                   />
                   <ChatSessionSubagentList

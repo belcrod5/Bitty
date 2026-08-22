@@ -12,7 +12,8 @@ import { codexItemMessageId } from "./codexItemMessageId";
 import { normalizeModelRef, parseModelRef, parseReasoningEffort, type ReasoningEffort } from "./settingsParsers";
 
 type ModelOptionLike = {
-  value: string;
+  modelId: string;
+  backendId?: string;
   label: string;
 };
 
@@ -45,6 +46,7 @@ type AdoptRestoredSessionDirectoryArgs = {
 };
 
 export type RestoredSessionState = {
+  nextBackendId: string;
   restoredMessages: LlmSessionMessage[];
   nextConversation: ConversationMessage[];
   nextHistory: HistoryEntry[];
@@ -177,6 +179,7 @@ export function buildRestoredSessionState({
   });
   const nextHistory = buildHistoryFromSessionMessages(restoredMessages);
   const effectiveContextUsedPct = clampContextUsedPct(restored.contextUsedPct);
+  const nextBackendId = String(restored.backendId || "codex").trim() || "codex";
   const nextModelRef = restored.modelRef
     ? parseModelRef(restored.modelRef, modelOptions, modelRef)
     : modelRef;
@@ -189,10 +192,11 @@ export function buildRestoredSessionState({
   if (prevEffectiveSessionId && prevEffectiveSessionId !== nextSessionId && (modelChanged || thinkChanged)) {
     sessionSwitchToastText = (
       `${modelLabelForToast(modelRef, modelOptions)} ${reasoningEffort} → ` +
-      `${modelLabelForToast(nextModelRef, modelOptions)} ${nextReasoningEffort}`
+      `${modelLabelForToast(nextModelRef, modelOptions, nextBackendId)} ${nextReasoningEffort}`
     );
   }
   return {
+    nextBackendId,
     restoredMessages,
     nextConversation,
     nextHistory,
@@ -247,9 +251,10 @@ export function buildHistoryFromSessionMessages(messages: LlmSessionMessage[]) {
   return nextHistoryChronological.reverse();
 }
 
-export function modelLabelForToast(modelRefRaw: unknown, modelOptions: readonly ModelOptionLike[]) {
+export function modelLabelForToast(modelRefRaw: unknown, modelOptions: readonly ModelOptionLike[], backendIdRaw?: unknown) {
   const normalized = normalizeModelRef(modelRefRaw);
+  const backendId = String(backendIdRaw || "").trim();
   if (!normalized) return "(default)";
-  const matched = modelOptions.find((item) => item.value === normalized);
+  const matched = modelOptions.find((item) => item.modelId === normalized && (!backendId || item.backendId === backendId));
   return matched?.label || normalized;
 }

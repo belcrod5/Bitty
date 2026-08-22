@@ -7,7 +7,6 @@ function firstString(...values) {
 }
 
 export function createCodexRawSessionOwnership({
-  enabled,
   bindSession,
   getSessionBinding,
   acquireLease,
@@ -18,16 +17,30 @@ export function createCodexRawSessionOwnership({
   sendRpc,
   log = console,
 }) {
-  async function bind(relay, nativeSessionId, rawCwd) {
-    if (!enabled || !nativeSessionId || !rawCwd) return;
+  async function bind(relay, nativeSessionId, rawCwd, options = {}) {
+    if (!nativeSessionId || !rawCwd) return;
     const canonicalCwd = await resolveCanonicalCwd(rawCwd);
-    const result = await bindSession({ backendId: "codex", nativeSessionId }, canonicalCwd, "raw");
+    const result = await bindSession(
+      { backendId: "codex", nativeSessionId },
+      canonicalCwd,
+      "raw",
+      { reconcileCwd: options.reconcileCwd === true },
+    );
     if (result?.status === "mode_conflict") throw makeConflictError("session_mode_conflict", "session is assigned to the neutral Agent transport");
     if (result?.status === "cwd_conflict") throw makeConflictError("session_cwd_mismatch", "session cwd does not match its binding");
     return canonicalCwd;
   }
 
   async function admit(relay, rpcPayload, params, kind = "turn") {
+    if (relay.agentLeaseSettlement) await relay.agentLeaseSettlement;
+    while (relay.agentBindingReconciliation) {
+      const bindingReconciliation = relay.agentBindingReconciliation;
+      const outcome = await bindingReconciliation;
+      if (relay.agentBindingReconciliation === bindingReconciliation) {
+        relay.agentBindingReconciliation = null;
+      }
+      if (outcome?.error) throw outcome.error;
+    }
     if (relay.agentLease) throw makeConflictError("session_busy", "session already has an active raw operation");
     const nativeSessionId = firstString(rpcPayload?.params?.threadId, params.threadId, relay.threadId);
     if (!nativeSessionId) throw makeConflictError("session_not_found", "turn/start requires a resolved threadId");
@@ -50,11 +63,16 @@ export function createCodexRawSessionOwnership({
 
   function settle(relay, state, expectedKind = "") {
     const lease = relay?.agentLease;
-    if (!lease || (expectedKind && lease.kind !== expectedKind)) return;
+    if (!lease || (expectedKind && lease.kind !== expectedKind)) return relay?.agentLeaseSettlement;
     relay.agentLease = null;
-    void settleLease(lease.sessionRef, lease.generation, state).catch((error) => {
+    const settlement = settleLease(lease.sessionRef, lease.generation, state).catch((error) => {
       log.warn(`[codex-ws-proxy] failed to ${state} session lease: ${errorMessage(error)}`);
     });
+    relay.agentLeaseSettlement = settlement;
+    void settlement.finally(() => {
+      if (relay.agentLeaseSettlement === settlement) relay.agentLeaseSettlement = null;
+    });
+    return settlement;
   }
 
   function reject(relay, rpcPayload, params, error) {
@@ -79,11 +97,10 @@ export function createCodexRawSessionOwnership({
   }
 
   function intercept(relay, rpcPayload, method, params, forward) {
-    if (!enabled) return null;
     const compact = (method === "thread/compact" || method === "thread/compact/start") && params.modeAdmitted !== true;
     const turnStart = method === "turn/start" && params.leaseAdmitted !== true;
     if (!compact && !turnStart) return null;
-    relay.clientForwardQueue = (relay.clientForwardQueue || Promise.resolve()).then(async () => {
+    return (async () => {
       try {
         const kind = turnStart ? "turn" : "compact";
         await admit(relay, rpcPayload, params, kind);
@@ -96,9 +113,8 @@ export function createCodexRawSessionOwnership({
         reject(relay, rpcPayload, params, error);
         return false;
       }
-    });
-    return relay.clientForwardQueue;
+    })();
   }
 
-  return { enabled, bind, admit, intercept, settle, reject };
+  return { bind, admit, intercept, settle, reject };
 }

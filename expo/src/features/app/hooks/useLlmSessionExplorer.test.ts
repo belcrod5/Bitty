@@ -1,22 +1,30 @@
 import { renderHook } from "@testing-library/react-native";
 import { listCodexAppServerThreads, readCodexAppServerThread } from "../../codex/codexAppServerClient";
+import { readAgentHistory } from "../../agent/client";
 import { buildLlmSessionHistoryEntry, useLlmSessionExplorer } from "./useLlmSessionExplorer";
 
 jest.mock("../../codex/codexAppServerClient", () => ({
   listCodexAppServerThreads: jest.fn(),
   readCodexAppServerThread: jest.fn(),
 }));
+jest.mock("../../agent/client", () => ({
+  ALL_BACKENDS_SCOPE: "all",
+  readAgentHistory: jest.fn(),
+}));
 
 const mockListCodexAppServerThreads = jest.mocked(listCodexAppServerThreads);
 const mockReadCodexAppServerThread = jest.mocked(readCodexAppServerThread);
+const mockReadAgentHistory = jest.mocked(readAgentHistory);
 
 function renderExplorerHook(overrides: {
+  codexWsUrl?: string;
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
   runnerToken?: string;
   getRunnerHttpAuth?: () => Promise<{ baseUrl: string; token: string }>;
+  runnerWebSocketManager?: never;
 } = {}) {
   return renderHook(() => useLlmSessionExplorer({
-    codexWsUrl: "ws://127.0.0.1:8788/runner-ws",
+    codexWsUrl: overrides.codexWsUrl ?? "ws://127.0.0.1:8788/runner-ws",
     codexWsToken: "runner-token",
     runnerToken: overrides.runnerToken ?? "runner-token",
     auxServerBaseUrl: () => "http://runner.test",
@@ -25,8 +33,8 @@ function renderExplorerHook(overrides: {
     normalizedLlmDirectoryForRequest: () => "/workspace",
     defaultLlmDirectory: "/workspace",
     nearUnlimitedTimeoutMs: 60_000,
-    llmBackend: "codex",
     rawFallbackBackendId: "codex",
+    runnerWebSocketManager: overrides.runnerWebSocketManager,
     onSessionDiagLog: overrides.onSessionDiagLog,
   }));
 }
@@ -100,10 +108,69 @@ test("marks a canonical directory with one scoped request", async () => {
   fetchMock.mockRestore();
 });
 
+test("fetchLatestSessionForDirectory returns the entry identity, not just the id", async () => {
+  mockListCodexAppServerThreads.mockResolvedValue({
+    data: [{
+      backendId: "claude",
+      threadId: "claude-session-1",
+      parentThreadId: "",
+      agentRole: "",
+      agentDisplayName: "",
+      preview: "hello",
+      modelProvider: "claude",
+      modelRef: "sonnet",
+      sourceKind: "appServer",
+      cwd: "/workspace",
+      createdAt: "",
+      updatedAt: "2026-08-22T00:00:00.000Z",
+      contextUsedPct: null,
+    }],
+    nextCursor: "",
+    backwardsCursor: "",
+  } as never);
+  const { result } = await renderExplorerHook();
+
+  const latest = await result.current.fetchLatestSessionForDirectory("/workspace");
+
+  expect(latest).toEqual({ sessionId: "claude-session-1", backendId: "claude" });
+  expect(mockListCodexAppServerThreads).toHaveBeenCalledWith(expect.objectContaining({
+    backendId: "all",
+    cwd: "/workspace",
+    limit: 1,
+  }));
+  mockListCodexAppServerThreads.mockReset();
+});
+
 describe("fetchRunnerSessionMessages", () => {
   afterEach(() => {
     jest.restoreAllMocks();
     mockReadCodexAppServerThread.mockReset();
+    mockReadAgentHistory.mockReset();
+  });
+
+  it("reads a saved Codex entry with its own backend even while Claude is globally selected", async () => {
+    mockReadAgentHistory.mockResolvedValue({
+      sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
+      canonicalCwd: "/native/workspace",
+      items: [{ id: "item-1", role: "assistant", content: [{ type: "text", text: "saved" }] }],
+    });
+    const { result } = await renderExplorerHook({
+      runnerWebSocketManager: {} as never,
+    });
+
+    const restored = await result.current.fetchRunnerSessionMessages("thread-1", "/workspace", {
+      backendId: "codex",
+    });
+
+    expect(mockReadAgentHistory).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      backendId: "codex",
+      nativeSessionId: "thread-1",
+    }));
+    expect(restored).toMatchObject({
+      backendId: "codex",
+      cwd: "/native/workspace",
+      modelRef: "",
+    });
   });
 
   it("loads saved history from the bounded runner page API", async () => {
@@ -415,6 +482,92 @@ describe("fetchSessionHistory runner snapshot failures", () => {
       source: "subagent",
     });
     expect(history.nextCursor).toBe("next-page");
+  });
+
+  it("defaults the directory history scope to all backends and keeps mixed entries with partial errors", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({
+      data: [
+        {
+          backendId: "claude",
+          threadId: "session-claude",
+          parentThreadId: "",
+          agentRole: "",
+          agentDisplayName: "",
+          preview: "claude hello",
+          modelProvider: "claude",
+          modelRef: "sonnet",
+          sourceKind: "appServer",
+          cwd: "/workspace",
+          createdAt: "2026-08-21T00:00:00Z",
+          updatedAt: "2026-08-22T00:00:00Z",
+          contextUsedPct: null,
+        },
+        {
+          backendId: "codex",
+          threadId: "session-codex",
+          parentThreadId: "",
+          agentRole: "",
+          agentDisplayName: "",
+          preview: "codex hello",
+          modelProvider: "codex",
+          modelRef: "gpt-5.6-sol",
+          sourceKind: "appServer",
+          cwd: "/workspace",
+          createdAt: "2026-08-21T00:00:00Z",
+          updatedAt: "2026-08-21T00:00:00Z",
+          contextUsedPct: null,
+        },
+      ],
+      nextCursor: "",
+      backwardsCursor: "",
+      partialErrors: [{ backendId: "other", code: "backend_unavailable", message: "down" }],
+    });
+    const { result } = await renderExplorerHook();
+
+    const history = await result.current.fetchSessionHistory("/workspace", {
+      includeRunnerSnapshots: false,
+    });
+
+    expect(mockListCodexAppServerThreads).toHaveBeenCalledWith(expect.objectContaining({ backendId: "all" }));
+    expect(history.entries.map((entry) => ({ backendId: entry.backendId, sessionId: entry.sessionId }))).toEqual([
+      { backendId: "claude", sessionId: "session-claude" },
+      { backendId: "codex", sessionId: "session-codex" },
+    ]);
+  });
+
+  it("preserves a Claude session backend and model from the backend catalog entry", async () => {
+    mockListCodexAppServerThreads.mockResolvedValue({
+      data: [{
+        backendId: "claude",
+        threadId: "session-claude",
+        parentThreadId: "",
+        agentRole: "",
+        agentDisplayName: "",
+        preview: "hello",
+        modelProvider: "claude",
+        modelRef: "sonnet",
+        sourceKind: "appServer",
+        cwd: "/workspace",
+        createdAt: "2026-08-21T00:00:00Z",
+        updatedAt: "2026-08-21T00:00:00Z",
+        contextUsedPct: null,
+      }],
+      nextCursor: "",
+      backwardsCursor: "",
+    });
+    const { result } = await renderExplorerHook({ codexWsUrl: "" });
+
+    const history = await result.current.fetchSessionHistory("/workspace", {
+      backendId: "claude",
+      includeRunnerSnapshots: false,
+    });
+
+    expect(mockListCodexAppServerThreads).toHaveBeenCalledWith(expect.objectContaining({ backendId: "claude" }));
+    expect(history.entries[0]).toMatchObject({
+      backendId: "claude",
+      sessionId: "session-claude",
+      modelRef: "sonnet",
+    });
   });
 });
 

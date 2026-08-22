@@ -9,6 +9,7 @@ export const APPROVE_ACTION = "approve";
 export const DENY_ACTION = "deny";
 
 export type NotificationMetadata = {
+  backendId: string;
   sessionId: string;
   directory: string;
   turnId: string;
@@ -31,6 +32,7 @@ export function normalizeNotificationMetadata(
     String(contentData[field] || "").trim() || String(triggerPayload[field] || "").trim()
   );
   return {
+    backendId: value("backendId"),
     sessionId: value("sessionId"),
     directory: value("directory"),
     turnId: value("turnId"),
@@ -77,6 +79,7 @@ export async function registerApprovalNotificationCategories(faceIdRequired: boo
 }
 
 export type PendingPushSessionTarget = {
+  backendId?: string;
   sessionId: string;
   directory: string;
   sequence: number;
@@ -87,6 +90,7 @@ let pendingPushSequence = 0;
 const pendingPushListeners = new Set<() => void>();
 
 export function setPendingPushSessionTarget(params: {
+  backendId?: unknown;
   sessionId: unknown;
   directory?: unknown;
 }): void {
@@ -94,6 +98,7 @@ export function setPendingPushSessionTarget(params: {
   if (!sessionId) return;
   pendingPushSequence += 1;
   pendingPushSessionTarget = {
+    ...(String(params?.backendId || "").trim() ? { backendId: String(params.backendId).trim() } : {}),
     sessionId,
     directory: String(params?.directory || "").trim(),
     sequence: pendingPushSequence,

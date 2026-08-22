@@ -60,7 +60,8 @@ type UseChatDerivedStateParams = {
   manualRecording: boolean;
   directNativeSttInterimText: string;
   composerInputFocused: boolean;
-  modelOptions: readonly { label: string; value: string }[];
+  llmBackend: string;
+  modelOptions: readonly { label: string; modelId: string; backendId: string }[];
   modelRef: string;
   reasoningEffort: string;
   normalizedLlmDirectoryForRequest: () => string;
@@ -112,6 +113,7 @@ export function useChatDerivedState({
   manualRecording,
   directNativeSttInterimText,
   composerInputFocused,
+  llmBackend,
   modelOptions,
   modelRef,
   reasoningEffort,
@@ -177,8 +179,8 @@ export function useChatDerivedState({
     return String(transcript || "").trim();
   }, [directNativeSttInterimText, transcript]);
   const selectedModelLabel = useMemo(
-    () => modelOptions.find((item) => item.value === modelRef)?.label || modelRef,
-    [modelOptions, modelRef]
+    () => modelOptions.find((item) => item.backendId === llmBackend && item.modelId === modelRef)?.label || modelRef,
+    [llmBackend, modelOptions, modelRef]
   );
   const chatFooterDirectoryLabel = useMemo(
     () => `${selectedModelLabel} ${reasoningEffort} ${normalizedLlmDirectoryForRequest()}`,
