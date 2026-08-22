@@ -6,7 +6,10 @@ export type PanelRuntimeMarkerColor = "none" | "gray" | "red" | "yellow" | "gree
 
 export type PanelRuntimeSnapshot = {
   panelId: string;
+  backendId?: string;
   selectedSessionId: string;
+  // false marks a local draft that has not been resolved to a provider-native session yet.
+  sessionMaterialized?: boolean;
   selectedDirectoryPath: string;
   selectedDirectoryDisplayName: string;
   selectedSessionTitle: string;

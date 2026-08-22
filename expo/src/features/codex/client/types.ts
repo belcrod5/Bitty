@@ -51,6 +51,10 @@ export type CodexAppServerLogEntry = {
 };
 
 export type CodexAppServerTurnOptions = {
+  backendId?: string;
+  preferNeutralAgent?: boolean;
+  rawFallbackBackendId?: string;
+  confirmWorkspaceAdmission?: (request: { canonicalRoot: string; warning: string }) => Promise<boolean>;
   wsUrl: string;
   wsToken?: string;
   traceId?: string;
@@ -169,12 +173,14 @@ export type CodexSessionState =
 export type CodexThreadStatusType = "active" | "idle" | "notLoaded" | "systemError" | "unknown";
 
 export type CodexThreadListEntry = {
+  backendId?: string;
   threadId: string;
   parentThreadId: string;
   agentRole: string;
   agentDisplayName: string;
   preview: string;
   modelProvider: string;
+  modelRef?: string;
   sourceKind: string;
   cwd: string;
   createdAt: string;
@@ -187,6 +193,8 @@ export type CodexThreadListResult = {
   data: CodexThreadListEntry[];
   nextCursor: string;
   backwardsCursor: string;
+  // all-backendsスコープでの部分失敗診断。成功Backendの一覧は保持される。
+  partialErrors?: Array<{ code?: string; backendId?: string; message?: string; retryable?: boolean }>;
 };
 
 export type CodexCommandExecutionInfo = {

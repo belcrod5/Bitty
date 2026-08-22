@@ -96,11 +96,13 @@ describe("planResumeSyncTargets", () => {
     sessionId: string;
     directory: string;
     isResponding: boolean;
+    sessionMaterialized: boolean;
   }> = {}) => ({
     panelId: "panel-1",
     sessionId: "session-2",
     directory: "/repo",
     isResponding: false,
+    sessionMaterialized: true,
     ...overrides,
   });
 
@@ -144,6 +146,27 @@ describe("planResumeSyncTargets", () => {
       { sessionId: "session-1", selected: true, panels: [] },
       { sessionId: "session-2", selected: false, panels: [{ panelId: "drawer_session_popup", directory: "/repo" }] },
       { sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
+    ]);
+  });
+
+  it("never targets an unmaterialized local popup draft", () => {
+    const plan = planResumeSyncTargets({
+      selectedSessionId: "",
+      observerThreadId: "",
+      popupPanelId: "drawer_session_popup",
+      panelEntries: [
+        basePanel({
+          panelId: "drawer_session_popup",
+          sessionId: "local-draft",
+          sessionMaterialized: false,
+        }),
+      ],
+      respondingSessionIds: [],
+    });
+
+    expect(plan.targets).toEqual([]);
+    expect(plan.skipped).toEqual([
+      { sessionId: "local-draft", panelId: "drawer_session_popup", reason: "local_draft" },
     ]);
   });
 

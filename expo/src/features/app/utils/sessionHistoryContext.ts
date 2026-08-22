@@ -7,6 +7,7 @@ import { clampContextUsedPct } from "./sessionRestore";
 import { normalizeModelRef, parseLlmDirectory } from "./settingsParsers";
 
 export type SessionHistoryContext = {
+  backendId: string;
   sessionId: string;
   directory: string;
   directoryDisplayName: string;
@@ -18,6 +19,7 @@ export type SessionHistoryContext = {
 };
 
 type ResolveSessionHistoryContextArgs = {
+  backendId?: unknown;
   sessionId: unknown;
   registeredDirectories: RegisteredDirectoryEntry[];
   directorySessionsById: Record<string, DirectorySessionTreeState>;
@@ -38,18 +40,22 @@ export function getCachedDirectorySessions(directoryState?: DirectorySessionTree
 }
 
 export function resolveSessionHistoryContext({
+  backendId: backendIdRaw,
   sessionId: sessionIdRaw,
   registeredDirectories,
   directorySessionsById,
   sessionTitleOverridesById,
 }: ResolveSessionHistoryContextArgs): SessionHistoryContext | null {
   const sessionId = parseOptionalSessionId(sessionIdRaw);
+  const backendId = String(backendIdRaw || "").trim();
   if (!sessionId) return null;
   for (const directory of registeredDirectories) {
     const directoryState = directorySessionsById[directory.id];
     const sessions = getCachedDirectorySessions(directoryState);
     const match = sessions.find(
-      (entry) => parseOptionalSessionId(entry.sessionId) === sessionId
+      (entry) => parseOptionalSessionId(entry.sessionId) === sessionId && (
+        !backendId || (String(entry.backendId || "codex").trim() || "codex") === backendId
+      )
     );
     if (!match) continue;
     const directoryPath = parseLlmDirectory(match.directory || directory.path);
@@ -58,6 +64,7 @@ export function resolveSessionHistoryContext({
     );
     const contextUsedPct = clampContextUsedPct(match.contextUsedPct);
     return {
+      backendId: String(match.backendId || "codex").trim() || "codex",
       sessionId,
       directory: directoryPath,
       directoryDisplayName: String(

@@ -6,6 +6,8 @@ import { ChatScreen } from "./ChatScreen";
 const mockStartAutoRecordingMode = jest.fn();
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
+const mockCodexScheduleProps: { current: Record<string, any> | null } = { current: null };
+const mockLocationScheduleProps: { current: Record<string, any> | null } = { current: null };
 const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
 const mockAddSkiaBoardFile = jest.fn();
 const mockRemoveSkiaBoardFile = jest.fn();
@@ -77,7 +79,18 @@ jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => n
 jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
 jest.mock("../components/ChatSessionSubagentList", () => ({ ChatSessionSubagentList: () => null }));
 jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({ RunnerWsConnectionStatus: () => null }));
-jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({ LocationScheduleSettings: () => null }));
+jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({
+  LocationScheduleSettings: (props: Record<string, any>) => {
+    mockLocationScheduleProps.current = props;
+    return null;
+  },
+}));
+jest.mock("../../codexSchedules/CodexScheduleSettings", () => ({
+  CodexScheduleSettings: (props: Record<string, any>) => {
+    mockCodexScheduleProps.current = props;
+    return null;
+  },
+}));
 
 jest.mock("../hooks/useWorkspaceFileMutations", () => ({
   useWorkspaceFileMutations: (params: unknown) => mockUseWorkspaceFileMutations(params),
@@ -99,10 +112,30 @@ jest.mock("../contexts/AppShellContext", () => ({
 
 jest.mock("../contexts/AppSettingsContext", () => ({
   useAppSettings: () => ({
-    selectedModelLabel: "Model",
+    selectedModelLabel: "Claude Sonnet",
     reasoningEffort: "high",
-    modelOptions: [{ label: "Model", value: "model" }],
-    modelRef: "model",
+    modelOptions: [
+      {
+        selectionKey: "codex::gpt-5.6-sol",
+        backendId: "codex",
+        modelId: "gpt-5.6-sol",
+        label: "ChatGPT 5.6 Sol",
+        supportsReasoningEffort: true,
+        changeWithinSession: true,
+        supportsScheduling: true,
+      },
+      {
+        selectionKey: "claude::sonnet",
+        backendId: "claude",
+        modelId: "sonnet",
+        label: "Claude Sonnet",
+        supportsReasoningEffort: false,
+        changeWithinSession: false,
+        supportsScheduling: false,
+      },
+    ],
+    llmBackend: "claude",
+    modelRef: "sonnet",
     codexWsUrl: "ws://runner.test",
     thinkOptions: ["high"],
     selectModel: jest.fn(),
@@ -121,7 +154,8 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       selectedSessionUpdatedAt: "",
       selectedSessionMarkerColor: "none",
       selectedThreadStatusType: "idle",
-      modelRef: "model",
+      backendId: "codex",
+      modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
       contextUsedPct: 0,
       isResponding: false,
@@ -321,6 +355,8 @@ jest.mock("../contexts/ConversationContext", () => ({
 describe("ChatScreen auto recording panel target", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCodexScheduleProps.current = null;
+    mockLocationScheduleProps.current = null;
   });
 
   it("passes the current panel ID from a panel runtime view", async () => {
@@ -338,6 +374,23 @@ describe("ChatScreen auto recording panel target", () => {
     await fireEvent.press(screen.getByText("mic"));
 
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith(undefined);
+    await screen.unmount();
+  });
+
+  it("keeps Codex-only schedule models when the active chat uses Claude", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" />);
+
+    await fireEvent.press(screen.getByText("Workspace"));
+
+    const expectedModels = [{ value: "gpt-5.6-sol", label: "ChatGPT 5.6 Sol" }];
+    expect(mockCodexScheduleProps.current).toMatchObject({
+      currentModelRef: "gpt-5.6-sol",
+      modelOptions: expectedModels,
+    });
+    expect(mockLocationScheduleProps.current).toMatchObject({
+      currentModelRef: "gpt-5.6-sol",
+      modelOptions: expectedModels,
+    });
     await screen.unmount();
   });
 
@@ -405,6 +458,7 @@ describe("ChatScreen auto recording panel target", () => {
     mockLegendListProps.current?.onTouchStart?.();
     mockLegendListProps.current?.onStartReached?.();
     expect(mockLoadOlderSessionHistory).toHaveBeenCalledWith({
+      backendId: "codex",
       sessionId: "session-1",
       directory: "/workspace",
     });

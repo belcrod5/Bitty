@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import os from "node:os";
+import path from "node:path";
+import { promises as fs } from "node:fs";
 import { WebSocket, WebSocketServer } from "ws";
 
 const upstream = new WebSocketServer({ port: 0 });
@@ -10,6 +13,8 @@ process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_MOCK = "1";
 process.env.RUNNER_TOKEN = "test-token";
 process.env.CODEX_WS_PROXY_UPSTREAM_URL = `ws://127.0.0.1:${address.port}`;
+const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-relay-initiated-"));
+process.env.ACP_SESSION_STORE_PATH = path.join(tempRoot, "sessions.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 
@@ -18,6 +23,8 @@ test.after(async () => {
     __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
   }
   await new Promise((resolve) => upstream.close(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
 function waitFor(check, timeoutMs = 2000) {

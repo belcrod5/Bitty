@@ -545,6 +545,13 @@ export function useDirectorySessionTreeController({
       const existingIds = new Set(latest.entries.map((entry) => entry.sessionId));
       const appended = applyReadOverrides(result.entries, readOverrides)
         .filter((entry) => !existingIds.has(entry.sessionId));
+      // all-backends合成のページはBackendごとに時間範囲が異なる(例: 1ページ目の
+      // claude末尾が8/7でも2ページ目のcodex先頭は8/21)。単純連結だと新しい
+      // セッションが古いものの下に出るため、表示順は常にupdatedAtで並べ直す。
+      const mergedEntries = [...latest.entries, ...appended].sort((a, b) => (
+        (new Date(String(b.updatedAt || "")).getTime() || 0)
+        - (new Date(String(a.updatedAt || "")).getTime() || 0)
+      ));
       commitTrees({
         ...directorySessionsByIdRef.current,
         [directoryId]: {
@@ -554,7 +561,7 @@ export function useDirectorySessionTreeController({
           error: "",
           nextCursor: result.nextCursor,
           hasMore: Boolean(result.nextCursor),
-          entries: [...latest.entries, ...appended],
+          entries: mergedEntries,
         },
       });
     } catch (error) {

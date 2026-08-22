@@ -131,6 +131,7 @@ describe("applyPanelHydrationStart", () => {
     const emptySnapshot = {
       ...panelSnapshot("target", "", ""),
       selectedSessionId: "",
+      sessionMaterialized: false,
       conversationMessages: [],
       ttsPlaybackMessageId: "",
     };
@@ -142,6 +143,7 @@ describe("applyPanelHydrationStart", () => {
 
     expect(started.target.snapshot).toMatchObject({
       selectedSessionId: "session-2",
+      sessionMaterialized: true,
       selectedThreadStatusType: "loading",
       isHydrating: true,
       isResponding: false,

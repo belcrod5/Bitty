@@ -37,7 +37,7 @@ import {
 export type FetchRunnerSessionMessagesFn = (
   sessionIdRaw: unknown,
   directoryRaw?: unknown,
-  options?: { cursor?: string; sinceCursor?: string; skipLiveState?: boolean },
+  options?: { backendId?: string; cursor?: string; sinceCursor?: string; skipLiveState?: boolean },
 ) => Promise<RunnerSessionMessagesResult>;
 
 type SessionDiagLogFn = (event: string, payload?: Record<string, unknown>) => void;
@@ -57,7 +57,7 @@ export type SessionMessagesCacheController = {
   fetchRunnerSessionMessagesCached: (
     sessionIdRaw: unknown,
     directoryRaw?: unknown,
-    options?: { cursor?: string },
+    options?: { backendId?: string; cursor?: string },
   ) => Promise<RunnerSessionMessagesResult>;
   // デバウンス中の書き込みを即時反映する(テスト・診断用)。
   flushPendingWrites: () => Promise<void>;
@@ -377,16 +377,20 @@ export function createSessionMessagesCacheController(
   // キャッシュミス時・差分フォールバック時の全文取得。latestCursor が返る(=差分対応
   // サーバー)場合のみ結果をキャッシュへ保存する。
   async function fetchFullAndStore(
+    cacheKey: string,
     sessionId: string,
     directoryRaw: unknown,
     reason: string,
+    backendId?: string,
   ): Promise<RunnerSessionMessagesResult> {
-    const result = await deps.fetchSessionMessages(sessionId, directoryRaw);
+    const result = backendId
+      ? await deps.fetchSessionMessages(sessionId, directoryRaw, { backendId })
+      : await deps.fetchSessionMessages(sessionId, directoryRaw);
     const restoredSessionId = parseOptionalSessionId(result.threadId);
     if (restoredSessionId && restoredSessionId !== sessionId) {
       // 呼び出し元(hydratePanelFromSessionHistory)が従来どおりmismatchを処理する。
       // ここではキャッシュだけ確実に消しておく。
-      await discardEntry(sessionId, "restored_session_mismatch");
+      await discardEntry(cacheKey, "restored_session_mismatch");
       return result;
     }
     const latestCursor = String(result.latestCursor || "").trim();
@@ -398,12 +402,12 @@ export function createSessionMessagesCacheController(
     if (result.messages.length <= 0) {
       // 空セッションは保存しない(0行ファイルはロード時に必ず破棄されるため、書き込み→
       // 破棄のチャーンになるだけ)。既存エントリが残っていれば空になったので消す。
-      if (entries.has(sessionId) || index?.sessions[sessionId]) {
-        await discardEntry(sessionId, "empty_session");
+      if (entries.has(cacheKey) || index?.sessions[cacheKey]) {
+        await discardEntry(cacheKey, "empty_session");
       }
       return result;
     }
-    updateEntry(sessionId, result.messages, latestCursor, result.olderCursor);
+    updateEntry(cacheKey, result.messages, latestCursor, result.olderCursor);
     diag("session_messages_cache_stored", {
       sessionId,
       reason,
@@ -413,11 +417,14 @@ export function createSessionMessagesCacheController(
   }
 
   async function fetchDeltaAndMerge(
+    cacheKey: string,
     sessionId: string,
     directoryRaw: unknown,
     entry: MemoryEntry,
+    backendId?: string,
   ): Promise<RunnerSessionMessagesResult> {
     const first = await deps.fetchSessionMessages(sessionId, directoryRaw, {
+      ...(backendId ? { backendId } : {}),
       sinceCursor: entry.latestCursor,
     });
     assertRestoredSessionMatches(sessionId, first);
@@ -436,6 +443,7 @@ export function createSessionMessagesCacheController(
       chains += 1;
       // 連鎖ページはメッセージ本文だけ必要なので、live状態のRPCは初回のみに抑える。
       last = await deps.fetchSessionMessages(sessionId, directoryRaw, {
+        ...(backendId ? { backendId } : {}),
         sinceCursor: nextSinceCursor,
         skipLiveState: true,
       });
@@ -448,9 +456,9 @@ export function createSessionMessagesCacheController(
       throw makeCodedError("missing_latest_cursor", "delta response missing latestCursor");
     }
     if (deltaRowCount > 0 || finalLatestCursor !== entry.latestCursor) {
-      updateEntry(sessionId, mergedRows, finalLatestCursor, entry.olderCursor);
+      updateEntry(cacheKey, mergedRows, finalLatestCursor, entry.olderCursor);
     } else {
-      touchAccess(sessionId);
+      touchAccess(cacheKey);
     }
     diag("session_messages_cache_hit", {
       sessionId,
@@ -478,36 +486,41 @@ export function createSessionMessagesCacheController(
   async function fetchRunnerSessionMessagesCached(
     sessionIdRaw: unknown,
     directoryRaw?: unknown,
-    options?: { cursor?: string },
+    options?: { backendId?: string; cursor?: string },
   ): Promise<RunnerSessionMessagesResult> {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
+    const backendId = String(options?.backendId || "").trim() || undefined;
+    const cacheBackendId = backendId || "codex";
+    const cacheKey = cacheBackendId === "codex"
+      ? sessionId
+      : `${cacheBackendId.replace(/[^A-Za-z0-9._-]/g, "_")}--${sessionId}`;
     const cursor = String(options?.cursor || "").trim();
     // olderページング(cursor指定)とキャッシュ不能なIDは素通しで従来どおりサーバーへ。
-    if (!sessionId || cursor || !isCacheSafeSessionId(sessionId)) {
+    if (!sessionId || cursor || !isCacheSafeSessionId(cacheKey)) {
       return deps.fetchSessionMessages(sessionIdRaw, directoryRaw, options);
     }
     let entry: MemoryEntry | null = null;
     try {
-      entry = await loadEntry(sessionId);
+      entry = await loadEntry(cacheKey);
     } catch {
       entry = null;
     }
     if (!entry || !entry.latestCursor || entry.rows.length <= 0) {
       diag("session_messages_cache_miss", { sessionId });
-      return fetchFullAndStore(sessionId, directoryRaw, "cache_miss");
+      return fetchFullAndStore(cacheKey, sessionId, directoryRaw, "cache_miss", backendId);
     }
     if (entry.trimmed) {
       // トリム済みエントリはolderCursorを失っている。差分を続けるとolderページング不能が
       // キャッシュ破棄まで続くため、オープン時に全文で取り直してエントリを置き換える。
       diag("session_messages_cache_trimmed_refresh", { sessionId });
-      return fetchFullAndStore(sessionId, directoryRaw, "trimmed_refresh");
+      return fetchFullAndStore(cacheKey, sessionId, directoryRaw, "trimmed_refresh", backendId);
     }
     try {
-      return await fetchDeltaAndMerge(sessionId, directoryRaw, entry);
+      return await fetchDeltaAndMerge(cacheKey, sessionId, directoryRaw, entry, backendId);
     } catch (error) {
       const code = errorCode(error);
       if (DISCARD_ERROR_CODES.has(code)) {
-        await discardEntry(sessionId, code);
+        await discardEntry(cacheKey, code);
       }
       diag("session_messages_cache_delta_fallback", {
         sessionId,
@@ -516,7 +529,7 @@ export function createSessionMessagesCacheController(
       });
       // 409・ネットワークエラー・連鎖上限超過はすべて全文取得へ。ここで失敗したら
       // そのままthrowし、呼び出し元の既存エラー処理(パネルのエラー表示等)に任せる。
-      return fetchFullAndStore(sessionId, directoryRaw, `delta_failed_${code || "unknown"}`);
+      return fetchFullAndStore(cacheKey, sessionId, directoryRaw, `delta_failed_${code || "unknown"}`, backendId);
     }
   }
 

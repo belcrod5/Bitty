@@ -27,6 +27,7 @@ import {
   createCalendarScheduleRequestHandler,
   createCalendarToolService,
   createCalendarHttpHandler,
+  calendarConversationDynamicTools,
   calendarScheduleDynamicTools,
 } from "./calendar-tool-service.mjs";
 import { createCalendarScheduleRuntime } from "./calendar-schedule-runtime.mjs";
@@ -39,9 +40,12 @@ import {
   extractCodexAgentMessageText,
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
+import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createNormalCodexTurnStarter } from "./codex-relay-initiator.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
+import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
+import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
 import {
   createLocationScheduleService,
   LocationScheduleStoreUnavailableError,
@@ -61,8 +65,10 @@ const HOST = process.env.HOST || "127.0.0.1";
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN || "";
 const RUNNER_MOCK = process.env.RUNNER_MOCK === "1";
 const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
+const AGENT_CLAUDE_BINARY = String(process.env.AGENT_CLAUDE_BINARY || "claude").trim() || "claude";
+const AGENT_PROCESS_EPOCH = randomUUID();
 const RUNNER_WS_PATH = "/runner-ws";
-const RUNNER_WS_CHANNELS = new Set(["llm", "tts", "relay", "control"]);
+const RUNNER_WS_CHANNELS = new Set(["agent", "llm", "tts", "relay", "control"]);
 const RUNNER_WS_ENVELOPE_MAX_CHARS = 32 * 1024 * 1024;
 const CODEX_WS_PROXY_UPSTREAM_URL = String(
   process.env.CODEX_WS_PROXY_UPSTREAM_URL || "ws://127.0.0.1:4500"
@@ -1120,14 +1126,28 @@ function normalizeSessionUpdatedAt(rawUpdatedAt) {
 }
 
 const {
+  acquireAgentSessionLease,
+  approveAgentWorkspace,
+  bindAgentSession,
   bindSessionToRootDir,
+  claimAgentOperation,
+  completeAgentOperation,
   getAcpSessionStoreStats,
+  getAgentModelInfo,
+  setAgentModelInfo,
+  getAgentSessionBinding,
+  getAgentSessionMode,
+  handoffAgentSessionMode,
+  listAgentWorkspaces,
   listAcpSessionsForDirectories,
   listAcpSessionsForDirectory,
   markAcpDirectoryRead,
   markAcpSessionsRead,
   migrateAcpSessionDirectoryIdentity,
+  revokeAgentWorkspace,
   resolveSessionIdForRootDir,
+  settleAgentSessionLease,
+  updateAgentSessionLeaseIdentity,
 } = createLlmAcpSessionStore({
   acpSessionStorePath: ACP_SESSION_STORE_PATH,
   compareSessionHistoryEntries,
@@ -1138,6 +1158,7 @@ const {
   normalizeSessionUpdatedAt,
   sessionRootBindingEnabled: SESSION_ROOT_BINDING_ENABLED,
   workspaceRoot: WORKSPACE_ROOT,
+  agentProcessEpoch: AGENT_PROCESS_EPOCH,
 });
 
 function normalizeSessionSource(rawSource, fallback = "all") {
@@ -1619,6 +1640,50 @@ async function listLlmSessionMessages(rawSessionId, opts = {}) {
     diagnostics,
   };
 }
+
+// Agent Backendへ渡すCodexセッションのcwdは実行identity(絶対パス)。
+// resolveCliSessionEntryDirectoryは一覧スコープ用のworkspace相対パスで、
+// workspace外のセッションでは空になり resolveCanonicalDirectoryIdentity の
+// llm_rootフォールバックへ誤解決される(session_cwd_mismatchの根本原因)。
+function resolveCliSessionEntryExecutionCwd(entry) {
+  const nativeCwd = String(entry?.cwd || "").trim();
+  if (nativeCwd) return toUnixPath(path.resolve(nativeCwd));
+  // 旧indexエントリ(cwd未記録)のみworkspace相対スコープから復元する。
+  // resolveCliSessionEntryDirectoryはcwd空だとprocess cwdを拾うため使わない。
+  const scopeDirectory = String(entry?.directory || "").trim();
+  if (scopeDirectory) {
+    return toUnixPath(path.resolve(WORKSPACE_ROOT, normalizeSessionRootRelativePath(scopeDirectory)));
+  }
+  return "";
+}
+
+const agentRuntime = createPrivateRunnerAgentRuntime({
+  claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
+  stores: {
+    bindSession: bindAgentSession, getSessionBinding: getAgentSessionBinding, getSessionMode: getAgentSessionMode,
+    acquireSessionLease: acquireAgentSessionLease, settleSessionLease: settleAgentSessionLease,
+    updateSessionLeaseIdentity: updateAgentSessionLeaseIdentity, handoffSessionMode: handoffAgentSessionMode,
+    claimOperation: claimAgentOperation, completeOperation: completeAgentOperation,
+    getModelInfo: getAgentModelInfo, setModelInfo: setAgentModelInfo,
+    listWorkspaces: listAgentWorkspaces, approveWorkspace: approveAgentWorkspace, revokeWorkspace: revokeAgentWorkspace,
+  },
+  createCodexClient: ({ signal }) => createCodexRpcClient({ signal }), normalizeSessionId: normalizeLlmExecutionSessionId,
+  findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
+  listSessions: listLlmSessions, listMessages: listLlmSessionMessages,
+  resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
+  normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
+});
+const { service: agentService, httpHandler: agentHttpHandler } = agentRuntime;
+const codexRawSessionOwnership = createCodexRawSessionOwnership({
+  bindSession: bindAgentSession,
+  getSessionBinding: getAgentSessionBinding,
+  acquireLease: acquireAgentSessionLease,
+  settleLease: settleAgentSessionLease,
+  resolveCanonicalCwd: resolveCanonicalDirectoryIdentity,
+  makeConflictError: (code, message) => makeApiError(409, code, message),
+  errorMessage,
+  sendRpc: sendCodexRelayRpcToClient,
+});
 
 function splitPseudoTextDeltas(text) {
   const source = String(text || "");
@@ -2377,7 +2442,7 @@ function parseRunnerWsEnvelope(raw, isBinary) {
   }
   const channel = String(payload.channel || "").trim();
   if (!RUNNER_WS_CHANNELS.has(channel)) {
-    return { ok: false, error: "channel must be one of llm, tts, relay, control" };
+    return { ok: false, error: "channel must be one of agent, llm, tts, relay, control" };
   }
   const op = String(payload.op || "").trim();
   if (!op) {
@@ -6860,161 +6925,12 @@ function markCodexQueuedTurn(turn, patch) {
 }
 
 function createCodexRpcClient({ signal, upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL, upstreamToken = CODEX_WS_PROXY_UPSTREAM_TOKEN } = {}) {
-  const headers = {};
-  if (upstreamToken) {
-    headers.authorization = `Bearer ${upstreamToken}`;
-  }
-  const ws = new WebSocket(upstreamUrl, { headers });
-  const pending = new Map();
-  let nextId = 1;
-  let closed = false;
-  const completionWaiters = new Set();
-  const notificationListeners = new Set();
-  const serverRequestHandlers = new Set();
-  const finishCompletionWaiters = () => {
-    for (const waiter of completionWaiters) waiter.finish();
-    completionWaiters.clear();
-  };
-  const close = (code = 1000, reason = "closed") => {
-    if (closed) return;
-    closed = true;
-    for (const entry of pending.values()) {
-      entry.reject(new Error("Codex app-server request cancelled"));
-      if (entry.timeout) clearTimeout(entry.timeout);
-    }
-    pending.clear();
-    finishCompletionWaiters();
-    safeWsClose(ws, code, reason);
-  };
-  const openPromise = new Promise((resolve, reject) => {
-    ws.on("open", resolve);
-    ws.on("error", reject);
-    ws.on("close", (code, reasonBuf) => {
-      const reason = Buffer.isBuffer(reasonBuf) ? reasonBuf.toString("utf8") : String(reasonBuf || "");
-      if (closed) return;
-      closed = true;
-      const message = `Codex app-server WebSocket closed code=${Number(code) || 0} reason=${reason || "-"}`;
-      for (const entry of pending.values()) {
-        entry.reject(new Error(message));
-        if (entry.timeout) clearTimeout(entry.timeout);
-      }
-      pending.clear();
-      finishCompletionWaiters();
-    });
+  return createCodexAppServerClient({
+    signal,
+    upstreamUrl,
+    upstreamToken,
+    turnCompletionTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
   });
-  ws.on("message", (data) => {
-    const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
-    if (!text) return;
-    let message = null;
-    try {
-      message = JSON.parse(text);
-    } catch {
-      return;
-    }
-    if (message?.method && (typeof message.id === "string" || typeof message.id === "number")) {
-      for (const handler of serverRequestHandlers) {
-        Promise.resolve(handler(message)).then((result) => {
-          if (closed || ws.readyState !== WebSocket.OPEN) return;
-          ws.send(JSON.stringify({ id: message.id, result }));
-        }).catch(() => {
-          if (closed || ws.readyState !== WebSocket.OPEN) return;
-          ws.send(JSON.stringify({ id: message.id, result: { success: false, contentItems: [] } }));
-        });
-      }
-      return;
-    }
-    if (message?.method) {
-      if (message.method === "turn/completed" || message.method === "turn/interrupted") {
-        for (const waiter of [...completionWaiters]) waiter.handle(message.params ?? {});
-      }
-      for (const listener of notificationListeners) {
-        try {
-          listener(String(message.method), message.params ?? {});
-        } catch {}
-      }
-      return;
-    }
-    const id = Number(message?.id);
-    if (!Number.isInteger(id)) return;
-    const entry = pending.get(id);
-    if (!entry) return;
-    pending.delete(id);
-    if (entry.timeout) clearTimeout(entry.timeout);
-    if (message.error) {
-      entry.reject(new Error(String(message.error?.message || message.error || "Codex RPC failed")));
-    } else {
-      entry.resolve(message.result);
-    }
-  });
-  const send = (payload) => {
-    if (closed || ws.readyState !== WebSocket.OPEN) {
-      throw new Error("Codex app-server WebSocket is not open");
-    }
-    ws.send(JSON.stringify(payload));
-  };
-  const request = (method, params = {}, timeoutMs = 30000) => {
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      const timeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-        ? setTimeout(() => {
-          pending.delete(id);
-          reject(new Error(`Codex RPC timeout: ${method}`));
-        }, Math.floor(Number(timeoutMs)))
-        : null;
-      pending.set(id, { resolve, reject, timeout });
-      try {
-        send({ id, method, params });
-      } catch (error) {
-        pending.delete(id);
-        if (timeout) clearTimeout(timeout);
-        reject(error);
-      }
-    });
-  };
-  const notify = (method, params = {}) => send({ method, params });
-  const waitForTurnCompletion = () => {
-    let timer = null;
-    let expected = null;
-    const pending = [];
-    let resolvePromise;
-    const promise = new Promise((resolve) => { resolvePromise = resolve; });
-    const finish = () => {
-      if (!completionWaiters.delete(waiter)) return;
-      if (timer) clearTimeout(timer);
-      resolvePromise();
-    };
-    const handle = (params) => {
-      if (!expected) {
-        pending.push(params);
-        return;
-      }
-      if (codexTurnEventMatches(params, expected)) finish();
-    };
-    const expect = (identity) => {
-      expected = identity;
-      if (pending.some((params) => codexTurnEventMatches(params, expected))) finish();
-      pending.length = 0;
-    };
-    const waiter = { finish, handle };
-    completionWaiters.add(waiter);
-    timer = setTimeout(finish, NEAR_UNLIMITED_TIMEOUT_MS);
-    return { promise, expect };
-  };
-  if (signal) {
-    if (signal.aborted) close(1000, "aborted");
-    signal.addEventListener("abort", () => close(1000, "aborted"), { once: true });
-  }
-  const addNotificationListener = (listener) => {
-    if (typeof listener !== "function") throw new TypeError("notification listener must be a function");
-    notificationListeners.add(listener);
-    return () => notificationListeners.delete(listener);
-  };
-  const addServerRequestHandler = (handler) => {
-    if (typeof handler !== "function") throw new TypeError("server request handler must be a function");
-    serverRequestHandlers.add(handler);
-    return () => serverRequestHandlers.delete(handler);
-  };
-  return { ws, openPromise, request, notify, close, waitForTurnCompletion, addNotificationListener, addServerRequestHandler };
 }
 
 function parseCodexThreadStatus(params) {
@@ -7118,6 +7034,7 @@ function observeCodexCompactClientRpc(relay, meta) {
   const threadId = String(meta.threadId || relay?.threadId || "").trim();
   noteCodexCompactStarted(threadId, meta.method);
 }
+const completeCodexRawCompact = (relay, threadId, method) => { noteCodexCompactCompleted(threadId, method); codexRawSessionOwnership.settle(relay, "released", "compact"); };
 
 function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") {
   if (!meta) return;
@@ -7127,15 +7044,16 @@ function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") 
   if (responseRpcMethod === "thread/compact/start" || responseRpcMethod === "thread/compact") {
     if (meta.hasError) {
       noteCodexCompactFailed(threadId, meta.errorMessage || `${responseRpcMethod} failed`);
+      codexRawSessionOwnership.settle(relay, "released", "compact");
       return;
     }
     if (responseRpcMethod === "thread/compact" && meta.hasResult) {
-      noteCodexCompactCompleted(threadId, responseRpcMethod);
+      completeCodexRawCompact(relay, threadId, responseRpcMethod);
       return;
     }
   }
   if (meta.method === "thread/compacted") {
-    noteCodexCompactCompleted(threadId, "thread/compact/start");
+    completeCodexRawCompact(relay, threadId, "thread/compact/start");
     return;
   }
   if (meta.method === "item/started" && isCodexCompactItemType(meta.itemType)) {
@@ -7143,7 +7061,7 @@ function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") 
     return;
   }
   if (meta.method === "item/completed" && isCodexCompactItemType(meta.itemType)) {
-    noteCodexCompactCompleted(threadId, "thread/compact/start");
+    completeCodexRawCompact(relay, threadId, "thread/compact/start");
     return;
   }
   if (meta.method === "thread/status/changed") {
@@ -7154,7 +7072,7 @@ function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") 
     }
     const compact = codexCompactByThreadId.get(threadId);
     if (status === "idle" && compact?.sawActivity) {
-      noteCodexCompactCompleted(threadId, "thread/compact/start");
+      completeCodexRawCompact(relay, threadId, "thread/compact/start");
       return;
     }
     return;
@@ -7162,7 +7080,7 @@ function observeCodexCompactUpstreamRpc(relay, meta, responseRpcMethodRaw = "") 
   if (meta.method === "turn/completed") {
     const compact = codexCompactByThreadId.get(threadId);
     if (compact?.sawActivity) {
-      noteCodexCompactCompleted(threadId, "thread/compact/start");
+      completeCodexRawCompact(relay, threadId, "thread/compact/start");
     }
   }
 }
@@ -7182,6 +7100,7 @@ async function runRunnerInitiatedTurn({
   try {
     const result = await executeCodexTurn({ client, clientName, onTurnStarted, ...request });
     void turnCompletionNotifier.notifyTurnCompleted({
+      backendId: "codex",
       threadId: result.threadId,
       turnId: result.turnId,
       agentMessageText: result.lastAgentMessageText,
@@ -7229,23 +7148,74 @@ async function runCodexQueuedTurn(turn) {
     abortController,
   });
   codexRunningTurnByThreadId.set(turn.threadId, turn.queuedTurnId);
+  const sessionRef = { backendId: "codex", nativeSessionId: turn.threadId };
   try {
-    await runRunnerInitiatedTurn({
-      clientName: "private-runner-codex-queued-turn",
-      origin: "queued_turn",
-      signal: abortController.signal,
-      onTurnStarted: ({ turnId }) => {
-        if (turnId) markCodexQueuedTurn(turn, { turnId });
-      },
-      request: {
-        threadId: turn.threadId,
-        inputText: turn.inputText,
+    const ownership = await getAgentSessionMode(sessionRef);
+    if (ownership?.mode === "neutral") {
+      const run = await agentService.startTurn({
+        backendId: "codex",
+        sessionRef,
         cwd: turn.cwd,
+        input: { blocks: [{ type: "text", text: turn.inputText }] },
         model: turn.model,
         effort: turn.effort,
-        approvalPolicy: turn.approvalPolicy,
-      },
-    });
+        policyProfileId: turn.approvalPolicy === "never" ? "codex-never" : "codex-on-request",
+        clientOperationId: turn.queuedTurnId,
+      }, { subjectId: "runner-queue" });
+      turn.agentRunId = run.runId;
+      const consumeEvents = (async () => {
+        for await (const event of run.events) {
+          if (event.type !== "action.requested") continue;
+          const requestId = String(event.payload?.requestId || "");
+          if (event.payload?.kind === "dynamic_tool") {
+            const input = event.payload?.input || {};
+            await agentService.respondToAction({
+              runId: run.runId,
+              requestId,
+              decision: "result",
+              result: runnerInitiatedCalendarResponse({
+                id: requestId,
+                method: input.method,
+                params: input.params,
+              }),
+            });
+          } else {
+            await agentService.respondToAction({ runId: run.runId, requestId, decision: "deny" });
+          }
+        }
+      })();
+      const result = await run.completion;
+      await consumeEvents;
+      if (result.outcome !== "completed") throw new Error(`queued Agent turn ${result.outcome}`);
+    } else {
+      let acquired = null;
+      const canonicalCwd = await resolveCanonicalDirectoryIdentity(turn.cwd);
+      const bound = await bindAgentSession(sessionRef, canonicalCwd, "raw");
+      if (bound?.status !== "bound") throw new Error(`queued Codex session binding failed: ${bound?.status || "unknown"}`);
+      acquired = await acquireAgentSessionLease({ sessionRef, mode: "raw", owner: "codex-queue", runId: turn.queuedTurnId });
+      if (acquired?.status !== "acquired" && acquired?.status !== "existing") throw new Error("queued Codex session is busy");
+      turn.agentLease = acquired.lease;
+      try {
+        await runRunnerInitiatedTurn({
+          clientName: "private-runner-codex-queued-turn",
+          origin: "queued_turn",
+          signal: abortController.signal,
+          onTurnStarted: ({ turnId }) => {
+            if (turnId) markCodexQueuedTurn(turn, { turnId });
+          },
+          request: {
+            threadId: turn.threadId, inputText: turn.inputText, cwd: turn.cwd,
+            model: turn.model, effort: turn.effort, approvalPolicy: turn.approvalPolicy,
+          },
+        });
+        if (acquired) await settleAgentSessionLease(sessionRef, acquired.lease.generation, "released");
+      } catch (error) {
+        if (acquired) await settleAgentSessionLease(sessionRef, acquired.lease.generation, "recovering").catch(() => {});
+        throw error;
+      } finally {
+        turn.agentLease = null;
+      }
+    }
     if (turn.status !== "cancelled") {
       markCodexQueuedTurn(turn, {
         status: "completed",
@@ -7383,6 +7353,7 @@ function cancelCodexQueuedTurn(queuedTurnIdRaw) {
   }
   if (turn.status === "running" && turn.abortController) {
     turn.abortController.abort();
+    if (turn.agentRunId) void agentService.interrupt(turn.agentRunId).catch(() => {});
   }
   markCodexQueuedTurn(turn, {
     status: "cancelled",
@@ -8555,6 +8526,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (await agentHttpHandler(req, res, reqUrl, pathname)) return;
+
   if (req.method === "GET" && pathname === "/directories") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -9429,6 +9402,10 @@ runnerWsServer.on("connection", (ws, req) => {
     route: "runner-ws",
     endpoint: reqUrl.pathname,
   });
+  const agentConnection = agentRuntime.createWsConnection({
+    ws,
+    sendEnvelope: sendRunnerWsEnvelope,
+  });
 
   function attachedRunnerWsLlmRelays() {
     const relays = [];
@@ -9705,6 +9682,8 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
+    if (agentConnection.handleMessage(message)) return;
+
     if (message.channel === "control" && message.op === "ping") {
       const pingPayload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
         ? message.payload
@@ -9873,7 +9852,7 @@ runnerWsServer.on("connection", (ws, req) => {
         bindCodexRelayThreadMapping(relay, message.threadId, { allowSwitch: true });
         cleanupNoClientRelaysForThread(message.threadId, relay, "runner_ws_llm_rebind");
       }
-      forwardCodexRelayClientData(relay, normalized.text, false, {
+      const forwarded = forwardCodexRelayClientData(relay, normalized.text, false, {
         remote,
         endpoint: RUNNER_WS_PATH,
         clientWs: ws,
@@ -9882,16 +9861,29 @@ runnerWsServer.on("connection", (ws, req) => {
         sessionId: message.sessionId || "",
         threadId: message.threadId || "",
       });
-      if (requestId) {
-        sendRunnerWsLlmRpcAck(relay, ws, {
-          op: "llm_rpc_forwarded",
-          requestId,
-          operationId: message.operationId || "",
-          method: meta?.method || "",
-          id: meta?.id ?? null,
-          threadId: message.threadId || meta?.threadId || relay.threadId || "",
-          state: "forwarded",
+      const acknowledgeForward = (didForward) => {
+        if (requestId && didForward !== false) {
+          sendRunnerWsLlmRpcAck(relay, ws, {
+            op: "llm_rpc_forwarded",
+            requestId,
+            operationId: message.operationId || "",
+            method: meta?.method || "",
+            id: meta?.id ?? null,
+            threadId: message.threadId || meta?.threadId || relay.threadId || "",
+            state: "forwarded",
+          });
+        }
+      };
+      if (forwarded && typeof forwarded.then === "function") {
+        void forwarded.then(acknowledgeForward).catch((error) => {
+          sendRunnerWsEnvelope(ws, runnerWsErrorEnvelope(
+            "runner_ws_llm_forward_failed",
+            errorMessage(error),
+            { requestId, operationId: message.operationId || "", threadId: message.threadId || "" },
+          ));
         });
+      } else {
+        acknowledgeForward(forwarded);
       }
       return;
     }
@@ -10090,6 +10082,7 @@ runnerWsServer.on("connection", (ws, req) => {
   ws.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error || "runner_ws_error");
     detachRunnerWsFromAllRelays("runner_ws_error");
+    agentConnection.detach();
     detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);
     runnerWsClientInstanceIds.delete(ws);
@@ -10103,6 +10096,7 @@ runnerWsServer.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
+    agentConnection.detach();
     detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);
     runnerWsClientInstanceIds.delete(ws);
@@ -11136,6 +11130,7 @@ function createCodexRelayContext(params) {
     upstreamWs: params.upstreamWs,
     upstreamOpen: false,
     pendingToUpstream: [],
+    clientForwardQueue: Promise.resolve(),
     clients: new Set(),
     threadId: "",
     threadCwd: "",
@@ -11146,6 +11141,8 @@ function createCodexRelayContext(params) {
     currentTurnStartSeq: 0,
     lastAgentMessageText: "",
     pendingApprovalRequestIds: new Set(),
+    agentLease: null,
+    agentBindingReconciliation: null,
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
     requestMetaByRpcId: new Map(),
@@ -11322,6 +11319,7 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     relay.threadId
   );
   void turnCompletionNotifier.notifyTurnCompleted({
+    backendId: "codex",
     sessionId: threadId,
     threadId,
     turnId: getCodexTurnStartedId(rpcPayload) || "",
@@ -11471,14 +11469,29 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       bindCodexRelayThreadMapping(relay, resolvedThreadId, { allowSwitch: true });
       cleanupNoClientRelaysForThread(resolvedThreadId, relay, `upstream_${responseRpcMethod}`);
     }
-    // Fallback working-directory capture for push titles: the app-server echoes the
-    // thread's cwd in thread/start / thread/resume results even when the client request
-    // omitted it (see the client-side capture in forwardCodexRelayClientData).
+    // The native result is authoritative. A shared relay may still carry another
+    // session's cwd while thread/resume is in flight, so never bind from relay state.
     const resultCwd = typeof rpcPayload?.result?.thread?.cwd === "string"
       ? rpcPayload.result.thread.cwd.trim()
       : "";
     if (resultCwd) relay.threadCwd = resultCwd;
+    if (resolvedThreadId && resultCwd) {
+      const previousReconciliation = relay.agentBindingReconciliation;
+      const leaseSettlement = relay.agentLeaseSettlement;
+      relay.agentBindingReconciliation = (async () => {
+        if (previousReconciliation) await previousReconciliation;
+        if (leaseSettlement) await leaseSettlement;
+        try {
+          await codexRawSessionOwnership.bind(relay, resolvedThreadId, resultCwd, { reconcileCwd: true });
+          return { error: null };
+        } catch (error) {
+          console.warn(`[codex-ws-proxy] failed to bind raw session: ${errorMessage(error)}`);
+          return { error };
+        }
+      })();
+    }
   }
+  if (responseRpcMethod === "turn/start" && meta?.hasError) codexRawSessionOwnership.settle(relay, "released", "turn");
   if (
     responseRpcMethod === "turn/start" &&
     meta?.hasResult &&
@@ -11524,7 +11537,11 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       relay.turnStatus = String(meta.threadStatus || "");
       if (isTerminalTurnStatus(meta.threadStatus) || !meta.threadStatus) {
         relay.turnCompleted = true;
+        codexRawSessionOwnership.settle(relay, "released", "turn");
       }
+    } else if (meta.method === "turn/interrupted" && ownsCurrentTurn) {
+      relay.turnCompleted = true;
+      codexRawSessionOwnership.settle(relay, "released", "turn");
     } else if (meta.method === "turn/started" && ownsCurrentTurn) {
       relay.turnStarted = true;
       relay.turnCompleted = false;
@@ -11664,6 +11681,7 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
       ? reasonBuf.toString("utf8")
       : String(reasonBuf || "");
     relay.upstreamOpen = false;
+    if (relay.agentLease) codexRawSessionOwnership.settle(relay, "recovering");
     relay.updatedAtMs = codexRelayNowMs();
     if (RUNNER_LOG_REQUESTS) {
       console.log(
@@ -11701,6 +11719,7 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
 
   upstreamWs.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error || "upstream_error");
+    if (relay.agentLease) codexRawSessionOwnership.settle(relay, "recovering");
     if (RUNNER_LOG_REQUESTS) {
       console.warn(`[codex-ws-proxy] upstream error: ${message} relay=${relay.relayId}`);
     }
@@ -11766,8 +11785,34 @@ function isCodexRelayIdentityBindingMethod(method) {
   return method === "initialize" || isCodexTurnOwningMethod(method);
 }
 
+function trackCodexRelayClientForward(relay, task) {
+  const queued = Promise.resolve(task);
+  const tail = queued.catch(() => {});
+  relay.clientForwardBusy = true;
+  relay.clientForwardQueue = tail;
+  void tail.finally(() => {
+    if (relay.clientForwardQueue === tail) relay.clientForwardBusy = false;
+  });
+  return queued;
+}
+
 function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (!relay || relay.closed) return;
+  if (params.clientForwardQueued !== true) {
+    const forwardQueued = () => forwardCodexRelayClientData(relay, data, isBinary, {
+      ...params,
+      clientForwardQueued: true,
+    });
+    if (relay.clientForwardBusy) {
+      const queued = (relay.clientForwardQueue || Promise.resolve()).then(forwardQueued);
+      return trackCodexRelayClientForward(relay, queued);
+    }
+    const forwarded = forwardQueued();
+    if (forwarded && typeof forwarded.then === "function") {
+      return trackCodexRelayClientForward(relay, forwarded);
+    }
+    return forwarded;
+  }
   const remote = String(params.remote || relay.remote || "unknown");
   const endpoint = String(params.endpoint || relay.endpoint || "/codex-ws");
   const requestId = String(params.requestId || "").trim();
@@ -11780,6 +11825,20 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (
+    meta?.method === "thread/start" ||
+    meta?.method === "thread/resume" ||
+    meta?.method === "turn/start"
+  ) {
+    const requestCwd = typeof rpcPayload?.params?.cwd === "string" ? rpcPayload.params.cwd.trim() : "";
+    if (meta.method === "thread/start" || meta.method === "thread/resume") relay.threadCwd = requestCwd;
+    else if (requestCwd) relay.threadCwd = requestCwd;
+  }
+  const admission = codexRawSessionOwnership.intercept(
+    relay, rpcPayload, meta?.method, params,
+    (admittedParams) => forwardCodexRelayClientData(relay, data, isBinary, admittedParams),
+  );
+  if (admission) return admission;
   if (handleCalendarClientResponse(relay, rpcPayload, data, isBinary, {
     ws: requestClientWs,
     operationId: requestOperationId,
@@ -11891,17 +11950,6 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
         sessionId: requestSessionId,
         threadId: requestThreadId,
       });
-    }
-    // Remember the session's working directory (the app sends cwd on thread/start,
-    // thread/resume, and turn/start) so push notifications can title themselves with the
-    // directory's trailing segment (see derivePushDirectoryTitle).
-    if (
-      meta.method === "thread/start" ||
-      meta.method === "thread/resume" ||
-      meta.method === "turn/start"
-    ) {
-      const requestCwd = typeof rpcPayload?.params?.cwd === "string" ? rpcPayload.params.cwd.trim() : "";
-      if (requestCwd) relay.threadCwd = requestCwd;
     }
     if (meta.threadId) {
       const allowSwitch = (
@@ -12237,6 +12285,9 @@ async function initializeCodexWsDebugRuntime() {
 }
 
 if (!RUNNER_SKIP_SERVER_START) {
+  const stopAgentsForSignal = (signal) => void agentRuntime.close().finally(() => process.kill(process.pid, signal));
+  process.once("SIGTERM", () => stopAgentsForSignal("SIGTERM"));
+  process.once("SIGINT", () => stopAgentsForSignal("SIGINT"));
   void initializeLlmRequestLogRuntime();
   void initializeClientAppLogRuntime();
   void initializeLlmFileRuntime();
@@ -12305,6 +12356,8 @@ export const __TESTING__ = {
   listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,
+  resolveCliSessionEntryExecutionCwd,
+  WORKSPACE_ROOT,
   resolvePathWithinToolRoot,
   resolveWorkspaceShellScriptTarget,
   resolveClientFilePath,

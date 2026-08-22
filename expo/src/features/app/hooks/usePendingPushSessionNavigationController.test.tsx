@@ -19,7 +19,7 @@ const mockGet = getPendingPushSessionTarget as jest.Mock;
 const mockSubscribe = subscribePendingPushSessionTarget as jest.Mock;
 
 function target(sessionId: string, directory: string, sequence: number): PendingPushSessionTarget {
-  return { sessionId, directory, sequence };
+  return { backendId: "claude", sessionId, directory, sequence };
 }
 
 function deferred<T>() {
@@ -87,6 +87,7 @@ describe("usePendingPushSessionNavigationController", () => {
     });
     expect(closeDrawer).toHaveBeenCalled();
     expect(open).toHaveBeenCalledWith({
+      backendId: "claude",
       sessionId: "session-abc",
       source: "notification",
       directory: "/repo",

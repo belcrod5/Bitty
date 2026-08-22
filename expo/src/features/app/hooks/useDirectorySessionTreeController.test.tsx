@@ -6,6 +6,7 @@ import { useDirectorySessionTreeController } from "./useDirectorySessionTreeCont
 
 function session(lastReadAt = "", sessionId = "session-1"): LlmSessionHistoryEntry {
   return {
+    backendId: "codex",
     sessionId,
     parentSessionId: "",
     directory: "/workspace",
@@ -222,6 +223,52 @@ test("applies a read completed while an unknown load-more page is in flight", as
       lastReadAt: "2026-07-29T02:00:00.000Z",
     })
   );
+});
+
+test("load-more re-sorts merged entries by updatedAt across composite page boundaries", async () => {
+  // all-backends合成では1ページ目のBackendごとの末尾時刻が揃わないため、
+  // 2ページ目に1ページ目より新しいセッションが来る(連結だけだと古い項目の下に出る)
+  const page1New = { ...session("", "codex-new"), updatedAt: "2026-08-22T00:00:00.000Z" };
+  const page1Old = { ...session("", "claude-old"), updatedAt: "2026-08-07T00:00:00.000Z", backendId: "claude" };
+  const page2Mid = { ...session("", "codex-mid"), updatedAt: "2026-08-21T00:00:00.000Z" };
+  const { result } = await renderHook(() => {
+    const [directorySessionsById, setDirectorySessionsById] = useState<
+      Record<string, DirectorySessionTreeState>
+    >({
+      workspace: {
+        ...emptyState,
+        loaded: true,
+        nextCursor: "page-2",
+        hasMore: true,
+        entries: [page1New, page1Old],
+      },
+    });
+    const controller = useDirectorySessionTreeController({
+      directorySessionsById,
+      setDirectorySessionsById,
+      setExpandedDirectoryIds: jest.fn(),
+      fetchSessionHistory: jest.fn(async () => ({
+        latestSessionId: "codex-mid",
+        nextCursor: "",
+        entries: [page2Mid],
+      })),
+      fetchSessionChildrenHistory: jest.fn(async () => ({})),
+      emptyDirectorySessionTreeState: emptyState,
+      directorySessionPageSize: 5,
+      directorySessionPrefetchTtlMs: 1,
+      directorySessionPrefetchConcurrency: 1,
+      registeredDirectories: [workspaceDirectory],
+      selectedDirectoryPath: "/workspace",
+    });
+    return { controller, directorySessionsById };
+  });
+
+  await act(async () => {
+    await result.current.controller.loadMoreDirectorySessionTree("workspace", "/workspace");
+  });
+
+  expect(result.current.directorySessionsById.workspace.entries.map((entry) => entry.sessionId))
+    .toEqual(["codex-new", "codex-mid", "claude-old"]);
 });
 
 test("does not let a stale child fetch overwrite a read completed while loading", async () => {

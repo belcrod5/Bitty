@@ -20,6 +20,18 @@ test("runner-ws parser accepts string operationId", () => {
   assert.equal(parsed.message.operationId, "op-1");
 });
 
+test("runner-ws parser accepts the neutral agent channel", () => {
+  const parsed = __TESTING__.parseRunnerWsEnvelope(JSON.stringify({
+    channel: "agent",
+    op: "agent.hello",
+    requestId: "req-agent",
+  }), false);
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.message.channel, "agent");
+  assert.equal(parsed.message.op, "agent.hello");
+});
+
 test("runner-ws parser rejects non-string operationId", () => {
   const parsed = __TESTING__.parseRunnerWsEnvelope(JSON.stringify({
     channel: "llm",

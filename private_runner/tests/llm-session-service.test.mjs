@@ -301,6 +301,59 @@ test("session list reads CLI summaries only after applying its limit", async () 
   assert.deepEqual(summaryReads, ["/new"]);
 });
 
+test("session list overlays rollout mtime so resumed sessions sort by real activity", async () => {
+  const calls = [];
+  const service = createService({
+    listCliSessionsForDirectory: async (directory, opts) => {
+      calls.push({ directory, opts });
+      return [];
+    },
+  });
+
+  await service.listLlmSessions("/workspace", { source: "cli" });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].opts?.useRolloutMtime, true);
+  assert.equal("includeSubagents" in calls[0].opts, false);
+});
+
+test("session list excludes subagents before paging when includeSubagents is false", async () => {
+  const calls = [];
+  const service = createService({
+    listCliSessionsForDirectory: async (directory, opts) => {
+      calls.push({ directory, opts });
+      return [];
+    },
+  });
+
+  await service.listLlmSessions("/workspace", { source: "cli", includeSubagents: false });
+
+  assert.equal(calls[0].opts?.includeSubagents, false);
+});
+
+test("session list pages with a keyset cursor and rejects an invalid cursor", async () => {
+  const service = createService({
+    listCliSessionsForDirectory: async () => [
+      { sessionId: "s3", source: "cli", filePath: "/3", updatedAt: "2026-08-21T03:00:00.000Z" },
+      { sessionId: "s2", source: "cli", filePath: "/2", updatedAt: "2026-08-21T02:00:00.000Z" },
+      { sessionId: "s1", source: "cli", filePath: "/1", updatedAt: "2026-08-21T01:00:00.000Z" },
+    ],
+  });
+
+  const page1 = await service.listLlmSessions("/workspace", { source: "cli", limit: 2 });
+  assert.deepEqual(page1.sessions.map((session) => session.sessionId), ["s3", "s2"]);
+  assert.ok(page1.cursor);
+
+  const page2 = await service.listLlmSessions("/workspace", { source: "cli", limit: 2, cursor: page1.cursor });
+  assert.deepEqual(page2.sessions.map((session) => session.sessionId), ["s1"]);
+  assert.equal("cursor" in page2, false);
+
+  await assert.rejects(
+    service.listLlmSessions("/workspace", { source: "cli", limit: 2, cursor: "not-a-cursor" }),
+    (error) => error.apiPayload?.error === "invalid_session_list_cursor",
+  );
+});
+
 test("summary lookup rejects non-array and oversized session id requests", async () => {
   const service = createService();
 

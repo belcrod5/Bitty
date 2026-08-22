@@ -15,6 +15,7 @@ import {
 } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
+import { ALL_BACKENDS_SCOPE, readAgentHistory } from "../../agent/client";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
@@ -30,6 +31,7 @@ export type DirectoryPickerEntry = {
 export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "notification" | "unknown";
 
 export type LlmSessionHistoryEntry = {
+  backendId: string;
   sessionId: string;
   parentSessionId: string;
   directory: string;
@@ -81,7 +83,7 @@ export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
   content: string;
   at: string;
-  kind?: "internal_context" | "unclassified_context";
+  kind?: "internal_context" | "unclassified_context" | "sidechain";
   // rollout内の永続item/call id。履歴page間の安定キーに使う。
   itemId?: string;
   // sinceCursor差分応答のみ: ペア確定で行IDが変わったとき、置換すべき旧行のitemId。
@@ -103,6 +105,8 @@ export type RunnerSessionLiveState = {
 };
 
 export type RunnerSessionMessagesResult = RunnerSessionLiveState & {
+  // Older on-device caches predate backend-neutral session references.
+  backendId?: string;
   sourceKind: string;
   cwd: string;
   updatedAt: string;
@@ -139,6 +143,7 @@ type UseLlmSessionExplorerOptions = {
   defaultLlmDirectory: string;
   nearUnlimitedTimeoutMs: number;
   runnerWebSocketManager?: RunnerWebSocketManager;
+  rawFallbackBackendId: string;
   onSessionDiagLog?: (event: string, payload?: Record<string, unknown>) => void;
 };
 
@@ -151,6 +156,7 @@ type RunnerSessionSnapshot = {
 };
 
 type FetchSessionHistoryOptions = {
+  backendId?: string;
   limit?: number;
   cursor?: string;
   includeRunnerSnapshots?: boolean;
@@ -247,6 +253,7 @@ export function buildLlmSessionHistoryEntry(
   const sessionId = parseOptionalSessionId(item.threadId);
   const snapshot = sessionId ? runnerSnapshotMap.get(sessionId) : undefined;
   return {
+    backendId: String(item.backendId || "codex").trim() || "codex",
     sessionId,
     parentSessionId: parseOptionalSessionId(item.parentThreadId),
     // The thread cwd is the execution identity. `directory` is only the scope used
@@ -262,7 +269,7 @@ export function buildLlmSessionHistoryEntry(
     contextUsedPct: snapshot
       ? clampContextUsedPct(snapshot.contextUsedPct)
       : clampContextUsedPct(item.contextUsedPct),
-    modelRef: String(snapshot?.modelRef || "").trim(),
+    modelRef: String(snapshot?.modelRef || item.modelRef || "").trim(),
     reasoningEffort: String(snapshot?.reasoningEffort || "").trim(),
     threadStatusType: item.threadStatusType || "unknown",
   };
@@ -279,6 +286,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     defaultLlmDirectory,
     nearUnlimitedTimeoutMs,
     runnerWebSocketManager,
+    rawFallbackBackendId,
     onSessionDiagLog,
   } = options;
 
@@ -472,26 +480,109 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
 
   const fetchRunnerSessionContextUsedPct = useCallback(async (
     sessionIdRaw: unknown,
-    directoryRaw?: unknown
+    directoryRaw?: unknown,
+    options?: { backendId?: string }
   ): Promise<number | null> => {
+    // backendIdが分かる場合はBackend中立のreadHistory(contextUsage付き)を優先する。
+    // legacy HTTP snapshotはCodex rollout専用で、他Backendのセッションを見つけられない。
+    const backendId = String(options?.backendId || "").trim();
+    const sessionId = parseOptionalSessionId(sessionIdRaw);
+    if (backendId && sessionId && runnerWebSocketManager) {
+      const neutral = await readAgentHistory(runnerWebSocketManager, {
+        backendId,
+        nativeSessionId: sessionId,
+        limit: 1,
+      }).catch(() => null);
+      const usedPct = parseContextUsageUsedPct(neutral?.contextUsage);
+      if (usedPct !== null) return usedPct;
+    }
     const snapshot = await fetchRunnerSessionSnapshot(sessionIdRaw, directoryRaw);
     return snapshot.contextUsedPct;
-  }, [fetchRunnerSessionSnapshot]);
+  }, [fetchRunnerSessionSnapshot, runnerWebSocketManager]);
 
   const fetchRunnerSessionMessages = useCallback(async (
     sessionIdRaw: unknown,
     directoryRaw?: unknown,
-    options?: { cursor?: string; sinceCursor?: string; skipLiveState?: boolean },
+    options?: { backendId?: string; cursor?: string; sinceCursor?: string; skipLiveState?: boolean },
   ): Promise<RunnerSessionMessagesResult> => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) {
       throw new Error("sessionId is required");
     }
     const preferredDirectory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
+    const backendId = String(options?.backendId || "codex").trim() || "codex";
     const cursor = String(options?.cursor || "").trim();
     const sinceCursor = String(options?.sinceCursor || "").trim();
     if (cursor && sinceCursor) {
       throw new Error("cursor と sinceCursor は同時に指定できません");
+    }
+    if (runnerWebSocketManager) {
+      let neutral;
+      try {
+        neutral = await readAgentHistory(runnerWebSocketManager, {
+          backendId,
+          nativeSessionId: sessionId,
+          cursor: cursor || undefined,
+          sinceCursor: sinceCursor || undefined,
+          limit: 500,
+        });
+      } catch (error) {
+        if (backendId !== rawFallbackBackendId) throw error;
+        neutral = null;
+      }
+      if (neutral?.sessionRef) {
+        const items = Array.isArray(neutral.items) ? neutral.items : [];
+        const messages: RunnerSessionMessage[] = items.flatMap((raw) => {
+          const item = raw && typeof raw === "object" ? raw as JsonRecord : {};
+          const role = String(item.role || "");
+          if (role !== "user" && role !== "assistant") return [];
+          const blocks = Array.isArray(item.content) ? item.content as JsonRecord[] : [];
+          const content = blocks
+            .filter((block) => block?.type === "text" || block?.type === "reasoning")
+            .map((block) => String(block.text || ""))
+            .join("\n");
+          const tool = blocks.find((block) => block?.type === "tool");
+          if (!content && !tool) return [];
+          const itemType = String(item.itemType || "");
+          return [{
+            role,
+            content,
+            at: String(item.createdAt || ""),
+            // 内部注入コンテキスト(environment_context等)とsubagent会話(sidechain)は
+            // 折りたたみ表示にする。
+            ...(itemType === "internal_context" || itemType === "unclassified_context" || itemType === "sidechain"
+              ? { kind: itemType }
+              : {}),
+            itemId: String(item.id || "") || undefined,
+            ...(tool ? {
+              commandExecution: {
+                command: String(tool.inputSummary || tool.name || "tool"),
+                status: String(tool.status || "") === "failed" ? "failed" as const : "completed" as const,
+              },
+            } : {}),
+          }];
+        });
+        return {
+          backendId: String(neutral.sessionRef && (neutral.sessionRef as JsonRecord).backendId || backendId).trim() || backendId,
+          threadId: sessionId,
+          sourceKind: "agent",
+          cwd: parseLlmDirectory(neutral.canonicalCwd || preferredDirectory),
+          updatedAt: messages.at(-1)?.at || "",
+          modelRef: String(neutral.modelId || "").trim(),
+          reasoningEffort: "",
+          latestToolLabel: "",
+          messages,
+          // rollout token_count由来のcontext使用率(codex)。無いBackendはnull。
+          contextUsedPct: parseContextUsageUsedPct(neutral.contextUsage),
+          threadStatusType: "idle",
+          hasRunningTurn: false,
+          runningTurn: null,
+          olderCursor: String(neutral.olderCursor || "") || null,
+          latestCursor: String(neutral.newerCursor || "") || null,
+          ...(sinceCursor ? { moreAfter: neutral.moreAfter === true } : {}),
+        };
+      }
+      if (backendId !== rawFallbackBackendId) throw new Error("Selected Agent Backend is unavailable");
     }
     const { baseUrl, token } = await getRunnerHttpAuth();
     if (!baseUrl || !token) throw new Error("Aux Server URL または Runner Token が未設定です");
@@ -510,6 +601,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         threadId: sessionId,
         timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
         runnerWebSocketManager,
+        backendId,
+        rawFallbackBackendId,
       }).catch((error) => {
         emitSessionDiag("app_server_thread_metadata_failed", {
           sessionId,
@@ -604,6 +697,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       ...responseByteMeta,
     });
     return {
+      backendId,
       threadId: liveState?.threadId || sessionId,
       sourceKind: String(data?.source || live?.sourceKind || "cli"),
       cwd: String(data?.cwd || live?.cwd || preferredDirectory),
@@ -631,13 +725,18 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     getRunnerHttpAuth,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
   ]);
 
-  const fetchLatestSessionIdForDirectory = useCallback(async (directoryRaw?: unknown) => {
+  // 一覧はall-backendsなので、返すのはsessionId単独ではなく{sessionId, backendId}の
+  // identity。呼び出し元がbackendIdを落とすと非Codexセッションの復元が壊れる。
+  const fetchLatestSessionForDirectory = useCallback(async (
+    directoryRaw?: unknown
+  ): Promise<{ sessionId: string; backendId: string } | null> => {
     const targetCodexWsUrl = codexWsUrl.trim();
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    if (!targetCodexWsUrl) return "";
+    if (!targetCodexWsUrl) return null;
     const listed = await listCodexAppServerThreads({
       wsUrl: targetCodexWsUrl,
       wsToken: codexWsToken.trim(),
@@ -646,9 +745,17 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
+      backendId: ALL_BACKENDS_SCOPE,
+      rawFallbackBackendId,
     });
-    return parseOptionalSessionId(listed.data[0]?.threadId);
-  }, [codexWsToken, codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, runnerWebSocketManager]);
+    const latest = listed.data[0];
+    const sessionId = parseOptionalSessionId(latest?.threadId);
+    if (!sessionId) return null;
+    return {
+      sessionId,
+      backendId: String(latest?.backendId || "codex").trim() || "codex",
+    };
+  }, [codexWsToken, codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, rawFallbackBackendId, runnerWebSocketManager]);
 
   const loadDirectoryExplorer = useCallback(async (pathRaw?: unknown) => {
     const targetLlmUrl = auxServerBaseUrl();
@@ -739,13 +846,17 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       : 80;
     const cursor = String(historyOptions?.cursor || "").trim();
     const includeRunnerSnapshots = historyOptions?.includeRunnerSnapshots !== false;
+    // directory一覧は「選択中Provider」ではなく「そのdirectoryの全Backend統合」が既定。
+    // 呼び出し元がbackendIdを明示した時だけ単一Backendに絞る。
+    const backendId = String(historyOptions?.backendId || ALL_BACKENDS_SCOPE).trim() || ALL_BACKENDS_SCOPE;
     const targetCodexWsUrl = codexWsUrl.trim();
-    if (!targetCodexWsUrl) {
+    if (!targetCodexWsUrl && backendId === rawFallbackBackendId) {
       throw new Error("Codex WS URL が未設定です");
     }
     const startedAt = Date.now();
     emitSessionDiag("session_history_fetch_start", {
       directory,
+      backendId,
       limit,
       cursor,
       includeRunnerSnapshots,
@@ -761,6 +872,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         : [...MAIN_THREAD_SOURCE_KINDS],
       timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
       runnerWebSocketManager,
+      backendId,
+      rawFallbackBackendId,
     });
     const listedSessionIds = listed.data
       .map((item) => parseOptionalSessionId(item.threadId))
@@ -779,12 +892,19 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const deduped = dedupeSessionHistoryEntries(sessions);
     emitSessionDiag("session_history_fetch_done", {
       directory,
+      backendId,
       elapsedMs: Math.max(0, Date.now() - startedAt),
       threadCountRaw: sessions.length,
       threadCountDeduped: deduped.length,
       latestSessionId: sessions[0]?.sessionId || "",
       nextCursor: listed.nextCursor,
       runnerSnapshotCount: runnerSnapshotMap.size,
+      ...(listed.partialErrors && listed.partialErrors.length > 0
+        ? {
+          partialErrorBackendIds: listed.partialErrors.map((error) => String(error?.backendId || "")),
+          partialErrorCodes: listed.partialErrors.map((error) => String(error?.code || "")),
+        }
+        : {}),
     });
     return {
       entries: deduped,
@@ -798,6 +918,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionSnapshotMap,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
   ]);
 
@@ -844,6 +965,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
         timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
         runnerWebSocketManager,
+        backendId: ALL_BACKENDS_SCOPE,
+        rawFallbackBackendId,
       });
       pageCount += 1;
       for (const item of listed.data) {
@@ -898,6 +1021,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionSnapshotMap,
     nearUnlimitedTimeoutMs,
     normalizedLlmDirectoryForRequest,
+    rawFallbackBackendId,
     runnerWebSocketManager,
   ]);
 
@@ -1092,7 +1216,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     fetchRunnerSessionContextUsedPct,
     fetchRunnerSessionSnapshot,
     fetchRunnerSessionMessages,
-    fetchLatestSessionIdForDirectory,
+    fetchLatestSessionForDirectory,
     fetchSessionHistory,
     fetchSessionChildrenHistory,
     markRunnerSessionRead,

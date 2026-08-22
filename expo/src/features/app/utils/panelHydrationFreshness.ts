@@ -12,6 +12,7 @@ type HydratedPanelRuntimeEntry = {
 export function applyPanelHydrationStart(params: {
   entries: Record<string, HydratedPanelRuntimeEntry>;
   panelId: string;
+  backendId?: string;
   sessionId: string;
   emptySnapshot: PanelRuntimeSnapshot;
   directory: string;
@@ -46,7 +47,9 @@ export function applyPanelHydrationStart(params: {
   );
   const snapshot: PanelRuntimeSnapshot = {
     ...base,
+    backendId: String(params.backendId || base.backendId || "codex").trim() || "codex",
     selectedSessionId: params.sessionId,
+    sessionMaterialized: true,
     selectedDirectoryPath: params.directory,
     selectedDirectoryDisplayName: params.directoryDisplayName,
     selectedSessionTitle: params.titleHint || base.selectedSessionTitle || "（ユーザーメッセージなし）",

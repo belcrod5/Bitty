@@ -5,6 +5,8 @@ import { MarkdownText } from "./MarkdownText";
 type InternalContextMessageProps = {
   content: string;
   unclassified?: boolean;
+  // 既定のCODEX CONTEXT以外の見出し(subagent会話等)を出したい時に指定する。
+  title?: string;
   textStyle: StyleProp<TextStyle>;
   onLocalFileLinkPress?: (path: string) => void;
   onSelectedTextTtsPress?: (text: string) => void;
@@ -23,7 +25,7 @@ export function InternalContextMessage(props: InternalContextMessageProps) {
         accessibilityState={{ expanded }}
       >
         <Text style={componentStyles.title}>
-          {props.unclassified ? "CODEX CONTEXT · 未分類" : "CODEX CONTEXT"}
+          {props.title ?? (props.unclassified ? "CODEX CONTEXT · 未分類" : "CODEX CONTEXT")}
         </Text>
         <Text style={componentStyles.action}>{expanded ? "折りたたむ ▴" : "内容を表示 ▾"}</Text>
       </TouchableOpacity>

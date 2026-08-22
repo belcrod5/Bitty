@@ -19,6 +19,7 @@ type ChatSessionSubagentListProps = {
   formatSessionUpdatedAt: (updatedAt: string) => string;
   loadSessionChildren: (sessionId: string, directory: string) => Promise<void>;
   openSessionHistoryEntry: (params: {
+    backendId: string;
     sessionId: string;
     source: LlmSessionSource;
     directory: string;
@@ -101,6 +102,7 @@ export function ChatSessionSubagentList({
             onPress={() => {
               onCloseMenu();
               openSessionHistoryEntry({
+                backendId: parentSession.backendId,
                 sessionId: parentSession.sessionId,
                 source: parentSession.source,
                 directory: parentSession.directory || selectedDirectoryPath,
@@ -136,6 +138,7 @@ export function ChatSessionSubagentList({
             onPress={() => {
               onCloseMenu();
               openSessionHistoryEntry({
+                backendId: session.backendId,
                 sessionId: session.sessionId,
                 source: session.source,
                 directory: session.directory || selectedDirectoryPath,

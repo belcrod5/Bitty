@@ -14,6 +14,7 @@ import {
 import { KeyboardAvoidingView } from "../keyboardController";
 import type { ApprovalAction } from "../../codex/approvalFlow";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { effortOptionsForModel } from "../modelOptions";
 import { useConversation } from "../contexts/ConversationContext";
 import type { ApprovalDialogViewState } from "../hooks/useApprovalRequestController";
 import { styles } from "../styles";
@@ -54,10 +55,10 @@ export function AppOverlays({
     setModelSelectOpen,
     modelOptions,
     modelRef,
+    llmBackend,
     selectModel,
     thinkSelectOpen,
     setThinkSelectOpen,
-    thinkOptions,
     reasoningEffort,
     selectThinkOption,
   } = useAppSettings();
@@ -76,6 +77,10 @@ export function AppOverlays({
     selectCurrentDirectory,
     openDirectoryEntry,
   } = useConversation();
+  const selectedModelOption = modelOptions.find(
+    (option) => option.backendId === llmBackend && option.modelId === modelRef
+  );
+  const effortOptionsForSelectedModel = effortOptionsForModel(selectedModelOption);
   const formatCompactDirectoryPath = (pathRaw: unknown) => {
     const path = String(pathRaw || "").trim();
     if (!path) return "-";
@@ -218,13 +223,13 @@ export function AppOverlays({
         <Pressable style={styles.modalBackdrop} onPress={() => setModelSelectOpen(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>LLM Model</Text>
-            {modelOptions.map((item) => {
-              const selected = item.value === modelRef;
+            {modelOptions.filter((item) => item.selectable !== false).map((item) => {
+              const selected = item.backendId === llmBackend && item.modelId === modelRef;
               return (
                 <TouchableOpacity
-                  key={item.value}
+                  key={item.selectionKey}
                   style={[styles.modalOption, selected && styles.modalOptionSelected]}
-                  onPress={() => selectModel(item.value)}
+                  onPress={() => selectModel(item.selectionKey)}
                 >
                   <Text style={[styles.modalOptionText, selected && styles.modalOptionTextSelected]}>
                     {item.label}
@@ -326,11 +331,11 @@ export function AppOverlays({
           </Pressable>
         </Pressable>
       </AppModal>
-      <AppModal visible={thinkSelectOpen && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setThinkSelectOpen(false)}>
+      <AppModal visible={thinkSelectOpen && selectedModelOption?.supportsReasoningEffort === true && !approvalDialogPending} transparent animationType="fade" onRequestClose={() => setThinkSelectOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setThinkSelectOpen(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>Think</Text>
-            {thinkOptions.map((item) => {
+            {effortOptionsForSelectedModel.map((item) => {
               const selected = item === reasoningEffort;
               return (
                 <TouchableOpacity

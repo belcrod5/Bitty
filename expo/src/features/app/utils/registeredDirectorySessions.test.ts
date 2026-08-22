@@ -4,6 +4,7 @@ import { collectRegisteredDirectorySessions } from "./registeredDirectorySession
 
 function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
   return {
+    backendId: "codex",
     sessionId: "session",
     parentSessionId: "",
     directory: "",
@@ -80,6 +81,15 @@ describe("collectRegisteredDirectorySessions", () => {
     expect(result).toHaveLength(1);
     expect(result[0].firstUserMessage).toBe("first");
     expect(result[0].directory).toBe("/workspace/first");
+  });
+
+  it("keeps identical native session ids from different backends distinct", () => {
+    const result = collectRegisteredDirectorySessions(directories, {
+      first: tree([session({ backendId: "codex", sessionId: "shared" })]),
+      second: tree([session({ backendId: "claude", sessionId: "shared" })]),
+    });
+
+    expect(result.map((item) => item.backendId)).toEqual(["codex", "claude"]);
   });
 
   it("treats invalid timestamps as zero when sorting and choosing duplicates", () => {

@@ -72,6 +72,7 @@ beforeEach(() => {
 
 function session(index: number): LlmSessionHistoryEntry {
   return {
+    backendId: "codex",
     sessionId: `session-${index}`,
     parentSessionId: "",
     directory: "/workspace",

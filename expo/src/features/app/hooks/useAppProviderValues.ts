@@ -51,6 +51,7 @@ export function useAppShellContextValue(args: AppShellContextValue): AppShellCon
 export function useAppSettingsContextValue(args: AppSettingsContextValue): AppSettingsContextValue {
   const {
     runnerUrl,
+    llmBackend,
     llmDirectory,
     codexWsUrl,
     codexWsToken,
@@ -128,6 +129,7 @@ export function useAppSettingsContextValue(args: AppSettingsContextValue): AppSe
   return useMemo(
     () => ({
       runnerUrl,
+      llmBackend,
       llmDirectory,
       codexWsUrl,
       codexWsToken,
@@ -203,6 +205,7 @@ export function useAppSettingsContextValue(args: AppSettingsContextValue): AppSe
     }),
     [
       runnerUrl,
+      llmBackend,
       llmDirectory,
       codexWsUrl,
       codexWsToken,

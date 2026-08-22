@@ -19,7 +19,9 @@ type UseSessionStartupRecoveryControllerArgs = {
     nextSessionIdRaw: unknown,
     opts?: SelectSpecificLlmSessionOptions
   ) => Promise<boolean>;
-  fetchLatestSessionIdForDirectory: (directoryRaw?: unknown) => Promise<string>;
+  fetchLatestSessionForDirectory: (
+    directoryRaw?: unknown
+  ) => Promise<{ sessionId: string; backendId: string } | null>;
   setLlmSessionRestoreError: Dispatch<SetStateAction<string>>;
 };
 
@@ -36,7 +38,7 @@ export function useSessionStartupRecoveryController({
   selectedLlmSessionId,
   getLlmConversationSessionId,
   selectSpecificLlmSession,
-  fetchLatestSessionIdForDirectory,
+  fetchLatestSessionForDirectory,
   setLlmSessionRestoreError,
 }: UseSessionStartupRecoveryControllerArgs) {
   // The session restore data rides the runner WebSocket (thread/read) and the
@@ -72,9 +74,12 @@ export function useSessionStartupRecoveryController({
         });
       }
       if (!restored) {
-        const latestSessionId = await fetchLatestSessionIdForDirectory(directory);
-        if (latestSessionId && latestSessionId !== preferredSessionId) {
-          restored = await selectSpecificLlmSession(latestSessionId, {
+        // all-backends一覧の最新セッションはCodexとは限らない。identityの
+        // backendIdを明示しないと非Codexセッションの復元が失敗し続ける。
+        const latest = await fetchLatestSessionForDirectory(directory);
+        if (latest && latest.sessionId !== preferredSessionId) {
+          restored = await selectSpecificLlmSession(latest.sessionId, {
+            backendId: latest.backendId,
             source: "all",
             directory,
           });
@@ -97,7 +102,7 @@ export function useSessionStartupRecoveryController({
     codexWsUrl,
     runnerWsReady,
     conversationMessagesRef,
-    fetchLatestSessionIdForDirectory,
+    fetchLatestSessionForDirectory,
     getLlmConversationSessionId,
     normalizedLlmDirectoryForRequest,
     parseOptionalSessionId,

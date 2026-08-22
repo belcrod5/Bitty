@@ -142,6 +142,7 @@ function readJsonRpcMethod(payload: unknown) {
 }
 
 function isStartStyleMessage(message: RunnerWsMessage) {
+  if (message.channel === "agent" && message.op === "turn.start") return true;
   if (message.channel === "tts" && message.op === "start") return true;
   if (message.channel !== "llm" || message.op !== "rpc") return false;
   const method = readJsonRpcMethod(message.payload);

@@ -1,4 +1,4 @@
-export type RunnerWsChannel = "llm" | "tts" | "relay" | "control";
+export type RunnerWsChannel = "agent" | "llm" | "tts" | "relay" | "control";
 
 export type RunnerWsMessage = {
   channel: RunnerWsChannel;
@@ -114,7 +114,7 @@ export function normalizeRunnerWsServerStatus(value: unknown): RunnerWsServerSta
 }
 
 export function isRunnerWsChannel(value: unknown): value is RunnerWsChannel {
-  return value === "llm" || value === "tts" || value === "relay" || value === "control";
+  return value === "agent" || value === "llm" || value === "tts" || value === "relay" || value === "control";
 }
 
 export function isRunnerWsMessage(value: unknown): value is RunnerWsMessage {

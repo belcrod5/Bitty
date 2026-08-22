@@ -72,7 +72,9 @@ export function usePanelNewSessionController({
       deriveDirectoryDisplayName(directory)
     ).trim();
     const snapshot = createPanelRuntimeSnapshot(panelId, createEmptyPanelRuntimeSnapshot(panelId), {
+      backendId: previousSnapshot.backendId,
       selectedSessionId: sessionId,
+      sessionMaterialized: false,
       selectedDirectoryPath: directory,
       selectedDirectoryDisplayName: directoryDisplayName || directory,
       selectedSessionTitle: "（ユーザーメッセージなし）",

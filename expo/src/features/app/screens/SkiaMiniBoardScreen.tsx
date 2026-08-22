@@ -528,6 +528,7 @@ const BoardCard = memo(function BoardCard({
 type SkiaMiniBoardScreenProps = {
   onStartNewSessionInDirectory: (directory: string) => void;
   openSessionHistoryPopup: (params: {
+    backendId?: string;
     sessionId: string;
     source: LlmSessionSource;
     directory?: string;
@@ -898,6 +899,7 @@ export function SkiaMiniBoardScreen({
       // プレビュー用パネルは直接開かず、ドロワーと同じ専用パネルのポップアップで開く
       // (毎オープン時にJSONLからhydrateされ、常に最新の本文になる)。
       openSessionHistoryPopup({
+        backendId: item.backendId,
         sessionId: item.sessionId,
         directory: item.directory,
         source: item.source,

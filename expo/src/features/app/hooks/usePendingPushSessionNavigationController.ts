@@ -23,6 +23,7 @@ export function usePendingPushSessionNavigationController({
     navigationInFlightRef.current = true;
     closeDrawer();
     void openSessionHistoryPopup({
+      ...(target.backendId ? { backendId: target.backendId } : {}),
       sessionId: target.sessionId,
       source: "notification",
       directory: target.directory || normalizedLlmDirectoryForRequest(),

@@ -14,6 +14,7 @@ process.env.APNS_KEY_PATH = path.join(tempDir, "AuthKey_TEST.p8");
 process.env.APNS_KEY_ID = "TESTKEYID1";
 process.env.APPLE_TEAM_ID = "TESTTEAMID";
 process.env.PUSH_DEVICE_STORE_PATH = path.join(tempDir, "push_devices.json");
+process.env.ACP_SESSION_STORE_PATH = path.join(tempDir, "agent_sessions.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 const {
@@ -25,6 +26,7 @@ const {
 } = __TESTING__;
 
 test.after(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 50));
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
@@ -269,4 +271,71 @@ test("captures the session cwd from the upstream thread/resume result as a fallb
     result: { thread: { id: "thread-1", cwd: "/work/from-upstream" } },
   }), false);
   assert.equal(relay.threadCwd, "/work/from-upstream");
+});
+
+for (const method of ["thread/start", "thread/resume"]) {
+  test(`${method} clears a shared relay cwd and never reuses it when the result omits cwd`, async () => {
+    const newThreadId = `new-${method.replace("/", "-")}-thread`;
+    const relay = makeRelay({
+      threadId: "old-thread",
+      threadCwd: "/work/old-session",
+      upstreamOpen: false,
+      pendingToUpstream: [],
+    });
+    forwardCodexRelayClientData(relay, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 6,
+      method,
+      params: method === "thread/resume" ? { threadId: newThreadId } : {},
+    }), false);
+    assert.equal(relay.threadCwd, "");
+
+    handleCodexRelayUpstreamMessage(relay, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 6,
+      result: { thread: { id: newThreadId } },
+    }), false);
+    assert.equal(relay.threadCwd, "");
+
+    await forwardCodexRelayClientData(relay, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "turn/start",
+      params: { threadId: newThreadId },
+    }), false);
+    assert.equal(relay.pendingToUpstream.length, 1);
+  });
+}
+
+test("turn/start waits for authoritative thread/resume cwd persistence", async () => {
+  const threadId = "thread-binding-race";
+  const relay = makeRelay({
+    threadId,
+    upstreamOpen: false,
+    pendingToUpstream: [],
+  });
+  relay.requestMethodByRpcId.set(codexRpcIdKey(50), "thread/resume");
+  handleCodexRelayUpstreamMessage(relay, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 50,
+    result: { thread: { id: threadId, cwd: tempDir } },
+  }), false);
+
+  const forwarding = forwardCodexRelayClientData(relay, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 51,
+    method: "turn/start",
+    params: { threadId, cwd: tempDir },
+  }), false);
+  assert.equal(relay.pendingToUpstream.length, 0);
+
+  await forwarding;
+  assert.equal(relay.pendingToUpstream.length, 1);
+  assert.equal(relay.agentBindingReconciliation, null);
+
+  handleCodexRelayUpstreamMessage(relay, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 51,
+    error: { code: -32000, message: "test cleanup" },
+  }), false);
 });

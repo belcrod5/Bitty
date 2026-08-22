@@ -10,7 +10,6 @@ function createArgs(sendResult: SendReplyRequestResult) {
     closeCodexRelayObserver: jest.fn(),
     logSessionDiag: jest.fn(),
     sendReplyRequestFromCodex: jest.fn(async () => sendResult),
-    llmBackend: "codex_app_server",
     cancelReplyRequestFromCodex: jest.fn(async () => true),
     suspendReplyRequestFromCodex: jest.fn(() => true),
   };
@@ -63,5 +62,21 @@ describe("useSendReplyRequestController rejection feedback", () => {
 
     expect(args.sendReplyRequestFromCodex).toHaveBeenCalledTimes(1);
     expect(args.showChatBottomToast).not.toHaveBeenCalled();
+  });
+
+  test("preserves the saved backend through the guarded send", async () => {
+    const args = createArgs(undefined);
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.sendReplyRequestWithSessionGuard("hello", {
+        ...sendOptions,
+        sessionSnapshot: { ...sendOptions.sessionSnapshot, backendId: "claude" },
+      });
+    });
+
+    expect(args.sendReplyRequestFromCodex).toHaveBeenCalledWith("hello", expect.objectContaining({
+      sessionSnapshot: expect.objectContaining({ backendId: "claude" }),
+    }));
   });
 });

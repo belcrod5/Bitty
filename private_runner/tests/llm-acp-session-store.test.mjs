@@ -59,7 +59,7 @@ test("migrates a legacy ACP root only after explicit confirmation", async (t) =>
 
   await store.migrateAcpSessionDirectoryIdentity(".", workspaceReal);
   const migrated = JSON.parse(await fs.readFile(storePath, "utf8"));
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 5);
   assert.equal(migrated.sessions.legacy.directory, workspaceReal);
   assert.equal(migrated.sessions.legacy.rootRelativePath, workspaceReal);
   assert.equal(migrated.latestByDirectory[workspaceReal], "legacy");
@@ -264,4 +264,316 @@ test("ACP directory read keeps live state unread after write or rename failure a
       "2026-08-10T03:00:00.000Z",
     );
   }
+});
+
+test("persists agent operation idempotency even when legacy ACP binding is disabled", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-operations-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  await fs.writeFile(storePath, JSON.stringify({
+    version: 3,
+    sessions: {
+      legacy: {
+        directory: tempRoot,
+        rootRelativePath: tempRoot,
+        updatedAt: "2026-08-21T00:00:00.000Z",
+        lastReadAt: "",
+      },
+    },
+    latestByDirectory: { [tempRoot]: "legacy" },
+  }));
+  const createStore = () => createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+  const store = createStore();
+  assert.deepEqual(await store.listAcpSessionsForDirectory(tempRoot), []);
+
+  assert.deepEqual(
+    await store.claimAgentOperation("user-1", "operation-1", "hash-1", "run-1"),
+    { status: "claimed", runId: "run-1" },
+  );
+  assert.deepEqual(
+    await store.claimAgentOperation("user-1", "operation-1", "hash-1", "run-2"),
+    { status: "existing", runId: "run-1", result: undefined },
+  );
+  assert.deepEqual(
+    await store.claimAgentOperation("user-1", "operation-1", "different", "run-2"),
+    { status: "conflict" },
+  );
+  await store.completeAgentOperation("user-1", "operation-1", { runId: "run-1", outcome: "completed" });
+
+  const restarted = createStore();
+  assert.deepEqual(
+    await restarted.claimAgentOperation("user-1", "operation-1", "hash-1", "run-3"),
+    {
+      status: "existing",
+      runId: "run-1",
+      result: { runId: "run-1", outcome: "completed" },
+    },
+  );
+  const persisted = JSON.parse(await fs.readFile(storePath, "utf8"));
+  assert.equal(persisted.agentOperations.length, 1);
+  assert.equal(persisted.sessions.legacy.directory, await fs.realpath(tempRoot));
+  assert.equal(Object.hasOwn(persisted.agentOperations[0], "input"), false);
+});
+
+test("keeps disabled legacy ACP reads isolated from corrupt agent metadata", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-disabled-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  await fs.writeFile(storePath, "{broken");
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+
+  assert.deepEqual(await store.listAcpSessionsForDirectory(tempRoot), []);
+  await assert.rejects(
+    store.claimAgentOperation("user-1", "operation-1", "hash-1", "run-1"),
+    SyntaxError,
+  );
+});
+
+test("does not restart an operation whose native outcome was pending at process restart", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-pending-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const options = {
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  };
+  const first = createLlmAcpSessionStore(options);
+  await first.claimAgentOperation("user-1", "operation-1", "hash-1", "run-1");
+
+  const restarted = createLlmAcpSessionStore(options);
+  assert.deepEqual(
+    await restarted.claimAgentOperation("user-1", "operation-1", "hash-1", "run-2"),
+    { status: "unknown", runId: "run-1" },
+  );
+});
+
+test("persists learned agent model info across restarts", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-model-info-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const options = {
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  };
+  const store = createLlmAcpSessionStore(options);
+  assert.equal(await store.getAgentModelInfo("claude", "fable"), null);
+  await store.setAgentModelInfo("claude", "fable", { contextWindowTokens: 500000 });
+  // 不正値は保存しない
+  assert.equal(await store.setAgentModelInfo("claude", "fable", { contextWindowTokens: 0 }), null);
+
+  const restarted = createLlmAcpSessionStore(options);
+  const info = await restarted.getAgentModelInfo("claude", "fable");
+  assert.equal(info.contextWindowTokens, 500000);
+  assert.equal(await restarted.getAgentModelInfo("claude", "sonnet"), null);
+});
+
+test("reclaims a crash-orphaned pending operation after its TTL", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-orphan-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  // 別プロセスがclaimしたままクラッシュしたpending(TTL超過)を仕込む
+  await fs.writeFile(storePath, JSON.stringify({
+    version: 3,
+    sessions: {},
+    latestByDirectory: {},
+    agentOperations: [{
+      subjectId: "user-1",
+      clientOperationId: "operation-1",
+      requestHash: "hash-1",
+      runId: "run-dead",
+      status: "pending",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    }],
+  }));
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+
+  // TTL超過の孤児pendingは回収され、同じclientOperationIdを新規claimできる
+  // (回収しないと恒久的にstatus:"unknown"で毒化し、蓄積すると容量到達で全claimが失敗する)
+  assert.deepEqual(
+    await store.claimAgentOperation("user-1", "operation-1", "hash-1", "run-2"),
+    { status: "claimed", runId: "run-2" },
+  );
+});
+
+test("persists one session mode and generation-checked lease across restarts", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-lease-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const options = (agentProcessEpoch) => ({
+    acpSessionStorePath: storePath,
+    agentProcessEpoch,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+  const ref = { backendId: "codex", nativeSessionId: "thread-1" };
+  const first = createLlmAcpSessionStore(options("epoch-1"));
+  assert.equal((await first.bindAgentSession(ref, tempRoot, "neutral")).status, "bound");
+  const acquired = await first.acquireAgentSessionLease({
+    sessionRef: ref,
+    mode: "neutral",
+    owner: "agent-service",
+    runId: "run-1",
+  });
+  assert.equal(acquired.status, "acquired");
+  // 同一モードへのhandoffはno-op: lease保持中(compact/turn実行中)でも成功する
+  assert.equal((await first.handoffAgentSessionMode(ref, "neutral")).status, "unchanged");
+  // モード反転はlease保持中は従来どおりbusy
+  assert.equal((await first.handoffAgentSessionMode(ref, "raw")).status, "busy");
+  assert.equal((await first.updateAgentSessionLeaseIdentity(
+    ref,
+    acquired.lease.generation,
+    JSON.stringify({ pid: 42, startedAt: "now" }),
+  )).status, "updated");
+  assert.equal((await first.acquireAgentSessionLease({
+    sessionRef: ref,
+    mode: "raw",
+    owner: "raw",
+    runId: "run-2",
+  })).status, "mode_conflict");
+
+  const restarted = createLlmAcpSessionStore(options("epoch-2"));
+  const recovering = await restarted.getAgentSessionMode(ref);
+  assert.equal(recovering.lease.state, "recovering");
+  assert.equal(recovering.lease.nativeProcessIdentity, JSON.stringify({ pid: 42, startedAt: "now" }));
+  assert.equal((await restarted.acquireAgentSessionLease({
+    sessionRef: ref,
+    mode: "neutral",
+    owner: "agent-service",
+    runId: "run-2",
+  })).status, "recovering");
+  assert.equal((await restarted.settleAgentSessionLease(ref, acquired.lease.generation + 1, "released")).status, "stale");
+  assert.equal((await restarted.settleAgentSessionLease(ref, acquired.lease.generation, "released")).status, "released");
+  assert.equal((await restarted.handoffAgentSessionMode(ref, "raw")).status, "changed");
+});
+
+test("repairs only an idle same-mode binding from an authoritative native cwd", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-cwd-reconcile-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const options = (agentProcessEpoch) => ({
+    acpSessionStorePath: storePath,
+    agentProcessEpoch,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+  const store = createLlmAcpSessionStore(options("epoch-1"));
+  const rawRef = { backendId: "codex", nativeSessionId: "raw-thread" };
+  const activeRawRef = { backendId: "codex", nativeSessionId: "active-raw-thread" };
+  const neutralRef = { backendId: "codex", nativeSessionId: "neutral-thread" };
+  const oldCwd = path.join(tempRoot, "old");
+  const nativeCwd = path.join(tempRoot, "native");
+  await store.bindAgentSession(rawRef, oldCwd, "raw");
+  await store.bindAgentSession(activeRawRef, oldCwd, "raw");
+  await store.bindAgentSession(neutralRef, oldCwd, "neutral");
+  await store.acquireAgentSessionLease({
+    sessionRef: activeRawRef,
+    mode: "raw",
+    owner: "codex-relay",
+    runId: "active-run",
+  });
+
+  assert.equal((await store.bindAgentSession(rawRef, nativeCwd, "raw")).status, "cwd_conflict");
+  // mode遷移を伴うreconcileは拒否(neutralセッションへrawで要求)。
+  assert.equal((await store.bindAgentSession(
+    neutralRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "cwd_conflict");
+  // idleならmode据え置きでneutralもnative cwdへ収束できる。
+  assert.equal((await store.bindAgentSession(
+    neutralRef, nativeCwd, "neutral", { reconcileCwd: true },
+  )).status, "bound");
+  assert.equal((await store.getAgentSessionBinding(neutralRef)).canonicalCwd, nativeCwd);
+  assert.equal((await store.getAgentSessionMode(neutralRef)).mode, "neutral");
+  assert.equal((await store.bindAgentSession(
+    activeRawRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "cwd_conflict");
+  const restarted = createLlmAcpSessionStore(options("epoch-2"));
+  assert.equal((await restarted.getAgentSessionMode(activeRawRef)).lease.state, "recovering");
+  assert.equal((await restarted.bindAgentSession(
+    activeRawRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "cwd_conflict");
+  assert.equal((await store.bindAgentSession(
+    rawRef, nativeCwd, "raw", { reconcileCwd: true },
+  )).status, "bound");
+  assert.equal((await store.getAgentSessionBinding(rawRef)).canonicalCwd, nativeCwd);
+});
+
+test("stores workspace approvals without conversation or credential data", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-workspace-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+  await store.approveAgentWorkspace("user-1", tempRoot, "1:2");
+  assert.equal((await store.listAgentWorkspaces("user-1"))[0].identity, "1:2");
+  await store.revokeAgentWorkspace("user-1", tempRoot);
+  assert.equal((await store.listAgentWorkspaces("user-1")).length, 0);
+  const persisted = await fs.readFile(storePath, "utf8");
+  assert.equal(persisted.includes("conversation"), false);
+  assert.equal(persisted.includes("credential"), false);
 });

@@ -29,7 +29,7 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   at?: string;
-  kind?: "internal_context" | "unclassified_context";
+  kind?: "internal_context" | "unclassified_context" | "sidechain";
   inheritedFromParent?: boolean;
   youtubeVideoIds?: string[];
   ttsWaveform?: number[];
@@ -86,6 +86,7 @@ export type StreamAudioQueueItem = {
 };
 
 export type SelectSpecificLlmSessionOptions = {
+  backendId?: string;
   source?: LlmSessionSource;
   directory?: string;
   // 復帰時の同一セッション再同期など「切替ではない再取得」で使う。
@@ -100,7 +101,7 @@ export type LlmDeltaEntry = {
   text: string;
 };
 
-export type LlmBackend = "codex_app_server";
+export type LlmBackend = string;
 export type AudioContainer = "wav" | "mp3" | "ogg" | "m4a" | "unknown";
 
 export type TtsDebugStats = {
@@ -139,6 +140,7 @@ export type StreamTtsControlState = {
 };
 
 export type LlmMessageCompletion = {
+  backendId: string;
   sessionId: string;
   threadId: string;
   directory: string;
@@ -296,6 +298,7 @@ export type SessionSwitchQueuedSend = {
 };
 
 export type ReplyRequestSessionSnapshot = {
+  backendId?: string;
   sessionId?: string;
   threadId?: string;
   directory?: string;

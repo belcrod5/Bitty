@@ -1,0 +1,93 @@
+import type { BackendStatus } from "../agent/client";
+import type { ModelOption } from "./contexts/AppSettingsContext";
+import type { LlmBackend } from "./types/appTypes";
+import { isReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "./utils/settingsParsers";
+
+export const DEFAULT_LLM_BACKEND: LlmBackend = "codex";
+export const DEFAULT_MODEL_REF = "gpt-5.6-sol";
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
+export const DEFAULT_CODEX_APPROVAL_POLICY: CodexApprovalPolicy = "on-request";
+export const THINK_OPTIONS: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+function parseEffortOptions(raw: unknown): ReasoningEffort[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed = raw
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(isReasoningEffort);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+// Backendがadvertiseしたeffort catalogを描画・検証の唯一のソースにする。
+// advertiseが無い場合のみ全値fallback(旧Backend statusとの互換)。
+export function effortOptionsForModel(
+  option: { supportsReasoningEffort?: boolean; effortOptions?: readonly ReasoningEffort[] } | undefined,
+): readonly ReasoningEffort[] {
+  if (option?.supportsReasoningEffort !== true) return [];
+  return option.effortOptions && option.effortOptions.length > 0 ? option.effortOptions : THINK_OPTIONS;
+}
+
+export function modelSelectionKey(backendIdRaw: unknown, modelIdRaw: unknown): ModelOption["selectionKey"] {
+  const backendId = encodeURIComponent(String(backendIdRaw || "").trim());
+  const modelId = encodeURIComponent(String(modelIdRaw || "").trim());
+  return `${backendId}::${modelId}` as ModelOption["selectionKey"];
+}
+
+export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): ModelOption[] {
+  return statuses.flatMap((status) => {
+    const backendId = String(status.backendId || "").trim();
+    if (!backendId) return [];
+    const capability = status.capabilities?.model;
+    return (capability?.catalog || []).flatMap((model) => {
+      const modelId = String(model.modelId || "").trim();
+      if (!modelId) return [];
+      return [{
+        selectionKey: modelSelectionKey(backendId, modelId),
+        backendId,
+        modelId,
+        label: String(model.label || modelId).trim() || modelId,
+        supportsReasoningEffort: capability?.effort === true,
+        effortOptions: parseEffortOptions(capability?.effortOptions),
+        changeWithinSession: capability?.changeWithinSession !== false,
+        supportsScheduling: status.capabilities?.operations?.schedule === true,
+        // compact queueはCodex raw固有の仕組み。compact対応(operations.compact)とは
+        // 別capabilityで申告される。
+        supportsCompactQueue: status.capabilities?.operations?.compactQueue === true,
+        selectable: true,
+      }];
+    });
+  });
+}
+
+export function currentModelFallback(
+  backendId: string,
+  modelId: string,
+  capability?: { effort?: boolean; effortOptions?: string[]; changeWithinSession?: boolean; schedule?: boolean; compactQueue?: boolean },
+): ModelOption {
+  return {
+    selectionKey: modelSelectionKey(backendId, modelId),
+    backendId,
+    modelId,
+    label: modelId,
+    supportsReasoningEffort: capability?.effort === true,
+    effortOptions: parseEffortOptions(capability?.effortOptions),
+    changeWithinSession: capability?.changeWithinSession === true,
+    supportsScheduling: capability?.schedule === true,
+    // compact queue preflightはBackendが明示的にqueue非対応と申告した時だけ止める。
+    // status未取得時に落とすと、compact実行中Codexへの送信がqueueされず直撃する。
+    supportsCompactQueue: capability?.compactQueue !== false,
+    selectable: false,
+  };
+}
+
+export function isModelSelectionBlocked(options: {
+  sessionLocked: boolean;
+  currentBackendId: string;
+  currentModelId: string;
+  currentChangeWithinSession: boolean | undefined;
+  nextBackendId: string;
+  nextModelId: string;
+}) {
+  if (!options.sessionLocked) return false;
+  if (options.nextBackendId !== options.currentBackendId) return true;
+  return options.nextModelId !== options.currentModelId && options.currentChangeWithinSession !== true;
+}

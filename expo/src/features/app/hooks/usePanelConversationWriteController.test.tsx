@@ -239,4 +239,59 @@ describe("usePanelConversationWriteController", () => {
     expect(harness.getEntries().panel_2.snapshot.conversationMessages).toHaveLength(4);
     expect(harness.getEntries().panel_3.snapshot.conversationMessages).toHaveLength(2);
   });
+
+  test("初回turnでnative session IDを採用した時点でmaterializedを確定する", async () => {
+    const draftEntry = panelEntry("panel_1", "local-draft", baseConversation);
+    draftEntry.snapshot.sessionMaterialized = false;
+    const harness = createHarness({
+      visibleSessionId: "",
+      entries: { panel_1: draftEntry },
+    });
+    const { result } = await renderHook(() => usePanelConversationWriteController(harness.options));
+
+    await act(async () => {
+      result.current.setPanelConversationMessagesForCodex("panel_1", compactConversation, {
+        isResponding: true,
+        sessionId: "native-thread",
+        sessionMaterialized: true,
+        adoptFromSessionId: "local-draft",
+      });
+    });
+
+    expect(harness.getEntries().panel_1).toMatchObject({
+      sessionId: "native-thread",
+      snapshot: {
+        selectedSessionId: "native-thread",
+        sessionMaterialized: true,
+      },
+    });
+  });
+
+  test("native session ID採用時もパネルのbackendId/modelRefを保持する", async () => {
+    const draftEntry = panelEntry("panel_1", "local-draft", baseConversation);
+    draftEntry.snapshot.sessionMaterialized = false;
+    draftEntry.snapshot.backendId = "claude";
+    draftEntry.snapshot.modelRef = "sonnet";
+    const harness = createHarness({
+      visibleSessionId: "",
+      entries: { panel_1: draftEntry },
+    });
+    const { result } = await renderHook(() => usePanelConversationWriteController(harness.options));
+
+    await act(async () => {
+      result.current.setPanelConversationMessagesForCodex("panel_1", compactConversation, {
+        isResponding: true,
+        sessionId: "0f0e0d0c-1b1a-4c4d-8e8f-000000000001",
+        sessionMaterialized: true,
+        adoptFromSessionId: "local-draft",
+      });
+    });
+
+    expect(harness.getEntries().panel_1.snapshot).toMatchObject({
+      selectedSessionId: "0f0e0d0c-1b1a-4c4d-8e8f-000000000001",
+      sessionMaterialized: true,
+      backendId: "claude",
+      modelRef: "sonnet",
+    });
+  });
 });

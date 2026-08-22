@@ -46,6 +46,7 @@ function createHarness(overrides = {}) {
 
 function completion(overrides = {}) {
   return {
+    backendId: "codex",
     threadId: "thread-1",
     turnId: "turn-1",
     sessionId: "session-1",
@@ -64,6 +65,7 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
   assert.deepEqual(
     { ...harness.broadcasts[0], completedAt: "ignored" },
     {
+      backendId: "codex",
       sessionId: "session-1",
       threadId: "thread-1",
       directory: "/work/project-a",
@@ -82,6 +84,7 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
       "thread-id": "session-1",
     },
     sessionId: "session-1",
+    backendId: "codex",
     directory: "/work/project-a",
     turnId: "turn-1",
   });

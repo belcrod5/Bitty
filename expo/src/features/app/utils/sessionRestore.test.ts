@@ -41,6 +41,24 @@ function buildRestoredResult(
 }
 
 describe("buildRestoredSessionState", () => {
+  it("restores the Claude backend and model as one session identity", () => {
+    const restored = buildRestoredResult([]);
+    restored.backendId = "claude";
+    restored.modelRef = "sonnet";
+
+    const state = buildRestoredSessionState({
+      restored,
+      buildConversationMessage: buildConversationMessageStub,
+      modelOptions: [{ backendId: "claude", modelId: "sonnet", label: "Claude Sonnet" }],
+      modelRef: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      prevEffectiveSessionId: "previous-thread",
+      nextSessionId: "thread-1",
+    });
+
+    expect(state).toMatchObject({ nextBackendId: "claude", nextModelRef: "sonnet", modelChanged: true });
+  });
+
   it.each(["max", "ultra"] as const)("restores %s reasoning effort from the session", (restoredEffort) => {
     const restored = buildRestoredResult([]);
     restored.reasoningEffort = restoredEffort;

@@ -37,7 +37,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   settingsLoaded: boolean;
   setSettingsLoaded: Dispatch<SetStateAction<boolean>>;
   settingsFileName: string;
-  modelOptions: readonly { value: string }[];
+  modelOptions: readonly { modelId: string; backendId?: string }[];
   defaultModelRef: string;
   defaultReasoningEffort: ReasoningEffort;
   defaultRecordingQualityPreset: RecordingQualityPreset;
@@ -57,6 +57,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   sessionMarkerColorsById: Record<string, RegisteredDirectoryEntry["markerColor"]>;
   expandedDirectoryIds: string[];
   selectedLlmSessionId: string;
+  selectedLlmSessionMaterialized: boolean;
   codexWsUrl: string;
   codexWsToken: string;
   modelRef: string;
@@ -84,12 +85,14 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCloudflareRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerWsUrl: Dispatch<SetStateAction<string>>;
+  setLlmBackend: Dispatch<SetStateAction<LlmBackend>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
   setSessionTitleOverridesById: Dispatch<SetStateAction<Record<string, string>>>;
   setSessionMarkerColorsById: Dispatch<SetStateAction<Record<string, RegisteredDirectoryEntry["markerColor"]>>>;
   setExpandedDirectoryIds: Dispatch<SetStateAction<string[]>>;
   setSelectedLlmSessionId: Dispatch<SetStateAction<string>>;
+  setSelectedLlmSessionMaterialized: Dispatch<SetStateAction<boolean>>;
   selectedLlmSessionIdRef: MutableRefObject<string>;
   llmConversationSessionIdRef: MutableRefObject<string>;
   rememberKnownCodexThreadId: (sessionIdRaw: unknown) => void;
@@ -142,6 +145,7 @@ export function useAppSettingsPersistenceController({
   sessionMarkerColorsById,
   expandedDirectoryIds,
   selectedLlmSessionId,
+  selectedLlmSessionMaterialized,
   codexWsUrl,
   codexWsToken,
   modelRef,
@@ -169,12 +173,14 @@ export function useAppSettingsPersistenceController({
   setCloudflareRunnerWsUrl,
   setLocalRunnerUrl,
   setLocalRunnerWsUrl,
+  setLlmBackend,
   setLlmDirectory,
   setRegisteredDirectories,
   setSessionTitleOverridesById,
   setSessionMarkerColorsById,
   setExpandedDirectoryIds,
   setSelectedLlmSessionId,
+  setSelectedLlmSessionMaterialized,
   selectedLlmSessionIdRef,
   llmConversationSessionIdRef,
   rememberKnownCodexThreadId,
@@ -253,6 +259,7 @@ export function useAppSettingsPersistenceController({
         expandedDirectoryIds,
       },
       selectedLlmSessionId,
+      selectedLlmSessionMaterialized,
       codexWsUrl,
       codexWsToken: codexWsToken.trim() === runnerToken.trim() ? "" : codexWsToken,
       modelRef,
@@ -306,6 +313,7 @@ export function useAppSettingsPersistenceController({
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
     selectedLlmSessionId,
+    selectedLlmSessionMaterialized,
     selectedVoiceIdByProvider,
     sttProvider,
     ttsProvider,
@@ -388,6 +396,8 @@ export function useAppSettingsPersistenceController({
     if (legacyCloudflareAccessClientSecret) {
       setCloudflareAccessClientSecret(legacyCloudflareAccessClientSecret);
     }
+    const savedBackend = String(parsed.llmBackend || "").trim();
+    setLlmBackend(savedBackend && savedBackend !== "codex_app_server" ? savedBackend : "codex");
     setLlmDirectory(parseLlmDirectory(parsed.llmDirectory));
     const parsedRegisteredDirectories = parseRegisteredDirectories(parsed.registeredDirectories);
     setRegisteredDirectories(parsedRegisteredDirectories);
@@ -406,12 +416,17 @@ export function useAppSettingsPersistenceController({
 
     const loadedSelectedSessionId = parseOptionalSessionId(parsed.selectedLlmSessionId);
     if (loadedSelectedSessionId) {
+      const loadedSessionMaterialized = Object.prototype.hasOwnProperty.call(parsed, "selectedLlmSessionMaterialized")
+        ? parsed.selectedLlmSessionMaterialized === true
+        : true;
       setSelectedLlmSessionId(loadedSelectedSessionId);
+      setSelectedLlmSessionMaterialized(loadedSessionMaterialized);
       selectedLlmSessionIdRef.current = loadedSelectedSessionId;
       llmConversationSessionIdRef.current = loadedSelectedSessionId;
-      rememberKnownCodexThreadId(loadedSelectedSessionId);
+      if (loadedSessionMaterialized) rememberKnownCodexThreadId(loadedSelectedSessionId);
     } else {
       setSelectedLlmSessionId("");
+      setSelectedLlmSessionMaterialized(false);
       selectedLlmSessionIdRef.current = "";
       llmConversationSessionIdRef.current = "";
     }
@@ -490,6 +505,7 @@ export function useAppSettingsPersistenceController({
     setCloudflareRunnerWsUrl,
     setExpandedDirectoryIds,
     setFaceTrackingEnabledWithRef,
+    setLlmBackend,
     setLlmDirectory,
     setLlmToolLogCompact,
     setLocalRunnerUrl,
@@ -502,6 +518,7 @@ export function useAppSettingsPersistenceController({
     setRunnerToken,
     setRunnerUrl,
     setSelectedLlmSessionId,
+    setSelectedLlmSessionMaterialized,
     setSelectedVoiceIdByProvider,
     setSessionMarkerColorsById,
     setSessionTitleOverridesById,

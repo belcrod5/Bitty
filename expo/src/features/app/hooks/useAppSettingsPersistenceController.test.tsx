@@ -42,7 +42,7 @@ const setter = jest.fn();
 function createArgs() {
   return {
     settingsFileName: "bitty-settings.json",
-    modelOptions: [{ value: "default-model" }],
+    modelOptions: [{ modelId: "default-model", backendId: "codex" }],
     defaultModelRef: "default-model",
     defaultReasoningEffort: "medium",
     defaultRecordingQualityPreset: "high",
@@ -62,6 +62,7 @@ function createArgs() {
     sessionMarkerColorsById: {},
     expandedDirectoryIds: [],
     selectedLlmSessionId: "",
+    selectedLlmSessionMaterialized: false,
     codexWsUrl: "",
     codexWsToken: "",
     modelRef: "default-model",
@@ -89,12 +90,14 @@ function createArgs() {
     setCloudflareRunnerWsUrl: setter,
     setLocalRunnerUrl: setter,
     setLocalRunnerWsUrl: setter,
+    setLlmBackend: setter,
     setLlmDirectory: setter,
     setRegisteredDirectories: setter,
     setSessionTitleOverridesById: setter,
     setSessionMarkerColorsById: setter,
     setExpandedDirectoryIds: setter,
     setSelectedLlmSessionId: setter,
+    setSelectedLlmSessionMaterialized: setter,
     selectedLlmSessionIdRef: { current: "" },
     llmConversationSessionIdRef: { current: "" },
     rememberKnownCodexThreadId: jest.fn(),
@@ -188,6 +191,55 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
   // 所有者(Skiaボード等)が直接書いたフィールドは保持し、それ以外はReact stateから再構築。
   expect(next.skiaBoardState).toEqual(boardState);
   expect(next.runnerUrl).toBe("http://default-runner");
+});
+
+test("keeps a persisted unsent local session as an unlocked draft", async () => {
+  mockReadPersistedSettings.mockResolvedValue({
+    selectedLlmSessionId: "local-session",
+    selectedLlmSessionMaterialized: false,
+  });
+  const setSelectedLlmSessionMaterialized = jest.fn();
+  const rememberKnownCodexThreadId = jest.fn();
+
+  await renderPersistenceController({
+    setSelectedLlmSessionMaterialized,
+    rememberKnownCodexThreadId,
+  } as Parameters<typeof renderPersistenceController>[0]);
+
+  expect(setSelectedLlmSessionMaterialized).toHaveBeenCalledWith(false);
+  expect(rememberKnownCodexThreadId).not.toHaveBeenCalled();
+});
+
+test("treats a legacy persisted session id as a materialized Codex session", async () => {
+  mockReadPersistedSettings.mockResolvedValue({ selectedLlmSessionId: "legacy-session" });
+  const setSelectedLlmSessionMaterialized = jest.fn();
+  const rememberKnownCodexThreadId = jest.fn();
+
+  await renderPersistenceController({
+    setSelectedLlmSessionMaterialized,
+    rememberKnownCodexThreadId,
+  } as Parameters<typeof renderPersistenceController>[0]);
+
+  expect(setSelectedLlmSessionMaterialized).toHaveBeenCalledWith(true);
+  expect(rememberKnownCodexThreadId).toHaveBeenCalledWith("legacy-session");
+});
+
+test("preserves a persisted backend and model before its catalog is available", async () => {
+  mockReadPersistedSettings.mockResolvedValue({
+    llmBackend: "claude",
+    modelRef: "sonnet",
+  });
+  const setLlmBackend = jest.fn();
+  const setModelRef = jest.fn();
+
+  await renderPersistenceController({
+    modelOptions: [{ modelId: "default-model", backendId: "codex" }],
+    setLlmBackend,
+    setModelRef,
+  } as Parameters<typeof renderPersistenceController>[0]);
+
+  expect(setLlmBackend).toHaveBeenCalledWith("claude");
+  expect(setModelRef).toHaveBeenCalledWith("sonnet");
 });
 
 test("does not delete credentials after their initial read fails", async () => {

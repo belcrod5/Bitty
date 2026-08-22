@@ -25,6 +25,7 @@ describe("normalizeNotificationMetadata", () => {
       trigger: {
         type: "push",
         payload: {
+          backendId: "claude",
           sessionId: "session-root",
           directory: "/root",
           turnId: "turn-root",
@@ -33,6 +34,7 @@ describe("normalizeNotificationMetadata", () => {
         },
       },
     } as unknown as Notifications.NotificationRequest)).toEqual({
+      backendId: "claude",
       sessionId: "session-root",
       directory: "/root",
       turnId: "turn-root",
@@ -55,6 +57,7 @@ describe("normalizeNotificationMetadata", () => {
         },
       },
     } as unknown as Notifications.NotificationRequest)).toEqual({
+      backendId: "",
       sessionId: "session-data",
       directory: "/root",
       turnId: "turn-data",

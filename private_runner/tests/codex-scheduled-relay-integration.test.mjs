@@ -14,6 +14,8 @@ process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_MOCK = "1";
 process.env.RUNNER_TOKEN = "test-token";
 process.env.CODEX_WS_PROXY_UPSTREAM_URL = `ws://127.0.0.1:${upstream.address().port}`;
+const agentStoreRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-scheduled-relay-agent-"));
+process.env.ACP_SESSION_STORE_PATH = path.join(agentStoreRoot, "sessions.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 
@@ -22,6 +24,8 @@ test.after(async () => {
     __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
   }
   await new Promise((resolve) => upstream.close(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await fs.rm(agentStoreRoot, { recursive: true, force: true });
 });
 
 test("a due schedule starts through the normal relay and stops tracking at turn acceptance", async (t) => {

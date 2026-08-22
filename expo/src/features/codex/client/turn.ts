@@ -57,6 +57,7 @@ import { assertSupportedCodexAppServer } from "./rpcSession";
 import {
   calendarDynamicTools,
 } from "../../calendar/calendarToolSpecs";
+import { startAgentTurnWithRawFallback } from "../../agent/client";
 import {
   calendarDynamicToolsIncompatible,
   calendarToolResponse,
@@ -100,7 +101,7 @@ function extractThreadReadPayload(result: unknown): unknown {
   return (object as any)?.thread ?? (object as any)?.data?.thread ?? (object as any)?.data ?? result;
 }
 
-export function startCodexAppServerTurn(
+function startCodexAppServerRawTurn(
   options: CodexAppServerTurnOptions
 ): CodexAppServerTurnSession {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
@@ -1502,4 +1503,10 @@ export async function runCodexAppServerTurn(
   options: CodexAppServerTurnOptions
 ): Promise<CodexAppServerTurnResult> {
   return await startCodexAppServerTurn(options).promise;
+}
+
+export function startCodexAppServerTurn(
+  options: CodexAppServerTurnOptions
+): CodexAppServerTurnSession {
+  return startAgentTurnWithRawFallback(options, () => startCodexAppServerRawTurn(options));
 }

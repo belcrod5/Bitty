@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+
+const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "runner-ws-multiplex-"));
 
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_MOCK = "1";
 process.env.RUNNER_TOKEN = process.env.RUNNER_TOKEN || "test-token";
 process.env.RUNNER_LOG_REQUESTS = "0";
+process.env.ACP_SESSION_STORE_PATH = path.join(tempDir, "agent_sessions.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
+
+test.after(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
 
 function createRelayForRunnerWsTest() {
   const upstreamSent = [];
@@ -28,6 +39,7 @@ function createRelayForRunnerWsTest() {
     pendingToUpstream: [],
     clients: new Set(),
     threadId: "",
+    threadCwd: "/work/project",
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
@@ -81,6 +93,33 @@ function createRunnerWsConnectionForTest() {
   });
   return ws;
 }
+
+async function waitFor(check, timeoutMs = 2000) {
+  const startedAt = Date.now();
+  while (!check()) {
+    if (Date.now() - startedAt >= timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+test("runner-ws advertises and negotiates the provider-neutral agent protocol", async () => {
+  const ws = createRunnerWsConnectionForTest();
+  assert.equal(ws.sent[0].op, "ready");
+  assert.equal(ws.sent[0].payload.channels.includes("agent"), true);
+
+  ws.emit("message", JSON.stringify({
+    channel: "agent",
+    op: "agent.hello",
+    requestId: "hello-1",
+  }), false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const ready = ws.sent.find((message) => message.channel === "agent" && message.op === "agent.ready");
+  assert.equal(ready.requestId, "hello-1");
+  assert.equal(ready.payload.protocolVersion, 1);
+  assert.equal(ready.payload.backends.some((backend) => backend.backendId === "codex"), true);
+  ws.close();
+});
 
 test("runner-ws LLM relay keys prefer thread, then session, then operation", () => {
   assert.equal(
@@ -450,15 +489,15 @@ test("runner-ws unknown identity resume misses without creating a relay", () => 
   ws.close();
 });
 
-test("runner-ws keeps existing threadId relay resume compatible", () => {
+test("runner-ws keeps existing threadId relay resume compatible", async () => {
   const relay = createRelayForRunnerWsTest();
   relay.relayId = `relay-thread-resume-${Date.now()}`;
   __TESTING__.codexWsRelaysById.set(relay.relayId, relay);
-  __TESTING__.forwardCodexRelayClientData(
+  await __TESTING__.forwardCodexRelayClientData(
     relay,
     JSON.stringify({
       jsonrpc: "2.0", id: 10, method: "turn/start",
-      params: { threadId: "thread-legacy", input: [] },
+      params: { threadId: "thread-legacy", cwd: process.cwd(), input: [] },
     }),
     false,
     { endpoint: "/runner-ws", remote: "test", threadId: "thread-legacy" },
@@ -472,6 +511,78 @@ test("runner-ws keeps existing threadId relay resume compatible", () => {
   assert.equal(ws.sent.at(-1)?.threadId, "thread-legacy");
   assert.equal(ws.sent.at(-1)?.payload.match, "thread");
   ws.close();
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("raw relay preserves turn start admission order before a following interrupt", async () => {
+  const relay = createRelayForRunnerWsTest();
+  const threadId = `thread-ordered-${Date.now()}`;
+  const start = __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 20, method: "turn/start", params: { threadId, cwd: process.cwd(), input: [] } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test", threadId },
+  );
+  const interrupt = __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 21, method: "turn/interrupt", params: { threadId } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test", threadId },
+  );
+
+  await Promise.all([start, interrupt]);
+
+  assert.deepEqual(relay.upstreamSent.map((text) => JSON.parse(text).method), [
+    "turn/start",
+    "turn/interrupt",
+  ]);
+  __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
+});
+
+test("raw relay preserves three-message order while a queued admission is asynchronous", async () => {
+  const relay = createRelayForRunnerWsTest();
+  const threadId = `thread-three-ordered-${Date.now()}`;
+  const sendUpstream = relay.upstreamWs.send.bind(relay.upstreamWs);
+  relay.upstreamWs.send = (data) => {
+    sendUpstream(data);
+    const request = JSON.parse(String(data));
+    if (request.method === "thread/compact") {
+      __TESTING__.handleCodexRelayUpstreamMessage(
+        relay,
+        JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }),
+        false,
+        { endpoint: "/runner-ws", remote: "test" },
+      );
+    }
+  };
+
+  const compact = __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 22, method: "thread/compact", params: { threadId, cwd: process.cwd() } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test", threadId },
+  );
+  const start = __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 23, method: "turn/start", params: { threadId, cwd: process.cwd(), input: [] } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test", threadId },
+  );
+  await compact;
+  const interrupt = __TESTING__.forwardCodexRelayClientData(
+    relay,
+    JSON.stringify({ jsonrpc: "2.0", id: 24, method: "turn/interrupt", params: { threadId } }),
+    false,
+    { endpoint: "/runner-ws", remote: "test", threadId },
+  );
+
+  await Promise.all([start, interrupt]);
+
+  assert.deepEqual(relay.upstreamSent.map((text) => JSON.parse(text).method), [
+    "thread/compact",
+    "turn/start",
+    "turn/interrupt",
+  ]);
   __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
 });
 
@@ -504,7 +615,7 @@ test("runner-ws TTS start requires operationId", () => {
   });
 });
 
-test("runner-ws LLM notifications without rpc id keep current operation metadata", (t) => {
+test("runner-ws LLM notifications without rpc id keep current operation metadata", async (t) => {
   const threadId = `thread-notification-${Date.now()}-${Math.random()}`;
   const relay = createRelayForRunnerWsTest();
   const client = createEnvelopeClientForRunnerWsTest();
@@ -513,13 +624,13 @@ test("runner-ws LLM notifications without rpc id keep current operation metadata
   t.after(() => notificationClient.close());
   __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
 
-  __TESTING__.forwardCodexRelayClientData(
+  await __TESTING__.forwardCodexRelayClientData(
     relay,
     JSON.stringify({
       jsonrpc: "2.0",
       id: 4,
       method: "turn/start",
-      params: { threadId, prompt: "hello" },
+      params: { threadId, cwd: process.cwd(), prompt: "hello" },
     }),
     false,
     {
@@ -667,7 +778,7 @@ test("runner-ws forwards assistant text without adding content", () => {
   assert.deepEqual(forwarded.map((message) => message.payload), [delta, completed, threadRead]);
 });
 
-test("runner-ws does not complete or notify the parent from a child subagent turn", (t) => {
+test("runner-ws does not complete or notify the parent from a child subagent turn", async (t) => {
   const threadId = `thread-parent-${Date.now()}-${Math.random()}`;
   const relay = createRelayForRunnerWsTest();
   const owner = createEnvelopeClientForRunnerWsTest();
@@ -676,11 +787,11 @@ test("runner-ws does not complete or notify the parent from a child subagent tur
   t.after(() => notificationClient.close());
   __TESTING__.attachClientToCodexRelay(relay, owner, { envelopeMode: true });
 
-  __TESTING__.forwardCodexRelayClientData(relay, JSON.stringify({
+  await __TESTING__.forwardCodexRelayClientData(relay, JSON.stringify({
     jsonrpc: "2.0",
     id: 41,
     method: "turn/start",
-    params: { threadId, prompt: "hello" },
+    params: { threadId, cwd: process.cwd(), prompt: "hello" },
   }), false, {
     requestId: "parent-request",
     operationId: "parent-operation",
@@ -840,7 +951,7 @@ test("runner-ws duplicate initialize on a reused relay returns cached result", (
   assert.equal(relay.upstreamSent.length, 2);
 });
 
-test("runner-ws binds thread/start result threadId to the initialized relay", () => {
+test("runner-ws binds thread/start result threadId to the initialized relay", async () => {
   const upstreamSent = [];
   const relay = __TESTING__.createCodexRelayContext({
     endpoint: "/runner-ws",
@@ -896,7 +1007,7 @@ test("runner-ws binds thread/start result threadId to the initialized relay", ()
         jsonrpc: "2.0",
         id: 2,
         method: "thread/start",
-        params: { prompt: "hello" },
+        params: { cwd: process.cwd(), prompt: "hello" },
       }),
       false,
       {
@@ -942,6 +1053,7 @@ test("runner-ws binds thread/start result threadId to the initialized relay", ()
       }),
       false
     );
+    await waitFor(() => upstreamSent.length >= 3);
 
     assert.equal(upstreamSent.length, 3);
     assert.equal(JSON.parse(upstreamSent[2]).method, "turn/start");
@@ -973,18 +1085,18 @@ test("runner-ws binds thread/start result threadId to the initialized relay", ()
   }
 });
 
-test("runner-ws thread/read rider does not steal notification identity from the turn owner", () => {
+test("runner-ws thread/read rider does not steal notification identity from the turn owner", async () => {
   const relay = createRelayForRunnerWsTest();
   const client = createEnvelopeClientForRunnerWsTest();
   __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
 
-  __TESTING__.forwardCodexRelayClientData(
+  await __TESTING__.forwardCodexRelayClientData(
     relay,
     JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
       method: "turn/start",
-      params: { threadId: "thread-1", prompt: "hello" },
+      params: { threadId: "thread-1", cwd: process.cwd(), prompt: "hello" },
     }),
     false,
     {
@@ -1004,7 +1116,7 @@ test("runner-ws thread/read rider does not steal notification identity from the 
   );
 
   // A panel-hydration probe rides the same (thread-keyed) relay mid-turn.
-  __TESTING__.forwardCodexRelayClientData(
+  await __TESTING__.forwardCodexRelayClientData(
     relay,
     JSON.stringify({
       jsonrpc: "2.0",

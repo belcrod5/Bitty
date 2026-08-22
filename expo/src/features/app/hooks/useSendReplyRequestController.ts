@@ -13,6 +13,7 @@ import type { SendReplyRequestRejectReason, SendReplyRequestResult } from "./use
 const SEND_REJECT_TOAST_TEXT: Partial<Record<SendReplyRequestRejectReason, string>> = {
   active_request: "前の応答が完了していないため送信できませんでした。完了を待つか停止してから再送してください。",
   missing_codex_ws_url: "Codex WS URLが未設定のため送信できませんでした。設定を確認してください。",
+  model_backend_mismatch: "このチャットではAgent Providerを変更できません。新規チャットを作成してください。",
 };
 
 type ReplyRequestOptions<TSttMeta> = {
@@ -53,7 +54,6 @@ type UseSendReplyRequestControllerArgs<TSttMeta> = {
     transcriptOverride?: string,
     options?: ReplyRequestOptions<TSttMeta>
   ) => Promise<SendReplyRequestResult>;
-  llmBackend: string;
   cancelReplyRequestFromCodex: (options?: { panelId?: string }) => Promise<boolean>;
   suspendReplyRequestFromCodex: (reason?: string, options?: { panelId?: string }) => boolean;
 };
@@ -65,7 +65,6 @@ export function useSendReplyRequestController<TSttMeta>({
   closeCodexRelayObserver,
   logSessionDiag,
   sendReplyRequestFromCodex,
-  llmBackend,
   cancelReplyRequestFromCodex,
   suspendReplyRequestFromCodex,
 }: UseSendReplyRequestControllerArgs<TSttMeta>) {
@@ -75,6 +74,7 @@ export function useSendReplyRequestController<TSttMeta>({
   ) => {
     const writePanelId = normalizeWritePanelId(options?.panelId);
     const forcedSnapshot = options?.sessionSnapshot;
+    const forcedBackendId = String(forcedSnapshot?.backendId || "codex").trim() || "codex";
     const forcedSessionId = String(forcedSnapshot?.sessionId || "").trim();
     const forcedThreadId = String(forcedSnapshot?.threadId || "").trim();
     const forcedDirectory = String(forcedSnapshot?.directory || "").trim();
@@ -88,6 +88,7 @@ export function useSendReplyRequestController<TSttMeta>({
       transcriptChars: typeof transcriptOverride === "string" ? transcriptOverride.trim().length : null,
       hasForcedSnapshot,
       forcedSessionId: forcedSessionId || undefined,
+      forcedBackendId,
       forcedThreadId: forcedThreadId || undefined,
       forcedDirectory: forcedDirectory || undefined,
     }, { throttleMs: 0 });
@@ -126,6 +127,7 @@ export function useSendReplyRequestController<TSttMeta>({
     const result = await sendReplyRequestFromCodex(transcriptOverride, {
       ...options,
       sessionSnapshot: {
+        backendId: forcedBackendId,
         sessionId: forcedSessionId,
         threadId: panelThreadId,
         directory: forcedDirectory || normalizedLlmDirectoryForRequest(),
@@ -156,18 +158,16 @@ export function useSendReplyRequestController<TSttMeta>({
   ]);
 
   const cancelCodexTurnRequestGuarded = useCallback(async (options?: { panelId?: string }) => {
-    if (llmBackend !== "codex_app_server") return;
     const targetPanelId = normalizeWritePanelId(options?.panelId);
     if (!targetPanelId) return;
     await cancelReplyRequestFromCodex(options);
-  }, [cancelReplyRequestFromCodex, llmBackend]);
+  }, [cancelReplyRequestFromCodex]);
 
   const suspendCodexTurnRequestForSessionSwitchGuarded = useCallback((options?: { panelId?: string }) => {
-    if (llmBackend !== "codex_app_server") return false;
     const targetPanelId = normalizeWritePanelId(options?.panelId);
     if (!targetPanelId) return false;
     return suspendReplyRequestFromCodex("session_switch", options);
-  }, [llmBackend, suspendReplyRequestFromCodex]);
+  }, [suspendReplyRequestFromCodex]);
 
   return {
     sendReplyRequestWithSessionGuard,

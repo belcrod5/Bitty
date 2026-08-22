@@ -102,6 +102,7 @@ export type ResumeSyncPanelEntry = {
   sessionId: string;
   directory: string;
   isResponding: boolean;
+  sessionMaterialized?: boolean;
 };
 
 // 1セッション=1ターゲット。同一セッションを表示する全可視パネルをまとめて持ち、
@@ -118,6 +119,7 @@ export type ResumeSyncSkip = {
   reason:
     | "live_observer"
     | "turn_in_flight"
+    | "local_draft"
     | "missing_directory";
 };
 
@@ -189,6 +191,10 @@ export function planResumeSyncTargets(input: {
       respondingSessionIds.has(sessionId)
     );
     if (!wanted) continue;
+    if (entryRaw.sessionMaterialized === false) {
+      skipped.push({ sessionId, panelId, reason: "local_draft" });
+      continue;
+    }
     if (observerThreadId && sessionId === observerThreadId) {
       skipped.push({ sessionId, panelId, reason: "live_observer" });
       continue;

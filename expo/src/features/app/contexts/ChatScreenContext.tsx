@@ -22,7 +22,12 @@ export type ChatScreenContextValue = {
     target?: Omit<TtsPlaybackTarget, "messageId">
   ) => Promise<void>;
   sessionHistoryPagingById: Record<string, SessionHistoryPagingState>;
-  loadOlderSessionHistory: (params: { sessionId: string; directory: string; retry?: boolean }) => Promise<void>;
+  loadOlderSessionHistory: (params: {
+    backendId?: string;
+    sessionId: string;
+    directory: string;
+    retry?: boolean;
+  }) => Promise<void>;
 };
 
 const ChatScreenContext = createContext<ChatScreenContextValue | null>(null);

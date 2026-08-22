@@ -25,6 +25,7 @@ jest.mock("../contexts/SkiaBoardContext", () => ({
 
 function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
   return {
+    backendId: "codex",
     sessionId: "session-default",
     parentSessionId: "",
     directory: "/work/bitty",
@@ -117,6 +118,15 @@ beforeEach(() => {
   mockHasSession.mockReturnValue(false);
   mockHasDirectory.mockReturnValue(false);
   mockSkiaBoardLoaded = true;
+});
+
+test("starts a new chat in the pressed drawer directory", async () => {
+  const onStartNewSessionInDirectory = jest.fn();
+  const drawer = await renderDrawer({ onStartNewSessionInDirectory });
+
+  await fireEvent.press(drawer.getByText("Bitty"));
+
+  expect(onStartNewSessionInDirectory).toHaveBeenCalledWith("/work/bitty");
 });
 
 test("opens the board from the left navigation", async () => {

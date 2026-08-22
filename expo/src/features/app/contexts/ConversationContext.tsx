@@ -66,6 +66,7 @@ export type ConversationContextValue = {
     directory: string
   ) => Promise<void>;
   openSessionHistoryEntry: (params: {
+    backendId: string;
     sessionId: string;
     source: LlmSessionSource;
     directory: string;

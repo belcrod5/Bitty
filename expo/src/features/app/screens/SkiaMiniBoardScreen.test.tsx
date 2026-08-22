@@ -255,6 +255,7 @@ const mockTidyBoard = jest.fn();
 const mockSetBoardCardTextScale = jest.fn();
 const mockDefaultSession = {
   kind: "session" as const,
+  backendId: "claude",
   cardId: "session:session-1",
   panelId: "skia_mini_preview_session-1",
   sessionId: "session-1",
@@ -875,6 +876,7 @@ test("opens the tapped card session via the shared session history popup", async
     fireCardTap();
   });
   expect(openSessionHistoryPopup).toHaveBeenCalledWith({
+    backendId: "claude",
     sessionId: "session-1",
     directory: "/workspace",
     source: "appserver",

@@ -84,17 +84,6 @@ export function DebugConnectionPanel() {
         autoCorrect={false}
       />
 
-      <Text style={styles.label}>LLM Transport</Text>
-      <View style={styles.providerRow}>
-        <View style={[styles.providerButton, styles.providerButtonSelected]}>
-          <Text style={[styles.providerButtonText, styles.providerButtonTextSelected]}>
-            codex app-server via runner-ws / codex-ws
-          </Text>
-        </View>
-      </View>
-      <Text style={styles.hint}>
-        現在のLLM接続先: Codex app-server (JSON-RPC over WebSocket、runner-ws は envelope)
-      </Text>
       <Text style={styles.hint}>
         executionEnvironment: {executionEnvironment} / expoGo: {String(isExpoGo)}
       </Text>

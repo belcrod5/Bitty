@@ -6,7 +6,7 @@ export type PanelRuntimeControllerContextValue = {
   setPanelAutoSpeechOpen: (panelId: string, open: boolean) => void;
   updatePanelSettings: (
     panelId: string,
-    settings: { modelRef?: string; reasoningEffort?: string }
+    settings: { backendId?: string; modelRef?: string; reasoningEffort?: string }
   ) => void;
   startNewPanelSession: (params: {
     panelId: string;
@@ -14,6 +14,7 @@ export type PanelRuntimeControllerContextValue = {
   }) => string;
   hydratePanelFromSessionHistory: (params: {
     panelId: string;
+    backendId?: string;
     sessionId: string;
     directory: string;
     source?: "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "notification" | "unknown";

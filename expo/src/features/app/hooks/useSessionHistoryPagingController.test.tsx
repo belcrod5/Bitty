@@ -27,13 +27,16 @@ it("loads one opaque cursor at a time and applies the next cursor", async () => 
   await act(() => result.current.registerPage("thread-1", page("cursor-1")));
   await act(async () => {
     await Promise.all([
-      result.current.loadOlder({ sessionId: "thread-1", directory: "/workspace" }),
-      result.current.loadOlder({ sessionId: "thread-1", directory: "/workspace" }),
+      result.current.loadOlder({ backendId: "claude", sessionId: "thread-1", directory: "/workspace" }),
+      result.current.loadOlder({ backendId: "claude", sessionId: "thread-1", directory: "/workspace" }),
     ]);
   });
 
   expect(fetchPage).toHaveBeenCalledTimes(1);
-  expect(fetchPage).toHaveBeenCalledWith("thread-1", "/workspace", { cursor: "cursor-1" });
+  expect(fetchPage).toHaveBeenCalledWith("thread-1", "/workspace", {
+    backendId: "claude",
+    cursor: "cursor-1",
+  });
   expect(applyPage).toHaveBeenCalledTimes(1);
   expect(result.current.stateBySessionId["thread-1"]).toEqual({
     olderCursor: "cursor-2",

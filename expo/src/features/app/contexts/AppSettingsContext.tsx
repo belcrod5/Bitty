@@ -7,10 +7,19 @@ import type {
   TtsProvider,
 } from "../utils/audioConfig";
 import type { ReasoningEffort } from "../utils/settingsParsers";
+import type { LlmBackend } from "../types/appTypes";
 
 export type ModelOption = {
+  selectionKey: `${string}::${string}`;
   label: string;
-  value: string;
+  modelId: string;
+  backendId: LlmBackend;
+  supportsReasoningEffort: boolean;
+  effortOptions?: readonly ReasoningEffort[];
+  changeWithinSession: boolean;
+  supportsScheduling?: boolean;
+  supportsCompactQueue?: boolean;
+  selectable?: boolean;
 };
 
 export type RunnerPairingResult = {
@@ -22,6 +31,7 @@ export type RunnerPairingResult = {
 
 export type AppSettingsContextValue = {
   runnerUrl: string;
+  llmBackend: LlmBackend;
   llmDirectory: string;
   codexWsUrl: string;
   codexWsToken: string;

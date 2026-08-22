@@ -5,6 +5,7 @@ export type PendingPushSessionNavigationControllerArgs = {
   normalizedLlmDirectoryForRequest: () => string;
   closeDrawer: () => void;
   openSessionHistoryPopup: (params: {
+    backendId?: string;
     sessionId: string;
     source: LlmSessionSource;
     directory?: string;

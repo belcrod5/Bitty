@@ -177,7 +177,7 @@ function parseCachedRow(raw: unknown): RunnerSessionMessage | null {
     role: role as RunnerSessionMessage["role"],
     content,
     at: String(item.at || "").trim(),
-    ...(item.kind === "internal_context" || item.kind === "unclassified_context"
+    ...(item.kind === "internal_context" || item.kind === "unclassified_context" || item.kind === "sidechain"
       ? { kind: item.kind }
       : {}),
     itemId: String(item.itemId || "").trim() || undefined,

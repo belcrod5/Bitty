@@ -62,6 +62,7 @@ export type AppDrawerProps = {
   onLoadSessionChildren: (directoryId: string, directoryPath: string, parentSessionId: string) => void;
   onStartNewSessionInDirectory: (directoryPath: string) => void;
   onSelectSessionHistoryEntry: (
+    backendId: string,
     sessionId: string,
     source: LlmSessionSource,
     directoryPath: string,
@@ -287,6 +288,7 @@ export const AppDrawer = memo(function AppDrawer({
           disabled={llmSessionRestoreLoading}
           onPress={(event) => (
             onSelectSessionHistoryEntry(
+              session.backendId,
               session.sessionId,
               session.source,
               session.directory || directory.path,
