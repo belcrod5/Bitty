@@ -622,7 +622,7 @@ export function useCodexReplyRequest<
       current.setTranscript("");
     }
     let replyRequestStartedAt = Date.now();
-    // compact queue preflightはBackendのoperations.compact capabilityに従う。
+    // compact queue preflightはBackendのoperations.compactQueue capabilityに従う。
     // 非対応Backend(session)へCodex raw queue opを送らない。
     const supportsCompactQueue = requestModelOption?.supportsCompactQueue !== false;
     if (requestThreadKey && supportsCompactQueue) {

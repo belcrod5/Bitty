@@ -489,3 +489,31 @@ busyで即失敗する。Codexはcompact queue(raw固有)へ退避されるが�
 
 検証: runner **497 passed / 1 skipped**・Expo **119 suites / 871 tests**・
 tsc / typecheck:macos passed。反映はrunner再起動が必要。
+
+## §21 追加コミット分(§17〜§20)の独立レビュー対応
+
+b362e3b以降の4コミットを独立レビュー(観点: 上流修正・抽象化・複雑度・正しさ)。
+M(要修正)ゼロ・軽微7件。m⑤「CodexのreadHistoryがcontextUsage未返却」は誤検知
+(注入されたlistLlmSessionMessagesがusedPct付きで返却済み)。m③は対応の中で解消。
+
+対応(agent-service):
+1. **m① lease解放直後の偽session_busy(競合窓)**: compact保持者の判定をstore再読
+   (`getMode`)から、acquireがbusy/recovering結果に同梱するleaseへ変更。解放直後の
+   再読で「保持者なし→compact以外」と誤判定する窓を排除。判定は`compactLeaseHolder(lease)`
+   (owner+runId接頭辞)へ純関数化。
+2. **m② タイムアウト境界**: `compactWaitTimeoutMs`既定を11分へ(Backendのcompact
+   タイムアウト10分+マージン)。
+3. **m③ compactがrecoveringに落ちた場合**: 待機ループがrecovering状態のcompact
+   leaseを検知したら`recoverSessionLease`で回収してから再取得(admission側と対称に)。
+4. **m④ stringly-typed接頭辞**: `COMPACT_RUN_PREFIX`定数を生成側(compactSessionの
+   runId)と判定側で共有(従来はリテラル2箇所+コメント同期)。
+
+対応(Expo、m⑥): useCodexReplyRequestの陳腐化コメント(operations.compact→
+compactQueue)修正、useAgentModelCatalogの不要キャスト除去(client.tsの型に
+compactQueue追加済みのため)。
+
+テスト(m⑦): compact待機のtimeoutパスと「compact以外の保持者に置き換わったら
+session_busyで打ち切り」パスを追加。
+
+検証: runner **499 passed / 1 skipped**・Expo **119 suites / 871 tests**・
+tsc / typecheck:macos passed。

@@ -88,7 +88,9 @@ export function createAgentService({
   resolveCanonicalCwd,
   replayLimit = DEFAULT_REPLAY_LIMIT,
   runRetentionMs = 24 * 60 * 60 * 1000,
-  compactWaitTimeoutMs = 10 * 60 * 1000,
+  // Backend側のcompactタイムアウト(既定10分)より長くし、compactが時間切れ間際
+  // まで走っても待機turnが先にtimeoutしないマージンを持たせる
+  compactWaitTimeoutMs = 11 * 60 * 1000,
   compactLeasePollMs = 500,
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
@@ -350,19 +352,19 @@ export function createAgentService({
     publish(run, type, payload);
   }
 
-  // compact操作のrunId接頭辞(compactSessionのrunId生成と一致させる)
+  // compact操作のleaseはrunId接頭辞で識別する(compactSessionのrunId生成と共有)
   const COMPACT_RUN_PREFIX = "agent_compact_";
 
-  async function compactHoldsSessionLease(sessionRef) {
-    const lease = (await sessionStore.getMode(sessionRef))?.lease;
+  function compactLeaseHolder(lease) {
     return String(lease?.owner || "") === "agent-service"
-      && String(lease?.runId || "").startsWith(COMPACT_RUN_PREFIX)
-      && String(lease?.state || "") === "active";
+      && String(lease?.runId || "").startsWith(COMPACT_RUN_PREFIX);
   }
 
   // compact実行中に受理したrunのlease取得待ち。圧縮完了(lease解放)後に自分の
   // leaseを取って返す。中断は"interrupted"、compact以外の保持者やタイムアウトはthrow。
-  async function waitForCompactLeaseRelease(run) {
+  // 保持者判定はacquireがbusy/recovering結果に同梱するleaseで行う。解放直後に
+  // storeを再読すると保持者不在を「compact以外」と誤判定してsession_busyになるため。
+  async function waitForCompactLeaseRelease(run, backend) {
     const deadlineMs = Date.now() + compactWaitTimeoutMs;
     while (true) {
       if (run.cancelRequested) return "interrupted";
@@ -373,7 +375,7 @@ export function createAgentService({
         runId: run.runId,
       });
       if (acquired?.status === "acquired" || acquired?.status === "existing") return acquired.lease;
-      if (!(await compactHoldsSessionLease(run.sessionRef))) {
+      if (!compactLeaseHolder(acquired?.lease)) {
         const error = agentError("session_busy", "session already has an active or recovering turn", { backendId: run.backendId });
         error.nativeActivity = "not_started";
         throw error;
@@ -383,6 +385,11 @@ export function createAgentService({
         error.nativeActivity = "not_started";
         throw error;
       }
+      if (String(acquired.lease?.state || "") === "recovering") {
+        // compactが異常終了しrecoveringへ落ちた場合は回収してから再取得する
+        await recoverSessionLease(run.sessionRef, backend);
+        continue;
+      }
       await new Promise((resolve) => setTimeout(resolve, compactLeasePollMs));
     }
   }
@@ -390,7 +397,7 @@ export function createAgentService({
   async function execute(run, backend, request) {
     try {
       if (run.sessionRef && !run.lease) {
-        const awaited = await waitForCompactLeaseRelease(run);
+        const awaited = await waitForCompactLeaseRelease(run, backend);
         if (awaited === "interrupted") {
           await finish(run, "interrupted");
           return;
@@ -509,7 +516,7 @@ export function createAgentService({
         });
         if (acquired?.status === "acquired" || acquired?.status === "existing") {
           preAcquiredLease = acquired.lease;
-        } else if (await compactHoldsSessionLease(request.sessionRef)) {
+        } else if (compactLeaseHolder(acquired?.lease)) {
           // compact操作がleaseを保持中の送信は落とさずrunとして受理し、
           // execute側で圧縮完了(lease解放)を待ってから実行する
           // (compact queueを持たないBackendでもcompact中の送信が成立する)。
@@ -717,7 +724,7 @@ export function createAgentService({
       if ((await sessionStore.getMode(sessionRef))?.mode !== "neutral") {
         throw agentError("session_busy", "session requires an explicit neutral handoff", { backendId: sessionRef.backendId });
       }
-      const runId = `agent_compact_${randomUUID()}`;
+      const runId = `${COMPACT_RUN_PREFIX}${randomUUID()}`;
       const acquired = await sessionStore.acquire({ sessionRef, mode: "neutral", owner: "agent-service", runId });
       if (acquired?.status !== "acquired") {
         throw agentError("session_busy", "session already has an active or recovering operation", { backendId: sessionRef.backendId });

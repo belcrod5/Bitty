@@ -56,7 +56,7 @@ export function useAgentModelCatalog({
     const capability = {
       ...status?.capabilities?.model,
       schedule: status?.capabilities?.operations?.schedule,
-      compactQueue: (status?.capabilities?.operations as { compactQueue?: boolean } | undefined)?.compactQueue,
+      compactQueue: status?.capabilities?.operations?.compactQueue,
     };
     return catalog.some((option) => option.backendId === backendId && option.modelId === modelId)
       ? catalog
