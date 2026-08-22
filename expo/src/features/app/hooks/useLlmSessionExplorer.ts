@@ -529,10 +529,15 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
             .join("\n");
           const tool = blocks.find((block) => block?.type === "tool");
           if (!content && !tool) return [];
+          const itemType = String(item.itemType || "");
           return [{
             role,
             content,
             at: String(item.createdAt || ""),
+            // 内部注入コンテキスト(environment_context等)は折りたたみ表示にする。
+            ...(itemType === "internal_context" || itemType === "unclassified_context"
+              ? { kind: itemType }
+              : {}),
             itemId: String(item.id || "") || undefined,
             ...(tool ? {
               commandExecution: {

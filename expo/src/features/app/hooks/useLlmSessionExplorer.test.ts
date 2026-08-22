@@ -173,6 +173,33 @@ describe("fetchRunnerSessionMessages", () => {
     });
   });
 
+  it("maps neutral history itemType to the collapsed internal-context kind", async () => {
+    mockReadAgentHistory.mockResolvedValue({
+      sessionRef: { backendId: "claude", nativeSessionId: "thread-1" },
+      canonicalCwd: "/native/workspace",
+      items: [
+        { id: "ctx-1", role: "user", itemType: "internal_context", content: [{ type: "text", text: "<recommended_plugins>list</recommended_plugins>" }] },
+        { id: "ctx-2", role: "assistant", itemType: "unclassified_context", content: [{ type: "text", text: "goal body" }] },
+        { id: "side-1", role: "assistant", itemType: "sidechain", content: [{ type: "text", text: "subagent" }] },
+        { id: "msg-1", role: "user", content: [{ type: "text", text: "hello" }] },
+      ],
+    });
+    const { result } = await renderExplorerHook({
+      runnerWebSocketManager: {} as never,
+    });
+
+    const restored = await result.current.fetchRunnerSessionMessages("thread-1", "/workspace", {
+      backendId: "claude",
+    });
+
+    expect(restored.messages.map((message) => ({ itemId: message.itemId, kind: message.kind }))).toEqual([
+      { itemId: "ctx-1", kind: "internal_context" },
+      { itemId: "ctx-2", kind: "unclassified_context" },
+      { itemId: "side-1", kind: undefined },
+      { itemId: "msg-1", kind: undefined },
+    ]);
+  });
+
   it("loads saved history from the bounded runner page API", async () => {
     mockReadCodexAppServerThread.mockResolvedValue({
       threadId: "thread-1",

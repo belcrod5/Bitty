@@ -379,6 +379,46 @@ test("Claude history stays inside projects root and invalidates changed cursors"
   }), (error) => error.code === "history_cursor_invalid");
 });
 
+test("Claude history classifies injected system messages as internal context", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-internal-context-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const project = path.join(tempRoot, "project");
+  const cwd = path.join(tempRoot, "workspace");
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(cwd);
+  const transcript = path.join(project, `${SESSION_ID}.jsonl`);
+  await fs.writeFile(transcript, [
+    JSON.stringify({ type: "user", uuid: "meta-1", cwd, isMeta: true, message: { content: "Caveat: injected caveat body" } }),
+    JSON.stringify({ type: "user", uuid: "cmd-1", cwd, message: { content: "<command-name>/clear</command-name>" } }),
+    JSON.stringify({ type: "user", uuid: "task-1", cwd, message: { content: "<task-notification>\n<task-id>abc</task-id>\n</task-notification>" } }),
+    JSON.stringify({ type: "user", uuid: "user-1", cwd, message: { content: "<foo>user supplied</foo>" } }),
+    JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { content: [{ type: "text", text: "reply" }] } }),
+  ].join("\n"));
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    projectsRoot: tempRoot,
+    runFile: async () => ({ stdout: "2.1.214" }),
+    fileSystem: fs,
+    sessionStore: { getBinding: async () => null },
+  });
+
+  const history = await backend.readHistory({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+    limit: 10,
+  });
+  assert.deepEqual(history.items.map((item) => ({ id: item.id, itemType: item.itemType })), [
+    { id: "meta-1", itemType: "internal_context" },
+    { id: "cmd-1", itemType: "internal_context" },
+    { id: "task-1", itemType: "internal_context" },
+    { id: "user-1", itemType: undefined },
+    { id: "a1", itemType: undefined },
+  ]);
+
+  // 一覧タイトルも注入メッセージではなく最初の実ユーザー発話から取る。
+  const listed = await backend.listSessions({ cwd, limit: 10 });
+  assert.equal(listed.sessions[0].title, "<foo>user supplied</foo>");
+});
+
 test("Claude session list pages with a keyset cursor and rejects an invalid cursor", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-list-page-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

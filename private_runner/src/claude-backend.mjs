@@ -78,6 +78,19 @@ function extractText(content) {
     .join("");
 }
 
+// Claude CLIがトランスクリプトへ注入するシステム由来メッセージ。ユーザー発話では
+// ないため、履歴表示では折りたたみ対象(internal_context)として返す。
+const INTERNAL_CONTEXT_TAG_PATTERN = /^<(system-reminder|recommended_plugins|command-name|command-message|command-args|command-contents|local-command-caveat|local-command-stdout|local-command-stderr|task-notification)\b/;
+
+function classifyHistoryItemType(record, text) {
+  if (record?.isSidechain === true) return "sidechain";
+  if (record?.isMeta === true) return "internal_context";
+  if (String(record?.type || "") === "user" && INTERNAL_CONTEXT_TAG_PATTERN.test(String(text || "").trimStart())) {
+    return "internal_context";
+  }
+  return "";
+}
+
 function cursorEncode(value) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
@@ -665,7 +678,8 @@ export function createClaudeBackend({
       const transcript = await readTranscript(file).catch(() => null);
       if (!transcript || transcriptCwd(transcript.records) !== canonicalCwd) continue;
       const nativeSessionId = path.basename(file, ".jsonl");
-      const firstUser = transcript.records.find((record) => record.value?.type === "user");
+      const firstUser = transcript.records.find((record) => record.value?.type === "user"
+        && !classifyHistoryItemType(record.value, extractText(record.value?.message?.content)));
       sessions.push({
         sessionRef: { backendId: "claude", nativeSessionId },
         canonicalCwd,
@@ -707,12 +721,13 @@ export function createClaudeBackend({
       if (type !== "user" && type !== "assistant") continue;
       const text = extractText(record.value?.message?.content);
       if (!text) continue;
+      const itemType = classifyHistoryItemType(record.value, text);
       display.push({
         id: String(record.value?.uuid || `${sessionRef.nativeSessionId}:${record.index}`),
         role: type,
         content: [{ type: "text", text }],
         ...(record.value?.timestamp ? { createdAt: String(record.value.timestamp) } : {}),
-        ...(record.value?.isSidechain === true ? { itemType: "sidechain" } : {}),
+        ...(itemType ? { itemType } : {}),
       });
     }
     const pageLimit = Math.max(1, Math.min(500, Number(limit) || 100));

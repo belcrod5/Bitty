@@ -364,3 +364,24 @@ bitty-publicで初期3件・「さらに読み込む」で+1件。live API確認
 ### 検証
 
 runner **480 passed / 1 skipped**・Expo **119 suites / 865 tests**・両typecheck passed。反映は**runner再起動+iOS再ビルド**(threads.ts変更のため)。
+
+## §15 内部コンテキストが折りたたまれず全文表示される(実機5回目)
+
+### 症状
+
+`<recommended_plugins>` などのシステム注入メッセージが、以前(legacy `/session-messages` 経路)は「CODEX CONTEXT」として折りたたみ表示されていたのに、全文がそのまま表示される。
+
+### 原因
+
+1. neutral履歴経路(`readAgentHistory`)でrunnerは分類を`itemType`として返しているが、クライアント(`useLlmSessionExplorer.fetchRunnerSessionMessages`)がマップ時に捨てていて`kind`が付かない。
+2. Claude backendの`readHistory`には分類自体がなく、`isMeta`レコードや`<command-name>`/`<task-notification>`等の注入メッセージが素のuserメッセージとして返る。
+
+### 修正
+
+- `useLlmSessionExplorer.ts`: neutral itemの`itemType`が`internal_context`/`unclassified_context`なら`kind`へマップ(→ChatScreenの既存折りたたみ表示`InternalContextMessage`が効く)。
+- `claude-backend.mjs`: `classifyHistoryItemType`を追加。`isMeta === true`、またはuserレコードの本文が既知の注入タグ(`system-reminder`/`recommended_plugins`/`command-name`/`command-message`/`command-args`/`command-contents`/`local-command-caveat`/`local-command-stdout`/`local-command-stderr`/`task-notification`)で始まる場合に`itemType: "internal_context"`。sidechainは従来どおり。一覧タイトル(`firstUser`)も注入メッセージをスキップ。
+- ユーザーが素で貼ったXML(`<foo>…`)は分類しない(Codex側のペアリング分類と同じ方針、タグは固定リスト)。
+
+### 検証
+
+runner **481 passed / 1 skipped**・Expo **119 suites / 866 tests**・`tsc --noEmit` passed。反映は**runner再起動+iOS再ビルド**の両方が必要。
