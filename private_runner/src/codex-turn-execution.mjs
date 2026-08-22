@@ -170,7 +170,8 @@ export async function startCodexTurn({
       version: "0.1.0",
     },
     capabilities: {
-      experimentalApi: Boolean(configuredDynamicTools),
+      // resume時のexcludeTurns(experimental API)を常用するため無条件で有効化
+      experimentalApi: true,
       optOutNotificationMethods: [],
     },
   }, 30000);
@@ -194,7 +195,7 @@ export async function startCodexTurn({
       const resumed = await client.request("thread/resume", {
         threadId: activeThreadId,
         cwd: directory || undefined,
-        persistExtendedHistory: false,
+        excludeTurns: true,
       }, 30000).catch(() => null);
       activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
     } else {

@@ -68,6 +68,7 @@ test("starts an ordinary new thread and forwards configured turn options", async
     approvalPolicy: "on-request",
   });
   assert.deepEqual(result, { threadId: "thread-new", turnId: "turn-1", lastAgentMessageText: "" });
+  assert.equal(client.calls.find((call) => call.method === "initialize")?.params.capabilities.experimentalApi, true);
   assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
   assert.deepEqual(client.calls.find((call) => call.method === "turn/start")?.params, {
     threadId: "thread-new",
@@ -221,7 +222,11 @@ test("resumes a queued turn's existing thread through the same operation", async
     cwd: "/work/project",
   });
   assert.equal(client.calls.some((call) => call.method === "thread/start"), false);
-  assert.equal(client.calls.find((call) => call.method === "thread/resume")?.params.threadId, "thread-existing");
+  assert.deepEqual(client.calls.find((call) => call.method === "thread/resume")?.params, {
+    threadId: "thread-existing",
+    cwd: "/work/project",
+    excludeTurns: true,
+  });
 });
 
 test("captures the final agent message and removes its notification listener", async () => {

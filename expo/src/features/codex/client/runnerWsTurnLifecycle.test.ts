@@ -315,6 +315,7 @@ test("manager mode admits existing-thread start RPCs once per active ready trans
   manager.becomeReady();
   await flushPromises();
 
+  expect((lastSent(manager).payload as any).params.capabilities.experimentalApi).toBe(true);
   respondToLastRequest(manager, {});
   await flushPromises();
   respondToLastRequest(manager, { thread: { id: "thread-1", status: "idle" } }, "thread-1");
@@ -326,6 +327,11 @@ test("manager mode admits existing-thread start RPCs once per active ready trans
   manager.becomeReady();
   await flushPromises();
   expect((lastSent(manager).payload as any).method).toBe("thread/resume");
+  expect((lastSent(manager).payload as any).params).toEqual({
+    threadId: "thread-1",
+    cwd: "/tmp/project",
+    excludeTurns: true,
+  });
   respondToLastRequest(manager, { thread: { id: "thread-1" } }, "thread-1");
   manager.setAppState("inactive");
   await flushPromises();

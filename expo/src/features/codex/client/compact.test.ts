@@ -216,6 +216,7 @@ test("manager mode treats cached initialize success as normal and completes comp
     threadId: "thread-1",
     payload: { method: "initialize" },
   });
+  expect((initialize.payload as any).params.capabilities.experimentalApi).toBe(true);
 
   respondToLastRequest(manager, {});
   await flushPromises();
@@ -234,6 +235,10 @@ test("manager mode treats cached initialize success as normal and completes comp
     "thread/read",
     "thread/resume",
   ]);
+  expect((lastRequest(manager).payload as any).params).toEqual({
+    threadId: "thread-1",
+    excludeTurns: true,
+  });
 
   respondToLastRequest(manager, { thread: { id: "thread-1" } });
   await flushPromises();

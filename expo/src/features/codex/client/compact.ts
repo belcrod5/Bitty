@@ -391,7 +391,7 @@ export async function compactCodexAppServerThread(options: {
             version: "0.1.0",
           },
           capabilities: {
-            experimentalApi: false,
+            experimentalApi: true,
             optOutNotificationMethods: [],
           },
         });
@@ -437,7 +437,7 @@ export async function compactCodexAppServerThread(options: {
               message: "thread_not_found_on_read",
               readyState: getTransportReadyState(),
             });
-            await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
+            await sendRequest<Record<string, unknown>>("thread/resume", { threadId, excludeTurns: true });
             emitLog({
               stage: "compact_thread_check_ok",
               method: "thread/resume",
@@ -482,7 +482,7 @@ export async function compactCodexAppServerThread(options: {
             while (true) {
               try {
                 if (method === "thread/compact/start" && !resumedBeforeCompactStart) {
-                  await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
+                  await sendRequest<Record<string, unknown>>("thread/resume", { threadId, excludeTurns: true });
                   resumedBeforeCompactStart = true;
                   emitLog({
                     stage: "compact_thread_check_ok",
@@ -520,7 +520,7 @@ export async function compactCodexAppServerThread(options: {
                     message: "thread_not_found_retry_after_resume",
                     readyState: getTransportReadyState(),
                   });
-                  await sendRequest<Record<string, unknown>>("thread/resume", { threadId });
+                  await sendRequest<Record<string, unknown>>("thread/resume", { threadId, excludeTurns: true });
                   emitLog({
                     stage: "compact_thread_check_ok",
                     method: "thread/resume",
