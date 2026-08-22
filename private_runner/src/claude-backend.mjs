@@ -441,6 +441,22 @@ export function createClaudeBackend({
       emit("item.completed", { itemId: assistant.itemId, itemType: "assistant", snapshotRevision: 1, ...(text ? { content: [{ type: "text", text }] } : {}) });
     };
 
+    // tool.started発行はtoolCallIdを唯一の真実源として冪等化する。interactive
+    // profileでは承認評価のタイミングにより、complete assistantメッセージ
+    // (tool_use入り)がstream_eventのcontent_block_stopより先に届くことがある
+    // (実測: CLI 2.1.238)。content_block_stop / assistantのtool_useループ /
+    // user tool_resultの未startedフォールバック、3経路のどれが先に来ても
+    // 同じtoolCallIdは一度しかemitしない(重複emitはemitFromBackendの
+    // startedTools検査でprotocol_errorとして落ちるため)。
+    const announceTool = ({ toolCallId, name, inputSummary, parentItemId, tracksRunning = true }) => {
+      if (!toolCallId || state.startedToolIds.has(toolCallId)) return false;
+      state.startedToolIds.add(toolCallId);
+      if (tracksRunning) state.runningToolIds.add(toolCallId);
+      resetNoOutput();
+      emit("tool.started", { toolCallId, name, inputSummary, ...(parentItemId ? { parentItemId } : {}) });
+      return true;
+    };
+
     async function handleMessage(message) {
       const type = String(message?.type || "");
       if (type === "system" && message?.subtype === "init") {
@@ -487,15 +503,15 @@ export function createClaudeBackend({
         if (event.type === "content_block_stop") {
           const tool = state.tools.get(index);
           if (tool && !tool.announced) {
+            // 同一Mapエントリ(index)の再stop防止。実際にemitするかはannounceTool
+            // 側のtoolCallId冪等性に委ねる(先にassistant complete経路がこの
+            // toolCallIdを一番乗りでannounceしている場合はここでは何もしない)。
             tool.announced = true;
-            state.startedToolIds.add(tool.id);
-            state.runningToolIds.add(tool.id);
-            resetNoOutput();
-            emit("tool.started", {
+            announceTool({
               toolCallId: tool.id,
               name: tool.name,
               inputSummary: tool.input.slice(0, 4096),
-              ...(tool.parentItemId ? { parentItemId: tool.parentItemId } : {}),
+              parentItemId: tool.parentItemId,
             });
           }
           return;
@@ -520,13 +536,8 @@ export function createClaudeBackend({
         for (const block of blocks) {
           if (block?.type !== "tool_use") continue;
           hasToolUse = true;
-          const toolCallId = String(block.id || "").trim();
-          if (!toolCallId || state.startedToolIds.has(toolCallId)) continue;
-          state.startedToolIds.add(toolCallId);
-          state.runningToolIds.add(toolCallId);
-          resetNoOutput();
-          emit("tool.started", {
-            toolCallId,
+          announceTool({
+            toolCallId: String(block.id || "").trim(),
             name: String(block.name || "tool"),
             inputSummary: JSON.stringify(block.input || {}).slice(0, 4096),
           });
@@ -542,10 +553,9 @@ export function createClaudeBackend({
           if (block?.type !== "tool_result") continue;
           const toolCallId = String(block.tool_use_id || "");
           if (!toolCallId || state.completedToolIds.has(toolCallId)) continue;
-          if (toolCallId && !state.startedToolIds.has(toolCallId)) {
-            state.startedToolIds.add(toolCallId);
-            emit("tool.started", { toolCallId, name: "tool", inputSummary: "" });
-          }
+          // このフォールバックはtool.startedの直後にtool.completedへ進むため、
+          // runningToolIdsには入れない(no-output抑止を無駄に挟まない)。
+          announceTool({ toolCallId, name: "tool", inputSummary: "", tracksRunning: false });
           emit("tool.completed", {
             toolCallId,
             status: block.is_error ? "failed" : "completed",

@@ -63,6 +63,7 @@ AgentService、agent-transport、Expoのaction経路は既にprovider非依存�
 6. deny応答`{"behavior":"deny","message":"..."}`→ツール未実行、turnは継続してresultまで到達。`result.permission_denials`に記録される
 7. MCP shimはCLIが子processとして自らspawnし、mcp-config JSONの`env`フィールドで環境変数を渡せる
 8. **deny時も対応する`tool_result`(is_error=true、本文はdenyのmessage)がuser messageとしてstreamへ流れる**。従って`runningToolIds`の解放と`tool.completed(failed)`の発行は既存のtool_result処理経路でそのまま成立し、deny用の合成処理は不要
+9. **interactiveモードではCLIがcomplete assistantメッセージをcontent_block_stopより先に流すことがある(2.1.238実測)。tool.started発行はtoolCallIdで冪等にする必要がある**。承認評価の待ち時間により、同一tool_useの`content_block_stop`(stream_event)と完全な`assistant`メッセージが競合し、どちらが先に届くか不定になる。両経路が同じtoolCallIdへ`tool.started`を発行しようとすると、2回目がemitFromBackendの重複tool検査で`protocol_error`となりturnが失敗する(実機で確認)。対策はtoolCallIdを唯一の真実源とする冪等な発行のみで、経路自体の順序を保証する対策ではない
 
 # 3. 全体構造
 
@@ -238,6 +239,7 @@ CLIのMCP tool呼び出しにはclient側タイムアウト(`MCP_TOOL_TIMEOUT`)�
 - interrupt(SIGINT→SIGTERM→SIGKILL)中にpendingが残る場合: CLI processの終了でstartTurnのfinallyに到達し、pending全denyとbridge closeが走る。shimはCLIと同時に死ぬため応答先が消えていてもよい(socket書き込みエラーは握りつぶす)
 - 拒否してもturnは継続する(スパイク実測6)。turn失敗にしない
 - 承認済み(answered)のactionはAgentService側でactiveActionsから除去され、resume時の再表示対象から外れる(既存動作)
+- tool.startedの発行はtoolCallIdについて経路横断で冪等である(content_block_stop / assistantのtool_useループ / user tool_resultフォールバックのどれが先着してもtoolCallIdごとに一度だけemitする。実測9)
 
 # 5. テスト計画
 

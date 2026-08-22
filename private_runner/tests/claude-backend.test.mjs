@@ -362,6 +362,67 @@ test("Claude Backend keeps assistant items valid across a tool round trip", asyn
   ]);
 });
 
+test("Claude Backend announces a tool exactly once when the complete assistant message arrives before content_block_stop", async () => {
+  // interactive(claude-on-request)モードでは承認評価のタイミングにより、complete
+  // assistantメッセージ(tool_use入り)がstream_eventのcontent_block_stopより先に
+  // 届くことがある(実測: CLI 2.1.238)。両経路が同じtoolCallIdを取り合っても
+  // tool.startedは一度しかemitされてはならない(重複はemitFromBackendの
+  // startedTools検査でprotocol_errorとして落ちる)。
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "assistant", uuid: "assistant-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Write", input: { file_path: "a.txt" } }] } },
+    { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "Write" } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"a.txt\"}" } } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "written" }] } },
+    { type: "assistant", uuid: "assistant-final", message: { content: [{ type: "text", text: "done" }] } },
+    { type: "result", subtype: "success", result: "done", session_id: SESSION_ID },
+  ]);
+  const events = [];
+  const result = await backend.startTurn({
+    runId: "run-tool-race-assistant-first",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "write it" }] },
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  assert.equal(result.outcome, "completed");
+  const toolStarted = events.filter((event) => event.type === "tool.started");
+  assert.equal(toolStarted.length, 1);
+  assert.equal(toolStarted[0].payload.toolCallId, "tool-1");
+  assert.deepEqual(events.filter((event) => event.type.startsWith("tool.")).map((event) => event.type), [
+    "tool.started", "tool.completed",
+  ]);
+});
+
+test("Claude Backend announces a tool exactly once in the traditional order (content_block_stop before the complete assistant message)", async () => {
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "Write" } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"a.txt\"}" } } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+    { type: "assistant", uuid: "assistant-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Write", input: { file_path: "a.txt" } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "written" }] } },
+    { type: "assistant", uuid: "assistant-final", message: { content: [{ type: "text", text: "done" }] } },
+    { type: "result", subtype: "success", result: "done", session_id: SESSION_ID },
+  ]);
+  const events = [];
+  const result = await backend.startTurn({
+    runId: "run-tool-race-stream-first",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "write it" }] },
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  assert.equal(result.outcome, "completed");
+  const toolStarted = events.filter((event) => event.type === "tool.started");
+  assert.equal(toolStarted.length, 1);
+  assert.equal(toolStarted[0].payload.toolCallId, "tool-1");
+  assert.deepEqual(events.filter((event) => event.type.startsWith("tool.")).map((event) => event.type), [
+    "tool.started", "tool.completed",
+  ]);
+});
+
 test("Claude Backend skips thinking-only assistant snapshots", async () => {
   const { backend } = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
