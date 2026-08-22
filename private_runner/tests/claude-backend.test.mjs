@@ -56,6 +56,7 @@ function backendWith(lines, options = {}) {
     sessionStore: { getBinding: async () => null },
     interruptGraceMs: 10,
     generateSessionId: () => SESSION_ID,
+    ...(options.backendOverrides || {}),
   });
   return { backend, child, calls };
 }
@@ -408,6 +409,125 @@ test("Claude history stays inside projects root and invalidates changed cursors"
   }), (error) => error.code === "history_cursor_invalid");
 });
 
+test("Claude Backend persists learned model context windows for later restores", async () => {
+  const stored = [];
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+    {
+      type: "result",
+      subtype: "success",
+      result: "done",
+      session_id: SESSION_ID,
+      usage: { input_tokens: 2, output_tokens: 1 },
+      modelUsage: { "claude-fable-5": { contextWindow: 500000 } },
+    },
+  ], {
+    backendOverrides: {
+      modelInfoStore: { set: async (backendId, modelId, info) => stored.push({ backendId, modelId, info }) },
+    },
+  });
+  await backend.startTurn({
+    runId: "run-learn",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  assert.deepEqual(stored, [{ backendId: "claude", modelId: "fable", info: { contextWindowTokens: 500000 } }]);
+});
+
+test("Claude compactSession runs /compact headless in the session cwd", async () => {
+  const runFileCalls = [];
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    runFile: async (file, args, options) => {
+      runFileCalls.push({ file, args, options });
+      if (args?.[0] === "--version") return { stdout: "2.1.238" };
+      if (args?.includes("/compact")) {
+        return { stdout: `${JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "" })}\n` };
+      }
+      return { stdout: "" };
+    },
+    fileSystem: { ...fs, realpath: async (value) => value, readdir: async () => [] },
+    sessionStore: { getBinding: async () => ({ canonicalCwd: "/work/project" }) },
+  });
+
+  const result = await backend.compactSession({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+  });
+  assert.deepEqual(result, {
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+    method: "cli/compact",
+    accepted: true,
+  });
+  const compactCall = runFileCalls.find((call) => call.args?.includes("/compact"));
+  assert.deepEqual(compactCall.args, [
+    "-p", "--output-format", "json", "--safe-mode", "--resume", SESSION_ID, "/compact",
+  ]);
+  assert.equal(compactCall.options.cwd, "/work/project");
+});
+
+test("Claude compactSession fails closed on a non-success result", async () => {
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    runFile: async (file, args) => {
+      if (args?.[0] === "--version") return { stdout: "2.1.238" };
+      return { stdout: `${JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true })}\n` };
+    },
+    fileSystem: { ...fs, realpath: async (value) => value, readdir: async () => [] },
+    sessionStore: { getBinding: async () => ({ canonicalCwd: "/work/project" }) },
+  });
+  await assert.rejects(backend.compactSession({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+  }), (error) => error.code === "turn_failed" && error.nativeActivity === "stopped");
+});
+
+test("Claude history restores context usage from the learned window and skips it across a compact boundary", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-context-restore-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const project = path.join(tempRoot, "project");
+  const cwd = path.join(tempRoot, "workspace");
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(cwd);
+  const transcript = path.join(project, `${SESSION_ID}.jsonl`);
+  const records = [
+    JSON.stringify({ type: "user", uuid: "u1", cwd, message: { content: "hello" } }),
+    JSON.stringify({
+      type: "assistant", uuid: "a1", cwd,
+      message: {
+        model: "claude-sonnet-4-5",
+        content: [{ type: "text", text: "reply" }],
+        usage: { input_tokens: 2, cache_read_input_tokens: 99990, cache_creation_input_tokens: 8, output_tokens: 0 },
+      },
+    }),
+  ];
+  await fs.writeFile(transcript, records.join("\n"));
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    projectsRoot: tempRoot,
+    runFile: async () => ({ stdout: "2.1.238" }),
+    fileSystem: fs,
+    sessionStore: { getBinding: async () => null },
+    modelInfoStore: { get: async (backendId, modelId) => (modelId === "sonnet" ? { contextWindowTokens: 200000 } : null) },
+  });
+
+  const history = await backend.readHistory({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+    limit: 10,
+  });
+  // (2+99990+8+0) / 200000 = 50%
+  assert.deepEqual(history.contextUsage, { usedPct: 50, totalTokens: 100000, contextWindowTokens: 200000 });
+
+  // /compact境界の後に新しいusageが無い間は、圧縮前の値を出さない
+  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "system", subtype: "compact_boundary", cwd })}`);
+  const afterCompact = await backend.readHistory({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+    limit: 10,
+  });
+  assert.equal(afterCompact.contextUsage, undefined);
+});
+
 test("Claude no-output watchdog pauses while a tool is running", async () => {
   const child = fakeChild([], { exitAfterInput: false });
   const backend = createClaudeBackend({
@@ -528,6 +648,7 @@ test("Claude history classifies injected system messages as internal context", a
     JSON.stringify({ type: "user", uuid: "meta-1", cwd, isMeta: true, message: { content: "Caveat: injected caveat body" } }),
     JSON.stringify({ type: "user", uuid: "cmd-1", cwd, message: { content: "<command-name>/clear</command-name>" } }),
     JSON.stringify({ type: "user", uuid: "task-1", cwd, message: { content: "<task-notification>\n<task-id>abc</task-id>\n</task-notification>" } }),
+    JSON.stringify({ type: "user", uuid: "compact-1", cwd, isCompactSummary: true, message: { content: "compact summary body" } }),
     JSON.stringify({ type: "user", uuid: "user-1", cwd, message: { content: "<foo>user supplied</foo>" } }),
     JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { content: [{ type: "text", text: "reply" }] } }),
   ].join("\n"));
@@ -547,6 +668,7 @@ test("Claude history classifies injected system messages as internal context", a
     { id: "meta-1", itemType: "internal_context" },
     { id: "cmd-1", itemType: "internal_context" },
     { id: "task-1", itemType: "internal_context" },
+    { id: "compact-1", itemType: "internal_context" },
     { id: "user-1", itemType: undefined },
     { id: "a1", itemType: undefined },
   ]);

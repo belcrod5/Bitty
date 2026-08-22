@@ -588,7 +588,8 @@ export function createCodexBackend({
         permission: { interactive: true },
         model: { select: true, effort: true, effortOptions: CODEX_EFFORT_OPTIONS, changeWithinSession: true, catalog: CODEX_MODELS },
         workspace: { projectCustomizations: true, admission: false },
-        operations: { compact: true, schedule: true },
+        // compactQueue: compact実行中の送信をrunner queueへ退避できるCodex raw固有機能
+        operations: { compact: true, schedule: true, compactQueue: true },
         event: { nativePayload: false },
         tool: { dynamic: Boolean(dynamicTools) },
       },

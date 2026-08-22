@@ -27,6 +27,9 @@ export function createLlmAcpSessionStore(deps = {}) {
   const agentSessionBindings = new Map();
   const agentSessionModes = new Map();
   const agentWorkspaces = new Map();
+  // Backendが実行時に学習したモデル事実(context window等)。transcriptには残らない
+  // ため、履歴再表示のcontext使用率計算にはこの永続値を使う。
+  const agentModelInfo = new Map();
   const agentProcessEpoch = String(deps.agentProcessEpoch || randomUUID()).trim();
   const agentOperationMaxEntries = Math.max(1, Number(deps.agentOperationMaxEntries || 1000));
   const agentOperationTtlMs = Math.max(60_000, Number(deps.agentOperationTtlMs || 24 * 60 * 60 * 1000));
@@ -114,6 +117,9 @@ export function createLlmAcpSessionStore(deps = {}) {
       agentWorkspaces: Array.from(agentWorkspaces.values())
         .sort((a, b) => agentWorkspaceKey(a.subjectId, a.canonicalRoot).localeCompare(agentWorkspaceKey(b.subjectId, b.canonicalRoot)))
         .map((entry) => ({ ...entry })),
+      agentModelInfo: Array.from(agentModelInfo.values())
+        .sort((a, b) => agentSessionKey(a.backendId, a.modelId).localeCompare(agentSessionKey(b.backendId, b.modelId)))
+        .map((entry) => ({ ...entry })),
     };
   }
 
@@ -136,6 +142,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     agentSessionBindings.clear();
     agentSessionModes.clear();
     agentWorkspaces.clear();
+    agentModelInfo.clear();
     const sessions = parsed && typeof parsed === "object" && parsed.sessions && typeof parsed.sessions === "object"
       ? parsed.sessions
       : {};
@@ -247,6 +254,14 @@ export function createLlmAcpSessionStore(deps = {}) {
         approvedAt,
         revokedAt: "",
       });
+    }
+    for (const value of Array.isArray(parsed?.agentModelInfo) ? parsed.agentModelInfo : []) {
+      const backendId = String(value?.backendId || "").trim();
+      const modelId = String(value?.modelId || "").trim();
+      const contextWindowTokens = Math.floor(Number(value?.contextWindowTokens));
+      const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt);
+      if (!backendId || !modelId || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0 || !updatedAt) continue;
+      agentModelInfo.set(agentSessionKey(backendId, modelId), { backendId, modelId, contextWindowTokens, updatedAt });
     }
   }
 
@@ -467,6 +482,37 @@ export function createLlmAcpSessionStore(deps = {}) {
       sessions: sessionRootBindingEnabled ? acpSessionRootBySessionId.size : 0,
       agentOperations: agentOperations.size,
     };
+  }
+
+  async function getAgentModelInfo(backendIdRaw, modelIdRaw) {
+    await ensureAgentMetadataStoreLoaded();
+    const entry = agentModelInfo.get(agentSessionKey(String(backendIdRaw || "").trim(), String(modelIdRaw || "").trim()));
+    return entry ? { ...entry } : null;
+  }
+
+  async function setAgentModelInfo(backendIdRaw, modelIdRaw, infoRaw) {
+    const backendId = String(backendIdRaw || "").trim();
+    const modelId = String(modelIdRaw || "").trim();
+    const contextWindowTokens = Math.floor(Number(infoRaw?.contextWindowTokens));
+    if (!backendId || !modelId || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return null;
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(backendId, modelId);
+      const existing = agentModelInfo.get(key);
+      if (existing && existing.contextWindowTokens === contextWindowTokens) return { ...existing };
+      const entry = { backendId, modelId, contextWindowTokens, updatedAt: new Date().toISOString() };
+      agentModelInfo.set(key, entry);
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        if (existing) agentModelInfo.set(key, existing);
+        else agentModelInfo.delete(key);
+        throw error;
+      }
+      return { ...entry };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
   }
 
   function pruneAgentOperations(nowMs) {
@@ -857,6 +903,8 @@ export function createLlmAcpSessionStore(deps = {}) {
     bindAgentSession,
     claimAgentOperation,
     completeAgentOperation,
+    getAgentModelInfo,
+    setAgentModelInfo,
     acquireAgentSessionLease,
     getAcpSessionStoreStats,
     getAgentSessionBinding,

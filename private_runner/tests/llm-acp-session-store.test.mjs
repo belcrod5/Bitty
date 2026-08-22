@@ -374,6 +374,33 @@ test("does not restart an operation whose native outcome was pending at process 
   );
 });
 
+test("persists learned agent model info across restarts", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-model-info-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  const options = {
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  };
+  const store = createLlmAcpSessionStore(options);
+  assert.equal(await store.getAgentModelInfo("claude", "fable"), null);
+  await store.setAgentModelInfo("claude", "fable", { contextWindowTokens: 500000 });
+  // 不正値は保存しない
+  assert.equal(await store.setAgentModelInfo("claude", "fable", { contextWindowTokens: 0 }), null);
+
+  const restarted = createLlmAcpSessionStore(options);
+  const info = await restarted.getAgentModelInfo("claude", "fable");
+  assert.equal(info.contextWindowTokens, 500000);
+  assert.equal(await restarted.getAgentModelInfo("claude", "sonnet"), null);
+});
+
 test("reclaims a crash-orphaned pending operation after its TTL", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-orphan-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

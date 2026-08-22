@@ -415,3 +415,29 @@ runner **481 passed / 1 skipped**・Expo **119 suites / 866 tests**・`tsc --noE
 ### 検証
 
 runner **490 passed / 1 skipped**・Expo **119 suites / 868 tests**・`tsc --noEmit`・`typecheck:macos` passed。反映は**runner再起動+iOS再ビルド**の両方が必要。
+
+## §17 Claude系2件: context length復元と/compact対応(実機7回目報告)
+
+### (J) Claudeのcontext lengthがチャット再表示で消える
+
+transcriptにはusage(消費実測)はあるがcontext windowが無い。windowは実行時にしか
+得られない(result.modelUsage.contextWindow)ため、**Backendが学習した実値をstoreへ
+永続化**する設計にした:
+- `llm-acp-session-store`に`agentModelInfo`({backendId, modelId, contextWindowTokens})を追加(get/set、write queue直列、restart永続)。
+- claude-backend: resultのmodelUsageからalias別にwindowを学習・保存(best-effort)。
+- claude readHistory: transcript末尾のusage(sidechain除外)+学習済みwindowから`contextUsage`(usedPct)を復元。直近が`compact_boundary`より前のusageなら次turnまで復元しない(圧縮前の値を出さない)。
+- 制限: 初回(まだ一度もturnがない新規インストール直後)はwindow未学習のため復元なし。一度でもClaudeのturnが完了すれば以後は再起動を跨いでも復元される。
+
+### (K) /compactが「Selected Agent Backend does not support compaction」
+
+Claude CLIはheadlessでも`/compact`を実行できることを実測で確認(2.1.238、
+`claude -p --resume <id> --output-format json "/compact"` → subtype=success、
+transcriptへ`compact_boundary`+`isCompactSummary`が記録される。少なすぎる場合は
+"Not enough messages to compact."でsuccess)。
+- claude-backendに`compactSession`実装(セッションcwdで実行、result JSONを検証、authエラーはログイン案内、失敗はfail-closed)。
+- capability分離: `operations.compact`(圧縮可否)と`operations.compactQueue`(compact実行中の送信をqueueへ退避するCodex raw固有機構)を分けた。codex={compact:true, compactQueue:true}、claude={compact:true, compactQueue:false}。旧gateのままcompact:trueにするとClaude送信がCodex raw queue opへ流れるため。
+- `/compact`要約(`isCompactSummary`)は折りたたみ(internal_context)表示。
+
+### 検証
+
+runner **495 passed / 1 skipped**・Expo **119 suites / 868 tests**・両typecheck passed。反映は**runner再起動+iOS再ビルド**の両方が必要。

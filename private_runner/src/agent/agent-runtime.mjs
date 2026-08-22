@@ -121,6 +121,8 @@ export function createPrivateRunnerAgentRuntime({
   const claudeBackend = createClaudeBackend({
     binary: claudeBinary,
     sessionStore,
+    // 実行時に学習したcontext window等の永続化先(履歴再表示の%復元に使う)
+    modelInfoStore: { get: stores.getModelInfo, set: stores.setModelInfo },
   });
 
   let service;

@@ -39,7 +39,7 @@ test("maps the backend's advertised effort catalog and renders only advertised v
           changeWithinSession: true,
           catalog: [{ modelId: "gpt-5.6-sol", label: "Sol" }],
         },
-        operations: { compact: true },
+        operations: { compact: true, compactQueue: true },
       },
     },
     {
@@ -51,7 +51,8 @@ test("maps the backend's advertised effort catalog and renders only advertised v
           changeWithinSession: false,
           catalog: [{ modelId: "sonnet", label: "Claude Sonnet" }],
         },
-        operations: { compact: false },
+        // claudeはcompact対応でもcodex raw固有のcompact queueには非対応
+        operations: { compact: true, compactQueue: false },
       },
     },
   ]);

@@ -23,6 +23,14 @@ const CLAUDE_MODELS = [
   { modelId: "fable", label: "Claude Fable" },
 ];
 const MODEL_ALIASES = new Set(CLAUDE_MODELS.map((model) => model.modelId));
+
+// フルmodel id("claude-haiku-4-5-20251001"等)をカタログのalias("haiku"等)へ寄せる
+function modelAliasOf(modelIdRaw) {
+  const modelId = String(modelIdRaw || "").trim().toLowerCase();
+  if (MODEL_ALIASES.has(modelId)) return modelId;
+  for (const alias of MODEL_ALIASES) if (modelId.includes(alias)) return alias;
+  return "";
+}
 // Claude CLI `--effort` が受け付ける値。`ultra`はCLI helpに存在しないため含めない。
 const CLAUDE_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -85,6 +93,8 @@ const INTERNAL_CONTEXT_TAG_PATTERN = /^<(system-reminder|recommended_plugins|com
 function classifyHistoryItemType(record, text) {
   if (record?.isSidechain === true) return "sidechain";
   if (record?.isMeta === true) return "internal_context";
+  // /compactの要約はシステム生成。折りたたみ表示にする。
+  if (record?.isCompactSummary === true) return "internal_context";
   if (String(record?.type || "") === "user" && INTERNAL_CONTEXT_TAG_PATTERN.test(String(text || "").trimStart())) {
     return "internal_context";
   }
@@ -122,8 +132,10 @@ export function createClaudeBackend({
   spawnProcess = spawn,
   runFile = execFile,
   sessionStore,
+  modelInfoStore = null,
   noOutputTimeoutMs = 5 * 60 * 1000,
   turnTimeoutMs = 24 * 60 * 60 * 1000,
+  compactTimeoutMs = 10 * 60 * 1000,
   interruptGraceMs = 1500,
   generateSessionId = randomUUID,
 } = {}) {
@@ -173,7 +185,7 @@ export function createClaudeBackend({
         permission: { interactive: false },
         model: { select: true, effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS, changeWithinSession: false, catalog: CLAUDE_MODELS },
         workspace: { projectCustomizations: false, admission: true },
-        operations: { compact: false, schedule: false },
+        operations: { compact: true, schedule: false, compactQueue: false },
         event: { nativePayload: false },
         tool: { dynamic: false },
       },
@@ -469,9 +481,22 @@ export function createClaudeBackend({
           // 消費合計をtotal_tokensへ正規化してクライアントの%計算を成立させる。
           const totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
             .reduce((sum, key) => sum + (Math.max(0, Number(usage[key]) || 0)), 0);
-          const contextWindow = Object.values(
+          const modelUsageEntries = Object.entries(
             message.modelUsage && typeof message.modelUsage === "object" ? message.modelUsage : {},
-          ).reduce((max, entry) => Math.max(max, Number(entry?.contextWindow) || 0), 0);
+          );
+          const contextWindow = modelUsageEntries
+            .reduce((max, [, entry]) => Math.max(max, Number(entry?.contextWindow) || 0), 0);
+          // モデルごとのcontext windowはtranscriptに残らない。履歴再表示時の%復元の
+          // ために、ここで学習した実値をstoreへ永続化する(best-effort)。
+          if (modelInfoStore?.set) {
+            for (const [modelId, entry] of modelUsageEntries) {
+              const alias = modelAliasOf(modelId);
+              const windowTokens = Math.floor(Number(entry?.contextWindow) || 0);
+              if (!alias || windowTokens <= 0) continue;
+              void Promise.resolve(modelInfoStore.set("claude", alias, { contextWindowTokens: windowTokens }))
+                .catch(() => {});
+            }
+          }
           emit("usage.updated", {
             usage: {
               ...usage,
@@ -663,11 +688,37 @@ export function createClaudeBackend({
 
   function transcriptModelId(records) {
     for (let index = records.length - 1; index >= 0; index -= 1) {
-      const modelId = String(records[index]?.value?.message?.model || records[index]?.value?.model || "").trim().toLowerCase();
-      if (MODEL_ALIASES.has(modelId)) return modelId;
-      for (const alias of MODEL_ALIASES) if (modelId.includes(alias)) return alias;
+      const alias = modelAliasOf(records[index]?.value?.message?.model || records[index]?.value?.model);
+      if (alias) return alias;
     }
     return "";
+  }
+
+  // transcript末尾のusage(メイン会話のみ)からcontext使用率を復元する。
+  // 直近が/compact境界より前のusageなら、次turnまで実測が無いため復元しない。
+  async function transcriptContextUsage(records) {
+    if (!modelInfoStore?.get) return null;
+    let usage = null;
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const value = records[index]?.value;
+      if (String(value?.subtype || "") === "compact_boundary") return null;
+      if (value?.isSidechain === true) continue;
+      const candidate = value?.message?.usage;
+      if (candidate && typeof candidate === "object") { usage = candidate; break; }
+    }
+    if (!usage) return null;
+    const totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
+      .reduce((sum, key) => sum + Math.max(0, Number(usage[key]) || 0), 0);
+    const modelId = transcriptModelId(records);
+    if (totalTokens <= 0 || !modelId) return null;
+    const info = await Promise.resolve(modelInfoStore.get("claude", modelId)).catch(() => null);
+    const contextWindowTokens = Math.floor(Number(info?.contextWindowTokens) || 0);
+    if (contextWindowTokens <= 0) return null;
+    return {
+      usedPct: Math.max(0, Math.min(100, Math.round((totalTokens / contextWindowTokens) * 100))),
+      totalTokens,
+      contextWindowTokens,
+    };
   }
 
   // transcript由来のcwdはsymlink経由(例: /tmp→/private/tmp)でも一致判定できるよう
@@ -809,12 +860,75 @@ export function createClaudeBackend({
     const pageLimit = Math.max(1, Math.min(500, Number(limit) || 100));
     const end = decoded ? decoded.offset : display.length;
     const start = Math.max(0, end - pageLimit);
+    const contextUsage = await transcriptContextUsage(transcript.records);
     return {
       items: display.slice(start, end),
       modelId: transcriptModelId(transcript.records),
       olderCursor: start > 0 ? cursorEncode({ identity, offset: start }) : null,
       newerCursor: null,
+      ...(contextUsage ? { contextUsage } : {}),
     };
+  }
+
+  // Claude CLIはheadlessでも/compactスラッシュコマンドを実行できる(実測: 2.1.238。
+  // 成功時はresult subtype=successで、transcriptへcompact_boundary+要約が記録される)。
+  async function compactSession({ sessionRef }) {
+    const detected = await runtime();
+    if (!detected.binaryPath) {
+      const error = agentError("backend_unavailable", "Claude Code CLI is not installed or is not available on PATH", { backendId: "claude" });
+      error.nativeActivity = "not_started";
+      throw error;
+    }
+    if (!detected.supported) {
+      const error = agentError(
+        "backend_version_unsupported",
+        `Claude Code CLI ${minimumVersion} or newer is required (detected: ${detected.version || "unknown"})`,
+        { backendId: "claude" },
+      );
+      error.nativeActivity = "not_started";
+      throw error;
+    }
+    const sessionId = String(sessionRef?.nativeSessionId || "").trim();
+    if (!SESSION_ID_PATTERN.test(sessionId)) {
+      const error = agentError("session_not_found", "Claude session ID is invalid", { backendId: "claude" });
+      error.nativeActivity = "not_started";
+      throw error;
+    }
+    // --resumeはcwd由来のprojectディレクトリからセッションを探すため、cwd一致が必須
+    const cwd = await resolveSessionCwd(sessionRef);
+    let stdout = "";
+    let stderr = "";
+    try {
+      const result = await runFile(detected.binaryPath, [
+        "-p", "--output-format", "json", "--safe-mode", "--resume", sessionId, "/compact",
+      ], { cwd, env: safeEnvironment(environment), timeout: compactTimeoutMs, encoding: "utf8", maxBuffer: MAX_STDOUT_BYTES });
+      stdout = String(typeof result === "string" ? result : result?.stdout || "");
+      stderr = String(result?.stderr || "");
+    } catch (executionError) {
+      const error = agentError(
+        "turn_failed",
+        isClaudeAuthFailure(executionError?.stdout, executionError?.stderr)
+          ? "Claude Code CLI is not logged in. Run `claude auth login` and try again"
+          : "Claude compact failed",
+        { backendId: "claude" },
+      );
+      error.nativeActivity = "stopped";
+      throw error;
+    }
+    let parsed = null;
+    try { parsed = JSON.parse(String(stdout).trim().split(/\r?\n/).at(-1) || ""); } catch {}
+    if (!parsed || parsed.type !== "result" || parsed.is_error === true || String(parsed.subtype || "") !== "success") {
+      const error = agentError(
+        "turn_failed",
+        isClaudeAuthFailure(stdout, stderr)
+          ? "Claude Code CLI is not logged in. Run `claude auth login` and try again"
+          : "Claude compact did not complete",
+        { backendId: "claude" },
+      );
+      error.nativeActivity = "stopped";
+      throw error;
+    }
+    return { sessionRef, method: "cli/compact", accepted: true };
   }
 
   return {
@@ -825,6 +939,7 @@ export function createClaudeBackend({
     resolveSessionCwd,
     listSessions,
     readHistory,
+    compactSession,
     listModels: async () => CLAUDE_MODELS,
     async interrupt({ runId }) {
       const state = activeRuns.get(runId);

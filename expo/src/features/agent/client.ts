@@ -35,7 +35,7 @@ export type BackendStatus = {
       catalog?: Array<{ modelId?: string; label?: string }>;
     };
     workspace?: { admission?: boolean };
-    operations?: { compact?: boolean; schedule?: boolean };
+    operations?: { compact?: boolean; schedule?: boolean; compactQueue?: boolean };
   };
 };
 
