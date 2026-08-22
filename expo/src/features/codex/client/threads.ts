@@ -74,7 +74,13 @@ export async function listCodexAppServerThreads(options: {
             preview: String(item.title || ""),
             modelProvider: entryBackendId,
             modelRef: String(item.modelId || ""),
-            sourceKind: item.isSubagent ? "subAgent" : "appServer",
+            // サーバーの実sourceKindを尊重する("acp"はapp-server由来のためappServerへ
+            // 正規化)。2値へ潰すと限定sourceKinds指定やsource表示の忠実性が失われる。
+            sourceKind: item.isSubagent
+              ? "subAgent"
+              : String(item.sourceKind || "") === "acp"
+                ? "appServer"
+                : String(item.sourceKind || "") || "appServer",
             cwd: String(item.canonicalCwd || cwd),
             createdAt: "",
             updatedAt: String(item.updatedAt || ""),
@@ -174,7 +180,11 @@ export async function readCodexAppServerThread(options: {
         createdAt: messages[0]?.at || "",
         updatedAt: messages.at(-1)?.at || "",
         messages,
-        contextUsedPct: null,
+        // 履歴が持つcontext使用率(rollout token_count由来)。無ければnull。
+        contextUsedPct: (() => {
+          const usedPct = Number((neutral.contextUsage as Record<string, unknown> | undefined)?.usedPct);
+          return Number.isFinite(usedPct) ? Math.max(0, Math.min(100, Math.round(usedPct))) : null;
+        })(),
         sessionState: "completed",
         threadStatusType: "idle",
         waitingOnApproval: false,

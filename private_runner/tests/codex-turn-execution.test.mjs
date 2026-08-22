@@ -140,6 +140,47 @@ test("Codex Backend maps native turn events without changing App Server RPCs", a
   assert.equal(client.closed, true);
 });
 
+test("Codex Backend emits turn usage with its context window for the context length display", async () => {
+  const client = fakeClient([
+    {
+      method: "turn/completed",
+      params: {
+        turn: {
+          status: "completed",
+          usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+          context_window: 272000,
+        },
+      },
+    },
+  ]);
+  client.close = () => {};
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const events = [];
+  const result = await backend.startTurn({
+    runId: "run-usage",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request",
+    signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+
+  assert.deepEqual(result, { outcome: "completed" });
+  const usage = events.find((event) => event.type === "usage.updated")?.payload.usage;
+  assert.deepEqual(usage, {
+    input_tokens: 100,
+    output_tokens: 20,
+    total_tokens: 120,
+    context_window: 272000,
+  });
+});
+
 test("Codex Backend compacts through the existing App Server methods", async () => {
   const client = fakeClient([]);
   client.close = () => {};

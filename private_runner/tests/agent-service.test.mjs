@@ -388,6 +388,81 @@ test("all-backends cut keeps a fully deferred backend at its current position", 
   assert.deepEqual(claudeCalls, ["", ""]);
 });
 
+test("all-backends paging carries a temporarily failing backend forward and retries it on the next page", async () => {
+  const codex = keysetBackend("codex", {});
+  const claude = keysetBackend("claude", {});
+  const c1 = codex.item("c1", "2026-08-22T10:00:00.000Z");
+  const c2 = codex.item("c2", "2026-08-22T09:00:00.000Z");
+  const c3 = codex.item("c3", "2026-08-22T08:00:00.000Z");
+  const l1 = claude.item("l1", "2026-08-22T07:00:00.000Z");
+  Object.assign(codex.backend, {
+    listSessions: async ({ cursor }) => ({
+      "": { sessions: [c1], cursor: "codex@c1" },
+      "codex@c1": { sessions: [c2], cursor: "codex@c2" },
+      "codex@c2": { sessions: [c3] },
+    })[String(cursor || "")],
+  });
+  let claudeFailsOnce = false;
+  const claudeCalls = [];
+  Object.assign(claude.backend, {
+    listSessions: async ({ cursor }) => {
+      claudeCalls.push(String(cursor || ""));
+      if (claudeFailsOnce) {
+        claudeFailsOnce = false;
+        throw Object.assign(new Error("claude transcript scan failed"), { code: "history_unavailable" });
+      }
+      return { sessions: [l1] };
+    },
+  });
+  const service = createAgentService({
+    backends: [codex.backend, claude.backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+
+  const page1 = await service.listSessions({ cwd: "/workspace", limit: 1 });
+  assert.deepEqual(page1.sessions.map((session) => session.sessionRef.nativeSessionId), ["c1"]);
+
+  // 2ページ目でclaudeが一時失敗しても、複合cursorから脱落せず次ページで再試行される
+  claudeFailsOnce = true;
+  const page2 = await service.listSessions({ cwd: "/workspace", limit: 1, cursor: page1.cursor });
+  assert.deepEqual(page2.sessions.map((session) => session.sessionRef.nativeSessionId), ["c2"]);
+  assert.equal(page2.errors?.[0]?.backendId, "claude");
+  assert.ok(page2.cursor);
+
+  const page3 = await service.listSessions({ cwd: "/workspace", limit: 1, cursor: page2.cursor });
+  assert.deepEqual(page3.sessions.map((session) => session.sessionRef.nativeSessionId), ["c3"]);
+  assert.equal(page3.errors, undefined);
+  assert.ok(page3.cursor);
+
+  const page4 = await service.listSessions({ cwd: "/workspace", limit: 1, cursor: page3.cursor });
+  assert.deepEqual(page4.sessions.map((session) => session.sessionRef.nativeSessionId), ["l1"]);
+  // claudeは毎ページ先頭位置("")のまま再試行されている
+  assert.deepEqual(claudeCalls, ["", "", "", ""]);
+});
+
+test("single-backend scope strips per-item cursors from the wire like the all-backends scope", async () => {
+  const codex = keysetBackend("codex", {});
+  const c1 = codex.item("c1", "2026-08-22T10:00:00.000Z");
+  Object.assign(codex.backend, {
+    listSessions: async () => ({ sessions: [c1], cursor: "codex@c1" }),
+  });
+  const service = createAgentService({
+    backends: [codex.backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+
+  const page = await service.listSessions({ backendId: "codex", cwd: "/workspace", limit: 1 });
+  assert.deepEqual(page.sessions.map((session) => session.sessionRef.nativeSessionId), ["c1"]);
+  assert.equal(page.sessions.every((session) => !("cursor" in session)), true);
+  assert.equal(page.cursor, "codex@c1");
+});
+
 test("rejects an effort outside the backend's advertised effort catalog before backend execution", async () => {
   let starts = 0;
   const backend = {

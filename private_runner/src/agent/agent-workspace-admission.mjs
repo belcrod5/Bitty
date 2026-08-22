@@ -43,8 +43,10 @@ export function createAgentWorkspaceAdmission({ store, fileSystem = fs, now = ()
     const parsedRoot = path.parse(canonicalRoot).root;
     let home = os.homedir();
     try { home = await fileSystem.realpath(home); } catch {}
-    if (canonicalRoot === parsedRoot || canonicalRoot === home) {
-      throw agentError("turn_rejected", "filesystem root and user home cannot be approved as a workspace");
+    // homeの祖先(/Users等)を承認するとhome全体がinside()で許可されるため、
+    // home自身と同様に拒否する。
+    if (canonicalRoot === parsedRoot || canonicalRoot === home || inside(canonicalRoot, home)) {
+      throw agentError("turn_rejected", "filesystem root, user home, and its ancestors cannot be approved as a workspace");
     }
     return { requestedPath: path.resolve(requested), canonicalRoot: path.resolve(canonicalRoot), identity: fileIdentity(stat) };
   }
@@ -69,7 +71,8 @@ export function createAgentWorkspaceAdmission({ store, fileSystem = fs, now = ()
       requestId,
       canonicalRoot: inspected.canonicalRoot,
       expiresAt: new Date(now() + PREPARE_TTL_MS).toISOString(),
-      warning: "Claude Code will be allowed to read and modify files inside this workspace.",
+      // 汎用層なので特定Backend名は出さない(表示名はクライアント側の責務)。
+      warning: "Approved agent backends will be allowed to read and modify files inside this workspace.",
     };
   }
 

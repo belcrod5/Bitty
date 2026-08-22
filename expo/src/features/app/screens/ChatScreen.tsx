@@ -896,7 +896,7 @@ export function ChatScreen({
     scrollChatListToBottomSettled(false);
   }, [scrollChatListToBottomSettled]);
   const getConversationMessageItemType = useCallback((message: ConversationMessage) => {
-    if (message.kind === "internal_context" || message.kind === "unclassified_context") {
+    if (message.kind === "internal_context" || message.kind === "unclassified_context" || message.kind === "sidechain") {
       return "internal_context";
     }
     return message.role === "assistant" ? "assistant" : "user";
@@ -1623,10 +1623,11 @@ export function ChatScreen({
           >
             {isUser ? "YOU" : "ASSISTANT"}
           </Text>
-          {message.kind === "internal_context" || message.kind === "unclassified_context" ? (
+          {message.kind === "internal_context" || message.kind === "unclassified_context" || message.kind === "sidechain" ? (
             <InternalContextMessage
               content={message.content}
               unclassified={message.kind === "unclassified_context"}
+              {...(message.kind === "sidechain" ? { title: "SUBAGENT" } : {})}
               textStyle={[styles.chatBubbleText, styles.chatBubbleTextAssistant]}
               onLocalFileLinkPress={openChatFileLinkContextMenu}
               onSelectedTextTtsPress={(selectedText) => readSelectedMessageText(message, selectedText)}

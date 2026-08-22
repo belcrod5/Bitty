@@ -83,7 +83,7 @@ export type RunnerSessionMessage = {
   role: RunnerSessionMessageRole;
   content: string;
   at: string;
-  kind?: "internal_context" | "unclassified_context";
+  kind?: "internal_context" | "unclassified_context" | "sidechain";
   // rollout内の永続item/call id。履歴page間の安定キーに使う。
   itemId?: string;
   // sinceCursor差分応答のみ: ペア確定で行IDが変わったとき、置換すべき旧行のitemId。
@@ -534,8 +534,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
             role,
             content,
             at: String(item.createdAt || ""),
-            // 内部注入コンテキスト(environment_context等)は折りたたみ表示にする。
-            ...(itemType === "internal_context" || itemType === "unclassified_context"
+            // 内部注入コンテキスト(environment_context等)とsubagent会話(sidechain)は
+            // 折りたたみ表示にする。
+            ...(itemType === "internal_context" || itemType === "unclassified_context" || itemType === "sidechain"
               ? { kind: itemType }
               : {}),
             itemId: String(item.id || "") || undefined,
@@ -557,7 +558,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           reasoningEffort: "",
           latestToolLabel: "",
           messages,
-          contextUsedPct: null,
+          // rollout token_count由来のcontext使用率(codex)。無いBackendはnull。
+          contextUsedPct: parseContextUsageUsedPct(neutral.contextUsage),
           threadStatusType: "idle",
           hasRunningTurn: false,
           runningTurn: null,

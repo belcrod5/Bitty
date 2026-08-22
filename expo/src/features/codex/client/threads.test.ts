@@ -116,6 +116,33 @@ it("still degrades a codex-scoped listing to raw when the runner WS is not ready
   expect(result.data).toEqual([]);
 });
 
+it("keeps the server-reported sourceKind and normalizes acp to appServer", async () => {
+  mockListAgentSessions.mockResolvedValue({
+    sessions: [
+      { sessionRef: { backendId: "codex", nativeSessionId: "codex-cli" }, updatedAt: "2026-08-22T03:00:00.000Z", sourceKind: "cli" },
+      { sessionRef: { backendId: "codex", nativeSessionId: "codex-acp" }, updatedAt: "2026-08-22T02:00:00.000Z", sourceKind: "acp" },
+      { sessionRef: { backendId: "claude", nativeSessionId: "claude-1" }, updatedAt: "2026-08-22T01:00:00.000Z", sourceKind: "cli" },
+      { sessionRef: { backendId: "codex", nativeSessionId: "sub-1" }, updatedAt: "2026-08-22T00:30:00.000Z", sourceKind: "cli", isSubagent: true },
+    ],
+  });
+
+  const result = await listCodexAppServerThreads({
+    wsUrl: "ws://runner",
+    cwd: "/workspace",
+    runnerWebSocketManager: {} as never,
+    backendId: "all",
+    rawFallbackBackendId: "codex",
+    sourceKinds: ["cli", "vscode", "appServer", "exec"],
+  });
+
+  // "cli"はそのまま、"acp"はappServerへ正規化、subagentはメイン一覧から除外
+  expect(result.data.map((item) => ({ threadId: item.threadId, sourceKind: item.sourceKind }))).toEqual([
+    { threadId: "codex-cli", sourceKind: "cli" },
+    { threadId: "codex-acp", sourceKind: "appServer" },
+    { threadId: "claude-1", sourceKind: "cli" },
+  ]);
+});
+
 it("requests subagents from the server when subAgent source kinds are included", async () => {
   mockListAgentSessions.mockResolvedValue({ sessions: [] });
 

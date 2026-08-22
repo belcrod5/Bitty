@@ -374,6 +374,45 @@ test("does not restart an operation whose native outcome was pending at process 
   );
 });
 
+test("reclaims a crash-orphaned pending operation after its TTL", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-orphan-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  // 別プロセスがclaimしたままクラッシュしたpending(TTL超過)を仕込む
+  await fs.writeFile(storePath, JSON.stringify({
+    version: 3,
+    sessions: {},
+    latestByDirectory: {},
+    agentOperations: [{
+      subjectId: "user-1",
+      clientOperationId: "operation-1",
+      requestHash: "hash-1",
+      runId: "run-dead",
+      status: "pending",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    }],
+  }));
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  });
+
+  // TTL超過の孤児pendingは回収され、同じclientOperationIdを新規claimできる
+  // (回収しないと恒久的にstatus:"unknown"で毒化し、蓄積すると容量到達で全claimが失敗する)
+  assert.deepEqual(
+    await store.claimAgentOperation("user-1", "operation-1", "hash-1", "run-2"),
+    { status: "claimed", runId: "run-2" },
+  );
+});
+
 test("persists one session mode and generation-checked lease across restarts", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-lease-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

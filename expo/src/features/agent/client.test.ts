@@ -65,3 +65,55 @@ test("a durable completed operation result settles without waiting for replay ev
   });
   expect(rawStart).not.toHaveBeenCalled();
 });
+
+test("a client-side event failure interrupts the server run best-effort", async () => {
+  let eventHandler: ((message: unknown) => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "turn.start") {
+      return { channel: "agent", op: "turn.accepted", streamId: "run-1", payload: { runId: "run-1" } };
+    }
+    if (message.op === "turn.interrupt") {
+      return { channel: "agent", op: "turn.interrupted", payload: {} };
+    }
+    return {
+      channel: "agent",
+      op: "agent.ready",
+      payload: {
+        protocolVersion: 1,
+        backends: [{
+          backendId: "codex",
+          readiness: { ready: true },
+          capabilities: { action: { policyProfiles: [] }, model: {}, workspace: { admission: false } },
+        }],
+      },
+    };
+  });
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: unknown) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+
+  const session = startAgentTurnWithRawFallback({
+    backendId: "codex",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    wsUrl: "ws://runner.test",
+    traceId: "trace-1",
+    inputText: "hello",
+    cwd: "/workspace",
+    onApprovalRequest: async () => "decline" as const,
+  }, jest.fn());
+
+  for (let i = 0; i < 20 && request.mock.calls.length < 2; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  // クライアント側で処理できないイベント → turn失敗と同時にサーバー側runをinterruptする
+  eventHandler!({ payload: { runId: "run-1", protocolVersion: 99, type: "turn.completed", sequence: 1, payload: {} } });
+  await expect(session.promise).rejects.toThrow(/unsupported/);
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt", streamId: "run-1" }));
+});

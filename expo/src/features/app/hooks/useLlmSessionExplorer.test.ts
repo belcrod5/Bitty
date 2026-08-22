@@ -195,7 +195,7 @@ describe("fetchRunnerSessionMessages", () => {
     expect(restored.messages.map((message) => ({ itemId: message.itemId, kind: message.kind }))).toEqual([
       { itemId: "ctx-1", kind: "internal_context" },
       { itemId: "ctx-2", kind: "unclassified_context" },
-      { itemId: "side-1", kind: undefined },
+      { itemId: "side-1", kind: "sidechain" },
       { itemId: "msg-1", kind: undefined },
     ]);
   });

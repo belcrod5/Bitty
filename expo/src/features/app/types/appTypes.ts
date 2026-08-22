@@ -29,7 +29,7 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   at?: string;
-  kind?: "internal_context" | "unclassified_context";
+  kind?: "internal_context" | "unclassified_context" | "sidechain";
   inheritedFromParent?: boolean;
   youtubeVideoIds?: string[];
   ttsWaveform?: number[];

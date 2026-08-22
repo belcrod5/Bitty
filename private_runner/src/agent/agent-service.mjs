@@ -704,7 +704,15 @@ export function createAgentService({
         if (status?.capabilities?.session?.list !== true) {
           throw agentError("capability_unsupported", "session listing is not supported", { backendId: backend.backendId });
         }
-        return await backend.listSessions({ ...options, cwd });
+        const singlePage = await backend.listSessions({ ...options, cwd });
+        // 項目別cursorは合成層のカット専用の内部値。all-scopeと同様wireへは出さない。
+        return {
+          ...singlePage,
+          sessions: (Array.isArray(singlePage?.sessions) ? singlePage.sessions : []).map((session) => {
+            const { cursor: _itemCursor, ...rest } = session;
+            return rest;
+          }),
+        };
       }
       // all-backends scope: session.list対応の全Backendを集約する。
       // 一部Backendの失敗は他Backendの成功分を消さず、診断可能なerrorsとして返す。
@@ -742,7 +750,13 @@ export function createAgentService({
       const merged = succeeded
         .flatMap((entry) => (Array.isArray(entry.page?.sessions) ? entry.page.sessions : [])
           .map((session) => ({ backendId: entry.backendId, session })))
-        .sort((a, b) => String(b.session?.updatedAt || "").localeCompare(String(a.session?.updatedAt || "")));
+        // updatedAtは各Backendが正規化済みのISO 8601(UTC・固定長)なので、ordinal比較で
+        // 辞書順=時系列になる。localeCompareはロケール依存の照合を通すため使わない。
+        .sort((a, b) => {
+          const left = String(a.session?.updatedAt || "");
+          const right = String(b.session?.updatedAt || "");
+          return left < right ? 1 : left > right ? -1 : 0;
+        });
       // 1ページ目から「全体の新しい順トップlimit」だけを返す。Backendごとのページは
       // 時間範囲が揃わないため、単純合成だと古い項目が新しい未返却項目より先に出る。
       // カットは全項目が位置cursor(session.cursor)を持つ時だけ行い、切った分は
@@ -768,6 +782,11 @@ export function createAgentService({
         } else if (pageCursor) {
           nextCursors[entry.backendId] = pageCursor;
         }
+      }
+      // 一時失敗したBackendは現位置のまま複合cursorへ引き継ぎ、次ページで再試行する。
+      // 引き継がないとスキップ判定(キー存在)により以降の全ページから恒久脱落する。
+      for (const entry of failed) {
+        nextCursors[entry.backendId] = String(compositeCursor?.[entry.backendId] || "");
       }
       const sessions = emitted.map(({ session }) => {
         const { cursor: _itemCursor, ...rest } = session;

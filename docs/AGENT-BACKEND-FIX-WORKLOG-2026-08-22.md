@@ -385,3 +385,33 @@ runner **480 passed / 1 skipped**・Expo **119 suites / 865 tests**・両typeche
 ### 検証
 
 runner **481 passed / 1 skipped**・Expo **119 suites / 866 tests**・`tsc --noEmit` passed。反映は**runner再起動+iOS再ビルド**の両方が必要。
+
+## §16 独立レビュー(PR #73)の全指摘対応 + context length表示の修正
+
+### レビュー指摘(M1〜M3, m1〜m10)への対応
+
+- **M1** 合成ページング中にBackendが一時失敗すると以降の全ページから恒久脱落 → 失敗Backendは現位置のまま複合cursorへ引き継ぎ、次ページで再試行(agent-service)。
+- **M2** Claudeの5分無出力watchdogが長時間の無音tool実行中のturnを殺す → `runningToolIds`を追跡し、tool実行中(tool.started〜tool.completed間)はno-output監視を停止。turnTimer(24h)は維持。
+- **M3** Claude一覧が毎回全transcript全文読み → `transcriptMetadataCache`(size+mtimeMs不変ならcwd/title/modelIdを再利用)。listSessions・resolveSessionCwd・resumeモデル整合チェックが対象。
+- **m1** クラッシュ孤児のpending operationが恒久残留 → pruneをpending孤児(claimedHere外)にも適用し、claim前にprune実行でTTL超過後は同一IDを再claim可能に。
+- **m2** Claude resolveSessionCwdがbinding優先でnative照合が恒真 → transcript(native)優先、bindingはtranscript未発見時のフォールバックへ。
+- **m3** transcript cwdがrealpathなし文字列比較 → `realpathCwd`キャッシュで正規化してから比較(symlink workspace対応)。
+- **m4** 一覧sourceKindの2値潰し → runnerが実sourceKindを素通し(codex=index source、claude="cli")、クライアントは"acp"→appServerへ正規化。
+- **m5** sidechain履歴が通常メッセージ表示 → kind unionに"sidechain"追加、折りたたみ(見出しSUBAGENT)で表示。
+- **m6** 単一Backendスコープのみ項目別cursorがwireに漏れる → all-scopeと同様に除去。
+- **m7** workspace admissionがhomeの祖先(/Users等)を承認可能 → homeを包含するパスを拒否。警告文の"Claude Code"ハードコードも汎用化。
+- **m8** updatedAtのlocaleCompare比較 → ordinal比較へ(agent-serviceのマージとclaude keysetキー)。
+- **m9** クライアントaction処理失敗時にサーバー側runが孤児化 → クライアント都合のfinish(error)でbest-effort `turn.interrupt`送信。
+- **m10** codex interrupt競合時にbuffered/live通知の適用順が逆転 → buffered flushをinterrupt awaitより前へ移動。
+
+### context length表示が更新されない(実機6回目報告)
+
+原因はneutral経路がusage/％を落としていたこと(3箇所):
+1. codex backendが`usage.updated`を一切発火していない → turn/completed paramsからusage(+context window)を抽出して発火。
+2. claude backendのusageに%計算材料がない → `total_tokens`(input+cache read+cache creation+output)と`context_window`(result.modelUsage.contextWindow、実CLI 2.1.238で確認)を補って発火。
+3. クライアント`agent/client.ts`の`contextUsage()`がusedPct:0固定 → raw経路と同じ`normalizeContextUsageSnapshot`へ委譲。
+あわせてセッション再表示時の復元: neutral readHistoryにrolloutの`contextUsage`を素通しし、explorer/threadsが`contextUsedPct`へ反映(claudeはtranscriptにwindowが無いため復元は非対応、live更新のみ)。
+
+### 検証
+
+runner **490 passed / 1 skipped**・Expo **119 suites / 868 tests**・`tsc --noEmit`・`typecheck:macos` passed。反映は**runner再起動+iOS再ビルド**の両方が必要。

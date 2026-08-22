@@ -207,6 +207,35 @@ test("Claude Backend uses one-shot stream-json, resolves native session, and nor
   ]);
 });
 
+test("Claude Backend enriches usage with total tokens and the model context window", async () => {
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+    {
+      type: "result",
+      subtype: "success",
+      result: "done",
+      session_id: SESSION_ID,
+      usage: { input_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 8, output_tokens: 10 },
+      modelUsage: { "claude-haiku-4-5-20251001": { inputTokens: 2, contextWindow: 200000 } },
+    },
+  ]);
+  const events = [];
+  await backend.startTurn({
+    runId: "run-usage",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+
+  const usage = events.find((event) => event.type === "usage.updated")?.payload.usage;
+  // cache read/creationを含む消費合計とcontext windowが載り、クライアントが%を計算できる
+  assert.equal(usage.total_tokens, 120);
+  assert.equal(usage.context_window, 200000);
+  assert.equal(usage.input_tokens, 2);
+});
+
 test("Claude Backend passes a supported effort to the CLI exactly once", async () => {
   const { backend, calls } = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
@@ -377,6 +406,114 @@ test("Claude history stays inside projects root and invalidates changed cursors"
     cursor: first.olderCursor,
     limit: 1,
   }), (error) => error.code === "history_cursor_invalid");
+});
+
+test("Claude no-output watchdog pauses while a tool is running", async () => {
+  const child = fakeChild([], { exitAfterInput: false });
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    runFile: async (file, args) => ({ stdout: file === "ps" ? "started\n" : args?.[0] === "--version" ? "2.1.214" : "" }),
+    fileSystem: { ...fs, realpath: async (value) => value },
+    spawnProcess: () => child,
+    sessionStore: { getBinding: async () => null },
+    noOutputTimeoutMs: 100,
+    interruptGraceMs: 10,
+    generateSessionId: () => SESSION_ID,
+  });
+  const writeLine = (line) => child.stdout.write(`${JSON.stringify(line)}\n`);
+  const turn = backend.startTurn({
+    runId: "run-slow-tool",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "build it" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: {} }] } });
+  // tool実行中の無出力(noOutputTimeoutMsの2倍以上)ではタイムアウトしない
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }] } });
+  writeLine({ type: "assistant", uuid: "a-final", message: { content: [{ type: "text", text: "done" }] } });
+  writeLine({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID });
+  child.stdout.end();
+  child.emit("exit", 0, null);
+  const result = await turn;
+  assert.equal(result.outcome, "completed");
+});
+
+test("Claude transcript metadata is cached until the file changes", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-meta-cache-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const project = path.join(tempRoot, "project");
+  const cwd = path.join(tempRoot, "workspace");
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(cwd);
+  const transcript = path.join(project, `${SESSION_ID}.jsonl`);
+  await fs.writeFile(transcript, [
+    JSON.stringify({ type: "user", uuid: "u1", cwd, timestamp: "2026-08-21T00:00:00.000Z", message: { content: "hello" } }),
+  ].join("\n"));
+  let readFileCalls = 0;
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    projectsRoot: tempRoot,
+    runFile: async () => ({ stdout: "2.1.214" }),
+    fileSystem: {
+      ...fs,
+      readFile: async (...args) => {
+        readFileCalls += 1;
+        return await fs.readFile(...args);
+      },
+    },
+    sessionStore: { getBinding: async () => null },
+  });
+
+  const first = await backend.listSessions({ cwd, limit: 10 });
+  assert.equal(first.sessions[0].title, "hello");
+  assert.equal(first.sessions[0].sourceKind, "cli");
+  const readsAfterFirst = readFileCalls;
+  assert.ok(readsAfterFirst >= 1);
+
+  // 変更がなければ全文読み込みは再発しない
+  const second = await backend.listSessions({ cwd, limit: 10 });
+  assert.equal(second.sessions[0].title, "hello");
+  assert.equal(readFileCalls, readsAfterFirst);
+
+  // resume時のモデル整合チェックもキャッシュで賄われる
+  await backend.resolveSessionCwd({ backendId: "claude", nativeSessionId: SESSION_ID });
+  assert.equal(readFileCalls, readsAfterFirst);
+
+  // ファイル更新(size/mtime変化)で読み直す
+  await fs.appendFile(transcript, `\n${JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { content: [{ type: "text", text: "world" }] } })}`);
+  await backend.listSessions({ cwd, limit: 10 });
+  assert.ok(readFileCalls > readsAfterFirst);
+});
+
+test("Claude session cwd prefers the transcript over a stale binding and matches symlinked workspaces", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-cwd-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const project = path.join(tempRoot, "project");
+  const realCwd = path.join(tempRoot, "workspace");
+  const linkCwd = path.join(tempRoot, "workspace-link");
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(realCwd);
+  await fs.symlink(realCwd, linkCwd);
+  const transcript = path.join(project, `${SESSION_ID}.jsonl`);
+  // transcriptはsymlink経由のcwdを記録している
+  await fs.writeFile(transcript, JSON.stringify({ type: "user", uuid: "u1", cwd: linkCwd, message: { content: "hello" } }));
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    projectsRoot: tempRoot,
+    runFile: async () => ({ stdout: "2.1.214" }),
+    fileSystem: fs,
+    sessionStore: { getBinding: async () => ({ canonicalCwd: "/stale/binding" }) },
+  });
+
+  const expectedRealCwd = await fs.realpath(realCwd);
+  // nativeデータ源(transcript)のcwdが真実。staleなbindingを返さない。
+  assert.equal(await backend.resolveSessionCwd({ backendId: "claude", nativeSessionId: SESSION_ID }), expectedRealCwd);
+  // realCwd指定でもsymlink経由のtranscriptが一致する
+  const listed = await backend.listSessions({ cwd: realCwd, limit: 10 });
+  assert.equal(listed.sessions[0]?.sessionRef.nativeSessionId, SESSION_ID);
 });
 
 test("Claude history classifies injected system messages as internal context", async (t) => {

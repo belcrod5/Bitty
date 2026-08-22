@@ -471,7 +471,11 @@ export function createLlmAcpSessionStore(deps = {}) {
 
   function pruneAgentOperations(nowMs) {
     const terminal = Array.from(agentOperations.entries())
-      .filter(([, entry]) => entry.status === "completed")
+      // 別プロセスでclaimされたままcompleteされなかったpending(クラッシュ孤児)は、
+      // runがプロセスと共に消えていて完了し得ない。completedと同じTTL/容量規則で
+      // 回収し、当該clientOperationIdの恒久毒化と容量枯渇を防ぐ。
+      .filter(([key, entry]) => entry.status === "completed"
+        || (entry.status === "pending" && !agentOperationsClaimedHere.has(key)))
       .sort((a, b) => a[1].updatedAt.localeCompare(b[1].updatedAt));
     for (const [key, entry] of terminal) {
       if (Date.parse(entry.updatedAt) + agentOperationTtlMs > nowMs && agentOperations.size < agentOperationMaxEntries) {
@@ -490,6 +494,10 @@ export function createLlmAcpSessionStore(deps = {}) {
     await ensureAgentMetadataStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
       const key = agentOperationKey(subjectId, clientOperationId);
+      const nowMs = Date.now();
+      // 先にpruneする: TTLを過ぎたクラッシュ孤児pendingが残っていても、ここで
+      // 回収されて同じclientOperationIdを新規claimし直せる。
+      pruneAgentOperations(nowMs);
       const existing = agentOperations.get(key);
       if (existing) {
         if (existing.requestHash !== requestHash) return { status: "conflict" };
@@ -498,8 +506,6 @@ export function createLlmAcpSessionStore(deps = {}) {
         }
         return { status: "existing", runId: existing.runId, result: existing.result };
       }
-      const nowMs = Date.now();
-      pruneAgentOperations(nowMs);
       if (agentOperations.size >= agentOperationMaxEntries) {
         throw new Error("agent operation store capacity reached");
       }

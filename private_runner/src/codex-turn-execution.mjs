@@ -261,6 +261,26 @@ function codexTurnStatus(params) {
   return String(params?.turn?.status || params?.status || "").trim().toLowerCase();
 }
 
+// turn/completedのparamsからcontext usageを取り出す。usage本体にcontext windowが
+// 無い場合はparams/turnレベルのwindowを補って返す(クライアントの%計算に必要)。
+function codexTurnCompletedUsage(paramsRaw) {
+  const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw : {};
+  const turn = params.turn && typeof params.turn === "object" ? params.turn : {};
+  const usage = [
+    params.contextUsage, params.context_usage, params.usage, params.tokenUsage, params.token_usage,
+    turn.contextUsage, turn.context_usage, turn.usage, turn.lastUsage, turn.last_usage,
+    turn.tokenUsage, turn.token_usage,
+  ].find((candidate) => candidate && typeof candidate === "object");
+  if (!usage) return null;
+  const windowOf = (source) => {
+    const value = Number(source?.contextWindowTokens ?? source?.context_window_tokens ?? source?.context_window);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  };
+  const contextWindow = windowOf(usage) || windowOf(turn) || windowOf(params);
+  if (!windowOf(usage) && contextWindow > 0) return { ...usage, context_window: contextWindow };
+  return usage;
+}
+
 function codexItemId(params, fallback) {
   return firstNonEmptyString(params?.item?.id, params?.itemId, params?.item_id, fallback);
 }
@@ -434,19 +454,25 @@ export function createCodexBackend({
       cleanupStartedTurn = started.cleanup;
       completion?.expect?.({ threadId: state.threadId, turnId: state.turnId });
       emit("turn.started", { nativeTurnId: state.turnId });
+      // turnId確定後はliveの通知が直接applyされるため、bufferedのflushはawaitを
+      // 挟む前に行う。interrupt要求のawait中にliveが先に適用されると順序が崩れる。
+      for (const [requestId, action] of state.actionById) announceAction(requestId, action);
+      for (const notification of state.bufferedNotifications.splice(0)) {
+        applyNotification(notification.method, notification.params);
+      }
       if (signal?.aborted) {
         await client.request("turn/interrupt", {
           threadId: state.threadId,
           turnId: state.turnId,
         }, 5000).catch(() => {});
       }
-      for (const [requestId, action] of state.actionById) announceAction(requestId, action);
-      for (const notification of state.bufferedNotifications.splice(0)) {
-        applyNotification(notification.method, notification.params);
-      }
       await (completion?.promise || completion);
       const terminal = state.terminalNotification;
       const status = codexTurnStatus(terminal?.params);
+      // context length表示の更新源。raw経路のturn/completed usage抽出と同じ情報を
+      // neutralイベントとしても届ける。
+      const turnUsage = codexTurnCompletedUsage(terminal?.params);
+      if (turnUsage) emit("usage.updated", { usage: turnUsage });
       if (terminal?.method === "turn/interrupted" || INTERRUPTED_TURN_STATUSES.has(status)) {
         return { outcome: "interrupted" };
       }

@@ -5,6 +5,7 @@ import type {
   CodexAppServerTurnSession,
   CodexContextUsage,
 } from "../codex/client/types";
+import { normalizeContextUsageSnapshot } from "../codex/client/helpers";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsMessage } from "../runnerWs/types";
 import {
@@ -93,21 +94,9 @@ function approvalRequest(event: AgentEvent, threadId: string, turnId: string): A
 }
 
 function contextUsage(payload: Record<string, unknown>): CodexContextUsage | null {
-  const usage = object(payload.usage || payload);
-  const inputTokens = Number(usage.input_tokens || usage.inputTokens || 0);
-  const outputTokens = Number(usage.output_tokens || usage.outputTokens || 0);
-  if (!inputTokens && !outputTokens) return null;
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: Number(usage.total_tokens || usage.totalTokens || inputTokens + outputTokens),
-    cachedInputTokens: Number(usage.cache_read_input_tokens || usage.cachedInputTokens || 0),
-    reasoningOutputTokens: Number(usage.reasoning_output_tokens || usage.reasoningOutputTokens || 0),
-    contextWindowTokens: Number(usage.context_window || usage.contextWindowTokens || 0),
-    usedRatio: 0,
-    usedPct: 0,
-    model: String(usage.model || ""),
-  };
+  // raw経路と同じ正規化を通してusedPctまで計算する(自前実装で0固定にすると
+  // 右上のcontext length表示が一切更新されない)。
+  return normalizeContextUsageSnapshot(object(payload.usage || payload));
 }
 
 export function startAgentTurnWithRawFallback(
@@ -206,12 +195,19 @@ export function startAgentTurnWithRawFallback(
       resolveTurn = resolve;
       rejectTurn = reject;
     });
-    const finish = (error?: Error) => {
+    const finish = (error?: Error, finishOptions?: { interruptRun?: boolean }) => {
       if (settled) return;
       settled = true;
       unsubscribe();
       unsubscribeSnapshot();
       clearTimeout(timeout);
+      // クライアント都合の打ち切り(action処理失敗・イベント処理失敗・タイムアウト)では
+      // サーバー側runを孤児にせずbest-effortでinterruptする。サーバー起点の終了
+      // (turn.completed/interrupted/failed)ではrunは既に終わっているため送らない。
+      if (error && finishOptions?.interruptRun && runId) {
+        void manager.request({ channel: "agent", op: "turn.interrupt", streamId: runId, payload: { runId } })
+          .catch(() => {});
+      }
       if (error) rejectTurn(error);
       else resolveTurn({ threadId, turnId, reply, contextUsage: usage });
     };
@@ -324,7 +320,7 @@ export function startAgentTurnWithRawFallback(
         return;
       }
       eventQueue = eventQueue.then(() => applyEvent(event)).catch((error) => {
-        finish(error instanceof Error ? error : new Error("Agent event handling failed"));
+        finish(error instanceof Error ? error : new Error("Agent event handling failed"), { interruptRun: true });
       });
     });
     let generation = manager.getSnapshot().generation;
@@ -345,9 +341,9 @@ export function startAgentTurnWithRawFallback(
         for (const action of Array.isArray(payload.activeActions) ? payload.activeActions : []) {
           await handleAction(object(action));
         }
-      }).catch((error) => finish(error instanceof Error ? error : new Error("Agent event resume failed")));
+      }).catch((error) => finish(error instanceof Error ? error : new Error("Agent event resume failed"), { interruptRun: true }));
     });
-    const timeout = setTimeout(() => finish(new Error("Agent turn timed out")), options.timeoutMs || 24 * 60 * 60 * 1000);
+    const timeout = setTimeout(() => finish(new Error("Agent turn timed out"), { interruptRun: true }), options.timeoutMs || 24 * 60 * 60 * 1000);
     const policyProfiles = status.capabilities?.action?.policyProfiles || [];
     const wantsInteractive = options.approvalPolicy !== "never";
     const policyProfileId = policyProfiles.find((profile) => profile.interactive === wantsInteractive)?.id
@@ -407,7 +403,7 @@ export function startAgentTurnWithRawFallback(
     }
     for (const event of eventsBeforeAcceptance.splice(0)) {
       eventQueue = eventQueue.then(() => applyEvent(event)).catch((error) => {
-        finish(error instanceof Error ? error : new Error("Agent event handling failed"));
+        finish(error instanceof Error ? error : new Error("Agent event handling failed"), { interruptRun: true });
       });
     }
     activeInterrupt = async () => {

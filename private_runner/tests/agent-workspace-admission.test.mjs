@@ -43,6 +43,17 @@ test("workspace confirmation is subject-bound, one-time, and rejects symlink rep
   await assert.rejects(admission.assertAllowed("user-1", second), /changed after approval/);
 });
 
+test("rejects filesystem root, home, and home ancestors as workspaces", async () => {
+  const admission = createAgentWorkspaceAdmission({
+    store: { list: async () => [], approve: async () => null, revoke: async () => null },
+  });
+  const home = await fs.realpath(os.homedir());
+  await assert.rejects(admission.prepare("user-1", home), /cannot be approved/);
+  // homeの祖先(/Users等)を承認するとhome全体が許可されてしまうため拒否する
+  await assert.rejects(admission.prepare("user-1", path.dirname(home)), /cannot be approved/);
+  await assert.rejects(admission.prepare("user-1", path.parse(home).root), /cannot be approved/);
+});
+
 test("revokes a stored workspace after its directory has been removed", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-workspace-revoke-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

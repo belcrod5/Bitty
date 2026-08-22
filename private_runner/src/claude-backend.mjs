@@ -248,7 +248,8 @@ export function createClaudeBackend({
       throw agentError("session_not_found", "Claude session ID is invalid", { backendId: "claude" });
     }
     if (requestedSessionId && selectedModel) {
-      const savedModel = transcriptModelId((await findTranscript(requestedSessionId))?.records || []);
+      const savedFile = await findTranscriptFile(requestedSessionId);
+      const savedModel = savedFile ? String((await transcriptMetadata(savedFile))?.modelId || "") : "";
       if (savedModel && savedModel !== selectedModel) {
         throw agentError("turn_rejected", "Claude model cannot be changed within an existing session", { backendId: "claude" });
       }
@@ -286,6 +287,7 @@ export function createClaudeBackend({
       startedToolIds: new Set(),
       completedToolIds: new Set(),
       completedSubagentItemIds: new Set(),
+      runningToolIds: new Set(),
       processing: Promise.resolve(),
       processIdentity: null,
       exitPromise: null,
@@ -298,6 +300,9 @@ export function createClaudeBackend({
     const protocolFailure = new Promise((_, reject) => { rejectProtocol = reject; });
     const resetNoOutput = () => {
       clearTimeout(noOutputTimer);
+      // ローカルtool実行中(tool.started〜tool.completed間)はCLIが無出力になるのが
+      // 正常(5分超のビルド等)。その間はno-output監視を止め、turnTimerだけを上限とする。
+      if (state.runningToolIds.size > 0) return;
       noOutputTimer = setTimeout(() => {
         const error = agentError("timeout", "Claude produced no output before timeout", { backendId: "claude" });
         error.nativeActivity = "unknown";
@@ -378,6 +383,8 @@ export function createClaudeBackend({
           if (tool && !tool.announced) {
             tool.announced = true;
             state.startedToolIds.add(tool.id);
+            state.runningToolIds.add(tool.id);
+            resetNoOutput();
             emit("tool.started", {
               toolCallId: tool.id,
               name: tool.name,
@@ -410,6 +417,8 @@ export function createClaudeBackend({
           const toolCallId = String(block.id || "").trim();
           if (!toolCallId || state.startedToolIds.has(toolCallId)) continue;
           state.startedToolIds.add(toolCallId);
+          state.runningToolIds.add(toolCallId);
+          resetNoOutput();
           emit("tool.started", {
             toolCallId,
             name: String(block.name || "tool"),
@@ -437,6 +446,8 @@ export function createClaudeBackend({
             resultSummary: extractText(block.content).slice(0, 4096),
           });
           state.completedToolIds.add(toolCallId);
+          state.runningToolIds.delete(toolCallId);
+          resetNoOutput();
         }
         return;
       }
@@ -452,7 +463,23 @@ export function createClaudeBackend({
         }
         state.result = message;
         const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
-        if (usage) emit("usage.updated", { usage });
+        if (usage) {
+          // Claudeのusageはcache read/creationが別建てで、context windowも
+          // usage本体には無い。result.modelUsageのcontextWindowを補い、
+          // 消費合計をtotal_tokensへ正規化してクライアントの%計算を成立させる。
+          const totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
+            .reduce((sum, key) => sum + (Math.max(0, Number(usage[key]) || 0)), 0);
+          const contextWindow = Object.values(
+            message.modelUsage && typeof message.modelUsage === "object" ? message.modelUsage : {},
+          ).reduce((max, entry) => Math.max(max, Number(entry?.contextWindow) || 0), 0);
+          emit("usage.updated", {
+            usage: {
+              ...usage,
+              ...(totalTokens > 0 ? { total_tokens: totalTokens } : {}),
+              ...(contextWindow > 0 ? { context_window: contextWindow } : {}),
+            },
+          });
+        }
       }
     }
 
@@ -643,31 +670,81 @@ export function createClaudeBackend({
     return "";
   }
 
-  async function findTranscript(sessionId) {
+  // transcript由来のcwdはsymlink経由(例: /tmp→/private/tmp)でも一致判定できるよう
+  // realpathへ正規化して比較する。serviceから渡るcwdはrealpath済みcanonical。
+  const realCwdCache = new Map();
+  async function realpathCwd(cwd) {
+    const key = String(cwd || "");
+    if (!key) return "";
+    if (realCwdCache.has(key)) return realCwdCache.get(key);
+    const real = await fileSystem.realpath(key).catch(() => path.resolve(key));
+    if (realCwdCache.size >= MAX_TRANSCRIPT_FILES) realCwdCache.clear();
+    realCwdCache.set(key, real);
+    return real;
+  }
+
+  // 一覧・probe・resume整合チェックのたびに全transcriptを全文読みしないための
+  // メタデータキャッシュ。size+mtimeMsが不変ならファイル本文を読まずに再利用する。
+  const transcriptMetadataCache = new Map();
+  async function transcriptMetadata(file) {
+    const stat = await fileSystem.stat(file).catch(() => null);
+    if (!stat || !stat.isFile()) return null;
+    const cached = transcriptMetadataCache.get(file);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return { ...cached, stat };
+    }
+    const transcript = await readTranscript(file).catch(() => null);
+    if (!transcript) return null;
+    const firstUser = transcript.records.find((record) => record.value?.type === "user"
+      && !classifyHistoryItemType(record.value, extractText(record.value?.message?.content)));
+    const metadata = {
+      size: transcript.stat.size,
+      mtimeMs: transcript.stat.mtimeMs,
+      realCwd: await realpathCwd(transcriptCwd(transcript.records)),
+      title: extractText(firstUser?.value?.message?.content).slice(0, 200),
+      modelId: transcriptModelId(transcript.records),
+    };
+    if (transcriptMetadataCache.size >= MAX_TRANSCRIPT_FILES) transcriptMetadataCache.clear();
+    transcriptMetadataCache.set(file, metadata);
+    return { ...metadata, stat: transcript.stat };
+  }
+
+  async function findTranscriptFile(sessionId) {
     if (!SESSION_ID_PATTERN.test(String(sessionId || ""))) return null;
     const suffix = `${sessionId}.jsonl`;
-    for (const file of await transcriptFiles()) if (path.basename(file) === suffix) return await readTranscript(file);
+    for (const file of await transcriptFiles()) if (path.basename(file) === suffix) return file;
     return null;
   }
 
+  async function findTranscript(sessionId) {
+    const file = await findTranscriptFile(sessionId);
+    return file ? await readTranscript(file) : null;
+  }
+
   async function resolveSessionCwd(sessionRef) {
+    // nativeデータ源(transcript)のcwdが真実。bindingはtranscript未発見時の
+    // フォールバックに限定し、serviceのbinding-vs-native照合を骨抜きにしない。
+    const file = await findTranscriptFile(sessionRef?.nativeSessionId);
+    const metadata = file ? await transcriptMetadata(file) : null;
+    if (metadata?.realCwd) return metadata.realCwd;
     const binding = await sessionStore.getBinding(sessionRef);
     if (binding?.canonicalCwd) return binding.canonicalCwd;
-    const transcript = await findTranscript(sessionRef?.nativeSessionId);
-    const cwd = transcriptCwd(transcript?.records || []);
-    if (!cwd) throw agentError("session_not_found", "Claude session was not found", { backendId: "claude" });
-    return cwd;
+    throw agentError("session_not_found", "Claude session was not found", { backendId: "claude" });
   }
 
   // 一覧の並び順キー(updatedAt desc → sessionId desc)。ページ継続cursorは
   // このキーのkeysetで、entryがcursorより後(古い側)に並ぶ時だけ正を返す。
+  // 値はISO 8601(UTC・固定長)とUUIDなので、ordinal比較で辞書順=時系列になる。
+  function compareOrdinalDesc(a, b) {
+    return a < b ? 1 : a > b ? -1 : 0;
+  }
   function compareListPageKeys(a, b) {
-    return String(b?.updatedAt || "").localeCompare(String(a?.updatedAt || ""))
-      || String(b?.sessionId || "").localeCompare(String(a?.sessionId || ""));
+    return compareOrdinalDesc(String(a?.updatedAt || ""), String(b?.updatedAt || ""))
+      || compareOrdinalDesc(String(a?.sessionId || ""), String(b?.sessionId || ""));
   }
 
   async function listSessions({ cwd, limit = 50, cursor = "" }) {
-    const canonicalCwd = path.resolve(String(cwd || ""));
+    const canonicalCwd = await realpathCwd(path.resolve(String(cwd || "")));
     const cursorRaw = String(cursor || "").trim();
     const cursorKey = cursorRaw ? cursorDecode(cursorRaw) : null;
     if (cursorRaw && !String(cursorKey?.sessionId || "").trim()) {
@@ -675,17 +752,16 @@ export function createClaudeBackend({
     }
     const sessions = [];
     for (const file of await transcriptFiles()) {
-      const transcript = await readTranscript(file).catch(() => null);
-      if (!transcript || transcriptCwd(transcript.records) !== canonicalCwd) continue;
+      const metadata = await transcriptMetadata(file);
+      if (!metadata || metadata.realCwd !== canonicalCwd) continue;
       const nativeSessionId = path.basename(file, ".jsonl");
-      const firstUser = transcript.records.find((record) => record.value?.type === "user"
-        && !classifyHistoryItemType(record.value, extractText(record.value?.message?.content)));
       sessions.push({
         sessionRef: { backendId: "claude", nativeSessionId },
         canonicalCwd,
-        updatedAt: transcript.stat.mtime.toISOString(),
-        title: extractText(firstUser?.value?.message?.content).slice(0, 200),
-        modelId: transcriptModelId(transcript.records),
+        updatedAt: metadata.stat.mtime.toISOString(),
+        title: metadata.title,
+        modelId: metadata.modelId,
+        sourceKind: "cli",
       });
     }
     const pageKey = (session) => ({ updatedAt: session.updatedAt, sessionId: session.sessionRef.nativeSessionId });
