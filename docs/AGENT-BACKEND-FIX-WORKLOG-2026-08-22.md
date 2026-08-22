@@ -441,3 +441,17 @@ transcriptへ`compact_boundary`+`isCompactSummary`が記録される。少なす
 ### 検証
 
 runner **495 passed / 1 skipped**・Expo **119 suites / 868 tests**・両typecheck passed。反映は**runner再起動+iOS再ビルド**の両方が必要。
+
+## §18 Claudeのcompact中送信が「session has an active or recovering turn」(実機8回目)
+
+原因: compact実行中はserviceがsession leaseを保持しており、送信前の`session.handoff`が
+busyで即失敗する。Codexはcompact queue(raw固有)へ退避されるが、queue非対応のClaudeは
+直行してエラーになる。
+
+修正: `useCodexReplyRequest`のdispatch直前で、compact queue非対応Backend かつ
+ローカルでcompact実行中(`isCodexCompactRunning`)の場合はcompact完了までポーリング待機
+(500ms間隔、上限5分)してから送信する。メッセージは通常どおり入力欄クリア+表示済みの
+まま待つ。検証: Expo 119 suites / 869 tests・tsc passed。
+
+関連: Claude権限承認ポップアップ(--permission-mode dontAsk固定の解消)はmain側
+`docs/タスクリスト.checklist`へ将来タスクとして追加済み。

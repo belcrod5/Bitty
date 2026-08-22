@@ -1047,6 +1047,42 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
   });
 
+  test("compact queue非対応Backendはcompact完了を待ってからdispatchする", async () => {
+    const { options } = createOptions();
+    // 2回目のポーリングまでcompact実行中 → その後解除
+    let compactPolls = 0;
+    Object.assign(options, {
+      transcript: "hello",
+      llmBackend: "claude",
+      modelRef: "sonnet",
+      isCodexCompactRunning: (threadId: string) => threadId === "thread-1" && ++compactPolls <= 2,
+      modelOptions: [{
+        modelId: "sonnet",
+        backendId: "claude",
+        supportsReasoningEffort: false,
+        changeWithinSession: false,
+        supportsCompactQueue: false,
+      }],
+    });
+    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+      promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet" },
+      });
+    });
+
+    // compact中のsession leaseと衝突するsession_busyを避けて、解除後に1回だけ送信される
+    expect(compactPolls).toBeGreaterThanOrEqual(3);
+    expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+  });
+
   test("compact queue対応Backendのmaterializedセッション送信は従来どおりpreflightする", async () => {
     const { options } = createOptions();
     Object.assign(options, {

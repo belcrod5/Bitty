@@ -724,6 +724,20 @@ export function useCodexReplyRequest<
         }, { throttleMs: 0 });
       }
     }
+    // compact queue非対応Backend(Claude等)はcompact完了を待ってから直接dispatchする。
+    // 直行するとcompactが保持するsession leaseと衝突し、handoffが
+    // 「session has an active or recovering turn」で即失敗する。
+    if (requestThreadKey && !supportsCompactQueue && compactRunningLocally) {
+      const waitDeadlineMs = Date.now() + 5 * 60 * 1000;
+      while (current.isCodexCompactRunning?.(requestThreadKey) && Date.now() < waitDeadlineMs) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      current.logSessionDiag("reply_send_waited_for_compact", {
+        panelId: requestPanelId,
+        threadId: requestThreadKey,
+        timedOut: current.isCodexCompactRunning?.(requestThreadKey) === true,
+      }, { throttleMs: 0 });
+    }
     // compact queue probing time is not part of a directly dispatched turn.
     replyRequestStartedAt = Date.now();
     const getConversationMessagesForPanel = (panelId: string): TMessage[] => {
