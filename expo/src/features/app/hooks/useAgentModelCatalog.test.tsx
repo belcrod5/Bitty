@@ -14,7 +14,6 @@ test("refreshes once per ready generation and when the picker opens", async () =
     capabilities: {
       model: {
         effort: true,
-        changeWithinSession: true,
         catalog: [{ modelId: "gpt-test", label: "GPT Test" }],
       },
     },

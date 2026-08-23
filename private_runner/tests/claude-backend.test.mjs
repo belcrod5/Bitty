@@ -82,7 +82,7 @@ test("Claude Backend defers CLI detection until a turn is sent", async () => {
   assert.equal(status.capabilities.model.select, true);
   assert.equal(status.capabilities.model.effort, true);
   assert.deepEqual(status.capabilities.model.effortOptions, ["low", "medium", "high", "xhigh", "max"]);
-  assert.equal(status.capabilities.model.changeWithinSession, false);
+  assert.equal("changeWithinSession" in status.capabilities.model, false);
   assert.deepEqual(status.capabilities.model.catalog.map((model) => model.modelId), ["haiku", "sonnet", "opus", "fable"]);
   assert.equal(runFileCalls, 0);
   await assert.rejects(backend.startTurn({
@@ -296,7 +296,7 @@ test("Claude Backend passes effort on resume and rejects an unsupported effort b
   assert.equal(rejected.calls.length, 0);
 });
 
-test("Claude Backend resumes without combining --session-id and rejects a missing result", async () => {
+test("Claude Backend resumes with the selected model without combining --session-id", async () => {
   const { backend, calls } = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
   ]);
@@ -305,12 +305,15 @@ test("Claude Backend resumes without combining --session-id and rejects a missin
     sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
     cwd: "/work/project",
     input: { blocks: [{ type: "text", text: "continue" }] },
+    model: "opus",
     resolveSession: async () => assert.fail("existing sessions are resolved by AgentService"),
     emit: () => {},
   }), (error) => error.code === "protocol_error" && error.nativeActivity === "stopped");
   assert.equal(calls[0].args.includes("--resume"), true);
   assert.equal(calls[0].args.includes("--session-id"), false);
-  assert.equal(calls[0].args.includes("--model"), false);
+  assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf("--model"), calls[0].args.indexOf("--model") + 2), [
+    "--model", "opus",
+  ]);
 });
 
 test("Claude Backend treats a repeated system/init with the same session ID as idempotent", async () => {

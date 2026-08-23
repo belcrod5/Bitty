@@ -2,7 +2,7 @@ import {
   THINK_OPTIONS,
   currentModelFallback,
   effortOptionsForModel,
-  isModelSelectionBlocked,
+  isBackendChangeBlocked,
   modelOptionsFromStatuses,
 } from "./modelOptions";
 
@@ -11,13 +11,13 @@ test("builds stable composite selections when backends publish the same model id
     {
       backendId: "first",
       capabilities: {
-        model: { effort: true, changeWithinSession: true, catalog: [{ modelId: "shared", label: "First" }] },
+        model: { effort: true, catalog: [{ modelId: "shared", label: "First" }] },
         operations: { schedule: true },
       },
     },
     {
       backendId: "second",
-      capabilities: { model: { effort: false, changeWithinSession: false, catalog: [{ modelId: "shared", label: "Second" }] } },
+      capabilities: { model: { effort: false, catalog: [{ modelId: "shared", label: "Second" }] } },
     },
   ]);
 
@@ -25,7 +25,7 @@ test("builds stable composite selections when backends publish the same model id
   expect(options[0]?.supportsScheduling).toBe(true);
   expect(options[1]?.supportsScheduling).toBe(false);
   expect(options.every((option) => option.selectable)).toBe(true);
-  expect(options[1]).toMatchObject({ supportsReasoningEffort: false, changeWithinSession: false });
+  expect(options[1]).toMatchObject({ supportsReasoningEffort: false });
 });
 
 test("maps the backend's advertised effort catalog and renders only advertised values", () => {
@@ -36,7 +36,6 @@ test("maps the backend's advertised effort catalog and renders only advertised v
         model: {
           effort: true,
           effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"],
-          changeWithinSession: true,
           catalog: [{ modelId: "gpt-5.6-sol", label: "Sol" }],
         },
         operations: { compact: true, compactQueue: true },
@@ -48,7 +47,6 @@ test("maps the backend's advertised effort catalog and renders only advertised v
         model: {
           effort: true,
           effortOptions: ["low", "medium", "high", "xhigh", "max", "not-an-effort"],
-          changeWithinSession: false,
           catalog: [{ modelId: "sonnet", label: "Claude Sonnet" }],
         },
         // claudeはcompact対応でもcodex raw固有のcompact queueには非対応
@@ -79,42 +77,24 @@ test("falls back to the full effort list only when a backend advertises no effor
 test("does not invent capabilities for a model missing from the current catalog", () => {
   expect(currentModelFallback("claude", "future-model")).toMatchObject({
     supportsReasoningEffort: false,
-    changeWithinSession: false,
     selectable: false,
   });
 });
 
-test("blocks backend changes and unsupported in-session model changes only for locked sessions", () => {
-  expect(isModelSelectionBlocked({
+test("blocks only backend changes for locked sessions", () => {
+  expect(isBackendChangeBlocked({
     sessionLocked: true,
     currentBackendId: "claude",
-    currentModelId: "sonnet",
-    currentChangeWithinSession: false,
     nextBackendId: "claude",
-    nextModelId: "opus",
-  })).toBe(true);
-  expect(isModelSelectionBlocked({
-    sessionLocked: true,
-    currentBackendId: "future-backend",
-    currentModelId: "unknown-model",
-    currentChangeWithinSession: undefined,
-    nextBackendId: "future-backend",
-    nextModelId: "another-model",
-  })).toBe(true);
-  expect(isModelSelectionBlocked({
+  })).toBe(false);
+  expect(isBackendChangeBlocked({
     sessionLocked: true,
     currentBackendId: "codex",
-    currentModelId: "shared-model",
-    currentChangeWithinSession: true,
     nextBackendId: "claude",
-    nextModelId: "shared-model",
   })).toBe(true);
-  expect(isModelSelectionBlocked({
+  expect(isBackendChangeBlocked({
     sessionLocked: false,
     currentBackendId: "claude",
-    currentModelId: "sonnet",
-    currentChangeWithinSession: false,
     nextBackendId: "codex",
-    nextModelId: "gpt",
   })).toBe(false);
 });

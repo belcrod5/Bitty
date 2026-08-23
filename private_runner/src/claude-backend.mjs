@@ -195,7 +195,7 @@ export function createClaudeBackend({
           ],
         },
         permission: { interactive: true },
-        model: { select: true, effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS, changeWithinSession: false, catalog: CLAUDE_MODELS },
+        model: { select: true, effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS, catalog: CLAUDE_MODELS },
         workspace: { projectCustomizations: false, admission: true },
         operations: { compact: true, schedule: false, compactQueue: false },
         event: { nativePayload: false },
@@ -302,13 +302,6 @@ export function createClaudeBackend({
     if (!SESSION_ID_PATTERN.test(freshSessionId)) {
       throw agentError("session_not_found", "Claude session ID is invalid", { backendId: "claude" });
     }
-    if (requestedSessionId && selectedModel) {
-      const savedFile = await findTranscriptFile(requestedSessionId);
-      const savedModel = savedFile ? String((await transcriptMetadata(savedFile))?.modelId || "") : "";
-      if (savedModel && savedModel !== selectedModel) {
-        throw agentError("turn_rejected", "Claude model cannot be changed within an existing session", { backendId: "claude" });
-      }
-    }
     if (!requestedSessionId) await resolveSession({ backendId: "claude", nativeSessionId: freshSessionId });
     if (signal?.aborted) {
       const error = agentError("turn_failed", "Claude turn was interrupted before process launch", { backendId: "claude" });
@@ -413,7 +406,7 @@ export function createClaudeBackend({
     const args = [
       "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       ...(requestedSessionId ? ["--resume", requestedSessionId] : ["--session-id", freshSessionId]),
-      ...(!requestedSessionId && selectedModel ? ["--model", selectedModel] : []),
+      ...(selectedModel ? ["--model", selectedModel] : []),
       ...(selectedEffort ? ["--effort", selectedEffort] : []),
       ...permissionArgs(policyProfileId, state.bridge),
     ];

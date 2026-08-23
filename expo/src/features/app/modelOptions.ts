@@ -47,7 +47,6 @@ export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): Mo
         label: String(model.label || modelId).trim() || modelId,
         supportsReasoningEffort: capability?.effort === true,
         effortOptions: parseEffortOptions(capability?.effortOptions),
-        changeWithinSession: capability?.changeWithinSession !== false,
         supportsScheduling: status.capabilities?.operations?.schedule === true,
         // compact queueはCodex raw固有の仕組み。compact対応(operations.compact)とは
         // 別capabilityで申告される。
@@ -61,7 +60,7 @@ export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): Mo
 export function currentModelFallback(
   backendId: string,
   modelId: string,
-  capability?: { effort?: boolean; effortOptions?: string[]; changeWithinSession?: boolean; schedule?: boolean; compactQueue?: boolean },
+  capability?: { effort?: boolean; effortOptions?: string[]; schedule?: boolean; compactQueue?: boolean },
 ): ModelOption {
   return {
     selectionKey: modelSelectionKey(backendId, modelId),
@@ -70,7 +69,6 @@ export function currentModelFallback(
     label: modelId,
     supportsReasoningEffort: capability?.effort === true,
     effortOptions: parseEffortOptions(capability?.effortOptions),
-    changeWithinSession: capability?.changeWithinSession === true,
     supportsScheduling: capability?.schedule === true,
     // compact queue preflightはBackendが明示的にqueue非対応と申告した時だけ止める。
     // status未取得時に落とすと、compact実行中Codexへの送信がqueueされず直撃する。
@@ -79,15 +77,10 @@ export function currentModelFallback(
   };
 }
 
-export function isModelSelectionBlocked(options: {
+export function isBackendChangeBlocked(options: {
   sessionLocked: boolean;
   currentBackendId: string;
-  currentModelId: string;
-  currentChangeWithinSession: boolean | undefined;
   nextBackendId: string;
-  nextModelId: string;
 }) {
-  if (!options.sessionLocked) return false;
-  if (options.nextBackendId !== options.currentBackendId) return true;
-  return options.nextModelId !== options.currentModelId && options.currentChangeWithinSession !== true;
+  return options.sessionLocked && options.nextBackendId !== options.currentBackendId;
 }

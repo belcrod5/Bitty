@@ -5,7 +5,7 @@ import type { ModelOption, RunnerPairingResult } from "../contexts/AppSettingsCo
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import type { AppScreen, LlmBackend } from "../types/appTypes";
 import { TTS_SPEED_STEP, type SelectedVoiceIdByProvider, type TtsProvider } from "../utils/audioConfig";
-import { isModelSelectionBlocked } from "../modelOptions";
+import { isBackendChangeBlocked } from "../modelOptions";
 import type { CodexApprovalPolicy, ReasoningEffort } from "../utils/settingsParsers";
 import { parseCloudflareRunnerPairingPayload } from "../utils/cloudflareAccess";
 import { saveSecureRunnerCredentials } from "../utils/secureRunnerCredentials";
@@ -270,18 +270,14 @@ export function useAppContextActions({
   const selectModel = useCallback((selectionKey: string) => {
     const option = modelOptions.find((item) => item.selectionKey === selectionKey);
     if (!option) return;
-    const currentOption = modelOptions.find((item) => item.backendId === llmBackend && item.modelId === modelRef);
-    const modelChangeBlocked = isModelSelectionBlocked({
+    const backendChangeBlocked = isBackendChangeBlocked({
       sessionLocked: modelBackendLocked,
       currentBackendId: llmBackend,
-      currentModelId: modelRef,
-      currentChangeWithinSession: currentOption?.changeWithinSession,
       nextBackendId: option.backendId,
-      nextModelId: option.modelId,
     });
-    if (modelChangeBlocked) {
+    if (backendChangeBlocked) {
       setModelSelectOpen(false);
-      Alert.alert("新規チャットが必要です", "チャットの途中でモデルまたはAgent Providerは変更できません。");
+      Alert.alert("新規チャットが必要です", "チャットの途中でAgent Providerは変更できません。");
       return;
     }
     setLlmBackend(option.backendId);
@@ -292,7 +288,7 @@ export function useAppContextActions({
         setThinkSelectOpen(true);
       });
     }
-  }, [drawerOpen, llmBackend, modelBackendLocked, modelOptions, modelRef, setLlmBackend, setModelRef, setModelSelectOpen, setThinkSelectOpen]);
+  }, [drawerOpen, llmBackend, modelBackendLocked, modelOptions, setLlmBackend, setModelRef, setModelSelectOpen, setThinkSelectOpen]);
   const selectThinkOption = useCallback((option: ReasoningEffort) => {
     setReasoningEffort(option);
     setThinkSelectOpen(false);

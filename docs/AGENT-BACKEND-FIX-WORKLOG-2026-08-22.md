@@ -60,7 +60,7 @@
 - `private_runner/src/claude-backend.mjs`:
   - `CLAUDE_EFFORT_OPTIONS = ["low","medium","high","xhigh","max"]`を追加(`ultra`はCLI helpに存在しないため含めない)
   - `capabilities.model`を`effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS`へ
-  - `startTurn`: effortをspawn前に検証(catalog外は`turn_rejected`)し、fresh/resume両方のargvへ`--effort <level>`を1回だけ追加。modelは従来どおりfreshのみ(`--resume`時は送らない)
+  - `startTurn`: effortをspawn前に検証(catalog外は`turn_rejected`)し、fresh/resume両方のargvへ`--effort <level>`を1回だけ追加。当時はmodelをfreshだけに送信していたが、現在はresumeにもturn単位で送る
 - `private_runner/src/codex-turn-execution.mjs`: `CODEX_EFFORT_OPTIONS`(6値)を定義し`effortOptions`としてadvertise。既存`VALID_EFFORTS`はこれを参照
 - `private_runner/src/agent/agent-service.mjs`: `startTurn`検証を拡張。`effortOptions`がadvertiseされている場合、catalog外effortは`capability_unsupported`でBackend実行前に拒否
 
@@ -392,7 +392,7 @@ runner **481 passed / 1 skipped**・Expo **119 suites / 866 tests**・`tsc --noE
 
 - **M1** 合成ページング中にBackendが一時失敗すると以降の全ページから恒久脱落 → 失敗Backendは現位置のまま複合cursorへ引き継ぎ、次ページで再試行(agent-service)。
 - **M2** Claudeの5分無出力watchdogが長時間の無音tool実行中のturnを殺す → `runningToolIds`を追跡し、tool実行中(tool.started〜tool.completed間)はno-output監視を停止。turnTimer(24h)は維持。
-- **M3** Claude一覧が毎回全transcript全文読み → `transcriptMetadataCache`(size+mtimeMs不変ならcwd/title/modelIdを再利用)。listSessions・resolveSessionCwd・resumeモデル整合チェックが対象。
+- **M3** Claude一覧が毎回全transcript全文読み → `transcriptMetadataCache`(size+mtimeMs不変ならcwd/title/modelIdを再利用)。listSessions・resolveSessionCwd・当時のresumeモデル整合チェックが対象。現在はresume時のモデル変更を許可するため、同整合チェックはない。
 - **m1** クラッシュ孤児のpending operationが恒久残留 → pruneをpending孤児(claimedHere外)にも適用し、claim前にprune実行でTTL超過後は同一IDを再claim可能に。
 - **m2** Claude resolveSessionCwdがbinding優先でnative照合が恒真 → transcript(native)優先、bindingはtranscript未発見時のフォールバックへ。
 - **m3** transcript cwdがrealpathなし文字列比較 → `realpathCwd`キャッシュで正規化してから比較(symlink workspace対応)。

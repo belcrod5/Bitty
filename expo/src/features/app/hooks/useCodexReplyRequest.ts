@@ -70,7 +70,6 @@ type UseCodexReplyRequestOptions<
     backendId: string;
     supportsReasoningEffort?: boolean;
     effortOptions?: readonly ReasoningEffort[];
-    changeWithinSession?: boolean;
     supportsCompactQueue?: boolean;
   }[];
   modelRef: string;
@@ -444,9 +443,6 @@ export function useCodexReplyRequest<
       !requestModelEffortOptions.includes(normalizedReasoningEffort)
       ? ""
       : normalizedReasoningEffort;
-    const requestTurnModel = requestThreadId && requestModelOption?.changeWithinSession === false
-      ? ""
-      : requestModelRef;
     const compactRunningLocally = Boolean(
       requestThreadKey && current.isCodexCompactRunning?.(requestThreadKey)
     );
@@ -1207,8 +1203,7 @@ export function useCodexReplyRequest<
         threadId: requestThreadId || undefined,
         strictThreadResume: !!requestThreadId,
         serviceName: "expo-ios-client",
-        model: requestTurnModel || undefined,
-        // effort変更可否はmodel固定(changeWithinSession)とは別のcapability。
+        model: requestModelRef || undefined,
         // Backendがeffort対応ならresumeでもturn単位で送る。
         effort: requestReasoningEffort || undefined,
         approvalPolicy: current.codexApprovalPolicy,

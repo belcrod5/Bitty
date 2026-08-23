@@ -16,7 +16,6 @@ export type ModelOption = {
   backendId: LlmBackend;
   supportsReasoningEffort: boolean;
   effortOptions?: readonly ReasoningEffort[];
-  changeWithinSession: boolean;
   supportsScheduling?: boolean;
   supportsCompactQueue?: boolean;
   selectable?: boolean;

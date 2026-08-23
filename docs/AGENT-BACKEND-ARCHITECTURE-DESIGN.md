@@ -190,7 +190,7 @@ BackendStatus = {
     turn: { interrupt },
     action: { kinds: ActionKind[], decisions: [...], policyProfiles: [...] },
     permission: { interactive },
-    model: { select, effort, changeWithinSession, catalog: [{ modelId, label }] },
+    model: { select, effort, effortOptions, catalog: [{ modelId, label }] },
     workspace: { projectCustomizations, admission },
     operations: { compact, schedule },
     event: { nativePayload },
@@ -304,7 +304,7 @@ item IDは同じnative recordに対してpaging/delta間でstableにする。con
 CodexのACP/CLI統合はCodex内、Claude catalog/transcript統合はClaude内で行う。
 history cursorとaction requestIdはopaqueである。Codex inode cursor、RPC ID、Claude transcript offset/permission tokenを共通層で解釈しない。
 decisionは`allow`、`deny`、対応可能なら`allow_for_session`とし、Backendがnative decisionへ変換する。
-model IDとeffort IDは共通層ではopaqueで、Backendが組を検証する。Backendの`getStatus()`はmodel catalogと`model.effort`、`model.changeWithinSession`を公開し、Expoは`(backendId, modelId)`の組だけを選択・保存する。Codexの既存model/reasoning effort一覧はCodexBackend、Claude Code CLIの安定alias（`haiku`、`sonnet`、`opus`）はClaudeBackendだけが所有する。Claudeはeffort選択とnative session途中のmodel変更をadvertiseせず、resumeでは保存済みmodelを維持する。
+model IDとeffort IDは共通層ではopaqueで、Backendが組を検証する。Backendの`getStatus()`はmodel catalogと`model.effort`を公開し、Expoは`(backendId, modelId)`の組だけを選択・保存する。materialize済みsessionではidentityを所有するBackendだけを固定し、modelはturnごとに選択できる。Codexの既存model/reasoning effort一覧はCodexBackend、Claude Code CLIの安定alias（`haiku`、`sonnet`、`opus`、`fable`）はClaudeBackendだけが所有する。
 
 ## 3.4 capabilityとoptional operation
 
@@ -409,7 +409,7 @@ claude -p --output-format stream-json --verbose --include-partial-messages
 
 resume（bindingの同一cwd）:
 claude -p --output-format stream-json --verbose --include-partial-messages
-  --safe-mode --resume <id> [permission flags]
+  --safe-mode --resume <id> [--model <alias>] [permission flags]
 ```
 
 resumeでは`--session-id`を併用しない。plain promptをstdinへwriteしてEOFし、argvへ本文を残さない。
@@ -476,7 +476,7 @@ CLI version＋fixture＋probeでhistory capabilityをgateする。将来Agent SD
 
 - native resume、turn interrupt、policy permission: spike通過後に有効
 - history read: version/fixtureで確認済みの範囲だけ有効
-- model/effort: Backendが公開する安定alias（`haiku`、`sonnet`、`opus`）だけfresh sessionで選択可。effort選択とresume中のmodel変更は無効
+- model/effort: Backendが公開する安定alias（`haiku`、`sonnet`、`opus`、`fable`）とeffortだけをfresh/resumeともturn単位で選択可。materialize済みsessionではBackendだけを固定する
 - project/local customization: 初期は`--safe-mode`で無効
 - interactive permission、compact、persistent live: 初期は無効
 
