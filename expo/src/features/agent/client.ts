@@ -186,6 +186,7 @@ export function startAgentTurnWithRawFallback(
     let lastSequence = 0;
     const eventsBeforeAcceptance: AgentEvent[] = [];
     const handledActions = new Set<string>();
+    const approvalActions = new Map<string, { request: ApprovalRequest; resolvedByServer: boolean }>();
     let eventQueue = Promise.resolve();
     let settled = false;
     let resolveTurn!: (result: CodexAppServerTurnResult) => void;
@@ -197,6 +198,15 @@ export function startAgentTurnWithRawFallback(
     const finish = (error?: Error, finishOptions?: { interruptRun?: boolean }) => {
       if (settled) return;
       settled = true;
+      for (const state of approvalActions.values()) {
+        if (!state.resolvedByServer) {
+          state.resolvedByServer = true;
+          try {
+            options.onApprovalRequestResolved?.(state.request);
+          } catch {}
+        }
+      }
+      approvalActions.clear();
       unsubscribe();
       unsubscribeSnapshot();
       clearTimeout(timeout);
@@ -214,8 +224,8 @@ export function startAgentTurnWithRawFallback(
       const requestId = String(payload.requestId || "");
       if (!requestId || handledActions.has(requestId)) return;
       handledActions.add(requestId);
-      try {
-        if (String(payload.kind || "") === "dynamic_tool") {
+      if (String(payload.kind || "") === "dynamic_tool") {
+        try {
           const input = object(payload.input);
           const rawRequest = { id: requestId, method: String(input.method || ""), params: object(input.params) };
           let result;
@@ -234,11 +244,21 @@ export function startAgentTurnWithRawFallback(
             },
           });
           if (response.op === "error") throw new Error(String(object(response.payload).message || "Tool response failed"));
-          return;
+        } catch (error) {
+          handledActions.delete(requestId);
+          throw error;
         }
-        const request = approvalRequest({ payload }, threadId, turnId);
+        return;
+      }
+      const state = {
+        request: approvalRequest({ payload }, threadId, turnId),
+        resolvedByServer: false,
+      };
+      approvalActions.set(requestId, state);
+      void (async () => {
         try {
-          const action = await options.onApprovalRequest(request);
+          const action = await options.onApprovalRequest(state.request);
+          if (state.resolvedByServer) return;
           if (!isApprovalAction(action)) throw new Error("Invalid approval action");
           const response = await manager.request({
             channel: "agent", op: "action.respond", streamId: runId,
@@ -247,14 +267,27 @@ export function startAgentTurnWithRawFallback(
               decision: action === "approve_once" || action === "approve_for_session" ? "allow" : "deny",
             },
           });
-          if (response.op === "error") throw new Error(String(object(response.payload).message || "Approval response failed"));
+          if (response.op === "error") {
+            const responsePayload = object(response.payload);
+            if (responsePayload.code === "action_expired") {
+              if (!state.resolvedByServer) {
+                state.resolvedByServer = true;
+                options.onApprovalRequestResolved?.(state.request);
+              }
+              return;
+            }
+            throw new Error(String(responsePayload.message || "Approval response failed"));
+          }
+          if (!state.resolvedByServer) options.onApprovalRequestResolved?.(state.request);
+        } catch (error) {
+          if (!state.resolvedByServer) {
+            handledActions.delete(requestId);
+            finish(error instanceof Error ? error : new Error("Approval handling failed"), { interruptRun: true });
+          }
         } finally {
-          options.onApprovalRequestResolved?.(request);
+          if (approvalActions.get(requestId) === state) approvalActions.delete(requestId);
         }
-      } catch (error) {
-        handledActions.delete(requestId);
-        throw error;
-      }
+      })();
     };
     const applyEvent = async (event: AgentEvent) => {
       if (!runId || event.runId !== runId || settled) return;
@@ -304,6 +337,15 @@ export function startAgentTurnWithRawFallback(
       }
       if (event.type === "action.requested") {
         await handleAction(payload);
+        return;
+      }
+      if (event.type === "action.resolved") {
+        const requestId = String(payload.requestId || "");
+        const state = approvalActions.get(requestId);
+        if (state && !state.resolvedByServer) {
+          state.resolvedByServer = true;
+          options.onApprovalRequestResolved?.(state.request);
+        }
         return;
       }
       if (event.type === "turn.completed") finish();

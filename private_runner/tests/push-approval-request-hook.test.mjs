@@ -23,6 +23,9 @@ const {
   forwardCodexRelayClientData,
   pushDeviceStore,
   apnsClient,
+  pendingAgentApprovals,
+  observeAgentRunEvent,
+  sendApprovalPush,
 } = __TESTING__;
 
 test.after(async () => {
@@ -90,6 +93,139 @@ test("sends exactly one push for a new approval request with the command in the 
   assert.equal(calls[0].payload.approvalId, "relay-approval-test:42");
   assert.equal(calls[0].payload.sessionId, "thread-1");
   assert.equal(calls[0].payload.directory, "");
+});
+
+test("sends provider-neutral approval pushes and clears pending entries on resolution", async (t) => {
+  await pushDeviceStore.upsertDevice({ deviceId: "device-agent", apnsToken: "token-agent", env: "sandbox" });
+  const calls = [];
+  const originalSendToDevice = apnsClient.sendToDevice;
+  apnsClient.sendToDevice = async (token, payload, opts) => {
+    calls.push({ token, payload, opts });
+    return { ok: true, status: 200 };
+  };
+  t.after(async () => {
+    apnsClient.sendToDevice = originalSendToDevice;
+    await pushDeviceStore.removeDevice("device-agent");
+    pendingAgentApprovals.clear();
+  });
+
+  const event = {
+    type: "action.requested",
+    runId: "agent-run-1",
+    sessionRef: { backendId: "claude", nativeSessionId: "claude-session-1" },
+    payload: { requestId: "approval-1", kind: "approval", title: "Allow a safe command?", decisions: ["allow", "deny"] },
+  };
+  observeAgentRunEvent(event);
+  assert.equal(pendingAgentApprovals.size, 1);
+  await flush();
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].payload.approvalId, /^agent-approval:/);
+  assert.equal(calls[0].payload.backendId, "claude");
+  assert.equal(calls[0].payload.sessionId, "claude-session-1");
+  assert.equal(calls[0].payload.aps.alert.body, "Allow a safe command?");
+  assert.equal(calls[0].payload.aps.category, "APPROVAL_REQUEST");
+  assert.equal(calls[0].payload.aps["interruption-level"], "time-sensitive");
+
+  observeAgentRunEvent({ ...event, type: "action.resolved", payload: { requestId: "approval-1" } });
+  assert.equal(pendingAgentApprovals.size, 0);
+
+  const codexEvent = {
+    ...event,
+    runId: "agent-run-2",
+    sessionRef: { backendId: "codex", nativeSessionId: "codex-session-1" },
+    payload: { ...event.payload, requestId: "approval-2" },
+  };
+  observeAgentRunEvent(codexEvent);
+  await flush();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].payload.backendId, "codex");
+  observeAgentRunEvent({ type: "turn.completed", runId: "agent-run-2", payload: {} });
+  assert.equal(pendingAgentApprovals.size, 0);
+});
+
+test("ignores non-approval actions and clears all approvals when a run terminates", () => {
+  const base = {
+    type: "action.requested",
+    runId: "agent-run-filter",
+    sessionRef: { backendId: "codex", nativeSessionId: "codex-session-1" },
+  };
+  observeAgentRunEvent({ ...base, payload: { requestId: "dynamic", kind: "dynamic_tool", decisions: ["result"] } });
+  observeAgentRunEvent({ ...base, payload: { requestId: "incomplete", kind: "approval", decisions: ["allow"] } });
+  assert.equal(pendingAgentApprovals.size, 0);
+
+  observeAgentRunEvent({
+    ...base,
+    payload: { requestId: "approval", kind: "approval", decisions: ["allow", "deny"] },
+  });
+  assert.equal(pendingAgentApprovals.size, 1);
+  observeAgentRunEvent({ type: "turn.interrupted", runId: "agent-run-filter", payload: {} });
+  assert.equal(pendingAgentApprovals.size, 0);
+});
+
+test("does not send a neutral push resolved while device listing is in flight", async (t) => {
+  const originalListDevices = pushDeviceStore.listDevices;
+  const originalSendToDevice = apnsClient.sendToDevice;
+  let releaseDevices;
+  let listingStarted;
+  const started = new Promise((resolve) => { listingStarted = resolve; });
+  const calls = [];
+  pushDeviceStore.listDevices = async () => {
+    listingStarted();
+    return await new Promise((resolve) => { releaseDevices = resolve; });
+  };
+  apnsClient.sendToDevice = async (...args) => {
+    calls.push(args);
+    return { ok: true, status: 200 };
+  };
+  t.after(() => {
+    pushDeviceStore.listDevices = originalListDevices;
+    apnsClient.sendToDevice = originalSendToDevice;
+    pendingAgentApprovals.clear();
+  });
+
+  const event = {
+    type: "action.requested",
+    runId: "agent-run-stale",
+    sessionRef: { backendId: "codex", nativeSessionId: "codex-session-stale" },
+    payload: { requestId: "approval-stale", kind: "approval", decisions: ["allow", "deny"] },
+  };
+  observeAgentRunEvent(event);
+  await started;
+  observeAgentRunEvent({ ...event, type: "action.resolved", payload: { requestId: "approval-stale" } });
+  releaseDevices([{ deviceId: "stale", apnsToken: "stale-token", env: "sandbox" }]);
+  await flush();
+  assert.equal(calls.length, 0);
+});
+
+test("the shared sender rechecks pending state before every device", async (t) => {
+  const originalListDevices = pushDeviceStore.listDevices;
+  const originalSendToDevice = apnsClient.sendToDevice;
+  let pending = true;
+  const calls = [];
+  pushDeviceStore.listDevices = async () => [
+    { deviceId: "first", apnsToken: "first-token", env: "sandbox" },
+    { deviceId: "second", apnsToken: "second-token", env: "sandbox" },
+  ];
+  apnsClient.sendToDevice = async (...args) => {
+    calls.push(args);
+    pending = false;
+    return { ok: true, status: 200 };
+  };
+  t.after(() => {
+    pushDeviceStore.listDevices = originalListDevices;
+    apnsClient.sendToDevice = originalSendToDevice;
+  });
+
+  await sendApprovalPush({
+    approvalId: "test:1",
+    sessionId: "session",
+    directory: "",
+    title: "Approval",
+    body: "Approve?",
+    isPending: () => pending,
+  });
+  assert.equal(calls.length, 1);
 });
 
 test("falls back to a generic file-change label when no command is present", async (t) => {
