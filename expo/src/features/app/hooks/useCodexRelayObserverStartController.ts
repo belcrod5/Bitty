@@ -7,7 +7,10 @@ import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { ConversationMessage, SessionRuntimeStatus } from "../types/appTypes";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
-import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
+import {
+  findLatestAssistantMessageIndex,
+  upsertCommandExecutionMessage,
+} from "../utils/sessionRuntimeStatus";
 import { resolveCodexItemRuntimeStatus } from "../utils/statusIcons";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
@@ -459,6 +462,28 @@ export function useCodexRelayObserverStartController({
         clearRespondingRequestStartedAtMs: isResponding ? null : startedAtMs,
       });
     };
+    const upsertRelayCommandMessage = (itemRaw: unknown, phase: "started" | "completed") => {
+      if (!shouldProjectRelayToTarget()) return;
+      const item = itemRaw && typeof itemRaw === "object" ? itemRaw as Record<string, unknown> : {};
+      const itemId = String(item.id || "").trim();
+      if (!itemId) return;
+      const latestConversation = relayPanelConversationDraft.length > 0
+        ? relayPanelConversationDraft
+        : readTargetConversation();
+      const nextConversation = upsertCommandExecutionMessage(
+        latestConversation,
+        item,
+        phase,
+        codexItemMessageId(threadId, itemId),
+        (commandExecution) => buildConversationMessage("assistant", "", { commandExecution })
+      );
+      relayPanelConversationDraft = nextConversation;
+      writeTargetConversation(nextConversation, {
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        sessionId: threadId,
+      });
+    };
     const settleRelayAgentMessages = (
       status: LlmUiStatus,
       detail: string,
@@ -663,6 +688,15 @@ export function useCodexRelayObserverStartController({
             void onSessionStreamBoundary?.(threadId);
           }
           const payload = params && typeof params === "object" ? params as Record<string, unknown> : {};
+          if (
+            (method === "item/started" || method === "item/completed") &&
+            String((payload as any)?.item?.type || "") === "commandExecution"
+          ) {
+            upsertRelayCommandMessage(
+              (payload as any).item,
+              method === "item/started" ? "started" : "completed"
+            );
+          }
           const itemRuntimeStatus = method === "item/started" || method === "item/completed"
             ? resolveCodexItemRuntimeStatus(
               (payload as any)?.item,

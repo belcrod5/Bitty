@@ -524,6 +524,42 @@ describe("useCodexRelayObserverStartController relay watermark", () => {
 });
 
 describe("useCodexRelayObserverStartController message ids", () => {
+  test("upserts replayed command execution with one deterministic message id", async () => {
+    const threadId = "thread-1";
+    const harness = createHarness([]);
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession(threadId, {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        startedAtMs: Date.now(),
+      });
+      harness.getObserverOptions().onEvent("item/started", {
+        item: { id: "call-1", type: "commandExecution", command: "find . -type f", status: "inProgress" },
+      });
+    });
+
+    expect(harness.getSessionConversation()).toEqual([
+      expect.objectContaining({
+        id: codexItemMessageId(threadId, "call-1"),
+        commandExecution: { command: "find . -type f", status: "running", exitCode: null },
+      }),
+    ]);
+
+    await act(async () => {
+      harness.getObserverOptions().onEvent("item/completed", {
+        item: { id: "call-1", type: "commandExecution", command: "", status: "completed", exitCode: 0 },
+      });
+    });
+
+    expect(harness.getSessionConversation()).toEqual([
+      expect.objectContaining({
+        id: codexItemMessageId(threadId, "call-1"),
+        commandExecution: { command: "find . -type f", status: "completed", exitCode: 0 },
+      }),
+    ]);
+  });
+
   test("returns shared runtime to thinking after an intermediate agent message completes", async () => {
     const harness = createHarness([]);
     const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));

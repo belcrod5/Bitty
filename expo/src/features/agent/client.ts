@@ -100,6 +100,58 @@ function contextUsage(payload: Record<string, unknown>): CodexContextUsage | nul
   return normalizeContextUsageSnapshot(object(payload.usage || payload));
 }
 
+function agentItemAsCodexItem(payload: Record<string, unknown>) {
+  const itemType = String(payload.itemType || "item");
+  return {
+    id: String(payload.itemId || ""),
+    type: itemType === "assistant" ? "agentMessage" : itemType,
+    ...(Array.isArray(payload.content) ? { content: payload.content } : {}),
+  };
+}
+
+function agentEventAsCodexEvent(event: AgentEvent, payload: Record<string, unknown>) {
+  if (event.type === "item.started" || event.type === "item.completed") {
+    return {
+      method: event.type.replace(".", "/"),
+      params: { item: agentItemAsCodexItem(payload) },
+    };
+  }
+  if (event.type === "tool.started") {
+    return {
+      method: "item/started",
+      params: {
+        item: {
+          id: String(payload.toolCallId || ""),
+          type: "commandExecution",
+          command: String(payload.inputSummary || payload.name || "tool"),
+          status: "inProgress",
+        },
+      },
+    };
+  }
+  if (event.type === "tool.completed") {
+    const exitCode = payload.exitCode === null || payload.exitCode === undefined
+      ? null
+      : Number(payload.exitCode);
+    return {
+      method: "item/completed",
+      params: {
+        item: {
+          id: String(payload.toolCallId || ""),
+          type: "commandExecution",
+          command: String(payload.inputSummary || ""),
+          status: String(payload.status || "completed"),
+          exitCode: Number.isFinite(exitCode) ? exitCode : null,
+        },
+      },
+    };
+  }
+  return {
+    method: String(event.type || "").replace(".", "/"),
+    params: payload,
+  };
+}
+
 type AgentRunEventPumpOptions = {
   manager: RunnerWebSocketManager;
   threadId: string;
@@ -482,7 +534,10 @@ export function startAgentTurnWithRawFallback(
       onApprovalRequestResolved: options.onApprovalRequestResolved,
       onCalendarToolCall: options.onCalendarToolCall,
       onThreadIdResolved: options.onThreadIdResolved,
-      onEvent: (event, payload) => options.onEvent?.(String(event.type || ""), payload),
+      onEvent: (event, payload) => {
+        const compatible = agentEventAsCodexEvent(event, payload);
+        options.onEvent?.(compatible.method, compatible.params);
+      },
       onDelta: options.onDelta,
       onAgentMessageCompleted: options.onAgentMessageCompleted,
       onTerminal: (type, payload) => {
@@ -598,15 +653,6 @@ export function startAgentSessionObserverWithRawFallback(
   const emitLog = (stage: string, message?: string) => {
     try { options.onLog?.({ stage, ...(message ? { message } : {}) }); } catch {}
   };
-  const legacyItem = (payload: Record<string, unknown>) => {
-    const itemType = String(payload.itemType || "item");
-    return {
-      id: String(payload.itemId || ""),
-      type: itemType === "assistant" ? "agentMessage" : itemType,
-      ...(Array.isArray(payload.content) ? { content: payload.content } : {}),
-    };
-  };
-
   function close() {
     if (closed) return;
     closed = true;
@@ -649,28 +695,18 @@ export function startAgentSessionObserverWithRawFallback(
       onApprovalRequest: options.onApprovalRequest,
       onApprovalRequestResolved: options.onApprovalRequestResolved,
       onEvent: (event, payload) => {
-        if (event.type === "turn.started") options.onEvent?.("turn/started", payload);
-        else if (event.type === "item.started") options.onEvent?.("item/started", { item: legacyItem(payload) });
-        else if (event.type === "item.completed") options.onEvent?.("item/completed", { item: legacyItem(payload) });
-        else if (event.type === "tool.started") {
-          options.onEvent?.("item/started", {
-            item: { id: String(payload.toolCallId || ""), type: "commandExecution", command: String(payload.name || "tool"), status: "inProgress" },
-          });
-        } else if (event.type === "tool.completed") {
-          options.onEvent?.("item/completed", {
-            item: { id: String(payload.toolCallId || ""), type: "commandExecution", command: "tool", status: String(payload.status || "completed") },
-          });
-        } else if (event.type === "action.requested") emitLog("relay_observer_approval_required");
+        const compatible = agentEventAsCodexEvent(event, payload);
+        options.onEvent?.(compatible.method, compatible.params);
+        if (event.type === "action.requested") emitLog("relay_observer_approval_required");
       },
       onDelta: (delta, payload) => options.onDelta?.(delta, { itemId: String(payload.itemId || "") }),
-      onAgentMessageCompleted: (text, payload) => options.onAgentMessageCompleted?.(text, { item: legacyItem(payload) }),
+      onAgentMessageCompleted: (text, payload) => options.onAgentMessageCompleted?.(text, { item: agentItemAsCodexItem(payload) }),
       onSequence: (activeRunId, sequence) => options.onRelaySeqAdvance?.({ threadId, relayId: activeRunId, seq: sequence }),
       onReplayTruncated: (activeRunId, replayFromSequence) => {
         emitLog("relay_observer_replay_truncated", "Agent event replay starts after the retained history boundary");
         options.onRelayReset?.({ threadId, relayId: activeRunId, seq: replayFromSequence - 1 });
       },
       onTerminal: (type, payload) => {
-        options.onEvent?.(type.replace(".", "/"), payload);
         options.onTurnCompleted?.({ ...payload, outcome: type.slice("turn.".length) });
         close();
       },

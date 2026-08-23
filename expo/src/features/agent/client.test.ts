@@ -165,6 +165,7 @@ function deferred<T>() {
 async function createLiveTurn(options: {
   onApprovalRequest: (request: any) => Promise<any>;
   onApprovalRequestResolved?: (request: any) => void;
+  onEvent?: (method: string, params: unknown) => void;
   actionResponse?: { channel: string; op: string; payload?: Record<string, unknown> } | Promise<{
     channel: string; op: string; payload?: Record<string, unknown>;
   }>;
@@ -227,6 +228,7 @@ async function createLiveTurn(options: {
     cwd: "/workspace",
     onApprovalRequest: options.onApprovalRequest,
     onApprovalRequestResolved: options.onApprovalRequestResolved,
+    onEvent: options.onEvent,
   }, jest.fn());
   for (let index = 0; index < 20 && request.mock.calls.every(([message]) => message.op !== "turn.start"); index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -246,6 +248,47 @@ async function createLiveTurn(options: {
     },
   };
 }
+
+test("a direct neutral turn maps tool lifecycle to one raw-compatible command item", async () => {
+  const onEvent = jest.fn();
+  const turn = await createLiveTurn({
+    onApprovalRequest: async () => "decline",
+    onEvent,
+  });
+
+  turn.emit("tool.started", {
+    toolCallId: "call-1",
+    name: "exec_command",
+    inputSummary: "find . -type f",
+  });
+  turn.emit("tool.completed", {
+    toolCallId: "call-1",
+    inputSummary: "find . -type f",
+    status: "completed",
+    exitCode: 0,
+  });
+  turn.emit("turn.completed");
+  await turn.session.promise;
+
+  expect(onEvent).toHaveBeenNthCalledWith(1, "item/started", {
+    item: {
+      id: "call-1",
+      type: "commandExecution",
+      command: "find . -type f",
+      status: "inProgress",
+    },
+  });
+  expect(onEvent).toHaveBeenNthCalledWith(2, "item/completed", {
+    item: {
+      id: "call-1",
+      type: "commandExecution",
+      command: "find . -type f",
+      status: "completed",
+      exitCode: 0,
+    },
+  });
+  expect(onEvent).toHaveBeenNthCalledWith(3, "turn/completed", {});
+});
 
 test.each([
   { action: "approve_for_session" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow_for_session" },
@@ -657,6 +700,96 @@ test("a restored neutral observer settles when the run ends between history and 
   }
 
   expect(onTurnCompleted).toHaveBeenCalledWith({ noActiveRun: true });
+});
+
+test("a restored neutral observer does not replace started tool input with a generic completion label", async () => {
+  let eventHandler: ((message: any) => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: { protocolVersion: 2, backends: [{ backendId: "codex", readiness: { ready: true } }] },
+      };
+    }
+    if (message.op === "events.resume") {
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "tool.started",
+          runId: "run-1",
+          sequence: 1,
+          payload: { toolCallId: "call-1", name: "exec_command", inputSummary: "find . -type f" },
+        },
+      });
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "tool.completed",
+          runId: "run-1",
+          sequence: 2,
+          payload: {
+            toolCallId: "call-1",
+            status: "completed",
+            exitCode: 0,
+          },
+        },
+      });
+      return {
+        channel: "agent",
+        op: "events.resumed",
+        streamId: "run-1",
+        payload: { active: true, runId: "run-1", activeActions: [] },
+      };
+    }
+    return { channel: "agent", op: "events.detached", payload: { detached: true } };
+  });
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onEvent = jest.fn();
+  const observer = startAgentSessionObserverWithRawFallback({
+    wsUrl: "ws://runner.test",
+    threadId: "session-1",
+    backendId: "codex",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    onApprovalRequest: async () => "decline" as const,
+    onEvent,
+  }, jest.fn());
+
+  for (let i = 0; i < 20 && onEvent.mock.calls.length < 2; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(onEvent).toHaveBeenNthCalledWith(1, "item/started", {
+    item: {
+      id: "call-1",
+      type: "commandExecution",
+      command: "find . -type f",
+      status: "inProgress",
+    },
+  });
+  expect(onEvent).toHaveBeenNthCalledWith(2, "item/completed", {
+    item: {
+      id: "call-1",
+      type: "commandExecution",
+      command: "",
+      status: "completed",
+      exitCode: 0,
+    },
+  });
+  observer.close();
 });
 
 test("a passive observer projection error detaches without interrupting the active run", async () => {

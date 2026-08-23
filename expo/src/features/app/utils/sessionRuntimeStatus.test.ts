@@ -3,6 +3,7 @@ import {
   hasPendingAssistantReplyInConversation,
   isCommandExecutionMessage,
   settleRunningCommandExecution,
+  upsertCommandExecutionMessage,
 } from "./sessionRuntimeStatus";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 
@@ -57,6 +58,28 @@ describe("settleRunningCommandExecution", () => {
   it("leaves non-running commands untouched", () => {
     const failed: CodexCommandExecutionInfo = { command: "false", status: "failed", exitCode: 1 };
     expect(settleRunningCommandExecution(failed, "completed")).toBe(failed);
+  });
+});
+
+describe("upsertCommandExecutionMessage", () => {
+  it("settles a hydrated command when replay only contains the completion", () => {
+    const hydrated = [{
+      id: "command-1",
+      role: "assistant" as const,
+      content: "",
+      commandExecution: { command: "find . -type f", status: "running" as const, exitCode: null },
+    }];
+
+    expect(upsertCommandExecutionMessage(
+      hydrated,
+      { status: "completed", exitCode: 0 },
+      "completed",
+      "command-1",
+      () => { throw new Error("hydrated row should be updated"); }
+    )).toEqual([{
+      ...hydrated[0],
+      commandExecution: { command: "find . -type f", status: "completed", exitCode: 0 },
+    }]);
   });
 });
 
