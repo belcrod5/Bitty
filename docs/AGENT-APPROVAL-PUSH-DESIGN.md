@@ -2,7 +2,7 @@
 
 ## 文書情報
 
-- 状態: 設計確定、実装未着手
+- 状態: 実装済み、自動テスト・iOS実機検証済み
 - 対象ブランチ: `feat/neutral-approval-push`
 - 基準: `origin/main` c6367b0、2026-08-23
 - 対象: neutral Agent経路（Claude / Codex共通）
@@ -198,7 +198,8 @@ Swift/native responder、Push endpoint形式、notification categoryは変更不
 |---|---|
 | `private_runner/src/agent/agent-service.mjs` | optional汎用observerをpublishへ接続 |
 | `private_runner/src/agent/agent-runtime.mjs` | observer callbackを組み立て境界から渡す |
-| `private_runner/src/server-runtime.mjs` | pending Map、neutral Push、既存endpoint振り分け、送信共通化 |
+| `private_runner/src/approval-push-service.mjs` | pending Map、neutral Push、既存endpoint振り分け、raw/neutral送信共通化 |
+| `private_runner/src/server-runtime.mjs` | approval Push serviceの依存注入、route・raw hook接続 |
 | `private_runner/tests/agent-service.test.mjs` | observer契約テスト |
 | Push関連Node tests | neutral送信、stale、応答、raw回帰 |
 | `expo/src/features/agent/client.ts`とtest | `action.resolved`を受ける非blocking action lifecycle |

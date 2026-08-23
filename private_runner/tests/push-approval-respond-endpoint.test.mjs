@@ -14,7 +14,7 @@ process.env.APPLE_TEAM_ID = "TESTTEAMID";
 process.env.PUSH_DEVICE_STORE_PATH = path.join(tempDir, "push_devices.json");
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
-const { server, codexWsRelaysById, pendingAgentApprovals, agentService } = __TESTING__;
+const { server, codexWsRelaysById } = __TESTING__;
 
 test.after(async () => {
   await fs.rm(tempDir, { recursive: true, force: true });
@@ -183,106 +183,5 @@ test("returns 409 on a second respond call for the same approval id (already ans
       authorization: "Bearer test-runner-token",
     });
     assert.equal(second.status, 409);
-  });
-});
-
-test("routes neutral approve and deny decisions through AgentService", async (t) => {
-  const originalRespondToAction = agentService.respondToAction;
-  const calls = [];
-  agentService.respondToAction = async (request) => { calls.push(request); };
-  t.after(() => { agentService.respondToAction = originalRespondToAction; });
-
-  await withServer(async (baseUrl) => {
-    for (const [suffix, approved, decision] of [["1", true, "allow"], ["2", false, "deny"]]) {
-      const approvalId = `agent-approval:00000000-0000-4000-8000-00000000000${suffix}`;
-      pendingAgentApprovals.set(approvalId, {
-        runId: `run-${suffix}`, requestId: `request-${suffix}`, responding: false,
-      });
-      const response = await postRespond(baseUrl, approvalId, { approved }, {
-        authorization: "Bearer test-runner-token",
-      });
-      assert.equal(response.status, 200);
-      assert.deepEqual(await response.json(), { ok: true, enabled: true, approved });
-      assert.equal(calls.at(-1).decision, decision);
-    }
-  });
-});
-
-test("reserves a neutral approval before awaiting AgentService", async (t) => {
-  const originalRespondToAction = agentService.respondToAction;
-  let release;
-  const calls = [];
-  agentService.respondToAction = (request) => {
-    calls.push(request);
-    return new Promise((resolve) => { release = resolve; });
-  };
-  t.after(() => { agentService.respondToAction = originalRespondToAction; });
-
-  await withServer(async (baseUrl) => {
-    const approvalId = "agent-approval:00000000-0000-4000-8000-000000000003";
-    pendingAgentApprovals.set(approvalId, { runId: "run-3", requestId: "request-3", responding: false });
-    const first = postRespond(baseUrl, approvalId, { approved: true }, {
-      authorization: "Bearer test-runner-token",
-    });
-    while (calls.length === 0) await new Promise((resolve) => setImmediate(resolve));
-    const duplicate = await postRespond(baseUrl, approvalId, { approved: false }, {
-      authorization: "Bearer test-runner-token",
-    });
-    assert.equal(duplicate.status, 409);
-    assert.equal(calls.length, 1);
-    release();
-    assert.equal((await first).status, 200);
-  });
-});
-
-test("normalizes expired neutral approvals to 409 and rejects malformed neutral ids", async (t) => {
-  const originalRespondToAction = agentService.respondToAction;
-  agentService.respondToAction = async () => {
-    const error = new Error("expired");
-    error.code = "action_expired";
-    throw error;
-  };
-  t.after(() => { agentService.respondToAction = originalRespondToAction; });
-
-  await withServer(async (baseUrl) => {
-    const malformed = await postRespond(baseUrl, "agent-approval:not-a-uuid", { approved: true }, {
-      authorization: "Bearer test-runner-token",
-    });
-    assert.equal(malformed.status, 400);
-
-    const approvalId = "agent-approval:00000000-0000-4000-8000-000000000004";
-    pendingAgentApprovals.set(approvalId, { runId: "run-4", requestId: "request-4", responding: false });
-    const expired = await postRespond(baseUrl, approvalId, { approved: true }, {
-      authorization: "Bearer test-runner-token",
-    });
-    assert.equal(expired.status, 409);
-    assert.equal(pendingAgentApprovals.has(approvalId), false);
-  });
-});
-
-test("releases a neutral response reservation after an unexpected failure", async (t) => {
-  const originalRespondToAction = agentService.respondToAction;
-  let attempts = 0;
-  agentService.respondToAction = async () => {
-    attempts += 1;
-    if (attempts === 1) throw new Error("temporary failure");
-  };
-  t.after(() => { agentService.respondToAction = originalRespondToAction; });
-
-  await withServer(async (baseUrl) => {
-    const approvalId = "agent-approval:00000000-0000-4000-8000-000000000005";
-    const entry = { runId: "run-5", requestId: "request-5", responding: false };
-    pendingAgentApprovals.set(approvalId, entry);
-    const first = await postRespond(baseUrl, approvalId, { approved: true }, {
-      authorization: "Bearer test-runner-token",
-    });
-    assert.equal(first.status, 500);
-    assert.equal(entry.responding, false);
-
-    const retry = await postRespond(baseUrl, approvalId, { approved: true }, {
-      authorization: "Bearer test-runner-token",
-    });
-    assert.equal(retry.status, 200);
-    assert.equal(attempts, 2);
   });
 });

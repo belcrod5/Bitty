@@ -44,15 +44,14 @@ import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createNormalCodexTurnStarter } from "./codex-relay-initiator.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
+import { createApprovalPushService } from "./approval-push-service.mjs";
 import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
-import { AGENT_TERMINAL_EVENT_TYPES } from "./agent/agent-protocol.mjs";
 import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
 import {
   createLocationScheduleService,
   LocationScheduleStoreUnavailableError,
 } from "./location-schedule-service.mjs";
 import {
-  compactLlmCompletionPreview,
   createTurnCompletionNotifier,
   derivePushDirectoryTitle,
 } from "./turn-completion-notification.mjs";
@@ -1658,44 +1657,15 @@ function resolveCliSessionEntryExecutionCwd(entry) {
   return "";
 }
 
-const pendingAgentApprovals = new Map();
-
-function observeAgentRunEvent(event) {
-  const runId = String(event?.runId || "").trim();
-  const requestId = String(event?.payload?.requestId || "").trim();
-  if (event?.type === "action.resolved") {
-    for (const [approvalId, entry] of pendingAgentApprovals) {
-      if (entry.runId === runId && entry.requestId === requestId) pendingAgentApprovals.delete(approvalId);
-    }
-    return;
-  }
-  if (AGENT_TERMINAL_EVENT_TYPES.has(event?.type)) {
-    for (const [approvalId, entry] of pendingAgentApprovals) {
-      if (entry.runId === runId) pendingAgentApprovals.delete(approvalId);
-    }
-    return;
-  }
-  const sessionRef = event?.sessionRef;
-  const decisions = event?.payload?.decisions;
-  if (
-    event?.type !== "action.requested" || !runId || !requestId ||
-    !sessionRef?.backendId || !sessionRef?.nativeSessionId ||
-    event?.payload?.kind === "dynamic_tool" || !Array.isArray(decisions) ||
-    !decisions.includes("allow") || !decisions.includes("deny")
-  ) return;
-  const approvalId = `agent-approval:${randomUUID()}`;
-  const entry = {
-    runId,
-    requestId,
-    sessionRef,
-    title: String(event.payload.title || ""),
-    responding: false,
-  };
-  pendingAgentApprovals.set(approvalId, entry);
-  void sendAgentApprovalRequestPush(approvalId, entry).catch((err) => {
-    console.warn(`[push] agent approval send failed: ${errorMessage(err)}`);
-  });
-}
+let agentService;
+const approvalPushService = createApprovalPushService({
+  enabled: PUSH_ENABLED, runnerToken: RUNNER_TOKEN, apnsClient, deviceStore: pushDeviceStore,
+  getAgentSessionBinding,
+  respondToAgentAction: (request) => agentService.respondToAction(request),
+  getRawRelay: (relayId) => codexWsRelaysById.get(relayId),
+  forwardRawData: (relay, data) => forwardCodexRelayClientData(relay, data, false),
+  parseAuthToken, readJsonBody, json, writeJsonRequestError,
+});
 
 const agentRuntime = createPrivateRunnerAgentRuntime({
   claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
@@ -1712,9 +1682,10 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   listSessions: listLlmSessions, listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
-  onRunEvent: observeAgentRunEvent,
+  onRunEvent: approvalPushService.onRunEvent,
 });
-const { service: agentService, httpHandler: agentHttpHandler } = agentRuntime;
+({ service: agentService } = agentRuntime);
+const { httpHandler: agentHttpHandler } = agentRuntime;
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -8706,92 +8677,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === "POST" && pathname.startsWith("/push/approvals/") && pathname.endsWith("/respond")) {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    if (!PUSH_ENABLED) {
-      return json(res, 200, { ok: true, enabled: false });
-    }
-    let approvalId = "";
-    try {
-      approvalId = decodeURIComponent(
-        pathname.slice("/push/approvals/".length, pathname.length - "/respond".length)
-      ).trim();
-    } catch {
-      // Malformed percent-encoding throws URIError; fall through to the 400 below rather
-      // than crashing the process with an unhandled rejection.
-      approvalId = "";
-    }
-    let body;
-    try {
-      body = await readJsonBody(req);
-    } catch (err) {
-      return writeJsonRequestError(res, err, "push_approval_respond_failed");
-    }
-    if (typeof body?.approved !== "boolean") {
-      return json(res, 400, { error: "invalid_request", message: "approved (boolean) is required" });
-    }
-    if (approvalId.startsWith("agent-approval:")) {
-      if (!/^agent-approval:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(approvalId)) {
-        return json(res, 400, { error: "invalid_approval_id", message: "approval id is malformed" });
-      }
-      const entry = pendingAgentApprovals.get(approvalId);
-      if (!entry || entry.responding) {
-        return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
-      }
-      entry.responding = true;
-      try {
-        await agentService.respondToAction({
-          runId: entry.runId,
-          requestId: entry.requestId,
-          decision: body.approved ? "allow" : "deny",
-        });
-        return json(res, 200, { ok: true, enabled: true, approved: body.approved });
-      } catch (err) {
-        if (pendingAgentApprovals.get(approvalId) === entry) entry.responding = false;
-        if (err?.code === "action_expired") {
-          pendingAgentApprovals.delete(approvalId);
-          return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
-        }
-        return json(res, 500, { error: "push_approval_respond_failed", message: errorMessage(err) });
-      }
-    }
-    // Raw approvalId is minted as "<relayId>:<rpcId>"; relayId never contains ":".
-    const separatorIndex = approvalId.lastIndexOf(":");
-    const relayId = separatorIndex > 0 ? approvalId.slice(0, separatorIndex) : "";
-    const rpcId = separatorIndex > 0 ? Number(approvalId.slice(separatorIndex + 1)) : NaN;
-    if (!relayId || !Number.isInteger(rpcId)) {
-      return json(res, 400, { error: "invalid_approval_id", message: "approval id is malformed" });
-    }
-    const relay = codexWsRelaysById.get(relayId);
-    if (!relay || relay.closed) {
-      return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
-    }
-    try {
-      // Re-check right before forwarding: the live WS approval UI (or a previous call to this
-      // endpoint) may have already answered this request while we awaited the request body.
-      if (!(relay.pendingApprovalRequestIds instanceof Set) || !relay.pendingApprovalRequestIds.has(rpcId)) {
-        return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
-      }
-      const decision = body.approved ? "accept" : "decline";
-      // Bridges to the existing codex-ws relay approval processing: this is the same
-      // JSON-RPC response shape/path the app sends over the live WS (see turn.ts sendJson),
-      // so forwardCodexRelayClientData's existing bookkeeping (pendingApprovalRequestIds
-      // cleanup, queueing while upstream is reconnecting, etc.) applies unchanged.
-      forwardCodexRelayClientData(
-        relay,
-        JSON.stringify({ jsonrpc: "2.0", id: rpcId, result: { decision } }),
-        false
-      );
-      return json(res, 200, { ok: true, enabled: true, approved: body.approved });
-    } catch (err) {
-      return json(res, 500, { error: "push_approval_respond_failed", message: errorMessage(err) });
-    }
-  }
+  if (await approvalPushService.handleHttpRequest(req, res, pathname)) return;
 
   if (
     (req.method === "GET" || req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE") &&
@@ -11250,104 +11136,6 @@ function parseCodexRpcObject(rawData, isBinary, maxChars = 200000) {
   }
 }
 
-// Builds a short push-notification body describing the command/tool awaiting approval.
-// No LLM summarization here (design decision): the raw command string is truncated instead,
-// matching the design doc's "要約LLM呼び出しは不要" note for approval requests.
-function buildApprovalPushBody(method, paramsRaw) {
-  const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw : {};
-  const command = pickFirstNonEmptyString(
-    params.command,
-    params.item?.command,
-    params.request?.command
-  );
-  const argsRaw = Array.isArray(params.args)
-    ? params.args
-    : (Array.isArray(params.item?.args) ? params.item.args : []);
-  const argsText = argsRaw.length > 0 ? ` ${argsRaw.map((item) => String(item ?? "")).join(" ")}` : "";
-  const fallbackLabel = String(method || "").startsWith("item/fileChange")
-    ? "ファイル変更"
-    : "コマンド実行";
-  const combined = command ? `${command}${argsText}` : fallbackLabel;
-  return compactLlmCompletionPreview(combined, 120) || fallbackLabel;
-}
-
-async function sendApprovalPush({ approvalId, backendId, sessionId, directory, title, body, isPending }) {
-  if (!PUSH_ENABLED || !apnsClient) return;
-  let devices = [];
-  try {
-    devices = await pushDeviceStore.listDevices();
-  } catch (err) {
-    console.warn(`[push] failed to list devices: ${errorMessage(err)}`);
-    return;
-  }
-  if (devices.length <= 0) return;
-  if (!isPending()) return;
-  const payload = {
-    aps: {
-      alert: { title, body },
-      sound: "default",
-      category: "APPROVAL_REQUEST",
-      "interruption-level": "time-sensitive",
-    },
-    approvalId,
-    ...(backendId ? { backendId } : {}),
-    sessionId,
-    directory,
-  };
-
-  let sentCount = 0;
-  await Promise.all(devices.map(async (device) => {
-    if (!isPending()) return;
-    try {
-      const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
-      if (result?.status === 410) {
-        await pushDeviceStore.removeDevice(device.deviceId);
-      } else if (!result?.ok) {
-        console.warn(
-          `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
-        );
-      } else {
-        sentCount += 1;
-      }
-    } catch (err) {
-      console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
-    }
-  }));
-  if (sentCount > 0) {
-    console.log(`[push] approval push sent devices=${sentCount}/${devices.length} approvalId=${approvalId}`);
-  }
-}
-
-// Sends a PUSH for a codex-ws-relay-forwarded approval request the moment it arrives from
-// upstream, so it reaches the device before the app-side approval UI would time out.
-async function sendApprovalRequestPush(relay, rpcId, method, params) {
-  return sendApprovalPush({
-    approvalId: `${relay.relayId}:${rpcId}`,
-    sessionId: String(relay.threadId || relay.runnerWsLlmSessionId || ""),
-    directory: String(relay.threadCwd || ""),
-    title: derivePushDirectoryTitle(relay?.threadCwd) || "承認リクエスト",
-    body: buildApprovalPushBody(method, params),
-    isPending: () => relay?.pendingApprovalRequestIds?.has?.(rpcId) === true,
-  });
-}
-
-async function sendAgentApprovalRequestPush(approvalId, entry) {
-  let binding = null;
-  try {
-    binding = await getAgentSessionBinding(entry.sessionRef);
-  } catch {}
-  const directory = String(binding?.canonicalCwd || "");
-  return sendApprovalPush({
-    approvalId,
-    backendId: String(entry.sessionRef.backendId),
-    sessionId: String(entry.sessionRef.nativeSessionId),
-    directory,
-    title: derivePushDirectoryTitle(directory) || "承認リクエスト",
-    body: compactLlmCompletionPreview(entry.title, 120) || "承認リクエスト",
-    isPending: () => pendingAgentApprovals.get(approvalId) === entry && entry.responding === false,
-  });
-}
-
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
   if (!payload?.threadId) return false;
   if (typeof runnerWsActiveClients === "undefined") return false;
@@ -11612,7 +11400,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
         // Fire exactly once per (relay, rpcId): only on first sighting of this approval id,
         // never on a replayed/duplicate upstream message for the same request.
         if (isNewApprovalRequest) {
-          void sendApprovalRequestPush(relay, approvalRpcId, meta.method, rpcPayload?.params).catch((err) => {
+          void approvalPushService.sendRawApprovalRequest(relay, approvalRpcId, meta.method, rpcPayload?.params).catch((err) => {
             console.warn(
               `[push] approval push failed relayId=${relay.relayId} rpcId=${approvalRpcId}: ${errorMessage(err)}`
             );
@@ -12419,11 +12207,6 @@ export const __TESTING__ = {
   locationScheduleService,
   codexScheduleService,
   turnCompletionNotifier,
-  agentService,
-  pendingAgentApprovals,
-  observeAgentRunEvent,
-  sendApprovalPush,
-  sendApprovalRequestPush,
   derivePushDirectoryTitle,
   codexWsRelaysById,
   CODEX_WS_RELAY_MAX_ACTIVE,
