@@ -947,6 +947,66 @@ test("resolves active actions before the terminal event", async () => {
   assert.deepEqual(types.slice(-3), ["action.requested", "action.resolved", "turn.completed"]);
 });
 
+test("observes every published event once without subscribers or replay", async () => {
+  const observed = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      emit("action.requested", { requestId: "approval-1", kind: "approval", decisions: ["allow", "deny"] });
+      assert.equal(observed.at(-1)?.type, "action.requested");
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-observed",
+    onRunEvent: (event) => { observed.push(event); },
+  });
+  const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  await run.completion;
+  const observedCount = observed.length;
+  service.subscribe(run.runId, { onEvent() {} }).unsubscribe();
+  assert.equal(observed.length, observedCount);
+  assert.deepEqual(observed.map((event) => event.type), [
+    "turn.accepted", "session.resolved", "turn.started", "action.requested", "action.resolved", "turn.completed",
+  ]);
+});
+
+test("isolates synchronous and asynchronous observer failures from run execution", async () => {
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit }) {
+      emit("turn.started", {});
+      emit("provider.event", { backendId: "test", nativeType: "async-failure", data: {} });
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    onRunEvent(event) {
+      if (event.type === "turn.accepted") throw new Error("sync observer failure");
+      if (event.type === "provider.event") return Promise.reject(new Error("async observer failure"));
+    },
+  });
+  const run = await service.startTurn(startRequest({
+    sessionRef: { backendId: "test", nativeSessionId: "session-1" },
+  }), { subjectId: "user-1" });
+  assert.equal((await run.completion).outcome, "completed");
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("recovers an old-process lease before admitting a resumed turn", async () => {
   const sessions = sessionStore();
   const sessionRef = { backendId: "test", nativeSessionId: "session-recovery" };

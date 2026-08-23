@@ -94,6 +94,7 @@ export function createAgentService({
   compactLeasePollMs = 500,
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
+  onRunEvent,
 } = {}) {
   const registry = new Map();
   for (const backend of backends || []) {
@@ -184,6 +185,11 @@ export function createAgentService({
     });
     run.events.push(event);
     if (run.events.length > replayLimit) run.events.shift();
+    if (typeof onRunEvent === "function") {
+      try {
+        Promise.resolve(onRunEvent(event)).catch(() => {});
+      } catch {}
+    }
     for (const subscriber of run.subscribers) subscriber(event);
     return event;
   }

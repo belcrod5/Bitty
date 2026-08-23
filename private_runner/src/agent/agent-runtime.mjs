@@ -41,6 +41,7 @@ export function createPrivateRunnerAgentRuntime({
   normalizeSessionListLimit,
   normalizeSessionMessagesLimit,
   readJsonBody,
+  onRunEvent,
 }) {
   const subjectId = `runner:${createHash("sha256").update(String(runnerToken || "")).digest("hex")}`;
   const sessionStore = {
@@ -144,6 +145,7 @@ export function createPrivateRunnerAgentRuntime({
     sessionStore,
     workspaceAdmission,
     resolveCanonicalCwd,
+    onRunEvent,
   });
   const httpHandler = createAgentHttpHandler({
     service, runnerToken, parseAuthToken, json, normalizeSessionListLimit,

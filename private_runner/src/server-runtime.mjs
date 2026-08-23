@@ -44,6 +44,7 @@ import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createNormalCodexTurnStarter } from "./codex-relay-initiator.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
+import { createApprovalPushService } from "./approval-push-service.mjs";
 import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
 import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
 import {
@@ -51,7 +52,6 @@ import {
   LocationScheduleStoreUnavailableError,
 } from "./location-schedule-service.mjs";
 import {
-  compactLlmCompletionPreview,
   createTurnCompletionNotifier,
   derivePushDirectoryTitle,
 } from "./turn-completion-notification.mjs";
@@ -1658,6 +1658,16 @@ function resolveCliSessionEntryExecutionCwd(entry) {
   return "";
 }
 
+let agentService;
+const approvalPushService = createApprovalPushService({
+  enabled: PUSH_ENABLED, runnerToken: RUNNER_TOKEN, apnsClient, deviceStore: pushDeviceStore,
+  getAgentSessionBinding,
+  respondToAgentAction: (request) => agentService.respondToAction(request),
+  getRawRelay: (relayId) => codexWsRelaysById.get(relayId),
+  forwardRawData: (relay, data) => forwardCodexRelayClientData(relay, data, false),
+  parseAuthToken, readJsonBody, json, writeJsonRequestError,
+});
+
 const agentRuntime = createPrivateRunnerAgentRuntime({
   claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
   stores: {
@@ -1675,8 +1685,10 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   listSessions: listLlmSessions, listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
+  onRunEvent: approvalPushService.onRunEvent,
 });
-const { service: agentService, httpHandler: agentHttpHandler } = agentRuntime;
+({ service: agentService } = agentRuntime);
+const { httpHandler: agentHttpHandler } = agentRuntime;
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -8668,63 +8680,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === "POST" && pathname.startsWith("/push/approvals/") && pathname.endsWith("/respond")) {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-    if (!PUSH_ENABLED) {
-      return json(res, 200, { ok: true, enabled: false });
-    }
-    // approvalId is minted as "<relayId>:<rpcId>" when the push is sent (see
-    // sendApprovalRequestPush); relayId itself never contains ":" (see createCodexWsRelayId).
-    let approvalId = "";
-    try {
-      approvalId = decodeURIComponent(
-        pathname.slice("/push/approvals/".length, pathname.length - "/respond".length)
-      ).trim();
-    } catch {
-      // Malformed percent-encoding throws URIError; fall through to the 400 below rather
-      // than crashing the process with an unhandled rejection.
-      approvalId = "";
-    }
-    const separatorIndex = approvalId.lastIndexOf(":");
-    const relayId = separatorIndex > 0 ? approvalId.slice(0, separatorIndex) : "";
-    const rpcId = separatorIndex > 0 ? Number(approvalId.slice(separatorIndex + 1)) : NaN;
-    if (!relayId || !Number.isInteger(rpcId)) {
-      return json(res, 400, { error: "invalid_approval_id", message: "approval id is malformed" });
-    }
-    const relay = codexWsRelaysById.get(relayId);
-    if (!relay || relay.closed) {
-      return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
-    }
-    try {
-      const body = await readJsonBody(req);
-      if (typeof body?.approved !== "boolean") {
-        return json(res, 400, { error: "invalid_request", message: "approved (boolean) is required" });
-      }
-      // Re-check right before forwarding: the live WS approval UI (or a previous call to this
-      // endpoint) may have already answered this request while we awaited the request body.
-      if (!(relay.pendingApprovalRequestIds instanceof Set) || !relay.pendingApprovalRequestIds.has(rpcId)) {
-        return json(res, 409, { error: "approval_not_pending", message: "approval already responded or expired" });
-      }
-      const decision = body.approved ? "accept" : "decline";
-      // Bridges to the existing codex-ws relay approval processing: this is the same
-      // JSON-RPC response shape/path the app sends over the live WS (see turn.ts sendJson),
-      // so forwardCodexRelayClientData's existing bookkeeping (pendingApprovalRequestIds
-      // cleanup, queueing while upstream is reconnecting, etc.) applies unchanged.
-      forwardCodexRelayClientData(
-        relay,
-        JSON.stringify({ jsonrpc: "2.0", id: rpcId, result: { decision } }),
-        false
-      );
-      return json(res, 200, { ok: true, enabled: true, approved: body.approved });
-    } catch (err) {
-      return json(res, 500, { error: "push_approval_respond_failed", message: errorMessage(err) });
-    }
-  }
+  if (await approvalPushService.handleHttpRequest(req, res, pathname)) return;
 
   if (
     (req.method === "GET" || req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE") &&
@@ -11183,83 +11139,6 @@ function parseCodexRpcObject(rawData, isBinary, maxChars = 200000) {
   }
 }
 
-// Builds a short push-notification body describing the command/tool awaiting approval.
-// No LLM summarization here (design decision): the raw command string is truncated instead,
-// matching the design doc's "要約LLM呼び出しは不要" note for approval requests.
-function buildApprovalPushBody(method, paramsRaw) {
-  const params = paramsRaw && typeof paramsRaw === "object" ? paramsRaw : {};
-  const command = pickFirstNonEmptyString(
-    params.command,
-    params.item?.command,
-    params.request?.command
-  );
-  const argsRaw = Array.isArray(params.args)
-    ? params.args
-    : (Array.isArray(params.item?.args) ? params.item.args : []);
-  const argsText = argsRaw.length > 0 ? ` ${argsRaw.map((item) => String(item ?? "")).join(" ")}` : "";
-  const fallbackLabel = String(method || "").startsWith("item/fileChange")
-    ? "ファイル変更"
-    : "コマンド実行";
-  const combined = command ? `${command}${argsText}` : fallbackLabel;
-  return compactLlmCompletionPreview(combined, 120) || fallbackLabel;
-}
-
-// Sends a PUSH for a codex-ws-relay-forwarded approval request the moment it arrives from
-// upstream, so it reaches the device before the app-side approval UI would time out.
-// Re-checks relay.pendingApprovalRequestIds right before each send so a request that was
-// already answered (via the live WS) or whose relay is gone never triggers a stale push.
-async function sendApprovalRequestPush(relay, rpcId, method, params) {
-  if (!PUSH_ENABLED || !apnsClient) return;
-  let devices = [];
-  try {
-    devices = await pushDeviceStore.listDevices();
-  } catch (err) {
-    console.warn(`[push] failed to list devices: ${errorMessage(err)}`);
-    return;
-  }
-  if (devices.length <= 0) return;
-  if (!relay?.pendingApprovalRequestIds?.has?.(rpcId)) return;
-
-  const approvalId = `${relay.relayId}:${rpcId}`;
-  const sessionId = String(relay.threadId || relay.runnerWsLlmSessionId || "");
-  const body = buildApprovalPushBody(method, params);
-  const payload = {
-    aps: {
-      alert: { title: derivePushDirectoryTitle(relay?.threadCwd) || "承認リクエスト", body },
-      sound: "default",
-      category: "APPROVAL_REQUEST",
-      "interruption-level": "time-sensitive",
-    },
-    approvalId,
-    sessionId,
-    directory: String(relay.threadCwd || ""),
-  };
-
-  let sentCount = 0;
-  await Promise.all(devices.map(async (device) => {
-    if (!relay?.pendingApprovalRequestIds?.has?.(rpcId)) return;
-    try {
-      const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
-      if (result?.status === 410) {
-        await pushDeviceStore.removeDevice(device.deviceId);
-      } else if (!result?.ok) {
-        console.warn(
-          `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
-        );
-      } else {
-        sentCount += 1;
-      }
-    } catch (err) {
-      console.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(err)}`);
-    }
-  }));
-  if (sentCount > 0) {
-    console.log(
-      `[push] approval push sent devices=${sentCount}/${devices.length} relayId=${relay?.relayId || ""} rpcId=${rpcId}`
-    );
-  }
-}
-
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
   if (!payload?.threadId) return false;
   if (typeof runnerWsActiveClients === "undefined") return false;
@@ -11524,7 +11403,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
         // Fire exactly once per (relay, rpcId): only on first sighting of this approval id,
         // never on a replayed/duplicate upstream message for the same request.
         if (isNewApprovalRequest) {
-          void sendApprovalRequestPush(relay, approvalRpcId, meta.method, rpcPayload?.params).catch((err) => {
+          void approvalPushService.sendRawApprovalRequest(relay, approvalRpcId, meta.method, rpcPayload?.params).catch((err) => {
             console.warn(
               `[push] approval push failed relayId=${relay.relayId} rpcId=${approvalRpcId}: ${errorMessage(err)}`
             );
@@ -12331,7 +12210,6 @@ export const __TESTING__ = {
   locationScheduleService,
   codexScheduleService,
   turnCompletionNotifier,
-  sendApprovalRequestPush,
   derivePushDirectoryTitle,
   codexWsRelaysById,
   CODEX_WS_RELAY_MAX_ACTIVE,
