@@ -8,14 +8,16 @@ import {
   type CodexAppServerTurnSession,
 } from "../../codex/codexAppServerClient";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
-import { extractCommandText } from "../../codex/client/helpers";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { CalendarToolResult } from "../../calendar/calendarToolSpecs";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { normalizeModelRef, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
 import { resolveCodexItemRuntimeStatus } from "../utils/statusIcons";
-import { settleRunningCommandExecution } from "../utils/sessionRuntimeStatus";
+import {
+  settleRunningCommandExecution,
+  upsertCommandExecutionMessage,
+} from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
 import type {
@@ -886,8 +888,7 @@ export function useCodexReplyRequest<
     const upsertPanelCommandMessage = (itemRaw: unknown, phase: "started" | "completed") => {
       const item = itemRaw && typeof itemRaw === "object" ? itemRaw as Record<string, unknown> : {};
       const itemId = String(item.id || "").trim();
-      const command = extractCommandText(item.command);
-      if (!itemId || !command) return;
+      if (!itemId) return;
       if (!commandMessageIdByItemId.has(itemId)) {
         commandMessageIdByItemId.set(
           itemId,
@@ -896,18 +897,19 @@ export function useCodexReplyRequest<
             : `command-${requestTraceId}-${itemId}`
         );
       }
-      const rawStatus = String(item.status || "").trim().toLowerCase();
-      const status: CodexCommandExecutionInfo["status"] = phase === "started"
-        ? "running"
-        : (rawStatus === "failed" || rawStatus === "declined" ? "failed" : "completed");
-      const exitCodeRaw = Number(item.exitCode ?? item.exit_code);
-      updatePanelLiveAssistantMessage("", {
-        commandExecution: {
-          command,
-          status,
-          exitCode: Number.isFinite(exitCodeRaw) ? exitCodeRaw : null,
-        },
-      }, undefined, commandMessageIdByItemId.get(itemId));
+      const latestConversation = getConversationMessagesForPanel(requestPanelId);
+      const nextConversation = upsertCommandExecutionMessage(
+        latestConversation,
+        item,
+        phase,
+        String(commandMessageIdByItemId.get(itemId) || ""),
+        (commandExecution) => current.buildConversationMessage("assistant", "", { commandExecution })
+      );
+      setConversationMessagesForPanel(
+        requestPanelId,
+        nextConversation,
+        buildPanelConversationWriteOptions()
+      );
     };
     const settlePanelLiveAgentMessages = (
       extra: Record<string, unknown>,

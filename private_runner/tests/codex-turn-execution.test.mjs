@@ -211,6 +211,60 @@ test("Codex Backend maps native turn events without changing App Server RPCs", a
   assert.equal(client.closed, true);
 });
 
+test("Codex Backend preserves command details in provider-neutral tool events", async () => {
+  const client = fakeClient([
+    {
+      method: "item/started",
+      params: { item: { id: "call-1", type: "commandExecution", command: ["find", ".", "-type", "f"] } },
+    },
+    {
+      method: "item/completed",
+      params: { item: { id: "call-1", type: "commandExecution", status: "completed", exitCode: 0 } },
+    },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  client.close = () => {};
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const events = [];
+
+  await backend.startTurn({
+    runId: "run-command",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "find files" }] },
+    policyProfileId: "codex-on-request",
+    signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+
+  assert.deepEqual(events.filter((event) => event.type.startsWith("tool.")), [
+    {
+      type: "tool.started",
+      payload: {
+        toolCallId: "call-1",
+        name: "exec_command",
+        inputSummary: "find . -type f",
+      },
+    },
+    {
+      type: "tool.completed",
+      payload: {
+        toolCallId: "call-1",
+        name: "exec_command",
+        inputSummary: "find . -type f",
+        status: "completed",
+        exitCode: 0,
+      },
+    },
+  ]);
+  assert.equal(events.some((event) => event.type === "item.started" || event.type === "item.completed"), false);
+});
+
 test("Codex Backend status advertises its full decision superset", async () => {
   const client = fakeClient();
   const backend = createCodexBackend({

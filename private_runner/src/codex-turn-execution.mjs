@@ -286,6 +286,27 @@ function codexItemId(params, fallback) {
   return firstNonEmptyString(params?.item?.id, params?.itemId, params?.item_id, fallback);
 }
 
+function codexCommandText(itemRaw) {
+  const command = itemRaw?.command;
+  if (Array.isArray(command)) {
+    return command.map((part) => String(part || "").trim()).filter(Boolean).join(" ");
+  }
+  return String(command || "").trim();
+}
+
+function codexCommandOutcome(itemRaw) {
+  const rawStatus = String(itemRaw?.status || "").trim().toLowerCase();
+  const rawExitCode = itemRaw?.exitCode ?? itemRaw?.exit_code;
+  const exitCode = rawExitCode === null || rawExitCode === undefined ? null : Number(rawExitCode);
+  return {
+    status: ["failed", "declined", "cancelled", "canceled"].includes(rawStatus) ||
+      (Number.isFinite(exitCode) && exitCode !== 0)
+      ? "failed"
+      : "completed",
+    exitCode: Number.isFinite(exitCode) ? exitCode : null,
+  };
+}
+
 function codexRecoveryTurn(threadResult) {
   const thread = threadResult?.thread || threadResult;
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
@@ -339,6 +360,7 @@ export function createCodexBackend({
       turnId: "",
       actionById: new Map(),
       itemIds: new Set(),
+      commandByToolCallId: new Map(),
       bufferedNotifications: [],
       turnStartRequested: false,
     };
@@ -347,6 +369,16 @@ export function createCodexBackend({
       if (!itemId || state.itemIds.has(itemId)) return;
       state.itemIds.add(itemId);
       emit("item.started", { itemId, itemType });
+    };
+    const emitToolStarted = (toolCallId, commandRaw) => {
+      if (!toolCallId || state.commandByToolCallId.has(toolCallId)) return;
+      const command = String(commandRaw || "").trim();
+      state.commandByToolCallId.set(toolCallId, command);
+      emit("tool.started", {
+        toolCallId,
+        name: "exec_command",
+        inputSummary: command,
+      });
     };
     const applyNotification = (method, params) => {
       if (!state.turnId) {
@@ -371,11 +403,26 @@ export function createCodexBackend({
       }
       if (method === "item/started") {
         const itemId = codexItemId(params, "");
+        if (String(params?.item?.type || "") === "commandExecution") {
+          emitToolStarted(itemId, codexCommandText(params.item));
+          return;
+        }
         if (itemId) emitItemStarted(itemId, String(params?.item?.type || "item"));
         return;
       }
       if (method === "item/completed") {
         const itemId = codexItemId(params, `${state.turnId}:${String(params?.item?.type || "item")}`);
+        if (String(params?.item?.type || "") === "commandExecution") {
+          const command = codexCommandText(params.item) || String(state.commandByToolCallId.get(itemId) || "");
+          emitToolStarted(itemId, command);
+          emit("tool.completed", {
+            toolCallId: itemId,
+            name: "exec_command",
+            inputSummary: command,
+            ...codexCommandOutcome(params.item),
+          });
+          return;
+        }
         emitItemStarted(itemId, String(params?.item?.type || "item"));
         const text = String(params?.item?.type || "") === "agentMessage"
           ? extractCodexAgentMessageText(params.item)

@@ -1,5 +1,6 @@
 import type { ConversationMessage } from "../types/appTypes";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
+import { extractCommandText } from "../../codex/client/helpers";
 
 export function isCommandExecutionMessage(
   message: { commandExecution?: CodexCommandExecutionInfo } | null | undefined
@@ -28,6 +29,40 @@ export function settleRunningCommandExecution(
     ...commandExecution,
     status: settledLlmStatus === "error" ? "failed" : "completed",
   };
+}
+
+export function upsertCommandExecutionMessage<T extends {
+  id: string;
+  commandExecution?: CodexCommandExecutionInfo;
+}>(
+  messages: readonly T[],
+  itemRaw: unknown,
+  phase: "started" | "completed",
+  messageId: string,
+  buildMessage: (commandExecution: CodexCommandExecutionInfo) => T,
+): T[] {
+  const item = itemRaw && typeof itemRaw === "object" ? itemRaw as Record<string, unknown> : {};
+  const existing = messages.find((message) => String(message.id || "") === messageId);
+  const command = extractCommandText(item.command) || existing?.commandExecution?.command || "";
+  if (!messageId || !command) return [...messages];
+  const rawStatus = String(item.status || "").trim().toLowerCase();
+  const rawExitCode = item.exitCode ?? item.exit_code;
+  const exitCode = rawExitCode === null || rawExitCode === undefined
+    ? null
+    : Number(rawExitCode);
+  const commandExecution: CodexCommandExecutionInfo = {
+    command,
+    status: phase === "started"
+      ? "running"
+      : (["failed", "declined", "cancelled", "canceled"].includes(rawStatus) ||
+        (Number.isFinite(exitCode) && exitCode !== 0) ? "failed" : "completed"),
+    exitCode: Number.isFinite(exitCode) ? exitCode : null,
+  };
+  const nextMessage = existing
+    ? { ...existing, commandExecution }
+    : { ...buildMessage(commandExecution), id: messageId };
+  if (!existing) return [...messages, nextMessage];
+  return messages.map((message) => String(message.id || "") === messageId ? nextMessage : message);
 }
 
 export function parseIsoTimestampMs(raw: unknown): number | null {
