@@ -82,6 +82,8 @@ test("Claude Backend defers CLI detection until a turn is sent", async () => {
   assert.equal(status.capabilities.model.select, true);
   assert.equal(status.capabilities.model.effort, true);
   assert.deepEqual(status.capabilities.model.effortOptions, ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(status.capabilities.action.decisions, ["allow", "allow_for_session", "deny"]);
+  assert.deepEqual(status.capabilities.action.policyProfiles[0].decisions, ["allow", "allow_for_session", "deny"]);
   assert.equal("changeWithinSession" in status.capabilities.model, false);
   assert.deepEqual(status.capabilities.model.catalog.map((model) => model.modelId), ["haiku", "sonnet", "opus", "fable"]);
   assert.equal(runFileCalls, 0);
@@ -948,20 +950,29 @@ test("Claude Backend sets MCP timeout env vars only for the interactive profile"
 // interactive経路のテストは、CLIが子processとしてspawnするMCP shimの代わりに、
 // テストが直接permission bridgeのUnix socketへ話しかける(設計書§5)。
 function startInteractivePermissionRun(runId, overrides = {}) {
-  const calls = [];
+  const runtime = overrides.runtime || { calls: [], children: [] };
+  const calls = runtime.calls;
   const child = fakeChild([], { exitAfterInput: false });
-  const backend = createClaudeBackend({
-    binary: "/test/claude",
-    runFile: async (file, args) => ({
-      stdout: file === "ps" ? "Thu Aug 21 12:34:56 2026\n" : args?.[0] === "--version" ? "2.1.214" : "",
-    }),
-    fileSystem: { ...fs, realpath: async (value) => value },
-    spawnProcess: (binary, args, options) => { calls.push({ binary, args, options }); return child; },
-    sessionStore: { getBinding: async () => null },
-    interruptGraceMs: 10,
-    generateSessionId: () => SESSION_ID,
-    ...overrides.backendOptions,
-  });
+  runtime.children.push(child);
+  const spawnIndex = calls.length;
+  if (!runtime.backend) {
+    runtime.backend = createClaudeBackend({
+      binary: "/test/claude",
+      runFile: async (file, args) => ({
+        stdout: file === "ps" ? "Thu Aug 21 12:34:56 2026\n" : args?.[0] === "--version" ? "2.1.214" : "",
+      }),
+      fileSystem: { ...fs, realpath: async (value) => value },
+      spawnProcess: (binary, args, options) => {
+        calls.push({ binary, args, options });
+        return runtime.children.shift();
+      },
+      sessionStore: { getBinding: async () => null },
+      interruptGraceMs: 10,
+      generateSessionId: () => SESSION_ID,
+      ...overrides.backendOptions,
+    });
+  }
+  const backend = runtime.backend;
   const events = [];
   const waiters = [];
   function emit(type, payload) {
@@ -989,12 +1000,13 @@ function startInteractivePermissionRun(runId, overrides = {}) {
     emit,
     ...overrides.startOptions,
   });
-  return { backend, child, calls, events, waitFor, turn, runId };
+  const nativeSessionId = overrides.startOptions?.sessionRef?.nativeSessionId || SESSION_ID;
+  return { backend, child, calls, events, waitFor, turn, runId, spawnIndex, nativeSessionId };
 }
 
-async function waitForSpawn(calls) {
-  while (calls.length === 0) await new Promise((resolve) => setImmediate(resolve));
-  return calls[0];
+async function waitForSpawn(calls, index = 0) {
+  while (!calls[index]) await new Promise((resolve) => setImmediate(resolve));
+  return calls[index];
 }
 
 function permissionBridgeEnv(args) {
@@ -1019,6 +1031,149 @@ function sendPermissionRequest(socketPath, payload) {
     });
   });
 }
+
+async function initializeInteractivePermissionRun(run) {
+  const spawned = await waitForSpawn(run.calls, run.spawnIndex);
+  const bridgeEnv = permissionBridgeEnv(spawned.args);
+  run.child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: run.nativeSessionId })}\n`);
+  await run.waitFor((event) => event.type === "turn.started");
+  return bridgeEnv;
+}
+
+async function finishInteractivePermissionRun(run) {
+  run.child.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: run.nativeSessionId })}\n`);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.deepEqual(await run.turn, { outcome: "completed", nativeTerminal: true });
+}
+
+test("Claude Backend session permission is scoped by backend instance, native session, and tool", async () => {
+  const runtime = { calls: [], children: [] };
+  const first = startInteractivePermissionRun("run-session-first", { runtime });
+  const firstBridge = await initializeInteractivePermissionRun(first);
+
+  const firstReply = sendPermissionRequest(firstBridge.BITTY_PERMISSION_SOCKET, {
+    token: firstBridge.BITTY_PERMISSION_TOKEN, toolName: "Write", input: { file: "a" }, toolUseId: "write-a",
+  });
+  const firstRequest = await first.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "write-a");
+  const parallelReply = sendPermissionRequest(firstBridge.BITTY_PERMISSION_SOCKET, {
+    token: firstBridge.BITTY_PERMISSION_TOKEN, toolName: "Write", input: { file: "b" }, toolUseId: "write-b",
+  });
+  const parallelRequest = await first.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "write-b");
+
+  await first.backend.respondToAction({
+    runId: first.runId, requestId: firstRequest.payload.requestId, decision: "allow_for_session",
+  });
+  assert.deepEqual(await firstReply, { decision: "allow" });
+  let parallelSettled = false;
+  parallelReply.then(() => { parallelSettled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(parallelSettled, false);
+  await first.backend.respondToAction({
+    runId: first.runId, requestId: parallelRequest.payload.requestId, decision: "deny",
+  });
+  assert.deepEqual(await parallelReply, { decision: "deny" });
+
+  const requestedCount = first.events.filter((event) => event.type === "action.requested").length;
+  const immediateReply = await sendPermissionRequest(firstBridge.BITTY_PERMISSION_SOCKET, {
+    token: firstBridge.BITTY_PERMISSION_TOKEN, toolName: "Write", input: { file: "c" }, toolUseId: "write-c",
+  });
+  assert.deepEqual(immediateReply, { decision: "allow" });
+  assert.equal(first.events.filter((event) => event.type === "action.requested").length, requestedCount);
+
+  const otherToolReply = sendPermissionRequest(firstBridge.BITTY_PERMISSION_SOCKET, {
+    token: firstBridge.BITTY_PERMISSION_TOKEN, toolName: "Bash", input: { command: "pwd" }, toolUseId: "bash-a",
+  });
+  const otherToolRequest = await first.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "bash-a");
+  await first.backend.respondToAction({ runId: first.runId, requestId: otherToolRequest.payload.requestId, decision: "deny" });
+  assert.deepEqual(await otherToolReply, { decision: "deny" });
+  await finishInteractivePermissionRun(first);
+
+  const resumed = startInteractivePermissionRun("run-session-resumed", {
+    runtime,
+    startOptions: { sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID } },
+  });
+  const resumedBridge = await initializeInteractivePermissionRun(resumed);
+  assert.deepEqual(await sendPermissionRequest(resumedBridge.BITTY_PERMISSION_SOCKET, {
+    token: resumedBridge.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "write-resumed",
+  }), { decision: "allow" });
+  assert.equal(resumed.events.some((event) => event.type === "action.requested"), false);
+  await finishInteractivePermissionRun(resumed);
+
+  const otherSessionId = "22222222-2222-4222-8222-222222222222";
+  const otherSession = startInteractivePermissionRun("run-other-session", {
+    runtime,
+    startOptions: { sessionRef: { backendId: "claude", nativeSessionId: otherSessionId } },
+  });
+  const otherSessionBridge = await initializeInteractivePermissionRun(otherSession);
+  const otherSessionReply = sendPermissionRequest(otherSessionBridge.BITTY_PERMISSION_SOCKET, {
+    token: otherSessionBridge.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "write-other-session",
+  });
+  const otherSessionRequest = await otherSession.waitFor((event) => event.type === "action.requested");
+  await otherSession.backend.respondToAction({ runId: otherSession.runId, requestId: otherSessionRequest.payload.requestId, decision: "deny" });
+  assert.deepEqual(await otherSessionReply, { decision: "deny" });
+  await finishInteractivePermissionRun(otherSession);
+
+  const restartedRun = startInteractivePermissionRun("run-restarted");
+  const restartedBridge = await initializeInteractivePermissionRun(restartedRun);
+  const restartedReply = sendPermissionRequest(restartedBridge.BITTY_PERMISSION_SOCKET, {
+    token: restartedBridge.BITTY_PERMISSION_TOKEN, toolName: "Write", input: {}, toolUseId: "write-restarted",
+  });
+  const restartedRequest = await restartedRun.waitFor((event) => event.type === "action.requested");
+  await restartedRun.backend.respondToAction({ runId: restartedRun.runId, requestId: restartedRequest.payload.requestId, decision: "deny" });
+  assert.deepEqual(await restartedReply, { decision: "deny" });
+  await finishInteractivePermissionRun(restartedRun);
+});
+
+test("Claude Backend does not grant session permission on interrupt or turn failure", async () => {
+  const runtime = { calls: [], children: [] };
+  const interrupted = startInteractivePermissionRun("run-session-interrupted", { runtime });
+  const interruptedBridge = await initializeInteractivePermissionRun(interrupted);
+  const interruptedReply = sendPermissionRequest(interruptedBridge.BITTY_PERMISSION_SOCKET, {
+    token: interruptedBridge.BITTY_PERMISSION_TOKEN, toolName: "Read", input: {}, toolUseId: "read-interrupted",
+  });
+  await interrupted.waitFor((event) => event.type === "action.requested");
+  await interrupted.backend.interrupt({ runId: interrupted.runId });
+  assert.equal((await interrupted.turn).outcome, "interrupted");
+  assert.equal((await interruptedReply).decision, "deny");
+
+  const failed = startInteractivePermissionRun("run-session-failed", {
+    runtime,
+    startOptions: { sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID } },
+  });
+  const failedBridge = await initializeInteractivePermissionRun(failed);
+  const readAfterInterruptReply = sendPermissionRequest(failedBridge.BITTY_PERMISSION_SOCKET, {
+    token: failedBridge.BITTY_PERMISSION_TOKEN, toolName: "Read", input: {}, toolUseId: "read-after-interrupt",
+  });
+  const readAfterInterrupt = await failed.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "read-after-interrupt");
+  await failed.backend.respondToAction({ runId: failed.runId, requestId: readAfterInterrupt.payload.requestId, decision: "deny" });
+  assert.deepEqual(await readAfterInterruptReply, { decision: "deny" });
+
+  const failedReply = sendPermissionRequest(failedBridge.BITTY_PERMISSION_SOCKET, {
+    token: failedBridge.BITTY_PERMISSION_TOKEN, toolName: "Edit", input: {}, toolUseId: "edit-failed",
+  });
+  await failed.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "edit-failed");
+  failed.child.stdout.write(`${JSON.stringify({
+    type: "result", subtype: "error_during_execution", is_error: true, result: "failed", session_id: SESSION_ID,
+  })}\n`);
+  failed.child.stdout.end();
+  failed.child.emit("exit", 1, null);
+  await assert.rejects(failed.turn, (error) => error.code === "turn_failed");
+  assert.equal((await failedReply).decision, "deny");
+
+  const afterFailure = startInteractivePermissionRun("run-session-after-failure", {
+    runtime,
+    startOptions: { sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID } },
+  });
+  const afterFailureBridge = await initializeInteractivePermissionRun(afterFailure);
+  const afterFailureReply = sendPermissionRequest(afterFailureBridge.BITTY_PERMISSION_SOCKET, {
+    token: afterFailureBridge.BITTY_PERMISSION_TOKEN, toolName: "Edit", input: {}, toolUseId: "edit-after-failure",
+  });
+  const afterFailureRequest = await afterFailure.waitFor((event) => event.type === "action.requested");
+  await afterFailure.backend.respondToAction({ runId: afterFailure.runId, requestId: afterFailureRequest.payload.requestId, decision: "deny" });
+  assert.deepEqual(await afterFailureReply, { decision: "deny" });
+  await finishInteractivePermissionRun(afterFailure);
+});
 
 test("Claude Backend interactive permission: a bridge request before system/init is denied and not registered", async () => {
   const run = startInteractivePermissionRun("run-pre-init");
@@ -1052,13 +1207,20 @@ test("Claude Backend interactive permission: allow unblocks the tool and emits a
   assert.ok(requested.payload.title.startsWith("Write:"));
   assert.ok(requested.payload.title.includes("a.txt"));
   assert.equal(requested.payload.toolCallId, "tool-1");
-  assert.deepEqual(requested.payload.decisions, ["allow", "deny"]);
+  assert.deepEqual(requested.payload.decisions, ["allow", "allow_for_session", "deny"]);
 
   await run.backend.respondToAction({ runId: run.runId, requestId: requested.payload.requestId, decision: "allow" });
   assert.deepEqual(await socketReply, { decision: "allow" });
 
   const resolved = await run.waitFor((event) => event.type === "action.resolved");
   assert.deepEqual(resolved.payload, { requestId: requested.payload.requestId, outcome: "answered", decision: "allow" });
+
+  const nextReply = sendPermissionRequest(bridgeEnv.BITTY_PERMISSION_SOCKET, {
+    token: bridgeEnv.BITTY_PERMISSION_TOKEN, toolName: "Write", input: { file_path: "b.txt" }, toolUseId: "tool-2",
+  });
+  const nextRequested = await run.waitFor((event) => event.type === "action.requested" && event.payload.toolCallId === "tool-2");
+  await run.backend.respondToAction({ runId: run.runId, requestId: nextRequested.payload.requestId, decision: "deny" });
+  assert.deepEqual(await nextReply, { decision: "deny" });
 
   await assert.rejects(
     run.backend.respondToAction({ runId: run.runId, requestId: requested.payload.requestId, decision: "allow" }),

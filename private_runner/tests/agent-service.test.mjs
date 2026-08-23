@@ -837,6 +837,43 @@ test("resolves active actions before the terminal event", async () => {
   assert.deepEqual(types.slice(-3), ["action.requested", "action.resolved", "turn.completed"]);
 });
 
+test("rejects allow_for_session when the active action did not advertise it", async () => {
+  let release;
+  let actionReady;
+  const actionWasRequested = new Promise((resolve) => { actionReady = resolve; });
+  let backendResponses = 0;
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      emit("action.requested", { requestId: "approval-1", kind: "approval", decisions: ["allow", "deny"] });
+      actionReady();
+      await new Promise((resolve) => { release = resolve; });
+      return { outcome: "completed" };
+    },
+    async respondToAction() { backendResponses += 1; },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-unadvertised-decision",
+  });
+  const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  await actionWasRequested;
+  await assert.rejects(
+    service.respondToAction({ runId: run.runId, requestId: "approval-1", decision: "allow_for_session" }),
+    (error) => error.code === "turn_rejected" && /not supported/.test(error.message),
+  );
+  assert.equal(backendResponses, 0);
+  release();
+  await run.completion;
+});
+
 test("recovers an old-process lease before admitting a resumed turn", async () => {
   const sessions = sessionStore();
   const sessionRef = { backendId: "test", nativeSessionId: "session-recovery" };

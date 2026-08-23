@@ -56,6 +56,76 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
   };
 }
 
+function startCodexActionRun({ method, decision, dynamicTools = null }) {
+  const client = fakeClient([]);
+  let finishTurn;
+  const completion = new Promise((resolve) => { finishTurn = resolve; });
+  let nativeResponse;
+  const originalRequest = client.request.bind(client);
+  client.request = async (requestMethod, params) => {
+    if (requestMethod !== "turn/start") return await originalRequest(requestMethod, params);
+    client.calls.push({ kind: "request", method: requestMethod, params });
+    queueMicrotask(async () => {
+      const handler = [...client.serverRequestHandlers][0];
+      nativeResponse = await handler({
+        id: "native-request-1",
+        method,
+        params: method === "item/tool/call"
+          ? { tool: "calendar_list_calendars", arguments: {} }
+          : { reason: "Approve test action" },
+      });
+      for (const listener of client.listeners) {
+        listener("turn/completed", { threadId: params.threadId, turnId: "turn-1", turn: { status: "completed" } });
+      }
+      finishTurn();
+    });
+    return { turn: { id: "turn-1" } };
+  };
+  client.waitForTurnCompletion = () => ({ promise: completion, expect() {} });
+  client.close = () => {};
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+    dynamicTools,
+    generateActionId: () => "action-1",
+  });
+  const events = [];
+  let resolveRequested;
+  const requested = new Promise((resolve) => { resolveRequested = resolve; });
+  const turn = backend.startTurn({
+    runId: "run-action",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request",
+    signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit(type, payload) {
+      events.push({ type, payload });
+      if (type === "action.requested") resolveRequested(payload);
+    },
+  });
+  return {
+    backend,
+    events,
+    requested,
+    turn,
+    nativeResponse: () => nativeResponse,
+    respond: async (payload = {}) => {
+      const request = await requested;
+      await backend.respondToAction({
+        runId: "run-action",
+        requestId: request.requestId,
+        decision,
+        ...payload,
+      });
+      await turn;
+      return request;
+    },
+  };
+}
+
 test("starts an ordinary new thread and forwards configured turn options", async () => {
   const client = fakeClient();
   const result = await executeCodexTurn({
@@ -139,6 +209,60 @@ test("Codex Backend maps native turn events without changing App Server RPCs", a
     { type: "text", text: "run checks" },
   ]);
   assert.equal(client.closed, true);
+});
+
+test("Codex Backend status advertises its full decision superset", async () => {
+  const client = fakeClient();
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const status = await backend.getStatus();
+  assert.deepEqual(status.capabilities.action.decisions, ["allow", "allow_for_session", "deny"]);
+  assert.deepEqual(status.capabilities.action.policyProfiles[0].decisions, ["allow", "allow_for_session", "deny"]);
+});
+
+for (const method of ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]) {
+  test(`Codex Backend maps allow_for_session for ${method}`, async () => {
+    const run = startCodexActionRun({ method, decision: "allow_for_session" });
+    const requested = await run.respond();
+    assert.deepEqual(requested.decisions, ["allow", "allow_for_session", "deny"]);
+    assert.deepEqual(run.nativeResponse(), { decision: "acceptForSession" });
+    assert.deepEqual(run.events.find((event) => event.type === "action.resolved")?.payload, {
+      requestId: "action-1",
+      outcome: "allowed",
+      decision: "allow_for_session",
+    });
+  });
+}
+
+test("Codex Backend keeps unknown approval methods on one-time allow and deny", async () => {
+  const allowed = startCodexActionRun({ method: "item/future/requestApproval", decision: "allow" });
+  assert.deepEqual((await allowed.respond()).decisions, ["allow", "deny"]);
+  assert.deepEqual(allowed.nativeResponse(), { decision: "accept" });
+  assert.deepEqual(allowed.events.find((event) => event.type === "action.resolved")?.payload, {
+    requestId: "action-1", outcome: "allowed", decision: "allow",
+  });
+
+  const denied = startCodexActionRun({ method: "item/future/requestApproval", decision: "deny" });
+  assert.deepEqual((await denied.respond()).decisions, ["allow", "deny"]);
+  assert.deepEqual(denied.nativeResponse(), { decision: "decline" });
+  assert.deepEqual(denied.events.find((event) => event.type === "action.resolved")?.payload, {
+    requestId: "action-1", outcome: "denied", decision: "deny",
+  });
+});
+
+test("Codex Backend keeps dynamic tool responses on the result path", async () => {
+  const dynamicTools = [{ type: "namespace", name: "calendar", tools: [] }];
+  const run = startCodexActionRun({ method: "item/tool/call", decision: "result", dynamicTools });
+  const result = { success: true, contentItems: [] };
+  assert.deepEqual((await run.respond({ result })).decisions, ["result"]);
+  assert.deepEqual(run.nativeResponse(), result);
+  assert.deepEqual(run.events.find((event) => event.type === "action.resolved")?.payload, {
+    requestId: "action-1", outcome: "completed",
+  });
 });
 
 test("Codex Backend emits turn usage with its context window for the context length display", async () => {

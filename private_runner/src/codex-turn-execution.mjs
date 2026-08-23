@@ -395,7 +395,7 @@ export function createCodexBackend({
         requestId,
         kind: action.kind || "approval",
         title: action.title,
-        decisions: action.kind === "dynamic_tool" ? ["result"] : ["allow", "deny"],
+        decisions: action.decisions,
         ...(action.request ? {
           input: { method: "item/tool/call", params: action.request.params },
         } : {}),
@@ -410,6 +410,7 @@ export function createCodexBackend({
             resolve,
             announced: false,
             kind: "dynamic_tool",
+            decisions: ["result"],
             title: String(request?.params?.tool || "Tool call"),
             request,
           };
@@ -421,10 +422,14 @@ export function createCodexBackend({
         return { decision: "decline" };
       }
       const requestId = generateActionId();
+      const method = String(request?.method || "");
       return new Promise((resolve) => {
         const action = {
           resolve,
           announced: false,
+          decisions: method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval"
+            ? ["allow", "allow_for_session", "deny"]
+            : ["allow", "deny"],
           title: String(request?.params?.reason || request?.params?.item?.type || "Approval required"),
         };
         state.actionById.set(requestId, action);
@@ -580,9 +585,11 @@ export function createCodexBackend({
         turn: { interrupt: true },
         action: {
           kinds: dynamicTools ? ["approval", "dynamic_tool"] : ["approval"],
-          decisions: dynamicTools ? ["allow", "deny", "result"] : ["allow", "deny"],
+          decisions: dynamicTools
+            ? ["allow", "allow_for_session", "deny", "result"]
+            : ["allow", "allow_for_session", "deny"],
           policyProfiles: [
-            { id: "codex-on-request", label: "On request", interactive: true, decisions: ["allow", "deny"] },
+            { id: "codex-on-request", label: "On request", interactive: true, decisions: ["allow", "allow_for_session", "deny"] },
             { id: "codex-never", label: "Never", interactive: false, decisions: [] },
           ],
         },
@@ -620,12 +627,13 @@ export function createCodexBackend({
       state.actionById.delete(requestId);
       action.resolve(action.kind === "dynamic_tool"
         ? result
-        : { decision: decision === "allow" ? "accept" : "decline" });
+        : { decision: decision === "allow_for_session" ? "acceptForSession" : decision === "allow" ? "accept" : "decline" });
       state.emit("action.resolved", {
         requestId,
         outcome: action.kind === "dynamic_tool"
           ? "completed"
-          : decision === "allow" ? "allowed" : "denied",
+          : decision === "allow" || decision === "allow_for_session" ? "allowed" : "denied",
+        ...(action.kind === "dynamic_tool" ? {} : { decision }),
       });
     },
     async recoverSession({ sessionRef }) {

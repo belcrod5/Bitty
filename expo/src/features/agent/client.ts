@@ -240,12 +240,16 @@ export function startAgentTurnWithRawFallback(
         try {
           const action = await options.onApprovalRequest(request);
           if (!isApprovalAction(action)) throw new Error("Invalid approval action");
+          const advertisedDecisions = Array.isArray(payload.decisions) ? payload.decisions : [];
+          let decision = "deny";
+          if (action === "approve_once" || action === "approve_for_session") {
+            decision = action === "approve_for_session" && advertisedDecisions.includes("allow_for_session")
+              ? "allow_for_session"
+              : "allow";
+          }
           const response = await manager.request({
             channel: "agent", op: "action.respond", streamId: runId,
-            payload: {
-              runId, requestId,
-              decision: action === "approve_once" || action === "approve_for_session" ? "allow" : "deny",
-            },
+            payload: { runId, requestId, decision },
           });
           if (response.op === "error") throw new Error(String(object(response.payload).message || "Approval response failed"));
         } finally {

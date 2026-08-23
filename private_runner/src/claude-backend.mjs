@@ -150,6 +150,7 @@ export function createClaudeBackend({
 } = {}) {
   if (typeof sessionStore?.getBinding !== "function") throw new TypeError("sessionStore.getBinding is required");
   const activeRuns = new Map();
+  const allowedToolsBySession = new Map();
   let probePromise = null;
 
   async function probe() {
@@ -188,9 +189,9 @@ export function createClaudeBackend({
         turn: { interrupt: true },
         action: {
           kinds: ["permission"],
-          decisions: ["allow", "deny"],
+          decisions: ["allow", "allow_for_session", "deny"],
           policyProfiles: [
-            { id: "claude-on-request", label: "Ask before tool use", interactive: true, decisions: ["allow", "deny"] },
+            { id: "claude-on-request", label: "Ask before tool use", interactive: true, decisions: ["allow", "allow_for_session", "deny"] },
             { id: "claude-dont-ask", label: "Deny unapproved tools", interactive: false, decisions: [] },
           ],
         },
@@ -339,6 +340,7 @@ export function createClaudeBackend({
       bridge: null,
       closed: false,
       resetNoOutput: null,
+      nativeSessionId: freshSessionId,
       emit,
     };
     activeRuns.set(runId, state);
@@ -373,6 +375,10 @@ export function createClaudeBackend({
           resolve({ decision: "deny" });
           return;
         }
+        if (allowedToolsBySession.get(state.nativeSessionId)?.has(toolName)) {
+          resolve({ decision: "allow" });
+          return;
+        }
         const requestId = `claude_action_${randomUUID()}`;
         state.pendingActions.set(requestId, { resolve, toolName });
         resetNoOutput();
@@ -388,7 +394,7 @@ export function createClaudeBackend({
           kind: "permission",
           title,
           toolCallId: toolUseId,
-          decisions: ["allow", "deny"],
+          decisions: ["allow", "allow_for_session", "deny"],
         });
       });
     }
@@ -1081,7 +1087,15 @@ export function createClaudeBackend({
       const pending = state?.pendingActions.get(requestId);
       if (!pending) throw agentError("action_expired", "Claude permission request is no longer active", { backendId: "claude" });
       state.pendingActions.delete(requestId);
-      pending.resolve({ decision: decision === "allow" ? "allow" : "deny" });
+      if (decision === "allow_for_session") {
+        let allowedTools = allowedToolsBySession.get(state.nativeSessionId);
+        if (!allowedTools) {
+          allowedTools = new Set();
+          allowedToolsBySession.set(state.nativeSessionId, allowedTools);
+        }
+        allowedTools.add(pending.toolName);
+      }
+      pending.resolve({ decision: decision === "allow" || decision === "allow_for_session" ? "allow" : "deny" });
       // 抑止条件(pendingActions.size > 0)が解けるため、無出力監視を再開する。
       state.resetNoOutput();
       state.emit("action.resolved", { requestId, outcome: "answered", decision });
