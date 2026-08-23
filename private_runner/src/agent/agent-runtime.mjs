@@ -136,7 +136,11 @@ export function createPrivateRunnerAgentRuntime({
   });
   service = createAgentService({
     backends: [codexBackend, claudeBackend],
-    operationStore: { claim: stores.claimOperation, complete: stores.completeOperation },
+    operationStore: {
+      inspect: stores.inspectOperation,
+      claim: stores.claimOperation,
+      complete: stores.completeOperation,
+    },
     sessionStore,
     workspaceAdmission,
     resolveCanonicalCwd,

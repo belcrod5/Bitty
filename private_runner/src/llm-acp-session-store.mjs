@@ -531,6 +531,30 @@ export function createLlmAcpSessionStore(deps = {}) {
     }
   }
 
+  function describeAgentOperation(entry, key, requestHash) {
+    if (entry.requestHash !== requestHash) return { status: "conflict" };
+    if (entry.status === "pending" && !agentOperationsClaimedHere.has(key)) {
+      return { status: "unknown", runId: entry.runId };
+    }
+    return { status: "existing", runId: entry.runId, result: entry.result };
+  }
+
+  async function inspectAgentOperation(subjectIdRaw, clientOperationIdRaw, requestHashRaw) {
+    const subjectId = String(subjectIdRaw || "").trim();
+    const clientOperationId = String(clientOperationIdRaw || "").trim();
+    const requestHash = String(requestHashRaw || "").trim();
+    if (!subjectId || !clientOperationId || !requestHash) throw new TypeError("invalid agent operation");
+    await ensureAgentMetadataStoreLoaded();
+    await acpSessionStoreWriteQueue;
+    const key = agentOperationKey(subjectId, clientOperationId);
+    const existing = agentOperations.get(key);
+    const replayable = existing && !(
+      Date.parse(existing.updatedAt) + agentOperationTtlMs <= Date.now()
+      && (existing.status === "completed" || !agentOperationsClaimedHere.has(key))
+    );
+    return replayable ? describeAgentOperation(existing, key, requestHash) : { status: "missing" };
+  }
+
   async function claimAgentOperation(subjectIdRaw, clientOperationIdRaw, requestHashRaw, runIdRaw) {
     const subjectId = String(subjectIdRaw || "").trim();
     const clientOperationId = String(clientOperationIdRaw || "").trim();
@@ -545,13 +569,7 @@ export function createLlmAcpSessionStore(deps = {}) {
       // 回収されて同じclientOperationIdを新規claimし直せる。
       pruneAgentOperations(nowMs);
       const existing = agentOperations.get(key);
-      if (existing) {
-        if (existing.requestHash !== requestHash) return { status: "conflict" };
-        if (existing.status === "pending" && !agentOperationsClaimedHere.has(key)) {
-          return { status: "unknown", runId: existing.runId };
-        }
-        return { status: "existing", runId: existing.runId, result: existing.result };
-      }
+      if (existing) return describeAgentOperation(existing, key, requestHash);
       if (agentOperations.size >= agentOperationMaxEntries) {
         throw new Error("agent operation store capacity reached");
       }
@@ -905,6 +923,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     bindAgentSession,
     claimAgentOperation,
     completeAgentOperation,
+    inspectAgentOperation,
     getAgentModelInfo,
     setAgentModelInfo,
     acquireAgentSessionLease,

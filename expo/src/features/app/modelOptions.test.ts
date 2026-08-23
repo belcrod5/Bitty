@@ -38,7 +38,7 @@ test("maps the backend's advertised effort catalog and renders only advertised v
           effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"],
           catalog: [{ modelId: "gpt-5.6-sol", label: "Sol" }],
         },
-        operations: { compact: true, compactQueue: true },
+        operations: { compact: true },
       },
     },
     {
@@ -49,8 +49,7 @@ test("maps the backend's advertised effort catalog and renders only advertised v
           effortOptions: ["low", "medium", "high", "xhigh", "max", "not-an-effort"],
           catalog: [{ modelId: "sonnet", label: "Claude Sonnet" }],
         },
-        // claudeはcompact対応でもcodex raw固有のcompact queueには非対応
-        operations: { compact: true, compactQueue: false },
+        operations: { compact: true },
       },
     },
   ]);
@@ -58,8 +57,6 @@ test("maps the backend's advertised effort catalog and renders only advertised v
   expect(effortOptionsForModel(options[0])).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
   expect(effortOptionsForModel(options[1])).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(effortOptionsForModel(options[1])).not.toContain("ultra");
-  expect(options[0]?.supportsCompactQueue).toBe(true);
-  expect(options[1]?.supportsCompactQueue).toBe(false);
 });
 
 test("falls back to the full effort list only when a backend advertises no effort catalog", () => {

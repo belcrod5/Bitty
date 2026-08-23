@@ -34,7 +34,7 @@ export type BackendStatus = {
       catalog?: Array<{ modelId?: string; label?: string }>;
     };
     workspace?: { admission?: boolean };
-    operations?: { compact?: boolean; schedule?: boolean; compactQueue?: boolean };
+    operations?: { compact?: boolean; schedule?: boolean };
   };
 };
 
@@ -377,6 +377,10 @@ export function startAgentTurnWithRawFallback(
       finish(new Error("Agent turn did not return runId"));
       return await completion;
     }
+    options.onTurnAccepted?.({
+      runId,
+      queued: object(accepted.payload).queued === true,
+    });
     if (accepted.op === "turn.result") {
       const result = object(accepted.payload);
       const resultSession = object(result.sessionRef);

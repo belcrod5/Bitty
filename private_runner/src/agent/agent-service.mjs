@@ -118,6 +118,7 @@ export function createAgentService({
 
   const runs = new Map();
   const activeRunBySession = new Map();
+  const compactQueueBySession = new Map();
   const recoveryBySession = new Map();
   let admissionQueue = Promise.resolve();
 
@@ -138,6 +139,15 @@ export function createAgentService({
     const run = runs.get(runId);
     if (!run) throw agentError("turn_rejected", "run was not found");
     return run;
+  }
+
+  function removeFromCompactQueue(run) {
+    if (!run.sessionKey || !run.queuedForCompact) return;
+    const queue = compactQueueBySession.get(run.sessionKey);
+    if (!queue) return;
+    const index = queue.indexOf(run.runId);
+    if (index >= 0) queue.splice(index, 1);
+    if (queue.length === 0) compactQueueBySession.delete(run.sessionKey);
   }
 
   async function resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle = false } = {}) {
@@ -284,6 +294,7 @@ export function createAgentService({
     if (run.sessionKey && activeRunBySession.get(run.sessionKey) === run.runId) {
       activeRunBySession.delete(run.sessionKey);
     }
+    removeFromCompactQueue(run);
     run.resolveCompletion(result);
     await operationStore.complete(run.subjectId, run.clientOperationId, result).catch(() => {});
     const retentionTimer = setTimeout(() => {
@@ -365,16 +376,24 @@ export function createAgentService({
   // 保持者判定はacquireがbusy/recovering結果に同梱するleaseで行う。解放直後に
   // storeを再読すると保持者不在を「compact以外」と誤判定してsession_busyになるため。
   async function waitForCompactLeaseRelease(run, backend) {
-    const deadlineMs = Date.now() + compactWaitTimeoutMs;
+    let deadlineMs = 0;
     while (true) {
       if (run.cancelRequested) return "interrupted";
+      if (compactQueueBySession.get(run.sessionKey)?.[0] !== run.runId) {
+        await new Promise((resolve) => setTimeout(resolve, compactLeasePollMs));
+        continue;
+      }
+      if (!deadlineMs) deadlineMs = Date.now() + compactWaitTimeoutMs;
       const acquired = await sessionStore.acquire({
         sessionRef: run.sessionRef,
         mode: "neutral",
         owner: "agent-service",
         runId: run.runId,
       });
-      if (acquired?.status === "acquired" || acquired?.status === "existing") return acquired.lease;
+      if (acquired?.status === "acquired" || acquired?.status === "existing") {
+        activeRunBySession.set(run.sessionKey, run.runId);
+        return acquired.lease;
+      }
       if (!compactLeaseHolder(acquired?.lease)) {
         const error = agentError("session_busy", "session already has an active or recovering turn", { backendId: run.backendId });
         error.nativeActivity = "not_started";
@@ -475,23 +494,35 @@ export function createAgentService({
     return await admitStart(async () => {
       const acceptedRequest = { ...request, cwd: canonicalCwd };
       const requestHash = hashAgentOperationRequest(acceptedRequest);
-      if (request.sessionRef && activeRunBySession.has(sessionKey(request.sessionRef))) {
-        const active = runs.get(activeRunBySession.get(sessionKey(request.sessionRef)));
-        if (active?.subjectId === subjectId && active?.clientOperationId === request.clientOperationId) {
-          if (active.requestHash !== requestHash) {
-            throw agentError("operation_conflict", "clientOperationId has different input");
-          }
+      const replayOperation = (operation) => {
+        const existing = runs.get(String(operation.runId || ""));
+        if (!existing && operation.result) {
           return {
-            runId: active.runId,
-            events: createEventStream(service, active.runId),
-            completion: active.completion,
+            runId: String(operation.runId || operation.result.runId || ""),
+            result: operation.result,
+            events: { async *[Symbol.asyncIterator]() {} },
+            completion: Promise.resolve(operation.result),
           };
         }
+        if (!existing) throw agentError("operation_status_unknown", "previous operation is no longer replayable");
+        return {
+          runId: existing.runId,
+          queued: existing.queuedForCompact === true,
+          events: createEventStream(service, existing.runId),
+          completion: existing.completion,
+        };
+      };
+      const inspected = await operationStore.inspect(subjectId, request.clientOperationId, requestHash);
+      if (inspected?.status === "conflict") throw agentError("operation_conflict", "clientOperationId has different input");
+      if (inspected?.status === "unknown") throw agentError("operation_status_unknown", "previous operation status is unknown");
+      if (inspected?.status === "existing") return replayOperation(inspected);
+      if (request.sessionRef && activeRunBySession.has(sessionKey(request.sessionRef))) {
         throw agentError("session_busy", "session already has an active turn", { backendId: request.backendId });
       }
 
       const proposedRunId = generateRunId();
       let preAcquiredLease = null;
+      let queuedForCompact = false;
       if (request.sessionRef) {
         const mode = await sessionStore.getMode(request.sessionRef);
         if (!mode) {
@@ -508,21 +539,22 @@ export function createAgentService({
         if (resolvedMode?.mode !== "neutral") {
           throw agentError("session_busy", "session requires an explicit neutral handoff", { backendId: request.backendId });
         }
-        const acquired = await sessionStore.acquire({
-          sessionRef: request.sessionRef,
-          mode: "neutral",
-          owner: "agent-service",
-          runId: proposedRunId,
-        });
-        if (acquired?.status === "acquired" || acquired?.status === "existing") {
-          preAcquiredLease = acquired.lease;
-        } else if (compactLeaseHolder(acquired?.lease)) {
-          // compact操作がleaseを保持中の送信は落とさずrunとして受理し、
-          // execute側で圧縮完了(lease解放)を待ってから実行する
-          // (compact queueを持たないBackendでもcompact中の送信が成立する)。
-          preAcquiredLease = null;
+        if ((compactQueueBySession.get(sessionKey(request.sessionRef))?.length || 0) > 0) {
+          queuedForCompact = true;
         } else {
-          throw agentError("session_busy", "session already has an active or recovering turn", { backendId: request.backendId });
+          const acquired = await sessionStore.acquire({
+            sessionRef: request.sessionRef,
+            mode: "neutral",
+            owner: "agent-service",
+            runId: proposedRunId,
+          });
+          if (acquired?.status === "acquired" || acquired?.status === "existing") {
+            preAcquiredLease = acquired.lease;
+          } else if (compactLeaseHolder(acquired?.lease)) {
+            queuedForCompact = true;
+          } else {
+            throw agentError("session_busy", "session already has an active or recovering turn", { backendId: request.backendId });
+          }
         }
       }
       let claim;
@@ -540,23 +572,7 @@ export function createAgentService({
       }
       if (claim?.status === "conflict") throw agentError("operation_conflict", "clientOperationId has different input");
       if (claim?.status === "unknown") throw agentError("operation_status_unknown", "previous operation status is unknown");
-      if (claim?.status === "existing") {
-        const existing = runs.get(String(claim.runId || ""));
-        if (!existing && claim.result) {
-          return {
-            runId: String(claim.runId || claim.result.runId || ""),
-            result: claim.result,
-            events: { async *[Symbol.asyncIterator]() {} },
-            completion: Promise.resolve(claim.result),
-          };
-        }
-        if (!existing) throw agentError("operation_status_unknown", "previous operation is no longer replayable");
-        return {
-          runId: existing.runId,
-          events: createEventStream(service, existing.runId),
-          completion: existing.completion,
-        };
-      }
+      if (claim?.status === "existing") return replayOperation(claim);
 
       let resolveCompletion;
       const completion = new Promise((resolve) => { resolveCompletion = resolve; });
@@ -571,6 +587,7 @@ export function createAgentService({
         sessionKey: request.sessionRef ? sessionKey(request.sessionRef) : "",
         cwd: canonicalCwd,
         lease: preAcquiredLease,
+        queuedForCompact,
         sequence: 0,
         events: [],
         subscribers: new Set(),
@@ -589,11 +606,19 @@ export function createAgentService({
         resolveCompletion,
       };
       runs.set(run.runId, run);
-      if (run.sessionKey) activeRunBySession.set(run.sessionKey, run.runId);
-      publish(run, "turn.accepted", { backendId: run.backendId });
+      if (run.sessionKey) {
+        if (queuedForCompact) {
+          const queue = compactQueueBySession.get(run.sessionKey) || [];
+          queue.push(run.runId);
+          compactQueueBySession.set(run.sessionKey, queue);
+        } else {
+          activeRunBySession.set(run.sessionKey, run.runId);
+        }
+      }
+      publish(run, "turn.accepted", { backendId: run.backendId, queued: queuedForCompact });
       if (run.sessionResolved) publish(run, "session.resolved", { sessionRef: run.sessionRef });
       queueMicrotask(() => void execute(run, backend, acceptedRequest));
-      return { runId: run.runId, events: createEventStream(service, run.runId), completion };
+      return { runId: run.runId, queued: queuedForCompact, events: createEventStream(service, run.runId), completion };
     });
   }
 

@@ -221,7 +221,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
             requestId: message.requestId || "",
             operationId: message.operationId || "",
             streamId: run.runId,
-            payload: { runId: run.runId },
+            payload: { runId: run.runId, queued: run.queued === true },
           });
           attach(run.runId, 0);
         }
