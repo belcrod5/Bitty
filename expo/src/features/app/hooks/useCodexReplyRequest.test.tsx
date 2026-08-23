@@ -921,7 +921,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 
-  test("omits model and effort when resuming a backend that fixes the native session model", async () => {
+  test("sends the selected model when resuming within the same backend", async () => {
     const { options } = createOptions();
     Object.assign(options, {
       transcript: "hello",
@@ -931,7 +931,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
         modelId: "sonnet",
         backendId: "claude",
         supportsReasoningEffort: false,
-        changeWithinSession: false,
       }],
     });
     mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
@@ -950,18 +949,17 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
       backendId: "claude",
       threadId: "thread-1",
-      model: undefined,
+      model: "sonnet",
       effort: undefined,
     }));
   });
 
-  test("model固定Backendのresumeでも、advertise済みeffortはturn単位で送られcatalog外はclampされる", async () => {
+  test("resumeでもadvertise済みeffortはturn単位で送られcatalog外はclampされる", async () => {
     const claudeModelOption = {
       modelId: "sonnet",
       backendId: "claude",
       supportsReasoningEffort: true,
       effortOptions: ["low", "medium", "high", "xhigh", "max"],
-      changeWithinSession: false,
       supportsCompactQueue: false,
     };
     {
@@ -986,7 +984,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
         backendId: "claude",
         threadId: "thread-1",
-        model: undefined,
+        model: "sonnet",
         effort: "xhigh",
       }));
     }
@@ -1026,7 +1024,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
         modelId: "sonnet",
         backendId: "claude",
         supportsReasoningEffort: false,
-        changeWithinSession: false,
         supportsCompactQueue: false,
       }],
     });
@@ -1060,7 +1057,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
         modelId: "sonnet",
         backendId: "claude",
         supportsReasoningEffort: false,
-        changeWithinSession: false,
         supportsCompactQueue: false,
       }],
     });
@@ -1090,7 +1086,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
         modelId: "gpt-5",
         backendId: "codex",
         supportsReasoningEffort: true,
-        changeWithinSession: true,
         supportsCompactQueue: true,
       }],
     });

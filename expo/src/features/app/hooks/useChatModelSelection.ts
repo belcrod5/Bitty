@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Alert } from "react-native";
 import type { ModelOption } from "../contexts/AppSettingsContext";
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
-import { effortOptionsForModel, isModelSelectionBlocked } from "../modelOptions";
+import { effortOptionsForModel, isBackendChangeBlocked } from "../modelOptions";
 import { modelRefLabelForDisplay, normalizeModelRef } from "../utils/settingsParsers";
 
 export function useChatModelSelection(options: {
@@ -59,15 +59,12 @@ export function useChatModelSelection(options: {
         Boolean(String(options.panelSnapshot.selectedSessionId || "").trim())
         && options.panelSnapshot.sessionMaterialized !== false
       );
-      if (isModelSelectionBlocked({
+      if (isBackendChangeBlocked({
         sessionLocked,
         currentBackendId,
-        currentModelId: normalizedModelRefForView,
-        currentChangeWithinSession: modelOptionForView?.changeWithinSession,
         nextBackendId: next.backendId,
-        nextModelId: next.modelId,
       })) {
-        Alert.alert("新規チャットが必要です", "チャットの途中でモデルまたはAgent Providerは変更できません。");
+        Alert.alert("新規チャットが必要です", "チャットの途中でAgent Providerは変更できません。");
         options.closePicker(null);
         return;
       }

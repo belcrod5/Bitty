@@ -11,7 +11,6 @@ const modelOptions = [
     label: "ChatGPT 5.6 Sol",
     supportsReasoningEffort: true,
     effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    changeWithinSession: true,
   },
   {
     selectionKey: "claude::sonnet",
@@ -20,7 +19,14 @@ const modelOptions = [
     label: "Claude Sonnet",
     supportsReasoningEffort: true,
     effortOptions: ["low", "medium", "high", "xhigh", "max"],
-    changeWithinSession: false,
+  },
+  {
+    selectionKey: "claude::opus",
+    backendId: "claude",
+    modelId: "opus",
+    label: "Claude Opus",
+    supportsReasoningEffort: true,
+    effortOptions: ["low", "medium", "high", "xhigh", "max"],
   },
 ] as const;
 
@@ -125,9 +131,45 @@ test("an empty native session cannot change Provider after hydration fails", asy
 
   expect(alert).toHaveBeenCalledWith(
     "新規チャットが必要です",
-    "チャットの途中でモデルまたはAgent Providerは変更できません。",
+    "チャットの途中でAgent Providerは変更できません。",
   );
   expect(updatePanelSettings).not.toHaveBeenCalled();
+  expect(closePicker).toHaveBeenCalledWith(null);
+  alert.mockRestore();
+});
+
+test("a materialized session can change models within its Provider", async () => {
+  const updatePanelSettings = jest.fn();
+  const closePicker = jest.fn();
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const { result } = await renderHook(() => useChatModelSelection({
+    isPanelRuntimeView: true,
+    panelId: "drawer-session-popup",
+    panelSnapshot: {
+      ...localDraft(),
+      backendId: "claude",
+      modelRef: "sonnet",
+      selectedSessionId: "native-session",
+      sessionMaterialized: true,
+    },
+    conversationMessageCount: 1,
+    llmBackend: "codex",
+    modelRef: "gpt-5.6-sol",
+    reasoningEffort: "medium",
+    selectedModelLabel: "ChatGPT 5.6 Sol",
+    modelOptions,
+    selectModel: jest.fn(),
+    updatePanelSettings,
+    closePicker,
+  }));
+
+  await act(async () => result.current.selectModelForView("claude::opus"));
+
+  expect(alert).not.toHaveBeenCalled();
+  expect(updatePanelSettings).toHaveBeenCalledWith("drawer-session-popup", {
+    backendId: "claude",
+    modelRef: "opus",
+  });
   expect(closePicker).toHaveBeenCalledWith(null);
   alert.mockRestore();
 });

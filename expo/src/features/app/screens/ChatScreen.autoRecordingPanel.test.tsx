@@ -121,7 +121,6 @@ jest.mock("../contexts/AppSettingsContext", () => ({
         modelId: "gpt-5.6-sol",
         label: "ChatGPT 5.6 Sol",
         supportsReasoningEffort: true,
-        changeWithinSession: true,
         supportsScheduling: true,
       },
       {
@@ -130,7 +129,6 @@ jest.mock("../contexts/AppSettingsContext", () => ({
         modelId: "sonnet",
         label: "Claude Sonnet",
         supportsReasoningEffort: false,
-        changeWithinSession: false,
         supportsScheduling: false,
       },
     ],

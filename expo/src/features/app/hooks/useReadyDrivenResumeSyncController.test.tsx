@@ -342,7 +342,6 @@ describe("useReadyDrivenResumeSyncController", () => {
         modelId: "gpt-5.6-sol",
         label: "ChatGPT 5.6 Sol",
         supportsReasoningEffort: true,
-        changeWithinSession: true,
       },
       {
         selectionKey: "claude::sonnet",
@@ -350,7 +349,6 @@ describe("useReadyDrivenResumeSyncController", () => {
         modelId: "sonnet",
         label: "Claude Sonnet",
         supportsReasoningEffort: false,
-        changeWithinSession: false,
       },
     ] as const;
     const selection = await renderHook(() => useChatModelSelection({

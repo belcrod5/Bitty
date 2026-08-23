@@ -31,7 +31,6 @@ export type BackendStatus = {
       select?: boolean;
       effort?: boolean;
       effortOptions?: string[];
-      changeWithinSession?: boolean;
       catalog?: Array<{ modelId?: string; label?: string }>;
     };
     workspace?: { admission?: boolean };

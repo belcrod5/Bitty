@@ -72,7 +72,7 @@ git diff --check
 - Codex App Serverの既存通信、thread/session、履歴、stream、approval、各種commandは作り直さない
 - 会話本文はProviderのnative session/historyを正本とし、runnerへ完全コピーしない
 - runnerには`backendId + nativeSessionId + canonicalCwd`等の最小メタデータだけを持つ
-- Provider切替とmodel切替は新規チャットだけで許可し、materialize済みセッションでは固定する
+- Provider切替は新規チャットだけで許可し、materialize済みセッションではProviderを固定する。modelは同一Provider内でturn単位に変更できる
 - `AGENT_NEUTRAL_ENABLED`、`AGENT_CLAUDE_ENABLED`のような実行時フラグは使わず常時登録する
 - Claude CLI未導入、対応version未満、未ログインはRunner起動失敗ではなく、Claude選択後の送信単位エラーにする
 
@@ -99,7 +99,7 @@ HEAD以降の大きな差分には主に次が含まれる。
 
 - Backend statusからCodex/Claudeのmodel一覧を作るmodel selector
 - `backendId + modelId`を一つの選択単位にするExpo state
-- 既存セッションでProvider/modelを変更させないguard
+- 既存セッションでProviderを変更させないguard
 - Claude completion通知へ`backendId`を伝える変更
 - Claude native historyをExpoのsession restoreへ接続する変更
 - Provider別session cache key
@@ -170,12 +170,12 @@ AgentService
 - 実行方式: Claude Code CLI + Claude subscription
 - API keyの注入は行わない
 - fresh: `claude -p ... --session-id <uuid> --model <alias>`
-- resume: `claude -p ... --resume <uuid>`
+- resume: `claude -p ... --resume <uuid> --model <alias>`
 - output: `stream-json`、`--verbose`、`--include-partial-messages`
 - permission: `--permission-mode dontAsk`
 - project customization: `--safe-mode`
 - history: `~/.claude/projects/**/<session-id>.jsonl`
-- 対応model alias: `haiku`、`sonnet`、`opus`
+- 対応model alias: `haiku`、`sonnet`、`opus`、`fable`
 - text inputのみ
 - cancel: SIGINT、SIGTERM、SIGKILLの段階停止
 - session list/history: transcriptを走査
@@ -185,9 +185,9 @@ AgentService
 
 ```text
 select=true
-effort=false
-changeWithinSession=false
-catalog=[haiku, sonnet, opus]
+effort=true
+effortOptions=[low, medium, high, xhigh, max]
+catalog=[haiku, sonnet, opus, fable]
 ```
 
 Claude CLI 2.1.238自身は`--effort <level>`を持ち、help上の値は`low, medium, high, xhigh, max`である。`ultra`はClaude CLIのhelpにはない。
@@ -253,7 +253,7 @@ Codex model:  low, medium, high, xhigh, max, ultra
 Claude model: low, medium, high, xhigh, max
 ```
 
-Backend側は受け取ったeffortを再検証し、Claude CLI argvへ`--effort <level>`を追加する。fresh/resumeの両方での実挙動を確認する。modelのsession途中変更禁止とeffort変更可否は別capabilityとして扱い、`changeWithinSession`を流用しない。
+Backend側は受け取ったmodelとeffortを再検証し、Claude CLI argvへ`--model <alias>`と`--effort <level>`を追加する。fresh/resumeの両方で同じturn単位の選択を適用する。materialize済みsessionで固定するのはProviderだけである。
 
 ### 7.3 必要なテスト
 
@@ -528,7 +528,7 @@ Step 1〜4を実施済み。ユーザー実機確認とcommit/pushは未実施�
 
 - Backend statusの`capabilities.model`へ`effortOptions`を追加(Codex: 6値、Claude: 5値=`ultra`なし)。`claude-backend.mjs`はeffortを検証して`--effort`をfresh/resume両方のargvへ1回だけ追加
 - AgentServiceは`effortOptions` advertise時にcatalog外effortを`capability_unsupported`で拒否
-- Expoは`effortOptionsForModel()`(`modelOptions.ts`)でpickerを描画。送信側はcatalog外の保存値(例: ultra→Claude)を送らずBackend既定へfallback。effort送信はmodel固定(`changeWithinSession`)から分離し、resumeでもturn単位で送る
+- Expoは`effortOptionsForModel()`(`modelOptions.ts`)でpickerを描画。送信側はcatalog外の保存値(例: ultra→Claude)を送らずBackend既定へfallback。modelとeffortはresumeでもturn単位で送る
 
 ### Step 3: session list全Backend統合(不具合3・4)
 
