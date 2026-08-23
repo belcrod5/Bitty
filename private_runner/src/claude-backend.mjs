@@ -198,7 +198,7 @@ export function createClaudeBackend({
         permission: { interactive: true },
         model: { select: true, effort: true, effortOptions: CLAUDE_EFFORT_OPTIONS, catalog: CLAUDE_MODELS },
         workspace: { projectCustomizations: false, admission: true },
-        operations: { compact: true, schedule: false, compactQueue: false },
+        operations: { compact: true, schedule: false },
         event: { nativePayload: false },
         tool: { dynamic: false },
       },

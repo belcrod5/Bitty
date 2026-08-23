@@ -73,6 +73,7 @@ export type CodexAppServerTurnOptions = {
   timeoutMs?: number;
   onDelta?: (delta: string, params?: unknown) => void;
   onAgentMessageCompleted?: (text: string, params?: unknown) => void;
+  onTurnAccepted?: (params: { runId: string; queued: boolean }) => void;
   onThreadIdResolved?: (threadId: string) => void;
   onEvent?: (method: string, params: unknown) => void;
   onLog?: (entry: CodexAppServerLogEntry) => void;

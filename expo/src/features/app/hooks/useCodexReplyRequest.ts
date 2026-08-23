@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import { Alert } from "react-native";
 import {
   deriveCodexSessionStateFromSnapshot,
-  enqueueRunnerCodexTurn,
   isCodexAppServerTurnInterruptedError,
   startCodexAppServerTurn,
   type CodexAppServerTurnResult,
@@ -28,11 +27,6 @@ type ConversationMessageLike = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  codexQueue?: {
-    queuedTurnId: string;
-    status: "queued" | "waiting_compact" | "running" | "completed" | "failed" | "cancelled";
-    errorMessage?: string;
-  };
 };
 
 type PanelConversationWriteOptions = {
@@ -70,7 +64,6 @@ type UseCodexReplyRequestOptions<
     backendId: string;
     supportsReasoningEffort?: boolean;
     effortOptions?: readonly ReasoningEffort[];
-    supportsCompactQueue?: boolean;
   }[];
   modelRef: string;
   reasoningEffort: ReasoningEffort;
@@ -126,7 +119,6 @@ type UseCodexReplyRequestOptions<
     options?: PanelConversationWriteOptions
   ) => void;
   normalizedLlmDirectoryForRequest: () => string;
-  isCodexCompactRunning?: (threadId: string) => boolean;
   syncLlmConversationSessionId: (
     value: unknown,
     options?: { expectedCurrentSessionId?: unknown; syncSelected?: boolean }
@@ -236,13 +228,12 @@ type InFlightThreadState = {
 };
 
 type PanelRequestState = {
+  ownedRequestSeqs: Set<number>;
+  cancelledRequestSeqs: Set<number>;
   activeRequestSeq: number;
   activeRequestThreadId: string;
   activeRequestSeqByThreadId: Record<string, number>;
-  cancelledRequestSeq: number | null;
-  cancelledRequestSeqByThreadId: Record<string, number | null>;
-  inFlightTurnRequest: InFlightCodexTurnRequest | null;
-  inFlightTurnRequestByThreadId: Record<string, InFlightCodexTurnRequest>;
+  inFlightTurnRequestBySeq: Record<number, InFlightCodexTurnRequest>;
 };
 
 const LEGACY_MAIN_PANEL_ID = "main";
@@ -265,13 +256,12 @@ function normalizePanelId(panelIdRaw: unknown): string {
 
 function createInitialPanelRequestState(): PanelRequestState {
   return {
+    ownedRequestSeqs: new Set(),
+    cancelledRequestSeqs: new Set(),
     activeRequestSeq: 0,
     activeRequestThreadId: "",
     activeRequestSeqByThreadId: {},
-    cancelledRequestSeq: null,
-    cancelledRequestSeqByThreadId: {},
-    inFlightTurnRequest: null,
-    inFlightTurnRequestByThreadId: {},
+    inFlightTurnRequestBySeq: {},
   };
 }
 
@@ -326,11 +316,9 @@ export function useCodexReplyRequest<
     const targetPanelId = normalizePanelId(panelIdRaw);
     const targetThreadId = String(threadIdRaw || "").trim();
     const panelState = getPanelRequestState(targetPanelId);
-    const inFlight = (
-      targetThreadId
-        ? panelState?.inFlightTurnRequestByThreadId[targetThreadId]
-        : null
-    ) || panelState?.inFlightTurnRequest || null;
+    const inFlight = Object.values(panelState?.inFlightTurnRequestBySeq || {})
+      .filter((request) => !targetThreadId || request.threadId === targetThreadId)
+      .sort((left, right) => right.requestSeq - left.requestSeq)[0] || null;
     const panelActiveRequestSeq = (
       targetThreadId
         ? (panelState?.activeRequestSeqByThreadId[targetThreadId] || 0)
@@ -358,12 +346,14 @@ export function useCodexReplyRequest<
     const threadId = String(threadIdRaw || "").trim();
     const panelState = getPanelRequestState(panelIdRaw);
     const result = {
+      clearedRequestOwnership: false,
       clearedPanelActive: false,
       clearedThreadActive: false,
       clearedPanelInFlight: false,
       clearedThreadInFlight: false,
     };
     if (!panelState || !Number.isFinite(requestSeq) || requestSeq <= 0) return result;
+    result.clearedRequestOwnership = panelState.ownedRequestSeqs.delete(requestSeq);
     const threadIdsToClear = new Set<string>();
     if (threadId) threadIdsToClear.add(threadId);
     if (panelState.activeRequestSeq === requestSeq) {
@@ -373,32 +363,25 @@ export function useCodexReplyRequest<
     for (const [candidateThreadId, activeRequestSeq] of Object.entries(panelState.activeRequestSeqByThreadId)) {
       if (activeRequestSeq === requestSeq) threadIdsToClear.add(candidateThreadId);
     }
-    for (const [candidateThreadId, inFlightRequest] of Object.entries(panelState.inFlightTurnRequestByThreadId)) {
-      if (inFlightRequest?.requestSeq === requestSeq) threadIdsToClear.add(candidateThreadId);
-    }
-    if (panelState.inFlightTurnRequest?.requestSeq === requestSeq) {
-      panelState.inFlightTurnRequest = null;
+    const inFlightRequest = panelState.inFlightTurnRequestBySeq[requestSeq];
+    if (inFlightRequest) {
+      if (inFlightRequest.threadId) threadIdsToClear.add(inFlightRequest.threadId);
+      delete panelState.inFlightTurnRequestBySeq[requestSeq];
       result.clearedPanelInFlight = true;
-    }
-    for (const candidateThreadId of threadIdsToClear) {
-      if (panelState.inFlightTurnRequestByThreadId[candidateThreadId]?.requestSeq === requestSeq) {
-        delete panelState.inFlightTurnRequestByThreadId[candidateThreadId];
-        result.clearedThreadInFlight = true;
-      }
+      result.clearedThreadInFlight = true;
     }
     if (panelState.activeRequestSeq === requestSeq) {
       panelState.activeRequestSeq = 0;
       panelState.activeRequestThreadId = "";
-      panelState.cancelledRequestSeq = null;
       result.clearedPanelActive = true;
     }
     for (const candidateThreadId of threadIdsToClear) {
       if (panelState.activeRequestSeqByThreadId[candidateThreadId] === requestSeq) {
         delete panelState.activeRequestSeqByThreadId[candidateThreadId];
-        delete panelState.cancelledRequestSeqByThreadId[candidateThreadId];
         result.clearedThreadActive = true;
       }
     }
+    panelState.cancelledRequestSeqs.delete(requestSeq);
     return result;
   }, [getPanelRequestState]);
 
@@ -443,39 +426,6 @@ export function useCodexReplyRequest<
       !requestModelEffortOptions.includes(normalizedReasoningEffort)
       ? ""
       : normalizedReasoningEffort;
-    const compactRunningLocally = Boolean(
-      requestThreadKey && current.isCodexCompactRunning?.(requestThreadKey)
-    );
-    const readPanelMessages = (): TMessage[] => {
-      if (typeof current.getPanelConversationMessages === "function") {
-        const panelMessages = current.getPanelConversationMessages(requestPanelId);
-        if (Array.isArray(panelMessages)) return panelMessages;
-      }
-      return [];
-    };
-    const writePanelMessages = (
-      messages: TMessage[],
-      options?: PanelConversationWriteOptions
-    ) => {
-      if (typeof current.setPanelConversationMessages === "function") {
-        current.setPanelConversationMessages(requestPanelId, messages, options);
-        return;
-      }
-    };
-    const findRecentMatchingUserMessageIndex = (messages: TMessage[]) => {
-      const index = messages.length - 1;
-      if (index < 0) return -1;
-      const nowMs = Date.now();
-      const candidate = messages[index] as TMessage & { at?: string };
-      if (String(candidate.role || "") !== "user") return -1;
-      if (String(candidate.content || "").trim() !== effectiveTranscript) return -1;
-      const queuedTurnId = String((candidate as any)?.codexQueue?.queuedTurnId || "").trim();
-      if (queuedTurnId) return -1;
-      const atMs = Date.parse(String(candidate.at || ""));
-      if (Number.isFinite(atMs) && nowMs - atMs > 15000) return -1;
-      return index;
-    };
-
     if (await current.runSlashCommand(effectiveTranscript, {
       clearInput,
       sttMeta: requestOptions?.sttMeta,
@@ -508,7 +458,7 @@ export function useCodexReplyRequest<
       const staleSeq = panelRequestState.activeRequestSeqByThreadId[requestThreadKey] || 0;
       if (staleSeq <= 0) return false;
       const inFlightState = inFlightByThreadRef.current[requestThreadKey];
-      const staleTurnRequest = panelRequestState.inFlightTurnRequestByThreadId[requestThreadKey];
+      const staleTurnRequest = panelRequestState.inFlightTurnRequestBySeq[staleSeq];
       if (inFlightState && inFlightState.requestSeq !== staleSeq) return false;
       if (staleTurnRequest && staleTurnRequest.requestSeq !== staleSeq) return false;
       if (inFlightState?.status === "tool_waiting_approval") return false;
@@ -588,13 +538,13 @@ export function useCodexReplyRequest<
     }
     const requestSeq = nextRequestSeqRef.current + 1;
     nextRequestSeqRef.current = requestSeq;
+    panelRequestState.ownedRequestSeqs.add(requestSeq);
     panelRequestState.activeRequestSeq = requestSeq;
     panelRequestState.activeRequestThreadId = requestThreadKey;
     if (requestThreadKey) {
       panelRequestState.activeRequestSeqByThreadId[requestThreadKey] = requestSeq;
-      delete panelRequestState.cancelledRequestSeqByThreadId[requestThreadKey];
     }
-    panelRequestState.cancelledRequestSeq = null;
+    panelRequestState.cancelledRequestSeqs.delete(requestSeq);
     const requestTraceId = createReplyTraceId(requestSeq);
     current.logSessionDiag("reply_http_panel_request_state_begin", {
       requestTraceId,
@@ -606,129 +556,17 @@ export function useCodexReplyRequest<
       activeRequestSeq: panelRequestState.activeRequestSeq,
       activeRequestThreadId: panelRequestState.activeRequestThreadId || undefined,
       activeThreadKeys: Object.keys(panelRequestState.activeRequestSeqByThreadId),
-      cancelledRequestSeq: panelRequestState.cancelledRequestSeq,
-      inFlightThreadKeys: Object.keys(panelRequestState.inFlightTurnRequestByThreadId),
-      hasInFlightTurnRequest: !!panelRequestState.inFlightTurnRequest,
+      cancelledRequestSeqs: Array.from(panelRequestState.cancelledRequestSeqs),
+      inFlightRequestSeqs: Object.keys(panelRequestState.inFlightTurnRequestBySeq),
     }, { throttleMs: 0 });
-    // Acceptance choke point: the request is now committed (it will be queued or
-    // dispatched as a turn), so clear the composer synchronously BEFORE any network
-    // I/O. Clearing must never wait on the compact-queue round trip below, and a
-    // rejected send must never reach this line (input is kept + caller notifies).
+    // Acceptance choke point: the request is committed to a turn, so clear the
+    // composer synchronously before network I/O. A rejected send never reaches here.
     if (clearInput) {
       current.setTranscript("");
     }
-    let replyRequestStartedAt = Date.now();
-    // compact queue preflightはBackendのoperations.compactQueue capabilityに従う。
-    // 非対応Backend(session)へCodex raw queue opを送らない。
-    const supportsCompactQueue = requestModelOption?.supportsCompactQueue !== false;
-    if (requestThreadKey && supportsCompactQueue) {
-      try {
-        const queued = await enqueueRunnerCodexTurn({
-          wsUrl: targetCodexWsUrl,
-          wsToken: current.codexWsToken.trim(),
-          threadId: requestThreadKey,
-          inputText: effectiveTranscript,
-          cwd: requestDirectory || undefined,
-          model: requestModelRef || undefined,
-          effort: requestReasoningEffort || undefined,
-          approvalPolicy: current.codexApprovalPolicy,
-          sourcePanelId: requestPanelId,
-          clientRequestId: `compact-queue-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-          onlyIfCompacting: true,
-          waitForCompactMs: compactRunningLocally ? 15000 : undefined,
-        });
-        if (queued.queued && queued.queuedTurn) {
-          // The runner queued the turn: no local turn will run for this request,
-          // so release the send gate taken above.
-          clearPanelRequestTracking(requestPanelId, requestSeq, requestThreadKey);
-          const currentMessages = readPanelMessages();
-          const queuePatch = {
-            codexQueue: {
-              queuedTurnId: queued.queuedTurn.queuedTurnId,
-              status: queued.queuedTurn.status,
-              errorMessage: queued.queuedTurn.errorMessage || undefined,
-            },
-          };
-          const matchedUserIndex = findRecentMatchingUserMessageIndex(currentMessages);
-          const queuedMessages = matchedUserIndex >= 0
-            ? currentMessages.map((message, index) => (
-              index === matchedUserIndex
-                ? ({
-                  ...message,
-                  ...queuePatch,
-                })
-                : message
-            ))
-            : [
-              ...currentMessages,
-              current.buildConversationMessage(
-                "user",
-                effectiveTranscript,
-                {
-                  ...(requestOptions?.sttMeta ? { sttMeta: requestOptions.sttMeta } : {}),
-                  ...queuePatch,
-                } as Omit<Partial<TMessage>, "id" | "role" | "content">
-              ),
-            ];
-          writePanelMessages(queuedMessages, {
-            isResponding: false,
-            selectedThreadStatusType: "active",
-            sessionId: requestThreadKey,
-          });
-          current.updateConversationRuntimeRequest?.({
-            requestId: requestTraceId,
-            requestSeq,
-            sessionId: requestThreadKey,
-            sourcePanelId: requestPanelId,
-            threadId: requestThreadKey,
-            lifecycle: "active",
-            status: "model_processing",
-            statusDetail: "queued after compact",
-            startedAtMs: replyRequestStartedAt,
-            updatedAtMs: Date.now(),
-            completedAtMs: null,
-          });
-          current.startCodexRelayObserverForSession?.(requestThreadKey, {
-            directory: requestDirectory || undefined,
-            startedAtMs: replyRequestStartedAt,
-            reason: "codex_queue_turn",
-            panelId: requestPanelId,
-            // 承認待ち中のqueue: pending approvalはseq≦watermarkだとサーバーが
-            // 再送しないため、watermarkを使わずseq=0で現行turnをreplayさせる
-            // (承認待ち再開・復元経路と同じ意味論)。
-            ignoreWatermark: current.getSessionRuntimeStatus?.(requestThreadKey)?.waitingApproval === true,
-          });
-          current.logSessionDiag("reply_http_send_queued_after_compact", {
-            panelId: requestPanelId,
-            threadId: requestThreadKey,
-            queuedTurnId: queued.queuedTurn.queuedTurnId,
-            modelRef: requestModelRef,
-            reasoningEffort: requestReasoningEffort,
-            compactRunningLocally,
-          }, { throttleMs: 0 });
-          return;
-        }
-        current.logSessionDiag("reply_http_send_queue_not_compacting", {
-          panelId: requestPanelId,
-          threadId: requestThreadKey,
-          reason: queued.reason || "not_compacting",
-          modelRef: requestModelRef,
-          reasoningEffort: requestReasoningEffort,
-          compactRunningLocally,
-        }, { throttleMs: 0 });
-      } catch (error) {
-        current.logSessionDiag("reply_http_compact_queue_failed", {
-          panelId: requestPanelId,
-          threadId: requestThreadKey,
-          message: error instanceof Error ? error.message : String(error),
-        }, { throttleMs: 0 });
-      }
-    }
-    // compact queue非対応Backend(Claude等)のcompact中送信は、runner側が受理して
-    // 圧縮完了後に実行する(agent-serviceのcompact lease待ち)。クライアントで待つと
-    // アプリ終了時にメッセージが失われるため、ここでは待たずそのままdispatchする。
-    // compact queue probing time is not part of a directly dispatched turn.
-    replyRequestStartedAt = Date.now();
+    const replyRequestStartedAt = Date.now();
+    // Runner acceptance is the queue boundary for every backend. If compaction
+    // owns the session lease, agent-service starts this accepted run after release.
     const getConversationMessagesForPanel = (panelId: string): TMessage[] => {
       const normalizedPanelId = normalizePanelId(panelId);
       if (typeof current.getPanelConversationMessages === "function") {
@@ -757,19 +595,11 @@ export function useCodexReplyRequest<
     };
     const isActiveRequest = () => {
       const state = getPanelRequestState(requestPanelId);
-      if (!state) return false;
-      if (requestThreadKey) {
-        return state.activeRequestSeqByThreadId[requestThreadKey] === requestSeq;
-      }
-      return state.activeRequestSeq === requestSeq;
+      return state?.ownedRequestSeqs.has(requestSeq) === true;
     };
     const isCancelledRequest = () => {
       const state = getPanelRequestState(requestPanelId);
-      if (!state) return false;
-      if (requestThreadKey) {
-        return state.cancelledRequestSeqByThreadId[requestThreadKey] === requestSeq;
-      }
-      return state.cancelledRequestSeq === requestSeq;
+      return state?.cancelledRequestSeqs.has(requestSeq) === true;
     };
     let finalUiSettled = false;
     let trackedThreadId = requestThreadId || requestUiSessionId;
@@ -779,7 +609,6 @@ export function useCodexReplyRequest<
     let lastDeltaAtMs = 0;
     let codexEventCount = 0;
     let lastCodexEvent = "";
-    let panelConversationDraft: TMessage[] = [];
     let latestContextUsedPct: number | null = null;
     const logTurnDiag = (event: string, payload: Record<string, unknown> = {}) => {
       current.logSessionDiag(event, {
@@ -794,7 +623,7 @@ export function useCodexReplyRequest<
         reasoningEffort: requestReasoningEffort,
         requestSnapshotSource,
         panelActiveRequestSeq: getPanelRequestState(requestPanelId)?.activeRequestSeq || 0,
-        panelCancelledRequestSeq: getPanelRequestState(requestPanelId)?.cancelledRequestSeq || null,
+        requestCancelled: getPanelRequestState(requestPanelId)?.cancelledRequestSeqs.has(requestSeq) === true,
         requestThreadKey: requestThreadKey || undefined,
         threadActiveRequestSeq: activeRequestSeqForCurrentThread(),
         ...payload,
@@ -875,17 +704,12 @@ export function useCodexReplyRequest<
       } else if (!from) {
         state.activeRequestSeqByThreadId[to] = requestSeq;
       }
-      if (from && state.cancelledRequestSeqByThreadId[from] === requestSeq) {
-        state.cancelledRequestSeqByThreadId[to] = requestSeq;
-        delete state.cancelledRequestSeqByThreadId[from];
-      }
-      const inFlight = from ? state.inFlightTurnRequestByThreadId[from] : null;
-      if (inFlight?.requestSeq === requestSeq) {
-        state.inFlightTurnRequestByThreadId[to] = {
+      const inFlight = state.inFlightTurnRequestBySeq[requestSeq];
+      if (inFlight) {
+        state.inFlightTurnRequestBySeq[requestSeq] = {
           ...inFlight,
           threadId: to,
         };
-        delete state.inFlightTurnRequestByThreadId[from];
       }
       if (state.activeRequestSeq === requestSeq) {
         state.activeRequestThreadId = to;
@@ -926,17 +750,13 @@ export function useCodexReplyRequest<
         if (options?.isResponding === false) {
           setConversationMessagesForPanel(
             requestPanelId,
-            panelConversationDraft.length > 0
-              ? panelConversationDraft
-              : getConversationMessagesForPanel(requestPanelId),
+            getConversationMessagesForPanel(requestPanelId),
             buildPanelConversationWriteOptions(options)
           );
         }
         return;
       }
-      const latestConversation = panelConversationDraft.length > 0
-        ? panelConversationDraft
-        : getConversationMessagesForPanel(requestPanelId);
+      const latestConversation = getConversationMessagesForPanel(requestPanelId);
       const content = String(contentRaw || "");
       const nextMessage = current.buildConversationMessage("assistant", content, {
         id: messageId,
@@ -951,7 +771,6 @@ export function useCodexReplyRequest<
       if (!replaced) {
         nextConversationForPanel.push(nextMessage);
       }
-      panelConversationDraft = nextConversationForPanel;
       setConversationMessagesForPanel(
         requestPanelId,
         nextConversationForPanel,
@@ -984,7 +803,6 @@ export function useCodexReplyRequest<
         ? { sttMeta: requestOptions.sttMeta }
         : undefined),
     ];
-    panelConversationDraft = nextConversation;
     setConversationMessagesForPanel(requestPanelId, nextConversation, {
       isResponding: true,
       sessionId: String(requestThreadId || requestUiSessionId || "").trim(),
@@ -1096,9 +914,7 @@ export function useCodexReplyRequest<
     ) => {
       const liveMessageIds = new Set(Array.from(agentMessageUiIdByItemId.values()));
       const commandMessageIds = new Set(Array.from(commandMessageIdByItemId.values()));
-      const latestConversation = panelConversationDraft.length > 0
-        ? panelConversationDraft
-        : getConversationMessagesForPanel(requestPanelId);
+      const latestConversation = getConversationMessagesForPanel(requestPanelId);
       const hasRunningCommand = latestConversation.some((message) => {
         const commandMessage = message as TMessage & { commandExecution?: CodexCommandExecutionInfo };
         return commandMessageIds.has(String(message.id || "")) && commandMessage.commandExecution?.status === "running";
@@ -1143,7 +959,6 @@ export function useCodexReplyRequest<
             : liveMessage.youtubeVideoIds,
         };
       });
-      panelConversationDraft = nextConversationForPanel;
       setConversationMessagesForPanel(
         requestPanelId,
         nextConversationForPanel,
@@ -1213,6 +1028,28 @@ export function useCodexReplyRequest<
         onApprovalRequestResolved: (request) => {
           current.onApprovalRequestResolved?.(projectApprovalRequest(request));
         },
+        onTurnAccepted: ({ runId, queued }) => {
+          if (!queued || !isActiveRequest() || isCancelledRequest()) return;
+          const state = getPanelRequestState(requestPanelId);
+          if (state?.activeRequestSeq === requestSeq) {
+            state.activeRequestSeq = 0;
+            state.activeRequestThreadId = "";
+          }
+          for (const [threadId, activeRequestSeq] of Object.entries(state?.activeRequestSeqByThreadId || {})) {
+            if (activeRequestSeq === requestSeq && state) delete state.activeRequestSeqByThreadId[threadId];
+          }
+          setConversationMessagesForPanel(
+            requestPanelId,
+            getConversationMessagesForPanel(requestPanelId),
+            {
+              isResponding: false,
+              selectedThreadStatusType: "active",
+              sessionId: requestThreadKey,
+            },
+          );
+          updateRuntimeRequest("active", "model_processing", "queued after compact");
+          logTurnDiag("reply_http_turn_queued_after_compact", { runId });
+        },
         onThreadIdResolved: (threadId) => {
           if (!isActiveRequest() || isCancelledRequest()) return;
           const resolvedThreadId = String(threadId || "").trim();
@@ -1230,9 +1067,7 @@ export function useCodexReplyRequest<
           }
           setConversationMessagesForPanel(
             requestPanelId,
-            panelConversationDraft.length > 0
-              ? panelConversationDraft
-              : getConversationMessagesForPanel(requestPanelId),
+            getConversationMessagesForPanel(requestPanelId),
             buildPanelConversationWriteOptions({
               sessionId: resolvedThreadId,
               sessionMaterialized: true,
@@ -1244,16 +1079,10 @@ export function useCodexReplyRequest<
             previousTrackedThreadId: previousThreadKey,
           });
           const activePanelState = getPanelRequestState(requestPanelId);
-          if (activePanelState?.inFlightTurnRequest?.requestSeq === requestSeq) {
-            activePanelState.inFlightTurnRequest = {
-              ...activePanelState.inFlightTurnRequest,
-              panelId: requestPanelId,
-              threadId: resolvedThreadId,
-            };
-          }
-          if (activePanelState?.inFlightTurnRequestByThreadId[resolvedThreadId]?.requestSeq === requestSeq) {
-            activePanelState.inFlightTurnRequestByThreadId[resolvedThreadId] = {
-              ...activePanelState.inFlightTurnRequestByThreadId[resolvedThreadId],
+          const inFlightRequest = activePanelState?.inFlightTurnRequestBySeq[requestSeq];
+          if (inFlightRequest && activePanelState) {
+            activePanelState.inFlightTurnRequestBySeq[requestSeq] = {
+              ...inFlightRequest,
               panelId: requestPanelId,
               threadId: resolvedThreadId,
             };
@@ -1368,17 +1197,13 @@ export function useCodexReplyRequest<
             if (hasLiveAgentMessages()) {
               setConversationMessagesForPanel(
                 requestPanelId,
-                panelConversationDraft.length > 0
-                  ? panelConversationDraft
-                  : getConversationMessagesForPanel(requestPanelId),
+                getConversationMessagesForPanel(requestPanelId),
                 buildPanelConversationWriteOptions(writeOptions)
               );
             } else if (!nextPanelReply) {
               setConversationMessagesForPanel(
                 requestPanelId,
-                panelConversationDraft.length > 0
-                  ? panelConversationDraft
-                  : getConversationMessagesForPanel(requestPanelId),
+                getConversationMessagesForPanel(requestPanelId),
                 buildPanelConversationWriteOptions(writeOptions)
               );
             } else {
@@ -1475,10 +1300,7 @@ export function useCodexReplyRequest<
         threadId: trackedThreadId,
         startedAt: replyRequestStartedAt,
       };
-      panelRequestState.inFlightTurnRequest = initialInFlightTurnRequest;
-      if (requestThreadKey) {
-        panelRequestState.inFlightTurnRequestByThreadId[requestThreadKey] = initialInFlightTurnRequest;
-      }
+      panelRequestState.inFlightTurnRequestBySeq[requestSeq] = initialInFlightTurnRequest;
       let result: CodexAppServerTurnResult;
       try {
         result = await turnSession.promise;
@@ -1509,10 +1331,7 @@ export function useCodexReplyRequest<
           threadId: trackedThreadId,
           startedAt: replyRequestStartedAt,
         };
-        panelRequestState.inFlightTurnRequest = retryInFlightTurnRequest;
-        if (requestThreadKey) {
-          panelRequestState.inFlightTurnRequestByThreadId[requestThreadKey] = retryInFlightTurnRequest;
-        }
+        panelRequestState.inFlightTurnRequestBySeq[requestSeq] = retryInFlightTurnRequest;
         result = await turnSession.promise;
       }
       if (!isActiveRequest() || isCancelledRequest()) return;
@@ -1722,9 +1541,10 @@ export function useCodexReplyRequest<
       // is waiting on an approval).
       purgeInFlightStatesForRequest(requestSeq);
       const clearedRequestTracking = clearPanelRequestTracking(requestPanelId, requestSeq, requestThreadKey);
+      const clearedRequestOwnership = clearedRequestTracking.clearedRequestOwnership;
       const isFinalPanelActive = clearedRequestTracking.clearedPanelActive;
       const isFinalThreadActive = clearedRequestTracking.clearedThreadActive;
-      if (isFinalPanelActive || isFinalThreadActive) {
+      if (clearedRequestOwnership || isFinalPanelActive || isFinalThreadActive) {
         logTurnDiag("reply_http_finally", {
           finalUiSettled,
           finalPanelActive: isFinalPanelActive,
@@ -1740,9 +1560,7 @@ export function useCodexReplyRequest<
         if (!finalUiSettled) {
           setConversationMessagesForPanel(
             requestPanelId,
-            panelConversationDraft.length > 0
-              ? panelConversationDraft
-              : getConversationMessagesForPanel(requestPanelId),
+            getConversationMessagesForPanel(requestPanelId),
             {
               isResponding: false,
               selectedThreadStatusType: "idle",
@@ -1760,82 +1578,64 @@ export function useCodexReplyRequest<
   const cancelReplyRequest = useCallback(async (options?: { panelId?: string }) => {
     const current = optionsRef.current;
     const targetPanelId = normalizePanelId(options?.panelId);
-    const targetThreadId = "";
-    const {
-      panelState: targetPanelState,
-      inFlight,
-      requestSeq: targetRequestSeq,
-      ownerPanelId,
-      sessionId: cancelledSessionId,
-    } = resolveRequestControlTarget(targetPanelId, targetThreadId);
-    if (targetRequestSeq <= 0) return false;
-    if (ownerPanelId !== targetPanelId) {
-      current.logAuto("reply_http_cancel_skipped_panel_mismatch", {
-        requestSeq: targetRequestSeq,
-        ownerPanelId,
-        targetPanelId,
-      });
-      return false;
-    }
-    if (targetPanelState) {
-      targetPanelState.cancelledRequestSeq = targetRequestSeq;
-      if (targetThreadId) {
-        targetPanelState.cancelledRequestSeqByThreadId[targetThreadId] = targetRequestSeq;
-      }
+    const targetPanelState = getPanelRequestState(targetPanelId);
+    const inFlightRequests = Object.values(targetPanelState?.inFlightTurnRequestBySeq || {})
+      .sort((left, right) => left.requestSeq - right.requestSeq);
+    const fallbackRequestSeq = targetPanelState?.activeRequestSeq || 0;
+    if (inFlightRequests.length === 0 && fallbackRequestSeq <= 0) return false;
+    for (const request of inFlightRequests) {
+      targetPanelState?.cancelledRequestSeqs.add(request.requestSeq);
     }
     current.logAuto("reply_http_cancel_requested", {
-      requestSeq: targetRequestSeq,
+      requestSeqs: inFlightRequests.map((request) => request.requestSeq),
       panelId: targetPanelId,
     });
     const cancelledAtMs = Date.now();
-    if (cancelledSessionId && typeof current.updateConversationRuntimeRequest === "function") {
-      current.updateConversationRuntimeRequest({
-        requestId: String(inFlight?.requestId || `reply-cancelled-${targetRequestSeq}`).trim(),
-        requestSeq: targetRequestSeq,
-        sessionId: cancelledSessionId,
-        sourcePanelId: targetPanelId,
-        threadId: cancelledSessionId,
-        lifecycle: "cancelled",
-        status: "idle",
-        statusDetail: "cancelled",
-        startedAtMs: Number(inFlight?.startedAt || cancelledAtMs),
-        updatedAtMs: cancelledAtMs,
-        completedAtMs: cancelledAtMs,
-      });
+    if (typeof current.updateConversationRuntimeRequest === "function") {
+      for (const request of inFlightRequests) {
+        const sessionId = String(request.threadId || "").trim();
+        if (!sessionId) continue;
+        current.updateConversationRuntimeRequest({
+          requestId: String(request.requestId || `reply-cancelled-${request.requestSeq}`).trim(),
+          requestSeq: request.requestSeq,
+          sessionId,
+          sourcePanelId: targetPanelId,
+          threadId: sessionId,
+          lifecycle: "cancelled",
+          status: "idle",
+          statusDetail: "cancelled",
+          startedAtMs: Number(request.startedAt || cancelledAtMs),
+          updatedAtMs: cancelledAtMs,
+          completedAtMs: cancelledAtMs,
+        });
+      }
     }
-    const clearPanelResponding = (threadIdRaw?: unknown) => {
-      if (typeof current.setPanelConversationMessages !== "function") return;
+    if (typeof current.setPanelConversationMessages === "function") {
       const messages = typeof current.getPanelConversationMessages === "function"
         ? current.getPanelConversationMessages(targetPanelId)
         : [];
       current.setPanelConversationMessages(targetPanelId, messages, {
         isResponding: false,
         selectedThreadStatusType: "idle",
-        sessionId: String(threadIdRaw || "").trim(),
+        sessionId: String(inFlightRequests.at(-1)?.threadId || "").trim(),
       });
-    };
-    clearPanelResponding(inFlight?.threadId);
-    if (!inFlight) {
-      clearPanelRequestTracking(targetPanelId, targetRequestSeq, targetThreadId);
+    }
+    if (inFlightRequests.length === 0) {
+      clearPanelRequestTracking(targetPanelId, fallbackRequestSeq);
       return true;
     }
-    try {
-      await inFlight.session.interrupt();
-      return true;
-    } catch (error) {
-      current.logAuto("reply_http_cancel_interrupt_error", {
-        requestSeq: inFlight.requestSeq,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      return true;
-    } finally {
-      const interruptedThreadId = String(inFlight.threadId || "").trim();
-      if (interruptedThreadId) {
-        delete inFlightByThreadRef.current[interruptedThreadId];
+    await Promise.all(inFlightRequests.map(async (request) => {
+      try {
+        await request.session.interrupt();
+      } catch (error) {
+        current.logAuto("reply_http_cancel_interrupt_error", {
+          requestSeq: request.requestSeq,
+          message: error instanceof Error ? error.message : String(error),
+        });
       }
-      clearPanelRequestTracking(targetPanelId, inFlight.requestSeq, interruptedThreadId || targetThreadId);
-    }
-  }, [clearPanelRequestTracking, resolveRequestControlTarget]);
+    }));
+    return true;
+  }, [clearPanelRequestTracking, getPanelRequestState]);
 
   const suspendReplyRequest = useCallback((reason = "session_switch", options?: { panelId?: string }) => {
     const current = optionsRef.current;
@@ -1909,12 +1709,7 @@ export function useCodexReplyRequest<
     const activeRequestSeq = panelState.activeRequestSeqByThreadId[threadId] || 0;
     if (!Number.isFinite(state.requestSeq) || state.requestSeq <= 0 || state.requestSeq !== activeRequestSeq) {
       delete inFlightByThreadRef.current[threadId];
-      if (panelState.inFlightTurnRequest?.requestSeq === state.requestSeq) {
-        panelState.inFlightTurnRequest = null;
-      }
-      if (panelState.inFlightTurnRequestByThreadId[threadId]?.requestSeq === state.requestSeq) {
-        delete panelState.inFlightTurnRequestByThreadId[threadId];
-      }
+      delete panelState.inFlightTurnRequestBySeq[state.requestSeq];
       current.logAuto("reply_http_restore_skipped_stale", {
         threadId,
         requestSeq: state.requestSeq,
@@ -1924,8 +1719,7 @@ export function useCodexReplyRequest<
     }
     panelState.activeRequestSeq = state.requestSeq;
     panelState.activeRequestThreadId = threadId;
-    panelState.cancelledRequestSeq = null;
-    panelState.cancelledRequestSeqByThreadId[threadId] = null;
+    panelState.cancelledRequestSeqs.delete(state.requestSeq);
     if (typeof current.updateConversationRuntimeRequest === "function") {
       current.updateConversationRuntimeRequest({
         requestId: state.requestId,

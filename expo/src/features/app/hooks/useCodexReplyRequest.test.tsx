@@ -3,13 +3,11 @@ import { useCodexReplyRequest } from "./useCodexReplyRequest";
 import { codexItemMessageId } from "../utils/codexItemMessageId";
 import {
   deriveCodexSessionStateFromSnapshot,
-  enqueueRunnerCodexTurn,
   startCodexAppServerTurn,
 } from "../../codex/codexAppServerClient";
 
 jest.mock("../../codex/codexAppServerClient", () => ({
   deriveCodexSessionStateFromSnapshot: jest.fn(() => null),
-  enqueueRunnerCodexTurn: jest.fn(async () => ({ queued: false })),
   isCodexAppServerTurnInterruptedError: (error: unknown) => Boolean(
     error && typeof error === "object" && (error as { isInterrupted?: boolean }).isInterrupted
   ),
@@ -17,7 +15,6 @@ jest.mock("../../codex/codexAppServerClient", () => ({
 }));
 
 const mockStartCodexAppServerTurn = jest.mocked(startCodexAppServerTurn);
-const mockEnqueueRunnerCodexTurn = jest.mocked(enqueueRunnerCodexTurn);
 
 type StoredMessage = {
   id: string;
@@ -704,45 +701,9 @@ describe("useCodexReplyRequest send gate liveness", () => {
 });
 
 describe("useCodexReplyRequest send acceptance contract", () => {
-  test("clears the composer synchronously on accept, before the compact-queue round trip settles", async () => {
+  test("dispatches accepted sends directly to the provider-neutral turn facade", async () => {
     const { options } = createOptions();
     (options as { transcript: string }).transcript = "hello world";
-    let resolveEnqueue: (value: unknown) => void = () => {};
-    mockEnqueueRunnerCodexTurn.mockImplementationOnce((() => new Promise((resolve) => {
-      resolveEnqueue = resolve;
-    })) as never);
-    mockStartCodexAppServerTurn.mockImplementation((() => ({
-      promise: Promise.resolve({ reply: "ok", threadId: "thread-1", turnId: "turn-1" }),
-    })) as any);
-    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
-
-    let sendPromise: Promise<unknown> = Promise.resolve();
-    await act(async () => {
-      sendPromise = result.current.sendReplyRequest(undefined, {
-        panelId: "panel-1",
-        sessionSnapshot: { threadId: "thread-1" },
-      });
-      for (let i = 0; i < 6; i += 1) await Promise.resolve();
-    });
-
-    // 送信受理と同時に同期クリアされる。キュー問い合わせ(HTTP)完了を待たない。
-    expect(mockEnqueueRunnerCodexTurn).toHaveBeenCalledTimes(1);
-    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
-    expect(options.setTranscript).toHaveBeenCalledWith("");
-
-    await act(async () => {
-      resolveEnqueue({ queued: false });
-      await expect(sendPromise).resolves.toBeUndefined();
-    });
-  });
-
-  test("queued-during-compact send clears the composer and releases the send gate", async () => {
-    const { options } = createOptions();
-    (options as { transcript: string }).transcript = "queued message";
-    mockEnqueueRunnerCodexTurn.mockResolvedValueOnce({
-      queued: true,
-      queuedTurn: { queuedTurnId: "qt-1", threadId: "thread-1", status: "queued", inputPreview: "" },
-    } as never);
     mockStartCodexAppServerTurn.mockImplementation((() => ({
       promise: new Promise(() => {}),
       interrupt: jest.fn(),
@@ -750,107 +711,139 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     const { result } = await renderHook(() => useCodexReplyRequest(options as never));
 
     await act(async () => {
-      await expect(result.current.sendReplyRequest(undefined, {
+      void result.current.sendReplyRequest(undefined, {
         panelId: "panel-1",
         sessionSnapshot: { threadId: "thread-1" },
-      })).resolves.toBeUndefined();
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
-    expect(options.setTranscript).toHaveBeenCalledWith("");
-    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
 
-    // ゲートが解放されているので、次の送信は通常ターンとして通る。
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+    expect(options.setTranscript).toHaveBeenCalledWith("");
+  });
+
+  test("server-queued turns release the send gate while retaining each run observer through completion", async () => {
+    const { options, panelWrites } = createOptions();
+    const runtimeUpdates = jest.fn();
+    (options as any).updateConversationRuntimeRequest = runtimeUpdates;
+    const turns: Array<{
+      options: any;
+      resolve: (value: unknown) => void;
+    }> = [];
+    mockStartCodexAppServerTurn.mockImplementation(((turnOptions: any) => {
+      let resolve = (_value: unknown) => {};
+      const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
+      turns.push({ options: turnOptions, resolve });
+      return { promise, interrupt: jest.fn() };
+    }) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    let firstSend: Promise<unknown> = Promise.resolve();
     await act(async () => {
-      void result.current.sendReplyRequest("next message", {
+      firstSend = result.current.sendReplyRequest("first message", {
         panelId: "panel-1",
         sessionSnapshot: { threadId: "thread-1" },
       });
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
-  });
-
-  test("queued-during-compact send ignores the watermark when the session is waiting on approval", async () => {
-    const { options } = createOptions();
-    (options as { transcript: string }).transcript = "queued while waiting approval";
-    const startCodexRelayObserverForSession = jest.fn((_threadId: string, _options?: Record<string, unknown>) => true);
-    (options as any).startCodexRelayObserverForSession = startCodexRelayObserverForSession;
-    // 承認待ち中: pending approvalはseq≦watermarkだとサーバーが再送しないため、
-    // queue経路のobserverもwatermarkを使わずreplayさせる必要がある。
-    (options as any).getSessionRuntimeStatus = jest.fn(() => ({
-      hasRunningTurn: true,
-      hasPendingAssistant: false,
-      restoredInFlight: false,
-      waitingApproval: true,
-      updatedAtMs: Date.now(),
-    }));
-    mockEnqueueRunnerCodexTurn.mockResolvedValueOnce({
-      queued: true,
-      queuedTurn: { queuedTurnId: "qt-1", threadId: "thread-1", status: "queued", inputPreview: "" },
-    } as never);
-    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
 
     await act(async () => {
-      await result.current.sendReplyRequest(undefined, {
-        panelId: "panel-1",
-        sessionSnapshot: { threadId: "thread-1" },
+      turns[0].options.onTurnAccepted?.({
+        runId: "run-1",
+        queued: true,
       });
     });
 
-    expect(startCodexRelayObserverForSession).toHaveBeenCalledWith(
-      "thread-1",
-      expect.objectContaining({
-        reason: "codex_queue_turn",
-        ignoreWatermark: true,
-      })
-    );
-  });
-
-  test("queued-during-compact send keeps the watermark when the session is not waiting on approval", async () => {
-    const { options } = createOptions();
-    (options as { transcript: string }).transcript = "queued message";
-    const startCodexRelayObserverForSession = jest.fn((_threadId: string, _options?: Record<string, unknown>) => true);
-    const updateConversationRuntimeRequest = jest.fn();
-    (options as any).startCodexRelayObserverForSession = startCodexRelayObserverForSession;
-    (options as any).updateConversationRuntimeRequest = updateConversationRuntimeRequest;
-    (options as any).getSessionRuntimeStatus = jest.fn(() => ({
-      hasRunningTurn: true,
-      hasPendingAssistant: false,
-      restoredInFlight: false,
-      waitingApproval: false,
-      updatedAtMs: Date.now(),
-    }));
-    mockEnqueueRunnerCodexTurn.mockResolvedValueOnce({
-      queued: true,
-      queuedTurn: { queuedTurnId: "qt-1", threadId: "thread-1", status: "queued", inputPreview: "" },
-    } as never);
-    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
-
+    let secondSend: Promise<unknown> = Promise.resolve();
     await act(async () => {
-      await result.current.sendReplyRequest(undefined, {
+      secondSend = result.current.sendReplyRequest("second message", {
         panelId: "panel-1",
         sessionSnapshot: { threadId: "thread-1" },
       });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(2);
 
-    expect(startCodexRelayObserverForSession).toHaveBeenCalledWith(
-      "thread-1",
-      expect.objectContaining({
-        reason: "codex_queue_turn",
-        ignoreWatermark: false,
-      })
-    );
-    const runtimeRequest = updateConversationRuntimeRequest.mock.calls[0]?.[0];
-    const relayOptions = startCodexRelayObserverForSession.mock.calls[0]?.[1];
-    expect(runtimeRequest).toMatchObject({
-      requestId: expect.stringMatching(/^reply-/),
+    await act(async () => {
+      turns[0].options.onDelta?.("first reply", { itemId: "item-1" });
+      turns[0].resolve({ threadId: "thread-1", turnId: "turn-1", reply: "first reply", contextUsage: null });
+      await firstSend;
+    });
+    expect(options.applyAssistantReply).toHaveBeenCalledWith("first reply");
+    expect(runtimeUpdates).toHaveBeenLastCalledWith(expect.objectContaining({
       requestSeq: 1,
-      sessionId: "thread-1",
-      sourcePanelId: "panel-1",
-      lifecycle: "active",
-      status: "model_processing",
-      statusDetail: "queued after compact",
+      lifecycle: "completed",
+      status: "completed",
+    }));
+
+    await act(async () => {
+      turns[1].options.onTurnAccepted?.({ runId: "run-2", queued: true });
+      turns[1].options.onDelta?.("second reply", { itemId: "item-2" });
+      turns[1].resolve({ threadId: "thread-1", turnId: "turn-2", reply: "second reply", contextUsage: null });
+      await secondSend;
     });
-    expect(runtimeRequest.startedAtMs).toBe(relayOptions?.startedAtMs);
+    expect(options.applyAssistantReply).toHaveBeenCalledWith("second reply");
+    expect(runtimeUpdates).toHaveBeenLastCalledWith(expect.objectContaining({
+      requestSeq: 2,
+      lifecycle: "completed",
+      status: "completed",
+    }));
+    expect(panelWrites.at(-1)?.messages.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: "first message" },
+      { role: "user", content: "second message" },
+      { role: "assistant", content: "first reply" },
+      { role: "assistant", content: "second reply" },
+    ]);
+  });
+
+  test("panel cancel interrupts every accepted compact-time run", async () => {
+    const { options } = createOptions();
+    const turns: Array<{
+      options: any;
+      reject: (error: unknown) => void;
+      interrupt: jest.Mock;
+    }> = [];
+    mockStartCodexAppServerTurn.mockImplementation(((turnOptions: any) => {
+      let reject = (_error: unknown) => {};
+      const promise = new Promise((_resolve, rejectPromise) => { reject = rejectPromise; });
+      const interrupt = jest.fn(async () => {});
+      turns.push({ options: turnOptions, reject, interrupt });
+      return { promise, interrupt };
+    }) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    let firstSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      firstSend = result.current.sendReplyRequest("first message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      turns[0].options.onTurnAccepted?.({ runId: "run-1", queued: true });
+    });
+
+    let secondSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      secondSend = result.current.sendReplyRequest("second message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      turns[1].options.onTurnAccepted?.({ runId: "run-2", queued: true });
+    });
+
+    await act(async () => {
+      await expect(result.current.cancelReplyRequest({ panelId: "panel-1" })).resolves.toBe(true);
+    });
+    expect(turns.map((turn) => turn.interrupt.mock.calls.length)).toEqual([1, 1]);
+
+    await act(async () => {
+      const interrupted = Object.assign(new Error("turn interrupted"), { isInterrupted: true });
+      turns[0].reject(interrupted);
+      turns[1].reject(interrupted);
+      await Promise.all([firstSend, secondSend]);
+    });
   });
 
   test("gate-blocked send keeps the composer and reports the rejection", async () => {
@@ -894,7 +887,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       })).resolves.toEqual({ rejected: "missing_codex_ws_url" });
     });
     expect(options.setTranscript).not.toHaveBeenCalled();
-    expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 
@@ -960,7 +952,6 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       backendId: "claude",
       supportsReasoningEffort: true,
       effortOptions: ["low", "medium", "high", "xhigh", "max"],
-      supportsCompactQueue: false,
     };
     {
       const { options } = createOptions();
@@ -1014,17 +1005,19 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     }
   });
 
-  test("compact queue非対応Backendのmaterializedセッション送信はCodex raw queueへ接続しない", async () => {
+  test.each([
+    ["codex", "gpt-5"],
+    ["claude", "sonnet"],
+  ])("%s materialized session dispatches through the provider-neutral turn facade", async (backendId, modelRef) => {
     const { options } = createOptions();
     Object.assign(options, {
       transcript: "hello",
-      llmBackend: "claude",
-      modelRef: "sonnet",
+      llmBackend: backendId,
+      modelRef,
       modelOptions: [{
-        modelId: "sonnet",
-        backendId: "claude",
+        modelId: modelRef,
+        backendId,
         supportsReasoningEffort: false,
-        supportsCompactQueue: false,
       }],
     });
     mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
@@ -1036,76 +1029,13 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     await act(async () => {
       await result.current.sendReplyRequest(undefined, {
         panelId: "panel-1",
-        sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet" },
+        sessionSnapshot: { backendId, threadId: "thread-1", modelRef },
       });
     });
 
-    expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
-    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
-  });
-
-  test("compact queue非対応Backendのcompact中送信はクライアントで待たずdispatchする", async () => {
-    // compact中の受理と実行待ちはrunner側(agent-serviceのcompact lease待ち)の責務。
-    // クライアントで待つとアプリ終了時にメッセージが失われる。
-    const { options } = createOptions();
-    Object.assign(options, {
-      transcript: "hello",
-      llmBackend: "claude",
-      modelRef: "sonnet",
-      isCodexCompactRunning: (threadId: string) => threadId === "thread-1",
-      modelOptions: [{
-        modelId: "sonnet",
-        backendId: "claude",
-        supportsReasoningEffort: false,
-        supportsCompactQueue: false,
-      }],
-    });
-    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
-      promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
-      interrupt: jest.fn(),
-    })) as never);
-    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
-
-    await act(async () => {
-      await result.current.sendReplyRequest(undefined, {
-        panelId: "panel-1",
-        sessionSnapshot: { backendId: "claude", threadId: "thread-1", modelRef: "sonnet" },
-      });
-    });
-
-    expect(mockEnqueueRunnerCodexTurn).not.toHaveBeenCalled();
-    expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
-  });
-
-  test("compact queue対応Backendのmaterializedセッション送信は従来どおりpreflightする", async () => {
-    const { options } = createOptions();
-    Object.assign(options, {
-      transcript: "hello",
-      modelRef: "gpt-5",
-      modelOptions: [{
-        modelId: "gpt-5",
-        backendId: "codex",
-        supportsReasoningEffort: true,
-        supportsCompactQueue: true,
-      }],
-    });
-    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
-      promise: Promise.resolve({ threadId: turnOptions.threadId, turnId: "turn-1", reply: "done", contextUsage: null }),
-      interrupt: jest.fn(),
-    })) as never);
-    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
-
-    await act(async () => {
-      await result.current.sendReplyRequest(undefined, {
-        panelId: "panel-1",
-        sessionSnapshot: { backendId: "codex", threadId: "thread-1", modelRef: "gpt-5" },
-      });
-    });
-
-    expect(mockEnqueueRunnerCodexTurn).toHaveBeenCalledTimes(1);
-    expect(mockEnqueueRunnerCodexTurn).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
+      backendId,
       threadId: "thread-1",
-      onlyIfCompacting: true,
     }));
   });
 });

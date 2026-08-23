@@ -17,7 +17,6 @@ export type ModelOption = {
   supportsReasoningEffort: boolean;
   effortOptions?: readonly ReasoningEffort[];
   supportsScheduling?: boolean;
-  supportsCompactQueue?: boolean;
   selectable?: boolean;
 };
 

@@ -41,6 +41,7 @@ export function createPrivateRunnerAgentRuntime({
   normalizeSessionListLimit,
   normalizeSessionMessagesLimit,
   readJsonBody,
+  onRunEvent,
 }) {
   const subjectId = `runner:${createHash("sha256").update(String(runnerToken || "")).digest("hex")}`;
   const sessionStore = {
@@ -136,10 +137,15 @@ export function createPrivateRunnerAgentRuntime({
   });
   service = createAgentService({
     backends: [codexBackend, claudeBackend],
-    operationStore: { claim: stores.claimOperation, complete: stores.completeOperation },
+    operationStore: {
+      inspect: stores.inspectOperation,
+      claim: stores.claimOperation,
+      complete: stores.completeOperation,
+    },
     sessionStore,
     workspaceAdmission,
     resolveCanonicalCwd,
+    onRunEvent,
   });
   const httpHandler = createAgentHttpHandler({
     service, runnerToken, parseAuthToken, json, normalizeSessionListLimit,

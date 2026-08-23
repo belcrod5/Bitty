@@ -6,6 +6,12 @@ import { createAgentService } from "../src/agent/agent-service.mjs";
 function operationStore() {
   const entries = new Map();
   return {
+    async inspect(subjectId, operationId, requestHash) {
+      const existing = entries.get(`${subjectId}:${operationId}`);
+      if (!existing) return { status: "missing" };
+      if (existing.requestHash !== requestHash) return { status: "conflict" };
+      return { status: "existing", runId: existing.runId, result: existing.result };
+    },
     async claim(subjectId, operationId, requestHash, runId) {
       const key = `${subjectId}:${operationId}`;
       const existing = entries.get(key);
@@ -152,7 +158,9 @@ test("accepts a turn during an active compact and executes it after the lease is
   const sessionRef = { backendId: "test", nativeSessionId: "session-1" };
   let releaseCompact;
   const compactGate = new Promise((resolve) => { releaseCompact = resolve; });
-  const turnStartedAt = [];
+  let releaseFirstTurn;
+  const firstTurnGate = new Promise((resolve) => { releaseFirstTurn = resolve; });
+  const startedInputs = [];
   const backend = {
     backendId: "test",
     getStatus: async () => ({
@@ -160,9 +168,11 @@ test("accepts a turn during an active compact and executes it after the lease is
       capabilities: { ...status().capabilities, operations: { compact: true } },
     }),
     resolveSessionCwd: async () => "/workspace",
-    async startTurn({ emit }) {
-      turnStartedAt.push(Date.now());
+    async startTurn({ emit, input }) {
+      const text = input.blocks[0].text;
+      startedInputs.push(text);
       emit("turn.started", {});
+      if (text === "first") await firstTurnGate;
       emit("item.started", { itemId: "item-1", itemType: "assistant" });
       emit("item.completed", { itemId: "item-1", revision: 1 });
       return { outcome: "completed" };
@@ -191,16 +201,36 @@ test("accepts a turn during an active compact and executes it after the lease is
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 
-  // compact中の送信はsession_busyにならず受理され、圧縮完了後に実行される
-  const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "user-1" });
+  // compact中の複数送信はsession_busyにならずFIFOで受理される
+  const requests = ["first", "second", "third"].map((text, index) => startRequest({
+    sessionRef,
+    cwd: "",
+    input: { blocks: [{ type: "text", text }] },
+    clientOperationId: `operation-${index + 1}`,
+  }));
+  const runs = await Promise.all(requests.map((request) => service.startTurn(request, { subjectId: "user-1" })));
+  assert.deepEqual(runs.map((run) => run.queued), [true, true, true]);
+  const replayedFirst = await service.startTurn(requests[0], { subjectId: "user-1" });
+  assert.equal(replayedFirst.runId, runs[0].runId);
+  assert.equal(replayedFirst.queued, true);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(turnStartedAt.length, 0);
+  assert.deepEqual(startedInputs, []);
 
   releaseCompact();
   await compactPromise;
-  const result = await run.completion;
-  assert.equal(result.outcome, "completed");
-  assert.equal(turnStartedAt.length, 1);
+  while (startedInputs.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  try {
+    const replayedSecond = await service.startTurn(requests[1], { subjectId: "user-1" });
+    assert.equal(replayedSecond.runId, runs[1].runId);
+    assert.equal(replayedSecond.queued, true);
+  } finally {
+    releaseFirstTurn();
+  }
+  const results = await Promise.all(runs.map((run) => run.completion));
+  assert.deepEqual(results.map((result) => result.outcome), ["completed", "completed", "completed"]);
+  assert.deepEqual(startedInputs, ["first", "second", "third"]);
   // turn終了後はleaseが解放されている
   assert.equal((await store.getMode(sessionRef))?.lease, null);
 });
@@ -210,7 +240,7 @@ test("interrupting a turn that waits for compaction settles it as interrupted", 
   const sessionRef = { backendId: "test", nativeSessionId: "session-1" };
   let releaseCompact;
   const compactGate = new Promise((resolve) => { releaseCompact = resolve; });
-  let backendTurnStarted = false;
+  const startedInputs = [];
   const backend = {
     backendId: "test",
     getStatus: async () => ({
@@ -218,8 +248,9 @@ test("interrupting a turn that waits for compaction settles it as interrupted", 
       capabilities: { ...status().capabilities, operations: { compact: true } },
     }),
     resolveSessionCwd: async () => "/workspace",
-    async startTurn() {
-      backendTurnStarted = true;
+    async startTurn({ emit, input }) {
+      startedInputs.push(input.blocks[0].text);
+      emit("turn.started", {});
       return { outcome: "completed" };
     },
     async compactSession() {
@@ -244,14 +275,84 @@ test("interrupting a turn that waits for compaction settles it as interrupted", 
   while (!(await store.getMode(sessionRef))?.lease) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "user-1" });
+  const [run, nextRun] = await Promise.all([
+    service.startTurn(startRequest({ sessionRef, cwd: "", input: { blocks: [{ type: "text", text: "first" }] } }), { subjectId: "user-1" }),
+    service.startTurn(startRequest({
+      sessionRef,
+      cwd: "",
+      input: { blocks: [{ type: "text", text: "second" }] },
+      clientOperationId: "operation-2",
+    }), { subjectId: "user-1" }),
+  ]);
   await service.interrupt(run.runId);
   const result = await run.completion;
   assert.equal(result.outcome, "interrupted");
-  assert.equal(backendTurnStarted, false);
+  assert.deepEqual(startedInputs, []);
 
   releaseCompact();
   await compactPromise;
+  assert.equal((await nextRun.completion).outcome, "completed");
+  assert.deepEqual(startedInputs, ["second"]);
+});
+
+test("a failed queued head releases the FIFO for the next turn", async () => {
+  const store = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-1" };
+  let releaseCompact;
+  const compactGate = new Promise((resolve) => { releaseCompact = resolve; });
+  const startedInputs = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { ...status().capabilities, operations: { compact: true } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, input }) {
+      const text = input.blocks[0].text;
+      startedInputs.push(text);
+      if (text === "first") {
+        const error = new Error("failed before native start");
+        error.nativeActivity = "not_started";
+        throw error;
+      }
+      emit("turn.started", {});
+      return { outcome: "completed" };
+    },
+    async compactSession() {
+      await compactGate;
+      return { sessionRef, accepted: true };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd,
+    compactLeasePollMs: 10,
+    compactWaitTimeoutMs: 2000,
+    now: () => "2026-08-22T00:00:00.000Z",
+  });
+  await store.bind(sessionRef, "/workspace", "neutral");
+
+  const compactPromise = service.compactSession({ sessionRef });
+  while (!(await store.getMode(sessionRef))?.lease) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const runs = await Promise.all(["first", "second"].map((text, index) => service.startTurn(startRequest({
+    sessionRef,
+    cwd: "",
+    input: { blocks: [{ type: "text", text }] },
+    clientOperationId: `operation-${index + 1}`,
+  }), { subjectId: "user-1" })));
+
+  releaseCompact();
+  await compactPromise;
+  const results = await Promise.all(runs.map((run) => run.completion));
+  assert.deepEqual(results.map((result) => result.outcome), ["failed", "completed"]);
+  assert.deepEqual(startedInputs, ["first", "second"]);
 });
 
 test("fails a queued turn with timeout when compaction never releases the lease", async () => {
@@ -810,6 +911,15 @@ test("serializes admission so concurrent operations cannot start the same native
   assert.equal(starts, 1);
   release();
   await first.completion;
+
+  // busyで拒否された新規operationIdはclaimされておらず、session解放後に再利用できる。
+  const retried = await service.startTurn(startRequest({ sessionRef, cwd: "", clientOperationId: "operation-2" }), {
+    subjectId: "user-1",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal((await retried.completion).outcome, "completed");
+  assert.equal(starts, 2);
 });
 
 test("resolves active actions before the terminal event", async () => {
@@ -872,6 +982,66 @@ test("rejects allow_for_session when the active action did not advertise it", as
   assert.equal(backendResponses, 0);
   release();
   await run.completion;
+});
+
+test("observes every published event once without subscribers or replay", async () => {
+  const observed = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      emit("action.requested", { requestId: "approval-1", kind: "approval", decisions: ["allow", "deny"] });
+      assert.equal(observed.at(-1)?.type, "action.requested");
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-observed",
+    onRunEvent: (event) => { observed.push(event); },
+  });
+  const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  await run.completion;
+  const observedCount = observed.length;
+  service.subscribe(run.runId, { onEvent() {} }).unsubscribe();
+  assert.equal(observed.length, observedCount);
+  assert.deepEqual(observed.map((event) => event.type), [
+    "turn.accepted", "session.resolved", "turn.started", "action.requested", "action.resolved", "turn.completed",
+  ]);
+});
+
+test("isolates synchronous and asynchronous observer failures from run execution", async () => {
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit }) {
+      emit("turn.started", {});
+      emit("provider.event", { backendId: "test", nativeType: "async-failure", data: {} });
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    onRunEvent(event) {
+      if (event.type === "turn.accepted") throw new Error("sync observer failure");
+      if (event.type === "provider.event") return Promise.reject(new Error("async observer failure"));
+    },
+  });
+  const run = await service.startTurn(startRequest({
+    sessionRef: { backendId: "test", nativeSessionId: "session-1" },
+  }), { subjectId: "user-1" });
+  assert.equal((await run.completion).outcome, "completed");
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("recovers an old-process lease before admitting a resumed turn", async () => {

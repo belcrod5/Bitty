@@ -92,3 +92,40 @@ test("agent WebSocket releases a run subscription after its terminal event", asy
   assert.equal(sent.at(-1).op, "event");
   assert.equal(unsubscribeCount, 1);
 });
+
+test("agent WebSocket detach leaves an accepted server run active", async () => {
+  let unsubscribeCount = 0;
+  let interruptCount = 0;
+  const service = {
+    startTurn: async () => ({ runId: "run-1", queued: true, completion: new Promise(() => {}) }),
+    subscribe() {
+      return { resumeMiss: false, activeActions: [], unsubscribe: () => { unsubscribeCount += 1; } };
+    },
+    async interrupt() {
+      interruptCount += 1;
+    },
+  };
+  const sent = [];
+  const connection = createAgentWsConnection({
+    service,
+    ws: {},
+    subjectId: "subject",
+    workspaceAdmission: {},
+    sendEnvelope: (_ws, message) => sent.push(message),
+  });
+
+  connection.handleMessage({
+    channel: "agent",
+    op: "turn.start",
+    operationId: "operation-1",
+    payload: {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sent.at(-1).op, "turn.accepted");
+  assert.equal(sent.at(-1).payload.queued, true);
+
+  connection.detach();
+
+  assert.equal(unsubscribeCount, 1);
+  assert.equal(interruptCount, 0);
+});
