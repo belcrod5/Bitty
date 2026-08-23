@@ -301,6 +301,14 @@ test("persists agent operation idempotency even when legacy ACP binding is disab
     { status: "claimed", runId: "run-1" },
   );
   assert.deepEqual(
+    await store.inspectAgentOperation("user-1", "operation-1", "hash-1"),
+    { status: "existing", runId: "run-1", result: undefined },
+  );
+  assert.deepEqual(
+    await store.inspectAgentOperation("user-1", "operation-1", "different"),
+    { status: "conflict" },
+  );
+  assert.deepEqual(
     await store.claimAgentOperation("user-1", "operation-1", "hash-1", "run-2"),
     { status: "existing", runId: "run-1", result: undefined },
   );

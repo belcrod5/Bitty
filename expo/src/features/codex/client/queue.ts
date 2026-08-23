@@ -91,45 +91,6 @@ async function fetchRunnerJson(
   }
 }
 
-export async function enqueueRunnerCodexTurn(options: {
-  wsUrl: string;
-  wsToken?: string;
-  threadId: string;
-  inputText: string;
-  cwd?: string;
-  model?: string;
-  effort?: string;
-  approvalPolicy?: string;
-  sourcePanelId?: string;
-  clientRequestId?: string;
-  onlyIfCompacting?: boolean;
-  waitForCompactMs?: number;
-  timeoutMs?: number;
-}) {
-  return await fetchRunnerJson(options.wsUrl, options.wsToken || "", "/codex/queued-turns", {
-    method: "POST",
-    timeoutMs: options.timeoutMs || 10000,
-    body: {
-      threadId: options.threadId,
-      inputText: options.inputText,
-      cwd: options.cwd,
-      model: options.model,
-      effort: options.effort,
-      approvalPolicy: options.approvalPolicy,
-      sourcePanelId: options.sourcePanelId,
-      clientRequestId: options.clientRequestId,
-      onlyIfCompacting: Boolean(options.onlyIfCompacting),
-      waitForCompactMs: options.waitForCompactMs,
-    },
-  }) as {
-    ok: boolean;
-    queued: boolean;
-    reason: string;
-    queuedTurn: CodexQueuedTurnSnapshot | null;
-    queue: CodexQueueSnapshot;
-  };
-}
-
 export async function cancelRunnerCodexQueuedTurn(options: {
   wsUrl: string;
   wsToken?: string;

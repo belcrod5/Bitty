@@ -5688,7 +5688,6 @@ export default function App() {
       setPanelConversationMessagesForCodexRef.current(panelId, messages, options);
     },
     normalizedLlmDirectoryForRequest,
-    isCodexCompactRunning,
     syncLlmConversationSessionId,
     rememberKnownCodexThreadId,
     handleApprovalRequest: handleRuntimeApprovalRequest,

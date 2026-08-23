@@ -68,9 +68,10 @@ test("a durable completed operation result settles without waiting for replay ev
 
 test("a client-side event failure interrupts the server run best-effort", async () => {
   let eventHandler: ((message: unknown) => void) | null = null;
+  const onTurnAccepted = jest.fn();
   const request = jest.fn(async (message: { op?: string }) => {
     if (message.op === "turn.start") {
-      return { channel: "agent", op: "turn.accepted", streamId: "run-1", payload: { runId: "run-1" } };
+      return { channel: "agent", op: "turn.accepted", streamId: "run-1", payload: { runId: "run-1", queued: true } };
     }
     if (message.op === "turn.interrupt") {
       return { channel: "agent", op: "turn.interrupted", payload: {} };
@@ -107,11 +108,13 @@ test("a client-side event failure interrupts the server run best-effort", async 
     inputText: "hello",
     cwd: "/workspace",
     onApprovalRequest: async () => "decline" as const,
+    onTurnAccepted,
   }, jest.fn());
 
   for (let i = 0; i < 20 && request.mock.calls.length < 2; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  expect(onTurnAccepted).toHaveBeenCalledWith({ runId: "run-1", queued: true });
   // クライアント側で処理できないイベント → turn失敗と同時にサーバー側runをinterruptする
   eventHandler!({ payload: { runId: "run-1", protocolVersion: 99, type: "turn.completed", sequence: 1, payload: {} } });
   await expect(session.promise).rejects.toThrow(/unsupported/);

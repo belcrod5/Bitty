@@ -48,9 +48,6 @@ export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): Mo
         supportsReasoningEffort: capability?.effort === true,
         effortOptions: parseEffortOptions(capability?.effortOptions),
         supportsScheduling: status.capabilities?.operations?.schedule === true,
-        // compact queueはCodex raw固有の仕組み。compact対応(operations.compact)とは
-        // 別capabilityで申告される。
-        supportsCompactQueue: status.capabilities?.operations?.compactQueue === true,
         selectable: true,
       }];
     });
@@ -60,7 +57,7 @@ export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): Mo
 export function currentModelFallback(
   backendId: string,
   modelId: string,
-  capability?: { effort?: boolean; effortOptions?: string[]; schedule?: boolean; compactQueue?: boolean },
+  capability?: { effort?: boolean; effortOptions?: string[]; schedule?: boolean },
 ): ModelOption {
   return {
     selectionKey: modelSelectionKey(backendId, modelId),
@@ -70,9 +67,6 @@ export function currentModelFallback(
     supportsReasoningEffort: capability?.effort === true,
     effortOptions: parseEffortOptions(capability?.effortOptions),
     supportsScheduling: capability?.schedule === true,
-    // compact queue preflightはBackendが明示的にqueue非対応と申告した時だけ止める。
-    // status未取得時に落とすと、compact実行中Codexへの送信がqueueされず直撃する。
-    supportsCompactQueue: capability?.compactQueue !== false,
     selectable: false,
   };
 }
