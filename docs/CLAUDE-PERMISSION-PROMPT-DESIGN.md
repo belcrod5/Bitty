@@ -64,6 +64,7 @@ AgentService、agent-transport、Expoのaction経路は既にprovider非依存�
 7. MCP shimはCLIが子processとして自らspawnし、mcp-config JSONの`env`フィールドで環境変数を渡せる
 8. **deny時も対応する`tool_result`(is_error=true、本文はdenyのmessage)がuser messageとしてstreamへ流れる**。従って`runningToolIds`の解放と`tool.completed(failed)`の発行は既存のtool_result処理経路でそのまま成立し、deny用の合成処理は不要
 9. **interactiveモードではCLIがcomplete assistantメッセージをcontent_block_stopより先に流すことがある(2.1.238実測)。tool.started発行はtoolCallIdで冪等にする必要がある**。承認評価の待ち時間により、同一tool_useの`content_block_stop`(stream_event)と完全な`assistant`メッセージが競合し、どちらが先に届くか不定になる。両経路が同じtoolCallIdへ`tool.started`を発行しようとすると、2回目がemitFromBackendの重複tool検査で`protocol_error`となりturnが失敗する(実機で確認)。対策はtoolCallIdを唯一の真実源とする冪等な発行のみで、経路自体の順序を保証する対策ではない
+10. **OAuth失効中のCLIはsystem/initを同一turn内で2回emitすることがある(2.1.238、実機)**。initは同一session idなら冪等に扱い、認証エラーはCLIのerror resultから分類する。既存実装は2回目のsystem/initを無条件で`protocol_error("Claude emitted system/init twice")`として即死させていたため、認証失効時にCLI自身のerror result/stderrへ到達できず、`isClaudeAuthFailure`によるログイン案内メッセージへ分類する経路が塞がれていた(実機でresumeターンが1.5秒でprotocol_errorとなり、直後にCLIの「Login expired」を別途確認して発覚)
 
 # 3. 全体構造
 

@@ -460,8 +460,20 @@ export function createClaudeBackend({
     async function handleMessage(message) {
       const type = String(message?.type || "");
       if (type === "system" && message?.subtype === "init") {
-        if (state.initialized) throw agentError("protocol_error", "Claude emitted system/init twice", { backendId: "claude" });
         const nativeSessionId = String(message.session_id || message.sessionId || "").trim();
+        if (state.initialized) {
+          // OAuth失効中のCLIは同一turn内でsystem/initを再送することがある
+          // (実測: CLI 2.1.238)。session idが変わっていなければ内部再試行と
+          // みなして無視する(throwすると認証エラーの正規経路=CLIのerror
+          // result/stderrへ到達できず、isClaudeAuthFailureによる分類が効かない)。
+          // provider.eventはturn.started後のみ許可されるが、initialized===true
+          // は必ずturn.started後なので順序制約に触れない。
+          if (nativeSessionId === freshSessionId) {
+            emit("provider.event", { backendId: "claude", nativeType: "system/init_repeated", data: {} });
+            return;
+          }
+          throw agentError("protocol_error", "Claude changed the session ID", { backendId: "claude" });
+        }
         if (!SESSION_ID_PATTERN.test(nativeSessionId) || nativeSessionId !== freshSessionId) {
           throw agentError("protocol_error", "Claude returned an unexpected session ID", { backendId: "claude" });
         }

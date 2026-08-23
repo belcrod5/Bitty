@@ -313,6 +313,57 @@ test("Claude Backend resumes without combining --session-id and rejects a missin
   assert.equal(calls[0].args.includes("--model"), false);
 });
 
+test("Claude Backend treats a repeated system/init with the same session ID as idempotent", async () => {
+  const events = [];
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    // OAuth失効中のCLIは内部再試行としてsystem/initを同一turn内で再送することがある
+    // (実測: CLI 2.1.238)。session idが変わっていなければ無視して継続する。
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "done", session_id: SESSION_ID },
+  ]);
+  const result = await backend.startTurn({
+    runId: "run-init-repeat",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  assert.deepEqual(result, { outcome: "completed", nativeTerminal: true });
+  assert.equal(events.filter((event) => event.type === "turn.started").length, 1);
+  assert.equal(events.filter((event) => event.type === "provider.event" && event.payload.nativeType === "system/init_repeated").length, 1);
+});
+
+test("Claude Backend fails closed when a repeated system/init reports a different session ID", async () => {
+  const otherSessionId = "22222222-2222-4222-8222-222222222222";
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "system", subtype: "init", session_id: otherSessionId },
+    { type: "result", subtype: "success", result: "done", session_id: SESSION_ID },
+  ]);
+  await assert.rejects(backend.startTurn({
+    runId: "run-init-mismatch",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  }), (error) => error.code === "protocol_error" && /changed the session ID/i.test(error.message));
+});
+
+test("Claude Backend reports an auth failure after a repeated system/init when the CLI then exits unsuccessfully", async () => {
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+  ], { code: 1, stderr: "Authentication required: not logged in" });
+  await assert.rejects(backend.startTurn({
+    runId: "run-init-repeat-then-auth-fail",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  }), (error) => error.code === "turn_failed" && /not logged in/i.test(error.message));
+});
+
 test("Claude Backend interrupts a one-shot process and reports the turn as interrupted", async () => {
   const { backend, child } = backendWith([], {
     startedAt: "Thu Aug 21 12:34:56 2026",
