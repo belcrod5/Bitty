@@ -1,116 +1,34 @@
-import { startAgentTurnWithRawFallback } from "./client";
+import { startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 
-async function neutralApprovalDecision(options: {
-  action: "approve_once" | "approve_for_session" | "decline";
-  decisions: string[];
-  resumed?: boolean;
-}) {
-  let eventHandler: ((message: unknown) => void) | null = null;
-  let snapshotHandler: (() => void) | null = null;
-  let generation = 1;
-  let responseDecision = "";
-  const action = {
-    requestId: "approval-1",
-    kind: "approval",
-    title: "Approve command",
-    decisions: options.decisions,
-  };
-  const manager = {
-    async request(message: { op?: string; payload?: Record<string, unknown> }) {
-      if (message.op === "agent.hello") {
-        return {
-          channel: "agent",
-          op: "agent.ready",
-          payload: {
-            protocolVersion: 1,
-            backends: [{
-              backendId: "codex",
-              readiness: { ready: true },
-              capabilities: { action: { policyProfiles: [] }, model: {}, workspace: { admission: false } },
-            }],
-          },
-        };
-      }
-      if (message.op === "turn.start") {
-        if (options.resumed) {
-          setTimeout(() => {
-            generation = 2;
-            snapshotHandler?.();
-          }, 0);
-        } else {
-          queueMicrotask(() => {
-            eventHandler?.({
-              payload: {
-                protocolVersion: 1,
-                type: "action.requested",
-                runId: "run-1",
-                sequence: 1,
-                payload: action,
-              },
-            });
-          });
-        }
-        return { channel: "agent", op: "turn.accepted", streamId: "run-1", payload: { runId: "run-1" } };
-      }
-      if (message.op === "events.resume") {
-        return { channel: "agent", op: "events.resumed", payload: { resumeMiss: false, activeActions: [action] } };
-      }
-      if (message.op === "action.respond") {
-        responseDecision = String(message.payload?.decision || "");
-        queueMicrotask(() => eventHandler?.({
-          payload: {
-            protocolVersion: 1,
-            type: "turn.completed",
-            runId: "run-1",
-            sequence: options.resumed ? 1 : 2,
-            payload: {},
-          },
-        }));
-        return { channel: "agent", op: "action.responded", payload: {} };
-      }
-      throw new Error(`Unexpected request: ${message.op}`);
+test("a protocol-v1 Runner falls back to the raw Codex transport", async () => {
+  const request = jest.fn(async () => ({
+    channel: "agent",
+    op: "agent.ready",
+    payload: {
+      protocolVersion: 1,
+      backends: [{ backendId: "codex", readiness: { ready: true } }],
     },
-    subscribe(_filter: unknown, handler: (message: unknown) => void) {
-      eventHandler = handler;
-      return () => {};
-    },
-    subscribeSnapshot(handler: () => void) {
-      snapshotHandler = handler;
-      return () => {};
-    },
-    getSnapshot: () => ({ generation, connectionState: "ready" }),
-  } as unknown as RunnerWebSocketManager;
+  }));
+  const manager = { request } as unknown as RunnerWebSocketManager;
+  const rawResult = { threadId: "raw-thread", turnId: "raw-turn", reply: "raw", contextUsage: null };
+  const rawStart = jest.fn(() => ({ promise: Promise.resolve(rawResult), interrupt: async () => {} }));
 
   const session = startAgentTurnWithRawFallback({
     backendId: "codex",
     preferNeutralAgent: true,
+    rawFallbackBackendId: "codex",
     runnerWebSocketManager: manager,
     wsUrl: "ws://runner.test",
-    traceId: "trace-approval",
+    traceId: "trace-old-runner",
     inputText: "hello",
     cwd: "/workspace",
-    onApprovalRequest: async () => options.action,
-  }, jest.fn());
-  await session.promise;
-  return responseDecision;
-}
+    onApprovalRequest: async () => "decline" as const,
+  }, rawStart);
 
-test.each([
-  { action: "approve_for_session" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow_for_session" },
-  { action: "approve_for_session" as const, decisions: ["allow", "deny"], expected: "allow" },
-  { action: "approve_once" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow" },
-  { action: "decline" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "deny" },
-])("neutral approval maps $action to $expected for advertised decisions", async ({ action, decisions, expected }) => {
-  await expect(neutralApprovalDecision({ action, decisions })).resolves.toBe(expected);
-});
-
-test("resumed active actions preserve advertised session approval", async () => {
-  await expect(neutralApprovalDecision({
-    action: "approve_for_session",
-    decisions: ["allow", "allow_for_session", "deny"],
-    resumed: true,
-  })).resolves.toBe("allow_for_session");
+  await expect(session.promise).resolves.toEqual(rawResult);
+  expect(rawStart).toHaveBeenCalledTimes(1);
+  expect(request).toHaveBeenCalledTimes(1);
 });
 
 test("a durable completed operation result settles without waiting for replay events", async () => {
@@ -119,7 +37,7 @@ test("a durable completed operation result settles without waiting for replay ev
       channel: "agent",
       op: "agent.ready",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         backends: [{
           backendId: "codex",
           readiness: { ready: true },
@@ -140,7 +58,7 @@ test("a durable completed operation result settles without waiting for replay ev
     .mockResolvedValueOnce({
       channel: "agent", op: "agent.ready",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         backends: [{ backendId: "codex", readiness: { ready: true } }],
       },
     })
@@ -178,7 +96,7 @@ test("a durable completed operation result settles without waiting for replay ev
   expect(rawStart).not.toHaveBeenCalled();
 });
 
-test("a client-side event failure interrupts the server run best-effort", async () => {
+test("an out-of-order client event interrupts the server run best-effort", async () => {
   let eventHandler: ((message: unknown) => void) | null = null;
   const onTurnAccepted = jest.fn();
   const request = jest.fn(async (message: { op?: string }) => {
@@ -192,7 +110,7 @@ test("a client-side event failure interrupts the server run best-effort", async 
       channel: "agent",
       op: "agent.ready",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         backends: [{
           backendId: "codex",
           readiness: { ready: true },
@@ -227,9 +145,14 @@ test("a client-side event failure interrupts the server run best-effort", async 
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   expect(onTurnAccepted).toHaveBeenCalledWith({ runId: "run-1", queued: true });
-  // クライアント側で処理できないイベント → turn失敗と同時にサーバー側runをinterruptする
-  eventHandler!({ payload: { runId: "run-1", protocolVersion: 99, type: "turn.completed", sequence: 1, payload: {} } });
-  await expect(session.promise).rejects.toThrow(/unsupported/);
+  eventHandler!({
+    payload: {
+      runId: "run-1", protocolVersion: 2, type: "content.delta", sequence: 2,
+      payload: { itemId: "assistant-1", delta: "newer" },
+    },
+  });
+  eventHandler!({ payload: { runId: "run-1", protocolVersion: 2, type: "turn.completed", sequence: 1, payload: {} } });
+  await expect(session.promise).rejects.toThrow(/not increasing/);
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt", streamId: "run-1" }));
 });
 
@@ -246,7 +169,6 @@ async function createLiveTurn(options: {
     channel: string; op: string; payload?: Record<string, unknown>;
   }>;
   resumeActions?: Record<string, unknown>[];
-  onCalendarToolCall?: (request: any) => Promise<any>;
 }) {
   let eventHandler: ((message: any) => void) | null = null;
   let snapshotHandler: (() => void) | null = null;
@@ -259,16 +181,22 @@ async function createLiveTurn(options: {
       return options.actionResponse || { channel: "agent", op: "action.respond.result", payload: {} };
     }
     if (message.op === "events.resume") {
-      return { channel: "agent", op: "events.resumed", payload: { activeActions: options.resumeActions || [] } };
+      return {
+        channel: "agent", op: "events.resumed", streamId: "run-1",
+        payload: { runId: "run-1", activeActions: options.resumeActions || [] },
+      };
     }
     if (message.op === "turn.interrupt") {
       return { channel: "agent", op: "turn.interrupted", payload: {} };
+    }
+    if (message.op === "events.detach") {
+      return { channel: "agent", op: "events.detached", payload: { detached: true } };
     }
     return {
       channel: "agent",
       op: "agent.ready",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         backends: [{
           backendId: "codex",
           readiness: { ready: true },
@@ -299,7 +227,6 @@ async function createLiveTurn(options: {
     cwd: "/workspace",
     onApprovalRequest: options.onApprovalRequest,
     onApprovalRequestResolved: options.onApprovalRequestResolved,
-    onCalendarToolCall: options.onCalendarToolCall,
   }, jest.fn());
   for (let index = 0; index < 20 && request.mock.calls.every(([message]) => message.op !== "turn.start"); index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -311,7 +238,7 @@ async function createLiveTurn(options: {
     session,
     emit(type: string, payload: Record<string, unknown> = {}) {
       sequence += 1;
-      eventHandler!({ payload: { runId: "run-1", protocolVersion: 1, type, sequence, payload } });
+      eventHandler!({ payload: { runId: "run-1", protocolVersion: 2, type, sequence, payload } });
     },
     reconnect() {
       generation += 1;
@@ -320,44 +247,56 @@ async function createLiveTurn(options: {
   };
 }
 
-test("server action resolution closes a pending approval without blocking later events or responding again", async () => {
-  const approval = deferred<"cancel">();
+test.each([
+  { action: "approve_for_session" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow_for_session" },
+  { action: "approve_for_session" as const, decisions: ["allow", "deny"], expected: "allow" },
+  { action: "approve_once" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow" },
+  { action: "decline" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "deny" },
+])("neutral approval maps $action to $expected for advertised decisions", async ({ action, decisions, expected }) => {
+  const turn = await createLiveTurn({ onApprovalRequest: async () => action });
+  turn.emit("action.requested", { requestId: "approval-1", kind: "approval", decisions });
+  for (let index = 0; index < 20 && turn.request.mock.calls.every(([message]) => message.op !== "action.respond"); index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(turn.request.mock.calls.find(([message]) => message.op === "action.respond")?.[0])
+    .toEqual(expect.objectContaining({ payload: expect.objectContaining({ decision: expected }) }));
+  turn.emit("turn.completed");
+  await turn.session.promise;
+});
+
+test("server action resolution closes a pending approval without blocking terminal events", async () => {
+  const approval = deferred<"decline">();
   const resolved = jest.fn();
   const turn = await createLiveTurn({
     onApprovalRequest: () => approval.promise,
     onApprovalRequestResolved: resolved,
   });
-
-  turn.emit("action.requested", { requestId: "approval-1", kind: "approval", title: "Approve?", decisions: ["allow", "deny"] });
+  turn.emit("action.requested", { requestId: "approval-1", kind: "approval", decisions: ["allow", "deny"] });
   turn.emit("action.resolved", { requestId: "approval-1", outcome: "answered", decision: "allow" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  turn.emit("turn.completed");
+  await turn.session.promise;
   expect(resolved).toHaveBeenCalledTimes(1);
   expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
-
-  turn.emit("turn.completed", {});
-  await expect(turn.session.promise).resolves.toEqual({ threadId: "", turnId: "", reply: "", contextUsage: null });
-  approval.resolve("cancel");
+  approval.resolve("decline");
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
 });
 
-test("a local approval responds once and closes its UI", async () => {
+test("a local approval response and its server resolution close the UI once", async () => {
   const resolved = jest.fn();
   const turn = await createLiveTurn({
     onApprovalRequest: async () => "approve_once",
     onApprovalRequestResolved: resolved,
   });
   turn.emit("action.requested", { requestId: "approval-local", kind: "approval", decisions: ["allow", "deny"] });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const responses = turn.request.mock.calls.filter(([message]) => message.op === "action.respond");
-  expect(responses).toHaveLength(1);
-  expect(responses[0][0]).toEqual(expect.objectContaining({ payload: expect.objectContaining({ decision: "allow" }) }));
+  for (let index = 0; index < 20 && resolved.mock.calls.length === 0; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   expect(resolved).toHaveBeenCalledTimes(1);
   turn.emit("action.resolved", { requestId: "approval-local", outcome: "answered", decision: "allow" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(resolved).toHaveBeenCalledTimes(1);
-  turn.emit("turn.completed", {});
+  turn.emit("turn.completed");
   await turn.session.promise;
+  expect(resolved).toHaveBeenCalledTimes(1);
 });
 
 test("action_expired closes the approval without interrupting the turn", async () => {
@@ -368,11 +307,13 @@ test("action_expired closes the approval without interrupting the turn", async (
     actionResponse: { channel: "agent", op: "error", payload: { code: "action_expired", message: "expired" } },
   });
   turn.emit("action.requested", { requestId: "approval-expired", kind: "approval", decisions: ["allow", "deny"] });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let index = 0; index < 20 && resolved.mock.calls.length === 0; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   expect(resolved).toHaveBeenCalledTimes(1);
   expect(turn.request.mock.calls.some(([message]) => message.op === "turn.interrupt")).toBe(false);
-  turn.emit("turn.completed", {});
-  await expect(turn.session.promise).resolves.toBeDefined();
+  turn.emit("turn.completed");
+  await turn.session.promise;
 });
 
 test("server resolution racing an in-flight UI response does not interrupt the turn", async () => {
@@ -386,17 +327,16 @@ test("server resolution racing an in-flight UI response does not interrupt the t
   turn.emit("action.requested", { requestId: "approval-race", kind: "approval", decisions: ["allow", "deny"] });
   await new Promise((resolve) => setTimeout(resolve, 0));
   turn.emit("action.resolved", { requestId: "approval-race", outcome: "answered", decision: "deny" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
   response.resolve({ channel: "agent", op: "error", payload: { code: "action_expired" } });
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(resolved).toHaveBeenCalledTimes(1);
   expect(turn.request.mock.calls.some(([message]) => message.op === "turn.interrupt")).toBe(false);
-  turn.emit("turn.completed", {});
-  await expect(turn.session.promise).resolves.toBeDefined();
+  turn.emit("turn.completed");
+  await turn.session.promise;
 });
 
-test("terminal events close pending approvals and resumed active approvals use the same lifecycle", async () => {
-  const approval = deferred<"cancel">();
+test("terminal events close resumed active approvals", async () => {
+  const approval = deferred<"decline">();
   const resolved = jest.fn();
   const turn = await createLiveTurn({
     onApprovalRequest: () => approval.promise,
@@ -405,28 +345,556 @@ test("terminal events close pending approvals and resumed active approvals use t
   });
   turn.reconnect();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  turn.emit("turn.completed", {});
+  turn.emit("turn.completed");
   await turn.session.promise;
   expect(resolved).toHaveBeenCalledTimes(1);
-  approval.resolve("cancel");
+  approval.resolve("decline");
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
 });
 
-test("dynamic tool actions keep the result response path", async () => {
-  const turn = await createLiveTurn({
-    onApprovalRequest: async () => "decline",
-    onCalendarToolCall: async () => ({ ok: true, value: "done" }),
+test("a fatal initial replay gap never projects partial events before its acknowledgement", async () => {
+  let eventHandler: ((message: any) => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "turn.start") {
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "content.delta",
+          runId: "run-1",
+          sequence: 10,
+          payload: { itemId: "item-1", delta: "partial" },
+        },
+      });
+      return {
+        channel: "agent",
+        op: "turn.accepted",
+        streamId: "run-1",
+        payload: { runId: "run-1", replayTruncated: true, replayFromSequence: 10, activeActions: [] },
+      };
+    }
+    if (message.op === "events.detach") {
+      return { channel: "agent", op: "events.detached", payload: { detached: true } };
+    }
+    if (message.op === "turn.interrupt") {
+      return { channel: "agent", op: "turn.interrupt.accepted", payload: { status: "cancelling" } };
+    }
+    return {
+      channel: "agent",
+      op: "agent.ready",
+      payload: {
+        protocolVersion: 2,
+        backends: [{
+          backendId: "codex",
+          readiness: { ready: true },
+          capabilities: { action: { policyProfiles: [] }, model: {}, workspace: { admission: false } },
+        }],
+      },
+    };
   });
-  turn.emit("action.requested", {
-    requestId: "tool-1",
-    kind: "dynamic_tool",
-    decisions: ["result"],
-    input: { method: "calendar.test", params: {} },
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onDelta = jest.fn();
+
+  const session = startAgentTurnWithRawFallback({
+    backendId: "codex",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    wsUrl: "ws://runner.test",
+    traceId: "trace-gap",
+    inputText: "hello",
+    cwd: "/workspace",
+    onApprovalRequest: async () => "decline" as const,
+    onDelta,
+  }, jest.fn());
+
+  await expect(session.promise).rejects.toThrow(/replay is no longer available/);
+  expect(onDelta).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "events.detach", streamId: "run-1" }));
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt", streamId: "run-1" }));
+});
+
+test("a dynamic tool is claimed before its side effect executes", async () => {
+  let eventHandler: ((message: any) => void) | null = null;
+  const order: string[] = [];
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: {
+          protocolVersion: 2,
+          backends: [{
+            backendId: "codex",
+            readiness: { ready: true },
+            capabilities: { action: { policyProfiles: [] }, model: {}, workspace: { admission: false } },
+          }],
+        },
+      };
+    }
+    if (message.op === "turn.start") {
+      return {
+        channel: "agent",
+        op: "turn.accepted",
+        streamId: "run-1",
+        payload: {
+          runId: "run-1",
+          activeActions: [{
+            requestId: "tool-1",
+            kind: "dynamic_tool",
+            input: { method: "calendar", params: {} },
+          }],
+        },
+      };
+    }
+    if (message.op === "action.claim") {
+      order.push("claim");
+      return { channel: "agent", op: "action.claim.accepted", payload: { status: "claimed" } };
+    }
+    if (message.op === "action.respond") {
+      order.push("respond");
+      return { channel: "agent", op: "action.response.accepted", payload: {} };
+    }
+    return { channel: "agent", op: "events.detached", payload: { detached: true } };
   });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const response = turn.request.mock.calls.find(([message]) => message.op === "action.respond");
-  expect(response?.[0]).toEqual(expect.objectContaining({ payload: expect.objectContaining({ decision: "result" }) }));
-  turn.emit("turn.completed", {});
-  await turn.session.promise;
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onCalendarToolCall = jest.fn(async () => {
+    order.push("side-effect");
+    return { ok: true as const, data: {} };
+  });
+  const session = startAgentTurnWithRawFallback({
+    backendId: "codex",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    wsUrl: "ws://runner.test",
+    traceId: "trace-tool-claim",
+    inputText: "calendar",
+    cwd: "/workspace",
+    onApprovalRequest: async () => "decline" as const,
+    onCalendarToolCall,
+  }, jest.fn());
+  for (let i = 0; i < 20 && !order.includes("respond"); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  (eventHandler as ((message: any) => void) | null)?.({
+    channel: "agent",
+    op: "event",
+    payload: {
+      protocolVersion: 2,
+      type: "session.resolved",
+      runId: "run-1",
+      sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
+      sequence: 7,
+      payload: {},
+    },
+  });
+  (eventHandler as ((message: any) => void) | null)?.({
+    channel: "agent",
+    op: "event",
+    payload: {
+      protocolVersion: 2,
+      type: "turn.completed",
+      runId: "run-1",
+      sequence: 8,
+      payload: { sessionRef: { backendId: "codex", nativeSessionId: "thread-1" } },
+    },
+  });
+
+  await expect(session.promise).resolves.toEqual(expect.objectContaining({ threadId: "thread-1" }));
+  expect(order).toEqual(["claim", "side-effect", "respond"]);
+  expect(onCalendarToolCall).toHaveBeenCalledTimes(1);
+});
+
+test("a restored neutral observer attaches by session, replays live output, and interrupts the active run", async () => {
+  let eventHandler: ((message: any) => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: { protocolVersion: 2, backends: [{ backendId: "claude", readiness: { ready: true } }] },
+      };
+    }
+    if (message.op === "events.resume") {
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "content.delta",
+          runId: "run-1",
+          sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+          sequence: 4,
+          payload: { itemId: "item-1", delta: "live" },
+        },
+      });
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "action.requested",
+          runId: "run-1",
+          sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+          sequence: 5,
+          payload: { requestId: "stale-action", kind: "permission", decisions: ["allow", "deny"] },
+        },
+      });
+      return {
+        channel: "agent",
+        op: "events.resumed",
+        streamId: "run-1",
+        payload: {
+          active: true,
+          runId: "run-1",
+          runChanged: true,
+          replayTruncated: true,
+          replayFromSequence: 4,
+          activeActions: [{ requestId: "tool-1", kind: "dynamic_tool", input: { method: "calendar" } }],
+        },
+      };
+    }
+    if (message.op === "turn.interrupt") {
+      return { channel: "agent", op: "turn.interrupt.accepted", payload: { status: "cancelling" } };
+    }
+    throw new Error(`unexpected request: ${message.op}`);
+  });
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onDelta = jest.fn();
+  const onRelayReset = jest.fn();
+  const onLog = jest.fn();
+  const onApprovalRequest = jest.fn(async () => "decline" as const);
+  const rawStart = jest.fn();
+
+  const observer = startAgentSessionObserverWithRawFallback({
+    wsUrl: "ws://runner.test",
+    threadId: "session-1",
+    backendId: "claude",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    resumeFromRelayId: "run-old",
+    resumeFromSeq: 1,
+    onApprovalRequest,
+    onDelta,
+    onRelayReset,
+    onLog,
+  }, rawStart);
+  await observer.interrupt?.();
+  for (let i = 0; i < 20 && onDelta.mock.calls.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(rawStart).not.toHaveBeenCalled();
+  expect(onDelta).toHaveBeenCalledWith("live", { itemId: "item-1" });
+  expect(onLog).toHaveBeenCalledWith(expect.objectContaining({ stage: "relay_observer_replay_truncated" }));
+  expect(onLog).not.toHaveBeenCalledWith(expect.objectContaining({ stage: "relay_observer_resume_miss" }));
+  expect(onRelayReset).toHaveBeenNthCalledWith(1, { threadId: "session-1", relayId: "run-1", seq: 0 });
+  expect(onRelayReset).toHaveBeenCalledWith({ threadId: "session-1", relayId: "run-1", seq: 3 });
+  expect(onRelayReset.mock.invocationCallOrder[0]).toBeLessThan(onDelta.mock.invocationCallOrder[0]);
+  expect(onApprovalRequest).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ op: "action.claim" }));
+  expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ op: "action.respond" }));
+
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt", streamId: "run-1" }));
+  observer.close();
+});
+
+test("a restored neutral observer settles when the run ends between history and attach", async () => {
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: { protocolVersion: 2, backends: [{ backendId: "claude", readiness: { ready: true } }] },
+      };
+    }
+    return { channel: "agent", op: "events.resumed", payload: { active: false, activeActions: [] } };
+  });
+  const manager = {
+    request,
+    subscribe: () => () => {},
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onTurnCompleted = jest.fn();
+
+  startAgentSessionObserverWithRawFallback({
+    wsUrl: "ws://runner.test",
+    threadId: "session-1",
+    backendId: "claude",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    onApprovalRequest: async () => "decline" as const,
+    onTurnCompleted,
+  }, jest.fn());
+  for (let i = 0; i < 20 && onTurnCompleted.mock.calls.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(onTurnCompleted).toHaveBeenCalledWith({ noActiveRun: true });
+});
+
+test("a passive observer projection error detaches without interrupting the active run", async () => {
+  let eventHandler: ((message: any) => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: { protocolVersion: 2, backends: [{ backendId: "claude", readiness: { ready: true } }] },
+      };
+    }
+    if (message.op === "events.resume") {
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "content.delta",
+          runId: "run-1",
+          sequence: 1,
+          payload: { itemId: "item-1", delta: "live" },
+        },
+      });
+      return {
+        channel: "agent",
+        op: "events.resumed",
+        streamId: "run-1",
+        payload: { active: true, runId: "run-1", activeActions: [] },
+      };
+    }
+    if (message.op === "events.detach") {
+      return { channel: "agent", op: "events.detached", payload: { detached: true } };
+    }
+    if (message.op === "turn.interrupt") {
+      throw new Error("passive observer must not interrupt");
+    }
+    throw new Error(`unexpected request: ${message.op}`);
+  });
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onLog = jest.fn();
+
+  startAgentSessionObserverWithRawFallback({
+    wsUrl: "ws://runner.test",
+    threadId: "session-1",
+    backendId: "claude",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    onApprovalRequest: async () => "decline" as const,
+    onDelta: () => { throw new Error("projection failed"); },
+    onLog,
+  }, jest.fn());
+  for (let i = 0; i < 20 && !request.mock.calls.some(([message]) => message.op === "events.detach"); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(onLog).toHaveBeenCalledWith(expect.objectContaining({
+    stage: "relay_observer_resume_miss",
+    message: "projection failed",
+  }));
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "events.detach", streamId: "run-1" }));
+  expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt" }));
+});
+
+test("reconnect buffers replay until the authoritative active-action snapshot filters stale requests", async () => {
+  let generation = 1;
+  let resumeCount = 0;
+  let eventHandler: ((message: any) => void) | null = null;
+  let snapshotHandler: (() => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: { protocolVersion: 2, backends: [{ backendId: "claude", readiness: { ready: true } }] },
+      };
+    }
+    if (message.op === "events.resume") {
+      resumeCount += 1;
+      if (resumeCount > 1) {
+        eventHandler?.({
+          channel: "agent",
+          op: "event",
+          payload: {
+            protocolVersion: 2,
+            type: "content.delta",
+            runId: "run-1",
+            sequence: 4,
+            payload: { itemId: "item-1", delta: "after reconnect" },
+          },
+        });
+        eventHandler?.({
+          channel: "agent",
+          op: "event",
+          payload: {
+            protocolVersion: 2,
+            type: "action.requested",
+            runId: "run-1",
+            sequence: 6,
+            payload: { requestId: "already-resolved", kind: "permission" },
+          },
+        });
+      }
+      return {
+        channel: "agent",
+        op: "events.resumed",
+        streamId: "run-1",
+        payload: { active: true, runId: "run-1", activeActions: [] },
+      };
+    }
+    return { channel: "agent", op: "events.detached", payload: { detached: true } };
+  });
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: (handler: () => void) => {
+      snapshotHandler = handler;
+      return () => {};
+    },
+    getSnapshot: () => ({ generation, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onApprovalRequest = jest.fn(async () => "decline" as const);
+  const onDelta = jest.fn();
+  const observer = startAgentSessionObserverWithRawFallback({
+    wsUrl: "ws://runner.test",
+    threadId: "session-1",
+    backendId: "claude",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    onApprovalRequest,
+    onDelta,
+  }, jest.fn());
+  for (let i = 0; i < 20 && resumeCount < 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+
+  generation = 2;
+  (snapshotHandler as (() => void) | null)?.();
+  for (let i = 0; i < 20 && onDelta.mock.calls.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(onDelta).toHaveBeenCalledWith("after reconnect", { itemId: "item-1" });
+  expect(onApprovalRequest).not.toHaveBeenCalled();
+  observer.close();
+});
+
+test("a restored neutral terminal preserves failed outcome", async () => {
+  let eventHandler: ((message: any) => void) | null = null;
+  const request = jest.fn(async (message: { op?: string }) => {
+    if (message.op === "agent.hello") {
+      return {
+        channel: "agent",
+        op: "agent.ready",
+        payload: { protocolVersion: 2, backends: [{ backendId: "claude", readiness: { ready: true } }] },
+      };
+    }
+    if (message.op === "events.resume") {
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "action.resolved",
+          runId: "run-1",
+          sequence: 2,
+          payload: { requestId: "approval-1", outcome: "expired" },
+        },
+      });
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "content.delta",
+          runId: "run-1",
+          sequence: 4,
+          payload: { itemId: "assistant-1", delta: "after action" },
+        },
+      });
+      eventHandler?.({
+        channel: "agent",
+        op: "event",
+        payload: {
+          protocolVersion: 2,
+          type: "turn.failed",
+          runId: "run-1",
+          sequence: 6,
+          payload: { error: { message: "backend failed" } },
+        },
+      });
+      return {
+        channel: "agent",
+        op: "events.resumed",
+        streamId: "run-1",
+        payload: { active: true, runId: "run-1", activeActions: [] },
+      };
+    }
+    return { channel: "agent", op: "events.detached", payload: { detached: true } };
+  });
+  const manager = {
+    request,
+    subscribe: (_filter: unknown, handler: (message: any) => void) => {
+      eventHandler = handler;
+      return () => {};
+    },
+    subscribeSnapshot: () => () => {},
+    getSnapshot: () => ({ generation: 1, connectionState: "ready" }),
+  } as unknown as RunnerWebSocketManager;
+  const onTurnCompleted = jest.fn();
+  const onDelta = jest.fn();
+
+  startAgentSessionObserverWithRawFallback({
+    wsUrl: "ws://runner.test",
+    threadId: "session-1",
+    backendId: "claude",
+    preferNeutralAgent: true,
+    runnerWebSocketManager: manager,
+    onApprovalRequest: async () => "decline" as const,
+    onDelta,
+    onTurnCompleted,
+  }, jest.fn());
+  for (let i = 0; i < 20 && onTurnCompleted.mock.calls.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(onDelta).toHaveBeenCalledWith("after action", { itemId: "assistant-1" });
+  expect(onTurnCompleted).toHaveBeenCalledWith({
+    error: { message: "backend failed" },
+    outcome: "failed",
+  });
 });

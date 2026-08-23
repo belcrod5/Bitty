@@ -173,6 +173,38 @@ describe("fetchRunnerSessionMessages", () => {
     });
   });
 
+  it("restores provider-neutral active-run state instead of forcing the session idle", async () => {
+    mockReadAgentHistory.mockResolvedValue({
+      sessionRef: { backendId: "claude", nativeSessionId: "thread-1" },
+      canonicalCwd: "/native/workspace",
+      items: [{ id: "item-1", role: "assistant", content: [{ type: "text", text: "partial" }] }],
+      activeRun: {
+        runId: "run-1",
+        state: "running",
+        startedAt: "2026-08-23T00:00:00.000Z",
+        updatedAt: "2026-08-23T00:00:01.000Z",
+        waitingForAction: false,
+      },
+    });
+    const { result } = await renderExplorerHook({ runnerWebSocketManager: {} as never });
+
+    const restored = await result.current.fetchRunnerSessionMessages("thread-1", "/workspace", {
+      backendId: "claude",
+    });
+
+    expect(restored).toMatchObject({
+      backendId: "claude",
+      sourceKind: "agent",
+      threadStatusType: "active",
+      hasRunningTurn: true,
+      runningTurn: {
+        status: "running",
+        startedAt: "2026-08-23T00:00:00.000Z",
+        updatedAt: "2026-08-23T00:00:01.000Z",
+      },
+    });
+  });
+
   it("maps neutral history itemType to the collapsed internal-context kind", async () => {
     mockReadAgentHistory.mockResolvedValue({
       sessionRef: { backendId: "claude", nativeSessionId: "thread-1" },

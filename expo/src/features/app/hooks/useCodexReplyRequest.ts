@@ -169,6 +169,7 @@ type UseCodexReplyRequestOptions<
       ignoreWatermark?: boolean;
       reason?: string;
       panelId?: string;
+      agentBackendId?: string;
     }
   ) => boolean;
   // queue経路のobserver起動でwatermark無視(承認待ち中のpending approval replay)を
@@ -1622,7 +1623,7 @@ export function useCodexReplyRequest<
     }
     if (inFlightRequests.length === 0) {
       clearPanelRequestTracking(targetPanelId, fallbackRequestSeq);
-      return true;
+      return false;
     }
     await Promise.all(inFlightRequests.map(async (request) => {
       try {

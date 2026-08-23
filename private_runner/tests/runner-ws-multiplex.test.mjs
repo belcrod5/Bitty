@@ -116,7 +116,7 @@ test("runner-ws advertises and negotiates the provider-neutral agent protocol", 
 
   const ready = ws.sent.find((message) => message.channel === "agent" && message.op === "agent.ready");
   assert.equal(ready.requestId, "hello-1");
-  assert.equal(ready.payload.protocolVersion, 1);
+  assert.equal(ready.payload.protocolVersion, 2);
   assert.equal(ready.payload.backends.some((backend) => backend.backendId === "codex"), true);
   ws.close();
 });

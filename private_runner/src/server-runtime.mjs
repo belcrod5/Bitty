@@ -1662,7 +1662,10 @@ let agentService;
 const approvalPushService = createApprovalPushService({
   enabled: PUSH_ENABLED, runnerToken: RUNNER_TOKEN, apnsClient, deviceStore: pushDeviceStore,
   getAgentSessionBinding,
-  respondToAgentAction: (request) => agentService.respondToAction(request),
+  respondToAgentAction: (request) => agentService.respondToAction(
+    request,
+    { subjectId: agentOwnerSubjectId, approvalResponder: true },
+  ),
   getRawRelay: (relayId) => codexWsRelaysById.get(relayId),
   forwardRawData: (relay, data) => forwardCodexRelayClientData(relay, data, false),
   parseAuthToken, readJsonBody, json, writeJsonRequestError,
@@ -1688,7 +1691,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   onRunEvent: approvalPushService.onRunEvent,
 });
 ({ service: agentService } = agentRuntime);
-const { httpHandler: agentHttpHandler } = agentRuntime;
+const { httpHandler: agentHttpHandler, ownerSubjectId: agentOwnerSubjectId } = agentRuntime;
 const codexRawSessionOwnership = createCodexRawSessionOwnership({
   bindSession: bindAgentSession,
   getSessionBinding: getAgentSessionBinding,
@@ -7176,13 +7179,17 @@ async function runCodexQueuedTurn(turn) {
         effort: turn.effort,
         policyProfileId: turn.approvalPolicy === "never" ? "codex-never" : "codex-on-request",
         clientOperationId: turn.queuedTurnId,
-      }, { subjectId: "runner-queue" });
+      }, { subjectId: agentOwnerSubjectId });
       turn.agentRunId = run.runId;
       const consumeEvents = (async () => {
         for await (const event of run.events) {
           if (event.type !== "action.requested") continue;
           const requestId = String(event.payload?.requestId || "");
           if (event.payload?.kind === "dynamic_tool") {
+            await agentService.claimAction(
+              { runId: run.runId, requestId },
+              { subjectId: agentOwnerSubjectId, actionConsumerId: run.actionConsumerId },
+            );
             const input = event.payload?.input || {};
             await agentService.respondToAction({
               runId: run.runId,
@@ -7193,9 +7200,12 @@ async function runCodexQueuedTurn(turn) {
                 method: input.method,
                 params: input.params,
               }),
-            });
+            }, { subjectId: agentOwnerSubjectId, actionConsumerId: run.actionConsumerId });
           } else {
-            await agentService.respondToAction({ runId: run.runId, requestId, decision: "deny" });
+            await agentService.respondToAction(
+              { runId: run.runId, requestId, decision: "deny" },
+              { subjectId: agentOwnerSubjectId, actionConsumerId: run.actionConsumerId },
+            );
           }
         }
       })();
@@ -7368,7 +7378,9 @@ function cancelCodexQueuedTurn(queuedTurnIdRaw) {
   }
   if (turn.status === "running" && turn.abortController) {
     turn.abortController.abort();
-    if (turn.agentRunId) void agentService.interrupt(turn.agentRunId).catch(() => {});
+    if (turn.agentRunId) {
+      void agentService.interrupt(turn.agentRunId, { subjectId: agentOwnerSubjectId }).catch(() => {});
+    }
   }
   markCodexQueuedTurn(turn, {
     status: "cancelled",

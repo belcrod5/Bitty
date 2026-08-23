@@ -531,6 +531,11 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         neutral = null;
       }
       if (neutral?.sessionRef) {
+        const activeRun = neutral.activeRun && typeof neutral.activeRun === "object"
+          ? neutral.activeRun as JsonRecord
+          : null;
+        const hasRunningTurn = Boolean(String(activeRun?.runId || "").trim());
+        const waitingForAction = activeRun?.waitingForAction === true;
         const items = Array.isArray(neutral.items) ? neutral.items : [];
         const messages: RunnerSessionMessage[] = items.flatMap((raw) => {
           const item = raw && typeof raw === "object" ? raw as JsonRecord : {};
@@ -574,9 +579,14 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           messages,
           // rollout token_count由来のcontext使用率(codex)。無いBackendはnull。
           contextUsedPct: parseContextUsageUsedPct(neutral.contextUsage),
-          threadStatusType: "idle",
-          hasRunningTurn: false,
-          runningTurn: null,
+          threadStatusType: hasRunningTurn ? (waitingForAction ? "waiting_approval" : "active") : "idle",
+          hasRunningTurn,
+          runningTurn: hasRunningTurn ? {
+            status: waitingForAction ? "waiting_approval" : String(activeRun?.state || "running"),
+            summary: waitingForAction ? "approval required" : "agent turn running",
+            startedAt: String(activeRun?.startedAt || ""),
+            updatedAt: String(activeRun?.updatedAt || ""),
+          } : null,
           olderCursor: String(neutral.olderCursor || "") || null,
           latestCursor: String(neutral.newerCursor || "") || null,
           ...(sinceCursor ? { moreAfter: neutral.moreAfter === true } : {}),

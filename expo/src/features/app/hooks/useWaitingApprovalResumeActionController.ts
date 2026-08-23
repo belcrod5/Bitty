@@ -3,6 +3,7 @@ import type { SessionRuntimeStatus } from "../types/appTypes";
 
 type StartCodexRelayObserverForSessionOptions = {
   directory?: string;
+  agentBackendId?: string;
   startedAtMs?: number | null;
   resumeFromSeq?: number;
   ignoreWatermark?: boolean;
@@ -13,6 +14,7 @@ type StartCodexRelayObserverForSessionOptions = {
 type UseWaitingApprovalResumeActionControllerArgs = {
   parseOptionalSessionId: (raw: unknown) => string;
   selectedSessionId: () => unknown;
+  selectedSessionBackendId: (sessionId: string) => unknown;
   waitingApprovalResumeLoading: boolean;
   waitingApprovalResumeCooldownUntilMsRef: MutableRefObject<number>;
   showChatBottomToast: (role: "user" | "assistant", textRaw: string) => void;
@@ -53,6 +55,7 @@ type UseWaitingApprovalResumeActionControllerArgs = {
 export function useWaitingApprovalResumeActionController({
   parseOptionalSessionId,
   selectedSessionId,
+  selectedSessionBackendId,
   waitingApprovalResumeLoading,
   waitingApprovalResumeCooldownUntilMsRef,
   showChatBottomToast,
@@ -119,6 +122,7 @@ export function useWaitingApprovalResumeActionController({
     ));
     const attached = startCodexRelayObserverForSession(sessionId, {
       directory,
+      agentBackendId: String(selectedSessionBackendId(sessionId) || "").trim() || undefined,
       startedAtMs: Number(selectedSessionExecutionFactStartedAtMs || 0) || Date.now(),
       reason: "session_restored_running_turn",
       // pending approval requestはseq≦watermarkだとサーバーが再送しないため、
@@ -145,6 +149,7 @@ export function useWaitingApprovalResumeActionController({
     reloadActiveSession,
     rememberSessionRuntimeStatus,
     selectedSessionExecutionFactStartedAtMs,
+    selectedSessionBackendId,
     selectedSessionId,
     selectedSessionWaitingApproval,
     sessionRuntimeStatusByIdRef,

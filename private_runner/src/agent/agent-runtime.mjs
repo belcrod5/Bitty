@@ -153,6 +153,7 @@ export function createPrivateRunnerAgentRuntime({
   });
   return {
     service,
+    ownerSubjectId: subjectId,
     workspaceAdmission,
     httpHandler,
     close: async () => Promise.allSettled([codexBackend.close(), claudeBackend.close()]),

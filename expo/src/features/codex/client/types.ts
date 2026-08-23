@@ -101,6 +101,9 @@ export type CodexAppServerRelayObserverLogEntry = {
 export type CodexAppServerRelayObserverOptions = {
   wsUrl: string;
   wsToken?: string;
+  backendId?: string;
+  preferNeutralAgent?: boolean;
+  rawFallbackBackendId?: string;
   threadId: string;
   resumeFromSeq?: number;
   // resumeFromSeqの由来relay(watermark)のrelayId。seqはrelayインスタンススコープの
@@ -124,6 +127,7 @@ export type CodexAppServerRelayObserverOptions = {
 
 export type CodexAppServerRelayObserverSession = {
   close: () => void;
+  interrupt?: () => Promise<void>;
 };
 
 export type CodexContextUsage = {

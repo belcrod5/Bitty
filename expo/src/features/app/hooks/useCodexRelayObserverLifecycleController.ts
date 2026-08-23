@@ -1,6 +1,11 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
-type CodexRelayObserverRef = MutableRefObject<{ threadId: string; panelId?: string; close: () => void } | null>;
+type CodexRelayObserverRef = MutableRefObject<{
+  threadId: string;
+  panelId?: string;
+  close: () => void;
+  interrupt?: () => Promise<void>;
+} | null>;
 
 type UseCodexRelayObserverLifecycleControllerArgs = {
   codexRelayObserverRef: CodexRelayObserverRef;
@@ -78,8 +83,19 @@ export function useCodexRelayObserverLifecycleController({
     logSessionDiag,
   ]);
 
+  const interruptCodexRelayObserver = useCallback(async (target: { panelId: string; threadId: string }) => {
+    const active = codexRelayObserverRef.current;
+    const threadId = String(target.threadId || "").trim();
+    if (!active?.interrupt || !threadId || active.threadId !== threadId) return false;
+    const activePanelId = String(active.panelId || "").trim();
+    if (activePanelId && activePanelId !== String(target.panelId || "").trim()) return false;
+    await active.interrupt();
+    return true;
+  }, [codexRelayObserverRef]);
+
   return {
     closeCodexRelayObserver,
     clearCodexRelayObserverForMiss,
+    interruptCodexRelayObserver,
   };
 }

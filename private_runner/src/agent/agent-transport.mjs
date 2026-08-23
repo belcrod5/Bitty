@@ -68,7 +68,7 @@ export function createAgentHttpHandler({
           cursor: String(reqUrl.searchParams.get("cursor") || "").trim(),
           sinceCursor: String(reqUrl.searchParams.get("sinceCursor") || "").trim(),
           limit: normalizeSessionMessagesLimit(reqUrl.searchParams.get("limit")),
-        }));
+        }, { subjectId }));
       } catch (error) {
         json(res, error?.code === "session_not_found" ? 404 : 400, {
           error: serializeAgentError(error, backendId),
@@ -144,11 +144,11 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     });
   }
 
-  function sendEvent(event) {
+  function sendEvent(subscriptionId, event) {
     sendEnvelope(ws, {
       channel: "agent",
       op: "event",
-      operationId: event.runId,
+      operationId: subscriptionId,
       streamId: event.runId,
       sessionId: event.sessionRef?.nativeSessionId || "",
       seq: event.sequence,
@@ -156,16 +156,23 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     });
     if (AGENT_TERMINAL_EVENT_TYPES.has(event.type)) {
       queueMicrotask(() => {
-        subscriptions.get(event.runId)?.unsubscribe();
-        subscriptions.delete(event.runId);
+        subscriptions.get(subscriptionId)?.subscription.unsubscribe();
+        subscriptions.delete(subscriptionId);
       });
     }
   }
 
-  function attach(runId, afterSequence = 0) {
-    subscriptions.get(runId)?.unsubscribe();
-    const subscription = service.subscribe(runId, { afterSequence, onEvent: sendEvent });
-    subscriptions.set(runId, subscription);
+  function attach(subscriptionId, runId, afterSequence = 0, actionConsumer = "all") {
+    const previous = subscriptions.get(subscriptionId);
+    const actionConsumerId = previous?.actionConsumerId || {};
+    const subscription = service.subscribe(runId, {
+      afterSequence,
+      actionConsumerId,
+      actionScope: actionConsumer === "approval" ? "approval" : "all",
+      onEvent: (event) => sendEvent(subscriptionId, event),
+    }, { subjectId });
+    subscriptions.set(subscriptionId, { actionConsumerId, subscription });
+    previous?.subscription.unsubscribe();
     return subscription;
   }
 
@@ -176,7 +183,11 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
   }
 
   function runIdFrom(message, payload) {
-    return String(message.streamId || message.operationId || payload.runId || "").trim();
+    return String(message.streamId || payload.runId || "").trim();
+  }
+
+  function subscriptionIdFrom(message, payload, runId = "") {
+    return String(payload.subscriptionId || message.operationId || runId).trim();
   }
 
   function handleMessage(message) {
@@ -190,7 +201,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
           protocolVersion: AGENT_PROTOCOL_VERSION,
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
           operations: [
-            "turn.start", "turn.interrupt", "action.respond", "events.resume", "session.handoff",
+            "turn.start", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
             "session.compact", "sessions.list", "history.read", "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],
           events: Array.from(AGENT_EVENT_TYPES),
@@ -215,24 +226,61 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
             payload: run.result,
           });
         } else {
+          const subscriptionId = subscriptionIdFrom(message, payload, run.runId);
+          const subscription = attach(
+            subscriptionId,
+            run.runId,
+            0,
+            String(payload.actionConsumer || "all"),
+          );
           sendEnvelope(ws, {
             channel: "agent",
             op: "turn.accepted",
             requestId: message.requestId || "",
             operationId: message.operationId || "",
             streamId: run.runId,
-            payload: { runId: run.runId, queued: run.queued === true },
+            payload: {
+              runId: run.runId,
+              queued: run.queued === true,
+              replayTruncated: subscription.replayTruncated,
+              replayFromSequence: subscription.replayFromSequence,
+              activeActions: subscription.activeActions,
+            },
           });
-          attach(run.runId, 0);
         }
       }).catch((error) => sendError(message, error));
       return true;
     }
     if (message.op === "events.resume") {
       const payload = payloadObject(message);
-      const runId = runIdFrom(message, payload);
       try {
-        const subscription = attach(runId, Number(message.seq || payload.afterSequence || 0));
+        const requestedRunId = runIdFrom(message, payload);
+        const subscriptionId = subscriptionIdFrom(message, payload, requestedRunId);
+        const activeRun = requestedRunId
+          ? { runId: requestedRunId }
+          : service.getActiveRun(payload.sessionRef, { subjectId });
+        if (!activeRun) {
+          subscriptions.get(subscriptionId)?.subscription.unsubscribe();
+          subscriptions.delete(subscriptionId);
+          sendEnvelope(ws, {
+            channel: "agent",
+            op: "events.resumed",
+            requestId: message.requestId || "",
+            operationId: message.operationId || "",
+            payload: { active: false, activeActions: [] },
+          });
+          return true;
+        }
+        const runId = activeRun.runId;
+        const expectedRunId = String(payload.expectedRunId || "").trim();
+        const runChanged = Boolean(expectedRunId && expectedRunId !== runId);
+        const afterSequence = runChanged ? 0 : Number(message.seq || payload.afterSequence || 0);
+        const subscription = attach(
+          subscriptionId,
+          runId,
+          afterSequence,
+          String(payload.actionConsumer || "all"),
+        );
         sendEnvelope(ws, {
           channel: "agent",
           op: "events.resumed",
@@ -240,7 +288,11 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
           operationId: message.operationId || "",
           streamId: runId,
           payload: {
-            resumeMiss: subscription.resumeMiss,
+            active: true,
+            runId,
+            runChanged,
+            replayTruncated: subscription.replayTruncated,
+            replayFromSequence: subscription.replayFromSequence,
             activeActions: subscription.activeActions,
           },
         });
@@ -249,10 +301,27 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
       }
       return true;
     }
+    if (message.op === "events.detach") {
+      const payload = payloadObject(message);
+      const subscriptionId = subscriptionIdFrom(message, payload);
+      const entry = subscriptions.get(subscriptionId);
+      if (entry) {
+        entry.subscription.unsubscribe();
+        subscriptions.delete(subscriptionId);
+      }
+      sendEnvelope(ws, {
+        channel: "agent",
+        op: "events.detached",
+        requestId: message.requestId || "",
+        operationId: subscriptionId,
+        payload: { detached: Boolean(entry) },
+      });
+      return true;
+    }
     if (message.op === "turn.interrupt") {
       const payload = payloadObject(message);
       const runId = runIdFrom(message, payload);
-      void service.interrupt(runId).then((result) => sendEnvelope(ws, {
+      void service.interrupt(runId, { subjectId }).then((result) => sendEnvelope(ws, {
         channel: "agent",
         op: "turn.interrupt.accepted",
         requestId: message.requestId || "",
@@ -264,17 +333,36 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     if (message.op === "action.respond") {
       const payload = payloadObject(message);
       const runId = runIdFrom(message, payload);
+      const subscriptionId = subscriptionIdFrom(message, payload, runId);
+      const actionConsumerId = subscriptions.get(subscriptionId)?.actionConsumerId;
       void service.respondToAction({
         runId,
         requestId: payload.requestId,
         decision: payload.decision,
         result: payload.result,
-      }).then(() => sendEnvelope(ws, {
+      }, { subjectId, actionConsumerId }).then(() => sendEnvelope(ws, {
         channel: "agent",
         op: "action.response.accepted",
         requestId: message.requestId || "",
         streamId: runId,
         payload: { requestId: String(payload.requestId || "") },
+      })).catch((error) => sendError(message, error));
+      return true;
+    }
+    if (message.op === "action.claim") {
+      const payload = payloadObject(message);
+      const runId = runIdFrom(message, payload);
+      const subscriptionId = subscriptionIdFrom(message, payload, runId);
+      const actionConsumerId = subscriptions.get(subscriptionId)?.actionConsumerId;
+      void service.claimAction({
+        runId,
+        requestId: payload.requestId,
+      }, { subjectId, actionConsumerId }).then((result) => sendEnvelope(ws, {
+        channel: "agent",
+        op: "action.claim.accepted",
+        requestId: message.requestId || "",
+        streamId: runId,
+        payload: result,
       })).catch((error) => sendError(message, error));
       return true;
     }
@@ -312,7 +400,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     }
     if (message.op === "history.read") {
       const payload = payloadObject(message);
-      void service.readHistory(payload).then((result) => sendEnvelope(ws, {
+      void service.readHistory(payload, { subjectId }).then((result) => sendEnvelope(ws, {
         channel: "agent",
         op: "history.read.result",
         requestId: message.requestId || "",
@@ -366,7 +454,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
   return {
     handleMessage,
     detach() {
-      for (const subscription of subscriptions.values()) subscription.unsubscribe();
+      for (const entry of subscriptions.values()) entry.subscription.unsubscribe();
       subscriptions.clear();
     },
   };
