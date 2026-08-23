@@ -1212,7 +1212,7 @@ export default function App() {
   const streamTtsSuppressedRef = useRef(false);
   const streamTtsControlRef = useRef<StreamTtsControlState | null>(null);
   const streamSocketRef = useRef<WebSocket | null>(null);
-  const codexRelayObserverRef = useRef<{ threadId: string; panelId?: string; close: () => void } | null>(null);
+  const codexRelayObserverRef = useRef<{ threadId: string; panelId?: string; close: () => void; interrupt?: () => Promise<void> } | null>(null);
   // observer強奪時の補償ハンドラ。実体は後段のuseReadyDrivenResumeSyncControllerが
   // 提供する markSessionRespondingForResync(refで前方参照を解決する)。
   const observerPreemptedHandlerRef = useRef<((sessionId: string) => void) | null>(null);
@@ -3424,10 +3424,8 @@ export default function App() {
       );
     },
   });
-  const {
-    closeCodexRelayObserver,
-    clearCodexRelayObserverForMiss,
-  } = useCodexRelayObserverLifecycleController({
+  const { closeCodexRelayObserver, clearCodexRelayObserverForMiss, interruptCodexRelayObserver } =
+    useCodexRelayObserverLifecycleController({
     codexRelayObserverRef,
     codexRelayObserverReplyByThreadRef,
     codexRelayObserverStartedAtMsByThreadRef,
@@ -4209,9 +4207,7 @@ export default function App() {
           ? `${prev} | session_live_turn_hydrated thread=${restoredThreadId}`
           : `session_live_turn_hydrated thread=${restoredThreadId}`
       ));
-    } else if (replyLoadingRef.current) {
-      setReplyLoadingWithRef(false);
-    }
+    } else setReplyLoadingWithRef(hasRunningTurn);
     if (waitingApprovalOnRestore && !restoredInFlight) {
       const approvalSummary = latestToolLabelOnRestore || runningTurnSummary || "承認待ちで停止中";
       const approvalStatus = runningTurnStatus || "waiting_approval";
@@ -4231,10 +4227,10 @@ export default function App() {
     if (!restoredInFlight && hasRunningTurn) {
       codexRelayAttached = startCodexRelayObserverForSession(nextSessionId, {
         directory,
+        agentBackendId: restored.sourceKind === "agent" ? restored.backendId : undefined,
         startedAtMs: runningStartedAtMs ?? undefined,
         reason: "session_restored_running_turn",
         panelId,
-        // 承認待ち復元はpending approvalのreplayが必要(seq≦watermarkは再送されない)。
         ignoreWatermark: waitingApprovalOnRestore,
       });
     } else {
@@ -4336,6 +4332,7 @@ export default function App() {
   const { resumeWaitingApprovalForActiveSession } = useWaitingApprovalResumeActionController({
     parseOptionalSessionId,
     selectedSessionId: () => selectedLlmSessionIdRef.current || selectedLlmSessionId,
+    selectedSessionBackendId: (sessionId) => resolveSessionHistoryContext(sessionId)?.backendId,
     waitingApprovalResumeLoading,
     waitingApprovalResumeCooldownUntilMsRef,
     showChatBottomToast,
@@ -5743,6 +5740,8 @@ export default function App() {
     showChatBottomToast,
     normalizedLlmDirectoryForRequest,
     closeCodexRelayObserver,
+    interruptCodexRelayObserver,
+    resolvePanelSessionSnapshot: resolvePanelWriteSessionSnapshot,
     logSessionDiag,
     sendReplyRequestFromCodex,
     cancelReplyRequestFromCodex,
@@ -7263,9 +7262,10 @@ export default function App() {
         const runningStartedAtMsRaw = Date.parse(String(restored.runningTurn?.startedAt || ""));
         const relayAttached = startCodexRelayObserverForSession(snapshot.selectedSessionId, {
           directory: restoredDirectory,
+          agentBackendId: restored.sourceKind === "agent" ? restored.backendId : undefined,
           startedAtMs: Number.isFinite(runningStartedAtMsRaw) ? runningStartedAtMsRaw : Date.now(),
           reason: "session_restored_running_turn",
-          // 承認待ち復元はpending approvalのreplayが必要(seq≦watermarkは再送されない)。
+          // 承認待ち復元はpending approvalを再送するためwatermarkを無視する。
           ignoreWatermark: snapshot.selectedThreadStatusType === "waiting_approval",
         });
         logSessionDiag("panel_runtime_hydrate_session_player_attach", {

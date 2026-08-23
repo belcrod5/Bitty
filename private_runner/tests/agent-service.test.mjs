@@ -148,7 +148,7 @@ test("emits one ordered lifecycle and resolves completion to the terminal payloa
     outcome: "completed",
   });
   assert.throws(
-    () => service.subscribe(run.runId, { afterSequence: Number.NaN, onEvent() {} }),
+    () => service.subscribe(run.runId, { afterSequence: Number.NaN, onEvent() {} }, { subjectId: "user-1" }),
     (error) => error.code === "turn_rejected",
   );
 });
@@ -165,7 +165,11 @@ test("accepts a turn during an active compact and executes it after the lease is
     backendId: "test",
     getStatus: async () => ({
       ...status(),
-      capabilities: { ...status().capabilities, operations: { compact: true } },
+      capabilities: {
+        ...status().capabilities,
+        operations: { compact: true },
+        session: { history: { read: true } },
+      },
     }),
     resolveSessionCwd: async () => "/workspace",
     async startTurn({ emit, input }) {
@@ -245,7 +249,11 @@ test("interrupting a turn that waits for compaction settles it as interrupted", 
     backendId: "test",
     getStatus: async () => ({
       ...status(),
-      capabilities: { ...status().capabilities, operations: { compact: true } },
+      capabilities: {
+        ...status().capabilities,
+        operations: { compact: true },
+        session: { history: { read: true } },
+      },
     }),
     resolveSessionCwd: async () => "/workspace",
     async startTurn({ emit, input }) {
@@ -284,7 +292,11 @@ test("interrupting a turn that waits for compaction settles it as interrupted", 
       clientOperationId: "operation-2",
     }), { subjectId: "user-1" }),
   ]);
-  await service.interrupt(run.runId);
+  const reopened = await service.readHistory({ sessionRef }, { subjectId: "user-1" });
+  assert.equal(reopened.activeRun.runId, run.runId);
+  assert.equal(reopened.activeRun.state, "queued");
+  assert.equal((await service.readHistory({ sessionRef }, { subjectId: "other" })).activeRun, null);
+  await service.interrupt(run.runId, { subjectId: "user-1" });
   const result = await run.completion;
   assert.equal(result.outcome, "interrupted");
   assert.deepEqual(startedInputs, []);
@@ -869,7 +881,7 @@ test("linearizes interrupt before a later backend success", async () => {
   });
   const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
   await new Promise((resolve) => setImmediate(resolve));
-  await service.interrupt(run.runId);
+  await service.interrupt(run.runId, { subjectId: "user-1" });
   const result = await run.completion;
   assert.equal(interrupted, true);
   assert.equal(result.outcome, "interrupted");
@@ -949,6 +961,8 @@ test("resolves active actions before the terminal event", async () => {
 
 test("rejects allow_for_session when the active action did not advertise it", async () => {
   let release;
+  let emitAction;
+  const actionGate = new Promise((resolve) => { emitAction = resolve; });
   let actionReady;
   const actionWasRequested = new Promise((resolve) => { actionReady = resolve; });
   let backendResponses = 0;
@@ -959,6 +973,7 @@ test("rejects allow_for_session when the active action did not advertise it", as
     async startTurn({ emit, resolveSession }) {
       await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
       emit("turn.started", {});
+      await actionGate;
       emit("action.requested", { requestId: "approval-1", kind: "approval", decisions: ["allow", "deny"] });
       actionReady();
       await new Promise((resolve) => { release = resolve; });
@@ -974,12 +989,85 @@ test("rejects allow_for_session when the active action did not advertise it", as
     generateRunId: () => "run-unadvertised-decision",
   });
   const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  const subscription = service.subscribe(run.runId, {
+    onEvent() {},
+    actionConsumerId: "consumer-1",
+    actionScope: "approval",
+  }, { subjectId: "user-1" });
+  emitAction();
   await actionWasRequested;
   await assert.rejects(
-    service.respondToAction({ runId: run.runId, requestId: "approval-1", decision: "allow_for_session" }),
+    service.respondToAction(
+      { runId: run.runId, requestId: "approval-1", decision: "allow_for_session" },
+      { subjectId: "user-1", actionConsumerId: "consumer-1" },
+    ),
     (error) => error.code === "turn_rejected" && /not supported/.test(error.message),
   );
   assert.equal(backendResponses, 0);
+  subscription.unsubscribe();
+  release();
+  await run.completion;
+});
+
+test("an authenticated push responder races the current approval consumer without bypassing action validation", async () => {
+  let emitAction;
+  const actionGate = new Promise((resolve) => { emitAction = resolve; });
+  let release;
+  let actionReady;
+  const actionWasRequested = new Promise((resolve) => { actionReady = resolve; });
+  const backendResponses = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      await actionGate;
+      emit("action.requested", { requestId: "approval-1", kind: "approval", decisions: ["allow", "deny"] });
+      actionReady();
+      await new Promise((resolve) => { release = resolve; });
+      return { outcome: "completed" };
+    },
+    async respondToAction(response) { backendResponses.push(response); },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-push-approval",
+  });
+  const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  const subscription = service.subscribe(run.runId, {
+    onEvent() {},
+    actionConsumerId: "ui-consumer",
+    actionScope: "approval",
+  }, { subjectId: "user-1" });
+  emitAction();
+  await actionWasRequested;
+
+  await assert.rejects(
+    service.respondToAction(
+      { runId: run.runId, requestId: "approval-1", decision: "allow" },
+      { subjectId: "user-1" },
+    ),
+    (error) => error.code === "action_expired",
+  );
+  await assert.rejects(
+    service.respondToAction(
+      { runId: run.runId, requestId: "approval-1", decision: "allow" },
+      { subjectId: "user-1", actionConsumerId: "other-consumer" },
+    ),
+    (error) => error.code === "action_expired",
+  );
+  await service.respondToAction(
+    { runId: run.runId, requestId: "approval-1", decision: "allow" },
+    { subjectId: "user-1", approvalResponder: true },
+  );
+  assert.equal(backendResponses.length, 1);
+
+  subscription.unsubscribe();
   release();
   await run.completion;
 });
@@ -1009,7 +1097,7 @@ test("observes every published event once without subscribers or replay", async 
   const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
   await run.completion;
   const observedCount = observed.length;
-  service.subscribe(run.runId, { onEvent() {} }).unsubscribe();
+  service.subscribe(run.runId, { onEvent() {} }, { subjectId: "user-1" }).unsubscribe();
   assert.equal(observed.length, observedCount);
   assert.deepEqual(observed.map((event) => event.type), [
     "turn.accepted", "session.resolved", "turn.started", "action.requested", "action.resolved", "turn.completed",
@@ -1137,6 +1225,352 @@ test("history returns native cwd and repairs an idle raw stale binding", async (
   assert.equal(page.canonicalCwd, "/workspace-real");
   assert.deepEqual(page.sessionRef, sessionRef);
   assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/workspace-real");
+});
+
+test("history exposes only the authenticated subject's active neutral run", async () => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-active" };
+  await sessions.bind(sessionRef, "/workspace", "neutral");
+  let finishTurn;
+  const turnGate = new Promise((resolve) => { finishTurn = resolve; });
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { ...status().capabilities, session: { history: { read: true } } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    readHistory: async () => ({ items: [] }),
+    async startTurn({ emit }) {
+      emit("turn.started", {});
+      await turnGate;
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-active",
+    now: () => "2026-08-23T00:00:00.000Z",
+  });
+
+  const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "owner" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const owned = await service.readHistory({ sessionRef }, { subjectId: "owner" });
+  const foreign = await service.readHistory({ sessionRef }, { subjectId: "other" });
+
+  assert.deepEqual(owned.activeRun, {
+    runId: "run-active",
+    sessionRef,
+    state: "running",
+    startedAt: "2026-08-23T00:00:00.000Z",
+    updatedAt: "2026-08-23T00:00:00.000Z",
+    waitingForAction: false,
+  });
+  assert.equal(foreign.activeRun, null);
+
+  finishTurn();
+  await run.completion;
+  assert.equal((await service.readHistory({ sessionRef }, { subjectId: "owner" })).activeRun, null);
+});
+
+test("a claimed dynamic action stays orphaned and stoppable after its consumer disconnects", async () => {
+  const sessions = sessionStore();
+  const sessionRef = { backendId: "test", nativeSessionId: "session-actions" };
+  await sessions.bind(sessionRef, "/workspace", "neutral");
+  let finishTurn;
+  let emitAction;
+  const turnGate = new Promise((resolve) => { finishTurn = resolve; });
+  const backendResponses = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit }) {
+      emitAction = emit;
+      emit("turn.started", {});
+      emit("action.requested", {
+        requestId: "approval-1",
+        kind: "permission",
+        decisions: ["allow", "deny"],
+      });
+      emit("action.requested", {
+        requestId: "tool-1",
+        kind: "dynamic_tool",
+        decisions: ["result"],
+      });
+      await turnGate;
+      return { outcome: "completed" };
+    },
+    async respondToAction(response) { backendResponses.push(response); },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "owner" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const approvalConsumer = {};
+  const allConsumer = {};
+  const approvalEvents = [];
+  const allEvents = [];
+  const passiveEvents = [];
+  const approvalSubscription = service.subscribe(run.runId, {
+    afterSequence: 0,
+    actionConsumerId: approvalConsumer,
+    actionScope: "approval",
+    onEvent: (event) => approvalEvents.push(event),
+  }, { subjectId: "owner" });
+  const allSubscription = service.subscribe(run.runId, {
+    afterSequence: 0,
+    actionConsumerId: allConsumer,
+    actionScope: "all",
+    onEvent: (event) => allEvents.push(event),
+  }, { subjectId: "owner" });
+  const passiveSubscription = service.subscribe(run.runId, {
+    afterSequence: 0,
+    onEvent: (event) => passiveEvents.push(event),
+  }, { subjectId: "owner" });
+
+  assert.deepEqual(approvalSubscription.activeActions.map((action) => action.requestId), ["approval-1"]);
+  assert.deepEqual(allSubscription.activeActions.map((action) => action.requestId), ["tool-1"]);
+  assert.equal(approvalEvents.some((event) => event.type === "action.requested"), false);
+  assert.equal(allEvents.some((event) => event.type === "action.requested"), false);
+  assert.throws(
+    () => service.subscribe(run.runId, { onEvent() {} }, { subjectId: "other" }),
+    (error) => error.code === "turn_rejected",
+  );
+  await assert.rejects(
+    service.interrupt(run.runId, { subjectId: "other" }),
+    (error) => error.code === "turn_rejected",
+  );
+
+  approvalSubscription.unsubscribe();
+  assert.deepEqual(
+    allEvents.filter((event) => event.type === "action.requested").map((event) => event.payload.requestId),
+    ["approval-1"],
+  );
+  emitAction("action.requested", {
+    requestId: "tool-2",
+    kind: "dynamic_tool",
+    decisions: ["result"],
+  });
+  assert.equal(passiveEvents.some((event) => event.type === "action.requested"), false);
+  assert.equal(allEvents.some((event) => event.payload?.requestId === "tool-2"), true);
+  await assert.rejects(
+    service.respondToAction(
+      { runId: run.runId, requestId: "approval-1", decision: "deny" },
+      { subjectId: "owner", actionConsumerId: approvalConsumer },
+    ),
+    (error) => error.code === "action_expired",
+  );
+  await assert.rejects(
+    service.respondToAction(
+      { runId: run.runId, requestId: "approval-1", decision: "deny" },
+      { subjectId: "other", actionConsumerId: allConsumer },
+    ),
+    (error) => error.code === "turn_rejected",
+  );
+  await service.respondToAction(
+    { runId: run.runId, requestId: "approval-1", decision: "deny" },
+    { subjectId: "owner", actionConsumerId: allConsumer },
+  );
+  await assert.rejects(
+    service.claimAction(
+      { runId: run.runId, requestId: "tool-1" },
+      { subjectId: "other", actionConsumerId: allConsumer },
+    ),
+    (error) => error.code === "turn_rejected",
+  );
+  await service.claimAction(
+    { runId: run.runId, requestId: "tool-1" },
+    { subjectId: "owner", actionConsumerId: allConsumer },
+  );
+  await service.respondToAction(
+    { runId: run.runId, requestId: "tool-1", decision: "result", result: { ok: true } },
+    { subjectId: "owner", actionConsumerId: allConsumer },
+  );
+  await assert.rejects(
+    service.respondToAction(
+      { runId: run.runId, requestId: "tool-1", decision: "result", result: { ok: false } },
+      { subjectId: "owner", actionConsumerId: allConsumer },
+    ),
+    (error) => error.code === "action_expired",
+  );
+  assert.deepEqual(backendResponses.map((response) => response.requestId), ["approval-1", "tool-1"]);
+
+  await service.claimAction(
+    { runId: run.runId, requestId: "tool-2" },
+    { subjectId: "owner", actionConsumerId: allConsumer },
+  );
+  await assert.rejects(
+    service.claimAction(
+      { runId: run.runId, requestId: "tool-2" },
+      { subjectId: "owner", actionConsumerId: allConsumer },
+    ),
+    (error) => error.code === "action_expired",
+  );
+  allSubscription.unsubscribe();
+  const replacementConsumer = {};
+  const replacementEvents = [];
+  const replacement = service.subscribe(run.runId, {
+    actionConsumerId: replacementConsumer,
+    actionScope: "all",
+    onEvent: (event) => replacementEvents.push(event),
+  }, { subjectId: "owner" });
+  assert.equal(replacement.activeActions.some((action) => action.requestId === "tool-2"), false);
+  assert.equal(
+    replacementEvents.some((event) => event.type === "action.requested" && event.payload.requestId === "tool-2"),
+    false,
+  );
+  await assert.rejects(
+    service.claimAction(
+      { runId: run.runId, requestId: "tool-2" },
+      { subjectId: "owner", actionConsumerId: replacementConsumer },
+    ),
+    (error) => error.code === "action_expired",
+  );
+  await service.interrupt(run.runId, { subjectId: "owner" });
+  finishTurn();
+  assert.equal((await run.completion).outcome, "interrupted");
+  replacement.unsubscribe();
+  passiveSubscription.unsubscribe();
+});
+
+test("filtered action events preserve run-global ordering for every subscriber", async () => {
+  let emitEvent;
+  let requestAction;
+  let finishTurn;
+  const actionGate = new Promise((resolve) => { requestAction = resolve; });
+  const turnGate = new Promise((resolve) => { finishTurn = resolve; });
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    async startTurn({ emit, resolveSession }) {
+      emitEvent = emit;
+      await resolveSession({ backendId: "test", nativeSessionId: "sequence-session" });
+      emit("turn.started", {});
+      await actionGate;
+      emit("action.requested", {
+        requestId: "approval-1",
+        kind: "permission",
+        decisions: ["allow", "deny"],
+      });
+      await turnGate;
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const run = await service.startTurn(startRequest(), { subjectId: "owner" });
+  const consumerEvents = [];
+  const passiveEvents = [];
+  const replacementEvents = [];
+  const consumer = service.subscribe(run.runId, {
+    actionConsumerId: {},
+    actionScope: "approval",
+    onEvent: (event) => consumerEvents.push(event),
+  }, { subjectId: "owner" });
+  const passive = service.subscribe(run.runId, {
+    onEvent: (event) => passiveEvents.push(event),
+  }, { subjectId: "owner" });
+  const replacement = service.subscribe(run.runId, {
+    actionConsumerId: {},
+    actionScope: "approval",
+    onEvent: (event) => replacementEvents.push(event),
+  }, { subjectId: "owner" });
+  requestAction();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    consumerEvents.filter((event) => event.type === "action.requested").map((event) => event.payload.requestId),
+    ["approval-1"],
+  );
+  assert.equal(passiveEvents.some((event) => event.type === "action.requested"), false);
+  assert.equal(replacementEvents.some((event) => event.type === "action.requested"), false);
+
+  emitEvent("provider.event", { backendId: "test", nativeType: "before-handoff", data: {} });
+  const sequenceBeforeHandoff = replacementEvents.at(-1).sequence;
+  consumer.unsubscribe();
+  const handedOff = replacementEvents.at(-1);
+  assert.equal(handedOff.type, "action.requested");
+  assert.equal(handedOff.payload.requestId, "approval-1");
+  assert.equal(handedOff.sequence > sequenceBeforeHandoff, true);
+  emitEvent("action.resolved", { requestId: "approval-1", outcome: "expired" });
+  const freshEvents = [];
+  const fresh = service.subscribe(run.runId, {
+    onEvent: (event) => freshEvents.push(event),
+  }, { subjectId: "owner" });
+  emitEvent("item.started", { itemId: "assistant-1", itemType: "assistant" });
+  emitEvent("content.delta", { itemId: "assistant-1", delta: "after action" });
+  emitEvent("item.completed", { itemId: "assistant-1", revision: 1 });
+  finishTurn();
+  await run.completion;
+
+  for (const events of [replacementEvents, passiveEvents, freshEvents]) {
+    assert.equal(events.some((event) => event.type === "action.resolved"), true);
+    assert.equal(events.some((event) => event.type === "content.delta"), true);
+    assert.equal(events.at(-1).type, "turn.completed");
+    assert.equal(events.every((event, index) => index === 0 || event.sequence > events[index - 1].sequence), true);
+  }
+  assert.equal(freshEvents.some((event) => event.type === "action.requested"), false);
+  passive.unsubscribe();
+  replacement.unsubscribe();
+  fresh.unsubscribe();
+});
+
+test("a fresh subscription reports an explicitly truncated replay window", async () => {
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      await resolveSession({ backendId: "test", nativeSessionId: "session-truncated" });
+      emit("turn.started", {});
+      emit("item.started", { itemId: "item-1", itemType: "assistant" });
+      emit("content.delta", { itemId: "item-1", delta: "latest" });
+      return { outcome: "completed" };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    replayLimit: 2,
+    generateRunId: () => "run-truncated",
+  });
+  const run = await service.startTurn(startRequest(), { subjectId: "owner" });
+  await run.completion;
+  const replayed = [];
+  const subscription = service.subscribe(
+    run.runId,
+    { afterSequence: 0, onEvent: (event) => replayed.push(event) },
+    { subjectId: "owner" },
+  );
+
+  assert.equal(subscription.replayTruncated, true);
+  assert.equal(subscription.replayFromSequence, 5);
+  assert.deepEqual(replayed.map((event) => event.sequence), [5, 6]);
+
+  const staleReplay = [];
+  const stale = service.subscribe(
+    run.runId,
+    { afterSequence: 1, onEvent: (event) => staleReplay.push(event) },
+    { subjectId: "owner" },
+  );
+  assert.equal(stale.replayTruncated, true);
+  assert.equal(stale.replayFromSequence, 5);
+  assert.deepEqual(staleReplay.map((event) => event.sequence), [5, 6]);
 });
 
 test("turn execution fails closed when native cwd disagrees with its binding", async () => {

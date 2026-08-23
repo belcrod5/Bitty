@@ -20,6 +20,8 @@ import {
 import {
   NEAR_UNLIMITED_TIMEOUT_MS,
   type CodexAppServerTurnOptions,
+  type CodexAppServerRelayObserverOptions,
+  type CodexAppServerRelayObserverSession,
   type CodexAppServerTurnResult,
   type CodexAppServerTurnSession,
   type CodexContextUsage,
@@ -57,13 +59,13 @@ import { assertSupportedCodexAppServer } from "./rpcSession";
 import {
   calendarDynamicTools,
 } from "../../calendar/calendarToolSpecs";
-import { startAgentTurnWithRawFallback } from "../../agent/client";
+import { startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "../../agent/client";
 import {
   calendarDynamicToolsIncompatible,
   calendarToolResponse,
   parseCalendarToolCall,
 } from "../../calendar/calendarToolHandler";
-export { startCodexAppServerTurnRelayObserver } from "./turnRelayObserver";
+import { startCodexAppServerTurnRelayObserver as startCodexAppServerRawTurnRelayObserver } from "./turnRelayObserver";
 
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
 const PRE_TURN_RPC_TIMEOUT_MS = 15000;
@@ -1509,4 +1511,13 @@ export function startCodexAppServerTurn(
   options: CodexAppServerTurnOptions
 ): CodexAppServerTurnSession {
   return startAgentTurnWithRawFallback(options, () => startCodexAppServerRawTurn(options));
+}
+
+export function startCodexAppServerTurnRelayObserver(
+  options: CodexAppServerRelayObserverOptions,
+): CodexAppServerRelayObserverSession {
+  return startAgentSessionObserverWithRawFallback(
+    options,
+    () => startCodexAppServerRawTurnRelayObserver(options),
+  );
 }

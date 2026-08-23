@@ -45,6 +45,8 @@ type UseSendReplyRequestControllerArgs<TSttMeta> = {
   showChatBottomToast: (role: "user" | "assistant", textRaw: string) => void;
   normalizedLlmDirectoryForRequest: () => string;
   closeCodexRelayObserver: (reason: string) => void;
+  interruptCodexRelayObserver: (target: { panelId: string; threadId: string }) => Promise<boolean>;
+  resolvePanelSessionSnapshot: (panelId: string) => ReplyRequestSessionSnapshot | undefined;
   logSessionDiag: (
     event: string,
     payload?: Record<string, unknown>,
@@ -63,6 +65,8 @@ export function useSendReplyRequestController<TSttMeta>({
   showChatBottomToast,
   normalizedLlmDirectoryForRequest,
   closeCodexRelayObserver,
+  interruptCodexRelayObserver,
+  resolvePanelSessionSnapshot,
   logSessionDiag,
   sendReplyRequestFromCodex,
   cancelReplyRequestFromCodex,
@@ -160,8 +164,12 @@ export function useSendReplyRequestController<TSttMeta>({
   const cancelCodexTurnRequestGuarded = useCallback(async (options?: { panelId?: string }) => {
     const targetPanelId = normalizeWritePanelId(options?.panelId);
     if (!targetPanelId) return;
-    await cancelReplyRequestFromCodex(options);
-  }, [cancelReplyRequestFromCodex]);
+    const cancelled = await cancelReplyRequestFromCodex(options);
+    if (cancelled) return;
+    const snapshot = resolvePanelSessionSnapshot(targetPanelId);
+    const threadId = String(snapshot?.threadId || snapshot?.sessionId || "").trim();
+    if (threadId) await interruptCodexRelayObserver({ panelId: targetPanelId, threadId });
+  }, [cancelReplyRequestFromCodex, interruptCodexRelayObserver, resolvePanelSessionSnapshot]);
 
   const suspendCodexTurnRequestForSessionSwitchGuarded = useCallback((options?: { panelId?: string }) => {
     const targetPanelId = normalizeWritePanelId(options?.panelId);

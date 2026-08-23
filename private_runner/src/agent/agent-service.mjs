@@ -45,7 +45,7 @@ function sessionKey(sessionRef) {
   return `${sessionRef.backendId}\u0000${sessionRef.nativeSessionId}`;
 }
 
-function createEventStream(service, runId) {
+function createEventStream(service, runId, subjectId, actionConsumerId) {
   return {
     [Symbol.asyncIterator]() {
       const buffered = [];
@@ -53,13 +53,18 @@ function createEventStream(service, runId) {
       let done = false;
       const subscription = service.subscribe(runId, {
         afterSequence: 0,
+        actionConsumerId,
+        actionScope: "all",
         onEvent(event) {
           buffered.push(event);
           if (AGENT_TERMINAL_EVENT_TYPES.has(event.type)) done = true;
           wake?.();
           wake = null;
         },
-      });
+      }, { subjectId });
+      for (const action of subscription.activeActions) {
+        buffered.push({ type: "action.requested", runId, payload: action });
+      }
       return {
         async next() {
           while (buffered.length === 0 && !done) {
@@ -142,6 +147,34 @@ export function createAgentService({
     return run;
   }
 
+  function getOwnedRun(runIdRaw, context = {}) {
+    const run = getRun(runIdRaw);
+    const subjectId = String(context.subjectId || "").trim();
+    if (!subjectId || run.subjectId !== subjectId) {
+      throw agentError("turn_rejected", "run was not found");
+    }
+    return run;
+  }
+
+  function acceptsAction(subscriber, action) {
+    return Boolean(
+      subscriber.actionConsumerId &&
+      (subscriber.actionScope === "all" || (
+        subscriber.actionScope === "approval" && String(action.payload.kind || "") !== "dynamic_tool"
+      ))
+    );
+  }
+
+  function claimPendingActions(run, notify = true) {
+    for (const action of run.activeActions.values()) {
+      if (action.consumerId) continue;
+      const subscriber = Array.from(run.subscribers).find((candidate) => acceptsAction(candidate, action));
+      if (!subscriber) continue;
+      action.consumerId = subscriber.actionConsumerId;
+      if (notify && action.event) publish(run, "action.requested", action.payload);
+    }
+  }
+
   function removeFromCompactQueue(run) {
     if (!run.sessionKey || !run.queuedForCompact) return;
     const queue = compactQueueBySession.get(run.sessionKey);
@@ -149,6 +182,23 @@ export function createAgentService({
     const index = queue.indexOf(run.runId);
     if (index >= 0) queue.splice(index, 1);
     if (queue.length === 0) compactQueueBySession.delete(run.sessionKey);
+  }
+
+  function getActiveRun(sessionRefRaw, context = {}) {
+    const sessionRef = normalizeAgentSessionRef(sessionRefRaw);
+    const key = sessionKey(sessionRef);
+    const runId = activeRunBySession.get(key) || compactQueueBySession.get(key)?.[0];
+    const run = runs.get(runId);
+    const subjectId = String(context.subjectId || "").trim();
+    if (!subjectId || !run || run.terminal || run.subjectId !== subjectId) return null;
+    return {
+      runId: run.runId,
+      sessionRef,
+      state: run.state,
+      startedAt: run.startedAt,
+      updatedAt: run.updatedAt,
+      waitingForAction: run.activeActions.size > 0,
+    };
   }
 
   async function resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle = false } = {}) {
@@ -184,13 +234,31 @@ export function createAgentService({
       payload,
     });
     run.events.push(event);
+    if (!run.startedAt) run.startedAt = event.at;
+    run.updatedAt = event.at;
     if (run.events.length > replayLimit) run.events.shift();
     if (typeof onRunEvent === "function") {
       try {
         Promise.resolve(onRunEvent(event)).catch(() => {});
       } catch {}
     }
-    for (const subscriber of run.subscribers) subscriber(event);
+    const requestedAction = type === "action.requested"
+      ? run.activeActions.get(String(payload?.requestId || ""))
+      : null;
+    if (requestedAction) {
+      requestedAction.event = event;
+      if (!requestedAction.consumerId) {
+        const subscriber = Array.from(run.subscribers).find((candidate) => acceptsAction(candidate, requestedAction));
+        if (subscriber) requestedAction.consumerId = subscriber.actionConsumerId;
+      }
+    }
+    for (const subscriber of run.subscribers) {
+      if (!requestedAction || (
+        requestedAction.consumerId && requestedAction.consumerId === subscriber.actionConsumerId
+      )) {
+        subscriber.onEvent(event);
+      }
+    }
     return event;
   }
 
@@ -273,7 +341,7 @@ export function createAgentService({
     run.state = "finalizing";
     for (const request of run.activeActions.values()) {
       publish(run, "action.resolved", {
-        requestId: request.requestId,
+        requestId: request.payload.requestId,
         outcome: outcome === "completed" ? "expired" : "cancelled",
       });
     }
@@ -358,7 +426,12 @@ export function createAgentService({
       if (!requestId || run.activeActions.has(requestId)) {
         throw agentError("protocol_error", "Backend emitted an invalid action request", { backendId: run.backendId });
       }
-      run.activeActions.set(requestId, { ...payload, requestId });
+      run.activeActions.set(requestId, {
+        payload: { ...payload, requestId },
+        consumerId: null,
+        claimState: null,
+        event: null,
+      });
     }
     if (type === "action.resolved") {
       const requestId = String(payload?.requestId || "").trim();
@@ -398,6 +471,7 @@ export function createAgentService({
       });
       if (acquired?.status === "acquired" || acquired?.status === "existing") {
         activeRunBySession.set(run.sessionKey, run.runId);
+        run.state = "running";
         return acquired.lease;
       }
       if (!compactLeaseHolder(acquired?.lease)) {
@@ -511,10 +585,12 @@ export function createAgentService({
           };
         }
         if (!existing) throw agentError("operation_status_unknown", "previous operation is no longer replayable");
+        const actionConsumerId = {};
         return {
           runId: existing.runId,
           queued: existing.queuedForCompact === true,
-          events: createEventStream(service, existing.runId),
+          events: createEventStream(service, existing.runId, subjectId, actionConsumerId),
+          actionConsumerId,
           completion: existing.completion,
         };
       };
@@ -595,6 +671,8 @@ export function createAgentService({
         lease: preAcquiredLease,
         queuedForCompact,
         sequence: 0,
+        startedAt: "",
+        updatedAt: "",
         events: [],
         subscribers: new Set(),
         activeActions: new Map(),
@@ -603,7 +681,7 @@ export function createAgentService({
         startedTools: new Set(),
         completedTools: new Set(),
         abortController: new AbortController(),
-        state: "running",
+        state: queuedForCompact ? "queued" : "running",
         nativeStarted: false,
         cancelRequested: false,
         terminal: false,
@@ -624,12 +702,19 @@ export function createAgentService({
       publish(run, "turn.accepted", { backendId: run.backendId, queued: queuedForCompact });
       if (run.sessionResolved) publish(run, "session.resolved", { sessionRef: run.sessionRef });
       queueMicrotask(() => void execute(run, backend, acceptedRequest));
-      return { runId: run.runId, queued: queuedForCompact, events: createEventStream(service, run.runId), completion };
+      const actionConsumerId = {};
+      return {
+        runId: run.runId,
+        queued: queuedForCompact,
+        events: createEventStream(service, run.runId, subjectId, actionConsumerId),
+        actionConsumerId,
+        completion,
+      };
     });
   }
 
-  async function interrupt(runId) {
-    const run = getRun(runId);
+  async function interrupt(runId, context = {}) {
+    const run = getOwnedRun(runId, context);
     if (run.terminal) return { status: "already_terminal", result: run.result };
     if (!run.cancelRequested) {
       run.cancelRequested = true;
@@ -640,15 +725,42 @@ export function createAgentService({
     return { status: "cancelling", runId: run.runId };
   }
 
-  async function respondToAction({ runId, requestId, decision, result }) {
-    const run = getRun(runId);
+  async function claimAction({ runId, requestId }, context = {}) {
+    const run = getOwnedRun(runId, context);
+    const normalizedRequestId = String(requestId || "").trim();
+    const action = run.activeActions.get(normalizedRequestId);
+    if (
+      run.terminal ||
+      String(action?.payload?.kind || "") !== "dynamic_tool" ||
+      !context.actionConsumerId ||
+      action.consumerId !== context.actionConsumerId ||
+      action.claimState
+    ) {
+      throw agentError("action_expired", "action request cannot be claimed", { backendId: run.backendId });
+    }
+    action.claimState = "executing";
+    return { status: "claimed", runId: run.runId, requestId: normalizedRequestId };
+  }
+
+  async function respondToAction({ runId, requestId, decision, result }, context = {}) {
+    const run = getOwnedRun(runId, context);
     const normalizedRequestId = String(requestId || "").trim();
     if (run.terminal || !run.activeActions.has(normalizedRequestId)) {
       throw agentError("action_expired", "action request is no longer active", { backendId: run.backendId });
     }
     const action = run.activeActions.get(normalizedRequestId);
+    const ownsAction = Boolean(context.actionConsumerId)
+      && action.consumerId === context.actionConsumerId;
+    const approvalResponder = context.approvalResponder === true
+      && String(action.payload.kind || "") !== "dynamic_tool";
+    if ((!ownsAction && !approvalResponder) || action.claimState === "responding") {
+      throw agentError("action_expired", "action request is owned by another consumer", { backendId: run.backendId });
+    }
     const normalizedDecision = String(decision || "").trim();
-    if (!Array.isArray(action?.decisions) || !action.decisions.includes(normalizedDecision)) {
+    if (String(action.payload.kind || "") === "dynamic_tool" && action.claimState !== "executing") {
+      throw agentError("action_expired", "dynamic action was not claimed before execution", { backendId: run.backendId });
+    }
+    if (!Array.isArray(action.payload.decisions) || !action.payload.decisions.includes(normalizedDecision)) {
       throw agentError("turn_rejected", "action decision is not supported", { backendId: run.backendId });
     }
     if (normalizedDecision === "result") {
@@ -662,32 +774,65 @@ export function createAgentService({
         throw agentError("turn_rejected", "action result is invalid or too large", { backendId: run.backendId });
       }
     }
-    await registry.get(run.backendId).respondToAction({
-      runId: run.runId,
-      requestId: normalizedRequestId,
-      decision: normalizedDecision,
-      ...(normalizedDecision === "result" ? { result } : {}),
-    });
+    const priorClaimState = action.claimState;
+    action.claimState = "responding";
+    try {
+      await registry.get(run.backendId).respondToAction({
+        runId: run.runId,
+        requestId: normalizedRequestId,
+        decision: normalizedDecision,
+        ...(normalizedDecision === "result" ? { result } : {}),
+      });
+    } catch (error) {
+      if (run.activeActions.get(normalizedRequestId) === action) {
+        action.claimState = priorClaimState;
+        if (
+          !action.claimState &&
+          !Array.from(run.subscribers).some((subscriber) => subscriber.actionConsumerId === action.consumerId)
+        ) {
+          action.consumerId = null;
+          claimPendingActions(run);
+        }
+      }
+      throw error;
+    }
   }
 
-  function subscribe(runId, { afterSequence = 0, onEvent } = {}) {
-    const run = getRun(runId);
+  function subscribe(runId, {
+    afterSequence = 0,
+    onEvent,
+    actionConsumerId = null,
+    actionScope = null,
+  } = {}, context = {}) {
+    const run = getOwnedRun(runId, context);
     if (typeof onEvent !== "function") throw new TypeError("onEvent is required");
     if (!Number.isInteger(afterSequence) || afterSequence < 0) {
       throw agentError("turn_rejected", "afterSequence must be a non-negative integer");
     }
     const oldestSequence = run.events[0]?.sequence || 0;
-    const resumeMiss = afterSequence > 0 && oldestSequence > afterSequence + 1;
-    if (!resumeMiss) {
-      for (const event of run.events) {
-        if (event.sequence > afterSequence) onEvent(event);
-      }
+    const replayTruncated = oldestSequence > afterSequence + 1;
+    const subscriber = { onEvent, actionConsumerId, actionScope };
+    if (!run.terminal) run.subscribers.add(subscriber);
+    claimPendingActions(run, false);
+    for (const event of run.events) {
+      if (event.sequence > afterSequence && event.type !== "action.requested") onEvent(event);
     }
-    if (!run.terminal) run.subscribers.add(onEvent);
     return {
-      resumeMiss,
-      activeActions: Array.from(run.activeActions.values()),
-      unsubscribe: () => run.subscribers.delete(onEvent),
+      replayTruncated,
+      replayFromSequence: oldestSequence,
+      activeActions: Array.from(run.activeActions.values())
+        .filter((action) => action.consumerId === actionConsumerId)
+        .map((action) => action.payload),
+      unsubscribe: () => {
+        if (!run.subscribers.delete(subscriber) || !actionConsumerId) return;
+        if (Array.from(run.subscribers).some((candidate) => candidate.actionConsumerId === actionConsumerId)) return;
+        for (const action of run.activeActions.values()) {
+          if (action.consumerId === actionConsumerId && !action.claimState) {
+            action.consumerId = null;
+          }
+        }
+        claimPendingActions(run);
+      },
     };
   }
 
@@ -737,7 +882,7 @@ export function createAgentService({
       !run.terminal && run.subjectId === subjectId &&
       (run.cwd === root || run.cwd.startsWith(`${root}/`))
     ));
-    await Promise.all(candidates.map((run) => interrupt(run.runId).catch(() => {})));
+    await Promise.all(candidates.map((run) => interrupt(run.runId, { subjectId }).catch(() => {})));
   }
 
   async function compactSession({ sessionRef: rawSessionRef }) {
@@ -777,8 +922,10 @@ export function createAgentService({
     protocolVersion: AGENT_PROTOCOL_VERSION,
     startTurn,
     interrupt,
+    claimAction,
     respondToAction,
     subscribe,
+    getActiveRun,
     getStatuses,
     handoffSession,
     compactSession,
@@ -896,7 +1043,7 @@ export function createAgentService({
           : {}),
       };
     },
-    async readHistory(options) {
+    async readHistory(options, context = {}) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);
       const backend = registry.get(sessionRef.backendId);
       if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
@@ -909,7 +1056,12 @@ export function createAgentService({
       }
       const page = await backend.readHistory({ ...options, sessionRef });
       const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle: true });
-      return { ...page, sessionRef, canonicalCwd };
+      return {
+        ...page,
+        sessionRef,
+        canonicalCwd,
+        activeRun: getActiveRun(sessionRef, context),
+      };
     },
   };
   return service;

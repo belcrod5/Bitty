@@ -133,6 +133,9 @@ export function createApprovalPushService({
       return;
     }
     if (!isNeutralApprovalEvent(event)) return;
+    if (Array.from(pendingAgentApprovals.values()).some((entry) => (
+      entry.runId === runId && entry.requestId === requestId
+    ))) return;
     const approvalId = `agent-approval:${randomUUID()}`;
     const entry = {
       runId,

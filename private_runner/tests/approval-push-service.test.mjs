@@ -89,6 +89,10 @@ test("observes Claude and Codex approvals through one path and clears stale IDs"
   assert.equal(first.aps.category, "APPROVAL_REQUEST");
   assert.equal(first.aps["interruption-level"], "time-sensitive");
 
+  service.onRunEvent({ ...claude, sequence: 99 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sent.length, 1, "action handoff must not send a duplicate approval push");
+
   service.onRunEvent({ ...claude, type: "action.resolved", payload: { requestId: "approval-1" } });
   assert.equal((await respond(service, first.approvalId, true)).status, 409);
 

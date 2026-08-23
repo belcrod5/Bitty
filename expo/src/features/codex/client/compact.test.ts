@@ -273,7 +273,7 @@ test("neutral compact uses capability, handoff, and the Agent operation", async 
     .mockResolvedValueOnce({
       channel: "agent", op: "agent.ready",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         backends: [{ backendId: "codex", readiness: { ready: true }, capabilities: { operations: { compact: true } } }],
       },
     })

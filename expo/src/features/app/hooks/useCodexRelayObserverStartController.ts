@@ -11,13 +11,19 @@ import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
 import { resolveCodexItemRuntimeStatus } from "../utils/statusIcons";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
 
-type CodexRelayObserverRef = MutableRefObject<{ threadId: string; panelId?: string; close: () => void } | null>;
+type CodexRelayObserverRef = MutableRefObject<{
+  threadId: string;
+  panelId?: string;
+  close: () => void;
+  interrupt?: () => Promise<void>;
+} | null>;
 
 // threadIdごとの実受信済みrelay位置(メモリのみ、永続化しない)。
 // observer再生成時にresumeFromSeqへ解決し、現行turn全イベントの再送を避ける。
 export type CodexRelayWatermark = { relayId: string; seq: number };
 
 type StartCodexRelayObserverOptions = {
+  agentBackendId?: string;
   directory?: string;
   startedAtMs?: number | null;
   resumeFromSeq?: number;
@@ -397,7 +403,8 @@ export function useCodexRelayObserverStartController({
       detail: string,
       isResponding: boolean,
       selectedThreadStatusType?: string,
-      messageIdRaw?: string
+      messageIdRaw?: string,
+      terminalQueueStatus?: "completed" | "failed" | "cancelled"
     ) => {
       if (!shouldProjectRelayToTarget()) return;
       const latestConversation = relayPanelConversationDraft.length > 0
@@ -406,7 +413,7 @@ export function useCodexRelayObserverStartController({
       const content = applyAssistantReply(String(contentRaw || ""));
       const queueStatus: NonNullable<ConversationMessage["codexQueue"]>["status"] = isResponding
         ? "running"
-        : "completed";
+        : terminalQueueStatus || "completed";
       const conversationWithQueueStatus = latestConversation.map((message) => updateQueueStatusForRelay(message, queueStatus));
       if (!hasRenderableRelayAssistantMessage(content, status)) {
         relayPanelConversationDraft = conversationWithQueueStatus;
@@ -456,7 +463,8 @@ export function useCodexRelayObserverStartController({
       status: LlmUiStatus,
       detail: string,
       isResponding: boolean,
-      selectedThreadStatusType: string
+      selectedThreadStatusType: string,
+      terminalQueueStatus?: "completed" | "failed" | "cancelled"
     ) => {
       const liveMessageIds = new Set(Array.from(agentMessageUiIdByItemId.values()));
       if (liveMessageIds.size === 0) {
@@ -465,7 +473,9 @@ export function useCodexRelayObserverStartController({
           status,
           detail,
           isResponding,
-          selectedThreadStatusType
+          selectedThreadStatusType,
+          undefined,
+          terminalQueueStatus
         );
         return;
       }
@@ -474,7 +484,7 @@ export function useCodexRelayObserverStartController({
         : readTargetConversation();
       const queueStatus: NonNullable<ConversationMessage["codexQueue"]>["status"] = isResponding
         ? "running"
-        : "completed";
+        : terminalQueueStatus || "completed";
       const nextConversation = latestConversation.map((message) => {
         const withQueueStatus = updateQueueStatusForRelay(message, queueStatus);
         if (!liveMessageIds.has(String(withQueueStatus.id || ""))) return withQueueStatus;
@@ -536,6 +546,9 @@ export function useCodexRelayObserverStartController({
         wsUrl: codexWsUrl.trim(),
         wsToken: codexWsToken.trim(),
         runnerWebSocketManager,
+        backendId: options?.agentBackendId,
+        preferNeutralAgent: Boolean(options?.agentBackendId),
+        rawFallbackBackendId: "codex",
         threadId,
         resumeFromSeq,
         resumeFromRelayId,
@@ -751,10 +764,16 @@ export function useCodexRelayObserverStartController({
           );
           onRuntimeStatus?.(threadId, "model_processing", "agent message completed");
         },
-        onTurnCompleted: () => {
+        onTurnCompleted: (terminalRaw) => {
           const active = codexRelayObserverRef.current;
           if (!active || active.threadId !== threadId) return;
-          if (shouldWaitForAgentMessageBeforeFinalize && !observedAgentMessage) {
+          const terminal = terminalRaw && typeof terminalRaw === "object"
+            ? terminalRaw as Record<string, unknown>
+            : {};
+          const outcome = String(terminal.outcome || "completed");
+          const failed = outcome === "failed";
+          const interrupted = outcome === "interrupted";
+          if (shouldWaitForAgentMessageBeforeFinalize && !observedAgentMessage && !failed && !interrupted) {
             ignoredPreAgentTurnCompleted = true;
             logSessionDiag("session_relay_observer_turn_completed_ignored", {
               threadId,
@@ -783,14 +802,24 @@ export function useCodexRelayObserverStartController({
           const canProjectCompletion = shouldProjectRelayToTarget();
           if (canProjectCompletion) {
             settleRelayAgentMessages(
-              "completed",
-              "turn completed",
+              failed || interrupted ? "error" : "completed",
+              failed
+                ? String((terminal.error as any)?.message || "turn failed")
+                : interrupted ? "turn interrupted" : "turn completed",
               false,
-              "idle"
+              "idle",
+              failed ? "failed" : interrupted ? "cancelled" : "completed"
+            );
+          }
+          if (failed || interrupted) {
+            onRuntimeStatus?.(
+              threadId,
+              "error",
+              failed ? String((terminal.error as any)?.message || "turn failed") : "turn interrupted",
             );
           }
           const finalAgentMessage = getLastAgentMessage();
-          if (!relayProjectionSuppressed) {
+          if (!failed && !interrupted && !relayProjectionSuppressed) {
             void onAssistantTurnCompleted?.({
               threadId,
               panelId: isSessionRuntimeObserver ? undefined : targetPanelId || undefined,
@@ -801,10 +830,10 @@ export function useCodexRelayObserverStartController({
             });
           }
           if (isQueueTurnObserver) {
-            closeCodexRelayObserver("turn_completed");
+            closeCodexRelayObserver(failed ? "turn_failed" : interrupted ? "turn_interrupted" : "turn_completed");
             return;
           }
-          closeCodexRelayObserver("turn_completed");
+          closeCodexRelayObserver(failed ? "turn_failed" : interrupted ? "turn_interrupted" : "turn_completed");
         },
         onApprovalRequest: (request) => {
           const nextRequest = targetPanelId && !isSessionRuntimeObserver
@@ -833,6 +862,7 @@ export function useCodexRelayObserverStartController({
         threadId,
         panelId: isSessionRuntimeObserver ? undefined : targetPanelId || undefined,
         close: observer.close,
+        interrupt: observer.interrupt,
       };
       return true;
     } catch (error) {

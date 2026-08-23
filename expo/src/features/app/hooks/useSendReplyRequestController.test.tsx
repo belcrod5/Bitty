@@ -8,6 +8,8 @@ function createArgs(sendResult: SendReplyRequestResult) {
     showChatBottomToast: jest.fn(),
     normalizedLlmDirectoryForRequest: jest.fn(() => ""),
     closeCodexRelayObserver: jest.fn(),
+    interruptCodexRelayObserver: jest.fn(async () => true),
+    resolvePanelSessionSnapshot: jest.fn(() => ({ sessionId: "session-1", threadId: "thread-1" })),
     logSessionDiag: jest.fn(),
     sendReplyRequestFromCodex: jest.fn(async () => sendResult),
     cancelReplyRequestFromCodex: jest.fn(async () => true),
@@ -78,5 +80,33 @@ describe("useSendReplyRequestController rejection feedback", () => {
     expect(args.sendReplyRequestFromCodex).toHaveBeenCalledWith("hello", expect.objectContaining({
       sessionSnapshot: expect.objectContaining({ backendId: "claude" }),
     }));
+  });
+
+  test("stops a restored observer when no locally-owned turn remains", async () => {
+    const args = createArgs(undefined);
+    args.cancelReplyRequestFromCodex.mockResolvedValue(false);
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.cancelCodexTurnRequestGuarded({ panelId: "panel-1" });
+    });
+
+    expect(args.interruptCodexRelayObserver).toHaveBeenCalledWith({
+      panelId: "panel-1",
+      threadId: "thread-1",
+    });
+  });
+
+  test("does not stop a different session when the target panel has no session", async () => {
+    const args = createArgs(undefined);
+    args.cancelReplyRequestFromCodex.mockResolvedValue(false);
+    (args.resolvePanelSessionSnapshot as jest.Mock).mockReturnValue(undefined);
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.cancelCodexTurnRequestGuarded({ panelId: "panel-2" });
+    });
+
+    expect(args.interruptCodexRelayObserver).not.toHaveBeenCalled();
   });
 });

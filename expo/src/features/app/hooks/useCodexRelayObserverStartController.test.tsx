@@ -185,6 +185,25 @@ describe("useCodexRelayObserverStartController relay loss recovery", () => {
     });
   });
 
+  test("passes restored backend ownership to the provider-neutral observer", async () => {
+    const harness = createHarness([]);
+    const { result } = await renderHook(() => useCodexRelayObserverStartController(harness.options as any));
+
+    await act(async () => {
+      result.current.startCodexRelayObserverForSession("thread-1", {
+        reason: "session_restored_running_turn",
+        directory: "/workspace",
+        agentBackendId: "claude",
+      });
+    });
+
+    expect(harness.getObserverOptions()).toMatchObject({
+      threadId: "thread-1",
+      backendId: "claude",
+      preferNeutralAgent: true,
+    });
+  });
+
   test("relay_closed on a session runtime observer routes into the same recovery and closes the observer", async () => {
     const harness = await startObserver("session_restored_running_turn");
 
@@ -208,6 +227,38 @@ describe("useCodexRelayObserverStartController relay loss recovery", () => {
 
     expect(harness.options.finalizeSessionRuntimeAfterRelayLoss).not.toHaveBeenCalled();
     expect(harness.options.closeCodexRelayObserver).not.toHaveBeenCalled();
+  });
+
+  test("projects a restored failed turn as an error instead of normal completion", async () => {
+    const harness = await startObserver("session_restored_running_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onTurnCompleted({
+        outcome: "failed",
+        error: { message: "backend failed" },
+      });
+    });
+
+    expect(harness.options.onRuntimeStatus).toHaveBeenCalledWith("thread-1", "error", "backend failed");
+    expect(harness.getSessionConversation().at(-1)).toMatchObject({
+      role: "assistant",
+      llmStatus: "error",
+      llmStatusDetail: "backend failed",
+    });
+    expect(harness.completedCalls).toEqual([]);
+    expect(harness.options.closeCodexRelayObserver).toHaveBeenCalledWith("turn_failed");
+  });
+
+  test("projects a restored interrupted turn distinctly from completion", async () => {
+    const harness = await startObserver("session_restored_running_turn");
+
+    await act(async () => {
+      harness.getObserverOptions().onTurnCompleted({ outcome: "interrupted" });
+    });
+
+    expect(harness.options.onRuntimeStatus).toHaveBeenCalledWith("thread-1", "error", "turn interrupted");
+    expect(harness.completedCalls).toEqual([]);
+    expect(harness.options.closeCodexRelayObserver).toHaveBeenCalledWith("turn_interrupted");
   });
 });
 
