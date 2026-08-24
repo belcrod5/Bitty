@@ -659,7 +659,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     }));
   }
 
-  async function recordAgentSessionActivity(sessionRef, canonicalCwdRaw, updatedAtRaw, settings = {}) {
+  async function recordAgentSessionActivity(sessionRef, canonicalCwdRaw, updatedAtRaw) {
     const backendId = String(sessionRef?.backendId || "").trim();
     const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
     const rawCwd = String(canonicalCwdRaw || "").trim();
@@ -675,10 +675,39 @@ export function createLlmAcpSessionStore(deps = {}) {
       if (!binding || binding.canonicalCwd !== canonicalCwd) return { status: "missing" };
       const previous = { ...binding };
       binding.updatedAt = updatedAt;
-      const modelId = String(settings?.modelId || "").trim();
-      const reasoningEffort = String(settings?.reasoningEffort || "").trim();
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentSessionBindings.set(key, previous);
+        throw error;
+      }
+      return { status: "updated" };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function setAgentSessionSettings(sessionRef, settings = {}) {
+    const backendId = String(sessionRef?.backendId || "").trim();
+    const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
+    const modelId = String(settings?.modelId || "").trim();
+    const reasoningEffort = String(settings?.reasoningEffort || "").trim();
+    if (!backendId || !nativeSessionId || modelId.length > 256 || reasoningEffort.length > 64) {
+      throw new TypeError("invalid agent session settings");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(backendId, nativeSessionId);
+      const binding = agentSessionBindings.get(key);
+      if (!binding) return { status: "missing" };
+      if (String(binding.modelId || "") === modelId && String(binding.reasoningEffort || "") === reasoningEffort) {
+        return { status: "unchanged" };
+      }
+      const previous = { ...binding };
       if (modelId) binding.modelId = modelId;
+      else delete binding.modelId;
       if (reasoningEffort) binding.reasoningEffort = reasoningEffort;
+      else delete binding.reasoningEffort;
       try {
         await persistAcpSessionStore();
       } catch (error) {
@@ -823,7 +852,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     return entry ? { ...entry, ...(entry.lease ? { lease: { ...entry.lease } } : {}) } : null;
   }
 
-  async function handoffAgentSessionMode(sessionRef, targetModeRaw) {
+  async function handoffAgentSessionMode(sessionRef, targetModeRaw, options = {}) {
     const backendId = String(sessionRef?.backendId || "").trim();
     const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
     const targetMode = targetModeRaw === "raw" ? "raw" : targetModeRaw === "neutral" ? "neutral" : "";
@@ -832,27 +861,38 @@ export function createLlmAcpSessionStore(deps = {}) {
     const op = acpSessionStoreWriteQueue.then(async () => {
       const key = agentSessionKey(backendId, nativeSessionId);
       const existing = agentSessionModes.get(key);
+      const binding = agentSessionBindings.get(key);
+      const clearSettings = options.clearSettings === true && Boolean(binding?.modelId || binding?.reasoningEffort);
       // 同一モードへのhandoffはモード遷移を伴わないno-op。lease保持中(turn/compact
       // 実行中)でも成功にする。leaseガードは「実行中のモード反転」を防ぐためのもの。
-      if (existing?.mode === targetMode) return { status: "unchanged", mode: targetMode };
-      if (existing?.lease) return { status: "busy", mode: existing.mode, lease: { ...existing.lease } };
+      if (existing?.mode === targetMode && !clearSettings) return { status: "unchanged", mode: targetMode };
+      if (existing?.mode !== targetMode && existing?.lease) {
+        return { status: "busy", mode: existing.mode, lease: { ...existing.lease } };
+      }
       const previous = existing ? { ...existing } : null;
-      const next = {
-        backendId,
-        nativeSessionId,
-        mode: targetMode,
-        lease: null,
-        updatedAt: new Date().toISOString(),
-      };
-      agentSessionModes.set(key, next);
+      const previousBinding = binding ? { ...binding } : null;
+      if (existing?.mode !== targetMode) {
+        agentSessionModes.set(key, {
+          backendId,
+          nativeSessionId,
+          mode: targetMode,
+          lease: null,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      if (clearSettings) {
+        delete binding.modelId;
+        delete binding.reasoningEffort;
+      }
       try {
         await persistAcpSessionStore();
       } catch (error) {
         if (previous) agentSessionModes.set(key, previous);
         else agentSessionModes.delete(key);
+        if (previousBinding) agentSessionBindings.set(key, previousBinding);
         throw error;
       }
-      return { status: "changed", mode: targetMode };
+      return { status: existing?.mode === targetMode ? "unchanged" : "changed", mode: targetMode };
     });
     acpSessionStoreWriteQueue = op.catch(() => {});
     return await op;
@@ -1059,6 +1099,7 @@ export function createLlmAcpSessionStore(deps = {}) {
     getAgentSessionBinding,
     getAgentSessionMode,
     handoffAgentSessionMode,
+    setAgentSessionSettings,
     listAgentWorkspaces,
     listAcpSessionsForDirectories,
     listAcpSessionsForDirectory,

@@ -119,6 +119,7 @@ export function createAgentService({
     typeof sessionStore?.settle !== "function" ||
     typeof sessionStore?.updateIdentity !== "function" ||
     typeof sessionStore?.handoff !== "function" ||
+    typeof sessionStore?.setSettings !== "function" ||
     typeof sessionStore?.recordActivity !== "function"
   ) throw new TypeError("A durable sessionStore is required");
   if (typeof resolveCanonicalCwd !== "function") throw new TypeError("resolveCanonicalCwd is required");
@@ -263,6 +264,22 @@ export function createAgentService({
     return event;
   }
 
+  async function persistRunSettings(run, sessionRef) {
+    try {
+      const settings = await sessionStore.setSettings(sessionRef, {
+        modelId: run.model,
+        reasoningEffort: run.effort,
+      });
+      if (settings?.status === "missing") {
+        throw agentError("session_busy", "session settings could not be stored", { backendId: run.backendId });
+      }
+      run.settingsPersisted = true;
+    } catch (error) {
+      if (error && typeof error === "object" && !error.nativeActivity) error.nativeActivity = "not_started";
+      throw error;
+    }
+  }
+
   async function bindResolvedSession(run, sessionRefRaw) {
     const resolved = normalizeAgentSessionRef(sessionRefRaw);
     if (!resolved || resolved.backendId !== run.backendId) {
@@ -284,6 +301,7 @@ export function createAgentService({
     if (binding?.status === "mode_conflict") {
       throw agentError("session_busy", "session is owned by the compatibility transport", { backendId: run.backendId });
     }
+    await persistRunSettings(run, resolved);
     if (!run.lease) {
       const acquired = await sessionStore.acquire({
         sessionRef: resolved,
@@ -341,6 +359,8 @@ export function createAgentService({
     const binding = await sessionStore.getBinding(session?.sessionRef);
     return {
       ...session,
+      // Neutral selection is authoritative until an explicit raw handoff clears it.
+      // Native metadata remains the legacy/raw fallback when no stored selection exists.
       modelId: String(binding?.modelId || session?.modelId || "").trim(),
       reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
     };
@@ -372,10 +392,7 @@ export function createAgentService({
       await sessionStore.settle(run.sessionRef, run.lease.generation, nativeKnownStopped ? "released" : "recovering").catch(() => {});
     }
     if (finalOutcome === "completed" && run.sessionRef) {
-      await sessionStore.recordActivity(run.sessionRef, run.cwd, now(), {
-        modelId: run.model,
-        reasoningEffort: run.effort,
-      }).catch(() => {});
+      await sessionStore.recordActivity(run.sessionRef, run.cwd, now()).catch(() => {});
     }
     publish(run, terminalType, result);
     run.terminal = true;
@@ -511,6 +528,9 @@ export function createAgentService({
 
   async function execute(run, backend, request) {
     try {
+      if (run.sessionRef && !run.settingsPersisted) {
+        await persistRunSettings(run, run.sessionRef);
+      }
       if (run.sessionRef && !run.lease) {
         const awaited = await waitForCompactLeaseRelease(run, backend);
         if (awaited === "interrupted") {
@@ -518,6 +538,9 @@ export function createAgentService({
           return;
         }
         run.lease = awaited;
+        // Several turns may queue behind one compact. Re-assert the head turn's
+        // selection immediately before native start so a later queued turn does not win early.
+        await persistRunSettings(run, run.sessionRef);
       }
       const backendResult = await backend.startTurn({
         ...request,
@@ -623,7 +646,8 @@ export function createAgentService({
       let queuedForCompact = false;
       if (request.sessionRef) {
         const mode = await sessionStore.getMode(request.sessionRef);
-        if (!mode) {
+        const binding = await sessionStore.getBinding(request.sessionRef);
+        if (!mode || !binding) {
           const bound = await sessionStore.bind(
             request.sessionRef,
             canonicalCwd,
@@ -686,6 +710,7 @@ export function createAgentService({
         cwd: canonicalCwd,
         model: request.model,
         effort: request.effort,
+        settingsPersisted: false,
         lease: preAcquiredLease,
         queuedForCompact,
         sequence: 0,
@@ -889,7 +914,9 @@ export function createAgentService({
       );
       if (bound?.status !== "bound") throw agentError("session_busy", "session could not be bound");
     }
-    const handedOff = await sessionStore.handoff(sessionRef, targetMode);
+    const handedOff = await sessionStore.handoff(sessionRef, targetMode, {
+      clearSettings: targetMode === "raw",
+    });
     if (handedOff?.status === "busy") throw agentError("session_busy", "session has an active or recovering turn");
     return { sessionRef, canonicalCwd, mode: handedOff.mode };
   }
@@ -1083,6 +1110,7 @@ export function createAgentService({
       const binding = await sessionStore.getBinding(sessionRef);
       return {
         ...page,
+        // Stored neutral selection follows the same authority rule as session lists.
         modelId: String(binding?.modelId || page?.modelId || "").trim(),
         reasoningEffort: String(binding?.reasoningEffort || page?.reasoningEffort || "").trim(),
         sessionRef,

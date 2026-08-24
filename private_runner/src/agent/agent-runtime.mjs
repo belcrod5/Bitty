@@ -52,6 +52,7 @@ export function createPrivateRunnerAgentRuntime({
     settle: stores.settleSessionLease,
     updateIdentity: stores.updateSessionLeaseIdentity,
     handoff: stores.handoffSessionMode,
+    setSettings: stores.setSessionSettings,
     recordActivity: stores.recordSessionActivity,
   };
 
