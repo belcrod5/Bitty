@@ -80,20 +80,30 @@ export function usePanelConversationWriteController({
     if (!panelId) return;
     const optionSessionId = parseOptionalSessionId(options?.sessionId);
     const baseSnapshot = resolvePanelSnapshotForDisplay(panelId);
+    const currentPanelSessionId = parseOptionalSessionId(baseSnapshot.selectedSessionId);
+    const selectedSessionId = String(optionSessionId || currentPanelSessionId || "").trim();
+    const runtimeSnapshot = selectedSessionId ? getConversationRuntimeSnapshot(selectedSessionId) : null;
+    const targetIsCurrentPanelSession = (
+      !optionSessionId ||
+      !currentPanelSessionId ||
+      currentPanelSessionId === selectedSessionId
+    );
     const hasContextUpdate = options?.contextUsedPct !== null &&
       typeof options?.contextUsedPct !== "undefined" &&
       Number.isFinite(Number(options?.contextUsedPct));
     const contextUsedPct = hasContextUpdate
       ? Math.max(0, Math.min(100, Math.round(Number(options?.contextUsedPct))))
-      : baseSnapshot.contextUsedPct;
+      : runtimeSnapshot?.contextUsedPct ?? (targetIsCurrentPanelSession ? baseSnapshot.contextUsedPct : null);
     const isResponding = typeof options?.isResponding === "boolean"
       ? options.isResponding
-      : Boolean(baseSnapshot.isResponding);
+      : runtimeSnapshot?.isResponding ?? (targetIsCurrentPanelSession ? Boolean(baseSnapshot.isResponding) : false);
     const selectedThreadStatusTypeForPanel = typeof options?.selectedThreadStatusType === "string"
       ? String(options?.selectedThreadStatusType || "unknown").trim() || "unknown"
-      : String(baseSnapshot.selectedThreadStatusType || "unknown").trim() || "unknown";
-    const selectedSessionId = String(optionSessionId || baseSnapshot.selectedSessionId || "").trim();
-    const runtimeSnapshot = selectedSessionId ? getConversationRuntimeSnapshot(selectedSessionId) : null;
+      : String(
+        runtimeSnapshot?.selectedThreadStatusType ||
+        (targetIsCurrentPanelSession ? baseSnapshot.selectedThreadStatusType : "unknown") ||
+        "unknown"
+      ).trim() || "unknown";
     const runtimeRequestStartedAtMs = runtimeSnapshot?.isResponding &&
       runtimeSnapshot.request &&
       isConversationRuntimeRequestResponding(runtimeSnapshot.request) &&
@@ -101,8 +111,11 @@ export function usePanelConversationWriteController({
       ? runtimeSnapshot.request.startedAtMs
       : undefined;
     const shouldSyncSameSession = !!selectedSessionId;
-    const previousMessageCount = Array.isArray(baseSnapshot.conversationMessages)
-      ? baseSnapshot.conversationMessages.length
+    const previousMessages = runtimeSnapshot?.conversationMessages || (
+      targetIsCurrentPanelSession ? baseSnapshot.conversationMessages : []
+    );
+    const previousMessageCount = Array.isArray(previousMessages)
+      ? previousMessages.length
       : 0;
     const nextMessageCount = Array.isArray(messagesRaw) ? messagesRaw.length : 0;
     const lastMessage = nextMessageCount > 0 ? messagesRaw[nextMessageCount - 1] : null;
@@ -117,7 +130,6 @@ export function usePanelConversationWriteController({
       selectedThreadStatusType: selectedThreadStatusTypeForPanel,
       conversationMessages: messagesRaw,
     });
-    const currentPanelSessionId = parseOptionalSessionId(resolvePanelSnapshotForDisplay(panelId).selectedSessionId);
     const adoptFromSessionId = parseOptionalSessionId(options?.adoptFromSessionId);
     const shouldAdoptSourcePanelSession = Boolean(
       optionSessionId &&
@@ -126,7 +138,6 @@ export function usePanelConversationWriteController({
     );
     const shouldUpdateSourcePanel = (
       !optionSessionId ||
-      !currentPanelSessionId ||
       currentPanelSessionId === selectedSessionId ||
       shouldAdoptSourcePanelSession
     );
@@ -142,6 +153,7 @@ export function usePanelConversationWriteController({
     }
     const visibleSessionId = parseOptionalSessionId(getVisibleSessionId());
     const shouldSyncVisibleConversation = Boolean(
+      shouldUpdateSourcePanel &&
       nextSnapshot.selectedSessionId &&
       visibleSessionId &&
       visibleSessionId === nextSnapshot.selectedSessionId
@@ -172,8 +184,10 @@ export function usePanelConversationWriteController({
             ...entry,
             sessionId: entry.sessionId || selectedSessionId,
             snapshot: createPanelRuntimeSnapshot(entryPanelId, entry.snapshot, {
-              modelRef: entry.snapshot.modelRef || baseSnapshot.modelRef,
-              reasoningEffort: entry.snapshot.reasoningEffort || baseSnapshot.reasoningEffort,
+              modelRef: entry.snapshot.modelRef || (targetIsCurrentPanelSession ? baseSnapshot.modelRef : ""),
+              reasoningEffort: entry.snapshot.reasoningEffort || (
+                targetIsCurrentPanelSession ? baseSnapshot.reasoningEffort : ""
+              ),
               sessionMaterialized: options?.sessionMaterialized,
               selectedSessionUpdatedAt,
               contextUsedPct,
