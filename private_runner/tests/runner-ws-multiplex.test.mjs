@@ -248,6 +248,7 @@ test("pending approvals suspend detached cleanup until the final response is for
 
 test("duplicate thread cleanup preserves the pending relay and rejects the new duplicate", () => {
   const upstream = () => ({ readyState: 1, send() {}, close() {} });
+  const duplicateMessages = [];
   const canonical = __TESTING__.createCodexRelayContext({
     endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
   });
@@ -257,13 +258,46 @@ test("duplicate thread cleanup preserves the pending relay and rejects the new d
     endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
   });
   duplicate.threadId = canonical.threadId;
+  duplicate.clients.add({
+    readyState: 1,
+    send(raw) { duplicateMessages.push(JSON.parse(String(raw))); },
+    close() {},
+  });
 
   __TESTING__.cleanupNoClientRelaysForThread(canonical.threadId, duplicate, "test_duplicate");
   assert.equal(canonical.closed, false);
   assert.equal(duplicate.closed, true);
+  assert.equal(duplicateMessages[0].type, "runner_relay_closed");
+  assert.equal(duplicateMessages[0].reason, "session_busy");
   assert.equal(__TESTING__.pickBestRelayForThread(canonical.threadId), canonical);
 
   __TESTING__.cleanupCodexRelay(canonical, "test_cleanup");
+});
+
+test("duplicate thread cleanup preserves a detached active relay", () => {
+  const upstream = () => ({ readyState: 1, send() {}, close() {} });
+  const active = __TESTING__.createCodexRelayContext({
+    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+  });
+  active.threadId = "thread-active-canonical";
+  active.turnStarted = true;
+  active.agentLease = {
+    sessionRef: { backendId: "codex", nativeSessionId: active.threadId },
+    generation: 1,
+    kind: "turn",
+  };
+  const duplicate = __TESTING__.createCodexRelayContext({
+    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+  });
+  duplicate.threadId = active.threadId;
+
+  __TESTING__.cleanupNoClientRelaysForThread(active.threadId, duplicate, "test_duplicate");
+  assert.equal(active.closed, false);
+  assert.equal(duplicate.closed, false);
+
+  active.agentLease = null;
+  __TESTING__.cleanupCodexRelay(active, "test_cleanup");
+  __TESTING__.cleanupCodexRelay(duplicate, "test_cleanup");
 });
 
 test("relay admission is a hard cap when every relay is connected or approval-protected", () => {

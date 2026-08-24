@@ -15,6 +15,7 @@ export const CODEX_SCHEDULE_RUNTIME_MAX_BYTES = 512 * 1024;
 export const CODEX_SCHEDULE_MAX_COUNT = 100;
 
 const MAX_PROMPT_CHARS = 24_000;
+const MAX_THREAD_ID_CHARS = 120;
 const MAX_ERROR_CHARS = 1_000;
 const MAX_TIMER_DELAY_MS = 60_000;
 const MAX_START_CONCURRENCY = 4;
@@ -27,11 +28,11 @@ const DISPATCH_STATUSES = new Set([
 ]);
 const DEFINITION_KEYS = new Set([
   "id", "name", "enabled", "startLocal", "timeZone", "rrule",
-  "cwd", "modelRef", "reasoningEffort", "prompt",
+  "cwd", "modelRef", "reasoningEffort", "prompt", "threadId",
 ]);
 const CREATE_DEFINITION_KEYS = new Set([
   "name", "enabled", "startLocal", "timeZone", "rrule",
-  "cwd", "modelRef", "reasoningEffort", "prompt",
+  "cwd", "modelRef", "reasoningEffort", "prompt", "threadId",
 ]);
 
 export const CODEX_SCHEDULE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -117,6 +118,9 @@ export function codexScheduleDefinitionHash(definition) {
     reasoningEffort: definition.reasoningEffort,
     prompt: definition.prompt,
   };
+  const threadId = String(definition.threadId || "").trim();
+  // Keep the legacy new-thread hash stable so existing version 1 runtime stores remain readable.
+  if (threadId) canonical.threadId = threadId;
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
@@ -141,6 +145,14 @@ function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields =
   if (!cwd || cwd.length > 2048) throw new Error(`schedules[${index}].cwd is invalid`);
   const prompt = requireString(value.prompt, `schedules[${index}].prompt`).trim();
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`schedules[${index}].prompt is invalid`);
+  const threadId = value.threadId === null || value.threadId === undefined
+    ? null
+    : requireString(value.threadId, `schedules[${index}].threadId`).trim();
+  if (threadId !== null && (
+    !threadId || threadId.length > MAX_THREAD_ID_CHARS || !/^[A-Za-z0-9._:-]+$/.test(threadId)
+  )) {
+    throw new Error(`schedules[${index}].threadId is invalid`);
+  }
   const modelRef = requireString(value.modelRef, `schedules[${index}].modelRef`).trim();
   if (!modelRef) throw new Error(`schedules[${index}].modelRef is invalid`);
   const reasoningEffort = requireString(
@@ -173,6 +185,7 @@ function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields =
     modelRef: normalizedModelRef,
     reasoningEffort,
     prompt,
+    threadId,
   };
 }
 
@@ -587,6 +600,7 @@ export function createCodexScheduleService({
         cwd: claim.definition.cwd,
         model: options.modelInfo.model,
         effort: claim.definition.reasoningEffort,
+        threadId: claim.definition.threadId || "",
         serviceName: "private-runner-codex-schedule",
       });
     } catch (error) {

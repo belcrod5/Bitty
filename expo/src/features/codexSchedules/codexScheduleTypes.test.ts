@@ -30,6 +30,9 @@ test("strict parser accepts the complete snapshot and rejects unknown or invalid
   });
   expect(snapshot.revision).toBe(4);
   expect(snapshot.schedules[0].timeZone).toBe("Asia/Tokyo");
+  expect(snapshot.schedules[0].threadId).toBeNull();
+  expect(parseCodexScheduleDefinition({ ...definition, threadId: "thread:current" }).threadId).toBe("thread:current");
+  expect(() => parseCodexScheduleDefinition({ ...definition, threadId: "not a thread" })).toThrow("threadId");
   expect(() => parseCodexScheduleDefinition({ ...definition, extra: true })).toThrow("unknown field");
   expect(() => parseCodexScheduleDefinition({ ...definition, startLocal: " 2026-08-14T09:00:00" })).toThrow("startLocal");
   expect(() => parseCodexScheduleDefinition({ ...definition, timeZone: "Not/AZone" })).toThrow("timeZone");
@@ -79,7 +82,7 @@ test("all repeat choices map to and from their canonical RRULE", () => {
 });
 
 test("definition-only wire shape removes runtime fields and local dates keep minute precision", () => {
-  const schedule: CodexSchedule = { ...definition, nextOccurrenceAt: null, lastDispatch: null };
-  expect(codexScheduleDefinitionOnly(schedule)).toEqual(definition);
+  const schedule: CodexSchedule = { ...definition, threadId: null, nextOccurrenceAt: null, lastDispatch: null };
+  expect(codexScheduleDefinitionOnly(schedule)).toEqual({ ...definition, threadId: null });
   expect(codexScheduleStartLocalFromDate(new Date(2026, 7, 14, 9, 7, 51))).toBe("2026-08-14T09:07:00");
 });
