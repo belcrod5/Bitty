@@ -1,74 +1,75 @@
 # Bitty
 
-Bitty lets you operate Codex running on your macOS machine from an iPhone or
-iPad. The iOS app connects to a local Node.js runner on your Mac, so you can
-start or resume Codex sessions, speak prompts, review approvals, inspect files,
-and monitor local coding work from your mobile device.
+Bitty is a local-first mobile command center for AI agents running on your Mac.
+It connects an iPhone or iPad to a private local runner and brings Codex and
+Claude Code sessions into one visible workspace.
 
-<p>
-  <img src="screenshots/image.png" alt="Bitty app screenshot" width="720" />
+<p align="center">
+  <img src="screenshots/image.png" alt="Bitty with an iPhone chat and iPad Skia Board" width="960" />
 </p>
 
 ## Why Bitty Exists
 
-Bitty started as a personal companion app for local AI-assisted development. The
-original workflow used OpenClaw, but it did not expose enough control over the
-working context, and it was hard to see what the assistant could see, remember,
-or act on.
+Sending a prompt is easy. Keeping track of several agents is not. Work spreads
+across conversations and directories, approvals wait for attention, and it
+becomes difficult to see what is running, what has finished, and where something
+stopped.
 
-The goal of Bitty is to make that shared context more visible and controllable:
-runtime state, token usage, session history, approvals, files, and speech
-activity are surfaced in the mobile app so the human and the AI assistant can
-work from a more aligned view of the task.
+Bitty makes that work visible. The app surfaces conversation history, live
+activity, context usage, approvals, files, and local runner state so you can
+understand what each agent is doing without reconstructing it from terminal
+windows.
+
+It is designed as a pocket view of the AI work happening on your computer: use
+the larger board on an iPad, or check progress and respond from an iPhone while
+away from your desk.
+
+## Skia Board
+
+Skia Board is the main workspace in Bitty. It is a zoomable, Figma-like canvas
+where chat sessions, directories, and files can be placed freely instead of
+being forced into a fixed list.
+
+Create named, colored sections for any workflow that makes sense to you: active
+work, waiting, review, blocked tasks, projects, teams, or something entirely
+different. The board keeps the relationship between conversations and their
+working directories visible, while each card remains a direct entry point into
+the underlying session.
+
+The board is deliberately flexible. It provides spatial organization and live
+status without imposing a particular task-management method.
 
 ## Features
 
-- Start, resume, and monitor Codex sessions running on your Mac from iOS.
+- Start, resume, and monitor Codex and Claude Code sessions running on your Mac.
+- Arrange sessions, directories, and files freely on the zoomable Skia Board.
+- Create, move, resize, label, and color sections to group work your own way.
+- See recent activity, unread state, progress, context usage, and waiting
+  approvals without opening every conversation.
+- Browse session history grouped by working directory from the mobile drawer.
+- Review approval requests before local commands or tools continue.
+- Inspect Git changes, workspace files, and running jobs without returning to
+  the desktop.
 - Talk to the runner with voice input, automatic recording, transcription, and
   optional auto-send.
 - Play assistant replies through local or cloud text-to-speech, including
   streamable TTS playback.
-- Use Mini Board to keep several directory-backed coding sessions visible at
-  once.
-- Browse directory session history, unread states, and recent runner activity
-  from the mobile drawer.
-- Keep token usage, runtime limits, and context usage visible while working.
-- Review approval requests on the phone before local commands or tools
-  continue.
-- Inspect Git changes, workspace files, and running jobs without switching back
-  to the desktop.
 - Search and preview YouTube results when the runner is configured with the
   optional YouTube tools.
 - Export and import app settings through the clipboard for device migration.
-
-## How Bitty Differs From ChatGPT Codex Mobile
-
-ChatGPT's Codex mobile experience is the official remote interface for Codex
-tasks, threads, approvals, diffs, tests, terminal output, and cloud/remote
-developer environments. Bitty is narrower: it is a local-first mobile companion
-for a runner you control on your own machine.
-
-| Area | ChatGPT Codex mobile | Bitty |
-| --- | --- | --- |
-| Primary role | Official Codex task and remote development surface | Mobile client for a local private runner |
-| Runtime | OpenAI Codex remote environment and connected workspaces | Your Mac or local network runner |
-| Interaction style | Task/thread review, approvals, diffs, logs | Voice input, TTS playback, chat, Mini Board, approvals |
-| Visibility | Codex task state and remote run details | Token usage, runtime limits, context usage, and local runner state |
-| Multi-task UX | Thread-oriented mobile access | Drawer, Mini Board, popup chat, and multiple sessions in parallel |
-| Local tools | Remote connections and configured environments | Runner endpoints for local files, jobs, speech, and tools |
-| Best fit | Managing Codex work from anywhere | Keeping a local coding assistant usable from a phone nearby |
 
 ## Screenshots
 
 The screenshots below show illustrative, public-safe demo states used for the README.
 
+<p align="center">
+  <img src="screenshots/skia-board-public.png" alt="Bitty Skia Board with spatially arranged AI sessions" width="360" />
+  <br />
+  <sub>Skia Board</sub>
+</p>
+
 <table>
   <tr>
-    <td align="center" width="33%">
-      <img src="screenshots/mini-board.png" alt="Bitty Mini Board" width="240" />
-      <br />
-      <sub>Mini Board</sub>
-    </td>
     <td align="center" width="33%">
       <img src="screenshots/chat.png" alt="Bitty Chat" width="240" />
       <br />
@@ -79,15 +80,11 @@ The screenshots below show illustrative, public-safe demo states used for the RE
       <br />
       <sub>Runner Drawer</sub>
     </td>
-  </tr>
-  <tr>
     <td align="center" width="33%">
       <img src="screenshots/git-diff-files.png" alt="Bitty Git Diff And Files" width="240" />
       <br />
       <sub>Git Diff And Files</sub>
     </td>
-    <td width="33%"></td>
-    <td width="33%"></td>
   </tr>
 </table>
 
@@ -105,7 +102,9 @@ The screenshots below show illustrative, public-safe demo states used for the RE
 
 - Node.js
 - npm
-- Codex CLI (`codex`)
+- At least one supported agent CLI:
+  - Codex CLI (`codex` 0.145.0 or newer)
+  - Claude Code CLI (`claude` 2.1.214 or newer)
 - Xcode for iOS builds
 - Expo development tooling
 
@@ -141,7 +140,11 @@ cp .env.example .env
 RUNNER_TOKEN_MODE=random
 RUNNER_PAIRING_QR=1
 CODEX_HOME=$HOME/.codex
+AGENT_CLAUDE_BINARY=claude
 ```
+
+`CODEX_HOME` is used by Codex. `AGENT_CLAUDE_BINARY` can be left as `claude`
+when Claude Code is available on `PATH`.
 
 With `RUNNER_TOKEN_MODE=random`, `run-local.sh` generates a fresh
 `RUNNER_TOKEN` on each start and passes it to the mobile app through a Pairing
@@ -154,7 +157,9 @@ RUNNER_TOKEN_MODE=env
 RUNNER_TOKEN=replace-with-a-long-random-string
 ```
 
-3. Log in to Codex for the runner:
+3. Authenticate the agent CLI or CLIs you want to use.
+
+For Codex:
 
 ```bash
 node setup-codex-auth.mjs
@@ -166,10 +171,23 @@ For headless setup, use:
 node setup-codex-auth.mjs --device-auth
 ```
 
-4. Start the local runner:
+For Claude Code:
+
+```bash
+claude auth login
+```
+
+4. Start the local runner. Use `full` mode for Codex or for a mixed
+Codex-and-Claude setup:
 
 ```bash
 ./run-local.sh start --mode full
+```
+
+For a Claude-only setup, the Codex app server is unnecessary:
+
+```bash
+./run-local.sh start --mode runner-only
 ```
 
 Detached starts do not write the Pairing QR to logs. After the runner is
@@ -186,6 +204,9 @@ Useful runner commands:
 ./run-local.sh restart --mode full
 ./run-local.sh stop --mode full
 ```
+
+Use `--mode runner-only` with restart and stop when running Claude only. Choose
+Codex or Claude from Bitty's agent/model selector when starting a new session.
 
 5. Install the mobile app dependencies:
 
@@ -287,19 +308,12 @@ GOOGLE_CLOUD_TTS_LANGUAGE_CODE=ja-JP
 GOOGLE_CLOUD_TTS_VOICE_NAME=ja-JP-Neural2-B
 ```
 
-## Planned Features
-
-These are not implemented yet:
-
-- Push notifications for long-running tasks and approval requests.
-- Siri shortcuts or voice commands for common app actions.
-- Access to the local runner from outside the local network.
-
 ## Tests And Checks
 
 ```bash
 cd expo
-npx tsc --noEmit
+npm run typecheck
+npm test -- --runInBand
 ```
 
 ```bash
