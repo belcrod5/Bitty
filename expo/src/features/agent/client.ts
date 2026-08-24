@@ -280,12 +280,17 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
     lastSequence = sequence;
     options.onSequence?.(runId, sequence);
     const payload = object(event.payload);
+    const resolvedThreadId = String(
+      event.sessionRef?.nativeSessionId
+        || (event.type === "session.resolved" ? object(payload.sessionRef).nativeSessionId : ""),
+    ).trim();
+    if (resolvedThreadId && resolvedThreadId !== threadId) {
+      threadId = resolvedThreadId;
+      options.onThreadIdResolved?.(threadId);
+    }
     if (event.type === "action.requested" && ignoredActionRequests.delete(String(payload.requestId || ""))) return;
     options.onEvent?.(event, payload);
-    if (event.type === "session.resolved") {
-      threadId = String(event.sessionRef?.nativeSessionId || object(payload.sessionRef).nativeSessionId || threadId);
-      if (threadId) options.onThreadIdResolved?.(threadId);
-    } else if (event.type === "turn.started") {
+    if (event.type === "turn.started") {
       turnId = String(payload.nativeTurnId || runId);
     } else if (event.type === "content.delta") {
       const delta = String(payload.delta || "");
@@ -332,12 +337,13 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
     if (response.op === "error") throw new Error(String(payload.message || "Agent event resume failed"));
     const resumedRunId = String(response.streamId || payload.runId || runId).trim();
     const replayTruncated = payload.replayTruncated === true;
-    if (replayTruncated && !options.onReplayTruncated) {
-      if (resumedRunId) runId = resumedRunId;
-      throw new Error("Agent event replay is no longer available");
-    }
     const activeActions = Array.isArray(payload.activeActions) ? payload.activeActions : [];
     const activeActionIds = new Set(activeActions.map((action) => String(object(action).requestId || "")));
+    if (replayTruncated) {
+      for (const requestId of approvalActions.keys()) {
+        if (!activeActionIds.has(requestId)) resolveApproval(requestId);
+      }
+    }
     if (resumedRunId) attach(resumedRunId, payload.runChanged === true || replayTruncated, activeActionIds);
     if (replayTruncated) {
       options.onReplayTruncated?.(runId, Math.max(1, Math.floor(Number(payload.replayFromSequence) || 1)));

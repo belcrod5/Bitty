@@ -166,10 +166,12 @@ async function createLiveTurn(options: {
   onApprovalRequest: (request: any) => Promise<any>;
   onApprovalRequestResolved?: (request: any) => void;
   onEvent?: (method: string, params: unknown) => void;
+  onThreadIdResolved?: (threadId: string) => void;
   actionResponse?: { channel: string; op: string; payload?: Record<string, unknown> } | Promise<{
     channel: string; op: string; payload?: Record<string, unknown>;
   }>;
   resumeActions?: Record<string, unknown>[];
+  resumeReplayTruncated?: boolean;
 }) {
   let eventHandler: ((message: any) => void) | null = null;
   let snapshotHandler: (() => void) | null = null;
@@ -184,7 +186,13 @@ async function createLiveTurn(options: {
     if (message.op === "events.resume") {
       return {
         channel: "agent", op: "events.resumed", streamId: "run-1",
-        payload: { runId: "run-1", activeActions: options.resumeActions || [] },
+        payload: {
+          runId: "run-1",
+          activeActions: options.resumeActions || [],
+          ...(options.resumeReplayTruncated
+            ? { replayTruncated: true, replayFromSequence: 7 }
+            : {}),
+        },
       };
     }
     if (message.op === "turn.interrupt") {
@@ -229,6 +237,7 @@ async function createLiveTurn(options: {
     onApprovalRequest: options.onApprovalRequest,
     onApprovalRequestResolved: options.onApprovalRequestResolved,
     onEvent: options.onEvent,
+    onThreadIdResolved: options.onThreadIdResolved,
   }, jest.fn());
   for (let index = 0; index < 20 && request.mock.calls.every(([message]) => message.op !== "turn.start"); index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -238,9 +247,21 @@ async function createLiveTurn(options: {
   return {
     request,
     session,
-    emit(type: string, payload: Record<string, unknown> = {}) {
-      sequence += 1;
-      eventHandler!({ payload: { runId: "run-1", protocolVersion: 2, type, sequence, payload } });
+    emit(type: string, payload: Record<string, unknown> = {}, eventOptions?: {
+      sequence?: number;
+      sessionRef?: { backendId: string; nativeSessionId: string };
+    }) {
+      sequence = eventOptions?.sequence ?? sequence + 1;
+      eventHandler!({
+        payload: {
+          runId: "run-1",
+          protocolVersion: 2,
+          type,
+          sequence,
+          ...(eventOptions?.sessionRef ? { sessionRef: eventOptions.sessionRef } : {}),
+          payload,
+        },
+      });
     },
     reconnect() {
       generation += 1;
@@ -396,7 +417,7 @@ test("terminal events close resumed active approvals", async () => {
   expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
 });
 
-test("a fatal initial replay gap never projects partial events before its acknowledgement", async () => {
+test("an initial replay gap continues from retained events without interrupting the run", async () => {
   let eventHandler: ((message: any) => void) | null = null;
   const request = jest.fn(async (message: { op?: string }) => {
     if (message.op === "turn.start") {
@@ -460,10 +481,67 @@ test("a fatal initial replay gap never projects partial events before its acknow
     onDelta,
   }, jest.fn());
 
-  await expect(session.promise).rejects.toThrow(/replay is no longer available/);
-  expect(onDelta).not.toHaveBeenCalled();
+  for (let i = 0; i < 20 && onDelta.mock.calls.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  (eventHandler as ((message: any) => void) | null)?.({
+    channel: "agent",
+    op: "event",
+    payload: {
+      protocolVersion: 2,
+      type: "turn.completed",
+      runId: "run-1",
+      sequence: 11,
+      payload: {},
+    },
+  });
+
+  await expect(session.promise).resolves.toEqual(expect.objectContaining({ reply: "partial" }));
+  expect(onDelta).toHaveBeenCalledWith("partial", { itemId: "item-1", delta: "partial" });
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "events.detach", streamId: "run-1" }));
-  expect(request).toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt", streamId: "run-1" }));
+  expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt" }));
+});
+
+test("a reconnect replay gap resolves stale approval and recovers the session from later events", async () => {
+  const approval = deferred<"decline">();
+  const onApprovalRequest = jest.fn(() => approval.promise);
+  const onApprovalRequestResolved = jest.fn();
+  const onThreadIdResolved = jest.fn();
+  const onEvent = jest.fn();
+  const turn = await createLiveTurn({
+    onApprovalRequest,
+    onApprovalRequestResolved,
+    onThreadIdResolved,
+    onEvent,
+    resumeReplayTruncated: true,
+  });
+
+  turn.emit("action.requested", { requestId: "stale-approval", kind: "approval" });
+  for (let i = 0; i < 20 && onApprovalRequest.mock.calls.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  turn.reconnect();
+  const sessionRef = { backendId: "codex", nativeSessionId: "thread-recovered" };
+  turn.emit("content.delta", { itemId: "assistant-1", delta: "after gap" }, { sequence: 7, sessionRef });
+  turn.emit("turn.completed", {}, { sessionRef });
+
+  await expect(turn.session.promise).resolves.toEqual(expect.objectContaining({
+    threadId: "thread-recovered",
+    reply: "after gap",
+  }));
+  expect(onEvent).toHaveBeenCalledWith("content/delta", { itemId: "assistant-1", delta: "after gap" });
+  expect(onApprovalRequestResolved).toHaveBeenCalledTimes(1);
+  expect(onThreadIdResolved).toHaveBeenCalledTimes(1);
+  expect(onThreadIdResolved).toHaveBeenCalledWith("thread-recovered");
+  expect(turn.request).toHaveBeenCalledWith(expect.objectContaining({
+    op: "events.resume",
+    streamId: "run-1",
+    seq: 1,
+  }));
+  expect(turn.request).not.toHaveBeenCalledWith(expect.objectContaining({ op: "turn.interrupt" }));
+  approval.resolve("decline");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(turn.request).not.toHaveBeenCalledWith(expect.objectContaining({ op: "action.respond" }));
 });
 
 test("a dynamic tool is claimed before its side effect executes", async () => {
