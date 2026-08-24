@@ -16,7 +16,7 @@ import {
   type NativeSyntheticEvent,
   View,
 } from "react-native";
-import { LegendList, type LegendListRef } from "@legendapp/list";
+import { LegendList, type LegendListRef, type OnViewableItemsChanged } from "@legendapp/list";
 import * as Clipboard from "../clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
@@ -69,6 +69,7 @@ import {
 } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
+import { findPreviousUserMessageIndex } from "../utils/chatScroll";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
@@ -519,6 +520,7 @@ export function ChatScreen({
   const bottomScrollTimeoutRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
   const initialSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAtBottomRef = useRef(true);
+  const firstVisibleMessageRef = useRef<{ id: string; index: number } | null>(null);
   const chatAutoScrollPausedRef = useRef(false);
   const chatScrollDragActiveRef = useRef(false);
   const lastChatCacheKeyRef = useRef("");
@@ -837,6 +839,45 @@ export function ChatScreen({
     scrollChatListToLastMessageTarget,
     scrollChatListToMeasuredBottom,
   ]);
+  const handleChatViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<ConversationMessage>>>(({
+    viewableItems,
+  }) => {
+    const firstVisibleItem = viewableItems.reduce<(typeof viewableItems)[number] | null>((firstItem, item) => {
+      if (!item.isViewable || item.index < 0) return firstItem;
+      return firstItem === null || item.index < firstItem.index ? item : firstItem;
+    }, null);
+    if (!firstVisibleItem) return;
+    firstVisibleMessageRef.current = {
+      id: firstVisibleItem.item.id,
+      index: firstVisibleItem.index,
+    };
+  }, []);
+  const scrollChatListToPreviousUser = useCallback(() => {
+    if (conversationMessagesForView.length === 0) return;
+    pauseChatAutoScrollForInteraction();
+    const firstVisibleMessage = firstVisibleMessageRef.current;
+    const currentIndexForVisibleMessage = firstVisibleMessage
+      ? conversationMessagesForView.findIndex((message) => message.id === firstVisibleMessage.id)
+      : -1;
+    const firstVisibleIndex = currentIndexForVisibleMessage >= 0
+      ? currentIndexForVisibleMessage
+      : (firstVisibleMessage?.index ?? conversationMessagesForView.length);
+    const targetIndex = findPreviousUserMessageIndex(conversationMessagesForView, firstVisibleIndex);
+    if (targetIndex === null) {
+      chatListRefForView.current?.scrollToOffset({ offset: 0, animated: true });
+      return;
+    }
+    chatListRefForView.current?.scrollToIndex({
+      index: targetIndex,
+      animated: true,
+      viewPosition: 0,
+    });
+  }, [chatListRefForView, conversationMessagesForView, pauseChatAutoScrollForInteraction]);
+  const resumeChatAtBottom = useCallback(() => {
+    chatAutoScrollPausedRef.current = false;
+    isAtBottomRef.current = true;
+    scrollChatListToBottom(true);
+  }, [scrollChatListToBottom]);
   const scrollChatListToBottomSettled = useCallback((animated = false) => {
     clearPendingBottomScrollFrames();
     const scrollToBottomOnNextFrame = (nextAnimated: boolean) => {
@@ -1171,6 +1212,7 @@ export function ChatScreen({
     didInitialScrollRef.current = false;
     initialSettlingRef.current = false;
     isAtBottomRef.current = true;
+    firstVisibleMessageRef.current = null;
     chatAutoScrollPausedRef.current = false;
     chatScrollDragActiveRef.current = false;
     previousMessageCountRef.current = 0;
@@ -1957,6 +1999,7 @@ export function ChatScreen({
                 updateChatViewportSizeForView(Number(layout?.width || 0), Number(layout?.height || 0));
               }}
               onScroll={handleChatScrollForView}
+              onViewableItemsChanged={handleChatViewableItemsChanged}
               scrollEventThrottle={16}
               onContentSizeChange={handleChatContentSizeChangeForView}
               onItemSizeChanged={handleChatItemSizeChangedForView}
@@ -2174,6 +2217,24 @@ export function ChatScreen({
         />
         <View style={styles.chatComposer}>
           <View style={styles.connectionStatusArea}>
+            <View style={styles.chatScrollControls}>
+              <TouchableOpacity
+                style={styles.chatScrollControlButton}
+                onPress={scrollChatListToPreviousUser}
+                accessibilityRole="button"
+                accessibilityLabel="前のユーザーメッセージまでスクロール"
+              >
+                <Ionicons name="chevron-up" size={14} color="#64748b" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.chatScrollControlButton}
+                onPress={resumeChatAtBottom}
+                accessibilityRole="button"
+                accessibilityLabel="チャットの末尾までスクロール"
+              >
+                <Ionicons name="chevron-down" size={14} color="#64748b" />
+              </TouchableOpacity>
+            </View>
             <RunnerWsConnectionStatus
               turnState={replyLoadingForView ? "running" : selectedThreadStatusTypeForView}
               dataSync={connectionDataSync}

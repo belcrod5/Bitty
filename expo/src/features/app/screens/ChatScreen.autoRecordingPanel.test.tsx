@@ -9,6 +9,10 @@ const mockLoadOlderSessionHistory = jest.fn();
 const mockCodexScheduleProps: { current: Record<string, any> | null } = { current: null };
 const mockLocationScheduleProps: { current: Record<string, any> | null } = { current: null };
 const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
+const mockScrollToEnd = jest.fn();
+const mockScrollToIndex = jest.fn();
+const mockScrollToOffset = jest.fn();
+const mockScrollItemIntoView = jest.fn();
 const mockAddSkiaBoardFile = jest.fn();
 const mockRemoveSkiaBoardFile = jest.fn();
 const mockHasSkiaBoardFile = jest.fn(() => false);
@@ -31,8 +35,14 @@ jest.mock("@legendapp/list", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
-    LegendList: ReactModule.forwardRef((props: Record<string, any>, _ref) => {
+    LegendList: ReactModule.forwardRef((props: Record<string, any>, ref) => {
       mockLegendListProps.current = props;
+      ReactModule.useImperativeHandle(ref, () => ({
+        scrollToEnd: mockScrollToEnd,
+        scrollToIndex: mockScrollToIndex,
+        scrollToOffset: mockScrollToOffset,
+        scrollItemIntoView: mockScrollItemIntoView,
+      }));
       return ReactModule.createElement(View, { testID: "legend-list" });
     }),
   };
@@ -475,6 +485,24 @@ describe("ChatScreen auto recording panel target", () => {
 
     await screen.unmount();
     jest.useRealTimers();
+  });
+
+  it("wires the scroll controls to the shared chat list", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const visibleMessage = mockLegendListProps.current?.data?.[0];
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: visibleMessage, index: 0, isViewable: true }],
+      changed: [],
+    });
+    mockScrollToOffset.mockClear();
+    mockScrollToEnd.mockClear();
+
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+    expect(mockScrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
+
+    await fireEvent.press(screen.getByLabelText("チャットの末尾までスクロール"));
+    await waitFor(() => expect(mockScrollToEnd).toHaveBeenCalledWith({ animated: true }));
+    await screen.unmount();
   });
 
   it("marks a hydrated Claude subagent read with its Backend identity", async () => {
