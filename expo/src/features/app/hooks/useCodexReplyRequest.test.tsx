@@ -340,6 +340,42 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     });
   });
 
+  test("routes the first approval after native ID adoption to the native session", async () => {
+    const harness = createHarness();
+    const onApprovalRequestResolved = jest.fn();
+    (harness.options as any).onApprovalRequestResolved = onApprovalRequestResolved;
+    const { sendPromise } = await startRequest(harness, { sessionId: "local-draft" });
+
+    const approvalRequest = {
+      requestId: "approval-1",
+      approvalKey: "approval-1",
+      threadId: "native-thread",
+      turnId: "turn-1",
+      command: "WebFetch",
+      args: [],
+    };
+    await act(async () => {
+      harness.getTurnOptions().onThreadIdResolved("native-thread");
+      await harness.getTurnOptions().onApprovalRequest(approvalRequest);
+      harness.getTurnOptions().onApprovalRequestResolved(approvalRequest);
+    });
+
+    expect(harness.options.handleApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({
+      sessionInfo: expect.objectContaining({ sessionId: "native-thread" }),
+    }));
+    expect(onApprovalRequestResolved).toHaveBeenCalledWith(expect.objectContaining({
+      sessionInfo: expect.objectContaining({ sessionId: "native-thread" }),
+    }));
+    expect(harness.options.handleApprovalRequest).not.toHaveBeenCalledWith(expect.objectContaining({
+      sessionInfo: expect.objectContaining({ sessionId: "local-draft" }),
+    }));
+
+    await act(async () => {
+      harness.resolveTurn({ threadId: "native-thread", turnId: "turn-1", reply: "done", contextUsage: null });
+      await sendPromise;
+    });
+  });
+
   test("projects real Codex item starts into the shared runtime status", async () => {
     const harness = createHarness();
     const updateConversationRuntimeRequest = jest.fn();

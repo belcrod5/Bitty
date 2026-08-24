@@ -1023,7 +1023,9 @@ export function useCodexReplyRequest<
         ...request,
         sessionInfo: {
           panelId: requestPanelId,
-          sessionId: String(requestSnapshot?.sessionId || request.threadId || requestThreadId || requestUiSessionId || "").trim(),
+          sessionId: String(
+            request.threadId || trackedThreadId || requestThreadId || requestUiSessionId || ""
+          ).trim(),
           directoryPath: requestDirectory,
           directoryDisplayName: String(requestSnapshot?.directoryDisplayName || "").trim(),
           sessionTitle: String(requestSnapshot?.sessionTitle || "").trim(),
