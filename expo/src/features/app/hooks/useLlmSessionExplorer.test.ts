@@ -733,6 +733,18 @@ describe("buildLlmSessionHistoryEntry", () => {
 
     expect(entry.contextUsedPct).toBe(42);
   });
+
+  it("uses provider-neutral list settings when no legacy snapshot exists", () => {
+    const entry = buildLlmSessionHistoryEntry({
+      threadId: "session-1",
+      cwd: "/workspace/bitty",
+      modelRef: "sonnet",
+      reasoningEffort: "high",
+    } as never, "/workspace/bitty", new Map());
+
+    expect(entry.modelRef).toBe("sonnet");
+    expect(entry.reasoningEffort).toBe("high");
+  });
 });
 
 test("paginates one directory subagent sequence, deduplicates it, and groups every parent", async () => {

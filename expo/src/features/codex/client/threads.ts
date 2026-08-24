@@ -74,6 +74,7 @@ export async function listCodexAppServerThreads(options: {
             preview: String(item.title || ""),
             modelProvider: entryBackendId,
             modelRef: String(item.modelId || ""),
+            reasoningEffort: String(item.reasoningEffort || ""),
             // サーバーの実sourceKindを尊重する("acp"はapp-server由来のためappServerへ
             // 正規化)。2値へ潰すと限定sourceKinds指定やsource表示の忠実性が失われる。
             sourceKind: item.isSubagent

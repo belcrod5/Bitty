@@ -52,6 +52,7 @@ export function createPrivateRunnerAgentRuntime({
     settle: stores.settleSessionLease,
     updateIdentity: stores.updateSessionLeaseIdentity,
     handoff: stores.handoffSessionMode,
+    setSettings: stores.setSessionSettings,
     recordActivity: stores.recordSessionActivity,
   };
 
@@ -89,6 +90,7 @@ export function createPrivateRunnerAgentRuntime({
           updatedAt: String(session.updatedAt || ""),
           title: String(session.firstUserMessage || ""),
           modelId: String(session.modelRef || ""),
+          reasoningEffort: String(session.reasoningEffort || ""),
           ...(session.source ? { sourceKind: String(session.source) } : {}),
           isSubagent: session.isSubagent === true,
           ...(session.parentSessionId
@@ -117,6 +119,8 @@ export function createPrivateRunnerAgentRuntime({
         ...(page.moreAfter !== undefined ? { moreAfter: page.moreAfter } : {}),
         // セッション再表示時のcontext length表示の復元源(rolloutのtoken_count由来)
         ...(page.contextUsage ? { contextUsage: page.contextUsage } : {}),
+        modelId: String(page.modelRef || ""),
+        reasoningEffort: String(page.reasoningEffort || ""),
       };
     },
   });

@@ -29,6 +29,7 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
         updatedAt: "2026-08-22T03:00:00.000Z",
         title: "claude session",
         modelId: "sonnet",
+        reasoningEffort: "high",
       },
       {
         sessionRef: { backendId: "codex", nativeSessionId: "codex-1" },
@@ -56,6 +57,7 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
     { backendId: "claude", threadId: "claude-1", modelProvider: "claude" },
     { backendId: "codex", threadId: "codex-1", modelProvider: "codex" },
   ]);
+  expect(result.data[0].reasoningEffort).toBe("high");
   expect(result.partialErrors).toEqual([{ backendId: "other", code: "backend_unavailable", message: "down" }]);
   expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
 });

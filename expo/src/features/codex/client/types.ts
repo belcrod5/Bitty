@@ -186,6 +186,7 @@ export type CodexThreadListEntry = {
   preview: string;
   modelProvider: string;
   modelRef?: string;
+  reasoningEffort?: string;
   sourceKind: string;
   cwd: string;
   createdAt: string;

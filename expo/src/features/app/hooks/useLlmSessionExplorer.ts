@@ -272,7 +272,7 @@ export function buildLlmSessionHistoryEntry(
       ? clampContextUsedPct(snapshot.contextUsedPct)
       : clampContextUsedPct(item.contextUsedPct),
     modelRef: String(snapshot?.modelRef || item.modelRef || "").trim(),
-    reasoningEffort: String(snapshot?.reasoningEffort || "").trim(),
+    reasoningEffort: String(snapshot?.reasoningEffort || item.reasoningEffort || "").trim(),
     threadStatusType: item.threadStatusType || "unknown",
   };
 }
@@ -576,7 +576,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           cwd: parseLlmDirectory(neutral.canonicalCwd || preferredDirectory),
           updatedAt: messages.at(-1)?.at || "",
           modelRef: String(neutral.modelId || "").trim(),
-          reasoningEffort: "",
+          reasoningEffort: String(neutral.reasoningEffort || "").trim(),
           latestToolLabel: "",
           messages,
           // rollout token_count由来のcontext使用率(codex)。無いBackendはnull。

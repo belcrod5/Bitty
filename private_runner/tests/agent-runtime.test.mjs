@@ -61,6 +61,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
       settleSessionLease: async () => ({ status: "released" }),
       updateSessionLeaseIdentity: async () => ({ status: "updated" }),
       handoffSessionMode: async () => ({ status: "handed_off" }),
+      setSessionSettings: async () => ({ status: "updated" }),
       recordSessionActivity: async () => ({ status: "updated" }),
       inspectOperation: async () => null,
       claimOperation: async () => ({ status: "claimed" }),
@@ -77,6 +78,8 @@ test("Codex Agent history preserves message timestamps", async (t) => {
     resolveSessionDirectory: (session) => session.cwd,
     listSessions: async () => ({ sessions: [] }),
     listMessages: async () => ({
+      modelRef: "gpt-5.6-sol",
+      reasoningEffort: "medium",
       messages: [{
         itemId: "message-1",
         role: "assistant",
@@ -104,6 +107,8 @@ test("Codex Agent history preserves message timestamps", async (t) => {
     content: [{ type: "text", text: "hello" }],
     createdAt: "2026-08-24T01:02:03.456Z",
   }]);
+  assert.equal(history.modelId, "gpt-5.6-sol");
+  assert.equal(history.reasoningEffort, "medium");
 });
 
 test("Agent runtime composes completion notification with the production event fanout", async (t) => {
@@ -134,6 +139,7 @@ test("Agent runtime composes completion notification with the production event f
       settleSessionLease: async () => ({ status: "released" }),
       updateSessionLeaseIdentity: async () => ({ status: "updated" }),
       handoffSessionMode: async () => ({ status: "handed_off" }),
+      setSessionSettings: async () => ({ status: "updated" }),
       recordSessionActivity: async () => ({ status: "updated" }),
       inspectOperation: async () => null,
       claimOperation: async () => ({ status: "claimed" }),

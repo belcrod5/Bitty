@@ -38,7 +38,14 @@ function sessionStore() {
       if (existingBinding && existingBinding.canonicalCwd !== canonicalCwd && options.reconcileCwd !== true) {
         return { status: "cwd_conflict", binding: existingBinding };
       }
-      bindings.set(key(ref), { ...ref, canonicalCwd });
+      const binding = { ...(existingBinding || ref), canonicalCwd };
+      if (Object.hasOwn(options, "settings")) {
+        if (options.settings?.modelId) binding.modelId = options.settings.modelId;
+        else delete binding.modelId;
+        if (options.settings?.reasoningEffort) binding.reasoningEffort = options.settings.reasoningEffort;
+        else delete binding.reasoningEffort;
+      }
+      bindings.set(key(ref), binding);
       modes.set(key(ref), existingMode || { mode, lease: null, generation: 0 });
       return { status: "bound", mode };
     },
@@ -66,16 +73,45 @@ function sessionStore() {
       entry.lease = { ...entry.lease, nativeProcessIdentity };
       return { status: "updated" };
     },
-    async handoff(ref, mode) {
+    async handoff(ref, mode, options = {}) {
       const entry = modes.get(key(ref)) || { lease: null, generation: 0 };
       // 実storeと同じ: 同一モードへのhandoffはlease保持中でもno-op成功
-      if (entry.mode === mode) return { status: "unchanged", mode };
+      if (entry.mode === mode) {
+        if (options.clearSettings) {
+          const binding = bindings.get(key(ref));
+          if (binding) {
+            delete binding.modelId;
+            delete binding.reasoningEffort;
+          }
+        }
+        return { status: "unchanged", mode };
+      }
       if (entry.lease) return { status: "busy", mode: entry.mode, lease: entry.lease };
       entry.mode = mode;
       modes.set(key(ref), entry);
+      if (options.clearSettings) {
+        const binding = bindings.get(key(ref));
+        if (binding) {
+          delete binding.modelId;
+          delete binding.reasoningEffort;
+        }
+      }
       return { status: "changed", mode };
     },
-    async recordActivity() { return { status: "updated" }; },
+    async setSettings(ref, settings = {}) {
+      const binding = bindings.get(key(ref));
+      if (!binding) return { status: "missing" };
+      if (settings.modelId) binding.modelId = settings.modelId;
+      else delete binding.modelId;
+      if (settings.reasoningEffort) binding.reasoningEffort = settings.reasoningEffort;
+      else delete binding.reasoningEffort;
+      return { status: "updated" };
+    },
+    async recordActivity(ref, canonicalCwd) {
+      const binding = bindings.get(key(ref));
+      if (!binding || binding.canonicalCwd !== canonicalCwd) return { status: "missing" };
+      return { status: "updated" };
+    },
   };
 }
 
@@ -209,6 +245,163 @@ test("does not record Agent activity for interrupted or failed turns", async () 
   assert.deepEqual(activityCalls, []);
 });
 
+for (const { existing, terminal } of [
+  { existing: true, terminal: "interrupted" },
+  { existing: true, terminal: "failed" },
+  { existing: false, terminal: "interrupted" },
+  { existing: false, terminal: "failed" },
+]) {
+  test(`${existing ? "resumed" : "new"} ${terminal} turn exposes settings before completion`, async () => {
+    const store = sessionStore();
+    const sessionRef = { backendId: "test", nativeSessionId: existing ? "existing-session" : "new-session" };
+    if (existing) await store.bind(sessionRef, "/workspace", "neutral");
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let settingsStored;
+    const stored = new Promise((resolve) => { settingsStored = resolve; });
+    if (existing) {
+      const setSettings = store.setSettings;
+      store.setSettings = async (...args) => {
+        const result = await setSettings(...args);
+        settingsStored();
+        return result;
+      };
+    } else {
+      const bind = store.bind;
+      store.bind = async (...args) => {
+        const result = await bind(...args);
+        if (Object.hasOwn(args[3] || {}, "settings")) settingsStored();
+        return result;
+      };
+    }
+    const backend = {
+      backendId: "test",
+      defaultDiscoveredSessionMode: "neutral",
+      getStatus: async () => ({
+        ...status(),
+        capabilities: {
+          session: { list: true, history: { read: true } },
+          model: { select: true, effort: true, effortOptions: ["low", "high"] },
+        },
+      }),
+      resolveSessionCwd: async () => "/workspace",
+      listSessions: async () => ({
+        sessions: [{ sessionRef, modelId: "native-old", reasoningEffort: "low" }],
+      }),
+      readHistory: async () => ({ items: [], modelId: "native-old", reasoningEffort: "low" }),
+      async startTurn({ emit, resolveSession }) {
+        if (!existing) await resolveSession(sessionRef);
+        emit("turn.started", {});
+        await gate;
+        if (terminal === "failed") {
+          const error = new Error("native failed");
+          error.nativeActivity = "stopped";
+          throw error;
+        }
+        return { outcome: "interrupted" };
+      },
+    };
+    const service = createAgentService({
+      backends: [backend],
+      operationStore: operationStore(),
+      sessionStore: store,
+      resolveCanonicalCwd: async (cwd) => cwd,
+    });
+    const run = await service.startTurn(startRequest({
+      ...(existing ? { sessionRef } : {}),
+      model: "selected-model",
+      effort: "high",
+    }), { subjectId: "user-1" });
+    await stored;
+
+    assert.deepEqual(await service.listSessions({ backendId: "test", cwd: "/workspace" }), {
+      sessions: [{ sessionRef, modelId: "selected-model", reasoningEffort: "high" }],
+    });
+    assert.deepEqual(await service.readHistory({ sessionRef }), {
+      items: [],
+      modelId: "selected-model",
+      reasoningEffort: "high",
+      sessionRef,
+      canonicalCwd: "/workspace",
+      activeRun: null,
+    });
+    release();
+    assert.equal((await run.completion).outcome, terminal);
+    assert.equal((await store.getBinding(sessionRef)).reasoningEffort, "high");
+  });
+}
+
+for (const existing of [true, false]) {
+  test(`${existing ? "resumed" : "new"} turn fails before native start when settings persistence fails`, async () => {
+    const store = sessionStore();
+    const sessionRef = { backendId: "test", nativeSessionId: existing ? "existing-session" : "new-session" };
+    if (existing) await store.bind(sessionRef, "/workspace", "neutral");
+    let restorePersistence;
+    if (existing) {
+      const setSettings = store.setSettings;
+      store.setSettings = async () => { throw new Error("settings disk write failed"); };
+      restorePersistence = () => { store.setSettings = setSettings; };
+    } else {
+      const bind = store.bind;
+      store.bind = async (...args) => {
+        if (Object.hasOwn(args[3] || {}, "settings")) throw new Error("settings disk write failed");
+        return await bind(...args);
+      };
+      restorePersistence = () => { store.bind = bind; };
+    }
+    let nativeStarts = 0;
+    const backend = {
+      backendId: "test",
+      defaultDiscoveredSessionMode: "neutral",
+      getStatus: async () => ({
+        ...status(),
+        capabilities: { model: { select: true, effort: true, effortOptions: ["high"] } },
+      }),
+      resolveSessionCwd: async () => "/workspace",
+      async startTurn({ emit, resolveSession }) {
+        if (!existing) await resolveSession(sessionRef);
+        nativeStarts += 1;
+        emit("turn.started", {});
+        return { outcome: "completed" };
+      },
+    };
+    const service = createAgentService({
+      backends: [backend],
+      operationStore: operationStore(),
+      sessionStore: store,
+      resolveCanonicalCwd: async (cwd) => cwd,
+    });
+    const run = await service.startTurn(startRequest({
+      ...(existing ? { sessionRef } : {}),
+      model: "selected-model",
+      effort: "high",
+    }), { subjectId: "user-1" });
+    const result = await run.completion;
+    assert.equal(result.outcome, "failed");
+    assert.match(result.error.message, /settings disk write failed/);
+    assert.equal(nativeStarts, 0);
+    if (existing) {
+      assert.equal((await store.getMode(sessionRef)).lease, null);
+    } else {
+      assert.equal(result.sessionRef, undefined);
+      assert.equal(await store.getBinding(sessionRef), null);
+      assert.equal(await store.getMode(sessionRef), null);
+    }
+    restorePersistence();
+    const retry = await service.startTurn(startRequest({
+      ...(existing ? { sessionRef } : {}),
+      model: "selected-model",
+      effort: "high",
+      clientOperationId: "retry-operation",
+    }), { subjectId: "user-1" });
+    const retryResult = await retry.completion;
+    assert.equal(retryResult.outcome, "completed");
+    assert.deepEqual(retryResult.sessionRef, sessionRef);
+    assert.equal((await store.getBinding(sessionRef)).reasoningEffort, "high");
+    assert.equal(nativeStarts, 1);
+  });
+}
+
 test("accepts a turn during an active compact and executes it after the lease is released", async () => {
   const store = sessionStore();
   const sessionRef = { backendId: "test", nativeSessionId: "session-1" };
@@ -225,6 +418,7 @@ test("accepts a turn during an active compact and executes it after the lease is
         ...status().capabilities,
         operations: { compact: true },
         session: { history: { read: true } },
+        model: { select: true, effort: true, effortOptions: ["high"] },
       },
     }),
     resolveSessionCwd: async () => "/workspace",
@@ -266,6 +460,8 @@ test("accepts a turn during an active compact and executes it after the lease is
     sessionRef,
     cwd: "",
     input: { blocks: [{ type: "text", text }] },
+    model: `${text}-model`,
+    effort: "high",
     clientOperationId: `operation-${index + 1}`,
   }));
   const runs = await Promise.all(requests.map((request) => service.startTurn(request, { subjectId: "user-1" })));
@@ -275,12 +471,14 @@ test("accepts a turn during an active compact and executes it after the lease is
   assert.equal(replayedFirst.queued, true);
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(startedInputs, []);
+  assert.equal((await store.getBinding(sessionRef)).modelId, "third-model");
 
   releaseCompact();
   await compactPromise;
   while (startedInputs.length === 0) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+  assert.equal((await store.getBinding(sessionRef)).modelId, "first-model");
   try {
     const replayedSecond = await service.startTurn(requests[1], { subjectId: "user-1" });
     assert.equal(replayedSecond.runId, runs[1].runId);
@@ -291,6 +489,7 @@ test("accepts a turn during an active compact and executes it after the lease is
   const results = await Promise.all(runs.map((run) => run.completion));
   assert.deepEqual(results.map((result) => result.outcome), ["completed", "completed", "completed"]);
   assert.deepEqual(startedInputs, ["first", "second", "third"]);
+  assert.equal((await store.getBinding(sessionRef)).modelId, "third-model");
   // turn終了後はleaseが解放されている
   assert.equal((await store.getMode(sessionRef))?.lease, null);
 });
@@ -877,6 +1076,7 @@ test("rejects an effort outside the backend's advertised effort catalog before b
 
 test("deduplicates a client operation and rejects conflicting reuse", async () => {
   let starts = 0;
+  let settingWrites = 0;
   let release;
   const backend = {
     backendId: "test",
@@ -890,10 +1090,21 @@ test("deduplicates a client operation and rejects conflicting reuse", async () =
       return { outcome: "completed" };
     },
   };
+  const store = sessionStore();
+  const bind = store.bind;
+  const setSettings = store.setSettings;
+  store.setSettings = async (...args) => {
+    settingWrites += 1;
+    return await setSettings(...args);
+  };
+  store.bind = async (...args) => {
+    if (Object.hasOwn(args[3] || {}, "settings")) settingWrites += 1;
+    return await bind(...args);
+  };
   const service = createAgentService({
     backends: [backend],
     operationStore: operationStore(),
-    sessionStore: sessionStore(),
+    sessionStore: store,
     resolveCanonicalCwd: async (cwd) => cwd,
     generateRunId: () => "run-1",
   });
@@ -908,6 +1119,7 @@ test("deduplicates a client operation and rejects conflicting reuse", async () =
   );
   release();
   await first.completion;
+  assert.equal(settingWrites, 1);
 });
 
 test("linearizes interrupt before a later backend success", async () => {
@@ -1716,44 +1928,44 @@ test("history keeps a leased mismatched binding fail-closed", async () => {
   assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/bound-workspace");
 });
 
-test("resumes an existing session with the history-resolved cwd and the same model", async () => {
+test("raw handoff clears stored neutral settings so newer native metadata wins", async () => {
   const sessions = sessionStore();
-  const sessionRef = { backendId: "test", nativeSessionId: "session-resume" };
+  const sessionRef = { backendId: "test", nativeSessionId: "session-raw" };
+  await sessions.bind(sessionRef, "/workspace", "neutral");
+  await sessions.setSettings(sessionRef, { modelId: "stored-old", reasoningEffort: "high" });
   const backend = {
     backendId: "test",
-    defaultDiscoveredSessionMode: "neutral",
+    defaultDiscoveredSessionMode: "raw",
     getStatus: async () => ({
       ...status(),
-      capabilities: {
-        session: { history: { read: true } },
-        model: { select: true },
-      },
+      capabilities: { session: { list: true, history: { read: true } } },
     }),
-    resolveSessionCwd: async () => "/workspace-link",
-    readHistory: async () => ({ items: [], modelId: "gpt-5" }),
-    async startTurn({ emit }) {
-      emit("turn.started", {});
-      return { outcome: "completed", sessionRef };
-    },
+    resolveSessionCwd: async () => "/workspace",
+    listSessions: async () => ({
+      sessions: [{ sessionRef, modelId: "native-new", reasoningEffort: "low" }],
+    }),
+    readHistory: async () => ({ items: [], modelId: "native-new", reasoningEffort: "low" }),
   };
   const service = createAgentService({
     backends: [backend],
     operationStore: operationStore(),
     sessionStore: sessions,
-    resolveCanonicalCwd: async (cwd) => cwd === "/workspace-link" ? "/workspace-real" : cwd,
-    generateRunId: () => "resume-run",
+    resolveCanonicalCwd: async (cwd) => cwd,
   });
-  const history = await service.readHistory({ sessionRef });
 
-  const run = await service.startTurn(startRequest({
+  assert.equal((await service.handoffSession({ sessionRef, targetMode: "raw" })).mode, "raw");
+  assert.equal((await sessions.getBinding(sessionRef)).modelId, undefined);
+  assert.deepEqual(await service.listSessions({ backendId: "test", cwd: "/workspace" }), {
+    sessions: [{ sessionRef, modelId: "native-new", reasoningEffort: "low" }],
+  });
+  assert.deepEqual(await service.readHistory({ sessionRef }), {
+    items: [],
+    modelId: "native-new",
+    reasoningEffort: "low",
     sessionRef,
-    cwd: history.canonicalCwd,
-    model: "gpt-5",
-    clientOperationId: "resume-operation",
-  }), { subjectId: "subject" });
-
-  assert.equal((await run.completion).outcome, "completed");
-  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/workspace-real");
+    canonicalCwd: "/workspace",
+    activeRun: null,
+  });
 });
 
 test("compact uses the Backend operation under the neutral session lease", async () => {

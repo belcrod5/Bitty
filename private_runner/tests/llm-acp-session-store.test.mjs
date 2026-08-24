@@ -502,7 +502,10 @@ test("persists one session mode and generation-checked lease across restarts", a
   })).status, "recovering");
   assert.equal((await restarted.settleAgentSessionLease(ref, acquired.lease.generation + 1, "released")).status, "stale");
   assert.equal((await restarted.settleAgentSessionLease(ref, acquired.lease.generation, "released")).status, "released");
-  assert.equal((await restarted.handoffAgentSessionMode(ref, "raw")).status, "changed");
+  await restarted.setAgentSessionSettings(ref, { modelId: "gpt-5.6-sol", reasoningEffort: "high" });
+  assert.equal((await restarted.handoffAgentSessionMode(ref, "raw", { clearSettings: true })).status, "changed");
+  assert.equal((await restarted.getAgentSessionBinding(ref)).modelId, undefined);
+  assert.equal((await restarted.getAgentSessionBinding(ref)).reasoningEffort, undefined);
 });
 
 test("repairs only an idle same-mode binding from an authoritative native cwd", async (t) => {
@@ -609,6 +612,14 @@ test("persists provider-aware Agent activity and read state", async (t) => {
   const store = createStore();
   await store.bindAgentSession(codex, cwd, "neutral");
   await store.bindAgentSession(claude, cwd, "neutral");
+  await store.setAgentSessionSettings(codex, {
+    modelId: "gpt-5.6-sol",
+    reasoningEffort: "medium",
+  });
+  await store.setAgentSessionSettings(claude, {
+    modelId: "sonnet",
+    reasoningEffort: "high",
+  });
   await store.agentSessionActivityStore.recordActivity(codex, cwd, "2099-08-24T01:00:00.000Z");
   await store.agentSessionActivityStore.recordActivity(claude, cwd, "2099-08-24T02:00:00.000Z");
   await store.agentSessionActivityStore.markSessionsRead(["shared"], {
@@ -621,6 +632,9 @@ test("persists provider-aware Agent activity and read state", async (t) => {
   assert.equal(sessions.get("codex").lastReadAt, "2100-08-24T03:00:00.000Z");
   assert.equal(sessions.get("claude").updatedAt, "2099-08-24T02:00:00.000Z");
   assert.notEqual(sessions.get("claude").lastReadAt, "2100-08-24T03:00:00.000Z");
+  assert.equal(sessions.get("claude").modelRef, "sonnet");
+  assert.equal(sessions.get("claude").reasoningEffort, "high");
+  assert.equal((await createStore().getAgentSessionBinding(claude)).reasoningEffort, "high");
 
   const directoryResult = await store.agentSessionActivityStore.markDirectoryRead(
     cwd,
@@ -633,6 +647,67 @@ test("persists provider-aware Agent activity and read state", async (t) => {
     updatedGroup.sessions.map((session) => session.lastReadAt),
     ["2101-08-24T04:00:00.000Z", "2101-08-24T04:00:00.000Z"],
   );
+});
+
+test("session settings persistence rolls back on failure and succeeds on retry", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-settings-failure-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "agent_metadata.json");
+  let failNextRename = false;
+  const options = {
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    fileSystem: {
+      ...fs,
+      async rename(...args) {
+        if (failNextRename) {
+          failNextRename = false;
+          throw Object.assign(new Error("settings rename failed"), { code: "EIO" });
+        }
+        return await fs.rename(...args);
+      },
+    },
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: false,
+    workspaceRoot: tempRoot,
+  };
+  const ref = { backendId: "claude", nativeSessionId: "session-1" };
+  const store = createLlmAcpSessionStore(options);
+
+  failNextRename = true;
+  await assert.rejects(
+    store.bindAgentSession(ref, tempRoot, "neutral", {
+      settings: { modelId: "sonnet", reasoningEffort: "high" },
+    }),
+    /settings rename failed/,
+  );
+  assert.equal(await store.getAgentSessionBinding(ref), null);
+  assert.equal(await store.getAgentSessionMode(ref), null);
+
+  await store.bindAgentSession(ref, tempRoot, "neutral", {
+    settings: { modelId: "sonnet", reasoningEffort: "high" },
+  });
+  assert.equal((await store.getAgentSessionBinding(ref)).reasoningEffort, "high");
+
+  failNextRename = true;
+  await assert.rejects(
+    store.setAgentSessionSettings(ref, { modelId: "opus", reasoningEffort: "low" }),
+    /settings rename failed/,
+  );
+  assert.equal((await store.getAgentSessionBinding(ref)).reasoningEffort, "high");
+
+  await store.setAgentSessionSettings(ref, { modelId: "opus", reasoningEffort: "low" });
+  const restarted = createLlmAcpSessionStore({ ...options, fileSystem: fs });
+  assert.deepEqual(await restarted.getAgentSessionBinding(ref), {
+    ...(await store.getAgentSessionBinding(ref)),
+    modelId: "opus",
+    reasoningEffort: "low",
+  });
+  assert.equal((await restarted.getAgentSessionMode(ref)).mode, "neutral");
 });
 
 test("migrates Agent bindings without read state as already read", async (t) => {
