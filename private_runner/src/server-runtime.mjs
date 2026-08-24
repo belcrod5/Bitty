@@ -10854,7 +10854,7 @@ function cleanupNoClientRelaysForThread(threadIdRaw, currentRelay, reason = "dup
       threadId,
       reason,
     });
-    cleanupCodexRelay(currentRelay, `${reason}_pending_canonical`);
+    cleanupCodexRelay(currentRelay, "session_busy");
     codexWsRelayIdByThreadId.set(threadId, protectedRelay.relayId);
     return;
   }
@@ -10863,11 +10863,16 @@ function cleanupNoClientRelaysForThread(threadIdRaw, currentRelay, reason = "dup
     if (canonical) codexWsRelayIdByThreadId.set(threadId, canonical.relayId);
     return;
   }
+  let activeRelay = null;
   for (const relay of Array.from(codexWsRelaysById.values())) {
     if (!relay || relay.closed || relay === currentRelay) continue;
     if (String(relay.threadId || "").trim() !== threadId) continue;
     if (relay.clients.size > 0) continue;
     if (relay.pendingApprovalRequestIds instanceof Set && relay.pendingApprovalRequestIds.size > 0) continue;
+    if (relay.agentLease || relay.agentLeaseSettlement || (relay.turnStarted && !relay.turnCompleted)) {
+      activeRelay ||= relay;
+      continue;
+    }
     void appendCodexWsProxyDebug("duplicate_thread_relay_cleanup", {
       relayId: relay.relayId,
       currentRelayId: currentRelay?.relayId || "",
@@ -10880,6 +10885,7 @@ function cleanupNoClientRelaysForThread(threadIdRaw, currentRelay, reason = "dup
     });
     cleanupCodexRelay(relay, reason);
   }
+  if (activeRelay) codexWsRelayIdByThreadId.set(threadId, activeRelay.relayId);
 }
 
 function isClientAttachedToAnyCodexRelay(clientWs) {

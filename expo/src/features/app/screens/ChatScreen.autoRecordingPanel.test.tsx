@@ -375,6 +375,8 @@ describe("ChatScreen auto recording panel target", () => {
     await fireEvent.press(screen.getByText("mic"));
 
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith("panel-a");
+    await fireEvent.press(screen.getByText("Workspace"));
+    expect(mockCodexScheduleProps.current?.currentThreadId).toBe("session-1");
     await screen.unmount();
   });
 
@@ -395,6 +397,7 @@ describe("ChatScreen auto recording panel target", () => {
     const expectedModels = [{ value: "gpt-5.6-sol", label: "ChatGPT 5.6 Sol" }];
     expect(mockCodexScheduleProps.current).toMatchObject({
       currentModelRef: "gpt-5.6-sol",
+      currentThreadId: "",
       modelOptions: expectedModels,
     });
     expect(mockLocationScheduleProps.current).toMatchObject({

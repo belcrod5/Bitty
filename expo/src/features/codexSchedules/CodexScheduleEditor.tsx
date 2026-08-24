@@ -30,6 +30,7 @@ type Props = {
   directories: readonly { path: string; displayName: string }[];
   modelOptions: readonly { value: string; label: string }[];
   thinkOptions: readonly ReasoningEffort[];
+  currentThreadId: string;
   onChange: (schedule: CodexSchedule) => void;
   onClose: () => void;
   onDelete: (id: string) => void;
@@ -48,6 +49,7 @@ export function CodexScheduleEditor({
   directories,
   modelOptions,
   thinkOptions,
+  currentThreadId,
   onChange,
   onClose,
   onDelete,
@@ -69,6 +71,13 @@ export function CodexScheduleEditor({
     ...modelOptions,
     ...(!modelOptions.some((option) => option.value === schedule.modelRef) && schedule.modelRef
       ? [{ value: schedule.modelRef, label: schedule.modelRef }]
+      : []),
+  ];
+  const threadOptions = [
+    { value: "", label: "新規チャット" },
+    ...(currentThreadId ? [{ value: currentThreadId, label: "現在のチャット" }] : []),
+    ...(schedule.threadId && schedule.threadId !== currentThreadId
+      ? [{ value: schedule.threadId, label: `指定済みチャット: ${schedule.threadId}` }]
       : []),
   ];
 
@@ -138,6 +147,13 @@ export function CodexScheduleEditor({
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>実行</Text>
+            <Text style={styles.label}>実行先</Text>
+            <OptionSelectField
+              title="実行先"
+              options={threadOptions}
+              selectedValue={schedule.threadId || ""}
+              onSelect={(threadId) => update({ threadId: threadId || null })}
+            />
             <Text style={styles.label}>ディレクトリ</Text>
             <OptionSelectField title="ディレクトリ" options={cwdOptions} selectedValue={schedule.cwd} onSelect={(cwd) => update({ cwd })} />
             <Text style={styles.label}>モデル</Text>

@@ -5,6 +5,8 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { WebSocket, WebSocketServer } from "ws";
 
+import { createCodexRelayInitiator } from "../src/codex-relay-initiator.mjs";
+
 const upstream = new WebSocketServer({ port: 0 });
 await new Promise((resolve) => upstream.once("listening", resolve));
 const address = upstream.address();
@@ -39,6 +41,56 @@ function waitFor(check, timeoutMs = 2000) {
     poll();
   });
 }
+
+test("runner initiator preserves only safe upstream error codes", async () => {
+  for (const [upstreamCode, expectedCode] of [
+    ["session_busy", "session_busy"],
+    ["unsafe code", undefined],
+    ["x".repeat(201), undefined],
+  ]) {
+    const relay = { threadId: "thread-existing" };
+    const initiator = createCodexRelayInitiator({
+      relay,
+      operationId: "operation-test",
+      forward: (_relay, raw, _isBinary, params) => {
+        const request = JSON.parse(raw);
+        params.clientWs.send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32009, message: "busy", data: { code: upstreamCode } },
+        }));
+      },
+    });
+    await assert.rejects(
+      initiator.client.request("turn/start"),
+      (error) => error.message === "busy" && error.code === expectedCode,
+    );
+    initiator.close();
+  }
+});
+
+test("runner initiator rejects pending RPCs immediately when its relay closes", async () => {
+  for (const [reason, expectedCode] of [
+    ["session_busy", "session_busy"],
+    ["unsafe reason", "relay_closed"],
+  ]) {
+    const initiator = createCodexRelayInitiator({
+      relay: { threadId: "thread-existing" },
+      operationId: "operation-test",
+      forward: (_relay, _raw, _isBinary, params) => {
+        params.clientWs.send(JSON.stringify({ type: "runner_relay_closed", reason }));
+      },
+    });
+    await assert.rejects(
+      initiator.client.request("thread/resume"),
+      (error) => error.message === "Codex relay closed" && error.code === expectedCode,
+    );
+    await assert.rejects(
+      initiator.client.request("turn/start"),
+      (error) => error.message === "Codex relay closed" && error.code === expectedCode,
+    );
+  }
+});
 
 test("runner-initiated turns use the normal relay and leave approvals for later clients", async () => {
   const received = [];

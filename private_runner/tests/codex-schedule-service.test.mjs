@@ -138,6 +138,7 @@ test("replacement is atomic, serialized, and preserves action-only next occurren
 
   const created = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
   assert.equal(created.revision, 1);
+  assert.equal(created.schedules[0].threadId, null);
   assert.equal(created.schedules[0].nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
   assert.deepEqual(renameTargets, [harness.definitionsPath, harness.runtimePath]);
 
@@ -183,10 +184,11 @@ test("item create, patch, and delete share revision and preserve idempotent retr
 
   const updated = await harness.service.patchSchedule(ID_A, {
     baseRevision: 1,
-    patch: { prompt: "Updated action" },
+    patch: { prompt: "Updated action", threadId: "thread-existing" },
   });
   assert.equal(updated.updated, true);
   assert.equal(updated.revision, 2);
+  assert.equal(updated.schedule.threadId, "thread-existing");
   assert.equal(updated.schedule.nextOccurrenceAt, created.schedule.nextOccurrenceAt);
   await harness.service.snapshot();
   const timerCountAfterPatch = harness.timers.length;
@@ -236,6 +238,10 @@ test("item mutations are strict and competing revisions serialize", async (t) =>
   await assert.rejects(
     harness.service.patchSchedule(ID_A, { baseRevision: 1, patch: { id: ID_B } }),
     /not supported/,
+  );
+  await assert.rejects(
+    harness.service.patchSchedule(ID_A, { baseRevision: 1, patch: { threadId: "invalid thread" } }),
+    /threadId is invalid/,
   );
 
   const patch = harness.service.patchSchedule(ID_A, {
@@ -477,6 +483,7 @@ test("revision mismatch recovery rebuilds future runtime and keeps only matching
 
   const snapshot = await harness.service.snapshot();
   assert.equal(snapshot.revision, 2);
+  assert.equal(snapshot.schedules[0].threadId, null);
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
   assert.equal(snapshot.schedules[0].lastDispatch.threadId, "thread-old");
   const runtime = await readJson(harness.runtimePath);
@@ -553,6 +560,7 @@ test("startup catches up one-time once and recurring schedules at only the lates
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, null);
   assert.equal(snapshot.schedules[0].lastDispatch.status, "fired");
   assert.equal(starts[0].serviceName, "private-runner-codex-schedule");
+  assert.equal(starts[0].threadId, "");
 
   const recurringStarts = [];
   const recurring = await makeHarness({
@@ -563,13 +571,26 @@ test("startup catches up one-time once and recurring schedules at only the lates
     },
   });
   t.after(() => fs.rm(recurring.directory, { recursive: true, force: true }));
-  await recurring.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
+  await recurring.service.replaceSchedules({
+    baseRevision: 0,
+    schedules: [definition({ threadId: "thread-existing" })],
+  });
   recurring.currentClock.set("2026-08-17T12:00:00.000Z");
   await recurring.service.start();
   snapshot = await recurring.service.snapshot();
   assert.equal(recurringStarts.length, 1);
+  assert.equal(recurringStarts[0].threadId, "thread-existing");
   assert.equal(snapshot.schedules[0].lastDispatch.occurrenceAt, "2026-08-17T00:00:00.000Z");
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, "2026-08-18T00:00:00.000Z");
+});
+
+test("new-chat definitions retain their legacy hash while thread targets affect identity", () => {
+  const legacy = definition();
+  assert.equal(codexScheduleDefinitionHash(legacy), codexScheduleDefinitionHash({ ...legacy, threadId: null }));
+  assert.notEqual(
+    codexScheduleDefinitionHash(legacy),
+    codexScheduleDefinitionHash({ ...legacy, threadId: "thread-existing" }),
+  );
 });
 
 test("overlapping evaluation dispatches once and restart never retries a persisted claim", async (t) => {

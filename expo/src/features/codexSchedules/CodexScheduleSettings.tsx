@@ -39,6 +39,7 @@ function newSchedule(props: CodexScheduleSettingsProps): CodexSchedule {
     modelRef: props.currentModelRef || props.modelOptions[0]?.value || "",
     reasoningEffort: props.currentReasoningEffort,
     prompt: "",
+    threadId: null,
     nextOccurrenceAt: null,
     lastDispatch: null,
   };
@@ -222,6 +223,7 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
             directories={props.directories}
             modelOptions={props.modelOptions}
             thinkOptions={props.thinkOptions}
+            currentThreadId={props.currentThreadId}
             onChange={updateSchedule}
             onClose={() => setEditingId(null)}
             onDelete={(id) => {

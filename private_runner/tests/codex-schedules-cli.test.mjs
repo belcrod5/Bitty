@@ -88,7 +88,7 @@ test("CLI uses env-file overrides, the token file, and fixed loopback CRUD reque
   const createInput = {
     baseRevision: 0,
     requestId: ID,
-    schedule: { prompt: "secret prompt" },
+    schedule: { prompt: "secret prompt", threadId: "thread-current" },
   };
   assert.equal((await runCli(cli.cli, ["create"], {
     env: processEnv,
@@ -113,6 +113,7 @@ test("CLI uses env-file overrides, the token file, and fixed loopback CRUD reque
   assert.equal(requests[1].requestId, ID);
   assert.equal("requestId" in requests[1].body, false);
   assert.equal(requests[1].body.baseRevision, 0);
+  assert.equal(requests[1].body.schedule.threadId, "thread-current");
 });
 
 test("create validates requestId before config and preserves it on later failures", async (t) => {

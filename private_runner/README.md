@@ -631,6 +631,11 @@ npm run ios
 - `PATCH /codex-schedules/:id`: mutable fieldだけを部分更新
 - `DELETE /codex-schedules/:id`: `{ "baseRevision": ... }` で一件削除
 
+scheduleの`threadId`は実行先です。`null`または省略時は従来どおり毎回新規threadを作成し、
+既存のCodex thread IDを指定した場合だけ、そのthreadをresumeしてturnを追加します。
+iOSの編集画面では、現在表示中のCodexチャットを実行先に選択できます。Claudeなど別backendの
+session IDはCodex scheduleへ渡しません。
+
 同じMac上のCodexからはBearer tokenを引数へ出さない専用CLIを使います。CLIは
 `private_runner/.env` の `RUNNER_TOKEN_FILE` と `RUNNER_PORT`（次点 `PORT`）を読み、
 `http://127.0.0.1` だけへ接続します。token fileは所有者だけが読めるmode 600にしてください。
@@ -644,6 +649,7 @@ node private_runner/tools/codex-schedules.mjs delete <schedule-id> < delete-requ
 
 mutation JSONはstdinまたは`--file /path/to/request.json`のどちらか一方から渡します。
 createのJSONには`baseRevision`, `schedule`と、再試行に使う任意の`requestId` UUIDを入れます。
+既存チャットを実行先にする場合は`schedule.threadId`へそのCodex thread IDを指定します。
 応答を失ったcreateは、出力された同じ`requestId`、元の`baseRevision`、同じscheduleで再試行します。
 revision conflictでは自動上書きせず、`list`で再取得して変更内容を見直してください。
 
