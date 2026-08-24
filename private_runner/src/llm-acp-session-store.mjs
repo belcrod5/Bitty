@@ -197,12 +197,16 @@ export function createLlmAcpSessionStore(deps = {}) {
       const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt);
       if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd) || !updatedAt) continue;
       const lastReadAt = normalizeSessionUpdatedAt(value?.lastReadAt) || updatedAt;
+      const modelId = String(value?.modelId || "").trim();
+      const reasoningEffort = String(value?.reasoningEffort || "").trim();
       agentSessionBindings.set(agentSessionKey(backendId, nativeSessionId), {
         backendId,
         nativeSessionId,
         canonicalCwd: path.resolve(canonicalCwd),
         updatedAt,
         lastReadAt,
+        ...(modelId ? { modelId } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
       });
     }
     for (const value of Array.isArray(parsed?.agentSessionModes) ? parsed.agentSessionModes : []) {
@@ -648,12 +652,14 @@ export function createLlmAcpSessionStore(deps = {}) {
           updatedAt: binding.updatedAt,
           lastReadAt: binding.lastReadAt,
           source: "agent",
+          ...(binding.modelId ? { modelRef: binding.modelId } : {}),
+          ...(binding.reasoningEffort ? { reasoningEffort: binding.reasoningEffort } : {}),
         }))
         .sort(compareSessionHistoryEntries),
     }));
   }
 
-  async function recordAgentSessionActivity(sessionRef, canonicalCwdRaw, updatedAtRaw) {
+  async function recordAgentSessionActivity(sessionRef, canonicalCwdRaw, updatedAtRaw, settings = {}) {
     const backendId = String(sessionRef?.backendId || "").trim();
     const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
     const rawCwd = String(canonicalCwdRaw || "").trim();
@@ -669,6 +675,10 @@ export function createLlmAcpSessionStore(deps = {}) {
       if (!binding || binding.canonicalCwd !== canonicalCwd) return { status: "missing" };
       const previous = { ...binding };
       binding.updatedAt = updatedAt;
+      const modelId = String(settings?.modelId || "").trim();
+      const reasoningEffort = String(settings?.reasoningEffort || "").trim();
+      if (modelId) binding.modelId = modelId;
+      if (reasoningEffort) binding.reasoningEffort = reasoningEffort;
       try {
         await persistAcpSessionStore();
       } catch (error) {

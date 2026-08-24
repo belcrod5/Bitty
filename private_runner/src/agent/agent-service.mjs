@@ -337,6 +337,15 @@ export function createAgentService({
     return await sessionStore.getMode(sessionRef);
   }
 
+  async function withStoredSessionSettings(session) {
+    const binding = await sessionStore.getBinding(session?.sessionRef);
+    return {
+      ...session,
+      modelId: String(binding?.modelId || session?.modelId || "").trim(),
+      reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
+    };
+  }
+
   async function finish(run, outcome, error = null) {
     if (run.terminal) return run.result;
     run.state = "finalizing";
@@ -363,7 +372,10 @@ export function createAgentService({
       await sessionStore.settle(run.sessionRef, run.lease.generation, nativeKnownStopped ? "released" : "recovering").catch(() => {});
     }
     if (finalOutcome === "completed" && run.sessionRef) {
-      await sessionStore.recordActivity(run.sessionRef, run.cwd, now()).catch(() => {});
+      await sessionStore.recordActivity(run.sessionRef, run.cwd, now(), {
+        modelId: run.model,
+        reasoningEffort: run.effort,
+      }).catch(() => {});
     }
     publish(run, terminalType, result);
     run.terminal = true;
@@ -672,6 +684,8 @@ export function createAgentService({
         sessionResolved: Boolean(request.sessionRef),
         sessionKey: request.sessionRef ? sessionKey(request.sessionRef) : "",
         cwd: canonicalCwd,
+        model: request.model,
+        effort: request.effort,
         lease: preAcquiredLease,
         queuedForCompact,
         sequence: 0,
@@ -950,10 +964,13 @@ export function createAgentService({
           throw agentError("capability_unsupported", "session listing is not supported", { backendId: backend.backendId });
         }
         const singlePage = await backend.listSessions({ ...options, cwd });
+        const sessions = await Promise.all(
+          (Array.isArray(singlePage?.sessions) ? singlePage.sessions : []).map(withStoredSessionSettings),
+        );
         // 項目別cursorは合成層のカット専用の内部値。all-scopeと同様wireへは出さない。
         return {
           ...singlePage,
-          sessions: (Array.isArray(singlePage?.sessions) ? singlePage.sessions : []).map((session) => {
+          sessions: sessions.map((session) => {
             const { cursor: _itemCursor, ...rest } = session;
             return rest;
           }),
@@ -983,7 +1000,10 @@ export function createAgentService({
             backendId: backend.backendId,
             cursor: compositeCursor?.[backend.backendId] || "",
           });
-          return { backendId: backend.backendId, page };
+          const sessions = await Promise.all(
+            (Array.isArray(page?.sessions) ? page.sessions : []).map(withStoredSessionSettings),
+          );
+          return { backendId: backend.backendId, page: { ...page, sessions } };
         } catch (error) {
           return { backendId: backend.backendId, error };
         }
@@ -1060,8 +1080,11 @@ export function createAgentService({
       }
       const page = await backend.readHistory({ ...options, sessionRef });
       const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle: true });
+      const binding = await sessionStore.getBinding(sessionRef);
       return {
         ...page,
+        modelId: String(binding?.modelId || page?.modelId || "").trim(),
+        reasoningEffort: String(binding?.reasoningEffort || page?.reasoningEffort || "").trim(),
         sessionRef,
         canonicalCwd,
         activeRun: getActiveRun(sessionRef, context),

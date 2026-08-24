@@ -609,8 +609,14 @@ test("persists provider-aware Agent activity and read state", async (t) => {
   const store = createStore();
   await store.bindAgentSession(codex, cwd, "neutral");
   await store.bindAgentSession(claude, cwd, "neutral");
-  await store.agentSessionActivityStore.recordActivity(codex, cwd, "2099-08-24T01:00:00.000Z");
-  await store.agentSessionActivityStore.recordActivity(claude, cwd, "2099-08-24T02:00:00.000Z");
+  await store.agentSessionActivityStore.recordActivity(codex, cwd, "2099-08-24T01:00:00.000Z", {
+    modelId: "gpt-5.6-sol",
+    reasoningEffort: "medium",
+  });
+  await store.agentSessionActivityStore.recordActivity(claude, cwd, "2099-08-24T02:00:00.000Z", {
+    modelId: "sonnet",
+    reasoningEffort: "high",
+  });
   await store.agentSessionActivityStore.markSessionsRead(["shared"], {
     lastReadAt: "2100-08-24T03:00:00.000Z",
   });
@@ -621,6 +627,9 @@ test("persists provider-aware Agent activity and read state", async (t) => {
   assert.equal(sessions.get("codex").lastReadAt, "2100-08-24T03:00:00.000Z");
   assert.equal(sessions.get("claude").updatedAt, "2099-08-24T02:00:00.000Z");
   assert.notEqual(sessions.get("claude").lastReadAt, "2100-08-24T03:00:00.000Z");
+  assert.equal(sessions.get("claude").modelRef, "sonnet");
+  assert.equal(sessions.get("claude").reasoningEffort, "high");
+  assert.equal((await createStore().getAgentSessionBinding(claude)).reasoningEffort, "high");
 
   const directoryResult = await store.agentSessionActivityStore.markDirectoryRead(
     cwd,

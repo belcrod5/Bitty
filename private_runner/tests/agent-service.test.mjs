@@ -75,7 +75,13 @@ function sessionStore() {
       modes.set(key(ref), entry);
       return { status: "changed", mode };
     },
-    async recordActivity() { return { status: "updated" }; },
+    async recordActivity(ref, canonicalCwd, _updatedAt, settings = {}) {
+      const binding = bindings.get(key(ref));
+      if (!binding || binding.canonicalCwd !== canonicalCwd) return { status: "missing" };
+      if (settings.modelId) binding.modelId = settings.modelId;
+      if (settings.reasoningEffort) binding.reasoningEffort = settings.reasoningEffort;
+      return { status: "updated" };
+    },
   };
 }
 
@@ -161,6 +167,7 @@ test("emits one ordered lifecycle and resolves completion to the terminal payloa
     { backendId: "test", nativeSessionId: "session-1" },
     "/workspace",
     "2026-08-21T00:00:00.000Z",
+    { modelId: "", reasoningEffort: "" },
   ]]);
   assert.throws(
     () => service.subscribe(run.runId, { afterSequence: Number.NaN, onEvent() {} }, { subjectId: "user-1" }),
@@ -1716,7 +1723,7 @@ test("history keeps a leased mismatched binding fail-closed", async () => {
   assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/bound-workspace");
 });
 
-test("resumes an existing session with the history-resolved cwd and the same model", async () => {
+test("resumes an existing session and exposes its latest successful model settings", async () => {
   const sessions = sessionStore();
   const sessionRef = { backendId: "test", nativeSessionId: "session-resume" };
   const backend = {
@@ -1725,12 +1732,13 @@ test("resumes an existing session with the history-resolved cwd and the same mod
     getStatus: async () => ({
       ...status(),
       capabilities: {
-        session: { history: { read: true } },
-        model: { select: true },
+        session: { list: true, history: { read: true } },
+        model: { select: true, effort: true, effortOptions: ["low", "high"] },
       },
     }),
     resolveSessionCwd: async () => "/workspace-link",
-    readHistory: async () => ({ items: [], modelId: "gpt-5" }),
+    listSessions: async () => ({ sessions: [{ sessionRef, modelId: "gpt-5", reasoningEffort: "low" }] }),
+    readHistory: async () => ({ items: [], modelId: "gpt-5", reasoningEffort: "low" }),
     async startTurn({ emit }) {
       emit("turn.started", {});
       return { outcome: "completed", sessionRef };
@@ -1748,12 +1756,29 @@ test("resumes an existing session with the history-resolved cwd and the same mod
   const run = await service.startTurn(startRequest({
     sessionRef,
     cwd: history.canonicalCwd,
-    model: "gpt-5",
+    model: "gpt-5.1",
+    effort: "high",
     clientOperationId: "resume-operation",
   }), { subjectId: "subject" });
 
   assert.equal((await run.completion).outcome, "completed");
-  assert.equal((await sessions.getBinding(sessionRef)).canonicalCwd, "/workspace-real");
+  assert.deepEqual(await sessions.getBinding(sessionRef), {
+    ...sessionRef,
+    canonicalCwd: "/workspace-real",
+    modelId: "gpt-5.1",
+    reasoningEffort: "high",
+  });
+  assert.deepEqual(await service.listSessions({ backendId: "test", cwd: "/workspace-real" }), {
+    sessions: [{ sessionRef, modelId: "gpt-5.1", reasoningEffort: "high" }],
+  });
+  assert.deepEqual(await service.readHistory({ sessionRef }), {
+    items: [],
+    modelId: "gpt-5.1",
+    reasoningEffort: "high",
+    sessionRef,
+    canonicalCwd: "/workspace-real",
+    activeRun: null,
+  });
 });
 
 test("compact uses the Backend operation under the neutral session lease", async () => {
