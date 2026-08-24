@@ -5686,6 +5686,9 @@ export default function App() {
     getPanelConversationMessages: (panelId) => (
       getPanelConversationMessagesForCodexRef.current(panelId)
     ),
+    getSessionConversationMessages: (sessionId) => (
+      getSessionConversationMessagesForCodexRef.current(sessionId)
+    ),
     setPanelConversationMessages: (panelId, messages, options) => {
       setPanelConversationMessagesForCodexRef.current(panelId, messages, options);
     },
@@ -6786,12 +6789,6 @@ export default function App() {
   getSessionConversationMessagesForCodexRef.current = (sessionIdRaw: string) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return [];
-    const visibleSessionId = parseOptionalSessionId(
-      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
-    );
-    if (visibleSessionId === sessionId) {
-      return cloneConversationMessages(conversationMessagesRef.current);
-    }
     const runtimeSnapshot = getConversationRuntimeSnapshot(sessionId);
     if (runtimeSnapshot) return runtimeSnapshot.conversationMessages;
     for (const entry of Object.values(panelRuntimeEntriesByIdRef.current as Record<string, PanelRuntimeEntry>)) {
@@ -6799,6 +6796,12 @@ export default function App() {
       const entrySessionId = parseOptionalSessionId(snapshot?.selectedSessionId || entry?.sessionId);
       if (entrySessionId !== sessionId || !snapshot) continue;
       return cloneConversationMessages(snapshot.conversationMessages);
+    }
+    const visibleSessionId = parseOptionalSessionId(
+      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
+    );
+    if (visibleSessionId === sessionId) {
+      return cloneConversationMessages(conversationMessagesRef.current);
     }
     return [];
   };
@@ -6865,7 +6868,7 @@ export default function App() {
       selectedThreadStatusType: selectedThreadStatusTypeForRuntime,
       syncedPanelIds,
       messageCount: messages.length,
-      source: "codex_relay_observer",
+      source: "session_event_projection",
     }, {
       throttleMs: isResponding ? 1000 : 0,
       throttleKey: isResponding
@@ -6963,36 +6966,8 @@ export default function App() {
     const sessionId = parseOptionalSessionId(
       request?.sessionInfo?.sessionId || request?.threadId
     );
-    const requestedPanelId = normalizeRuntimePanelId(request?.sessionInfo?.panelId || "");
-    const knownPanelIds = Array.from(new Set([
-      requestedPanelId,
-      ...Object.keys(panelRuntimeEntriesById),
-    ].filter(Boolean)));
-    const targetPanelId = (() => {
-      if (requestedPanelId && panelRuntimeEntriesById[requestedPanelId]) return requestedPanelId;
-      if (sessionId) {
-        for (const panelId of knownPanelIds) {
-          const entry = panelRuntimeEntriesById[panelId];
-          const snapshotSessionId = parseOptionalSessionId(entry?.snapshot?.selectedSessionId || entry?.sessionId);
-          if (snapshotSessionId === sessionId) return panelId;
-        }
-      }
-      return "";
-    })();
-
-    if (!targetPanelId) {
-      logSessionDiag("approval_message_skipped_missing_panel", {
-        sessionId,
-        requestedPanelId: requestedPanelId || undefined,
-        command: String(request?.command || "").trim() || undefined,
-      }, {
-        throttleMs: 1000,
-        throttleKey: `approval_message_skipped_missing_panel:${sessionId}:${content}`,
-      });
-      return;
-    }
-
-    const messages = getPanelConversationMessagesForCodex(targetPanelId);
+    if (!sessionId) return;
+    const messages = getSessionConversationMessagesForCodex(sessionId);
     const nextMessages = appendAssistantEventMessageToMessages({
       messages,
       line: content,
@@ -7000,16 +6975,14 @@ export default function App() {
     });
     if (!nextMessages) return;
     playAssistantEventSfx(content);
-    setPanelConversationMessagesForCodex(targetPanelId, nextMessages, {
+    setSessionConversationMessagesForCodex(sessionId, nextMessages, {
       sessionId,
     });
   }, [
     buildConversationMessage,
-    getPanelConversationMessagesForCodex,
-    logSessionDiag,
-    panelRuntimeEntriesById,
+    getSessionConversationMessagesForCodex,
     playAssistantEventSfx,
-    setPanelConversationMessagesForCodex,
+    setSessionConversationMessagesForCodex,
   ]);
   appendAssistantEventMessageForApprovalRef.current = appendAssistantEventMessageForApproval;
   const hydratePanelFromSessionHistory = useCallback(async (params: {

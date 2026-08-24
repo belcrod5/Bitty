@@ -48,6 +48,13 @@ function panelEntry(
 function createHarness(params: {
   visibleSessionId?: string;
   entries?: Record<string, PanelRuntimeEntry>;
+  runtimes?: Record<string, {
+    sessionId: string;
+    conversationMessages: ConversationMessage[];
+    contextUsedPct: number | null;
+    isResponding: boolean;
+    selectedThreadStatusType: string;
+  }>;
 }) {
   let entries: Record<string, PanelRuntimeEntry> = params.entries || {};
   const runtimeBySessionId: Record<string, {
@@ -56,7 +63,7 @@ function createHarness(params: {
     contextUsedPct: number | null;
     isResponding: boolean;
     selectedThreadStatusType: string;
-  }> = {};
+  }> = { ...params.runtimes };
   const setVisibleConversationMessages = jest.fn();
   const setVisibleReplyLoading = jest.fn();
   const setVisibleThreadStatusType = jest.fn();
@@ -196,7 +203,7 @@ describe("usePanelConversationWriteController", () => {
     expect(harness.setVisibleContextUsedPct).toHaveBeenCalledWith(42);
   });
 
-  test("パネルのセッションが切り替わっていても表示中セッションのstate/runtimeは更新される", async () => {
+  test("別セッションへ切替済みのパネルには遅延書込を投影しない", async () => {
     const harness = createHarness({
       visibleSessionId: "session-b",
       entries: { panel_1: panelEntry("panel_1", "session-a", baseConversation) },
@@ -213,9 +220,69 @@ describe("usePanelConversationWriteController", () => {
     // source panelはsession不一致ガードにより据え置き。
     expect(harness.getEntries().panel_1.snapshot.selectedSessionId).toBe("session-a");
     expect(harness.getEntries().panel_1.snapshot.conversationMessages).toHaveLength(2);
-    // 一方で書込対象セッションのruntimeと表示中stateは更新される。
+    // 書込対象セッションのruntimeだけを更新し、切替後の表示stateには触れない。
     expect(harness.getRuntime("session-b")?.conversationMessages).toHaveLength(4);
-    expect(harness.setVisibleConversationMessages).toHaveBeenCalledTimes(1);
+    expect(harness.setVisibleConversationMessages).not.toHaveBeenCalled();
+  });
+
+  test("clear済みの共有パネルを遅延セッション書込が再取得しない", async () => {
+    const harness = createHarness({
+      visibleSessionId: "session-a",
+      entries: {
+        panel_1: {
+          sessionId: "",
+          snapshot: emptySnapshot("panel_1"),
+        },
+      },
+    });
+    const { result } = await renderHook(() => usePanelConversationWriteController(harness.options));
+
+    await act(async () => {
+      result.current.setPanelConversationMessagesForCodex("panel_1", compactConversation, {
+        isResponding: true,
+        sessionId: "session-a",
+      });
+    });
+
+    expect(harness.getRuntime("session-a")?.conversationMessages).toHaveLength(4);
+    expect(harness.getEntries().panel_1.snapshot.selectedSessionId).toBe("");
+    expect(harness.getEntries().panel_1.snapshot.conversationMessages).toHaveLength(0);
+    expect(harness.setVisibleConversationMessages).not.toHaveBeenCalled();
+  });
+
+  test("別セッションへの遅延書込は対象runtimeのcontext/statusを保持する", async () => {
+    const sourceEntry = panelEntry("panel_1", "session-b", baseConversation);
+    sourceEntry.snapshot.contextUsedPct = 88;
+    sourceEntry.snapshot.isResponding = true;
+    sourceEntry.snapshot.selectedThreadStatusType = "waiting_approval";
+    const harness = createHarness({
+      visibleSessionId: "session-a",
+      entries: { panel_1: sourceEntry },
+      runtimes: {
+        "session-a": {
+          sessionId: "session-a",
+          conversationMessages: baseConversation,
+          contextUsedPct: 12,
+          isResponding: false,
+          selectedThreadStatusType: "idle",
+        },
+      },
+    });
+    const { result } = await renderHook(() => usePanelConversationWriteController(harness.options));
+
+    await act(async () => {
+      result.current.setPanelConversationMessagesForCodex("panel_1", compactConversation, {
+        sessionId: "session-a",
+      });
+    });
+
+    expect(harness.getRuntime("session-a")).toMatchObject({
+      contextUsedPct: 12,
+      isResponding: false,
+      selectedThreadStatusType: "idle",
+    });
+    expect(harness.getEntries().panel_1.snapshot.selectedSessionId).toBe("session-b");
+    expect(harness.setVisibleConversationMessages).not.toHaveBeenCalled();
   });
 
   test("同一セッションを表示している他パネルにも書込が同期される", async () => {

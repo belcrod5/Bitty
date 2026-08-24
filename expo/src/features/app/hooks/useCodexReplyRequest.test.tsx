@@ -32,6 +32,7 @@ type WriteCall = {
 
 function createHarness() {
   const store: Record<string, StoredMessage[]> = {};
+  const sessionStore: Record<string, StoredMessage[]> = {};
   const writeCalls: WriteCall[] = [];
   let capturedTurnOptions: any = null;
   let resolveTurn: (result: unknown) => void = () => {};
@@ -96,12 +97,15 @@ function createHarness() {
     setHistory: jest.fn(),
     createHistoryEntry: jest.fn(),
     getPanelConversationMessages: (panelId: string) => store[panelId] || [],
+    getSessionConversationMessages: (sessionId: string) => sessionStore[sessionId] || [],
     setPanelConversationMessages: (
       panelId: string,
       messages: StoredMessage[],
       writeOptions?: Record<string, unknown>
     ) => {
       store[panelId] = messages;
+      const sessionId = String(writeOptions?.sessionId || "").trim();
+      if (sessionId) sessionStore[sessionId] = messages;
       writeCalls.push({ messages, options: writeOptions });
     },
     normalizedLlmDirectoryForRequest: () => "",
@@ -133,6 +137,7 @@ function createHarness() {
   return {
     options,
     store,
+    sessionStore,
     writeCalls,
     getTurnOptions: () => capturedTurnOptions,
     resolveTurn: (result: unknown) => resolveTurn(result),
@@ -146,11 +151,14 @@ function createHarness() {
   };
 }
 
-async function startRequest(harness: ReturnType<typeof createHarness>) {
+async function startRequest(
+  harness: ReturnType<typeof createHarness>,
+  sessionSnapshot?: { sessionId?: string; threadId?: string }
+) {
   const { result } = await renderHook(() => useCodexReplyRequest(harness.options as any));
   let sendPromise: Promise<unknown> = Promise.resolve();
   await act(async () => {
-    sendPromise = result.current.sendReplyRequest("hello", { panelId: "panel-1" });
+    sendPromise = result.current.sendReplyRequest("hello", { panelId: "panel-1", sessionSnapshot });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -314,7 +322,7 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
 
   test("marks the panel session materialized when the first turn resolves a native ID", async () => {
     const harness = createHarness();
-    const { sendPromise } = await startRequest(harness);
+    const { sendPromise } = await startRequest(harness, { sessionId: "local-draft" });
 
     await act(async () => {
       harness.getTurnOptions().onThreadIdResolved("thread-1");
@@ -323,7 +331,9 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     expect(harness.writeCalls[harness.writeCalls.length - 1]?.options).toMatchObject({
       sessionId: "thread-1",
       sessionMaterialized: true,
+      adoptFromSessionId: "local-draft",
     });
+    expect(harness.sessionStore["thread-1"].some((message) => message.content === "hello")).toBe(true);
     await act(async () => {
       harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null });
       await sendPromise;
@@ -487,6 +497,73 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     expect(secondMessage?.llmStatus).toBe("completed");
     const lastWrite = harness.writeCalls[harness.writeCalls.length - 1];
     expect(lastWrite.options).toMatchObject({ isResponding: false });
+  });
+});
+
+describe("useCodexReplyRequest session isolation", () => {
+  test("keeps concurrent streams isolated when one shared panel switches sessions", async () => {
+    const { options } = createOptions();
+    const sessions: Record<string, PanelWriteCall["messages"]> = {
+      "session-a": [{ id: "a-history", role: "assistant", content: "history a" }],
+      "session-b": [{ id: "b-history", role: "assistant", content: "history b" }],
+    };
+    let displayedSessionId = "session-a";
+    let panelMessages = sessions[displayedSessionId];
+    const turns: Array<{ options: any }> = [];
+    mockStartCodexAppServerTurn.mockImplementation(((turnOptions: any) => {
+      turns.push({ options: turnOptions });
+      return { promise: new Promise(() => {}), interrupt: jest.fn() };
+    }) as any);
+    (options as any).getPanelConversationMessages = () => panelMessages;
+    (options as any).getSessionConversationMessages = (sessionId: string) => sessions[sessionId] || [];
+    (options as any).setPanelConversationMessages = (
+      _panelId: string,
+      messages: PanelWriteCall["messages"],
+      writeOptions?: { sessionId?: string }
+    ) => {
+      const sessionId = String(writeOptions?.sessionId || "").trim();
+      if (sessionId) sessions[sessionId] = messages;
+      if (!sessionId || sessionId === displayedSessionId) panelMessages = messages;
+    };
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      void result.current.sendReplyRequest("question a", {
+        panelId: "shared-panel",
+        sessionSnapshot: { threadId: "session-a" },
+      });
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    });
+    displayedSessionId = "session-b";
+    panelMessages = sessions[displayedSessionId];
+    await act(async () => {
+      void result.current.sendReplyRequest("question b", {
+        panelId: "shared-panel",
+        sessionSnapshot: { threadId: "session-b" },
+      });
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    });
+
+    await act(async () => {
+      turns[0].options.onDelta("answer a", { itemId: "item-a" });
+      turns[1].options.onDelta("answer b", { itemId: "item-b" });
+    });
+
+    expect(sessions["session-a"].map((message) => message.content)).toEqual([
+      "history a",
+      "question a",
+      "answer a",
+    ]);
+    expect(sessions["session-b"].map((message) => message.content)).toEqual([
+      "history b",
+      "question b",
+      "answer b",
+    ]);
+    expect(panelMessages.map((message) => message.content)).toEqual([
+      "history b",
+      "question b",
+      "answer b",
+    ]);
   });
 });
 

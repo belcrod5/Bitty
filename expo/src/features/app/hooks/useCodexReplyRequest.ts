@@ -115,6 +115,7 @@ type UseCodexReplyRequestOptions<
   setHistory: (updater: (prev: THistoryEntry[]) => THistoryEntry[]) => void;
   createHistoryEntry: (params: { transcript: string; reply: string }) => THistoryEntry;
   getPanelConversationMessages?: (panelId: string) => TMessage[];
+  getSessionConversationMessages?: (sessionId: string) => TMessage[];
   setPanelConversationMessages?: (
     panelId: string,
     messages: TMessage[],
@@ -570,10 +571,16 @@ export function useCodexReplyRequest<
     const replyRequestStartedAt = Date.now();
     // Runner acceptance is the queue boundary for every backend. If compaction
     // owns the session lease, agent-service starts this accepted run after release.
-    const getConversationMessagesForPanel = (panelId: string): TMessage[] => {
-      const normalizedPanelId = normalizePanelId(panelId);
+    let trackedThreadId = requestThreadId || requestUiSessionId;
+    const getConversationMessagesForRequest = (sessionIdRaw?: string): TMessage[] => {
+      const sessionId = String(
+        sessionIdRaw || trackedThreadId || requestThreadId || requestUiSessionId || ""
+      ).trim();
+      if (sessionId && typeof current.getSessionConversationMessages === "function") {
+        return current.getSessionConversationMessages(sessionId);
+      }
       if (typeof current.getPanelConversationMessages === "function") {
-        const panelMessages = current.getPanelConversationMessages(normalizedPanelId);
+        const panelMessages = current.getPanelConversationMessages(requestPanelId);
         if (Array.isArray(panelMessages) && panelMessages.length > 0) return panelMessages;
       }
       return [];
@@ -605,7 +612,6 @@ export function useCodexReplyRequest<
       return state?.cancelledRequestSeqs.has(requestSeq) === true;
     };
     let finalUiSettled = false;
-    let trackedThreadId = requestThreadId || requestUiSessionId;
     const panelStreamingAssistantMessageId = `assistant-stream-${requestTraceId}`;
     let nativeDeltaCount = 0;
     let firstDeltaAtMs = 0;
@@ -736,6 +742,32 @@ export function useCodexReplyRequest<
       adoptFromSessionId: options?.adoptFromSessionId,
       clearRespondingRequestStartedAtMs: options?.clearRespondingRequestStartedAtMs,
     });
+    const adoptResolvedThreadId = (resolvedThreadId: string) => {
+      const previousThreadKey = requestThreadKey;
+      if (requestThreadKey === resolvedThreadId && trackedThreadId === resolvedThreadId) {
+        return previousThreadKey;
+      }
+      const messagesBeforeSessionAdoption = getConversationMessagesForRequest(
+        previousThreadKey || requestSessionAdoptionSourceId
+      );
+      if (requestThreadKey !== resolvedThreadId) {
+        movePanelRequestThreadKey(requestThreadKey, resolvedThreadId);
+      }
+      if (trackedThreadId && trackedThreadId !== resolvedThreadId) {
+        moveInFlightStateKey(trackedThreadId, resolvedThreadId);
+      }
+      trackedThreadId = resolvedThreadId;
+      setConversationMessagesForPanel(
+        requestPanelId,
+        messagesBeforeSessionAdoption,
+        buildPanelConversationWriteOptions({
+          sessionId: resolvedThreadId,
+          sessionMaterialized: true,
+          adoptFromSessionId: requestSessionAdoptionSourceId,
+        })
+      );
+      return previousThreadKey;
+    };
     const hasRenderableAssistantMessage = (contentRaw: string, extra: Record<string, unknown>) => {
       if (String(contentRaw || "").trim()) return true;
       if (Array.isArray(extra.youtubeVideoIds) && extra.youtubeVideoIds.length > 0) return true;
@@ -753,13 +785,13 @@ export function useCodexReplyRequest<
         if (options?.isResponding === false) {
           setConversationMessagesForPanel(
             requestPanelId,
-            getConversationMessagesForPanel(requestPanelId),
+            getConversationMessagesForRequest(),
             buildPanelConversationWriteOptions(options)
           );
         }
         return;
       }
-      const latestConversation = getConversationMessagesForPanel(requestPanelId);
+      const latestConversation = getConversationMessagesForRequest();
       const content = String(contentRaw || "");
       const nextMessage = current.buildConversationMessage("assistant", content, {
         id: messageId,
@@ -801,7 +833,7 @@ export function useCodexReplyRequest<
       hasThreadId: !!requestThreadId,
     });
     const nextConversation = [
-      ...getConversationMessagesForPanel(requestPanelId),
+      ...getConversationMessagesForRequest(),
       current.buildConversationMessage("user", effectiveTranscript, requestOptions?.sttMeta
         ? { sttMeta: requestOptions.sttMeta }
         : undefined),
@@ -897,7 +929,7 @@ export function useCodexReplyRequest<
             : `command-${requestTraceId}-${itemId}`
         );
       }
-      const latestConversation = getConversationMessagesForPanel(requestPanelId);
+      const latestConversation = getConversationMessagesForRequest();
       const nextConversation = upsertCommandExecutionMessage(
         latestConversation,
         item,
@@ -917,7 +949,7 @@ export function useCodexReplyRequest<
     ) => {
       const liveMessageIds = new Set(Array.from(agentMessageUiIdByItemId.values()));
       const commandMessageIds = new Set(Array.from(commandMessageIdByItemId.values()));
-      const latestConversation = getConversationMessagesForPanel(requestPanelId);
+      const latestConversation = getConversationMessagesForRequest();
       const hasRunningCommand = latestConversation.some((message) => {
         const commandMessage = message as TMessage & { commandExecution?: CodexCommandExecutionInfo };
         return commandMessageIds.has(String(message.id || "")) && commandMessage.commandExecution?.status === "running";
@@ -1043,7 +1075,7 @@ export function useCodexReplyRequest<
           }
           setConversationMessagesForPanel(
             requestPanelId,
-            getConversationMessagesForPanel(requestPanelId),
+            getConversationMessagesForRequest(),
             {
               isResponding: false,
               selectedThreadStatusType: "active",
@@ -1058,25 +1090,7 @@ export function useCodexReplyRequest<
           const resolvedThreadId = String(threadId || "").trim();
           if (!resolvedThreadId) return;
           current.rememberKnownCodexThreadId?.(resolvedThreadId);
-          const previousThreadKey = requestThreadKey;
-          if (requestThreadKey !== resolvedThreadId) {
-            movePanelRequestThreadKey(requestThreadKey, resolvedThreadId);
-          }
-          if (!trackedThreadId) {
-            trackedThreadId = resolvedThreadId;
-          } else if (trackedThreadId !== resolvedThreadId) {
-            moveInFlightStateKey(trackedThreadId, resolvedThreadId);
-            trackedThreadId = resolvedThreadId;
-          }
-          setConversationMessagesForPanel(
-            requestPanelId,
-            getConversationMessagesForPanel(requestPanelId),
-            buildPanelConversationWriteOptions({
-              sessionId: resolvedThreadId,
-              sessionMaterialized: true,
-              adoptFromSessionId: requestSessionAdoptionSourceId,
-            })
-          );
+          const previousThreadKey = adoptResolvedThreadId(resolvedThreadId);
           logTurnDiag("reply_http_thread_resolved", {
             resolvedThreadId,
             previousTrackedThreadId: previousThreadKey,
@@ -1200,13 +1214,13 @@ export function useCodexReplyRequest<
             if (hasLiveAgentMessages()) {
               setConversationMessagesForPanel(
                 requestPanelId,
-                getConversationMessagesForPanel(requestPanelId),
+                getConversationMessagesForRequest(),
                 buildPanelConversationWriteOptions(writeOptions)
               );
             } else if (!nextPanelReply) {
               setConversationMessagesForPanel(
                 requestPanelId,
-                getConversationMessagesForPanel(requestPanelId),
+                getConversationMessagesForRequest(),
                 buildPanelConversationWriteOptions(writeOptions)
               );
             } else {
@@ -1338,21 +1352,10 @@ export function useCodexReplyRequest<
         result = await turnSession.promise;
       }
       if (!isActiveRequest() || isCancelledRequest()) return;
-      if (!trackedThreadId) {
-        const resolvedThreadId = String(result.threadId || "").trim();
-        if (resolvedThreadId) {
-          current.rememberKnownCodexThreadId?.(resolvedThreadId);
-          movePanelRequestThreadKey(requestThreadKey, resolvedThreadId);
-          trackedThreadId = resolvedThreadId;
-        }
-      } else {
-        const resolvedThreadId = String(result.threadId || "").trim();
-        if (resolvedThreadId && resolvedThreadId !== trackedThreadId) {
-          current.rememberKnownCodexThreadId?.(resolvedThreadId);
-          movePanelRequestThreadKey(requestThreadKey, resolvedThreadId);
-          moveInFlightStateKey(trackedThreadId, resolvedThreadId);
-          trackedThreadId = resolvedThreadId;
-        }
+      const resolvedThreadId = String(result.threadId || "").trim();
+      if (resolvedThreadId) {
+        current.rememberKnownCodexThreadId?.(resolvedThreadId);
+        adoptResolvedThreadId(resolvedThreadId);
       }
       let contextUsedPct = current.parseContextUsageUsedPct(result.contextUsage);
       if (contextUsedPct === null) {
@@ -1563,7 +1566,7 @@ export function useCodexReplyRequest<
         if (!finalUiSettled) {
           setConversationMessagesForPanel(
             requestPanelId,
-            getConversationMessagesForPanel(requestPanelId),
+            getConversationMessagesForRequest(),
             {
               isResponding: false,
               selectedThreadStatusType: "idle",
