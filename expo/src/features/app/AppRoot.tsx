@@ -130,7 +130,7 @@ import { useConversationMessageWindowController } from "./hooks/useConversationM
 import { useSessionHistoryPagingController } from "./hooks/useSessionHistoryPagingController";
 import { useSessionMessagesCacheController } from "./hooks/useSessionMessagesCacheController";
 import { useApplySessionHistoryPage } from "./hooks/useApplySessionHistoryPage";
-import { useLateSessionLiveStateController } from "./hooks/useLateSessionLiveStateController";
+import { useSessionLiveStateController } from "./hooks/useSessionLiveStateController";
 import {
   isConversationRuntimeRequestResponding,
   useConversationRuntimeStoreController,
@@ -181,7 +181,6 @@ import {
 } from "./hooks/useLlmSessionExplorer";
 import {
   cancelRunnerCodexQueuedTurn,
-  readCodexAppServerThread,
 } from "../codex/codexAppServerClient";
 import type {
   AppScreen,
@@ -767,7 +766,6 @@ export default function App() {
   const [llmSessionRestoreTargetId, setLlmSessionRestoreTargetId] = useState("");
   const [llmSessionRestoreError, setLlmSessionRestoreError] = useState("");
   const [selectedThreadStatusType, setSelectedThreadStatusType] = useState("unknown");
-  const selectedThreadStatusProbeSeqRef = useRef(0);
   const [waitingApprovalResumeLoading, setWaitingApprovalResumeLoading] = useState(false);
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
@@ -1299,72 +1297,6 @@ export default function App() {
     return !!sessionId && (!visibleSessionId || visibleSessionId === sessionId);
   }, [
     selectedLlmSessionId,
-  ]);
-  useEffect(() => {
-    if (!settingsLoaded) return;
-    const sessionId = parseOptionalSessionId(
-      selectedLlmSessionIdRef.current || selectedLlmSessionId || llmConversationSessionIdRef.current
-    );
-    if (!sessionId || !codexWsUrl.trim()) {
-      setSelectedThreadStatusType("unknown");
-      return;
-    }
-    const probeSeq = selectedThreadStatusProbeSeqRef.current + 1;
-    selectedThreadStatusProbeSeqRef.current = probeSeq;
-    let cancelled = false;
-    const runProbe = () => {
-      // probeもセッションidentity({backendId, sessionId})で照会する。
-      // backendId未解決のままCodex固定で照会すると非Codexセッションが
-      // 常に「not found」になり、状態表示とresume判定が壊れる。
-      const probeBackendId = String(
-        resolveSessionHistoryContextRef.current(sessionId)?.backendId || llmBackend || "codex"
-      ).trim() || "codex";
-      logSessionDiag("thread_status_probe_start", {
-        sessionId,
-        backendId: probeBackendId,
-        wsUrl: codexWsUrl.trim(),
-      }, { throttleMs: 0 });
-      void readCodexAppServerThread({
-        wsUrl: codexWsUrl.trim(),
-        wsToken: effectiveCodexWsToken,
-        threadId: sessionId,
-        timeoutMs: 25_000,
-        runnerWebSocketManager,
-        backendId: probeBackendId,
-        rawFallbackBackendId: "codex",
-      })
-        .then((restored) => {
-          if (cancelled || selectedThreadStatusProbeSeqRef.current !== probeSeq) return;
-          const nextStatusType = String(restored.threadStatusType || "unknown").trim() || "unknown";
-          setSelectedThreadStatusType(nextStatusType);
-          logSessionDiag("thread_status_probe_done", {
-            sessionId,
-            threadStatusType: nextStatusType,
-            sessionState: restored.sessionState,
-            latestTurnStatus: restored.latestTurnStatus,
-            hasRunningTurn: restored.hasRunningTurn,
-          }, { throttleMs: 0 });
-        })
-        .catch((error) => {
-          if (cancelled || selectedThreadStatusProbeSeqRef.current !== probeSeq) return;
-          logSessionDiag("thread_status_probe_failed", {
-            sessionId,
-            reason: error instanceof Error ? error.message : String(error),
-          }, { throttleMs: 0 });
-          setSelectedThreadStatusType("unknown");
-        });
-    };
-    runProbe();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    effectiveCodexWsToken,
-    codexWsUrl,
-    llmBackend,
-    runnerWebSocketManager,
-    selectedLlmSessionId,
-    settingsLoaded,
   ]);
   const knownCodexThreadIdsRef = useRef<Set<string>>(new Set());
   const sessionRuntimeStatusByIdRef = useRef<Record<string, SessionRuntimeStatus>>({});
@@ -6478,7 +6410,16 @@ export default function App() {
   const {
     applyActive: applyLateActiveSessionLiveState,
     applyPanel: applyLatePanelSessionLiveState,
-  } = useLateSessionLiveStateController({
+  } = useSessionLiveStateController({
+    settingsLoaded,
+    selectedSessionId: selectedLlmSessionId,
+    codexWsUrl,
+    codexWsToken: effectiveCodexWsToken,
+    backendId: llmBackend,
+    runnerWebSocketManager,
+    resolveBackendId: (sessionId) => (
+      resolveSessionHistoryContextRef.current(sessionId)?.backendId || ""
+    ),
     activeSessionId: () => parseOptionalSessionId(
       selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
     ),
@@ -6489,6 +6430,13 @@ export default function App() {
     upsertRuntime: upsertConversationRuntimeSnapshot,
     setPanelEntries: setPanelRuntimeEntriesById,
     createPanelSnapshot: createPanelRuntimeSnapshot,
+    setActiveResponding: () => {
+      const wasResponding = replyLoadingRef.current;
+      setReplyLoadingWithRef(false);
+      if (wasResponding) {
+        finishLlmRequest("completed", "thread status probe completed");
+      }
+    },
     setActiveThreadStatus: setSelectedThreadStatusType,
     startRelay: startCodexRelayObserverForSession,
     onLiveStateNotRunning: handleLateLiveStateNotRunning,
