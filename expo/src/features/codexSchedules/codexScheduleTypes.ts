@@ -15,6 +15,7 @@ export type CodexScheduleDefinition = {
   modelRef: string;
   reasoningEffort: CodexScheduleReasoningEffort;
   prompt: string;
+  threadId: string | null;
 };
 
 export type CodexScheduleDispatch = {
@@ -127,7 +128,7 @@ function parseDispatch(raw: unknown): CodexScheduleDispatch | null {
 
 export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinition {
   const value = object(raw, "schedule");
-  const keys = ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "cwd", "modelRef", "reasoningEffort", "prompt"];
+  const keys = ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "cwd", "modelRef", "reasoningEffort", "prompt", "threadId"];
   exactKeys(value, keys, "schedule");
   const id = text(value.id, "id", 36);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error("id is invalid");
@@ -139,6 +140,10 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
   }
   if (typeof value.enabled !== "boolean") throw new Error("enabled is invalid");
   const timeZone = text(value.timeZone, "timeZone", 100);
+  const threadId = value.threadId === null || value.threadId === undefined
+    ? null
+    : text(value.threadId, "threadId", 120);
+  if (threadId !== null && !/^[A-Za-z0-9._:-]+$/.test(threadId)) throw new Error("threadId is invalid");
   try {
     new Intl.DateTimeFormat("en", { timeZone }).format(new Date());
   } catch {
@@ -155,6 +160,7 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
     modelRef: text(value.modelRef, "modelRef", 1_000),
     reasoningEffort,
     prompt: text(value.prompt, "prompt", 24_000),
+    threadId,
   };
 }
 

@@ -2670,6 +2670,7 @@ export function ChatScreen({
                     currentCwd={selectedDirectoryPathForView}
                     currentModelRef={scheduleModelRef}
                     currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
+                    currentThreadId={backendIdForView === "codex" && (!isPanelRuntimeView || panelSnapshot.sessionMaterialized !== false) ? selectedSessionIdForView : ""}
                     directories={registeredDirectories}
                     modelOptions={scheduleModelOptions}
                     thinkOptions={thinkOptions}

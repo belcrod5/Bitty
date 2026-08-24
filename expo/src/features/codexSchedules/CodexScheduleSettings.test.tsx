@@ -27,6 +27,7 @@ const props = {
   currentCwd: "/work",
   currentModelRef: "openai-codex/gpt-5.6",
   currentReasoningEffort: "high" as const,
+  currentThreadId: "thread-current",
   directories: [{ path: "/work", displayName: "Work" }],
   modelOptions: [{ value: "openai-codex/gpt-5.6", label: "GPT-5.6" }],
   thinkOptions: ["low", "high"] as const,
@@ -42,6 +43,7 @@ const schedule = {
   modelRef: "openai-codex/gpt-5.6",
   reasoningEffort: "high" as const,
   prompt: "Check",
+  threadId: null,
   nextOccurrenceAt: null,
   lastDispatch: null,
 };
@@ -79,6 +81,7 @@ test("new editor exposes native pickers and reuses directory, model, and effort 
   expect(view.getByLabelText("ディレクトリ")).toBeTruthy();
   expect(view.getByLabelText("モデル")).toBeTruthy();
   expect(view.getByLabelText("思考レベル")).toBeTruthy();
+  expect(view.getByLabelText("実行先")).toBeTruthy();
 });
 
 test("revision conflict offers a reload and never marks the draft saved", async () => {
@@ -109,6 +112,7 @@ test("native date picker normalizes its edited value back to startLocal", async 
       directories={props.directories}
       modelOptions={props.modelOptions}
       thinkOptions={props.thinkOptions}
+      currentThreadId={props.currentThreadId}
       onChange={onChange}
       onClose={jest.fn()}
       onDelete={jest.fn()}
@@ -125,6 +129,7 @@ test("editor follows the keyboard so focused text inputs remain visible", async 
       directories={props.directories}
       modelOptions={props.modelOptions}
       thinkOptions={props.thinkOptions}
+      currentThreadId={props.currentThreadId}
       onChange={jest.fn()}
       onClose={jest.fn()}
       onDelete={jest.fn()}
@@ -132,4 +137,24 @@ test("editor follows the keyboard so focused text inputs remain visible", async 
   );
 
   expect(await view.findByTestId("codex-schedule-editor-scroll")).toHaveProp("bottomOffset", 24);
+});
+
+test("editor can target only the current Codex chat or a new chat", async () => {
+  const onChange = jest.fn();
+  const view = await render(
+    <CodexScheduleEditor
+      schedule={schedule}
+      directories={props.directories}
+      modelOptions={props.modelOptions}
+      thinkOptions={props.thinkOptions}
+      currentThreadId={props.currentThreadId}
+      onChange={onChange}
+      onClose={jest.fn()}
+      onDelete={jest.fn()}
+    />,
+  );
+
+  await act(async () => fireEvent.press(await view.findByLabelText("実行先")));
+  await act(async () => fireEvent.press(view.getByText("現在のチャット")));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread-current" }));
 });

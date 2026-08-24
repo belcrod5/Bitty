@@ -6,6 +6,17 @@ export function createCodexRelayInitiator({ relay, forward, operationId }) {
   const pending = new Map();
   let nextId = 1;
   let closed = false;
+  let closedError = null;
+
+  const rejectPending = (error) => {
+    closed = true;
+    closedError = error;
+    for (const entry of pending.values()) {
+      if (entry.timeout) clearTimeout(entry.timeout);
+      entry.reject(error);
+    }
+    pending.clear();
+  };
 
   const subscriber = {
     readyState: 1,
@@ -16,13 +27,27 @@ export function createCodexRelayInitiator({ relay, forward, operationId }) {
       } catch {
         return;
       }
+      if (message?.type === "runner_relay_closed") {
+        const reason = message.reason;
+        const error = new Error("Codex relay closed");
+        error.code = typeof reason === "string" && reason.length <= 200 && /^[A-Za-z0-9._:-]+$/.test(reason)
+          ? reason
+          : "relay_closed";
+        rejectPending(error);
+        return;
+      }
       if (message?.method || (typeof message?.id !== "string" && typeof message?.id !== "number")) return;
       const entry = pending.get(String(message.id));
       if (!entry) return;
       pending.delete(String(message.id));
       if (entry.timeout) clearTimeout(entry.timeout);
       if (message.error) {
-        entry.reject(new Error(String(message.error?.message || message.error || "Codex RPC failed")));
+        const error = new Error(String(message.error?.message || message.error || "Codex RPC failed"));
+        const code = message.error?.data?.code;
+        if (typeof code === "string" && code.length <= 200 && /^[A-Za-z0-9._:-]+$/.test(code)) {
+          error.code = code;
+        }
+        entry.reject(error);
       } else {
         entry.resolve(message.result);
       }
@@ -30,7 +55,7 @@ export function createCodexRelayInitiator({ relay, forward, operationId }) {
   };
 
   const send = (payload) => {
-    if (closed) throw new Error("Codex relay initiator is closed");
+    if (closed) throw closedError || new Error("Codex relay initiator is closed");
     const threadId = String(relay?.threadId || "").trim();
     forward(relay, JSON.stringify(payload), false, {
       endpoint: relay?.endpoint,
@@ -64,12 +89,7 @@ export function createCodexRelayInitiator({ relay, forward, operationId }) {
 
   const close = () => {
     if (closed) return;
-    closed = true;
-    for (const entry of pending.values()) {
-      if (entry.timeout) clearTimeout(entry.timeout);
-      entry.reject(new Error("Codex relay initiator closed"));
-    }
-    pending.clear();
+    rejectPending(new Error("Codex relay initiator closed"));
   };
 
   return {
@@ -95,6 +115,7 @@ export function createNormalCodexTurnStarter({
     cwd,
     model = "",
     effort = "",
+    threadId = "",
     serviceName = "private-runner-scheduled-codex",
   }) {
     const operationId = `runner_initiated_${randomUUID()}`;
@@ -117,6 +138,7 @@ export function createNormalCodexTurnStarter({
         cwd,
         model,
         effort,
+        threadId,
         approvalPolicy: "on-request",
       });
       cleanupStartedTurn = started.cleanup;
