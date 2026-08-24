@@ -9,6 +9,7 @@ const EMPTY_DISMISS_RESULT = {
 export async function setUnreadBadgeCount(_unreadCount: number): Promise<void> {}
 
 export async function dismissReadSessionNotifications(_params: {
+  backendId?: unknown;
   sessionId: unknown;
   directory: unknown;
 }) {

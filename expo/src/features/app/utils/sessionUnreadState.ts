@@ -78,11 +78,13 @@ export async function syncUnreadSessionCounts(
 export async function fetchSessionUnreadState({
   runnerUrl,
   runnerToken,
+  backendId = "codex",
   sessionId,
   directory,
 }: {
   runnerUrl: string;
   runnerToken: string;
+  backendId?: string;
   sessionId: string;
   directory: string;
 }): Promise<{ found: boolean; unread: boolean }> {
@@ -95,7 +97,7 @@ export async function fetchSessionUnreadState({
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ sessionId, directory }),
+    body: JSON.stringify({ backendId: String(backendId || "codex").trim() || "codex", sessionId, directory }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

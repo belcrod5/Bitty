@@ -43,10 +43,12 @@ const runnerWebSocketManager = {
 
 function renderController({
   popup = "",
+  popupBackendId = "codex",
   popupDirectory = "/repo",
   popupIsHydrating = false,
 } = {}) {
   const getPopupSessionTarget = () => ({
+    backendId: popupBackendId,
     sessionId: popup,
     directory: popupDirectory,
     isHydrating: popupIsHydrating,
@@ -146,6 +148,7 @@ describe("useSessionNotificationLifecycleController", () => {
     let handled = false;
     await act(async () => {
       handled = result.current.handleForegroundSessionCompletion({
+        backendId: "codex",
         sessionId: "selected-session",
         directory: "/repo",
       });
@@ -161,7 +164,7 @@ describe("useSessionNotificationLifecycleController", () => {
     result.current.markSessionReadAsyncRef.current = markRead;
     let handled = false;
     await act(async () => {
-      handled = result.current.handleForegroundSessionCompletion({ sessionId: "popup-session" });
+      handled = result.current.handleForegroundSessionCompletion({ backendId: "codex", sessionId: "popup-session" });
     });
     expect(handled).toBe(true);
     expect(markRead).toHaveBeenCalledWith(expect.objectContaining({
@@ -182,6 +185,7 @@ describe("useSessionNotificationLifecycleController", () => {
     let handled = true;
     await act(async () => {
       handled = result.current.handleForegroundSessionCompletion({
+        backendId: "codex",
         sessionId: "shared-session",
         directory: "/other",
       });
@@ -203,6 +207,7 @@ describe("useSessionNotificationLifecycleController", () => {
     let handled = true;
     await act(async () => {
       handled = result.current.handleForegroundSessionCompletion({
+        backendId: "codex",
         sessionId: "popup-session",
         directory: "/repo",
       });
@@ -221,6 +226,7 @@ describe("useSessionNotificationLifecycleController", () => {
     result.current.markSessionReadAsyncRef.current = markRead;
 
     expect(result.current.handleForegroundSessionCompletion({
+      backendId: "codex",
       sessionId: "shared-session",
       directory: "/visible",
     })).toBe(true);
@@ -235,7 +241,7 @@ describe("useSessionNotificationLifecycleController", () => {
     const { result } = await renderController();
     let handled = true;
     await act(async () => {
-      handled = result.current.handleForegroundSessionCompletion({ sessionId: "other-session" });
+      handled = result.current.handleForegroundSessionCompletion({ backendId: "codex", sessionId: "other-session" });
     });
     expect(handled).toBe(false);
     expect(mockSyncUnread).toHaveBeenCalledWith({
@@ -245,16 +251,47 @@ describe("useSessionNotificationLifecycleController", () => {
     });
   });
 
+  it("does not auto-read a visible Codex session when Claude reuses its native id", async () => {
+    const { result } = await renderController({ popup: "shared-session", popupBackendId: "codex" });
+    const markRead = jest.fn();
+    result.current.markSessionReadAsyncRef.current = markRead;
+
+    expect(result.current.handleForegroundSessionCompletion({
+      backendId: "claude",
+      sessionId: "shared-session",
+      directory: "/repo",
+    })).toBe(false);
+    expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it("auto-reads a visible Claude completion with its full identity", async () => {
+    const { result } = await renderController({ popup: "shared-session", popupBackendId: "claude" });
+    const markRead = jest.fn();
+    result.current.markSessionReadAsyncRef.current = markRead;
+
+    expect(result.current.handleForegroundSessionCompletion({
+      backendId: "claude",
+      sessionId: "shared-session",
+      directory: "/repo",
+    })).toBe(true);
+    expect(markRead).toHaveBeenCalledWith(expect.objectContaining({
+      backendId: "claude",
+      sessionId: "shared-session",
+    }));
+  });
+
   it("dismisses delivered completion notifications only after a read commit", async () => {
     const { result } = await renderController();
     await act(async () => {
       result.current.handleSessionReadStateCommitted({
+        backendId: "codex",
         sessionId: "session-1",
         directory: "/canonical",
         isRead: true,
       });
     });
     expect(mockDismiss).toHaveBeenCalledWith({
+      backendId: "codex",
       sessionId: "session-1",
       directory: "/canonical",
       isRead: true,

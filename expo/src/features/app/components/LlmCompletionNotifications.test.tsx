@@ -16,7 +16,7 @@ test("opens a completion notification with its Backend-qualified session referen
         previewText: "done",
         completedAt: new Date(100).toISOString(),
       }]}
-      visibleSessionIds={[]}
+      visibleSessions={[]}
       onOpenSession={onOpenSession}
       onDismiss={jest.fn()}
     />
@@ -28,4 +28,27 @@ test("opens a completion notification with its Backend-qualified session referen
     backendId: "claude",
     sessionId: "session-1",
   });
+});
+
+test("suppresses only the notification matching the visible Backend-qualified session", async () => {
+  const notification = (backendId: string) => ({
+    id: `${backendId}:shared:100`,
+    backendId,
+    sessionId: "shared",
+    threadId: "shared",
+    directoryName: "repo",
+    previewText: `${backendId} done`,
+    completedAt: new Date(100).toISOString(),
+  });
+  const view = await render(
+    <LlmCompletionNotifications
+      notifications={[notification("codex"), notification("claude")]}
+      visibleSessions={[{ backendId: "codex", sessionId: "shared" }]}
+      onOpenSession={jest.fn()}
+      onDismiss={jest.fn()}
+    />
+  );
+
+  expect(view.queryByText("codex done")).toBeNull();
+  expect(view.getByText("claude done")).toBeTruthy();
 });

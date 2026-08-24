@@ -98,6 +98,7 @@ export function shouldHandleReadyTransition(input: {
 }
 
 export type ResumeSyncPanelEntry = {
+  backendId: string;
   panelId: string;
   sessionId: string;
   directory: string;
@@ -108,6 +109,7 @@ export type ResumeSyncPanelEntry = {
 // 1セッション=1ターゲット。同一セッションを表示する全可視パネルをまとめて持ち、
 // レート制御は1回の獲得で全反映先に適用する(relay-loss回復経路と同じ扱い)。
 export type ResumeSyncSessionTarget = {
+  backendId: string;
   sessionId: string;
   selected: boolean;
   panels: Array<{ panelId: string; directory: string }>;
@@ -143,6 +145,7 @@ export type ResumeSyncPlan = {
 //   全パネルへ反映する(#40 relay-loss回復経路と同じ扱い)。
 export function planResumeSyncTargets(input: {
   selectedSessionId: string;
+  selectedBackendId?: string;
   observerThreadId: string;
   popupPanelId: string;
   panelEntries: ResumeSyncPanelEntry[];
@@ -150,8 +153,9 @@ export function planResumeSyncTargets(input: {
   turnInFlightSessionIds?: string[];
 }): ResumeSyncPlan {
   const skipped: ResumeSyncSkip[] = [];
-  const targetsBySessionId = new Map<string, ResumeSyncSessionTarget>();
+  const targetsByIdentity = new Map<string, ResumeSyncSessionTarget>();
   const selectedSessionId = String(input.selectedSessionId || "").trim();
+  const selectedBackendId = String(input.selectedBackendId || "codex").trim() || "codex";
   const observerThreadId = String(input.observerThreadId || "").trim();
   const popupPanelId = String(input.popupPanelId || "").trim();
   const respondingSessionIds = new Set(
@@ -164,25 +168,27 @@ export function planResumeSyncTargets(input: {
       .map((id) => String(id || "").trim())
       .filter(Boolean)
   );
-  const ensureTarget = (sessionId: string): ResumeSyncSessionTarget => {
-    const existing = targetsBySessionId.get(sessionId);
+  const ensureTarget = (backendId: string, sessionId: string): ResumeSyncSessionTarget => {
+    const identity = JSON.stringify([backendId, sessionId]);
+    const existing = targetsByIdentity.get(identity);
     if (existing) return existing;
-    const created: ResumeSyncSessionTarget = { sessionId, selected: false, panels: [] };
-    targetsBySessionId.set(sessionId, created);
+    const created: ResumeSyncSessionTarget = { backendId, sessionId, selected: false, panels: [] };
+    targetsByIdentity.set(identity, created);
     return created;
   };
 
   if (selectedSessionId) {
-    if (observerThreadId && observerThreadId === selectedSessionId) {
+    if (selectedBackendId === "codex" && observerThreadId === selectedSessionId) {
       skipped.push({ sessionId: selectedSessionId, reason: "live_observer" });
     } else {
-      ensureTarget(selectedSessionId).selected = true;
+      ensureTarget(selectedBackendId, selectedSessionId).selected = true;
     }
   }
 
   for (const entryRaw of Array.isArray(input.panelEntries) ? input.panelEntries : []) {
     const panelId = String(entryRaw?.panelId || "").trim();
     const sessionId = String(entryRaw?.sessionId || "").trim();
+    const backendId = String(entryRaw?.backendId || "codex").trim() || "codex";
     if (!panelId || !sessionId) continue;
     const isPopupPanel = Boolean(popupPanelId) && panelId === popupPanelId;
     const wanted = (
@@ -195,7 +201,7 @@ export function planResumeSyncTargets(input: {
       skipped.push({ sessionId, panelId, reason: "local_draft" });
       continue;
     }
-    if (observerThreadId && sessionId === observerThreadId) {
+    if (backendId === "codex" && sessionId === observerThreadId) {
       skipped.push({ sessionId, panelId, reason: "live_observer" });
       continue;
     }
@@ -208,11 +214,11 @@ export function planResumeSyncTargets(input: {
       skipped.push({ sessionId, panelId, reason: "missing_directory" });
       continue;
     }
-    ensureTarget(sessionId).panels.push({ panelId, directory });
+    ensureTarget(backendId, sessionId).panels.push({ panelId, directory });
   }
 
   return {
-    targets: Array.from(targetsBySessionId.values()),
+    targets: Array.from(targetsByIdentity.values()),
     skipped,
   };
 }

@@ -1,5 +1,5 @@
 import React from "react";
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Alert } from "react-native";
 import { ChatScreen } from "./ChatScreen";
 
@@ -13,6 +13,11 @@ const mockAddSkiaBoardFile = jest.fn();
 const mockRemoveSkiaBoardFile = jest.fn();
 const mockHasSkiaBoardFile = jest.fn(() => false);
 const mockMarkFileUnavailable = jest.fn();
+const mockMarkSessionRead = jest.fn();
+const mockMarkSessionUnread = jest.fn();
+const mockHydratePanelFromSessionHistory = jest.fn(async () => "applied");
+const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
+let mockPanelBackendId = "codex";
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   renameTarget: null,
   requestRename: jest.fn(),
@@ -77,7 +82,12 @@ jest.mock("../components/YouTubeVideoList", () => ({ YouTubeVideoList: () => nul
 jest.mock("../components/GitDiffPanel", () => ({ GitDiffPanel: () => null }));
 jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => null }));
 jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
-jest.mock("../components/ChatSessionSubagentList", () => ({ ChatSessionSubagentList: () => null }));
+jest.mock("../components/ChatSessionSubagentList", () => ({
+  ChatSessionSubagentList: (props: Record<string, any>) => {
+    mockChatSessionSubagentProps.current = props;
+    return null;
+  },
+}));
 jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({ RunnerWsConnectionStatus: () => null }));
 jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({
   LocationScheduleSettings: (props: Record<string, any>) => {
@@ -152,7 +162,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       selectedSessionUpdatedAt: "",
       selectedSessionMarkerColor: "none",
       selectedThreadStatusType: "idle",
-      backendId: "codex",
+      backendId: mockPanelBackendId,
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
       contextUsedPct: 0,
@@ -167,7 +177,7 @@ jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
   usePanelRuntimeController: () => ({
     startNewPanelSession: jest.fn(),
     updatePanelSettings: jest.fn(),
-    hydratePanelFromSessionHistory: jest.fn(async () => "applied"),
+    hydratePanelFromSessionHistory: mockHydratePanelFromSessionHistory,
   }),
 }));
 
@@ -336,8 +346,8 @@ jest.mock("../contexts/ConversationContext", () => ({
     formatSessionUpdatedAt: jest.fn(),
     loadSessionChildren: jest.fn(),
     openSessionHistoryEntry: jest.fn(),
-    markSessionRead: jest.fn(),
-    markSessionUnread: jest.fn(),
+    markSessionRead: mockMarkSessionRead,
+    markSessionUnread: mockMarkSessionUnread,
     showChatBottomToast: jest.fn(),
     setTranscript: jest.fn(),
     sendReplyTranscript: jest.fn(),
@@ -355,6 +365,8 @@ describe("ChatScreen auto recording panel target", () => {
     jest.clearAllMocks();
     mockCodexScheduleProps.current = null;
     mockLocationScheduleProps.current = null;
+    mockChatSessionSubagentProps.current = null;
+    mockPanelBackendId = "codex";
   });
 
   it("passes the current panel ID from a panel runtime view", async () => {
@@ -463,5 +475,45 @@ describe("ChatScreen auto recording panel target", () => {
 
     await screen.unmount();
     jest.useRealTimers();
+  });
+
+  it("marks a hydrated Claude subagent read with its Backend identity", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.press(screen.getByText("Workspace"));
+
+    await act(async () => {
+      await mockChatSessionSubagentProps.current?.openSessionHistoryEntry?.({
+        backendId: "claude",
+        sessionId: "shared-session",
+        source: "cli",
+        directory: "/workspace",
+      });
+    });
+
+    await waitFor(() => expect(mockMarkSessionRead).toHaveBeenCalledWith(
+      "shared-session",
+      "cli",
+      "/workspace",
+      "claude",
+    ));
+    await screen.unmount();
+  });
+
+  it("marks the visible Claude panel unread without targeting same-id Codex", async () => {
+    mockPanelBackendId = "claude";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const message = mockLegendListProps.current?.data?.[0];
+    const row = await render(mockLegendListProps.current?.renderItem?.({ item: message, index: 0 }));
+
+    await fireEvent.press(row.getByLabelText("セッションを未読にする"));
+
+    expect(mockMarkSessionUnread).toHaveBeenCalledWith({
+      backendId: "claude",
+      sessionId: "session-1",
+      source: "all",
+      directory: "/workspace",
+    });
+    await row.unmount();
+    await screen.unmount();
   });
 });

@@ -2974,6 +2974,7 @@ export default function App() {
   );
   const sessionNotificationLifecycle = useSessionNotificationLifecycleController({
     getPopupSessionTarget: () => ({
+      backendId: String(panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.backendId || "codex").trim() || "codex",
       sessionId: parseOptionalSessionId(panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.selectedSessionId),
       directory: String(panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.selectedDirectoryPath || "").trim(),
       isHydrating: panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId]?.snapshot?.isHydrating === true,
@@ -3347,12 +3348,14 @@ export default function App() {
   const markSessionReadFromContext = useCallback((
     sessionIdRaw: string,
     source: LlmSessionSource,
-    directoryRaw: string
+    directoryRaw: string,
+    backendId: string
   ) => {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
     markSessionReadAsync({
+      backendId,
       sessionId,
       source: source || "all",
       directory,
@@ -3371,12 +3374,14 @@ export default function App() {
       return;
     }
     void markSessionUnread({
+      backendId: llmBackend,
       sessionId,
       source: "all",
       directory: normalizedLlmDirectoryForRequest(),
     });
   }, [
     markSessionUnread,
+    llmBackend,
     normalizedLlmDirectoryForRequest,
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,
@@ -4938,7 +4943,7 @@ export default function App() {
     resyncRateLimiter: resumeSyncRateLimiter,
     codexRelayObserverRef,
     panelRuntimeEntriesByIdRef,
-    selectedLlmSessionIdRef,
+    selectedLlmSessionIdRef, selectedBackendId: llmBackend,
     llmConversationSessionIdRef,
     replyLoadingRef,
     streamSocketRef,
@@ -7632,7 +7637,7 @@ export default function App() {
         setDrawerPopupHighlightSessionId("");
         return false;
       }
-      markSessionReadFromContext(sessionId, params.source, directory);
+      markSessionReadFromContext(sessionId, params.source, directory, backendId);
       return true;
     } catch (err) {
       showChatBottomToast("assistant", `セッション読込に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
@@ -7666,28 +7671,22 @@ export default function App() {
       source: "all",
     });
   }, [closeDrawer, openSessionHistoryPopup]);
-  const visibleCompletionNotificationSessionIds = useMemo(() => {
-    const ids: string[] = [];
+  const visibleCompletionNotificationSessions = useMemo(() => {
+    const sessions: Array<{ backendId: string; sessionId: string }> = [];
     if (activeScreen === "skia_board") {
-      const activeSessionId = parseOptionalSessionId(
-        selectedLlmSessionId || llmConversationSessionIdRef.current
-      );
-      if (activeSessionId) ids.push(activeSessionId);
+      const activeSessionId = parseOptionalSessionId(selectedLlmSessionId || llmConversationSessionIdRef.current);
+      if (activeSessionId) sessions.push({ backendId: llmBackend, sessionId: activeSessionId });
     }
     if (drawerSessionPopupPanelId) {
       const popupEntry = panelRuntimeEntriesById[drawerSessionPopupPanelId];
-      const popupSessionId = parseOptionalSessionId(
-        popupEntry?.snapshot?.selectedSessionId || popupEntry?.sessionId
-      );
-      if (popupSessionId) ids.push(popupSessionId);
+      const popupSessionId = parseOptionalSessionId(popupEntry?.snapshot?.selectedSessionId || popupEntry?.sessionId);
+      if (popupSessionId) sessions.push({
+        backendId: String(popupEntry?.snapshot?.backendId || "codex").trim() || "codex",
+        sessionId: popupSessionId,
+      });
     }
-    return Array.from(new Set(ids));
-  }, [
-    activeScreen,
-    drawerSessionPopupPanelId,
-    panelRuntimeEntriesById,
-    selectedLlmSessionId,
-  ]);
+    return sessions;
+  }, [activeScreen, drawerSessionPopupPanelId, llmBackend, panelRuntimeEntriesById, selectedLlmSessionId]);
 
   const appDrawerProps = useAppDrawerSessionController({
     selectedDirectoryPath: selectedDirectoryPathForConversationContext,
@@ -7804,7 +7803,7 @@ export default function App() {
         <SafeAreaView pointerEvents="box-none" style={styles.llmCompletionNotificationLayer}>
           <LlmCompletionNotifications
             notifications={llmCompletionNotifications}
-            visibleSessionIds={visibleCompletionNotificationSessionIds}
+            visibleSessions={visibleCompletionNotificationSessions}
             onOpenSession={openCompletedLlmSession}
             onDismiss={dismissLlmCompletionNotification}
           />

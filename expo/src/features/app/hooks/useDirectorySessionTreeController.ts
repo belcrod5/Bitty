@@ -95,7 +95,9 @@ function applyReadOverrides(
   if (lastReadAtBySessionId.size <= 0) return entries;
   return entries.map((entry) => {
     const directory = normalizeDirectoryPath(entry.directory);
-    const lastReadAt = lastReadAtBySessionId.get(`\u0000session:${directory}:${entry.sessionId}`)
+    const lastReadAt = lastReadAtBySessionId.get(`\u0000session:${directory}:${entry.backendId}:${entry.sessionId}`)
+      || lastReadAtBySessionId.get(`\u0000session::${entry.backendId}:${entry.sessionId}`)
+      || lastReadAtBySessionId.get(`\u0000session:${directory}:${entry.sessionId}`)
       || lastReadAtBySessionId.get(entry.sessionId)
       || lastReadAtBySessionId.get(`\u0000directory:${normalizeDirectoryPath(entry.directory)}`);
     return !lastReadAt || lastReadAt === entry.lastReadAt ? entry : { ...entry, lastReadAt };
@@ -201,13 +203,20 @@ export function useDirectorySessionTreeController({
 
   const applySessionLastReadAtByIdToDirectoryTrees = useCallback((
     lastReadAtBySessionId: Map<string, string>,
-    directoryRaw?: string
+    directoryRaw?: string,
+    backendIdRaw?: string,
   ) => {
     if (lastReadAtBySessionId.size <= 0) return;
     const directory = normalizeDirectoryPath(directoryRaw);
+    const backendId = String(backendIdRaw || "").trim();
     for (const readOverrides of readOverridesByActiveFetchRef.current) {
       for (const [sessionId, lastReadAt] of lastReadAtBySessionId) {
-        readOverrides.set(directory ? `\u0000session:${directory}:${sessionId}` : sessionId, lastReadAt);
+        let overrideKey = sessionId;
+        if (backendId) overrideKey = `\u0000session::${backendId}:${sessionId}`;
+        if (directory) overrideKey = backendId
+          ? `\u0000session:${directory}:${backendId}:${sessionId}`
+          : `\u0000session:${directory}:${sessionId}`;
+        readOverrides.set(overrideKey, lastReadAt);
       }
     }
     const currentTrees = directorySessionsByIdRef.current;
@@ -217,6 +226,7 @@ export function useDirectorySessionTreeController({
         let entryChanged = false;
         const entries = state.entries.map((entry) => {
           if (directory && normalizeDirectoryPath(entry.directory) !== directory) return entry;
+          if (backendId && entry.backendId !== backendId) return entry;
           const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
           if (!lastReadAt || lastReadAt === entry.lastReadAt) return entry;
           entryChanged = true;
@@ -228,6 +238,7 @@ export function useDirectorySessionTreeController({
             let currentChildChanged = false;
             const childEntries = child.entries.map((entry) => {
               if (directory && normalizeDirectoryPath(entry.directory) !== directory) return entry;
+              if (backendId && entry.backendId !== backendId) return entry;
               const lastReadAt = lastReadAtBySessionId.get(entry.sessionId);
               if (!lastReadAt || lastReadAt === entry.lastReadAt) return entry;
               currentChildChanged = true;

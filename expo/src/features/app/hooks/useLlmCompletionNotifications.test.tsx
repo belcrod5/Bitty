@@ -3,8 +3,9 @@ import { useLlmCompletionNotifications } from "./useLlmCompletionNotifications";
 
 test("keeps Backend identity while resolving and deduplicating completion notifications", async () => {
   const resolveSessionHistoryContext = jest.fn(() => ({ directoryDisplayName: "repo" }));
+  const handleForegroundSessionCompletion = jest.fn(() => false);
   const { result } = await renderHook(() => useLlmCompletionNotifications({
-    handleForegroundSessionCompletion: () => false,
+    handleForegroundSessionCompletion,
     resolveSessionHistoryContext,
   }));
 
@@ -27,6 +28,11 @@ test("keeps Backend identity while resolving and deduplicating completion notifi
 
   expect(resolveSessionHistoryContext).toHaveBeenNthCalledWith(1, "same-session", "claude");
   expect(resolveSessionHistoryContext).toHaveBeenNthCalledWith(2, "same-session", "codex");
+  expect(handleForegroundSessionCompletion).toHaveBeenNthCalledWith(1, {
+    backendId: "claude",
+    sessionId: "same-session",
+    directory: undefined,
+  });
   expect(result.current.notifications).toEqual([
     expect.objectContaining({ backendId: "codex", sessionId: "same-session" }),
     expect.objectContaining({ backendId: "claude", sessionId: "same-session" }),

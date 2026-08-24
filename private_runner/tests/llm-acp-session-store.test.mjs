@@ -585,3 +585,83 @@ test("stores workspace approvals without conversation or credential data", async
   assert.equal(persisted.includes("conversation"), false);
   assert.equal(persisted.includes("credential"), false);
 });
+
+test("persists provider-aware Agent activity and read state", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-unread-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const storePath = path.join(tempRoot, "acp_sessions.json");
+  const createStore = () => createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)),
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: true,
+    workspaceRoot: tempRoot,
+  });
+  const requestedCwd = path.join(tempRoot, "project");
+  await fs.mkdir(requestedCwd);
+  const cwd = await fs.realpath(requestedCwd);
+  const codex = { backendId: "codex", nativeSessionId: "shared" };
+  const claude = { backendId: "claude", nativeSessionId: "shared" };
+  const store = createStore();
+  await store.bindAgentSession(codex, cwd, "neutral");
+  await store.bindAgentSession(claude, cwd, "neutral");
+  await store.agentSessionActivityStore.recordActivity(codex, cwd, "2099-08-24T01:00:00.000Z");
+  await store.agentSessionActivityStore.recordActivity(claude, cwd, "2099-08-24T02:00:00.000Z");
+  await store.agentSessionActivityStore.markSessionsRead(["shared"], {
+    lastReadAt: "2100-08-24T03:00:00.000Z",
+  });
+
+  const [group] = await createStore().agentSessionActivityStore.listForDirectories([cwd]);
+  const sessions = new Map(group.sessions.map((session) => [session.backendId, session]));
+  assert.equal(sessions.get("codex").updatedAt, "2099-08-24T01:00:00.000Z");
+  assert.equal(sessions.get("codex").lastReadAt, "2100-08-24T03:00:00.000Z");
+  assert.equal(sessions.get("claude").updatedAt, "2099-08-24T02:00:00.000Z");
+  assert.notEqual(sessions.get("claude").lastReadAt, "2100-08-24T03:00:00.000Z");
+
+  const directoryResult = await store.agentSessionActivityStore.markDirectoryRead(
+    cwd,
+    "2101-08-24T04:00:00.000Z",
+  );
+  assert.equal(directoryResult.selectedSessionIds.length, 2);
+  assert.equal(directoryResult.updatedSessionIds.length, 2);
+  const [updatedGroup] = await store.agentSessionActivityStore.listForDirectories([cwd]);
+  assert.deepEqual(
+    updatedGroup.sessions.map((session) => session.lastReadAt),
+    ["2101-08-24T04:00:00.000Z", "2101-08-24T04:00:00.000Z"],
+  );
+});
+
+test("migrates Agent bindings without read state as already read", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-unread-migration-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const cwd = await fs.realpath(tempRoot);
+  const storePath = path.join(tempRoot, "acp_sessions.json");
+  await fs.writeFile(storePath, JSON.stringify({
+    version: 5,
+    agentSessionBindings: [{
+      backendId: "claude",
+      nativeSessionId: "legacy",
+      canonicalCwd: cwd,
+      updatedAt: "2026-08-24T01:00:00.000Z",
+    }],
+  }));
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: storePath,
+    compareSessionHistoryEntries: () => 0,
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: true,
+    workspaceRoot: tempRoot,
+  });
+
+  const [group] = await store.agentSessionActivityStore.listForDirectories([cwd]);
+  assert.equal(group.sessions[0].updatedAt, "2026-08-24T01:00:00.000Z");
+  assert.equal(group.sessions[0].lastReadAt, "2026-08-24T01:00:00.000Z");
+});

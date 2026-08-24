@@ -41,7 +41,7 @@ export function createPrivateRunnerAgentRuntime({
   normalizeSessionListLimit,
   normalizeSessionMessagesLimit,
   readJsonBody,
-  onRunEvent,
+  runEventObservers = [],
 }) {
   const subjectId = `runner:${createHash("sha256").update(String(runnerToken || "")).digest("hex")}`;
   const sessionStore = {
@@ -52,6 +52,7 @@ export function createPrivateRunnerAgentRuntime({
     settle: stores.settleSessionLease,
     updateIdentity: stores.updateSessionLeaseIdentity,
     handoff: stores.handoffSessionMode,
+    recordActivity: stores.recordSessionActivity,
   };
 
   async function resolveCodexSessionCwd(sessionRef) {
@@ -145,7 +146,9 @@ export function createPrivateRunnerAgentRuntime({
     sessionStore,
     workspaceAdmission,
     resolveCanonicalCwd,
-    onRunEvent,
+    onRunEvent: (event) => Promise.allSettled(
+      runEventObservers.map((observer) => Promise.resolve().then(() => observer(event))),
+    ),
   });
   const httpHandler = createAgentHttpHandler({
     service, runnerToken, parseAuthToken, json, normalizeSessionListLimit,

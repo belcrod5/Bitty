@@ -9,6 +9,7 @@ import { parseOptionalSessionId } from "../utils/llmSession";
 import { parseLlmDirectory } from "../utils/settingsParsers";
 
 type MarkReadParams = {
+  backendId?: string;
   sessionId: string;
   directory: string;
   source?: LlmSessionSource;
@@ -18,6 +19,7 @@ type MarkReadParams = {
 };
 
 type SessionReadOptions = {
+  backendId?: unknown;
   directory?: unknown;
   source?: LlmSessionSource;
   lastReadAt?: unknown;
@@ -32,7 +34,8 @@ type UseSessionMarkReadControllerArgs = {
   normalizedLlmDirectoryForRequest: () => string;
   applySessionLastReadAtByIdToDirectoryTrees: (
     lastReadAtBySessionId: Map<string, string>,
-    directory?: string
+    directory?: string,
+    backendId?: string,
   ) => void;
   applyDirectoryLastReadAtToDirectoryTrees: (directory: string, lastReadAt: string) => void;
   reconcileDirectorySessionTree: (
@@ -40,6 +43,7 @@ type UseSessionMarkReadControllerArgs = {
     requestedDirectory?: string
   ) => Promise<DirectoryLoadOutcome>;
   onSessionReadStateCommitted?: (result: {
+    backendId: string;
     sessionId: string;
     directory: string;
     isRead: boolean;
@@ -58,11 +62,11 @@ type UseSessionMarkReadControllerArgs = {
 };
 
 function runnerSessionReadTargetFound(result: RunnerSessionReadResult): boolean {
-  if (result.updated || result.acpUpdated || result.cliUpdated) return true;
+  if (result.updated || result.acpUpdated || result.agentUpdated || result.cliUpdated) return true;
   const diagnostics = result.diagnostics;
   if (result.source === "cli") return diagnostics?.cliEntryFound === true;
   if (result.source === "acp") return diagnostics?.acpEntryFound === true;
-  return diagnostics?.cliEntryFound === true || diagnostics?.acpEntryFound === true;
+  return diagnostics?.cliEntryFound === true || diagnostics?.acpEntryFound === true || diagnostics?.agentEntryFound === true;
 }
 
 export function useSessionMarkReadController({
@@ -87,6 +91,7 @@ export function useSessionMarkReadController({
     sessionId: string,
     options: SessionReadOptions
   ) => {
+    const identity = `${String(options.backendId || "codex").trim() || "codex"}\u0000${sessionId}`;
     const previousDirectoryReads = [...pendingDirectoryReadsRef.current];
     const run = async () => {
       await Promise.all(previousDirectoryReads.map((promise) => promise.then(
@@ -100,20 +105,21 @@ export function useSessionMarkReadController({
         throw new Error("Runnerで対象セッションの既読状態を更新できませんでした");
       }
       const directory = String(result.directory || "").trim();
-      applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, lastReadAt]]), directory);
+      applySessionLastReadAtByIdToDirectoryTrees(new Map([[sessionId, lastReadAt]]), directory, result.backendId);
       onSessionReadStateCommitted?.({
+        backendId: result.backendId,
         sessionId,
         directory,
         isRead: String(options.lastReadAt || "").trim() !== new Date(0).toISOString(),
       });
       return result;
     };
-    const previous = pendingSessionReadByIdRef.current.get(sessionId);
+    const previous = pendingSessionReadByIdRef.current.get(identity);
     const promise = previous ? previous.then(run, run) : run();
-    pendingSessionReadByIdRef.current.set(sessionId, promise);
+    pendingSessionReadByIdRef.current.set(identity, promise);
     const cleanup = () => {
-      if (pendingSessionReadByIdRef.current.get(sessionId) === promise) {
-        pendingSessionReadByIdRef.current.delete(sessionId);
+      if (pendingSessionReadByIdRef.current.get(identity) === promise) {
+        pendingSessionReadByIdRef.current.delete(identity);
       }
     };
     void promise.then(cleanup, cleanup);
@@ -126,6 +132,7 @@ export function useSessionMarkReadController({
 
   const markSessionReadAsync = useCallback(({
     sessionId,
+    backendId,
     directory,
     source,
     perfTraceId,
@@ -136,6 +143,7 @@ export function useSessionMarkReadController({
     void (async () => {
       try {
         const asyncMarkReadResult = await startSessionReadMutation(sessionId, {
+          backendId,
           directory,
           source,
         });
@@ -171,10 +179,12 @@ export function useSessionMarkReadController({
 
   const markSessionUnread = useCallback(async ({
     sessionId: sessionIdRaw,
+    backendId,
     source,
     directory: directoryRaw,
   }: {
     sessionId: string;
+    backendId?: string;
     source?: LlmSessionSource;
     directory?: string;
   }) => {
@@ -183,6 +193,7 @@ export function useSessionMarkReadController({
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
     try {
       await startSessionReadMutation(sessionId, {
+        backendId,
         source: source || "all",
         directory,
         lastReadAt: new Date(0).toISOString(),
@@ -202,10 +213,12 @@ export function useSessionMarkReadController({
 
   const markSessionRead = useCallback(async ({
     sessionId: sessionIdRaw,
+    backendId,
     source,
     directory: directoryRaw,
   }: {
     sessionId: string;
+    backendId?: string;
     source?: LlmSessionSource;
     directory?: string;
   }) => {
@@ -214,6 +227,7 @@ export function useSessionMarkReadController({
     const directory = parseLlmDirectory(directoryRaw || normalizedLlmDirectoryForRequest());
     try {
       await startSessionReadMutation(sessionId, {
+        backendId,
         source: source || "all",
         directory,
       });

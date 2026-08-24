@@ -177,6 +177,10 @@ test("Codex Backend maps native turn events without changing App Server RPCs", a
       method: "item/completed",
       params: { item: { id: "message-1", type: "agentMessage", content: [{ type: "text", text: "final" }] } },
     },
+    {
+      method: "item/completed",
+      params: { item: { id: "message-2", type: "agentMessage", content: [{ type: "text", text: "without delta" }] } },
+    },
     { method: "turn/completed", params: { turn: { status: "completed" } } },
   ]);
   client.close = () => { client.closed = true; };
@@ -204,7 +208,15 @@ test("Codex Backend maps native turn events without changing App Server RPCs", a
     "item.started",
     "content.delta",
     "item.completed",
+    "item.started",
+    "item.completed",
   ]);
+  assert.deepEqual(
+    events.filter((event) => event.type === "item.started" || event.type === "item.completed")
+      .map((event) => event.payload.itemType),
+    ["assistant", "assistant", "assistant", "assistant"],
+  );
+  assert.equal(events.at(-1).payload.content[0].text, "without delta");
   assert.deepEqual(client.calls.find((call) => call.method === "turn/start")?.params.input, [
     { type: "text", text: "run checks" },
   ]);

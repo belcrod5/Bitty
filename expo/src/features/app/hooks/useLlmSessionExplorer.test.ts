@@ -62,6 +62,7 @@ test("marks a session with credentials resolved after render", async () => {
   });
 
   await result.current.markRunnerSessionRead("thread-1", {
+    backendId: "claude",
     directory: "/workspace",
   });
 
@@ -73,6 +74,11 @@ test("marks a session with credentials resolved after render", async () => {
       }),
     })
   );
+  const request = fetchMock.mock.calls[0][1];
+  expect(JSON.parse(String(request?.body))).toMatchObject({
+    backendId: "claude",
+    sessionId: "thread-1",
+  });
   fetchMock.mockRestore();
 });
 

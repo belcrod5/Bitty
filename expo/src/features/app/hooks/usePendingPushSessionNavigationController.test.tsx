@@ -117,6 +117,22 @@ describe("usePendingPushSessionNavigationController", () => {
     }));
   });
 
+  it("keeps Backend identity when Codex and Claude reuse a native session id", async () => {
+    currentTarget = target("shared", "/repo", 1);
+    const { open } = await renderController();
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({
+      backendId: "claude",
+      sessionId: "shared",
+    }));
+
+    currentTarget = { backendId: "codex", sessionId: "shared", directory: "/repo", sequence: 2 };
+    await act(async () => storeListener?.());
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({
+      backendId: "codex",
+      sessionId: "shared",
+    }));
+  });
+
   it("keeps a failed intent and opens a newer intent after an older navigation settles", async () => {
     const first = deferred<boolean>();
     const second = deferred<boolean>();

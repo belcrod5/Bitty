@@ -33,6 +33,7 @@ export function createLlmSessionService(deps = {}) {
     findCliSessionIndexEntriesBySessionIds,
     listAcpSessionsForDirectories,
     listAcpSessionsForDirectory,
+    agentSessionActivityStore,
     listCliSessionsForDirectories,
     listCliSessionsForDirectory,
     makeApiError,
@@ -194,17 +195,23 @@ export function createLlmSessionService(deps = {}) {
     const directory = await resolveCanonicalDirectoryIdentity(opts?.directory);
     const source = normalizeSessionSource(opts?.source, "all");
     const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
+    const backendId = String(opts?.backendId || "codex").trim() || "codex";
     let acpResults = [];
+    let agentResults = [];
     let cliResults = [];
 
-    if (sessionIds.length > 0 && (source === "acp" || source === "all")) {
+    if (backendId === "codex" && sessionIds.length > 0 && (source === "acp" || source === "all")) {
       acpResults = await markAcpSessionsRead(sessionIds, lastReadAt);
     }
-    if (sessionIds.length > 0 && (source === "cli" || source === "all")) {
+    if (backendId === "codex" && sessionIds.length > 0 && (source === "cli" || source === "all")) {
       cliResults = await markCliSessionsRead(sessionIds, { directory, lastReadAt });
+    }
+    if (sessionIds.length > 0) {
+      agentResults = await agentSessionActivityStore.markSessionsRead(sessionIds, { backendId, lastReadAt });
     }
 
     const acpById = new Map(acpResults.map((result) => [result.sessionId, result]));
+    const agentById = new Map(agentResults.map((result) => [result.sessionId, result]));
     const cliById = new Map(cliResults.map((result) => [result.sessionId, result]));
     const diagnostics = {
       totalMs: Math.max(0, Date.now() - startedAtMs),
@@ -214,25 +221,31 @@ export function createLlmSessionService(deps = {}) {
       cliPersistMs: Math.max(0, Number(cliResults[0]?.persistMs || 0)),
     };
     return {
+      backendId,
       directory,
       source,
       lastReadAt,
       results: sessionIds.map((sessionId) => {
         const acpResult = acpById.get(sessionId);
+        const agentResult = agentById.get(sessionId);
         const cliResult = cliById.get(sessionId);
         const acpUpdated = Boolean(acpResult?.updated);
+        const agentUpdated = Boolean(agentResult?.updated);
         const cliUpdated = Boolean(cliResult?.updated);
         return {
+          backendId,
           sessionId,
           directory,
           source,
           lastReadAt,
-          updated: acpUpdated || cliUpdated,
+          updated: acpUpdated || agentUpdated || cliUpdated,
           acpUpdated,
+          agentUpdated,
           cliUpdated,
           diagnostics: {
             ...diagnostics,
             acpEntryFound: Boolean(acpResult?.entryFound),
+            agentEntryFound: Boolean(agentResult?.entryFound),
             cliEntryFound: Boolean(cliResult?.entryFound),
           },
         };
@@ -274,6 +287,11 @@ export function createLlmSessionService(deps = {}) {
         run: () => markAcpDirectoryRead(directory, lastReadAt),
       },
       {
+        name: "agent",
+        enabled: source === "all",
+        run: () => agentSessionActivityStore.markDirectoryRead(directory, lastReadAt),
+      },
+      {
         name: "cli",
         enabled: source === "cli" || source === "all",
         run: () => markCliDirectoryRead(directory, { lastReadAt }),
@@ -304,8 +322,11 @@ export function createLlmSessionService(deps = {}) {
     }));
     const requested = settled.filter((store) => store.status !== "skipped");
     const succeeded = requested.filter((store) => store.status === "success");
-    const selectedSessionIds = new Set(succeeded.flatMap((store) => store.selectedSessionIds));
-    const updatedSessionIds = new Set(succeeded.flatMap((store) => store.updatedSessionIds));
+    const providerAwareIds = (store, ids) => ids.map((sessionId) => (
+      store.name === "agent" ? sessionId : JSON.stringify(["codex", sessionId])
+    ));
+    const selectedSessionIds = new Set(succeeded.flatMap((store) => providerAwareIds(store, store.selectedSessionIds)));
+    const updatedSessionIds = new Set(succeeded.flatMap((store) => providerAwareIds(store, store.updatedSessionIds)));
     const status = succeeded.length === requested.length
       ? "full"
       : succeeded.length > 0 ? "partial" : "failed";
@@ -353,6 +374,7 @@ export function createLlmSessionService(deps = {}) {
     const options = {
       directory: body.directory,
       source: body.source,
+      backendId: body.backendId,
       lastReadAt: body.lastReadAt,
     };
     if (directoryScope) return await markLlmDirectoryRead(body.directory, options);
@@ -456,18 +478,23 @@ export function createLlmSessionService(deps = {}) {
     return directories;
   }
 
-  function mergeSessionGroups(directories, acpGroups, cliGroups) {
+  function mergeSessionGroups(directories, acpGroups, agentGroups, cliGroups) {
     return directories.map((directory, index) => {
       const sessionsById = new Map();
       const sessions = [
-        ...(acpGroups[index]?.sessions || []),
-        ...(cliGroups[index]?.sessions || []),
+        ...(acpGroups[index]?.sessions || []).map((session) => ({ ...session, backendId: "codex" })),
+        ...(cliGroups[index]?.sessions || []).map((session) => ({ ...session, backendId: "codex" })),
+        ...(agentGroups[index]?.sessions || []),
       ];
       for (const session of sessions) {
+        const backendId = String(session?.backendId || "").trim();
         const sessionId = String(session?.sessionId || "").trim();
-        if (!sessionId) continue;
-        const existing = sessionsById.get(sessionId);
-        sessionsById.set(sessionId, {
+        if (!backendId || !sessionId) continue;
+        const identity = JSON.stringify([backendId, sessionId]);
+        const existing = sessionsById.get(identity);
+        sessionsById.set(identity, {
+          backendId,
+          sessionId,
           updatedAt: newerTimestamp(existing?.updatedAt, session?.updatedAt),
           lastReadAt: newerTimestamp(existing?.lastReadAt, session?.lastReadAt),
         });
@@ -477,21 +504,27 @@ export function createLlmSessionService(deps = {}) {
   }
 
   async function loadUnreadSessionSnapshot(directories) {
-    const cliGroups = await listCliSessionsForDirectories(directories, {
-      forceRefresh: true,
-      useRolloutMtime: true,
-      includeSubagents: false,
-    });
-    const acpGroups = await listAcpSessionsForDirectories(directories);
-    return mergeSessionGroups(directories, acpGroups, cliGroups);
+    const [acpGroups, agentGroups, cliGroups] = await Promise.all([
+      listAcpSessionsForDirectories(directories),
+      agentSessionActivityStore.listForDirectories(directories),
+      listCliSessionsForDirectories(directories, {
+        forceRefresh: true,
+        useRolloutMtime: true,
+        includeSubagents: false,
+      }),
+    ]);
+    return mergeSessionGroups(directories, acpGroups, agentGroups, cliGroups);
   }
 
-  async function getPushUnreadSnapshot({ directorySets, targetSessionId, targetDirectory }) {
+  async function getPushUnreadSnapshot({ directorySets, targetBackendId = "codex", targetSessionId, targetDirectory }) {
     if (!Array.isArray(directorySets)) {
       throw makeApiError(400, "invalid_directory_sets", "directorySets must be an array");
     }
     const sessionId = normalizeLlmExecutionSessionId(targetSessionId);
     if (!sessionId) throw makeApiError(400, "invalid_session_id", "sessionId is required");
+    const backendId = String(targetBackendId || "").trim();
+    if (!backendId) throw makeApiError(400, "invalid_backend_id", "backendId is required");
+    const targetIdentity = JSON.stringify([backendId, sessionId]);
     const canonicalDirectorySets = await Promise.all(
       directorySets.map((directories) => normalizeUnreadDirectories(directories)),
     );
@@ -512,12 +545,12 @@ export function createLlmSessionService(deps = {}) {
       mergedGroups.map((group) => [group.directory, group.sessionsById]),
     );
     let directory = requestedDirectory || "";
-    let target = directory ? sessionsByDirectory.get(directory)?.get(sessionId) : undefined;
+    let target = directory ? sessionsByDirectory.get(directory)?.get(targetIdentity) : undefined;
     if (!directory) {
-      const matches = mergedGroups.filter((group) => group.sessionsById.has(sessionId));
+      const matches = mergedGroups.filter((group) => group.sessionsById.has(targetIdentity));
       if (matches.length === 1) {
         directory = matches[0].directory;
-        target = matches[0].sessionsById.get(sessionId);
+        target = matches[0].sessionsById.get(targetIdentity);
       }
     }
     const unreadCountByDirectorySet = new Map();
@@ -535,6 +568,7 @@ export function createLlmSessionService(deps = {}) {
     });
     return {
       directory,
+      backendId,
       sessionId,
       targetFound: Boolean(target),
       targetUnread: isMergedSessionUnread(target),
@@ -543,14 +577,17 @@ export function createLlmSessionService(deps = {}) {
     };
   }
 
-  async function getSessionUnreadState(rawSessionId, rawDirectory) {
+  async function getSessionUnreadState(rawSessionId, rawDirectory, rawBackendId = "codex") {
     const sessionId = normalizeLlmExecutionSessionId(rawSessionId);
     if (!sessionId) throw makeApiError(400, "invalid_session_id", "sessionId is required");
+    const backendId = String(rawBackendId || "").trim();
+    if (!backendId) throw makeApiError(400, "invalid_backend_id", "backendId is required");
     const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
     const [group] = await loadUnreadSessionSnapshot([directory]);
-    const session = group?.sessionsById.get(sessionId);
+    const session = group?.sessionsById.get(JSON.stringify([backendId, sessionId]));
     return {
       directory,
+      backendId,
       sessionId,
       found: Boolean(session),
       unread: isMergedSessionUnread(session),

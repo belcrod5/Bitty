@@ -43,11 +43,13 @@ type UseAppDrawerSessionControllerArgs = {
     sourceRect?: PopupChatSourceRect;
   }) => void;
   markSessionUnread: (params: {
+    backendId?: string;
     sessionId: string;
     source: LlmSessionSource;
     directory: string;
   }) => void;
   markSessionRead: (params: {
+    backendId?: string;
     sessionId: string;
     source: LlmSessionSource;
     directory: string;
@@ -149,11 +151,13 @@ export function useAppDrawerSessionController({
   ]);
 
   const handleMarkSessionUnread = useCallback((
+    backendId: string,
     sessionId: string,
     source: LlmSessionSource,
     directoryPath: string
   ) => {
     markSessionUnread({
+      backendId,
       sessionId,
       source,
       directory: directoryPath,
@@ -161,11 +165,13 @@ export function useAppDrawerSessionController({
   }, [markSessionUnread]);
 
   const handleMarkSessionRead = useCallback((
+    backendId: string,
     sessionId: string,
     source: LlmSessionSource,
     directoryPath: string
   ) => {
     markSessionRead({
+      backendId,
       sessionId,
       source,
       directory: directoryPath,

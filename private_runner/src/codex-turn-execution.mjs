@@ -403,16 +403,19 @@ export function createCodexBackend({
       }
       if (method === "item/started") {
         const itemId = codexItemId(params, "");
-        if (String(params?.item?.type || "") === "commandExecution") {
+        const nativeItemType = String(params?.item?.type || "");
+        if (nativeItemType === "commandExecution") {
           emitToolStarted(itemId, codexCommandText(params.item));
           return;
         }
-        if (itemId) emitItemStarted(itemId, String(params?.item?.type || "item"));
+        const itemType = nativeItemType === "agentMessage" ? "assistant" : (nativeItemType || "item");
+        if (itemId) emitItemStarted(itemId, itemType);
         return;
       }
       if (method === "item/completed") {
-        const itemId = codexItemId(params, `${state.turnId}:${String(params?.item?.type || "item")}`);
-        if (String(params?.item?.type || "") === "commandExecution") {
+        const nativeItemType = String(params?.item?.type || "");
+        const itemId = codexItemId(params, `${state.turnId}:${nativeItemType || "item"}`);
+        if (nativeItemType === "commandExecution") {
           const command = codexCommandText(params.item) || String(state.commandByToolCallId.get(itemId) || "");
           emitToolStarted(itemId, command);
           emit("tool.completed", {
@@ -423,13 +426,14 @@ export function createCodexBackend({
           });
           return;
         }
-        emitItemStarted(itemId, String(params?.item?.type || "item"));
-        const text = String(params?.item?.type || "") === "agentMessage"
+        const itemType = nativeItemType === "agentMessage" ? "assistant" : (nativeItemType || "item");
+        emitItemStarted(itemId, itemType);
+        const text = nativeItemType === "agentMessage"
           ? extractCodexAgentMessageText(params.item)
           : "";
         emit("item.completed", {
           itemId,
-          itemType: String(params?.item?.type || "item"),
+          itemType,
           snapshotRevision: 1,
           ...(text ? { content: [{ type: "text", text }] } : {}),
         });
