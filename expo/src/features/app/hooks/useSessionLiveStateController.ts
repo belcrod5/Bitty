@@ -116,6 +116,12 @@ export function useSessionLiveStateController(options: {
       }
       return false;
     }
+    const terminalThreadStatusType = (
+      selectedThreadStatusType === "idle"
+      || selectedThreadStatusType === "notLoaded"
+      || selectedThreadStatusType === "systemError"
+      || selectedThreadStatusType === "error"
+    ) ? selectedThreadStatusType : "idle";
     const currentRuntime = currentOptions.getRuntime(params.sessionId);
     const currentRequestStartedAtMs = Number(currentRuntime?.request?.startedAtMs) || null;
     // A request created after this probe began was not represented by its result.
@@ -147,7 +153,7 @@ export function useSessionLiveStateController(options: {
       sessionId: params.sessionId,
       conversationMessages,
       isResponding: false,
-      selectedThreadStatusType,
+      selectedThreadStatusType: terminalThreadStatusType,
       expectedRequestStartedAtMs: currentRequestStartedAtMs,
       clearRespondingRequestStartedAtMs: currentRequestStartedAtMs,
     });
@@ -169,7 +175,7 @@ export function useSessionLiveStateController(options: {
           ...entry,
           snapshot: currentOptions.createPanelSnapshot(panelId, entry.snapshot, {
             isResponding: false,
-            selectedThreadStatusType,
+            selectedThreadStatusType: terminalThreadStatusType,
           }),
         };
         changed = true;
@@ -178,11 +184,11 @@ export function useSessionLiveStateController(options: {
     });
     if (currentOptions.activeSessionId() === params.sessionId) {
       currentOptions.setActiveResponding(false);
-      currentOptions.setActiveThreadStatus(selectedThreadStatusType);
+      currentOptions.setActiveThreadStatus(terminalThreadStatusType);
     }
     currentOptions.log("session_live_terminal_state_applied", {
       sessionId: params.sessionId,
-      selectedThreadStatusType,
+      selectedThreadStatusType: terminalThreadStatusType,
       clearedRequestStartedAtMs: currentRequestStartedAtMs,
       source: "thread_status_probe",
     }, { throttleMs: 0 });

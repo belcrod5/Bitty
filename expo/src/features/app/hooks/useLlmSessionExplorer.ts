@@ -16,6 +16,7 @@ import {
 import { parseLlmDirectory } from "../utils/settingsParsers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 import { ALL_BACKENDS_SCOPE, readAgentHistory } from "../../agent/client";
+import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
@@ -533,11 +534,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         neutral = null;
       }
       if (neutral?.sessionRef) {
-        const activeRun = neutral.activeRun && typeof neutral.activeRun === "object"
-          ? neutral.activeRun as JsonRecord
-          : null;
-        const hasRunningTurn = Boolean(String(activeRun?.runId || "").trim());
-        const waitingForAction = activeRun?.waitingForAction === true;
+        const liveState = deriveAgentSessionLiveState(neutral.activeRun);
         const items = Array.isArray(neutral.items) ? neutral.items : [];
         const messages: RunnerSessionMessage[] = items.flatMap((raw) => {
           const item = raw && typeof raw === "object" ? raw as JsonRecord : {};
@@ -581,14 +578,9 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           messages,
           // rollout token_count由来のcontext使用率(codex)。無いBackendはnull。
           contextUsedPct: parseContextUsageUsedPct(neutral.contextUsage),
-          threadStatusType: hasRunningTurn ? (waitingForAction ? "waiting_approval" : "active") : "idle",
-          hasRunningTurn,
-          runningTurn: hasRunningTurn ? {
-            status: waitingForAction ? "waiting_approval" : String(activeRun?.state || "running"),
-            summary: waitingForAction ? "approval required" : "agent turn running",
-            startedAt: String(activeRun?.startedAt || ""),
-            updatedAt: String(activeRun?.updatedAt || ""),
-          } : null,
+          threadStatusType: liveState.threadStatusType,
+          hasRunningTurn: liveState.hasRunningTurn,
+          runningTurn: liveState.runningTurn,
           olderCursor: String(neutral.olderCursor || "") || null,
           latestCursor: String(neutral.newerCursor || "") || null,
           ...(sinceCursor ? { moreAfter: neutral.moreAfter === true } : {}),

@@ -382,6 +382,44 @@ describe("confirmed terminal live-state reconciliation", () => {
     });
   });
 
+  it("normalizes an unknown thread status when the latest turn confirms completion", async () => {
+    const harness = await buildReconciliationHarness();
+    await act(() => {
+      harness.result.current.runtimeStore.upsertConversationRuntimeSnapshot({
+        sessionId: "thread-1",
+        conversationMessages: [{ id: "message-1", role: "assistant", content: "latest" }],
+        isResponding: true,
+        selectedThreadStatusType: "active",
+        request: activeRequest(500),
+      });
+    });
+
+    let applied = false;
+    await act(() => {
+      applied = harness.result.current.controller.applyProbe({
+        sessionId: "thread-1",
+        liveState: {
+          threadStatusType: "unknown",
+          latestTurnStatus: "completed",
+          hasRunningTurn: false,
+        },
+        probeStartedAtMs: 1_000,
+      });
+    });
+
+    expect(applied).toBe(true);
+    expect(harness.result.current.runtimeStore.getConversationRuntimeSnapshot("thread-1")).toMatchObject({
+      isResponding: false,
+      selectedThreadStatusType: "idle",
+      request: null,
+    });
+    expect(harness.result.current.entries["panel-1"].snapshot).toMatchObject({
+      isResponding: false,
+      selectedThreadStatusType: "idle",
+    });
+    expect(harness.setActiveThreadStatus).toHaveBeenCalledWith("idle");
+  });
+
   it("settles the restore/probe race through the selected-session probe effect", async () => {
     let resolveProbe: ((value: Awaited<ReturnType<typeof readCodexAppServerThread>>) => void) | null = null;
     const probePromise = new Promise<Awaited<ReturnType<typeof readCodexAppServerThread>>>((resolve) => {
