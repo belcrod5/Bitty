@@ -108,7 +108,7 @@ export function createPrivateRunnerAgentRuntime({
           id: String(message.itemId || `${sessionRef.nativeSessionId}:${index}`),
           role: String(message.role || "assistant"),
           content: historyContent(message),
-          ...(message.timestamp ? { createdAt: String(message.timestamp) } : {}),
+          ...(message.at ? { createdAt: String(message.at) } : {}),
           ...(message.kind ? { itemType: String(message.kind) } : {}),
         })),
         olderCursor: page.olderCursor,
