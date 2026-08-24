@@ -60,6 +60,7 @@ import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 import { useChatModelSelection } from "../hooks/useChatModelSelection";
+import { useChatScrollNavigation } from "../hooks/useChatScrollNavigation";
 import { countGitChangedFiles } from "../utils/gitChangedFiles";
 import {
   normalizeRunnerPath,
@@ -756,25 +757,6 @@ export function ChatScreen({
     chatAutoScrollPausedRef.current = true;
     cancelPendingChatBottomSettling();
   }, [cancelPendingChatBottomSettling]);
-  const handleChatTouchEndForAutoScroll = useCallback(() => {
-    handleChatTouchEndForView?.();
-    if (chatScrollDragActiveRef.current) return;
-    if (isAtBottomRef.current) chatAutoScrollPausedRef.current = false;
-  }, [handleChatTouchEndForView]);
-  const handleChatTouchCancelForAutoScroll = useCallback(() => {
-    chatScrollDragActiveRef.current = false;
-    handleChatTouchEndForView?.();
-    if (isAtBottomRef.current) chatAutoScrollPausedRef.current = false;
-  }, [handleChatTouchEndForView]);
-  const handleChatScrollInteractionBegin = useCallback(() => {
-    chatScrollDragActiveRef.current = true;
-    chatAutoScrollPausedRef.current = true;
-    cancelPendingChatBottomSettling();
-  }, [cancelPendingChatBottomSettling]);
-  const handleChatScrollInteractionEnd = useCallback(() => {
-    chatScrollDragActiveRef.current = false;
-    if (isAtBottomRef.current) chatAutoScrollPausedRef.current = false;
-  }, []);
   const queueBottomScrollFrame = useCallback((callback: () => void) => {
     const frame = requestAnimationFrame(() => {
       bottomScrollRafRefs.current = bottomScrollRafRefs.current.filter((queuedFrame) => queuedFrame !== frame);
@@ -837,6 +819,42 @@ export function ChatScreen({
     scrollChatListToLastMessageTarget,
     scrollChatListToMeasuredBottom,
   ]);
+  const resumeChatAutoScroll = useCallback(() => {
+    chatAutoScrollPausedRef.current = false;
+    isAtBottomRef.current = true;
+  }, []);
+  const {
+    handleViewableItemsChanged: handleChatViewableItemsChanged,
+    resetNavigation: resetChatScrollNavigation,
+    scrollToBottomAndResume: resumeChatAtBottom,
+    scrollToPreviousUser: scrollChatListToPreviousUser,
+    shouldKeepAutoScrollPaused,
+  } = useChatScrollNavigation({
+    messages: conversationMessagesForView,
+    listRef: chatListRefForView,
+    pauseAutoScroll: pauseChatAutoScrollForInteraction,
+    resumeAutoScroll: resumeChatAutoScroll,
+    scrollToBottom: scrollChatListToBottom,
+  });
+  const handleChatTouchEndForAutoScroll = useCallback(() => {
+    handleChatTouchEndForView?.();
+    if (chatScrollDragActiveRef.current) return;
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
+  }, [handleChatTouchEndForView, shouldKeepAutoScrollPaused]);
+  const handleChatTouchCancelForAutoScroll = useCallback(() => {
+    chatScrollDragActiveRef.current = false;
+    handleChatTouchEndForView?.();
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
+  }, [handleChatTouchEndForView, shouldKeepAutoScrollPaused]);
+  const handleChatScrollInteractionBegin = useCallback(() => {
+    chatScrollDragActiveRef.current = true;
+    chatAutoScrollPausedRef.current = true;
+    cancelPendingChatBottomSettling();
+  }, [cancelPendingChatBottomSettling]);
+  const handleChatScrollInteractionEnd = useCallback(() => {
+    chatScrollDragActiveRef.current = false;
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
+  }, [shouldKeepAutoScrollPaused]);
   const scrollChatListToBottomSettled = useCallback((animated = false) => {
     clearPendingBottomScrollFrames();
     const scrollToBottomOnNextFrame = (nextAnimated: boolean) => {
@@ -939,11 +957,14 @@ export function ChatScreen({
     chatScrollDiagnosticRef.current.viewportHeight = viewportHeight;
     const isAtBottom = distanceToBottom <= CHAT_BOTTOM_RESUME_THRESHOLD_PX;
     isAtBottomRef.current = isAtBottom;
-    if (isAtBottom && !chatScrollDragActiveRef.current) chatAutoScrollPausedRef.current = false;
+    const keepAutoScrollPaused = shouldKeepAutoScrollPaused(isAtBottom);
+    if (isAtBottom && !chatScrollDragActiveRef.current && !keepAutoScrollPaused) {
+      chatAutoScrollPausedRef.current = false;
+    }
     if (!isMiniBoardPopupMode) {
       handleChatScroll(event);
     }
-  }, [handleChatScroll, isMiniBoardPopupMode]);
+  }, [handleChatScroll, isMiniBoardPopupMode, shouldKeepAutoScrollPaused]);
   const handleChatContentSizeChangeForView = useCallback((_widthRaw: number, heightRaw: number) => {
     const previousHeight = chatScrollDiagnosticRef.current.contentSizeHeight;
     const nextHeight = Number(heightRaw || 0);
@@ -1171,6 +1192,7 @@ export function ChatScreen({
     didInitialScrollRef.current = false;
     initialSettlingRef.current = false;
     isAtBottomRef.current = true;
+    resetChatScrollNavigation();
     chatAutoScrollPausedRef.current = false;
     chatScrollDragActiveRef.current = false;
     previousMessageCountRef.current = 0;
@@ -1181,7 +1203,7 @@ export function ChatScreen({
       initialSettleTimerRef.current = null;
     }
     clearPendingBottomScrollFrames();
-  }, [clearPendingBottomScrollFrames, conversationScrollResetKey]);
+  }, [clearPendingBottomScrollFrames, conversationScrollResetKey, resetChatScrollNavigation]);
   useEffect(() => {
     const width = Math.round(Number(currentChatViewportSize.width || 0));
     if (width <= 0) return;
@@ -1957,6 +1979,7 @@ export function ChatScreen({
                 updateChatViewportSizeForView(Number(layout?.width || 0), Number(layout?.height || 0));
               }}
               onScroll={handleChatScrollForView}
+              onViewableItemsChanged={handleChatViewableItemsChanged}
               scrollEventThrottle={16}
               onContentSizeChange={handleChatContentSizeChangeForView}
               onItemSizeChanged={handleChatItemSizeChangedForView}
@@ -2174,6 +2197,26 @@ export function ChatScreen({
         />
         <View style={styles.chatComposer}>
           <View style={styles.connectionStatusArea}>
+            <View style={styles.chatScrollControls}>
+              <TouchableOpacity
+                style={styles.chatScrollControlButton}
+                onPress={scrollChatListToPreviousUser}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="前のユーザーメッセージまでスクロール"
+              >
+                <Ionicons name="chevron-up" size={14} color="#64748b" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.chatScrollControlButton}
+                onPress={resumeChatAtBottom}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="チャットの末尾までスクロール"
+              >
+                <Ionicons name="chevron-down" size={14} color="#64748b" />
+              </TouchableOpacity>
+            </View>
             <RunnerWsConnectionStatus
               turnState={replyLoadingForView ? "running" : selectedThreadStatusTypeForView}
               dataSync={connectionDataSync}
