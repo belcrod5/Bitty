@@ -49,6 +49,7 @@ type UseReadyDrivenResumeSyncControllerArgs = {
   codexRelayObserverRef: MutableRefObject<{ threadId: string; panelId?: string; close: () => void } | null>;
   panelRuntimeEntriesByIdRef: MutableRefObject<Record<string, PanelRuntimeEntry>>;
   selectedLlmSessionIdRef: MutableRefObject<string>;
+  selectedBackendId?: string;
   llmConversationSessionIdRef: MutableRefObject<string>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
@@ -74,6 +75,7 @@ type UseReadyDrivenResumeSyncControllerArgs = {
     directoryRaw?: unknown
   ) => Promise<{ sessionId: string; backendId: string } | null>;
   markSessionReadAsync: (params: {
+    backendId?: string;
     sessionId: string;
     directory: string;
     source?: "all";
@@ -111,6 +113,7 @@ export function useReadyDrivenResumeSyncController({
   codexRelayObserverRef,
   panelRuntimeEntriesByIdRef,
   selectedLlmSessionIdRef,
+  selectedBackendId = "codex",
   llmConversationSessionIdRef,
   replyLoadingRef,
   streamSocketRef,
@@ -144,6 +147,7 @@ export function useReadyDrivenResumeSyncController({
   const collectPanelEntries = useCallback((): ResumeSyncPanelEntry[] => (
     Object.entries(panelRuntimeEntriesByIdRef.current || {}).map(([panelId, entry]) => ({
       panelId,
+      backendId: String(entry?.snapshot?.backendId || "codex").trim() || "codex",
       sessionId: parseOptionalSessionId(entry?.snapshot?.selectedSessionId || entry?.sessionId),
       directory: String(entry?.snapshot?.selectedDirectoryPath || "").trim(),
       isResponding: entry?.snapshot?.isResponding === true,
@@ -257,7 +261,7 @@ export function useReadyDrivenResumeSyncController({
 
   const resyncPanel = useCallback((
     sessionId: string,
-    panel: { panelId: string; directory: string },
+    panel: { panelId: string; backendId: string; directory: string },
     diagnosticCycleId: string,
     logContext: Record<string, unknown>,
     markRead: boolean
@@ -270,6 +274,7 @@ export function useReadyDrivenResumeSyncController({
     }).then((result) => {
       if (result === "applied" && markRead) {
         markSessionReadAsync({
+          backendId: panel.backendId,
           sessionId,
           directory: panel.directory,
           source: "all",
@@ -316,6 +321,7 @@ export function useReadyDrivenResumeSyncController({
     )).filter((sessionId) => hasActiveClientTurnForSession(sessionId));
     const plan = planResumeSyncTargets({
       selectedSessionId,
+      selectedBackendId,
       observerThreadId: parseOptionalSessionId(codexRelayObserverRef.current?.threadId),
       popupPanelId: inputs.drawerSessionPopupPanelId,
       panelEntries,
@@ -342,6 +348,7 @@ export function useReadyDrivenResumeSyncController({
       const panel = panelEntries.find((entry) => entry.panelId === skip.panelId && entry.directory);
       if (!panel) continue;
       markSessionReadAsync({
+        backendId: panel.backendId,
         sessionId: skip.sessionId,
         directory: panel.directory,
         source: "all",
@@ -352,6 +359,9 @@ export function useReadyDrivenResumeSyncController({
     const directory = normalizedLlmDirectoryForRequest();
     const work: Promise<unknown>[] = [];
     for (const target of plan.targets) {
+      const targetIdentity = target.backendId === "codex"
+        ? target.sessionId
+        : JSON.stringify([target.backendId, target.sessionId]);
       if (target.selected) {
         // in-flight turn(replyLoading)が生きている間はturn.ts自身のseq resumeが
         // ライブ復旧を担う。ここで全文再取得+quiesceするとストリームUI・TTSを壊す(High-2)。
@@ -374,7 +384,7 @@ export function useReadyDrivenResumeSyncController({
           continue;
         }
       }
-      if (!resyncRateLimiter.canResync(target.sessionId, now)) {
+      if (!resyncRateLimiter.canResync(targetIdentity, now)) {
         logSessionDiag("resume_sync_rate_limited", {
           reason,
           generation,
@@ -384,7 +394,7 @@ export function useReadyDrivenResumeSyncController({
         }, { throttleMs: 0, throttleKey: `resume_sync_rate_limited:${target.sessionId}` });
         continue;
       }
-      resyncRateLimiter.recordResync(target.sessionId, now);
+      resyncRateLimiter.recordResync(targetIdentity, now);
       consumeRespondingAtBackground(target.sessionId);
       const logContext = { reason, generation };
       if (target.selected) {
@@ -394,7 +404,7 @@ export function useReadyDrivenResumeSyncController({
       for (const panel of target.panels) {
         work.push(resyncPanel(
           target.sessionId,
-          panel,
+          { ...panel, backendId: target.backendId },
           diagnosticCycleId,
           logContext,
           panel.panelId === inputs.drawerSessionPopupPanelId
@@ -415,8 +425,11 @@ export function useReadyDrivenResumeSyncController({
         const latest = await fetchLatestSessionForDirectory(directory);
         if (!latest) return;
         const latestSessionId = latest.sessionId;
-        if (!resyncRateLimiter.canResync(latestSessionId)) return;
-        resyncRateLimiter.recordResync(latestSessionId);
+        const latestIdentity = latest.backendId === "codex"
+          ? latestSessionId
+          : JSON.stringify([latest.backendId, latestSessionId]);
+        if (!resyncRateLimiter.canResync(latestIdentity)) return;
+        resyncRateLimiter.recordResync(latestIdentity);
         const restored = await selectSpecificLlmSession(latestSessionId, {
           backendId: latest.backendId,
           source: "all",
@@ -458,6 +471,7 @@ export function useReadyDrivenResumeSyncController({
     scheduleRestoreBusyRetry,
     selectSpecificLlmSession,
     selectedLlmSessionIdRef,
+    selectedBackendId,
     startupSessionRestoreAttemptedRef,
     streamSocketRef,
     streamTtsControlRef,
@@ -552,11 +566,13 @@ export function useReadyDrivenResumeSyncController({
   // G2が閉じたい完了レース窓は「直前のresyncから数秒以内」に必ず起きるため、
   // 即時拒否だけだと恒常的にドロップしてしまう(High-1)。
   const requestSessionResyncRef = useRef<(sessionIdRaw: unknown, opts: {
+    backendId?: string;
     panelId?: string;
     reason: string;
     attempt?: number;
   }) => boolean>(() => false);
   const requestSessionResync = useCallback((sessionIdRaw: unknown, opts: {
+    backendId?: string;
     panelId?: string;
     reason: string;
     attempt?: number;
@@ -565,8 +581,20 @@ export function useReadyDrivenResumeSyncController({
     if (!sessionId) return false;
     const reason = String(opts?.reason || "session_resync").trim() || "session_resync";
     const attempt = Math.max(0, Math.floor(Number(opts?.attempt) || 0));
+    const panelIdHint = String(opts?.panelId || "").trim();
+    const selectedSessionId = parseOptionalSessionId(
+      selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
+    );
+    const allPanelEntries = collectPanelEntries();
+    const hintedPanel = panelIdHint
+      ? allPanelEntries.find((entry) => entry.panelId === panelIdHint && entry.sessionId === sessionId)
+      : undefined;
+    const backendId = String(
+      opts?.backendId || hintedPanel?.backendId || (sessionId === selectedSessionId ? selectedBackendId : "codex")
+    ).trim() || "codex";
+    const sessionIdentity = backendId === "codex" ? sessionId : JSON.stringify([backendId, sessionId]);
     const observerThreadId = parseOptionalSessionId(codexRelayObserverRef.current?.threadId);
-    if (observerThreadId && observerThreadId === sessionId) return false;
+    if (backendId === "codex" && observerThreadId === sessionId) return false;
     const now = Date.now();
     const scheduleRetry = (delayMs: number, blockedBy: string) => {
       if (attempt >= SESSION_RESYNC_RETRY_MAX_ATTEMPTS) {
@@ -578,7 +606,7 @@ export function useReadyDrivenResumeSyncController({
         }, { throttleMs: 0, throttleKey: `session_resync_request_gave_up:${sessionId}:${reason}` });
         return false;
       }
-      if (sessionResyncRetryTimerBySessionIdRef.current[sessionId]) return false;
+      if (sessionResyncRetryTimerBySessionIdRef.current[sessionIdentity]) return false;
       const normalizedDelayMs = Math.max(SESSION_RESYNC_RETRY_SLACK_MS, Math.floor(delayMs) + SESSION_RESYNC_RETRY_SLACK_MS);
       logSessionDiag("session_resync_request_deferred", {
         sessionId,
@@ -587,8 +615,8 @@ export function useReadyDrivenResumeSyncController({
         attempt,
         delayMs: normalizedDelayMs,
       }, { throttleMs: 0, throttleKey: `session_resync_request_deferred:${sessionId}:${reason}:${attempt}` });
-      sessionResyncRetryTimerBySessionIdRef.current[sessionId] = setTimeout(() => {
-        delete sessionResyncRetryTimerBySessionIdRef.current[sessionId];
+      sessionResyncRetryTimerBySessionIdRef.current[sessionIdentity] = setTimeout(() => {
+        delete sessionResyncRetryTimerBySessionIdRef.current[sessionIdentity];
         requestSessionResyncRef.current(sessionId, {
           ...opts,
           attempt: attempt + 1,
@@ -596,25 +624,22 @@ export function useReadyDrivenResumeSyncController({
       }, normalizedDelayMs);
       return false;
     };
-    if (!resyncRateLimiter.canResync(sessionId, now)) {
-      const waitMs = resyncRateLimiter.msUntilAllowed(sessionId, now);
+    if (!resyncRateLimiter.canResync(sessionIdentity, now)) {
+      const waitMs = resyncRateLimiter.msUntilAllowed(sessionIdentity, now);
       if (!Number.isFinite(waitMs)) return false;
       return scheduleRetry(waitMs, "rate_limit");
     }
-    const panelIdHint = String(opts?.panelId || "").trim();
-    const selectedSessionId = parseOptionalSessionId(
-      selectedLlmSessionIdRef.current || llmConversationSessionIdRef.current
-    );
-    const isSelected = sessionId === selectedSessionId;
+    const isSelected = backendId === selectedBackendId && sessionId === selectedSessionId;
     // 同一セッションを表示する全可視パネルへ反映する(#40経路と同じ扱い)。
-    const panelEntries = collectPanelEntries().filter((entry) => (
-      entry.sessionId === sessionId && Boolean(entry.directory) && entry.sessionMaterialized !== false
+    const panelEntries = allPanelEntries.filter((entry) => (
+      entry.backendId === backendId && entry.sessionId === sessionId
+      && Boolean(entry.directory) && entry.sessionMaterialized !== false
     ));
     if (isSelected && (llmSessionRestoreInFlightRef.current || llmSessionRestoreLoadingRef.current)) {
       return scheduleRetry(RESUME_SYNC_RESTORE_BUSY_RETRY_MS, "restore_busy");
     }
     if (!isSelected && panelEntries.length === 0) return false;
-    resyncRateLimiter.recordResync(sessionId, now);
+    resyncRateLimiter.recordResync(sessionIdentity, now);
     consumeRespondingAtBackground(sessionId);
     logSessionDiag("session_resync_requested", {
       sessionId,
@@ -632,7 +657,7 @@ export function useReadyDrivenResumeSyncController({
     for (const entry of panelEntries) {
       void resyncPanel(
         sessionId,
-        { panelId: entry.panelId, directory: entry.directory },
+        { panelId: entry.panelId, backendId, directory: entry.directory },
         diagnosticCycleId,
         logContext,
         entry.panelId === inputsRef.current.drawerSessionPopupPanelId
@@ -651,6 +676,7 @@ export function useReadyDrivenResumeSyncController({
     resyncPanel,
     resyncRateLimiter,
     resyncSelectedSession,
+    selectedBackendId,
     selectedLlmSessionIdRef,
   ]);
   requestSessionResyncRef.current = requestSessionResync;

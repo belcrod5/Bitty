@@ -39,19 +39,23 @@ async function dismissPresentedNotifications(
 }
 
 export async function dismissReadSessionNotifications({
+  backendId: backendIdRaw,
   sessionId: sessionIdRaw,
   directory: directoryRaw,
 }: {
+  backendId?: unknown;
   sessionId: unknown;
   directory: unknown;
 }) {
+  const backendId = String(backendIdRaw || "codex").trim() || "codex";
   const sessionId = String(sessionIdRaw || "").trim();
   const directory = String(directoryRaw || "").trim();
   if (!sessionId || !directory) return { matchedCount: 0, dismissedCount: 0, failureCount: 0 };
   return await dismissPresentedNotifications("session_read", (notification) => {
     if (notification.request.content.categoryIdentifier !== TURN_COMPLETED_CATEGORY) return false;
     const metadata = normalizeNotificationMetadata(notification.request);
-    return metadata.sessionId === sessionId && metadata.directory === directory;
+    return (metadata.backendId || "codex") === backendId
+      && metadata.sessionId === sessionId && metadata.directory === directory;
   });
 }
 
@@ -76,20 +80,26 @@ export async function reconcileReadDirectoryNotifications({
   const directory = String(directoryRaw || "").trim();
   if (!directory) return { matchedCount: 0, dismissedCount: 0, failureCount: 0 };
   const presented = await Notifications.getPresentedNotificationsAsync();
-  const notificationsBySessionId = new Map<string, Notifications.Notification[]>();
+  const notificationsBySession = new Map<string, {
+    backendId: string;
+    sessionId: string;
+    notifications: Notifications.Notification[];
+  }>();
   for (const notification of presented) {
     if (notification.request.content.categoryIdentifier !== TURN_COMPLETED_CATEGORY) continue;
     const metadata = normalizeNotificationMetadata(notification.request);
     if (!metadata.sessionId || metadata.directory !== directory) continue;
-    const matches = notificationsBySessionId.get(metadata.sessionId) || [];
-    matches.push(notification);
-    notificationsBySessionId.set(metadata.sessionId, matches);
+    const backendId = metadata.backendId || "codex";
+    const identity = JSON.stringify([backendId, metadata.sessionId]);
+    const entry = notificationsBySession.get(identity) || { backendId, sessionId: metadata.sessionId, notifications: [] };
+    entry.notifications.push(notification);
+    notificationsBySession.set(identity, entry);
   }
   const failures: string[] = [];
   let dismissedCount = 0;
-  await Promise.all([...notificationsBySessionId.entries()].map(async ([sessionId, notifications]) => {
+  await Promise.all([...notificationsBySession.values()].map(async ({ backendId, sessionId, notifications }) => {
     try {
-      const state = await fetchSessionUnreadState({ runnerUrl, runnerToken, sessionId, directory });
+      const state = await fetchSessionUnreadState({ runnerUrl, runnerToken, backendId, sessionId, directory });
       if (!state.found || state.unread) return;
       const results = await Promise.allSettled(notifications.map((notification) => (
         Notifications.dismissNotificationAsync(notification.request.identifier)
@@ -109,7 +119,7 @@ export async function reconcileReadDirectoryNotifications({
     });
   }
   return {
-    matchedCount: [...notificationsBySessionId.values()].reduce((sum, items) => sum + items.length, 0),
+    matchedCount: [...notificationsBySession.values()].reduce((sum, entry) => sum + entry.notifications.length, 0),
     dismissedCount,
     failureCount: failures.length,
   };
@@ -141,7 +151,7 @@ export async function reconcileReceivedSessionNotification({
   runnerToken: string;
   directories: string[];
 }): Promise<UnreadSessionCountSnapshot | null> {
-  const { sessionId, directory } = normalizeNotificationMetadata(notification.request);
+  const { backendId, sessionId, directory } = normalizeNotificationMetadata(notification.request);
   if (notification.request.content.categoryIdentifier !== TURN_COMPLETED_CATEGORY) return null;
   const badgeSync = syncUnreadBadgeCount({ runnerUrl, runnerToken, directories });
   const work: Promise<unknown>[] = [badgeSync];
@@ -149,6 +159,7 @@ export async function reconcileReceivedSessionNotification({
     work.push(fetchSessionUnreadState({
       runnerUrl,
       runnerToken,
+      backendId: backendId || "codex",
       sessionId,
       directory,
     }).then(async (state) => {

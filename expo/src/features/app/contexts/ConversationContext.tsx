@@ -74,7 +74,8 @@ export type ConversationContextValue = {
   markSessionRead: (
     sessionId: string,
     source: LlmSessionSource,
-    directory: string
+    directory: string,
+    backendId: string
   ) => void;
   markSelectedSessionUnread: () => void;
   reloadSelectedSession: () => void;
@@ -88,6 +89,7 @@ export type ConversationContextValue = {
   selectSessionMarkerColorForSession: (sessionId: string, nextMarkerColor: DirectoryMarkerColor) => void;
   removeDirectoryForPath: (directoryPath: string) => void;
   markSessionUnread: (params: {
+    backendId: string;
     sessionId: string;
     source: LlmSessionSource;
     directory: string;

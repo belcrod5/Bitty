@@ -15,6 +15,7 @@ import {
 import type { RunnerDirectoryReadResult } from "./useLlmSessionExplorer";
 
 type MarkSessionRead = (params: {
+  backendId: string;
   sessionId: string;
   directory: string;
   source?: "all";
@@ -34,7 +35,12 @@ export function useSessionNotificationLifecycleController({
   registeredDirectoryPaths,
   runnerWebSocketManager,
 }: {
-  getPopupSessionTarget: () => { sessionId: string; directory: string; isHydrating: boolean };
+  getPopupSessionTarget: () => {
+    backendId: string;
+    sessionId: string;
+    directory: string;
+    isHydrating: boolean;
+  };
   getRunnerHttpAuth: () => Promise<{ baseUrl: string; token: string }>;
   normalizedLlmDirectoryForRequest: () => string;
   registeredDirectoryPaths: string[];
@@ -95,6 +101,7 @@ export function useSessionNotificationLifecycleController({
   }, [runnerWebSocketManager, syncUnreadState]);
 
   const handleSessionReadStateCommitted = useCallback((result: {
+    backendId: string;
     sessionId: string;
     directory: string;
     isRead: boolean;
@@ -142,9 +149,11 @@ export function useSessionNotificationLifecycleController({
   }, [getRunnerHttpAuth, syncUnreadState]);
 
   const handleForegroundSessionCompletion = useCallback(({
+    backendId,
     sessionId,
     directory,
   }: {
+    backendId: string;
     sessionId: string;
     directory?: string;
   }) => {
@@ -154,11 +163,13 @@ export function useSessionNotificationLifecycleController({
     const popupDirectory = String(popupTarget.directory || "").trim();
     const visible = (
       !popupTarget.isHydrating
+      && popupTarget.backendId === backendId
       && parseOptionalSessionId(popupTarget.sessionId) === sessionId
       && (!directoryValue || popupDirectory === directoryValue)
     );
     if (visible && markSessionReadAsyncRef.current) {
       markSessionReadAsyncRef.current({
+        backendId,
         sessionId,
         // Older completion events did not include directory. The visible popup owns the read target;
         // the globally selected directory may point at another chat.

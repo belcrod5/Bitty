@@ -1126,7 +1126,7 @@ function normalizeSessionUpdatedAt(rawUpdatedAt) {
 }
 
 const {
-  acquireAgentSessionLease,
+  agentSessionActivityStore, acquireAgentSessionLease,
   approveAgentWorkspace,
   bindAgentSession,
   bindSessionToRootDir,
@@ -1385,7 +1385,7 @@ const {
   listLlmSessions,
   markLlmSessionReadRequest,
 } = createLlmSessionService({
-  compareSessionHistoryEntries,
+  compareSessionHistoryEntries, agentSessionActivityStore,
   findCliSessionIndexEntriesBySessionIds,
   listAcpSessionsForDirectories,
   listAcpSessionsForDirectory,
@@ -1426,7 +1426,7 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
   apnsClient,
   pushSummarizer,
   pushDeviceStore,
-  getPushUnreadSnapshot,
+  getPushUnreadSnapshot, getAgentSessionBinding,
   broadcast: (payload) => broadcastRunnerWsTurnCompletedNotification(null, payload),
 });
 const calendarToolService = createCalendarToolService({
@@ -1677,7 +1677,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
     bindSession: bindAgentSession, getSessionBinding: getAgentSessionBinding, getSessionMode: getAgentSessionMode,
     acquireSessionLease: acquireAgentSessionLease, settleSessionLease: settleAgentSessionLease,
     updateSessionLeaseIdentity: updateAgentSessionLeaseIdentity, handoffSessionMode: handoffAgentSessionMode,
-    inspectOperation: inspectAgentOperation,
+    recordSessionActivity: agentSessionActivityStore.recordActivity, inspectOperation: inspectAgentOperation,
     claimOperation: claimAgentOperation,
     completeOperation: completeAgentOperation,
     getModelInfo: getAgentModelInfo, setModelInfo: setAgentModelInfo,
@@ -1688,7 +1688,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   listSessions: listLlmSessions, listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
-  onRunEvent: approvalPushService.onRunEvent,
+  runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
 });
 ({ service: agentService } = agentRuntime);
 const { httpHandler: agentHttpHandler, ownerSubjectId: agentOwnerSubjectId } = agentRuntime;
@@ -8797,7 +8797,7 @@ const server = http.createServer(async (req, res) => {
       }
       : pathname === "/sessions/unread-state" ? {
         error: "session_unread_state_failed",
-        run: (body) => getSessionUnreadState(body?.sessionId, body?.directory),
+        run: (body) => getSessionUnreadState(body?.sessionId, body?.directory, body?.backendId),
       } : null
   );
   if (sessionStateRequest) {

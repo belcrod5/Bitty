@@ -118,7 +118,8 @@ export function createAgentService({
     typeof sessionStore?.acquire !== "function" ||
     typeof sessionStore?.settle !== "function" ||
     typeof sessionStore?.updateIdentity !== "function" ||
-    typeof sessionStore?.handoff !== "function"
+    typeof sessionStore?.handoff !== "function" ||
+    typeof sessionStore?.recordActivity !== "function"
   ) throw new TypeError("A durable sessionStore is required");
   if (typeof resolveCanonicalCwd !== "function") throw new TypeError("resolveCanonicalCwd is required");
 
@@ -360,6 +361,9 @@ export function createAgentService({
       : finalOutcome === "interrupted" ? "turn.interrupted" : "turn.failed";
     if (run.lease && run.sessionRef) {
       await sessionStore.settle(run.sessionRef, run.lease.generation, nativeKnownStopped ? "released" : "recovering").catch(() => {});
+    }
+    if (finalOutcome === "completed" && run.sessionRef) {
+      await sessionStore.recordActivity(run.sessionRef, run.cwd, now()).catch(() => {});
     }
     publish(run, terminalType, result);
     run.terminal = true;

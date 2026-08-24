@@ -196,11 +196,13 @@ export function createLlmAcpSessionStore(deps = {}) {
       const canonicalCwd = String(value?.canonicalCwd || "").trim();
       const updatedAt = normalizeSessionUpdatedAt(value?.updatedAt);
       if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd) || !updatedAt) continue;
+      const lastReadAt = normalizeSessionUpdatedAt(value?.lastReadAt) || updatedAt;
       agentSessionBindings.set(agentSessionKey(backendId, nativeSessionId), {
         backendId,
         nativeSessionId,
         canonicalCwd: path.resolve(canonicalCwd),
         updatedAt,
+        lastReadAt,
       });
     }
     for (const value of Array.isArray(parsed?.agentSessionModes) ? parsed.agentSessionModes : []) {
@@ -628,6 +630,116 @@ export function createLlmAcpSessionStore(deps = {}) {
     return binding ? { ...binding } : null;
   }
 
+  async function listAgentSessionsForDirectories(requestedDirectories) {
+    await ensureAgentMetadataStoreLoaded();
+    const requestedRoots = await Promise.all(
+      (Array.isArray(requestedDirectories) ? requestedDirectories : [])
+        .map((directory) => resolveDirectoryIdentity(directory)),
+    );
+    const bindings = Array.from(agentSessionBindings.values());
+    return requestedRoots.map((directory) => ({
+      directory,
+      sessions: bindings
+        .filter((binding) => binding.canonicalCwd === directory)
+        .map((binding) => ({
+          backendId: binding.backendId,
+          sessionId: binding.nativeSessionId,
+          directory,
+          updatedAt: binding.updatedAt,
+          lastReadAt: binding.lastReadAt,
+          source: "agent",
+        }))
+        .sort(compareSessionHistoryEntries),
+    }));
+  }
+
+  async function recordAgentSessionActivity(sessionRef, canonicalCwdRaw, updatedAtRaw) {
+    const backendId = String(sessionRef?.backendId || "").trim();
+    const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
+    const rawCwd = String(canonicalCwdRaw || "").trim();
+    const canonicalCwd = rawCwd ? path.resolve(rawCwd) : "";
+    const updatedAt = normalizeSessionUpdatedAt(updatedAtRaw) || new Date().toISOString();
+    if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd)) {
+      throw new TypeError("invalid agent session activity");
+    }
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const key = agentSessionKey(backendId, nativeSessionId);
+      const binding = agentSessionBindings.get(key);
+      if (!binding || binding.canonicalCwd !== canonicalCwd) return { status: "missing" };
+      const previous = { ...binding };
+      binding.updatedAt = updatedAt;
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentSessionBindings.set(key, previous);
+        throw error;
+      }
+      return { status: "updated" };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function markAgentSessionsRead(sessionIds, { backendId: backendIdRaw, lastReadAt }) {
+    const backendId = String(backendIdRaw || "codex").trim() || "codex";
+    const ids = Array.isArray(sessionIds) ? sessionIds.map((value) => String(value || "").trim()) : [];
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const results = ids.map((sessionId) => ({ sessionId, updated: false, entryFound: false }));
+      const previousBindings = new Map();
+      for (const result of results) {
+        for (const [key, binding] of agentSessionBindings) {
+          if (binding.nativeSessionId !== result.sessionId || binding.backendId !== backendId) continue;
+          result.entryFound = true;
+          if (binding.lastReadAt === lastReadAt) continue;
+          if (!previousBindings.has(key)) previousBindings.set(key, { ...binding });
+          binding.lastReadAt = lastReadAt;
+          result.updated = true;
+        }
+      }
+      if (previousBindings.size === 0) return results;
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        for (const [key, binding] of previousBindings) agentSessionBindings.set(key, binding);
+        throw error;
+      }
+      return results;
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
+  async function markAgentDirectoryRead(directoryRaw, lastReadAt) {
+    const directory = await resolveDirectoryIdentity(directoryRaw);
+    await ensureAgentMetadataStoreLoaded();
+    const op = acpSessionStoreWriteQueue.then(async () => {
+      const selectedSessionIds = [];
+      const updatedSessionIds = [];
+      const previousBindings = new Map();
+      for (const [key, binding] of agentSessionBindings) {
+        if (binding.canonicalCwd !== directory) continue;
+        selectedSessionIds.push(agentSessionKey(binding.backendId, binding.nativeSessionId));
+        if (binding.lastReadAt === lastReadAt) continue;
+        previousBindings.set(key, { ...binding });
+        binding.lastReadAt = lastReadAt;
+        updatedSessionIds.push(key);
+      }
+      if (previousBindings.size > 0) {
+        try {
+          await persistAcpSessionStore();
+        } catch (error) {
+          for (const [key, binding] of previousBindings) agentSessionBindings.set(key, binding);
+          throw error;
+        }
+      }
+      return { selectedSessionIds, updatedSessionIds };
+    });
+    acpSessionStoreWriteQueue = op.catch(() => {});
+    return await op;
+  }
+
   async function bindAgentSession(sessionRef, canonicalCwdRaw, modeRaw, options = {}) {
     const backendId = String(sessionRef?.backendId || "").trim();
     const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
@@ -651,7 +763,7 @@ export function createLlmAcpSessionStore(deps = {}) {
           !existingMode.lease
         ) {
           const previousBinding = { ...existingBinding };
-          const binding = { ...existingBinding, canonicalCwd, updatedAt: new Date().toISOString() };
+          const binding = { ...existingBinding, canonicalCwd };
           agentSessionBindings.set(key, binding);
           try {
             await persistAcpSessionStore();
@@ -675,7 +787,7 @@ export function createLlmAcpSessionStore(deps = {}) {
       const previousMode = existingMode
         ? { ...existingMode, ...(existingMode.lease ? { lease: { ...existingMode.lease } } : {}) }
         : null;
-      const binding = { backendId, nativeSessionId, canonicalCwd, updatedAt: nowIso };
+      const binding = { backendId, nativeSessionId, canonicalCwd, updatedAt: nowIso, lastReadAt: nowIso };
       const modeEntry = existingMode || { backendId, nativeSessionId, mode, lease: null, updatedAt: nowIso };
       modeEntry.updatedAt = nowIso;
       agentSessionBindings.set(key, binding);
@@ -919,6 +1031,12 @@ export function createLlmAcpSessionStore(deps = {}) {
   }
 
   return {
+    agentSessionActivityStore: {
+      listForDirectories: listAgentSessionsForDirectories,
+      markDirectoryRead: markAgentDirectoryRead,
+      markSessionsRead: markAgentSessionsRead,
+      recordActivity: recordAgentSessionActivity,
+    },
     bindSessionToRootDir,
     bindAgentSession,
     claimAgentOperation,

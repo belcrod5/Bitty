@@ -7,6 +7,14 @@ import {
 } from "../src/llm-session-service.mjs";
 
 function createService(overrides = {}) {
+  const agentSessionActivityStore = {
+    listForDirectories: async (directories) => (
+      directories.map((directory) => ({ directory, sessions: [] }))
+    ),
+    markDirectoryRead: async () => ({ selectedSessionIds: [], updatedSessionIds: [] }),
+    markSessionsRead: async () => [],
+    ...overrides.agentSessionActivityStore,
+  };
   return createLlmSessionService({
     compareSessionHistoryEntries: (a, b) => (
       Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
@@ -16,6 +24,7 @@ function createService(overrides = {}) {
       directories.map((directory) => ({ directory, sessions: [] }))
     ),
     listAcpSessionsForDirectory: async () => [],
+    agentSessionActivityStore,
     listCliSessionsForDirectories: async (directories) => (
       directories.map((directory) => ({ directory, sessions: [] }))
     ),
@@ -37,6 +46,7 @@ function createService(overrides = {}) {
     readCliSessionSummaryFromRolloutFile: async () => ({}),
     resolveCanonicalDirectoryIdentity: async (value) => `/canonical${value}`,
     ...overrides,
+    agentSessionActivityStore,
   });
 }
 
@@ -137,6 +147,27 @@ test("directory read returns bounded unique counts and canonical full success", 
     { store: "acp", directory: "/canonical/alias" },
     { store: "cli", directory: "/canonical/alias" },
   ]);
+});
+
+test("directory read deduplicates legacy Codex and Agent identities without merging providers", async () => {
+  const codexIdentity = JSON.stringify(["codex", "shared"]);
+  const claudeIdentity = JSON.stringify(["claude", "shared"]);
+  const service = createService({
+    markAcpDirectoryRead: async () => ({ selectedSessionIds: ["shared"], updatedSessionIds: ["shared"] }),
+    markCliDirectoryRead: async () => ({ selectedSessionIds: ["shared"], updatedSessionIds: ["shared"] }),
+    agentSessionActivityStore: {
+      markDirectoryRead: async () => ({
+        selectedSessionIds: [codexIdentity, claudeIdentity],
+        updatedSessionIds: [codexIdentity, claudeIdentity],
+      }),
+    },
+  });
+
+  const result = await service.markLlmDirectoryRead("/repo", { source: "all" });
+
+  assert.equal(result.selectedCount, 2);
+  assert.equal(result.updatedCount, 2);
+  assert.equal(result.stores.agent.selectedCount, 2);
 });
 
 test("directory read isolates one store failure as partial", async () => {
@@ -492,6 +523,7 @@ test("checks one target session from merged ACP/CLI truth", async () => {
   });
   assert.deepEqual(await service.getSessionUnreadState("target", "/repo"), {
     directory: "/canonical/repo",
+    backendId: "codex",
     sessionId: "target",
     found: true,
     unread: false,
@@ -499,6 +531,82 @@ test("checks one target session from merged ACP/CLI truth", async () => {
     lastReadAt: "2026-08-10T04:00:00.000Z",
   });
   assert.equal((await service.getSessionUnreadState("missing", "/repo")).found, false);
+});
+
+test("keeps Agent unread identity provider-aware when native session ids collide", async () => {
+  const service = createService({
+    agentSessionActivityStore: {
+      listForDirectories: async (directories) => directories.map((directory) => ({
+        directory,
+        sessions: [{
+          backendId: "codex",
+          sessionId: "shared",
+          updatedAt: "2026-08-10T03:00:00.000Z",
+          lastReadAt: "2026-08-10T04:00:00.000Z",
+        }, {
+          backendId: "claude",
+          sessionId: "shared",
+          updatedAt: "2026-08-10T05:00:00.000Z",
+          lastReadAt: "2026-08-10T02:00:00.000Z",
+        }],
+      })),
+    },
+  });
+
+  const codex = await service.getPushUnreadSnapshot({
+    directorySets: [["/repo"]],
+    targetBackendId: "codex",
+    targetSessionId: "shared",
+    targetDirectory: "/repo",
+  });
+  const claude = await service.getPushUnreadSnapshot({
+    directorySets: [["/repo"]],
+    targetBackendId: "claude",
+    targetSessionId: "shared",
+    targetDirectory: "/repo",
+  });
+
+  assert.equal(codex.targetUnread, false);
+  assert.equal(claude.targetUnread, true);
+  assert.deepEqual(claude.unreadCounts, [1]);
+});
+
+test("marks a Claude CLI-listed session only in provider-aware Agent state", async () => {
+  const agentCalls = [];
+  const legacyCalls = [];
+  const service = createService({
+    markAcpSessionsRead: async (...args) => {
+      legacyCalls.push({ store: "acp", args });
+      return [];
+    },
+    markCliSessionsRead: async (...args) => {
+      legacyCalls.push({ store: "cli", args });
+      return [];
+    },
+    agentSessionActivityStore: {
+      markSessionsRead: async (sessionIds, options) => {
+        agentCalls.push({ sessionIds, options });
+        return sessionIds.map((sessionId) => ({ sessionId, updated: true, entryFound: true }));
+      },
+    },
+  });
+
+  const result = await service.markLlmSessionRead("shared", {
+    backendId: "claude",
+    directory: "/repo",
+    source: "cli",
+    lastReadAt: "2026-08-10T06:00:00.000Z",
+  });
+
+  assert.deepEqual(agentCalls, [{
+    sessionIds: ["shared"],
+    options: { backendId: "claude", lastReadAt: "2026-08-10T06:00:00.000Z" },
+  }]);
+  assert.deepEqual(legacyCalls, []);
+  assert.equal(result.agentUpdated, true);
+  assert.equal(result.acpUpdated, false);
+  assert.equal(result.cliUpdated, false);
+  assert.equal(result.diagnostics.agentEntryFound, true);
 });
 
 test("derives push target state and deduplicated device counts from one forced snapshot", async () => {

@@ -68,8 +68,8 @@ export type AppDrawerProps = {
     directoryPath: string,
     sourceRect?: PopupChatSourceRect
   ) => void;
-  onMarkSessionRead: (sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
-  onMarkSessionUnread: (sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
+  onMarkSessionRead: (backendId: string, sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
+  onMarkSessionUnread: (backendId: string, sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
   onMarkDirectorySessionsRead: (directoryPath: string) => void;
 };
 
@@ -145,6 +145,7 @@ export const AppDrawer = memo(function AppDrawer({
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const expandedSessionSet = useMemo(() => new Set(expandedSessionIds), [expandedSessionIds]);
   const [sessionContextMenuTarget, setSessionContextMenuTarget] = useState<{
+    backendId: string;
     sessionId: string;
     source: LlmSessionSource;
     directoryPath: string;
@@ -298,6 +299,7 @@ export const AppDrawer = memo(function AppDrawer({
           onLongPress={() => {
             setDirectoryContextMenuTarget(null);
             setSessionContextMenuTarget({
+              backendId: session.backendId,
               sessionId: session.sessionId,
               source: session.source,
               directoryPath: session.directory || directory.path,
@@ -620,6 +622,7 @@ export const AppDrawer = memo(function AppDrawer({
                 onPress={() => {
                   if (sessionContextMenuTarget) {
                     onMarkSessionRead(
+                      sessionContextMenuTarget.backendId,
                       sessionContextMenuTarget.sessionId,
                       sessionContextMenuTarget.source,
                       sessionContextMenuTarget.directoryPath
@@ -635,6 +638,7 @@ export const AppDrawer = memo(function AppDrawer({
                 onPress={() => {
                   if (sessionContextMenuTarget) {
                     onMarkSessionUnread(
+                      sessionContextMenuTarget.backendId,
                       sessionContextMenuTarget.sessionId,
                       sessionContextMenuTarget.source,
                       sessionContextMenuTarget.directoryPath

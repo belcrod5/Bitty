@@ -12,6 +12,7 @@ function createHarness(overrides = {}) {
   const removals = [];
   const warnings = [];
   const logs = [];
+  const bindingCalls = [];
   const devices = overrides.devices || [
     { deviceId: "device-1", apnsToken: "token-1", env: "sandbox" },
   ];
@@ -34,6 +35,10 @@ function createHarness(overrides = {}) {
       targetUnread: true,
       unreadCounts: directorySets.map(() => 0),
     })),
+    getAgentSessionBinding: overrides.getAgentSessionBinding || (async (sessionRef) => {
+      bindingCalls.push(sessionRef);
+      return { canonicalCwd: "/work/project-a" };
+    }),
     broadcast(payload) { broadcasts.push(payload); },
     log: {
       log(message) { logs.push(String(message)); },
@@ -41,7 +46,7 @@ function createHarness(overrides = {}) {
     },
     now: overrides.now || Date.now,
   });
-  return { notifier, broadcasts, sends, removals, warnings, logs };
+  return { notifier, broadcasts, sends, removals, warnings, logs, bindingCalls };
 }
 
 function completion(overrides = {}) {
@@ -93,6 +98,72 @@ test("broadcasts and sends one TURN_COMPLETED push with the existing payload sha
   ]);
 });
 
+test("notifies once when a provider-neutral Agent turn completes", async () => {
+  const harness = createHarness();
+  const sessionRef = { backendId: "claude", nativeSessionId: "session-neutral" };
+  const events = [
+    { type: "turn.started", runId: "run-neutral", sessionRef, payload: { nativeTurnId: "turn-neutral" } },
+    { type: "item.started", runId: "run-neutral", sessionRef, payload: { itemId: "assistant-1", itemType: "assistant" } },
+    { type: "content.delta", runId: "run-neutral", sessionRef, payload: { itemId: "assistant-1", delta: "streamed " } },
+    {
+      type: "item.completed",
+      runId: "run-neutral",
+      sessionRef,
+      payload: { itemId: "assistant-1", itemType: "assistant", content: [{ type: "text", text: "earlier answer" }] },
+    },
+    {
+      type: "item.started",
+      runId: "run-neutral",
+      sessionRef,
+      payload: { itemId: "assistant-2", itemType: "assistant" },
+    },
+    {
+      type: "item.completed",
+      runId: "run-neutral",
+      sessionRef,
+      payload: { itemId: "assistant-2", itemType: "assistant", content: [{ type: "text", text: "final answer" }] },
+    },
+    { type: "turn.completed", runId: "run-neutral", sessionRef, payload: {} },
+  ];
+  for (const event of events) await harness.notifier.onAgentRunEvent(event);
+  await harness.notifier.onAgentRunEvent(events.at(-1));
+
+  assert.deepEqual(harness.bindingCalls, [sessionRef]);
+  assert.equal(harness.broadcasts.length, 1);
+  assert.equal(harness.broadcasts[0].backendId, "claude");
+  assert.equal(harness.broadcasts[0].sessionId, "session-neutral");
+  assert.equal(harness.broadcasts[0].previewText, "final answer");
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.backendId, "claude");
+  assert.equal(harness.sends[0].payload.turnId, "turn-neutral");
+  assert.equal(harness.sends[0].payload.directory, "/work/project-a");
+});
+
+test("does not notify for interrupted or failed Agent turns", async () => {
+  const harness = createHarness();
+  for (const [runId, terminalType] of [
+    ["run-interrupted", "turn.interrupted"],
+    ["run-failed", "turn.failed"],
+  ]) {
+    const sessionRef = { backendId: "codex", nativeSessionId: runId };
+    await harness.notifier.onAgentRunEvent({
+      type: "turn.started", runId, sessionRef, payload: { nativeTurnId: `${runId}-turn` },
+    });
+    await harness.notifier.onAgentRunEvent({
+      type: "item.started", runId, sessionRef, payload: { itemId: `${runId}-assistant`, itemType: "assistant" },
+    });
+    await harness.notifier.onAgentRunEvent({
+      type: "content.delta", runId, sessionRef, payload: { itemId: `${runId}-assistant`, delta: "partial" },
+    });
+    await harness.notifier.onAgentRunEvent({ type: terminalType, runId, sessionRef, payload: {} });
+    await harness.notifier.onAgentRunEvent({ type: "turn.completed", runId, sessionRef, payload: {} });
+  }
+
+  assert.deepEqual(harness.bindingCalls, []);
+  assert.equal(harness.broadcasts.length, 0);
+  assert.equal(harness.sends.length, 0);
+});
+
 test("sets an absolute badge from each device directory subscription", async () => {
   const snapshotCalls = [];
   const harness = createHarness({
@@ -115,6 +186,7 @@ test("sets an absolute badge from each device directory subscription", async () 
   await harness.notifier.notifyTurnCompleted(completion());
   assert.deepEqual(snapshotCalls, [{
     directorySets: [["/one", "/two"]],
+    targetBackendId: "codex",
     targetSessionId: "session-1",
     targetDirectory: "/work/project-a",
   }]);
@@ -146,6 +218,7 @@ test("uses the snapshot-resolved directory when completion metadata has no cwd",
 
   assert.deepEqual(snapshotCalls, [{
     directorySets: [["/registered/project-a"]],
+    targetBackendId: "codex",
     targetSessionId: "session-1",
     targetDirectory: "",
   }]);
@@ -178,6 +251,7 @@ test("suppresses a stale completion push when the target becomes read during sum
     pushSummarizer: { async summarize() { return await summaryPending; } },
     getPushUnreadSnapshot: async (request) => {
       assert.equal(request.targetSessionId, "session-1");
+      assert.equal(request.targetBackendId, "codex");
       assert.equal(request.targetDirectory, "/work/project-a");
       return { targetUnread: unread, unreadCounts: [] };
     },
@@ -195,6 +269,14 @@ test("deduplicates the same turn across execution origins", async () => {
   await harness.notifier.notifyTurnCompleted(completion({ origin: "relay" }));
   assert.equal(harness.broadcasts.length, 1);
   assert.equal(harness.sends.length, 1);
+});
+
+test("keeps completion deduplication scoped to the provider identity", async () => {
+  const harness = createHarness();
+  await harness.notifier.notifyTurnCompleted(completion({ backendId: "codex" }));
+  await harness.notifier.notifyTurnCompleted(completion({ backendId: "claude" }));
+  assert.equal(harness.broadcasts.length, 2);
+  assert.equal(harness.sends.length, 2);
 });
 
 test("requires a thread id but broadcasts text-free completion boundaries without pushing", async () => {

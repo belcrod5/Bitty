@@ -79,6 +79,34 @@ function useTestController(params: {
   return { controller, directorySessionsById };
 }
 
+test("applies a session read timestamp only to the matching provider identity", async () => {
+  const codex = session("", "shared");
+  const claude = { ...codex, backendId: "claude" };
+  const { result } = await renderHook(() => useTestController({
+    initialTrees: {
+      workspace: { ...emptyState, loaded: true, entries: [codex, claude] },
+    },
+    fetchSessionHistory: jest.fn(),
+  }));
+
+  await act(async () => {
+    result.current.controller.applySessionLastReadAtByIdToDirectoryTrees(
+      new Map([["shared", "2026-08-24T02:00:00.000Z"]]),
+      "/workspace",
+      "claude",
+    );
+    await Promise.resolve();
+  });
+
+  expect(result.current.directorySessionsById.workspace.entries.map((entry) => ({
+    backendId: entry.backendId,
+    lastReadAt: entry.lastReadAt,
+  }))).toEqual([
+    { backendId: "codex", lastReadAt: "" },
+    { backendId: "claude", lastReadAt: "2026-08-24T02:00:00.000Z" },
+  ]);
+});
+
 test("does not let a stale directory fetch overwrite a read mutation made while loading", async () => {
   const fetchResult = deferred<{
     latestSessionId: string;

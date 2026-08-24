@@ -27,12 +27,14 @@ export function createTurnCompletionNotifier({
   pushSummarizer,
   pushDeviceStore,
   getPushUnreadSnapshot,
+  getAgentSessionBinding,
   broadcast,
   log = console,
   now = Date.now,
 }) {
   const broadcastedAtByTurn = new Map();
   const pushedAtByTurn = new Map();
+  const agentRuns = new Map();
 
   function rememberTurn(map, key, nowMs) {
     for (const [existingKey, notifiedAt] of map) {
@@ -83,6 +85,7 @@ export function createTurnCompletionNotifier({
     try {
       unreadSnapshot = await getPushUnreadSnapshot({
         directorySets,
+        targetBackendId: backendId,
         targetSessionId: id,
         targetDirectory: directory,
       });
@@ -145,17 +148,18 @@ export function createTurnCompletionNotifier({
     directory,
     origin,
   }) {
+    const normalizedBackendId = String(backendId || "codex").trim() || "codex";
     const threadId = String(threadIdRaw || "").trim();
     const turnId = String(turnIdRaw || "").trim();
     const previewText = compactLlmCompletionPreview(agentMessageText);
     if (!threadId) return;
-    const turnKey = `${threadId}|${turnId || "-"}`;
+    const turnKey = JSON.stringify([normalizedBackendId, threadId, turnId]);
     const nowMs = Number(now());
 
     if (rememberTurn(broadcastedAtByTurn, turnKey, nowMs)) {
       try {
         broadcast({
-          backendId: String(backendId || "codex").trim() || "codex",
+          backendId: normalizedBackendId,
           sessionId: String(sessionId || threadId),
           threadId,
           directory: String(directory || "").trim(),
@@ -168,8 +172,82 @@ export function createTurnCompletionNotifier({
     }
     if (!previewText) return;
     if (!rememberTurn(pushedAtByTurn, turnKey, nowMs)) return;
-    await sendPush({ backendId, sessionId, threadId, turnId, previewText, directory, origin });
+    await sendPush({
+      backendId: normalizedBackendId,
+      sessionId,
+      threadId,
+      turnId,
+      previewText,
+      directory,
+      origin,
+    });
   }
 
-  return { notifyTurnCompleted };
+  async function onAgentRunEvent(event) {
+    const runId = String(event?.runId || "").trim();
+    if (!runId) return;
+
+    if (event.type === "turn.completed" || event.type === "turn.interrupted" || event.type === "turn.failed") {
+      const run = agentRuns.get(runId);
+      agentRuns.delete(runId);
+      if (event.type !== "turn.completed" || !run) return;
+      const sessionRef = event.sessionRef || run.sessionRef;
+      const backendId = String(sessionRef?.backendId || "").trim();
+      const sessionId = String(sessionRef?.nativeSessionId || "").trim();
+      if (!backendId || !sessionId) return;
+      let binding = null;
+      try {
+        binding = typeof getAgentSessionBinding === "function"
+          ? await getAgentSessionBinding(sessionRef)
+          : null;
+      } catch (error) {
+        log.warn(`[push] agent session binding failed run=${runId}: ${errorMessage(error)}`);
+      }
+      return await notifyTurnCompleted({
+        backendId,
+        sessionId,
+        threadId: sessionId,
+        turnId: run.nativeTurnId || runId,
+        agentMessageText: run.lastAssistantText,
+        directory: String(binding?.canonicalCwd || ""),
+        origin: "agent",
+      });
+    }
+
+    if (event.type === "turn.started") {
+      agentRuns.set(runId, {
+        sessionRef: event.sessionRef,
+        nativeTurnId: String(event.payload?.nativeTurnId || "").trim(),
+        lastAssistantItemId: "",
+        lastAssistantText: "",
+      });
+      return;
+    }
+
+    const run = agentRuns.get(runId);
+    if (!run) return;
+    const itemId = String(event.payload?.itemId || "").trim();
+    if (!itemId) return;
+    if (event.type === "item.started" && event.payload?.itemType === "assistant") {
+      run.lastAssistantItemId = itemId;
+      run.lastAssistantText = "";
+      return;
+    }
+    if (itemId !== run.lastAssistantItemId) return;
+    if (event.type === "content.delta") {
+      run.lastAssistantText += String(event.payload?.delta || "");
+      return;
+    }
+    if (event.type === "item.completed") {
+      const snapshotText = Array.isArray(event.payload?.content)
+        ? event.payload.content
+          .filter((block) => block?.type === "text")
+          .map((block) => String(block.text || ""))
+          .join("")
+        : "";
+      if (snapshotText) run.lastAssistantText = snapshotText;
+    }
+  }
+
+  return { notifyTurnCompleted, onAgentRunEvent };
 }

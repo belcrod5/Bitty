@@ -27,7 +27,7 @@ export type LlmCompletionNotification = {
 
 type LlmCompletionNotificationsProps = {
   notifications: LlmCompletionNotification[];
-  visibleSessionIds: string[];
+  visibleSessions: Array<{ backendId: string; sessionId: string }>;
   onOpenSession: (sessionRef: { backendId: string; sessionId: string }) => void;
   onDismiss: (id: string) => void;
 };
@@ -128,7 +128,7 @@ function LlmCompletionNotificationCard({
 
 export function LlmCompletionNotifications({
   notifications,
-  visibleSessionIds,
+  visibleSessions,
   onOpenSession,
   onDismiss,
 }: LlmCompletionNotificationsProps) {
@@ -146,12 +146,12 @@ export function LlmCompletionNotifications({
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousTopNotificationIdRef = useRef("");
 
-  const visibleSessionIdSet = useMemo(() => (
-    new Set(visibleSessionIds.map((item) => String(item || "").trim()).filter(Boolean))
-  ), [visibleSessionIds]);
+  const visibleSessionSet = useMemo(() => new Set(visibleSessions.map((item) => (
+    JSON.stringify([item.backendId, item.sessionId])
+  ))), [visibleSessions]);
   const visibleNotifications = useMemo(() => (
-    notifications.filter((item) => !visibleSessionIdSet.has(item.sessionId))
-  ), [notifications, visibleSessionIdSet]);
+    notifications.filter((item) => !visibleSessionSet.has(JSON.stringify([item.backendId, item.sessionId])))
+  ), [notifications, visibleSessionSet]);
   const topNotificationId = visibleNotifications[0]?.id || "";
   const expandedWidth = Math.min(
     LLM_COMPLETION_NOTIFICATION_EXPANDED_WIDTH,

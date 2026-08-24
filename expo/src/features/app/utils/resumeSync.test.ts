@@ -92,12 +92,14 @@ describe("shouldHandleReadyTransition", () => {
 
 describe("planResumeSyncTargets", () => {
   const basePanel = (overrides: Partial<{
+    backendId: string;
     panelId: string;
     sessionId: string;
     directory: string;
     isResponding: boolean;
     sessionMaterialized: boolean;
   }> = {}) => ({
+    backendId: "codex",
     panelId: "panel-1",
     sessionId: "session-2",
     directory: "/repo",
@@ -115,7 +117,7 @@ describe("planResumeSyncTargets", () => {
       respondingSessionIds: [],
     });
     expect(withoutObserver.targets).toEqual([
-      { sessionId: "session-1", selected: true, panels: [] },
+      { backendId: "codex", sessionId: "session-1", selected: true, panels: [] },
     ]);
 
     const withObserver = planResumeSyncTargets({
@@ -128,6 +130,25 @@ describe("planResumeSyncTargets", () => {
     // observerのseq resumeが第一経路のため、全文再取得はしない(G1)。
     expect(withObserver.targets).toEqual([]);
     expect(withObserver.skipped).toEqual([{ sessionId: "session-1", reason: "live_observer" }]);
+  });
+
+  it("does not let a Codex observer suppress the same native id from another backend", () => {
+    const plan = planResumeSyncTargets({
+      selectedBackendId: "claude",
+      selectedSessionId: "shared",
+      observerThreadId: "shared",
+      popupPanelId: "",
+      panelEntries: [basePanel({ backendId: "claude", panelId: "panel-a", sessionId: "shared", isResponding: true })],
+      respondingSessionIds: [],
+    });
+
+    expect(plan.targets).toEqual([{
+      backendId: "claude",
+      sessionId: "shared",
+      selected: true,
+      panels: [{ panelId: "panel-a", directory: "/repo" }],
+    }]);
+    expect(plan.skipped).toEqual([]);
   });
 
   it("targets the popup panel and responding panels but not idle panels", () => {
@@ -143,9 +164,9 @@ describe("planResumeSyncTargets", () => {
       respondingSessionIds: [],
     });
     expect(plan.targets).toEqual([
-      { sessionId: "session-1", selected: true, panels: [] },
-      { sessionId: "session-2", selected: false, panels: [{ panelId: "drawer_session_popup", directory: "/repo" }] },
-      { sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
+      { backendId: "codex", sessionId: "session-1", selected: true, panels: [] },
+      { backendId: "codex", sessionId: "session-2", selected: false, panels: [{ panelId: "drawer_session_popup", directory: "/repo" }] },
+      { backendId: "codex", sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
     ]);
   });
 
@@ -181,7 +202,7 @@ describe("planResumeSyncTargets", () => {
       respondingSessionIds: ["session-3"],
     });
     expect(plan.targets).toEqual([
-      { sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
+      { backendId: "codex", sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
     ]);
   });
 
@@ -201,11 +222,13 @@ describe("planResumeSyncTargets", () => {
     // popupがselectedと同一セッションでもpanel hydrateは省略しない。
     expect(plan.targets).toEqual([
       {
+        backendId: "codex",
         sessionId: "session-1",
         selected: true,
         panels: [{ panelId: "drawer_session_popup", directory: "/repo" }],
       },
       {
+        backendId: "codex",
         sessionId: "session-2",
         selected: false,
         panels: [
@@ -232,8 +255,8 @@ describe("planResumeSyncTargets", () => {
     // ストリーミング中のパネル(観測observerなし・turn.ts経由)はready passの再hydrateから
     // 外す。選択セッションのreplyLoadingスキップと同じ理屈で、seq resumeが復旧を担う。
     expect(plan.targets).toEqual([
-      { sessionId: "session-1", selected: true, panels: [] },
-      { sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
+      { backendId: "codex", sessionId: "session-1", selected: true, panels: [] },
+      { backendId: "codex", sessionId: "session-3", selected: false, panels: [{ panelId: "panel-a", directory: "/repo" }] },
     ]);
     expect(plan.skipped).toEqual([
       { sessionId: "session-2", panelId: "drawer_session_popup", reason: "turn_in_flight" },

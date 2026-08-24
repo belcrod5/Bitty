@@ -12,12 +12,14 @@ function marked(
   directory = "/workspace"
 ): RunnerSessionReadResult {
   return {
+    backendId: "codex",
     sessionId,
     directory,
     source: "all",
     lastReadAt,
     updated: true,
     acpUpdated: false,
+    agentUpdated: false,
     cliUpdated: true,
     diagnostics: null,
   };
@@ -35,6 +37,7 @@ function directoryResult(overrides: Partial<RunnerDirectoryReadResult> = {}): Ru
     updatedCount: 200,
     stores: {
       acp: { status: "success", selectedCount: 5, foundCount: 5, updatedCount: 5 },
+      agent: { status: "success", selectedCount: 0, foundCount: 0, updatedCount: 0 },
       cli: { status: "success", selectedCount: 205, foundCount: 205, updatedCount: 200 },
     },
     diagnostics: null,
@@ -147,6 +150,7 @@ test("does not optimistically apply a partial directory result and reconciles au
     updatedCount: 80,
     stores: {
       acp: { status: "failed", selectedCount: 0, foundCount: 0, updatedCount: 0, reason: "eacces" },
+      agent: { status: "success", selectedCount: 0, foundCount: 0, updatedCount: 0 },
       cli: { status: "success", selectedCount: 101, foundCount: 101, updatedCount: 80 },
     },
   });
@@ -253,9 +257,11 @@ test("a later singular unread waits for directory reconciliation and wins local 
   });
   expect(dependencies.applySession).toHaveBeenLastCalledWith(
     new Map([["session-1", new Date(0).toISOString()]]),
-    "/canonical/workspace"
+    "/canonical/workspace",
+    "codex",
   );
   expect(dependencies.onSessionCommitted).toHaveBeenLastCalledWith({
+    backendId: "codex",
     sessionId: "session-1",
     directory: "/canonical/workspace",
     isRead: false,

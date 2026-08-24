@@ -49,12 +49,14 @@ export type LlmSessionHistoryEntry = {
 };
 
 export type RunnerSessionReadResult = {
+  backendId: string;
   sessionId: string;
   directory: string;
   source: string;
   lastReadAt: string;
   updated: boolean;
   acpUpdated: boolean;
+  agentUpdated: boolean;
   cliUpdated: boolean;
   diagnostics: Record<string, unknown> | null;
 };
@@ -68,7 +70,7 @@ export type RunnerDirectoryReadResult = {
   selectedCount: number;
   foundCount: number;
   updatedCount: number;
-  stores: Record<"acp" | "cli", {
+  stores: Record<"acp" | "agent" | "cli", {
     status: "success" | "failed" | "skipped";
     selectedCount: number;
     foundCount: number;
@@ -1037,19 +1039,21 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
 
   const markRunnerSessionRead = useCallback(async (
     sessionIdRaw: unknown,
-    opts?: { directory?: unknown; source?: LlmSessionSource; lastReadAt?: unknown },
+    opts?: { backendId?: unknown; directory?: unknown; source?: LlmSessionSource; lastReadAt?: unknown },
   ): Promise<RunnerSessionReadResult> => {
     const startedAt = Date.now();
     const traceId = `mr_${startedAt.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) {
       return {
+        backendId: "codex",
         sessionId: "",
         directory: "",
         source: "all",
         lastReadAt: "",
         updated: false,
         acpUpdated: false,
+        agentUpdated: false,
         cliUpdated: false,
         diagnostics: null,
       };
@@ -1059,6 +1063,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       throw new Error("Aux Server URL または Runner Token が未設定です");
     }
     const directory = parseLlmDirectory(opts?.directory ?? normalizedLlmDirectoryForRequest());
+    const backendId = String(opts?.backendId || "codex").trim() || "codex";
     const sourceRaw = String(opts?.source || "").trim().toLowerCase();
     const source = (
       sourceRaw === "acp" || sourceRaw === "cli" || sourceRaw === "all"
@@ -1070,6 +1075,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     emitSessionDiag("session_mark_read_start", {
       traceId,
       sessionId,
+      backendId,
       directory,
       source,
       lastReadAt: requestedLastReadAt || undefined,
@@ -1083,6 +1089,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         },
         body: JSON.stringify({
           sessionId,
+          backendId,
           directory,
           source,
           lastReadAt: requestedLastReadAt || undefined,
@@ -1097,6 +1104,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       const lastReadAt = String(data?.lastReadAt || "").trim();
       const updated = Boolean(data?.updated);
       const acpUpdated = Boolean(data?.acpUpdated);
+      const agentUpdated = Boolean(data?.agentUpdated);
       const cliUpdated = Boolean(data?.cliUpdated);
       emitSessionDiag("session_mark_read_done", {
         traceId,
@@ -1107,16 +1115,19 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         httpStatus: Number(response.status || 0),
         updated,
         acpUpdated,
+        agentUpdated,
         cliUpdated,
         serverDiagnostics: diagnostics || undefined,
       });
       return {
+        backendId: String(data?.backendId || backendId),
         sessionId: String(data?.sessionId || sessionId),
         directory: String(data?.directory || directory),
         source: String(data?.source || source),
         lastReadAt,
         updated,
         acpUpdated,
+        agentUpdated,
         cliUpdated,
         diagnostics,
       };

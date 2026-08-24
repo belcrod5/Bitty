@@ -64,6 +64,29 @@ test("dismisses only delivered TURN_COMPLETED notifications for committed sessio
   warning.mockRestore();
 });
 
+test("dismisses a read session only for the matching provider identity", async () => {
+  (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+    {
+      request: {
+        identifier: "codex",
+        content: { categoryIdentifier: "TURN_COMPLETED", data: { backendId: "codex", sessionId: "shared", directory: "/repo" } },
+      },
+    },
+    {
+      request: {
+        identifier: "claude",
+        content: { categoryIdentifier: "TURN_COMPLETED", data: { backendId: "claude", sessionId: "shared", directory: "/repo" } },
+      },
+    },
+  ]);
+  (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+
+  await dismissReadSessionNotifications({ backendId: "claude", sessionId: "shared", directory: "/repo" });
+
+  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledTimes(1);
+  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith("claude");
+});
+
 test("full directory cleanup dismisses only matching delivered completion notifications", async () => {
   (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
     {
@@ -121,6 +144,38 @@ test("partial directory cleanup reconciles authority and dismisses only read ses
   });
   expect(Notifications.dismissNotificationAsync).toHaveBeenCalledTimes(1);
   expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith("read-notification");
+});
+
+test("directory reconcile queries colliding native ids by provider", async () => {
+  (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+    {
+      request: {
+        identifier: "codex-read",
+        content: { categoryIdentifier: "TURN_COMPLETED", data: { backendId: "codex", sessionId: "shared", directory: "/repo" } },
+      },
+    },
+    {
+      request: {
+        identifier: "claude-unread",
+        content: { categoryIdentifier: "TURN_COMPLETED", data: { backendId: "claude", sessionId: "shared", directory: "/repo" } },
+      },
+    },
+  ]);
+  global.fetch = jest.fn(async (_url, init) => {
+    const body = JSON.parse(String(init?.body || "{}"));
+    return { ok: true, json: async () => ({ found: true, unread: body.backendId === "claude" }) };
+  }) as unknown as typeof fetch;
+  (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+
+  await reconcileReadDirectoryNotifications({
+    runnerUrl: "https://runner.example.com",
+    runnerToken: "token",
+    directory: "/repo",
+  });
+
+  expect(global.fetch).toHaveBeenCalledTimes(2);
+  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledTimes(1);
+  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith("codex-read");
 });
 
 test("fetches the exact canonical unread count and applies it as an absolute badge", async () => {

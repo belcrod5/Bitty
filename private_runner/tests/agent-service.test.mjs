@@ -75,6 +75,7 @@ function sessionStore() {
       modes.set(key(ref), entry);
       return { status: "changed", mode };
     },
+    async recordActivity() { return { status: "updated" }; },
   };
 }
 
@@ -102,6 +103,12 @@ function startRequest(overrides = {}) {
 }
 
 test("emits one ordered lifecycle and resolves completion to the terminal payload", async () => {
+  const activityCalls = [];
+  const store = sessionStore();
+  store.recordActivity = async (...args) => {
+    activityCalls.push(args);
+    return { status: "updated" };
+  };
   const backend = {
     backendId: "test",
     getStatus: async () => status(),
@@ -120,10 +127,13 @@ test("emits one ordered lifecycle and resolves completion to the terminal payloa
   const service = createAgentService({
     backends: [backend],
     operationStore: operationStore(),
-    sessionStore: sessionStore(),
+    sessionStore: store,
     resolveCanonicalCwd: async (cwd) => cwd,
     generateRunId: () => "run-1",
     now: () => "2026-08-21T00:00:00.000Z",
+    onRunEvent: (event) => {
+      if (event.type === "turn.completed") assert.equal(activityCalls.length, 1);
+    },
   });
 
   const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
@@ -147,10 +157,56 @@ test("emits one ordered lifecycle and resolves completion to the terminal payloa
     sessionRef: { backendId: "test", nativeSessionId: "session-1" },
     outcome: "completed",
   });
+  assert.deepEqual(activityCalls, [[
+    { backendId: "test", nativeSessionId: "session-1" },
+    "/workspace",
+    "2026-08-21T00:00:00.000Z",
+  ]]);
   assert.throws(
     () => service.subscribe(run.runId, { afterSequence: Number.NaN, onEvent() {} }, { subjectId: "user-1" }),
     (error) => error.code === "turn_rejected",
   );
+});
+
+test("does not record Agent activity for interrupted or failed turns", async () => {
+  const activityCalls = [];
+  const store = sessionStore();
+  store.recordActivity = async (...args) => {
+    activityCalls.push(args);
+    return { status: "updated" };
+  };
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, input, resolveSession }) {
+      await resolveSession({ backendId: "test", nativeSessionId: input.blocks[0].text });
+      emit("turn.started", {});
+      if (input.blocks[0].text === "failed") throw new Error("failed");
+      return { outcome: "interrupted" };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  const interrupted = await service.startTurn(startRequest({
+    input: { blocks: [{ type: "text", text: "interrupted" }] },
+    clientOperationId: "interrupted-operation",
+  }), { subjectId: "user-1" });
+  const failed = await service.startTurn(startRequest({
+    input: { blocks: [{ type: "text", text: "failed" }] },
+    clientOperationId: "failed-operation",
+  }), { subjectId: "user-1" });
+
+  assert.equal((await interrupted.completion).outcome, "interrupted");
+  assert.equal((await failed.completion).outcome, "failed");
+  assert.deepEqual(activityCalls, []);
 });
 
 test("accepts a turn during an active compact and executes it after the lease is released", async () => {

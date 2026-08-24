@@ -469,7 +469,7 @@ export function ChatScreen({
         showChatBottomToast("assistant", "サブエージェントのセッションを読み込めませんでした。");
         return;
       }
-      markSessionRead(sessionId, params.source, directory);
+      markSessionRead(sessionId, params.source, directory, params.backendId);
     }).catch((error) => {
       showChatBottomToast(
         "assistant",
@@ -1477,6 +1477,7 @@ export function ChatScreen({
     if (isPanelSnapshotView) {
       if (!actionSessionIdForView) return;
       markSessionUnread({
+        backendId: backendIdForView,
         sessionId: actionSessionIdForView,
         source: "all",
         directory: actionDirectoryPathForView,
@@ -1487,6 +1488,7 @@ export function ChatScreen({
   }, [
     actionDirectoryPathForView,
     actionSessionIdForView,
+    backendIdForView,
     isPanelSnapshotView,
     markSelectedSessionUnread,
     markSessionUnread,

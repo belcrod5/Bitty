@@ -5,7 +5,11 @@ import { parseOptionalSessionId } from "../utils/llmSession";
 type CompletionContext = { directoryDisplayName?: string } | null;
 
 export function useLlmCompletionNotifications(options: {
-  handleForegroundSessionCompletion: (params: { sessionId: string; directory?: string }) => boolean;
+  handleForegroundSessionCompletion: (params: {
+    backendId: string;
+    sessionId: string;
+    directory?: string;
+  }) => boolean;
   resolveSessionHistoryContext: (sessionId: string, backendId?: string) => CompletionContext;
 }) {
   const [notifications, setNotifications] = useState<LlmCompletionNotification[]>([]);
@@ -22,7 +26,7 @@ export function useLlmCompletionNotifications(options: {
     const threadId = parseOptionalSessionId(params.threadId || sessionId);
     const previewText = String(params.previewText || "").replace(/\s+/g, " ").trim().slice(0, 240);
     if (!sessionId || !threadId) return;
-    if (options.handleForegroundSessionCompletion({ sessionId, directory: params.directory })) return;
+    if (options.handleForegroundSessionCompletion({ backendId, sessionId, directory: params.directory })) return;
     // Text-free lifecycle boundaries still own read/badge reconciliation. Only the local
     // completion card requires preview text.
     if (!previewText) return;
