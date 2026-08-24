@@ -16,7 +16,7 @@ import {
   type NativeSyntheticEvent,
   View,
 } from "react-native";
-import { LegendList, type LegendListRef, type OnViewableItemsChanged } from "@legendapp/list";
+import { LegendList, type LegendListRef } from "@legendapp/list";
 import * as Clipboard from "../clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
@@ -60,6 +60,7 @@ import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 import { useChatModelSelection } from "../hooks/useChatModelSelection";
+import { useChatScrollNavigation } from "../hooks/useChatScrollNavigation";
 import { countGitChangedFiles } from "../utils/gitChangedFiles";
 import {
   normalizeRunnerPath,
@@ -69,7 +70,6 @@ import {
 } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
-import { findPreviousUserMessageIndex } from "../utils/chatScroll";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
@@ -520,7 +520,6 @@ export function ChatScreen({
   const bottomScrollTimeoutRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
   const initialSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAtBottomRef = useRef(true);
-  const firstVisibleMessageRef = useRef<{ id: string; index: number } | null>(null);
   const chatAutoScrollPausedRef = useRef(false);
   const chatScrollDragActiveRef = useRef(false);
   const lastChatCacheKeyRef = useRef("");
@@ -758,25 +757,6 @@ export function ChatScreen({
     chatAutoScrollPausedRef.current = true;
     cancelPendingChatBottomSettling();
   }, [cancelPendingChatBottomSettling]);
-  const handleChatTouchEndForAutoScroll = useCallback(() => {
-    handleChatTouchEndForView?.();
-    if (chatScrollDragActiveRef.current) return;
-    if (isAtBottomRef.current) chatAutoScrollPausedRef.current = false;
-  }, [handleChatTouchEndForView]);
-  const handleChatTouchCancelForAutoScroll = useCallback(() => {
-    chatScrollDragActiveRef.current = false;
-    handleChatTouchEndForView?.();
-    if (isAtBottomRef.current) chatAutoScrollPausedRef.current = false;
-  }, [handleChatTouchEndForView]);
-  const handleChatScrollInteractionBegin = useCallback(() => {
-    chatScrollDragActiveRef.current = true;
-    chatAutoScrollPausedRef.current = true;
-    cancelPendingChatBottomSettling();
-  }, [cancelPendingChatBottomSettling]);
-  const handleChatScrollInteractionEnd = useCallback(() => {
-    chatScrollDragActiveRef.current = false;
-    if (isAtBottomRef.current) chatAutoScrollPausedRef.current = false;
-  }, []);
   const queueBottomScrollFrame = useCallback((callback: () => void) => {
     const frame = requestAnimationFrame(() => {
       bottomScrollRafRefs.current = bottomScrollRafRefs.current.filter((queuedFrame) => queuedFrame !== frame);
@@ -839,45 +819,42 @@ export function ChatScreen({
     scrollChatListToLastMessageTarget,
     scrollChatListToMeasuredBottom,
   ]);
-  const handleChatViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<ConversationMessage>>>(({
-    viewableItems,
-  }) => {
-    const firstVisibleItem = viewableItems.reduce<(typeof viewableItems)[number] | null>((firstItem, item) => {
-      if (!item.isViewable || item.index < 0) return firstItem;
-      return firstItem === null || item.index < firstItem.index ? item : firstItem;
-    }, null);
-    if (!firstVisibleItem) return;
-    firstVisibleMessageRef.current = {
-      id: firstVisibleItem.item.id,
-      index: firstVisibleItem.index,
-    };
-  }, []);
-  const scrollChatListToPreviousUser = useCallback(() => {
-    if (conversationMessagesForView.length === 0) return;
-    pauseChatAutoScrollForInteraction();
-    const firstVisibleMessage = firstVisibleMessageRef.current;
-    const currentIndexForVisibleMessage = firstVisibleMessage
-      ? conversationMessagesForView.findIndex((message) => message.id === firstVisibleMessage.id)
-      : -1;
-    const firstVisibleIndex = currentIndexForVisibleMessage >= 0
-      ? currentIndexForVisibleMessage
-      : (firstVisibleMessage?.index ?? conversationMessagesForView.length);
-    const targetIndex = findPreviousUserMessageIndex(conversationMessagesForView, firstVisibleIndex);
-    if (targetIndex === null) {
-      chatListRefForView.current?.scrollToOffset({ offset: 0, animated: true });
-      return;
-    }
-    chatListRefForView.current?.scrollToIndex({
-      index: targetIndex,
-      animated: true,
-      viewPosition: 0,
-    });
-  }, [chatListRefForView, conversationMessagesForView, pauseChatAutoScrollForInteraction]);
-  const resumeChatAtBottom = useCallback(() => {
+  const resumeChatAutoScroll = useCallback(() => {
     chatAutoScrollPausedRef.current = false;
     isAtBottomRef.current = true;
-    scrollChatListToBottom(true);
-  }, [scrollChatListToBottom]);
+  }, []);
+  const {
+    handleViewableItemsChanged: handleChatViewableItemsChanged,
+    resetNavigation: resetChatScrollNavigation,
+    scrollToBottomAndResume: resumeChatAtBottom,
+    scrollToPreviousUser: scrollChatListToPreviousUser,
+    shouldKeepAutoScrollPaused,
+  } = useChatScrollNavigation({
+    messages: conversationMessagesForView,
+    listRef: chatListRefForView,
+    pauseAutoScroll: pauseChatAutoScrollForInteraction,
+    resumeAutoScroll: resumeChatAutoScroll,
+    scrollToBottom: scrollChatListToBottom,
+  });
+  const handleChatTouchEndForAutoScroll = useCallback(() => {
+    handleChatTouchEndForView?.();
+    if (chatScrollDragActiveRef.current) return;
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
+  }, [handleChatTouchEndForView, shouldKeepAutoScrollPaused]);
+  const handleChatTouchCancelForAutoScroll = useCallback(() => {
+    chatScrollDragActiveRef.current = false;
+    handleChatTouchEndForView?.();
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
+  }, [handleChatTouchEndForView, shouldKeepAutoScrollPaused]);
+  const handleChatScrollInteractionBegin = useCallback(() => {
+    chatScrollDragActiveRef.current = true;
+    chatAutoScrollPausedRef.current = true;
+    cancelPendingChatBottomSettling();
+  }, [cancelPendingChatBottomSettling]);
+  const handleChatScrollInteractionEnd = useCallback(() => {
+    chatScrollDragActiveRef.current = false;
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
+  }, [shouldKeepAutoScrollPaused]);
   const scrollChatListToBottomSettled = useCallback((animated = false) => {
     clearPendingBottomScrollFrames();
     const scrollToBottomOnNextFrame = (nextAnimated: boolean) => {
@@ -980,11 +957,14 @@ export function ChatScreen({
     chatScrollDiagnosticRef.current.viewportHeight = viewportHeight;
     const isAtBottom = distanceToBottom <= CHAT_BOTTOM_RESUME_THRESHOLD_PX;
     isAtBottomRef.current = isAtBottom;
-    if (isAtBottom && !chatScrollDragActiveRef.current) chatAutoScrollPausedRef.current = false;
+    const keepAutoScrollPaused = shouldKeepAutoScrollPaused(isAtBottom);
+    if (isAtBottom && !chatScrollDragActiveRef.current && !keepAutoScrollPaused) {
+      chatAutoScrollPausedRef.current = false;
+    }
     if (!isMiniBoardPopupMode) {
       handleChatScroll(event);
     }
-  }, [handleChatScroll, isMiniBoardPopupMode]);
+  }, [handleChatScroll, isMiniBoardPopupMode, shouldKeepAutoScrollPaused]);
   const handleChatContentSizeChangeForView = useCallback((_widthRaw: number, heightRaw: number) => {
     const previousHeight = chatScrollDiagnosticRef.current.contentSizeHeight;
     const nextHeight = Number(heightRaw || 0);
@@ -1212,7 +1192,7 @@ export function ChatScreen({
     didInitialScrollRef.current = false;
     initialSettlingRef.current = false;
     isAtBottomRef.current = true;
-    firstVisibleMessageRef.current = null;
+    resetChatScrollNavigation();
     chatAutoScrollPausedRef.current = false;
     chatScrollDragActiveRef.current = false;
     previousMessageCountRef.current = 0;
@@ -1223,7 +1203,7 @@ export function ChatScreen({
       initialSettleTimerRef.current = null;
     }
     clearPendingBottomScrollFrames();
-  }, [clearPendingBottomScrollFrames, conversationScrollResetKey]);
+  }, [clearPendingBottomScrollFrames, conversationScrollResetKey, resetChatScrollNavigation]);
   useEffect(() => {
     const width = Math.round(Number(currentChatViewportSize.width || 0));
     if (width <= 0) return;
@@ -2221,6 +2201,7 @@ export function ChatScreen({
               <TouchableOpacity
                 style={styles.chatScrollControlButton}
                 onPress={scrollChatListToPreviousUser}
+                hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel="前のユーザーメッセージまでスクロール"
               >
@@ -2229,6 +2210,7 @@ export function ChatScreen({
               <TouchableOpacity
                 style={styles.chatScrollControlButton}
                 onPress={resumeChatAtBottom}
+                hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel="チャットの末尾までスクロール"
               >
