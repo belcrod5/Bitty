@@ -38,7 +38,14 @@ function sessionStore() {
       if (existingBinding && existingBinding.canonicalCwd !== canonicalCwd && options.reconcileCwd !== true) {
         return { status: "cwd_conflict", binding: existingBinding };
       }
-      bindings.set(key(ref), { ...ref, canonicalCwd });
+      const binding = { ...(existingBinding || ref), canonicalCwd };
+      if (Object.hasOwn(options, "settings")) {
+        if (options.settings?.modelId) binding.modelId = options.settings.modelId;
+        else delete binding.modelId;
+        if (options.settings?.reasoningEffort) binding.reasoningEffort = options.settings.reasoningEffort;
+        else delete binding.reasoningEffort;
+      }
+      bindings.set(key(ref), binding);
       modes.set(key(ref), existingMode || { mode, lease: null, generation: 0 });
       return { status: "bound", mode };
     },
@@ -252,12 +259,21 @@ for (const { existing, terminal } of [
     const gate = new Promise((resolve) => { release = resolve; });
     let settingsStored;
     const stored = new Promise((resolve) => { settingsStored = resolve; });
-    const setSettings = store.setSettings;
-    store.setSettings = async (...args) => {
-      const result = await setSettings(...args);
-      settingsStored();
-      return result;
-    };
+    if (existing) {
+      const setSettings = store.setSettings;
+      store.setSettings = async (...args) => {
+        const result = await setSettings(...args);
+        settingsStored();
+        return result;
+      };
+    } else {
+      const bind = store.bind;
+      store.bind = async (...args) => {
+        const result = await bind(...args);
+        if (Object.hasOwn(args[3] || {}, "settings")) settingsStored();
+        return result;
+      };
+    }
     const backend = {
       backendId: "test",
       defaultDiscoveredSessionMode: "neutral",
@@ -291,7 +307,6 @@ for (const { existing, terminal } of [
       sessionStore: store,
       resolveCanonicalCwd: async (cwd) => cwd,
     });
-
     const run = await service.startTurn(startRequest({
       ...(existing ? { sessionRef } : {}),
       model: "selected-model",
@@ -321,7 +336,19 @@ for (const existing of [true, false]) {
     const store = sessionStore();
     const sessionRef = { backendId: "test", nativeSessionId: existing ? "existing-session" : "new-session" };
     if (existing) await store.bind(sessionRef, "/workspace", "neutral");
-    store.setSettings = async () => { throw new Error("settings disk write failed"); };
+    let restorePersistence;
+    if (existing) {
+      const setSettings = store.setSettings;
+      store.setSettings = async () => { throw new Error("settings disk write failed"); };
+      restorePersistence = () => { store.setSettings = setSettings; };
+    } else {
+      const bind = store.bind;
+      store.bind = async (...args) => {
+        if (Object.hasOwn(args[3] || {}, "settings")) throw new Error("settings disk write failed");
+        return await bind(...args);
+      };
+      restorePersistence = () => { store.bind = bind; };
+    }
     let nativeStarts = 0;
     const backend = {
       backendId: "test",
@@ -344,18 +371,34 @@ for (const existing of [true, false]) {
       sessionStore: store,
       resolveCanonicalCwd: async (cwd) => cwd,
     });
-
     const run = await service.startTurn(startRequest({
       ...(existing ? { sessionRef } : {}),
       model: "selected-model",
       effort: "high",
     }), { subjectId: "user-1" });
     const result = await run.completion;
-
     assert.equal(result.outcome, "failed");
     assert.match(result.error.message, /settings disk write failed/);
     assert.equal(nativeStarts, 0);
-    if (existing) assert.equal((await store.getMode(sessionRef)).lease, null);
+    if (existing) {
+      assert.equal((await store.getMode(sessionRef)).lease, null);
+    } else {
+      assert.equal(result.sessionRef, undefined);
+      assert.equal(await store.getBinding(sessionRef), null);
+      assert.equal(await store.getMode(sessionRef), null);
+    }
+    restorePersistence();
+    const retry = await service.startTurn(startRequest({
+      ...(existing ? { sessionRef } : {}),
+      model: "selected-model",
+      effort: "high",
+      clientOperationId: "retry-operation",
+    }), { subjectId: "user-1" });
+    const retryResult = await retry.completion;
+    assert.equal(retryResult.outcome, "completed");
+    assert.deepEqual(retryResult.sessionRef, sessionRef);
+    assert.equal((await store.getBinding(sessionRef)).reasoningEffort, "high");
+    assert.equal(nativeStarts, 1);
   });
 }
 
@@ -1048,10 +1091,15 @@ test("deduplicates a client operation and rejects conflicting reuse", async () =
     },
   };
   const store = sessionStore();
+  const bind = store.bind;
   const setSettings = store.setSettings;
   store.setSettings = async (...args) => {
     settingWrites += 1;
     return await setSettings(...args);
+  };
+  store.bind = async (...args) => {
+    if (Object.hasOwn(args[3] || {}, "settings")) settingWrites += 1;
+    return await bind(...args);
   };
   const service = createAgentService({
     backends: [backend],

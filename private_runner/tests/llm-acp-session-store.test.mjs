@@ -677,18 +677,37 @@ test("session settings persistence rolls back on failure and succeeds on retry",
   };
   const ref = { backendId: "claude", nativeSessionId: "session-1" };
   const store = createLlmAcpSessionStore(options);
-  await store.bindAgentSession(ref, tempRoot, "neutral");
 
   failNextRename = true;
   await assert.rejects(
-    store.setAgentSessionSettings(ref, { modelId: "sonnet", reasoningEffort: "high" }),
+    store.bindAgentSession(ref, tempRoot, "neutral", {
+      settings: { modelId: "sonnet", reasoningEffort: "high" },
+    }),
     /settings rename failed/,
   );
-  assert.equal((await store.getAgentSessionBinding(ref)).reasoningEffort, undefined);
+  assert.equal(await store.getAgentSessionBinding(ref), null);
+  assert.equal(await store.getAgentSessionMode(ref), null);
 
-  await store.setAgentSessionSettings(ref, { modelId: "sonnet", reasoningEffort: "high" });
+  await store.bindAgentSession(ref, tempRoot, "neutral", {
+    settings: { modelId: "sonnet", reasoningEffort: "high" },
+  });
+  assert.equal((await store.getAgentSessionBinding(ref)).reasoningEffort, "high");
+
+  failNextRename = true;
+  await assert.rejects(
+    store.setAgentSessionSettings(ref, { modelId: "opus", reasoningEffort: "low" }),
+    /settings rename failed/,
+  );
+  assert.equal((await store.getAgentSessionBinding(ref)).reasoningEffort, "high");
+
+  await store.setAgentSessionSettings(ref, { modelId: "opus", reasoningEffort: "low" });
   const restarted = createLlmAcpSessionStore({ ...options, fileSystem: fs });
-  assert.equal((await restarted.getAgentSessionBinding(ref)).reasoningEffort, "high");
+  assert.deepEqual(await restarted.getAgentSessionBinding(ref), {
+    ...(await store.getAgentSessionBinding(ref)),
+    modelId: "opus",
+    reasoningEffort: "low",
+  });
+  assert.equal((await restarted.getAgentSessionMode(ref)).mode, "neutral");
 });
 
 test("migrates Agent bindings without read state as already read", async (t) => {

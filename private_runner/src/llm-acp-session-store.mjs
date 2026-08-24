@@ -47,6 +47,22 @@ export function createLlmAcpSessionStore(deps = {}) {
     return JSON.stringify([String(backendId || "").trim(), String(nativeSessionId || "").trim()]);
   }
 
+  function normalizeAgentSessionSettings(settings) {
+    const modelId = String(settings?.modelId || "").trim();
+    const reasoningEffort = String(settings?.reasoningEffort || "").trim();
+    if (modelId.length > 256 || reasoningEffort.length > 64) {
+      throw new TypeError("invalid agent session settings");
+    }
+    return { modelId, reasoningEffort };
+  }
+
+  function replaceAgentSessionSettings(binding, settings) {
+    if (settings.modelId) binding.modelId = settings.modelId;
+    else delete binding.modelId;
+    if (settings.reasoningEffort) binding.reasoningEffort = settings.reasoningEffort;
+    else delete binding.reasoningEffort;
+  }
+
   async function resolveDirectoryIdentity(rawDirectory) {
     const normalized = normalizeSessionRootRelativePath(rawDirectory);
     const absolute = path.isAbsolute(normalized)
@@ -690,24 +706,21 @@ export function createLlmAcpSessionStore(deps = {}) {
   async function setAgentSessionSettings(sessionRef, settings = {}) {
     const backendId = String(sessionRef?.backendId || "").trim();
     const nativeSessionId = String(sessionRef?.nativeSessionId || "").trim();
-    const modelId = String(settings?.modelId || "").trim();
-    const reasoningEffort = String(settings?.reasoningEffort || "").trim();
-    if (!backendId || !nativeSessionId || modelId.length > 256 || reasoningEffort.length > 64) {
-      throw new TypeError("invalid agent session settings");
-    }
+    const normalizedSettings = normalizeAgentSessionSettings(settings);
+    if (!backendId || !nativeSessionId) throw new TypeError("invalid agent session settings");
     await ensureAgentMetadataStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
       const key = agentSessionKey(backendId, nativeSessionId);
       const binding = agentSessionBindings.get(key);
       if (!binding) return { status: "missing" };
-      if (String(binding.modelId || "") === modelId && String(binding.reasoningEffort || "") === reasoningEffort) {
+      if (
+        String(binding.modelId || "") === normalizedSettings.modelId &&
+        String(binding.reasoningEffort || "") === normalizedSettings.reasoningEffort
+      ) {
         return { status: "unchanged" };
       }
       const previous = { ...binding };
-      if (modelId) binding.modelId = modelId;
-      else delete binding.modelId;
-      if (reasoningEffort) binding.reasoningEffort = reasoningEffort;
-      else delete binding.reasoningEffort;
+      replaceAgentSessionSettings(binding, normalizedSettings);
       try {
         await persistAcpSessionStore();
       } catch (error) {
@@ -785,6 +798,9 @@ export function createLlmAcpSessionStore(deps = {}) {
     const rawCwd = String(canonicalCwdRaw || "").trim();
     const canonicalCwd = rawCwd ? path.resolve(rawCwd) : "";
     const mode = modeRaw === "raw" ? "raw" : modeRaw === "neutral" ? "neutral" : "";
+    const settings = Object.hasOwn(options, "settings")
+      ? normalizeAgentSessionSettings(options.settings)
+      : null;
     if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd) || !mode) {
       throw new TypeError("invalid agent session binding");
     }
@@ -803,6 +819,7 @@ export function createLlmAcpSessionStore(deps = {}) {
         ) {
           const previousBinding = { ...existingBinding };
           const binding = { ...existingBinding, canonicalCwd };
+          if (settings) replaceAgentSessionSettings(binding, settings);
           agentSessionBindings.set(key, binding);
           try {
             await persistAcpSessionStore();
@@ -819,6 +836,20 @@ export function createLlmAcpSessionStore(deps = {}) {
         return { status: "mode_conflict", mode: existingMode.mode, lease: existingMode.lease };
       }
       if (existingBinding && existingMode) {
+        if (!settings || (
+          String(existingBinding.modelId || "") === settings.modelId &&
+          String(existingBinding.reasoningEffort || "") === settings.reasoningEffort
+        )) {
+          return { status: "bound", binding: { ...existingBinding }, mode };
+        }
+        const previousBinding = { ...existingBinding };
+        replaceAgentSessionSettings(existingBinding, settings);
+        try {
+          await persistAcpSessionStore();
+        } catch (error) {
+          agentSessionBindings.set(key, previousBinding);
+          throw error;
+        }
         return { status: "bound", binding: { ...existingBinding }, mode };
       }
       const nowIso = new Date().toISOString();
@@ -827,6 +858,7 @@ export function createLlmAcpSessionStore(deps = {}) {
         ? { ...existingMode, ...(existingMode.lease ? { lease: { ...existingMode.lease } } : {}) }
         : null;
       const binding = { backendId, nativeSessionId, canonicalCwd, updatedAt: nowIso, lastReadAt: nowIso };
+      if (settings) replaceAgentSessionSettings(binding, settings);
       const modeEntry = existingMode || { backendId, nativeSessionId, mode, lease: null, updatedAt: nowIso };
       modeEntry.updatedAt = nowIso;
       agentSessionBindings.set(key, binding);

@@ -294,14 +294,16 @@ export function createAgentService({
       throw agentError("session_busy", "session already has an active turn", { backendId: run.backendId });
     }
     if (run.sessionResolved) throw agentError("protocol_error", "Backend resolved the session more than once", { backendId: run.backendId });
-    const binding = await sessionStore.bind(resolved, run.cwd, "neutral");
+    const binding = await sessionStore.bind(resolved, run.cwd, "neutral", {
+      settings: { modelId: run.model, reasoningEffort: run.effort },
+    });
     if (binding?.status === "cwd_conflict") {
       throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: run.backendId });
     }
     if (binding?.status === "mode_conflict") {
       throw agentError("session_busy", "session is owned by the compatibility transport", { backendId: run.backendId });
     }
-    await persistRunSettings(run, resolved);
+    run.settingsPersisted = true;
     if (!run.lease) {
       const acquired = await sessionStore.acquire({
         sessionRef: resolved,
