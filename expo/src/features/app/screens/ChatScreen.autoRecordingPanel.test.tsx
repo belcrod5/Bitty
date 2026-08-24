@@ -9,6 +9,10 @@ const mockLoadOlderSessionHistory = jest.fn();
 const mockCodexScheduleProps: { current: Record<string, any> | null } = { current: null };
 const mockLocationScheduleProps: { current: Record<string, any> | null } = { current: null };
 const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
+const mockScrollToEnd = jest.fn();
+const mockScrollToIndex = jest.fn();
+const mockScrollToOffset = jest.fn();
+const mockScrollItemIntoView = jest.fn();
 const mockAddSkiaBoardFile = jest.fn();
 const mockRemoveSkiaBoardFile = jest.fn();
 const mockHasSkiaBoardFile = jest.fn(() => false);
@@ -18,6 +22,7 @@ const mockMarkSessionUnread = jest.fn();
 const mockHydratePanelFromSessionHistory = jest.fn(async () => "applied");
 const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
 let mockPanelBackendId = "codex";
+let mockPanelConversationMessages: Array<{ id: string; role: "user" | "assistant"; content: string }> = [];
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   renameTarget: null,
   requestRename: jest.fn(),
@@ -31,8 +36,14 @@ jest.mock("@legendapp/list", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
-    LegendList: ReactModule.forwardRef((props: Record<string, any>, _ref) => {
+    LegendList: ReactModule.forwardRef((props: Record<string, any>, ref) => {
       mockLegendListProps.current = props;
+      ReactModule.useImperativeHandle(ref, () => ({
+        scrollToEnd: mockScrollToEnd,
+        scrollToIndex: mockScrollToIndex,
+        scrollToOffset: mockScrollToOffset,
+        scrollItemIntoView: mockScrollItemIntoView,
+      }));
       return ReactModule.createElement(View, { testID: "legend-list" });
     }),
   };
@@ -168,7 +179,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       contextUsedPct: 0,
       isResponding: false,
       inheritedConversationMessages: [],
-      conversationMessages: [{ id: "message-1", role: "assistant", content: "hello" }],
+      conversationMessages: mockPanelConversationMessages,
     }),
   }),
 }));
@@ -367,6 +378,7 @@ describe("ChatScreen auto recording panel target", () => {
     mockLocationScheduleProps.current = null;
     mockChatSessionSubagentProps.current = null;
     mockPanelBackendId = "codex";
+    mockPanelConversationMessages = [{ id: "message-1", role: "assistant", content: "hello" }];
   });
 
   it("passes the current panel ID from a panel runtime view", async () => {
@@ -476,6 +488,168 @@ describe("ChatScreen auto recording panel target", () => {
       directory: "/workspace",
     });
 
+    await screen.unmount();
+    jest.useRealTimers();
+  });
+
+  it("wires the scroll controls to the shared chat list", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const visibleMessage = mockLegendListProps.current?.data?.[0];
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: visibleMessage, index: 0, isViewable: true }],
+      changed: [],
+    });
+    mockScrollToOffset.mockClear();
+    mockScrollToEnd.mockClear();
+
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+    expect(mockScrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
+
+    await fireEvent.press(screen.getByLabelText("チャットの末尾までスクロール"));
+    await waitFor(() => expect(mockScrollToEnd).toHaveBeenCalledWith({ animated: true }));
+    await screen.unmount();
+  });
+
+  it("advances through previous user messages on consecutive presses", async () => {
+    mockPanelConversationMessages = [
+      { id: "user-1", role: "user", content: "first" },
+      { id: "assistant-1", role: "assistant", content: "reply" },
+      { id: "user-2", role: "user", content: "second" },
+      { id: "assistant-2", role: "assistant", content: "reply" },
+      { id: "user-3", role: "user", content: "third" },
+      { id: "assistant-3", role: "assistant", content: "reply" },
+    ];
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[5], index: 5, isViewable: true }],
+      changed: [],
+    });
+    mockScrollToIndex.mockClear();
+
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+    mockLegendListProps.current?.onScroll?.({
+      nativeEvent: {
+        contentOffset: { y: 200 },
+        contentSize: { height: 700 },
+        layoutMeasurement: { height: 200 },
+      },
+    });
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[5], index: 5, isViewable: true }],
+      changed: [],
+    });
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+
+    expect(mockScrollToIndex.mock.calls).toEqual([
+      [{ index: 4, animated: true, viewPosition: 0 }],
+      [{ index: 2, animated: true, viewPosition: 0 }],
+    ]);
+    await screen.unmount();
+  });
+
+  it("accepts normal viewability updates after the navigation target becomes visible", async () => {
+    mockPanelConversationMessages = [
+      { id: "user-1", role: "user", content: "first" },
+      { id: "assistant-1", role: "assistant", content: "reply" },
+      { id: "user-2", role: "user", content: "second" },
+      { id: "assistant-2", role: "assistant", content: "reply" },
+      { id: "user-3", role: "user", content: "third" },
+      { id: "assistant-3", role: "assistant", content: "reply" },
+    ];
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[5], index: 5, isViewable: true }],
+      changed: [],
+    });
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[4], index: 4, isViewable: true }],
+      changed: [],
+    });
+    mockLegendListProps.current?.onScroll?.({
+      nativeEvent: {
+        contentOffset: { y: 200 },
+        contentSize: { height: 700 },
+        layoutMeasurement: { height: 200 },
+      },
+    });
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[1], index: 1, isViewable: true }],
+      changed: [],
+    });
+    mockScrollToIndex.mockClear();
+
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+
+    expect(mockScrollToIndex).toHaveBeenCalledWith({ index: 0, animated: true, viewPosition: 0 });
+    await screen.unmount();
+  });
+
+  it("keeps auto-scroll paused while an upward jump is leaving the bottom", async () => {
+    jest.useFakeTimers();
+    mockPanelConversationMessages = [
+      { id: "user-1", role: "user", content: "first" },
+      { id: "assistant-1", role: "assistant", content: "reply" },
+    ];
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[1], index: 1, isViewable: true }],
+      changed: [],
+    });
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+    mockScrollToEnd.mockClear();
+
+    mockLegendListProps.current?.onScroll?.({
+      nativeEvent: {
+        contentOffset: { y: 400 },
+        contentSize: { height: 600 },
+        layoutMeasurement: { height: 200 },
+      },
+    });
+    mockLegendListProps.current?.onContentSizeChange?.(0, 700);
+    mockLegendListProps.current?.onScroll?.({
+      nativeEvent: {
+        contentOffset: { y: 200 },
+        contentSize: { height: 700 },
+        layoutMeasurement: { height: 200 },
+      },
+    });
+    mockLegendListProps.current?.onContentSizeChange?.(0, 800);
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(mockScrollToEnd).not.toHaveBeenCalled();
+    await screen.unmount();
+    jest.useRealTimers();
+  });
+
+  it("resumes auto-scroll when the bottom control is pressed", async () => {
+    jest.useFakeTimers();
+    mockPanelConversationMessages = [
+      { id: "user-1", role: "user", content: "first" },
+      { id: "assistant-1", role: "assistant", content: "reply" },
+    ];
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    mockLegendListProps.current?.onViewableItemsChanged?.({
+      viewableItems: [{ item: mockPanelConversationMessages[1], index: 1, isViewable: true }],
+      changed: [],
+    });
+    await fireEvent.press(screen.getByLabelText("前のユーザーメッセージまでスクロール"));
+    mockScrollToEnd.mockClear();
+
+    await fireEvent.press(screen.getByLabelText("チャットの末尾までスクロール"));
+    await act(async () => {
+      jest.advanceTimersByTime(20);
+    });
+    expect(mockScrollToEnd).toHaveBeenCalledWith({ animated: true });
+
+    mockScrollToEnd.mockClear();
+    mockLegendListProps.current?.onContentSizeChange?.(0, 700);
+    await act(async () => {
+      jest.advanceTimersByTime(20);
+    });
+    expect(mockScrollToEnd).toHaveBeenCalledWith({ animated: true });
     await screen.unmount();
     jest.useRealTimers();
   });
