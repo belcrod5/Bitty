@@ -12,6 +12,7 @@ import {
 } from "./types";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { ALL_BACKENDS_SCOPE, listAgentSessions, readAgentHistory } from "../../agent/client";
+import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
 
 export async function listCodexAppServerThreads(options: {
   wsUrl: string;
@@ -158,6 +159,7 @@ export async function readCodexAppServerThread(options: {
       if (backendId !== options.rawFallbackBackendId) throw error;
     }
     if (neutral) {
+      const liveState = deriveAgentSessionLiveState(neutral.activeRun);
       const items = Array.isArray(neutral.items) ? neutral.items : [];
       const messages = items.map((raw) => {
         const item = raw && typeof raw === "object" ? raw as Record<string, any> : {};
@@ -186,12 +188,10 @@ export async function readCodexAppServerThread(options: {
           const usedPct = Number((neutral.contextUsage as Record<string, unknown> | undefined)?.usedPct);
           return Number.isFinite(usedPct) ? Math.max(0, Math.min(100, Math.round(usedPct))) : null;
         })(),
-        sessionState: "completed",
-        threadStatusType: "idle",
-        waitingOnApproval: false,
-        latestTurnStatus: "completed",
-        hasRunningTurn: false,
-        runningTurn: null,
+        ...liveState,
+        // CodexThreadStatusType represents approval through the separate
+        // waitingOnApproval field while the app runtime uses waiting_approval.
+        threadStatusType: liveState.hasRunningTurn ? "active" : "idle",
       };
     }
     if (options.backendId && backendId !== options.rawFallbackBackendId) {

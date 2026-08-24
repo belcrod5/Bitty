@@ -1,6 +1,6 @@
 import { runCodexRpcSession } from "./rpcSession";
 import { listCodexAppServerThreads, readCodexAppServerThread } from "./threads";
-import { listAgentSessions } from "../../agent/client";
+import { listAgentSessions, readAgentHistory } from "../../agent/client";
 
 jest.mock("./rpcSession", () => ({
   ...jest.requireActual("./rpcSession"),
@@ -14,10 +14,12 @@ jest.mock("../../agent/client", () => ({
 
 const mockRunCodexRpcSession = jest.mocked(runCodexRpcSession);
 const mockListAgentSessions = jest.mocked(listAgentSessions);
+const mockReadAgentHistory = jest.mocked(readAgentHistory);
 
 beforeEach(() => {
   mockRunCodexRpcSession.mockReset();
   mockListAgentSessions.mockReset();
+  mockReadAgentHistory.mockReset();
 });
 
 it("maps an all-backends listing per entry backend and surfaces partial errors", async () => {
@@ -158,6 +160,93 @@ it("requests subagents from the server when subAgent source kinds are included",
   });
 
   expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeSubagents: true }));
+});
+
+it("maps a provider-neutral active run to a running thread", async () => {
+  mockReadAgentHistory.mockResolvedValue({
+    items: [],
+    activeRun: {
+      runId: "run-1",
+      state: "running",
+      startedAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:01.000Z",
+      waitingForAction: false,
+    },
+  });
+
+  const result = await readCodexAppServerThread({
+    wsUrl: "ws://runner",
+    threadId: "thread-1",
+    runnerWebSocketManager: {} as never,
+    backendId: "claude",
+  });
+
+  expect(result).toMatchObject({
+    sessionState: "running",
+    threadStatusType: "active",
+    waitingOnApproval: false,
+    latestTurnStatus: "running",
+    hasRunningTurn: true,
+    runningTurn: {
+      status: "running",
+      summary: "agent turn running",
+      startedAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:01.000Z",
+    },
+  });
+  expect(mockRunCodexRpcSession).not.toHaveBeenCalled();
+});
+
+it("maps a provider-neutral pending action to approval-waiting live state", async () => {
+  mockReadAgentHistory.mockResolvedValue({
+    items: [],
+    activeRun: {
+      runId: "run-1",
+      state: "running",
+      startedAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:01.000Z",
+      waitingForAction: true,
+    },
+  });
+
+  const result = await readCodexAppServerThread({
+    wsUrl: "ws://runner",
+    threadId: "thread-1",
+    runnerWebSocketManager: {} as never,
+    backendId: "claude",
+  });
+
+  expect(result).toMatchObject({
+    sessionState: "waiting_on_approval",
+    threadStatusType: "active",
+    waitingOnApproval: true,
+    latestTurnStatus: "waiting_on_approval",
+    hasRunningTurn: true,
+    runningTurn: {
+      status: "waiting_approval",
+      summary: "approval required",
+    },
+  });
+});
+
+it("maps provider-neutral history without an active run to completed idle state", async () => {
+  mockReadAgentHistory.mockResolvedValue({ items: [], activeRun: null });
+
+  const result = await readCodexAppServerThread({
+    wsUrl: "ws://runner",
+    threadId: "thread-1",
+    runnerWebSocketManager: {} as never,
+    backendId: "claude",
+  });
+
+  expect(result).toMatchObject({
+    sessionState: "completed",
+    threadStatusType: "idle",
+    waitingOnApproval: false,
+    latestTurnStatus: "completed",
+    hasRunningTurn: false,
+    runningTurn: null,
+  });
 });
 
 it("reads metadata without replaying saved turns", async () => {
