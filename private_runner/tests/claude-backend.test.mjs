@@ -744,6 +744,48 @@ test("Claude transcript metadata is cached until the file changes", async (t) =>
   assert.ok(readFileCalls > readsAfterFirst);
 });
 
+test("Claude batch session snapshot scans the transcript catalog once and groups by cwd", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-batch-list-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const projectsRoot = path.join(tempRoot, "projects");
+  const project = path.join(projectsRoot, "catalog");
+  const cwdOne = path.join(tempRoot, "workspace-one");
+  const cwdTwo = path.join(tempRoot, "workspace-two");
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(cwdOne);
+  await fs.mkdir(cwdTwo);
+  const sessionOne = "11111111-1111-4111-8111-111111111111";
+  const sessionTwo = "22222222-2222-4222-8222-222222222222";
+  await fs.writeFile(path.join(project, `${sessionOne}.jsonl`), JSON.stringify({
+    type: "user", uuid: "u1", cwd: cwdOne, message: { content: "one" },
+  }));
+  await fs.writeFile(path.join(project, `${sessionTwo}.jsonl`), JSON.stringify({
+    type: "user", uuid: "u2", cwd: cwdTwo, message: { content: "two" },
+  }));
+  let readdirCalls = 0;
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    projectsRoot,
+    runFile: async () => ({ stdout: "2.1.214" }),
+    fileSystem: { ...fs, async readdir(...args) {
+      readdirCalls += 1;
+      return await fs.readdir(...args);
+    } },
+    sessionStore: { getBinding: async () => null },
+  });
+
+  const snapshot = await backend.listSessionsForDirectories({ cwds: [cwdOne, cwdTwo] });
+
+  assert.equal(readdirCalls, 2);
+  assert.deepEqual(snapshot.groups.map((group) => ({
+    cwd: group.cwd,
+    sessionIds: group.sessions.map((session) => session.sessionRef.nativeSessionId),
+  })), [
+    { cwd: await fs.realpath(cwdOne), sessionIds: [sessionOne] },
+    { cwd: await fs.realpath(cwdTwo), sessionIds: [sessionTwo] },
+  ]);
+});
+
 test("Claude session cwd prefers the transcript over a stale binding and matches symlinked workspaces", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-cwd-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

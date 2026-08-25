@@ -745,6 +745,19 @@ describe("buildLlmSessionHistoryEntry", () => {
     expect(entry.modelRef).toBe("sonnet");
     expect(entry.reasoningEffort).toBe("high");
   });
+
+  it("prefers backend-aware provider-neutral read state over a legacy snapshot", () => {
+    const entry = buildLlmSessionHistoryEntry({
+      threadId: "session-1",
+      cwd: "/workspace/bitty",
+      lastReadAt: "2026-08-24T03:00:00.000Z",
+    } as never, "/workspace/bitty", new Map([[
+      "session-1",
+      { contextUsedPct: null, modelRef: "", reasoningEffort: "", latestToolLabel: "", lastReadAt: "2026-08-23T03:00:00.000Z" },
+    ]]));
+
+    expect(entry.lastReadAt).toBe("2026-08-24T03:00:00.000Z");
+  });
 });
 
 test("paginates one directory subagent sequence, deduplicates it, and groups every parent", async () => {

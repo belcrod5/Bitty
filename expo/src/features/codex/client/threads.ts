@@ -86,6 +86,7 @@ export async function listCodexAppServerThreads(options: {
             cwd: String(item.canonicalCwd || cwd),
             createdAt: "",
             updatedAt: String(item.updatedAt || ""),
+            lastReadAt: String(item.lastReadAt || ""),
             contextUsedPct: null,
           };
         }).filter((item) => item.threadId && sourceKinds.includes(item.sourceKind as CodexThreadSourceKind)),

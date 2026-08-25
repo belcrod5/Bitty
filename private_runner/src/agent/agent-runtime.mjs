@@ -34,6 +34,7 @@ export function createPrivateRunnerAgentRuntime({
   findSession,
   resolveSessionDirectory,
   listSessions,
+  listSessionsForDirectories,
   listMessages,
   resolveCanonicalCwd,
   parseAuthToken,
@@ -43,6 +44,9 @@ export function createPrivateRunnerAgentRuntime({
   readJsonBody,
   runEventObservers = [],
 }) {
+  if (typeof listSessionsForDirectories !== "function") {
+    throw new TypeError("listSessionsForDirectories is required");
+  }
   const subjectId = `runner:${createHash("sha256").update(String(runnerToken || "")).digest("hex")}`;
   const sessionStore = {
     bind: stores.bindSession,
@@ -54,6 +58,7 @@ export function createPrivateRunnerAgentRuntime({
     handoff: stores.handoffSessionMode,
     setSettings: stores.setSessionSettings,
     recordActivity: stores.recordSessionActivity,
+    getReadState: stores.getSessionReadState,
   };
 
   async function resolveCodexSessionCwd(sessionRef) {
@@ -88,6 +93,7 @@ export function createPrivateRunnerAgentRuntime({
           sessionRef: { backendId: "codex", nativeSessionId: session.sessionId },
           canonicalCwd: String(session.cwd || session.directory || page.directory || ""),
           updatedAt: String(session.updatedAt || ""),
+          lastReadAt: String(session.lastReadAt || ""),
           title: String(session.firstUserMessage || ""),
           modelId: String(session.modelRef || ""),
           reasoningEffort: String(session.reasoningEffort || ""),
@@ -99,6 +105,22 @@ export function createPrivateRunnerAgentRuntime({
           ...(session.cursor ? { cursor: String(session.cursor) } : {}),
         })),
         ...(page.cursor ? { cursor: String(page.cursor) } : {}),
+      };
+    },
+    async listSessionsForDirectories({ cwds, includeSubagents }) {
+      const groups = await listSessionsForDirectories(cwds, { includeSubagents });
+      return {
+        groups: groups.map((group) => ({
+          cwd: group.directory,
+          sessions: group.sessions.map((session) => ({
+            sessionRef: { backendId: "codex", nativeSessionId: session.sessionId },
+            canonicalCwd: String(group.directory || ""),
+            updatedAt: String(session.updatedAt || ""),
+            lastReadAt: String(session.lastReadAt || ""),
+            ...(session.source ? { sourceKind: String(session.source) } : {}),
+            isSubagent: session.isSubagent === true,
+          })),
+        })),
       };
     },
     async readHistory({ sessionRef, cursor, sinceCursor, limit }) {

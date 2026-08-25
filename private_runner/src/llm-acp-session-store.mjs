@@ -24,6 +24,9 @@ export function createLlmAcpSessionStore(deps = {}) {
   const acpLatestSessionByRootRelativePath = new Map();
   const agentOperations = new Map();
   const agentOperationsClaimedHere = new Set();
+  let agentReadStateRevision = 0;
+  const agentDirectoryReadStates = new Map();
+  const agentSessionReadStates = new Map();
   const agentSessionBindings = new Map();
   const agentSessionModes = new Map();
   const agentWorkspaces = new Map();
@@ -122,6 +125,14 @@ export function createLlmAcpSessionStore(deps = {}) {
       agentOperations: Array.from(agentOperations.values())
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .map((entry) => ({ ...entry })),
+      agentReadStateRevision,
+      agentDirectoryReadStates: Array.from(agentDirectoryReadStates.values())
+        .sort((a, b) => a.canonicalCwd.localeCompare(b.canonicalCwd))
+        .map((entry) => ({ ...entry })),
+      agentSessionReadStates: Array.from(agentSessionReadStates.values())
+        .sort((a, b) => agentSessionKey(a.backendId, a.nativeSessionId)
+          .localeCompare(agentSessionKey(b.backendId, b.nativeSessionId)))
+        .map((entry) => ({ ...entry })),
       agentSessionBindings: Array.from(agentSessionBindings.values())
         .sort((a, b) => agentSessionKey(a.backendId, a.nativeSessionId)
           .localeCompare(agentSessionKey(b.backendId, b.nativeSessionId)))
@@ -155,6 +166,9 @@ export function createLlmAcpSessionStore(deps = {}) {
     acpLatestSessionByRootRelativePath.clear();
     agentOperations.clear();
     agentOperationsClaimedHere.clear();
+    agentReadStateRevision = 0;
+    agentDirectoryReadStates.clear();
+    agentSessionReadStates.clear();
     agentSessionBindings.clear();
     agentSessionModes.clear();
     agentWorkspaces.clear();
@@ -206,6 +220,30 @@ export function createLlmAcpSessionStore(deps = {}) {
           : {}),
       });
     }
+    for (const value of Array.isArray(parsed?.agentDirectoryReadStates) ? parsed.agentDirectoryReadStates : []) {
+      const canonicalCwd = String(value?.canonicalCwd || "").trim();
+      const lastReadAt = normalizeSessionUpdatedAt(value?.lastReadAt);
+      const revision = Number(value?.revision);
+      if (!path.isAbsolute(canonicalCwd) || !lastReadAt || !Number.isSafeInteger(revision) || revision <= 0) continue;
+      const entry = { canonicalCwd: path.resolve(canonicalCwd), lastReadAt, revision };
+      agentDirectoryReadStates.set(entry.canonicalCwd, entry);
+      agentReadStateRevision = Math.max(agentReadStateRevision, revision);
+    }
+    for (const value of Array.isArray(parsed?.agentSessionReadStates) ? parsed.agentSessionReadStates : []) {
+      const backendId = String(value?.backendId || "").trim();
+      const nativeSessionId = String(value?.nativeSessionId || "").trim();
+      const canonicalCwd = String(value?.canonicalCwd || "").trim();
+      const lastReadAt = normalizeSessionUpdatedAt(value?.lastReadAt);
+      const revision = Number(value?.revision);
+      if (!backendId || !nativeSessionId || !path.isAbsolute(canonicalCwd) || !lastReadAt
+        || !Number.isSafeInteger(revision) || revision <= 0) continue;
+      const entry = { backendId, nativeSessionId, canonicalCwd: path.resolve(canonicalCwd), lastReadAt, revision };
+      agentSessionReadStates.set(agentSessionKey(backendId, nativeSessionId), entry);
+      agentReadStateRevision = Math.max(agentReadStateRevision, revision);
+    }
+    agentReadStateRevision = Math.max(agentReadStateRevision, Number.isSafeInteger(parsed?.agentReadStateRevision)
+      ? parsed.agentReadStateRevision
+      : 0);
     for (const value of Array.isArray(parsed?.agentSessionBindings) ? parsed.agentSessionBindings : []) {
       const backendId = String(value?.backendId || "").trim();
       const nativeSessionId = String(value?.nativeSessionId || "").trim();
@@ -650,29 +688,21 @@ export function createLlmAcpSessionStore(deps = {}) {
     return binding ? { ...binding } : null;
   }
 
-  async function listAgentSessionsForDirectories(requestedDirectories) {
+  async function getAgentSessionReadState(sessionRef, directoryRaw) {
+    const rawDirectory = String(directoryRaw || "").trim();
+    if (!path.isAbsolute(rawDirectory)) throw new TypeError("invalid agent session read directory");
+    const directory = path.resolve(rawDirectory);
     await ensureAgentMetadataStoreLoaded();
-    const requestedRoots = await Promise.all(
-      (Array.isArray(requestedDirectories) ? requestedDirectories : [])
-        .map((directory) => resolveDirectoryIdentity(directory)),
-    );
-    const bindings = Array.from(agentSessionBindings.values());
-    return requestedRoots.map((directory) => ({
-      directory,
-      sessions: bindings
-        .filter((binding) => binding.canonicalCwd === directory)
-        .map((binding) => ({
-          backendId: binding.backendId,
-          sessionId: binding.nativeSessionId,
-          directory,
-          updatedAt: binding.updatedAt,
-          lastReadAt: binding.lastReadAt,
-          source: "agent",
-          ...(binding.modelId ? { modelRef: binding.modelId } : {}),
-          ...(binding.reasoningEffort ? { reasoningEffort: binding.reasoningEffort } : {}),
-        }))
-        .sort(compareSessionHistoryEntries),
-    }));
+    const sessionState = agentSessionReadStates.get(agentSessionKey(
+      sessionRef?.backendId,
+      sessionRef?.nativeSessionId,
+    ));
+    const matchingSessionState = sessionState?.canonicalCwd === directory ? sessionState : null;
+    const directoryState = agentDirectoryReadStates.get(directory);
+    const state = !matchingSessionState || (directoryState?.revision || 0) > matchingSessionState.revision
+      ? directoryState
+      : matchingSessionState;
+    return state ? { lastReadAt: state.lastReadAt, revision: state.revision } : null;
   }
 
   async function recordAgentSessionActivity(sessionRef, canonicalCwdRaw, updatedAtRaw) {
@@ -733,31 +763,52 @@ export function createLlmAcpSessionStore(deps = {}) {
     return await op;
   }
 
-  async function markAgentSessionsRead(sessionIds, { backendId: backendIdRaw, lastReadAt }) {
+  function nextAgentReadStateRevision() {
+    if (agentReadStateRevision >= Number.MAX_SAFE_INTEGER) {
+      throw makeApiError(
+        503,
+        "agent_read_state_revision_exhausted",
+        "Agent read state revision is exhausted",
+      );
+    }
+    return agentReadStateRevision + 1;
+  }
+
+  async function markAgentSessionsRead(sessionIds, { backendId: backendIdRaw, directory: directoryRaw, lastReadAt }) {
     const backendId = String(backendIdRaw || "codex").trim() || "codex";
-    const ids = Array.isArray(sessionIds) ? sessionIds.map((value) => String(value || "").trim()) : [];
+    const ids = Array.isArray(sessionIds)
+      ? sessionIds.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const directory = await resolveDirectoryIdentity(directoryRaw);
     await ensureAgentMetadataStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
-      const results = ids.map((sessionId) => ({ sessionId, updated: false, entryFound: false }));
-      const previousBindings = new Map();
-      for (const result of results) {
-        for (const [key, binding] of agentSessionBindings) {
-          if (binding.nativeSessionId !== result.sessionId || binding.backendId !== backendId) continue;
-          result.entryFound = true;
-          if (binding.lastReadAt === lastReadAt) continue;
-          if (!previousBindings.has(key)) previousBindings.set(key, { ...binding });
-          binding.lastReadAt = lastReadAt;
-          result.updated = true;
-        }
+      if (ids.length === 0) return [];
+      const previousRevision = agentReadStateRevision;
+      const revision = nextAgentReadStateRevision();
+      const previousStates = new Map();
+      for (const nativeSessionId of ids) {
+        const key = agentSessionKey(backendId, nativeSessionId);
+        previousStates.set(key, agentSessionReadStates.get(key));
+        agentSessionReadStates.set(key, {
+          backendId,
+          nativeSessionId,
+          canonicalCwd: directory,
+          lastReadAt,
+          revision,
+        });
       }
-      if (previousBindings.size === 0) return results;
+      agentReadStateRevision = revision;
       try {
         await persistAcpSessionStore();
       } catch (error) {
-        for (const [key, binding] of previousBindings) agentSessionBindings.set(key, binding);
+        agentReadStateRevision = previousRevision;
+        for (const [key, state] of previousStates) {
+          if (state) agentSessionReadStates.set(key, state);
+          else agentSessionReadStates.delete(key);
+        }
         throw error;
       }
-      return results;
+      return ids.map((sessionId) => ({ sessionId, updated: true, entryFound: true }));
     });
     acpSessionStoreWriteQueue = op.catch(() => {});
     return await op;
@@ -767,26 +818,23 @@ export function createLlmAcpSessionStore(deps = {}) {
     const directory = await resolveDirectoryIdentity(directoryRaw);
     await ensureAgentMetadataStoreLoaded();
     const op = acpSessionStoreWriteQueue.then(async () => {
-      const selectedSessionIds = [];
-      const updatedSessionIds = [];
-      const previousBindings = new Map();
-      for (const [key, binding] of agentSessionBindings) {
-        if (binding.canonicalCwd !== directory) continue;
-        selectedSessionIds.push(agentSessionKey(binding.backendId, binding.nativeSessionId));
-        if (binding.lastReadAt === lastReadAt) continue;
-        previousBindings.set(key, { ...binding });
-        binding.lastReadAt = lastReadAt;
-        updatedSessionIds.push(key);
+      const previousRevision = agentReadStateRevision;
+      const previous = agentDirectoryReadStates.get(directory);
+      agentReadStateRevision = nextAgentReadStateRevision();
+      agentDirectoryReadStates.set(directory, {
+        canonicalCwd: directory,
+        lastReadAt,
+        revision: agentReadStateRevision,
+      });
+      try {
+        await persistAcpSessionStore();
+      } catch (error) {
+        agentReadStateRevision = previousRevision;
+        if (previous) agentDirectoryReadStates.set(directory, previous);
+        else agentDirectoryReadStates.delete(directory);
+        throw error;
       }
-      if (previousBindings.size > 0) {
-        try {
-          await persistAcpSessionStore();
-        } catch (error) {
-          for (const [key, binding] of previousBindings) agentSessionBindings.set(key, binding);
-          throw error;
-        }
-      }
-      return { selectedSessionIds, updatedSessionIds };
+      return { selectedSessionIds: [], updatedSessionIds: [] };
     });
     acpSessionStoreWriteQueue = op.catch(() => {});
     return await op;
@@ -1114,7 +1162,7 @@ export function createLlmAcpSessionStore(deps = {}) {
 
   return {
     agentSessionActivityStore: {
-      listForDirectories: listAgentSessionsForDirectories,
+      getReadState: getAgentSessionReadState,
       markDirectoryRead: markAgentDirectoryRead,
       markSessionsRead: markAgentSessionsRead,
       recordActivity: recordAgentSessionActivity,

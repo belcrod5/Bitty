@@ -29,6 +29,7 @@ function operationStore() {
 function sessionStore() {
   const bindings = new Map();
   const modes = new Map();
+  const directoryLastReadAt = new Map();
   const key = (ref) => `${ref.backendId}:${ref.nativeSessionId}`;
   return {
     async bind(ref, canonicalCwd, mode, options = {}) {
@@ -50,6 +51,10 @@ function sessionStore() {
       return { status: "bound", mode };
     },
     async getBinding(ref) { return bindings.get(key(ref)) || null; },
+    async getReadState(_ref, cwd) {
+      const lastReadAt = directoryLastReadAt.get(cwd);
+      return lastReadAt ? { lastReadAt, revision: 1 } : null;
+    },
     async getMode(ref) { return modes.get(key(ref)) || null; },
     async acquire({ sessionRef, mode, owner, runId }) {
       const entry = modes.get(key(sessionRef)) || { mode, lease: null, generation: 0 };
@@ -112,6 +117,7 @@ function sessionStore() {
       if (!binding || binding.canonicalCwd !== canonicalCwd) return { status: "missing" };
       return { status: "updated" };
     },
+    setDirectoryLastReadAt(cwd, lastReadAt) { directoryLastReadAt.set(cwd, lastReadAt); },
   };
 }
 
@@ -734,13 +740,18 @@ function listBackend(backendId, { sessions, listError, listSupported = true } = 
 }
 
 test("all-backends session list merges every listing backend by updatedAt and keeps partial failures diagnosable", async () => {
-  const codexSessions = [
-    { sessionRef: { backendId: "codex", nativeSessionId: "codex-1" }, updatedAt: "2026-08-22T02:00:00.000Z" },
-  ];
+  const codexRef = { backendId: "codex", nativeSessionId: "codex-1" };
+  const claudeRef = { backendId: "claude", nativeSessionId: "claude-1" };
+  const codexSessions = [{ sessionRef: codexRef, updatedAt: "2026-08-22T02:00:00.000Z" }];
   const claudeSessions = [
-    { sessionRef: { backendId: "claude", nativeSessionId: "claude-1" }, updatedAt: "2026-08-22T03:00:00.000Z" },
+    { sessionRef: claudeRef, updatedAt: "2026-08-22T03:00:00.000Z" },
     { sessionRef: { backendId: "claude", nativeSessionId: "claude-2" }, updatedAt: "2026-08-22T01:00:00.000Z" },
   ];
+  const sessions = sessionStore();
+  await sessions.bind(codexRef, "/workspace", "neutral");
+  await sessions.bind(claudeRef, "/workspace", "neutral");
+  (await sessions.getBinding(codexRef)).lastReadAt = "2026-08-22T04:00:00.000Z";
+  (await sessions.getBinding(claudeRef)).lastReadAt = "2026-08-22T05:00:00.000Z";
   const service = createAgentService({
     backends: [
       listBackend("codex", { sessions: codexSessions }),
@@ -748,19 +759,17 @@ test("all-backends session list merges every listing backend by updatedAt and ke
       listBackend("nolist", { sessions: [], listSupported: false }),
     ],
     operationStore: operationStore(),
-    sessionStore: sessionStore(),
+    sessionStore: sessions,
     resolveCanonicalCwd: async (cwd) => cwd,
-    now: () => "2026-08-22T00:00:00.000Z",
   });
-
   const merged = await service.listSessions({ cwd: "/workspace" });
-  assert.deepEqual(merged.sessions.map((session) => session.sessionRef.nativeSessionId), [
-    "claude-1", "codex-1", "claude-2",
-  ]);
+  assert.deepEqual(
+    merged.sessions.map((session) => [session.sessionRef.nativeSessionId, session.lastReadAt]),
+    [["claude-1", "2026-08-22T05:00:00.000Z"], ["codex-1", "2026-08-22T04:00:00.000Z"], ["claude-2", undefined]]);
   assert.equal(merged.errors, undefined);
 
   const scoped = await service.listSessions({ backendId: "codex", cwd: "/workspace" });
-  assert.deepEqual(scoped.sessions.map((session) => session.sessionRef.nativeSessionId), ["codex-1"]);
+  assert.equal(scoped.sessions[0].lastReadAt, "2026-08-22T04:00:00.000Z");
 
   const failure = Object.assign(new Error("claude transcript scan failed"), { code: "history_unavailable" });
   const partialService = createAgentService({
@@ -771,7 +780,6 @@ test("all-backends session list merges every listing backend by updatedAt and ke
     operationStore: operationStore(),
     sessionStore: sessionStore(),
     resolveCanonicalCwd: async (cwd) => cwd,
-    now: () => "2026-08-22T00:00:00.000Z",
   });
   const partial = await partialService.listSessions({ backendId: "all", cwd: "/workspace" });
   assert.deepEqual(partial.sessions.map((session) => session.sessionRef.nativeSessionId), ["codex-1"]);
@@ -787,7 +795,6 @@ test("all-backends session list merges every listing backend by updatedAt and ke
     operationStore: operationStore(),
     sessionStore: sessionStore(),
     resolveCanonicalCwd: async (cwd) => cwd,
-    now: () => "2026-08-22T00:00:00.000Z",
   });
   await assert.rejects(
     allFailedService.listSessions({ cwd: "/workspace" }),
@@ -798,6 +805,165 @@ test("all-backends session list merges every listing backend by updatedAt and ke
     service.listSessions({ cwd: "/workspace", cursor: "not-a-composite-cursor" }),
     (error) => error.code === "turn_rejected" && /cursor is invalid/.test(error.message),
   );
+});
+
+test("session list prefers revisioned read state over legacy session timestamps", async () => {
+  const explicitRef = { backendId: "claude", nativeSessionId: "explicit" };
+  const nativeRef = { backendId: "claude", nativeSessionId: "native" };
+  const unboundRef = { backendId: "claude", nativeSessionId: "unbound" };
+  const sessions = sessionStore();
+  await sessions.bind(explicitRef, "/workspace", "neutral");
+  (await sessions.getBinding(explicitRef)).lastReadAt = new Date(0).toISOString();
+  sessions.setDirectoryLastReadAt("/workspace", "2026-08-25T01:00:00.000Z");
+  const service = createAgentService({
+    backends: [listBackend("claude", { sessions: [
+      { sessionRef: explicitRef, updatedAt: "2026-08-25T02:00:00.000Z" },
+      { sessionRef: nativeRef, updatedAt: "2026-08-25T02:00:00.000Z", lastReadAt: "2026-08-25T00:30:00.000Z" },
+      { sessionRef: unboundRef, updatedAt: "2026-08-25T00:30:00.000Z" },
+    ] })],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  const listed = await service.listSessions({ backendId: "claude", cwd: "/workspace" });
+  assert.deepEqual(listed.sessions.map((session) => session.lastReadAt), [
+    "2026-08-25T01:00:00.000Z",
+    "2026-08-25T01:00:00.000Z",
+    "2026-08-25T01:00:00.000Z",
+  ]);
+});
+
+test("multi-directory snapshot uses backend batch listing and fails closed", async () => {
+  const calls = [];
+  const backend = listBackend("claude", { sessions: [] });
+  backend.listSessionsForDirectories = async (options) => {
+    calls.push(options);
+    return { groups: options.cwds.map((cwd, index) => ({
+      cwd,
+      sessions: [{
+        sessionRef: { backendId: "claude", nativeSessionId: `session-${index}` },
+        canonicalCwd: cwd,
+        updatedAt: `2026-08-25T0${index + 1}:00:00.000Z`,
+      }],
+    })) };
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  const snapshot = await service.listSessionSnapshot({
+    cwds: ["/one", "/two"],
+    includeSubagents: false,
+  });
+  assert.deepEqual(calls, [{ cwds: ["/one", "/two"], includeSubagents: false }]);
+  assert.deepEqual(snapshot.groups.map((group) => group.sessions[0].sessionRef.nativeSessionId), [
+    "session-0",
+    "session-1",
+  ]);
+
+  backend.listSessionsForDirectories = async () => { throw new Error("catalog failed"); };
+  await assert.rejects(
+    service.listSessionSnapshot({ cwds: ["/one", "/two"] }),
+    /catalog failed/,
+  );
+});
+
+test("scoped session snapshot calls only the target backend", async () => {
+  const calls = [];
+  let codexFails = false;
+  let claudeFails = true;
+  const codex = listBackend("codex", { sessions: [] });
+  const claude = listBackend("claude", { sessions: [] });
+  codex.listSessionsForDirectories = async ({ cwds }) => {
+    calls.push("codex");
+    if (codexFails) throw new Error("codex listing failed");
+    return { groups: cwds.map((cwd) => ({ cwd, sessions: [
+      { sessionRef: { backendId: "codex", nativeSessionId: "codex-session" }, canonicalCwd: cwd },
+    ] })) };
+  };
+  claude.listSessionsForDirectories = async ({ cwds }) => {
+    calls.push("claude");
+    if (claudeFails) throw new Error("claude listing failed");
+    return { groups: cwds.map((cwd) => ({ cwd, sessions: [
+      { sessionRef: { backendId: "claude", nativeSessionId: "claude-session" }, canonicalCwd: cwd },
+    ] })) };
+  };
+  const service = createAgentService({
+    backends: [codex, claude, listBackend("nolist", { sessions: [], listSupported: false })],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  const codexSnapshot = await service.listSessionSnapshot({ backendId: "codex", cwds: ["/workspace"] });
+  assert.equal(codexSnapshot.groups[0].sessions[0].sessionRef.backendId, "codex");
+  assert.deepEqual(calls, ["codex"]);
+
+  codexFails = true;
+  claudeFails = false;
+  const claudeSnapshot = await service.listSessionSnapshot({ backendId: "claude", cwds: ["/workspace"] });
+  assert.equal(claudeSnapshot.groups[0].sessions[0].sessionRef.backendId, "claude");
+  assert.deepEqual(calls, ["codex", "claude"]);
+
+  await assert.rejects(
+    service.listSessionSnapshot({ backendId: "codex", cwds: ["/workspace"] }),
+    /codex listing failed/,
+  );
+  await assert.rejects(
+    service.listSessionSnapshot({ backendId: "missing", cwds: ["/workspace"] }),
+    (error) => error.code === "backend_unavailable",
+  );
+  await assert.rejects(
+    service.listSessionSnapshot({ backendId: "nolist", cwds: ["/workspace"] }),
+    (error) => error.code === "capability_unsupported",
+  );
+});
+
+test("session snapshot rejects malformed backend batch groups", async () => {
+  let result;
+  const backend = listBackend("codex", { sessions: [] });
+  backend.listSessionsForDirectories = async () => result;
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const validGroups = () => [
+    { cwd: "/one", sessions: [] },
+    { cwd: "/two", sessions: [] },
+  ];
+  const invalidResults = [
+    { groups: [{ cwd: "/one", sessions: [] }] },
+    { groups: [{ cwd: "/one", sessions: [] }, { cwd: "/one", sessions: [] }] },
+    { groups: [{ cwd: "/one", sessions: [] }, { cwd: "/unknown", sessions: [] }] },
+    { groups: [{ cwd: "/one" }, validGroups()[1]] },
+    { groups: [
+      { cwd: "/one", sessions: [{
+        sessionRef: { backendId: "claude", nativeSessionId: "wrong-provider" },
+        canonicalCwd: "/one",
+      }] },
+      validGroups()[1],
+    ] },
+    { groups: [
+      { cwd: "/one", sessions: [{
+        sessionRef: { backendId: "codex", nativeSessionId: "wrong-cwd" },
+        canonicalCwd: "/two",
+      }] },
+      validGroups()[1],
+    ] },
+  ];
+
+  for (result of invalidResults) {
+    await assert.rejects(
+      service.listSessionSnapshot({ backendId: "codex", cwds: ["/one", "/two"] }),
+      (error) => error.code === "protocol_error",
+    );
+  }
 });
 
 test("all-backends paging re-queries only backends that returned a cursor", async () => {

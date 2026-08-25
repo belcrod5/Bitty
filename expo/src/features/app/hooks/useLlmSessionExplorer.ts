@@ -263,7 +263,7 @@ export function buildLlmSessionHistoryEntry(
     // to discover the thread and may be the parent of a subagent workspace.
     directory: parseLlmDirectory(item.cwd || directory),
     updatedAt: String(item.updatedAt || item.createdAt || "").trim(),
-    lastReadAt: String(snapshot?.lastReadAt || "").trim(),
+    lastReadAt: String(item.lastReadAt || snapshot?.lastReadAt || "").trim(),
     source: parseLlmSessionSource(item.sourceKind, "unknown"),
     cwd: String(item.cwd || "").trim(),
     firstUserMessage: String(item.agentDisplayName || item.preview || "").trim(),

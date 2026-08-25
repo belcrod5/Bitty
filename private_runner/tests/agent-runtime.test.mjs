@@ -49,6 +49,8 @@ function completionClient() {
 }
 
 test("Codex Agent history preserves message timestamps", async (t) => {
+  const aliasWorkspace = "/alias/workspace";
+  const canonicalWorkspace = "/real/workspace";
   const runtime = createPrivateRunnerAgentRuntime({
     claudeBinary: "claude",
     runnerToken: "test-token",
@@ -63,6 +65,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
       handoffSessionMode: async () => ({ status: "handed_off" }),
       setSessionSettings: async () => ({ status: "updated" }),
       recordSessionActivity: async () => ({ status: "updated" }),
+      getSessionReadState: async () => null,
       inspectOperation: async () => null,
       claimOperation: async () => ({ status: "claimed" }),
       completeOperation: async () => ({ status: "completed" }),
@@ -76,7 +79,22 @@ test("Codex Agent history preserves message timestamps", async (t) => {
     normalizeSessionId: (value) => String(value || ""),
     findSession: async () => ({ sessionId: "thread-1", cwd: "/workspace" }),
     resolveSessionDirectory: (session) => session.cwd,
-    listSessions: async () => ({ sessions: [] }),
+    listSessions: async () => ({
+      sessions: [{
+        sessionId: "thread-1",
+        directory: "/workspace",
+        updatedAt: "2026-08-24T02:00:00.000Z",
+        lastReadAt: "2026-08-24T03:00:00.000Z",
+      }],
+    }),
+    listSessionsForDirectories: async (directories) => directories.map((directory) => ({
+      directory,
+      sessions: [{
+        sessionId: "batch-thread",
+        cwd: aliasWorkspace,
+        updatedAt: "2026-08-24T04:00:00.000Z",
+      }],
+    })),
     listMessages: async () => ({
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "medium",
@@ -87,7 +105,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
         at: "2026-08-24T01:02:03.456Z",
       }],
     }),
-    resolveCanonicalCwd: async (cwd) => cwd,
+    resolveCanonicalCwd: async (cwd) => cwd === aliasWorkspace ? canonicalWorkspace : cwd,
     parseAuthToken: () => "",
     json: () => {},
     normalizeSessionListLimit: (value) => value,
@@ -95,6 +113,16 @@ test("Codex Agent history preserves message timestamps", async (t) => {
     readJsonBody: async () => ({}),
   });
   t.after(() => runtime.close());
+
+  const listed = await runtime.service.listSessions({ backendId: "codex", cwd: "/workspace" });
+  assert.equal(listed.sessions[0].lastReadAt, "2026-08-24T03:00:00.000Z");
+
+  const snapshot = await runtime.service.listSessionSnapshot({
+    backendId: "codex",
+    cwds: [aliasWorkspace],
+  });
+  assert.equal(snapshot.groups[0].cwd, canonicalWorkspace);
+  assert.equal(snapshot.groups[0].sessions[0].canonicalCwd, canonicalWorkspace);
 
   const history = await runtime.service.readHistory({
     sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
@@ -141,6 +169,7 @@ test("Agent runtime composes completion notification with the production event f
       handoffSessionMode: async () => ({ status: "handed_off" }),
       setSessionSettings: async () => ({ status: "updated" }),
       recordSessionActivity: async () => ({ status: "updated" }),
+      getSessionReadState: async () => null,
       inspectOperation: async () => null,
       claimOperation: async () => ({ status: "claimed" }),
       completeOperation: async () => ({ status: "completed" }),
@@ -155,6 +184,10 @@ test("Agent runtime composes completion notification with the production event f
     findSession: async () => null,
     resolveSessionDirectory: () => "",
     listSessions: async () => ({ sessions: [] }),
+    listSessionsForDirectories: async (directories) => directories.map((directory) => ({
+      directory,
+      sessions: [],
+    })),
     listMessages: async () => ({ messages: [] }),
     resolveCanonicalCwd: async (cwd) => cwd,
     parseAuthToken: () => "",

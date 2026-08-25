@@ -45,6 +45,14 @@ function sessionKey(sessionRef) {
   return `${sessionRef.backendId}\u0000${sessionRef.nativeSessionId}`;
 }
 
+function newerTimestamp(first, second) {
+  const firstMs = Date.parse(String(first || ""));
+  const secondMs = Date.parse(String(second || ""));
+  if (!Number.isFinite(firstMs)) return Number.isFinite(secondMs) ? second : "";
+  if (!Number.isFinite(secondMs)) return first;
+  return secondMs > firstMs ? second : first;
+}
+
 function createEventStream(service, runId, subjectId, actionConsumerId) {
   return {
     [Symbol.asyncIterator]() {
@@ -120,7 +128,8 @@ export function createAgentService({
     typeof sessionStore?.updateIdentity !== "function" ||
     typeof sessionStore?.handoff !== "function" ||
     typeof sessionStore?.setSettings !== "function" ||
-    typeof sessionStore?.recordActivity !== "function"
+    typeof sessionStore?.recordActivity !== "function" ||
+    typeof sessionStore?.getReadState !== "function"
   ) throw new TypeError("A durable sessionStore is required");
   if (typeof resolveCanonicalCwd !== "function") throw new TypeError("resolveCanonicalCwd is required");
 
@@ -357,14 +366,20 @@ export function createAgentService({
     return await sessionStore.getMode(sessionRef);
   }
 
-  async function withStoredSessionSettings(session) {
-    const binding = await sessionStore.getBinding(session?.sessionRef);
+  async function withStoredSessionState(session, cwd) {
+    const [binding, readState] = await Promise.all([
+      sessionStore.getBinding(session?.sessionRef),
+      sessionStore.getReadState(session?.sessionRef, cwd),
+    ]);
+    const lastReadAt = String(readState?.lastReadAt || "").trim()
+      || newerTimestamp(binding?.lastReadAt, session?.lastReadAt);
     return {
       ...session,
       // Neutral selection is authoritative until an explicit raw handoff clears it.
       // Native metadata remains the legacy/raw fallback when no stored selection exists.
       modelId: String(binding?.modelId || session?.modelId || "").trim(),
       reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
+      ...(lastReadAt ? { lastReadAt } : {}),
     };
   }
 
@@ -994,7 +1009,8 @@ export function createAgentService({
         }
         const singlePage = await backend.listSessions({ ...options, cwd });
         const sessions = await Promise.all(
-          (Array.isArray(singlePage?.sessions) ? singlePage.sessions : []).map(withStoredSessionSettings),
+          (Array.isArray(singlePage?.sessions) ? singlePage.sessions : [])
+            .map((session) => withStoredSessionState(session, cwd)),
         );
         // 項目別cursorは合成層のカット専用の内部値。all-scopeと同様wireへは出さない。
         return {
@@ -1030,7 +1046,8 @@ export function createAgentService({
             cursor: compositeCursor?.[backend.backendId] || "",
           });
           const sessions = await Promise.all(
-            (Array.isArray(page?.sessions) ? page.sessions : []).map(withStoredSessionSettings),
+            (Array.isArray(page?.sessions) ? page.sessions : [])
+              .map((session) => withStoredSessionState(session, cwd)),
           );
           return { backendId: backend.backendId, page: { ...page, sessions } };
         } catch (error) {
@@ -1094,6 +1111,134 @@ export function createAgentService({
         ...(failed.length > 0
           ? { errors: failed.map((entry) => serializeAgentError(entry.error, entry.backendId)) }
           : {}),
+      };
+    },
+    async listSessionSnapshot(options) {
+      const requestedBackendId = String(options?.backendId || ALL_BACKENDS_SCOPE).trim()
+        || ALL_BACKENDS_SCOPE;
+      const selectedBackends = requestedBackendId === ALL_BACKENDS_SCOPE
+        ? Array.from(registry.values())
+        : [registry.get(requestedBackendId)];
+      if (!selectedBackends[0]) {
+        throw agentError("backend_unavailable", "Agent Backend is unavailable", {
+          backendId: requestedBackendId,
+        });
+      }
+      const requestedCwds = Array.isArray(options?.cwds) ? options.cwds : [];
+      const resolvedCwds = await Promise.all(requestedCwds.map((requestedCwd) => (
+        resolveCanonicalCwd(String(requestedCwd || "").trim())
+      )));
+      const canonicalCwds = [];
+      const seenCwds = new Set();
+      for (const cwd of resolvedCwds) {
+        if (seenCwds.has(cwd)) continue;
+        seenCwds.add(cwd);
+        canonicalCwds.push(cwd);
+      }
+      const canonicalCwdSet = new Set(canonicalCwds);
+      const listed = await Promise.all(selectedBackends.map(async (backend) => {
+        try {
+          const status = await backend.getStatus();
+          if (status?.capabilities?.session?.list !== true) {
+            if (requestedBackendId === ALL_BACKENDS_SCOPE) return null;
+            throw agentError("capability_unsupported", "session listing is not supported", {
+              backendId: backend.backendId,
+            });
+          }
+          if (!status?.readiness?.ready) {
+            throw agentError(
+              "backend_unavailable",
+              status?.readiness?.reason || "Agent Backend is not ready",
+              { backendId: backend.backendId },
+            );
+          }
+          let result;
+          if (typeof backend.listSessionsForDirectories === "function") {
+            result = await backend.listSessionsForDirectories({
+              cwds: canonicalCwds,
+              includeSubagents: options?.includeSubagents,
+            });
+          } else {
+            const groups = await Promise.all(canonicalCwds.map(async (cwd) => {
+              const sessions = [];
+              let cursor = "";
+              const seenCursors = new Set();
+              do {
+                const page = await backend.listSessions({
+                  cwd,
+                  limit: 200,
+                  includeSubagents: options?.includeSubagents,
+                  ...(cursor ? { cursor } : {}),
+                });
+                sessions.push(...(Array.isArray(page?.sessions) ? page.sessions : []));
+                const nextCursor = String(page?.cursor || "").trim();
+                if (!nextCursor) break;
+                if (seenCursors.has(nextCursor)) {
+                  throw agentError("protocol_error", "session list cursor did not advance", {
+                    backendId: backend.backendId,
+                  });
+                }
+                seenCursors.add(nextCursor);
+                cursor = nextCursor;
+              } while (cursor);
+              return { cwd, sessions };
+            }));
+            result = { groups };
+          }
+          const groups = Array.isArray(result?.groups) ? result.groups : [];
+          const returnedCwds = new Set();
+          for (const group of groups) {
+            const cwd = String(group?.cwd || "").trim();
+            if (!canonicalCwdSet.has(cwd) || returnedCwds.has(cwd)
+              || !Array.isArray(group?.sessions)) {
+              throw agentError("protocol_error", "session snapshot returned an invalid cwd group", {
+                backendId: backend.backendId,
+              });
+            }
+            returnedCwds.add(cwd);
+            for (const session of group.sessions) {
+              if (session?.sessionRef?.backendId !== backend.backendId
+                || !String(session?.sessionRef?.nativeSessionId || "").trim()
+                || session?.canonicalCwd !== cwd) {
+                throw agentError("protocol_error", "session snapshot returned an invalid session", {
+                  backendId: backend.backendId,
+                });
+              }
+            }
+          }
+          if (returnedCwds.size !== canonicalCwds.length) {
+            throw agentError("protocol_error", "session snapshot omitted a cwd group", {
+              backendId: backend.backendId,
+            });
+          }
+          return { groups };
+        } catch (error) {
+          return { error };
+        }
+      }));
+      const failure = listed.find((entry) => entry?.error);
+      if (failure) throw failure.error;
+      const sessionsByCwd = new Map(canonicalCwds.map((cwd) => [cwd, []]));
+      for (const result of listed.filter(Boolean)) {
+        for (const group of Array.isArray(result?.groups) ? result.groups : []) {
+          const cwd = String(group?.cwd || "").trim();
+          const sessions = sessionsByCwd.get(cwd);
+          if (!sessions) continue;
+          sessions.push(...await Promise.all(
+            (Array.isArray(group?.sessions) ? group.sessions : [])
+              .map((session) => withStoredSessionState(session, cwd)),
+          ));
+        }
+      }
+      return {
+        groups: canonicalCwds.map((cwd) => ({
+          cwd,
+          sessions: sessionsByCwd.get(cwd).sort((a, b) => {
+            const left = String(a?.updatedAt || "");
+            const right = String(b?.updatedAt || "");
+            return left < right ? 1 : left > right ? -1 : 0;
+          }),
+        })),
       };
     },
     async readHistory(options, context = {}) {
