@@ -34,6 +34,7 @@ export function createLlmSessionService(deps = {}) {
     listAcpSessionsForDirectories,
     listAcpSessionsForDirectory,
     agentSessionActivityStore,
+    listAgentSessionSnapshot,
     listCliSessionsForDirectories,
     listCliSessionsForDirectory,
     makeApiError,
@@ -162,6 +163,40 @@ export function createLlmSessionService(deps = {}) {
     };
   }
 
+  async function listLlmSessionsForDirectories(rawDirectories, opts = {}) {
+    const directories = await Promise.all(
+      (Array.isArray(rawDirectories) ? rawDirectories : [])
+        .map((directory) => resolveCanonicalDirectoryIdentity(directory)),
+    );
+    const [acpGroups, cliGroups] = await Promise.all([
+      listAcpSessionsForDirectories(directories),
+      listCliSessionsForDirectories(directories, {
+        forceRefresh: true,
+        useRolloutMtime: true,
+        ...(opts?.includeSubagents === false ? { includeSubagents: false } : {}),
+      }),
+    ]);
+    return directories.map((directory, index) => {
+      const sessionsById = new Map();
+      for (const session of [
+        ...(acpGroups[index]?.sessions || []),
+        ...(cliGroups[index]?.sessions || []),
+      ]) {
+        const sessionId = String(session?.sessionId || "").trim();
+        if (!sessionId) continue;
+        const previous = sessionsById.get(sessionId);
+        sessionsById.set(sessionId, {
+          ...session,
+          sessionId,
+          directory,
+          updatedAt: newerTimestamp(previous?.updatedAt, session?.updatedAt),
+          lastReadAt: newerTimestamp(previous?.lastReadAt, session?.lastReadAt),
+        });
+      }
+      return { directory, sessions: Array.from(sessionsById.values()) };
+    });
+  }
+
   function normalizeRequestedSessionIds(rawSessionIds) {
     if (!Array.isArray(rawSessionIds)) {
       throw makeApiError(400, "invalid_session_ids", "sessionIds must be an array");
@@ -199,15 +234,29 @@ export function createLlmSessionService(deps = {}) {
     let acpResults = [];
     let agentResults = [];
     let cliResults = [];
+    let foundSessionIds = [];
 
-    if (backendId === "codex" && sessionIds.length > 0 && (source === "acp" || source === "all")) {
-      acpResults = await markAcpSessionsRead(sessionIds, lastReadAt);
-    }
-    if (backendId === "codex" && sessionIds.length > 0 && (source === "cli" || source === "all")) {
-      cliResults = await markCliSessionsRead(sessionIds, { directory, lastReadAt });
-    }
     if (sessionIds.length > 0) {
-      agentResults = await agentSessionActivityStore.markSessionsRead(sessionIds, { backendId, lastReadAt });
+      const [group] = await listAgentSessionsForDirectories(
+        [directory],
+        { backendId, includeSubagents: true },
+      );
+      foundSessionIds = sessionIds.filter((sessionId) => (
+        group?.sessionsById.has(JSON.stringify([backendId, sessionId]))
+      ));
+    }
+    if (backendId === "codex" && foundSessionIds.length > 0 && (source === "acp" || source === "all")) {
+      acpResults = await markAcpSessionsRead(foundSessionIds, lastReadAt);
+    }
+    if (backendId === "codex" && foundSessionIds.length > 0 && (source === "cli" || source === "all")) {
+      cliResults = await markCliSessionsRead(foundSessionIds, { directory, lastReadAt });
+    }
+    if (foundSessionIds.length > 0) {
+      agentResults = await agentSessionActivityStore.markSessionsRead(foundSessionIds, {
+        backendId,
+        directory,
+        lastReadAt,
+      });
     }
 
     const acpById = new Map(acpResults.map((result) => [result.sessionId, result]));
@@ -280,6 +329,11 @@ export function createLlmSessionService(deps = {}) {
     const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
     const source = normalizeSessionSource(opts?.source, "all");
     const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
+    const [snapshotGroup] = await listAgentSessionsForDirectories(
+      [directory],
+      { backendId: source === "all" ? "all" : "codex", includeSubagents: true },
+    );
+    const agentSessionIds = Array.from(snapshotGroup?.sessionsById.keys() || []);
     const stores = [
       {
         name: "acp",
@@ -289,7 +343,10 @@ export function createLlmSessionService(deps = {}) {
       {
         name: "agent",
         enabled: source === "all",
-        run: () => agentSessionActivityStore.markDirectoryRead(directory, lastReadAt),
+        run: async () => {
+          await agentSessionActivityStore.markDirectoryRead(directory, lastReadAt);
+          return { selectedSessionIds: agentSessionIds, updatedSessionIds: agentSessionIds };
+        },
       },
       {
         name: "cli",
@@ -302,6 +359,15 @@ export function createLlmSessionService(deps = {}) {
         return {
           name: store.name,
           status: "skipped",
+          selectedSessionIds: [],
+          updatedSessionIds: [],
+          elapsedMs: 0,
+        };
+      }
+      if (agentSessionIds.length === 0) {
+        return {
+          name: store.name,
+          status: "success",
           selectedSessionIds: [],
           updatedSessionIds: [],
           elapsedMs: 0,
@@ -478,42 +544,38 @@ export function createLlmSessionService(deps = {}) {
     return directories;
   }
 
-  function mergeSessionGroups(directories, acpGroups, agentGroups, cliGroups) {
-    return directories.map((directory, index) => {
-      const sessionsById = new Map();
-      const sessions = [
-        ...(acpGroups[index]?.sessions || []).map((session) => ({ ...session, backendId: "codex" })),
-        ...(cliGroups[index]?.sessions || []).map((session) => ({ ...session, backendId: "codex" })),
-        ...(agentGroups[index]?.sessions || []),
-      ];
-      for (const session of sessions) {
-        const backendId = String(session?.backendId || "").trim();
-        const sessionId = String(session?.sessionId || "").trim();
+  async function listAgentSessionsForDirectories(
+    directories,
+    { backendId = "all", includeSubagents = false } = {},
+  ) {
+    const snapshot = await listAgentSessionSnapshot({ backendId, cwds: directories, includeSubagents });
+    return (Array.isArray(snapshot?.groups) ? snapshot.groups : []).map((group) => {
+      const directory = String(group?.cwd || "").trim();
+      const sessions = [];
+      for (const session of Array.isArray(group?.sessions) ? group.sessions : []) {
+        const backendId = String(session?.sessionRef?.backendId || "").trim();
+        const sessionId = String(session?.sessionRef?.nativeSessionId || "").trim();
         if (!backendId || !sessionId) continue;
-        const identity = JSON.stringify([backendId, sessionId]);
-        const existing = sessionsById.get(identity);
-        sessionsById.set(identity, {
+        sessions.push({
           backendId,
           sessionId,
-          updatedAt: newerTimestamp(existing?.updatedAt, session?.updatedAt),
-          lastReadAt: newerTimestamp(existing?.lastReadAt, session?.lastReadAt),
+          directory,
+          updatedAt: String(session?.updatedAt || ""),
+          lastReadAt: String(session?.lastReadAt || ""),
         });
       }
-      return { directory, sessionsById };
+      return {
+        directory,
+        sessionsById: new Map(sessions.map((session) => [
+          JSON.stringify([session.backendId, session.sessionId]),
+          session,
+        ])),
+      };
     });
   }
 
   async function loadUnreadSessionSnapshot(directories) {
-    const [acpGroups, agentGroups, cliGroups] = await Promise.all([
-      listAcpSessionsForDirectories(directories),
-      agentSessionActivityStore.listForDirectories(directories),
-      listCliSessionsForDirectories(directories, {
-        forceRefresh: true,
-        useRolloutMtime: true,
-        includeSubagents: false,
-      }),
-    ]);
-    return mergeSessionGroups(directories, acpGroups, agentGroups, cliGroups);
+    return await listAgentSessionsForDirectories(directories, { backendId: "all" });
   }
 
   async function getPushUnreadSnapshot({ directorySets, targetBackendId = "codex", targetSessionId, targetDirectory }) {
@@ -622,6 +684,7 @@ export function createLlmSessionService(deps = {}) {
     getPushUnreadSnapshot,
     getSessionUnreadState,
     listLlmSessions,
+    listLlmSessionsForDirectories,
     markLlmDirectoryRead,
     markLlmSessionRead,
     markLlmSessionReadRequest,

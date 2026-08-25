@@ -929,6 +929,36 @@ export function createClaudeBackend({
       || compareOrdinalDesc(String(a?.sessionId || ""), String(b?.sessionId || ""));
   }
 
+  async function listSessionsForDirectories({ cwds }) {
+    const canonicalCwds = await Promise.all(
+      (Array.isArray(cwds) ? cwds : []).map((cwd) => realpathCwd(path.resolve(String(cwd || "")))),
+    );
+    const sessionsByCwd = new Map(canonicalCwds.map((cwd) => [cwd, []]));
+    for (const file of await transcriptFiles()) {
+      const metadata = await transcriptMetadata(file);
+      const sessions = metadata ? sessionsByCwd.get(metadata.realCwd) : null;
+      if (!sessions) continue;
+      sessions.push({
+        sessionRef: { backendId: "claude", nativeSessionId: path.basename(file, ".jsonl") },
+        canonicalCwd: metadata.realCwd,
+        updatedAt: metadata.stat.mtime.toISOString(),
+        title: metadata.title,
+        modelId: metadata.modelId,
+        sourceKind: "cli",
+      });
+    }
+    return {
+      groups: canonicalCwds.map((cwd) => ({
+        cwd,
+        sessions: sessionsByCwd.get(cwd)
+          .sort((a, b) => compareListPageKeys(
+            { updatedAt: a.updatedAt, sessionId: a.sessionRef.nativeSessionId },
+            { updatedAt: b.updatedAt, sessionId: b.sessionRef.nativeSessionId },
+          )),
+      })),
+    };
+  }
+
   async function listSessions({ cwd, limit = 50, cursor = "" }) {
     const canonicalCwd = await realpathCwd(path.resolve(String(cwd || "")));
     const cursorRaw = String(cursor || "").trim();
@@ -936,20 +966,7 @@ export function createClaudeBackend({
     if (cursorRaw && !String(cursorKey?.sessionId || "").trim()) {
       throw agentError("turn_rejected", "session list cursor is invalid", { backendId: "claude" });
     }
-    const sessions = [];
-    for (const file of await transcriptFiles()) {
-      const metadata = await transcriptMetadata(file);
-      if (!metadata || metadata.realCwd !== canonicalCwd) continue;
-      const nativeSessionId = path.basename(file, ".jsonl");
-      sessions.push({
-        sessionRef: { backendId: "claude", nativeSessionId },
-        canonicalCwd,
-        updatedAt: metadata.stat.mtime.toISOString(),
-        title: metadata.title,
-        modelId: metadata.modelId,
-        sourceKind: "cli",
-      });
-    }
+    const [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd] })).groups;
     const pageKey = (session) => ({ updatedAt: session.updatedAt, sessionId: session.sessionRef.nativeSessionId });
     sessions.sort((a, b) => compareListPageKeys(pageKey(a), pageKey(b)));
     const positioned = cursorKey
@@ -1073,6 +1090,7 @@ export function createClaudeBackend({
     startTurn,
     resolveSessionCwd,
     listSessions,
+    listSessionsForDirectories,
     readHistory,
     compactSession,
     listModels: async () => CLAUDE_MODELS,

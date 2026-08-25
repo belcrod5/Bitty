@@ -191,6 +191,7 @@ export type CodexThreadListEntry = {
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  lastReadAt?: string;
   contextUsedPct: number | null;
   threadStatusType?: CodexThreadStatusType;
 };

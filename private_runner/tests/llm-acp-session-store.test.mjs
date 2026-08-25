@@ -589,13 +589,13 @@ test("stores workspace approvals without conversation or credential data", async
   assert.equal(persisted.includes("credential"), false);
 });
 
-test("persists provider-aware Agent activity and read state", async (t) => {
+test("persists revision-ordered directory and provider-aware session read state across restarts", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-unread-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
   const storePath = path.join(tempRoot, "acp_sessions.json");
   const createStore = () => createLlmAcpSessionStore({
     acpSessionStorePath: storePath,
-    compareSessionHistoryEntries: (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)),
+    compareSessionHistoryEntries: () => 0,
     generateLlmExecutionSessionId: () => "generated",
     makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
     normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
@@ -604,49 +604,105 @@ test("persists provider-aware Agent activity and read state", async (t) => {
     sessionRootBindingEnabled: true,
     workspaceRoot: tempRoot,
   });
-  const requestedCwd = path.join(tempRoot, "project");
-  await fs.mkdir(requestedCwd);
-  const cwd = await fs.realpath(requestedCwd);
+  const cwd = await fs.realpath(tempRoot);
   const codex = { backendId: "codex", nativeSessionId: "shared" };
   const claude = { backendId: "claude", nativeSessionId: "shared" };
   const store = createStore();
-  await store.bindAgentSession(codex, cwd, "neutral");
-  await store.bindAgentSession(claude, cwd, "neutral");
-  await store.setAgentSessionSettings(codex, {
-    modelId: "gpt-5.6-sol",
-    reasoningEffort: "medium",
-  });
-  await store.setAgentSessionSettings(claude, {
-    modelId: "sonnet",
-    reasoningEffort: "high",
-  });
-  await store.agentSessionActivityStore.recordActivity(codex, cwd, "2099-08-24T01:00:00.000Z");
-  await store.agentSessionActivityStore.recordActivity(claude, cwd, "2099-08-24T02:00:00.000Z");
+  await store.agentSessionActivityStore.markDirectoryRead(cwd, "2099-08-24T01:00:00.000Z");
   await store.agentSessionActivityStore.markSessionsRead(["shared"], {
-    lastReadAt: "2100-08-24T03:00:00.000Z",
+    backendId: "claude",
+    directory: cwd,
+    lastReadAt: new Date(0).toISOString(),
   });
+  const restarted = createStore();
+  assert.equal((await restarted.agentSessionActivityStore.getReadState(claude, cwd)).lastReadAt, new Date(0).toISOString());
+  assert.equal((await restarted.agentSessionActivityStore.getReadState(codex, cwd)).lastReadAt, "2099-08-24T01:00:00.000Z");
+  assert.equal(await restarted.getAgentSessionBinding(claude), null);
 
-  const [group] = await createStore().agentSessionActivityStore.listForDirectories([cwd]);
-  const sessions = new Map(group.sessions.map((session) => [session.backendId, session]));
-  assert.equal(sessions.get("codex").updatedAt, "2099-08-24T01:00:00.000Z");
-  assert.equal(sessions.get("codex").lastReadAt, "2100-08-24T03:00:00.000Z");
-  assert.equal(sessions.get("claude").updatedAt, "2099-08-24T02:00:00.000Z");
-  assert.notEqual(sessions.get("claude").lastReadAt, "2100-08-24T03:00:00.000Z");
-  assert.equal(sessions.get("claude").modelRef, "sonnet");
-  assert.equal(sessions.get("claude").reasoningEffort, "high");
-  assert.equal((await createStore().getAgentSessionBinding(claude)).reasoningEffort, "high");
+  await restarted.agentSessionActivityStore.markDirectoryRead(cwd, "2000-01-01T00:00:00.000Z");
+  assert.equal((await restarted.agentSessionActivityStore.getReadState(claude, cwd)).lastReadAt, "2000-01-01T00:00:00.000Z");
+  await restarted.agentSessionActivityStore.markSessionsRead(["shared"], {
+    backendId: "claude",
+    directory: cwd,
+    lastReadAt: "2100-01-01T00:00:00.000Z",
+  });
+  assert.equal((await createStore().agentSessionActivityStore.getReadState(claude, cwd)).lastReadAt, "2100-01-01T00:00:00.000Z");
 
-  const directoryResult = await store.agentSessionActivityStore.markDirectoryRead(
-    cwd,
-    "2101-08-24T04:00:00.000Z",
+  const persisted = JSON.parse(await fs.readFile(storePath, "utf8"));
+  assert.equal(persisted.agentReadStateRevision, 4);
+  assert.deepEqual(persisted.agentDirectoryReadStates, [{
+    canonicalCwd: cwd,
+    lastReadAt: "2000-01-01T00:00:00.000Z",
+    revision: 3,
+  }]);
+  assert.equal(persisted.agentSessionReadStates[0].revision, 4);
+
+  persisted.agentReadStateRevision = Number.MAX_SAFE_INTEGER;
+  await fs.writeFile(storePath, JSON.stringify(persisted));
+  const exhausted = createStore();
+  await assert.rejects(
+    exhausted.agentSessionActivityStore.markDirectoryRead(cwd, "2101-01-01T00:00:00.000Z"),
+    (error) => error.code === "agent_read_state_revision_exhausted",
   );
-  assert.equal(directoryResult.selectedSessionIds.length, 2);
-  assert.equal(directoryResult.updatedSessionIds.length, 2);
-  const [updatedGroup] = await store.agentSessionActivityStore.listForDirectories([cwd]);
-  assert.deepEqual(
-    updatedGroup.sessions.map((session) => session.lastReadAt),
-    ["2101-08-24T04:00:00.000Z", "2101-08-24T04:00:00.000Z"],
+  await assert.rejects(
+    exhausted.agentSessionActivityStore.markSessionsRead(["shared"], {
+      backendId: "claude",
+      directory: cwd,
+      lastReadAt: "2101-01-01T00:00:00.000Z",
+    }),
+    (error) => error.code === "agent_read_state_revision_exhausted",
   );
+});
+
+test("rolls back failed Agent read-state persistence and succeeds on retry", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-agent-read-failure-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  let failNextRename = false;
+  const store = createLlmAcpSessionStore({
+    acpSessionStorePath: path.join(tempRoot, "acp_sessions.json"),
+    compareSessionHistoryEntries: () => 0,
+    fileSystem: { ...fs, async rename(...args) {
+      if (failNextRename) {
+        failNextRename = false;
+        throw Object.assign(new Error("read state rename failed"), { code: "EIO" });
+      }
+      return await fs.rename(...args);
+    } },
+    generateLlmExecutionSessionId: () => "generated",
+    makeApiError: (_status, code, message) => Object.assign(new Error(message), { code }),
+    normalizeLlmExecutionSessionId: (value) => String(value || "").trim(),
+    normalizeSessionRootRelativePath: normalizeDirectory,
+    normalizeSessionUpdatedAt: normalizeTimestamp,
+    sessionRootBindingEnabled: true,
+    workspaceRoot: tempRoot,
+  });
+  const cwd = await fs.realpath(tempRoot);
+  const ref = { backendId: "claude", nativeSessionId: "unbound" };
+
+  failNextRename = true;
+  await assert.rejects(
+    store.agentSessionActivityStore.markDirectoryRead(cwd, "2026-08-25T01:00:00.000Z"),
+    /read state rename failed/,
+  );
+  assert.equal(await store.agentSessionActivityStore.getReadState(ref, cwd), null);
+  await store.agentSessionActivityStore.markDirectoryRead(cwd, "2026-08-25T01:00:00.000Z");
+
+  failNextRename = true;
+  await assert.rejects(store.agentSessionActivityStore.markSessionsRead(["unbound"], {
+    backendId: "claude",
+    directory: cwd,
+    lastReadAt: new Date(0).toISOString(),
+  }), /read state rename failed/);
+  assert.equal(
+    (await store.agentSessionActivityStore.getReadState(ref, cwd)).lastReadAt,
+    "2026-08-25T01:00:00.000Z",
+  );
+  await store.agentSessionActivityStore.markSessionsRead(["unbound"], {
+    backendId: "claude",
+    directory: cwd,
+    lastReadAt: new Date(0).toISOString(),
+  });
+  assert.equal((await store.agentSessionActivityStore.getReadState(ref, cwd)).lastReadAt, new Date(0).toISOString());
 });
 
 test("session settings persistence rolls back on failure and succeeds on retry", async (t) => {
@@ -736,7 +792,7 @@ test("migrates Agent bindings without read state as already read", async (t) => 
     workspaceRoot: tempRoot,
   });
 
-  const [group] = await store.agentSessionActivityStore.listForDirectories([cwd]);
-  assert.equal(group.sessions[0].updatedAt, "2026-08-24T01:00:00.000Z");
-  assert.equal(group.sessions[0].lastReadAt, "2026-08-24T01:00:00.000Z");
+  const binding = await store.getAgentSessionBinding({ backendId: "claude", nativeSessionId: "legacy" });
+  assert.equal(binding.updatedAt, "2026-08-24T01:00:00.000Z");
+  assert.equal(binding.lastReadAt, "2026-08-24T01:00:00.000Z");
 });

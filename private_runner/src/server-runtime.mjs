@@ -1379,17 +1379,14 @@ const {
 });
 
 const {
-  countUnreadSessions,
-  getLlmSessionSummaries,
-  getPushUnreadSnapshot,
-  getSessionUnreadState,
-  listLlmSessions,
+  countUnreadSessions, getLlmSessionSummaries, getPushUnreadSnapshot, getSessionUnreadState,
+  listLlmSessions, listLlmSessionsForDirectories,
   markLlmSessionReadRequest,
 } = createLlmSessionService({
   compareSessionHistoryEntries, agentSessionActivityStore,
   findCliSessionIndexEntriesBySessionIds,
   listAcpSessionsForDirectories,
-  listAcpSessionsForDirectory,
+  listAcpSessionsForDirectory, listAgentSessionSnapshot: (options) => agentService.listSessionSnapshot(options),
   listCliSessionsForDirectories,
   listCliSessionsForDirectory,
   makeApiError,
@@ -1680,6 +1677,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
     updateSessionLeaseIdentity: updateAgentSessionLeaseIdentity, handoffSessionMode: handoffAgentSessionMode,
     setSessionSettings: setAgentSessionSettings,
     recordSessionActivity: agentSessionActivityStore.recordActivity, inspectOperation: inspectAgentOperation,
+    getSessionReadState: agentSessionActivityStore.getReadState,
     claimOperation: claimAgentOperation,
     completeOperation: completeAgentOperation,
     getModelInfo: getAgentModelInfo, setModelInfo: setAgentModelInfo,
@@ -1687,7 +1685,8 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   },
   createCodexClient: ({ signal }) => createCodexRpcClient({ signal }), normalizeSessionId: normalizeLlmExecutionSessionId,
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
-  listSessions: listLlmSessions, listMessages: listLlmSessionMessages,
+  listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
+  listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
   runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
