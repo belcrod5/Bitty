@@ -109,3 +109,29 @@ test("adds a file to the Skia board from the file context menu", async () => {
   });
   alertSpy.mockRestore();
 });
+
+test("loads the shared file explorer when its tab opens", async () => {
+  const response = {
+    basePath: "/work/bitty",
+    entries: [{ kind: "file", name: "README.md", path: "/work/bitty/README.md" }],
+  };
+  const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(response),
+  } as Response);
+  const panel = await renderPanel({ visible: true });
+
+  await fireEvent.press(panel.getByLabelText("File Explorerタブを表示"));
+
+  expect(await panel.findByText("README.md")).toBeTruthy();
+  expect(fetchSpy).toHaveBeenCalledWith(
+    expect.stringContaining("%2Fwork%2Fbitty"),
+    expect.objectContaining({
+      method: "GET",
+      headers: { authorization: "Bearer token" },
+      signal: expect.anything(),
+    }),
+  );
+  fetchSpy.mockRestore();
+});

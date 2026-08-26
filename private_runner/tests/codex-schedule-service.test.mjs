@@ -66,10 +66,12 @@ async function makeHarness(options = {}) {
     validateCwd: options.validateCwd || (async (cwd) => {
       if (!(await fs.stat(cwd)).isDirectory()) throw new Error("not a directory");
     }),
+    validateShellScript: options.validateShellScript || (async () => {}),
     startNormalCodexTurn: options.startNormalCodexTurn || (async () => ({
       threadId: "thread-1",
       turnId: "turn-1",
     })),
+    startShellScript: options.startShellScript || (async () => ({ jobId: "script-job-1" })),
     now: currentClock.now,
     scheduleTimer: options.scheduleTimer || ((callback, delay) => {
       const timer = { callback, delay, cleared: false, unref() {} };
@@ -138,7 +140,7 @@ test("replacement is atomic, serialized, and preserves action-only next occurren
 
   const created = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
   assert.equal(created.revision, 1);
-  assert.equal(created.schedules[0].threadId, null);
+  assert.equal(created.schedules[0].action.threadId, null);
   assert.equal(created.schedules[0].nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
   assert.deepEqual(renameTargets, [harness.definitionsPath, harness.runtimePath]);
 
@@ -188,7 +190,7 @@ test("item create, patch, and delete share revision and preserve idempotent retr
   });
   assert.equal(updated.updated, true);
   assert.equal(updated.revision, 2);
-  assert.equal(updated.schedule.threadId, "thread-existing");
+  assert.equal(updated.schedule.action.threadId, "thread-existing");
   assert.equal(updated.schedule.nextOccurrenceAt, created.schedule.nextOccurrenceAt);
   await harness.service.snapshot();
   const timerCountAfterPatch = harness.timers.length;
@@ -483,12 +485,61 @@ test("revision mismatch recovery rebuilds future runtime and keeps only matching
 
   const snapshot = await harness.service.snapshot();
   assert.equal(snapshot.revision, 2);
-  assert.equal(snapshot.schedules[0].threadId, null);
+  assert.equal(snapshot.schedules[0].action.threadId, null);
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, "2026-08-14T00:00:00.000Z");
-  assert.equal(snapshot.schedules[0].lastDispatch.threadId, "thread-old");
+  assert.deepEqual(snapshot.schedules[0].lastDispatch.result, {
+    kind: "llm", threadId: "thread-old", turnId: "turn-old",
+  });
   const runtime = await readJson(harness.runtimePath);
+  const definitions = await readJson(harness.definitionsPath);
+  assert.equal(definitions.version, 2);
+  assert.equal(definitions.schedules[0].action.kind, "llm");
+  assert.equal(runtime.version, 2);
   assert.deepEqual(Object.keys(runtime.runtimes), [ID_A]);
   assert.equal(runtime.definitionsRevision, 2);
+});
+
+test("version 1 migration preserves a failed dispatch with only a thread ID", async (t) => {
+  const harness = await makeHarness();
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const schedule = definition();
+  const definitionHash = codexScheduleDefinitionHash(schedule);
+  await fs.writeFile(harness.definitionsPath, `${JSON.stringify({
+    version: 1,
+    revision: 1,
+    schedules: [schedule],
+    updatedAt: "2026-08-12T00:00:00.000Z",
+  })}\n`);
+  await fs.writeFile(harness.runtimePath, `${JSON.stringify({
+    version: 1,
+    definitionsRevision: 1,
+    runtimes: {
+      [ID_A]: {
+        definitionHash,
+        nextOccurrenceAt: "2026-08-14T00:00:00.000Z",
+        lastDispatch: {
+          occurrenceAt: "2026-08-12T00:00:00.000Z",
+          claimedAt: "2026-08-12T00:00:00.000Z",
+          definitionHash,
+          status: "failed",
+          threadId: "thread-partial",
+          turnId: null,
+          errorCode: "upstream_failed",
+          errorMessage: "turn start failed",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+      },
+    },
+    updatedAt: "2026-08-12T00:00:00.000Z",
+  })}\n`);
+
+  const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+  assert.deepEqual(dispatch.result, {
+    kind: "llm", threadId: "thread-partial", turnId: null,
+  });
+  const storedRuntime = await readJson(harness.runtimePath);
+  assert.equal(storedRuntime.version, 2);
+  assert.deepEqual(storedRuntime.runtimes[ID_A].lastDispatch.result, dispatch.result);
 });
 
 test("a missing runtime rebuilds strictly future and does not catch up old one-time work", async (t) => {
@@ -584,6 +635,41 @@ test("startup catches up one-time once and recurring schedules at only the lates
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, "2026-08-18T00:00:00.000Z");
 });
 
+test("script actions validate and start the selected .sh inside their cwd without requiring Codex IDs", async (t) => {
+  const validations = [];
+  const starts = [];
+  let codexStarts = 0;
+  const harness = await makeHarness({
+    validateShellScript: async (...args) => { validations.push(args); },
+    startShellScript: async (...args) => {
+      starts.push(args);
+      return { jobId: "script-job-42" };
+    },
+    startNormalCodexTurn: async () => {
+      codexStarts += 1;
+      return { threadId: "unexpected", turnId: "unexpected" };
+    },
+  });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const scriptPath = path.join(harness.directory, "scheduled.sh");
+  const schedule = {
+    ...definition({ rrule: null }),
+    action: { kind: "script", cwd: harness.directory, scriptPath },
+  };
+  for (const key of ["cwd", "modelRef", "reasoningEffort", "prompt", "threadId"]) delete schedule[key];
+  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [schedule] });
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate();
+  const snapshot = await harness.service.snapshot();
+  assert.equal(codexStarts, 0);
+  assert.equal(starts.length, 1);
+  assert.deepEqual(starts[0], [scriptPath, { allowExternal: true, allowedRoot: harness.directory }]);
+  assert.equal(validations.length, 2);
+  assert.deepEqual(snapshot.schedules[0].lastDispatch.result, {
+    kind: "script", jobId: "script-job-42",
+  });
+});
+
 test("new-chat definitions retain their legacy hash while thread targets affect identity", () => {
   const legacy = definition();
   assert.equal(codexScheduleDefinitionHash(legacy), codexScheduleDefinitionHash({ ...legacy, threadId: null }));
@@ -616,8 +702,7 @@ test("overlapping evaluation dispatches once and restart never retries a persist
 
   const runtime = await readJson(harness.runtimePath);
   runtime.runtimes[ID_A].lastDispatch.status = "claimed";
-  runtime.runtimes[ID_A].lastDispatch.threadId = null;
-  runtime.runtimes[ID_A].lastDispatch.turnId = null;
+  runtime.runtimes[ID_A].lastDispatch.result = null;
   await fs.writeFile(harness.runtimePath, `${JSON.stringify(runtime)}\n`);
   const restarted = createCodexScheduleService({
     definitionsPath: harness.definitionsPath,
@@ -768,7 +853,7 @@ test("schema accepts max and ultra reasoning efforts supported by turn execution
       baseRevision: index,
       schedules: [definition({ reasoningEffort })],
     });
-    assert.equal(saved.schedules[0].reasoningEffort, reasoningEffort);
+    assert.equal(saved.schedules[0].action.reasoningEffort, reasoningEffort);
   }
 });
 

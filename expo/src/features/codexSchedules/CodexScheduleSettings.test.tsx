@@ -39,11 +39,14 @@ const schedule = {
   startLocal: "2026-08-14T09:07:00",
   timeZone: "Asia/Tokyo",
   rrule: null,
-  cwd: "/work",
-  modelRef: "openai-codex/gpt-5.6",
-  reasoningEffort: "high" as const,
-  prompt: "Check",
-  threadId: null,
+  action: {
+    kind: "llm" as const,
+    cwd: "/work",
+    modelRef: "openai-codex/gpt-5.6",
+    reasoningEffort: "high" as const,
+    prompt: "Check",
+    threadId: null,
+  },
   nextOccurrenceAt: null,
   lastDispatch: null,
 };
@@ -82,6 +85,47 @@ test("new editor exposes native pickers and reuses directory, model, and effort 
   expect(view.getByLabelText("モデル")).toBeTruthy();
   expect(view.getByLabelText("思考レベル")).toBeTruthy();
   expect(view.getByLabelText("実行先")).toBeTruthy();
+  expect(view.getByLabelText("実行種別")).toBeTruthy();
+});
+
+test("script execution browses the selected directory and saves the chosen .sh action", async () => {
+  const directoryResponse = {
+    basePath: "/work",
+    entries: [
+      { kind: "file", name: "ignore.txt", path: "/work/ignore.txt" },
+      { kind: "file", name: "scheduled.sh", path: "/work/scheduled.sh" },
+    ],
+  };
+  const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(directoryResponse),
+  } as Response);
+  mockPut.mockResolvedValue({ revision: 1, schedules: [] });
+  const view = await render(<CodexScheduleSettings {...props} />);
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュール実行")));
+  await view.findByText("スケジュールはありません。");
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュールを追加")));
+  await act(async () => fireEvent.changeText(view.getByLabelText("スケジュール名"), "Shell"));
+  await act(async () => fireEvent.press(view.getByLabelText("実行種別")));
+  await act(async () => fireEvent.press(view.getAllByText("実行ファイル").at(-1)!));
+  await act(async () => fireEvent.press(view.getByLabelText("実行ファイル")));
+  expect(await view.findByText("scheduled.sh")).toBeTruthy();
+  expect(view.queryByText("ignore.txt")).toBeNull();
+  await act(async () => fireEvent.press(view.getByLabelText("scheduled.shを選択")));
+  await act(async () => fireEvent.press(view.getByLabelText("編集を閉じる")));
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュールを保存")));
+  expect(fetchSpy).toHaveBeenCalledWith(
+    expect.stringContaining("%2Fwork"),
+    expect.objectContaining({ headers: { authorization: "Bearer token" } }),
+  );
+  expect(mockPut).toHaveBeenCalledWith(
+    expect.anything(),
+    0,
+    [expect.objectContaining({
+      action: { kind: "script", cwd: "/work", scriptPath: "/work/scheduled.sh" },
+    })],
+  );
 });
 
 test("revision conflict offers a reload and never marks the draft saved", async () => {
@@ -113,6 +157,8 @@ test("native date picker normalizes its edited value back to startLocal", async 
       modelOptions={props.modelOptions}
       thinkOptions={props.thinkOptions}
       currentThreadId={props.currentThreadId}
+      runnerUrl={props.runnerUrl}
+      runnerToken={props.runnerToken}
       onChange={onChange}
       onClose={jest.fn()}
       onDelete={jest.fn()}
@@ -130,6 +176,8 @@ test("editor follows the keyboard so focused text inputs remain visible", async 
       modelOptions={props.modelOptions}
       thinkOptions={props.thinkOptions}
       currentThreadId={props.currentThreadId}
+      runnerUrl={props.runnerUrl}
+      runnerToken={props.runnerToken}
       onChange={jest.fn()}
       onClose={jest.fn()}
       onDelete={jest.fn()}
@@ -148,6 +196,8 @@ test("editor can target only the current Codex chat or a new chat", async () => 
       modelOptions={props.modelOptions}
       thinkOptions={props.thinkOptions}
       currentThreadId={props.currentThreadId}
+      runnerUrl={props.runnerUrl}
+      runnerToken={props.runnerToken}
       onChange={onChange}
       onClose={jest.fn()}
       onDelete={jest.fn()}
@@ -156,5 +206,31 @@ test("editor can target only the current Codex chat or a new chat", async () => 
 
   await act(async () => fireEvent.press(await view.findByLabelText("実行先")));
   await act(async () => fireEvent.press(view.getByText("現在のチャット")));
-  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ threadId: "thread-current" }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+    action: expect.objectContaining({ threadId: "thread-current" }),
+  }));
+});
+
+test("editor displays a saved script selection without LLM-only fields", async () => {
+  const view = await render(
+    <CodexScheduleEditor
+      schedule={{
+        ...schedule,
+        action: { kind: "script", cwd: "/work", scriptPath: "/work/tasks/nightly.sh" },
+      }}
+      directories={props.directories}
+      modelOptions={props.modelOptions}
+      thinkOptions={props.thinkOptions}
+      currentThreadId={props.currentThreadId}
+      runnerUrl={props.runnerUrl}
+      runnerToken={props.runnerToken}
+      onChange={jest.fn()}
+      onClose={jest.fn()}
+      onDelete={jest.fn()}
+    />,
+  );
+
+  expect(await view.findByText("/work/tasks/nightly.sh")).toBeTruthy();
+  expect(view.queryByLabelText("モデル")).toBeNull();
+  expect(view.queryByLabelText("プロンプト")).toBeNull();
 });

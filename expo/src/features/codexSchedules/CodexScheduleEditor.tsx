@@ -15,12 +15,14 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 
 import { OptionSelectField } from "../app/components/OptionSelectField";
 import type { ReasoningEffort } from "../app/utils/settingsParsers";
+import { CodexScheduleScriptPicker } from "./CodexScheduleScriptPicker";
 import {
   CODEX_SCHEDULE_REPEAT_OPTIONS,
   codexScheduleRepeatToRrule,
   codexScheduleRruleToRepeat,
   codexScheduleStartLocalFromDate,
   dateFromCodexScheduleStartLocal,
+  type CodexScheduleAction,
   type CodexSchedule,
   type CodexScheduleRepeat,
 } from "./codexScheduleTypes";
@@ -31,6 +33,8 @@ type Props = {
   modelOptions: readonly { value: string; label: string }[];
   thinkOptions: readonly ReasoningEffort[];
   currentThreadId: string;
+  runnerUrl: string;
+  runnerToken: string;
   onChange: (schedule: CodexSchedule) => void;
   onClose: () => void;
   onDelete: (id: string) => void;
@@ -50,6 +54,8 @@ export function CodexScheduleEditor({
   modelOptions,
   thinkOptions,
   currentThreadId,
+  runnerUrl,
+  runnerToken,
   onChange,
   onClose,
   onDelete,
@@ -61,23 +67,28 @@ export function CodexScheduleEditor({
   if (!schedule) return null;
 
   const update = (patch: Partial<CodexSchedule>) => onChange({ ...schedule, ...patch });
+  const updateLlmAction = (patch: Partial<Extract<CodexScheduleAction, { kind: "llm" }>>) => {
+    if (schedule.action.kind === "llm") update({ action: { ...schedule.action, ...patch } });
+  };
   const cwdOptions = [
     ...directories.map((directory) => ({ value: directory.path, label: directory.displayName || directory.path })),
-    ...(!directories.some((directory) => directory.path === schedule.cwd) && schedule.cwd
-      ? [{ value: schedule.cwd, label: `登録解除済み: ${schedule.cwd}` }]
+    ...(!directories.some((directory) => directory.path === schedule.action.cwd) && schedule.action.cwd
+      ? [{ value: schedule.action.cwd, label: `登録解除済み: ${schedule.action.cwd}` }]
       : []),
   ];
+  const llmAction = schedule.action.kind === "llm" ? schedule.action : null;
+  const scriptAction = schedule.action.kind === "script" ? schedule.action : null;
   const models = [
     ...modelOptions,
-    ...(!modelOptions.some((option) => option.value === schedule.modelRef) && schedule.modelRef
-      ? [{ value: schedule.modelRef, label: schedule.modelRef }]
+    ...(!modelOptions.some((option) => option.value === llmAction?.modelRef) && llmAction?.modelRef
+      ? [{ value: llmAction.modelRef, label: llmAction.modelRef }]
       : []),
   ];
   const threadOptions = [
     { value: "", label: "新規チャット" },
     ...(currentThreadId ? [{ value: currentThreadId, label: "現在のチャット" }] : []),
-    ...(schedule.threadId && schedule.threadId !== currentThreadId
-      ? [{ value: schedule.threadId, label: `指定済みチャット: ${schedule.threadId}` }]
+    ...(llmAction?.threadId && llmAction.threadId !== currentThreadId
+      ? [{ value: llmAction.threadId, label: `指定済みチャット: ${llmAction.threadId}` }]
       : []),
   ];
 
@@ -147,39 +158,81 @@ export function CodexScheduleEditor({
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>実行</Text>
-            <Text style={styles.label}>実行先</Text>
+            <Text style={styles.label}>実行種別</Text>
             <OptionSelectField
-              title="実行先"
-              options={threadOptions}
-              selectedValue={schedule.threadId || ""}
-              onSelect={(threadId) => update({ threadId: threadId || null })}
+              title="実行種別"
+              options={[{ value: "llm", label: "LLM" }, { value: "script", label: "実行ファイル" }]}
+              selectedValue={schedule.action.kind}
+              onSelect={(kind) => update({
+                action: kind === "script"
+                  ? { kind: "script", cwd: schedule.action.cwd, scriptPath: "" }
+                  : {
+                    kind: "llm",
+                    cwd: schedule.action.cwd,
+                    modelRef: modelOptions[0]?.value || "",
+                    reasoningEffort: thinkOptions[0] || "medium",
+                    prompt: "",
+                    threadId: null,
+                  },
+              })}
             />
             <Text style={styles.label}>ディレクトリ</Text>
-            <OptionSelectField title="ディレクトリ" options={cwdOptions} selectedValue={schedule.cwd} onSelect={(cwd) => update({ cwd })} />
-            <Text style={styles.label}>モデル</Text>
-            <OptionSelectField title="モデル" options={models} selectedValue={schedule.modelRef} onSelect={(modelRef) => update({ modelRef })} />
-            <Text style={styles.label}>思考レベル</Text>
             <OptionSelectField
-              title="思考レベル"
-              options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
-              selectedValue={schedule.reasoningEffort}
-              onSelect={(reasoningEffort) => update({ reasoningEffort: reasoningEffort as CodexSchedule["reasoningEffort"] })}
+              title="ディレクトリ"
+              options={cwdOptions}
+              selectedValue={schedule.action.cwd}
+              onSelect={(cwd) => update({ action: schedule.action.kind === "script"
+                ? { ...schedule.action, cwd, scriptPath: "" }
+                : { ...schedule.action, cwd } })}
             />
+            {llmAction ? (
+              <>
+                <Text style={styles.label}>実行先</Text>
+                <OptionSelectField
+                  title="実行先"
+                  options={threadOptions}
+                  selectedValue={llmAction.threadId || ""}
+                  onSelect={(threadId) => updateLlmAction({ threadId: threadId || null })}
+                />
+                <Text style={styles.label}>モデル</Text>
+                <OptionSelectField title="モデル" options={models} selectedValue={llmAction.modelRef} onSelect={(modelRef) => updateLlmAction({ modelRef })} />
+                <Text style={styles.label}>思考レベル</Text>
+                <OptionSelectField
+                  title="思考レベル"
+                  options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
+                  selectedValue={llmAction.reasoningEffort}
+                  onSelect={(reasoningEffort) => updateLlmAction({ reasoningEffort: reasoningEffort as ReasoningEffort })}
+                />
+              </>
+            ) : (
+              <>
+                <Text style={styles.label}>ファイル</Text>
+                <CodexScheduleScriptPicker
+                  runnerUrl={runnerUrl}
+                  runnerToken={runnerToken}
+                  rootPath={schedule.action.cwd}
+                  value={scriptAction?.scriptPath || ""}
+                  onSelect={(scriptPath) => scriptAction && update({ action: { ...scriptAction, scriptPath } })}
+                />
+              </>
+            )}
           </View>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>プロンプト</Text>
-            <TextInput
-              accessibilityLabel="プロンプト"
-              style={[styles.input, styles.prompt]}
-              value={schedule.prompt}
-              maxLength={24_000}
-              multiline
-              textAlignVertical="top"
-              onChangeText={(prompt) => update({ prompt })}
-            />
-            <Text style={styles.count}>{schedule.prompt.length.toLocaleString()} / 24,000</Text>
-          </View>
+          {llmAction ? (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>プロンプト</Text>
+              <TextInput
+                accessibilityLabel="プロンプト"
+                style={[styles.input, styles.prompt]}
+                value={llmAction.prompt}
+                maxLength={24_000}
+                multiline
+                textAlignVertical="top"
+                onChangeText={(prompt) => updateLlmAction({ prompt })}
+              />
+              <Text style={styles.count}>{llmAction.prompt.length.toLocaleString()} / 24,000</Text>
+            </View>
+          ) : null}
 
           <TouchableOpacity
             accessibilityRole="button"

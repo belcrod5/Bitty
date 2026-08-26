@@ -3466,6 +3466,19 @@ async function resolveWorkspaceShellScriptTarget(rawPath, opts = {}) {
   if (!resolved.relativePath.toLowerCase().endsWith(".sh")) {
     throw makeApiError(400, "script_extension_invalid", "only .sh files can be executed");
   }
+  if (opts.allowedRoot) {
+    let allowedRootReal;
+    try {
+      allowedRootReal = await fs.realpath(String(opts.allowedRoot));
+      const allowedRootStat = await fs.stat(allowedRootReal);
+      if (!allowedRootStat.isDirectory()) throw new Error("allowed root is not a directory");
+    } catch (err) {
+      throw makeApiError(400, classifyPathResolutionError(err), errorMessage(err));
+    }
+    if (!isPathInsideRoot(allowedRootReal, resolved.realPath)) {
+      throw makeApiError(400, "path_outside_root", "script path is outside the selected directory");
+    }
+  }
   const cwdAbs = path.dirname(resolved.realPath);
   const timeoutMs = resolveScriptExecutionTimeoutMs();
   return {
@@ -7149,7 +7162,9 @@ const codexScheduleService = createCodexScheduleService({
     const stat = await fs.stat(resolved);
     if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
   },
+  validateShellScript: resolveWorkspaceShellScriptTarget,
   startNormalCodexTurn,
+  startShellScript: startWorkspaceShellScript,
 });
 const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
   service: codexScheduleService,
