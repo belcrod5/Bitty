@@ -1331,6 +1331,8 @@ test("shows a moved-or-deleted message instead of file actions for an unavailabl
 });
 
 test("long-pressing a selected card still opens its context menu", async () => {
+  const displayTitle = `${"🙂".repeat(199)}…`;
+  mockSessions = [{ ...mockDefaultSession, title: displayTitle }];
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await render(
     <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
@@ -1347,7 +1349,11 @@ test("long-pressing a selected card still opens its context menu", async () => {
     registry.LongPress.onStart({ x: 30, y: 30 });
   });
 
-  expect(alertSpy).toHaveBeenCalled();
+  expect(alertSpy).toHaveBeenCalledWith(
+    "カードを削除",
+    `「${displayTitle}」をボードから外しますか?\n外したセッションは自動では再追加されません。`,
+    expect.any(Array),
+  );
   expect(registry.Pan.minDistance).toBe(10);
   alertSpy.mockRestore();
 });

@@ -16,7 +16,7 @@ import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerCon
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import type { LlmSessionSource } from "./useLlmSessionExplorer";
-import { isLlmSessionUnread } from "../utils/llmSession";
+import { formatLlmSessionDisplayTitle, isLlmSessionUnread } from "../utils/llmSession";
 import type { SessionActivity } from "../utils/statusIcons";
 
 // パネルIDはセッションごとに固定(インデックス割当だと並び替えで担当が入れ替わり、
@@ -178,9 +178,20 @@ export function useSkiaMiniChatSessions() {
     return (boardState?.cards || []).flatMap((card) => {
       if (card.kind !== "session") return [];
       const candidate = candidatesBySessionId.get(card.sessionId);
-      return candidate ? [{ card, candidate, panelId: skiaMiniChatPanelId(card.sessionId) }] : [];
+      if (!candidate) return [];
+      return [{
+        card,
+        candidate,
+        panelId: skiaMiniChatPanelId(card.sessionId),
+        title: formatLlmSessionDisplayTitle(
+          sessionTitleOverridesById[candidate.sessionId]
+          || candidate.agentDisplayName
+          || candidate.firstUserMessage
+          || candidate.sessionId
+        ),
+      }];
     });
-  }, [boardState, sessionCandidates]);
+  }, [boardState, sessionCandidates, sessionTitleOverridesById]);
 
   const childStateByParentId = useMemo(() => new Map(
     Object.values(directorySessionsById).flatMap((state) => (
@@ -233,7 +244,7 @@ export function useSkiaMiniChatSessions() {
     }
     setHydratingPanelCount(hydrateTargets.length);
     setPanelHydrationErrorCount(0);
-    void Promise.all(hydrateTargets.map(async ({ candidate, panelId }) => {
+    void Promise.all(hydrateTargets.map(async ({ candidate, panelId, title }) => {
       // 発行記録は失敗時も残し、同じupdatedAtのままでのホットリトライを防ぐ。
       lastRequestedHydrationByPanelRef.current[panelId] =
         buildPanelHydrationRequestMark(panelId, candidate);
@@ -245,7 +256,7 @@ export function useSkiaMiniChatSessions() {
           directory: candidate.directory,
           source: candidate.source,
           directoryDisplayName: candidate.directoryDisplayName,
-          title: sessionTitleOverridesById[candidate.sessionId] || candidate.firstUserMessage,
+          title,
           updatedAt: candidate.updatedAt,
           modelRef: candidate.modelRef,
           reasoningEffort: candidate.reasoningEffort,
@@ -269,7 +280,7 @@ export function useSkiaMiniChatSessions() {
       if (hydrationGenerationRef.current !== generation) return;
       setHydratingPanelCount(0);
     });
-  }, [assignedSessions, sessionTitleOverridesById]);
+  }, [assignedSessions]);
 
   // 再構築時、内容が変わっていないカードは前回のオブジェクト(と配列)を使い回す。
   // itemのidentityが保たれることで、React.memoされたカードの再レンダリングと
@@ -281,7 +292,7 @@ export function useSkiaMiniChatSessions() {
   const sessions = useMemo<SkiaMiniChatSession[]>(() => {
     const previous = sessionReuseRef.current;
     const nextByCardId = new Map<string, SkiaMiniChatSession>();
-    const list = assignedSessions.map(({ card, candidate, panelId }) => {
+    const list = assignedSessions.map(({ card, candidate, panelId, title }) => {
       const snapshot = getSnapshot(panelId);
       const messages = snapshot.selectedSessionId === candidate.sessionId
         ? snapshot.conversationMessages
@@ -297,12 +308,7 @@ export function useSkiaMiniChatSessions() {
         sessionId: candidate.sessionId,
         directory: candidate.directory,
         source: candidate.source,
-        title: String(
-          sessionTitleOverridesById[candidate.sessionId]
-          || candidate.agentDisplayName
-          || candidate.firstUserMessage
-          || candidate.sessionId
-        ).trim(),
+        title,
         directoryName: candidate.directoryDisplayName,
         lastMessageContent: snapshot.selectedSessionId === candidate.sessionId
           ? String(lastMessage?.content || "メッセージなし").replace(/\s+/g, " ").trim()
@@ -338,7 +344,6 @@ export function useSkiaMiniChatSessions() {
     getSnapshot,
     nowMs,
     sessionMarkerColorsById,
-    sessionTitleOverridesById,
   ]);
 
   // file/directoryカードも、元のboardStateカードが同一参照なら同じitemを使い回す。

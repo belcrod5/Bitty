@@ -2,7 +2,7 @@ import type {
   DirectorySessionTreeState,
   RegisteredDirectoryEntry,
 } from "../types/directorySessions";
-import { parseOptionalSessionId } from "./llmSession";
+import { formatLlmSessionDisplayTitle, parseOptionalSessionId } from "./llmSession";
 import { clampContextUsedPct } from "./sessionRestore";
 import { normalizeModelRef, parseLlmDirectory } from "./settingsParsers";
 
@@ -71,11 +71,11 @@ export function resolveSessionHistoryContext({
         registeredDirectory?.displayName ||
         deriveDirectoryDisplayName(directoryPath)
       ).trim(),
-      sessionTitle: String(
+      sessionTitle: formatLlmSessionDisplayTitle(
         sessionTitleOverridesById[sessionId] ||
         match.firstUserMessage ||
         ""
-      ).replace(/\s+/g, " ").trim(),
+      ),
       updatedAt: String(match.updatedAt || "").trim(),
       modelRef: normalizeModelRef(match.modelRef),
       reasoningEffort: String(match.reasoningEffort || "").trim(),
