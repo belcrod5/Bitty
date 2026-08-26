@@ -366,7 +366,7 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
-  it("projects a persisted directory shortcut as a board item", async () => {
+  it("derives a persisted directory shortcut name instead of restoring its legacy snapshot", async () => {
     persistedFile.skiaBoardState = {
       cards: [{
         kind: "directory",
@@ -387,7 +387,7 @@ describe("useSkiaMiniChatSessions", () => {
       kind: "directory",
       cardId: "directory:/workspace/projects/bitty",
       directory: "/workspace/projects/bitty",
-      name: "Bitty",
+      name: "bitty",
       col: 1.5,
       row: 2.25,
     }]);
@@ -407,7 +407,6 @@ describe("useSkiaMiniChatSessions", () => {
     expect((persistedFile.skiaBoardState as { cards: unknown[] }).cards).toEqual([{
       kind: "directory",
       directory: "/workspace/projects/bitty",
-      name: "Bitty",
       col: 0,
       row: 0,
     }]);

@@ -12,53 +12,71 @@ import {
 import {
   RunnerFileExplorer,
   type RunnerFileExplorerEntry,
-} from "../app/components/RunnerFileExplorer";
+} from "./RunnerFileExplorer";
 
 type Props = {
+  title: string;
+  accessibilityLabel: string;
+  closeAccessibilityLabel: string;
   runnerUrl: string;
   runnerToken: string;
   rootPath: string;
+  rootDisplayName: string;
   value: string;
+  placeholder: string;
+  fileFilter: (entry: RunnerFileExplorerEntry) => boolean;
+  fileAccessibilityLabel: (entry: RunnerFileExplorerEntry) => string;
   onSelect: (path: string) => void;
 };
 
-const shellScriptsOnly = (entry: RunnerFileExplorerEntry) => entry.name.toLowerCase().endsWith(".sh");
-
-export function CodexScheduleScriptPicker({ runnerUrl, runnerToken, rootPath, value, onSelect }: Props) {
+export function RunnerFilePicker({
+  title,
+  accessibilityLabel,
+  closeAccessibilityLabel,
+  runnerUrl,
+  runnerToken,
+  rootPath,
+  rootDisplayName,
+  value,
+  placeholder,
+  fileFilter,
+  fileAccessibilityLabel,
+  onSelect,
+}: Props) {
   const [visible, setVisible] = useState(false);
 
   return (
     <>
       <TouchableOpacity
         accessibilityRole="button"
-        accessibilityLabel="実行ファイル"
+        accessibilityLabel={accessibilityLabel}
         style={styles.field}
         onPress={() => setVisible(true)}
       >
         <Text style={value ? styles.value : styles.placeholder} numberOfLines={2}>
-          {value || ".sh ファイルを選択"}
+          {value || placeholder}
         </Text>
         <Text style={styles.chevron}>›</Text>
       </TouchableOpacity>
       <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setVisible(false)}>
         <SafeAreaView style={styles.root}>
           <View style={styles.header}>
-            <TouchableOpacity accessibilityRole="button" accessibilityLabel="実行ファイル選択を閉じる" onPress={() => setVisible(false)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={closeAccessibilityLabel} onPress={() => setVisible(false)}>
               <Text style={styles.headerAction}>閉じる</Text>
             </TouchableOpacity>
-            <Text style={styles.title}>実行ファイル</Text>
+            <Text style={styles.title}>{title}</Text>
             <View style={styles.headerSpacer} />
           </View>
-          <Text style={styles.path} numberOfLines={2}>{rootPath}</Text>
+          <Text style={styles.path} numberOfLines={2}>{rootDisplayName}</Text>
           <ScrollView contentContainerStyle={styles.content}>
             <RunnerFileExplorer
               active={visible}
               runnerUrl={runnerUrl}
               runnerToken={runnerToken}
               rootPath={rootPath}
-              rootDisplayName={rootPath}
-              fileFilter={shellScriptsOnly}
-              fileAccessibilityLabel={(entry) => `${entry.name}を選択`}
+              rootDisplayName={rootDisplayName}
+              fileFilter={fileFilter}
+              fileAccessibilityLabel={fileAccessibilityLabel}
               onFilePress={(entry) => {
                 onSelect(entry.path);
                 setVisible(false);

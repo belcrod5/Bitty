@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -9,6 +10,7 @@ import {
   View,
 } from "react-native";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
 
 type WorkspaceFileRenameDialogProps = {
@@ -55,45 +57,51 @@ export function WorkspaceFileRenameDialog({
       onRequestClose={saving ? undefined : onCancel}
     >
       <Pressable style={dialogStyles.backdrop} onPress={saving ? undefined : onCancel}>
-        <Pressable style={dialogStyles.card} onPress={() => {}}>
-          <Text style={dialogStyles.title}>{title}</Text>
-          <Text style={dialogStyles.path} numberOfLines={2}>{target?.path || ""}</Text>
-          <TextInput
-            ref={inputRef}
-            style={dialogStyles.input}
-            value={name}
-            onChangeText={setName}
-            onSubmitEditing={submit}
-            editable={!saving}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="done"
-            selectTextOnFocus
-          />
-          <View style={dialogStyles.actions}>
-            <TouchableOpacity
-              style={dialogStyles.secondaryButton}
-              onPress={onCancel}
-              disabled={saving}
-            >
-              <Text style={dialogStyles.secondaryButtonText}>キャンセル</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                dialogStyles.primaryButton,
-                (!name.trim() || saving) ? dialogStyles.disabledButton : null,
-              ]}
-              onPress={submit}
-              disabled={!name.trim() || saving}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#ffffff" />
-              ) : (
-                <Text style={dialogStyles.primaryButtonText}>{submitLabel}</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </Pressable>
+        <KeyboardAvoidingView
+          style={dialogStyles.keyboardAvoiding}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          automaticOffset={Platform.OS === "ios"}
+        >
+          <Pressable style={dialogStyles.card} onPress={() => {}}>
+            <Text style={dialogStyles.title}>{title}</Text>
+            <Text style={dialogStyles.path} numberOfLines={2}>{target?.path || ""}</Text>
+            <TextInput
+              ref={inputRef}
+              style={dialogStyles.input}
+              value={name}
+              onChangeText={setName}
+              onSubmitEditing={submit}
+              editable={!saving}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="done"
+              selectTextOnFocus
+            />
+            <View style={dialogStyles.actions}>
+              <TouchableOpacity
+                style={dialogStyles.secondaryButton}
+                onPress={onCancel}
+                disabled={saving}
+              >
+                <Text style={dialogStyles.secondaryButtonText}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  dialogStyles.primaryButton,
+                  (!name.trim() || saving) ? dialogStyles.disabledButton : null,
+                ]}
+                onPress={submit}
+                disabled={!name.trim() || saving}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <Text style={dialogStyles.primaryButtonText}>{submitLabel}</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </KeyboardAvoidingView>
       </Pressable>
     </AppModal>
   );
@@ -102,10 +110,10 @@ export function WorkspaceFileRenameDialog({
 const dialogStyles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    justifyContent: "center",
     padding: 24,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
   },
+  keyboardAvoiding: { flex: 1, justifyContent: "center" },
   card: {
     borderRadius: 12,
     borderWidth: 1,

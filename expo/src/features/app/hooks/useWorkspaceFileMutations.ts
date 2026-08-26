@@ -11,6 +11,7 @@ import {
   isRunnerEditableTextFile,
   normalizeRunnerPath,
 } from "../utils/runnerFileContextMenu";
+import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 
 type UseWorkspaceFileMutationsParams = {
   runnerUrl: string;
@@ -19,7 +20,6 @@ type UseWorkspaceFileMutationsParams = {
   reloadDirectory?: (path: string) => Promise<void>;
   refreshChangedFiles: () => void | Promise<void>;
   showInfoToast: (textRaw: unknown) => void;
-  onPathRemoved?: (target: WorkspaceFileTarget) => void;
 };
 
 function getParentPath(pathRaw: unknown) {
@@ -37,8 +37,8 @@ export function useWorkspaceFileMutations({
   reloadDirectory,
   refreshChangedFiles,
   showInfoToast,
-  onPathRemoved,
 }: UseWorkspaceFileMutationsParams) {
+  const { renameFile: renameBoardFile, markFileUnavailable } = useSkiaBoard();
   const [renameTarget, setRenameTarget] = useState<WorkspaceFileTarget | null>(null);
   const [editTarget, setEditTarget] = useState<WorkspaceFileTarget | null>(null);
   const [createFileDirectory, setCreateFileDirectory] = useState<string | null>(null);
@@ -82,7 +82,7 @@ export function useWorkspaceFileMutations({
       });
       setRenameTarget(null);
       if (normalizeRunnerPath(result.path) !== normalizeRunnerPath(target.path)) {
-        onPathRemoved?.(target);
+        renameBoardFile(rootDirectory, target.path, result.path);
       }
       showInfoToast(`名前を変更しました: ${result.path}`);
       await refreshAfterMutationWithAlert(result);
@@ -94,7 +94,7 @@ export function useWorkspaceFileMutations({
   }, [
     refreshAfterMutationWithAlert,
     rootDirectory,
-    onPathRemoved,
+    renameBoardFile,
     runnerToken,
     runnerUrl,
     showInfoToast,
@@ -194,7 +194,7 @@ export function useWorkspaceFileMutations({
         path: target.path,
         operation: "delete",
       });
-      onPathRemoved?.(target);
+      markFileUnavailable(rootDirectory, target.path);
       showInfoToast(`削除しました: ${result.path || target.path}`);
       await refreshAfterMutationWithAlert(result);
     } catch (err) {
@@ -203,7 +203,7 @@ export function useWorkspaceFileMutations({
     }
   }, [
     refreshAfterMutationWithAlert,
-    onPathRemoved,
+    markFileUnavailable,
     rootDirectory,
     runnerToken,
     runnerUrl,

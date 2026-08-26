@@ -9,6 +9,7 @@ import {
 } from "../utils/panelAssignmentHydration";
 import {
   SKIA_BOARD_DEFAULT_TEXT_SCALE,
+  skiaBoardCardDisplayName,
   skiaBoardCardId,
 } from "../utils/skiaBoardState";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
@@ -52,6 +53,8 @@ export type SkiaMiniBoardFile = {
   rootDir: string;
   path: string;
   name: string;
+  displayNameOverride?: string;
+  imagePath?: string;
   unavailable?: boolean;
   col: number;
   row: number;
@@ -62,6 +65,8 @@ export type SkiaMiniBoardDirectory = {
   cardId: string;
   directory: string;
   name: string;
+  displayNameOverride?: string;
+  imagePath?: string;
   col: number;
   row: number;
 };
@@ -118,7 +123,7 @@ export function useSkiaMiniChatSessions() {
     removeDirectory: removeBoardDirectory,
     removeFile: removeBoardFile,
     hasFile: hasBoardFile,
-    markFileUnavailable: markBoardFileUnavailable,
+    updateCardAppearance: updateBoardCardAppearance,
     tidyCards,
     setCardTextScale: setBoardCardTextScale,
     addSection: addBoardSection,
@@ -337,27 +342,31 @@ export function useSkiaMiniChatSessions() {
   ]);
 
   // file/directoryカードも、元のboardStateカードが同一参照なら同じitemを使い回す。
-  const boardItemReuseRef = useRef(new Map<string, { source: unknown; item: SkiaMiniBoardItem }>());
+  const boardItemReuseRef = useRef(new Map<
+    string,
+    { source: unknown; name: string; item: SkiaMiniBoardItem }
+  >());
   const items = useMemo<SkiaMiniBoardItem[]>(() => {
     const sessionsByCardId = new Map(sessions.map((session) => [session.cardId, session]));
     const previous = boardItemReuseRef.current;
-    const next = new Map<string, { source: unknown; item: SkiaMiniBoardItem }>();
+    const next = new Map<string, { source: unknown; name: string; item: SkiaMiniBoardItem }>();
     const list = (boardState?.cards || []).flatMap((card) => {
       const cardId = skiaBoardCardId(card);
       if (card.kind === "session") {
         const item = sessionsByCardId.get(cardId);
         return item ? [item] : [];
       }
+      const name = skiaBoardCardDisplayName(card, registeredDirectories);
       const cached = previous.get(cardId);
-      const item: SkiaMiniBoardItem = cached && cached.source === card
+      const item: SkiaMiniBoardItem = cached && cached.source === card && cached.name === name
         ? cached.item
-        : { ...card, cardId };
-      next.set(cardId, { source: card, item });
+        : { ...card, cardId, name };
+      next.set(cardId, { source: card, name, item });
       return [item];
     });
     boardItemReuseRef.current = next;
     return list;
-  }, [boardState, sessions]);
+  }, [boardState, registeredDirectories, sessions]);
   const tidyBoard = useCallback(() => {
     tidyCards(items.map((item) => item.cardId));
   }, [items, tidyCards]);
@@ -379,7 +388,7 @@ export function useSkiaMiniChatSessions() {
     removeBoardDirectory,
     removeBoardFile,
     hasBoardFile,
-    markBoardFileUnavailable,
+    updateBoardCardAppearance,
     tidyBoard,
   };
 }

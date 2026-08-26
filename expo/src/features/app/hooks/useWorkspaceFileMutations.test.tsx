@@ -8,50 +8,68 @@ jest.mock("../utils/workspaceFiles", () => ({
   writeWorkspaceTextFile: jest.fn(),
 }));
 
+const mockRenameBoardFile = jest.fn();
+const mockMarkFileUnavailable = jest.fn();
+jest.mock("../contexts/SkiaBoardContext", () => ({
+  useSkiaBoard: () => ({
+    renameFile: mockRenameBoardFile,
+    markFileUnavailable: mockMarkFileUnavailable,
+  }),
+}));
+
 const mockMutateWorkspaceFile = mutateWorkspaceFile as jest.MockedFunction<typeof mutateWorkspaceFile>;
 const mockWriteWorkspaceTextFile = writeWorkspaceTextFile as jest.MockedFunction<
   typeof writeWorkspaceTextFile
 >;
 
-async function renderMutations(onPathRemoved: jest.Mock, showInfoToast = jest.fn()) {
+async function renderMutations(showInfoToast = jest.fn()) {
   return await renderHook(() => useWorkspaceFileMutations({
     runnerUrl: "http://localhost:8787",
     runnerToken: "token",
     rootDirectory: "/workspace",
     refreshChangedFiles: jest.fn(),
     showInfoToast,
-    onPathRemoved,
   }));
 }
 
 beforeEach(() => {
   mockMutateWorkspaceFile.mockReset();
   mockWriteWorkspaceTextFile.mockReset();
+  mockRenameBoardFile.mockReset();
+  mockMarkFileUnavailable.mockReset();
 });
 
-test.each([
-  ["rename" as const, { path: "docs/renamed.md", previousPath: "docs/guide.md" }],
-  ["delete" as const, { path: "docs/guide.md" }],
-])("reports the old path after a successful %s", async (operation, result) => {
-  const onPathRemoved = jest.fn();
-  const hook = await renderMutations(onPathRemoved);
-  mockMutateWorkspaceFile.mockResolvedValue({ ok: true, ...result });
+test("updates the board reference after a successful rename", async () => {
+  const hook = await renderMutations();
+  const result = { ok: true, path: "docs/renamed.md", previousPath: "docs/guide.md" };
+  mockMutateWorkspaceFile.mockResolvedValue(result);
   const target = { path: "docs/guide.md", name: "guide.md" };
 
   await act(async () => {
-    if (operation === "rename") {
-      await hook.result.current.renameFileTarget(target, "renamed.md");
-    } else {
-      await hook.result.current.deleteFile(target);
-    }
+    await hook.result.current.renameFileTarget(target, "renamed.md");
   });
 
-  expect(onPathRemoved).toHaveBeenCalledWith(target);
+  expect(mockRenameBoardFile).toHaveBeenCalledWith(
+    "/workspace",
+    "docs/guide.md",
+    "docs/renamed.md"
+  );
+});
+
+test("marks the board reference unavailable after a successful delete", async () => {
+  const hook = await renderMutations();
+  mockMutateWorkspaceFile.mockResolvedValue({ ok: true, path: "docs/guide.md" });
+  const target = { path: "docs/guide.md", name: "guide.md" };
+
+  await act(async () => {
+    await hook.result.current.deleteFile(target);
+  });
+
+  expect(mockMarkFileUnavailable).toHaveBeenCalledWith("/workspace", "docs/guide.md");
 });
 
 test("keeps the path available when rename succeeds without changing its normalized path", async () => {
-  const onPathRemoved = jest.fn();
-  const hook = await renderMutations(onPathRemoved);
+  const hook = await renderMutations();
   mockMutateWorkspaceFile.mockResolvedValue({
     ok: true,
     path: " docs\\guide.md ",
@@ -65,12 +83,11 @@ test("keeps the path available when rename succeeds without changing its normali
     );
   });
 
-  expect(onPathRemoved).not.toHaveBeenCalled();
+  expect(mockRenameBoardFile).not.toHaveBeenCalled();
 });
 
 test("does not mark a path unavailable when the mutation fails", async () => {
-  const onPathRemoved = jest.fn();
-  const hook = await renderMutations(onPathRemoved);
+  const hook = await renderMutations();
   mockMutateWorkspaceFile.mockRejectedValue(new Error("failed"));
 
   await act(async () => {
@@ -80,7 +97,7 @@ test("does not mark a path unavailable when the mutation fails", async () => {
     )).rejects.toThrow("failed");
   });
 
-  expect(onPathRemoved).not.toHaveBeenCalled();
+  expect(mockRenameBoardFile).not.toHaveBeenCalled();
 });
 
 test.each(["/work/other/tasks", "/", "D:/"])(
@@ -89,7 +106,7 @@ test.each(["/work/other/tasks", "/", "D:/"])(
     const targetPath = targetRootDirectory === "/"
       ? "/today.checklist"
       : `${targetRootDirectory.replace(/\/$/u, "")}/today.checklist`;
-    const hook = await renderMutations(jest.fn());
+    const hook = await renderMutations();
     mockWriteWorkspaceTextFile.mockResolvedValue({
       ok: true,
       path: targetPath,
@@ -117,7 +134,7 @@ test.each(["/work/other/tasks", "/", "D:/"])(
 
 test("falls back to the current root when a save target has no location root", async () => {
   const showInfoToast = jest.fn();
-  const hook = await renderMutations(jest.fn(), showInfoToast);
+  const hook = await renderMutations(showInfoToast);
   mockWriteWorkspaceTextFile.mockResolvedValue({
     ok: true,
     path: "docs/note.md",
@@ -141,7 +158,7 @@ test("falls back to the current root when a save target has no location root", a
 
 test("auto-saves without showing the manual save success toast", async () => {
   const showInfoToast = jest.fn();
-  const hook = await renderMutations(jest.fn(), showInfoToast);
+  const hook = await renderMutations(showInfoToast);
   mockWriteWorkspaceTextFile.mockResolvedValue({
     ok: true,
     path: "tasks/today.checklist",

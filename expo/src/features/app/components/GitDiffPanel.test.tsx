@@ -14,16 +14,25 @@ jest.mock("@expo/vector-icons", () => {
     Ionicons: (props: Record<string, unknown>) => React.createElement(Text, props, "icon"),
   };
 });
+jest.mock("../keyboardController", () => {
+  const React = require("react");
+  const { View } = require("react-native");
+  return {
+    KeyboardAvoidingView: ({ children }: { children?: React.ReactNode }) => React.createElement(View, null, children),
+  };
+});
 const mockAddFile = jest.fn();
 const mockRemoveFile = jest.fn();
 const mockHasFile = jest.fn(() => false);
 const mockMarkFileUnavailable = jest.fn();
+const mockRenameBoardFile = jest.fn();
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
     addFile: mockAddFile,
     removeFile: mockRemoveFile,
     hasFile: mockHasFile,
     markFileUnavailable: mockMarkFileUnavailable,
+    renameFile: mockRenameBoardFile,
     loaded: true,
   }),
 }));

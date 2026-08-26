@@ -289,7 +289,6 @@ export function ChatScreen({
     addFile: addSkiaBoardFile,
     removeFile: removeSkiaBoardFile,
     hasFile: hasSkiaBoardFile,
-    markFileUnavailable,
     loaded: skiaBoardLoaded,
   } = useSkiaBoard();
   const popupHeaderDragStartPageYRef = useRef<number | null>(null);
@@ -1347,7 +1346,6 @@ export function ChatScreen({
     rootDirectory: selectedDirectoryPathForView,
     refreshChangedFiles: gitChangedFiles.refresh,
     showInfoToast,
-    onPathRemoved: (target) => markFileUnavailable(selectedDirectoryPathForView, target.path),
   });
   const speakRunnerFileText = useCallback((textRaw: unknown, target: WorkspaceFileTarget) => {
     const text = String(textRaw || "").trim();

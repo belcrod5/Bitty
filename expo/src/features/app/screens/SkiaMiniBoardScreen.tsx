@@ -41,6 +41,7 @@ import {
 } from "react-native-reanimated";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useChatScreen } from "../contexts/ChatScreenContext";
+import { useConversation } from "../contexts/ConversationContext";
 import type { SessionPopupOrigin } from "../components/popupChatTypes";
 import type { LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import {
@@ -67,6 +68,11 @@ import {
   SkiaBoardSectionRegion,
 } from "../components/SkiaBoardSection";
 import { SkiaBoardSectionEditor } from "../components/SkiaBoardSectionEditor";
+import {
+  SkiaBoardCardAppearanceEditor,
+  type SkiaBoardAppearanceTarget,
+} from "../components/SkiaBoardCardAppearanceEditor";
+import { useSkiaBoardCardImage } from "../hooks/useSkiaBoardCardImage";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -318,6 +324,8 @@ type BoardCardProps = {
   selected: boolean;
   titleFontSize: number;
   bodyFontSize: number;
+  runnerUrl: string;
+  runnerToken: string;
 };
 
 // item(内容が変わった時だけidentityが変わる)以外のpropsは安定しているため、
@@ -330,12 +338,19 @@ const BoardCard = memo(function BoardCard({
   selected,
   titleFontSize,
   bodyFontSize,
+  runnerUrl,
+  runnerToken,
 }: BoardCardProps) {
   const transform = useDerivedValue(() => {
     const position = positions.value[index] || { x: 0, y: 0 };
     return [{ translateX: position.x }, { translateY: position.y }];
   });
   const contentWidth = cardWidth - 32;
+  const boardImage = useSkiaBoardCardImage(
+    runnerUrl,
+    runnerToken,
+    item.kind === "session" ? undefined : item.imagePath
+  );
   const messageContent = item.kind === "session"
     ? item.lastMessageContent.replace(/\s+/g, " ").trim() || "メッセージを読み込み中…"
     : "";
@@ -442,6 +457,22 @@ const BoardCard = memo(function BoardCard({
     drawCardRect(2, 4, fillPaint("#cbd5e1", 0.42));
     drawCardRect(0, 0, fillPaint("#ffffff"));
     drawCardRect(0, 0, strokePaint(selected ? "#2563eb" : "#d7dee8", selected ? 2.5 : 1));
+    if (boardImage) {
+      const availableWidth = cardWidth - 16;
+      const availableHeight = CARD_HEIGHT - 16;
+      const imageWidth = boardImage.width();
+      const imageHeight = boardImage.height();
+      const imageScale = Math.min(availableWidth / imageWidth, availableHeight / imageHeight);
+      const width = imageWidth * imageScale;
+      const height = imageHeight * imageScale;
+      canvas.drawImageRect(
+        boardImage,
+        Skia.XYWHRect(0, 0, imageWidth, imageHeight),
+        Skia.XYWHRect((cardWidth - width) / 2, (CARD_HEIGHT - height) / 2, width, height),
+        fillPaint("#ffffff")
+      );
+      return;
+    }
     if (showUnread) {
       canvas.drawCircle(cardWidth - 12, 12, 4, fillPaint("#2563eb"));
     }
@@ -498,6 +529,7 @@ const BoardCard = memo(function BoardCard({
     // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
     activityTrailKey,
     bodyFontSize,
+    boardImage,
     cardWidth,
     contentWidth,
     detail,
@@ -548,6 +580,7 @@ export function SkiaMiniBoardScreen({
     sanitizeTextForTts,
     handleAssistantAudioButtonPress,
   } = useChatScreen();
+  const { registeredDirectories } = useConversation();
   const {
     directorySync,
     hydratingPanelCount,
@@ -564,7 +597,7 @@ export function SkiaMiniBoardScreen({
     removeBoardDirectory,
     removeBoardFile,
     hasBoardFile,
-    markBoardFileUnavailable,
+    updateBoardCardAppearance,
     tidyBoard,
   } = useSkiaMiniChatSessions();
   const syncStatusText =
@@ -584,6 +617,7 @@ export function SkiaMiniBoardScreen({
   const [selectedCardId, setSelectedCardId] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [editingSectionId, setEditingSectionId] = useState("");
+  const [appearanceTarget, setAppearanceTarget] = useState<SkiaBoardAppearanceTarget | null>(null);
   const [tool, setTool] = useState<"select" | "section">("select");
   const [boardMenuOpen, setBoardMenuOpen] = useState(false);
   const [fileMenuRootDir, setFileMenuRootDir] = useState("");
@@ -594,6 +628,15 @@ export function SkiaMiniBoardScreen({
   const [runnerMedia, setRunnerMedia] = useState<RunnerMediaFile | null>(null);
   const [runnerFileViewerTarget, setRunnerFileViewerTarget] = useState<RunnerFileViewerTarget | null>(null);
   const [viewportWidth, setViewportWidth] = useState(windowWidth);
+  const openAppearanceEditor = useCallback((item: Exclude<SkiaMiniBoardItem, SkiaMiniChatSession>) => {
+    setAppearanceTarget({
+      cardId: item.cardId,
+      name: item.name,
+      rootPath: item.kind === "file" ? item.rootDir : item.directory,
+      displayNameOverride: item.displayNameOverride,
+      imagePath: item.imagePath,
+    });
+  }, []);
   const cardWidth = Math.max(
     SKIA_BOARD_MIN_CARD_WIDTH,
     Math.min(270, (viewportWidth - BOARD_PADDING * 2 - CARD_GAP) / 2)
@@ -854,13 +897,17 @@ export function SkiaMiniBoardScreen({
       [
         { text: "キャンセル", style: "cancel" },
         {
+          text: "表示をカスタマイズ",
+          onPress: () => openAppearanceEditor(item),
+        },
+        {
           text: "Skiaボードから除外",
           style: "destructive",
           onPress: () => removeBoardFile(item.rootDir, item.path),
         },
       ]
     );
-  }, [removeBoardFile]);
+  }, [openAppearanceEditor, removeBoardFile]);
 
   const handleCardTap = useCallback((index: number) => {
     if (index < 0) {
@@ -962,44 +1009,59 @@ export function SkiaMiniBoardScreen({
 
   const confirmRemoveCard = useCallback((index: number) => {
     const item = itemsRef.current[index];
-    if (!item || item.kind === "file") return;
-    const label = item.kind === "session" ? item.title || item.sessionId : item.name;
+    if (!item || item.kind !== "session") return;
+    const label = item.title || item.sessionId;
     Alert.alert(
       "カードを削除",
-      item.kind === "session"
-        ? `「${label}」をボードから外しますか?\n外したセッションは自動では再追加されません。`
-        : `「${label}」をボードから外しますか?`,
+      `「${label}」をボードから外しますか?\n外したセッションは自動では再追加されません。`,
       [
         { text: "キャンセル", style: "cancel" },
         {
           text: "削除",
           style: "destructive",
           onPress: () => {
-            if (item.kind === "session") {
-              removeBoardSession(item.sessionId);
-            } else {
-              removeBoardDirectory(item.directory);
-            }
+            removeBoardSession(item.sessionId);
           },
         },
       ]
     );
-  }, [removeBoardDirectory, removeBoardSession]);
+  }, [removeBoardSession]);
 
   const openCardContextMenu = useCallback((index: number) => {
     const item = itemsRef.current[index];
     if (!item) return;
-    if (item.kind !== "file") {
+    if (item.kind === "session") {
       confirmRemoveCard(index);
+      return;
+    }
+    if (item.kind === "directory") {
+      Alert.alert(item.name, item.directory, [
+        { text: "キャンセル", style: "cancel" },
+        { text: "表示をカスタマイズ", onPress: () => openAppearanceEditor(item) },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: () => removeBoardDirectory(item.directory),
+        },
+      ]);
       return;
     }
     if (item.unavailable) {
       showUnavailableFileMenu(item);
       return;
     }
-    setFileMenuRootDir(item.rootDir);
-    setPendingFileAction({ item, action: "menu" });
-  }, [confirmRemoveCard, showUnavailableFileMenu]);
+    Alert.alert(item.name, item.path, [
+      { text: "キャンセル", style: "cancel" },
+      { text: "表示をカスタマイズ", onPress: () => openAppearanceEditor(item) },
+      {
+        text: "ファイル操作",
+        onPress: () => {
+          setFileMenuRootDir(item.rootDir);
+          setPendingFileAction({ item, action: "menu" });
+        },
+      },
+    ]);
+  }, [confirmRemoveCard, openAppearanceEditor, removeBoardDirectory, showUnavailableFileMenu]);
 
   const openSectionContextMenu = useCallback((index: number) => {
     const section = sections[index];
@@ -1054,7 +1116,6 @@ export function SkiaMiniBoardScreen({
     rootDirectory: fileMenuRootDir,
     refreshChangedFiles: refreshBoardFile,
     showInfoToast,
-    onPathRemoved: (target) => markBoardFileUnavailable(fileMenuRootDir, target.path),
   });
   const speakFileText = useCallback((text: string, target: WorkspaceFileTarget) => {
     const content = sanitizeTextForTts(text);
@@ -1076,7 +1137,7 @@ export function SkiaMiniBoardScreen({
     setPendingFileAction(null);
     const params = {
       filePathRaw: file.path,
-      fileNameRaw: file.name,
+      fileNameRaw: getPathLabel(file.path),
       runnerUrl,
       runnerToken,
       rootDir: file.rootDir,
@@ -1725,6 +1786,8 @@ export function SkiaMiniBoardScreen({
                     selected={item.cardId === selectedCardId}
                     titleFontSize={titleFontSize}
                     bodyFontSize={bodyFontSize}
+                    runnerUrl={runnerUrl}
+                    runnerToken={runnerToken}
                   />
                 ))}
               </Group>
@@ -1784,6 +1847,17 @@ export function SkiaMiniBoardScreen({
         }}
         onDelete={() => {
           if (editingSection) confirmRemoveSection(editingSection);
+        }}
+      />
+      <SkiaBoardCardAppearanceEditor
+        target={appearanceTarget}
+        directories={registeredDirectories}
+        runnerUrl={runnerUrl}
+        runnerToken={runnerToken}
+        onClose={() => setAppearanceTarget(null)}
+        onSave={(appearance) => {
+          if (appearanceTarget) updateBoardCardAppearance(appearanceTarget.cardId, appearance);
+          setAppearanceTarget(null);
         }}
       />
       <RunnerMediaViewer

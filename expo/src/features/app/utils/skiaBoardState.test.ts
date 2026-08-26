@@ -5,19 +5,23 @@ import {
   addSkiaBoardSession,
   findFreeSkiaBoardCell,
   ingestSkiaBoardSessions,
+  isAbsoluteRunnerHostPath,
   markSkiaBoardFileUnavailable,
   moveSkiaBoardCard,
   normalizeSkiaBoardTextScale,
   parseSkiaBoardState,
+  renameSkiaBoardFile,
   removeSkiaBoardDirectory,
   removeSkiaBoardSession,
   removeSkiaBoardFile,
   removeSkiaBoardSection,
   skiaBoardCardId,
+  skiaBoardCardDisplayName,
   skiaBoardDirectoryId,
   skiaBoardGridPosition,
   setSkiaBoardCardTextScale,
   tidySkiaBoardCards,
+  updateSkiaBoardCardAppearance,
   updateSkiaBoardSection,
   type SkiaBoardState,
 } from "./skiaBoardState";
@@ -159,7 +163,6 @@ describe("ingestSkiaBoardSessions", () => {
       cards: [{
         kind: "directory",
         directory: "/workspace",
-        name: "Workspace",
         col: 0,
         row: 0,
       }],
@@ -282,7 +285,6 @@ describe("manual board cards", () => {
     expect(added.cards[1]).toEqual({
       kind: "directory",
       directory: "/workspace/projects/bitty",
-      name: "Bitty",
       col: 1,
       row: 0,
     });
@@ -305,7 +307,6 @@ describe("manual board cards", () => {
         kind: "file",
         rootDir: "/workspace",
         path: "docs/guide.md",
-        name: "guide.md",
         col: 0.4,
         row: 2.1,
       }],
@@ -328,7 +329,6 @@ describe("manual board cards", () => {
     });
     expect(restored.cards[0]).toEqual({
       ...state.cards[0],
-      name: "guide restored.md",
       unavailable: false,
     });
   });
@@ -550,10 +550,47 @@ describe("parseSkiaBoardState", () => {
     })?.cards).toEqual([{
       kind: "directory",
       directory: "/workspace/projects/bitty",
-      name: "Bitty",
       col: 1,
       row: 2,
     }]);
+  });
+
+  it("discards legacy names and restores only explicit appearance", () => {
+    expect(parseSkiaBoardState({
+      cards: [
+        {
+          kind: "file",
+          rootDir: "/workspace",
+          path: "docs/guide.md",
+          name: "legacy.md",
+          displayNameOverride: "Board guide",
+          imagePath: "/Users/me/Pictures/guide.png",
+          col: 0,
+          row: 0,
+        },
+        {
+          kind: "directory",
+          directory: "/workspace",
+          name: "legacy workspace",
+          imagePath: "relative/image.png",
+          col: 1,
+          row: 0,
+        },
+      ],
+      sections: [],
+      excludedSessionIds: [],
+    })?.cards).toEqual([
+      {
+        kind: "file",
+        rootDir: "/workspace",
+        path: "docs/guide.md",
+        displayNameOverride: "Board guide",
+        imagePath: "/Users/me/Pictures/guide.png",
+        col: 0,
+        row: 0,
+      },
+      { kind: "directory", directory: "/workspace", col: 1, row: 0 },
+    ]);
   });
 
   it("drops malformed cards and rejects empty or invalid payloads", () => {
@@ -605,5 +642,86 @@ describe("parseSkiaBoardState", () => {
       excludedSessionIds: [],
       cardTextScale: "",
     })).toBeNull();
+  });
+});
+
+describe("board card appearance and file identity", () => {
+  const state: SkiaBoardState = {
+    cards: [
+      { kind: "file", rootDir: "/workspace", path: "docs/guide.md", col: 0, row: 0 },
+      { kind: "directory", directory: "/workspace/projects/bitty", col: 1, row: 0 },
+    ],
+    sections: [],
+    excludedSessionIds: [],
+    ingestedUpdatedAtMs: 0,
+    cardTextScale: 1,
+  };
+
+  it("derives normal names and prefers explicit overrides", () => {
+    const file = state.cards[0];
+    const directory = state.cards[1];
+    if (file.kind !== "file" || directory.kind !== "directory") throw new Error("bad fixture");
+    expect(skiaBoardCardDisplayName(file)).toBe("guide.md");
+    expect(skiaBoardCardDisplayName(directory, [{
+      path: "/workspace/projects/bitty",
+      displayName: "Bitty登録名",
+    }])).toBe("Bitty登録名");
+    expect(skiaBoardCardDisplayName({
+      ...directory,
+      displayNameOverride: "Board名",
+    })).toBe("Board名");
+  });
+
+  it("sets and clears appearance without a display mode", () => {
+    const cardId = skiaBoardCardId(state.cards[0]);
+    const customized = updateSkiaBoardCardAppearance(state, cardId, {
+      displayNameOverride: "Guide",
+      imagePath: "/Users/me/Pictures/guide.png",
+    });
+    expect(customized.cards[0]).toMatchObject({
+      displayNameOverride: "Guide",
+      imagePath: "/Users/me/Pictures/guide.png",
+    });
+    expect(updateSkiaBoardCardAppearance(customized, cardId, {}).cards[0]).toEqual(state.cards[0]);
+    expect(isAbsoluteRunnerHostPath("/tmp/image.png")).toBe(true);
+    expect(isAbsoluteRunnerHostPath("C:\\Pictures\\image.png")).toBe(true);
+    expect(isAbsoluteRunnerHostPath("Pictures/image.png")).toBe(false);
+  });
+
+  it("updates a renamed reference while preserving appearance and position", () => {
+    const customized = updateSkiaBoardCardAppearance(state, skiaBoardCardId(state.cards[0]), {
+      displayNameOverride: "Guide",
+      imagePath: "/tmp/guide.png",
+    });
+    const renamed = renameSkiaBoardFile(customized, "/workspace", "docs/guide.md", "docs/new.md");
+    expect(renamed.cards[0]).toEqual({
+      kind: "file",
+      rootDir: "/workspace",
+      path: "docs/new.md",
+      displayNameOverride: "Guide",
+      imagePath: "/tmp/guide.png",
+      col: 0,
+      row: 0,
+    });
+  });
+
+  it("keeps an existing destination and removes the renamed source", () => {
+    const destination = {
+      kind: "file" as const,
+      rootDir: "/workspace",
+      path: "docs/new.md",
+      col: 2,
+      row: 3,
+    };
+    const withDestination: SkiaBoardState = {
+      ...state,
+      cards: [state.cards[0], destination],
+    };
+    expect(renameSkiaBoardFile(
+      withDestination,
+      "/workspace",
+      "docs/guide.md",
+      "docs/new.md"
+    ).cards).toEqual([destination]);
   });
 });
