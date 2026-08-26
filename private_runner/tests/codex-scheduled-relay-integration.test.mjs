@@ -87,8 +87,9 @@ test("targeted schedules resume normally and fail busy without replacing an acti
 
   const snapshot = await service.snapshot();
   assert.equal(snapshot.schedules[0].lastDispatch.status, "fired");
-  assert.equal(snapshot.schedules[0].lastDispatch.threadId, "scheduled-thread");
-  assert.equal(snapshot.schedules[0].lastDispatch.turnId, "scheduled-turn");
+  assert.deepEqual(snapshot.schedules[0].lastDispatch.result, {
+    kind: "llm", threadId: "scheduled-thread", turnId: "scheduled-turn",
+  });
   assert.equal(received.some((message) => message.method === "thread/start"), false);
   const threadResume = received.find((message) => message.method === "thread/resume");
   const turnStart = received.find((message) => message.method === "turn/start");

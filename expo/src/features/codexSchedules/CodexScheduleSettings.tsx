@@ -35,11 +35,14 @@ function newSchedule(props: CodexScheduleSettingsProps): CodexSchedule {
     startLocal: codexScheduleStartLocalFromDate(start),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     rrule: null,
-    cwd: props.currentCwd || props.directories[0]?.path || "",
-    modelRef: props.currentModelRef || props.modelOptions[0]?.value || "",
-    reasoningEffort: props.currentReasoningEffort,
-    prompt: "",
-    threadId: null,
+    action: {
+      kind: "llm",
+      cwd: props.currentCwd || props.directories[0]?.path || "",
+      modelRef: props.currentModelRef || props.modelOptions[0]?.value || "",
+      reasoningEffort: props.currentReasoningEffort,
+      prompt: "",
+      threadId: null,
+    },
     nextOccurrenceAt: null,
     lastDispatch: null,
   };
@@ -224,6 +227,8 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
             modelOptions={props.modelOptions}
             thinkOptions={props.thinkOptions}
             currentThreadId={props.currentThreadId}
+            runnerUrl={props.runnerUrl}
+            runnerToken={props.runnerToken}
             onChange={updateSchedule}
             onClose={() => setEditingId(null)}
             onDelete={(id) => {

@@ -4,18 +4,39 @@ export type CodexScheduleReasoningEffort = ReasoningEffort;
 export type CodexScheduleRrule = null | "FREQ=DAILY" | "FREQ=WEEKLY" | "FREQ=MONTHLY" | "FREQ=YEARLY";
 export type CodexScheduleRepeat = "none" | "daily" | "weekly" | "monthly" | "yearly";
 
-export type CodexScheduleDefinition = {
+type CodexScheduleBase = {
   id: string;
   name: string;
   enabled: boolean;
   startLocal: string;
   timeZone: string;
   rrule: CodexScheduleRrule;
+};
+
+export type CodexScheduleAction = {
+  kind: "llm";
   cwd: string;
   modelRef: string;
   reasoningEffort: CodexScheduleReasoningEffort;
   prompt: string;
   threadId: string | null;
+} | {
+  kind: "script";
+  cwd: string;
+  scriptPath: string;
+};
+
+export type CodexScheduleDefinition = CodexScheduleBase & {
+  action: CodexScheduleAction;
+};
+
+export type CodexScheduleDispatchResult = {
+  kind: "llm";
+  threadId: string | null;
+  turnId: string | null;
+} | {
+  kind: "script";
+  jobId: string;
 };
 
 export type CodexScheduleDispatch = {
@@ -23,8 +44,7 @@ export type CodexScheduleDispatch = {
   claimedAt: string;
   definitionHash: string;
   status: "claimed" | "fired" | "failed" | "failed_uncertain_after_restart";
-  threadId: string | null;
-  turnId: string | null;
+  result: CodexScheduleDispatchResult | null;
   errorCode: string;
   errorMessage: string;
   updatedAt: string;
@@ -102,24 +122,42 @@ function startLocal(value: unknown) {
 function parseDispatch(raw: unknown): CodexScheduleDispatch | null {
   if (raw === null) return null;
   const value = object(raw, "lastDispatch");
-  exactKeys(value, ["occurrenceAt", "claimedAt", "definitionHash", "status", "threadId", "turnId", "errorCode", "errorMessage", "updatedAt"], "lastDispatch");
+  exactKeys(value, ["occurrenceAt", "claimedAt", "definitionHash", "status", "result", "errorCode", "errorMessage", "updatedAt"], "lastDispatch");
   const statuses = ["claimed", "fired", "failed", "failed_uncertain_after_restart"] as const;
   if (!statuses.includes(value.status as typeof statuses[number])) throw new Error("lastDispatch.status is invalid");
-  const nullableId = (input: unknown, label: string) => input === null ? null : text(input, label, 10_000);
   const definitionHash = typeof value.definitionHash === "string" && /^[a-f0-9]{64}$/.test(value.definitionHash)
     ? value.definitionHash
     : (() => { throw new Error("lastDispatch.definitionHash is invalid"); })();
-  const threadId = nullableId(value.threadId, "lastDispatch.threadId");
-  const turnId = nullableId(value.turnId, "lastDispatch.turnId");
-  if (value.status === "fired" && (!threadId || !turnId)) throw new Error("lastDispatch fired IDs are required");
-  if (value.status === "claimed" && (threadId !== null || turnId !== null)) throw new Error("lastDispatch claimed IDs must be null");
+  let result: CodexScheduleDispatchResult | null = null;
+  if (value.result !== null) {
+    const rawResult = object(value.result, "lastDispatch.result");
+    if (rawResult.kind === "llm") {
+      exactKeys(rawResult, ["kind", "threadId", "turnId"], "lastDispatch.result");
+      const nullableId = (input: unknown, label: string) => input === null ? null : text(input, label, 10_000);
+      result = {
+        kind: "llm",
+        threadId: nullableId(rawResult.threadId, "lastDispatch.result.threadId"),
+        turnId: nullableId(rawResult.turnId, "lastDispatch.result.turnId"),
+      };
+      if (!result.threadId && !result.turnId) throw new Error("lastDispatch.result must contain at least one LLM ID");
+    } else if (rawResult.kind === "script") {
+      exactKeys(rawResult, ["kind", "jobId"], "lastDispatch.result");
+      result = { kind: "script", jobId: text(rawResult.jobId, "lastDispatch.result.jobId", 10_000) };
+    } else {
+      throw new Error("lastDispatch.result.kind is invalid");
+    }
+  }
+  if (value.status === "fired" && !result) throw new Error("lastDispatch fired result is required");
+  if (value.status === "fired" && result?.kind === "llm" && (!result.threadId || !result.turnId)) {
+    throw new Error("lastDispatch fired LLM IDs are required");
+  }
+  if (value.status === "claimed" && result !== null) throw new Error("lastDispatch claimed result must be null");
   return {
     occurrenceAt: iso(value.occurrenceAt, "lastDispatch.occurrenceAt"),
     claimedAt: iso(value.claimedAt, "lastDispatch.claimedAt"),
     definitionHash,
     status: value.status as CodexScheduleDispatch["status"],
-    threadId,
-    turnId,
+    result,
     errorCode: typeof value.errorCode === "string" && value.errorCode.length <= 200 ? value.errorCode : (() => { throw new Error("lastDispatch.errorCode is invalid"); })(),
     errorMessage: typeof value.errorMessage === "string" && value.errorMessage.length <= 1_000 ? value.errorMessage : (() => { throw new Error("lastDispatch.errorMessage is invalid"); })(),
     updatedAt: iso(value.updatedAt, "lastDispatch.updatedAt"),
@@ -128,26 +166,55 @@ function parseDispatch(raw: unknown): CodexScheduleDispatch | null {
 
 export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinition {
   const value = object(raw, "schedule");
-  const keys = ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "cwd", "modelRef", "reasoningEffort", "prompt", "threadId"];
-  exactKeys(value, keys, "schedule");
+  const legacy = value.action === undefined;
+  exactKeys(value, legacy
+    ? ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "cwd", "modelRef", "reasoningEffort", "prompt", "threadId"]
+    : ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "action"], "schedule");
   const id = text(value.id, "id", 36);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error("id is invalid");
   const rrules: CodexScheduleRrule[] = [null, "FREQ=DAILY", "FREQ=WEEKLY", "FREQ=MONTHLY", "FREQ=YEARLY"];
   if (!rrules.includes(value.rrule as CodexScheduleRrule)) throw new Error("rrule is invalid");
-  const reasoningEffort = value.reasoningEffort;
-  if (typeof reasoningEffort !== "string" || reasoningEffort !== reasoningEffort.trim().toLowerCase() || !isReasoningEffort(reasoningEffort)) {
-    throw new Error("reasoningEffort is invalid");
-  }
   if (typeof value.enabled !== "boolean") throw new Error("enabled is invalid");
   const timeZone = text(value.timeZone, "timeZone", 100);
-  const threadId = value.threadId === null || value.threadId === undefined
-    ? null
-    : text(value.threadId, "threadId", 120);
-  if (threadId !== null && !/^[A-Za-z0-9._:-]+$/.test(threadId)) throw new Error("threadId is invalid");
   try {
     new Intl.DateTimeFormat("en", { timeZone }).format(new Date());
   } catch {
     throw new Error("timeZone is invalid");
+  }
+  const rawAction = legacy ? {
+    kind: "llm",
+    cwd: value.cwd,
+    modelRef: value.modelRef,
+    reasoningEffort: value.reasoningEffort,
+    prompt: value.prompt,
+    threadId: value.threadId,
+  } : object(value.action, "action");
+  let action: CodexScheduleAction;
+  if (rawAction.kind === "script") {
+    exactKeys(rawAction, ["kind", "cwd", "scriptPath"], "action");
+    const scriptPath = text(rawAction.scriptPath, "action.scriptPath", 2_048);
+    if (!scriptPath.toLowerCase().endsWith(".sh")) throw new Error("action.scriptPath is invalid");
+    action = { kind: "script", cwd: text(rawAction.cwd, "action.cwd", 2_048), scriptPath };
+  } else if (rawAction.kind === "llm") {
+    exactKeys(rawAction, ["kind", "cwd", "modelRef", "reasoningEffort", "prompt", "threadId"], "action");
+    const reasoningEffort = rawAction.reasoningEffort;
+    if (typeof reasoningEffort !== "string" || reasoningEffort !== reasoningEffort.trim().toLowerCase() || !isReasoningEffort(reasoningEffort)) {
+      throw new Error("action.reasoningEffort is invalid");
+    }
+    const threadId = rawAction.threadId === null || rawAction.threadId === undefined
+      ? null
+      : text(rawAction.threadId, "action.threadId", 120);
+    if (threadId !== null && !/^[A-Za-z0-9._:-]+$/.test(threadId)) throw new Error("action.threadId is invalid");
+    action = {
+      kind: "llm",
+      cwd: text(rawAction.cwd, "action.cwd", 2_048),
+      modelRef: text(rawAction.modelRef, "action.modelRef", 1_000),
+      reasoningEffort,
+      prompt: text(rawAction.prompt, "action.prompt", 24_000),
+      threadId,
+    };
+  } else {
+    throw new Error("action.kind is invalid");
   }
   return {
     id,
@@ -156,11 +223,7 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
     startLocal: startLocal(value.startLocal),
     timeZone,
     rrule: value.rrule as CodexScheduleRrule,
-    cwd: text(value.cwd, "cwd", 2_048),
-    modelRef: text(value.modelRef, "modelRef", 1_000),
-    reasoningEffort,
-    prompt: text(value.prompt, "prompt", 24_000),
-    threadId,
+    action,
   };
 }
 

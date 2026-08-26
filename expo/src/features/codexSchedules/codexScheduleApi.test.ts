@@ -11,11 +11,14 @@ const schedule: CodexSchedule = {
   startLocal: "2026-08-14T09:00:00",
   timeZone: "Asia/Tokyo",
   rrule: "FREQ=DAILY",
-  cwd: "/work/project",
-  modelRef: "openai-codex/gpt-5.6",
-  reasoningEffort: "high",
-  prompt: "Check",
-  threadId: "thread-current",
+  action: {
+    kind: "llm",
+    cwd: "/work/project",
+    modelRef: "openai-codex/gpt-5.6",
+    reasoningEffort: "high",
+    prompt: "Check",
+    threadId: "thread-current",
+  },
   nextOccurrenceAt: "2026-08-14T00:00:00.000Z",
   lastDispatch: null,
 };
@@ -49,7 +52,7 @@ test("PUT sends only definitions with base revision", async () => {
     baseRevision: 2,
     schedules: [expect.not.objectContaining({ nextOccurrenceAt: expect.anything(), lastDispatch: expect.anything() })],
   });
-  expect(body.schedules[0].threadId).toBe("thread-current");
+  expect(body.schedules[0].action.threadId).toBe("thread-current");
 });
 
 test("409 exposes the latest revision without hiding the conflict", async () => {

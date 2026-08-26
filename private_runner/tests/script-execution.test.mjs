@@ -49,3 +49,20 @@ test("accepts confirmed absolute script paths outside the workspace", async () =
     assert.equal(target.cwdAbs, nestedRealPath);
   });
 });
+
+test("rejects a scheduled script outside its selected directory", async () => {
+  await withTempDir(async (root) => {
+    const selectedDirectory = path.join(root, "selected");
+    const scriptPath = path.join(root, "outside.sh");
+    await mkdir(selectedDirectory);
+    await writeFile(scriptPath, "echo outside\n");
+
+    await assert.rejects(
+      __TESTING__.resolveWorkspaceShellScriptTarget(scriptPath, {
+        allowExternal: true,
+        allowedRoot: selectedDirectory,
+      }),
+      /outside the selected directory/,
+    );
+  });
+});

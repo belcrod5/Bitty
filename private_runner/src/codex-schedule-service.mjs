@@ -27,13 +27,19 @@ const DISPATCH_STATUSES = new Set([
   "failed_uncertain_after_restart",
 ]);
 const DEFINITION_KEYS = new Set([
+  "id", "name", "enabled", "startLocal", "timeZone", "rrule", "action",
+]);
+const LEGACY_DEFINITION_KEYS = new Set([
   "id", "name", "enabled", "startLocal", "timeZone", "rrule",
   "cwd", "modelRef", "reasoningEffort", "prompt", "threadId",
 ]);
 const CREATE_DEFINITION_KEYS = new Set([
-  "name", "enabled", "startLocal", "timeZone", "rrule",
-  "cwd", "modelRef", "reasoningEffort", "prompt", "threadId",
+  "name", "enabled", "startLocal", "timeZone", "rrule", "action",
 ]);
+const LEGACY_CREATE_DEFINITION_KEYS = new Set(
+  [...LEGACY_DEFINITION_KEYS].filter((key) => key !== "id"),
+);
+const PATCH_DEFINITION_KEYS = new Set([...CREATE_DEFINITION_KEYS, ...LEGACY_CREATE_DEFINITION_KEYS]);
 
 export const CODEX_SCHEDULE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -107,26 +113,102 @@ function validIso(value) {
 }
 
 export function codexScheduleDefinitionHash(definition) {
+  const action = definition.action || {
+    kind: "llm",
+    cwd: definition.cwd,
+    modelRef: definition.modelRef,
+    reasoningEffort: definition.reasoningEffort,
+    prompt: definition.prompt,
+    threadId: definition.threadId,
+  };
   const canonical = {
     id: definition.id,
     enabled: definition.enabled,
     startLocal: definition.startLocal,
     timeZone: definition.timeZone,
     rrule: definition.rrule,
-    cwd: definition.cwd,
-    modelRef: definition.modelRef,
-    reasoningEffort: definition.reasoningEffort,
-    prompt: definition.prompt,
   };
-  const threadId = String(definition.threadId || "").trim();
-  // Keep the legacy new-thread hash stable so existing version 1 runtime stores remain readable.
-  if (threadId) canonical.threadId = threadId;
+  if (action.kind === "script") {
+    canonical.action = { kind: "script", cwd: action.cwd, scriptPath: action.scriptPath };
+  } else {
+    canonical.cwd = action.cwd;
+    canonical.modelRef = action.modelRef;
+    canonical.reasoningEffort = action.reasoningEffort;
+    canonical.prompt = action.prompt;
+    const threadId = String(action.threadId || "").trim();
+    // Keep version 1 LLM hashes stable so existing runtime history remains attached.
+    if (threadId) canonical.threadId = threadId;
+  }
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
-function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields = false) {
+function normalizeAction(value, index, parseCodexOptions, strictStoredFields, legacy) {
+  const label = `schedules[${index}]`;
+  if (legacy) {
+    value = {
+      kind: "llm",
+      cwd: value.cwd,
+      modelRef: value.modelRef,
+      reasoningEffort: value.reasoningEffort,
+      prompt: value.prompt,
+      threadId: value.threadId,
+    };
+  } else {
+    value = requireObject(value.action, `${label}.action`);
+  }
+  const kind = requireString(value.kind, `${label}.action.kind`).trim();
+  const cwd = requireString(value.cwd, `${label}.action.cwd`).trim();
+  if (!cwd || cwd.length > 2048) throw new Error(`${label}.action.cwd is invalid`);
+  if (kind === "script") {
+    onlyKeys(value, new Set(["kind", "cwd", "scriptPath"]), `${label}.action`);
+    const scriptPath = requireString(value.scriptPath, `${label}.action.scriptPath`).trim();
+    if (!scriptPath || scriptPath.length > 2048 || !scriptPath.toLowerCase().endsWith(".sh")) {
+      throw new Error(`${label}.action.scriptPath is invalid`);
+    }
+    return { kind, cwd, scriptPath };
+  }
+  if (kind !== "llm") throw new Error(`${label}.action.kind is invalid`);
+  onlyKeys(value, new Set(["kind", "cwd", "modelRef", "reasoningEffort", "prompt", "threadId"]), `${label}.action`);
+  const prompt = requireString(value.prompt, `${label}.action.prompt`).trim();
+  if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`${label}.action.prompt is invalid`);
+  const threadId = value.threadId === null || value.threadId === undefined
+    ? null
+    : requireString(value.threadId, `${label}.action.threadId`).trim();
+  if (threadId !== null && (
+    !threadId || threadId.length > MAX_THREAD_ID_CHARS || !/^[A-Za-z0-9._:-]+$/.test(threadId)
+  )) {
+    throw new Error(`${label}.action.threadId is invalid`);
+  }
+  const modelRef = requireString(value.modelRef, `${label}.action.modelRef`).trim();
+  if (!modelRef) throw new Error(`${label}.action.modelRef is invalid`);
+  const reasoningEffort = requireString(
+    value.reasoningEffort,
+    `${label}.action.reasoningEffort`,
+  ).trim().toLowerCase();
+  if (!EFFORTS.has(reasoningEffort)) throw new Error(`${label}.action.reasoningEffort is invalid`);
+  let options;
+  try {
+    options = parseCodexOptions(modelRef, reasoningEffort);
+  } catch (error) {
+    throw new Error(`${label} Codex options are invalid: ${errorMessage(error)}`);
+  }
+  if (String(options?.reasoningEffort || "") !== reasoningEffort) {
+    throw new Error(`${label}.action.reasoningEffort was not preserved`);
+  }
+  const normalizedModelRef = String(options?.modelInfo?.modelRef || "").trim();
+  if (!normalizedModelRef) throw new Error(`${label}.action.modelRef is invalid`);
+  if (strictStoredFields && normalizedModelRef !== modelRef) {
+    throw new Error(`${label}.action.modelRef is not normalized`);
+  }
+  return { kind, cwd, modelRef: normalizedModelRef, reasoningEffort, prompt, threadId };
+}
+
+function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields = false, legacy = false) {
   const value = requireObject(raw, `schedules[${index}]`);
-  if (strictStoredFields) onlyKeys(value, DEFINITION_KEYS, `schedules[${index}]`);
+  const legacyShape = legacy || (!strictStoredFields && value.action === undefined);
+  if (strictStoredFields) {
+    onlyKeys(value, legacyShape ? LEGACY_DEFINITION_KEYS : DEFINITION_KEYS, `schedules[${index}]`);
+  }
   const id = requireString(value.id, `schedules[${index}].id`).trim();
   if (!CODEX_SCHEDULE_UUID_PATTERN.test(id)) {
     throw new Error(`schedules[${index}].id is invalid`);
@@ -141,39 +223,6 @@ function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields =
     requireString(value.timeZone, `schedules[${index}].timeZone`),
   );
   const rrule = normalizeCodexScheduleRrule(value.rrule);
-  const cwd = requireString(value.cwd, `schedules[${index}].cwd`).trim();
-  if (!cwd || cwd.length > 2048) throw new Error(`schedules[${index}].cwd is invalid`);
-  const prompt = requireString(value.prompt, `schedules[${index}].prompt`).trim();
-  if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`schedules[${index}].prompt is invalid`);
-  const threadId = value.threadId === null || value.threadId === undefined
-    ? null
-    : requireString(value.threadId, `schedules[${index}].threadId`).trim();
-  if (threadId !== null && (
-    !threadId || threadId.length > MAX_THREAD_ID_CHARS || !/^[A-Za-z0-9._:-]+$/.test(threadId)
-  )) {
-    throw new Error(`schedules[${index}].threadId is invalid`);
-  }
-  const modelRef = requireString(value.modelRef, `schedules[${index}].modelRef`).trim();
-  if (!modelRef) throw new Error(`schedules[${index}].modelRef is invalid`);
-  const reasoningEffort = requireString(
-    value.reasoningEffort,
-    `schedules[${index}].reasoningEffort`,
-  ).trim().toLowerCase();
-  if (!EFFORTS.has(reasoningEffort)) throw new Error(`schedules[${index}].reasoningEffort is invalid`);
-  let options;
-  try {
-    options = parseCodexOptions(modelRef, reasoningEffort);
-  } catch (error) {
-    throw new Error(`schedules[${index}] Codex options are invalid: ${errorMessage(error)}`);
-  }
-  if (String(options?.reasoningEffort || "") !== reasoningEffort) {
-    throw new Error(`schedules[${index}].reasoningEffort was not preserved`);
-  }
-  const normalizedModelRef = String(options?.modelInfo?.modelRef || "").trim();
-  if (!normalizedModelRef) throw new Error(`schedules[${index}].modelRef is invalid`);
-  if (strictStoredFields && normalizedModelRef !== modelRef) {
-    throw new Error(`schedules[${index}].modelRef is not normalized`);
-  }
   return {
     id,
     name,
@@ -181,25 +230,26 @@ function normalizeDefinition(raw, index, parseCodexOptions, strictStoredFields =
     startLocal,
     timeZone,
     rrule,
-    cwd,
-    modelRef: normalizedModelRef,
-    reasoningEffort,
-    prompt,
-    threadId,
+    action: normalizeAction(value, index, parseCodexOptions, strictStoredFields, legacyShape),
   };
 }
 
-async function normalizeDefinitions(raw, { parseCodexOptions, validateCwd, strictStoredFields = false }) {
+async function normalizeDefinitions(raw, {
+  parseCodexOptions,
+  validateAction,
+  strictStoredFields = false,
+  legacy = false,
+}) {
   if (!Array.isArray(raw)) throw new Error("schedules must be an array");
   if (raw.length > CODEX_SCHEDULE_MAX_COUNT) throw new Error("schedules must contain at most 100 entries");
   const ids = new Set();
   const schedules = raw.map((value, index) => normalizeDefinition(
-    value, index, parseCodexOptions, strictStoredFields,
+    value, index, parseCodexOptions, strictStoredFields, legacy,
   ));
   for (const schedule of schedules) {
     if (ids.has(schedule.id)) throw new Error(`duplicate schedule id: ${schedule.id}`);
     ids.add(schedule.id);
-    if (validateCwd) await validateCwd(schedule.cwd);
+    if (validateAction) await validateAction(schedule.action);
   }
   return schedules;
 }
@@ -209,13 +259,42 @@ function triggerChanged(left, right) {
     left.timeZone !== right.timeZone || left.rrule !== right.rrule;
 }
 
-function validateLastDispatch(raw, label) {
+function validateDispatchResult(raw, label) {
   if (raw === null) return null;
   const value = requireObject(raw, label);
-  onlyKeys(value, new Set([
-    "occurrenceAt", "claimedAt", "definitionHash", "status", "threadId", "turnId",
-    "errorCode", "errorMessage", "updatedAt",
-  ]), label);
+  if (value.kind === "llm") {
+    onlyKeys(value, new Set(["kind", "threadId", "turnId"]), label);
+    const nullableId = (input, idLabel) => input === null
+      ? null
+      : requireString(input, idLabel).trim();
+    const threadId = nullableId(value.threadId, `${label}.threadId`);
+    const turnId = nullableId(value.turnId, `${label}.turnId`);
+    if ((threadId !== null && !threadId) || (turnId !== null && !turnId) || (!threadId && !turnId)) {
+      throw new Error(`${label} must contain at least one LLM ID`);
+    }
+    return { kind: "llm", threadId, turnId };
+  }
+  if (value.kind === "script") {
+    onlyKeys(value, new Set(["kind", "jobId"]), label);
+    const jobId = requireString(value.jobId, `${label}.jobId`).trim();
+    if (!jobId) throw new Error(`${label}.jobId is invalid`);
+    return { kind: "script", jobId };
+  }
+  throw new Error(`${label}.kind is invalid`);
+}
+
+function validateLastDispatch(raw, label, legacy = false) {
+  if (raw === null) return null;
+  const value = requireObject(raw, label);
+  onlyKeys(value, legacy
+    ? new Set([
+      "occurrenceAt", "claimedAt", "definitionHash", "status", "threadId", "turnId",
+      "errorCode", "errorMessage", "updatedAt",
+    ])
+    : new Set([
+      "occurrenceAt", "claimedAt", "definitionHash", "status", "result",
+      "errorCode", "errorMessage", "updatedAt",
+    ]), label);
   if (!validIso(value.occurrenceAt) || !validIso(value.claimedAt) || !validIso(value.updatedAt)) {
     throw new Error(`${label} timestamps are invalid`);
   }
@@ -223,29 +302,36 @@ function validateLastDispatch(raw, label) {
     throw new Error(`${label}.definitionHash is invalid`);
   }
   if (!DISPATCH_STATUSES.has(value.status)) throw new Error(`${label}.status is invalid`);
-  if (value.threadId !== null && (typeof value.threadId !== "string" || !value.threadId.trim())) {
-    throw new Error(`${label}.threadId is invalid`);
+  const result = legacy
+    ? (value.threadId || value.turnId
+      ? validateDispatchResult({ kind: "llm", threadId: value.threadId, turnId: value.turnId }, `${label}.result`)
+      : null)
+    : validateDispatchResult(value.result, `${label}.result`);
+  if (value.status === "fired" && !result) throw new Error(`${label} fired result is required`);
+  if (value.status === "fired" && result?.kind === "llm" && (!result.threadId || !result.turnId)) {
+    throw new Error(`${label} fired LLM IDs are required`);
   }
-  if (value.turnId !== null && (typeof value.turnId !== "string" || !value.turnId.trim())) {
-    throw new Error(`${label}.turnId is invalid`);
-  }
-  if (value.status === "fired" && (!value.threadId || !value.turnId)) {
-    throw new Error(`${label} fired IDs are required`);
-  }
-  if (value.status === "claimed" && (value.threadId !== null || value.turnId !== null)) {
-    throw new Error(`${label} claimed IDs must be null`);
-  }
+  if (value.status === "claimed" && result !== null) throw new Error(`${label} claimed result must be null`);
   if (typeof value.errorCode !== "string" || value.errorCode.length > 200) throw new Error(`${label}.errorCode is invalid`);
   if (typeof value.errorMessage !== "string" || value.errorMessage.length > MAX_ERROR_CHARS) {
     throw new Error(`${label}.errorMessage is invalid`);
   }
-  return clone(value);
+  return {
+    occurrenceAt: value.occurrenceAt,
+    claimedAt: value.claimedAt,
+    definitionHash: value.definitionHash,
+    status: value.status,
+    result,
+    errorCode: value.errorCode,
+    errorMessage: value.errorMessage,
+    updatedAt: value.updatedAt,
+  };
 }
 
 function validateRuntime(raw, definitions, allowDefinitionMismatch = false) {
   const root = requireObject(raw, "runtime store");
   onlyKeys(root, new Set(["version", "definitionsRevision", "runtimes", "updatedAt"]), "runtime store");
-  if (root.version !== 1 || !Number.isInteger(root.definitionsRevision) || root.definitionsRevision < 0) {
+  if (![1, 2].includes(root.version) || !Number.isInteger(root.definitionsRevision) || root.definitionsRevision < 0) {
     throw new Error("runtime store header is invalid");
   }
   if (!validIso(root.updatedAt)) throw new Error("runtime store updatedAt is invalid");
@@ -270,9 +356,9 @@ function validateRuntime(raw, definitions, allowDefinitionMismatch = false) {
     if (value.nextOccurrenceAt !== null && !validIso(value.nextOccurrenceAt)) {
       throw new Error(`${label}.nextOccurrenceAt is invalid`);
     }
-    value.lastDispatch = validateLastDispatch(value.lastDispatch, `${label}.lastDispatch`);
+    value.lastDispatch = validateLastDispatch(value.lastDispatch, `${label}.lastDispatch`, root.version === 1);
   }
-  return clone(root);
+  return { ...clone(root), version: 2 };
 }
 
 function buildSnapshot(definitions, runtimeStore) {
@@ -291,7 +377,9 @@ export function createCodexScheduleService({
   runtimePath,
   parseCodexOptions,
   validateCwd,
+  validateShellScript,
   startNormalCodexTurn,
+  startShellScript,
   now = () => new Date(),
   scheduleTimer = (callback, delay) => setTimeout(callback, delay),
   clearTimer = (timer) => clearTimeout(timer),
@@ -307,6 +395,16 @@ export function createCodexScheduleService({
   const queuedIdSet = new Set();
   let activeStarts = 0;
   const idleWaiters = new Set();
+
+  async function validateActionTarget(action) {
+    await validateCwd(action.cwd);
+    if (action.kind === "script") {
+      await validateShellScript(action.scriptPath, {
+        allowExternal: true,
+        allowedRoot: action.cwd,
+      });
+    }
+  }
 
   function storeError(context, error) {
     const failure = error instanceof CodexScheduleStoreUnavailableError
@@ -386,7 +484,7 @@ export function createCodexScheduleService({
         lastDispatch: preservedDispatch,
       };
     }
-    return { version: 1, definitionsRevision: revision, runtimes, updatedAt: iso(at) };
+    return { version: 2, definitionsRevision: revision, runtimes, updatedAt: iso(at) };
   }
 
   async function load() {
@@ -412,8 +510,8 @@ export function createCodexScheduleService({
       if (definitionsMissing && !runtimeMissing) throw new Error("definitions store is missing while runtime exists");
       if (definitionsMissing && runtimeMissing) {
         const at = now();
-        definitionsStore = { version: 1, revision: 0, schedules: [], updatedAt: iso(at) };
-        runtimeStore = { version: 1, definitionsRevision: 0, runtimes: {}, updatedAt: iso(at) };
+        definitionsStore = { version: 2, revision: 0, schedules: [], updatedAt: iso(at) };
+        runtimeStore = { version: 2, definitionsRevision: 0, runtimes: {}, updatedAt: iso(at) };
         const definitionsText = encoded(
           definitionsStore,
           CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
@@ -427,17 +525,18 @@ export function createCodexScheduleService({
 
       const root = requireObject(definitionsRaw, "definitions store");
       onlyKeys(root, new Set(["version", "revision", "schedules", "updatedAt"]), "definitions store");
-      if (root.version !== 1 || !Number.isInteger(root.revision) || root.revision < 0 || !validIso(root.updatedAt)) {
+      if (![1, 2].includes(root.version) || !Number.isInteger(root.revision) || root.revision < 0 || !validIso(root.updatedAt)) {
         throw new Error("definitions store header is invalid");
       }
       const schedules = await normalizeDefinitions(root.schedules, {
         parseCodexOptions,
         strictStoredFields: true,
+        legacy: root.version === 1,
       });
-      definitionsStore = { ...clone(root), schedules };
+      definitionsStore = { ...clone(root), version: 2, schedules };
       if (runtimeMissing) {
         runtimeStore = rebuildRuntime(schedules, root.revision, now());
-        await persistRuntime(runtimeStore);
+        if (root.version === 2) await persistRuntime(runtimeStore);
       } else {
         const parsedRuntime = validateRuntime(
           runtimeRaw,
@@ -450,6 +549,15 @@ export function createCodexScheduleService({
         } else {
           runtimeStore = parsedRuntime;
         }
+      }
+      if (root.version === 1 || runtimeRaw?.version === 1) {
+        const updatedAt = iso(now());
+        definitionsStore.updatedAt = updatedAt;
+        runtimeStore.updatedAt = updatedAt;
+        await persistBoth(
+          encoded(definitionsStore, CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES, "definitions store"),
+          encoded(runtimeStore, CODEX_SCHEDULE_RUNTIME_MAX_BYTES, "runtime store"),
+        );
       }
       loaded = true;
     } catch (error) {
@@ -525,8 +633,7 @@ export function createCodexScheduleService({
         claimedAt: iso(at),
         definitionHash,
         status: "claimed",
-        threadId: null,
-        turnId: null,
+        result: null,
         errorCode: "",
         errorMessage: "",
         updatedAt: iso(at),
@@ -544,23 +651,35 @@ export function createCodexScheduleService({
         dispatch.definitionHash !== claim.definitionHash || dispatch.status !== "claimed") return;
       if (failure) {
         dispatch.status = "failed";
-        dispatch.errorCode = String(failure.code || "codex_schedule_dispatch_failed").slice(0, 200);
+        dispatch.errorCode = String(failure.code || "schedule_dispatch_failed").slice(0, 200);
         dispatch.errorMessage = errorMessage(failure).slice(0, MAX_ERROR_CHARS);
-        dispatch.threadId = failure.threadId ? String(failure.threadId) : null;
-        dispatch.turnId = failure.turnId ? String(failure.turnId) : null;
+        dispatch.result = null;
       } else {
-        const threadId = String(result?.threadId || "").trim();
-        const turnId = String(result?.turnId || "").trim();
-        if (!threadId || !turnId) {
-          dispatch.status = "failed";
-          dispatch.errorCode = "codex_start_ids_missing";
-          dispatch.errorMessage = "Codex turn start did not return thread and turn IDs";
+        if (claim.definition.action.kind === "script") {
+          const jobId = String(result?.jobId || "").trim();
+          if (!jobId) {
+            dispatch.status = "failed";
+            dispatch.errorCode = "script_start_job_id_missing";
+            dispatch.errorMessage = "Script start did not return a job ID";
+          } else {
+            dispatch.status = "fired";
+            dispatch.result = { kind: "script", jobId };
+            dispatch.errorCode = "";
+            dispatch.errorMessage = "";
+          }
         } else {
-          dispatch.status = "fired";
-          dispatch.threadId = threadId;
-          dispatch.turnId = turnId;
-          dispatch.errorCode = "";
-          dispatch.errorMessage = "";
+          const threadId = String(result?.threadId || "").trim();
+          const turnId = String(result?.turnId || "").trim();
+          if (!threadId || !turnId) {
+            dispatch.status = "failed";
+            dispatch.errorCode = "codex_start_ids_missing";
+            dispatch.errorMessage = "Codex turn start did not return thread and turn IDs";
+          } else {
+            dispatch.status = "fired";
+            dispatch.result = { kind: "llm", threadId, turnId };
+            dispatch.errorCode = "";
+            dispatch.errorMessage = "";
+          }
         }
       }
       dispatch.updatedAt = iso(now());
@@ -576,33 +695,45 @@ export function createCodexScheduleService({
       claim = await claimSchedule(id);
       if (!claim) return;
       try {
-        await validateCwd(claim.definition.cwd);
+        await validateCwd(claim.definition.action.cwd);
       } catch (error) {
         const failure = new Error(errorMessage(error));
         failure.code = "cwd_unavailable";
         throw failure;
       }
-      let options;
-      try {
-        options = parseCodexOptions(claim.definition.modelRef, claim.definition.reasoningEffort);
-      } catch (error) {
-        const failure = new Error(errorMessage(error));
-        failure.code = "codex_options_invalid";
-        throw failure;
+      const action = claim.definition.action;
+      if (action.kind === "script") {
+        await validateShellScript(action.scriptPath, {
+          allowExternal: true,
+          allowedRoot: action.cwd,
+        });
+        result = await startShellScript(action.scriptPath, {
+          allowExternal: true,
+          allowedRoot: action.cwd,
+        });
+      } else {
+        let options;
+        try {
+          options = parseCodexOptions(action.modelRef, action.reasoningEffort);
+        } catch (error) {
+          const failure = new Error(errorMessage(error));
+          failure.code = "codex_options_invalid";
+          throw failure;
+        }
+        if (String(options?.reasoningEffort || "") !== action.reasoningEffort) {
+          const error = new Error("reasoning effort is no longer available");
+          error.code = "codex_options_invalid";
+          throw error;
+        }
+        result = await startNormalCodexTurn({
+          inputText: action.prompt,
+          cwd: action.cwd,
+          model: options.modelInfo.model,
+          effort: action.reasoningEffort,
+          threadId: action.threadId || "",
+          serviceName: "private-runner-codex-schedule",
+        });
       }
-      if (String(options?.reasoningEffort || "") !== claim.definition.reasoningEffort) {
-        const error = new Error("reasoning effort is no longer available");
-        error.code = "codex_options_invalid";
-        throw error;
-      }
-      result = await startNormalCodexTurn({
-        inputText: claim.definition.prompt,
-        cwd: claim.definition.cwd,
-        model: options.modelInfo.model,
-        effort: claim.definition.reasoningEffort,
-        threadId: claim.definition.threadId || "",
-        serviceName: "private-runner-codex-schedule",
-      });
     } catch (error) {
       failure = error instanceof Error ? error : new Error(errorMessage(error));
     }
@@ -673,13 +804,13 @@ export function createCodexScheduleService({
     const updatedAt = iso(at);
     const nextRevision = definitionsStore.revision + 1;
     const nextDefinitions = {
-      version: 1,
+      version: 2,
       revision: nextRevision,
       schedules,
       updatedAt,
     };
     const nextRuntime = {
-      version: 1,
+      version: 2,
       definitionsRevision: nextRevision,
       runtimes,
       updatedAt,
@@ -707,7 +838,7 @@ export function createCodexScheduleService({
       }
       const schedules = await normalizeDefinitions(body.schedules, {
         parseCodexOptions,
-        validateCwd,
+        validateAction: validateActionTarget,
       });
       return commitNormalizedDefinitions(schedules, now());
     });
@@ -728,12 +859,13 @@ export function createCodexScheduleService({
         throw new Error("idempotency key is invalid");
       }
       const input = requireObject(body.schedule, "schedule");
-      onlyKeys(input, CREATE_DEFINITION_KEYS, "schedule");
+      onlyKeys(input, input.action === undefined ? LEGACY_CREATE_DEFINITION_KEYS : CREATE_DEFINITION_KEYS, "schedule");
       const schedule = normalizeDefinition(
         { ...input, id: idempotencyKey },
         0,
         parseCodexOptions,
         true,
+        input.action === undefined,
       );
       const existing = definitionsStore.schedules.find((item) => item.id === idempotencyKey);
       if (existing) {
@@ -753,7 +885,7 @@ export function createCodexScheduleService({
       if (definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
         throw new Error("schedules must contain at most 100 entries");
       }
-      await validateCwd(schedule.cwd);
+      await validateActionTarget(schedule.action);
       const snapshot = await commitNormalizedDefinitions(
         [...definitionsStore.schedules, schedule],
         now(),
@@ -784,14 +916,30 @@ export function createCodexScheduleService({
         throw new Error("baseRevision must be a non-negative integer");
       }
       const patch = requireObject(body.patch, "patch");
-      onlyKeys(patch, CREATE_DEFINITION_KEYS, "patch");
+      onlyKeys(patch, PATCH_DEFINITION_KEYS, "patch");
       const patchKeys = Object.keys(patch);
       if (patchKeys.length === 0) throw new Error("patch must not be empty");
       const index = definitionsStore.schedules.findIndex((schedule) => schedule.id === id);
       if (index < 0) throw new CodexScheduleNotFoundError();
       const current = definitionsStore.schedules[index];
-      const schedule = normalizeDefinition({ ...current, ...patch }, index, parseCodexOptions, true);
-      if (patchKeys.every((key) => current[key] === schedule[key])) {
+      const legacyActionPatch = Object.fromEntries(
+        ["cwd", "modelRef", "reasoningEffort", "prompt", "threadId"]
+          .filter((key) => Object.hasOwn(patch, key))
+          .map((key) => [key, patch[key]]),
+      );
+      if (patch.action !== undefined && Object.keys(legacyActionPatch).length > 0) {
+        throw new Error("patch must use either action or legacy LLM fields");
+      }
+      if (Object.keys(legacyActionPatch).length > 0 && current.action.kind !== "llm") {
+        throw new Error("legacy LLM fields cannot patch a script action");
+      }
+      const normalizedPatch = { ...patch };
+      for (const key of Object.keys(legacyActionPatch)) delete normalizedPatch[key];
+      if (Object.keys(legacyActionPatch).length > 0) {
+        normalizedPatch.action = { ...current.action, ...legacyActionPatch };
+      }
+      const schedule = normalizeDefinition({ ...current, ...normalizedPatch }, index, parseCodexOptions, true);
+      if (Object.keys(normalizedPatch).every((key) => JSON.stringify(current[key]) === JSON.stringify(schedule[key]))) {
         const snapshot = buildSnapshot(definitionsStore.schedules, runtimeStore);
         return {
           updated: false,
@@ -802,7 +950,7 @@ export function createCodexScheduleService({
       if (body.baseRevision !== definitionsStore.revision) {
         throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       }
-      await validateCwd(schedule.cwd);
+      await validateActionTarget(schedule.action);
       const schedules = [...definitionsStore.schedules];
       schedules[index] = schedule;
       const snapshot = await commitNormalizedDefinitions(schedules, now());
