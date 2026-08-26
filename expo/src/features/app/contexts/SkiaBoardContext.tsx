@@ -19,6 +19,7 @@ import {
   markSkiaBoardFileUnavailable,
   moveSkiaBoardCard,
   readPersistedSkiaBoardState,
+  renameSkiaBoardFile,
   removeSkiaBoardDirectory,
   removeSkiaBoardFile,
   removeSkiaBoardSession,
@@ -28,9 +29,9 @@ import {
   skiaBoardDirectoryId,
   skiaBoardFileId,
   tidySkiaBoardCards,
+  updateSkiaBoardCardAppearance,
   updateSkiaBoardSection,
   writePersistedSkiaBoardState,
-  type SkiaBoardDirectoryCard,
   type SkiaBoardFileCard,
   type SkiaBoardState,
   type SkiaBoardSection,
@@ -42,13 +43,18 @@ type SkiaBoardContextValue = {
   addSession: (sessionId: string) => void;
   removeSession: (sessionId: string) => void;
   hasSession: (sessionId: string) => boolean;
-  addDirectory: (target: Pick<SkiaBoardDirectoryCard, "directory" | "name">) => void;
+  addDirectory: (target: { directory: string; name?: string }) => void;
   removeDirectory: (directory: string) => void;
   hasDirectory: (directory: string) => boolean;
-  addFile: (file: Pick<SkiaBoardFileCard, "rootDir" | "path" | "name">) => void;
+  addFile: (file: { rootDir: string; path: string; name?: string }) => void;
   removeFile: (rootDir: string, path: string) => void;
   markFileUnavailable: (rootDir: string, path: string) => void;
+  renameFile: (rootDir: string, previousPath: string, nextPath: string) => void;
   hasFile: (rootDir: string, path: string) => boolean;
+  updateCardAppearance: (
+    cardId: string,
+    appearance: Pick<SkiaBoardFileCard, "displayNameOverride" | "imagePath">
+  ) => void;
   moveCard: (cardId: string, col: number, row: number) => void;
   addSection: (section: SkiaBoardSection) => void;
   updateSection: (sectionId: string, update: Partial<Omit<SkiaBoardSection, "id">>) => void;
@@ -166,13 +172,13 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const removeSession = useCallback((sessionId: string) => {
     updateInitializedState((current) => removeSkiaBoardSession(current, sessionId));
   }, [updateInitializedState]);
-  const addDirectory = useCallback((target: Pick<SkiaBoardDirectoryCard, "directory" | "name">) => {
+  const addDirectory = useCallback((target: { directory: string; name?: string }) => {
     updateInitializedState((current) => addSkiaBoardDirectory(current, target));
   }, [updateInitializedState]);
   const removeDirectory = useCallback((directory: string) => {
     updateInitializedState((current) => removeSkiaBoardDirectory(current, directory));
   }, [updateInitializedState]);
-  const addFile = useCallback((file: Pick<SkiaBoardFileCard, "rootDir" | "path" | "name">) => {
+  const addFile = useCallback((file: { rootDir: string; path: string; name?: string }) => {
     updateInitializedState((current) => addSkiaBoardFile(current, file));
   }, [updateInitializedState]);
   const removeFile = useCallback((rootDir: string, path: string) => {
@@ -180,6 +186,19 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   }, [updateInitializedState]);
   const markFileUnavailable = useCallback((rootDir: string, path: string) => {
     updateInitializedState((current) => markSkiaBoardFileUnavailable(current, rootDir, path));
+  }, [updateInitializedState]);
+  const renameFile = useCallback((rootDir: string, previousPath: string, nextPath: string) => {
+    updateInitializedState((current) => (
+      renameSkiaBoardFile(current, rootDir, previousPath, nextPath)
+    ));
+  }, [updateInitializedState]);
+  const updateCardAppearance = useCallback((
+    cardId: string,
+    appearance: Pick<SkiaBoardFileCard, "displayNameOverride" | "imagePath">
+  ) => {
+    updateInitializedState((current) => (
+      updateSkiaBoardCardAppearance(current, cardId, appearance)
+    ));
   }, [updateInitializedState]);
   const moveCard = useCallback((cardId: string, col: number, row: number) => {
     updateInitializedState((current) => moveSkiaBoardCard(current, cardId, col, row));
@@ -234,7 +253,9 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     addFile,
     removeFile,
     markFileUnavailable,
+    renameFile,
     hasFile,
+    updateCardAppearance,
     moveCard,
     addSection,
     updateSection,
@@ -250,6 +271,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     hasSession,
     loaded,
     markFileUnavailable,
+    renameFile,
     moveCard,
     addSection,
     updateSection,
@@ -258,6 +280,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     removeFile,
     removeSession,
     state,
+    updateCardAppearance,
     setCardTextScale,
     tidyCards,
   ]);

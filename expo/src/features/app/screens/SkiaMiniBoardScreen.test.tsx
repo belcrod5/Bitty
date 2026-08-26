@@ -1,6 +1,6 @@
 import React from "react";
 import { Alert, Platform, StyleSheet } from "react-native";
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 
@@ -69,6 +69,7 @@ jest.mock("@shopify/react-native-skia", () => {
     Line: Stub,
     Path: PathStub,
     Picture: PictureStub,
+    useImage: () => null,
     RoundedRect: Stub,
     FontWeight: { Bold: 700 },
     PaintStyle: { Fill: 0, Stroke: 1 },
@@ -159,6 +160,16 @@ jest.mock("@expo/vector-icons", () => {
   };
 });
 
+jest.mock("../keyboardController", () => {
+  const ReactModule = require("react");
+  const { View } = require("react-native");
+  return {
+    KeyboardAvoidingView: ({ children }: { children?: React.ReactNode }) => (
+      ReactModule.createElement(View, null, children)
+    ),
+  };
+});
+
 // 公式mockのuseSharedValueはrender毎に新オブジェクトを返し、実物と異なり
 // deps比較で毎render変化してしまうため、実物同様に同一参照を維持する。
 jest.mock("react-native-worklets", () => require("react-native-worklets/src/mock"));
@@ -229,6 +240,17 @@ jest.mock("../contexts/ChatScreenContext", () => ({
     handleAssistantAudioButtonPress: jest.fn(),
   }),
 }));
+jest.mock("../contexts/ConversationContext", () => ({
+  useConversation: () => ({
+    registeredDirectories: [{ path: "/workspace", displayName: "Workspace" }],
+  }),
+}));
+jest.mock("../contexts/SkiaBoardContext", () => ({
+  useSkiaBoard: () => ({
+    renameFile: mockRenameBoardFile,
+    markFileUnavailable: mockMarkBoardFileUnavailable,
+  }),
+}));
 jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => null }));
 jest.mock("../components/RunnerFileViewer", () => {
   const ReactModule = require("react");
@@ -251,6 +273,8 @@ const mockRemoveBoardDirectory = jest.fn();
 const mockRemoveBoardFile = jest.fn();
 const mockHasBoardFile = jest.fn(() => true);
 const mockMarkBoardFileUnavailable = jest.fn();
+const mockRenameBoardFile = jest.fn();
+const mockUpdateBoardCardAppearance = jest.fn();
 const mockTidyBoard = jest.fn();
 const mockSetBoardCardTextScale = jest.fn();
 const mockDefaultSession = {
@@ -321,6 +345,8 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
     removeBoardFile: mockRemoveBoardFile,
     hasBoardFile: mockHasBoardFile,
     markBoardFileUnavailable: mockMarkBoardFileUnavailable,
+    renameBoardFile: mockRenameBoardFile,
+    updateBoardCardAppearance: mockUpdateBoardCardAppearance,
     tidyBoard: mockTidyBoard,
   }),
 }));
@@ -338,6 +364,8 @@ beforeEach(() => {
   mockRemoveBoardFile.mockClear();
   mockHasBoardFile.mockClear();
   mockMarkBoardFileUnavailable.mockClear();
+  mockRenameBoardFile.mockClear();
+  mockUpdateBoardCardAppearance.mockClear();
   mockTidyBoard.mockClear();
   mockSetBoardCardTextScale.mockClear();
   mockSessions = [mockDefaultSession];
@@ -993,12 +1021,165 @@ test("shows the shared file menu and removes a file card from it", async () => {
   await act(async () => {
     gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
   });
-
-  const menuCall = alertSpy.mock.calls.find((call) => call[0] === "readme.md");
+  const boardActions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => {
+    boardActions.find((action) => action.text === "ファイル操作")?.onPress?.();
+  });
+  const matchingCalls = alertSpy.mock.calls.filter((call) => call[0] === "readme.md");
+  const menuCall = matchingCalls[matchingCalls.length - 1];
   const actions = (menuCall?.[2] || []) as Array<{ text: string; onPress?: () => void }>;
   actions.find((action) => action.text === "Skiaボードから除外")?.onPress?.();
   expect(mockRemoveBoardFile).toHaveBeenCalledWith("/workspace", "docs/readme.md");
   alertSpy.mockRestore();
+});
+
+test("customizes a file card without renaming the Runner file", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ndocs/readme.md",
+    rootDir: "/workspace",
+    path: "docs/readme.md",
+    name: "readme.md",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    text: async () => JSON.stringify({
+      basePath: "/workspace",
+      entries: [
+        { kind: "file", name: "docs.png", path: "/Users/me/Pictures/docs.png" },
+        { kind: "file", name: "notes.txt", path: "/Users/me/Pictures/notes.txt" },
+      ],
+    }),
+  } as Response);
+  const screen = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
+  });
+  const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => {
+    actions.find((action) => action.text === "表示をカスタマイズ")?.onPress?.();
+  });
+  await fireEvent.changeText(screen.getByLabelText("ボード上の表示名"), "Docs");
+  expect(screen.getByLabelText("画像を探すディレクトリ")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("カード画像"));
+  await waitFor(() => expect(screen.getByLabelText("docs.pngを画像として選択")).toBeTruthy());
+  expect(fetchSpy).toHaveBeenCalledWith(
+    expect.stringContaining("path=%2Fworkspace"),
+    expect.any(Object)
+  );
+  expect(screen.queryByLabelText("notes.txtを画像として選択")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("docs.pngを画像として選択"));
+  expect(screen.getAllByText("/Users/me/Pictures/docs.png")).not.toHaveLength(0);
+  await fireEvent.press(screen.getByLabelText("選択した画像を解除"));
+  expect(screen.queryByLabelText("選択した画像を解除")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("カード画像"));
+  await waitFor(() => expect(screen.getByLabelText("docs.pngを画像として選択")).toBeTruthy());
+  await fireEvent.press(screen.getByLabelText("docs.pngを画像として選択"));
+  await fireEvent.press(screen.getByText("保存"));
+
+  expect(mockUpdateBoardCardAppearance).toHaveBeenCalledWith(
+    "file:/workspace\ndocs/readme.md",
+    { displayNameOverride: "Docs", imagePath: "/Users/me/Pictures/docs.png" }
+  );
+  alertSpy.mockRestore();
+  fetchSpy.mockRestore();
+});
+
+test("keeps a legacy image path until its directory is selected again", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\nreadme.md",
+    rootDir: "/workspace",
+    path: "readme.md",
+    name: "readme.md",
+    imagePath: "/outside/legacy.png",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const screen = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await act(async () => {
+    gestureRegistry().LongPress.onStart({ x: 30, y: 30 });
+  });
+  const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => {
+    actions.find((action) => action.text === "表示をカスタマイズ")?.onPress?.();
+  });
+
+  expect(screen.getByText("登録解除済み: /outside")).toBeTruthy();
+  expect(screen.getAllByText("/outside/legacy.png")).not.toHaveLength(0);
+  await fireEvent.press(screen.getByLabelText("画像を探すディレクトリ"));
+  await fireEvent.press(screen.getByText("Workspace"));
+  expect(screen.queryByText("/outside/legacy.png")).toBeNull();
+  alertSpy.mockRestore();
+});
+
+test("loads a configured image from the authenticated Runner media endpoint", async () => {
+  mockSessions = [{
+    kind: "directory",
+    cardId: "directory:/workspace",
+    directory: "/workspace",
+    name: "Workspace",
+    imagePath: "/Users/me/Pictures/board.png",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+  } as Response);
+
+  await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+    "http://localhost:8787/files/media?path=%2FUsers%2Fme%2FPictures%2Fboard.png&rootDir=%2FUsers%2Fme%2FPictures",
+    expect.objectContaining({ headers: { authorization: "Bearer token" } })
+  ));
+  fetchSpy.mockRestore();
+});
+
+test("aborts an unused image request and retries it after the card is shown again", async () => {
+  mockSessions = [{
+    kind: "directory",
+    cardId: "directory:/workspace",
+    directory: "/workspace",
+    name: "Workspace",
+    imagePath: "/Users/me/Pictures/pending.png",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  let firstSignal: AbortSignal | undefined;
+  const fetchSpy = jest.spyOn(global, "fetch").mockImplementation((_url, init) => {
+    firstSignal ||= init?.signal || undefined;
+    return new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  });
+
+  const first = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+  await first.unmount();
+  expect(firstSignal?.aborted).toBe(true);
+
+  const second = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+  await second.unmount();
+  fetchSpy.mockRestore();
 });
 
 test("opens a supported file on its second tap without opening the context menu", async () => {

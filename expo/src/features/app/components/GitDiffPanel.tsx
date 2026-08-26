@@ -99,7 +99,6 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     addFile,
     removeFile,
     hasFile,
-    markFileUnavailable,
     loaded: skiaBoardLoaded,
   } = useSkiaBoard();
   const hasEverBeenVisibleRef = useRef(visible);
@@ -164,7 +163,6 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     reloadDirectory: reloadExplorerDirectory,
     refreshChangedFiles: refreshGitChangedFiles,
     showInfoToast,
-    onPathRemoved: (target) => markFileUnavailable(selectedDirectoryPath, target.path),
   });
 
   const stagedFiles = useMemo(

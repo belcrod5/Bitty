@@ -14,8 +14,9 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 
 import { OptionSelectField } from "../app/components/OptionSelectField";
+import { RunnerFilePicker } from "../app/components/RunnerFilePicker";
+import type { RunnerFileExplorerEntry } from "../app/components/RunnerFileExplorer";
 import type { ReasoningEffort } from "../app/utils/settingsParsers";
-import { CodexScheduleScriptPicker } from "./CodexScheduleScriptPicker";
 import {
   CODEX_SCHEDULE_REPEAT_OPTIONS,
   codexScheduleRepeatToRrule,
@@ -39,6 +40,8 @@ type Props = {
   onClose: () => void;
   onDelete: (id: string) => void;
 };
+
+const isShellScript = (entry: RunnerFileExplorerEntry) => entry.name.toLowerCase().endsWith(".sh");
 
 function combineDate(current: Date, selected: Date) {
   return new Date(selected.getFullYear(), selected.getMonth(), selected.getDate(), current.getHours(), current.getMinutes());
@@ -207,11 +210,18 @@ export function CodexScheduleEditor({
             ) : (
               <>
                 <Text style={styles.label}>ファイル</Text>
-                <CodexScheduleScriptPicker
+                <RunnerFilePicker
+                  title="実行ファイル"
+                  accessibilityLabel="実行ファイル"
+                  closeAccessibilityLabel="実行ファイル選択を閉じる"
                   runnerUrl={runnerUrl}
                   runnerToken={runnerToken}
                   rootPath={schedule.action.cwd}
+                  rootDisplayName={schedule.action.cwd}
                   value={scriptAction?.scriptPath || ""}
+                  placeholder=".sh ファイルを選択"
+                  fileFilter={isShellScript}
+                  fileAccessibilityLabel={(entry) => `${entry.name}を選択`}
                   onSelect={(scriptPath) => scriptAction && update({ action: { ...scriptAction, scriptPath } })}
                 />
               </>

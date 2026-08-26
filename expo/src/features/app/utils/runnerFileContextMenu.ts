@@ -517,7 +517,7 @@ function isAbsoluteRunnerPath(pathRaw: unknown) {
   return targetPath.startsWith("/") || /^[a-zA-Z]:\//.test(targetPath);
 }
 
-function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
+export function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unknown) {
   const targetPath = normalizeRunnerComparablePath(pathRaw);
   const directory = normalizeRunnerComparablePath(directoryRaw);
   if (!directory || directory === ".") return true;

@@ -17,6 +17,7 @@ const mockAddSkiaBoardFile = jest.fn();
 const mockRemoveSkiaBoardFile = jest.fn();
 const mockHasSkiaBoardFile = jest.fn(() => false);
 const mockMarkFileUnavailable = jest.fn();
+const mockRenameBoardFile = jest.fn();
 const mockMarkSessionRead = jest.fn();
 const mockMarkSessionUnread = jest.fn();
 const mockHydratePanelFromSessionHistory = jest.fn(async () => "applied");
@@ -123,6 +124,7 @@ jest.mock("../contexts/SkiaBoardContext", () => ({
     removeFile: mockRemoveSkiaBoardFile,
     hasFile: mockHasSkiaBoardFile,
     markFileUnavailable: mockMarkFileUnavailable,
+    renameFile: mockRenameBoardFile,
     loaded: true,
   }),
 }));
@@ -419,15 +421,11 @@ describe("ChatScreen auto recording panel target", () => {
     await screen.unmount();
   });
 
-  it("marks board files unavailable through the shared mutation callback", async () => {
+  it("does not duplicate board mutation callbacks in the screen", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
-    const mutationParams = mockUseWorkspaceFileMutations.mock.calls[0]?.[0] as {
-      onPathRemoved?: (target: { path: string; name: string }) => void;
-    };
-
-    mutationParams.onPathRemoved?.({ path: "docs/guide.md", name: "guide.md" });
-
-    expect(mockMarkFileUnavailable).toHaveBeenCalledWith("/workspace", "docs/guide.md");
+    const mutationParams = mockUseWorkspaceFileMutations.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(mutationParams.onPathRenamed).toBeUndefined();
+    expect(mutationParams.onPathDeleted).toBeUndefined();
     await screen.unmount();
   });
 
