@@ -9,6 +9,7 @@ import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSe
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "./AppDrawer";
 import { styles } from "../styles";
 import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
+import { formatLlmSessionDisplayTitle } from "../utils/llmSession";
 
 type ChatSessionSubagentListProps = {
   selectedSessionId: string;
@@ -31,7 +32,7 @@ function sessionTitle(
   session: LlmSessionHistoryEntry,
   sessionTitleOverridesById: Record<string, string>
 ) {
-  return (
+  return formatLlmSessionDisplayTitle(
     String(sessionTitleOverridesById[session.sessionId] || "").trim() ||
     String(session.agentDisplayName || "").trim() ||
     String(session.firstUserMessage || "").trim() ||

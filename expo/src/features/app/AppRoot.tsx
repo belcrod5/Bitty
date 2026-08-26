@@ -326,6 +326,7 @@ import {
 } from "./utils/appDiagnostics";
 import {
   createLlmSessionId,
+  formatLlmSessionDisplayTitle,
   parseLlmSessionSource,
   parseOptionalSessionId,
 } from "./utils/llmSession";
@@ -682,7 +683,7 @@ function parseSessionMarkerColors(raw: unknown) {
 
 function deriveSessionTitleFromConversationMessages(messages: ConversationMessage[]) {
   const firstUser = messages.find((item) => item.role === "user" && String(item.content || "").trim());
-  const title = String(firstUser?.content || "").replace(/\s+/g, " ").trim();
+  const title = formatLlmSessionDisplayTitle(firstUser?.content);
   if (title) return title;
   return "（ユーザーメッセージなし）";
 }
@@ -2705,7 +2706,7 @@ export default function App() {
   const selectedSessionHeaderTitle = useMemo(() => {
     const selectedSessionId = parseOptionalSessionId(selectedLlmSessionId || llmConversationSessionIdRef.current);
     if (!selectedSessionId) return "（ユーザーメッセージなし）";
-    const overrideTitle = String(sessionTitleOverridesById[selectedSessionId] || "").trim();
+    const overrideTitle = formatLlmSessionDisplayTitle(sessionTitleOverridesById[selectedSessionId]);
     if (overrideTitle) return overrideTitle;
 
     const selectedDirectoryId = String(selectedRegisteredDirectory?.id || "").trim();
@@ -2713,13 +2714,13 @@ export default function App() {
       ? (directorySessionsById[selectedDirectoryId]?.entries || [])
       : [];
     const fromDirectoryTree = directoryEntries.find((item) => item.sessionId === selectedSessionId);
-    const directoryTreeTitle = String(fromDirectoryTree?.firstUserMessage || "").trim();
+    const directoryTreeTitle = formatLlmSessionDisplayTitle(fromDirectoryTree?.firstUserMessage);
     if (directoryTreeTitle) return directoryTreeTitle;
 
     const allMessages = Array.isArray(conversationMessagesRef.current) ? conversationMessagesRef.current : [];
     for (const message of allMessages) {
       if (String(message?.role || "") !== "user") continue;
-      const compact = String(message?.content || "").replace(/\s+/g, " ").trim();
+      const compact = formatLlmSessionDisplayTitle(message?.content);
       if (compact) return compact;
     }
     return "（ユーザーメッセージなし）";
@@ -6542,7 +6543,7 @@ export default function App() {
         if (candidateSessionIds.length <= 0) continue;
         let overrideTitle = "";
         for (const candidateSessionId of candidateSessionIds) {
-          const value = String(sessionTitleOverridesById[candidateSessionId] || "").trim();
+          const value = formatLlmSessionDisplayTitle(sessionTitleOverridesById[candidateSessionId]);
           if (!value) continue;
           overrideTitle = value;
           break;
@@ -7075,11 +7076,11 @@ export default function App() {
         lastMessagePreview: String(lastConversation?.content || "").slice(0, 80),
       }, { throttleMs: 0 });
       let selectedSessionTitle = titleHint;
-      const overrideTitle = String(
+      const overrideTitle = formatLlmSessionDisplayTitle(
         sessionTitleOverridesById[markerSessionId] ||
         sessionTitleOverridesById[sessionId] ||
         ""
-      ).trim();
+      );
       selectedSessionTitle = overrideTitle || selectedSessionTitle;
       if (!selectedSessionTitle) selectedSessionTitle = deriveSessionTitleFromConversationMessages(conversation);
       const selectedSessionMarkerColor = parseDirectoryMarkerColor(

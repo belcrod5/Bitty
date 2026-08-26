@@ -1,5 +1,8 @@
 import { parseOptionalFiniteNumber } from "./formatting";
 
+// Claude thread metadata already uses 200 characters; keep every provider's UI title within that contract.
+const LLM_SESSION_DISPLAY_TITLE_MAX_CODE_POINTS = 200;
+
 export type LlmSessionSource = "acp" | "cli" | "all" | "appserver" | "vscode" | "exec" | "subagent" | "notification" | "unknown";
 export type LlmSessionMessageRole = "user" | "assistant";
 
@@ -23,6 +26,13 @@ export type LlmSessionHistoryEntryLike = {
 
 export function parseOptionalSessionId(raw: unknown): string {
   return String(raw || "").trim();
+}
+
+export function formatLlmSessionDisplayTitle(raw: unknown): string {
+  const title = String(raw || "").replace(/\s+/gu, " ").trim();
+  const codePoints = Array.from(title);
+  if (codePoints.length <= LLM_SESSION_DISPLAY_TITLE_MAX_CODE_POINTS) return title;
+  return `${codePoints.slice(0, LLM_SESSION_DISPLAY_TITLE_MAX_CODE_POINTS - 1).join("")}…`;
 }
 
 export function llmStreamSessionKey(raw: unknown, fallback: string): string {

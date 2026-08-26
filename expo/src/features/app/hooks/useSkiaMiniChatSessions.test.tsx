@@ -218,6 +218,28 @@ describe("useSkiaMiniChatSessions", () => {
     expect(savedState.cards).toHaveLength(6);
   });
 
+  it("uses one bounded Unicode display title for hydration and the board card", async () => {
+    const firstUserMessage = `  調査  ${"🙂".repeat(10_000)}  完了  `;
+    const candidate = { ...session(1), firstUserMessage };
+    const hydratePanelFromSessionHistory = jest.fn().mockResolvedValue("applied");
+    mockUsePanelRuntimeController.mockReturnValue({
+      clearPanelSnapshot: jest.fn(),
+      hydratePanelFromSessionHistory,
+    } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    mockConversation([candidate]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    const displayTitle = result.current.sessions[0].title;
+    expect(Array.from(displayTitle)).toHaveLength(200);
+    expect(displayTitle.endsWith("🙂…")).toBe(true);
+    expect(hydratePanelFromSessionHistory).toHaveBeenCalledWith(expect.objectContaining({
+      title: displayTitle,
+    }));
+    expect(candidate.firstUserMessage).toBe(firstUserMessage);
+  });
+
   it("projects unread, activity, and cached subagent counts onto cards", async () => {
     const parent = { ...session(1), lastReadAt: "2026-05-01T00:00:00.000Z" };
     const childState = {

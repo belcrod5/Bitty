@@ -17,7 +17,7 @@ import Svg, { Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { PopupChatSourceRect } from "./popupChatTypes";
 import { styles } from "../styles";
-import { isLlmSessionUnread } from "../utils/llmSession";
+import { formatLlmSessionDisplayTitle, isLlmSessionUnread } from "../utils/llmSession";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
 import type {
@@ -257,7 +257,7 @@ export const AppDrawer = memo(function AppDrawer({
   ): ReactNode => {
     const selected = highlightedSessionId === session.sessionId;
     const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
-    const sessionPrimaryTitle = (
+    const sessionPrimaryTitle = formatLlmSessionDisplayTitle(
       titleOverride ||
       String(session.agentDisplayName || "").trim() ||
       String(session.firstUserMessage || "").trim() ||
