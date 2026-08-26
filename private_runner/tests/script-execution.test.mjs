@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -59,6 +59,25 @@ test("rejects a scheduled script outside its selected directory", async () => {
 
     await assert.rejects(
       __TESTING__.resolveWorkspaceShellScriptTarget(scriptPath, {
+        allowExternal: true,
+        allowedRoot: selectedDirectory,
+      }),
+      /outside the selected directory/,
+    );
+  });
+});
+
+test("rejects a symlink inside the selected directory that targets an outside script", async () => {
+  await withTempDir(async (root) => {
+    const selectedDirectory = path.join(root, "selected");
+    const outsideScript = path.join(root, "outside.sh");
+    const linkedScript = path.join(selectedDirectory, "linked.sh");
+    await mkdir(selectedDirectory);
+    await writeFile(outsideScript, "echo outside\n");
+    await symlink(outsideScript, linkedScript);
+
+    await assert.rejects(
+      __TESTING__.resolveWorkspaceShellScriptTarget(linkedScript, {
         allowExternal: true,
         allowedRoot: selectedDirectory,
       }),

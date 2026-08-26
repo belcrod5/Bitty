@@ -89,16 +89,17 @@ test("new editor exposes native pickers and reuses directory, model, and effort 
 });
 
 test("script execution browses the selected directory and saves the chosen .sh action", async () => {
+  const directoryResponse = {
+    basePath: "/work",
+    entries: [
+      { kind: "file", name: "ignore.txt", path: "/work/ignore.txt" },
+      { kind: "file", name: "scheduled.sh", path: "/work/scheduled.sh" },
+    ],
+  };
   const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue({
     ok: true,
     status: 200,
-    json: async () => ({
-      basePath: "/work",
-      entries: [
-        { kind: "file", name: "ignore.txt", path: "/work/ignore.txt" },
-        { kind: "file", name: "scheduled.sh", path: "/work/scheduled.sh" },
-      ],
-    }),
+    text: async () => JSON.stringify(directoryResponse),
   } as Response);
   mockPut.mockResolvedValue({ revision: 1, schedules: [] });
   const view = await render(<CodexScheduleSettings {...props} />);

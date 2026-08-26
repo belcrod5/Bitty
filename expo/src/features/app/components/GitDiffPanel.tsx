@@ -14,6 +14,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { styles } from "../styles";
 import { GitBranchDropdown, type GitBranchOption } from "./GitBranchDropdown";
 import { GitDiffRunningJobsSection } from "./GitDiffRunningJobsSection";
+import {
+  RunnerFileExplorer,
+  type RunnerFileExplorerEntry,
+  type RunnerFileExplorerRef,
+} from "./RunnerFileExplorer";
 import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "./WorkspaceTextFileEditor";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
@@ -24,7 +29,6 @@ import {
   buildRunnerMediaItem,
   normalizeRunnerPath,
   openRunnerFileContextMenu,
-  RUNNER_FILE_HTTP_TIMEOUT_MS,
   type RunnerFileViewerTarget,
   type RunnerMediaFile,
   type RunnerMediaItem,
@@ -37,22 +41,6 @@ import {
 import { supportsWorkspaceFilePicking } from "../utils/workspaceUploadPicker";
 
 type GitPanelTab = "diff" | "explorer" | "running";
-type ExplorerEntryKind = "dir" | "file";
-type ExplorerEntry = {
-  kind: ExplorerEntryKind;
-  name: string;
-  path: string;
-};
-type ExplorerNode = {
-  kind: ExplorerEntryKind;
-  name: string;
-  path: string;
-  childPaths: string[];
-  loaded: boolean;
-  loading: boolean;
-  error: string;
-};
-type JsonRecord = Record<string, unknown>;
 type GitDiffPanelProps = {
   visible: boolean;
   runnerUrl: string;
@@ -118,17 +106,12 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   if (visible) hasEverBeenVisibleRef.current = true;
   const [gitPanelTab, setGitPanelTab] = useState<GitPanelTab>("diff");
   const [treeExpandedByKey, setTreeExpandedByKey] = useState<Record<string, boolean>>({});
-  const [explorerRootPath, setExplorerRootPath] = useState("");
-  const [explorerNodesByPath, setExplorerNodesByPath] = useState<Record<string, ExplorerNode>>({});
-  const [explorerGlobalError, setExplorerGlobalError] = useState("");
   const [uploadingDirectoryPath, setUploadingDirectoryPath] = useState("");
   const [runningJobsRefreshSignal, setRunningJobsRefreshSignal] = useState(0);
   const [runningJobsLoading, setRunningJobsLoading] = useState(false);
   const panelAnim = useRef(new Animated.Value(0)).current;
   const onRefreshGitChangedFilesRef = useRef(onRefreshGitChangedFiles);
-  const explorerVisibleReloadKeyRef = useRef("");
-  const explorerLoadSeqByPathRef = useRef<Record<string, number>>({});
-  const canonicalExplorerPathByRequestedPathRef = useRef<Record<string, string>>({});
+  const fileExplorerRef = useRef<RunnerFileExplorerRef>(null);
   const workspaceUploadInFlightRef = useRef(false);
   const { width: screenWidth } = useWindowDimensions();
 
@@ -145,17 +128,6 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     return parts[parts.length - 1] || fallbackLabel;
   }, [selectedDirectoryDisplayName]);
 
-  const setTreeExpanded = useCallback((key: string, expanded: boolean) => {
-    if (!key) return;
-    setTreeExpandedByKey((prev) => {
-      if (prev[key] === expanded) return prev;
-      return {
-        ...prev,
-        [key]: expanded,
-      };
-    });
-  }, []);
-
   const toggleTreeExpanded = useCallback((key: string) => {
     if (!key) return;
     setTreeExpandedByKey((prev) => ({
@@ -164,233 +136,9 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     }));
   }, []);
 
-  const fetchDirectories = useCallback(async (pathRaw: unknown) => {
-    const baseUrl = String(runnerUrl || "").trim().replace(/\/$/, "");
-    const token = String(runnerToken || "").trim();
-    const targetPath = normalizeRunnerPath(pathRaw);
-    if (!baseUrl || !token) {
-      logSessionDiag?.("runner_file_explorer_load_error", {
-        path: targetPath,
-        message: "Runner URL または Runner Token が未設定です",
-      }, { throttleMs: 0 });
-      throw new Error("Runner URL または Runner Token が未設定です");
-    }
-    const controller = new AbortController();
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-    const startedAt = Date.now();
-    logSessionDiag?.("runner_file_explorer_load_start", {
-      path: targetPath,
-    }, { throttleMs: 0 });
-    try {
-      const url = new URL(`${baseUrl}/directories`);
-      url.searchParams.set("path", targetPath);
-      const request = fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      }).then(async (response) => ({
-        response,
-        text: await response.text(),
-      }));
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timeoutHandle = setTimeout(() => {
-          controller.abort();
-          reject(new Error(`request timeout (${RUNNER_FILE_HTTP_TIMEOUT_MS}ms)`));
-        }, RUNNER_FILE_HTTP_TIMEOUT_MS);
-      });
-      const { response, text } = await Promise.race([request, timeout]);
-      let data: JsonRecord = {};
-      try {
-        data = text ? JSON.parse(text) as JsonRecord : {};
-      } catch {
-        data = {};
-      }
-      if (!response.ok) {
-        throw new Error(String(data?.message || data?.error || `HTTP ${response.status}`));
-      }
-      const basePath = normalizeRunnerPath(data?.basePath || targetPath);
-      const entries = Array.isArray(data?.entries)
-        ? data.entries
-          .map((entryRaw: unknown): ExplorerEntry | null => {
-            const entry = entryRaw && typeof entryRaw === "object" ? entryRaw as JsonRecord : {};
-            const kindRaw = String(entry.kind || "").trim().toLowerCase();
-            const kind: ExplorerEntryKind = kindRaw === "file" ? "file" : "dir";
-            const name = String(entry.name || "").trim();
-            const path = normalizeRunnerPath(entry.path);
-            if (!name || !path) return null;
-            return { kind, name, path };
-          })
-          .filter((entry: ExplorerEntry | null): entry is ExplorerEntry => Boolean(entry))
-        : (
-          Array.isArray(data?.directories)
-            ? data.directories
-              .map((entryRaw: unknown): ExplorerEntry | null => {
-                const entry = entryRaw && typeof entryRaw === "object" ? entryRaw as JsonRecord : {};
-                const name = String(entry.name || "").trim();
-                const path = normalizeRunnerPath(entry.path);
-                if (!name || !path) return null;
-                return { kind: "dir", name, path };
-              })
-              .filter((entry: ExplorerEntry | null): entry is ExplorerEntry => Boolean(entry))
-            : []
-        );
-      entries.sort((a: ExplorerEntry, b: ExplorerEntry) => {
-        if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-      logSessionDiag?.("runner_file_explorer_load_done", {
-        requestedPath: targetPath,
-        path: basePath,
-        elapsedMs: Math.max(0, Date.now() - startedAt),
-        entryCount: entries.length,
-      }, { throttleMs: 0 });
-      return {
-        basePath,
-        entries,
-      };
-    } catch (err: unknown) {
-      const isAbortError = err && typeof err === "object" && "name" in err && (err as { name?: unknown }).name === "AbortError";
-      const message = isAbortError
-        ? `request timeout (${RUNNER_FILE_HTTP_TIMEOUT_MS}ms)`
-        : err instanceof Error ? err.message : String(err);
-      logSessionDiag?.("runner_file_explorer_load_error", {
-        path: targetPath,
-        elapsedMs: Math.max(0, Date.now() - startedAt),
-        message,
-      }, { throttleMs: 0 });
-      if (isAbortError) {
-        throw new Error(`request timeout (${RUNNER_FILE_HTTP_TIMEOUT_MS}ms)`);
-      }
-      throw err;
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
-  }, [logSessionDiag, runnerToken, runnerUrl]);
-
-  const mergeExplorerNode = useCallback((
-    path: string,
-    update: Partial<{
-      kind: ExplorerEntryKind;
-      name: string;
-      childPaths: string[];
-      loaded: boolean;
-      loading: boolean;
-      error: string;
-    }>,
-  ) => {
-    const normalizedPath = normalizeRunnerPath(path);
-    if (!normalizedPath) return;
-    setExplorerNodesByPath((prev) => {
-      const current = prev[normalizedPath];
-      const nextNode = {
-        kind: update.kind ?? current?.kind ?? "dir",
-        name: update.name ?? current?.name ?? getPathLabel(normalizedPath),
-        path: normalizedPath,
-        childPaths: update.childPaths ?? current?.childPaths ?? [],
-        loaded: update.loaded ?? current?.loaded ?? false,
-        loading: update.loading ?? current?.loading ?? false,
-        error: update.error ?? current?.error ?? "",
-      };
-      return {
-        ...prev,
-        [normalizedPath]: nextNode,
-      };
-    });
-  }, [getPathLabel]);
-
-  const applyExplorerDirectoryPayload = useCallback((
-    pathRaw: unknown,
-    payload: { basePath: string; entries: ExplorerEntry[] },
-  ) => {
-    const requestedPath = normalizeRunnerPath(pathRaw);
-    const targetPath = normalizeRunnerPath(payload.basePath || pathRaw);
-    if (!targetPath) return;
-    setExplorerNodesByPath((prev) => {
-      const next = { ...prev };
-      const childPaths: string[] = [];
-      const nextChildPathSet = new Set<string>();
-      for (const entry of payload.entries) {
-        const childPath = normalizeRunnerPath(entry.path);
-        if (!childPath) continue;
-        childPaths.push(childPath);
-        nextChildPathSet.add(childPath);
-        const currentChild = prev[childPath];
-        next[childPath] = {
-          kind: entry.kind,
-          name: entry.name,
-          path: childPath,
-          loaded: entry.kind === "file" ? true : (currentChild?.loaded ?? false),
-          loading: false,
-          error: currentChild?.error ?? "",
-          childPaths: entry.kind === "file" ? [] : (currentChild?.childPaths ?? []),
-        };
-      }
-      for (const stalePath of prev[targetPath]?.childPaths ?? []) {
-        const normalizedStalePath = normalizeRunnerPath(stalePath);
-        if (!normalizedStalePath || nextChildPathSet.has(normalizedStalePath)) continue;
-        if (prev[normalizedStalePath]?.kind === "file") {
-          delete next[normalizedStalePath];
-        }
-      }
-      next[targetPath] = {
-        kind: "dir",
-        name: getPathLabel(targetPath),
-        path: targetPath,
-        childPaths,
-        loaded: true,
-        loading: false,
-        error: "",
-      };
-      if (requestedPath && requestedPath !== targetPath) {
-        delete next[requestedPath];
-      }
-      return next;
-    });
-  }, [getPathLabel]);
-
-  const loadExplorerChildren = useCallback(async (pathRaw: unknown, forceReload = false) => {
-    const targetPath = normalizeRunnerPath(pathRaw);
-    if (!targetPath) return;
-    const current = explorerNodesByPath[targetPath];
-    if (!forceReload && current?.loaded && !current.error) return;
-    const requestSeq = (explorerLoadSeqByPathRef.current[targetPath] ?? 0) + 1;
-    explorerLoadSeqByPathRef.current[targetPath] = requestSeq;
-    mergeExplorerNode(targetPath, { loading: true, error: "" });
-    try {
-      const payload = await fetchDirectories(targetPath);
-      if (explorerLoadSeqByPathRef.current[targetPath] !== requestSeq) return;
-      applyExplorerDirectoryPayload(targetPath, payload);
-      const canonicalPath = normalizeRunnerPath(payload.basePath);
-      if (canonicalPath) {
-        canonicalExplorerPathByRequestedPathRef.current[targetPath] = canonicalPath;
-      }
-      if (canonicalPath && canonicalPath !== targetPath && explorerRootPath === targetPath) {
-        setExplorerRootPath(canonicalPath);
-        setTreeExpanded(`explorer:${canonicalPath}`, true);
-      }
-    } catch (err) {
-      if (explorerLoadSeqByPathRef.current[targetPath] !== requestSeq) return;
-      mergeExplorerNode(targetPath, {
-        loading: false,
-        loaded: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
-    }
-  }, [
-    applyExplorerDirectoryPayload,
-    explorerNodesByPath,
-    explorerRootPath,
-    fetchDirectories,
-    mergeExplorerNode,
-    setTreeExpanded,
-  ]);
-
   const reloadExplorerDirectory = useCallback((path: string) => (
-    loadExplorerChildren(path, true)
-  ), [loadExplorerChildren]);
+    fileExplorerRef.current?.reloadDirectory(path) || Promise.resolve()
+  ), []);
   const refreshGitChangedFiles = useCallback(() => (
     onRefreshGitChangedFilesRef.current?.()
   ), []);
@@ -431,19 +179,16 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   const openFileContextMenu = useCallback((
     filePathRaw: unknown,
     fileNameRaw: unknown,
-    options?: { allowExecute?: boolean; allowMutate?: boolean },
+    options?: {
+      allowExecute?: boolean;
+      allowMutate?: boolean;
+      siblings?: RunnerFileExplorerEntry[];
+    },
   ) => {
     const filePath = normalizeRunnerPath(filePathRaw);
     const parentPath = getParentRunnerPath(filePath);
-    const parentNode = explorerNodesByPath[parentPath];
-    const siblingNodes = parentNode?.childPaths.length
-      ? parentNode.childPaths
-        .map((childPath) => explorerNodesByPath[normalizeRunnerPath(childPath)])
-        .filter((node): node is ExplorerNode => Boolean(node))
-      : Object.values(explorerNodesByPath)
-        .filter((node) => node.kind === "file" && getParentRunnerPath(node.path) === parentPath);
-    const siblingPaths = siblingNodes.length > 0
-      ? siblingNodes.map((node) => ({ path: node.path, name: node.name }))
+    const siblingPaths = options?.siblings?.length
+      ? options.siblings
       : Array.from(new Set([...stagedFiles, ...unstagedFiles]))
         .filter((path) => getParentRunnerPath(path) === parentPath)
         .map((path) => ({ path, name: getPathLabel(path) }));
@@ -482,7 +227,6 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     });
   }, [
     addFile,
-    explorerNodesByPath,
     getPathLabel,
     hasFile,
     onOpenMedia,
@@ -525,7 +269,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
         return;
       }
       showInfoToast(`アップロードしました: ${result.path || result.name}`);
-      await loadExplorerChildren(targetDirectory, true);
+      await reloadExplorerDirectory(targetDirectory);
       await onRefreshGitChangedFilesRef.current?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -535,7 +279,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
       setUploadingDirectoryPath("");
     }
   }, [
-    loadExplorerChildren,
+    reloadExplorerDirectory,
     runnerToken,
     runnerUrl,
     selectedDirectoryPath,
@@ -612,15 +356,6 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   }, [onRefreshGitChangedFiles]);
 
   useEffect(() => {
-    canonicalExplorerPathByRequestedPathRef.current = {};
-    explorerVisibleReloadKeyRef.current = "";
-    explorerLoadSeqByPathRef.current = {};
-    setExplorerRootPath("");
-    setExplorerNodesByPath({});
-    setExplorerGlobalError("");
-  }, [runnerToken, runnerUrl]);
-
-  useEffect(() => {
     if (!visible) return;
     logSessionDiag?.("git_diff_panel_opened", {
       selectedDirectoryPath,
@@ -631,63 +366,6 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     }, { throttleMs: 0 });
     void onRefreshGitChangedFilesRef.current?.();
   }, [visible]);
-
-  useEffect(() => {
-    if (!visible) return;
-    if (gitPanelTab !== "explorer") return;
-    const requestedRootPath = normalizeRunnerPath(selectedDirectoryPath);
-    if (!requestedRootPath) {
-      setExplorerGlobalError("ディレクトリーが未選択です");
-      return;
-    }
-    const rootPath = canonicalExplorerPathByRequestedPathRef.current[requestedRootPath] || requestedRootPath;
-    setExplorerGlobalError("");
-    if (rootPath !== explorerRootPath) {
-      setExplorerRootPath(rootPath);
-      setExplorerNodesByPath((prev) => ({
-        ...prev,
-        [rootPath]: prev[rootPath] || {
-          kind: "dir",
-          name: getPathLabel(rootPath),
-          path: rootPath,
-          childPaths: [],
-          loaded: false,
-          loading: false,
-          error: "",
-        },
-      }));
-      setTreeExpanded(`explorer:${rootPath}`, true);
-    }
-  }, [
-    explorerRootPath,
-    getPathLabel,
-    gitPanelTab,
-    selectedDirectoryPath,
-    setTreeExpanded,
-    visible,
-  ]);
-
-  useEffect(() => {
-    if (!visible || gitPanelTab !== "explorer") {
-      explorerVisibleReloadKeyRef.current = "";
-      return;
-    }
-    const rootPath = normalizeRunnerPath(explorerRootPath);
-    if (!rootPath) return;
-    const rootNode = explorerNodesByPath[rootPath];
-    if (rootNode?.loading || explorerVisibleReloadKeyRef.current === rootPath) return;
-    explorerVisibleReloadKeyRef.current = rootPath;
-    setExplorerGlobalError("");
-    void loadExplorerChildren(rootPath, true).catch((err) => {
-      setExplorerGlobalError(err instanceof Error ? err.message : String(err));
-    });
-  }, [
-    explorerNodesByPath,
-    explorerRootPath,
-    gitPanelTab,
-    loadExplorerChildren,
-    visible,
-  ]);
 
   const renderTreeNodes = (
     nodes: GitDiffFileTreeNode[],
@@ -739,74 +417,8 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     ));
   };
 
-  const renderExplorerNodeByPath = (path: string, depth = 0): ReactElement | null => {
-    const normalizedPath = normalizeRunnerPath(path);
-    if (!normalizedPath) return null;
-    const node = explorerNodesByPath[normalizedPath];
-    if (!node) return null;
-    if (node.kind === "file") {
-      return (
-        <View key={normalizedPath} style={styles.gitDiffTreeNodeWrap}>
-          <TouchableOpacity
-            style={[styles.gitDiffTreeNodeRow, { paddingLeft: 10 + (depth * 14) }]}
-            onPress={() => openFileContextMenu(node.path, node.name, {
-              allowExecute: true,
-              allowMutate: true,
-            })}
-            accessibilityRole="button"
-            accessibilityLabel={`${node.name}のメニューを表示`}
-          >
-            <Text style={styles.gitDiffTreeNodeIcon}>・</Text>
-            <Text style={styles.gitDiffTreeNodeFileText}>{node.name}</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-    const key = `explorer:${normalizedPath}`;
-    const expanded = !!treeExpandedByKey[key];
-    return (
-      <View key={normalizedPath} style={styles.gitDiffTreeNodeWrap}>
-        <TouchableOpacity
-          style={[styles.gitDiffTreeNodeRow, { paddingLeft: 10 + (depth * 14) }]}
-          onPress={() => {
-            const nextExpanded = !expanded;
-            setTreeExpanded(key, nextExpanded);
-            if (nextExpanded) {
-              setExplorerGlobalError("");
-              void loadExplorerChildren(normalizedPath).catch((err) => {
-                setExplorerGlobalError(err instanceof Error ? err.message : String(err));
-              });
-            }
-          }}
-          onLongPress={() => openDirectoryUploadMenu(node.path, node.name)}
-          accessibilityRole="button"
-          accessibilityLabel={`${node.name}フォルダーを開閉`}
-          accessibilityHint="長押しするとファイルをアップロードできます"
-        >
-          <Text style={styles.gitDiffTreeNodeIcon}>
-            {expanded ? "▾" : "▸"}
-          </Text>
-          <Text style={styles.gitDiffTreeNodeDirText}>{node.name}</Text>
-          {node.loading || uploadingDirectoryPath === normalizedPath ? (
-            <ActivityIndicator size="small" color="#0f766e" style={styles.gitDiffTreeNodeSpinner} />
-          ) : null}
-        </TouchableOpacity>
-        {node.error ? (
-          <Text style={[styles.gitDiffPanelErrorText, styles.gitDiffTreeNodeErrorText]}>{node.error}</Text>
-        ) : null}
-        {expanded && node.loaded && node.childPaths.length <= 0 ? (
-          <Text style={[styles.gitDiffEmptyText, styles.gitDiffTreeNodeEmptyText]}>フォルダーは空です</Text>
-        ) : null}
-        {expanded && node.childPaths.length > 0
-          ? node.childPaths.map((childPath) => renderExplorerNodeByPath(childPath, depth + 1))
-          : null}
-      </View>
-    );
-  };
-
   if (!hasEverBeenVisibleRef.current) return null;
 
-  const explorerRootNode = explorerRootPath ? explorerNodesByPath[explorerRootPath] : null;
   const panelWidth = Math.min(420, Math.max(260, Math.floor(screenWidth * 0.86)));
   const overlayOpacity = panelAnim.interpolate({
     inputRange: [0, 1],
@@ -980,22 +592,22 @@ export const GitDiffPanel = memo(function GitDiffPanel({
                 )}
               </View>
               <View style={styles.gitDiffSectionCard}>
-                {explorerGlobalError ? (
-                  <Text style={styles.gitDiffPanelErrorText}>{explorerGlobalError}</Text>
-                ) : null}
-                {explorerRootPath ? (
-                  <>
-                    {explorerRootNode?.loading && !explorerRootNode.loaded ? (
-                      <View style={styles.gitDiffPanelStatusRow}>
-                        <ActivityIndicator size="small" color="#0f766e" />
-                        <Text style={styles.gitDiffPanelStatusText}>読み込み中...</Text>
-                      </View>
-                    ) : null}
-                    {explorerRootNode ? renderExplorerNodeByPath(explorerRootPath, 0) : null}
-                  </>
-                ) : (
-                  <Text style={styles.gitDiffEmptyText}>ディレクトリーが未選択です</Text>
-                )}
+                <RunnerFileExplorer
+                  ref={fileExplorerRef}
+                  active={visible && gitPanelTab === "explorer"}
+                  runnerUrl={runnerUrl}
+                  runnerToken={runnerToken}
+                  rootPath={selectedDirectoryPath}
+                  rootDisplayName={selectedDirectoryDisplayName}
+                  loadingDirectoryPath={uploadingDirectoryPath}
+                  logSessionDiag={logSessionDiag}
+                  onFilePress={(entry, siblings) => openFileContextMenu(entry.path, entry.name, {
+                    allowExecute: true,
+                    allowMutate: true,
+                    siblings,
+                  })}
+                  onDirectoryLongPress={(entry) => openDirectoryUploadMenu(entry.path, entry.name)}
+                />
               </View>
             </>
           ) : null}
