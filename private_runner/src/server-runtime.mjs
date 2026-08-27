@@ -46,6 +46,7 @@ import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
 import { createSkiaBoardService } from "./skia-board-service.mjs";
 import { createSkiaBoardHttpHandler } from "./skia-board-http.mjs";
+import { createSkiaBoardIngest } from "./skia-board-ingest.mjs";
 import { createApprovalPushService } from "./approval-push-service.mjs";
 import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
 import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
@@ -1386,7 +1387,7 @@ const {
 
 const {
   countUnreadSessions, getLlmSessionSummaries, getPushUnreadSnapshot, getSessionUnreadState,
-  listLlmSessions, listLlmSessionsForDirectories,
+  listAgentSessionsForDirectories, listLlmSessions, listLlmSessionsForDirectories,
   markLlmSessionReadRequest,
 } = createLlmSessionService({
   compareSessionHistoryEntries, agentSessionActivityStore,
@@ -1431,7 +1432,12 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
   pushSummarizer,
   pushDeviceStore,
   getPushUnreadSnapshot, getAgentSessionBinding,
-  broadcast: (payload) => broadcastRunnerWsTurnCompletedNotification(null, payload),
+  broadcast: (payload) => {
+    // ターン完了はSkiaボードの自動カード追加(ingest)の主トリガでもある。
+    // relay/スケジュール/agent runの3経路がここに収束する。失敗はingest側で握る。
+    void skiaBoardIngest.onTurnCompleted(payload);
+    return broadcastRunnerWsTurnCompletedNotification(null, payload);
+  },
 });
 const calendarToolService = createCalendarToolService({
   sendPush: async (deviceId, marker) => {
@@ -7180,9 +7186,16 @@ const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
 const skiaBoardService = createSkiaBoardService({
   storePath: SKIA_BOARD_STORE_PATH,
   broadcast: (payload) => broadcastSkiaBoardUpdated(payload),
+  normalizeDirectory: (value) => resolveCanonicalDirectoryIdentity(value),
+});
+const skiaBoardIngest = createSkiaBoardIngest({
+  boardService: skiaBoardService,
+  listAgentSessionsForDirectories,
+  resolveDirectory: (value) => resolveCanonicalDirectoryIdentity(value),
 });
 const skiaBoardHttpHandler = createSkiaBoardHttpHandler({
   service: skiaBoardService,
+  ingest: skiaBoardIngest,
   runnerToken: RUNNER_TOKEN,
   parseAuthToken,
   readJsonBody,
@@ -12130,6 +12143,7 @@ export const __TESTING__ = {
   locationScheduleService,
   codexScheduleService,
   skiaBoardService,
+  skiaBoardIngest,
   turnCompletionNotifier,
   derivePushDirectoryTitle,
   codexWsRelaysById,

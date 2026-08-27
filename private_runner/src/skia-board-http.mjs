@@ -19,6 +19,7 @@ function message(error) {
 
 export function createSkiaBoardHttpHandler({
   service,
+  ingest = null,
   runnerToken,
   parseAuthToken,
   readJsonBody,
@@ -28,7 +29,12 @@ export function createSkiaBoardHttpHandler({
     "/skia-board": {
       method: "GET",
       maxBytes: 0,
-      handle: () => service.getBoard(),
+      handle: async () => {
+        // 補完スイープ: ランナーを経由せず作られたセッションをボードへ取り込んでから返す。
+        // スロットルと失敗の握り込みは ingest 側が持つ。
+        if (ingest) await ingest.sweep();
+        return service.getBoard();
+      },
     },
     "/skia-board/ops": {
       method: "POST",

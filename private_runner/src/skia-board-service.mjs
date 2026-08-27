@@ -6,8 +6,9 @@
 //   影響しないため revision を上げない(opの楽観ロックを無駄に失敗させない)
 // - 読み書きの失敗はフェイルクローズ(以後 unavailable エラー)。ユーザーの配置データを
 //   壊れた読み取り結果で上書きしない
-// - 空ストアの自動初期化はしない。origin は "import"(アプリからの引き継ぎ) または
-//   "ingest"(ランナー自動生成) で、引き継ぎの受理判定に使う
+// - origin は "import"(アプリからの引き継ぎ) または "ingest"(ランナー自動生成) で、
+//   引き継ぎの受理判定に使う。自動生成(ingest)が先に初期化しても、ユーザー編集が
+//   入るまでは import が上書きできるため、移行前の配置は失われない
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -15,6 +16,7 @@ import { promises as defaultFileSystem } from "node:fs";
 import {
   addSkiaBoardCard,
   emptySkiaBoardState,
+  ingestSkiaBoardSessions,
   moveSkiaBoardCard,
   normalizeSkiaBoardState,
   parseSkiaBoardState,
@@ -121,6 +123,9 @@ export function createSkiaBoardService({
   now = () => new Date(),
   fileSystem = defaultFileSystem,
   broadcast = () => {},
+  // ingestDirectoriesの保存前正規化(server-runtimeはrealpath解決の
+  // resolveCanonicalDirectoryIdentityを注入する)。失敗したエントリは取り込まない。
+  normalizeDirectory = (value) => value,
 } = {}) {
   if (!storePath) throw new Error("storePath is required");
 
@@ -354,7 +359,16 @@ export function createSkiaBoardService({
       if (!Array.isArray(body.directories)) {
         throw new SkiaBoardValidationError("directories must be an array");
       }
-      const additions = normalizeIngestDirectories(body.directories)
+      const canonical = [];
+      for (const directory of normalizeIngestDirectories(body.directories)) {
+        try {
+          const resolved = String(await normalizeDirectory(directory) || "").trim();
+          if (resolved) canonical.push(resolved);
+        } catch (error) {
+          console.warn(`[skia-board] skipping unresolvable ingest directory: ${directory}`, error);
+        }
+      }
+      const additions = normalizeIngestDirectories(canonical)
         .filter((directory) => !store.ingestDirectories.includes(directory));
       if (additions.length <= 0) {
         return { ingestDirectories: store.ingestDirectories };
@@ -371,10 +385,45 @@ export function createSkiaBoardService({
     });
   }
 
+  async function getIngestDirectories() {
+    if (unavailableReason) throw new SkiaBoardStoreUnavailableError(unavailableReason);
+    await ensureLoaded();
+    return store.ingestDirectories.slice();
+  }
+
+  // 新しいセッションの自動カード追加。書き手をランナー1箇所に集約する。
+  // userEdited は変更しない(自動生成のみのボードは引き継ぎ(import)で上書き可能なまま)。
+  function ingestSessions(candidatesRaw) {
+    return serialize(async () => {
+      const candidates = (Array.isArray(candidatesRaw) ? candidatesRaw : [])
+        .map((candidate) => ({
+          sessionId: String(candidate?.sessionId || "").trim(),
+          directory: String(candidate?.directory || "").trim(),
+          backendId: String(candidate?.backendId || "").trim(),
+          updatedAt: String(candidate?.updatedAt || ""),
+        }))
+        .filter((candidate) => !!candidate.sessionId);
+      if (candidates.length <= 0) return buildSnapshot();
+      const baseBoard = store.origin ? store.board : null;
+      const nextBoard = ingestSkiaBoardSessions(baseBoard, candidates);
+      if (!nextBoard || nextBoard === baseBoard) return buildSnapshot();
+      await commit({
+        ...store,
+        revision: store.revision + 1,
+        origin: store.origin ?? "ingest",
+        initializedAt: store.initializedAt ?? now().toISOString(),
+        board: nextBoard,
+      });
+      return buildSnapshot();
+    });
+  }
+
   return {
     getBoard,
     applyOps,
     importBoard,
     syncIngestDirectories,
+    getIngestDirectories,
+    ingestSessions,
   };
 }
