@@ -44,29 +44,14 @@ function emitTurnNotification(
   });
 }
 
-test("manager mode uses singleton even when configured URL is legacy codex-ws", async () => {
+test("rejects the removed legacy Codex WebSocket path", async () => {
   const manager = new FakeRunnerWebSocketManager();
 
   const session = createTurn(manager, "ws://127.0.0.1:8788/codex-ws");
 
+  await expect(session.promise).rejects.toThrow("must use /runner-ws");
   expect(mockCreateWebSocketWithOptionalAuth).not.toHaveBeenCalled();
-  expect(manager.connect).toHaveBeenCalledTimes(1);
-
-  manager.becomeReady();
-  await flushPromises();
-
-  expect(lastSent(manager)).toMatchObject({
-    channel: "llm",
-    op: "rpc",
-    payload: {
-      method: "initialize",
-    },
-  });
-
-  manager.dropConnection();
-  await flushPromises();
-  await session.interrupt();
-  await expect(session.promise).rejects.toThrow("interrupted");
+  expect(manager.connect).not.toHaveBeenCalled();
 });
 
 test("new app threads expose calendar tools whenever the client provides the handler", async () => {

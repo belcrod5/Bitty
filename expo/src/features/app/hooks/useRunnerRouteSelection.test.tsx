@@ -9,9 +9,7 @@ jest.mock("expo-network", () => ({
 }));
 
 const localRunnerUrl = "http://d5-macbook.local:8788";
-const localRunnerWsUrl = "ws://d5-macbook.local:8788/runner-ws";
 const cloudflareRunnerUrl = "https://runner.example.com";
-const cloudflareRunnerWsUrl = "wss://runner.example.com/runner-ws";
 const runnerToken = "runner-secret";
 type RouteSelectionProps = Parameters<typeof useRunnerRouteSelection>[0];
 type RouteSelectionResult = ReturnType<typeof useRunnerRouteSelection>;
@@ -71,25 +69,20 @@ describe("useRunnerRouteSelection", () => {
 
   async function renderSelection(overrides: Partial<Parameters<typeof useRunnerRouteSelection>[0]> = {}) {
     const setRunnerUrl = jest.fn();
-    const setCodexWsUrl = jest.fn();
     const props: RouteSelectionProps = {
       enabled: true,
       localRunnerUrl,
-      localRunnerWsUrl,
       cloudflareRunnerUrl,
-      cloudflareRunnerWsUrl,
       runnerToken,
       runnerUrl: cloudflareRunnerUrl,
-      codexWsUrl: cloudflareRunnerWsUrl,
       setRunnerUrl,
-      setCodexWsUrl,
       ...overrides,
     };
     const rendered = await render(<RouteSelectionProbe {...props} />);
     await act(async () => {
       await Promise.resolve();
     });
-    return { rendered, setRunnerUrl, setCodexWsUrl };
+    return { rendered, setRunnerUrl };
   }
 
   function resolveFetchLater() {
@@ -101,7 +94,7 @@ describe("useRunnerRouteSelection", () => {
   }
 
   it("checks local health with the runner token and switches to local when reachable", async () => {
-    const { setRunnerUrl, setCodexWsUrl } = await renderSelection();
+    const { setRunnerUrl } = await renderSelection();
 
     await runPendingTimers();
 
@@ -111,13 +104,11 @@ describe("useRunnerRouteSelection", () => {
       headers: { Authorization: `Bearer ${runnerToken}` },
     }));
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
-    expect(setCodexWsUrl).toHaveBeenCalledWith(localRunnerWsUrl);
   });
 
   it("rechecks when a local runner candidate is saved after startup", async () => {
-    const { rendered, setRunnerUrl, setCodexWsUrl } = await renderSelection({
+    const { rendered, setRunnerUrl } = await renderSelection({
       localRunnerUrl: "",
-      localRunnerWsUrl: "",
     });
 
     await runPendingTimers();
@@ -127,14 +118,10 @@ describe("useRunnerRouteSelection", () => {
     await rendered.rerender(<RouteSelectionProbe
       enabled={true}
       localRunnerUrl={localRunnerUrl}
-      localRunnerWsUrl={localRunnerWsUrl}
       cloudflareRunnerUrl={cloudflareRunnerUrl}
-      cloudflareRunnerWsUrl={cloudflareRunnerWsUrl}
       runnerToken={runnerToken}
       runnerUrl={cloudflareRunnerUrl}
-      codexWsUrl={cloudflareRunnerWsUrl}
       setRunnerUrl={setRunnerUrl}
-      setCodexWsUrl={setCodexWsUrl}
     />);
 
     await runPendingTimers();
@@ -143,12 +130,11 @@ describe("useRunnerRouteSelection", () => {
       headers: { Authorization: `Bearer ${runnerToken}` },
     }));
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
-    expect(setCodexWsUrl).toHaveBeenCalledWith(localRunnerWsUrl);
   });
 
   it("rechecks again after a network event so local can win once Wi-Fi stabilizes", async () => {
     jest.mocked(fetch).mockResolvedValueOnce({ ok: false } as Response);
-    const { setRunnerUrl, setCodexWsUrl } = await renderSelection();
+    const { setRunnerUrl } = await renderSelection();
 
     await runPendingTimers();
     expect(setRunnerUrl).not.toHaveBeenCalled();
@@ -165,7 +151,6 @@ describe("useRunnerRouteSelection", () => {
     await advanceTimers(1500);
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
-    expect(setCodexWsUrl).toHaveBeenCalledWith(localRunnerWsUrl);
 
     await advanceTimers(3000);
     expect(fetch).toHaveBeenCalledTimes(3);
@@ -173,7 +158,7 @@ describe("useRunnerRouteSelection", () => {
 
   it("keeps the network retry window when a WebSocket problem follows the network event", async () => {
     jest.mocked(fetch).mockResolvedValueOnce({ ok: false } as Response);
-    const { setRunnerUrl, setCodexWsUrl } = await renderSelection();
+    const { setRunnerUrl } = await renderSelection();
 
     await runPendingTimers();
     expect(setRunnerUrl).not.toHaveBeenCalled();
@@ -191,13 +176,12 @@ describe("useRunnerRouteSelection", () => {
     await advanceTimers(1500);
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
-    expect(setCodexWsUrl).toHaveBeenCalledWith(localRunnerWsUrl);
   });
 
   it("ignores an old in-flight health result after a newer network event is scheduled", async () => {
     const firstHealth = resolveFetchLater();
     jest.mocked(fetch).mockImplementationOnce(() => firstHealth.promise);
-    const { setRunnerUrl, setCodexWsUrl } = await renderSelection();
+    const { setRunnerUrl } = await renderSelection();
 
     await advanceTimers(0);
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -210,13 +194,11 @@ describe("useRunnerRouteSelection", () => {
     });
 
     expect(setRunnerUrl).not.toHaveBeenCalled();
-    expect(setCodexWsUrl).not.toHaveBeenCalled();
 
     await advanceTimers(500);
 
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
-    expect(setCodexWsUrl).toHaveBeenCalledWith(localRunnerWsUrl);
   });
 
 });

@@ -98,13 +98,13 @@ export async function compactCodexAppServerThread(options: {
   const wsUrl = normalized.wsUrl;
   const runnerWebSocketManager = options.runnerWebSocketManager;
   const useRunnerWsManager = Boolean(runnerWebSocketManager);
-  const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
   const wsToken = normalized.wsToken;
   const threadId = String(options.threadId || "").trim();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))
     ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
     : NEAR_UNLIMITED_TIMEOUT_MS;
   if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
+  if (!isRunnerWsUrl(wsUrl)) throw new Error("Codex WebSocket URL must use /runner-ws");
   if (!threadId) throw new Error("threadId is empty");
   if (runnerWebSocketManager && options.backendId) {
     const backendId = String(options.backendId || "codex");
@@ -236,9 +236,7 @@ export async function compactCodexAppServerThread(options: {
       return;
     }
     if (!ws) throw new Error("Codex app-server WebSocket is not initialized");
-    ws.send(useRunnerWsEnvelope
-      ? encodeRunnerWsLlmRpc(payload, threadId)
-      : JSON.stringify(payload));
+    ws.send(encodeRunnerWsLlmRpc(payload, threadId));
   }
 
   function sendRequest<R>(method: string, params: Record<string, unknown> = {}) {

@@ -102,28 +102,6 @@ export const settingsScreenStyles = {
     color: "#111111",
     fontSize: 14,
   },
-  settingsRouteActions: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  settingsCompactButton: {
-    minHeight: 30,
-    justifyContent: "center",
-    borderRadius: 8,
-    backgroundColor: "#eaf4ff",
-    paddingHorizontal: 11,
-  },
-  settingsCompactButtonText: {
-    color: "#0a84ff",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  settingsCompactButtonSelected: {
-    backgroundColor: "#0a84ff",
-  },
-  settingsCompactButtonTextSelected: {
-    color: "#ffffff",
-  },
   settingsStepper: {
     flexDirection: "row",
     alignItems: "center",

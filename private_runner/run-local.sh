@@ -68,8 +68,8 @@ case "$CODEX_HOME" in
   *) export CODEX_HOME="$PROJECT_ROOT/$CODEX_HOME" ;;
 esac
 
-# Keep codex app-server loopback-only by default. The runner proxies /codex-ws
-# to 127.0.0.1:4500, while exposing only the runner port to other devices.
+# Keep codex app-server loopback-only by default. The runner relays /runner-ws
+# traffic to 127.0.0.1:4500 while exposing only the runner port to other devices.
 CODEX_APP_SERVER_LISTEN="${CODEX_APP_SERVER_LISTEN:-ws://127.0.0.1:4500}"
 CODEX_APP_SERVER_WS_AUTH="${CODEX_APP_SERVER_WS_AUTH:-}"
 CODEX_APP_SERVER_TOKEN_FILE="${CODEX_APP_SERVER_TOKEN_FILE:-}"

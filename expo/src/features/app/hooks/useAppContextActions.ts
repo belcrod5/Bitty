@@ -27,15 +27,11 @@ type UseAppContextActionsArgs = {
   setActiveScreen: Dispatch<SetStateAction<AppScreen>>;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   selectLlmDirectory: (value: string) => void;
-  setCodexWsUrl: Dispatch<SetStateAction<string>>;
-  setCodexWsToken: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
-  setCloudflareRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
-  setLocalRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setModelSelectOpen: Dispatch<SetStateAction<boolean>>;
   setThinkSelectOpen: Dispatch<SetStateAction<boolean>>;
@@ -85,15 +81,11 @@ export function useAppContextActions({
   setActiveScreen,
   setRunnerUrl,
   selectLlmDirectory,
-  setCodexWsUrl,
-  setCodexWsToken,
   setRunnerToken,
   setCloudflareAccessClientId,
   setCloudflareAccessClientSecret,
   setCloudflareRunnerUrl,
-  setCloudflareRunnerWsUrl,
   setLocalRunnerUrl,
-  setLocalRunnerWsUrl,
   setCodexApprovalPolicy,
   setModelSelectOpen,
   setThinkSelectOpen,
@@ -144,12 +136,6 @@ export function useAppContextActions({
   const changeLlmDirectory = useCallback((value: string) => {
     selectLlmDirectory(value);
   }, [selectLlmDirectory]);
-  const changeCodexWsUrl = useCallback((value: string) => {
-    setCodexWsUrl(value);
-  }, [setCodexWsUrl]);
-  const changeCodexWsToken = useCallback((value: string) => {
-    setCodexWsToken(value);
-  }, [setCodexWsToken]);
   const changeRunnerToken = useCallback((value: string) => {
     setRunnerToken(value);
   }, [setRunnerToken]);
@@ -172,31 +158,19 @@ export function useAppContextActions({
     });
     setRunnerUrl(pairing.runnerUrl);
     setRunnerToken(pairing.runnerToken);
-    setCodexWsToken(pairing.runnerToken);
     setCloudflareAccessClientId(pairing.cloudflareAccessClientId);
     setCloudflareAccessClientSecret(pairing.cloudflareAccessClientSecret);
     setCloudflareRunnerUrl(pairing.runnerUrl);
-    setCloudflareRunnerWsUrl(pairing.runnerWsUrl);
     setLocalRunnerUrl(pairing.localRunnerUrl);
-    setLocalRunnerWsUrl(pairing.localRunnerWsUrl);
-    if (pairing.runnerWsUrl) {
-      setCodexWsUrl(pairing.runnerWsUrl);
-    }
     return {
       runnerUrl: pairing.runnerUrl,
-      runnerWsUrl: pairing.runnerWsUrl,
       localRunnerUrl: pairing.localRunnerUrl,
-      localRunnerWsUrl: pairing.localRunnerWsUrl,
     };
   }, [
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
-    setCloudflareRunnerWsUrl,
-    setCodexWsToken,
-    setCodexWsUrl,
     setLocalRunnerUrl,
-    setLocalRunnerWsUrl,
     setRunnerToken,
     setRunnerUrl,
   ]);
@@ -331,8 +305,6 @@ export function useAppContextActions({
     openSkiaBoardScreen,
     changeRunnerUrl,
     changeLlmDirectory,
-    changeCodexWsUrl,
-    changeCodexWsToken,
     changeRunnerToken,
     clearCloudflareAccessCredentials,
     applyCloudflareRunnerPairing,

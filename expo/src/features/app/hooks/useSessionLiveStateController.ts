@@ -46,7 +46,7 @@ export function useSessionLiveStateController(options: {
   settingsLoaded: boolean;
   selectedSessionId: string;
   codexWsUrl: string;
-  codexWsToken: string;
+  runnerToken: string;
   backendId: string;
   runnerWebSocketManager: RunnerWebSocketManager;
   resolveBackendId: (sessionId: string) => string;
@@ -216,7 +216,7 @@ export function useSessionLiveStateController(options: {
     }, { throttleMs: 0 });
     void readCodexAppServerThread({
       wsUrl: options.codexWsUrl.trim(),
-      wsToken: options.codexWsToken,
+      wsToken: options.runnerToken,
       threadId: sessionId,
       timeoutMs: 25_000,
       runnerWebSocketManager: options.runnerWebSocketManager,
@@ -250,7 +250,7 @@ export function useSessionLiveStateController(options: {
   }, [
     applyProbe,
     options.backendId,
-    options.codexWsToken,
+    options.runnerToken,
     options.codexWsUrl,
     options.runnerWebSocketManager,
     options.selectedSessionId,

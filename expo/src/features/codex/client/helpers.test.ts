@@ -148,23 +148,13 @@ describe("normalizeThreadReadEntry", () => {
 });
 
 describe("normalizeCodexWsInputs", () => {
-  it("migrates a legacy query token out of the URL", () => {
+  it("normalizes the configured runner WebSocket URL and token", () => {
     expect(normalizeCodexWsInputs(
-      "wss://runner.example.com/codex-ws?token=legacy-secret&resume=1",
-      ""
+      " wss://runner.example.com/runner-ws ",
+      " runner-secret "
     )).toEqual({
-      wsUrl: "wss://runner.example.com/codex-ws?resume=1",
-      wsToken: "legacy-secret",
-    });
-  });
-
-  it("removes query tokens without replacing an explicit token", () => {
-    expect(normalizeCodexWsInputs(
-      "wss://runner.example.com/codex-ws?Token=old-secret",
-      "secure-store-secret"
-    )).toEqual({
-      wsUrl: "wss://runner.example.com/codex-ws",
-      wsToken: "secure-store-secret",
+      wsUrl: "wss://runner.example.com/runner-ws",
+      wsToken: "runner-secret",
     });
   });
 });

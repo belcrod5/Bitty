@@ -11,10 +11,6 @@ import {
   toCodexApprovalDecision,
   toErrorMessage,
 } from "./helpers";
-import {
-  buildRunnerRelayResumeWsUrl,
-  parseRunnerRelayControlMessage,
-} from "./runnerRelayControl";
 import { reserveRunnerWsReconnectDelay } from "./runnerWsReconnectGate";
 import type {
   CodexAppServerRelayObserverOptions,
@@ -27,6 +23,7 @@ import {
   isRunnerWsUrl,
   normalizeRunnerWsIncomingCodexRpc,
   parseRunnerWsEnvelope,
+  parseRunnerWsRelayControlMessage,
 } from "../../runnerWs/llmAdapter";
 import type { RunnerWsMessage } from "../../runnerWs/types";
 
@@ -100,13 +97,13 @@ export function startCodexAppServerTurnRelayObserver(
 ): CodexAppServerRelayObserverSession {
   const normalized = normalizeCodexWsInputs(options.wsUrl, options.wsToken);
   const wsUrl = normalized.wsUrl;
-  const useRunnerWsEnvelope = isRunnerWsUrl(wsUrl);
   const wsToken = normalized.wsToken;
   const threadId = String(options.threadId || "").trim();
   const resumeFromSeq = Number.isFinite(Number(options.resumeFromSeq))
     ? Math.max(0, Math.floor(Number(options.resumeFromSeq)))
     : 0;
   if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
+  if (!isRunnerWsUrl(wsUrl)) throw new Error("Codex WebSocket URL must use /runner-ws");
   if (!threadId) throw new Error("threadId is empty");
   if (typeof options.onApprovalRequest !== "function") {
     throw new Error("onApprovalRequest is required");
@@ -363,7 +360,7 @@ export function startCodexAppServerTurnRelayObserver(
   };
 
   const runnerWebSocketManager = options.runnerWebSocketManager;
-  if (runnerWebSocketManager && useRunnerWsEnvelope) {
+  if (runnerWebSocketManager) {
     const unsubscribers: Array<() => void> = [];
     let resumeSentGeneration = -1;
 
@@ -559,9 +556,7 @@ export function startCodexAppServerTurnRelayObserver(
     }
     reconnectAttempts += 1;
     const attempt = reconnectAttempts;
-    const nextResumeWsUrl = useRunnerWsEnvelope
-      ? wsUrl
-      : buildRunnerRelayResumeWsUrl(wsUrl, threadId, lastRelaySeq);
+    const nextResumeWsUrl = wsUrl;
     const reconnectDelayMs = reserveRunnerWsReconnectDelay(nextResumeWsUrl, {
       minSpacingMs: Math.min(5000, 1000 * attempt),
       jitterMs: 500,
@@ -616,9 +611,7 @@ export function startCodexAppServerTurnRelayObserver(
     return true;
   };
 
-  const resumeWsUrl = useRunnerWsEnvelope
-    ? wsUrl
-    : buildRunnerRelayResumeWsUrl(wsUrl, threadId, resumeFromSeq);
+  const resumeWsUrl = wsUrl;
   ws = createWebSocketWithOptionalAuth(resumeWsUrl, wsToken);
 
   finishClose = () => {
@@ -639,14 +632,11 @@ export function startCodexAppServerTurnRelayObserver(
   };
 
   sendObserverJson = (payload: Record<string, unknown>) => {
-    ws.send(useRunnerWsEnvelope
-      ? encodeRunnerWsLlmRpc(payload, threadId)
-      : JSON.stringify(payload));
+    ws.send(encodeRunnerWsLlmRpc(payload, threadId));
   };
 
   const sendHeartbeatPing = (socket: WebSocket) => {
     if (
-      !useRunnerWsEnvelope ||
       closeRequested ||
       closed ||
       socket !== ws ||
@@ -695,7 +685,6 @@ export function startCodexAppServerTurnRelayObserver(
     clearHeartbeatTimer();
     pendingPing = null;
     missedPingCount = 0;
-    if (!useRunnerWsEnvelope) return;
     sendHeartbeatPing(socket);
     heartbeatTimer = setInterval(() => sendHeartbeatPing(socket), RUNNER_RELAY_OBSERVER_PING_INTERVAL_MS);
   };
@@ -707,19 +696,17 @@ export function startCodexAppServerTurnRelayObserver(
         stage: mode === "initial" ? "relay_observer_open" : "relay_observer_reconnect_open",
         readyState: socket.readyState,
       });
-      if (useRunnerWsEnvelope) {
-        try {
-          socket.send(encodeRunnerWsRelayResume(threadId, lastRelaySeq));
-        } catch (error) {
-          const detail = toErrorMessage(error);
-          emitLog({
-            stage: "relay_observer_resume_send_error",
-            message: detail,
-            readyState: socket.readyState,
-          });
-          void tryReconnectRelayObserver("relay_observer_resume_send_error", detail, socket.readyState);
-          return;
-        }
+      try {
+        socket.send(encodeRunnerWsRelayResume(threadId, lastRelaySeq));
+      } catch (error) {
+        const detail = toErrorMessage(error);
+        emitLog({
+          stage: "relay_observer_resume_send_error",
+          message: detail,
+          readyState: socket.readyState,
+        });
+        void tryReconnectRelayObserver("relay_observer_resume_send_error", detail, socket.readyState);
+        return;
       }
       startHeartbeatTimer(socket);
     };
@@ -727,7 +714,7 @@ export function startCodexAppServerTurnRelayObserver(
     socket.onmessage = (event) => {
       if (closeRequested || closed || socket !== ws) return;
       const rawData = typeof event.data === "string" ? event.data : String(event.data || "");
-      const envelope = useRunnerWsEnvelope ? parseRunnerWsEnvelope(rawData) : null;
+      const envelope = parseRunnerWsEnvelope(rawData);
       if (envelope?.channel === "llm" && envelope.op === "rpc") {
         reconnectAttempts = 0;
         // seq処理は「llm:rpcかつseq持ち」に限定(relay controlのseqは下の
@@ -745,7 +732,7 @@ export function startCodexAppServerTurnRelayObserver(
       pendingPing = null;
       missedPingCount = 0;
 
-      const control = parseRunnerRelayControlMessage(rawData);
+      const control = parseRunnerWsRelayControlMessage(rawData);
       if (control) {
         const tracking = applyRelayControlSeqTracking(control);
         if (control.type === "runner_relay_attached") {

@@ -25,7 +25,6 @@ function renderExplorerHook(overrides: {
 } = {}) {
   return renderHook(() => useLlmSessionExplorer({
     codexWsUrl: overrides.codexWsUrl ?? "ws://127.0.0.1:8788/runner-ws",
-    codexWsToken: "runner-token",
     runnerToken: overrides.runnerToken ?? "runner-token",
     auxServerBaseUrl: () => "http://runner.test",
     getRunnerHttpAuth: overrides.getRunnerHttpAuth

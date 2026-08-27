@@ -193,7 +193,7 @@ test("manager mode treats cached initialize success as normal and completes comp
   const manager = new FakeRunnerWebSocketManager();
   const onEvent = jest.fn();
   const promise = compactCodexAppServerThread({
-    wsUrl: "ws://127.0.0.1:8788/codex-ws",
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
     wsToken: "runner-token",
     threadId: "thread-1",
     runnerWebSocketManager: manager as unknown as RunnerWebSocketManager,
@@ -285,7 +285,7 @@ test("neutral compact uses capability, handoff, and the Agent operation", async 
   const manager = { request } as unknown as RunnerWebSocketManager;
 
   await expect(compactCodexAppServerThread({
-    wsUrl: "ws://127.0.0.1:8788/codex-ws",
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
     threadId: "thread-1",
     runnerWebSocketManager: manager,
     backendId: "codex",

@@ -61,9 +61,7 @@ function createArgs() {
     cloudflareAccessClientId: "",
     cloudflareAccessClientSecret: "",
     cloudflareRunnerUrl: "",
-    cloudflareRunnerWsUrl: "",
     localRunnerUrl: "",
-    localRunnerWsUrl: "",
     llmBackend: "codex",
     llmDirectory: "",
     registeredDirectories: [],
@@ -72,8 +70,6 @@ function createArgs() {
     expandedDirectoryIds: [],
     selectedLlmSessionId: "",
     selectedLlmSessionMaterialized: false,
-    codexWsUrl: "",
-    codexWsToken: "",
     modelRef: "default-model",
     reasoningEffort: "medium",
     codexApprovalPolicy: "on-request",
@@ -95,9 +91,7 @@ function createArgs() {
     setCloudflareAccessClientId: setter,
     setCloudflareAccessClientSecret: setter,
     setCloudflareRunnerUrl: setter,
-    setCloudflareRunnerWsUrl: setter,
     setLocalRunnerUrl: setter,
-    setLocalRunnerWsUrl: setter,
     setLlmBackend: setter,
     setLlmDirectory: setter,
     setRegisteredDirectories: setter,
@@ -109,8 +103,6 @@ function createArgs() {
     selectedLlmSessionIdRef: { current: "" },
     llmConversationSessionIdRef: { current: "" },
     rememberKnownCodexThreadId: jest.fn(),
-    setCodexWsUrl: setter,
-    setCodexWsToken: setter,
     setModelRef: setter,
     setReasoningEffort: setter,
     setCodexApprovalPolicy: setter,
@@ -198,7 +190,10 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
   expect(mockMutatePersistedSettings).toHaveBeenCalled();
   const mutate = mockMutatePersistedSettings.mock.calls[0][0];
   const boardState = { cards: [{ sessionId: "session-1", col: 0, row: 0 }] };
-  const next = mutate({ skiaBoardState: boardState, runnerUrl: "stale-url" });
+  const next = mutate({
+    skiaBoardState: boardState,
+    runnerUrl: "stale-url",
+  });
 
   // 所有者(Skiaボード等)が直接書いたフィールドは保持し、それ以外はReact stateから再構築。
   expect(next.skiaBoardState).toEqual(boardState);
@@ -208,7 +203,6 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
 test("clipboard export excludes authentication credentials and approval rules", async () => {
   const hook = await renderPersistenceController({
     runnerToken: "runner-secret",
-    codexWsToken: "different-codex-secret",
     cloudflareAccessClientId: "cloudflare-client-id",
     cloudflareAccessClientSecret: "cloudflare-client-secret",
   });
@@ -220,7 +214,6 @@ test("clipboard export excludes authentication credentials and approval rules", 
   const exported = JSON.parse(mockSetStringAsync.mock.calls[0][0]);
   expect(exported.appDefaultSettings.runnerUrl).toBe("http://default-runner");
   expect(exported.appDefaultSettings).not.toHaveProperty("runnerToken");
-  expect(exported.appDefaultSettings).not.toHaveProperty("codexWsToken");
   expect(exported.appDefaultSettings).not.toHaveProperty("cloudflareAccessClientId");
   expect(exported.appDefaultSettings).not.toHaveProperty("cloudflareAccessClientSecret");
   expect(exported.appDefaultSettings).not.toHaveProperty("toolAutoApprovalRules");
@@ -254,8 +247,6 @@ test("clipboard import never restores credentials from an old settings payload",
     appDefaultSettings: {
       runnerUrl: "https://migrated.example.com",
       runnerToken: "legacy-runner-secret",
-      codexWsUrl: "wss://migrated.example.com/codex-ws?token=legacy-query-secret",
-      codexWsToken: "legacy-codex-secret",
       cloudflareAccessClientId: "legacy-cloudflare-id",
       cloudflareAccessClientSecret: "legacy-cloudflare-secret",
       toolAutoApprovalRules: { "session:command": true },
@@ -263,16 +254,12 @@ test("clipboard import never restores credentials from an old settings payload",
     },
   }));
   const setRunnerToken = jest.fn();
-  const setCodexWsToken = jest.fn();
   const setCloudflareAccessClientId = jest.fn();
   const setCloudflareAccessClientSecret = jest.fn();
-  const setCodexWsUrl = jest.fn();
   const hook = await renderPersistenceController({
     setRunnerToken,
-    setCodexWsToken,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
-    setCodexWsUrl,
   } as Parameters<typeof renderPersistenceController>[0]);
 
   await act(async () => {
@@ -283,19 +270,15 @@ test("clipboard import never restores credentials from an old settings payload",
     ?.find(({ text }) => text === "インポート");
 
   setRunnerToken.mockClear();
-  setCodexWsToken.mockClear();
   setCloudflareAccessClientId.mockClear();
   setCloudflareAccessClientSecret.mockClear();
-  setCodexWsUrl.mockClear();
   await act(async () => {
     importButton?.onPress?.();
   });
 
   expect(setRunnerToken).not.toHaveBeenCalled();
-  expect(setCodexWsToken).not.toHaveBeenCalled();
   expect(setCloudflareAccessClientId).not.toHaveBeenCalled();
   expect(setCloudflareAccessClientSecret).not.toHaveBeenCalled();
-  expect(setCodexWsUrl).toHaveBeenCalledWith("wss://migrated.example.com/codex-ws");
 });
 
 test("keeps a persisted unsent local session as an unlocked draft", async () => {
@@ -350,8 +333,6 @@ test("preserves a persisted backend and model before its catalog is available", 
 test("local startup preserves legacy credentials before applying SecureStore values", async () => {
   mockReadPersistedSettings.mockResolvedValue({
     runnerToken: "legacy-runner-token",
-    codexWsUrl: "wss://legacy.example.com/codex-ws?token=query-token&mode=relay",
-    codexWsToken: "legacy-codex-token",
     cloudflareAccessClientId: "legacy-cloudflare-id",
     cloudflareAccessClientSecret: "legacy-cloudflare-secret",
   });
@@ -361,49 +342,25 @@ test("local startup preserves legacy credentials before applying SecureStore val
     cloudflareAccessClientSecret: "secure-cloudflare-secret",
   });
   const setRunnerToken = jest.fn();
-  const setCodexWsToken = jest.fn();
-  const setCodexWsUrl = jest.fn();
   const setCloudflareAccessClientId = jest.fn();
   const setCloudflareAccessClientSecret = jest.fn();
 
   await renderPersistenceController({
     setRunnerToken,
-    setCodexWsToken,
-    setCodexWsUrl,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
   } as Parameters<typeof renderPersistenceController>[0]);
 
   expect(setRunnerToken.mock.calls[0][0]).toBe("legacy-runner-token");
-  expect(setCodexWsToken.mock.calls[0][0]).toBe("legacy-codex-token");
-  expect(setCodexWsUrl).toHaveBeenCalledWith("wss://legacy.example.com/codex-ws?mode=relay");
   expect(setCloudflareAccessClientId.mock.calls[0][0]).toBe("legacy-cloudflare-id");
   expect(setCloudflareAccessClientSecret.mock.calls[0][0]).toBe("legacy-cloudflare-secret");
 
   const secureRunnerUpdate = setRunnerToken.mock.calls[1][0];
-  const secureCodexUpdate = setCodexWsToken.mock.calls[1][0];
   const secureCloudflareIdUpdate = setCloudflareAccessClientId.mock.calls[1][0];
   const secureCloudflareSecretUpdate = setCloudflareAccessClientSecret.mock.calls[1][0];
   expect(secureRunnerUpdate("legacy-runner-token")).toBe("secure-runner-token");
-  expect(secureCodexUpdate("legacy-codex-token")).toBe("legacy-codex-token");
   expect(secureCloudflareIdUpdate("legacy-cloudflare-id")).toBe("secure-cloudflare-id");
   expect(secureCloudflareSecretUpdate("legacy-cloudflare-secret")).toBe("secure-cloudflare-secret");
-});
-
-test("local startup recovers a legacy runner token from the Codex WebSocket URL", async () => {
-  mockReadPersistedSettings.mockResolvedValue({
-    codexWsUrl: "wss://legacy.example.com/codex-ws?mode=relay&token=query-token",
-  });
-  const setRunnerToken = jest.fn();
-  const setCodexWsUrl = jest.fn();
-
-  await renderPersistenceController({
-    setRunnerToken,
-    setCodexWsUrl,
-  } as Parameters<typeof renderPersistenceController>[0]);
-
-  expect(setRunnerToken.mock.calls[0][0]).toBe("query-token");
-  expect(setCodexWsUrl).toHaveBeenCalledWith("wss://legacy.example.com/codex-ws?mode=relay");
 });
 
 test("does not delete credentials after their initial read fails", async () => {

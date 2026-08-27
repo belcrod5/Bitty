@@ -57,19 +57,6 @@ function normalizeLocalHttpUrl(raw) {
   }
 }
 
-function buildRunnerWsUrl(runnerUrl) {
-  try {
-    const url = new URL(runnerUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = "/runner-ws";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return "";
-  }
-}
-
 function readMacLocalHostName() {
   const configured = String(process.env.RUNNER_LOCAL_HOSTNAME || "").trim();
   if (configured) return configured.replace(/\.local$/i, "");
@@ -137,9 +124,7 @@ const payload = {
   type: "bitty.runner.pairing",
   version: 1,
   runnerUrl,
-  runnerWsUrl: buildRunnerWsUrl(runnerUrl),
   localRunnerUrl,
-  localRunnerWsUrl: buildRunnerWsUrl(localRunnerUrl),
   runnerToken,
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,

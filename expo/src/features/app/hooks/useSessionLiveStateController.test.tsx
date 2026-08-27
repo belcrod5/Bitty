@@ -21,7 +21,7 @@ const disabledProbeOptions = {
   settingsLoaded: false,
   selectedSessionId: "thread-1",
   codexWsUrl: "",
-  codexWsToken: "",
+  runnerToken: "",
   backendId: "codex",
   runnerWebSocketManager: {} as any,
   resolveBackendId: () => "codex",

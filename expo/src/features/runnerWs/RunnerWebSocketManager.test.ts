@@ -66,9 +66,9 @@ function createManager() {
   });
 }
 
-function createLegacyUrlManager() {
+function createManagerWithWrongPath() {
   return new RunnerWebSocketManager({
-    url: " ws://127.0.0.1:8788/codex-ws ",
+    url: " ws://127.0.0.1:8788/wrong-path ",
     token: " runner-token ",
     appState: "active",
     clientInstanceId: "client-1",
@@ -150,9 +150,9 @@ test("connect is single-flight and waits for control ready", async () => {
   });
 });
 
-test("normalizes legacy codex-ws URLs to runner-ws", () => {
+test("pins the configured endpoint to runner-ws", () => {
   nextSocket();
-  const manager = createLegacyUrlManager();
+  const manager = createManagerWithWrongPath();
 
   void manager.connect().catch(() => undefined);
 

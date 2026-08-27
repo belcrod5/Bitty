@@ -9368,7 +9368,6 @@ const runnerWsActiveClients = new Set();
 const runnerWsClientInstanceIds = new WeakMap();
 const runnerWsServer = new WebSocketServer({ noServer: true });
 const wsServer = new WebSocketServer({ noServer: true });
-const codexProxyWsServer = new WebSocketServer({ noServer: true });
 
 runnerWsServer.on("connection", (ws, req) => {
   const reqUrl = req ? parseRequestUrl(req) : { pathname: RUNNER_WS_PATH };
@@ -11248,7 +11247,7 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
 function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   if (!relay || relay.closed) return;
   const remote = String(params.remote || relay.remote || "unknown");
-  const endpoint = String(params.endpoint || relay.endpoint || "/codex-ws");
+  const endpoint = String(params.endpoint || relay.endpoint || RUNNER_WS_PATH);
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
@@ -11564,7 +11563,7 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
   if (!relay?.upstreamWs) return;
   const upstreamWs = relay.upstreamWs;
   const remote = String(params.remote || relay.remote || "unknown");
-  const endpoint = String(params.endpoint || relay.endpoint || "/codex-ws");
+  const endpoint = String(params.endpoint || relay.endpoint || RUNNER_WS_PATH);
   const upstreamUrl = String(params.upstreamUrl || relay.upstreamUrl || CODEX_WS_PROXY_UPSTREAM_URL);
   upstreamWs.on("open", () => {
     if (relay.closed) return;
@@ -11665,7 +11664,7 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
 }
 
 function createCodexRelayWithUpstream(params = {}) {
-  const endpoint = String(params.endpoint || "/codex-ws");
+  const endpoint = String(params.endpoint || RUNNER_WS_PATH);
   const remote = String(params.remote || "unknown");
   const upstreamUrl = String(params.upstreamUrl || CODEX_WS_PROXY_UPSTREAM_URL);
   const protocols = Array.isArray(params.protocols) ? params.protocols : [];
@@ -11730,7 +11729,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     return forwarded;
   }
   const remote = String(params.remote || relay.remote || "unknown");
-  const endpoint = String(params.endpoint || relay.endpoint || "/codex-ws");
+  const endpoint = String(params.endpoint || relay.endpoint || RUNNER_WS_PATH);
   const requestId = String(params.requestId || "").trim();
   const requestOperationId = String(params.operationId || "").trim();
   const requestSessionId = String(params.sessionId || "").trim();
@@ -11942,158 +11941,12 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   }
 }
 
-codexProxyWsServer.on("connection", (clientWs, req) => {
-  const reqUrl = parseRequestUrl(req);
-  const remote = String(req?.socket?.remoteAddress || "unknown");
-  const upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL;
-  const requestToken = String(reqUrl.searchParams.get("token") || "").trim();
-  const authToken = parseAuthToken(req);
-  const connectionId = `codex_ws_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-  const protocolList = req.headers["sec-websocket-protocol"];
-  const protocols = Array.isArray(protocolList)
-    ? protocolList
-    : (protocolList ? String(protocolList).split(",").map((item) => item.trim()).filter(Boolean) : []);
-  const resumeThreadId = String(reqUrl.searchParams.get("resumeThreadId") || "").trim();
-  const resumeFromSeqRaw = Number(
-    reqUrl.searchParams.get("resumeFromSeq") ||
-    reqUrl.searchParams.get("lastSeq") ||
-    0
-  );
-  const resumeFromSeq = Number.isFinite(resumeFromSeqRaw)
-    ? Math.max(0, Math.floor(resumeFromSeqRaw))
-    : 0;
-  let relay = null;
-  if (resumeThreadId) {
-    const mappedRelayId = codexWsRelayIdByThreadId.get(resumeThreadId) || "";
-    const mappedRelay = mappedRelayId ? (codexWsRelaysById.get(mappedRelayId) || null) : null;
-    const bestRelay = pickBestRelayForThread(resumeThreadId);
-    if (bestRelay && !bestRelay.closed) {
-      relay = bestRelay;
-      if (!mappedRelay || mappedRelay.relayId !== bestRelay.relayId) {
-        void appendCodexWsProxyDebug("proxy_resume_relay_selected", {
-          remote,
-          endpoint: reqUrl.pathname,
-          resumeThreadId,
-          resumeFromSeq,
-          mappedRelayId: mappedRelayId || "",
-          selectedRelayId: bestRelay.relayId,
-          selectedLastSeq: Number(bestRelay.lastSeq) || 0,
-          selectedTurnCompleted: Boolean(bestRelay.turnCompleted),
-          selectedUpstreamOpen: Boolean(bestRelay.upstreamOpen),
-          selectedClients: bestRelay.clients.size,
-        });
-      }
-    } else if (mappedRelay && !mappedRelay.closed) {
-      relay = mappedRelay;
-    }
-  }
-
-  if (resumeThreadId && !relay) {
-    void appendCodexWsProxyDebug("proxy_resume_miss", {
-      remote,
-      endpoint: reqUrl.pathname,
-      resumeThreadId,
-      resumeFromSeq,
-    });
-    sendRelayControl(clientWs, {
-      type: "runner_relay_resume_miss",
-      threadId: resumeThreadId,
-      resumeFromSeq,
-    });
-    safeWsClose(clientWs, 4404, "relay_not_found");
-    return;
-  }
-
-  if (!relay) {
-    try {
-      relay = createCodexRelayWithUpstream({
-        endpoint: reqUrl.pathname,
-        remote,
-        upstreamUrl,
-        protocols,
-      });
-    } catch (error) {
-      if (error?.code !== "codex_relay_capacity") throw error;
-      sendRelayControl(clientWs, {
-        type: "runner_relay_server_busy",
-        reason: "codex_relay_capacity",
-      });
-      safeWsClose(clientWs, 1013, "server_busy");
-      return;
-    }
-  }
-
-  if (RUNNER_LOG_REQUESTS) {
-    console.log(
-      `[codex-ws-proxy] connect from=${remote} endpoint=${reqUrl.pathname} relay=${relay.relayId} upstream=${upstreamUrl} resumeThread=${resumeThreadId || "-"}`
-    );
-  }
-  const replayed = attachClientToCodexRelay(relay, clientWs, {
-    replayAfterSeq: resumeFromSeq,
-  });
-  void appendCodexWsProxyDebug("proxy_connection_opened", {
-    relayId: relay.relayId,
-    remote,
-    endpoint: reqUrl.pathname,
-    host: String(req?.headers?.host || ""),
-    hasQueryToken: !!requestToken,
-    hasAuthHeaderToken: !!authToken,
-    protocolCount: protocols.length,
-    upstreamUrl,
-    resumeThreadId: resumeThreadId || "",
-    resumeFromSeq,
-    replayed,
-    threadId: relay.threadId || "",
-  });
-  trackRunnerWebSocket(req, clientWs, {
-    connectionId,
-    route: "codex-ws-proxy",
-    endpoint: reqUrl.pathname,
-  });
-
-  clientWs.on("message", (data, isBinary) => {
-    forwardCodexRelayClientData(relay, data, isBinary, {
-      remote,
-      endpoint: reqUrl.pathname,
-      clientWs,
-    });
-  });
-
-  clientWs.on("close", (code, reasonBuf) => {
-    const reason = Buffer.isBuffer(reasonBuf) ? reasonBuf.toString("utf8") : String(reasonBuf || "");
-    removeClientFromRelay(relay, clientWs);
-    void appendCodexWsProxyDebug("client_ws_closed", {
-      relayId: relay.relayId,
-      remote,
-      code: Number(code),
-      reason: reason || "-",
-      remainingClients: relay.clients.size,
-      threadId: relay.threadId || "",
-    });
-    cleanupOrScheduleDetachedRelay(relay, "client_detached");
-  });
-
-  clientWs.on("error", (error) => {
-    const message = error instanceof Error ? error.message : String(error || "client_error");
-    removeClientFromRelay(relay, clientWs);
-    void appendCodexWsProxyDebug("client_ws_error", {
-      relayId: relay.relayId,
-      remote,
-      message,
-      remainingClients: relay.clients.size,
-      threadId: relay.threadId || "",
-    });
-    cleanupOrScheduleDetachedRelay(relay, "client_error");
-  });
-});
-
 installRunnerWebSocketUpgradeHandler({
   server,
   runnerToken: RUNNER_TOKEN,
   runnerWsPath: RUNNER_WS_PATH,
   runnerWsServer,
   streamTtsWsServer: wsServer,
-  codexProxyWsServer,
   appendDebug: appendCodexWsProxyDebug,
   logRequests: RUNNER_LOG_REQUESTS,
 });

@@ -1,6 +1,6 @@
 # Private Runner (auth.json / openai-codex)
 
-ローカルまたは自前環境でのみ動かす想定の API サーバーです。現在は `runner` 単体起動で、LLMは `runner -> /runner-ws` または legacy `/codex-ws` -> `codex app-server` の中継を使います。
+ローカルまたは自前環境でのみ動かす想定の API サーバーです。現在は `runner` 単体起動で、LLMは `runner -> /runner-ws -> codex app-server` の中継を使います。
 
 ## 認証モデル（setup と deploy の分離）
 この runner は API キー入力ではなく、`codex login` の OAuth ログイン状態を使います。
@@ -48,7 +48,7 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 - backend は OAuth profile を読んで `openai-codex-responses` を呼び出す（ログイン処理は行わない）
 
 ## 必要なキー（このrunner用）
-- 必須: `RUNNER_TOKEN`（`/runner-ws` `/codex-ws` `/stream-tts` `/stt` `/tts` `/client-logs` 保護用のBearerトークン）
+- 必須: `RUNNER_TOKEN`（`/runner-ws` `/stream-tts` `/stt` `/tts` `/client-logs` 保護用のBearerトークン）
   - `run-local.sh` では既定で `RUNNER_TOKEN_MODE=random` のため、起動ごとにランダム生成し、Expo向けPairing QRで渡します。
   - 固定tokenで検証する場合だけ `RUNNER_TOKEN_MODE=env` と `RUNNER_TOKEN` をlocal `.env` に設定します。
   - detached起動時はQRをログへ残さないため、起動後に `private_runner/run-local.sh pairing-qr` で表示します。
@@ -132,19 +132,17 @@ rg -n '"source":"session_diag"' "$LATEST" | tail -n 200
 - 認証アカウント切替時の restart は既存サービスを再利用せず、必ず停止・再起動します。
 
 ## サーバー構成（現在）
-- runner（既定: 8788）: `/runner-ws` `/codex-ws` `/stream-tts` `/stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
+- runner（既定: 8788）: `/runner-ws` `/stream-tts` `/stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
 - codex app-server（既定: 4500）: JSON-RPC本体
 - 推奨接続先（iOS）: `ws://<MacのLocalHostName>.local:8788/runner-ws`
-- 互換接続先（iOS）: `ws://<Mac LAN IP>:8788/codex-ws`
 - iOS/Expo は `RUNNER_TOKEN` をURL queryへ載せず、WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>` で送ります。
 - 実機からローカル接続する場合、runner は `HOST=0.0.0.0` で待ち受けます。`.local` が使えないネットワークでは、Expo側が `/health` の1回確認に失敗した時だけCloudflare Tunnel接続へ戻します。
 
 LLM本線:
 - iOS/Expo からは `/runner-ws` の `llm:rpc` envelope 経由で `thread/*` と `turn/start` を使います。runner から codex app-server への upstream は raw JSON-RPC のままです。
 - Expo側で常時接続の補助WebSocketは作りません。会話、診断、TTSなど実際の操作が必要な時だけ、同じ認証ヘッダー付きWebSocket生成経路を使います。
-- `/codex-ws` は legacy 互換経路です。raw JSON-RPC と `runner_relay_*` control message を維持しています。
 - `/reply` と `/reply-files` は legacy 互換APIです。
-- `/runner-ws` と `/codex-ws` は resumable relay 対応です。`/runner-ws` は `relay:resume` envelope、`/codex-ws` は `resumeThreadId=<threadId>&resumeFromSeq=<lastSeq>` query で、保持中イベントの未受信分を再送して live stream に合流します。
+- `/runner-ws` は `relay:resume` envelopeで、保持中イベントの未受信分を再送して live stream に合流します。
 
 resumable relay 環境変数:
 - `CODEX_WS_RELAY_EVENT_MAX`（既定: `6000`）: threadごとの保持イベント数
@@ -659,5 +657,5 @@ RUNNER_MOCK=1 RUNNER_TOKEN=test node private_runner/server.mjs
 ```
 
 ## 認証エラー時の挙動
-- 未ログインや認証失効で `openai-codex-responses` が失敗した場合、`codex-ws` および legacy `/reply` `/reply-files` は認証エラーを返します。
+- 未ログインや認証失効で `openai-codex-responses` が失敗した場合、`/runner-ws` および legacy `/reply` `/reply-files` は認証エラーを返します。
 - 返却される `help` に沿って runner ホストで再ログインしてください。

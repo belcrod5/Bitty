@@ -13,6 +13,7 @@ export type RunnerRelayControlMessage = {
   replayed?: number;
   latestSeq?: number;
   reason?: string;
+  payload?: Record<string, unknown>;
 };
 
 export type RunnerWsIncomingCodexRpc =
@@ -158,7 +159,7 @@ export function parseRunnerWsRelayControlMessage(rawData: string): RunnerRelayCo
 
 export function normalizeRunnerWsIncomingCodexRpc(rawData: string): RunnerWsIncomingCodexRpc {
   const message = parseRunnerWsEnvelope(rawData);
-  if (!message) return { type: "rpc", rawData };
+  if (!message) return { type: "error", message: "runner-ws message is not a valid envelope" };
   if (message.channel === "llm" && message.op === "rpc") {
     const payload = message.payload;
     if (typeof payload === "string") {

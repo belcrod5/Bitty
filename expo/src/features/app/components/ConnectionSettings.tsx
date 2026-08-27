@@ -1,12 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useCallback } from "react";
-import { Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Switch, Text, TextInput, View } from "react-native";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { styles } from "../styles";
-import {
-  suggestCodexWsUrlFromRunnerUrl,
-  suggestRunnerWsUrlFromRunnerUrl,
-} from "../utils/urlResolvers";
 import { SettingsSelect } from "./SettingsSelect";
 
 const APPROVAL_OPTIONS = [
@@ -28,8 +23,6 @@ export function ConnectionSettings() {
     runnerUrl,
     llmBackend,
     modelRef,
-    codexWsUrl,
-    codexWsToken,
     runnerToken,
     codexApprovalPolicy,
     selectedModelLabel,
@@ -37,8 +30,6 @@ export function ConnectionSettings() {
     modelOptions,
     thinkOptions,
     changeRunnerUrl,
-    changeCodexWsUrl,
-    changeCodexWsToken,
     changeRunnerToken,
     selectCodexApprovalPolicy,
     selectModel,
@@ -46,20 +37,6 @@ export function ConnectionSettings() {
     faceIdRequiredForApproval,
     toggleFaceIdRequiredForApproval,
   } = useAppSettings();
-
-  const codexRouteUrl = suggestCodexWsUrlFromRunnerUrl(runnerUrl);
-  const runnerRouteUrl = suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
-  const normalizedCodexWsUrl = codexWsUrl.trim().replace(/\/$/, "");
-  const codexRouteSelected = Boolean(codexRouteUrl) && normalizedCodexWsUrl === codexRouteUrl;
-  const runnerRouteSelected = Boolean(runnerRouteUrl) && normalizedCodexWsUrl === runnerRouteUrl;
-
-  const applyCodexWsRoute = useCallback(() => {
-    if (codexRouteUrl) changeCodexWsUrl(codexRouteUrl);
-  }, [changeCodexWsUrl, codexRouteUrl]);
-
-  const applyRunnerWsRoute = useCallback(() => {
-    if (runnerRouteUrl) changeCodexWsUrl(runnerRouteUrl);
-  }, [changeCodexWsUrl, runnerRouteUrl]);
 
   const selectableModels = modelOptions
     .filter((option) => option.selectable !== false)
@@ -93,78 +70,6 @@ export function ConnectionSettings() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
-            />
-          </View>
-        </View>
-
-        <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
-          <Ionicons name="git-network-outline" size={22} color="#111827" />
-          <View style={styles.settingsInputContent}>
-            <Text style={styles.settingsRowLabel}>Codex WebSocket URL</Text>
-            <TextInput
-              style={styles.settingsInlineInput}
-              value={codexWsUrl}
-              onChangeText={changeCodexWsUrl}
-              accessibilityLabel="Codex WebSocket URL"
-              placeholder="wss://runner.example.com/runner-ws"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-            />
-            <View style={styles.settingsRouteActions}>
-              <TouchableOpacity
-                style={[
-                  styles.settingsCompactButton,
-                  codexRouteSelected && styles.settingsCompactButtonSelected,
-                ]}
-                onPress={applyCodexWsRoute}
-                accessibilityRole="button"
-                accessibilityState={{ selected: codexRouteSelected }}
-              >
-                <Text
-                  style={[
-                    styles.settingsCompactButtonText,
-                    codexRouteSelected && styles.settingsCompactButtonTextSelected,
-                  ]}
-                >
-                  Codex経路
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.settingsCompactButton,
-                  runnerRouteSelected && styles.settingsCompactButtonSelected,
-                ]}
-                onPress={applyRunnerWsRoute}
-                accessibilityRole="button"
-                accessibilityState={{ selected: runnerRouteSelected }}
-              >
-                <Text
-                  style={[
-                    styles.settingsCompactButtonText,
-                    runnerRouteSelected && styles.settingsCompactButtonTextSelected,
-                  ]}
-                >
-                  Runner経路
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-
-        <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
-          <Ionicons name="key-outline" size={22} color="#111827" />
-          <View style={styles.settingsInputContent}>
-            <Text style={styles.settingsRowLabel}>Codexトークン（任意）</Text>
-            <TextInput
-              style={styles.settingsInlineInput}
-              value={codexWsToken}
-              onChangeText={changeCodexWsToken}
-              accessibilityLabel="Codexトークン"
-              placeholder="Bearer token"
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
             />
           </View>
         </View>

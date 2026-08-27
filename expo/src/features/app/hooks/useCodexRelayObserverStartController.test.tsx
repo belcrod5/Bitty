@@ -44,7 +44,7 @@ function createHarness(initialConversation: ConversationMessage[]) {
     llmRequestStartedAtRef: { current: 0 },
     reply: "",
     codexWsUrl: "ws://127.0.0.1:8788/codex",
-    codexWsToken: "",
+    runnerToken: "",
     logSessionDiag: jest.fn(),
     waitingApprovalResumePendingSessionIdRef: { current: "" },
     setWaitingApprovalResumeStatusText: jest.fn(),
