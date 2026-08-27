@@ -44,6 +44,8 @@ import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createScheduledCodexTurnStarter } from "./codex-scheduled-turn.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
+import { createSkiaBoardService } from "./skia-board-service.mjs";
+import { createSkiaBoardHttpHandler } from "./skia-board-http.mjs";
 import { createApprovalPushService } from "./approval-push-service.mjs";
 import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
 import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
@@ -508,6 +510,10 @@ const PUSH_DEVICE_STORE_PATH = path.resolve(
 const LOCATION_SCHEDULE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.LOCATION_SCHEDULE_STORE_PATH || "private_runner/logs/location_schedules.json"
+);
+const SKIA_BOARD_STORE_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  process.env.SKIA_BOARD_STORE_PATH || "private_runner/logs/skia_board_state.json"
 );
 const CODEX_SCHEDULE_DEFINITIONS_PATH = path.resolve(
   WORKSPACE_ROOT,
@@ -7171,6 +7177,17 @@ const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
   readJsonBody,
   json,
 });
+const skiaBoardService = createSkiaBoardService({
+  storePath: SKIA_BOARD_STORE_PATH,
+  broadcast: (payload) => broadcastSkiaBoardUpdated(payload),
+});
+const skiaBoardHttpHandler = createSkiaBoardHttpHandler({
+  service: skiaBoardService,
+  runnerToken: RUNNER_TOKEN,
+  parseAuthToken,
+  readJsonBody,
+  json,
+});
 
 async function runCodexQueuedTurn(turn) {
   const abortController = new AbortController();
@@ -8616,6 +8633,7 @@ const server = http.createServer(async (req, res) => {
 
   if (await calendarHttpHandler(req, res, reqUrl)) return;
   if (await codexScheduleHttpHandler(req, res, pathname)) return;
+  if (await skiaBoardHttpHandler(req, res, pathname)) return;
 
   if (req.method === "POST" && pathname === "/push/devices") {
     if (!RUNNER_TOKEN) {
@@ -11170,6 +11188,23 @@ function parseCodexRpcObject(rawData, isBinary, maxChars = 200000) {
   }
 }
 
+// Skiaボード状態の変更を全WSクライアントへ通知する。受信側は GET /skia-board で再取得する
+// (イベントに全データは載せない。既存の「通知→再取得」パターンと同じ)。
+function broadcastSkiaBoardUpdated(payload) {
+  if (typeof runnerWsActiveClients === "undefined") return false;
+  let sent = 0;
+  for (const client of Array.from(runnerWsActiveClients)) {
+    if (sendRunnerWsEnvelope(client, {
+      channel: "control",
+      op: "skia_board_updated",
+      payload,
+    })) {
+      sent += 1;
+    }
+  }
+  return sent > 0;
+}
+
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
   if (!payload?.threadId) return false;
   if (typeof runnerWsActiveClients === "undefined") return false;
@@ -12094,6 +12129,7 @@ export const __TESTING__ = {
   pushSummarizer,
   locationScheduleService,
   codexScheduleService,
+  skiaBoardService,
   turnCompletionNotifier,
   derivePushDirectoryTitle,
   codexWsRelaysById,
