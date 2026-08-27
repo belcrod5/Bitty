@@ -8,6 +8,12 @@ import {
   mutatePersistedSettings,
   readPersistedSettingsField,
 } from "../utils/persistedSettingsFile";
+import {
+  fetchSkiaBoard,
+  importSkiaBoard,
+  postSkiaBoardOps,
+} from "../utils/skiaBoardRunnerApi";
+import { applySkiaBoardOpsLocally } from "../utils/skiaBoardRunnerOps";
 import type { LlmSessionHistoryEntry } from "./useLlmSessionExplorer";
 import {
   formatSkiaMiniChatUpdatedAt,
@@ -15,6 +21,7 @@ import {
 } from "./useSkiaMiniChatSessions";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
 import { SkiaBoardProvider, useSkiaBoard } from "../contexts/SkiaBoardContext";
+import type { SkiaBoardCard, SkiaBoardState } from "../utils/skiaBoardState";
 
 jest.mock("../contexts/ConversationContext", () => ({
   useConversation: jest.fn(),
@@ -25,11 +32,29 @@ jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
 jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
   usePanelRuntimeStore: jest.fn(),
 }));
-// 端末ローカル保存はファイルIOをモックし、ボードステートの読み書きだけ検証する。
+jest.mock("../contexts/ChatScreenContext", () => ({
+  useChatScreen: () => ({ runnerUrl: "http://runner", runnerToken: "runner-token" }),
+}));
+jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
+  useRunnerWebSocketManager: () => ({
+    subscribe: jest.fn(() => () => {}),
+    subscribeSnapshot: jest.fn(() => () => {}),
+    getSnapshot: () => ({ connectionState: "idle", generation: 0, connected: false }),
+  }),
+}));
+// 端末ローカル保存はファイルIOをモックし、フィールドの読み書きだけ検証する。
 jest.mock("../utils/persistedSettingsFile", () => ({
   SKIA_BOARD_STATE_FIELD: "skiaBoardState",
+  SKIA_BOARD_CARD_TEXT_SCALE_FIELD: "skiaBoardCardTextScale",
+  SKIA_BOARD_RUNNER_CACHE_FIELD: "skiaBoardRunnerCache",
   readPersistedSettingsField: jest.fn(),
   mutatePersistedSettings: jest.fn(),
+}));
+// ランナーAPIはインメモリのフェイクランナーで置き換える(op適用は実ロジックを共有)。
+jest.mock("../utils/skiaBoardRunnerApi", () => ({
+  fetchSkiaBoard: jest.fn(),
+  importSkiaBoard: jest.fn(),
+  postSkiaBoardOps: jest.fn(),
 }));
 
 const mockUseConversation = jest.mocked(useConversation);
@@ -37,6 +62,9 @@ const mockUsePanelRuntimeController = jest.mocked(usePanelRuntimeController);
 const mockUsePanelRuntimeStore = jest.mocked(usePanelRuntimeStore);
 const mockReadPersistedSettingsField = jest.mocked(readPersistedSettingsField);
 const mockMutatePersistedSettings = jest.mocked(mutatePersistedSettings);
+const mockFetchSkiaBoard = jest.mocked(fetchSkiaBoard);
+const mockImportSkiaBoard = jest.mocked(importSkiaBoard);
+const mockPostSkiaBoardOps = jest.mocked(postSkiaBoardOps);
 const workspaceDirectory = {
   id: "workspace",
   path: "/workspace",
@@ -44,15 +72,72 @@ const workspaceDirectory = {
   markerColor: "none" as const,
 };
 
-// mutatePersistedSettingsへ書かれたボードステートを取り出す。
+// mutatePersistedSettingsへ書かれた端末ローカル設定を取り出す。
 let persistedFile: Record<string, unknown> = {};
+
+// フェイクランナー: ボード正本とrevisionを持ち、opは実ロジックで適用する。
+let runnerStore: { initialized: boolean; revision: number; board: SkiaBoardState | null };
+
+function runnerSnapshot() {
+  return {
+    initialized: runnerStore.initialized,
+    revision: runnerStore.revision,
+    board: runnerStore.board,
+  };
+}
+
+function boardOf(cards: SkiaBoardCard[], extra: Partial<SkiaBoardState> = {}): SkiaBoardState {
+  return {
+    cards,
+    sections: [],
+    excludedSessionIds: [],
+    ingestedUpdatedAtMs: 0,
+    cardTextScale: 1,
+    ...extra,
+  };
+}
+
+function seedRunnerBoard(cards: SkiaBoardCard[], extra: Partial<SkiaBoardState> = {}) {
+  runnerStore = { initialized: true, revision: 1, board: boardOf(cards, extra) };
+}
+
+function sessionCard(sessionId: string, col: number, row: number): SkiaBoardCard {
+  return { kind: "session", sessionId, col, row };
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
   persistedFile = {};
+  runnerStore = { initialized: false, revision: 0, board: null };
   mockReadPersistedSettingsField.mockImplementation(async (field: string) => persistedFile[field]);
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
     persistedFile = mutate(persistedFile);
+  });
+  mockFetchSkiaBoard.mockImplementation(async () => runnerSnapshot());
+  mockImportSkiaBoard.mockImplementation(async (_auth, { board }) => {
+    if (runnerStore.initialized) {
+      return { status: "already_initialized", snapshot: runnerSnapshot() };
+    }
+    runnerStore = {
+      initialized: true,
+      revision: runnerStore.revision + 1,
+      board: boardOf([], {}), // 下で全量置換
+    };
+    runnerStore.board = { ...boardOf([]), ...(board as SkiaBoardState) };
+    return { status: "ok", snapshot: runnerSnapshot() };
+  });
+  mockPostSkiaBoardOps.mockImplementation(async (_auth, { baseRevision, ops }) => {
+    if (!runnerStore.initialized) {
+      return { status: "not_initialized", snapshot: runnerSnapshot() };
+    }
+    if (baseRevision !== runnerStore.revision) {
+      return { status: "conflict", snapshot: runnerSnapshot() };
+    }
+    const next = applySkiaBoardOpsLocally(runnerStore.board as SkiaBoardState, ops as never);
+    if (next !== runnerStore.board) {
+      runnerStore = { ...runnerStore, revision: runnerStore.revision + 1, board: next };
+    }
+    return { status: "ok", snapshot: runnerSnapshot() };
   });
   mockUsePanelRuntimeController.mockReturnValue({
     clearPanelSnapshot: jest.fn(),
@@ -91,9 +176,9 @@ function session(index: number): LlmSessionHistoryEntry {
 
 function tree(entries: LlmSessionHistoryEntry[]): DirectorySessionTreeState {
   return {
-  loading: false,
-  refreshing: false,
-  loadingMore: false,
+    loading: false,
+    refreshing: false,
+    loadingMore: false,
     loaded: true,
     fetchedAtMs: 0,
     error: "",
@@ -131,8 +216,9 @@ function deferred<T>() {
 
 async function flush() {
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 6; i += 1) {
+      await Promise.resolve();
+    }
   });
 }
 
@@ -152,6 +238,11 @@ describe("useSkiaMiniChatSessions", () => {
   it("keeps item identity across minute ticks while card content is unchanged", async () => {
     jest.useFakeTimers();
     try {
+      seedRunnerBoard([
+        sessionCard("session-1", 0, 0),
+        sessionCard("session-2", 1, 0),
+        sessionCard("session-3", 0, 1),
+      ]);
       mockConversation(Array.from({ length: 3 }, (_, index) => session(index + 1)));
       const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
       await flush();
@@ -169,7 +260,17 @@ describe("useSkiaMiniChatSessions", () => {
     }
   });
 
-  it("initializes the board with the latest six sessions on a grid", async () => {
+  it("imports the legacy local board to the runner on first connect", async () => {
+    // ランナー未初期化+ローカル保存あり → 初回接続時にimportで引き継ぐ。
+    persistedFile.skiaBoardState = {
+      cards: [8, 7, 6, 5, 4, 3].map((index, position) => ({
+        sessionId: `session-${index}`,
+        col: position % 2,
+        row: Math.floor(position / 2),
+      })),
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: new Date(session(8).updatedAt).getTime(),
+    };
     const ensureRegisteredDirectorySessions = jest.fn().mockResolvedValue(undefined);
     mockConversation(
       Array.from({ length: 8 }, (_, index) => session(index + 1)),
@@ -184,6 +285,8 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(ensureRegisteredDirectorySessions).toHaveBeenCalledTimes(1);
+    expect(mockImportSkiaBoard).toHaveBeenCalledTimes(1);
+    expect(runnerStore.initialized).toBe(true);
     expect(result.current.directorySync.phase).toBe("idle");
     expect(result.current.sessions).toHaveLength(6);
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual([
@@ -194,7 +297,6 @@ describe("useSkiaMiniChatSessions", () => {
       "session-4",
       "session-3",
     ]);
-    // 初期配置は2列グリッド。
     expect(result.current.sessions.map((item) => [item.col, item.row])).toEqual([
       [0, 0],
       [1, 0],
@@ -213,9 +315,9 @@ describe("useSkiaMiniChatSessions", () => {
       markerColor: "green",
       updatedAtLabel: expect.any(String),
     });
-    // 初期化されたボードステートが永続化される。
-    const savedState = persistedFile.skiaBoardState as { cards: Array<{ sessionId: string }> };
-    expect(savedState.cards).toHaveLength(6);
+    // ランナー正本が読み取り専用キャッシュとして保存される。
+    const cache = persistedFile.skiaBoardRunnerCache as { board: { cards: unknown[] } };
+    expect(cache.board.cards).toHaveLength(6);
   });
 
   it("uses one bounded Unicode display title for hydration and the board card", async () => {
@@ -226,6 +328,7 @@ describe("useSkiaMiniChatSessions", () => {
       clearPanelSnapshot: jest.fn(),
       hydratePanelFromSessionHistory,
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
     mockConversation([candidate]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -267,6 +370,7 @@ describe("useSkiaMiniChatSessions", () => {
       }),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    seedRunnerBoard([sessionCard(parent.sessionId, 0, 0)]);
     mockConversation([parent], {
       directorySessionsById: {
         workspace: {
@@ -310,6 +414,7 @@ describe("useSkiaMiniChatSessions", () => {
       }),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    seedRunnerBoard([sessionCard(parent.sessionId, 0, 0)]);
     mockConversation([parent], {
       directorySessionsById: {
         workspace: {
@@ -341,6 +446,7 @@ describe("useSkiaMiniChatSessions", () => {
       }),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    seedRunnerBoard([sessionCard(parent.sessionId, 0, 0)]);
     mockConversation([parent]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -356,6 +462,10 @@ describe("useSkiaMiniChatSessions", () => {
 
   it("requests missing child trees once per directory", async () => {
     const loadSessionChildrenBatch = jest.fn().mockResolvedValue(undefined);
+    seedRunnerBoard([
+      sessionCard("session-2", 0, 0),
+      sessionCard("session-1", 1, 0),
+    ]);
     mockConversation([session(2), session(1)], { loadSessionChildrenBatch });
 
     await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -368,27 +478,25 @@ describe("useSkiaMiniChatSessions", () => {
     );
   });
 
-  it("restores persisted card positions instead of re-initializing", async () => {
-    persistedFile.skiaBoardState = {
-      cards: [
-        { sessionId: "session-2", col: 1.5, row: 2.25 },
-        { sessionId: "session-1", col: 0, row: 0 },
-      ],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: new Date(session(2).updatedAt).getTime(),
-    };
+  it("restores runner card positions instead of re-initializing", async () => {
+    seedRunnerBoard([
+      { kind: "session", sessionId: "session-2", col: 1.5, row: 2.25 },
+      sessionCard("session-1", 0, 0),
+    ]);
     mockConversation([session(2), session(1)]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
 
+    expect(mockImportSkiaBoard).not.toHaveBeenCalled();
     expect(result.current.sessions.map((item) => [item.sessionId, item.col, item.row])).toEqual([
       ["session-2", 1.5, 2.25],
       ["session-1", 0, 0],
     ]);
   });
 
-  it("derives a persisted directory shortcut name instead of restoring its legacy snapshot", async () => {
+  it("derives a directory shortcut name instead of restoring its legacy snapshot", async () => {
+    // 旧ローカル保存のnameフィールドはimport時のパースで落ち、表示名は都度導出される。
     persistedFile.skiaBoardState = {
       cards: [{
         kind: "directory",
@@ -415,7 +523,7 @@ describe("useSkiaMiniChatSessions", () => {
     }]);
   });
 
-  it("adds, recognizes, persists, and removes a directory through the board context", async () => {
+  it("adds, recognizes, and removes a directory through runner ops", async () => {
     mockConversation([]);
     const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
     await flush();
@@ -426,7 +534,9 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(result.current.hasDirectory("/workspace/projects/bitty")).toBe(true);
-    expect((persistedFile.skiaBoardState as { cards: unknown[] }).cards).toEqual([{
+    // 未初期化ランナーへの最初の編集はimportとして初期化される。
+    expect(runnerStore.initialized).toBe(true);
+    expect(runnerStore.board?.cards).toEqual([{
       kind: "directory",
       directory: "/workspace/projects/bitty",
       col: 0,
@@ -439,32 +549,16 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(result.current.hasDirectory("/workspace/projects/bitty")).toBe(false);
+    expect(runnerStore.board?.cards).toEqual([]);
   });
 
-  it("stacks only sessions newer than the ingest watermark", async () => {
-    persistedFile.skiaBoardState = {
-      cards: [{ sessionId: "session-3", col: 0, row: 0 }],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: new Date(session(3).updatedAt).getTime(),
-    };
-    // session-2 はウォーターマークより古いので流入しない。session-4 は新しいので積み上げ。
-    mockConversation([session(4), session(3), session(2)]);
-
-    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
-    await flush();
-
-    expect(result.current.sessions.map((item) => item.sessionId)).toEqual([
-      "session-3",
-      "session-4",
-    ]);
-    // 既存カードの位置は動かさず、新カードは空きセルへ。
-    expect(result.current.sessions[0]).toMatchObject({ col: 0, row: 0 });
-    expect(result.current.sessions[1]).toMatchObject({ col: 1, row: 0 });
-  });
-
-  it("stays usable in memory without overwriting storage when persisted state fails to load", async () => {
+  it("loads the runner board even when local bootstrap reads fail", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     mockReadPersistedSettingsField.mockRejectedValue(new Error("read failed"));
+    seedRunnerBoard([
+      sessionCard("session-2", 0, 0),
+      sessionCard("session-1", 1, 0),
+    ]);
     mockConversation([session(2), session(1)]);
 
     const { result } = await renderHook(() => ({
@@ -482,102 +576,51 @@ describe("useSkiaMiniChatSessions", () => {
     await act(async () => {
       result.current.board.removeSession("session-2");
     });
+    await flush();
     expect(result.current.preview.sessions.map((item) => item.sessionId)).toEqual(["session-1"]);
-
-    // 読み取れなかった保存済みの位置と除外リストを上書きしない。
-    expect(mockMutatePersistedSettings).not.toHaveBeenCalled();
-    expect(mockReadPersistedSettingsField.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(runnerStore.board?.excludedSessionIds).toEqual(["session-2"]);
     warnSpy.mockRestore();
   });
 
-  it("replays an add onto persisted state after a failed read recovers", async () => {
+  it("resends queued ops after a network failure recovers", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    persistedFile.skiaBoardState = {
-      cards: [{ sessionId: "session-9", col: 0, row: 0 }],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: new Date(session(9).updatedAt).getTime(),
-      cardTextScale: 1,
-    };
-    mockReadPersistedSettingsField.mockRejectedValueOnce(new Error("read failed"));
-    mockConversation([session(2), session(1)], {
-      // Keep automatic ingest out of this recovery boundary: the user action below
-      // is the queued transformation whose replay order this test fixes.
-      directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: "partial_error" },
-    });
+    seedRunnerBoard([sessionCard("session-9", 0, 0)]);
+    mockConversation([session(2), session(9)]);
 
     const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
     await flush();
-    expect(result.current.loaded).toBe(true);
-    expect(mockMutatePersistedSettings).not.toHaveBeenCalled();
 
+    mockPostSkiaBoardOps.mockRejectedValueOnce(new Error("network down"));
     await act(async () => {
       result.current.addSession("session-2");
     });
     await flush();
+    // 送信は失敗したが、楽観反映は維持され、ランナーは未変更。
+    expect(result.current.hasSession("session-2")).toBe(true);
+    expect(runnerStore.board?.cards.map((card) => (card.kind === "session" ? card.sessionId : ""))).toEqual(["session-9"]);
 
-    const savedState = persistedFile.skiaBoardState as {
-      cards: Array<{ sessionId: string }>;
-    };
-    expect(savedState.cards.map((card) => card.sessionId)).toEqual(["session-9", "session-2"]);
-    expect(mockReadPersistedSettingsField).toHaveBeenCalledTimes(2);
-    expect(mockMutatePersistedSettings).toHaveBeenCalled();
-    warnSpy.mockRestore();
-  });
-
-  it("does not ingest or advance the watermark while directory sync is partially failed", async () => {
-    const watermarkMs = new Date(session(3).updatedAt).getTime();
-    persistedFile.skiaBoardState = {
-      cards: [{ sessionId: "session-3", col: 0, row: 0 }],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: watermarkMs,
-    };
-    // 一部ディレクトリ失敗中は候補が欠けている可能性があるため取り込まない
-    // (取り込むとウォーターマークが復旧前のセッションを追い越して取りこぼす)。
-    mockConversation([session(4), session(3)], {
-      directorySessionSync: { ...IDLE_DIRECTORY_SESSION_SYNC, phase: "partial_error" },
-    });
-
-    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
-    await flush();
-
-    expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["session-3"]);
-    const savedState = persistedFile.skiaBoardState as {
-      cards: Array<{ sessionId: string }>;
-      ingestedUpdatedAtMs: number;
-    };
-    expect(savedState.cards.map((card) => card.sessionId)).toEqual(["session-3"]);
-    expect(savedState.ingestedUpdatedAtMs).toBe(watermarkMs);
-  });
-
-  it("retries persisting after a failed write on the next state change", async () => {
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    mockMutatePersistedSettings.mockRejectedValueOnce(new Error("write failed"));
-    mockConversation([session(1)]);
-
-    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
-    await flush();
-    // 初回書込は失敗し、ファイルには何も残らない。
-    expect(persistedFile.skiaBoardState).toBeUndefined();
-
+    // 次の操作で保留opごと再送される。
     await act(async () => {
-      result.current.moveBoardCard("session:session-1", 2, 2);
+      result.current.moveCard("session:session-9", 2, 2);
     });
     await flush();
 
-    // 次のステート変化で失敗分も含めて保存し直す。
-    const savedState = persistedFile.skiaBoardState as {
-      cards: Array<{ sessionId: string; col: number; row: number }>;
-    };
-    expect(savedState.cards).toEqual([{
-      kind: "session",
-      sessionId: "session-1",
-      col: 2,
-      row: 2,
-    }]);
+    const cards = runnerStore.board?.cards || [];
+    expect(cards.map((card) => (card.kind === "session" ? card.sessionId : ""))).toEqual([
+      "session-9",
+      "session-2",
+    ]);
+    expect(cards[0]).toMatchObject({ col: 2, row: 2 });
+    // 手動追加カードには候補由来の出所情報が付く。
+    expect(cards[1]).toMatchObject({ directory: "/workspace", backendId: "codex" });
     warnSpy.mockRestore();
   });
 
-  it("keeps removed sessions excluded from re-stacking and persists the exclusion", async () => {
+  it("keeps removed sessions excluded and applies the exclusion on the runner", async () => {
+    seedRunnerBoard([
+      sessionCard("session-2", 0, 0),
+      sessionCard("session-1", 1, 0),
+    ]);
     mockConversation([session(2), session(1)]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -590,15 +633,15 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["session-1"]);
-    const savedState = persistedFile.skiaBoardState as {
-      cards: Array<{ sessionId: string }>;
-      excludedSessionIds: string[];
-    };
-    expect(savedState.excludedSessionIds).toEqual(["session-2"]);
-    expect(savedState.cards.map((card) => card.sessionId)).toEqual(["session-1"]);
+    expect(runnerStore.board?.excludedSessionIds).toEqual(["session-2"]);
+    expect(runnerStore.board?.cards.map((card) => (card.kind === "session" ? card.sessionId : ""))).toEqual(["session-1"]);
   });
 
-  it("persists moved and tidied card positions", async () => {
+  it("applies moved and tidied card positions on the runner", async () => {
+    seedRunnerBoard([
+      sessionCard("session-2", 0, 0),
+      sessionCard("session-1", 1, 0),
+    ]);
     mockConversation([session(2), session(1)]);
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
@@ -607,8 +650,7 @@ describe("useSkiaMiniChatSessions", () => {
       result.current.moveBoardCard("session:session-2", 2.5, 3.5);
     });
     await flush();
-    let savedState = persistedFile.skiaBoardState as { cards: Array<{ sessionId: string; col: number; row: number }> };
-    expect(savedState.cards.find((card) => card.sessionId === "session-2")).toMatchObject({
+    expect(runnerStore.board?.cards.find((card) => card.kind === "session" && card.sessionId === "session-2")).toMatchObject({
       col: 2.5,
       row: 3.5,
     });
@@ -617,24 +659,18 @@ describe("useSkiaMiniChatSessions", () => {
       result.current.tidyBoard();
     });
     await flush();
-    savedState = persistedFile.skiaBoardState as { cards: Array<{ sessionId: string; col: number; row: number }> };
-    expect(savedState.cards.map((card) => [card.col, card.row])).toEqual([
+    expect(runnerStore.board?.cards.map((card) => [card.col, card.row])).toEqual([
       [0, 0],
       [1, 0],
     ]);
   });
 
   it("tidies visible cards without gaps and keeps hidden cards after them", async () => {
-    persistedFile.skiaBoardState = {
-      cards: [
-        { sessionId: "session-2", col: 3, row: 3 },
-        { sessionId: "session-9", col: 4, row: 4 },
-        { sessionId: "session-1", col: 5, row: 5 },
-      ],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: new Date(session(9).updatedAt).getTime(),
-      cardTextScale: 1,
-    };
+    seedRunnerBoard([
+      { kind: "session", sessionId: "session-2", col: 3, row: 3 },
+      { kind: "session", sessionId: "session-9", col: 4, row: 4 },
+      { kind: "session", sessionId: "session-1", col: 5, row: 5 },
+    ], { ingestedUpdatedAtMs: new Date(session(9).updatedAt).getTime() });
     mockConversation([session(2), session(1)]);
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
@@ -644,10 +680,8 @@ describe("useSkiaMiniChatSessions", () => {
     });
     await flush();
 
-    const savedState = persistedFile.skiaBoardState as {
-      cards: Array<{ sessionId: string; col: number; row: number }>;
-    };
-    expect(savedState.cards.map((card) => [card.sessionId, card.col, card.row])).toEqual([
+    const cards = (runnerStore.board?.cards || []) as Array<{ sessionId?: string; col: number; row: number }>;
+    expect(cards.map((card) => [card.sessionId, card.col, card.row])).toEqual([
       ["session-2", 0, 0],
       ["session-1", 1, 0],
       ["session-9", 0, 1],
@@ -658,7 +692,8 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
-  it("persists card text scale in the existing board state", async () => {
+  it("persists card text scale as a device-local setting", async () => {
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
     mockConversation([session(1)]);
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
     await flush();
@@ -669,7 +704,9 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(result.current.cardTextScale).toBe(1.1);
-    expect((persistedFile.skiaBoardState as { cardTextScale: number }).cardTextScale).toBe(1.1);
+    // 文字倍率はランナー共有ボードではなく端末ローカル設定として保存する。
+    expect(persistedFile.skiaBoardCardTextScale).toBe(1.1);
+    expect(runnerStore.board?.cardTextScale).toBe(1);
   });
 
   it("settles failed panel hydration separately from directory sync", async () => {
@@ -680,6 +717,10 @@ describe("useSkiaMiniChatSessions", () => {
         sessionId === "session-1" ? "failed" : "applied"
       )),
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
+    seedRunnerBoard([
+      sessionCard("session-2", 0, 0),
+      sessionCard("session-1", 1, 0),
+    ]);
     mockConversation([session(2), session(1)]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -711,6 +752,7 @@ describe("useSkiaMiniChatSessions", () => {
       ),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
     mockConversation([session(1)]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -741,6 +783,7 @@ describe("useSkiaMiniChatSessions", () => {
       ),
       getKnownPanelIds: () => [],
     } as unknown as ReturnType<typeof usePanelRuntimeStore>);
+    seedRunnerBoard([sessionCard("session-2", 0, 0)]);
     mockConversation([session(2)]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -759,6 +802,10 @@ describe("useSkiaMiniChatSessions", () => {
       )),
     } as unknown as ReturnType<typeof usePanelRuntimeController>);
 
+    seedRunnerBoard([
+      sessionCard("session-1", 0, 0),
+      sessionCard("session-2", 1, 0),
+    ]);
     mockConversation([session(1)]);
     const { result, rerender } = await renderHook(
       (_candidate: LlmSessionHistoryEntry) => useSkiaMiniChatSessions(),
