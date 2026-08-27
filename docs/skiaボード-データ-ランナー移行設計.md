@@ -196,3 +196,18 @@
 - ファイルカード（`SkiaBoardFileCard`）の `rootDir`/`path` は端末非依存（ランナー上のパス）なのでそのまま共有可能
 - 旧バージョンアプリが併存する期間は、旧端末のローカルingestが動き続けボードが二重管理になる。ただし旧端末はランナーストアを見ないため、実害が出るのは移行タイミングのみ（許容）
 - 引き継ぎ元は「最初に接続した1台」だが、古い配置しか持たない端末が先に接続するリスクがある。移行案内では**普段使いのメイン端末から先に接続する**ことをユーザーに依頼する
+
+## 12. 実装時の確定事項(設計からの差分)
+
+実装(2026-08-27、Step 0〜4)で確定した設計との差分。いずれも設計意図の範囲内の詳細化。
+
+- ストアスキーマ: `ingestDirectories` は `board` の中ではなくストアのトップレベルに置いた(ボード=ユーザーの配置内容、ingestDirectories=取り込み設定の分離)。`userEdited` フラグを追加し、引き継ぎ受理条件3「ingest初期化後にユーザー編集opが入った」の判定に使う
+- `syncIngestDirectories` はopではなく専用エンドポイント `POST /skia-board/ingest-directories` にした。和集合マージは可換のためbaseRevision不要で、ボード内容も変わらないためrevisionは上げない(opの楽観ロックを無駄に失敗させない)。保存時に `resolveCanonicalDirectoryIdentity` で正規化する
+- WSイベントは既存の命名慣例に合わせ `{channel:"control", op:"skia_board_updated", payload:{revision}}`
+- `cardTextScale` は端末ローカル設定フィールド `skiaBoardCardTextScale` へ分離(旧skiaBoardState.cardTextScaleから初回引き継ぎ)。オフライン表示キャッシュは `skiaBoardRunnerCache` フィールド(いずれもPRESERVED_SETTINGS_FIELDS)
+- 空ストアの扱い: ランナーingestは空ストアを `origin:"ingest"` で初期化してよい。安全性は受理条件2(未編集ingestはimportで上書き可)で担保する。対になるアプリ側は「初回接続時にランナーが初期化済みでも一度はimportを送り、受理判定をサーバーに任せる」方式に変更(自動生成が先行してもユーザー配置が失われない)
+- ターン完了トリガのingestは常に全登録ディレクトリを対象にする(単一ディレクトリの候補だけでウォーターマークが前進すると他ディレクトリのセッションを恒久的に取りこぼすため。一覧取得コストはCLIインデックスのフルスキャン支配でディレクトリ数にほぼ非依存)
+- アプリの操作送信: 楽観反映+opキュー。409 revision_conflict/not_initializedは正本を採用して同じopを再送(上限3回)。ネットワーク失敗はopを保持し、WS再接続・フォアグラウンド復帰・skia_board_updated受信時に再送。保留opはメモリのみ(アプリ終了で消える。既知の許容)
+- Step 3の縮退: /session-summaries は agentDisplayName / backendId / threadStatusType を持たないため、ウィンドウ外カードのタイトルは firstUserMessage 駆動(ACPセッションはsessionIdに退化)、backendIdはカード側の値を優先。不足フィールドのランナー側追加は将来課題
+- 5.3の「409時に skiaBoardStateBackup へ退避」は実装せず、ローカルの `skiaBoardState` フィールドをそのまま残す方式にした(Step 5まで読み取り対象から外すのみ。同じ復旧余地をより単純に確保)
+- マージ順: Step 0 → Step 1 → Step 4 → Step 2 → Step 3(Step 4を先にマージすることでアプリ切替時に自動追加の空白期間を作らない)
