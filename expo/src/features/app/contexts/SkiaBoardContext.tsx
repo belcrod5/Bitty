@@ -102,10 +102,13 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const pendingOpsRef = useRef<SkiaBoardOp[]>([]);
   const flushInFlightRef = useRef(false);
   const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
   const legacyImportAttemptedRef = useRef(false);
   const lastReadyGenerationRef = useRef(0);
   const authRef = useRef({ runnerUrl, runnerToken });
-  authRef.current = { runnerUrl, runnerToken };
+  useEffect(() => {
+    authRef.current = { runnerUrl, runnerToken };
+  }, [runnerUrl, runnerToken]);
 
   // セッションカード追加時に directory/backendId を補うための逆引き。
   const sessionMetaById = useMemo(() => {
@@ -121,7 +124,9 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     return map;
   }, [directorySessionsById, registeredDirectories]);
   const sessionMetaRef = useRef(sessionMetaById);
-  sessionMetaRef.current = sessionMetaById;
+  useEffect(() => {
+    sessionMetaRef.current = sessionMetaById;
+  }, [sessionMetaById]);
 
   const emptyBoardState = useCallback((): SkiaBoardState => ({
     cards: [],
@@ -145,6 +150,14 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const adoptSnapshot = useCallback((snapshot: SkiaBoardRunnerSnapshot) => {
+    // refreshとflushは並行し得るため、遅れて届いた古いスナップショットで
+    // 確定済みの新しいrevisionと表示を巻き戻さない(未初期化⇔初期化の遷移は例外)。
+    const current = serverRef.current;
+    if (
+      current.synced
+      && snapshot.initialized === current.initialized
+      && snapshot.revision < current.revision
+    ) return;
     serverRef.current = {
       synced: true,
       initialized: snapshot.initialized,
@@ -171,21 +184,24 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const refreshFromServer = useCallback(async () => {
     const auth = authRef.current;
     if (!auth.runnerUrl.trim() || !auth.runnerToken.trim()) return;
-    if (refreshInFlightRef.current) return;
+    if (refreshInFlightRef.current) {
+      // 実行中に来た要求は握り潰さず、完了後にもう一周して最新を取り直す。
+      refreshQueuedRef.current = true;
+      return;
+    }
     refreshInFlightRef.current = true;
     try {
       let snapshot = await fetchSkiaBoard(auth);
       if (!snapshot.initialized && !legacyImportAttemptedRef.current) {
         // 初回接続時の引き継ぎ: ローカル保存のボード配置をランナーへ移す。
-        legacyImportAttemptedRef.current = true;
-        const legacy = await readPersistedSkiaBoardState().catch((error) => {
-          console.warn("[skia_board] failed to read legacy board state", error);
-          return null;
-        });
+        // フラグは確定的な結果(移行対象なし/成功/初期化済み)のときだけ立てる。
+        // 読み取り・送信のthrowは外側catchへ抜け、次のトリガで再試行される。
+        const legacy = await readPersistedSkiaBoardState();
         if (legacy) {
           const result = await importSkiaBoard(auth, { board: legacy });
           snapshot = result.snapshot;
         }
+        legacyImportAttemptedRef.current = true;
       }
       if (!mountedRef.current) return;
       adoptSnapshot(snapshot);
@@ -193,6 +209,10 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
       console.warn("[skia_board] failed to load board from runner", error);
     } finally {
       refreshInFlightRef.current = false;
+      if (refreshQueuedRef.current && mountedRef.current) {
+        refreshQueuedRef.current = false;
+        void refreshFromServer();
+      }
     }
   }, [adoptSnapshot]);
 
@@ -200,7 +220,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     if (flushInFlightRef.current) return;
     flushInFlightRef.current = true;
     try {
-      let conflictRetries = 0;
+      let retryAttempts = 0;
       while (mountedRef.current && pendingOpsRef.current.length > 0) {
         const auth = authRef.current;
         if (!auth.runnerUrl.trim() || !auth.runnerToken.trim()) break;
@@ -215,7 +235,10 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
               || board.sections.length > 0
               || board.excludedSessionIds.length > 0
             );
-            if (!importable) continue;
+            if (!importable) {
+              console.warn("[skia_board] dropping ops that leave an uninitialized board empty");
+              continue;
+            }
             const result = await importSkiaBoard(auth, { board });
             if (result.status === "already_initialized") {
               // 他端末が先に初期化していた: 正本を採用し、編集はopとして再送する。
@@ -234,8 +257,8 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
           }
           if (result.status === "conflict") {
             // 他端末の変更が先行: 正本を取り込み、同じopを新しいrevisionで再送する。
-            conflictRetries += 1;
-            if (conflictRetries > MAX_CONFLICT_RETRIES) {
+            retryAttempts += 1;
+            if (retryAttempts > MAX_CONFLICT_RETRIES) {
               console.warn("[skia_board] dropping board ops after repeated revision conflicts");
               adoptSnapshot(result.snapshot);
               break;
@@ -245,6 +268,12 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
             continue;
           }
           // not_initialized: ストアが未初期化へ戻っている(手動リセット等)。importパスへ回す。
+          // conflictと同じ上限で打ち切り、病的な往復ループを防ぐ。
+          retryAttempts += 1;
+          if (retryAttempts > MAX_CONFLICT_RETRIES) {
+            console.warn("[skia_board] dropping board ops after repeated initialization races");
+            break;
+          }
           pendingOpsRef.current = [...batch, ...pendingOpsRef.current];
           serverRef.current = {
             ...serverRef.current,
@@ -279,6 +308,10 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
         cardTextScaleRef.current = normalizeSkiaBoardTextScale(
           textScaleRaw !== undefined ? textScaleRaw : legacy?.cardTextScale
         );
+        // サーバー同期がこの読み込みより先に済んでいた場合は、倍率を表示へ再合成する。
+        if (stateRef.current && stateRef.current.cardTextScale !== cardTextScaleRef.current) {
+          setDisplayState(stateRef.current);
+        }
         if (!serverRef.current.synced) {
           const cache = cacheRaw && typeof cacheRaw === "object" && !Array.isArray(cacheRaw)
             ? cacheRaw as Record<string, unknown>
@@ -310,16 +343,21 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     void flushPendingOps();
   }, [flushPendingOps, refreshFromServer, runnerToken, runnerUrl]);
 
-  // 他デバイスの変更通知。送信中・未送信op保有中はflush側の409処理に任せる。
+  // 他デバイスの変更通知。送信中はflush側の409処理に任せる。保留opが残っている
+  // (前回送信失敗など)なら、接続が生きている合図なので再送を優先する。
   useEffect(() => runnerWebSocketManager.subscribe(
     { channel: "control", op: "skia_board_updated" },
     (message) => {
       const revision = Number((message.payload as { revision?: unknown } | undefined)?.revision);
       if (Number.isInteger(revision) && revision === serverRef.current.revision) return;
-      if (flushInFlightRef.current || pendingOpsRef.current.length > 0) return;
+      if (flushInFlightRef.current) return;
+      if (pendingOpsRef.current.length > 0) {
+        void flushPendingOps();
+        return;
+      }
       void refreshFromServer();
     }
-  ), [refreshFromServer, runnerWebSocketManager]);
+  ), [flushPendingOps, refreshFromServer, runnerWebSocketManager]);
 
   // WS再接続(ready遷移1回につき1回)とフォアグラウンド復帰時の再取得・再送。
   useEffect(() => {
@@ -352,7 +390,10 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   useEffect(() => subscribePersistedSkiaBoardStateReplaced((replaced) => {
     void (async () => {
       const auth = authRef.current;
-      if (!auth.runnerUrl.trim() || !auth.runnerToken.trim()) return;
+      if (!auth.runnerUrl.trim() || !auth.runnerToken.trim()) {
+        console.warn("[skia_board] runner is not configured; restored backup stays local only");
+        return;
+      }
       try {
         const result = await importSkiaBoard(auth, { board: replaced });
         if (result.status === "already_initialized") {

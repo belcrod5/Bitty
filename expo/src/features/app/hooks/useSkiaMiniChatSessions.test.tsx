@@ -35,9 +35,15 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
 jest.mock("../contexts/ChatScreenContext", () => ({
   useChatScreen: () => ({ runnerUrl: "http://runner", runnerToken: "runner-token" }),
 }));
+const mockWsEmitter: { handlers: Array<(message: { payload?: unknown }) => void> } = {
+  handlers: [],
+};
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketManager: () => ({
-    subscribe: jest.fn(() => () => {}),
+    subscribe: (_filter: unknown, handler: (message: { payload?: unknown }) => void) => {
+      mockWsEmitter.handlers.push(handler);
+      return () => {};
+    },
     subscribeSnapshot: jest.fn(() => () => {}),
     getSnapshot: () => ({ connectionState: "idle", generation: 0, connected: false }),
   }),
@@ -108,6 +114,7 @@ function sessionCard(sessionId: string, col: number, row: number): SkiaBoardCard
 beforeEach(() => {
   jest.clearAllMocks();
   persistedFile = {};
+  mockWsEmitter.handlers = [];
   runnerStore = { initialized: false, revision: 0, board: null };
   mockReadPersistedSettingsField.mockImplementation(async (field: string) => persistedFile[field]);
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
@@ -791,6 +798,73 @@ describe("useSkiaMiniChatSessions", () => {
 
     expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
     expect(result.current.hydratingPanelCount).toBe(0);
+  });
+
+  it("retries the legacy import after a transient failure", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    persistedFile.skiaBoardState = {
+      cards: [{ sessionId: "session-1", col: 0, row: 0 }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    };
+    const workingImport = mockImportSkiaBoard.getMockImplementation()!;
+    mockImportSkiaBoard.mockRejectedValue(new Error("network down"));
+    mockConversation([session(1)]);
+
+    const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
+    await flush();
+
+    // importが失敗する間はランナー未初期化のまま、表示はローカルのボードを維持。
+    expect(runnerStore.initialized).toBe(false);
+    expect(result.current.state?.cards).toHaveLength(1);
+
+    // ネットワーク復旧後のトリガ(WS通知)で引き継ぎが再試行される(恒久スキップしない)。
+    mockImportSkiaBoard.mockImplementation(workingImport);
+    await act(async () => {
+      mockWsEmitter.handlers.forEach((handler) => handler({ payload: { revision: 99 } }));
+    });
+    await flush();
+
+    expect(runnerStore.initialized).toBe(true);
+    expect(runnerStore.board?.cards).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it("ignores a stale refresh snapshot that would roll back a confirmed edit", async () => {
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    mockConversation([session(1)]);
+    const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
+    await flush();
+
+    // 遅いGETが古いスナップショットを返す状況を作る。
+    const stale = deferred<ReturnType<typeof runnerSnapshot>>();
+    const staleSnapshot = runnerSnapshot();
+    mockFetchSkiaBoard.mockImplementationOnce(() => stale.promise as never);
+    await act(async () => {
+      mockWsEmitter.handlers.forEach((handler) => handler({ payload: { revision: 2 } }));
+    });
+
+    // GET保留中に編集が確定してrevisionが進む。
+    await act(async () => {
+      result.current.moveCard("session:session-1", 3, 3);
+    });
+    await flush();
+    expect(runnerStore.revision).toBe(2);
+
+    // 遅れて届いた古いスナップショットは表示もrevisionも巻き戻さない。
+    await act(async () => {
+      stale.resolve(staleSnapshot);
+    });
+    await flush();
+    expect(result.current.state?.cards[0]).toMatchObject({ col: 3, row: 3 });
+
+    // 次のopが古いbaseRevisionでconflictにならない。
+    await act(async () => {
+      result.current.moveCard("session:session-1", 4, 4);
+    });
+    await flush();
+    expect(runnerStore.revision).toBe(3);
+    expect(runnerStore.board?.cards[0]).toMatchObject({ col: 4, row: 4 });
   });
 
   it("ignores a failed hydration from an obsolete candidate generation", async () => {

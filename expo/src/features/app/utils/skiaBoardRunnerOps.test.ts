@@ -61,6 +61,40 @@ test("removeCard dispatches by card id prefix", () => {
   expect(applySkiaBoardOpLocally(withoutFile, { type: "removeCard", cardId: "file:broken-id" })).toBe(withoutFile);
 });
 
+test("no-op inputs return the same state reference", () => {
+  const base = state({
+    cards: [{ kind: "session", sessionId: "s1", col: 0, row: 0 }],
+    excludedSessionIds: ["s2"],
+  });
+  expect(applySkiaBoardOpLocally(base, { type: "moveCard", cardId: "session:missing", col: 1, row: 1 })).toBe(base);
+  expect(applySkiaBoardOpLocally(base, { type: "addCard", card: { kind: "file", rootDir: "", path: "a.md" } })).toBe(base);
+  expect(applySkiaBoardOpLocally(base, { type: "removeSection", sectionId: "none" })).toBe(base);
+  expect(applySkiaBoardOpLocally(base, { type: "removeCard", cardId: "directory:/none" })).toBe(base);
+  // sessionカードには外観設定を適用しない。
+  expect(applySkiaBoardOpLocally(base, { type: "updateCardAppearance", cardId: "session:s1", displayNameOverride: "x" })).toBe(base);
+  expect(applySkiaBoardOpLocally(base, { type: "renameFileCard", rootDir: "/w", previousPath: "none.md", nextPath: "b.md" })).toBe(base);
+  expect(applySkiaBoardOpLocally(base, { type: "setFileCardUnavailable", rootDir: "/w", path: "none.md", unavailable: true })).toBe(base);
+});
+
+test("re-adding an excluded session clears the exclusion and duplicates are no-ops", () => {
+  const base = state({
+    cards: [{ kind: "session", sessionId: "s1", col: 0, row: 0 }],
+    excludedSessionIds: ["s2"],
+  });
+  const readded = applySkiaBoardOpLocally(base, { type: "addCard", card: { kind: "session", sessionId: "s2" } });
+  expect(readded.excludedSessionIds).toEqual([]);
+  expect(readded.cards).toHaveLength(2);
+  expect(applySkiaBoardOpLocally(readded, { type: "addCard", card: { kind: "session", sessionId: "s1" } })).toBe(readded);
+});
+
+test("upsertSection adds a section that does not exist yet", () => {
+  const added = applySkiaBoardOpLocally(state(), { type: "upsertSection", section });
+  expect(added.sections).toEqual([section]);
+  const updated = applySkiaBoardOpLocally(added, { type: "upsertSection", section: { ...section, label: "改" } });
+  expect(updated.sections).toHaveLength(1);
+  expect(updated.sections[0].label).toBe("改");
+});
+
 test("section, appearance, rename, unavailable, move, and tidy ops map to board functions", () => {
   let board = applySkiaBoardOpsLocally(state(), [
     { type: "upsertSection", section },
