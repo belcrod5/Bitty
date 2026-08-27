@@ -27,6 +27,11 @@ import {
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
 } from "../utils/persistedSettingsFile";
+import {
+  parseSkiaBoardState,
+  readPersistedSkiaBoardState,
+  replacePersistedSkiaBoardState,
+} from "../utils/skiaBoardState";
 
 type UseAppSettingsPersistenceControllerArgs = {
   settingsLoaded: boolean;
@@ -450,12 +455,18 @@ export function useAppSettingsPersistenceController({
   ]);
 
   const exportSettingsJson = useCallback(async () => {
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      appDefaultSettings: buildPersistedSettingsPayload(),
-    };
-    const settingsJson = JSON.stringify(payload, null, 2);
     try {
+      // skiaBoardStateはReact stateに載らずボードUIが直接ディスクへ書くため、
+      // エクスポート時もディスクから読む。未使用(null)ならフィールドごと省略する。
+      const skiaBoardState = await readPersistedSkiaBoardState();
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        appDefaultSettings: {
+          ...buildPersistedSettingsPayload(),
+          ...(skiaBoardState ? { skiaBoardState } : {}),
+        },
+      };
+      const settingsJson = JSON.stringify(payload, null, 2);
       await Clipboard.setStringAsync(settingsJson);
       Alert.alert("書き出し完了", "設定をクリップボードへコピーしました。");
     } catch (error) {
@@ -488,7 +499,7 @@ export function useAppSettingsPersistenceController({
           { text: "キャンセル", style: "cancel" },
           {
             text: "インポート",
-            onPress: () => {
+            onPress: () => void (async () => {
               const importedSettings = { ...imported };
               for (const field of [
                 "runnerToken",
@@ -499,9 +510,29 @@ export function useAppSettingsPersistenceController({
               ]) {
                 delete importedSettings[field];
               }
+              // ボード配置はReact設定stateを経由しないため、検証後に永続化ファイルへ
+              // 直接書き込み、ボードUIへ置換を通知する。無い(旧形式)場合は現状維持。
+              const importedSkiaBoardState = parseSkiaBoardState(importedSettings.skiaBoardState);
+              if (importedSettings.skiaBoardState !== undefined && !importedSkiaBoardState) {
+                console.warn("[settings] imported skia board state was empty or invalid; keeping the current board");
+              }
+              delete importedSettings.skiaBoardState;
               applyPersistedSettings(importedSettings);
+              if (importedSkiaBoardState) {
+                try {
+                  await replacePersistedSkiaBoardState(importedSkiaBoardState);
+                } catch (error) {
+                  console.warn("[settings] failed to restore skia board state", error);
+                  const message = error instanceof Error ? error.message : String(error);
+                  Alert.alert(
+                    "インポート一部失敗",
+                    `端末設定は反映しましたが、Skiaボード配置を復元できませんでした。${message ? `\n${message}` : ""}`
+                  );
+                  return;
+                }
+              }
               Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
-            },
+            })(),
           },
         ]
       );
