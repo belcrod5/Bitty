@@ -201,15 +201,20 @@ export function useSkiaMiniChatSessions() {
   };
   const [summaryCandidates, setSummaryCandidates] = useState<SummaryCandidate[]>([]);
   const summaryFetchGenerationRef = useRef(0);
+  const summaryFetchInFlightKeyRef = useRef("");
   useEffect(() => {
     const generation = summaryFetchGenerationRef.current + 1;
     summaryFetchGenerationRef.current = generation;
     const groups = JSON.parse(missingSummaryKey) as Array<[string, string[]]>;
     if (groups.length <= 0) {
-      setSummaryCandidates([]);
+      // 空→空の再設定は余分な再レンダリングになるため据え置く。
+      setSummaryCandidates((current) => (current.length > 0 ? [] : current));
       return;
     }
     if (!runnerUrl.trim() || !runnerToken.trim()) return;
+    // 同じ不足集合のfetchが進行中なら重ねない(cycleIdの短周期環境での並走抑止)。
+    if (summaryFetchInFlightKeyRef.current === missingSummaryKey) return;
+    summaryFetchInFlightKeyRef.current = missingSummaryKey;
     const directoryNames = new Map(registeredDirectories.map((directory) => [
       String(directory.path || "").trim(),
       String(directory.displayName || "").trim(),
@@ -217,11 +222,21 @@ export function useSkiaMiniChatSessions() {
     void (async () => {
       try {
         const collected: SummaryCandidate[] = [];
+        // ディレクトリ単位で失敗を局所化し、成功分は部分反映する。
         for (const [directory, sessionIds] of groups) {
-          const summaries = await fetchSkiaBoardSessionSummaries(
-            { runnerUrl, runnerToken },
-            { directory, sessionIds }
-          );
+          let summaries;
+          try {
+            summaries = await fetchSkiaBoardSessionSummaries(
+              { runnerUrl, runnerToken },
+              { directory, sessionIds }
+            );
+          } catch (error) {
+            console.warn(
+              `[skia_board] failed to fetch session summaries for ${directory}`,
+              error
+            );
+            continue;
+          }
           for (const summary of summaries) {
             collected.push({
               // backendId はサマリ応答に無いため、assignedSessions側でカードの値を優先する。
@@ -249,6 +264,10 @@ export function useSkiaMiniChatSessions() {
         setSummaryCandidates(collected);
       } catch (error) {
         console.warn("[skia_board] failed to fetch session summaries for board cards", error);
+      } finally {
+        if (summaryFetchInFlightKeyRef.current === missingSummaryKey) {
+          summaryFetchInFlightKeyRef.current = "";
+        }
       }
     })();
     // cycleId: ドロワー同期の各サイクル完了時にサマリの鮮度(未読・updatedAt)を追随させる。

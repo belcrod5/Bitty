@@ -856,6 +856,36 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
+  it("prefers the card backendId over the summary fallback", async () => {
+    seedRunnerBoard([
+      { kind: "session", sessionId: "session-77", directory: "/workspace", backendId: "claude", col: 0, row: 0 },
+    ]);
+    mockFetchSkiaBoardSessionSummaries.mockResolvedValue([{
+      sessionId: "session-77",
+      directory: "/workspace",
+      cwd: "/workspace",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+      lastReadAt: "2026-06-21T00:00:00.000Z",
+      source: "cli",
+      firstUserMessage: "別バックエンドのセッション",
+      parentSessionId: "",
+      contextUsage: null,
+      modelRef: "",
+      reasoningEffort: "",
+    }]);
+    mockConversation([]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+    await flush();
+
+    expect(result.current.sessions[0]).toMatchObject({
+      sessionId: "session-77",
+      backendId: "claude",
+      unread: false,
+    });
+  });
+
   it("does not fetch summaries when every board card is inside the window", async () => {
     seedRunnerBoard([sessionCard("session-1", 0, 0)]);
     mockConversation([session(1)]);
