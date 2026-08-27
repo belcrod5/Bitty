@@ -1,8 +1,7 @@
 import type { ComponentProps } from "react";
 import { SafeAreaView, View } from "react-native";
-import { AudioLabScreen } from "./AudioLabScreen";
 import { CloudflareTunnelMonitorScreen } from "../screens/CloudflareTunnelMonitorScreen";
-import { DebugScreen } from "../screens/DebugScreen";
+import { SettingsScreen } from "../screens/SettingsScreen";
 import { SkiaMiniBoardScreen } from "../screens/SkiaMiniBoardScreen";
 import type { AppScreen } from "../types/appTypes";
 
@@ -21,8 +20,8 @@ export function AppScreenContent({
   const ScreenContainer = activeScreen === "skia_board" ? View : SafeAreaView;
   return (
     <ScreenContainer style={{ flex: 1 }}>
-      {activeScreen === "debug" ? (
-        <DebugScreen />
+      {activeScreen === "settings" ? (
+        <SettingsScreen />
       ) : activeScreen === "cloudflare_tunnel_monitor" ? (
         <CloudflareTunnelMonitorScreen />
       ) : activeScreen === "skia_board" ? (
@@ -30,9 +29,7 @@ export function AppScreenContent({
           onStartNewSessionInDirectory={onStartNewSessionInDirectory}
           openSessionHistoryPopup={openSessionHistoryPopup}
         />
-      ) : (
-        <AudioLabScreen />
-      )}
+      ) : null}
     </ScreenContainer>
   );
 }

@@ -1,11 +1,7 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { SttProvider } from "../../stt/sttConfig";
 import type { VoiceOption } from "../hooks/useTtsVoiceCatalog";
-import type {
-  RecordingQualityPreset,
-  RecordingTuning,
-  TtsProvider,
-} from "../utils/audioConfig";
+import type { RecordingQualityPreset, TtsProvider } from "../utils/audioConfig";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmBackend } from "../types/appTypes";
 
@@ -40,10 +36,6 @@ export type AppSettingsContextValue = {
   cloudflareRunnerWsUrl: string;
   localRunnerUrl: string;
   localRunnerWsUrl: string;
-  executionEnvironment: string;
-  isExpoGo: boolean;
-  isDev: boolean;
-  defaultCodexWsUrl: string;
   codexApprovalPolicy: "on-request" | "never";
   selectedModelLabel: string;
   modelRef: string;
@@ -59,13 +51,13 @@ export type AppSettingsContextValue = {
   voiceFilter: string;
   selectedVoiceId: string;
   recordingQualityPreset: RecordingQualityPreset;
-  recordingTuning: RecordingTuning;
   autoTranscribeOnStop: boolean;
   autoReplyAfterStt: boolean;
   autoBargeInEnabled: boolean;
   autoSpeakerPriorityEnabled: boolean;
   autoSpeakAfterReply: boolean;
   faceIdRequiredForApproval: boolean;
+  toolAutoApprovalRuleCount: number;
   changeRunnerUrl: (value: string) => void;
   changeLlmDirectory: (value: string) => void;
   changeCodexWsUrl: (value: string) => void;
@@ -84,16 +76,15 @@ export type AppSettingsContextValue = {
   selectTtsProvider: (provider: TtsProvider) => void;
   selectSttProvider: (provider: SttProvider) => void;
   applyRecordingQualityPreset: (preset: RecordingQualityPreset) => void;
-  changeRecordingSampleRate: (raw: string) => void;
-  changeRecordingBitRate: (raw: string) => void;
-  changeRecordingChannels: (raw: string) => void;
-  changeRecordingProgressUpdateInterval: (raw: string) => void;
   toggleAutoTranscribeOnStop: (value: boolean) => void;
   toggleAutoReplyAfterStt: (value: boolean) => void;
   toggleAutoBargeInEnabled: (value: boolean) => void;
   toggleAutoSpeakerPriorityEnabled: (value: boolean) => void;
   toggleAutoSpeakAfterReply: (value: boolean) => void;
   toggleFaceIdRequiredForApproval: (value: boolean) => void;
+  exportSettingsJson: () => void;
+  importSettingsJson: () => void;
+  clearToolAutoApprovals: () => void;
   openModelSelect: () => void;
   openThinkSelect: () => void;
   modelSelectOpen: boolean;

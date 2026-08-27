@@ -20,10 +20,6 @@ import {
   type PanelRuntimeControllerContextValue,
 } from "./contexts/PanelRuntimeControllerContext";
 import {
-  AudioLabProvider,
-  type AudioLabContextValue,
-} from "./contexts/AudioLabContext";
-import {
   YouTubePlayerProvider,
   type YouTubePlayerContextValue,
 } from "./contexts/YouTubePlayerContext";
@@ -43,18 +39,6 @@ import {
   ChatScreenProvider,
   type ChatScreenContextValue,
 } from "./contexts/ChatScreenContext";
-import {
-  DebugRuntimeProvider,
-  type DebugRuntimeContextValue,
-} from "./contexts/DebugRuntimeContext";
-import {
-  DebugConversationProvider,
-  type DebugConversationContextValue,
-} from "./contexts/DebugConversationContext";
-import {
-  DebugSpeechProvider,
-  type DebugSpeechContextValue,
-} from "./contexts/DebugSpeechContext";
 import { SkiaBoardProvider } from "./contexts/SkiaBoardContext";
 
 type AppProvidersProps = {
@@ -63,15 +47,11 @@ type AppProvidersProps = {
   conversation: ConversationContextValue;
   panelRuntimeStore: PanelRuntimeStoreContextValue;
   panelRuntimeController: PanelRuntimeControllerContextValue;
-  audioLab: AudioLabContextValue;
   youTubePlayer: YouTubePlayerContextValue;
   chatDiagnostics: ChatDiagnosticsContextValue;
   chatComposer: ChatComposerContextValue;
   chatVisual: ChatVisualContextValue;
   chatScreen: ChatScreenContextValue;
-  debugRuntime: DebugRuntimeContextValue;
-  debugConversation: DebugConversationContextValue;
-  debugSpeech: DebugSpeechContextValue;
   children: ReactNode;
 };
 
@@ -81,15 +61,11 @@ export function AppProviders({
   conversation,
   panelRuntimeStore,
   panelRuntimeController,
-  audioLab,
   youTubePlayer,
   chatDiagnostics,
   chatComposer,
   chatVisual,
   chatScreen,
-  debugRuntime,
-  debugConversation,
-  debugSpeech,
   children,
 }: AppProvidersProps) {
   return (
@@ -98,25 +74,17 @@ export function AppProviders({
         <PanelRuntimeStoreProvider value={panelRuntimeStore}>
           <PanelRuntimeControllerProvider value={panelRuntimeController}>
             <ConversationProvider value={conversation}>
-              <AudioLabProvider value={audioLab}>
-                <YouTubePlayerProvider value={youTubePlayer}>
-                  <ChatDiagnosticsProvider value={chatDiagnostics}>
-                    <ChatComposerProvider value={chatComposer}>
-                      <ChatVisualProvider value={chatVisual}>
-                        <ChatScreenProvider value={chatScreen}>
-                          <DebugRuntimeProvider value={debugRuntime}>
-                            <DebugConversationProvider value={debugConversation}>
-                              <DebugSpeechProvider value={debugSpeech}>
-                                <SkiaBoardProvider>{children}</SkiaBoardProvider>
-                              </DebugSpeechProvider>
-                            </DebugConversationProvider>
-                          </DebugRuntimeProvider>
-                        </ChatScreenProvider>
-                      </ChatVisualProvider>
-                    </ChatComposerProvider>
-                  </ChatDiagnosticsProvider>
-                </YouTubePlayerProvider>
-              </AudioLabProvider>
+              <YouTubePlayerProvider value={youTubePlayer}>
+                <ChatDiagnosticsProvider value={chatDiagnostics}>
+                  <ChatComposerProvider value={chatComposer}>
+                    <ChatVisualProvider value={chatVisual}>
+                      <ChatScreenProvider value={chatScreen}>
+                        <SkiaBoardProvider>{children}</SkiaBoardProvider>
+                      </ChatScreenProvider>
+                    </ChatVisualProvider>
+                  </ChatComposerProvider>
+                </ChatDiagnosticsProvider>
+              </YouTubePlayerProvider>
             </ConversationProvider>
           </PanelRuntimeControllerProvider>
         </PanelRuntimeStoreProvider>

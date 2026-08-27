@@ -97,9 +97,6 @@ type UseChatDerivedStateParams = {
   autoWaveformLastSampleAt: number;
   autoWaveformUiAt: number;
   streamAudioQueueSize: number;
-  audioLabRunning: boolean;
-  audioLabNowMs: number;
-  audioLabStartedAt: number;
 };
 
 export function useChatDerivedState({
@@ -150,9 +147,6 @@ export function useChatDerivedState({
   autoWaveformLastSampleAt,
   autoWaveformUiAt,
   streamAudioQueueSize,
-  audioLabRunning,
-  audioLabNowMs,
-  audioLabStartedAt,
 }: UseChatDerivedStateParams) {
   const canSend = useMemo(
     () => !!transcript.trim() && !replyLoading && !llmSessionRestoreLoading && !!codexWsUrl.trim(),
@@ -409,11 +403,6 @@ export function useChatDerivedState({
     streamAudioQueueSize,
     ttsPlaying,
   ]);
-  const audioLabElapsedMs = useMemo(() => {
-    if (!audioLabRunning || audioLabStartedAt <= 0) return 0;
-    const now = audioLabNowMs > 0 ? audioLabNowMs : Date.now();
-    return Math.max(0, now - audioLabStartedAt);
-  }, [audioLabNowMs, audioLabRunning, audioLabStartedAt]);
 
   return {
     canSend,
@@ -450,6 +439,5 @@ export function useChatDerivedState({
     autoSpectrumSpeechMask,
     autoSpeechDetected,
     autoWaveformDebugText,
-    audioLabElapsedMs,
   };
 }

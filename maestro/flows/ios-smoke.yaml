@@ -31,7 +31,7 @@ appId: app.bitty.mobile
 - tapOn:
     point: 9%,8%
 - extendedWaitUntil:
-    visible: ".*Current Settings.*"
+    visible: ".*設定.*"
     timeout: 10000
 - extendedWaitUntil:
     visible: DIRECTORIES

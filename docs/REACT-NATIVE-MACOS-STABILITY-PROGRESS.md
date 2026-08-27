@@ -15,7 +15,7 @@ preserving the working iPhone behavior and avoiding scattered `Platform.OS` bran
       secure-storage boundary; keep ordinary settings in the existing settings file.
 - [x] Restore Skia board session addition, including the left navigation drawer's
       session-history long-press menu.
-- [x] Keep the macOS Skia board mounted while visiting Current Settings so its
+- [x] Keep the macOS Skia board mounted while visiting Settings so its
       native Canvas remains intact on return.
 - [x] Render Skia card text with Paragraph and system-font fallback for Japanese
       and emoji on iOS and macOS.
@@ -82,7 +82,7 @@ code change.
   tests), including failed-read recovery without overwriting existing board data;
   TypeScript and `git diff --check` pass. Device verification remains.
 - Skia navigation/font follow-up: focused screen-content and board tests pass;
-  TypeScript, iOS bundling, and `git diff --check` pass. Manual Current Settings
+  TypeScript, iOS bundling, and `git diff --check` pass. Manual Settings
   round-trip on macOS and Japanese/emoji rendering on macOS and iPhone remain.
 - Skia Command + wheel: RNGH patch-package clean reapplication, focused board tests
   (19), TypeScript, diff checks, and macOS Debug arm64 native build pass. Manual

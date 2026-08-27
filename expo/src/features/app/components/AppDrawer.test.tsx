@@ -96,7 +96,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     llmSessionRestoreLoading: false,
     llmSessionRestoreTargetId: "",
     formatSessionUpdatedAt: () => "today",
-    onOpenDebug: jest.fn(),
+    onOpenSettings: jest.fn(),
     onOpenCloudflareTunnelMonitor: jest.fn(),
     onOpenSkiaBoard: jest.fn(),
     onOpenDirectoryExplorer: jest.fn(),
@@ -136,6 +136,16 @@ test("opens the board from the left navigation", async () => {
   await fireEvent.press(drawer.getByText("Board"));
 
   expect(onOpenSkiaBoard).toHaveBeenCalledTimes(1);
+});
+
+test("opens Settings from the left navigation", async () => {
+  const onOpenSettings = jest.fn();
+  const drawer = await renderDrawer({ onOpenSettings });
+
+  await fireEvent.press(drawer.getByText("設定"));
+
+  expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  expect(drawer.getByText("接続・モデル・音声を設定")).toBeTruthy();
 });
 
 test("adds a long-pressed session to the Skia board", async () => {

@@ -19,9 +19,6 @@ type UseDirectNativeSttControllerOptions = {
   sttProvider: SttProvider;
   sttProviderRef: MutableRefObject<SttProvider>;
   manualRecordingActive: boolean;
-  audioLabRunning: boolean;
-  audioLabRecordingActive: boolean;
-  audioLabPlaybackActive: boolean;
   faceTrackingEnabled: boolean;
   faceTrackingLooking: boolean;
   autoRecordingEnabledRef: MutableRefObject<boolean>;
@@ -63,9 +60,6 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     sttProvider,
     sttProviderRef,
     manualRecordingActive,
-    audioLabRunning,
-    audioLabRecordingActive,
-    audioLabPlaybackActive,
     faceTrackingEnabled,
     faceTrackingLooking,
     autoRecordingEnabledRef,
@@ -352,10 +346,6 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
   const startDirectNativeStt = useCallback(async () => {
     if (sttProvider !== "ios_native_direct") return;
     if (directNativeSttEnabledRef.current) return;
-    if (audioLabRecordingActive || audioLabPlaybackActive || audioLabRunning) {
-      reportError("Audio Lab実行中はDirect STTを開始できません。", "stt:direct:start");
-      return;
-    }
     if (manualRecordingActive) {
       reportError("手動録音を停止してからDirect STTを開始してください。", "stt:direct:start");
       return;
@@ -368,9 +358,6 @@ export function useDirectNativeSttController(options: UseDirectNativeSttControll
     playUiSfx("recordStart");
     void runDirectNativeSttLoop();
   }, [
-    audioLabPlaybackActive,
-    audioLabRecordingActive,
-    audioLabRunning,
     autoRecordingEnabledRef,
     manualRecordingActive,
     playUiSfx,

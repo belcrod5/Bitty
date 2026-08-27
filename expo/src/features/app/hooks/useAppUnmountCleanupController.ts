@@ -24,17 +24,10 @@ type UseAppUnmountCleanupControllerOptions = {
   cleanupRecordingTranscription: () => void;
   cleanupDirectNativeStt: () => void;
   faceTrackingSessionRef: MutableRefObject<IosFaceTrackingSession | null>;
-  clearAudioLabInputPollTimer: () => void;
-  clearAudioLabPlaybackWatchdogTimer: () => void;
-  audioLabClientLogs: BufferedClientLogsLike;
   clearTtsPlaybackWatchdogTimer: () => void;
   ttsPlaybackWantedRef: MutableRefObject<boolean>;
   ttsPlaybackTransitionInFlightRef: MutableRefObject<boolean>;
   ttsStopInFlightRef: MutableRefObject<Promise<void> | null>;
-  audioLabActionInFlightRef: MutableRefObject<boolean>;
-  audioLabPlaybackWantedRef: MutableRefObject<boolean>;
-  audioLabRecordingRef: MutableRefObject<Audio.Recording | null>;
-  audioLabSoundRef: MutableRefObject<Audio.Sound | null>;
 };
 
 export function useAppUnmountCleanupController({
@@ -53,17 +46,10 @@ export function useAppUnmountCleanupController({
   cleanupRecordingTranscription,
   cleanupDirectNativeStt,
   faceTrackingSessionRef,
-  clearAudioLabInputPollTimer,
-  clearAudioLabPlaybackWatchdogTimer,
-  audioLabClientLogs,
   clearTtsPlaybackWatchdogTimer,
   ttsPlaybackWantedRef,
   ttsPlaybackTransitionInFlightRef,
   ttsStopInFlightRef,
-  audioLabActionInFlightRef,
-  audioLabPlaybackWantedRef,
-  audioLabRecordingRef,
-  audioLabSoundRef,
 }: UseAppUnmountCleanupControllerOptions) {
   useEffect(() => {
     return () => {
@@ -102,27 +88,10 @@ export function useAppUnmountCleanupController({
       if (faceTrackingSession) {
         void faceTrackingSession.stop().catch(() => {});
       }
-      clearAudioLabInputPollTimer();
-      clearAudioLabPlaybackWatchdogTimer();
-      audioLabClientLogs.clearFlushTimer();
       clearTtsPlaybackWatchdogTimer();
       ttsPlaybackWantedRef.current = false;
       ttsPlaybackTransitionInFlightRef.current = false;
       ttsStopInFlightRef.current = null;
-      audioLabActionInFlightRef.current = false;
-      audioLabPlaybackWantedRef.current = false;
-      const audioLabRec = audioLabRecordingRef.current;
-      audioLabRecordingRef.current = null;
-      if (audioLabRec) {
-        audioLabRec.setOnRecordingStatusUpdate(null);
-        void releaseRecording(audioLabRec).catch(() => {});
-      }
-      const audioLabSound = audioLabSoundRef.current;
-      audioLabSoundRef.current = null;
-      if (audioLabSound) {
-        audioLabSound.setOnPlaybackStatusUpdate(null);
-        void audioLabSound.unloadAsync().catch(() => {});
-      }
     };
   }, [clearPendingApprovals, cleanupDirectNativeStt, cleanupRecordingTranscription]);
 }

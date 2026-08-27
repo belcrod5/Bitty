@@ -253,7 +253,7 @@ export type GitChangedFilesDirectoryState = {
   error: string;
 };
 
-export type AppScreen = "skia_board" | "debug" | "audio_lab" | "cloudflare_tunnel_monitor";
+export type AppScreen = "skia_board" | "settings" | "cloudflare_tunnel_monitor";
 export type SlashCommandName = "/status" | "/compact";
 
 export type UiSfxKey =

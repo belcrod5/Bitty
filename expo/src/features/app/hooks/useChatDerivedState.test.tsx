@@ -51,9 +51,6 @@ function baseParams(overrides: Partial<Parameters<typeof useChatDerivedState>[0]
     autoWaveformLastSampleAt: 0,
     autoWaveformUiAt: 0,
     streamAudioQueueSize: 0,
-    audioLabRunning: false,
-    audioLabNowMs: 0,
-    audioLabStartedAt: 0,
     ...overrides,
   };
 }

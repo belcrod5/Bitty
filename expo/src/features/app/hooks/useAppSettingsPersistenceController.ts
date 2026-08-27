@@ -76,7 +76,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   autoReplyAfterStt: boolean;
   autoSpeakAfterReply: boolean;
   faceIdRequiredForApproval: boolean;
-  llmToolLogCompact: boolean;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
@@ -108,7 +107,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   setRecordingTuning: Dispatch<SetStateAction<RecordingTuning>>;
   setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
   setTtsSpeedWithSync: (value: number) => void;
-  setLlmToolLogCompact: Dispatch<SetStateAction<boolean>>;
   setAutoTranscribeOnStop: Dispatch<SetStateAction<boolean>>;
   setAutoBargeInEnabled: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakerPriorityEnabled: Dispatch<SetStateAction<boolean>>;
@@ -164,7 +162,6 @@ export function useAppSettingsPersistenceController({
   autoReplyAfterStt,
   autoSpeakAfterReply,
   faceIdRequiredForApproval,
-  llmToolLogCompact,
   setRunnerUrl,
   setRunnerToken,
   setCloudflareAccessClientId,
@@ -196,7 +193,6 @@ export function useAppSettingsPersistenceController({
   setRecordingTuning,
   setFaceTrackingEnabledWithRef,
   setTtsSpeedWithSync,
-  setLlmToolLogCompact,
   setAutoTranscribeOnStop,
   setAutoBargeInEnabled,
   setAutoSpeakerPriorityEnabled,
@@ -280,7 +276,6 @@ export function useAppSettingsPersistenceController({
       autoReplyAfterStt,
       autoSpeakAfterReply,
       faceIdRequiredForApproval,
-      llmToolLogCompact,
     };
   }, [
     autoBargeInEnabled,
@@ -298,7 +293,6 @@ export function useAppSettingsPersistenceController({
     faceTrackingEnabled,
     llmBackend,
     llmDirectory,
-    llmToolLogCompact,
     localRunnerUrl,
     localRunnerWsUrl,
     modelRef,
@@ -320,7 +314,10 @@ export function useAppSettingsPersistenceController({
     ttsSpeed,
   ]);
 
-  const applyPersistedSettings = useCallback((parsed: Record<string, unknown>) => {
+  const applyPersistedSettings = useCallback((
+    parsed: Record<string, unknown>,
+    { restoreCredentials = true }: { restoreCredentials?: boolean } = {}
+  ) => {
     let savedRunnerUrl = String(parsed.runnerUrl || "").trim();
     let savedRunnerToken = String(parsed.runnerToken || "").trim();
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
@@ -434,7 +431,9 @@ export function useAppSettingsPersistenceController({
     if (savedCodexWsUrl) {
       setCodexWsUrl(savedCodexWsUrl);
     }
-    setCodexWsToken(savedCodexWsToken);
+    if (restoreCredentials) {
+      setCodexWsToken(savedCodexWsToken);
+    }
     setModelRef(parseModelRef(parsed.modelRef, modelOptions, defaultModelRef));
     setReasoningEffort(parseReasoningEffort(parsed.reasoningEffort, defaultReasoningEffort));
     setCodexApprovalPolicy(parseCodexApprovalPolicy(parsed.codexApprovalPolicy));
@@ -456,9 +455,6 @@ export function useAppSettingsPersistenceController({
       setFaceTrackingEnabledWithRef(parsed.faceTrackingEnabled);
     }
     setTtsSpeedWithSync(parseTtsSpeed(parsed.ttsSpeed));
-    if (typeof parsed.llmToolLogCompact === "boolean") {
-      setLlmToolLogCompact(parsed.llmToolLogCompact);
-    }
     if (typeof parsed.autoTranscribeOnStop === "boolean") {
       setAutoTranscribeOnStop(parsed.autoTranscribeOnStop);
     }
@@ -507,7 +503,6 @@ export function useAppSettingsPersistenceController({
     setFaceTrackingEnabledWithRef,
     setLlmBackend,
     setLlmDirectory,
-    setLlmToolLogCompact,
     setLocalRunnerUrl,
     setLocalRunnerWsUrl,
     setModelRef,
@@ -527,18 +522,22 @@ export function useAppSettingsPersistenceController({
     setTtsSpeedWithSync,
   ]);
 
-  const logSettingsJson = useCallback(async () => {
+  const exportSettingsJson = useCallback(async () => {
+    const exportedSettings = {
+      ...buildPersistedSettingsPayload(),
+      codexWsToken: undefined,
+    };
     const payload = {
       exportedAt: new Date().toISOString(),
-      appDefaultSettings: buildPersistedSettingsPayload(),
+      appDefaultSettings: exportedSettings,
     };
     const settingsJson = JSON.stringify(payload, null, 2);
-    console.log("[settings/export]", settingsJson);
     try {
       await Clipboard.setStringAsync(settingsJson);
-      console.log("[settings/export] copied to clipboard");
+      Alert.alert("書き出し完了", "設定をクリップボードへコピーしました。");
     } catch (error) {
-      console.warn("[settings/export] failed to copy to clipboard", error);
+      const message = error instanceof Error ? error.message : String(error);
+      Alert.alert("書き出し失敗", message || "設定をコピーできませんでした。");
     }
   }, [buildPersistedSettingsPayload]);
 
@@ -561,14 +560,28 @@ export function useAppSettingsPersistenceController({
 
       Alert.alert(
         "設定をインポート",
-        "接続先、個人パス、セッション設定、自動許可ルールを含むすべての端末設定を復元します。",
+        "認証トークン、Cloudflare認証情報、保存済み承認ルールを除く端末設定を復元します。これらは移行先で再設定してください。",
         [
           { text: "キャンセル", style: "cancel" },
           {
             text: "インポート",
             onPress: () => {
-              applyPersistedSettings(imported);
-              Alert.alert("インポート完了", "すべての端末設定を反映しました。");
+              const importedSettings = { ...imported };
+              for (const field of [
+                "runnerToken",
+                "codexWsToken",
+                "cloudflareAccessClientId",
+                "cloudflareAccessClientSecret",
+                "toolAutoApprovalRules",
+                "toolAutoApprovalMap",
+              ]) {
+                delete importedSettings[field];
+              }
+              if (typeof importedSettings.codexWsUrl === "string") {
+                importedSettings.codexWsUrl = normalizeCodexWsInputs(importedSettings.codexWsUrl, "").wsUrl;
+              }
+              applyPersistedSettings(importedSettings, { restoreCredentials: false });
+              Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
             },
           },
         ]
@@ -700,6 +713,6 @@ export function useAppSettingsPersistenceController({
 
   return {
     importSettingsJson,
-    logSettingsJson,
+    exportSettingsJson,
   };
 }

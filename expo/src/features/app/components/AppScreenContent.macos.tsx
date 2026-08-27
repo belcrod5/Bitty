@@ -1,8 +1,7 @@
 import type { ComponentProps } from "react";
 import { SafeAreaView, StyleSheet, View } from "react-native";
-import { AudioLabScreen } from "./AudioLabScreen";
 import { CloudflareTunnelMonitorScreen } from "../screens/CloudflareTunnelMonitorScreen";
-import { DebugScreen } from "../screens/DebugScreen";
+import { SettingsScreen } from "../screens/SettingsScreen";
 import { SkiaMiniBoardScreen } from "../screens/SkiaMiniBoardScreen";
 import type { AppScreen } from "../types/appTypes";
 
@@ -34,13 +33,11 @@ export function AppScreenContent({
       </View>
       {!boardVisible ? (
         <SafeAreaView style={styles.screen}>
-          {activeScreen === "debug" ? (
-            <DebugScreen />
+          {activeScreen === "settings" ? (
+            <SettingsScreen />
           ) : activeScreen === "cloudflare_tunnel_monitor" ? (
             <CloudflareTunnelMonitorScreen />
-          ) : (
-            <AudioLabScreen />
-          )}
+          ) : null}
         </SafeAreaView>
       ) : null}
     </View>

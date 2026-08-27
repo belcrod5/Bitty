@@ -287,13 +287,14 @@ By default the public app identity is:
 
 ## Settings Migration
 
-The app includes clipboard-based settings export/import for complete
-device-to-device migration.
+The app includes clipboard-based export/import for migrating non-sensitive
+device settings.
 
 The exported settings JSON can contain private data such as local URLs, paths,
-session metadata, and approval rules. Do not publish exported settings files.
-For OSS defaults, choose safe values manually in source code or example config
-files.
+and session metadata, so do not publish it. Authentication tokens, Cloudflare
+credentials, and saved approval rules are excluded and must be configured again
+on the destination device. For OSS defaults, choose safe values manually in
+source code or example config files.
 
 ## Optional Google Cloud Settings
 

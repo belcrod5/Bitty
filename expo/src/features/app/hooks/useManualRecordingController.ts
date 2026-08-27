@@ -8,9 +8,6 @@ import {
 import { isRecorderNotPreparedError, isRecordingNotAllowedError } from "../utils/audioSession";
 
 type UseManualRecordingControllerOptions = {
-  audioLabRunning: boolean;
-  audioLabRecordingActive: boolean;
-  audioLabPlaybackActive: boolean;
   autoRecordingEnabled: boolean;
   recordingTuning: RecordingTuning;
   autoTranscribeOnStop: boolean;
@@ -26,9 +23,6 @@ type UseManualRecordingControllerOptions = {
 
 export function useManualRecordingController(options: UseManualRecordingControllerOptions) {
   const {
-    audioLabRunning,
-    audioLabRecordingActive,
-    audioLabPlaybackActive,
     autoRecordingEnabled,
     recordingTuning,
     autoTranscribeOnStop,
@@ -49,10 +43,6 @@ export function useManualRecordingController(options: UseManualRecordingControll
   const startRecording = useCallback(async () => {
     if (!supportsAudioRecording) {
       reportError("録音機能はこの端末では利用できません。", "recording:start");
-      return;
-    }
-    if (audioLabRecordingActive || audioLabPlaybackActive || audioLabRunning) {
-      reportError("Audio Lab実行中は手動録音できません。", "manual:start");
       return;
     }
     if (autoRecordingEnabled) {
@@ -99,9 +89,6 @@ export function useManualRecordingController(options: UseManualRecordingControll
       reportError(error, "manual:start");
     }
   }, [
-    audioLabPlaybackActive,
-    audioLabRecordingActive,
-    audioLabRunning,
     autoRecordingEnabled,
     ensureMicReady,
     onManualMeteringTick,

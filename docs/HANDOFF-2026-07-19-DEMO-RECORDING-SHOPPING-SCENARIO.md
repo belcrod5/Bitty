@@ -55,7 +55,7 @@ iOS Simulator で以下のユーザーストーリーを通しで録画する。
    ```
    - `expo prebuild`(特に `--clean`)は走らせない(ios プロジェクト直編集分が消える)。`run:ios` は既存 ios/ を使うので可
    - UDID 取得: `xcrun simctl list devices booted`
-4. **Runner とペアリング**: アプリの `Current Settings` デバッグ画面で対話設定
+4. **Runner とペアリング**: アプリの「設定」画面で対話設定
    - Aux Server URL: `http://127.0.0.1:8788` / Codex WS URL: `ws://127.0.0.1:8788/runner-ws`
    - Token: `pbcopy < private_runner/logs/runner-token` で clipboard 経由。**トークンを画面・ログ・レポートに残さない**
    - 短いチャット1往復で接続確認
@@ -93,7 +93,7 @@ iOS Simulator で以下のユーザーストーリーを通しで録画する。
 - enter イベントは座標変更後最大60秒程度かかることがある。録画は発火・通知のタイミングを確認したリハーサル後に
 - 実機(ユーザーの iPhone)も同じ Runner に接続しているため、デモ中に実機へ push が飛ぶ可能性があるが実害なし。**実機の既存ルールを消さない**ことだけ厳守
 - シミュレーターのタイムゾーンは Mac と同じ(Asia/Tokyo)。ルールの時刻は JST でそのまま設定してよい
-- トークン・Cloudflare 資格情報・store 全文をレポートや動画に映さない(`Current Settings` 画面を録画に含めない)
+- トークン・Cloudflare 資格情報・store 全文をレポートや動画に映さない（設定画面を録画に含めない）
 
 ## 後片付け
 
