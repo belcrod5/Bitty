@@ -175,6 +175,43 @@ test("onTurnCompleted ingests only registered directories", async () => {
   }, { sessionsByDirectory });
 });
 
+test("onTurnCompleted ingests across all registered directories", async () => {
+  // 単一ディレクトリの候補だけでウォーターマークが前進すると他ディレクトリの
+  // セッションが恒久的に取りこぼされるため、常に全登録ディレクトリを対象にする。
+  const sessionsByDirectory = {
+    "/work-a": [candidate(9)],
+    "/work-b": [{ ...candidate(2), sessionId: "b-session" }],
+  };
+  await withHarness(async ({ service, ingest, listCalls }) => {
+    await service.syncIngestDirectories({ directories: ["/work-a", "/work-b"] });
+
+    const snapshot = await ingest.onTurnCompleted({ directory: "/work-a" });
+
+    assert.deepEqual(listCalls, [["/work-a", "/work-b"]]);
+    assert.deepEqual(
+      snapshot.board.cards.map((card) => card.sessionId).sort(),
+      ["b-session", "session-9"]
+    );
+    // ウォーターマークは全候補の最大updatedAt。
+    assert.equal(
+      snapshot.board.ingestedUpdatedAtMs,
+      new Date("2026-06-09T00:00:00.000Z").getTime()
+    );
+  }, { sessionsByDirectory });
+});
+
+test("concurrent sweeps merge into a single listing", async () => {
+  await withHarness(async ({ service, ingest, listCalls }) => {
+    await service.syncIngestDirectories({ directories: ["/work"] });
+    const [first, second] = await Promise.all([
+      ingest.sweep({ force: true }),
+      ingest.sweep({ force: true }),
+    ]);
+    assert.equal(listCalls.length, 1);
+    assert.equal(first, second);
+  }, { sessionsByDirectory: { "/work": [candidate(1)] } });
+});
+
 test("ingest failures are contained and do not reject", async () => {
   const originalWarn = console.warn;
   console.warn = () => {};

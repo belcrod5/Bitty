@@ -194,8 +194,26 @@ export function createSkiaBoardService({
       userEdited: parsed.userEdited === true,
       initializedAt: typeof parsed.initializedAt === "string" ? parsed.initializedAt : null,
       board: origin ? normalizeSkiaBoardState(parsed.board) : null,
-      ingestDirectories: normalizeIngestDirectories(parsed.ingestDirectories),
+      ingestDirectories: await canonicalizeIngestDirectories(
+        normalizeIngestDirectories(parsed.ingestDirectories)
+      ),
     };
+  }
+
+  // 旧バージョンが未正規化のまま保存したエントリも読み込み時に正規化して照合を揃える。
+  // 解決できないエントリは元の値のまま保持する(設定を黙って失わせない)。
+  async function canonicalizeIngestDirectories(directories) {
+    const canonical = [];
+    for (const directory of directories) {
+      let resolved = directory;
+      try {
+        resolved = String(await normalizeDirectory(directory) || "").trim() || directory;
+      } catch {
+        resolved = directory;
+      }
+      if (!canonical.includes(resolved)) canonical.push(resolved);
+    }
+    return canonical;
   }
 
   function ensureLoaded() {

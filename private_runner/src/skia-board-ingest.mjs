@@ -16,6 +16,20 @@ export function createSkiaBoardIngest({
 } = {}) {
   let lastSweepAtMs = 0;
   let sweepInFlight = null;
+  let lastWarnMessage = "";
+
+  // 起動直後のバックエンド未readyなど、ターン完了ごとに同じ警告を繰り返さない。
+  function warnOnce(message, error) {
+    const key = `${message}: ${String(error?.message || error || "")}`;
+    if (key === lastWarnMessage) return;
+    lastWarnMessage = key;
+    console.warn(`[skia-board] ${message}`, error);
+  }
+
+  function updatedAtMs(value) {
+    const time = Date.parse(String(value || ""));
+    return Number.isFinite(time) ? time : 0;
+  }
 
   async function collectCandidates(directories) {
     const groups = await listAgentSessionsForDirectories(directories, { includeSubagents: false });
@@ -31,7 +45,8 @@ export function createSkiaBoardIngest({
       }
     }
     // 新しい順に並べる(空ボード初期化時に先頭6件を採用する既存ロジックに合わせる)。
-    candidates.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    // updatedAtはISO文字列前提だが、欠損・不正値でも順序が壊れないよう数値比較する。
+    candidates.sort((a, b) => updatedAtMs(b.updatedAt) - updatedAtMs(a.updatedAt));
     return candidates;
   }
 
@@ -54,7 +69,7 @@ export function createSkiaBoardIngest({
         const directories = await boardService.getIngestDirectories();
         return await ingestDirectoriesNow(directories);
       } catch (error) {
-        console.warn("[skia-board] ingest sweep failed", error);
+        warnOnce("ingest sweep failed", error);
         return null;
       } finally {
         sweepInFlight = null;
@@ -63,20 +78,27 @@ export function createSkiaBoardIngest({
     return sweepInFlight;
   }
 
-  // ターン完了。該当ディレクトリがingest対象なら、そのディレクトリだけ取り込み直す。
-  // 単発candidateではなく一覧の引き直しにすることで、updatedAtの正確さと
-  // 同ディレクトリの取りこぼし補完(自己修復)を両立する。
+  // ターン完了。該当ディレクトリがingest対象なら取り込み直す。単発candidateではなく
+  // 一覧の引き直しにすることで、updatedAtの正確さと取りこぼし補完(自己修復)を両立する。
+  // 常に登録ディレクトリ全件を対象にするのは、単一ディレクトリの候補だけで
+  // ウォーターマークが前進すると、他ディレクトリの未取り込みセッションが
+  // 「updatedAt > ウォーターマーク」条件から恒久的に外れてしまうため
+  // (空ストアの初期化が単一ディレクトリの6件に偏る問題も同時に防ぐ)。
+  // 一覧取得コストはCLIインデックスのフルスキャンが支配的で、ディレクトリ数に
+  // ほぼ依存しないため、全件渡しでも追加コストは実質無い。
   async function onTurnCompleted(payload) {
     try {
+      // 空directoryは resolveDirectory を呼ぶ前に弾く(既定llmルートへの
+      // フォールバックで無関係なディレクトリ扱いになる事故の回避)。
       const rawDirectory = String(payload?.directory || "").trim();
       if (!rawDirectory) return null;
       const directory = String(await resolveDirectory(rawDirectory) || "").trim();
       if (!directory) return null;
       const registered = await boardService.getIngestDirectories();
       if (!registered.includes(directory)) return null;
-      return await ingestDirectoriesNow([directory]);
+      return await ingestDirectoriesNow(registered);
     } catch (error) {
-      console.warn("[skia-board] turn-completed ingest failed", error);
+      warnOnce("turn-completed ingest failed", error);
       return null;
     }
   }
