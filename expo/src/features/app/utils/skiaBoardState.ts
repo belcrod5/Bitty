@@ -664,7 +664,14 @@ export function subscribePersistedSkiaBoardStateReplaced(
 
 // ボードUI外(設定インポート等)からの一括置換。保存後に購読者へ通知しないと、
 // ボードがメモリに保持する旧stateが次の永続化で置換内容を上書きしてしまう。
+// リスナーの例外は保存済みという結果を覆さないよう、通知失敗として警告に留める。
 export async function replacePersistedSkiaBoardState(state: SkiaBoardState): Promise<void> {
   await writePersistedSkiaBoardState(state);
-  for (const listener of persistedStateReplacedListeners) listener(state);
+  for (const listener of persistedStateReplacedListeners) {
+    try {
+      listener(state);
+    } catch (error) {
+      console.warn("[skia_board] board state replacement listener failed", error);
+    }
+  }
 }

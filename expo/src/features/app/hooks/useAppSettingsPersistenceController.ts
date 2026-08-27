@@ -499,7 +499,7 @@ export function useAppSettingsPersistenceController({
           { text: "キャンセル", style: "cancel" },
           {
             text: "インポート",
-            onPress: () => {
+            onPress: () => void (async () => {
               const importedSettings = { ...imported };
               for (const field of [
                 "runnerToken",
@@ -513,15 +513,26 @@ export function useAppSettingsPersistenceController({
               // ボード配置はReact設定stateを経由しないため、検証後に永続化ファイルへ
               // 直接書き込み、ボードUIへ置換を通知する。無い(旧形式)場合は現状維持。
               const importedSkiaBoardState = parseSkiaBoardState(importedSettings.skiaBoardState);
+              if (importedSettings.skiaBoardState !== undefined && !importedSkiaBoardState) {
+                console.warn("[settings] imported skia board state was empty or invalid; keeping the current board");
+              }
               delete importedSettings.skiaBoardState;
               applyPersistedSettings(importedSettings);
               if (importedSkiaBoardState) {
-                void replacePersistedSkiaBoardState(importedSkiaBoardState).catch((error) => {
+                try {
+                  await replacePersistedSkiaBoardState(importedSkiaBoardState);
+                } catch (error) {
                   console.warn("[settings] failed to restore skia board state", error);
-                });
+                  const message = error instanceof Error ? error.message : String(error);
+                  Alert.alert(
+                    "インポート一部失敗",
+                    `端末設定は反映しましたが、Skiaボード配置を復元できませんでした。${message ? `\n${message}` : ""}`
+                  );
+                  return;
+                }
               }
               Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
-            },
+            })(),
           },
         ]
       );

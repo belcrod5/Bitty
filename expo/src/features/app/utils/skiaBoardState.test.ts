@@ -760,6 +760,33 @@ describe("replacePersistedSkiaBoardState", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it("keeps notifying remaining subscribers when one listener throws", async () => {
+    const mockMutate = jest.mocked(mutatePersistedSettings);
+    mockMutate.mockClear();
+    mockMutate.mockResolvedValue(undefined);
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    const throwingListener = jest.fn(() => {
+      throw new Error("listener failed");
+    });
+    const listener = jest.fn();
+    const unsubscribeThrowing = subscribePersistedSkiaBoardStateReplaced(throwingListener);
+    const unsubscribe = subscribePersistedSkiaBoardStateReplaced(listener);
+    const state: SkiaBoardState = {
+      cards: [],
+      sections: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+
+    await expect(replacePersistedSkiaBoardState(state)).resolves.toBeUndefined();
+    expect(listener).toHaveBeenCalledWith(state);
+
+    unsubscribeThrowing();
+    unsubscribe();
+    jest.mocked(console.warn).mockRestore();
+  });
+
   it("does not notify subscribers when the write fails", async () => {
     const mockMutate = jest.mocked(mutatePersistedSettings);
     mockMutate.mockClear();

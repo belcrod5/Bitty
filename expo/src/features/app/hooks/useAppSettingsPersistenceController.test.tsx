@@ -288,6 +288,37 @@ test("clipboard import restores the skia board state to the settings file", asyn
   }]);
 });
 
+test("clipboard import reports a partial failure when the board state cannot be persisted", async () => {
+  mockGetStringAsync.mockResolvedValue(JSON.stringify({
+    appDefaultSettings: {
+      runnerUrl: "https://migrated.example.com",
+      skiaBoardState: {
+        cards: [{ sessionId: "session-1", col: 0, row: 1 }],
+      },
+    },
+  }));
+  const hook = await renderPersistenceController();
+
+  await act(async () => {
+    await hook.result.current.importSettingsJson();
+  });
+  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void }> | undefined)
+    ?.find(({ text }) => text === "インポート");
+
+  jest.mocked(Alert.alert).mockClear();
+  mockMutatePersistedSettings.mockRejectedValue(new Error("disk full"));
+  await act(async () => {
+    importButton?.onPress?.();
+  });
+
+  expect(Alert.alert).toHaveBeenCalledWith(
+    "インポート一部失敗",
+    expect.stringContaining("Skiaボード配置を復元できませんでした")
+  );
+  expect(jest.mocked(Alert.alert).mock.calls.some(([title]) => title === "インポート完了")).toBe(false);
+});
+
 test("clipboard import without board data keeps the persisted board state untouched", async () => {
   mockGetStringAsync.mockResolvedValue(JSON.stringify({
     appDefaultSettings: { runnerUrl: "https://migrated.example.com" },
