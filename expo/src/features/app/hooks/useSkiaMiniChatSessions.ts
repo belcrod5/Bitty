@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
+import { fetchSkiaBoardSessionSummaries } from "../utils/skiaBoardRunnerApi";
+import { parseContextUsageUsedPct } from "../utils/formatting";
 import {
   buildPanelHydrationRequestMark,
   decidePanelHydration,
@@ -15,7 +18,7 @@ import {
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
-import type { LlmSessionSource } from "./useLlmSessionExplorer";
+import type { LlmSessionHistoryEntry, LlmSessionSource } from "./useLlmSessionExplorer";
 import { formatLlmSessionDisplayTitle, isLlmSessionUnread } from "../utils/llmSession";
 import type { SessionActivity } from "../utils/statusIcons";
 
@@ -169,15 +172,107 @@ export function useSkiaMiniChatSessions() {
     registeredDirectories,
   ]);
 
-  // ボード搭載カードのうち、候補(取得済みセッション)が存在するものだけを表示・
-  // hydrate対象にする。取得ウィンドウ外のカードは位置だけ保持して再登場を待つ。
+  // ドロワーの取得ウィンドウ外のセッションカードは、カードが持つ出所情報
+  // (directory/backendId)を使ってランナーのサマリAPIから直接表示情報を取得する。
+  // これにより「配置済みなのに読み込みウィンドウ外で非表示」が構造的に消える(設計書 Step 3)。
+  const { runnerUrl, runnerToken } = useChatScreen();
+  const missingSummaryKey = useMemo(() => {
+    const candidateIds = new Set(sessionCandidates.map((candidate) => candidate.sessionId));
+    const byDirectory = new Map<string, string[]>();
+    for (const card of boardState?.cards || []) {
+      if (card.kind !== "session" || candidateIds.has(card.sessionId)) continue;
+      const directory = String(card.directory || "").trim();
+      // 出所情報の無い旧カードは従来どおりウィンドウ外では非表示(位置は保持)。
+      if (!directory) continue;
+      const sessionIds = byDirectory.get(directory) || [];
+      sessionIds.push(card.sessionId);
+      byDirectory.set(directory, sessionIds);
+    }
+    return JSON.stringify(
+      Array.from(byDirectory, ([directory, sessionIds]) => [directory, sessionIds.sort()])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    );
+  }, [boardState, sessionCandidates]);
+
+  type SummaryCandidate = LlmSessionHistoryEntry & {
+    directory: string;
+    cwd: string;
+    directoryDisplayName: string;
+  };
+  const [summaryCandidates, setSummaryCandidates] = useState<SummaryCandidate[]>([]);
+  const summaryFetchGenerationRef = useRef(0);
+  useEffect(() => {
+    const generation = summaryFetchGenerationRef.current + 1;
+    summaryFetchGenerationRef.current = generation;
+    const groups = JSON.parse(missingSummaryKey) as Array<[string, string[]]>;
+    if (groups.length <= 0) {
+      setSummaryCandidates([]);
+      return;
+    }
+    if (!runnerUrl.trim() || !runnerToken.trim()) return;
+    const directoryNames = new Map(registeredDirectories.map((directory) => [
+      String(directory.path || "").trim(),
+      String(directory.displayName || "").trim(),
+    ]));
+    void (async () => {
+      try {
+        const collected: SummaryCandidate[] = [];
+        for (const [directory, sessionIds] of groups) {
+          const summaries = await fetchSkiaBoardSessionSummaries(
+            { runnerUrl, runnerToken },
+            { directory, sessionIds }
+          );
+          for (const summary of summaries) {
+            collected.push({
+              // backendId はサマリ応答に無いため、assignedSessions側でカードの値を優先する。
+              backendId: "codex",
+              sessionId: summary.sessionId,
+              parentSessionId: summary.parentSessionId,
+              directory,
+              updatedAt: summary.updatedAt,
+              lastReadAt: summary.lastReadAt,
+              source: (summary.source || "unknown") as LlmSessionSource,
+              cwd: summary.cwd || directory,
+              firstUserMessage: summary.firstUserMessage,
+              agentRole: "",
+              agentDisplayName: "",
+              contextUsedPct: parseContextUsageUsedPct(summary.contextUsage),
+              modelRef: summary.modelRef,
+              reasoningEffort: summary.reasoningEffort,
+              directoryDisplayName: directoryNames.get(directory)
+                || directory.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop()
+                || directory,
+            });
+          }
+        }
+        if (summaryFetchGenerationRef.current !== generation) return;
+        setSummaryCandidates(collected);
+      } catch (error) {
+        console.warn("[skia_board] failed to fetch session summaries for board cards", error);
+      }
+    })();
+    // cycleId: ドロワー同期の各サイクル完了時にサマリの鮮度(未読・updatedAt)を追随させる。
+  }, [directorySessionSync.cycleId, missingSummaryKey, registeredDirectories, runnerToken, runnerUrl]);
+
+  // ボード搭載カードのうち、候補(ウィンドウ内セッション、またはサマリ取得済み)が
+  // 存在するものを表示・hydrate対象にする。どちらにも無いカードは位置だけ保持する。
   const assignedSessions = useMemo(() => {
     const candidatesBySessionId = new Map(
       sessionCandidates.map((candidate) => [candidate.sessionId, candidate])
     );
+    const summariesBySessionId = new Map(
+      summaryCandidates.map((candidate) => [candidate.sessionId, candidate])
+    );
     return (boardState?.cards || []).flatMap((card) => {
       if (card.kind !== "session") return [];
-      const candidate = candidatesBySessionId.get(card.sessionId);
+      const windowCandidate = candidatesBySessionId.get(card.sessionId);
+      const summaryCandidate = windowCandidate
+        ? undefined
+        : summariesBySessionId.get(card.sessionId);
+      const candidate = windowCandidate
+        ?? (summaryCandidate
+          ? { ...summaryCandidate, backendId: card.backendId || summaryCandidate.backendId }
+          : undefined);
       if (!candidate) return [];
       return [{
         card,
@@ -191,7 +286,7 @@ export function useSkiaMiniChatSessions() {
         ),
       }];
     });
-  }, [boardState, sessionCandidates, sessionTitleOverridesById]);
+  }, [boardState, sessionCandidates, sessionTitleOverridesById, summaryCandidates]);
 
   const childStateByParentId = useMemo(() => new Map(
     Object.values(directorySessionsById).flatMap((state) => (

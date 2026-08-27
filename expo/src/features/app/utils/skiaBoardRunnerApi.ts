@@ -112,6 +112,69 @@ export async function postSkiaBoardOps(
   throw new Error(errorMessage(data, status));
 }
 
+// ボードに配置済みのセッションカードの表示情報を、ドロワーの取得ウィンドウに
+// 依存せず直接取得する(POST /session-summaries、directory必須・100件バッチ)。
+export const SKIA_BOARD_SESSION_SUMMARY_BATCH_SIZE = 100;
+
+export type SkiaBoardSessionSummary = {
+  sessionId: string;
+  directory: string;
+  cwd: string;
+  updatedAt: string;
+  lastReadAt: string;
+  source: string;
+  firstUserMessage: string;
+  parentSessionId: string;
+  contextUsage: unknown;
+  modelRef: string;
+  reasoningEffort: string;
+};
+
+export async function fetchSkiaBoardSessionSummaries(
+  auth: RunnerAuth,
+  { directory, sessionIds }: { directory: string; sessionIds: readonly string[] }
+): Promise<SkiaBoardSessionSummary[]> {
+  const { baseUrl, token } = requireAuth(auth);
+  const results: SkiaBoardSessionSummary[] = [];
+  for (
+    let start = 0;
+    start < sessionIds.length;
+    start += SKIA_BOARD_SESSION_SUMMARY_BATCH_SIZE
+  ) {
+    const batch = sessionIds.slice(start, start + SKIA_BOARD_SESSION_SUMMARY_BATCH_SIZE);
+    const { status, data } = await fetchJson(`${baseUrl}/session-summaries`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ directory, sessionIds: batch }),
+    });
+    if (status !== 200) throw new Error(errorMessage(data, status));
+    for (const raw of Array.isArray(data.sessions) ? data.sessions : []) {
+      const record = raw && typeof raw === "object" && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const sessionId = String(record.sessionId || "").trim();
+      if (!sessionId) continue;
+      results.push({
+        sessionId,
+        directory: String(record.directory || directory),
+        cwd: String(record.cwd || ""),
+        updatedAt: String(record.updatedAt || ""),
+        lastReadAt: String(record.lastReadAt || ""),
+        source: String(record.source || ""),
+        firstUserMessage: String(record.firstUserMessage || ""),
+        parentSessionId: String(record.parentSessionId || ""),
+        contextUsage: record.contextUsage ?? null,
+        modelRef: String(record.modelRef || ""),
+        reasoningEffort: String(record.reasoningEffort || ""),
+      });
+    }
+  }
+  return results;
+}
+
 // 各端末の登録ディレクトリをランナーへ送り、自動カード追加(ingest)の対象を
 // 和集合で共有する。ボード内容は変わらないためrevisionは動かない。
 export async function syncSkiaBoardIngestDirectories(

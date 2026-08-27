@@ -10,6 +10,7 @@ import {
 } from "../utils/persistedSettingsFile";
 import {
   fetchSkiaBoard,
+  fetchSkiaBoardSessionSummaries,
   importSkiaBoard,
   postSkiaBoardOps,
   syncSkiaBoardIngestDirectories,
@@ -60,6 +61,7 @@ jest.mock("../utils/persistedSettingsFile", () => ({
 // ランナーAPIはインメモリのフェイクランナーで置き換える(op適用は実ロジックを共有)。
 jest.mock("../utils/skiaBoardRunnerApi", () => ({
   fetchSkiaBoard: jest.fn(),
+  fetchSkiaBoardSessionSummaries: jest.fn(),
   importSkiaBoard: jest.fn(),
   postSkiaBoardOps: jest.fn(),
   syncSkiaBoardIngestDirectories: jest.fn(),
@@ -74,6 +76,7 @@ const mockFetchSkiaBoard = jest.mocked(fetchSkiaBoard);
 const mockImportSkiaBoard = jest.mocked(importSkiaBoard);
 const mockPostSkiaBoardOps = jest.mocked(postSkiaBoardOps);
 const mockSyncSkiaBoardIngestDirectories = jest.mocked(syncSkiaBoardIngestDirectories);
+const mockFetchSkiaBoardSessionSummaries = jest.mocked(fetchSkiaBoardSessionSummaries);
 const workspaceDirectory = {
   id: "workspace",
   path: "/workspace",
@@ -125,6 +128,7 @@ beforeEach(() => {
   });
   mockFetchSkiaBoard.mockImplementation(async () => runnerSnapshot());
   mockSyncSkiaBoardIngestDirectories.mockResolvedValue({ ingestDirectories: [] });
+  mockFetchSkiaBoardSessionSummaries.mockResolvedValue([]);
   mockImportSkiaBoard.mockImplementation(async (_auth, { board }) => {
     if (runnerStore.initialized) {
       return { status: "already_initialized", snapshot: runnerSnapshot() };
@@ -802,6 +806,79 @@ describe("useSkiaMiniChatSessions", () => {
 
     expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
     expect(result.current.hydratingPanelCount).toBe(0);
+  });
+
+  it("shows out-of-window session cards via direct summaries", async () => {
+    // ドロワーの取得ウィンドウ(candidates)に無いカードでも、カードの出所情報から
+    // サマリを直接取得して表示する(5件ページング依存の解消)。
+    seedRunnerBoard([
+      sessionCard("session-1", 0, 0),
+      { kind: "session", sessionId: "session-99", directory: "/workspace", backendId: "codex", col: 1, row: 0 },
+    ]);
+    mockFetchSkiaBoardSessionSummaries.mockResolvedValue([{
+      sessionId: "session-99",
+      directory: "/workspace",
+      cwd: "/workspace",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+      lastReadAt: "",
+      source: "cli",
+      firstUserMessage: "ウィンドウ外セッション",
+      parentSessionId: "",
+      contextUsage: { usedPct: 42.4 },
+      modelRef: "codex-model",
+      reasoningEffort: "medium",
+    }]);
+    mockConversation([session(1)]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+    // サマリ取得→反映は次のeffectサイクルになるためもう一周流す。
+    await flush();
+
+    expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledWith(
+      { runnerUrl: "http://runner", runnerToken: "runner-token" },
+      { directory: "/workspace", sessionIds: ["session-99"] }
+    );
+    const summarySession = result.current.sessions.find((item) => item.sessionId === "session-99");
+    expect(summarySession).toMatchObject({
+      title: "ウィンドウ外セッション",
+      directory: "/workspace",
+      directoryName: "Workspace",
+      backendId: "codex",
+      unread: true,
+      col: 1,
+      row: 0,
+    });
+    // ウィンドウ内のセッションも従来どおり表示される。
+    expect(result.current.sessions.map((item) => item.sessionId).sort()).toEqual([
+      "session-1",
+      "session-99",
+    ]);
+  });
+
+  it("does not fetch summaries when every board card is inside the window", async () => {
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    mockConversation([session(1)]);
+
+    await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(mockFetchSkiaBoardSessionSummaries).not.toHaveBeenCalled();
+  });
+
+  it("keeps cards without origin info hidden outside the window", async () => {
+    // 出所情報(directory)の無い旧カードは、従来どおり位置だけ保持して非表示。
+    seedRunnerBoard([
+      sessionCard("session-1", 0, 0),
+      sessionCard("session-99", 1, 0),
+    ]);
+    mockConversation([session(1)]);
+
+    const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(mockFetchSkiaBoardSessionSummaries).not.toHaveBeenCalled();
+    expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["session-1"]);
   });
 
   it("offers the legacy board even when the runner is already initialized", async () => {
