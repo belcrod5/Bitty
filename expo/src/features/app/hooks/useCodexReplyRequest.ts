@@ -58,7 +58,7 @@ type UseCodexReplyRequestOptions<
 > = {
   transcript: string;
   codexWsUrl: string;
-  codexWsToken: string;
+  runnerToken: string;
   runnerWebSocketManager?: RunnerWebSocketManager;
   llmBackend: string;
   modelOptions?: readonly {
@@ -1005,7 +1005,7 @@ export function useCodexReplyRequest<
       void current.uploadCodexWsPreflightLog({
         phase: "send_before_ws_connect",
         targetWsUrl: targetCodexWsUrl,
-        targetWsToken: current.codexWsToken.trim(),
+        targetWsToken: current.runnerToken.trim(),
         extra: {
           transcriptChars: effectiveTranscript.length,
         },
@@ -1033,7 +1033,7 @@ export function useCodexReplyRequest<
       });
       const createTurnSession = (attempt: number) => startCodexAppServerTurn({
         wsUrl: targetCodexWsUrl,
-        wsToken: current.codexWsToken.trim(),
+        wsToken: current.runnerToken.trim(),
         runnerWebSocketManager: current.runnerWebSocketManager,
         preferNeutralAgent: true,
         backendId: requestBackendId,
@@ -1410,7 +1410,7 @@ export function useCodexReplyRequest<
       void current.uploadCodexWsPreflightLog({
         phase: "send_after_reply_ok",
         targetWsUrl: targetCodexWsUrl,
-        targetWsToken: current.codexWsToken.trim(),
+        targetWsToken: current.runnerToken.trim(),
         extra: {
           threadId: result.threadId || "",
           turnId: result.turnId || "",
@@ -1512,7 +1512,7 @@ export function useCodexReplyRequest<
       void current.uploadCodexWsPreflightLog({
         phase: "send_after_reply_error",
         targetWsUrl: targetCodexWsUrl,
-        targetWsToken: current.codexWsToken.trim(),
+        targetWsToken: current.runnerToken.trim(),
         extra: {
           message: error instanceof Error ? error.message : String(error),
           model: requestModelRef,

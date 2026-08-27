@@ -325,6 +325,7 @@ import {
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
 import { SETTINGS_FILE_NAME } from "./utils/persistedSettingsFile";
+import { suggestRunnerWsUrlFromRunnerUrl } from "./utils/urlResolvers";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
 import {
@@ -336,7 +337,6 @@ import {
 } from "./modelOptions";
 
 const DEFAULT_RUNNER_URL = "http://127.0.0.1:8788";
-const DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/runner-ws";
 const NEAR_UNLIMITED_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24h
 const EXPO_EXECUTION_ENVIRONMENT = String(
   (Constants as { executionEnvironment?: unknown })?.executionEnvironment || "unknown"
@@ -671,19 +671,15 @@ export default function App() {
   const [runnerUrl, setRunnerUrl] = useState(DEFAULT_RUNNER_URL);
   const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
-  const [codexWsUrl, setCodexWsUrl] = useState(DEFAULT_CODEX_WS_URL);
-  const [codexWsToken, setCodexWsToken] = useState("");
+  const codexWsUrl = suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
   const [runnerToken, setRunnerToken] = useState("");
-  const effectiveCodexWsToken = codexWsToken.trim() || runnerToken.trim();
   const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
-    bootstrapReady: false, url: codexWsUrl, token: effectiveCodexWsToken,
+    bootstrapReady: false, url: codexWsUrl, token: runnerToken,
   }));
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
   const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
-  const [cloudflareRunnerWsUrl, setCloudflareRunnerWsUrl] = useState("");
   const [localRunnerUrl, setLocalRunnerUrl] = useState("");
-  const [localRunnerWsUrl, setLocalRunnerWsUrl] = useState("");
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -878,7 +874,6 @@ export default function App() {
     openDirectoryExplorer: primeDirectoryExplorer,
   } = useLlmSessionExplorer({
     codexWsUrl,
-    codexWsToken: effectiveCodexWsToken,
     runnerToken,
     auxServerBaseUrl,
     getRunnerHttpAuth,
@@ -1021,14 +1016,10 @@ export default function App() {
   const runnerRouteSelection = useRunnerRouteSelection({
     enabled: settingsLoaded,
     localRunnerUrl,
-    localRunnerWsUrl,
     cloudflareRunnerUrl,
-    cloudflareRunnerWsUrl,
     runnerToken,
     runnerUrl,
-    codexWsUrl,
     setRunnerUrl,
-    setCodexWsUrl,
   });
   const autoRecordingEnabledRef = useRef(false);
   const autoRecordingPanelIdRef = useRef("");
@@ -3893,7 +3884,7 @@ export default function App() {
     llmRequestStartedAtRef,
     reply,
     codexWsUrl,
-    codexWsToken: effectiveCodexWsToken,
+    runnerToken,
     runnerWebSocketManager,
     logSessionDiag,
     waitingApprovalResumePendingSessionIdRef,
@@ -4443,9 +4434,7 @@ export default function App() {
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
     cloudflareRunnerUrl,
-    cloudflareRunnerWsUrl,
     localRunnerUrl,
-    localRunnerWsUrl,
     llmBackend,
     setLlmBackend,
     llmDirectory,
@@ -4455,8 +4444,6 @@ export default function App() {
     expandedDirectoryIds,
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,
-    codexWsUrl,
-    codexWsToken,
     modelRef,
     reasoningEffort,
     codexApprovalPolicy,
@@ -4478,9 +4465,7 @@ export default function App() {
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
-    setCloudflareRunnerWsUrl,
     setLocalRunnerUrl,
-    setLocalRunnerWsUrl,
     setLlmDirectory,
     setRegisteredDirectories,
     setSessionTitleOverridesById,
@@ -4491,8 +4476,6 @@ export default function App() {
     selectedLlmSessionIdRef,
     llmConversationSessionIdRef,
     rememberKnownCodexThreadId,
-    setCodexWsUrl,
-    setCodexWsToken,
     setModelRef,
     setReasoningEffort,
     setCodexApprovalPolicy,
@@ -5079,7 +5062,7 @@ export default function App() {
     try {
       const result = await cancelRunnerCodexQueuedTurn({
         wsUrl: codexWsUrl.trim(),
-        wsToken: effectiveCodexWsToken,
+        wsToken: runnerToken,
         queuedTurnId,
       });
       appendSlashCommandResult(
@@ -5099,7 +5082,7 @@ export default function App() {
       );
     }
     return true;
-  }, [appendSlashCommandResult, effectiveCodexWsToken, codexWsUrl]);
+  }, [appendSlashCommandResult, codexWsUrl, runnerToken]);
   const cancelCodexQueuedTurnForMessage = useCallback(async (params: {
     queuedTurnId: string;
     messageId: string;
@@ -5112,7 +5095,7 @@ export default function App() {
     try {
       const result = await cancelRunnerCodexQueuedTurn({
         wsUrl: codexWsUrl.trim(),
-        wsToken: effectiveCodexWsToken,
+        wsToken: runnerToken,
         queuedTurnId,
       });
       const rawStatus = String(result.queuedTurn.status || "").trim();
@@ -5147,14 +5130,14 @@ export default function App() {
       showChatBottomToast("assistant", `queueキャンセルに失敗しました: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [
-    effectiveCodexWsToken,
     codexWsUrl,
     logSessionDiag,
+    runnerToken,
     showChatBottomToast,
   ]);
   const { runSlashCompactCommand } = useSlashCompactCommandController({
     codexWsUrl,
-    codexWsToken: effectiveCodexWsToken,
+    runnerToken,
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     runnerWebSocketManager,
     llmBackend,
@@ -5213,7 +5196,7 @@ export default function App() {
   >({
     transcript,
     codexWsUrl,
-    codexWsToken: effectiveCodexWsToken,
+    runnerToken,
     runnerWebSocketManager,
     llmBackend,
     modelOptions,
@@ -5494,8 +5477,6 @@ export default function App() {
     openSkiaBoardScreen,
     changeRunnerUrl,
     changeLlmDirectory,
-    changeCodexWsUrl,
-    changeCodexWsToken,
     changeRunnerToken,
     clearCloudflareAccessCredentials,
     applyCloudflareRunnerPairing,
@@ -5545,15 +5526,11 @@ export default function App() {
     setActiveScreen,
     setRunnerUrl,
     selectLlmDirectory,
-    setCodexWsUrl,
-    setCodexWsToken,
     setRunnerToken,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
-    setCloudflareRunnerWsUrl,
     setLocalRunnerUrl,
-    setLocalRunnerWsUrl,
     setCodexApprovalPolicy,
     setModelSelectOpen,
     setThinkSelectOpen,
@@ -5643,15 +5620,11 @@ export default function App() {
     runnerUrl,
     llmBackend,
     llmDirectory,
-    codexWsUrl,
-    codexWsToken,
     runnerToken,
     cloudflareAccessClientId,
     cloudflareAccessEnabled,
     cloudflareRunnerUrl,
-    cloudflareRunnerWsUrl,
     localRunnerUrl,
-    localRunnerWsUrl,
     codexApprovalPolicy,
     selectedModelLabel,
     modelRef,
@@ -5676,8 +5649,6 @@ export default function App() {
     toolAutoApprovalRuleCount: Object.keys(toolAutoApprovalMap).length,
     changeRunnerUrl,
     changeLlmDirectory,
-    changeCodexWsUrl,
-    changeCodexWsToken,
     changeRunnerToken,
     clearCloudflareAccessCredentials,
     applyCloudflareRunnerPairing,
@@ -5907,7 +5878,7 @@ export default function App() {
     settingsLoaded,
     selectedSessionId: selectedLlmSessionId,
     codexWsUrl,
-    codexWsToken: effectiveCodexWsToken,
+    runnerToken,
     backendId: llmBackend,
     runnerWebSocketManager,
     resolveBackendId: (sessionId) => (
@@ -7107,7 +7078,7 @@ export default function App() {
       <RunnerWebSocketProvider
         bootstrapReady={settingsLoaded}
         url={codexWsUrl}
-        token={effectiveCodexWsToken}
+        token={runnerToken}
         cloudflareRunnerUrl={effectiveCloudflareRunnerUrl}
         cloudflareAccessClientId={cloudflareAccessClientId}
         cloudflareAccessClientSecret={cloudflareAccessClientSecret}

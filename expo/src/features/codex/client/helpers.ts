@@ -17,23 +17,10 @@ export function toErrorMessage(error: unknown) {
 }
 
 export function normalizeCodexWsInputs(wsUrlRaw: unknown, wsTokenRaw: unknown) {
-  const compactUrl = String(wsUrlRaw || "").replace(/\s+/g, "").trim();
-  let wsUrl = compactUrl;
-  let wsToken = String(wsTokenRaw || "").trim();
-  try {
-    const parsed = new URL(compactUrl);
-    for (const key of Array.from(parsed.searchParams.keys())) {
-      if (key.toLowerCase() !== "token") continue;
-      if (!wsToken) {
-        wsToken = String(parsed.searchParams.get(key) || "").trim();
-      }
-      parsed.searchParams.delete(key);
-    }
-    wsUrl = parsed.toString();
-  } catch {
-    // keep compactUrl as-is
-  }
-  return { wsUrl, wsToken };
+  return {
+    wsUrl: String(wsUrlRaw || "").replace(/\s+/g, "").trim(),
+    wsToken: String(wsTokenRaw || "").trim(),
+  };
 }
 
 export function deriveReadyzUrlFromWsUrl(wsUrl: string): string | null {

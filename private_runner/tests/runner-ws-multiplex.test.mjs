@@ -220,7 +220,7 @@ test("runner-ws LLM identity index keeps exact pre-turn pairs recoverable after 
 test("pending approvals suspend detached cleanup until the final response is forwarded", () => {
   const sent = [];
   const relay = __TESTING__.createCodexRelayContext({
-    endpoint: "/codex-ws",
+    endpoint: "/runner-ws",
     remote: "test",
     upstreamUrl: "ws://upstream.test",
     upstreamWs: { readyState: 1, send(data) { sent.push(String(data)); }, close() {} },
@@ -250,12 +250,12 @@ test("duplicate thread cleanup preserves the pending relay and rejects the new d
   const upstream = () => ({ readyState: 1, send() {}, close() {} });
   const duplicateMessages = [];
   const canonical = __TESTING__.createCodexRelayContext({
-    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+    endpoint: "/runner-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
   });
   canonical.threadId = "thread-pending-canonical";
   canonical.pendingApprovalRequestIds.add(7);
   const duplicate = __TESTING__.createCodexRelayContext({
-    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+    endpoint: "/runner-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
   });
   duplicate.threadId = canonical.threadId;
   duplicate.clients.add({
@@ -277,7 +277,7 @@ test("duplicate thread cleanup preserves the pending relay and rejects the new d
 test("duplicate thread cleanup preserves a detached active relay", () => {
   const upstream = () => ({ readyState: 1, send() {}, close() {} });
   const active = __TESTING__.createCodexRelayContext({
-    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+    endpoint: "/runner-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
   });
   active.threadId = "thread-active-canonical";
   active.turnStarted = true;
@@ -287,7 +287,7 @@ test("duplicate thread cleanup preserves a detached active relay", () => {
     kind: "turn",
   };
   const duplicate = __TESTING__.createCodexRelayContext({
-    endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
+    endpoint: "/runner-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: upstream(),
   });
   duplicate.threadId = active.threadId;
 
@@ -309,7 +309,7 @@ test("relay admission is a hard cap when every relay is connected or approval-pr
       try {
         __TESTING__.ensureCodexRelayCapacity();
         const relay = __TESTING__.createCodexRelayContext({
-          endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: makeUpstream(),
+          endpoint: "/runner-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: makeUpstream(),
         });
         if (created.length === 0) relay.pendingApprovalRequestIds.add(1);
         else relay.clients.add({ readyState: 1, send() {} });
@@ -333,7 +333,7 @@ test("relay admission evicts only the oldest eligible relay from a mixed set", (
   const makeUpstream = () => ({ readyState: 1, send() {}, close() {} });
   const create = (updatedAtMs) => {
     const relay = __TESTING__.createCodexRelayContext({
-      endpoint: "/codex-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: makeUpstream(),
+      endpoint: "/runner-ws", remote: "test", upstreamUrl: "ws://upstream.test", upstreamWs: makeUpstream(),
     });
     relay.updatedAtMs = updatedAtMs;
     created.push(relay);

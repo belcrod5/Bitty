@@ -38,6 +38,7 @@ import {
   encodeRunnerWsLlmRpc,
   encodeRunnerWsRelayResume,
   isRunnerWsUrl,
+  parseRunnerWsRelayControlMessage,
   parseRunnerWsLlmRpcAck,
   parseRunnerWsEnvelope,
   normalizeRunnerWsIncomingCodexRpc,
@@ -45,10 +46,6 @@ import {
 import type {
   RunnerWsMessage,
 } from "../../runnerWs/types";
-import {
-  buildRunnerRelayResumeWsUrl,
-  parseRunnerRelayControlMessage,
-} from "./runnerRelayControl";
 import { reserveRunnerWsReconnectDelay } from "./runnerWsReconnectGate";
 import {
   buildCodexRunnerWsRequestId,
@@ -110,7 +107,6 @@ function startCodexAppServerRawTurn(
   const wsUrl = normalized.wsUrl;
   const runnerWebSocketManager = options.runnerWebSocketManager;
   const useRunnerWsManager = Boolean(runnerWebSocketManager);
-  const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
   const inputText = String(options.inputText || "").trim();
   const wsToken = normalized.wsToken;
   const cwd = String(options.cwd || "").trim();
@@ -123,6 +119,7 @@ function startCodexAppServerRawTurn(
     ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
     : NEAR_UNLIMITED_TIMEOUT_MS;
   if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
+  if (!isRunnerWsUrl(wsUrl)) throw new Error("Codex WebSocket URL must use /runner-ws");
   if (!inputText) throw new Error("inputText is empty");
   if (typeof options.onApprovalRequest !== "function") {
     throw new Error("onApprovalRequest is required");
@@ -307,16 +304,13 @@ function startCodexAppServerRawTurn(
     }
     const id = Number(payload.id);
     const method = String(payload.method || "");
-    let runnerRequestId = "";
-    if (useRunnerWsEnvelope) {
-      runnerWsEnvelopeSeq += 1;
-      runnerRequestId = buildCodexRunnerWsRequestId(
-        traceId || runnerWsOperationId,
-        runnerWsEnvelopeSeq,
-        method,
-        id
-      );
-    }
+    runnerWsEnvelopeSeq += 1;
+    const runnerRequestId = buildCodexRunnerWsRequestId(
+      traceId || runnerWsOperationId,
+      runnerWsEnvelopeSeq,
+      method,
+      id
+    );
     if (useRunnerWsManager && runnerWebSocketManager) {
       const outboundPayload = runnerWsRpcIds.rewriteOutbound(payload);
       const message: RunnerWsMessage = {
@@ -331,13 +325,11 @@ function startCodexAppServerRawTurn(
       runnerWebSocketManager.send(message);
     } else {
       if (!ws) throw new Error("Codex app-server WebSocket is not initialized");
-      ws.send(useRunnerWsEnvelope
-        ? encodeRunnerWsLlmRpc(payload, activeThreadId, {
-          requestId: runnerRequestId || undefined,
-          operationId: runnerWsOperationId,
-          sessionId: runnerWsSessionId,
-        })
-        : JSON.stringify(payload));
+      ws.send(encodeRunnerWsLlmRpc(payload, activeThreadId, {
+        requestId: runnerRequestId,
+        operationId: runnerWsOperationId,
+        sessionId: runnerWsSessionId,
+      }));
     }
     if (Number.isInteger(id)) sentPendingRpcIds.add(id);
     if (method === "turn/start") turnStartIssued = true;
@@ -732,7 +724,7 @@ function startCodexAppServerRawTurn(
   }
 
   function maybeHandleRunnerRelayControl(rawData: string) {
-    const control = parseRunnerRelayControlMessage(rawData);
+    const control = parseRunnerWsRelayControlMessage(rawData);
     if (!control) return false;
     if (typeof control.seq === "number") {
       lastRelaySeq = Math.max(lastRelaySeq, control.seq);
@@ -839,9 +831,7 @@ function startCodexAppServerRawTurn(
       }
       reconnectAttempts += 1;
       const attempt = reconnectAttempts;
-      const resumeWsUrl = useRunnerWsEnvelope
-        ? wsUrl
-        : buildRunnerRelayResumeWsUrl(wsUrl, activeThreadId, lastRelaySeq);
+      const resumeWsUrl = wsUrl;
       const reconnectDelayMs = reserveRunnerWsReconnectDelay(resumeWsUrl, {
         minSpacingMs: Math.min(5000, 1000 * attempt),
         jitterMs: 500,
@@ -1140,7 +1130,7 @@ function startCodexAppServerRawTurn(
       rawData: string,
       failIfActive: (error: Error) => void
     ) => {
-      const runnerWsEnvelope = useRunnerWsEnvelope ? parseRunnerWsEnvelope(rawData) : null;
+      const runnerWsEnvelope = parseRunnerWsEnvelope(rawData);
       const isRelayedLlmRpc = runnerWsEnvelope?.channel === "llm" && runnerWsEnvelope.op === "rpc";
       if (typeof runnerWsEnvelope?.seq === "number") {
         const seq = Math.max(0, Math.floor(runnerWsEnvelope.seq));
@@ -1271,20 +1261,18 @@ function startCodexAppServerRawTurn(
           readyState: socket.readyState,
         });
         if (currentMode === "resume") {
-          if (useRunnerWsEnvelope) {
-            try {
-              socket.send(encodeRunnerWsRelayResume(activeThreadId, lastRelaySeq));
-            } catch (error) {
-              const detail = toErrorMessage(error);
-              emitLog({
-                stage: "ws_resume_send_error",
-                message: detail,
-                readyState: socket.readyState,
-              });
-              if (tryReconnectViaRunnerRelay("ws_resume_send_error", detail)) return;
-              failIfActive(error instanceof Error ? error : new Error(detail));
-              return;
-            }
+          try {
+            socket.send(encodeRunnerWsRelayResume(activeThreadId, lastRelaySeq));
+          } catch (error) {
+            const detail = toErrorMessage(error);
+            emitLog({
+              stage: "ws_resume_send_error",
+              message: detail,
+              readyState: socket.readyState,
+            });
+            if (tryReconnectViaRunnerRelay("ws_resume_send_error", detail)) return;
+            failIfActive(error instanceof Error ? error : new Error(detail));
+            return;
           }
           if (interruptRequested) {
             sendTurnInterruptIfPossible();

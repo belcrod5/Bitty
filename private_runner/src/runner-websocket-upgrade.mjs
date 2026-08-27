@@ -15,7 +15,6 @@ function bearerToken(req) {
 
 function routeFor(pathname, runnerWsPath) {
   if (pathname === runnerWsPath) return "runner-ws";
-  if (pathname === "/codex-ws") return "codex-ws-proxy";
   if (pathname === "/stream-tts") return "stream-tts";
   return "unsupported-ws";
 }
@@ -34,7 +33,6 @@ export function installRunnerWebSocketUpgradeHandler({
   runnerWsPath,
   runnerWsServer,
   streamTtsWsServer,
-  codexProxyWsServer,
   appendDebug,
   logRequests = false,
 }) {
@@ -88,9 +86,7 @@ export function installRunnerWebSocketUpgradeHandler({
     }
 
     void appendDebug("upgrade_accepted", { remoteAddress, endpoint, route });
-    const wsServer = route === "runner-ws"
-      ? runnerWsServer
-      : (route === "codex-ws-proxy" ? codexProxyWsServer : streamTtsWsServer);
+    const wsServer = route === "runner-ws" ? runnerWsServer : streamTtsWsServer;
     wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit("connection", ws, req));
   });
 }

@@ -70,6 +70,7 @@ import {
 } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
+import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
@@ -173,7 +174,6 @@ export function ChatScreen({
     modelOptions,
     modelRef,
     llmBackend,
-    codexWsUrl,
     thinkOptions,
     selectModel,
     selectThinkOption,
@@ -576,11 +576,12 @@ export function ChatScreen({
   const showComposerFullscreenToggleForView = usesPanelComposerState
     ? panelComposerFocused
     : showComposerFullscreenToggle;
+  const hasRunnerWsEndpoint = !!suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
   const baseCanSendForView = usesPanelComposerState
-    ? hasComposerTextForView && !replyLoadingForView && !llmSessionRestoreLoadingForView && !!String(codexWsUrl || "").trim()
+    ? hasComposerTextForView && !replyLoadingForView && !llmSessionRestoreLoadingForView && hasRunnerWsEndpoint
     : canSend;
   const canSendForView = codexCompactRunningForView
-    ? hasComposerTextForView && !llmSessionRestoreLoadingForView && !!String(codexWsUrl || "").trim()
+    ? hasComposerTextForView && !llmSessionRestoreLoadingForView && hasRunnerWsEndpoint
     : baseCanSendForView;
   const selectedSessionExecutionFactForView = useMemo(() => {
     if (!isMiniBoardPopupMode) return selectedSessionExecutionFact;
@@ -2387,6 +2388,7 @@ export function ChatScreen({
                       style={[styles.chatIconButton, styles.chatRecordIconButton, disabled && styles.buttonDisabled]}
                       onPress={onPress}
                       disabled={disabled}
+                      testID="chat-composer-action"
                     >
                       <Ionicons name={iconName as keyof typeof Ionicons.glyphMap} size={18} color="#ffffff" />
                     </TouchableOpacity>

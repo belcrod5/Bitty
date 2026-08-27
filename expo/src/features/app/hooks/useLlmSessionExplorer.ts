@@ -135,7 +135,6 @@ type LlmSessionHistoryResult = {
 
 type UseLlmSessionExplorerOptions = {
   codexWsUrl: string;
-  codexWsToken: string;
   runnerToken: string;
   auxServerBaseUrl: () => string;
   // Waits for the settings bootstrap, then returns the live runner HTTP
@@ -281,7 +280,6 @@ export function buildLlmSessionHistoryEntry(
 export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
   const {
     codexWsUrl,
-    codexWsToken,
     runnerToken,
     auxServerBaseUrl,
     getRunnerHttpAuth,
@@ -601,7 +599,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const livePromise = !cursor && options?.skipLiveState !== true && targetCodexWsUrl
       ? readCodexAppServerThread({
         wsUrl: targetCodexWsUrl,
-        wsToken: codexWsToken.trim(),
+        wsToken: runnerToken.trim(),
         threadId: sessionId,
         timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
         runnerWebSocketManager,
@@ -722,7 +720,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         : {}),
     };
   }, [
-    codexWsToken,
+    runnerToken,
     codexWsUrl,
     emitSessionDiag,
     fetchTextWithTimeout,
@@ -743,7 +741,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     if (!targetCodexWsUrl) return null;
     const listed = await listCodexAppServerThreads({
       wsUrl: targetCodexWsUrl,
-      wsToken: codexWsToken.trim(),
+      wsToken: runnerToken.trim(),
       cwd: directory,
       limit: 1,
       sourceKinds: [...MAIN_THREAD_SOURCE_KINDS],
@@ -759,7 +757,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sessionId,
       backendId: String(latest?.backendId || "codex").trim() || "codex",
     };
-  }, [codexWsToken, codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, rawFallbackBackendId, runnerWebSocketManager]);
+  }, [codexWsUrl, nearUnlimitedTimeoutMs, normalizedLlmDirectoryForRequest, rawFallbackBackendId, runnerToken, runnerWebSocketManager]);
 
   const loadDirectoryExplorer = useCallback(async (pathRaw?: unknown) => {
     const targetLlmUrl = auxServerBaseUrl();
@@ -867,7 +865,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     });
     const listed = await listCodexAppServerThreads({
       wsUrl: targetCodexWsUrl,
-      wsToken: codexWsToken.trim(),
+      wsToken: runnerToken.trim(),
       cwd: directory,
       limit,
       cursor,
@@ -916,7 +914,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       nextCursor: String(listed.nextCursor || "").trim(),
     };
   }, [
-    codexWsToken,
+    runnerToken,
     codexWsUrl,
     emitSessionDiag,
     fetchRunnerSessionSnapshotMap,
@@ -962,7 +960,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     while (true) {
       const listed = await listCodexAppServerThreads({
         wsUrl: targetCodexWsUrl,
-        wsToken: codexWsToken.trim(),
+        wsToken: runnerToken.trim(),
         cwd: directory,
         limit,
         cursor,
@@ -1019,7 +1017,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       sessions.filter((session) => session.parentSessionId === parentSessionId),
     ]));
   }, [
-    codexWsToken,
+    runnerToken,
     codexWsUrl,
     emitSessionDiag,
     fetchRunnerSessionSnapshotMap,

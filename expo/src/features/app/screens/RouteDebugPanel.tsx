@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import * as Clipboard from "../clipboard";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 
 type RouteDebugProbe = {
   label: string;
@@ -16,12 +17,11 @@ type RouteDebugState = {
   selectedRoute: string;
   diagnosis: string;
   currentRunnerUrl: string;
-  currentCodexWsUrl: string;
+  currentWsEndpoint: string;
   localRunnerUrl: string;
-  localRunnerWsUrl: string;
+  localWsCandidate: string;
   cloudflareRunnerUrl: string;
   runnerTokenStatus: string;
-  codexWsTokenStatus: string;
   probes: RouteDebugProbe[];
 };
 
@@ -138,12 +138,11 @@ function buildRouteDebugReport(params: {
   lines.push(`Route Debug selected: ${routeDebug.selectedRoute}`);
   lines.push(`checked: ${routeDebug.checkedAt}`);
   lines.push(`current runnerUrl: ${routeDebug.currentRunnerUrl || "-"}`);
-  lines.push(`current codexWsUrl: ${routeDebug.currentCodexWsUrl || "-"}`);
+  lines.push(`current runner ws endpoint: ${routeDebug.currentWsEndpoint || "-"}`);
   lines.push(`local candidate: ${routeDebug.localRunnerUrl || "-"}`);
-  lines.push(`local ws candidate: ${routeDebug.localRunnerWsUrl || "-"}`);
+  lines.push(`local ws candidate: ${routeDebug.localWsCandidate || "-"}`);
   lines.push(`cloudflare candidate: ${routeDebug.cloudflareRunnerUrl || "-"}`);
   lines.push(`runnerToken: ${routeDebug.runnerTokenStatus}`);
-  lines.push(`codexWsToken: ${routeDebug.codexWsTokenStatus}`);
   if (routeDebug.diagnosis) lines.push(`diagnosis: ${routeDebug.diagnosis}`);
   for (const probe of routeDebug.probes) {
     lines.push(`${probe.ok ? "OK" : "NG"} ${probe.label}: ${probe.status}`);
@@ -198,12 +197,9 @@ export function RouteDebugPanel({
 }: RouteDebugPanelProps) {
   const {
     runnerUrl,
-    codexWsUrl,
-    codexWsToken,
     runnerToken,
     cloudflareRunnerUrl,
     localRunnerUrl,
-    localRunnerWsUrl,
   } = useAppSettings();
   const [showDetails, setShowDetails] = useState(false);
   const [routeDebug, setRouteDebug] = useState<RouteDebugState | null>(null);
@@ -252,18 +248,17 @@ export function RouteDebugPanel({
         selectedRoute,
         diagnosis: routeDiagnosis(localUrl, cloudflareUrl, selectedRoute),
         currentRunnerUrl,
-        currentCodexWsUrl: String(codexWsUrl || "").trim(),
+        currentWsEndpoint: suggestRunnerWsUrlFromRunnerUrl(currentRunnerUrl),
         localRunnerUrl: localUrl,
-        localRunnerWsUrl: String(localRunnerWsUrl || "").trim(),
+        localWsCandidate: suggestRunnerWsUrlFromRunnerUrl(localUrl),
         cloudflareRunnerUrl: cloudflareUrl,
         runnerTokenStatus: tokenStatus(runnerToken),
-        codexWsTokenStatus: tokenStatus(codexWsToken),
         probes,
       });
     } finally {
       setRouteDebugLoading(false);
     }
-  }, [cloudflareRunnerUrl, codexWsToken, codexWsUrl, localRunnerUrl, localRunnerWsUrl, runnerToken, runnerUrl]);
+  }, [cloudflareRunnerUrl, localRunnerUrl, runnerToken, runnerUrl]);
 
   useEffect(() => {
     if (!showDetails) return;
@@ -313,12 +308,11 @@ export function RouteDebugPanel({
               <Text style={styles.meta}>selected: {routeDebug.selectedRoute}</Text>
               <Text style={styles.meta}>checked: {exactJapanTime(routeDebug.checkedAt)}</Text>
               <Text style={styles.meta}>current runnerUrl: {routeDebug.currentRunnerUrl || "-"}</Text>
-              <Text style={styles.meta}>current codexWsUrl: {routeDebug.currentCodexWsUrl || "-"}</Text>
+              <Text style={styles.meta}>current runner ws endpoint: {routeDebug.currentWsEndpoint || "-"}</Text>
               <Text style={styles.meta}>local candidate: {routeDebug.localRunnerUrl || "-"}</Text>
-              <Text style={styles.meta}>local ws candidate: {routeDebug.localRunnerWsUrl || "-"}</Text>
+              <Text style={styles.meta}>local ws candidate: {routeDebug.localWsCandidate || "-"}</Text>
               <Text style={styles.meta}>cloudflare candidate: {routeDebug.cloudflareRunnerUrl || "-"}</Text>
               <Text style={styles.meta}>runnerToken: {routeDebug.runnerTokenStatus}</Text>
-              <Text style={styles.meta}>codexWsToken: {routeDebug.codexWsTokenStatus}</Text>
               {lastPairingLocalRunnerUrl !== null ? (
                 <Text style={styles.meta}>last pairing localRunnerUrl: {lastPairingLocalRunnerUrl || "-"}</Text>
               ) : null}

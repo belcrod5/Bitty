@@ -51,7 +51,7 @@ function createHarness() {
   const options = {
     transcript: "",
     codexWsUrl: "ws://127.0.0.1:8788/runner-ws",
-    codexWsToken: "",
+    runnerToken: "",
     modelRef: "",
     reasoningEffort: "medium",
     codexApprovalPolicy: "never",
@@ -186,7 +186,7 @@ function createOptions() {
   const options = {
     transcript: "",
     codexWsUrl: "ws://127.0.0.1:8788/codex",
-    codexWsToken: "",
+    runnerToken: "",
     modelRef: "gpt-5",
     reasoningEffort: "medium" as const,
     codexApprovalPolicy: "untrusted" as never,

@@ -66,7 +66,7 @@ type UseCodexRelayObserverStartControllerArgs = {
   llmRequestStartedAtRef: MutableRefObject<number>;
   reply: string;
   codexWsUrl: string;
-  codexWsToken: string;
+  runnerToken: string;
   runnerWebSocketManager?: RunnerWebSocketManager;
   logSessionDiag: (
     event: string,
@@ -176,7 +176,7 @@ export function useCodexRelayObserverStartController({
   llmRequestStartedAtRef,
   reply,
   codexWsUrl,
-  codexWsToken,
+  runnerToken,
   runnerWebSocketManager,
   logSessionDiag,
   waitingApprovalResumePendingSessionIdRef,
@@ -569,7 +569,7 @@ export function useCodexRelayObserverStartController({
     try {
       const observer = startCodexAppServerTurnRelayObserver({
         wsUrl: codexWsUrl.trim(),
-        wsToken: codexWsToken.trim(),
+        wsToken: runnerToken.trim(),
         runnerWebSocketManager,
         backendId: options?.agentBackendId,
         preferNeutralAgent: Boolean(options?.agentBackendId),
@@ -921,7 +921,7 @@ export function useCodexRelayObserverStartController({
     codexRelayObserverStartedAtMsByThreadRef,
     codexRelayWatermarkByThreadRef,
     onRelayWatermarkGap,
-    codexWsToken,
+    runnerToken,
     codexWsUrl,
     runnerWebSocketManager,
     finishWaitingApprovalResumeAttempt,

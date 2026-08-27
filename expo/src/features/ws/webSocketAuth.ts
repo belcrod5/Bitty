@@ -59,7 +59,7 @@ function buildWebSocketHeaders(
 
 function isRunnerWebSocketUrl(url: string) {
   try {
-    return ["/runner-ws", "/codex-ws", "/stream-tts"].includes(new URL(url).pathname);
+    return ["/runner-ws", "/stream-tts"].includes(new URL(url).pathname);
   } catch {
     return false;
   }

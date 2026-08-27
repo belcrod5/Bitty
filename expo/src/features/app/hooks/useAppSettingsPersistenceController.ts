@@ -15,7 +15,6 @@ import {
 } from "../utils/audioConfig";
 import { parseOptionalSessionId } from "../utils/llmSession";
 import { parseCodexApprovalPolicy, parseLlmDirectory, parseModelRef, parseReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
-import { suggestRunnerUrlFromCodexWsUrl } from "../utils/urlResolvers";
 import type { LlmBackend } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import {
@@ -23,15 +22,11 @@ import {
   saveSecureRunnerCredentials,
   type SecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
-import { normalizeCodexWsInputs } from "../../codex/client/helpers";
 import {
   mutatePersistedSettings,
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
 } from "../utils/persistedSettingsFile";
-
-const LEGACY_DEFAULT_CODEX_WS_URL = "ws://127.0.0.1:8788/codex-ws";
-const DEFAULT_RUNNER_WS_URL = "ws://127.0.0.1:8788/runner-ws";
 
 type UseAppSettingsPersistenceControllerArgs = {
   settingsLoaded: boolean;
@@ -47,9 +42,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   cloudflareAccessClientId: string;
   cloudflareAccessClientSecret: string;
   cloudflareRunnerUrl: string;
-  cloudflareRunnerWsUrl: string;
   localRunnerUrl: string;
-  localRunnerWsUrl: string;
   llmBackend: LlmBackend;
   llmDirectory: string;
   registeredDirectories: RegisteredDirectoryEntry[];
@@ -58,8 +51,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   expandedDirectoryIds: string[];
   selectedLlmSessionId: string;
   selectedLlmSessionMaterialized: boolean;
-  codexWsUrl: string;
-  codexWsToken: string;
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
@@ -81,9 +72,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
-  setCloudflareRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
-  setLocalRunnerWsUrl: Dispatch<SetStateAction<string>>;
   setLlmBackend: Dispatch<SetStateAction<LlmBackend>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
@@ -95,8 +84,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   selectedLlmSessionIdRef: MutableRefObject<string>;
   llmConversationSessionIdRef: MutableRefObject<string>;
   rememberKnownCodexThreadId: (sessionIdRaw: unknown) => void;
-  setCodexWsUrl: Dispatch<SetStateAction<string>>;
-  setCodexWsToken: Dispatch<SetStateAction<string>>;
   setModelRef: Dispatch<SetStateAction<string>>;
   setReasoningEffort: Dispatch<SetStateAction<ReasoningEffort>>;
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
@@ -133,9 +120,7 @@ export function useAppSettingsPersistenceController({
   cloudflareAccessClientId,
   cloudflareAccessClientSecret,
   cloudflareRunnerUrl,
-  cloudflareRunnerWsUrl,
   localRunnerUrl,
-  localRunnerWsUrl,
   llmBackend,
   llmDirectory,
   registeredDirectories,
@@ -144,8 +129,6 @@ export function useAppSettingsPersistenceController({
   expandedDirectoryIds,
   selectedLlmSessionId,
   selectedLlmSessionMaterialized,
-  codexWsUrl,
-  codexWsToken,
   modelRef,
   reasoningEffort,
   codexApprovalPolicy,
@@ -167,9 +150,7 @@ export function useAppSettingsPersistenceController({
   setCloudflareAccessClientId,
   setCloudflareAccessClientSecret,
   setCloudflareRunnerUrl,
-  setCloudflareRunnerWsUrl,
   setLocalRunnerUrl,
-  setLocalRunnerWsUrl,
   setLlmBackend,
   setLlmDirectory,
   setRegisteredDirectories,
@@ -181,8 +162,6 @@ export function useAppSettingsPersistenceController({
   selectedLlmSessionIdRef,
   llmConversationSessionIdRef,
   rememberKnownCodexThreadId,
-  setCodexWsUrl,
-  setCodexWsToken,
   setModelRef,
   setReasoningEffort,
   setCodexApprovalPolicy,
@@ -226,12 +205,9 @@ export function useAppSettingsPersistenceController({
       setter((current) => keepExistingValues && String(current || "").trim() ? current : value);
     };
     applyValue(setRunnerToken, secureCredentials.runnerToken);
-    if (secureCredentials.runnerToken) {
-      setCodexWsToken((current) => String(current || "").trim() ? current : secureCredentials.runnerToken);
-    }
     applyValue(setCloudflareAccessClientId, secureCredentials.cloudflareAccessClientId);
     applyValue(setCloudflareAccessClientSecret, secureCredentials.cloudflareAccessClientSecret);
-  }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret, setCodexWsToken, setRunnerToken]);
+  }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret, setRunnerToken]);
 
   const settingsPath = useCallback(() => {
     const baseDir = FileSystem.documentDirectory;
@@ -243,9 +219,7 @@ export function useAppSettingsPersistenceController({
     return {
       runnerUrl,
       cloudflareRunnerUrl,
-      cloudflareRunnerWsUrl,
       localRunnerUrl,
-      localRunnerWsUrl,
       llmBackend,
       llmDirectory,
       registeredDirectories,
@@ -256,8 +230,6 @@ export function useAppSettingsPersistenceController({
       },
       selectedLlmSessionId,
       selectedLlmSessionMaterialized,
-      codexWsUrl,
-      codexWsToken: codexWsToken.trim() === runnerToken.trim() ? "" : codexWsToken,
       modelRef,
       reasoningEffort,
       codexApprovalPolicy,
@@ -285,16 +257,12 @@ export function useAppSettingsPersistenceController({
     autoTranscribeOnStop,
     faceIdRequiredForApproval,
     cloudflareRunnerUrl,
-    cloudflareRunnerWsUrl,
     codexApprovalPolicy,
-    codexWsToken,
-    codexWsUrl,
     expandedDirectoryIds,
     faceTrackingEnabled,
     llmBackend,
     llmDirectory,
     localRunnerUrl,
-    localRunnerWsUrl,
     modelRef,
     reasoningEffort,
     recordingQualityPreset,
@@ -302,7 +270,6 @@ export function useAppSettingsPersistenceController({
     registeredDirectories,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
-    runnerToken,
     runnerUrl,
     cloudflareAccessClientId,
     cloudflareAccessClientSecret,
@@ -314,33 +281,13 @@ export function useAppSettingsPersistenceController({
     ttsSpeed,
   ]);
 
-  const applyPersistedSettings = useCallback((
-    parsed: Record<string, unknown>,
-    { restoreCredentials = true }: { restoreCredentials?: boolean } = {}
-  ) => {
-    let savedRunnerUrl = String(parsed.runnerUrl || "").trim();
-    let savedRunnerToken = String(parsed.runnerToken || "").trim();
+  const applyPersistedSettings = useCallback((parsed: Record<string, unknown>) => {
+    const savedRunnerUrl = String(parsed.runnerUrl || "").trim();
+    const savedRunnerToken = String(parsed.runnerToken || "").trim();
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
     const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
     const savedCloudflareRunnerUrl = String(parsed.cloudflareRunnerUrl || parsed.tunnelRunnerUrl || "").trim();
-    const savedCloudflareRunnerWsUrl = String(parsed.cloudflareRunnerWsUrl || parsed.tunnelRunnerWsUrl || "").trim();
     const savedLocalRunnerUrl = String(parsed.localRunnerUrl || "").trim();
-    const savedLocalRunnerWsUrl = String(parsed.localRunnerWsUrl || "").trim();
-    const savedCodexWsUrlRaw = String(parsed.codexWsUrl || "").trim();
-    const mappedCodexWsUrl = savedCodexWsUrlRaw === LEGACY_DEFAULT_CODEX_WS_URL
-      ? DEFAULT_RUNNER_WS_URL
-      : savedCodexWsUrlRaw;
-    const explicitCodexWsToken = String(parsed.codexWsToken || "").trim();
-    const normalizedCodexWs = normalizeCodexWsInputs(mappedCodexWsUrl, explicitCodexWsToken);
-    const savedCodexWsUrl = normalizedCodexWs.wsUrl;
-    const savedCodexWsToken = explicitCodexWsToken;
-    const legacyQueryToken = explicitCodexWsToken ? "" : normalizedCodexWs.wsToken;
-    if (!savedRunnerUrl && savedCodexWsUrl) {
-      savedRunnerUrl = suggestRunnerUrlFromCodexWsUrl(savedCodexWsUrl);
-    }
-    if (!savedRunnerToken && legacyQueryToken) {
-      savedRunnerToken = legacyQueryToken;
-    }
 
     const savedVoiceIds = {
       ...defaultSelectedVoiceIds,
@@ -366,20 +313,10 @@ export function useAppSettingsPersistenceController({
     } else if (savedRunnerUrl.startsWith("https://")) {
       setCloudflareRunnerUrl(savedRunnerUrl);
     }
-    if (savedCloudflareRunnerWsUrl) {
-      setCloudflareRunnerWsUrl(savedCloudflareRunnerWsUrl);
-    } else if (savedCodexWsUrl.startsWith("wss://")) {
-      setCloudflareRunnerWsUrl(savedCodexWsUrl);
-    }
     if (savedLocalRunnerUrl) {
       setLocalRunnerUrl(savedLocalRunnerUrl);
     } else if (savedRunnerUrl.startsWith("http://") && savedRunnerUrl.includes(".local")) {
       setLocalRunnerUrl(savedRunnerUrl);
-    }
-    if (savedLocalRunnerWsUrl) {
-      setLocalRunnerWsUrl(savedLocalRunnerWsUrl);
-    } else if (savedCodexWsUrl.startsWith("ws://") && savedCodexWsUrl.includes(".local")) {
-      setLocalRunnerWsUrl(savedCodexWsUrl);
     }
     // The runner token lives in SecureStore, not in the settings JSON, so the
     // parsed value is normally empty (only legacy exports carried it). Never
@@ -428,12 +365,6 @@ export function useAppSettingsPersistenceController({
       llmConversationSessionIdRef.current = "";
     }
 
-    if (savedCodexWsUrl) {
-      setCodexWsUrl(savedCodexWsUrl);
-    }
-    if (restoreCredentials) {
-      setCodexWsToken(savedCodexWsToken);
-    }
     setModelRef(parseModelRef(parsed.modelRef, modelOptions, defaultModelRef));
     setReasoningEffort(parseReasoningEffort(parsed.reasoningEffort, defaultReasoningEffort));
     setCodexApprovalPolicy(parseCodexApprovalPolicy(parsed.codexApprovalPolicy));
@@ -493,18 +424,14 @@ export function useAppSettingsPersistenceController({
     setAutoTranscribeOnStop,
     setFaceIdRequiredForApproval,
     setCodexApprovalPolicy,
-    setCodexWsToken,
-    setCodexWsUrl,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
-    setCloudflareRunnerWsUrl,
     setExpandedDirectoryIds,
     setFaceTrackingEnabledWithRef,
     setLlmBackend,
     setLlmDirectory,
     setLocalRunnerUrl,
-    setLocalRunnerWsUrl,
     setModelRef,
     setReasoningEffort,
     setRecordingQualityPreset,
@@ -523,13 +450,9 @@ export function useAppSettingsPersistenceController({
   ]);
 
   const exportSettingsJson = useCallback(async () => {
-    const exportedSettings = {
-      ...buildPersistedSettingsPayload(),
-      codexWsToken: undefined,
-    };
     const payload = {
       exportedAt: new Date().toISOString(),
-      appDefaultSettings: exportedSettings,
+      appDefaultSettings: buildPersistedSettingsPayload(),
     };
     const settingsJson = JSON.stringify(payload, null, 2);
     try {
@@ -569,7 +492,6 @@ export function useAppSettingsPersistenceController({
               const importedSettings = { ...imported };
               for (const field of [
                 "runnerToken",
-                "codexWsToken",
                 "cloudflareAccessClientId",
                 "cloudflareAccessClientSecret",
                 "toolAutoApprovalRules",
@@ -577,10 +499,7 @@ export function useAppSettingsPersistenceController({
               ]) {
                 delete importedSettings[field];
               }
-              if (typeof importedSettings.codexWsUrl === "string") {
-                importedSettings.codexWsUrl = normalizeCodexWsInputs(importedSettings.codexWsUrl, "").wsUrl;
-              }
-              applyPersistedSettings(importedSettings, { restoreCredentials: false });
+              applyPersistedSettings(importedSettings);
               Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
             },
           },

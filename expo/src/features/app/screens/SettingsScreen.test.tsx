@@ -14,7 +14,6 @@ jest.mock("expo-av", () => ({
 const mockOpenSkiaBoardScreen = jest.fn();
 const mockOpenDrawer = jest.fn();
 const mockChangeRunnerUrl = jest.fn();
-const mockChangeCodexWsUrl = jest.fn();
 const mockToggleAutoReplyAfterStt = jest.fn();
 const mockExportSettingsJson = jest.fn();
 const mockSelectTtsProvider = jest.fn();
@@ -31,8 +30,6 @@ const mockSettings = {
   llmDirectory: "/work/bitty",
   llmBackend: "codex",
   modelRef: "gpt-5.5",
-  codexWsUrl: "wss://runner.example.com/codex-ws",
-  codexWsToken: "codex-secret",
   runnerToken: "runner-secret",
   codexApprovalPolicy: "on-request",
   selectedModelLabel: "GPT-5.5",
@@ -65,8 +62,6 @@ const mockSettings = {
   toolAutoApprovalRuleCount: 2,
   changeRunnerUrl: mockChangeRunnerUrl,
   changeLlmDirectory: jest.fn(),
-  changeCodexWsUrl: mockChangeCodexWsUrl,
-  changeCodexWsToken: jest.fn(),
   changeRunnerToken: jest.fn(),
   selectCodexApprovalPolicy: mockSelectCodexApprovalPolicy,
   openModelSelect: jest.fn(),
@@ -121,7 +116,7 @@ test("renders real settings and wires their actions securely", async () => {
   expect(screen.queryByText("変更内容はこの端末に自動保存されます。")).toBeNull();
   expect(screen.queryByText("Runnerへの接続先とCodexの実行設定")).toBeNull();
   expect(screen.getByText(/認証トークン.*保存済み承認ルールは移行に含まれません/)).toBeTruthy();
-  expect(screen.getByDisplayValue("codex-secret").props.secureTextEntry).toBe(true);
+  expect(screen.queryByLabelText("Codexトークン")).toBeNull();
   expect(screen.getByDisplayValue("runner-secret").props.secureTextEntry).toBe(true);
 
   await fireEvent.changeText(screen.getByLabelText("Runner URL"), "https://next.example.com");
@@ -134,16 +129,6 @@ test("renders real settings and wires their actions securely", async () => {
   expect(mockExportSettingsJson).toHaveBeenCalledTimes(1);
   expect(mockOpenSkiaBoardScreen).toHaveBeenCalledTimes(1);
   expect(mockOpenDrawer).toHaveBeenCalledTimes(1);
-});
-
-test("shows and applies the selected WebSocket route", async () => {
-  const screen = await render(<SettingsScreen />);
-
-  expect(screen.getByText("Codex経路").parent?.props.accessibilityState).toEqual({ selected: true });
-  expect(screen.getByText("Runner経路").parent?.props.accessibilityState).toEqual({ selected: false });
-
-  await fireEvent.press(screen.getByText("Runner経路"));
-  expect(mockChangeCodexWsUrl).toHaveBeenCalledWith("wss://runner.example.com/runner-ws");
 });
 
 test("uses dropdowns for selectable settings", async () => {

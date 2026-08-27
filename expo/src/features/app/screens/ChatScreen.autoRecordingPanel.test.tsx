@@ -23,6 +23,7 @@ const mockMarkSessionUnread = jest.fn();
 const mockHydratePanelFromSessionHistory = jest.fn(async () => "applied");
 const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
 let mockPanelBackendId = "codex";
+let mockRunnerUrl = "http://runner.test";
 let mockPanelConversationMessages: Array<{ id: string; role: "user" | "assistant"; content: string }> = [];
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   renameTarget: null,
@@ -315,7 +316,7 @@ jest.mock("../contexts/ChatScreenContext", () => ({
     chatContentRef: { current: null },
     onChatTouchStart: jest.fn(),
     onChatTouchEnd: jest.fn(),
-    runnerUrl: "http://runner.test",
+    runnerUrl: mockRunnerUrl,
     runnerToken: "runner-token",
     runnerRouteSelection: { selectedRoute: "local" },
     isCodexCompactRunning: () => false,
@@ -380,6 +381,7 @@ describe("ChatScreen auto recording panel target", () => {
     mockLocationScheduleProps.current = null;
     mockChatSessionSubagentProps.current = null;
     mockPanelBackendId = "codex";
+    mockRunnerUrl = "http://runner.test";
     mockPanelConversationMessages = [{ id: "message-1", role: "assistant", content: "hello" }];
   });
 
@@ -400,6 +402,16 @@ describe("ChatScreen auto recording panel target", () => {
     await fireEvent.press(screen.getByText("mic"));
 
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith(undefined);
+    await screen.unmount();
+  });
+
+  it("disables panel send when the runner URL cannot produce a WebSocket endpoint", async () => {
+    mockRunnerUrl = "invalid";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await fireEvent.changeText(screen.getByPlaceholderText("メッセージを入力"), "hello");
+
+    expect(screen.getByTestId("chat-composer-action")).toBeDisabled();
     await screen.unmount();
   });
 

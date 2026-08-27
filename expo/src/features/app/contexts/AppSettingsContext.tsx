@@ -18,24 +18,18 @@ export type ModelOption = {
 
 export type RunnerPairingResult = {
   runnerUrl: string;
-  runnerWsUrl: string;
   localRunnerUrl: string;
-  localRunnerWsUrl: string;
 };
 
 export type AppSettingsContextValue = {
   runnerUrl: string;
   llmBackend: LlmBackend;
   llmDirectory: string;
-  codexWsUrl: string;
-  codexWsToken: string;
   runnerToken: string;
   cloudflareAccessClientId: string;
   cloudflareAccessEnabled: boolean;
   cloudflareRunnerUrl: string;
-  cloudflareRunnerWsUrl: string;
   localRunnerUrl: string;
-  localRunnerWsUrl: string;
   codexApprovalPolicy: "on-request" | "never";
   selectedModelLabel: string;
   modelRef: string;
@@ -60,8 +54,6 @@ export type AppSettingsContextValue = {
   toolAutoApprovalRuleCount: number;
   changeRunnerUrl: (value: string) => void;
   changeLlmDirectory: (value: string) => void;
-  changeCodexWsUrl: (value: string) => void;
-  changeCodexWsToken: (value: string) => void;
   changeRunnerToken: (value: string) => void;
   clearCloudflareAccessCredentials: () => Promise<void>;
   applyCloudflareRunnerPairing: (payload: string) => Promise<RunnerPairingResult>;

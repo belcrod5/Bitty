@@ -39,7 +39,6 @@ function install(runnerToken) {
     runnerWsPath: "/runner-ws",
     runnerWsServer,
     streamTtsWsServer: wsServerProbe(),
-    codexProxyWsServer: wsServerProbe(),
     appendDebug: () => {},
   });
   return { server, runnerWsServer };
@@ -64,6 +63,18 @@ test("routes an authenticated WebSocket upgrade", () => {
 
   assert.equal(socket.destroyed, false);
   assert.equal(runnerWsServer.upgrades, 1);
+});
+
+test("rejects the removed legacy Codex WebSocket path", () => {
+  const { server, runnerWsServer } = install("expected-token");
+  const req = request("expected-token");
+  req.url = "/codex-ws";
+  const socket = socketProbe();
+
+  server.emit("upgrade", req, socket, Buffer.alloc(0));
+
+  assert.equal(socket.destroyed, true);
+  assert.equal(runnerWsServer.upgrades, 0);
 });
 
 test("does not accept a runner token from the URL query", () => {

@@ -58,13 +58,13 @@ export async function runCodexRpcSession<T>(options: {
   const wsToken = normalized.wsToken;
   const runnerWebSocketManager = options.runnerWebSocketManager;
   const useRunnerWsManager = Boolean(runnerWebSocketManager);
-  const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
   const threadId = String(options.threadId || "").trim();
   const traceId = String(options.traceId || options.clientName || "").trim();
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))
     ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
     : NEAR_UNLIMITED_TIMEOUT_MS;
   if (!wsUrl) throw new Error("Codex WebSocket URL is empty");
+  if (!isRunnerWsUrl(wsUrl)) throw new Error("Codex WebSocket URL must use /runner-ws");
 
   const ws = useRunnerWsManager ? null : createWebSocketWithOptionalAuth(wsUrl, wsToken);
   const wsLabel = wsToken ? `${wsUrl} (token)` : `${wsUrl} (no-token)`;
@@ -132,7 +132,7 @@ export async function runCodexRpcSession<T>(options: {
       return;
     }
     if (!ws) throw new Error("Codex app-server WebSocket is not initialized");
-    ws.send(useRunnerWsEnvelope ? encodeRunnerWsLlmRpc(payload, threadId) : JSON.stringify(payload));
+    ws.send(encodeRunnerWsLlmRpc(payload, threadId));
   }
 
   function resolvePendingForId(idRaw: unknown, result: unknown) {
@@ -201,9 +201,7 @@ export async function runCodexRpcSession<T>(options: {
     }
 
     function handleIncomingRawData(rawData: string) {
-      const incoming = useRunnerWsEnvelope
-        ? normalizeRunnerWsIncomingCodexRpc(rawData)
-        : { type: "rpc" as const, rawData };
+      const incoming = normalizeRunnerWsIncomingCodexRpc(rawData);
       if (incoming.type === "ignore") return;
       if (incoming.type === "error") {
         fail(new Error(incoming.message));

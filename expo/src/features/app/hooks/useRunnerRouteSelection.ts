@@ -9,14 +9,10 @@ const LOCAL_HEALTH_TIMEOUT_MS = 2500;
 type RunnerRouteSelectionArgs = {
   enabled: boolean;
   localRunnerUrl: string;
-  localRunnerWsUrl: string;
   cloudflareRunnerUrl: string;
-  cloudflareRunnerWsUrl: string;
   runnerToken: string;
   runnerUrl: string;
-  codexWsUrl: string;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
-  setCodexWsUrl: Dispatch<SetStateAction<string>>;
 };
 
 export type RunnerRouteSelectionState = {
@@ -26,11 +22,6 @@ export type RunnerRouteSelectionState = {
 
 export type RunnerRouteSelectionResult = RunnerRouteSelectionState & {
   requestRouteRecheck: () => void;
-};
-
-type RunnerRouteTarget = {
-  runnerUrl: string;
-  runnerWsUrl: string;
 };
 
 function trimTrailingSlash(value: unknown) {
@@ -72,39 +63,20 @@ async function probeRunnerHealth(runnerUrl: string, runnerToken: string) {
   }
 }
 
-function applyRouteTarget(
-  target: RunnerRouteTarget,
-  current: RunnerRouteTarget,
-  setRunnerUrl: Dispatch<SetStateAction<string>>,
-  setCodexWsUrl: Dispatch<SetStateAction<string>>
-) {
-  if (!target.runnerUrl || !target.runnerWsUrl) return;
-  if (target.runnerUrl === current.runnerUrl && target.runnerWsUrl === current.runnerWsUrl) return;
-  setRunnerUrl(target.runnerUrl);
-  setCodexWsUrl(target.runnerWsUrl);
-}
-
 export function useRunnerRouteSelection({
   enabled,
   localRunnerUrl,
-  localRunnerWsUrl,
   cloudflareRunnerUrl,
-  cloudflareRunnerWsUrl,
   runnerToken,
   runnerUrl,
-  codexWsUrl,
   setRunnerUrl,
-  setCodexWsUrl,
 }: RunnerRouteSelectionArgs) {
   const latestRef = useRef({
     enabled,
     localRunnerUrl: trimTrailingSlash(localRunnerUrl),
-    localRunnerWsUrl: String(localRunnerWsUrl || "").trim(),
     cloudflareRunnerUrl: trimTrailingSlash(cloudflareRunnerUrl),
-    cloudflareRunnerWsUrl: String(cloudflareRunnerWsUrl || "").trim(),
     runnerToken: String(runnerToken || "").trim(),
     runnerUrl: trimTrailingSlash(runnerUrl),
-    codexWsUrl: String(codexWsUrl || "").trim(),
   });
   const recheckTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const scheduleGenerationRef = useRef(0);
@@ -123,20 +95,14 @@ export function useRunnerRouteSelection({
     latestRef.current = {
       enabled,
       localRunnerUrl: trimTrailingSlash(localRunnerUrl),
-      localRunnerWsUrl: String(localRunnerWsUrl || "").trim(),
       cloudflareRunnerUrl: trimTrailingSlash(cloudflareRunnerUrl),
-      cloudflareRunnerWsUrl: String(cloudflareRunnerWsUrl || "").trim(),
       runnerToken: String(runnerToken || "").trim(),
       runnerUrl: trimTrailingSlash(runnerUrl),
-      codexWsUrl: String(codexWsUrl || "").trim(),
     };
   }, [
     cloudflareRunnerUrl,
-    cloudflareRunnerWsUrl,
-    codexWsUrl,
     enabled,
     localRunnerUrl,
-    localRunnerWsUrl,
     runnerToken,
     runnerUrl,
   ]);
@@ -155,9 +121,7 @@ export function useRunnerRouteSelection({
       if (
         !latest.enabled ||
         !latest.localRunnerUrl ||
-        !latest.localRunnerWsUrl ||
         !latest.cloudflareRunnerUrl ||
-        !latest.cloudflareRunnerWsUrl ||
         !latest.runnerToken
       ) {
         return;
@@ -172,14 +136,12 @@ export function useRunnerRouteSelection({
         selectedRoute,
         checkedAtMs: Date.now(),
       });
-      applyRouteTarget(
-        localReachable
-          ? { runnerUrl: current.localRunnerUrl, runnerWsUrl: current.localRunnerWsUrl }
-          : { runnerUrl: current.cloudflareRunnerUrl, runnerWsUrl: current.cloudflareRunnerWsUrl },
-        { runnerUrl: current.runnerUrl, runnerWsUrl: current.codexWsUrl },
-        setRunnerUrl,
-        setCodexWsUrl
-      );
+      const targetRunnerUrl = localReachable
+        ? current.localRunnerUrl
+        : current.cloudflareRunnerUrl;
+      if (targetRunnerUrl && targetRunnerUrl !== current.runnerUrl) {
+        setRunnerUrl(targetRunnerUrl);
+      }
       if (localReachable) {
         clearScheduledRechecks();
       }
@@ -219,17 +181,15 @@ export function useRunnerRouteSelection({
       networkSubscription.remove();
       appStateSubscription.remove();
     };
-  }, [setCodexWsUrl, setRunnerUrl]);
+  }, [setRunnerUrl]);
 
   useEffect(() => {
-    if (!enabled || !localRunnerUrl || !localRunnerWsUrl || !cloudflareRunnerUrl || !cloudflareRunnerWsUrl || !runnerToken) return;
+    if (!enabled || !localRunnerUrl || !cloudflareRunnerUrl || !runnerToken) return;
     scheduleRouteSelectionRef.current([0]);
   }, [
     cloudflareRunnerUrl,
-    cloudflareRunnerWsUrl,
     enabled,
     localRunnerUrl,
-    localRunnerWsUrl,
     runnerToken,
   ]);
 

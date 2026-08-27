@@ -13,7 +13,7 @@ type RunSlashCompactOptions = {
 
 type UseSlashCompactCommandControllerArgs = {
   codexWsUrl: string;
-  codexWsToken: string;
+  runnerToken: string;
   nearUnlimitedTimeoutMs: number;
   runnerWebSocketManager?: RunnerWebSocketManager;
   llmBackend: string;
@@ -43,7 +43,7 @@ function shouldProjectSlashDebugToActiveSession(panelIdRaw: unknown) {
 
 export function useSlashCompactCommandController({
   codexWsUrl,
-  codexWsToken,
+  runnerToken,
   nearUnlimitedTimeoutMs,
   runnerWebSocketManager,
   llmBackend,
@@ -112,7 +112,7 @@ export function useSlashCompactCommandController({
     try {
       const compactResult = await compactCodexAppServerThread({
         wsUrl,
-        wsToken: codexWsToken.trim(),
+        wsToken: runnerToken.trim(),
         threadId,
         timeoutMs: nearUnlimitedTimeoutMs,
         runnerWebSocketManager,
@@ -218,7 +218,7 @@ export function useSlashCompactCommandController({
   }, [
     appendSlashCommandResult,
     appendSlashCommandProgress,
-    codexWsToken,
+    runnerToken,
     codexWsUrl,
     fetchRunnerSessionContextUsedPct,
     llmBackend,

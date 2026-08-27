@@ -166,7 +166,7 @@ test("drops upstream relay events from a different thread before mutating relay 
   const relay = {
     relayId: "relay-test",
     remote: "test",
-    endpoint: "/codex-ws",
+    endpoint: "/runner-ws",
     clients: new Set([subscriber]),
     threadId: "parent-thread",
     turnStatus: "",

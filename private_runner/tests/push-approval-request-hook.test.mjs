@@ -38,7 +38,7 @@ function makeRelay(overrides = {}) {
   return {
     relayId: "relay-approval-test",
     remote: "test",
-    endpoint: "/codex-ws",
+    endpoint: "/runner-ws",
     clients: new Set(),
     threadId: "thread-1",
     threadCwd: "",
