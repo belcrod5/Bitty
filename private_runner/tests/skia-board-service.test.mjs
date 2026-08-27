@@ -295,6 +295,34 @@ test("concurrent applyOps serialize and both revisions advance", async () => {
   });
 });
 
+test("stored ingest directories are canonicalized on load", async () => {
+  await withTempStorePath(async (storePath) => {
+    // 旧バージョンが未正規化のまま保存したケースを再現する。
+    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    await fs.writeFile(storePath, JSON.stringify({
+      version: 1,
+      revision: 0,
+      origin: null,
+      userEdited: false,
+      initializedAt: null,
+      updatedAt: "2026-08-27T00:00:00.000Z",
+      board: null,
+      ingestDirectories: ["/var/work", "/private/var/work", "/unresolvable"],
+    }));
+    const service = createSkiaBoardService({
+      storePath,
+      normalizeDirectory: (value) => {
+        if (value === "/unresolvable") throw new Error("ENOENT-ish");
+        return value.replace(/^\/var\//, "/private/var/");
+      },
+    });
+    assert.deepEqual(await service.getIngestDirectories(), [
+      "/private/var/work",
+      "/unresolvable",
+    ]);
+  });
+});
+
 test("a corrupted store fails closed instead of reinitializing", async () => {
   await withTempStorePath(async (storePath) => {
     await fs.mkdir(path.dirname(storePath), { recursive: true });
