@@ -37,6 +37,9 @@ type SkiaBoardCardAppearance = {
 export type SkiaBoardSessionCard = SkiaBoardCardPosition & {
   kind: "session";
   sessionId: string;
+  // カード単独でランナーへサマリを問い合わせるための出所情報(ランナー側スキーマ拡張)。
+  directory?: string;
+  backendId?: string;
 };
 
 export type SkiaBoardFileCard = SkiaBoardCardPosition & SkiaBoardCardAppearance & {
@@ -247,7 +250,16 @@ export function parseSkiaBoardState(raw: unknown): SkiaBoardState | null {
     // kind の無い既存保存データは session カードとして移行する。
     const sessionId = String(card.sessionId || "").trim();
     if (!sessionId) continue;
-    const parsed: SkiaBoardSessionCard = { kind: "session", sessionId, col, row };
+    const directory = String(card.directory || "").trim();
+    const backendId = String(card.backendId || "").trim();
+    const parsed: SkiaBoardSessionCard = {
+      kind: "session",
+      sessionId,
+      ...(directory ? { directory } : {}),
+      ...(backendId ? { backendId } : {}),
+      col,
+      row,
+    };
     const id = skiaBoardCardId(parsed);
     if (seenCardIds.has(id)) continue;
     seenCardIds.add(id);
@@ -446,7 +458,11 @@ export function removeSkiaBoardSession(state: SkiaBoardState, sessionId: string)
   };
 }
 
-export function addSkiaBoardSession(state: SkiaBoardState, sessionIdRaw: unknown): SkiaBoardState {
+export function addSkiaBoardSession(
+  state: SkiaBoardState,
+  sessionIdRaw: unknown,
+  meta: { directory?: string; backendId?: string } = {}
+): SkiaBoardState {
   const sessionId = String(sessionIdRaw || "").trim();
   if (!sessionId) return state;
   const alreadyAdded = state.cards.some(
@@ -458,11 +474,19 @@ export function addSkiaBoardSession(state: SkiaBoardState, sessionIdRaw: unknown
       ? state
       : { ...state, excludedSessionIds };
   }
+  const directory = String(meta.directory || "").trim();
+  const backendId = String(meta.backendId || "").trim();
   return {
     ...state,
     cards: [
       ...state.cards,
-      { kind: "session", sessionId, ...findFreeSkiaBoardCell(state.cards) },
+      {
+        kind: "session",
+        sessionId,
+        ...(directory ? { directory } : {}),
+        ...(backendId ? { backendId } : {}),
+        ...findFreeSkiaBoardCell(state.cards),
+      },
     ],
     excludedSessionIds,
   };
