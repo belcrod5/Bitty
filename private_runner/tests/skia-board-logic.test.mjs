@@ -102,7 +102,18 @@ test("addCard revives an unavailable file card in place", () => {
     cards: [{ kind: "file", rootDir: "/w", path: "a.md", col: 1, row: 2, unavailable: true }],
   };
   const next = addSkiaBoardCard(state, { kind: "file", rootDir: "/w", path: "a.md" });
-  assert.deepEqual(next.cards, [{ kind: "file", rootDir: "/w", path: "a.md", col: 1, row: 2, unavailable: false }]);
+  assert.deepEqual(next.cards, [{ kind: "file", rootDir: "/w", path: "a.md", col: 1, row: 2 }]);
+});
+
+test("addCard ignores client-provided coordinates", () => {
+  const state = baseState();
+  const next = addSkiaBoardCard(state, {
+    kind: "session",
+    sessionId: "session-3",
+    col: "not-a-number",
+    row: 99,
+  });
+  assert.deepEqual(next.cards[2], { kind: "session", sessionId: "session-3", col: 0, row: 1 });
 });
 
 test("removeCard excludes removed sessions but not files", () => {

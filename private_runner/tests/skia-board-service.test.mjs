@@ -222,6 +222,79 @@ test("syncIngestDirectories merges as a union without bumping the revision", asy
   });
 });
 
+test("a board emptied by ops survives a reload", async () => {
+  await withTempStorePath(async (storePath) => {
+    const service = createSkiaBoardService({ storePath });
+    await service.importBoard({
+      board: {
+        cards: [{ kind: "file", rootDir: "/w", path: "a.md", col: 0, row: 0 }],
+        sections: [],
+        excludedSessionIds: [],
+        ingestedUpdatedAtMs: 0,
+      },
+    });
+    const emptied = await service.applyOps({
+      baseRevision: 1,
+      ops: [{ type: "removeCard", cardId: "file:/w\na.md" }],
+    });
+    assert.deepEqual(emptied.board.cards, []);
+
+    const reloaded = createSkiaBoardService({ storePath });
+    const snapshot = await reloaded.getBoard();
+    assert.equal(snapshot.initialized, true);
+    assert.equal(snapshot.origin, "import");
+    assert.deepEqual(snapshot.board.cards, []);
+  });
+});
+
+test("a persist failure fails closed for later operations", async () => {
+  await withTempStorePath(async (storePath) => {
+    let failWrites = false;
+    const fileSystem = {
+      stat: (...args) => fs.stat(...args),
+      readFile: (...args) => fs.readFile(...args),
+      mkdir: (...args) => fs.mkdir(...args),
+      unlink: (...args) => fs.unlink(...args),
+      rename: (...args) => fs.rename(...args),
+      writeFile: (...args) => {
+        if (failWrites) return Promise.reject(new Error("disk full"));
+        return fs.writeFile(...args);
+      },
+    };
+    const service = createSkiaBoardService({ storePath, fileSystem });
+    failWrites = true;
+    await assert.rejects(
+      service.importBoard({ board: importableBoard() }),
+      /failed to persist/
+    );
+    failWrites = false;
+    await assert.rejects(service.getBoard(), /failed to persist/);
+  });
+});
+
+test("concurrent applyOps serialize and both revisions advance", async () => {
+  await withTempStorePath(async (storePath) => {
+    const service = createSkiaBoardService({ storePath });
+    await service.importBoard({ board: importableBoard() });
+    const [first, second] = await Promise.allSettled([
+      service.applyOps({
+        baseRevision: 1,
+        ops: [{ type: "addCard", card: { kind: "directory", directory: "/one" } }],
+      }),
+      service.applyOps({
+        baseRevision: 1,
+        ops: [{ type: "addCard", card: { kind: "directory", directory: "/two" } }],
+      }),
+    ]);
+    assert.equal(first.status, "fulfilled");
+    assert.equal(first.value.revision, 2);
+    // 直列化により2本目は古いbaseRevisionとなり409相当で弾かれる。
+    assert.equal(second.status, "rejected");
+    assert.ok(second.reason instanceof SkiaBoardRevisionConflictError);
+    assert.equal(second.reason.snapshot.revision, 2);
+  });
+});
+
 test("a corrupted store fails closed instead of reinitializing", async () => {
   await withTempStorePath(async (storePath) => {
     await fs.mkdir(path.dirname(storePath), { recursive: true });

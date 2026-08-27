@@ -260,7 +260,8 @@ function addSkiaBoardFileCard(state, card) {
     const existing = state.cards[existingIndex];
     if (existing.kind !== "file" || !existing.unavailable) return state;
     const cards = state.cards.slice();
-    cards[existingIndex] = { ...existing, unavailable: false };
+    const { unavailable: _unavailable, ...availableCard } = existing;
+    cards[existingIndex] = availableCard;
     return { ...state, cards };
   }
   const { col: _col, row: _row, unavailable: _unavailable, ...identity } = card;
@@ -290,7 +291,7 @@ function addSkiaBoardDirectoryCard(state, card) {
 export function addSkiaBoardCard(state, cardRaw) {
   const card = parseSkiaBoardCard(
     cardRaw && typeof cardRaw === "object" && !Array.isArray(cardRaw)
-      ? { col: 0, row: 0, ...cardRaw }
+      ? { ...cardRaw, col: 0, row: 0 }
       : cardRaw
   );
   if (!card) return state;

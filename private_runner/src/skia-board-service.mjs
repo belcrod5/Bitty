@@ -171,6 +171,9 @@ export function createSkiaBoardService({
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw storeError("skia board store root must be an object");
     }
+    if (parsed.version !== 1) {
+      throw storeError(`unsupported skia board store version: ${String(parsed.version)}`);
+    }
     const revision = parsed.revision;
     if (!Number.isInteger(revision) || revision < 0) {
       throw storeError("skia board store revision must be a non-negative integer");
@@ -254,7 +257,14 @@ export function createSkiaBoardService({
   async function commit(nextStore, { notify = true } = {}) {
     await persist(nextStore);
     store = nextStore;
-    if (notify) broadcast({ revision: store.revision });
+    if (notify) {
+      // 通知の失敗で「永続化は成功したのにリクエストがエラー」にしない。
+      try {
+        broadcast({ revision: store.revision });
+      } catch (error) {
+        console.warn("[skia-board] failed to broadcast board update", error);
+      }
+    }
   }
 
   async function getBoard() {
@@ -351,6 +361,11 @@ export function createSkiaBoardService({
       }
       const merged = [...store.ingestDirectories, ...additions]
         .slice(0, SKIA_BOARD_MAX_INGEST_DIRECTORIES);
+      if (merged.length < store.ingestDirectories.length + additions.length) {
+        console.warn(
+          `[skia-board] ingest directories exceed ${SKIA_BOARD_MAX_INGEST_DIRECTORIES}; dropping the overflow`
+        );
+      }
       await commit({ ...store, ingestDirectories: merged }, { notify: false });
       return { ingestDirectories: store.ingestDirectories };
     });
