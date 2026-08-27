@@ -17,7 +17,6 @@ type UseAppContextActionsArgs = {
   directoryExplorerRootPath: string;
   directoryExplorerPath: string;
   selectedRegisteredDirectory: RegisteredDirectoryEntry | null;
-  latestAssistantYouTubeVideoIds: string[];
   ttsSpeed: number;
   ttsProvider: TtsProvider;
   llmBackend: LlmBackend;
@@ -43,19 +42,6 @@ type UseAppContextActionsArgs = {
   setModelRef: Dispatch<SetStateAction<string>>;
   setLlmBackend: Dispatch<SetStateAction<LlmBackend>>;
   setReasoningEffort: Dispatch<SetStateAction<ReasoningEffort>>;
-  testHardcodedCodexWsConnection: () => Promise<void>;
-  testHardcodedCodexWsHandshakeOnly: () => Promise<void>;
-  runCodexWsDiagnosticsAndUpload: () => Promise<void>;
-  runRunner8788ReachabilitySuite: () => Promise<void>;
-  runCodexWsE2eTurnAndUpload: () => Promise<void>;
-  loadLlmRuntimeLimits: () => Promise<void>;
-  updateLlmToolMaxRounds: () => Promise<void>;
-  setLlmToolMaxRoundsInput: Dispatch<SetStateAction<string>>;
-  setLlmToolLogCompact: Dispatch<SetStateAction<boolean>>;
-  setTranscript: Dispatch<SetStateAction<string>>;
-  setSystemPrompt: Dispatch<SetStateAction<string>>;
-  sendReplyRequest: () => Promise<void>;
-  sendReplyTranscript: () => Promise<void>;
   reloadActiveSession: (source?: "board" | "drawer" | "session_modal") => void;
   loadDirectoryExplorer: (path: string) => Promise<void>;
   upsertRegisteredDirectory: (pathRaw: unknown) => void;
@@ -65,24 +51,10 @@ type UseAppContextActionsArgs = {
   setSelectedSessionTitleOverride: (nextTitleRaw: unknown) => void;
   setSelectedSessionMarkerColor: (nextMarkerColorRaw: unknown) => void;
   removeRegisteredDirectory: (directoryId: string) => void;
-  openYouTubeVideo: (
-    videoId: string,
-    source: string,
-    options?: { queueVideoIds?: string[]; queueIndex?: number }
-  ) => void;
-  synthesizeSpeech: () => Promise<void>;
-  stopTtsPlayback: () => Promise<void>;
   startDirectNativeStt: () => Promise<void>;
   stopDirectNativeStt: () => Promise<void>;
   startAutoRecordingMode: (panelId?: string) => Promise<void>;
   stopAutoRecordingMode: () => Promise<void>;
-  sendAutoClientLogsNow: () => Promise<void>;
-  transcribeRecording: () => Promise<void>;
-  startAudioLabProbe: () => Promise<void>;
-  stopAudioLabProbe: (reason?: string) => Promise<void>;
-  startAudioLabPlaybackOnly: (reason?: string) => Promise<void>;
-  stopAudioLabPlaybackOnly: (reason?: string) => Promise<void>;
-  sendAudioLabLogsNow: () => Promise<void>;
   stopRecording: () => Promise<void>;
   cancelCodexTurnRequest: () => Promise<void>;
   stopWaveformPlayback: () => Promise<void>;
@@ -103,7 +75,6 @@ export function useAppContextActions({
   directoryExplorerRootPath,
   directoryExplorerPath,
   selectedRegisteredDirectory,
-  latestAssistantYouTubeVideoIds,
   ttsSpeed,
   ttsProvider,
   llmBackend,
@@ -129,19 +100,6 @@ export function useAppContextActions({
   setModelRef,
   setLlmBackend,
   setReasoningEffort,
-  testHardcodedCodexWsConnection,
-  testHardcodedCodexWsHandshakeOnly,
-  runCodexWsDiagnosticsAndUpload,
-  runRunner8788ReachabilitySuite,
-  runCodexWsE2eTurnAndUpload,
-  loadLlmRuntimeLimits,
-  updateLlmToolMaxRounds,
-  setLlmToolMaxRoundsInput,
-  setLlmToolLogCompact,
-  setTranscript,
-  setSystemPrompt,
-  sendReplyRequest,
-  sendReplyTranscript,
   reloadActiveSession,
   loadDirectoryExplorer,
   upsertRegisteredDirectory,
@@ -151,20 +109,10 @@ export function useAppContextActions({
   setSelectedSessionTitleOverride,
   setSelectedSessionMarkerColor,
   removeRegisteredDirectory,
-  openYouTubeVideo,
-  synthesizeSpeech,
-  stopTtsPlayback,
   startDirectNativeStt,
   stopDirectNativeStt,
   startAutoRecordingMode,
   stopAutoRecordingMode,
-  sendAutoClientLogsNow,
-  transcribeRecording,
-  startAudioLabProbe,
-  stopAudioLabProbe,
-  startAudioLabPlaybackOnly,
-  stopAudioLabPlaybackOnly,
-  sendAudioLabLogsNow,
   stopRecording,
   cancelCodexTurnRequest,
   stopWaveformPlayback,
@@ -181,11 +129,8 @@ export function useAppContextActions({
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
   }, [setDrawerOpen]);
-  const openDebugScreen = useCallback(() => {
-    setActiveScreen("debug");
-  }, [setActiveScreen]);
-  const openAudioLabScreen = useCallback(() => {
-    setActiveScreen("audio_lab");
+  const openSettingsScreen = useCallback(() => {
+    setActiveScreen("settings");
   }, [setActiveScreen]);
   const openCloudflareTunnelMonitorScreen = useCallback(() => {
     setActiveScreen("cloudflare_tunnel_monitor");
@@ -293,45 +238,6 @@ export function useAppContextActions({
     setReasoningEffort(option);
     setThinkSelectOpen(false);
   }, [setReasoningEffort, setThinkSelectOpen]);
-  const probeCurrentWsFromContext = useCallback(() => {
-    void testHardcodedCodexWsConnection();
-  }, [testHardcodedCodexWsConnection]);
-  const probeHandshakeOnlyFromContext = useCallback(() => {
-    void testHardcodedCodexWsHandshakeOnly();
-  }, [testHardcodedCodexWsHandshakeOnly]);
-  const runWsDiagFromContext = useCallback(() => {
-    void runCodexWsDiagnosticsAndUpload();
-  }, [runCodexWsDiagnosticsAndUpload]);
-  const runAuxServerSuiteFromContext = useCallback(() => {
-    void runRunner8788ReachabilitySuite();
-  }, [runRunner8788ReachabilitySuite]);
-  const runWsE2eFromContext = useCallback(() => {
-    void runCodexWsE2eTurnAndUpload();
-  }, [runCodexWsE2eTurnAndUpload]);
-  const loadLlmRuntimeLimitsFromContext = useCallback(() => {
-    void loadLlmRuntimeLimits();
-  }, [loadLlmRuntimeLimits]);
-  const updateLlmToolMaxRoundsFromContext = useCallback(() => {
-    void updateLlmToolMaxRounds();
-  }, [updateLlmToolMaxRounds]);
-  const changeLlmToolMaxRoundsInputFromContext = useCallback((value: string) => {
-    setLlmToolMaxRoundsInput(value);
-  }, [setLlmToolMaxRoundsInput]);
-  const toggleLlmToolLogCompactFromContext = useCallback((value: boolean) => {
-    setLlmToolLogCompact(value);
-  }, [setLlmToolLogCompact]);
-  const changeTranscript = useCallback((value: string) => {
-    setTranscript(value);
-  }, [setTranscript]);
-  const changeSystemPrompt = useCallback((value: string) => {
-    setSystemPrompt(value);
-  }, [setSystemPrompt]);
-  const sendReplyRequestFromContext = useCallback(() => {
-    void sendReplyRequest();
-  }, [sendReplyRequest]);
-  const sendReplyTranscriptFromContext = useCallback(() => {
-    void sendReplyTranscript();
-  }, [sendReplyTranscript]);
   const reloadSelectedSessionFromContext = useCallback(() => {
     reloadActiveSession("board");
   }, [reloadActiveSession]);
@@ -367,51 +273,6 @@ export function useAppContextActions({
     if (!selectedRegisteredDirectory) return;
     removeRegisteredDirectory(selectedRegisteredDirectory.id);
   }, [selectedRegisteredDirectory, removeRegisteredDirectory]);
-  const openLatestYouTubeVideoFromDebugContext = useCallback((videoId: string, queueIndex: number) => {
-    openYouTubeVideo(videoId, "__latest__", {
-      queueVideoIds: latestAssistantYouTubeVideoIds,
-      queueIndex,
-    });
-  }, [openYouTubeVideo, latestAssistantYouTubeVideoIds]);
-  const synthesizeSpeechFromDebugContext = useCallback(() => {
-    void synthesizeSpeech();
-  }, [synthesizeSpeech]);
-  const stopTtsPlaybackFromDebugContext = useCallback(() => {
-    void stopTtsPlayback();
-  }, [stopTtsPlayback]);
-  const startDirectNativeSttFromDebugSpeechContext = useCallback(() => {
-    void startDirectNativeStt();
-  }, [startDirectNativeStt]);
-  const stopDirectNativeSttFromDebugSpeechContext = useCallback(() => {
-    void stopDirectNativeStt();
-  }, [stopDirectNativeStt]);
-  const startAutoRecordingModeFromDebugSpeechContext = useCallback(() => {
-    void startAutoRecordingMode();
-  }, [startAutoRecordingMode]);
-  const stopAutoRecordingModeFromDebugSpeechContext = useCallback(() => {
-    void stopAutoRecordingMode();
-  }, [stopAutoRecordingMode]);
-  const sendAutoClientLogsFromDebugSpeechContext = useCallback(() => {
-    void sendAutoClientLogsNow();
-  }, [sendAutoClientLogsNow]);
-  const transcribeRecordingFromDebugSpeechContext = useCallback(() => {
-    void transcribeRecording();
-  }, [transcribeRecording]);
-  const startAudioLabProbeFromContext = useCallback(() => {
-    void startAudioLabProbe();
-  }, [startAudioLabProbe]);
-  const stopAudioLabProbeFromContext = useCallback(() => {
-    void stopAudioLabProbe("manual_stop");
-  }, [stopAudioLabProbe]);
-  const startAudioLabPlaybackOnlyFromContext = useCallback(() => {
-    void startAudioLabPlaybackOnly("manual_resume");
-  }, [startAudioLabPlaybackOnly]);
-  const stopAudioLabPlaybackOnlyFromContext = useCallback(() => {
-    void stopAudioLabPlaybackOnly("manual_interrupt");
-  }, [stopAudioLabPlaybackOnly]);
-  const sendAudioLabLogsFromContext = useCallback(() => {
-    void sendAudioLabLogsNow();
-  }, [sendAudioLabLogsNow]);
   const stopDirectNativeSttFromComposerContext = useCallback(() => {
     void stopDirectNativeStt();
   }, [stopDirectNativeStt]);
@@ -465,8 +326,7 @@ export function useAppContextActions({
   return {
     openDrawer,
     closeDrawer,
-    openDebugScreen,
-    openAudioLabScreen,
+    openSettingsScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeRunnerUrl,
@@ -481,19 +341,6 @@ export function useAppContextActions({
     openThinkSelect,
     selectModel,
     selectThinkOption,
-    probeCurrentWsFromContext,
-    probeHandshakeOnlyFromContext,
-    runWsDiagFromContext,
-    runAuxServerSuiteFromContext,
-    runWsE2eFromContext,
-    loadLlmRuntimeLimitsFromContext,
-    updateLlmToolMaxRoundsFromContext,
-    changeLlmToolMaxRoundsInputFromContext,
-    toggleLlmToolLogCompactFromContext,
-    changeTranscript,
-    changeSystemPrompt,
-    sendReplyRequestFromContext,
-    sendReplyTranscriptFromContext,
     reloadSelectedSessionFromContext,
     goDirectoryParentFromContext,
     goDirectoryRootFromContext,
@@ -504,20 +351,6 @@ export function useAppContextActions({
     renameSelectedSessionTitleFromContext,
     selectSessionMarkerColorFromContext,
     removeSelectedDirectoryFromContext,
-    openLatestYouTubeVideoFromDebugContext,
-    synthesizeSpeechFromDebugContext,
-    stopTtsPlaybackFromDebugContext,
-    startDirectNativeSttFromDebugSpeechContext,
-    stopDirectNativeSttFromDebugSpeechContext,
-    startAutoRecordingModeFromDebugSpeechContext,
-    stopAutoRecordingModeFromDebugSpeechContext,
-    sendAutoClientLogsFromDebugSpeechContext,
-    transcribeRecordingFromDebugSpeechContext,
-    startAudioLabProbeFromContext,
-    stopAudioLabProbeFromContext,
-    startAudioLabPlaybackOnlyFromContext,
-    stopAudioLabPlaybackOnlyFromContext,
-    sendAudioLabLogsFromContext,
     stopDirectNativeSttFromComposerContext,
     stopAutoRecordingModeFromComposerContext,
     stopRecordingFromComposerContext,

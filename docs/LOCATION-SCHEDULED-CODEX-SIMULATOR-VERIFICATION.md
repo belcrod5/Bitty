@@ -141,7 +141,7 @@ Maestro flow 内で変更する場合は、同等の `setLocation` command を�
 
 Simulator の既存設定で Runner 接続が成功するならそのまま使う。再pairingが必要な場合、QRやtokenをスクリーンショット、Maestro flow、report、shell引数へ残さない。
 
-Simulator のcamera経由のQR読取が使えない場合は、development build の `Current Settings` debug画面で次を対話的に設定できる。
+Simulator のcamera経由のQR読取が使えない場合は、development build の「設定」画面で次を対話的に設定できる。
 
 - Aux Server URL: `http://127.0.0.1:8788`
 - Codex WS URL: `ws://127.0.0.1:8788/runner-ws`

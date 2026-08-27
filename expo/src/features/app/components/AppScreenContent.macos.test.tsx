@@ -15,25 +15,22 @@ jest.mock("../screens/SkiaMiniBoardScreen", () => ({
     return ReactModule.createElement(Text, null, "Skia board");
   },
 }));
-jest.mock("../screens/DebugScreen", () => ({
-  DebugScreen: () => {
+jest.mock("../screens/SettingsScreen", () => ({
+  SettingsScreen: () => {
     const ReactModule = require("react");
     const { Text } = require("react-native");
-    return ReactModule.createElement(Text, null, "Debug screen");
+    return ReactModule.createElement(Text, null, "Settings screen");
   },
 }));
 jest.mock("../screens/CloudflareTunnelMonitorScreen", () => ({
   CloudflareTunnelMonitorScreen: () => null,
-}));
-jest.mock("./AudioLabScreen", () => ({
-  AudioLabScreen: () => null,
 }));
 
 beforeEach(() => {
   mockBoardMountCount = 0;
 });
 
-test("keeps the native Skia surface mounted while visiting Current Settings", async () => {
+test("keeps the native Skia surface mounted while visiting Settings", async () => {
   const openSessionHistoryPopup = jest.fn();
   const screen = await render(
     <AppScreenContent
@@ -46,12 +43,12 @@ test("keeps the native Skia surface mounted while visiting Current Settings", as
   expect(mockBoardMountCount).toBe(1);
   await screen.rerender(
     <AppScreenContent
-      activeScreen="debug"
+      activeScreen="settings"
       onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
   );
-  expect(screen.getByText("Debug screen")).toBeTruthy();
+  expect(screen.getByText("Settings screen")).toBeTruthy();
 
   await screen.rerender(
     <AppScreenContent

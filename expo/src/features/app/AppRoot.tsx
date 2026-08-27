@@ -60,10 +60,6 @@ import { useAutoCaptureCycleCore } from "./hooks/useAutoCaptureCycleCore";
 import { useYouTubePlayerController } from "./hooks/useYouTubePlayerController";
 import { useYouTubePlayerDisplay } from "./hooks/useYouTubePlayerDisplay";
 import { useTtsVoiceCatalog } from "./hooks/useTtsVoiceCatalog";
-import { useAudioLabPlaybackMonitoring } from "./hooks/useAudioLabPlaybackMonitoring";
-import { useAudioLabLoggingController } from "./hooks/useAudioLabLoggingController";
-import { useAudioLabPlaybackController } from "./hooks/useAudioLabPlaybackController";
-import { useAudioLabProbeController } from "./hooks/useAudioLabProbeController";
 import { useAutoWaveformStateController } from "./hooks/useAutoWaveformStateController";
 import { useAudioSettingsInputController } from "./hooks/useAudioSettingsInputController";
 import { useChatDerivedState } from "./hooks/useChatDerivedState";
@@ -104,7 +100,7 @@ import { useCodexRelayObserverStartController } from "./hooks/useCodexRelayObser
 import { useCodexStatusAuthController } from "./hooks/useCodexStatusAuthController";
 import { useCodexStatusRefreshEffects } from "./hooks/useCodexStatusRefreshEffects";
 import { useGitChangedFilesController } from "./hooks/useGitChangedFilesController";
-import { useLlmRuntimeLimitsController } from "./hooks/useLlmRuntimeLimitsController";
+import { useLlmRuntimeLimitsReader } from "./hooks/useLlmRuntimeLimitsReader";
 import { useSlashCompactCommandController } from "./hooks/useSlashCompactCommandController";
 import { useSlashCommandController } from "./hooks/useSlashCommandController";
 import { useSlashCommandResultAppender } from "./hooks/useSlashCommandResultAppender";
@@ -158,20 +154,16 @@ import {
   useConversationMessageBuilders,
 } from "./hooks/useConversationMessageBuilders";
 import { useAppStateAutoRecoveryController } from "./hooks/useAppStateAutoRecoveryController";
-import { useCodexWsDiagnosticsController } from "./hooks/useCodexWsDiagnosticsController";
+import { useCodexWsPreflightLogger } from "./hooks/useCodexWsPreflightLogger";
 import { useAppUnmountCleanupController } from "./hooks/useAppUnmountCleanupController";
 import {
   useAppSettingsContextValue,
   useAppShellContextValue,
-  useAudioLabContextValue,
   useChatComposerContextValue,
   useChatDiagnosticsContextValue,
   useChatScreenContextValue,
   useChatVisualContextValue,
   useConversationContextValue,
-  useDebugConversationContextValue,
-  useDebugRuntimeContextValue,
-  useDebugSpeechContextValue,
   useYouTubePlayerContextValue,
 } from "./hooks/useAppProviderValues";
 import {
@@ -242,15 +234,11 @@ import { configureCloudflareAccessFetch } from "./utils/cloudflareAccessFetch";
 import { normalizeCloudflareAccessCredentials, hasCloudflareAccessCredentials } from "./utils/cloudflareAccess";
 import {
   buildAutoClientLogSessionId,
-  isAirPodsInputName,
   isBackgroundAudioSessionError,
   isRecorderNotPreparedError,
   isRecordingNotAllowedError,
 } from "./utils/audioSession";
 import {
-  buildRecordingOptions,
-  clampRecordingChannels,
-  clampRecordingProgressUpdateIntervalMs,
   clampTtsSpeed,
   DEFAULT_RECORDING_QUALITY_PRESET,
   DEFAULT_SELECTED_VOICE_IDS,
@@ -270,7 +258,6 @@ import {
   llmStatusLabel,
   llmStatusVisual,
   sanitizeTextForTts,
-  toInlineSummary,
   trimForInline,
 } from "./utils/statusText";
 import { liveLlmStatusDetail } from "./utils/liveLlmStatusDetail";
@@ -409,7 +396,6 @@ const UI_SFX_MIN_INTERVAL_MS: Partial<Record<UiSfxKey, number>> = {
   error: 220,
 };
 const PIXEL_ROBOT_IMAGE = require("../../../assets/images/robot-indicator.gif");
-const AUDIO_LAB_LOOP_ASSET = require("../../../assets/sfx/audio-lab-loop.wav");
 const AUTO_STOP_SILENCE_MS = 850;
 const AUTO_MIN_SPEECH_MS = 700;
 const AUTO_MAX_SPEECH_MS = 20000;
@@ -453,10 +439,6 @@ const AUTO_CLIENT_LOG_BUFFER_MAX = 600;
 const AUTO_CLIENT_LOG_FLUSH_BATCH_SIZE = 100;
 const AUTO_CLIENT_LOG_FLUSH_DELAY_MS = 1200;
 const AUTO_CLIENT_LOG_RETRY_MS = 4000;
-const AUDIO_LAB_LOG_BUFFER_MAX = 600;
-const AUDIO_LAB_LOG_FLUSH_BATCH_SIZE = 100;
-const AUDIO_LAB_LOG_FLUSH_DELAY_MS = 1200;
-const AUDIO_LAB_LOG_RETRY_MS = 4000;
 const SESSION_DIAG_LOG_BUFFER_MAX = 240;
 const SESSION_DIAG_LOG_FLUSH_BATCH_SIZE = 40;
 const SESSION_DIAG_LOG_FLUSH_DELAY_MS = 700;
@@ -480,17 +462,6 @@ const SLASH_COMMAND_OPTIONS: Array<{ command: SlashCommandName; description: str
   { command: "/status", description: "現在のセッション情報と実行制限を表示" },
   { command: "/compact", description: "Codex CLIのコンテキスト圧縮を実行" },
 ];
-const AUDIO_LAB_RECENT_LOG_MAX = 24;
-const AUDIO_LAB_INPUT_POLL_MS = 1300;
-const AUDIO_LAB_METER_LOG_THROTTLE_MS = 500;
-const AUDIO_LAB_FLATLINE_DB = -118;
-const AUDIO_LAB_ROUTE_ERROR_LOG_THROTTLE_MS = 2400;
-const AUDIO_LAB_PLAYBACK_STATUS_LOG_THROTTLE_MS = 700;
-const AUDIO_LAB_PLAYBACK_WATCHDOG_INTERVAL_MS = 420;
-const AUDIO_LAB_PLAYBACK_WATCHDOG_STATUS_TIMEOUT_MS = 320;
-const AUDIO_LAB_PLAYBACK_STALL_MS = 1100;
-const AUDIO_LAB_PLAYBACK_RECOVER_COOLDOWN_MS = 1400;
-const AUDIO_LAB_PLAYBACK_WATCHDOG_ERROR_LOG_THROTTLE_MS = 1800;
 const ENABLE_TTS_PLAYBACK_WATCHDOG = true;
 const TTS_PLAYBACK_STATUS_LOG_THROTTLE_MS = 700;
 const TTS_PLAYBACK_WATCHDOG_INTERVAL_MS = 420;
@@ -795,23 +766,6 @@ export default function App() {
   const [autoSegments, setAutoSegments] = useState(0);
   const [autoInputName, setAutoInputName] = useState("");
   const [autoAirPodsInput, setAutoAirPodsInput] = useState(false);
-  const [audioLabRunning, setAudioLabRunning] = useState(false);
-  const [audioLabRecordingActive, setAudioLabRecordingActive] = useState(false);
-  const [audioLabPlaybackActive, setAudioLabPlaybackActive] = useState(false);
-  const [audioLabInputName, setAudioLabInputName] = useState("");
-  const [audioLabAirPodsInput, setAudioLabAirPodsInput] = useState(false);
-  const [audioLabNowMs, setAudioLabNowMs] = useState(0);
-  const [audioLabLastDb, setAudioLabLastDb] = useState<number | null>(null);
-  const [audioLabMinDb, setAudioLabMinDb] = useState<number | null>(null);
-  const [audioLabMaxDb, setAudioLabMaxDb] = useState<number | null>(null);
-  const [audioLabFlatlineMs, setAudioLabFlatlineMs] = useState(0);
-  const [audioLabCallbackIntervalMs, setAudioLabCallbackIntervalMs] = useState<number | null>(null);
-  const [audioLabPlaybackPositionMs, setAudioLabPlaybackPositionMs] = useState(0);
-  const [audioLabPlaybackStallMs, setAudioLabPlaybackStallMs] = useState(0);
-  const [audioLabLoopCount, setAudioLabLoopCount] = useState(0);
-  const [audioLabUnexpectedStopCount, setAudioLabUnexpectedStopCount] = useState(0);
-  const [audioLabPlaybackRecoverCount, setAudioLabPlaybackRecoverCount] = useState(0);
-  const [audioLabRecentLogs, setAudioLabRecentLogs] = useState<string[]>([]);
   const [autoBargeInEnabled, setAutoBargeInEnabled] = useState(true);
   const [autoSpeakerPriorityEnabled, setAutoSpeakerPriorityEnabled] = useState(true);
   const [autoTranscribeOnStop, setAutoTranscribeOnStop] = useState(true);
@@ -990,9 +944,6 @@ export default function App() {
     setRecordedClip,
     clearRecordedClip,
   } = useManualRecordingController({
-    audioLabRunning,
-    audioLabRecordingActive,
-    audioLabPlaybackActive,
     autoRecordingEnabled,
     recordingTuning,
     autoTranscribeOnStop,
@@ -1056,8 +1007,6 @@ export default function App() {
   const [llmActiveToolCalls, setLlmActiveToolCalls] = useState(0);
   const [llmLastToolCall, setLlmLastToolCall] = useState<ToolCallEntry | null>(null);
   const [llmRuntimeLimits, setLlmRuntimeLimits] = useState<LlmRuntimeLimitsSnapshot | null>(null);
-  const [llmRuntimeLimitsLoading, setLlmRuntimeLimitsLoading] = useState(false);
-  const [llmRuntimeLimitsError, setLlmRuntimeLimitsError] = useState("");
   const [codexCliStatusSnapshot, setCodexCliStatusSnapshot] = useState<CodexCliStatusSnapshot | null>(null);
   const [codexCliStatusFetchedAtMs, setCodexCliStatusFetchedAtMs] = useState(0);
   const [codexCliStatusLoading, setCodexCliStatusLoading] = useState(false);
@@ -1068,18 +1017,6 @@ export default function App() {
   const [gitChangedFilesByDirectory, setGitChangedFilesByDirectory] = useState<
     Record<string, GitChangedFilesDirectoryState>
   >({});
-  const [llmToolMaxRoundsInput, setLlmToolMaxRoundsInput] = useState("500");
-  const [llmToolMaxRoundsSaving, setLlmToolMaxRoundsSaving] = useState(false);
-  const [codexWsProbeLoading, setCodexWsProbeLoading] = useState(false);
-  const [codexWsHandshakeProbeLoading, setCodexWsHandshakeProbeLoading] = useState(false);
-  const [codexWsHandshakeProbeStatus, setCodexWsHandshakeProbeStatus] = useState("idle");
-  const [codexWsDiagLoading, setCodexWsDiagLoading] = useState(false);
-  const [codexWsDiagStatus, setCodexWsDiagStatus] = useState("idle");
-  const [codexWsE2eLoading, setCodexWsE2eLoading] = useState(false);
-  const [codexWsE2eStatus, setCodexWsE2eStatus] = useState("idle");
-  const [runner8788SuiteLoading, setRunner8788SuiteLoading] = useState(false);
-  const [runner8788SuiteStatus, setRunner8788SuiteStatus] = useState("idle");
-  const [llmToolLogCompact, setLlmToolLogCompact] = useState(true);
   const [toolAutoApprovalMap, setToolAutoApprovalMap] = useState<ToolAutoApprovalMap>(EMPTY_TOOL_AUTO_APPROVALS);
   const runnerRouteSelection = useRunnerRouteSelection({
     enabled: settingsLoaded,
@@ -1147,26 +1084,6 @@ export default function App() {
   const autoInputNameRef = useRef("");
   const autoInputDetectErrorLogAtRef = useRef(0);
   const autoAirPodsInputRef = useRef(false);
-  const audioLabRecordingRef = useRef<Audio.Recording | null>(null);
-  const audioLabSoundRef = useRef<Audio.Sound | null>(null);
-  const audioLabInputPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioLabPlaybackWatchdogTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioLabActionInFlightRef = useRef(false);
-  const audioLabRunIdRef = useRef(0);
-  const audioLabStartedAtRef = useRef(0);
-  const audioLabLastStatusAtRef = useRef(0);
-  const audioLabFlatlineSinceRef = useRef(0);
-  const audioLabMeterLogAtRef = useRef(0);
-  const audioLabPlaybackWantedRef = useRef(false);
-  const audioLabPlaybackLastPlayingAtRef = useRef(0);
-  const audioLabPlaybackStatusLogAtRef = useRef(0);
-  const audioLabPlaybackRecoverAtRef = useRef(0);
-  const audioLabPlaybackWatchdogInFlightRef = useRef(false);
-  const audioLabPlaybackWatchdogErrorLogAtRef = useRef(0);
-  const audioLabInputNameRef = useRef("");
-  const audioLabAirPodsInputRef = useRef(false);
-  const audioLabRouteErrorLogAtRef = useRef(0);
-  const audioLabRecordingInactiveLoggedRef = useRef(false);
   const autoRecordingWatchdogTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRecordingWatchdogInFlightRef = useRef(false);
   const autoRecordingWatchdogInFlightTokenRef = useRef(0);
@@ -1226,7 +1143,6 @@ export default function App() {
   const waitingApprovalResumePendingSessionIdRef = useRef("");
   const waitingApprovalResumeAttachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const waitingApprovalResumeCooldownUntilMsRef = useRef(0);
-  const codexHandshakeProbeSocketRef = useRef<WebSocket | null>(null);
   // ドロワーキャッシュからのセッションidentity解決(probe等、depsに載せたくない
   // コールサイト用)。実体はresolveSessionHistoryContext定義後にrenderで代入する。
   const resolveSessionHistoryContextRef = useRef<
@@ -1344,28 +1260,6 @@ export default function App() {
     flushDelayMs: AUTO_CLIENT_LOG_FLUSH_DELAY_MS,
     retryMs: AUTO_CLIENT_LOG_RETRY_MS,
   });
-  const audioLabClientLogs = useBufferedClientLogs<AutoClientLogEntry>({
-    enabled: AUTO_DIAGNOSTICS_ENABLED,
-    source: "audio_lab",
-    runnerUrl,
-    runnerToken,
-    getBaseUrl: baseUrl,
-    createSessionId: buildAutoClientLogSessionId,
-    createEntry: (seed) => ({
-      ...seed,
-      screen: activeScreen,
-      autoEnabled: false,
-      autoState: audioLabRunning ? "running" : "idle",
-      autoEvent: seed.event,
-      ttsPlaying: ttsPlayingRef.current,
-      ttsLoading,
-      replyLoading: replyLoadingRef.current,
-    }),
-    bufferMax: AUDIO_LAB_LOG_BUFFER_MAX,
-    flushBatchSize: AUDIO_LAB_LOG_FLUSH_BATCH_SIZE,
-    flushDelayMs: AUDIO_LAB_LOG_FLUSH_DELAY_MS,
-    retryMs: AUDIO_LAB_LOG_RETRY_MS,
-  });
   const sessionDiagClientLogs = useBufferedClientLogs<AutoClientLogEntry>({
     enabled: true,
     source: "session_diag",
@@ -1389,23 +1283,7 @@ export default function App() {
     retryMs: SESSION_DIAG_LOG_RETRY_MS,
   });
   sessionDiagEnqueueRef.current = sessionDiagClientLogs.enqueue;
-  const autoClientLogQueuedCount = autoClientLogs.queuedCount;
-  const autoClientLogSentCount = autoClientLogs.sentCount;
-  const autoClientLogStatus = autoClientLogs.status;
-  const audioLabLogQueuedCount = audioLabClientLogs.queuedCount;
-  const audioLabLogSentCount = audioLabClientLogs.sentCount;
-  const audioLabLogStatus = audioLabClientLogs.status;
 
-  useEffect(() => {
-    return () => {
-      const ws = codexHandshakeProbeSocketRef.current;
-      codexHandshakeProbeSocketRef.current = null;
-      if (!ws) return;
-      try {
-        ws.close();
-      } catch {}
-    };
-  }, []);
   const sttProviderRef = useRef<SttProvider>(DEFAULT_STT_PROVIDER);
   const faceTrackingEnabledRef = useRef(false);
   const faceTrackingLookingRef = useRef(true);
@@ -2012,8 +1890,6 @@ export default function App() {
     faceTrackingSuppressedRef,
     faceTrackingNotLookingSinceRef,
     autoCaptureCycleSeqRef,
-    audioLabRecordingRef,
-    audioLabSoundRef,
     faceTrackingFaceDetectedRef,
     faceTrackingLookingRef,
     autoSpeakerPriorityEnabledRef,
@@ -2030,7 +1906,6 @@ export default function App() {
     autoReplyAfterStt,
     autoSpeakAfterReply,
     ttsLoading,
-    audioLabRunning,
     manualRecordingActive: Boolean(manualRecording),
     autoWaitReasonLogThrottleMs: AUTO_WAIT_REASON_LOG_THROTTLE_MS,
     autoRestartDelayMs: 400,
@@ -2069,9 +1944,6 @@ export default function App() {
     sttProvider,
     sttProviderRef,
     manualRecordingActive: Boolean(manualRecording),
-    audioLabRunning,
-    audioLabRecordingActive,
-    audioLabPlaybackActive,
     faceTrackingEnabled,
     faceTrackingLooking,
     autoRecordingEnabledRef,
@@ -2216,7 +2088,6 @@ export default function App() {
     autoSpectrumBars,
     autoSpeechDetected,
     autoWaveformDebugText,
-    audioLabElapsedMs,
   } = useChatDerivedState({
     codexWsUrl,
     transcript,
@@ -2265,9 +2136,6 @@ export default function App() {
     autoWaveformLastSampleAt: autoWaveformLastSampleAtRef.current,
     autoWaveformUiAt: autoWaveformUiAtRef.current,
     streamAudioQueueSize,
-    audioLabRunning,
-    audioLabNowMs,
-    audioLabStartedAt: audioLabStartedAtRef.current,
   });
   const selectedSessionExecutionFact = useMemo(() => {
     const selectedSessionId = parseOptionalSessionId(selectedLlmSessionId || llmConversationSessionIdRef.current);
@@ -4332,10 +4200,6 @@ export default function App() {
   const {
     setTtsSpeedWithSync,
     applyRecordingQualityPreset,
-    setRecordingSampleRateFromInput,
-    setRecordingChannelsFromInput,
-    setRecordingBitRateFromInput,
-    setRecordingProgressUpdateIntervalFromInput,
   } = useAudioSettingsInputController({
     setTtsSpeed,
     setTtsSpeedInput,
@@ -4344,7 +4208,6 @@ export default function App() {
     setRecordingTuning,
     parseRecordingQualityPreset,
     recordingTuningFromPreset,
-    clampRecordingChannels,
   });
 
   function setReplyLoadingWithRef(next: boolean) {
@@ -4376,20 +4239,10 @@ export default function App() {
       ...patch,
     }));
   }
-  const {
-    loadLlmRuntimeLimits,
-    updateLlmToolMaxRounds,
-    fetchRunnerLlmRuntimeLimitsForStatus,
-  } = useLlmRuntimeLimitsController({
+  const { fetchRunnerLlmRuntimeLimitsForStatus } = useLlmRuntimeLimitsReader({
     auxServerBaseUrl,
     runnerToken,
-    llmToolMaxRoundsInput,
     setLlmRuntimeLimits,
-    setLlmRuntimeLimitsError,
-    setLlmRuntimeLimitsLoading,
-    setLlmToolMaxRoundsInput,
-    setLlmToolMaxRoundsSaving,
-    setReplyDebug,
   });
 
   function elapsedSinceMs(startedAtMs: number) {
@@ -4408,154 +4261,6 @@ export default function App() {
     });
   }
 
-  async function sendAutoClientLogsNow() {
-    await autoClientLogs.sendNow();
-  }
-
-  function clearAutoClientLogsLocal() {
-    autoClientLogs.clearLocal();
-  }
-
-  const {
-    logAudioLab,
-    sendAudioLabLogsNow,
-    clearAudioLabLogsLocal,
-  } = useAudioLabLoggingController({
-    autoDiagnosticsEnabled: AUTO_DIAGNOSTICS_ENABLED,
-    audioLabRecentLogMax: AUDIO_LAB_RECENT_LOG_MAX,
-    audioLabClientLogs,
-    setAudioLabRecentLogs: (updater) => setAudioLabRecentLogs(updater),
-    toInlineSummary,
-  });
-
-  const {
-    clearAudioLabInputPollTimer,
-    clearAudioLabPlaybackWatchdogTimer,
-    bindAudioLabPlaybackStatus,
-    startAudioLabPlaybackWatchdog,
-    detectAudioLabInputRoute,
-    startAudioLabInputRoutePolling,
-  } = useAudioLabPlaybackMonitoring({
-    audioLabRecordingRef,
-    audioLabSoundRef,
-    audioLabInputPollTimerRef,
-    audioLabPlaybackWatchdogTimerRef,
-    audioLabRunIdRef,
-    audioLabPlaybackWantedRef,
-    audioLabPlaybackLastPlayingAtRef,
-    audioLabPlaybackStatusLogAtRef,
-    audioLabPlaybackRecoverAtRef,
-    audioLabPlaybackWatchdogInFlightRef,
-    audioLabPlaybackWatchdogErrorLogAtRef,
-    audioLabInputNameRef,
-    audioLabAirPodsInputRef,
-    audioLabRouteErrorLogAtRef,
-    audioLabInputPollMs: AUDIO_LAB_INPUT_POLL_MS,
-    playbackStatusLogThrottleMs: AUDIO_LAB_PLAYBACK_STATUS_LOG_THROTTLE_MS,
-    playbackWatchdogIntervalMs: AUDIO_LAB_PLAYBACK_WATCHDOG_INTERVAL_MS,
-    playbackWatchdogStatusTimeoutMs: AUDIO_LAB_PLAYBACK_WATCHDOG_STATUS_TIMEOUT_MS,
-    playbackRecoverCooldownMs: AUDIO_LAB_PLAYBACK_RECOVER_COOLDOWN_MS,
-    playbackStallMs: AUDIO_LAB_PLAYBACK_STALL_MS,
-    playbackWatchdogErrorLogThrottleMs: AUDIO_LAB_PLAYBACK_WATCHDOG_ERROR_LOG_THROTTLE_MS,
-    routeErrorLogThrottleMs: AUDIO_LAB_ROUTE_ERROR_LOG_THROTTLE_MS,
-    setAudioLabPlaybackActive,
-    setAudioLabPlaybackPositionMs,
-    setAudioLabPlaybackStallMs,
-    setAudioLabLoopCount,
-    setAudioLabUnexpectedStopCount,
-    setAudioLabPlaybackRecoverCount,
-    setAudioLabInputName,
-    setAudioLabAirPodsInput,
-    logAudioLab,
-    isAirPodsInputName,
-  });
-
-  const {
-    stopAudioLabPlaybackOnly,
-    startAudioLabPlaybackOnly,
-  } = useAudioLabPlaybackController({
-    audioLabLoopAsset: AUDIO_LAB_LOOP_ASSET,
-    audioLabRunning,
-    audioLabActionInFlightRef,
-    audioLabRecordingRef,
-    audioLabSoundRef,
-    audioLabPlaybackWantedRef,
-    audioLabRunIdRef,
-    audioLabStartedAtRef,
-    audioLabPlaybackLastPlayingAtRef,
-    clearAudioLabPlaybackWatchdogTimer,
-    startAudioLabPlaybackWatchdog,
-    bindAudioLabPlaybackStatus,
-    setAudioLabRunning,
-    setAudioLabNowMs,
-    setAudioLabPlaybackActive,
-    setAudioLabPlaybackPositionMs,
-    setAudioLabPlaybackStallMs,
-    logAudioLab,
-    reportError,
-  });
-
-  const { startAudioLabProbe, stopAudioLabProbe } = useAudioLabProbeController({
-    audioLabLoopAsset: AUDIO_LAB_LOOP_ASSET,
-    audioLabFlatlineDb: AUDIO_LAB_FLATLINE_DB,
-    audioLabMeterLogThrottleMs: AUDIO_LAB_METER_LOG_THROTTLE_MS,
-    audioLabRunning,
-    manualRecording,
-    ttsLoading,
-    autoRecordingEnabledRef,
-    ttsPlayingRef,
-    audioLabActionInFlightRef,
-    audioLabRecordingRef,
-    audioLabSoundRef,
-    audioLabRunIdRef,
-    audioLabStartedAtRef,
-    audioLabLastStatusAtRef,
-    audioLabFlatlineSinceRef,
-    audioLabMeterLogAtRef,
-    audioLabPlaybackWantedRef,
-    audioLabPlaybackLastPlayingAtRef,
-    audioLabPlaybackStatusLogAtRef,
-    audioLabPlaybackRecoverAtRef,
-    audioLabPlaybackWatchdogErrorLogAtRef,
-    audioLabInputNameRef,
-    audioLabAirPodsInputRef,
-    audioLabRecordingInactiveLoggedRef,
-    recordingTuning,
-    clearAudioLabInputPollTimer,
-    clearAudioLabPlaybackWatchdogTimer,
-    detectAudioLabInputRoute,
-    startAudioLabInputRoutePolling,
-    bindAudioLabPlaybackStatus,
-    startAudioLabPlaybackWatchdog,
-    stopAudioLabPlaybackOnly,
-    stopWaveformPlayback,
-    ensureMicReady,
-    releaseRecording,
-    setAudioModeForPlayback,
-    setError,
-    setAudioLabLastDb,
-    setAudioLabMinDb,
-    setAudioLabMaxDb,
-    setAudioLabFlatlineMs,
-    setAudioLabCallbackIntervalMs,
-    setAudioLabPlaybackPositionMs,
-    setAudioLabPlaybackStallMs,
-    setAudioLabLoopCount,
-    setAudioLabUnexpectedStopCount,
-    setAudioLabPlaybackRecoverCount,
-    setAudioLabInputName,
-    setAudioLabAirPodsInput,
-    setAudioLabNowMs,
-    setAudioLabRecordingActive,
-    setAudioLabPlaybackActive,
-    setAudioLabRunning,
-    logAudioLab,
-    reportError,
-    isRecordingNotAllowedError,
-    isRecorderNotPreparedError,
-    buildRecordingOptions,
-    clampRecordingProgressUpdateIntervalMs,
-  });
   const {
     appendAutoWaveformSample: appendAutoWaveformSampleFromController,
     decayAutoWaveformFrame: decayAutoWaveformFrameFromController,
@@ -4724,7 +4429,7 @@ export default function App() {
     chatScrollOffsetYRef.current = chatScrollOffsetY;
   }, [chatScrollOffsetY]);
 
-  const { importSettingsJson, logSettingsJson } = useAppSettingsPersistenceController({
+  const { importSettingsJson, exportSettingsJson } = useAppSettingsPersistenceController({
     settingsLoaded,
     setSettingsLoaded,
     settingsFileName: SETTINGS_FILE_NAME,
@@ -4768,7 +4473,6 @@ export default function App() {
     autoReplyAfterStt,
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
-    llmToolLogCompact,
     setRunnerUrl,
     setRunnerToken,
     setCloudflareAccessClientId,
@@ -4799,7 +4503,6 @@ export default function App() {
     setRecordingTuning,
     setFaceTrackingEnabledWithRef,
     setTtsSpeedWithSync,
-    setLlmToolLogCompact,
     setAutoTranscribeOnStop,
     setAutoBargeInEnabled,
     setAutoSpeakerPriorityEnabled,
@@ -5044,17 +4747,10 @@ export default function App() {
     cleanupRecordingTranscription,
     cleanupDirectNativeStt,
     faceTrackingSessionRef,
-    clearAudioLabInputPollTimer,
-    clearAudioLabPlaybackWatchdogTimer,
-    audioLabClientLogs,
     clearTtsPlaybackWatchdogTimer,
     ttsPlaybackWantedRef,
     ttsPlaybackTransitionInFlightRef,
     ttsStopInFlightRef,
-    audioLabActionInFlightRef,
-    audioLabPlaybackWantedRef,
-    audioLabRecordingRef,
-    audioLabSoundRef,
   });
 
   useEffect(() => {
@@ -5206,20 +4902,6 @@ export default function App() {
     return () => clearInterval(timer);
   }, [manualRecording, autoRecordingEnabled]);
 
-  useEffect(() => {
-    if (!audioLabRunning) return;
-    setAudioLabNowMs(Date.now());
-    const timer = setInterval(() => {
-      setAudioLabNowMs(Date.now());
-    }, 240);
-    return () => clearInterval(timer);
-  }, [audioLabRunning]);
-
-  useEffect(() => {
-    if (activeScreen === "audio_lab") return;
-    if (!audioLabRunning && !audioLabRecordingRef.current && !audioLabSoundRef.current) return;
-    void stopAudioLabProbe("screen_changed");
-  }, [activeScreen, audioLabRunning]);
 
   useEffect(() => {
     const isRecordingActive = Boolean(manualRecording) || autoRecordingEnabled;
@@ -5493,54 +5175,20 @@ export default function App() {
     runSlashCancelQueueCommand,
   });
 
-  const {
-    testHardcodedCodexWsConnection,
-    uploadCodexWsPreflightLog,
-    runCodexWsDiagnosticsAndUpload,
-    runRunner8788ReachabilitySuite,
-    runCodexWsE2eTurnAndUpload,
-    testHardcodedCodexWsHandshakeOnly,
-  } = useCodexWsDiagnosticsController({
-    defaultCodexWsUrl: DEFAULT_CODEX_WS_URL,
+  const { uploadCodexWsPreflightLog } = useCodexWsPreflightLogger({
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     executionEnvironment: EXPO_EXECUTION_ENVIRONMENT,
     isExpoGo: IS_EXPO_GO,
-    codexWsUrl,
-    codexWsToken: effectiveCodexWsToken,
     runnerToken,
-    runnerWebSocketManager,
     activeScreen,
     autoRecordingState,
     autoLastEvent,
     ttsLoading,
-    modelRef,
-    reasoningEffort,
-    codexApprovalPolicy,
-    codexWsProbeLoading,
-    codexWsDiagLoading,
-    runner8788SuiteLoading,
-    codexWsE2eLoading,
-    codexWsHandshakeProbeLoading,
     autoClientSessionIdRef: autoClientLogs.sessionIdRef,
     autoRecordingEnabledRef,
     ttsPlayingRef,
     replyLoadingRef,
-    codexHandshakeProbeSocketRef,
     baseUrl,
-    normalizedLlmDirectoryForRequest,
-    handleApprovalRequest: handleRuntimeApprovalRequest,
-    onApprovalRequestResolved: handleRuntimeApprovalResolved,
-    setError,
-    setReplyDebug,
-    setCodexWsProbeLoading,
-    setCodexWsDiagLoading,
-    setCodexWsDiagStatus,
-    setRunner8788SuiteLoading,
-    setRunner8788SuiteStatus,
-    setCodexWsE2eLoading,
-    setCodexWsE2eStatus,
-    setCodexWsHandshakeProbeLoading,
-    setCodexWsHandshakeProbeStatus,
   });
 
   const handleLlmMessageCompleted = useCallback((completion: LlmMessageCompletion) => {
@@ -5841,8 +5489,7 @@ export default function App() {
   const {
     openDrawer,
     closeDrawer,
-    openDebugScreen,
-    openAudioLabScreen,
+    openSettingsScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeRunnerUrl,
@@ -5857,19 +5504,6 @@ export default function App() {
     openThinkSelect,
     selectModel,
     selectThinkOption,
-    probeCurrentWsFromContext,
-    probeHandshakeOnlyFromContext,
-    runWsDiagFromContext,
-    runAuxServerSuiteFromContext,
-    runWsE2eFromContext,
-    loadLlmRuntimeLimitsFromContext,
-    updateLlmToolMaxRoundsFromContext,
-    changeLlmToolMaxRoundsInputFromContext,
-    toggleLlmToolLogCompactFromContext,
-    changeTranscript,
-    changeSystemPrompt,
-    sendReplyRequestFromContext,
-    sendReplyTranscriptFromContext,
     reloadSelectedSessionFromContext,
     goDirectoryParentFromContext,
     goDirectoryRootFromContext,
@@ -5880,20 +5514,6 @@ export default function App() {
     renameSelectedSessionTitleFromContext,
     selectSessionMarkerColorFromContext,
     removeSelectedDirectoryFromContext,
-    openLatestYouTubeVideoFromDebugContext,
-    synthesizeSpeechFromDebugContext,
-    stopTtsPlaybackFromDebugContext,
-    startDirectNativeSttFromDebugSpeechContext,
-    stopDirectNativeSttFromDebugSpeechContext,
-    startAutoRecordingModeFromDebugSpeechContext,
-    stopAutoRecordingModeFromDebugSpeechContext,
-    sendAutoClientLogsFromDebugSpeechContext,
-    transcribeRecordingFromDebugSpeechContext,
-    startAudioLabProbeFromContext,
-    stopAudioLabProbeFromContext,
-    startAudioLabPlaybackOnlyFromContext,
-    stopAudioLabPlaybackOnlyFromContext,
-    sendAudioLabLogsFromContext,
     stopDirectNativeSttFromComposerContext,
     stopAutoRecordingModeFromComposerContext,
     stopRecordingFromComposerContext,
@@ -5915,7 +5535,6 @@ export default function App() {
     directoryExplorerRootPath,
     directoryExplorerPath,
     selectedRegisteredDirectory,
-    latestAssistantYouTubeVideoIds,
     ttsSpeed,
     ttsProvider,
     llmBackend,
@@ -5941,19 +5560,6 @@ export default function App() {
     setModelRef,
     setLlmBackend,
     setReasoningEffort,
-    testHardcodedCodexWsConnection,
-    testHardcodedCodexWsHandshakeOnly,
-    runCodexWsDiagnosticsAndUpload,
-    runRunner8788ReachabilitySuite,
-    runCodexWsE2eTurnAndUpload,
-    loadLlmRuntimeLimits,
-    updateLlmToolMaxRounds,
-    setLlmToolMaxRoundsInput,
-    setLlmToolLogCompact,
-    setTranscript,
-    setSystemPrompt,
-    sendReplyRequest,
-    sendReplyTranscript,
     reloadActiveSession,
     loadDirectoryExplorer,
     upsertRegisteredDirectory,
@@ -5963,20 +5569,10 @@ export default function App() {
     setSelectedSessionTitleOverride,
     setSelectedSessionMarkerColor,
     removeRegisteredDirectory,
-    openYouTubeVideo,
-    synthesizeSpeech,
-    stopTtsPlayback,
     startDirectNativeStt,
     stopDirectNativeStt,
     startAutoRecordingMode,
     stopAutoRecordingMode,
-    sendAutoClientLogsNow,
-    transcribeRecording,
-    startAudioLabProbe,
-    stopAudioLabProbe,
-    startAudioLabPlaybackOnly,
-    stopAudioLabPlaybackOnly,
-    sendAudioLabLogsNow,
     stopRecording,
     cancelCodexTurnRequest,
     stopWaveformPlayback,
@@ -6039,8 +5635,7 @@ export default function App() {
     setDrawerOpen,
     openDrawer,
     closeDrawer,
-    openDebugScreen,
-    openAudioLabScreen,
+    openSettingsScreen,
     openSkiaBoardScreen,
     openCloudflareTunnelMonitorScreen,
   });
@@ -6057,10 +5652,6 @@ export default function App() {
     cloudflareRunnerWsUrl,
     localRunnerUrl,
     localRunnerWsUrl,
-    executionEnvironment: EXPO_EXECUTION_ENVIRONMENT,
-    isExpoGo: IS_EXPO_GO,
-    isDev: __DEV__,
-    defaultCodexWsUrl: DEFAULT_CODEX_WS_URL,
     codexApprovalPolicy,
     selectedModelLabel,
     modelRef,
@@ -6076,13 +5667,13 @@ export default function App() {
     voiceFilter,
     selectedVoiceId,
     recordingQualityPreset,
-    recordingTuning,
     autoTranscribeOnStop,
     autoReplyAfterStt,
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
+    toolAutoApprovalRuleCount: Object.keys(toolAutoApprovalMap).length,
     changeRunnerUrl,
     changeLlmDirectory,
     changeCodexWsUrl,
@@ -6101,16 +5692,15 @@ export default function App() {
     selectTtsProvider: setTtsProvider,
     selectSttProvider: setSttProvider,
     applyRecordingQualityPreset,
-    changeRecordingSampleRate: setRecordingSampleRateFromInput,
-    changeRecordingBitRate: setRecordingBitRateFromInput,
-    changeRecordingChannels: setRecordingChannelsFromInput,
-    changeRecordingProgressUpdateInterval: setRecordingProgressUpdateIntervalFromInput,
     toggleAutoTranscribeOnStop: setAutoTranscribeOnStop,
     toggleAutoReplyAfterStt: setAutoReplyAfterStt,
     toggleAutoBargeInEnabled: setAutoBargeInEnabled,
     toggleAutoSpeakerPriorityEnabled: setAutoSpeakerPriorityEnabled,
     toggleAutoSpeakAfterReply: setAutoSpeakAfterReply,
     toggleFaceIdRequiredForApproval: setFaceIdRequiredForApproval,
+    exportSettingsJson,
+    importSettingsJson,
+    clearToolAutoApprovals,
     openModelSelect,
     openThinkSelect,
     modelSelectOpen,
@@ -6119,108 +5709,6 @@ export default function App() {
     setThinkSelectOpen,
     selectModel,
     selectThinkOption,
-  });
-  const debugRuntimeContextValue = useDebugRuntimeContextValue({
-    codexWsProbeLoading,
-    probeCurrentWs: probeCurrentWsFromContext,
-    codexWsHandshakeProbeLoading,
-    probeHandshakeOnly: probeHandshakeOnlyFromContext,
-    codexWsDiagLoading,
-    runWsDiag: runWsDiagFromContext,
-    runner8788SuiteLoading,
-    runAuxServerSuite: runAuxServerSuiteFromContext,
-    codexWsE2eLoading,
-    runWsE2e: runWsE2eFromContext,
-    codexWsHandshakeProbeStatus,
-    codexWsDiagStatus,
-    runner8788SuiteStatus,
-    codexWsE2eStatus,
-    llmRuntimeLimitsLoading,
-    loadLlmRuntimeLimits: loadLlmRuntimeLimitsFromContext,
-    llmToolMaxRoundsInput,
-    changeLlmToolMaxRoundsInput: changeLlmToolMaxRoundsInputFromContext,
-    llmToolMaxRoundsSaving,
-    updateLlmToolMaxRounds: updateLlmToolMaxRoundsFromContext,
-    llmRuntimeLimits,
-    llmRuntimeLimitsError,
-    llmToolLogCompact,
-    toggleLlmToolLogCompact: toggleLlmToolLogCompactFromContext,
-  });
-  const debugConversationContextValue = useDebugConversationContextValue({
-    llmVisual,
-    llmStatusText: llmStatusLabel(llmUiStatus),
-    llmUiStatusDetail,
-    llmPixelIconKey,
-    pixelStatusAnimations: PIXEL_STATUS_ANIMATIONS,
-    llmActiveToolCalls,
-    llmElapsedLabel: formatElapsedMmSs(replyLoading ? llmElapsedLiveMs : llmElapsedMs),
-    llmLastToolCall,
-    streamAudioQueueSize,
-    streamMode,
-    streamLlmNativeDeltaCount,
-    streamLlmPseudoDeltaCount,
-    streamFirstNativeDeltaOffsetMs,
-    ttsDebugStats,
-    streamLlmProgress,
-    streamLlmDeltas,
-    streamSegments,
-    trimForInline,
-    replyDebug,
-    latestAssistantYouTubeVideos,
-    youtubePlayerMessageId,
-    youtubePlayerVideoId,
-    youtubeEmbedHtml,
-    youtubePlayerSession,
-    youtubeEmbedOrigin: YOUTUBE_EMBED_ORIGIN,
-    onYouTubeWebViewMessage: handleYouTubeWebViewMessage,
-    onOpenLatestYouTubeVideo: openLatestYouTubeVideoFromDebugContext,
-    formatYouTubePublishedDate,
-    formatYouTubeViewCount,
-    canReadReplyAudio: !!sanitizeTextForTts(reply) && !ttsLoading && !!runnerUrl.trim() && !!runnerToken.trim(),
-    ttsLoading,
-    synthesizeSpeech: synthesizeSpeechFromDebugContext,
-    hasTtsSound: !!ttsSound,
-    stopTtsPlayback: stopTtsPlaybackFromDebugContext,
-    ttsUri,
-    history,
-  });
-  const debugSpeechContextValue = useDebugSpeechContextValue({
-    importSettingsJson,
-    logSettingsJson,
-    clearToolAutoApprovals,
-    toolAutoApprovalRuleCount: Object.keys(toolAutoApprovalMap).length,
-    isDirectNativeSttProvider,
-    directNativeSttEnabled,
-    directNativeSttActive,
-    directNativeSttPreviewText,
-    startDirectNativeStt: startDirectNativeSttFromDebugSpeechContext,
-    stopDirectNativeStt: stopDirectNativeSttFromDebugSpeechContext,
-    autoRecordingEnabled,
-    startAutoRecordingMode: startAutoRecordingModeFromDebugSpeechContext,
-    stopAutoRecordingMode: stopAutoRecordingModeFromDebugSpeechContext,
-    autoWaveformAnimationEnabled: AUTO_WAVEFORM_ANIMATION_ENABLED,
-    waveformDotGif: WAVEFORM_DOT_GIF,
-    autoSpeechDetected,
-    autoWaveformDebugOverlayEnabled: AUTO_WAVEFORM_DEBUG_OVERLAY_ENABLED,
-    autoWaveformDebugText,
-    autoRecordingState,
-    autoMeteringDb,
-    autoLastEvent,
-    autoSegments,
-    autoInputName,
-    autoAirPodsInput,
-    autoClientLogQueuedCount,
-    autoClientLogSentCount,
-    autoClientLogStatus,
-    sendAutoClientLogs: sendAutoClientLogsFromDebugSpeechContext,
-    clearAutoClientLogs: clearAutoClientLogsLocal,
-    manualRecording: Boolean(manualRecording),
-    startRecording,
-    stopRecording,
-    recordingUri,
-    transcribeRecording: transcribeRecordingFromDebugSpeechContext,
-    recordingSec,
-    clearRecordedClip,
   });
   const renameDirectoryForPathFromContext = useCallback((directoryPathRaw: string, nextDisplayName: string) => {
     const directoryPath = parseLlmDirectory(directoryPathRaw);
@@ -6327,10 +5815,14 @@ export default function App() {
     removeDirectoryForPath: removeDirectoryForPathFromContext,
     markSessionUnread,
     showChatBottomToast,
-    setTranscript: changeTranscript,
-    setSystemPrompt: changeSystemPrompt,
-    sendReplyRequest: sendReplyRequestFromContext,
-    sendReplyTranscript: sendReplyTranscriptFromContext,
+    setTranscript,
+    setSystemPrompt,
+    sendReplyRequest: () => {
+      void sendReplyRequest();
+    },
+    sendReplyTranscript: () => {
+      void sendReplyTranscript();
+    },
     sendReplyRequestForPanelWithTranscript: sendReplyRequestForPanelWithTranscriptFromContext,
     sendReplyTranscriptForPanel: sendReplyTranscriptForPanelFromContext,
     cancelReplyRequestForPanel: cancelReplyRequestForPanelFromContext,
@@ -7308,38 +6800,6 @@ export default function App() {
     startNewPanelSession,
     updatePanelSettings,
   ]);
-  const audioLabContextValue = useAudioLabContextValue({
-    audioLabFlatlineDb: AUDIO_LAB_FLATLINE_DB,
-    audioLabRunning,
-    audioLabRecordingActive,
-    audioLabPlaybackActive,
-    audioLabInputName,
-    audioLabAirPodsInput,
-    audioLabElapsedMs,
-    audioLabCallbackIntervalMs,
-    audioLabLastDb,
-    audioLabMinDb,
-    audioLabMaxDb,
-    audioLabFlatlineMs,
-    audioLabPlaybackPositionMs,
-    audioLabPlaybackStallMs,
-    audioLabLoopCount,
-    audioLabUnexpectedStopCount,
-    audioLabPlaybackRecoverCount,
-    audioLabLogQueuedCount,
-    audioLabLogSentCount,
-    audioLabLogStatus,
-    audioLabRecentLogs,
-    errorMessage: error,
-    startProbe: startAudioLabProbeFromContext,
-    stopProbe: stopAudioLabProbeFromContext,
-    startPlaybackOnly: startAudioLabPlaybackOnlyFromContext,
-    stopPlaybackOnly: stopAudioLabPlaybackOnlyFromContext,
-    sendLogs: sendAudioLabLogsFromContext,
-    clearLogs: clearAudioLabLogsLocal,
-    runnerUrl,
-    runnerToken,
-  });
   const youTubePlayerContextValue = useYouTubePlayerContextValue({
     activeYouTubeQueuePositionLabel,
     youtubeVideoMetaById,
@@ -7624,7 +7084,7 @@ export default function App() {
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
     closeDrawer,
-    openDebugScreen,
+    openSettingsScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     openDirectoryExplorer,
@@ -7661,15 +7121,11 @@ export default function App() {
         conversation={conversationContextValue}
         panelRuntimeStore={panelRuntimeStoreContextValue}
         panelRuntimeController={panelRuntimeControllerContextValue}
-        audioLab={audioLabContextValue}
         youTubePlayer={youTubePlayerContextValue}
         chatDiagnostics={chatDiagnosticsContextValue}
         chatComposer={chatComposerContextValue}
         chatVisual={chatVisualContextValue}
         chatScreen={chatScreenContextValue}
-        debugRuntime={debugRuntimeContextValue}
-        debugConversation={debugConversationContextValue}
-        debugSpeech={debugSpeechContextValue}
       >
       <KeyboardProvider>
         <AppDrawerLayout

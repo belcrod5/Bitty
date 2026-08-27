@@ -11,7 +11,7 @@ Worktree: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/feat/react-native-maco
 Improve the feel of these macOS inputs without changing the working iPhone
 behavior:
 
-1. Mouse-wheel and trackpad scrolling in Drawer, Chat, and Current Settings.
+1. Mouse-wheel and trackpad scrolling in Drawer, Chat, and Settings.
 2. Command + mouse-wheel zoom on the Skia board.
 
 Fix missing behavior at its owning dependency/platform boundary. Do not add
@@ -50,7 +50,7 @@ diff, not a substitute for rerunning the relevant checks after a new code change
 ## User-verified state
 
 - Fixed: Chat no longer jumps to the bottom while the user is reading older messages.
-- Still unsatisfactory: Drawer, Chat, and Current Settings do not feel smoothly
+- Still unsatisfactory: Drawer, Chat, and Settings do not feel smoothly
   scrolled.
 - Still unsatisfactory: Skia Command + wheel zoom changes scale too abruptly.
 
@@ -132,7 +132,7 @@ Reproduce separately with:
 
 - a traditional/discrete mouse wheel;
 - a precise trackpad gesture;
-- Drawer, Chat, and Current Settings;
+- Drawer, Chat, and Settings;
 - Command + wheel on both an empty Skia board and a board with many Paragraph-backed
   cards;
 - macOS Debug and, when the Release blocker below is resolved, Profile/Release.
@@ -320,7 +320,7 @@ native event contract.
 | `expo/src/features/app/screens/SkiaMiniBoardScreen.tsx` | Shared pinch consumer; owns transform/focal-point math, not wheel recognition |
 | `expo/src/features/app/screens/ChatScreen.tsx` | Shared Chat follow state; regression reference only for generic smoothness |
 | `expo/src/features/app/components/AppDrawer.tsx` | Plain `ScrollView` reproduction surface |
-| `expo/src/features/app/screens/DebugScreen.tsx` | Current Settings plain `ScrollView` reproduction surface |
+| `expo/src/features/app/screens/SettingsScreen.tsx` | Settings plain `ScrollView` reproduction surface |
 | `expo/patches/@legendapp+list+2.0.19.patch` | macOS list item-placement fix; preserve unless profiling implicates it |
 | `expo/metro.config.js` | Maps `react-native` imports to `react-native-macos` for macOS |
 | `expo/app.json` | Confirms New Architecture is enabled |
@@ -420,7 +420,7 @@ result rather than writing only "manual check passed."
 
 Ordinary scrolling:
 
-- Drawer, Chat, and Current Settings move smoothly without changing relative
+- Drawer, Chat, and Settings move smoothly without changing relative
   sensitivity unexpectedly.
 - Precise trackpad momentum is unchanged; discrete-wheel shaping does not delay it.
 - Vertical/horizontal movement, Shift + wheel, natural scrolling on/off, nested

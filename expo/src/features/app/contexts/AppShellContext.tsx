@@ -8,8 +8,7 @@ export type AppShellContextValue = {
   setDrawerOpen: Dispatch<SetStateAction<boolean>>;
   openDrawer: () => void;
   closeDrawer: () => void;
-  openDebugScreen: () => void;
-  openAudioLabScreen: () => void;
+  openSettingsScreen: () => void;
   openSkiaBoardScreen: () => void;
   openCloudflareTunnelMonitorScreen: () => void;
 };

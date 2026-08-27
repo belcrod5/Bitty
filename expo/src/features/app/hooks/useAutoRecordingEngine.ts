@@ -48,8 +48,6 @@ type UseAutoRecordingEngineOptions = {
   faceTrackingSuppressedRef: MutableRefObject<boolean>;
   faceTrackingNotLookingSinceRef: MutableRefObject<number>;
   autoCaptureCycleSeqRef: MutableRefObject<number>;
-  audioLabRecordingRef: MutableRefObject<Audio.Recording | null>;
-  audioLabSoundRef: MutableRefObject<Audio.Sound | null>;
   faceTrackingFaceDetectedRef: MutableRefObject<boolean>;
   faceTrackingLookingRef: MutableRefObject<boolean>;
   autoSpeakerPriorityEnabledRef: MutableRefObject<boolean>;
@@ -66,7 +64,6 @@ type UseAutoRecordingEngineOptions = {
   autoReplyAfterStt: boolean;
   autoSpeakAfterReply: boolean;
   ttsLoading: boolean;
-  audioLabRunning: boolean;
   manualRecordingActive: boolean;
   autoWaitReasonLogThrottleMs: number;
   autoRestartDelayMs: number;
@@ -139,8 +136,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     faceTrackingSuppressedRef,
     faceTrackingNotLookingSinceRef,
     autoCaptureCycleSeqRef,
-    audioLabRecordingRef,
-    audioLabSoundRef,
     faceTrackingFaceDetectedRef,
     faceTrackingLookingRef,
     autoSpeakerPriorityEnabledRef,
@@ -157,7 +152,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     autoReplyAfterStt,
     autoSpeakAfterReply,
     ttsLoading,
-    audioLabRunning,
     manualRecordingActive,
     autoWaitReasonLogThrottleMs,
     autoRestartDelayMs,
@@ -479,10 +473,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
       return;
     }
     if (autoRecordingEnabledRef.current) return;
-    if (audioLabRecordingRef.current || audioLabSoundRef.current || audioLabRunning) {
-      reportError("Audio Lab実行中はAuto Recordingを開始できません。", "auto:start-mode");
-      return;
-    }
     if (manualRecordingActive) {
       reportError("手動録音を停止してから自動録音を開始してください。", "auto:start-mode");
       return;
@@ -538,9 +528,6 @@ export function useAutoRecordingEngine(options: UseAutoRecordingEngineOptions) {
     playUiSfx("recordStart");
     void startAutoCaptureCycle();
   }, [
-    audioLabRecordingRef,
-    audioLabRunning,
-    audioLabSoundRef,
     autoAboveGapSinceRef,
     autoAirPodsInputRef,
     autoAppStateNonActiveTimerRef,

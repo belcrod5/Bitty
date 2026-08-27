@@ -12,7 +12,6 @@ type UseAudioSettingsInputControllerOptions = {
   setRecordingTuning: (value: RecordingTuning | ((prev: RecordingTuning) => RecordingTuning)) => void;
   parseRecordingQualityPreset: (valueRaw: unknown) => RecordingQualityPreset;
   recordingTuningFromPreset: (preset: RecordingQualityPreset) => RecordingTuning;
-  clampRecordingChannels: (raw: number) => number;
 };
 
 export function useAudioSettingsInputController(options: UseAudioSettingsInputControllerOptions) {
@@ -24,7 +23,6 @@ export function useAudioSettingsInputController(options: UseAudioSettingsInputCo
     setRecordingTuning,
     parseRecordingQualityPreset,
     recordingTuningFromPreset,
-    clampRecordingChannels,
   } = options;
 
   const setTtsSpeedWithSync = useCallback((value: number) => {
@@ -48,57 +46,8 @@ export function useAudioSettingsInputController(options: UseAudioSettingsInputCo
     recordingTuningFromPreset,
   ]);
 
-  const setRecordingSampleRateFromInput = useCallback((raw: string) => {
-    const value = Number(raw);
-    if (!Number.isFinite(value)) return;
-    const normalized = Math.round(value);
-    if (normalized <= 0) return;
-    setRecordingTuning((prev) => ({
-      ...prev,
-      sampleRate: normalized,
-    }));
-  }, [setRecordingTuning]);
-
-  const setRecordingChannelsFromInput = useCallback((raw: string) => {
-    const value = Number(raw);
-    if (!Number.isFinite(value)) return;
-    setRecordingTuning((prev) => ({
-      ...prev,
-      numberOfChannels: clampRecordingChannels(value),
-    }));
-  }, [
-    clampRecordingChannels,
-    setRecordingTuning,
-  ]);
-
-  const setRecordingBitRateFromInput = useCallback((raw: string) => {
-    const value = Number(raw);
-    if (!Number.isFinite(value)) return;
-    const normalized = Math.round(value);
-    if (normalized <= 0) return;
-    setRecordingTuning((prev) => ({
-      ...prev,
-      bitRate: normalized,
-    }));
-  }, [setRecordingTuning]);
-
-  const setRecordingProgressUpdateIntervalFromInput = useCallback((raw: string) => {
-    const value = Number(raw);
-    if (!Number.isFinite(value)) return;
-    const normalized = Math.round(value);
-    if (normalized <= 0) return;
-    setRecordingTuning((prev) => ({
-      ...prev,
-      progressUpdateIntervalMs: normalized,
-    }));
-  }, [setRecordingTuning]);
-
   return {
     setTtsSpeedWithSync,
     applyRecordingQualityPreset,
-    setRecordingSampleRateFromInput,
-    setRecordingChannelsFromInput,
-    setRecordingBitRateFromInput,
-    setRecordingProgressUpdateIntervalFromInput,
   };
 }

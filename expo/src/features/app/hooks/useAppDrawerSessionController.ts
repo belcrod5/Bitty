@@ -26,7 +26,7 @@ type UseAppDrawerSessionControllerArgs = {
   llmSessionRestoreTargetId: string;
   formatSessionUpdatedAt: (updatedAt: string) => string;
   closeDrawer: () => void;
-  openDebugScreen: () => void;
+  openSettingsScreen: () => void;
   openCloudflareTunnelMonitorScreen: () => void;
   openSkiaBoardScreen: () => void;
   openDirectoryExplorer: () => void;
@@ -74,7 +74,7 @@ export function useAppDrawerSessionController({
   llmSessionRestoreTargetId,
   formatSessionUpdatedAt,
   closeDrawer,
-  openDebugScreen,
+  openSettingsScreen,
   openCloudflareTunnelMonitorScreen,
   openSkiaBoardScreen,
   openDirectoryExplorer,
@@ -88,10 +88,10 @@ export function useAppDrawerSessionController({
   markSessionRead,
   markDirectorySessionsRead,
 }: UseAppDrawerSessionControllerArgs): AppDrawerProps {
-  const handleOpenDebug = useCallback(() => {
+  const handleOpenSettings = useCallback(() => {
     closeDrawer();
-    openDebugScreen();
-  }, [closeDrawer, openDebugScreen]);
+    openSettingsScreen();
+  }, [closeDrawer, openSettingsScreen]);
   const handleOpenCloudflareTunnelMonitor = useCallback(() => {
     closeDrawer();
     openCloudflareTunnelMonitorScreen();
@@ -198,7 +198,7 @@ export function useAppDrawerSessionController({
     llmSessionRestoreLoading,
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
-    onOpenDebug: handleOpenDebug,
+    onOpenSettings: handleOpenSettings,
     onOpenCloudflareTunnelMonitor: handleOpenCloudflareTunnelMonitor,
     onOpenSkiaBoard: handleOpenSkiaBoard,
     onOpenDirectoryExplorer: handleOpenDirectoryExplorer,
@@ -224,7 +224,7 @@ export function useAppDrawerSessionController({
     llmSessionRestoreLoading,
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
-    handleOpenDebug,
+    handleOpenSettings,
     handleOpenCloudflareTunnelMonitor,
     handleOpenSkiaBoard,
     handleOpenDirectoryExplorer,
