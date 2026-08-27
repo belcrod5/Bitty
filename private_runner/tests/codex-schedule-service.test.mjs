@@ -67,7 +67,7 @@ async function makeHarness(options = {}) {
       if (!(await fs.stat(cwd)).isDirectory()) throw new Error("not a directory");
     }),
     validateShellScript: options.validateShellScript || (async () => {}),
-    startNormalCodexTurn: options.startNormalCodexTurn || (async () => ({
+    startScheduledCodexTurn: options.startScheduledCodexTurn || (async () => ({
       threadId: "thread-1",
       turnId: "turn-1",
     })),
@@ -570,7 +570,7 @@ test("matching revisions with a stale definition hash fail closed", async (t) =>
     runtimePath: harness.runtimePath,
     parseCodexOptions,
     validateCwd: async () => {},
-    startNormalCodexTurn: async () => ({ threadId: "thread", turnId: "turn" }),
+    startScheduledCodexTurn: async () => ({ threadId: "thread", turnId: "turn" }),
     now: harness.currentClock.now,
   });
   await assert.rejects(restarted.snapshot(), CodexScheduleStoreUnavailableError);
@@ -590,7 +590,7 @@ test("matching revisions with a stale definition hash fail closed", async (t) =>
 test("startup catches up one-time once and recurring schedules at only the latest occurrence", async (t) => {
   const starts = [];
   const oneTime = await makeHarness({
-    startNormalCodexTurn: async (request) => {
+    startScheduledCodexTurn: async (request) => {
       starts.push(request);
       const runtime = await readJson(oneTime.runtimePath);
       assert.equal(runtime.runtimes[ID_A].lastDispatch.status, "claimed");
@@ -610,13 +610,16 @@ test("startup catches up one-time once and recurring schedules at only the lates
   assert.equal(snapshot.revision, 1);
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, null);
   assert.equal(snapshot.schedules[0].lastDispatch.status, "fired");
-  assert.equal(starts[0].serviceName, "private-runner-codex-schedule");
+  assert.equal(
+    starts[0].clientOperationId,
+    `codex_schedule:${ID_A}:2026-08-14T00:00:00.000Z`,
+  );
   assert.equal(starts[0].threadId, "");
 
   const recurringStarts = [];
   const recurring = await makeHarness({
     clock: clock("2026-08-12T00:00:00.000Z"),
-    startNormalCodexTurn: async (request) => {
+    startScheduledCodexTurn: async (request) => {
       recurringStarts.push(request);
       return { threadId: "thread-recurring", turnId: "turn-recurring" };
     },
@@ -631,6 +634,10 @@ test("startup catches up one-time once and recurring schedules at only the lates
   snapshot = await recurring.service.snapshot();
   assert.equal(recurringStarts.length, 1);
   assert.equal(recurringStarts[0].threadId, "thread-existing");
+  assert.equal(
+    recurringStarts[0].clientOperationId,
+    `codex_schedule:${ID_A}:2026-08-17T00:00:00.000Z`,
+  );
   assert.equal(snapshot.schedules[0].lastDispatch.occurrenceAt, "2026-08-17T00:00:00.000Z");
   assert.equal(snapshot.schedules[0].nextOccurrenceAt, "2026-08-18T00:00:00.000Z");
 });
@@ -645,7 +652,7 @@ test("script actions validate and start the selected .sh inside their cwd withou
       starts.push(args);
       return { jobId: "script-job-42" };
     },
-    startNormalCodexTurn: async () => {
+    startScheduledCodexTurn: async () => {
       codexStarts += 1;
       return { threadId: "unexpected", turnId: "unexpected" };
     },
@@ -684,7 +691,7 @@ test("overlapping evaluation dispatches once and restart never retries a persist
   const gate = new Promise((resolve) => { release = resolve; });
   let calls = 0;
   const harness = await makeHarness({
-    startNormalCodexTurn: async () => {
+    startScheduledCodexTurn: async () => {
       calls += 1;
       await gate;
       return { threadId: "thread", turnId: "turn" };
@@ -709,7 +716,7 @@ test("overlapping evaluation dispatches once and restart never retries a persist
     runtimePath: harness.runtimePath,
     parseCodexOptions,
     validateCwd: async () => {},
-    startNormalCodexTurn: async () => { throw new Error("must not retry"); },
+    startScheduledCodexTurn: async () => { throw new Error("must not retry"); },
     now: harness.currentClock.now,
   });
   await restarted.start();
@@ -719,7 +726,7 @@ test("overlapping evaluation dispatches once and restart never retries a persist
 
 test("dispatch failures are clipped and definition data is not rewritten on fire", async (t) => {
   const harness = await makeHarness({
-    startNormalCodexTurn: async () => {
+    startScheduledCodexTurn: async () => {
       const error = new Error("x".repeat(2_000));
       error.code = "upstream_failed";
       throw error;
@@ -742,7 +749,7 @@ test("five simultaneous schedules keep at most four turn starts in flight", asyn
   let maximum = 0;
   let calls = 0;
   const harness = await makeHarness({
-    startNormalCodexTurn: async () => {
+    startScheduledCodexTurn: async () => {
       calls += 1;
       active += 1;
       maximum = Math.max(maximum, active);
@@ -775,7 +782,7 @@ test("queued due work does not create a zero-delay timer loop while four starts 
   let calls = 0;
   const callbacks = [];
   const harness = await makeHarness({
-    startNormalCodexTurn: async () => {
+    startScheduledCodexTurn: async () => {
       calls += 1;
       await new Promise((resolve) => releases.push(resolve));
       return { threadId: `thread-${calls}`, turnId: `turn-${calls}` };
@@ -905,7 +912,7 @@ test("ten thousand virtual fires keep one bounded runtime record", async () => {
     runtimePath,
     parseCodexOptions,
     validateCwd: async () => {},
-    startNormalCodexTurn: async () => ({ threadId: "thread", turnId: "turn" }),
+    startScheduledCodexTurn: async () => ({ threadId: "thread", turnId: "turn" }),
     now: currentClock.now,
     scheduleTimer: () => ({ unref() {} }),
     clearTimer: () => {},

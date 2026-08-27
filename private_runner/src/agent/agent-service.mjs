@@ -168,10 +168,13 @@ export function createAgentService({
   }
 
   function acceptsAction(subscriber, action) {
+    const kind = String(action.payload.kind || "");
     return Boolean(
       subscriber.actionConsumerId &&
       (subscriber.actionScope === "all" || (
-        subscriber.actionScope === "approval" && String(action.payload.kind || "") !== "dynamic_tool"
+        subscriber.actionScope === "approval" && kind !== "dynamic_tool"
+      ) || (
+        subscriber.actionScope === "dynamic_tool" && kind === "dynamic_tool"
       ))
     );
   }

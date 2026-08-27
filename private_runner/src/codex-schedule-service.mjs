@@ -378,7 +378,7 @@ export function createCodexScheduleService({
   parseCodexOptions,
   validateCwd,
   validateShellScript,
-  startNormalCodexTurn,
+  startScheduledCodexTurn,
   startShellScript,
   now = () => new Date(),
   scheduleTimer = (callback, delay) => setTimeout(callback, delay),
@@ -725,13 +725,13 @@ export function createCodexScheduleService({
           error.code = "codex_options_invalid";
           throw error;
         }
-        result = await startNormalCodexTurn({
+        result = await startScheduledCodexTurn({
           inputText: action.prompt,
           cwd: action.cwd,
           model: options.modelInfo.model,
           effort: action.reasoningEffort,
           threadId: action.threadId || "",
-          serviceName: "private-runner-codex-schedule",
+          clientOperationId: `codex_schedule:${claim.definition.id}:${claim.occurrenceAt}`,
         });
       }
     } catch (error) {

@@ -41,7 +41,7 @@ import {
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
-import { createNormalCodexTurnStarter } from "./codex-relay-initiator.mjs";
+import { createScheduledCodexTurnStarter } from "./codex-scheduled-turn.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
 import { createApprovalPushService } from "./approval-push-service.mjs";
@@ -7146,12 +7146,10 @@ async function runRunnerInitiatedTurn({
   }
 }
 
-const startNormalCodexTurn = createNormalCodexTurnStarter({
-  createRelay: createCodexRelayWithUpstream,
-  attachClient: attachClientToCodexRelay,
-  forwardClientData: forwardCodexRelayClientData,
-  removeClient: removeClientFromRelay,
-  cleanupDetachedRelay: cleanupOrScheduleDetachedRelay,
+const startScheduledCodexTurn = createScheduledCodexTurnStarter({
+  agentService,
+  subjectId: agentOwnerSubjectId,
+  dynamicToolResponse: (request) => runnerInitiatedCalendarResponse(request),
 });
 const codexScheduleService = createCodexScheduleService({
   definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
@@ -7163,7 +7161,7 @@ const codexScheduleService = createCodexScheduleService({
     if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
   },
   validateShellScript: resolveWorkspaceShellScriptTarget,
-  startNormalCodexTurn,
+  startScheduledCodexTurn,
   startShellScript: startWorkspaceShellScript,
 });
 const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
@@ -12100,7 +12098,7 @@ export const __TESTING__ = {
   derivePushDirectoryTitle,
   codexWsRelaysById,
   CODEX_WS_RELAY_MAX_ACTIVE,
-  startNormalCodexTurn,
+  startScheduledCodexTurn,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
   parseCodexRpcMeta,

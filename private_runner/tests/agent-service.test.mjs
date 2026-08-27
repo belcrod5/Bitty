@@ -1749,8 +1749,10 @@ test("a claimed dynamic action stays orphaned and stoppable after its consumer d
   const run = await service.startTurn(startRequest({ sessionRef, cwd: "" }), { subjectId: "owner" });
   await new Promise((resolve) => setImmediate(resolve));
   const approvalConsumer = {};
+  const dynamicConsumer = {};
   const allConsumer = {};
   const approvalEvents = [];
+  const dynamicEvents = [];
   const allEvents = [];
   const passiveEvents = [];
   const approvalSubscription = service.subscribe(run.runId, {
@@ -1758,6 +1760,12 @@ test("a claimed dynamic action stays orphaned and stoppable after its consumer d
     actionConsumerId: approvalConsumer,
     actionScope: "approval",
     onEvent: (event) => approvalEvents.push(event),
+  }, { subjectId: "owner" });
+  const dynamicSubscription = service.subscribe(run.runId, {
+    afterSequence: 0,
+    actionConsumerId: dynamicConsumer,
+    actionScope: "dynamic_tool",
+    onEvent: (event) => dynamicEvents.push(event),
   }, { subjectId: "owner" });
   const allSubscription = service.subscribe(run.runId, {
     afterSequence: 0,
@@ -1771,8 +1779,10 @@ test("a claimed dynamic action stays orphaned and stoppable after its consumer d
   }, { subjectId: "owner" });
 
   assert.deepEqual(approvalSubscription.activeActions.map((action) => action.requestId), ["approval-1"]);
-  assert.deepEqual(allSubscription.activeActions.map((action) => action.requestId), ["tool-1"]);
+  assert.deepEqual(dynamicSubscription.activeActions.map((action) => action.requestId), ["tool-1"]);
+  assert.deepEqual(allSubscription.activeActions.map((action) => action.requestId), []);
   assert.equal(approvalEvents.some((event) => event.type === "action.requested"), false);
+  assert.equal(dynamicEvents.some((event) => event.type === "action.requested"), false);
   assert.equal(allEvents.some((event) => event.type === "action.requested"), false);
   assert.throws(
     () => service.subscribe(run.runId, { onEvent() {} }, { subjectId: "other" }),
@@ -1794,7 +1804,8 @@ test("a claimed dynamic action stays orphaned and stoppable after its consumer d
     decisions: ["result"],
   });
   assert.equal(passiveEvents.some((event) => event.type === "action.requested"), false);
-  assert.equal(allEvents.some((event) => event.payload?.requestId === "tool-2"), true);
+  assert.equal(dynamicEvents.some((event) => event.payload?.requestId === "tool-2"), true);
+  assert.equal(allEvents.some((event) => event.payload?.requestId === "tool-2"), false);
   await assert.rejects(
     service.respondToAction(
       { runId: run.runId, requestId: "approval-1", decision: "deny" },
@@ -1816,22 +1827,22 @@ test("a claimed dynamic action stays orphaned and stoppable after its consumer d
   await assert.rejects(
     service.claimAction(
       { runId: run.runId, requestId: "tool-1" },
-      { subjectId: "other", actionConsumerId: allConsumer },
+      { subjectId: "other", actionConsumerId: dynamicConsumer },
     ),
     (error) => error.code === "turn_rejected",
   );
   await service.claimAction(
     { runId: run.runId, requestId: "tool-1" },
-    { subjectId: "owner", actionConsumerId: allConsumer },
+    { subjectId: "owner", actionConsumerId: dynamicConsumer },
   );
   await service.respondToAction(
     { runId: run.runId, requestId: "tool-1", decision: "result", result: { ok: true } },
-    { subjectId: "owner", actionConsumerId: allConsumer },
+    { subjectId: "owner", actionConsumerId: dynamicConsumer },
   );
   await assert.rejects(
     service.respondToAction(
       { runId: run.runId, requestId: "tool-1", decision: "result", result: { ok: false } },
-      { subjectId: "owner", actionConsumerId: allConsumer },
+      { subjectId: "owner", actionConsumerId: dynamicConsumer },
     ),
     (error) => error.code === "action_expired",
   );
@@ -1839,15 +1850,16 @@ test("a claimed dynamic action stays orphaned and stoppable after its consumer d
 
   await service.claimAction(
     { runId: run.runId, requestId: "tool-2" },
-    { subjectId: "owner", actionConsumerId: allConsumer },
+    { subjectId: "owner", actionConsumerId: dynamicConsumer },
   );
   await assert.rejects(
     service.claimAction(
       { runId: run.runId, requestId: "tool-2" },
-      { subjectId: "owner", actionConsumerId: allConsumer },
+      { subjectId: "owner", actionConsumerId: dynamicConsumer },
     ),
     (error) => error.code === "action_expired",
   );
+  dynamicSubscription.unsubscribe();
   allSubscription.unsubscribe();
   const replacementConsumer = {};
   const replacementEvents = [];
