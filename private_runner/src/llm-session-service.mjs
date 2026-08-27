@@ -685,6 +685,7 @@ export function createLlmSessionService(deps = {}) {
     getSessionUnreadState,
     listLlmSessions,
     listLlmSessionsForDirectories,
+    listAgentSessionsForDirectories,
     markLlmDirectoryRead,
     markLlmSessionRead,
     markLlmSessionReadRequest,
