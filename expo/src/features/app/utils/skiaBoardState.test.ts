@@ -15,16 +15,19 @@ import {
   removeSkiaBoardSession,
   removeSkiaBoardFile,
   removeSkiaBoardSection,
+  replacePersistedSkiaBoardState,
   skiaBoardCardId,
   skiaBoardCardDisplayName,
   skiaBoardDirectoryId,
   skiaBoardGridPosition,
   setSkiaBoardCardTextScale,
+  subscribePersistedSkiaBoardStateReplaced,
   tidySkiaBoardCards,
   updateSkiaBoardCardAppearance,
   updateSkiaBoardSection,
   type SkiaBoardState,
 } from "./skiaBoardState";
+import { mutatePersistedSettings } from "./persistedSettingsFile";
 
 jest.mock("./persistedSettingsFile", () => ({
   SKIA_BOARD_STATE_FIELD: "skiaBoardState",
@@ -723,5 +726,56 @@ describe("board card appearance and file identity", () => {
       "docs/guide.md",
       "docs/new.md"
     ).cards).toEqual([destination]);
+  });
+});
+
+describe("replacePersistedSkiaBoardState", () => {
+  it("persists the replacement and notifies subscribers after the write", async () => {
+    const mockMutate = jest.mocked(mutatePersistedSettings);
+    mockMutate.mockClear();
+    mockMutate.mockResolvedValue(undefined);
+    const listener = jest.fn();
+    const unsubscribe = subscribePersistedSkiaBoardStateReplaced(listener);
+    const state: SkiaBoardState = {
+      cards: [sessionCard("session-1", 0, 1)],
+      sections: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+
+    await replacePersistedSkiaBoardState(state);
+
+    expect(mockMutate).toHaveBeenCalledTimes(1);
+    const mutate = mockMutate.mock.calls[0][0];
+    expect(mutate({ runnerUrl: "http://kept" })).toEqual({
+      runnerUrl: "http://kept",
+      skiaBoardState: state,
+    });
+    expect(listener).toHaveBeenCalledWith(state);
+
+    unsubscribe();
+    listener.mockClear();
+    await replacePersistedSkiaBoardState(state);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("does not notify subscribers when the write fails", async () => {
+    const mockMutate = jest.mocked(mutatePersistedSettings);
+    mockMutate.mockClear();
+    mockMutate.mockRejectedValue(new Error("write failed"));
+    const listener = jest.fn();
+    const unsubscribe = subscribePersistedSkiaBoardStateReplaced(listener);
+    const state: SkiaBoardState = {
+      cards: [],
+      sections: [],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+      cardTextScale: 1,
+    };
+
+    await expect(replacePersistedSkiaBoardState(state)).rejects.toThrow("write failed");
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
   });
 });

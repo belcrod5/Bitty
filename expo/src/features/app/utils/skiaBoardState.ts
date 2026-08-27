@@ -648,3 +648,23 @@ export function writePersistedSkiaBoardState(state: SkiaBoardState): Promise<voi
     [SKIA_BOARD_STATE_FIELD]: state,
   }));
 }
+
+type PersistedSkiaBoardStateReplacedListener = (state: SkiaBoardState) => void;
+const persistedStateReplacedListeners = new Set<PersistedSkiaBoardStateReplacedListener>();
+
+// SkiaBoardProviderが購読し、UI外からの一括置換をメモリ上のボードstateへ反映する。
+export function subscribePersistedSkiaBoardStateReplaced(
+  listener: PersistedSkiaBoardStateReplacedListener
+): () => void {
+  persistedStateReplacedListeners.add(listener);
+  return () => {
+    persistedStateReplacedListeners.delete(listener);
+  };
+}
+
+// ボードUI外(設定インポート等)からの一括置換。保存後に購読者へ通知しないと、
+// ボードがメモリに保持する旧stateが次の永続化で置換内容を上書きしてしまう。
+export async function replacePersistedSkiaBoardState(state: SkiaBoardState): Promise<void> {
+  await writePersistedSkiaBoardState(state);
+  for (const listener of persistedStateReplacedListeners) listener(state);
+}

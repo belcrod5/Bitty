@@ -28,6 +28,7 @@ import {
   SKIA_BOARD_DEFAULT_TEXT_SCALE,
   skiaBoardDirectoryId,
   skiaBoardFileId,
+  subscribePersistedSkiaBoardStateReplaced,
   tidySkiaBoardCards,
   updateSkiaBoardCardAppearance,
   updateSkiaBoardSection,
@@ -118,6 +119,17 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
       mountedRef.current = false;
     };
   }, [recoverPersistence]);
+
+  // 設定インポート等がディスク上のボードstateを丸ごと置換したときの反映。
+  // 置換済みstateを最終永続化状態として採用し、置換前提の古い保留更新は破棄する。
+  useEffect(() => subscribePersistedSkiaBoardStateReplaced((replaced) => {
+    if (!mountedRef.current) return;
+    pendingStateUpdatesRef.current = [];
+    lastPersistedStateRef.current = replaced;
+    persistenceWritableRef.current = true;
+    setState(replaced);
+    setLoaded(true);
+  }), []);
 
   const updateLoadedState = useCallback((update: SkiaBoardStateUpdate) => {
     if (!loaded) return;
