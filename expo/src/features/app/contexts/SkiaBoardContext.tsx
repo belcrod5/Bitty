@@ -18,6 +18,7 @@ import {
   fetchSkiaBoard,
   importSkiaBoard,
   postSkiaBoardOps,
+  syncSkiaBoardIngestDirectories,
   type SkiaBoardRunnerSnapshot,
 } from "../utils/skiaBoardRunnerApi";
 import {
@@ -192,16 +193,26 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     refreshInFlightRef.current = true;
     try {
       let snapshot = await fetchSkiaBoard(auth);
-      if (!snapshot.initialized && !legacyImportAttemptedRef.current) {
+      if (!legacyImportAttemptedRef.current) {
         // 初回接続時の引き継ぎ: ローカル保存のボード配置をランナーへ移す。
+        // ランナーが自動生成(ingest)で初期化済みでも一度は送り、受理判定は
+        // サーバーの3条件(未初期化/未編集ingest上書き/それ以外409)に任せる。
         // フラグは確定的な結果(移行対象なし/成功/初期化済み)のときだけ立てる。
-        // 読み取り・送信のthrowは外側catchへ抜け、次のトリガで再試行される。
-        const legacy = await readPersistedSkiaBoardState();
+        // ローカル読み取りの失敗は引き継ぎだけを見送ってサーバー正本の採用は続行し、
+        // 送信(import)のthrowは外側catchへ抜けて次のトリガで再試行される。
+        let legacy = null;
+        let legacyReadFailed = false;
+        try {
+          legacy = await readPersistedSkiaBoardState();
+        } catch (error) {
+          legacyReadFailed = true;
+          console.warn("[skia_board] failed to read legacy board state", error);
+        }
         if (legacy) {
           const result = await importSkiaBoard(auth, { board: legacy });
           snapshot = result.snapshot;
         }
-        legacyImportAttemptedRef.current = true;
+        if (!legacyReadFailed) legacyImportAttemptedRef.current = true;
       }
       if (!mountedRef.current) return;
       adoptSnapshot(snapshot);
@@ -342,6 +353,32 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     void refreshFromServer();
     void flushPendingOps();
   }, [flushPendingOps, refreshFromServer, runnerToken, runnerUrl]);
+
+  // 自端末の登録ディレクトリをランナーへ送り、自動カード追加(ingest)の対象を
+  // 和集合で共有する。同一内容の再送はしない。失敗は次の変化時に再試行される。
+  const lastSyncedDirectoriesRef = useRef("");
+  useEffect(() => {
+    if (!runnerUrl.trim() || !runnerToken.trim()) return;
+    const directories = Array.from(new Set(
+      registeredDirectories
+        .map((directory) => String(directory.path || "").trim())
+        .filter(Boolean)
+    )).sort();
+    if (directories.length <= 0) return;
+    const key = directories.join("\n");
+    if (key === lastSyncedDirectoriesRef.current) return;
+    let cancelled = false;
+    void syncSkiaBoardIngestDirectories({ runnerUrl, runnerToken }, { directories })
+      .then(() => {
+        if (!cancelled) lastSyncedDirectoriesRef.current = key;
+      })
+      .catch((error) => {
+        console.warn("[skia_board] failed to sync ingest directories", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [registeredDirectories, runnerToken, runnerUrl]);
 
   // 他デバイスの変更通知。送信中はflush側の409処理に任せる。保留opが残っている
   // (前回送信失敗など)なら、接続が生きている合図なので再送を優先する。

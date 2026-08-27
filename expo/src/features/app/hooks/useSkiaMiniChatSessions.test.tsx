@@ -12,6 +12,7 @@ import {
   fetchSkiaBoard,
   importSkiaBoard,
   postSkiaBoardOps,
+  syncSkiaBoardIngestDirectories,
 } from "../utils/skiaBoardRunnerApi";
 import { applySkiaBoardOpsLocally } from "../utils/skiaBoardRunnerOps";
 import type { LlmSessionHistoryEntry } from "./useLlmSessionExplorer";
@@ -61,6 +62,7 @@ jest.mock("../utils/skiaBoardRunnerApi", () => ({
   fetchSkiaBoard: jest.fn(),
   importSkiaBoard: jest.fn(),
   postSkiaBoardOps: jest.fn(),
+  syncSkiaBoardIngestDirectories: jest.fn(),
 }));
 
 const mockUseConversation = jest.mocked(useConversation);
@@ -71,6 +73,7 @@ const mockMutatePersistedSettings = jest.mocked(mutatePersistedSettings);
 const mockFetchSkiaBoard = jest.mocked(fetchSkiaBoard);
 const mockImportSkiaBoard = jest.mocked(importSkiaBoard);
 const mockPostSkiaBoardOps = jest.mocked(postSkiaBoardOps);
+const mockSyncSkiaBoardIngestDirectories = jest.mocked(syncSkiaBoardIngestDirectories);
 const workspaceDirectory = {
   id: "workspace",
   path: "/workspace",
@@ -121,6 +124,7 @@ beforeEach(() => {
     persistedFile = mutate(persistedFile);
   });
   mockFetchSkiaBoard.mockImplementation(async () => runnerSnapshot());
+  mockSyncSkiaBoardIngestDirectories.mockResolvedValue({ ingestDirectories: [] });
   mockImportSkiaBoard.mockImplementation(async (_auth, { board }) => {
     if (runnerStore.initialized) {
       return { status: "already_initialized", snapshot: runnerSnapshot() };
@@ -798,6 +802,44 @@ describe("useSkiaMiniChatSessions", () => {
 
     expect(hydratePanelFromSessionHistory).not.toHaveBeenCalled();
     expect(result.current.hydratingPanelCount).toBe(0);
+  });
+
+  it("offers the legacy board even when the runner is already initialized", async () => {
+    // ランナーが自動生成で先に初期化されていても引き継ぎを一度は試み、
+    // 受理判定(未編集ingestなら上書き/それ以外は現状維持)はサーバーに任せる。
+    persistedFile.skiaBoardState = {
+      cards: [{ sessionId: "legacy-session", col: 0, row: 0 }],
+      excludedSessionIds: [],
+      ingestedUpdatedAtMs: 0,
+    };
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    mockConversation([session(1)]);
+
+    const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(mockImportSkiaBoard).toHaveBeenCalledTimes(1);
+    // フェイクランナーは初期化済みなので409相当: サーバー正本が表示される。
+    expect(result.current.hasSession("session-1")).toBe(true);
+    expect(result.current.hasSession("legacy-session")).toBe(false);
+  });
+
+  it("syncs registered directories to the runner once per content", async () => {
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    mockConversation([session(1)]);
+
+    const { rerender } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
+    await flush();
+
+    expect(mockSyncSkiaBoardIngestDirectories).toHaveBeenCalledTimes(1);
+    expect(mockSyncSkiaBoardIngestDirectories.mock.calls[0][1]).toEqual({
+      directories: ["/workspace"],
+    });
+
+    // 同一内容の再レンダリングでは再送しない。
+    await rerender(undefined as never);
+    await flush();
+    expect(mockSyncSkiaBoardIngestDirectories).toHaveBeenCalledTimes(1);
   });
 
   it("retries the legacy import after a transient failure", async () => {

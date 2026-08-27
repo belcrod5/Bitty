@@ -112,6 +112,28 @@ export async function postSkiaBoardOps(
   throw new Error(errorMessage(data, status));
 }
 
+// 各端末の登録ディレクトリをランナーへ送り、自動カード追加(ingest)の対象を
+// 和集合で共有する。ボード内容は変わらないためrevisionは動かない。
+export async function syncSkiaBoardIngestDirectories(
+  auth: RunnerAuth,
+  { directories }: { directories: readonly string[] }
+): Promise<{ ingestDirectories: string[] }> {
+  const { baseUrl, token } = requireAuth(auth);
+  const { status, data } = await fetchJson(`${baseUrl}/skia-board/ingest-directories`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ directories }),
+  });
+  if (status !== 200) throw new Error(errorMessage(data, status));
+  const ingestDirectories = Array.isArray(data.ingestDirectories)
+    ? data.ingestDirectories.map((value) => String(value || ""))
+    : [];
+  return { ingestDirectories };
+}
+
 export async function importSkiaBoard(
   auth: RunnerAuth,
   { board }: { board: unknown }
