@@ -786,6 +786,76 @@ test("Claude batch session snapshot scans the transcript catalog once and groups
   ]);
 });
 
+test("Claude session listing enumerates subagent transcripts under the parent session directory", async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-subagents-"));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const projectsRoot = path.join(tempRoot, "projects");
+  const project = path.join(projectsRoot, "catalog");
+  const cwd = path.join(tempRoot, "workspace");
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(cwd);
+  const parentId = SESSION_ID;
+  const taskAgentId = "agent-a1b2c3d4e5f60718a";
+  const workflowAgentId = "agent-b2c3d4e5f6071829b";
+  await fs.writeFile(path.join(project, `${parentId}.jsonl`), JSON.stringify({
+    type: "user", uuid: "u1", cwd, timestamp: "2026-08-28T00:00:00.000Z", message: { content: "parent task" },
+  }));
+  // Taskサブエージェント: <parent>/subagents/agent-<id>.jsonl
+  const subagentsDir = path.join(project, parentId, "subagents");
+  await fs.mkdir(subagentsDir, { recursive: true });
+  await fs.writeFile(path.join(subagentsDir, `${taskAgentId}.jsonl`), [
+    JSON.stringify({ type: "user", uuid: "su1", cwd, isSidechain: true, agentId: taskAgentId.slice(6), timestamp: "2026-08-28T00:01:00.000Z", message: { content: "subagent prompt" } }),
+    JSON.stringify({ type: "assistant", uuid: "sa1", cwd, isSidechain: true, agentId: taskAgentId.slice(6), timestamp: "2026-08-28T00:01:05.000Z", message: { content: [{ type: "text", text: "subagent reply" }] } }),
+  ].join("\n"));
+  await fs.writeFile(path.join(subagentsDir, `${taskAgentId}.meta.json`), JSON.stringify({
+    agentType: "general-purpose", description: "検証タスク", spawnDepth: 1,
+  }));
+  // ワークフローのサブエージェント: <parent>/subagents/workflows/<wfId>/agent-<id>.jsonl
+  const workflowDir = path.join(subagentsDir, "workflows", "wf_755bbf2f-29e");
+  await fs.mkdir(workflowDir, { recursive: true });
+  await fs.writeFile(path.join(workflowDir, `${workflowAgentId}.jsonl`), JSON.stringify({
+    type: "user", uuid: "wu1", cwd, isSidechain: true, timestamp: "2026-08-28T00:02:00.000Z", message: { content: "workflow subagent prompt" },
+  }));
+  // agent-*.jsonl以外(journal等)はセッションとして列挙しない
+  await fs.writeFile(path.join(workflowDir, "journal.jsonl"), JSON.stringify({ type: "journal" }));
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    projectsRoot,
+    runFile: async () => ({ stdout: "2.1.214" }),
+    fileSystem: fs,
+    sessionStore: { getBinding: async () => null },
+  });
+
+  const listed = await backend.listSessions({ cwd, limit: 10 });
+  const byId = new Map(listed.sessions.map((session) => [session.sessionRef.nativeSessionId, session]));
+  assert.deepEqual([...byId.keys()].sort(), [parentId, taskAgentId, workflowAgentId].sort());
+  assert.equal(byId.get(parentId).isSubagent, false);
+  assert.equal(byId.get(parentId).parentSessionRef, undefined);
+  for (const agentId of [taskAgentId, workflowAgentId]) {
+    assert.equal(byId.get(agentId).isSubagent, true);
+    assert.deepEqual(byId.get(agentId).parentSessionRef, { backendId: "claude", nativeSessionId: parentId });
+  }
+  // タイトルはtranscript先頭のユーザーメッセージ(全recordがisSidechainでも拾える)
+  assert.equal(byId.get(taskAgentId).title, "subagent prompt");
+
+  // includeSubagents=false(未読カウント・Skiaボードingest)はメインセッションのみ
+  const filtered = await backend.listSessions({ cwd, limit: 10, includeSubagents: false });
+  assert.deepEqual(filtered.sessions.map((session) => session.sessionRef.nativeSessionId), [parentId]);
+  const snapshot = await backend.listSessionsForDirectories({ cwds: [cwd], includeSubagents: false });
+  assert.deepEqual(snapshot.groups[0].sessions.map((session) => session.sessionRef.nativeSessionId), [parentId]);
+
+  // 履歴読み出しはサブエージェントnativeSessionIdでも解決でき、本人の会話は
+  // sidechain(折りたたみ)扱いにならない
+  const history = await backend.readHistory({
+    sessionRef: { backendId: "claude", nativeSessionId: taskAgentId },
+    limit: 10,
+  });
+  assert.deepEqual(history.items.map((item) => ({ role: item.role, itemType: item.itemType })), [
+    { role: "user", itemType: undefined },
+    { role: "assistant", itemType: undefined },
+  ]);
+});
+
 test("Claude session cwd prefers the transcript over a stale binding and matches symlinked workspaces", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-cwd-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
