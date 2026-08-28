@@ -243,24 +243,31 @@ test("suppresses completion when the exact unread snapshot fails", async () => {
   assert.match(harness.warnings.join("\n"), /snapshot failed/);
 });
 
-test("suppresses a stale completion push when the target becomes read during summarization", async () => {
-  let releaseSummary;
-  const summaryPending = new Promise((resolve) => { releaseSummary = resolve; });
+test("checks unread before summarization so a read during summarization does not drop the push", async () => {
+  // 完了時点で未読なら通知する仕様。要約生成(最大数秒)の間に既読化されても
+  // 判定は要約前に固定されている必要がある。判定が要約後だとこのテストは
+  // unread=false を観測して通知が落ちる。
   let unread = true;
+  const order = [];
   const harness = createHarness({
-    pushSummarizer: { async summarize() { return await summaryPending; } },
+    pushSummarizer: {
+      async summarize(text) {
+        order.push("summarize");
+        unread = false; // 要約中にクライアントが既読化した状況を再現
+        return `summary: ${text}`;
+      },
+    },
     getPushUnreadSnapshot: async (request) => {
+      order.push("snapshot");
       assert.equal(request.targetSessionId, "session-1");
       assert.equal(request.targetBackendId, "codex");
       assert.equal(request.targetDirectory, "/work/project-a");
       return { targetUnread: unread, unreadCounts: [] };
     },
   });
-  const notifying = harness.notifier.notifyTurnCompleted(completion());
-  unread = false;
-  releaseSummary("summary");
-  await notifying;
-  assert.equal(harness.sends.length, 0);
+  await harness.notifier.notifyTurnCompleted(completion());
+  assert.deepEqual(order, ["snapshot", "summarize"]);
+  assert.equal(harness.sends.length, 1);
 });
 
 test("deduplicates the same turn across execution origins", async () => {

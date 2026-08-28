@@ -43,6 +43,7 @@ export function createPrivateRunnerAgentRuntime({
   normalizeSessionMessagesLimit,
   readJsonBody,
   runEventObservers = [],
+  log = console,
 }) {
   if (typeof listSessionsForDirectories !== "function") {
     throw new TypeError("listSessionsForDirectories is required");
@@ -172,9 +173,16 @@ export function createPrivateRunnerAgentRuntime({
     sessionStore,
     workspaceAdmission,
     resolveCanonicalCwd,
-    onRunEvent: (event) => Promise.allSettled(
-      runEventObservers.map((observer) => Promise.resolve().then(() => observer(event))),
-    ),
+    log,
+    // 全observerを独立に実行しつつ、失敗はallSettledで無音破棄せず
+    // agent-service側のwarnログへ届ける(push通知欠落の診断用)。
+    onRunEvent: async (event) => {
+      const results = await Promise.allSettled(
+        runEventObservers.map((observer) => Promise.resolve().then(() => observer(event))),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed) throw failed.reason;
+    },
   });
   const httpHandler = createAgentHttpHandler({
     service, runnerToken, parseAuthToken, json, normalizeSessionListLimit,
