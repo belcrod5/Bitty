@@ -4,12 +4,6 @@ import {
   postSkiaBoardOps,
 } from "./skiaBoardRunnerApi";
 
-jest.mock("./persistedSettingsFile", () => ({
-  SKIA_BOARD_STATE_FIELD: "skiaBoardState",
-  readPersistedSettingsField: jest.fn(),
-  mutatePersistedSettings: jest.fn(),
-}));
-
 const auth = { runnerUrl: "http://runner/", runnerToken: "token" };
 const mockFetch = jest.fn();
 
