@@ -180,8 +180,20 @@ export function createPrivateRunnerAgentRuntime({
       const results = await Promise.allSettled(
         runEventObservers.map((observer) => Promise.resolve().then(() => observer(event))),
       );
-      const failed = results.find((result) => result.status === "rejected");
-      if (failed) throw failed.reason;
+      const failed = results.filter((result) => result.status === "rejected");
+      if (failed.length === 1) throw failed[0].reason;
+      if (failed.length > 1) {
+        // 複数observerの失敗を1件目だけで握り潰さず、全件をメッセージへ束ねて
+        // agent-service側のwarnログ(errorTextはmessage参照)へ届ける。
+        throw new AggregateError(
+          failed.map((result) => result.reason),
+          failed
+            .map((result) => (result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason)))
+            .join("; "),
+        );
+      }
     },
   });
   const httpHandler = createAgentHttpHandler({

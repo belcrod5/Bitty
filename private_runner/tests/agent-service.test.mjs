@@ -897,9 +897,20 @@ test("all-scope snapshot tolerates one backend failure and fails only when all f
     snapshot.groups[0].sessions.map((session) => session.sessionRef.backendId),
     ["codex"],
   );
+  // 部分失敗の印: 消費側(Skiaボードingest)がウォーターマーク前進を
+  // 見送れるよう、欠けているBackendを明示する。
+  assert.equal(snapshot.partial, true);
+  assert.deepEqual(snapshot.failedBackendIds, ["claude"]);
   assert.match(warnings.join("\n"), /session snapshot skipped backend=claude: claude listing failed/);
 
+  // 全Backend成功時はpartialの印が付かない。
+  claudeFails = false;
+  const fullSnapshot = await service.listSessionSnapshot({ cwds: ["/workspace"] });
+  assert.equal("partial" in fullSnapshot, false);
+  assert.equal("failedBackendIds" in fullSnapshot, false);
+
   codexFails = true;
+  claudeFails = true;
   await assert.rejects(
     service.listSessionSnapshot({ cwds: ["/workspace"] }),
     /listing failed/,

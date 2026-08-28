@@ -1266,6 +1266,12 @@ export function createAgentService({
             return left < right ? 1 : left > right ? -1 : 0;
           }),
         })),
+        // 部分失敗の印。ウォーターマーク前進を伴う消費側(Skiaボードingest)が
+        // 不完全なスナップショットで失敗Backendのセッションを恒久スキップ
+        // しないよう、続行しつつ「欠けている」ことを明示する。
+        ...(failures.length > 0
+          ? { partial: true, failedBackendIds: failures.map((entry) => entry.backendId) }
+          : {}),
       };
     },
     async readHistory(options, context = {}) {

@@ -23,7 +23,8 @@ export function createSkiaBoardIngest({
     const key = `${message}: ${String(error?.message || error || "")}`;
     if (key === lastWarnMessage) return;
     lastWarnMessage = key;
-    console.warn(`[skia-board] ${message}`, error);
+    if (error === undefined) console.warn(`[skia-board] ${message}`);
+    else console.warn(`[skia-board] ${message}`, error);
   }
 
   function updatedAtMs(value) {
@@ -32,9 +33,10 @@ export function createSkiaBoardIngest({
   }
 
   async function collectCandidates(directories) {
-    const groups = await listAgentSessionsForDirectories(directories, { includeSubagents: false });
+    const snapshot = await listAgentSessionsForDirectories(directories, { includeSubagents: false });
+    const groups = Array.isArray(snapshot?.groups) ? snapshot.groups : [];
     const candidates = [];
-    for (const group of Array.isArray(groups) ? groups : []) {
+    for (const group of groups) {
       for (const session of group.sessionsById.values()) {
         candidates.push({
           sessionId: session.sessionId,
@@ -47,12 +49,27 @@ export function createSkiaBoardIngest({
     // 新しい順に並べる(空ボード初期化時に先頭6件を採用する既存ロジックに合わせる)。
     // updatedAtはISO文字列前提だが、欠損・不正値でも順序が壊れないよう数値比較する。
     candidates.sort((a, b) => updatedAtMs(b.updatedAt) - updatedAtMs(a.updatedAt));
-    return candidates;
+    return {
+      candidates,
+      partial: snapshot?.partial === true,
+      failedBackendIds: Array.isArray(snapshot?.failedBackendIds) ? snapshot.failedBackendIds : [],
+    };
   }
 
   async function ingestDirectoriesNow(directories) {
     if (!Array.isArray(directories) || directories.length <= 0) return null;
-    const candidates = await collectCandidates(directories);
+    const { candidates, partial, failedBackendIds } = await collectCandidates(directories);
+    // 一部Backendだけ失敗した不完全スナップショットで取り込むと、生き残った
+    // Backendの最大updatedAtまでウォーターマークが前進し、失敗中Backendの
+    // 未取込セッションが復旧後も「updatedAt > ウォーターマーク」を満たせず
+    // 恒久スキップされる。partial時はingest自体を見送り、次回(sweep /
+    // ターン完了)の完全なスナップショットで取り込む。
+    if (partial) {
+      warnOnce(
+        `ingest skipped: session snapshot is partial (failed backends: ${failedBackendIds.join(", ") || "unknown"})`,
+      );
+      return null;
+    }
     if (candidates.length <= 0) return null;
     return boardService.ingestSessions(candidates);
   }
