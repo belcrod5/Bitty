@@ -33,23 +33,21 @@ import {
 } from "../utils/persistedSettingsFile";
 import {
   normalizeSkiaBoardTextScale,
-  readPersistedSkiaBoardState,
   SKIA_BOARD_DEFAULT_TEXT_SCALE,
   skiaBoardDirectoryId,
   skiaBoardFileId,
-  subscribePersistedSkiaBoardStateReplaced,
   type SkiaBoardFileCard,
   type SkiaBoardState,
   type SkiaBoardSection,
 } from "../utils/skiaBoardState";
 
-// Skiaボード配置の正本はランナー(GET /skia-board)が持つ。このProviderは
+// Skiaボード配置の正本はランナー(GET /skia-board)が持ち、端末には保存しない。このProviderは
 // 1) サーバー正本の取得と skia_board_updated 通知/再接続/フォアグラウンド復帰での再取得
 // 2) 操作の楽観反映と POST /skia-board/ops への差分送信(baseRevision楽観ロック、409で正本再採用)
-// 3) 初回接続時のローカル保存データ引き継ぎ(POST /skia-board/import)
-// 4) オフライン起動用の読み取り専用ディスクキャッシュ
+// 3) オフライン起動用の読み取り専用ディスクキャッシュ
 // を担う。cardTextScale だけは画面サイズ依存の好みのため端末ローカルに保存する。
 // 新セッションの自動カード追加(ingest)はランナー側に一本化されたため、ここでは行わない。
+// POST /skia-board/import は未初期化ストアへの最初の編集を初期化する用途にのみ使う。
 
 type SkiaBoardContextValue = {
   state: SkiaBoardState | null;
@@ -104,7 +102,6 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
   const flushInFlightRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
-  const legacyImportAttemptedRef = useRef(false);
   const lastReadyGenerationRef = useRef(0);
   const authRef = useRef({ runnerUrl, runnerToken });
   useEffect(() => {
@@ -192,28 +189,7 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     }
     refreshInFlightRef.current = true;
     try {
-      let snapshot = await fetchSkiaBoard(auth);
-      if (!legacyImportAttemptedRef.current) {
-        // 初回接続時の引き継ぎ: ローカル保存のボード配置をランナーへ移す。
-        // ランナーが自動生成(ingest)で初期化済みでも一度は送り、受理判定は
-        // サーバーの3条件(未初期化/未編集ingest上書き/それ以外409)に任せる。
-        // フラグは確定的な結果(移行対象なし/成功/初期化済み)のときだけ立てる。
-        // ローカル読み取りの失敗は引き継ぎだけを見送ってサーバー正本の採用は続行し、
-        // 送信(import)のthrowは外側catchへ抜けて次のトリガで再試行される。
-        let legacy = null;
-        let legacyReadFailed = false;
-        try {
-          legacy = await readPersistedSkiaBoardState();
-        } catch (error) {
-          legacyReadFailed = true;
-          console.warn("[skia_board] failed to read legacy board state", error);
-        }
-        if (legacy) {
-          const result = await importSkiaBoard(auth, { board: legacy });
-          snapshot = result.snapshot;
-        }
-        if (!legacyReadFailed) legacyImportAttemptedRef.current = true;
-      }
+      const snapshot = await fetchSkiaBoard(auth);
       if (!mountedRef.current) return;
       adoptSnapshot(snapshot);
     } catch (error) {
@@ -309,16 +285,12 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
     mountedRef.current = true;
     void (async () => {
       try {
-        const [textScaleRaw, cacheRaw, legacy] = await Promise.all([
+        const [textScaleRaw, cacheRaw] = await Promise.all([
           readPersistedSettingsField(SKIA_BOARD_CARD_TEXT_SCALE_FIELD),
           readPersistedSettingsField(SKIA_BOARD_RUNNER_CACHE_FIELD),
-          readPersistedSkiaBoardState().catch(() => null),
         ]);
         if (!mountedRef.current) return;
-        // 新フィールドが無ければ旧ボード保存の文字倍率を引き継ぐ。
-        cardTextScaleRef.current = normalizeSkiaBoardTextScale(
-          textScaleRaw !== undefined ? textScaleRaw : legacy?.cardTextScale
-        );
+        cardTextScaleRef.current = normalizeSkiaBoardTextScale(textScaleRaw);
         // サーバー同期がこの読み込みより先に済んでいた場合は、倍率を表示へ再合成する。
         if (stateRef.current && stateRef.current.cardTextScale !== cardTextScaleRef.current) {
           setDisplayState(stateRef.current);
@@ -327,11 +299,9 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
           const cache = cacheRaw && typeof cacheRaw === "object" && !Array.isArray(cacheRaw)
             ? cacheRaw as Record<string, unknown>
             : null;
-          const cachedBoard = cache
-            ? (cache.board && typeof cache.board === "object" && !Array.isArray(cache.board)
-              ? { ...emptyBoardState(), ...(cache.board as Partial<SkiaBoardState>) }
-              : null)
-            : legacy;
+          const cachedBoard = cache && cache.board && typeof cache.board === "object" && !Array.isArray(cache.board)
+            ? { ...emptyBoardState(), ...(cache.board as Partial<SkiaBoardState>) }
+            : null;
           if (cachedBoard) {
             setDisplayState(cachedBoard);
             markLoaded();
@@ -421,27 +391,6 @@ export function SkiaBoardProvider({ children }: { children: ReactNode }) {
       appStateSubscription.remove();
     };
   }, [flushPendingOps, refreshFromServer, runnerWebSocketManager]);
-
-  // 設定インポート(バックアップ復元)がローカルのボード保存を置換したとき、
-  // ランナーが未初期化ならそのままランナーへ引き継ぐ(初期化済みなら正本優先)。
-  useEffect(() => subscribePersistedSkiaBoardStateReplaced((replaced) => {
-    void (async () => {
-      const auth = authRef.current;
-      if (!auth.runnerUrl.trim() || !auth.runnerToken.trim()) {
-        console.warn("[skia_board] runner is not configured; restored backup stays local only");
-        return;
-      }
-      try {
-        const result = await importSkiaBoard(auth, { board: replaced });
-        if (result.status === "already_initialized") {
-          console.warn("[skia_board] runner board already initialized; restored backup was not applied");
-        }
-        if (mountedRef.current) adoptSnapshot(result.snapshot);
-      } catch (error) {
-        console.warn("[skia_board] failed to import restored board state", error);
-      }
-    })();
-  }), [adoptSnapshot]);
 
   const dispatchOps = useCallback((ops: SkiaBoardOp[]) => {
     if (!loadedRef.current) return;

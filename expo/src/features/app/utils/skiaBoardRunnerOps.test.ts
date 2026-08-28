@@ -1,12 +1,6 @@
 import { applySkiaBoardOpLocally, applySkiaBoardOpsLocally } from "./skiaBoardRunnerOps";
 import type { SkiaBoardState } from "./skiaBoardState";
 
-jest.mock("./persistedSettingsFile", () => ({
-  SKIA_BOARD_STATE_FIELD: "skiaBoardState",
-  readPersistedSettingsField: jest.fn(),
-  mutatePersistedSettings: jest.fn(),
-}));
-
 function state(partial: Partial<SkiaBoardState> = {}): SkiaBoardState {
   return {
     cards: [],

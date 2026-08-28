@@ -52,7 +52,6 @@ jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
 }));
 // 端末ローカル保存はファイルIOをモックし、フィールドの読み書きだけ検証する。
 jest.mock("../utils/persistedSettingsFile", () => ({
-  SKIA_BOARD_STATE_FIELD: "skiaBoardState",
   SKIA_BOARD_CARD_TEXT_SCALE_FIELD: "skiaBoardCardTextScale",
   SKIA_BOARD_RUNNER_CACHE_FIELD: "skiaBoardRunnerCache",
   readPersistedSettingsField: jest.fn(),
@@ -275,17 +274,16 @@ describe("useSkiaMiniChatSessions", () => {
     }
   });
 
-  it("imports the legacy local board to the runner on first connect", async () => {
-    // ランナー未初期化+ローカル保存あり → 初回接続時にimportで引き継ぐ。
-    persistedFile.skiaBoardState = {
-      cards: [8, 7, 6, 5, 4, 3].map((index, position) => ({
-        sessionId: `session-${index}`,
-        col: position % 2,
-        row: Math.floor(position / 2),
-      })),
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: new Date(session(8).updatedAt).getTime(),
-    };
+  it("displays the runner board on first connect without touching import", async () => {
+    // 正本はランナーのみ。端末ローカルの引き継ぎ(import)は行わない。
+    seedRunnerBoard(
+      [8, 7, 6, 5, 4, 3].map((index, position) => sessionCard(
+        `session-${index}`,
+        position % 2,
+        Math.floor(position / 2)
+      )),
+      { ingestedUpdatedAtMs: new Date(session(8).updatedAt).getTime() }
+    );
     const ensureRegisteredDirectorySessions = jest.fn().mockResolvedValue(undefined);
     mockConversation(
       Array.from({ length: 8 }, (_, index) => session(index + 1)),
@@ -300,8 +298,7 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(ensureRegisteredDirectorySessions).toHaveBeenCalledTimes(1);
-    expect(mockImportSkiaBoard).toHaveBeenCalledTimes(1);
-    expect(runnerStore.initialized).toBe(true);
+    expect(mockImportSkiaBoard).not.toHaveBeenCalled();
     expect(result.current.directorySync.phase).toBe("idle");
     expect(result.current.sessions).toHaveLength(6);
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual([
@@ -510,19 +507,14 @@ describe("useSkiaMiniChatSessions", () => {
     ]);
   });
 
-  it("derives a directory shortcut name instead of restoring its legacy snapshot", async () => {
-    // 旧ローカル保存のnameフィールドはimport時のパースで落ち、表示名は都度導出される。
-    persistedFile.skiaBoardState = {
-      cards: [{
-        kind: "directory",
-        directory: "/workspace/projects/bitty",
-        name: "Bitty",
-        col: 1.5,
-        row: 2.25,
-      }],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-    };
+  it("derives a directory shortcut name from the runner board", async () => {
+    // ボード正本は表示名を持たないため、表示名は都度導出される。
+    seedRunnerBoard([{
+      kind: "directory",
+      directory: "/workspace/projects/bitty",
+      col: 1.5,
+      row: 2.25,
+    }]);
     mockConversation([]);
 
     const { result } = await renderHook(() => useSkiaMiniChatSessions(), { wrapper: BoardWrapper });
@@ -911,26 +903,6 @@ describe("useSkiaMiniChatSessions", () => {
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["session-1"]);
   });
 
-  it("offers the legacy board even when the runner is already initialized", async () => {
-    // ランナーが自動生成で先に初期化されていても引き継ぎを一度は試み、
-    // 受理判定(未編集ingestなら上書き/それ以外は現状維持)はサーバーに任せる。
-    persistedFile.skiaBoardState = {
-      cards: [{ sessionId: "legacy-session", col: 0, row: 0 }],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-    };
-    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
-    mockConversation([session(1)]);
-
-    const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
-    await flush();
-
-    expect(mockImportSkiaBoard).toHaveBeenCalledTimes(1);
-    // フェイクランナーは初期化済みなので409相当: サーバー正本が表示される。
-    expect(result.current.hasSession("session-1")).toBe(true);
-    expect(result.current.hasSession("legacy-session")).toBe(false);
-  });
-
   it("syncs registered directories to the runner once per content", async () => {
     seedRunnerBoard([sessionCard("session-1", 0, 0)]);
     mockConversation([session(1)]);
@@ -949,33 +921,28 @@ describe("useSkiaMiniChatSessions", () => {
     expect(mockSyncSkiaBoardIngestDirectories).toHaveBeenCalledTimes(1);
   });
 
-  it("retries the legacy import after a transient failure", async () => {
+  it("retries loading the runner board after a transient fetch failure", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    persistedFile.skiaBoardState = {
-      cards: [{ sessionId: "session-1", col: 0, row: 0 }],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-    };
-    const workingImport = mockImportSkiaBoard.getMockImplementation()!;
-    mockImportSkiaBoard.mockRejectedValue(new Error("network down"));
+    seedRunnerBoard([sessionCard("session-1", 0, 0)]);
+    const workingFetch = mockFetchSkiaBoard.getMockImplementation()!;
+    mockFetchSkiaBoard.mockRejectedValue(new Error("network down"));
     mockConversation([session(1)]);
 
     const { result } = await renderHook(() => useSkiaBoard(), { wrapper: BoardWrapper });
     await flush();
 
-    // importが失敗する間はランナー未初期化のまま、表示はローカルのボードを維持。
-    expect(runnerStore.initialized).toBe(false);
-    expect(result.current.state?.cards).toHaveLength(1);
+    // 取得が失敗する間はボード未ロード(キャッシュも無い)。
+    expect(result.current.loaded).toBe(false);
 
-    // ネットワーク復旧後のトリガ(WS通知)で引き継ぎが再試行される(恒久スキップしない)。
-    mockImportSkiaBoard.mockImplementation(workingImport);
+    // ネットワーク復旧後のトリガ(WS通知)で再取得される(恒久スキップしない)。
+    mockFetchSkiaBoard.mockImplementation(workingFetch);
     await act(async () => {
       mockWsEmitter.handlers.forEach((handler) => handler({ payload: { revision: 99 } }));
     });
     await flush();
 
-    expect(runnerStore.initialized).toBe(true);
-    expect(runnerStore.board?.cards).toHaveLength(1);
+    expect(result.current.loaded).toBe(true);
+    expect(result.current.state?.cards).toHaveLength(1);
     warnSpy.mockRestore();
   });
 

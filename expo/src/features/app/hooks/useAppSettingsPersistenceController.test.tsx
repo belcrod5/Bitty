@@ -31,8 +31,7 @@ jest.mock("../clipboard", () => ({
 }));
 
 jest.mock("../utils/persistedSettingsFile", () => ({
-  PRESERVED_SETTINGS_FIELDS: ["skiaBoardState"],
-  SKIA_BOARD_STATE_FIELD: "skiaBoardState",
+  PRESERVED_SETTINGS_FIELDS: ["skiaBoardCardTextScale"],
   mutatePersistedSettings: jest.fn(),
   readPersistedSettings: jest.fn(),
   readPersistedSettingsField: jest.fn(),
@@ -194,14 +193,16 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
 
   expect(mockMutatePersistedSettings).toHaveBeenCalled();
   const mutate = mockMutatePersistedSettings.mock.calls[0][0];
-  const boardState = { cards: [{ sessionId: "session-1", col: 0, row: 0 }] };
   const next = mutate({
-    skiaBoardState: boardState,
+    skiaBoardCardTextScale: 1.1,
+    skiaBoardState: { cards: [{ sessionId: "session-1", col: 0, row: 0 }] },
     runnerUrl: "stale-url",
   });
 
   // 所有者(Skiaボード等)が直接書いたフィールドは保持し、それ以外はReact stateから再構築。
-  expect(next.skiaBoardState).toEqual(boardState);
+  expect(next.skiaBoardCardTextScale).toBe(1.1);
+  // PRESERVED対象から外れた旧ボード保存(skiaBoardState)は自動保存で消える。
+  expect(next).not.toHaveProperty("skiaBoardState");
   expect(next.runnerUrl).toBe("http://default-runner");
 });
 
@@ -225,23 +226,7 @@ test("clipboard export excludes authentication credentials and approval rules", 
   expect(Alert.alert).toHaveBeenCalledWith("書き出し完了", "設定をクリップボードへコピーしました。");
 });
 
-test("clipboard export includes the skia board state persisted on disk", async () => {
-  mockReadPersistedSettingsField.mockResolvedValue({
-    cards: [{ sessionId: "session-1", col: 0, row: 1 }],
-  });
-  const hook = await renderPersistenceController();
-
-  await act(async () => {
-    await hook.result.current.exportSettingsJson();
-  });
-
-  const exported = JSON.parse(mockSetStringAsync.mock.calls[0][0]);
-  expect(exported.appDefaultSettings.skiaBoardState.cards).toEqual([
-    { kind: "session", sessionId: "session-1", col: 0, row: 1 },
-  ]);
-});
-
-test("clipboard export omits the skia board state when the board was never used", async () => {
+test("clipboard export does not include the skia board state", async () => {
   const hook = await renderPersistenceController();
 
   await act(async () => {
@@ -252,7 +237,8 @@ test("clipboard export omits the skia board state when the board was never used"
   expect(exported.appDefaultSettings).not.toHaveProperty("skiaBoardState");
 });
 
-test("clipboard import restores the skia board state to the settings file", async () => {
+test("clipboard import ignores the skia board state in old backups", async () => {
+  // 旧形式のバックアップにボード配置が入っていても取り込まない(正本はランナー)。
   mockGetStringAsync.mockResolvedValue(JSON.stringify({
     appDefaultSettings: {
       runnerUrl: "https://migrated.example.com",
@@ -261,69 +247,6 @@ test("clipboard import restores the skia board state to the settings file", asyn
       },
     },
   }));
-  const hook = await renderPersistenceController();
-
-  await act(async () => {
-    await hook.result.current.importSettingsJson();
-  });
-  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
-  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void }> | undefined)
-    ?.find(({ text }) => text === "インポート");
-
-  mockMutatePersistedSettings.mockClear();
-  await act(async () => {
-    importButton?.onPress?.();
-  });
-
-  // 自動保存のmutateはskiaBoardStateを持ち込まないため、復元書き込みだけが残る。
-  const persistedBoardStates = mockMutatePersistedSettings.mock.calls
-    .map(([mutate]) => mutate({}).skiaBoardState)
-    .filter((value) => value !== undefined);
-  expect(persistedBoardStates).toEqual([{
-    cards: [{ kind: "session", sessionId: "session-1", col: 0, row: 1 }],
-    sections: [],
-    excludedSessionIds: [],
-    ingestedUpdatedAtMs: 0,
-    cardTextScale: 1,
-  }]);
-});
-
-test("clipboard import reports a partial failure when the board state cannot be persisted", async () => {
-  mockGetStringAsync.mockResolvedValue(JSON.stringify({
-    appDefaultSettings: {
-      runnerUrl: "https://migrated.example.com",
-      skiaBoardState: {
-        cards: [{ sessionId: "session-1", col: 0, row: 1 }],
-      },
-    },
-  }));
-  const hook = await renderPersistenceController();
-
-  await act(async () => {
-    await hook.result.current.importSettingsJson();
-  });
-  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
-  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void }> | undefined)
-    ?.find(({ text }) => text === "インポート");
-
-  jest.mocked(Alert.alert).mockClear();
-  mockMutatePersistedSettings.mockRejectedValue(new Error("disk full"));
-  await act(async () => {
-    importButton?.onPress?.();
-  });
-
-  expect(Alert.alert).toHaveBeenCalledWith(
-    "インポート一部失敗",
-    expect.stringContaining("Skiaボード配置を復元できませんでした")
-  );
-  expect(jest.mocked(Alert.alert).mock.calls.some(([title]) => title === "インポート完了")).toBe(false);
-});
-
-test("clipboard import without board data keeps the persisted board state untouched", async () => {
-  mockGetStringAsync.mockResolvedValue(JSON.stringify({
-    appDefaultSettings: { runnerUrl: "https://migrated.example.com" },
-  }));
-  const existingBoardState = { cards: [{ sessionId: "kept-session", col: 1, row: 2 }] };
   const hook = await renderPersistenceController();
 
   await act(async () => {
@@ -339,8 +262,9 @@ test("clipboard import without board data keeps the persisted board state untouc
   });
 
   for (const [mutate] of mockMutatePersistedSettings.mock.calls) {
-    expect(mutate({ skiaBoardState: existingBoardState }).skiaBoardState).toBe(existingBoardState);
+    expect(mutate({})).not.toHaveProperty("skiaBoardState");
   }
+  expect(jest.mocked(Alert.alert).mock.calls.some(([title]) => title === "インポート完了")).toBe(true);
 });
 
 test("import confirmation identifies settings that must be reconfigured", async () => {

@@ -61,11 +61,9 @@ export const LOCATION_BACKGROUND_FIELDS = [
   "locationScheduleLastStates",
 ] as const;
 
-// Skiaボードのボードステート(utils/skiaBoardState.ts)の保存フィールド。
-// ランナー移行後は「初回接続時の引き継ぎ元」としてのみ読む(正本はランナー)。
-export const SKIA_BOARD_STATE_FIELD = "skiaBoardState";
-
 // Skiaボードの文字倍率(端末ローカル設定。ランナー共有ボードには含めない)。
+// ボード配置自体の正本はランナーが持ち、端末には保存しない(旧skiaBoardState
+// フィールドはPRESERVED対象から外れたため、次の設定保存で自然に消える)。
 export const SKIA_BOARD_CARD_TEXT_SCALE_FIELD = "skiaBoardCardTextScale";
 
 // ランナー正本ボードの読み取り専用キャッシュ(オフライン起動時の表示用)。
@@ -75,7 +73,6 @@ export const SKIA_BOARD_RUNNER_CACHE_FIELD = "skiaBoardRunnerCache";
 // mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
 export const PRESERVED_SETTINGS_FIELDS = [
   ...LOCATION_BACKGROUND_FIELDS,
-  SKIA_BOARD_STATE_FIELD,
   SKIA_BOARD_CARD_TEXT_SCALE_FIELD,
   SKIA_BOARD_RUNNER_CACHE_FIELD,
 ] as const;
