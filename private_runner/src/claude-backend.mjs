@@ -351,6 +351,11 @@ export function createClaudeBackend({
     const protocolFailure = new Promise((_, reject) => { rejectProtocol = reject; });
     const resetNoOutput = () => {
       clearTimeout(noOutputTimer);
+      // resultを一度受けた後は、CLIがバックグラウンドタスク(Task/Workflowの
+      // background実行)の完了を静かに待つ正当な無音期間があり得る(中間result→
+      // task-notification注入→自動継続、実測: CLI 2.1.238)。以後はno-output監視を
+      // 張り直さず、turnTimer(24h)だけをbackstopとする。
+      if (state.result) return;
       // ローカルtool実行中(tool.started〜tool.completed間)、または承認待ち中は
       // CLIが無出力になるのが正常(5分超のビルド・無期限の承認待ち)。その間は
       // no-output監視を止め、turnTimerだけを上限とする。
@@ -583,17 +588,27 @@ export function createClaudeBackend({
         return;
       }
       if (type === "result") {
-        if (state.result) throw agentError("protocol_error", "Claude emitted more than one result", { backendId: "claude" });
+        // バックグラウンドタスクを含むターンでは、CLIは中間resultを出した後に
+        // task-notificationをuserメッセージとして注入し同一プロセス内で自動継続、
+        // 最終resultを再度出す(実測シーケンス: assistant→result#1→user(task-
+        // notification)→assistant→result#2→exit)。複数resultを許容し、最後の
+        // resultを正とする(exit後の最終判定・finalTextはstate.resultを参照)。
+        // session ID整合チェックは各resultで維持する。
         const resultSessionId = String(message.session_id || message.sessionId || "").trim();
         if (resultSessionId && resultSessionId !== freshSessionId) {
           throw agentError("protocol_error", "Claude result changed the session ID", { backendId: "claude" });
         }
         state.result = message;
+        // result受信後はno-output監視を張り直さない(resetNoOutputのガード参照)。
+        // 直前のstdout受信で武装済みのタイマーもここでクリアする。
+        resetNoOutput();
         const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
         if (usage) {
           // Claudeのusageはcache read/creationが別建てで、context windowも
           // usage本体には無い。result.modelUsageのcontextWindowを補い、
           // 消費合計をtotal_tokensへ正規化してクライアントの%計算を成立させる。
+          // resultが複数来た場合はresultごとにusage.updatedをemitし、最後の
+          // resultの値が最終値になる(累積加算はしない)。
           const totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
             .reduce((sum, key) => sum + (Math.max(0, Number(usage[key]) || 0)), 0);
           const modelUsageEntries = Object.entries(
