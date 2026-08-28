@@ -1,16 +1,10 @@
 import {
-  mutatePersistedSettings,
-  readPersistedSettingsField,
-  SKIA_BOARD_STATE_FIELD,
-} from "./persistedSettingsFile";
-import {
   SKIA_BOARD_MIN_SECTION_COL_SPAN,
   SKIA_BOARD_MIN_SECTION_ROW_SPAN,
 } from "./skiaBoardSectionGeometry";
 
 // Skiaボードの「ボードステート」(カードと独立セクションの自由配置・除外リスト・取り込み境界)の
-// 純ロジック。永続化は設定JSONの SKIA_BOARD_STATE_FIELD に保存し、設定オートセーブ
-// からは PRESERVED_SETTINGS_FIELDS 経由で保護される。
+// 純ロジック。正本はランナー(GET /skia-board)が持ち、端末には保存しない。
 //
 // - カード位置はグリッド単位の自由座標(col/row、1.0 = カード1枚+ギャップ)。
 //   カード幅(画面回転など)に依存しないため、保存位置が壊れない。
@@ -22,7 +16,6 @@ export const SKIA_BOARD_DEFAULT_TEXT_SCALE = 1;
 export const SKIA_BOARD_MIN_TEXT_SCALE = 0.8;
 export const SKIA_BOARD_MAX_TEXT_SCALE = 1.2;
 export const SKIA_BOARD_TEXT_SCALE_STEP = 0.1;
-const INITIAL_BOARD_CARD_COUNT = 6;
 
 type SkiaBoardCardPosition = {
   col: number;
@@ -113,11 +106,6 @@ export type SkiaBoardState = {
   cardTextScale: number;
 };
 
-export type SkiaBoardSessionCandidate = {
-  sessionId: string;
-  updatedAt?: unknown;
-};
-
 export function skiaBoardCardId(card: SkiaBoardCard): string {
   if (card.kind === "session") return `session:${card.sessionId}`;
   if (card.kind === "directory") return skiaBoardDirectoryId(card.directory);
@@ -160,11 +148,6 @@ export function skiaBoardCardDisplayName(
   return String(registeredName || "").trim()
     || card.directory.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop()
     || card.directory;
-}
-
-function updatedAtMs(value: unknown) {
-  const time = new Date(String(value || "")).getTime();
-  return Number.isFinite(time) ? time : 0;
 }
 
 export function skiaBoardGridPosition(index: number): { col: number; row: number } {
@@ -298,93 +281,6 @@ export function parseSkiaBoardState(raw: unknown): SkiaBoardState | null {
       ? Math.max(0, ingestedUpdatedAtMsRaw)
       : 0,
     cardTextScale: normalizeSkiaBoardTextScale(record.cardTextScale),
-  };
-}
-
-// 候補セッションをボードへ取り込む。変化がなければ同一参照を返す(永続化抑制)。
-// - 保存済みカード/除外/ウォーターマークが無い場合: 最新 INITIAL_BOARD_CARD_COUNT 件で
-//   グリッド初期化。文字倍率だけが保存済みなら、その値は引き継ぐ。
-//   ウォーターマークは全候補の最大updatedAtにし、既存の過去分が後から流れ込まない。
-// - 以降: 未搭載・未除外かつ updatedAt がウォーターマークより新しい候補だけを
-//   空きセルへ追加する。既存カードの位置は動かさない。
-export function ingestSkiaBoardSessions(
-  state: SkiaBoardState | null,
-  candidates: readonly SkiaBoardSessionCandidate[]
-): SkiaBoardState | null {
-  const needsInitialSessions = !state || (
-    state.cards.length === 0
-    && state.excludedSessionIds.length === 0
-    && state.ingestedUpdatedAtMs === 0
-  );
-  if (needsInitialSessions) {
-    if (candidates.length <= 0) return state;
-    return {
-      ...state,
-      cards: candidates.slice(0, INITIAL_BOARD_CARD_COUNT).map((candidate, index) => ({
-        kind: "session" as const,
-        sessionId: candidate.sessionId,
-        ...skiaBoardGridPosition(index),
-      })),
-      excludedSessionIds: [],
-      sections: state?.sections || [],
-      ingestedUpdatedAtMs: candidates.reduce(
-        (max, candidate) => Math.max(max, updatedAtMs(candidate.updatedAt)),
-        0
-      ),
-      cardTextScale: state?.cardTextScale ?? SKIA_BOARD_DEFAULT_TEXT_SCALE,
-    };
-  }
-  if (
-    state.cards.length > 0
-    && !state.cards.some((card) => card.kind === "session")
-    && state.excludedSessionIds.length === 0
-    && state.ingestedUpdatedAtMs === 0
-  ) {
-    const cards = state.cards.slice();
-    for (const candidate of candidates.slice(0, INITIAL_BOARD_CARD_COUNT)) {
-      cards.push({
-        kind: "session",
-        sessionId: candidate.sessionId,
-        ...findFreeSkiaBoardCell(cards),
-      });
-    }
-    return {
-      ...state,
-      cards,
-      ingestedUpdatedAtMs: candidates.reduce(
-        (max, candidate) => Math.max(max, updatedAtMs(candidate.updatedAt)),
-        0
-      ),
-    };
-  }
-  const boardedSessionIds = new Set(state.cards.flatMap((card) => (
-    card.kind === "session" ? [card.sessionId] : []
-  )));
-  const excludedSessionIds = new Set(state.excludedSessionIds);
-  const additions = candidates
-    .filter((candidate) => (
-      !boardedSessionIds.has(candidate.sessionId)
-      && !excludedSessionIds.has(candidate.sessionId)
-      && updatedAtMs(candidate.updatedAt) > state.ingestedUpdatedAtMs
-    ))
-    // 古い順に空きセルへ積む(新しいものほど後ろのセル)。
-    .sort((a, b) => updatedAtMs(a.updatedAt) - updatedAtMs(b.updatedAt));
-  if (additions.length <= 0) return state;
-  const cards = state.cards.slice();
-  for (const candidate of additions) {
-    cards.push({
-      kind: "session",
-      sessionId: candidate.sessionId,
-      ...findFreeSkiaBoardCell(cards),
-    });
-  }
-  return {
-    ...state,
-    cards,
-    ingestedUpdatedAtMs: additions.reduce(
-      (max, candidate) => Math.max(max, updatedAtMs(candidate.updatedAt)),
-      state.ingestedUpdatedAtMs
-    ),
   };
 }
 
@@ -660,42 +556,4 @@ export function setSkiaBoardCardTextScale(
 ): SkiaBoardState {
   const cardTextScale = normalizeSkiaBoardTextScale(value);
   return cardTextScale === state.cardTextScale ? state : { ...state, cardTextScale };
-}
-
-export async function readPersistedSkiaBoardState(): Promise<SkiaBoardState | null> {
-  return parseSkiaBoardState(await readPersistedSettingsField(SKIA_BOARD_STATE_FIELD));
-}
-
-export function writePersistedSkiaBoardState(state: SkiaBoardState): Promise<void> {
-  return mutatePersistedSettings((current) => ({
-    ...current,
-    [SKIA_BOARD_STATE_FIELD]: state,
-  }));
-}
-
-type PersistedSkiaBoardStateReplacedListener = (state: SkiaBoardState) => void;
-const persistedStateReplacedListeners = new Set<PersistedSkiaBoardStateReplacedListener>();
-
-// SkiaBoardProviderが購読し、UI外からの一括置換をメモリ上のボードstateへ反映する。
-export function subscribePersistedSkiaBoardStateReplaced(
-  listener: PersistedSkiaBoardStateReplacedListener
-): () => void {
-  persistedStateReplacedListeners.add(listener);
-  return () => {
-    persistedStateReplacedListeners.delete(listener);
-  };
-}
-
-// ボードUI外(設定インポート等)からの一括置換。保存後に購読者へ通知しないと、
-// ボードがメモリに保持する旧stateが次の永続化で置換内容を上書きしてしまう。
-// リスナーの例外は保存済みという結果を覆さないよう、通知失敗として警告に留める。
-export async function replacePersistedSkiaBoardState(state: SkiaBoardState): Promise<void> {
-  await writePersistedSkiaBoardState(state);
-  for (const listener of persistedStateReplacedListeners) {
-    try {
-      listener(state);
-    } catch (error) {
-      console.warn("[skia_board] board state replacement listener failed", error);
-    }
-  }
 }

@@ -224,6 +224,20 @@ test("ingest initializes an empty board with the latest candidates", () => {
   assert.equal(state.ingestedUpdatedAtMs, new Date("2026-06-08T00:00:00.000Z").getTime());
 });
 
+test("ingest keeps existing sections when initializing a section-only board", () => {
+  const state = {
+    cards: [],
+    sections: [section()],
+    excludedSessionIds: [],
+    ingestedUpdatedAtMs: 0,
+  };
+  const next = ingestSkiaBoardSessions(state, [
+    { sessionId: "session-1", updatedAt: "2026-06-01T00:00:00.000Z" },
+  ]);
+  assert.deepEqual(next.sections, [section()]);
+  assert.deepEqual(next.cards.map((card) => card.sessionId), ["session-1"]);
+});
+
 test("ingest adds only new unexcluded sessions past the watermark", () => {
   const state = {
     ...baseState(),

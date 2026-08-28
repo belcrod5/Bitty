@@ -4,7 +4,6 @@ import {
   addSkiaBoardSection,
   addSkiaBoardSession,
   findFreeSkiaBoardCell,
-  ingestSkiaBoardSessions,
   isAbsoluteRunnerHostPath,
   markSkiaBoardFileUnavailable,
   moveSkiaBoardCard,
@@ -15,35 +14,18 @@ import {
   removeSkiaBoardSession,
   removeSkiaBoardFile,
   removeSkiaBoardSection,
-  replacePersistedSkiaBoardState,
   skiaBoardCardId,
   skiaBoardCardDisplayName,
   skiaBoardDirectoryId,
-  skiaBoardGridPosition,
   setSkiaBoardCardTextScale,
-  subscribePersistedSkiaBoardStateReplaced,
   tidySkiaBoardCards,
   updateSkiaBoardCardAppearance,
   updateSkiaBoardSection,
   type SkiaBoardState,
 } from "./skiaBoardState";
-import { mutatePersistedSettings } from "./persistedSettingsFile";
-
-jest.mock("./persistedSettingsFile", () => ({
-  SKIA_BOARD_STATE_FIELD: "skiaBoardState",
-  readPersistedSettingsField: jest.fn(),
-  mutatePersistedSettings: jest.fn(),
-}));
-
-function candidate(index: number) {
-  return {
-    sessionId: `session-${index}`,
-    updatedAt: `2026-06-${String(index).padStart(2, "0")}T00:00:00.000Z`,
-  };
-}
 
 function updatedAtMs(index: number) {
-  return new Date(candidate(index).updatedAt).getTime();
+  return new Date(`2026-06-${String(index).padStart(2, "0")}T00:00:00.000Z`).getTime();
 }
 
 function sessionCard(sessionId: string, col: number, row: number) {
@@ -67,120 +49,6 @@ function section(id = "section:1") {
 function boardedSessionIds(state: SkiaBoardState | null | undefined) {
   return (state?.cards || []).flatMap((card) => card.kind === "session" ? [card.sessionId] : []);
 }
-
-describe("ingestSkiaBoardSessions", () => {
-  it("initializes with the latest six candidates and a watermark over all candidates", () => {
-    const state = ingestSkiaBoardSessions(
-      null,
-      Array.from({ length: 8 }, (_, index) => candidate(8 - index))
-    );
-
-    expect(boardedSessionIds(state)).toEqual([
-      "session-8",
-      "session-7",
-      "session-6",
-      "session-5",
-      "session-4",
-      "session-3",
-    ]);
-    expect(state?.cards[2]).toMatchObject(skiaBoardGridPosition(2));
-    // ウォーターマークは全候補の最大updatedAt(初期化時点の過去分は以後流入しない)。
-    expect(state?.ingestedUpdatedAtMs).toBe(updatedAtMs(8));
-    expect(state?.excludedSessionIds).toEqual([]);
-  });
-
-  it("returns null without candidates so a later full sync can initialize", () => {
-    expect(ingestSkiaBoardSessions(null, [])).toBeNull();
-  });
-
-  it("initializes latest-first from a scale-only persisted state and preserves its scale", () => {
-    const scaleOnlyState = parseSkiaBoardState({
-      cards: [],
-      sections: [],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-      cardTextScale: 1.2,
-    });
-
-    const state = ingestSkiaBoardSessions(
-      scaleOnlyState,
-      Array.from({ length: 8 }, (_, index) => candidate(8 - index))
-    );
-
-    expect(boardedSessionIds(state)).toEqual([
-      "session-8",
-      "session-7",
-      "session-6",
-      "session-5",
-      "session-4",
-      "session-3",
-    ]);
-    expect(state?.ingestedUpdatedAtMs).toBe(updatedAtMs(8));
-    expect(state?.cardTextScale).toBe(1.2);
-  });
-
-  it("stacks only unboarded, unexcluded candidates newer than the watermark", () => {
-    const state: SkiaBoardState = {
-      cards: [sessionCard("session-3", 0.4, 0.1)],
-      sections: [],
-      excludedSessionIds: ["session-5"],
-      ingestedUpdatedAtMs: updatedAtMs(3),
-      cardTextScale: 1,
-    };
-
-    const next = ingestSkiaBoardSessions(state, [
-      candidate(6),
-      candidate(5), // 除外済み → 追加しない
-      candidate(4),
-      candidate(3), // 搭載済み
-      candidate(2), // ウォーターマークより古い → 追加しない
-    ]);
-
-    expect(next).not.toBe(state);
-    expect(boardedSessionIds(next)).toEqual([
-      "session-3",
-      "session-4",
-      "session-6",
-    ]);
-    // 既存カードの位置は不変、新カードは重ならない空きセルへ古い順に配置。
-    // (0.4, 0.1) のカードは row0/row1 の4セルへ部分的に重なるため row2 から埋まる。
-    expect(next?.cards[0]).toMatchObject({ col: 0.4, row: 0.1 });
-    expect(next?.cards[1]).toMatchObject({ col: 0, row: 2 });
-    expect(next?.cards[2]).toMatchObject({ col: 1, row: 2 });
-    expect(next?.ingestedUpdatedAtMs).toBe(updatedAtMs(6));
-  });
-
-  it("returns the same reference when nothing changes", () => {
-    const state: SkiaBoardState = {
-      cards: [sessionCard("session-2", 0, 0)],
-      sections: [],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: updatedAtMs(2),
-      cardTextScale: 1,
-    };
-    expect(ingestSkiaBoardSessions(state, [candidate(2), candidate(1)])).toBe(state);
-  });
-
-  it("initializes sessions alongside an existing directory shortcut", () => {
-    const state: SkiaBoardState = {
-      cards: [{
-        kind: "directory",
-        directory: "/workspace",
-        col: 0,
-        row: 0,
-      }],
-      sections: [],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-      cardTextScale: 1,
-    };
-
-    const next = ingestSkiaBoardSessions(state, [candidate(1)]);
-
-    expect(next?.cards).toHaveLength(2);
-    expect(next?.cards[1]).toMatchObject({ kind: "session", sessionId: "session-1" });
-  });
-});
 
 describe("findFreeSkiaBoardCell", () => {
   it("skips cells overlapped by free-form card positions", () => {
@@ -211,14 +79,8 @@ describe("removeSkiaBoardSession", () => {
 
     const removed = removeSkiaBoardSession(state, "session-2");
     expect(boardedSessionIds(removed)).toEqual(["session-1"]);
+    // 除外リストによりランナー側の自動再追加(ingest)からも守られる。
     expect(removed.excludedSessionIds).toEqual(["session-2"]);
-
-    // 除外済みセッションはupdatedAtが前進しても再追加されない。
-    const reIngested = ingestSkiaBoardSessions(removed, [
-      { sessionId: "session-2", updatedAt: "2026-07-01T00:00:00.000Z" },
-      candidate(1),
-    ]);
-    expect(boardedSessionIds(reIngested)).toEqual(["session-1"]);
   });
 
   it("returns the same reference for a session that is not on the board", () => {
@@ -470,12 +332,6 @@ describe("board sections", () => {
     })?.sections).toEqual([]);
   });
 
-  it("keeps sections when sessions are initially ingested", () => {
-    const sectionOnly = { ...state, sections: [section()] };
-    const ingested = ingestSkiaBoardSessions(sectionOnly, [candidate(1)]);
-    expect(ingested?.sections).toEqual([section()]);
-    expect(boardedSessionIds(ingested)).toEqual(["session-1"]);
-  });
 });
 
 describe("card text scale", () => {
@@ -726,83 +582,5 @@ describe("board card appearance and file identity", () => {
       "docs/guide.md",
       "docs/new.md"
     ).cards).toEqual([destination]);
-  });
-});
-
-describe("replacePersistedSkiaBoardState", () => {
-  it("persists the replacement and notifies subscribers after the write", async () => {
-    const mockMutate = jest.mocked(mutatePersistedSettings);
-    mockMutate.mockClear();
-    mockMutate.mockResolvedValue(undefined);
-    const listener = jest.fn();
-    const unsubscribe = subscribePersistedSkiaBoardStateReplaced(listener);
-    const state: SkiaBoardState = {
-      cards: [sessionCard("session-1", 0, 1)],
-      sections: [],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-      cardTextScale: 1,
-    };
-
-    await replacePersistedSkiaBoardState(state);
-
-    expect(mockMutate).toHaveBeenCalledTimes(1);
-    const mutate = mockMutate.mock.calls[0][0];
-    expect(mutate({ runnerUrl: "http://kept" })).toEqual({
-      runnerUrl: "http://kept",
-      skiaBoardState: state,
-    });
-    expect(listener).toHaveBeenCalledWith(state);
-
-    unsubscribe();
-    listener.mockClear();
-    await replacePersistedSkiaBoardState(state);
-    expect(listener).not.toHaveBeenCalled();
-  });
-
-  it("keeps notifying remaining subscribers when one listener throws", async () => {
-    const mockMutate = jest.mocked(mutatePersistedSettings);
-    mockMutate.mockClear();
-    mockMutate.mockResolvedValue(undefined);
-    jest.spyOn(console, "warn").mockImplementation(() => {});
-    const throwingListener = jest.fn(() => {
-      throw new Error("listener failed");
-    });
-    const listener = jest.fn();
-    const unsubscribeThrowing = subscribePersistedSkiaBoardStateReplaced(throwingListener);
-    const unsubscribe = subscribePersistedSkiaBoardStateReplaced(listener);
-    const state: SkiaBoardState = {
-      cards: [],
-      sections: [],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-      cardTextScale: 1,
-    };
-
-    await expect(replacePersistedSkiaBoardState(state)).resolves.toBeUndefined();
-    expect(listener).toHaveBeenCalledWith(state);
-
-    unsubscribeThrowing();
-    unsubscribe();
-    jest.mocked(console.warn).mockRestore();
-  });
-
-  it("does not notify subscribers when the write fails", async () => {
-    const mockMutate = jest.mocked(mutatePersistedSettings);
-    mockMutate.mockClear();
-    mockMutate.mockRejectedValue(new Error("write failed"));
-    const listener = jest.fn();
-    const unsubscribe = subscribePersistedSkiaBoardStateReplaced(listener);
-    const state: SkiaBoardState = {
-      cards: [],
-      sections: [],
-      excludedSessionIds: [],
-      ingestedUpdatedAtMs: 0,
-      cardTextScale: 1,
-    };
-
-    await expect(replacePersistedSkiaBoardState(state)).rejects.toThrow("write failed");
-    expect(listener).not.toHaveBeenCalled();
-    unsubscribe();
   });
 });

@@ -30,9 +30,16 @@ jest.mock("expo-file-system/legacy", () => ({
 
 import {
   mutatePersistedSettings,
+  PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
   readPersistedSettingsField,
 } from "./persistedSettingsFile";
+
+// ボード配置の正本はランナーへ移行済み。旧skiaBoardStateをPRESERVEDへ戻すと
+// 端末に配置データが残り続けるため、実定数から外れていることを固定する。
+test("preserved settings fields no longer carry the legacy skia board state", () => {
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("skiaBoardState");
+});
 
 beforeEach(() => {
   mockFiles.clear();
