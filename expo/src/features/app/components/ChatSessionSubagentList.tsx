@@ -8,7 +8,7 @@ import {
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "./AppDrawer";
 import { styles } from "../styles";
-import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
+import { findDirectoryForSessionTree, getCachedDirectorySessions } from "../utils/sessionHistoryContext";
 import { formatLlmSessionDisplayTitle } from "../utils/llmSession";
 
 type ChatSessionSubagentListProps = {
@@ -55,10 +55,15 @@ export function ChatSessionSubagentList({
     const directoryPath = String(selectedDirectoryPath || "").trim();
     const sessionId = String(selectedSessionId || "").trim();
     if (!directoryPath || !sessionId) return null;
-    const directory = registeredDirectories.find((item) => {
-      const directoryState = directorySessionsById[item.id];
-      return getCachedDirectorySessions(directoryState).some((session) => session.sessionId === sessionId);
-    });
+    // 選択中セッションがドロワーの取得ウィンドウ外でも、選択中ディレクトリの
+    // パスから直接解決する(loaderと同じ解決規則)。逆引きのみだと永久にnullで
+    // サブエージェントリストが空のままになる。
+    const directory = findDirectoryForSessionTree(
+      registeredDirectories,
+      directorySessionsById,
+      [sessionId],
+      directoryPath,
+    );
     const directoryState = directory ? directorySessionsById[directory.id] : undefined;
     if (!directoryState) return null;
     const cachedSessions = getCachedDirectorySessions(directoryState);
