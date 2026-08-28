@@ -50,7 +50,7 @@ export function createAgentHttpHandler({
           cursor: String(reqUrl.searchParams.get("cursor") || "").trim(),
           limit: normalizeSessionListLimit(reqUrl.searchParams.get("limit")),
           ...(reqUrl.searchParams.get("includeSubagents") === "false" ? { includeSubagents: false } : {}),
-        }));
+        }, { subjectId }));
       } catch (error) {
         json(res, error?.code === "backend_unavailable" ? 404 : 400, { error: serializeAgentError(error) });
       }
@@ -390,7 +390,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     }
     if (message.op === "sessions.list") {
       const payload = payloadObject(message);
-      void service.listSessions(payload).then((result) => sendEnvelope(ws, {
+      void service.listSessions(payload, { subjectId }).then((result) => sendEnvelope(ws, {
         channel: "agent",
         op: "sessions.list.result",
         requestId: message.requestId || "",

@@ -88,6 +88,9 @@ export async function listCodexAppServerThreads(options: {
             updatedAt: String(item.updatedAt || ""),
             lastReadAt: String(item.lastReadAt || ""),
             contextUsedPct: null,
+            // read経路(activeRun→active/idle)と同じサーバー発の実行状態。
+            // 欠落させると常に"unknown"となりsubagent実行中カウントが構造的に0になる。
+            threadStatusType: item.isActive === true ? "active" as const : "idle" as const,
           };
         }).filter((item) => item.threadId && sourceKinds.includes(item.sourceKind as CodexThreadSourceKind)),
         nextCursor: String(neutral.cursor || ""),

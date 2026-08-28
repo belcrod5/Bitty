@@ -62,6 +62,47 @@ test("agent HTTP history passes a neutral session reference with its authenticat
   assert.deepEqual(received.context, { subjectId: "runner-token" });
 });
 
+test("agent session lists carry the authenticated owner on both transports", async () => {
+  const received = [];
+  const service = {
+    async listSessions(options, context) {
+      received.push({ options, context });
+      return { sessions: [] };
+    },
+  };
+  const handler = createAgentHttpHandler({
+    service,
+    runnerToken: "test-token",
+    parseAuthToken: (req) => req.token || "",
+    json,
+    normalizeSessionListLimit: (value) => Number(value || 20),
+    normalizeSessionMessagesLimit: (value) => Number(value || 20),
+  });
+  const reqUrl = new URL("http://runner.test/agent/sessions?backendId=all&cwd=/workspace");
+  const res = response();
+  await handler({ method: "GET", token: "test-token" }, res, reqUrl, reqUrl.pathname);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(received[0].context, { subjectId: "runner-token" });
+
+  const sent = [];
+  const connection = createAgentWsConnection({
+    service,
+    ws: {},
+    subjectId: "subject",
+    workspaceAdmission: {},
+    sendEnvelope: (_ws, message) => sent.push(message),
+  });
+  assert.equal(connection.handleMessage({
+    channel: "agent",
+    op: "sessions.list",
+    requestId: "request-1",
+    payload: { backendId: "all", cwd: "/workspace" },
+  }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(received[1].context, { subjectId: "subject" });
+  assert.equal(sent.at(-1).op, "sessions.list.result");
+});
+
 test("agent WebSocket releases a run subscription after its terminal event", async () => {
   let onEvent;
   let unsubscribeCount = 0;

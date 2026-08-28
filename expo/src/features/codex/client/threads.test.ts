@@ -164,6 +164,41 @@ it("requests subagents from the server when subAgent source kinds are included",
   expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeSubagents: true }));
 });
 
+it("maps the server-reported isActive to a threadStatusType per listing entry", async () => {
+  mockListAgentSessions.mockResolvedValue({
+    sessions: [
+      {
+        sessionRef: { backendId: "codex", nativeSessionId: "sub-running" },
+        updatedAt: "2026-08-28T03:00:00.000Z",
+        sourceKind: "cli",
+        isSubagent: true,
+        isActive: true,
+      },
+      {
+        sessionRef: { backendId: "codex", nativeSessionId: "sub-idle" },
+        updatedAt: "2026-08-28T02:00:00.000Z",
+        sourceKind: "cli",
+        isSubagent: true,
+      },
+    ],
+  });
+
+  const result = await listCodexAppServerThreads({
+    wsUrl: "ws://runner",
+    cwd: "/workspace",
+    runnerWebSocketManager: {} as never,
+    backendId: "all",
+    rawFallbackBackendId: "codex",
+    sourceKinds: ["subAgent"],
+  });
+
+  // threadStatusTypeを欠落させると常に"unknown"になり実行中カウントが構造的に0になる
+  expect(result.data.map((item) => ({ threadId: item.threadId, threadStatusType: item.threadStatusType }))).toEqual([
+    { threadId: "sub-running", threadStatusType: "active" },
+    { threadId: "sub-idle", threadStatusType: "idle" },
+  ]);
+});
+
 it("maps a provider-neutral active run to a running thread", async () => {
   mockReadAgentHistory.mockResolvedValue({
     items: [],

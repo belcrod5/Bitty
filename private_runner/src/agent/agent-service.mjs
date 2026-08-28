@@ -369,13 +369,19 @@ export function createAgentService({
     return await sessionStore.getMode(sessionRef);
   }
 
-  async function withStoredSessionState(session, cwd) {
+  async function withStoredSessionState(session, cwd, context = {}) {
     const [binding, readState] = await Promise.all([
       sessionStore.getBinding(session?.sessionRef),
       sessionStore.getReadState(session?.sessionRef, cwd),
     ]);
     const lastReadAt = String(readState?.lastReadAt || "").trim()
       || newerTimestamp(binding?.lastReadAt, session?.lastReadAt);
+    // isActiveはhistory.readのactiveRunと同じ発生源(service管理のrun)を一覧へ流す。
+    // Backendがnative観測でisActive: trueを付けた項目(spawnされたsubagent等)は
+    // spreadで保持され、どちらかが実行中ならactiveになる。
+    const activeRun = String(context?.subjectId || "").trim() && session?.sessionRef?.nativeSessionId
+      ? getActiveRun(session.sessionRef, context)
+      : null;
     return {
       ...session,
       // Neutral selection is authoritative until an explicit raw handoff clears it.
@@ -383,6 +389,7 @@ export function createAgentService({
       modelId: String(binding?.modelId || session?.modelId || "").trim(),
       reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
       ...(lastReadAt ? { lastReadAt } : {}),
+      ...(activeRun ? { isActive: true } : {}),
     };
   }
 
@@ -995,7 +1002,7 @@ export function createAgentService({
     handoffSession,
     compactSession,
     cancelRunsInWorkspace,
-    async listSessions(options) {
+    async listSessions(options, context = {}) {
       const requestedCwd = String(options?.cwd || "").trim();
       if (!requestedCwd) throw agentError("turn_rejected", "cwd is required");
       const cwd = await resolveCanonicalCwd(requestedCwd);
@@ -1013,7 +1020,7 @@ export function createAgentService({
         const singlePage = await backend.listSessions({ ...options, cwd });
         const sessions = await Promise.all(
           (Array.isArray(singlePage?.sessions) ? singlePage.sessions : [])
-            .map((session) => withStoredSessionState(session, cwd)),
+            .map((session) => withStoredSessionState(session, cwd, context)),
         );
         // 項目別cursorは合成層のカット専用の内部値。all-scopeと同様wireへは出さない。
         return {
@@ -1050,7 +1057,7 @@ export function createAgentService({
           });
           const sessions = await Promise.all(
             (Array.isArray(page?.sessions) ? page.sessions : [])
-              .map((session) => withStoredSessionState(session, cwd)),
+              .map((session) => withStoredSessionState(session, cwd, context)),
           );
           return { backendId: backend.backendId, page: { ...page, sessions } };
         } catch (error) {
