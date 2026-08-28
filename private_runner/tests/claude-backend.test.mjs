@@ -178,7 +178,7 @@ test("Claude Backend uses one-shot stream-json, resolves native session, and nor
     { type: "system", subtype: "init", session_id: SESSION_ID, model: "claude-test" },
     { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hel" } } },
     { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "lo" } } },
-    { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } },
+    { type: "assistant", message: { content: [{ type: "text", text: "hello" }], usage: { input_tokens: 2, output_tokens: 1 } } },
     { type: "result", subtype: "success", result: "hello", session_id: SESSION_ID, usage: { input_tokens: 2, output_tokens: 1 } },
   ], { startedAt });
   const events = [];
@@ -217,17 +217,48 @@ test("Claude Backend uses one-shot stream-json, resolves native session, and nor
   ]);
 });
 
-test("Claude Backend enriches usage with total tokens and the model context window", async () => {
+test("Claude Backend reports the latest main assistant context usage instead of cumulative result usage", async () => {
   const { backend } = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
-    { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+    {
+      type: "assistant",
+      uuid: "assistant-tool",
+      message: {
+        model: "claude-haiku-4-5-20251001",
+        content: [{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "README.md" } }],
+        usage: { input_tokens: 2, cache_read_input_tokens: 40000, cache_creation_input_tokens: 8, output_tokens: 10 },
+      },
+    },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "contents" }] } },
+    {
+      type: "assistant",
+      uuid: "assistant-final",
+      message: {
+        model: "claude-haiku-4-5-20251001",
+        content: [{ type: "text", text: "done" }],
+        usage: { input_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 7, output_tokens: 10 },
+      },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-subagent",
+      parent_tool_use_id: "tool-1",
+      message: {
+        model: "claude-opus-4-1-20250805",
+        content: [{ type: "text", text: "subagent result" }],
+        usage: { input_tokens: 50000, output_tokens: 50000 },
+      },
+    },
     {
       type: "result",
       subtype: "success",
       result: "done",
       session_id: SESSION_ID,
-      usage: { input_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 8, output_tokens: 10 },
-      modelUsage: { "claude-haiku-4-5-20251001": { inputTokens: 2, contextWindow: 200000 } },
+      usage: { input_tokens: 50002, cache_read_input_tokens: 40100, cache_creation_input_tokens: 15, output_tokens: 50020 },
+      modelUsage: {
+        "claude-opus-4-1-20250805": { inputTokens: 50000, contextWindow: 500000 },
+        "claude-haiku-4-5-20251001": { inputTokens: 2, contextWindow: 200000 },
+      },
     },
   ]);
   const events = [];
@@ -240,10 +271,12 @@ test("Claude Backend enriches usage with total tokens and the model context wind
   });
 
   const usage = events.find((event) => event.type === "usage.updated")?.payload.usage;
-  // cache read/creationを含む消費合計とcontext windowが載り、クライアントが%を計算できる
+  // 最新メインassistantの3+100+7+10だけを使い、過去のtool turn、subagent、
+  // resultのターン累計をcontext占有量へ混ぜない。
   assert.equal(usage.total_tokens, 120);
   assert.equal(usage.context_window, 200000);
-  assert.equal(usage.input_tokens, 2);
+  assert.equal(usage.input_tokens, 3);
+  assert.equal(usage.cache_read_input_tokens, 100);
 });
 
 test("Claude Backend passes a supported effort to the CLI exactly once", async () => {

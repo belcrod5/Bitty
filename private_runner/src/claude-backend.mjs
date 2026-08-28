@@ -32,6 +32,12 @@ const CLAUDE_MODELS = [
   { modelId: "fable", label: "Claude Fable" },
 ];
 const MODEL_ALIASES = new Set(CLAUDE_MODELS.map((model) => model.modelId));
+const CONTEXT_TOKEN_KEYS = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"];
+
+function contextTokensFromUsage(usage) {
+  if (!usage || typeof usage !== "object") return 0;
+  return CONTEXT_TOKEN_KEYS.reduce((sum, key) => sum + Math.max(0, Number(usage[key]) || 0), 0);
+}
 
 // フルmodel id("claude-haiku-4-5-20251001"等)をカタログのalias("haiku"等)へ寄せる
 function modelAliasOf(modelIdRaw) {
@@ -331,6 +337,7 @@ export function createClaudeBackend({
       completedToolIds: new Set(),
       completedSubagentItemIds: new Set(),
       runningToolIds: new Set(),
+      latestAssistantContext: null,
       processing: Promise.resolve(),
       processIdentity: null,
       exitPromise: null,
@@ -542,6 +549,12 @@ export function createClaudeBackend({
           });
           return;
         }
+        if (message.message?.usage && typeof message.message.usage === "object") {
+          state.latestAssistantContext = {
+            usage: message.message.usage,
+            modelId: String(message.message.model || "").trim(),
+          };
+        }
         const blocks = Array.isArray(message.message?.content) ? message.message.content : [];
         let hasToolUse = false;
         for (const block of blocks) {
@@ -589,29 +602,32 @@ export function createClaudeBackend({
           throw agentError("protocol_error", "Claude result changed the session ID", { backendId: "claude" });
         }
         state.result = message;
-        const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
-        if (usage) {
-          // Claudeのusageはcache read/creationが別建てで、context windowも
-          // usage本体には無い。result.modelUsageのcontextWindowを補い、
-          // 消費合計をtotal_tokensへ正規化してクライアントの%計算を成立させる。
-          const totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
-            .reduce((sum, key) => sum + (Math.max(0, Number(usage[key]) || 0)), 0);
-          const modelUsageEntries = Object.entries(
-            message.modelUsage && typeof message.modelUsage === "object" ? message.modelUsage : {},
-          );
-          const contextWindow = modelUsageEntries
-            .reduce((max, [, entry]) => Math.max(max, Number(entry?.contextWindow) || 0), 0);
-          // モデルごとのcontext windowはtranscriptに残らない。履歴再表示時の%復元の
-          // ために、ここで学習した実値をstoreへ永続化する(best-effort)。
-          if (modelInfoStore?.set) {
-            for (const [modelId, entry] of modelUsageEntries) {
-              const alias = modelAliasOf(modelId);
-              const windowTokens = Math.floor(Number(entry?.contextWindow) || 0);
-              if (!alias || windowTokens <= 0) continue;
-              void Promise.resolve(modelInfoStore.set("claude", alias, { contextWindowTokens: windowTokens }))
-                .catch(() => {});
-            }
+        const modelUsageEntries = Object.entries(
+          message.modelUsage && typeof message.modelUsage === "object" ? message.modelUsage : {},
+        );
+        const assistantModelId = state.latestAssistantContext?.modelId || "";
+        const assistantModelAlias = modelAliasOf(assistantModelId);
+        const assistantModelUsage = modelUsageEntries.find(([modelId]) => modelId === assistantModelId)
+          || (assistantModelAlias
+            ? modelUsageEntries.find(([modelId]) => modelAliasOf(modelId) === assistantModelAlias)
+            : null);
+        const contextWindow = Math.floor(Number(assistantModelUsage?.[1]?.contextWindow) || 0);
+        // モデルごとのcontext windowはtranscriptに残らない。履歴再表示時の%復元の
+        // ために、ここで学習した実値をstoreへ永続化する(best-effort)。
+        if (modelInfoStore?.set) {
+          for (const [modelId, entry] of modelUsageEntries) {
+            const alias = modelAliasOf(modelId);
+            const windowTokens = Math.floor(Number(entry?.contextWindow) || 0);
+            if (!alias || windowTokens <= 0) continue;
+            void Promise.resolve(modelInfoStore.set("claude", alias, { contextWindowTokens: windowTokens }))
+              .catch(() => {});
           }
+        }
+        // result.usageはtool呼び出しを含むターン累計であり、context占有量ではない。
+        // transcript復元と同じ最新のメインassistant message usageを表示に使う。
+        const usage = state.latestAssistantContext?.usage;
+        if (usage) {
+          const totalTokens = contextTokensFromUsage(usage);
           emit("usage.updated", {
             usage: {
               ...usage,
@@ -839,8 +855,7 @@ export function createClaudeBackend({
       if (value?.isSidechain === true) continue;
       const usage = value?.message?.usage;
       if (usage && typeof usage === "object") {
-        totalTokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]
-          .reduce((sum, key) => sum + Math.max(0, Number(usage[key]) || 0), 0);
+        totalTokens = contextTokensFromUsage(usage);
         break;
       }
     }
