@@ -11,3 +11,7 @@ opened yet. The reproduction is tested with React Native Skia 2.11.1, which this
 repository now uses. When either React Native or Skia changes, check upstream
 again and rerun the keyboard-open first-tap scenario on a real device. Remove
 the patch only after the same fix ships upstream and that scenario passes.
+
+The install version guard keeps Skia at the investigated 2.11.1 version.
+When intentionally upgrading Skia, update the guard only after checking for an
+upstream fix and scheduling the same real-device scenario for revalidation.

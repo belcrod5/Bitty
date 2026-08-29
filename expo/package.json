@@ -8,6 +8,7 @@
     "test": "jest",
     "typecheck": "tsc --noEmit --pretty false",
     "typecheck:macos": "tsc --noEmit --pretty false -p tsconfig.macos.json",
+    "preinstall": "node ./scripts/verify-skia-version.mjs",
     "postinstall": "patch-package --error-on-fail --error-on-warn",
     "start:perf": "expo start --no-dev --minify",
     "ios:release": "expo run:ios --configuration Release",

@@ -1801,7 +1801,7 @@ PODS:
     - React-RCTFBReactNativeSpec
     - ReactCommon/turbomodule/core
     - SocketRocket
-  - react-native-skia (2.2.12):
+  - react-native-skia (2.11.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -2995,7 +2995,7 @@ SPEC CHECKSUMS:
   React-logger: 19586e18cb370047633039b018d365953598739e
   React-Mapbuffer: 45ec5cdca592f4dc6522c59b8f4575abf573e0b1
   React-microtasksnativemodule: a0f271cefc1bae9ff0cb8f4237b9f7481cd97543
-  react-native-skia: 665cd52db7ad3d41e2a59c84e9c097343745c088
+  react-native-skia: 35cf5d3dc682162ce896b145da5315d9a8f55e44
   react-native-webview: 4cbb7f05f2c50671a7dcff4012d3e85faad271e4
   React-NativeModulesApple: 02b57ec4dced7eb81bedcccdad1ca62fee961c4d
   React-oscompat: 66d4c9c770c0690b00c652a568f30b4713104ebf
