@@ -39,6 +39,29 @@ export function getCachedDirectorySessions(directoryState?: DirectorySessionTree
   ];
 }
 
+// セッションのsubagentツリー(childrenByParentId)を持つ登録ディレクトリを解決する。
+// キャッシュ済みセッションからの逆引きを優先しつつ、対象セッションが取得ウィンドウ外
+// でもディレクトリパス一致で解決できるようフォールバックする。子ツリーの読み書きが
+// 同じディレクトリに揃うよう、loader(useDirectorySessionTreeController)と表示側の
+// 両方でこの解決を使うこと。
+export function findDirectoryForSessionTree(
+  registeredDirectories: RegisteredDirectoryEntry[],
+  directorySessionsById: Record<string, DirectorySessionTreeState>,
+  sessionIdsRaw: readonly string[],
+  directoryPathRaw: unknown,
+): RegisteredDirectoryEntry | null {
+  const sessionIds = new Set(sessionIdsRaw.map((value) => String(value || "").trim()).filter(Boolean));
+  const directoryPath = String(directoryPathRaw || "").trim();
+  return (
+    registeredDirectories.find((directory) => (
+      getCachedDirectorySessions(directorySessionsById[directory.id])
+        .some((session) => sessionIds.has(session.sessionId))
+    ))
+    || registeredDirectories.find((directory) => String(directory.path || "").trim() === directoryPath)
+    || null
+  );
+}
+
 export function resolveSessionHistoryContext({
   backendId: backendIdRaw,
   sessionId: sessionIdRaw,

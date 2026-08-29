@@ -8,6 +8,7 @@ import type {
   SessionChildTreeState,
 } from "../types/directorySessions";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
+import { findDirectoryForSessionTree } from "../utils/sessionHistoryContext";
 
 type FetchSessionHistoryResult = {
   latestSessionId: string;
@@ -708,16 +709,14 @@ export function useDirectorySessionTreeController({
       parentSessionIdsRaw.map((value) => String(value || "").trim()).filter(Boolean)
     ));
     if (parentIds.length <= 0) return Promise.resolve();
-    const parentIdSet = new Set(parentIds);
-    const directoryPath = normalizeDirectoryPath(directoryPathRaw);
-    const directory = registeredDirectoriesRef.current.find((item) => {
-      const state = directorySessionsByIdRef.current[item.id];
-      return state?.entries.some((entry) => parentIdSet.has(entry.sessionId)) || Object.values(
-        state?.childrenByParentId || {}
-      ).some((childState) => childState.entries.some((entry) => parentIdSet.has(entry.sessionId)));
-    }) || registeredDirectoriesRef.current.find((item) => (
-      normalizeDirectoryPath(item.path) === directoryPath
-    ));
+    // 表示側(ChatSessionSubagentList)と同じ解決規則で、childrenByParentIdの
+    // 読み書き先ディレクトリを揃える。
+    const directory = findDirectoryForSessionTree(
+      registeredDirectoriesRef.current,
+      directorySessionsByIdRef.current,
+      parentIds,
+      normalizeDirectoryPath(directoryPathRaw),
+    );
     if (!directory) return Promise.resolve();
     return loadSessionChildTrees(directory.id, directory.path, parentIds);
   }, [loadSessionChildTrees]);

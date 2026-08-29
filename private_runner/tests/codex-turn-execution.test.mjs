@@ -223,6 +223,72 @@ test("Codex Backend maps native turn events without changing App Server RPCs", a
   assert.equal(client.closed, true);
 });
 
+test("Codex Backend tracks native thread activity for session list annotations", async () => {
+  const client = fakeClient([]);
+  let finishTurn;
+  const completion = new Promise((resolve) => { finishTurn = resolve; });
+  client.waitForTurnCompletion = () => ({ promise: completion, expect() {} });
+  client.close = () => {};
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({
+      sessions: [
+        { sessionRef: { backendId: "codex", nativeSessionId: "subagent-thread" }, canonicalCwd: "/work/project" },
+        { sessionRef: { backendId: "codex", nativeSessionId: "other-thread" }, canonicalCwd: "/work/project" },
+      ],
+    }),
+    listSessionsForDirectories: async () => ({
+      groups: [{
+        cwd: "/work/project",
+        sessions: [{ sessionRef: { backendId: "codex", nativeSessionId: "subagent-thread" }, canonicalCwd: "/work/project" }],
+      }],
+    }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const turn = backend.startTurn({
+    runId: "run-live",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "spawn subagents" }] },
+    policyProfileId: "codex-on-request",
+    signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit() {},
+  });
+  while (!client.calls.some((call) => call.method === "turn/start")) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  // spawnされたsubagent thread(親turnとthreadId不一致)のstatus通知を配信する
+  for (const listener of [...client.listeners]) {
+    listener("thread/status/changed", { threadId: "subagent-thread", status: "active" });
+  }
+  const during = await backend.listSessions({ cwd: "/work/project" });
+  assert.deepEqual(
+    during.sessions.map((session) => [session.sessionRef.nativeSessionId, session.isActive === true]),
+    [["subagent-thread", true], ["other-thread", false]],
+  );
+  const grouped = await backend.listSessionsForDirectories({ cwds: ["/work/project"] });
+  assert.equal(grouped.groups[0].sessions[0].isActive, true);
+
+  // idle通知(object status形)で解除される
+  for (const listener of [...client.listeners]) {
+    listener("thread/status/changed", { threadId: "subagent-thread", status: { type: "idle" } });
+  }
+  assert.equal((await backend.listSessions({ cwd: "/work/project" })).sessions[0].isActive, undefined);
+
+  // turn接続が全て閉じたらstale activeを残さない
+  for (const listener of [...client.listeners]) {
+    listener("thread/status/changed", { threadId: "subagent-thread", status: "active" });
+  }
+  for (const listener of [...client.listeners]) {
+    listener("turn/completed", { threadId: "thread-new", turnId: "turn-1", turn: { status: "completed" } });
+  }
+  finishTurn();
+  assert.equal((await turn).outcome, "completed");
+  assert.equal((await backend.listSessions({ cwd: "/work/project" })).sessions[0].isActive, undefined);
+});
+
 test("Codex Backend preserves command details in provider-neutral tool events", async () => {
   const client = fakeClient([
     {

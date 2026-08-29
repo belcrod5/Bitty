@@ -83,6 +83,89 @@ test("shows and opens the direct parent of the selected subagent", async () => {
   });
 });
 
+test("resolves children by the selected directory when the session is outside the cached window", async () => {
+  // 選択中セッションがドロワーの取得ウィンドウ外(entriesに無い)でも、
+  // 選択中ディレクトリのパスからchildrenByParentIdを直接解決できること。
+  const child = session({
+    sessionId: "child",
+    parentSessionId: "out-of-window-parent",
+    source: "subagent",
+    firstUserMessage: "Windowed child task",
+  });
+  const directoryState: DirectorySessionTreeState = {
+    loading: false,
+    refreshing: false,
+    loadingMore: false,
+    loaded: true,
+    fetchedAtMs: 1,
+    error: "",
+    latestSessionId: "recent",
+    nextCursor: "cursor-1",
+    hasMore: true,
+    entries: [session({ sessionId: "recent" })],
+    childrenByParentId: {
+      "out-of-window-parent": { loading: false, loaded: true, error: "", entries: [child] },
+    },
+  };
+  const view = await render(
+    <ChatSessionSubagentList
+      selectedSessionId="out-of-window-parent"
+      selectedDirectoryPath="/work/bitty"
+      registeredDirectories={[{
+        id: "dir-1",
+        path: "/work/bitty",
+        displayName: "Bitty",
+        markerColor: "none",
+      }]}
+      directorySessionsById={{ "dir-1": directoryState }}
+      sessionTitleOverridesById={{}}
+      formatSessionUpdatedAt={() => "now"}
+      loadSessionChildren={jest.fn(async () => undefined)}
+      openSessionHistoryEntry={jest.fn()}
+      onCloseMenu={jest.fn()}
+    />
+  );
+
+  expect(view.getByText("Windowed child task")).toBeTruthy();
+});
+
+test("loads children for an uncached session through the selected directory", async () => {
+  const directoryState: DirectorySessionTreeState = {
+    loading: false,
+    refreshing: false,
+    loadingMore: false,
+    loaded: true,
+    fetchedAtMs: 1,
+    error: "",
+    latestSessionId: "recent",
+    nextCursor: "",
+    hasMore: false,
+    entries: [session({ sessionId: "recent" })],
+    childrenByParentId: {},
+  };
+  const loadSessionChildren = jest.fn(async () => undefined);
+  await render(
+    <ChatSessionSubagentList
+      selectedSessionId="out-of-window-parent"
+      selectedDirectoryPath="/work/bitty"
+      registeredDirectories={[{
+        id: "dir-1",
+        path: "/work/bitty",
+        displayName: "Bitty",
+        markerColor: "none",
+      }]}
+      directorySessionsById={{ "dir-1": directoryState }}
+      sessionTitleOverridesById={{}}
+      formatSessionUpdatedAt={() => "now"}
+      loadSessionChildren={loadSessionChildren}
+      openSessionHistoryEntry={jest.fn()}
+      onCloseMenu={jest.fn()}
+    />
+  );
+
+  expect(loadSessionChildren).toHaveBeenCalledWith("out-of-window-parent", "/work/bitty");
+});
+
 test("opens a child with the child's own working directory", async () => {
   const child = session({
     sessionId: "child",

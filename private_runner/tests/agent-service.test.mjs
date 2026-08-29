@@ -807,6 +807,59 @@ test("all-backends session list merges every listing backend by updatedAt and ke
   );
 });
 
+test("session lists mark the authenticated subject's active run as isActive", async () => {
+  const sessionRef = { backendId: "test", nativeSessionId: "running-session" };
+  const store = sessionStore();
+  await store.bind(sessionRef, "/workspace", "neutral");
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { ...status().capabilities, session: { list: true } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    listSessions: async () => ({
+      sessions: [
+        { sessionRef, updatedAt: "2026-08-28T00:00:00.000Z" },
+        { sessionRef: { backendId: "test", nativeSessionId: "idle-session" }, updatedAt: "2026-08-28T00:00:00.000Z" },
+        // Backendがnative観測(spawnされたsubagent等)で実行中と申告した項目は維持される
+        { sessionRef: { backendId: "test", nativeSessionId: "native-active" }, updatedAt: "2026-08-28T00:00:00.000Z", isActive: true },
+      ],
+    }),
+    readHistory: async () => ({ items: [] }),
+    async startTurn({ emit }) {
+      emit("turn.started", {});
+      await gate;
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const run = await service.startTurn(startRequest({ sessionRef }), { subjectId: "user-1" });
+
+  const listed = await service.listSessions({ backendId: "test", cwd: "/workspace" }, { subjectId: "user-1" });
+  assert.deepEqual(
+    listed.sessions.map((session) => [session.sessionRef.nativeSessionId, session.isActive === true]),
+    [["running-session", true], ["idle-session", false], ["native-active", true]],
+  );
+
+  // 認証subjectが不明な呼び出しへはrun由来のactiveを出さない(Backend申告分は残る)
+  const anonymous = await service.listSessions({ backendId: "test", cwd: "/workspace" });
+  assert.equal(anonymous.sessions[0].isActive, undefined);
+  assert.equal(anonymous.sessions[2].isActive, true);
+
+  release();
+  assert.equal((await run.completion).outcome, "completed");
+  const after = await service.listSessions({ backendId: "test", cwd: "/workspace" }, { subjectId: "user-1" });
+  assert.equal(after.sessions[0].isActive, undefined);
+});
+
 test("session list prefers revisioned read state over legacy session timestamps", async () => {
   const explicitRef = { backendId: "claude", nativeSessionId: "explicit" };
   const nativeRef = { backendId: "claude", nativeSessionId: "native" };

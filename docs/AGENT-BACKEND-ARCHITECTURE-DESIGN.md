@@ -274,7 +274,8 @@ AgentSessionSummary = {
   title?,
   modelId?,
   isSubagent?,
-  parentSessionRef?
+  parentSessionRef?,
+  isActive?  // 実行中turn(service管理のrun、またはBackendのnative観測)がある時のみtrue
 }
 
 HistoryPage = {

@@ -25,6 +25,11 @@ const MAX_LINES = 20_000;
 const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 const MAX_TRANSCRIPT_FILES = 5000;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Claude CLIはサブエージェントの記録を親セッションのサブディレクトリへ保存する:
+//   <project>/<parentSessionId>/subagents/agent-<id>.jsonl           (Taskサブエージェント)
+//   <project>/<parentSessionId>/subagents/workflows/<wfId>/agent-<id>.jsonl (ワークフロー)
+// nativeSessionIdはファイル名の "agent-<id>" をそのまま使う(履歴読み出しと整合)。
+const SUBAGENT_SESSION_ID_PATTERN = /^agent-[0-9a-z][0-9a-z_-]{0,63}$/i;
 const CLAUDE_MODELS = [
   { modelId: "haiku", label: "Claude Haiku" },
   { modelId: "sonnet", label: "Claude Sonnet" },
@@ -105,8 +110,10 @@ function extractText(content) {
 // ないため、履歴表示では折りたたみ対象(internal_context)として返す。
 const INTERNAL_CONTEXT_TAG_PATTERN = /^<(system-reminder|recommended_plugins|command-name|command-message|command-args|command-contents|local-command-caveat|local-command-stdout|local-command-stderr|task-notification)\b/;
 
-function classifyHistoryItemType(record, text) {
-  if (record?.isSidechain === true) return "sidechain";
+function classifyHistoryItemType(record, text, { isSubagentTranscript = false } = {}) {
+  // サブエージェント自身のtranscriptは全recordがisSidechain: trueで記録される。
+  // その文脈では本人のメイン会話なのでsidechain扱い(折りたたみ)にしない。
+  if (record?.isSidechain === true && !isSubagentTranscript) return "sidechain";
   if (record?.isMeta === true) return "internal_context";
   // /compactの要約はシステム生成。折りたたみ表示にする。
   if (record?.isCompactSummary === true) return "internal_context";
@@ -801,21 +808,57 @@ export function createClaudeBackend({
     try { return await fileSystem.realpath(projectsRoot); } catch { return ""; }
   }
 
-  async function transcriptFiles() {
+  // 一覧・履歴解決の元となるtranscriptカタログ。メインセッション(<UUID>.jsonl)に加え、
+  // 親セッションディレクトリ配下のサブエージェント(subagents/**/agent-*.jsonl)も列挙する。
+  // 返り値: { file, nativeSessionId, parentSessionId }(メインはparentSessionId="")
+  async function transcriptFileEntries() {
     const root = await projectsRootReal();
     if (!root) return [];
     const projects = (await fileSystem.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).slice(0, 2000);
-    const files = [];
+    const entries = [];
+    const addEntry = async (directory, name, parentSessionId) => {
+      const file = await fileSystem.realpath(path.join(directory, name)).catch(() => "");
+      if (file && inside(root, file)) {
+        entries.push({ file, nativeSessionId: path.basename(name, ".jsonl"), parentSessionId });
+      }
+      return entries.length >= MAX_TRANSCRIPT_FILES;
+    };
+    const isTranscriptFile = (entry, pattern) => entry.isFile()
+      && path.extname(entry.name) === ".jsonl"
+      && pattern.test(path.basename(entry.name, ".jsonl"));
+    const listDirectory = async (directory) => (
+      (await fileSystem.readdir(directory, { withFileTypes: true }).catch(() => [])).slice(0, 5000)
+    );
     scan: for (const project of projects) {
       const directory = path.join(root, project.name);
-      for (const entry of (await fileSystem.readdir(directory, { withFileTypes: true }).catch(() => [])).slice(0, 5000)) {
-        if (!entry.isFile() || !SESSION_ID_PATTERN.test(path.basename(entry.name, ".jsonl")) || path.extname(entry.name) !== ".jsonl") continue;
-        const file = await fileSystem.realpath(path.join(directory, entry.name)).catch(() => "");
-        if (file && inside(root, file)) files.push(file);
-        if (files.length >= MAX_TRANSCRIPT_FILES) break scan;
+      for (const entry of await listDirectory(directory)) {
+        if (isTranscriptFile(entry, SESSION_ID_PATTERN)) {
+          if (await addEntry(directory, entry.name, "")) break scan;
+          continue;
+        }
+        // サブエージェントは親セッションIDのディレクトリ配下のsubagents/に保存される
+        if (!entry.isDirectory() || !SESSION_ID_PATTERN.test(entry.name)) continue;
+        const subagentsDirectory = path.join(directory, entry.name, "subagents");
+        for (const subagentEntry of await listDirectory(subagentsDirectory)) {
+          if (isTranscriptFile(subagentEntry, SUBAGENT_SESSION_ID_PATTERN)) {
+            if (await addEntry(subagentsDirectory, subagentEntry.name, entry.name)) break scan;
+            continue;
+          }
+          // ワークフローのサブエージェントはさらにworkflows/<wfId>/配下に置かれる
+          if (!subagentEntry.isDirectory() || subagentEntry.name !== "workflows") continue;
+          const workflowsDirectory = path.join(subagentsDirectory, subagentEntry.name);
+          for (const workflowEntry of await listDirectory(workflowsDirectory)) {
+            if (!workflowEntry.isDirectory()) continue;
+            const workflowDirectory = path.join(workflowsDirectory, workflowEntry.name);
+            for (const agentEntry of await listDirectory(workflowDirectory)) {
+              if (!isTranscriptFile(agentEntry, SUBAGENT_SESSION_ID_PATTERN)) continue;
+              if (await addEntry(workflowDirectory, agentEntry.name, entry.name)) break scan;
+            }
+          }
+        }
       }
     }
-    return files;
+    return entries;
   }
 
   async function readTranscript(file) {
@@ -858,7 +901,7 @@ export function createClaudeBackend({
   // transcript末尾のusage(メイン会話のみ)からcontext使用率を復元する。
   // /compact境界より新しいusageが無い間は、境界レコードのcompactMetadata.postTokens
   // (CLI自身が記録する圧縮後トークン数)から復元する。
-  async function transcriptContextUsage(records) {
+  async function transcriptContextUsage(records, { isSubagentTranscript = false } = {}) {
     if (!modelInfoStore?.get) return null;
     let totalTokens = 0;
     for (let index = records.length - 1; index >= 0; index -= 1) {
@@ -867,7 +910,8 @@ export function createClaudeBackend({
         totalTokens = Math.max(0, Math.floor(Number(value?.compactMetadata?.postTokens) || 0));
         break;
       }
-      if (value?.isSidechain === true) continue;
+      // サブエージェント自身のtranscriptは全recordがisSidechain: trueのため除外しない
+      if (value?.isSidechain === true && !isSubagentTranscript) continue;
       const usage = value?.message?.usage;
       if (usage && typeof usage === "object") {
         totalTokens = contextTokensFromUsage(usage);
@@ -911,8 +955,9 @@ export function createClaudeBackend({
     }
     const transcript = await readTranscript(file).catch(() => null);
     if (!transcript) return null;
+    const isSubagentTranscript = SUBAGENT_SESSION_ID_PATTERN.test(path.basename(file, ".jsonl"));
     const firstUser = transcript.records.find((record) => record.value?.type === "user"
-      && !classifyHistoryItemType(record.value, extractText(record.value?.message?.content)));
+      && !classifyHistoryItemType(record.value, extractText(record.value?.message?.content), { isSubagentTranscript }));
     const metadata = {
       size: transcript.stat.size,
       mtimeMs: transcript.stat.mtimeMs,
@@ -926,9 +971,9 @@ export function createClaudeBackend({
   }
 
   async function findTranscriptFile(sessionId) {
-    if (!SESSION_ID_PATTERN.test(String(sessionId || ""))) return null;
-    const suffix = `${sessionId}.jsonl`;
-    for (const file of await transcriptFiles()) if (path.basename(file) === suffix) return file;
+    const id = String(sessionId || "");
+    if (!SESSION_ID_PATTERN.test(id) && !SUBAGENT_SESSION_ID_PATTERN.test(id)) return null;
+    for (const entry of await transcriptFileEntries()) if (entry.nativeSessionId === id) return entry.file;
     return null;
   }
 
@@ -959,22 +1004,29 @@ export function createClaudeBackend({
       || compareOrdinalDesc(String(a?.sessionId || ""), String(b?.sessionId || ""));
   }
 
-  async function listSessionsForDirectories({ cwds }) {
+  async function listSessionsForDirectories({ cwds, includeSubagents }) {
     const canonicalCwds = await Promise.all(
       (Array.isArray(cwds) ? cwds : []).map((cwd) => realpathCwd(path.resolve(String(cwd || "")))),
     );
     const sessionsByCwd = new Map(canonicalCwds.map((cwd) => [cwd, []]));
-    for (const file of await transcriptFiles()) {
-      const metadata = await transcriptMetadata(file);
+    for (const entry of await transcriptFileEntries()) {
+      // includeSubagents=falseは未読カウント・Skiaボードingest等のメイン一覧用途。
+      // codex側(llm-cli-session-index)と同じく、明示false時のみ除外する。
+      if (includeSubagents === false && entry.parentSessionId) continue;
+      const metadata = await transcriptMetadata(entry.file);
       const sessions = metadata ? sessionsByCwd.get(metadata.realCwd) : null;
       if (!sessions) continue;
       sessions.push({
-        sessionRef: { backendId: "claude", nativeSessionId: path.basename(file, ".jsonl") },
+        sessionRef: { backendId: "claude", nativeSessionId: entry.nativeSessionId },
         canonicalCwd: metadata.realCwd,
         updatedAt: metadata.stat.mtime.toISOString(),
         title: metadata.title,
         modelId: metadata.modelId,
         sourceKind: "cli",
+        isSubagent: Boolean(entry.parentSessionId),
+        ...(entry.parentSessionId
+          ? { parentSessionRef: { backendId: "claude", nativeSessionId: entry.parentSessionId } }
+          : {}),
       });
     }
     return {
@@ -989,14 +1041,14 @@ export function createClaudeBackend({
     };
   }
 
-  async function listSessions({ cwd, limit = 50, cursor = "" }) {
+  async function listSessions({ cwd, limit = 50, cursor = "", includeSubagents }) {
     const canonicalCwd = await realpathCwd(path.resolve(String(cwd || "")));
     const cursorRaw = String(cursor || "").trim();
     const cursorKey = cursorRaw ? cursorDecode(cursorRaw) : null;
     if (cursorRaw && !String(cursorKey?.sessionId || "").trim()) {
       throw agentError("turn_rejected", "session list cursor is invalid", { backendId: "claude" });
     }
-    const [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd] })).groups;
+    const [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd], includeSubagents })).groups;
     const pageKey = (session) => ({ updatedAt: session.updatedAt, sessionId: session.sessionRef.nativeSessionId });
     sessions.sort((a, b) => compareListPageKeys(pageKey(a), pageKey(b)));
     const positioned = cursorKey
@@ -1024,13 +1076,14 @@ export function createClaudeBackend({
     if (cursor && (!decoded || decoded.identity !== identity || !Number.isInteger(decoded.offset))) {
       throw agentError("history_cursor_invalid", "Claude history cursor is invalid", { backendId: "claude" });
     }
+    const isSubagentTranscript = SUBAGENT_SESSION_ID_PATTERN.test(path.basename(transcript.real, ".jsonl"));
     const display = [];
     for (const record of transcript.records) {
       const type = String(record.value?.type || "");
       if (type !== "user" && type !== "assistant") continue;
       const text = extractText(record.value?.message?.content);
       if (!text) continue;
-      const itemType = classifyHistoryItemType(record.value, text);
+      const itemType = classifyHistoryItemType(record.value, text, { isSubagentTranscript });
       display.push({
         id: String(record.value?.uuid || `${sessionRef.nativeSessionId}:${record.index}`),
         role: type,
@@ -1042,7 +1095,7 @@ export function createClaudeBackend({
     const pageLimit = Math.max(1, Math.min(500, Number(limit) || 100));
     const end = decoded ? decoded.offset : display.length;
     const start = Math.max(0, end - pageLimit);
-    const contextUsage = await transcriptContextUsage(transcript.records);
+    const contextUsage = await transcriptContextUsage(transcript.records, { isSubagentTranscript });
     return {
       items: display.slice(start, end),
       modelId: transcriptModelId(transcript.records),

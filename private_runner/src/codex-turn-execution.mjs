@@ -320,8 +320,9 @@ function isCompactItem(item) {
   return ["compact", "compaction", "threadcompaction", "contextcompaction", "compacted"].includes(type);
 }
 
-function compactThreadStatus(params) {
+function codexThreadLiveStatus(params) {
   const raw = firstNonEmptyString(
+    params?.status?.type, params?.status?.state,
     params?.status, params?.state, params?.phase,
     params?.thread?.status, params?.thread?.state,
   ).toLowerCase().replace(/[-\s]/g, "");
@@ -346,6 +347,31 @@ export function createCodexBackend({
   if (typeof createClient !== "function") throw new TypeError("createClient is required");
   if (typeof resolveSessionCwd !== "function") throw new TypeError("resolveSessionCwd is required");
   const activeRuns = new Map();
+  // app-serverがturn実行中のclient接続へbroadcastするthread/status/changedから、
+  // 「native activeなthread」を追跡する。runner自身が起動したturn以外(spawnされた
+  // subagent thread等)のactive/idleはここでしか観測できず、session一覧の
+  // isActive(サブエージェント実行中数の表示源)に使う。
+  const nativeActiveThreadIds = new Set();
+  let openTurnClientCount = 0;
+  const observeNativeThreadStatus = (method, params) => {
+    if (method !== "thread/status/changed") return;
+    const threadId = getCodexTurnEventIdentity(params).threadId;
+    if (!threadId) return;
+    const status = codexThreadLiveStatus(params);
+    if (status === "active") nativeActiveThreadIds.add(threadId);
+    else if (status === "idle") nativeActiveThreadIds.delete(threadId);
+  };
+  const releaseTurnClient = () => {
+    openTurnClientCount = Math.max(0, openTurnClientCount - 1);
+    // 通知を聴く接続が無くなったらactiveの根拠も消える。stale activeを
+    // 残すと一覧が「実行中」を出し続けるため、知らない=idleへ倒す。
+    if (openTurnClientCount === 0) nativeActiveThreadIds.clear();
+  };
+  const withNativeThreadActivity = (sessions) => (Array.isArray(sessions) ? sessions : []).map((session) => (
+    nativeActiveThreadIds.has(String(session?.sessionRef?.nativeSessionId || ""))
+      ? { ...session, isActive: true }
+      : session
+  ));
 
   async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit }) {
     if (signal?.aborted) {
@@ -453,6 +479,8 @@ export function createCodexBackend({
         } : {}),
       });
     };
+    openTurnClientCount += 1;
+    const removeNativeStatusListener = client.addNotificationListener(observeNativeThreadStatus);
     const removeNotificationListener = client.addNotificationListener(applyNotification);
     const removeServerRequestHandler = client.addServerRequestHandler((request) => {
       if (String(request?.method || "") === "item/tool/call" && dynamicTools) {
@@ -552,10 +580,12 @@ export function createCodexBackend({
           : { decision: "decline" });
       }
       state.actionById.clear();
+      removeNativeStatusListener();
       removeNotificationListener();
       removeServerRequestHandler();
       cleanupStartedTurn();
       client.close();
+      releaseTurnClient();
       activeRuns.delete(runId);
     }
   }
@@ -573,7 +603,7 @@ export function createCodexBackend({
       if (eventThreadId && eventThreadId !== threadId) return;
       if (notificationMethod === "thread/compacted") return resolveCompletion();
       if (notificationMethod === "thread/status/changed") {
-        const status = compactThreadStatus(params);
+        const status = codexThreadLiveStatus(params);
         if (status === "active") sawActivity = true;
         else if (status === "idle" && sawActivity) resolveCompletion();
       } else if (notificationMethod === "item/started" && isCompactItem(params?.item)) {
@@ -655,8 +685,24 @@ export function createCodexBackend({
     })),
     startTurn,
     resolveSessionCwd,
-    listSessions,
-    listSessionsForDirectories,
+    listSessions: typeof listSessions === "function"
+      ? async (options) => {
+        const page = await listSessions(options);
+        return { ...page, sessions: withNativeThreadActivity(page?.sessions) };
+      }
+      : listSessions,
+    listSessionsForDirectories: typeof listSessionsForDirectories === "function"
+      ? async (options) => {
+        const result = await listSessionsForDirectories(options);
+        return {
+          ...result,
+          groups: (Array.isArray(result?.groups) ? result.groups : []).map((group) => ({
+            ...group,
+            sessions: withNativeThreadActivity(group?.sessions),
+          })),
+        };
+      }
+      : listSessionsForDirectories,
     readHistory,
     listModels,
     compactSession,
