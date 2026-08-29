@@ -1,14 +1,22 @@
-import { useCallback, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 import type { LegendListRef, OnViewableItemsChanged } from "@legendapp/list";
 import type { ConversationMessage } from "../types/appTypes";
 import { findPreviousUserMessageIndex } from "../utils/chatScroll";
+import type { SessionDeepLinkJumpTarget } from "../utils/sessionDeepLink";
 
 type ChatScrollNavigationParams = {
   messages: readonly ConversationMessage[];
   listRef: RefObject<LegendListRef | null>;
+  isAtBottomRef: RefObject<boolean>;
+  interactionActiveRef: RefObject<boolean>;
   pauseAutoScroll: () => void;
   resumeAutoScroll: () => void;
   scrollToBottom: (animated?: boolean) => void;
+  onTouchStart?: () => void;
+  onTouchEnd?: () => void;
+  deepLinkTarget?: SessionDeepLinkJumpTarget | null;
+  sessionId?: string;
+  onDeepLinkHandled?: (requestId: number) => void;
 };
 type PendingPreviousUserTarget = {
   id: string;
@@ -20,12 +28,36 @@ type PendingPreviousUserTarget = {
 export function useChatScrollNavigation({
   messages,
   listRef,
+  isAtBottomRef,
+  interactionActiveRef,
   pauseAutoScroll,
   resumeAutoScroll,
   scrollToBottom,
+  onTouchStart,
+  onTouchEnd,
+  deepLinkTarget,
+  sessionId = "",
+  onDeepLinkHandled,
 }: ChatScrollNavigationParams) {
   const firstVisibleMessageRef = useRef<{ id: string; index: number } | null>(null);
   const pendingPreviousUserTargetRef = useRef<PendingPreviousUserTarget | null>(null);
+
+  useEffect(() => {
+    if (!deepLinkTarget || deepLinkTarget.sessionId !== sessionId) return;
+    const index = messages.findIndex((message) => message.id === deepLinkTarget.messageId);
+    const item = messages[index];
+    if (!item || !listRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      try {
+        pauseAutoScroll();
+        listRef.current?.scrollItemIntoView({ item, animated: true });
+        onDeepLinkHandled?.(deepLinkTarget.requestId);
+      } catch {
+        // Keep the target pending so the next list render can retry it.
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [deepLinkTarget, listRef, messages, onDeepLinkHandled, pauseAutoScroll, sessionId]);
 
   const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<ConversationMessage>>>(({
     viewableItems,
@@ -94,12 +126,47 @@ export function useChatScrollNavigation({
     return true;
   }, []);
 
+  const resumeIfSettledAtBottom = useCallback(() => {
+    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) resumeAutoScroll();
+  }, [isAtBottomRef, resumeAutoScroll, shouldKeepAutoScrollPaused]);
+
+  const handleTouchStart = useCallback(() => {
+    pauseAutoScroll();
+    onTouchStart?.();
+  }, [onTouchStart, pauseAutoScroll]);
+
+  const handleTouchEnd = useCallback(() => {
+    onTouchEnd?.();
+    if (!interactionActiveRef.current) resumeIfSettledAtBottom();
+  }, [interactionActiveRef, onTouchEnd, resumeIfSettledAtBottom]);
+
+  const handleTouchCancel = useCallback(() => {
+    interactionActiveRef.current = false;
+    onTouchEnd?.();
+    resumeIfSettledAtBottom();
+  }, [interactionActiveRef, onTouchEnd, resumeIfSettledAtBottom]);
+
+  const handleScrollInteractionBegin = useCallback(() => {
+    interactionActiveRef.current = true;
+    pauseAutoScroll();
+  }, [interactionActiveRef, pauseAutoScroll]);
+
+  const handleScrollInteractionEnd = useCallback(() => {
+    interactionActiveRef.current = false;
+    resumeIfSettledAtBottom();
+  }, [interactionActiveRef, resumeIfSettledAtBottom]);
+
   const resetNavigation = useCallback(() => {
     firstVisibleMessageRef.current = null;
     pendingPreviousUserTargetRef.current = null;
   }, []);
 
   return {
+    handleScrollInteractionBegin,
+    handleScrollInteractionEnd,
+    handleTouchCancel,
+    handleTouchEnd,
+    handleTouchStart,
     handleViewableItemsChanged,
     resetNavigation,
     scrollToBottomAndResume,

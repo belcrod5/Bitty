@@ -55,7 +55,7 @@ it("discards a response after a newer initial page is registered", async () => {
   const { result } = await renderHook(() => useSessionHistoryPagingController({ fetchPage, applyPage }));
 
   await act(() => result.current.registerPage("thread-1", page("old-cursor")));
-  let pending: Promise<void> = Promise.resolve();
+  let pending: Promise<unknown> = Promise.resolve();
   await act(async () => {
     pending = result.current.loadOlder({ sessionId: "thread-1", directory: "/workspace" });
     await Promise.resolve();

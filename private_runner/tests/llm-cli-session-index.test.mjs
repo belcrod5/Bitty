@@ -86,7 +86,7 @@ test("migrates unchanged session metadata and excludes subagents only from user 
     ["parent", false, ""],
   ]);
   const persisted = JSON.parse(await fs.readFile(indexPath, "utf8"));
-  assert.equal(persisted.version, 3);
+  assert.equal(persisted.version, 4);
   assert.equal(persisted.entries.find((entry) => entry.sessionId === "child").lastReadAt, new Date(0).toISOString());
 
   const directoryRead = await index.markCliDirectoryRead(rootDir, {
@@ -407,7 +407,17 @@ test("index lastReadAt survives a rescan after the rollout file changes", async 
   });
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0].lastReadAt, "2026-02-01T00:00:00.000Z");
+  assert.equal(sessions[0].createdAt, "2026-01-01T00:00:00.000Z");
   assert.equal(sessions[0].updatedAt, "2026-02-02T00:00:00.000Z");
+
+  await index.upsertCliSessionIndexEntryFromRolloutFile(rolloutFile, {
+    sessionId: "session-1",
+    cwd: rootReal,
+    updatedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const continued = await index.listCliSessionsForDirectory(rootReal);
+  assert.equal(continued[0].createdAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(continued[0].updatedAt, "2026-03-01T00:00:00.000Z");
 });
 
 test("cached epoch unread wins over legacy rollout last_read_at during scan and upsert", async (t) => {

@@ -147,6 +147,7 @@ export async function startCodexTurn({
   onTurnStarted,
   calendarSchedule,
   dynamicTools,
+  developerInstructions = "",
 }) {
   const normalizedInput = Array.isArray(input?.blocks)
     ? input.blocks.map((block) => block?.type === "image"
@@ -155,6 +156,7 @@ export async function startCodexTurn({
       .filter((block) => block.type === "localImage" ? block.path : block.text)
     : [{ type: "text", text: String(inputText || "").trim() }].filter((block) => block.text);
   const directory = String(cwd || "").trim();
+  const normalizedDeveloperInstructions = String(developerInstructions || "").trim();
   let activeThreadId = String(threadId || "").trim();
   const configuredDynamicTools = calendarSchedule?.dynamicTools || dynamicTools;
   if (normalizedInput.length === 0) throw new Error("input is required");
@@ -196,6 +198,7 @@ export async function startCodexTurn({
         threadId: activeThreadId,
         cwd: directory || undefined,
         excludeTurns: true,
+        ...(normalizedDeveloperInstructions ? { developerInstructions: normalizedDeveloperInstructions } : {}),
       }, 30000).catch(() => null);
       activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
     } else {
@@ -216,7 +219,9 @@ export async function startCodexTurn({
               apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
             },
             developerInstructions: CALENDAR_DEVELOPER_INSTRUCTIONS,
-          } : {}),
+          } : normalizedDeveloperInstructions
+            ? { developerInstructions: normalizedDeveloperInstructions }
+            : {}),
         }, 30000);
       } catch (error) {
         if (calendarSchedule) throw dynamicToolsFailure("thread_start");
@@ -340,6 +345,7 @@ export function createCodexBackend({
   getStatus,
   listModels = async () => CODEX_MODELS,
   dynamicTools = null,
+  developerInstructions = "",
   generateActionId = () => `codex_action_${randomUUID()}`,
   clientName = "private-runner-agent",
   compactTimeoutMs = 10 * 60 * 1000,
@@ -529,6 +535,7 @@ export function createCodexBackend({
         effort,
         approvalPolicy: policyProfileId === "codex-never" ? "never" : "on-request",
         dynamicTools,
+        developerInstructions,
         onBeforeTurnStart: () => { state.turnStartRequested = true; },
         onThreadResolved: sessionRef ? undefined : async ({ threadId }) => {
           state.threadId = threadId;

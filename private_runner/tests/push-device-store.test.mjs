@@ -105,3 +105,30 @@ test("stores a bounded deduplicated directory subscription with the device", asy
     assert.deepEqual(persisted.devices[0].directories, ["/one", "/two"]);
   });
 });
+
+test("lists the current directory union without exposing device records", async () => {
+  await withTempStorePath(async (storePath) => {
+    const store = createPushDeviceStore(storePath);
+    await store.upsertDevice({
+      deviceId: "device-1",
+      apnsToken: "secret-1",
+      directories: ["/one", "/shared"],
+    });
+    await store.upsertDevice({
+      deviceId: "device-2",
+      apnsToken: "secret-2",
+      directories: ["/shared", "/two"],
+    });
+    assert.deepEqual(await store.listDirectories(), ["/one", "/shared", "/two"]);
+
+    await store.upsertDevice({
+      deviceId: "device-1",
+      apnsToken: "secret-1",
+      directories: [],
+    });
+    assert.deepEqual(await store.listDirectories(), ["/shared", "/two"]);
+
+    await store.removeDevice("device-2");
+    assert.deepEqual(await store.listDirectories(), []);
+  });
+});

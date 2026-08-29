@@ -56,6 +56,42 @@ export function createAgentHttpHandler({
       }
       return true;
     }
+    if (req.method === "GET" && pathname === "/agent/session-history/search") {
+      if (!authenticate(req, res)) return true;
+      try {
+        json(res, 200, await service.searchConversationHistory({
+          query: reqUrl.searchParams.get("query"),
+          cwds: reqUrl.searchParams.getAll("cwd"),
+          backendId: reqUrl.searchParams.get("backendId"),
+          cursor: reqUrl.searchParams.get("cursor"),
+          limit: reqUrl.searchParams.get("limit"),
+          order: reqUrl.searchParams.get("order"),
+          since: reqUrl.searchParams.get("since"),
+        }, { subjectId }));
+      } catch (error) {
+        json(res, error?.code === "backend_unavailable" ? 404 : 400, { error: serializeAgentError(error) });
+      }
+      return true;
+    }
+    if (req.method === "GET" && pathname === "/agent/session-conversation") {
+      if (!authenticate(req, res)) return true;
+      const backendId = String(reqUrl.searchParams.get("backendId") || "").trim();
+      try {
+        json(res, 200, await service.readConversationHistory({
+          sessionRef: {
+            backendId,
+            nativeSessionId: reqUrl.searchParams.get("sessionId"),
+          },
+          cursor: reqUrl.searchParams.get("cursor"),
+          limit: reqUrl.searchParams.get("limit"),
+        }, { subjectId }));
+      } catch (error) {
+        json(res, error?.code === "session_not_found" ? 404 : 400, {
+          error: serializeAgentError(error, backendId),
+        });
+      }
+      return true;
+    }
     if (req.method === "GET" && pathname === "/agent/session-history") {
       if (!authenticate(req, res)) return true;
       const backendId = String(reqUrl.searchParams.get("backendId") || "").trim();
@@ -202,7 +238,8 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
           operations: [
             "turn.start", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
-            "session.compact", "sessions.list", "history.read", "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
+            "session.compact", "sessions.list", "history.read", "history.search", "conversation.read",
+            "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],
           events: Array.from(AGENT_EVENT_TYPES),
           backends,
@@ -403,6 +440,27 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
       void service.readHistory(payload, { subjectId }).then((result) => sendEnvelope(ws, {
         channel: "agent",
         op: "history.read.result",
+        requestId: message.requestId || "",
+        sessionId: String(payload?.sessionRef?.nativeSessionId || ""),
+        payload: result,
+      })).catch((error) => sendError(message, error));
+      return true;
+    }
+    if (message.op === "history.search") {
+      const payload = payloadObject(message);
+      void service.searchConversationHistory(payload, { subjectId }).then((result) => sendEnvelope(ws, {
+        channel: "agent",
+        op: "history.search.result",
+        requestId: message.requestId || "",
+        payload: result,
+      })).catch((error) => sendError(message, error));
+      return true;
+    }
+    if (message.op === "conversation.read") {
+      const payload = payloadObject(message);
+      void service.readConversationHistory(payload, { subjectId }).then((result) => sendEnvelope(ws, {
+        channel: "agent",
+        op: "conversation.read.result",
         requestId: message.requestId || "",
         sessionId: String(payload?.sessionRef?.nativeSessionId || ""),
         payload: result,

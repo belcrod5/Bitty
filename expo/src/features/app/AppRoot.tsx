@@ -125,6 +125,8 @@ import { useFaceTrackingStateController } from "./hooks/useFaceTrackingStateCont
 import { useAppContextActions } from "./hooks/useAppContextActions";
 import { useConversationMessageWindowController } from "./hooks/useConversationMessageWindowController";
 import { useSessionHistoryPagingController } from "./hooks/useSessionHistoryPagingController";
+import { useSessionDeepLinkNavigationController } from "./hooks/useSessionDeepLinkNavigationController";
+import { useOpenSessionHistoryPopup } from "./hooks/useOpenSessionHistoryPopup";
 import { useSessionMessagesCacheController } from "./hooks/useSessionMessagesCacheController";
 import { useApplySessionHistoryPage } from "./hooks/useApplySessionHistoryPage";
 import { useSessionLiveStateController } from "./hooks/useSessionLiveStateController";
@@ -142,6 +144,7 @@ import {
 } from "./hooks/usePanelConversationWriteController";
 import { usePanelHydrationGuard } from "./hooks/usePanelHydrationGuard";
 import { deriveSessionExecutionStatusType } from "./utils/sessionExecutionStatus";
+import type { SessionDeepLinkJumpTarget } from "./utils/sessionDeepLink";
 import { createResyncRateLimiter } from "./utils/resumeSync";
 import {
   buildPanelRuntimeSnapshot,
@@ -710,6 +713,8 @@ export default function App() {
   });
   const [activeScreen, setActiveScreen] = useState<AppScreen>("skia_board");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sessionDeepLinkJumpTarget, setSessionDeepLinkJumpTarget] =
+    useState<SessionDeepLinkJumpTarget | null>(null);
   const drawerSessionPrefetchRequestedForOpenRef = useRef(false);
   const [modelRef, setModelRef] = useState<string>(DEFAULT_MODEL_REF);
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
@@ -6845,6 +6850,11 @@ export default function App() {
     chatBottomToast,
     chatBottomToastAnimRef,
   });
+  const clearSessionDeepLinkJumpTarget = useCallback((requestId: number) => {
+    setSessionDeepLinkJumpTarget((current) => (
+      current?.requestId === requestId ? null : current
+    ));
+  }, []);
   const chatScreenContextValue = useChatScreenContextValue({
     approvalDialogPending: !!approvalDialog,
     setChatScreenLayout,
@@ -6861,6 +6871,8 @@ export default function App() {
     handleAssistantAudioButtonPress,
     sessionHistoryPagingById,
     loadOlderSessionHistory,
+    sessionDeepLinkJumpTarget,
+    clearSessionDeepLinkJumpTarget,
   });
   const {
     drawerHighlightedSessionId,
@@ -6907,83 +6919,41 @@ export default function App() {
     setDrawerPopupHighlightSessionId,
     startNewPanelSession,
   ]);
-  const openSessionHistoryPopup = useCallback(async (params: {
-    backendId?: string;
-    sessionId: string;
-    source: LlmSessionSource;
-    directory?: string;
-    sourceRect?: PopupChatSourceRect;
-    origin?: SessionPopupOrigin;
-  }) => {
-    const sessionId = parseOptionalSessionId(params.sessionId);
-    if (!sessionId) {
-      showChatBottomToast("assistant", "セッションIDが不明なため開けませんでした。");
-      return false;
-    }
-    const context = resolveSessionHistoryContext(sessionId, params.backendId);
-    const backendId = String(params.backendId || context?.backendId || "codex").trim() || "codex";
-    const directoryRaw = String(params.directory || "").trim();
-    const directory = context?.directory || (directoryRaw ? parseLlmDirectory(directoryRaw) : "");
-    if (!directory) {
-      showChatBottomToast("assistant", "セッションのディレクトリが不明なため開けませんでした。");
-      logSessionDiag("drawer_session_popup_open_skipped_missing_directory", {
-        sessionId,
-        source: params.source,
-      }, { throttleMs: 0 });
-      return false;
-    }
-    const cycleId = `drawer-session-popup-${Date.now().toString(36)}`;
-    setDrawerSessionPopupSourceRect(params.sourceRect || null);
-    setDrawerSessionPopupCycleId(cycleId);
-    setDrawerSessionPopupOrigin(params.origin || "drawer");
-    setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
-    setDrawerPopupHighlightSessionId(sessionId);
-    try {
-      const result = await hydratePanelFromSessionHistory({
-      panelId: DRAWER_SESSION_POPUP_PANEL_ID,
-      backendId,
-      sessionId,
-      directory,
-      source: params.source,
-      directoryDisplayName: context?.directoryDisplayName,
-      diagnosticCycleId: cycleId,
-      title: context?.sessionTitle,
-      updatedAt: context?.updatedAt,
-      modelRef: context?.modelRef,
-      reasoningEffort: context?.reasoningEffort,
-      contextUsedPct: context?.contextUsedPct,
-      });
-      if (result === "superseded") return false;
-      if (result === "failed") {
-        showChatBottomToast("assistant", "セッションをポップアップに読み込めませんでした。");
-        clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
-        setDrawerSessionPopupPanelId("");
-        setDrawerPopupHighlightSessionId("");
-        return false;
-      }
-      markSessionReadFromContext(sessionId, params.source, directory, backendId);
-      return true;
-    } catch (err) {
-      showChatBottomToast("assistant", `セッション読込に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
-      clearPanelSnapshot(DRAWER_SESSION_POPUP_PANEL_ID);
-      setDrawerSessionPopupPanelId("");
-      setDrawerPopupHighlightSessionId("");
-      return false;
-    }
-  }, [
-    clearPanelSnapshot,
-    hydratePanelFromSessionHistory,
-    markSessionReadFromContext,
-    logSessionDiag,
-    resolveSessionHistoryContext,
-    setDrawerPopupHighlightSessionId,
-    showChatBottomToast,
-  ]);
+  const openSessionHistoryPopup = useOpenSessionHistoryPopup({
+    panelId: DRAWER_SESSION_POPUP_PANEL_ID,
+    resolveContext: resolveSessionHistoryContext,
+    hydrate: hydratePanelFromSessionHistory,
+    markRead: markSessionReadFromContext,
+    clearPanel: clearPanelSnapshot,
+    setPanelId: setDrawerSessionPopupPanelId,
+    setCycleId: setDrawerSessionPopupCycleId,
+    setSourceRect: setDrawerSessionPopupSourceRect,
+    setOrigin: setDrawerSessionPopupOrigin,
+    setHighlight: setDrawerPopupHighlightSessionId,
+    showToast: showChatBottomToast,
+    log: logSessionDiag,
+  });
   usePendingPushSessionNavigationController({
     settingsLoaded,
     normalizedLlmDirectoryForRequest,
     closeDrawer,
     openSessionHistoryPopup,
+  });
+  const getDeepLinkSessionMessages = useCallback((sessionId: string) => (
+    getConversationRuntimeSnapshot(sessionId)?.conversationMessages || []
+  ), [getConversationRuntimeSnapshot]);
+  const showDeepLinkMessageNotFound = useCallback(() => showChatBottomToast(
+    "assistant",
+    "リンク先のメッセージを履歴の取得上限内で見つけられませんでした。"
+  ), [showChatBottomToast]);
+  useSessionDeepLinkNavigationController({
+    settingsLoaded,
+    openSession: openSessionHistoryPopup,
+    closeDrawer,
+    loadOlder: loadOlderSessionHistory,
+    getMessages: getDeepLinkSessionMessages,
+    setJumpTarget: setSessionDeepLinkJumpTarget,
+    onNotFound: showDeepLinkMessageNotFound,
   });
   const openCompletedLlmSession = useCallback((sessionRef: { backendId: string; sessionId: string }) => {
     const sessionId = parseOptionalSessionId(sessionRef.sessionId);

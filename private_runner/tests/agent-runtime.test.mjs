@@ -92,6 +92,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
       sessions: [{
         sessionId: "batch-thread",
         cwd: aliasWorkspace,
+        createdAt: "2026-08-24T01:00:00.000Z",
         updatedAt: "2026-08-24T04:00:00.000Z",
       }],
     })),
@@ -123,6 +124,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
   });
   assert.equal(snapshot.groups[0].cwd, canonicalWorkspace);
   assert.equal(snapshot.groups[0].sessions[0].canonicalCwd, canonicalWorkspace);
+  assert.equal(snapshot.groups[0].sessions[0].createdAt, "2026-08-24T01:00:00.000Z");
 
   const history = await runtime.service.readHistory({
     sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
