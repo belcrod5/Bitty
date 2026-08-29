@@ -62,15 +62,6 @@ export function createTurnCompletionNotifier({
     }
     if (devices.length === 0) return;
 
-    let summary;
-    try {
-      summary = await pushSummarizer.summarize(previewText);
-    } catch (error) {
-      log.warn(`[push] turn completion summary failed origin=${origin || "unknown"}: ${errorMessage(error)}`);
-      return;
-    }
-    if (!summary) return;
-
     const id = String(sessionId || threadId || "");
     const directorySets = [];
     const directorySetIndexByKey = new Map();
@@ -81,6 +72,9 @@ export function createTurnCompletionNotifier({
       directorySetIndexByKey.set(key, directorySets.length);
       directorySets.push(device.directories);
     }
+    // 未読判定は要約生成(最大数秒)より前に行う。要約中にクライアントが
+    // 既読化すると「完了時点では未読だったのに通知が落ちる」競合になるため、
+    // 期待仕様「完了時点で未読なら通知する」を判定時点で固定する。
     let unreadSnapshot;
     try {
       unreadSnapshot = await getPushUnreadSnapshot({
@@ -94,6 +88,16 @@ export function createTurnCompletionNotifier({
       return;
     }
     if (!unreadSnapshot?.targetUnread) return;
+
+    let summary;
+    try {
+      summary = await pushSummarizer.summarize(previewText);
+    } catch (error) {
+      log.warn(`[push] turn completion summary failed origin=${origin || "unknown"}: ${errorMessage(error)}`);
+      return;
+    }
+    if (!summary) return;
+
     const payloadDirectory = String(unreadSnapshot.directory || directory || "").trim();
     const basePayload = {
       aps: {

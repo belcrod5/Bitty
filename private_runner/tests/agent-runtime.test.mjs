@@ -147,6 +147,7 @@ test("Agent runtime composes completion notification with the production event f
   );
   const broadcasts = [];
   const observedTypes = [];
+  const warnings = [];
   const notifier = createTurnCompletionNotifier({
     pushEnabled: false,
     pushDeviceStore: {},
@@ -202,6 +203,7 @@ test("Agent runtime composes completion notification with the production event f
       },
       notifier.onAgentRunEvent,
     ],
+    log: { warn: (message) => warnings.push(String(message)) },
   });
   t.after(() => runtime.close());
 
@@ -215,6 +217,11 @@ test("Agent runtime composes completion notification with the production event f
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.ok(observedTypes.includes("turn.completed"));
+  // 一部observerの失敗は他observer(通知)を止めず、無音破棄もされない
+  assert.match(
+    warnings.join("\n"),
+    /run event observer failed type=item\.completed run=.*: observer failure/,
+  );
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].backendId, "codex");
   assert.equal(broadcasts[0].sessionId, "thread-new");

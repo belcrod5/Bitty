@@ -887,6 +887,125 @@ test("session list prefers revisioned read state over legacy session timestamps"
   ]);
 });
 
+test("session state adopts the newer of binding activity and native updatedAt", async () => {
+  const boundRef = { backendId: "claude", nativeSessionId: "bound" };
+  const staleRef = { backendId: "claude", nativeSessionId: "stale-binding" };
+  const sessions = sessionStore();
+  await sessions.bind(boundRef, "/workspace", "neutral");
+  await sessions.bind(staleRef, "/workspace", "neutral");
+  // ターン完了時のrecordActivity相当。native側(rollout mtime由来)より新しい。
+  (await sessions.getBinding(boundRef)).updatedAt = "2026-08-27T10:00:00.000Z";
+  // 逆にnative側の方が新しいケース(binding記録後にrolloutが更新された)。
+  (await sessions.getBinding(staleRef)).updatedAt = "2026-08-27T01:00:00.000Z";
+  const service = createAgentService({
+    backends: [listBackend("claude", { sessions: [
+      { sessionRef: boundRef, updatedAt: "2026-08-27T09:00:00.000Z" },
+      { sessionRef: staleRef, updatedAt: "2026-08-27T02:00:00.000Z" },
+      { sessionRef: { backendId: "claude", nativeSessionId: "unbound" }, updatedAt: "2026-08-27T03:00:00.000Z" },
+    ] })],
+    operationStore: operationStore(),
+    sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+
+  const listed = await service.listSessions({ backendId: "claude", cwd: "/workspace" });
+  assert.deepEqual(
+    Object.fromEntries(listed.sessions.map((session) => [session.sessionRef.nativeSessionId, session.updatedAt])),
+    {
+      bound: "2026-08-27T10:00:00.000Z",
+      "stale-binding": "2026-08-27T02:00:00.000Z",
+      unbound: "2026-08-27T03:00:00.000Z",
+    },
+  );
+});
+
+test("all-scope snapshot tolerates one backend failure and fails only when all fail", async () => {
+  const warnings = [];
+  let codexFails = false;
+  let claudeFails = true;
+  const codex = listBackend("codex", { sessions: [] });
+  const claude = listBackend("claude", { sessions: [] });
+  codex.listSessionsForDirectories = async ({ cwds }) => {
+    if (codexFails) throw new Error("codex listing failed");
+    return { groups: cwds.map((cwd) => ({ cwd, sessions: [
+      { sessionRef: { backendId: "codex", nativeSessionId: "codex-session" }, canonicalCwd: cwd },
+    ] })) };
+  };
+  claude.listSessionsForDirectories = async ({ cwds }) => {
+    if (claudeFails) throw new Error("claude listing failed");
+    return { groups: cwds.map((cwd) => ({ cwd, sessions: [
+      { sessionRef: { backendId: "claude", nativeSessionId: "claude-session" }, canonicalCwd: cwd },
+    ] })) };
+  };
+  const service = createAgentService({
+    backends: [codex, claude],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    log: { warn: (message) => warnings.push(String(message)) },
+  });
+
+  const snapshot = await service.listSessionSnapshot({ cwds: ["/workspace"] });
+  assert.deepEqual(
+    snapshot.groups[0].sessions.map((session) => session.sessionRef.backendId),
+    ["codex"],
+  );
+  // 部分失敗の印: 消費側(Skiaボードingest)がウォーターマーク前進を
+  // 見送れるよう、欠けているBackendを明示する。
+  assert.equal(snapshot.partial, true);
+  assert.deepEqual(snapshot.failedBackendIds, ["claude"]);
+  assert.match(warnings.join("\n"), /session snapshot skipped backend=claude: claude listing failed/);
+
+  // 全Backend成功時はpartialの印が付かない。
+  claudeFails = false;
+  const fullSnapshot = await service.listSessionSnapshot({ cwds: ["/workspace"] });
+  assert.equal("partial" in fullSnapshot, false);
+  assert.equal("failedBackendIds" in fullSnapshot, false);
+
+  codexFails = true;
+  claudeFails = true;
+  await assert.rejects(
+    service.listSessionSnapshot({ cwds: ["/workspace"] }),
+    /listing failed/,
+  );
+});
+
+test("logs run event observer failures instead of silently dropping them", async () => {
+  const warnings = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => status(),
+    resolveSessionCwd: async () => "/workspace",
+    async startTurn({ resolveSession, emit }) {
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      return { outcome: "completed" };
+    },
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  };
+  const service = createAgentService({
+    backends: [backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    generateRunId: () => "run-1",
+    onRunEvent: async (event) => {
+      if (event.type === "turn.completed") throw new Error("observer failed");
+    },
+    log: { warn: (message) => warnings.push(String(message)) },
+  });
+
+  const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  const result = await run.completion;
+  assert.equal(result.outcome, "completed");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(
+    warnings.join("\n"),
+    /run event observer failed type=turn\.completed run=run-1: observer failed/,
+  );
+});
+
 test("multi-directory snapshot uses backend batch listing and fails closed", async () => {
   const calls = [];
   const backend = listBackend("claude", { sessions: [] });
