@@ -73,7 +73,7 @@ function safeEnvironment(source) {
   const exact = new Set([
     "HOME", "USER", "LOGNAME", "PATH", "SHELL", "TMPDIR", "LANG", "TERM", "COLORTERM",
     "CLAUDE_CONFIG_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
-    "BITTY_RUNNER_URL",
+    "BITTY_RUNNER_URL", "BITTY_RUNNER_TOKEN_FILE", "RUNNER_TOKEN_FILE",
   ]);
   const target = {};
   for (const [key, value] of Object.entries(source || {})) {

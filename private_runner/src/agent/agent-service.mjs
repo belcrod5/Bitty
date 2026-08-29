@@ -154,6 +154,9 @@ export function createAgentService({
     typeof sessionStore?.recordActivity !== "function" ||
     typeof sessionStore?.getReadState !== "function"
   ) throw new TypeError("A durable sessionStore is required");
+  if (typeof workspaceAdmission?.assertAllowed !== "function") {
+    throw new TypeError("workspaceAdmission.assertAllowed is required");
+  }
   if (typeof resolveCanonicalCwd !== "function") throw new TypeError("resolveCanonicalCwd is required");
 
   const runs = new Map();
@@ -1637,8 +1640,9 @@ export function createAgentService({
     async readHistory(options, context = {}) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);
       const backend = await readyHistoryBackend(sessionRef);
-      const page = await backend.readHistory({ ...options, sessionRef });
       const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle: true });
+      await workspaceAdmission.assertAllowed(String(context.subjectId || "").trim(), canonicalCwd);
+      const page = await backend.readHistory({ ...options, sessionRef });
       const binding = await sessionStore.getBinding(sessionRef);
       return {
         ...page,

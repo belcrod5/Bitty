@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import test from "node:test";
 
 import { createPrivateRunnerAgentRuntime } from "../src/agent/agent-runtime.mjs";
@@ -49,8 +49,8 @@ function completionClient() {
 }
 
 test("Codex Agent history preserves message timestamps", async (t) => {
-  const aliasWorkspace = "/alias/workspace";
-  const canonicalWorkspace = "/real/workspace";
+  const canonicalWorkspace = await realpath(".");
+  const aliasWorkspace = `${canonicalWorkspace}/.`;
   const runtime = createPrivateRunnerAgentRuntime({
     claudeBinary: "claude",
     runnerToken: "test-token",
@@ -70,6 +70,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
       claimOperation: async () => ({ status: "claimed" }),
       completeOperation: async () => ({ status: "completed" }),
       listWorkspaces: async () => [],
+      listRegisteredDirectories: async () => [canonicalWorkspace],
       approveWorkspace: async () => null,
       revokeWorkspace: async () => false,
       getModelInfo: async () => null,
@@ -77,12 +78,12 @@ test("Codex Agent history preserves message timestamps", async (t) => {
     },
     createCodexClient: () => { throw new Error("not used"); },
     normalizeSessionId: (value) => String(value || ""),
-    findSession: async () => ({ sessionId: "thread-1", cwd: "/workspace" }),
+    findSession: async () => ({ sessionId: "thread-1", cwd: canonicalWorkspace }),
     resolveSessionDirectory: (session) => session.cwd,
     listSessions: async () => ({
       sessions: [{
         sessionId: "thread-1",
-        directory: "/workspace",
+        directory: canonicalWorkspace,
         updatedAt: "2026-08-24T02:00:00.000Z",
         lastReadAt: "2026-08-24T03:00:00.000Z",
       }],
@@ -115,7 +116,7 @@ test("Codex Agent history preserves message timestamps", async (t) => {
   });
   t.after(() => runtime.close());
 
-  const listed = await runtime.service.listSessions({ backendId: "codex", cwd: "/workspace" });
+  const listed = await runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace });
   assert.equal(listed.sessions[0].lastReadAt, "2026-08-24T03:00:00.000Z");
 
   const snapshot = await runtime.service.listSessionSnapshot({

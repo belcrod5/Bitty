@@ -1200,7 +1200,13 @@ test("Claude Backend sets MCP timeout env vars only for the interactive profile"
   const interactiveRun = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
     { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
-  ]);
+  ], { backendOverrides: { environment: {
+    PATH: "/test/bin",
+    BITTY_RUNNER_URL: "http://127.0.0.1:8788",
+    BITTY_RUNNER_TOKEN_FILE: "/test/bitty-token",
+    RUNNER_TOKEN_FILE: "/test/runner-token",
+    UNSAFE_SECRET: "not-forwarded",
+  } } });
   await interactiveRun.backend.startTurn({
     runId: "run-mcp-timeout",
     cwd: "/work/project",
@@ -1211,6 +1217,9 @@ test("Claude Backend sets MCP timeout env vars only for the interactive profile"
   });
   assert.equal(interactiveRun.calls[0].options.env.MCP_TOOL_TIMEOUT, "86400000");
   assert.equal(interactiveRun.calls[0].options.env.MCP_TIMEOUT, "86400000");
+  assert.equal(interactiveRun.calls[0].options.env.BITTY_RUNNER_TOKEN_FILE, "/test/bitty-token");
+  assert.equal(interactiveRun.calls[0].options.env.RUNNER_TOKEN_FILE, "/test/runner-token");
+  assert.equal("UNSAFE_SECRET" in interactiveRun.calls[0].options.env, false);
 
   const dontAskRun = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },

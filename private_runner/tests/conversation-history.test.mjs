@@ -43,7 +43,9 @@ function createConversationService({ sessions, readHistory, allowedCwds = ["/wor
     workspaceAdmission: {
       async assertAllowed(subjectId, cwd) {
         assert.equal(subjectId, "owner");
-        assert.ok(allowedCwds.includes(cwd));
+        if (!allowedCwds.includes(cwd)) {
+          throw Object.assign(new Error("workspace has not been approved"), { code: "turn_rejected" });
+        }
         admitted.push(cwd);
         return cwd;
       },
@@ -396,6 +398,25 @@ test("conversation range read excludes non-conversation items and paginates with
   assert.deepEqual(second.items, [{ id: "user-old", role: "user", text: "old question" }]);
   assert.equal(second.cursor, undefined);
   assert.deepEqual(backendCursors, ["", ""]);
+});
+
+test("history read rechecks the resolved session workspace before reading backend data", async () => {
+  const sessionRef = { backendId: "test", nativeSessionId: "revoked-session" };
+  let readCalls = 0;
+  const { service } = createConversationService({
+    sessions: [{ sessionRef, canonicalCwd: "/revoked" }],
+    allowedCwds: [],
+    async readHistory() {
+      readCalls += 1;
+      return { items: [], olderCursor: null };
+    },
+  });
+
+  await assert.rejects(
+    service.readHistory({ sessionRef }, { subjectId: "owner" }),
+    (error) => error.code === "turn_rejected",
+  );
+  assert.equal(readCalls, 0);
 });
 
 test("search-focused read returns a small section containing a match near the end of a long message", async () => {

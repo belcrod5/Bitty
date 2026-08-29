@@ -66,7 +66,7 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
   assert.equal(requested.searchParams.get("since"), "2026-08-22T00:00:00.000Z");
 });
 
-test("conversation history CLI searches the first eight approved workspaces by default", async (t) => {
+test("conversation history CLI pages omitted approved workspaces without hiding partial coverage", async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-workspaces-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const tokenFile = path.join(temp, "token");
@@ -84,16 +84,67 @@ test("conversation history CLI searches the first eight approved workspaces by d
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  await execFile(CLI, ["search", "needle"], {
+  const environment = {
+    ...process.env,
+    BITTY_RUNNER_TOKEN_FILE: tokenFile,
+    BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+  };
+  const first = await execFile(CLI, ["search", "needle"], {
     env: {
-      ...process.env,
-      BITTY_RUNNER_TOKEN_FILE: tokenFile,
-      BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+      ...environment,
     },
+  });
+  const firstPayload = JSON.parse(first.stdout);
+  assert.equal(firstPayload.partial, true);
+  assert.deepEqual(firstPayload.workspaceSearch, {
+    offset: 0,
+    searchedCount: 8,
+    totalCount: 10,
+    partial: true,
+    nextOffset: 8,
+    instruction: "Finish the current result cursor first, then repeat the search with --workspace-offset 8 and without --cursor.",
   });
   assert.equal(requestedUrls.length, 2);
   const searchUrl = new URL(requestedUrls[1], "http://runner.test");
   assert.deepEqual(searchUrl.searchParams.getAll("cwd"), workspaces.slice(0, 8).map((entry) => entry.canonicalRoot));
+
+  const second = await execFile(CLI, ["search", "needle", "--workspace-offset", "8"], { env: environment });
+  const secondPayload = JSON.parse(second.stdout);
+  assert.equal(secondPayload.partial, undefined);
+  assert.deepEqual(secondPayload.workspaceSearch, {
+    offset: 8,
+    searchedCount: 2,
+    totalCount: 10,
+  });
+  const secondSearchUrl = new URL(requestedUrls[3], "http://runner.test");
+  assert.deepEqual(secondSearchUrl.searchParams.getAll("cwd"), workspaces.slice(8).map((entry) => entry.canonicalRoot));
+});
+
+test("conversation history CLI honors the documented runner token file relative to the repository", async (t) => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-runner-token-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const tokenFile = path.join(temp, "token");
+  await fs.writeFile(tokenFile, "documented-token\n", { mode: 0o600 });
+  let authorization = "";
+  const server = http.createServer((request, response) => {
+    authorization = String(request.headers.authorization || "");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ results: [], scanned: {} }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await execFile(CLI, ["search", "needle", "--cwd", temp], {
+    cwd: temp,
+    env: {
+      ...process.env,
+      BITTY_RUNNER_TOKEN_FILE: "",
+      RUNNER_TOKEN_FILE: path.relative(path.resolve("."), tokenFile),
+      BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+    },
+  });
+  assert.equal(authorization, "Bearer documented-token");
 });
 
 test("session Markdown link requires the admitted canonical cwd", () => {
