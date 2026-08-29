@@ -104,7 +104,8 @@ export function ComposerFullscreenEditor({
                       ]}
                       onPress={() => selectHistoryMessage(message)}
                       accessibilityRole="button"
-                      accessibilityLabel={`送信履歴 ${index + 1}`}
+                      accessibilityLabel={`送信履歴 ${index + 1}: ${message}`}
+                      accessibilityHint="入力欄に反映"
                     >
                       <Text style={componentStyles.historyItemText} numberOfLines={5}>
                         {message}

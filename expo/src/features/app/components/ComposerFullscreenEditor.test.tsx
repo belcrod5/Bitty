@@ -52,12 +52,14 @@ test("replaces the draft with a selected long history message and closes the lis
   expect(StyleSheet.flatten(view.getByTestId("composer-history-list").props.style)).toMatchObject({
     position: "absolute",
   });
-  expect(StyleSheet.flatten(view.getByLabelText("送信履歴 2").props.style)).toMatchObject({
+  const olderHistoryItem = view.getByLabelText("送信履歴 2: older message");
+  expect(olderHistoryItem.props.accessibilityHint).toBe("入力欄に反映");
+  expect(StyleSheet.flatten(olderHistoryItem.props.style)).toMatchObject({
     borderTopWidth: 1,
     borderTopColor: "#94a3b8",
   });
   await act(async () => {
-    fireEvent.press(view.getByLabelText("送信履歴 1"));
+    fireEvent.press(view.getByLabelText(`送信履歴 1: ${message}`));
   });
   expect(onChangeText).toHaveBeenCalledWith(message);
   expect(view.queryByTestId("composer-history-list")).toBeNull();
