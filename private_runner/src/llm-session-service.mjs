@@ -189,6 +189,7 @@ export function createLlmSessionService(deps = {}) {
           ...session,
           sessionId,
           directory,
+          createdAt: String(previous?.createdAt || session?.createdAt || ""),
           updatedAt: newerTimestamp(previous?.updatedAt, session?.updatedAt),
           lastReadAt: newerTimestamp(previous?.lastReadAt, session?.lastReadAt),
         });

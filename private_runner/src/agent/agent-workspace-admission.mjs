@@ -17,7 +17,13 @@ function fileIdentity(stat) {
   return `${String(stat.dev)}:${String(stat.ino)}`;
 }
 
-export function createAgentWorkspaceAdmission({ store, fileSystem = fs, now = () => Date.now(), onRevoke } = {}) {
+export function createAgentWorkspaceAdmission({
+  store,
+  listRegisteredDirectories = async () => [],
+  fileSystem = fs,
+  now = () => Date.now(),
+  onRevoke,
+} = {}) {
   if (
     typeof store?.list !== "function" ||
     typeof store?.approve !== "function" ||
@@ -92,13 +98,35 @@ export function createAgentWorkspaceAdmission({ store, fileSystem = fs, now = ()
   }
 
   async function list(subjectIdRaw) {
-    return await store.list(String(subjectIdRaw || "").trim());
+    const subjectId = String(subjectIdRaw || "").trim();
+    const workspaces = new Map(
+      (await store.list(subjectId)).map((entry) => [entry.canonicalRoot, entry])
+    );
+    const registeredDirectories = await listRegisteredDirectories();
+    for (const registeredDirectory of registeredDirectories) {
+      try {
+        const rawRoot = String(registeredDirectory || "").trim();
+        if (!rawRoot || !path.isAbsolute(rawRoot)) continue;
+        const registeredRoot = path.resolve(rawRoot);
+        const inspected = await inspect(registeredRoot);
+        // Push registration stores canonical paths. If one is later replaced by a
+        // symlink, do not silently authorize its new target.
+        if (inspected.canonicalRoot !== registeredRoot || workspaces.has(registeredRoot)) continue;
+        workspaces.set(registeredRoot, {
+          subjectId,
+          canonicalRoot: registeredRoot,
+          identity: inspected.identity,
+        });
+      } catch {}
+    }
+    return Array.from(workspaces.values())
+      .sort((left, right) => left.canonicalRoot.localeCompare(right.canonicalRoot));
   }
 
   async function assertAllowed(subjectIdRaw, rawCwd) {
     const subjectId = String(subjectIdRaw || "").trim();
     const inspected = await inspect(rawCwd);
-    const roots = await store.list(subjectId);
+    const roots = await list(subjectId);
     for (const entry of roots) {
       try {
         const currentRoot = await inspect(entry.canonicalRoot);

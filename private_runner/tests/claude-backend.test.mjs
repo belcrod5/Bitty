@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createClaudeBackend, isClaudeVersionSupported } from "../src/claude-backend.mjs";
+import { CONVERSATION_HISTORY_TOOL_INSTRUCTIONS } from "../src/agent/agent-runtime.mjs";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -531,7 +532,7 @@ test("Claude Backend skips thinking-only assistant snapshots", async () => {
   assert.equal(events.find((event) => event.type === "item.completed")?.payload.content?.[0]?.text, "done");
 });
 
-test("Claude history stays inside projects root and invalidates changed cursors", async (t) => {
+test("Claude history cursors allow appends and reject destructive changes", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-history-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
   const project = path.join(tempRoot, "project");
@@ -558,7 +559,21 @@ test("Claude history stays inside projects root and invalidates changed cursors"
   });
   assert.equal(first.items[0].role, "assistant");
   assert.ok(first.olderCursor);
-  await fs.appendFile(transcript, "\n");
+  await fs.appendFile(transcript, `\n${JSON.stringify({
+    type: "assistant", uuid: "a2", cwd, timestamp: "2026-08-21T00:00:02.000Z",
+    message: { content: [{ type: "text", text: "new reply" }] },
+  })}`);
+  const older = await backend.readHistory({
+    sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
+    cursor: first.olderCursor,
+    limit: 1,
+  });
+  assert.deepEqual(older.items.map((item) => item.id), ["u1"]);
+
+  await fs.writeFile(transcript, [
+    JSON.stringify({ type: "user", uuid: "u1", cwd, message: { content: "changed" } }),
+    JSON.stringify({ type: "assistant", uuid: "a1", cwd, message: { content: "world" } }),
+  ].join("\n"));
   await assert.rejects(backend.readHistory({
     sessionRef: { backendId: "claude", nativeSessionId: SESSION_ID },
     cursor: first.olderCursor,
@@ -964,9 +979,11 @@ test("Claude session listing enumerates subagent transcripts under the parent se
   const byId = new Map(listed.sessions.map((session) => [session.sessionRef.nativeSessionId, session]));
   assert.deepEqual([...byId.keys()].sort(), [parentId, taskAgentId, workflowAgentId].sort());
   assert.equal(byId.get(parentId).isSubagent, false);
+  assert.equal(byId.get(parentId).createdAt, "2026-08-28T00:00:00.000Z");
   assert.equal(byId.get(parentId).parentSessionRef, undefined);
   for (const agentId of [taskAgentId, workflowAgentId]) {
     assert.equal(byId.get(agentId).isSubagent, true);
+    assert.match(byId.get(agentId).createdAt, /^2026-08-28T00:0[12]:00\.000Z$/);
     assert.deepEqual(byId.get(agentId).parentSessionRef, { backendId: "claude", nativeSessionId: parentId });
   }
   // タイトルはtranscript先頭のユーザーメッセージ(全recordがisSidechainでも拾える)
@@ -1162,11 +1179,34 @@ test("Claude Backend claude-on-request builds interactive argv with an inline MC
   assert.ok(server.env.BITTY_PERMISSION_TOKEN);
 });
 
+test("Claude Backend applies the same conversation-history instruction as a system prompt", async () => {
+  const { backend, calls } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
+  ], { backendOverrides: { developerInstructions: CONVERSATION_HISTORY_TOOL_INSTRUCTIONS } });
+  await backend.startTurn({
+    runId: "run-history-instructions",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "find a conversation" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  const promptIndex = calls[0].args.indexOf("--append-system-prompt");
+  assert.ok(promptIndex >= 0);
+  assert.equal(calls[0].args[promptIndex + 1], CONVERSATION_HISTORY_TOOL_INSTRUCTIONS);
+});
+
 test("Claude Backend sets MCP timeout env vars only for the interactive profile", async () => {
   const interactiveRun = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
     { type: "result", subtype: "success", result: "ok", session_id: SESSION_ID },
-  ]);
+  ], { backendOverrides: { environment: {
+    PATH: "/test/bin",
+    BITTY_RUNNER_URL: "http://127.0.0.1:8788",
+    BITTY_RUNNER_TOKEN_FILE: "/test/bitty-token",
+    RUNNER_TOKEN_FILE: "/test/runner-token",
+    UNSAFE_SECRET: "not-forwarded",
+  } } });
   await interactiveRun.backend.startTurn({
     runId: "run-mcp-timeout",
     cwd: "/work/project",
@@ -1177,6 +1217,9 @@ test("Claude Backend sets MCP timeout env vars only for the interactive profile"
   });
   assert.equal(interactiveRun.calls[0].options.env.MCP_TOOL_TIMEOUT, "86400000");
   assert.equal(interactiveRun.calls[0].options.env.MCP_TIMEOUT, "86400000");
+  assert.equal(interactiveRun.calls[0].options.env.BITTY_RUNNER_TOKEN_FILE, "/test/bitty-token");
+  assert.equal(interactiveRun.calls[0].options.env.RUNNER_TOKEN_FILE, "/test/runner-token");
+  assert.equal("UNSAFE_SECRET" in interactiveRun.calls[0].options.env, false);
 
   const dontAskRun = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },

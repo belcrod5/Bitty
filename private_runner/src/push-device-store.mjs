@@ -122,10 +122,18 @@ export function createPushDeviceStore(storePath) {
     return byDeviceId.get(String(deviceId || "").trim()) || null;
   }
 
+  async function listDirectories() {
+    await ensureLoaded();
+    return Array.from(new Set(
+      Array.from(byDeviceId.values()).flatMap((device) => device.directories)
+    )).sort();
+  }
+
   return {
     upsertDevice,
     removeDevice,
     listDevices,
     getDevice,
+    listDirectories,
   };
 }

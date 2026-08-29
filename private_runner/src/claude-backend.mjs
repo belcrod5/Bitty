@@ -3,7 +3,7 @@ import os from "node:os";
 import { promises as fs } from "node:fs";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { agentError } from "./agent/agent-protocol.mjs";
@@ -73,6 +73,7 @@ function safeEnvironment(source) {
   const exact = new Set([
     "HOME", "USER", "LOGNAME", "PATH", "SHELL", "TMPDIR", "LANG", "TERM", "COLORTERM",
     "CLAUDE_CONFIG_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+    "BITTY_RUNNER_URL", "BITTY_RUNNER_TOKEN_FILE", "RUNNER_TOKEN_FILE",
   ]);
   const target = {};
   for (const [key, value] of Object.entries(source || {})) {
@@ -136,6 +137,21 @@ function cursorDecode(value) {
   }
 }
 
+function historyBoundaryFingerprint(items, end) {
+  const hash = createHash("sha256");
+  for (const item of items.slice(Math.max(0, end - 4), end)) {
+    hash.update(String(item.id || ""));
+    hash.update("\0");
+    hash.update(String(item.role || ""));
+    hash.update("\0");
+    hash.update(String(item.itemType || ""));
+    hash.update("\0");
+    hash.update(String(item.content?.[0]?.text || ""));
+    hash.update("\u0001");
+  }
+  return hash.digest("base64url");
+}
+
 function isClaudeAuthFailure(...values) {
   return /not logged in|login required|authentication|oauth|unauthorized/i.test(values.map(String).join("\n"));
 }
@@ -160,6 +176,7 @@ export function createClaudeBackend({
   compactTimeoutMs = 10 * 60 * 1000,
   interruptGraceMs = 1500,
   generateSessionId = randomUUID,
+  developerInstructions = "",
 } = {}) {
   if (typeof sessionStore?.getBinding !== "function") throw new TypeError("sessionStore.getBinding is required");
   const activeRuns = new Map();
@@ -430,6 +447,9 @@ export function createClaudeBackend({
     }
     const args = [
       "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+      ...(String(developerInstructions || "").trim()
+        ? ["--append-system-prompt", String(developerInstructions).trim()]
+        : []),
       ...(requestedSessionId ? ["--resume", requestedSessionId] : ["--session-id", freshSessionId]),
       ...(selectedModel ? ["--model", selectedModel] : []),
       ...(selectedEffort ? ["--effort", selectedEffort] : []),
@@ -958,10 +978,15 @@ export function createClaudeBackend({
     const isSubagentTranscript = SUBAGENT_SESSION_ID_PATTERN.test(path.basename(file, ".jsonl"));
     const firstUser = transcript.records.find((record) => record.value?.type === "user"
       && !classifyHistoryItemType(record.value, extractText(record.value?.message?.content), { isSubagentTranscript }));
+    const firstTimestamp = String(
+      transcript.records.find((record) => record.value?.timestamp)?.value?.timestamp || "",
+    );
+    const createdAtMs = Date.parse(firstTimestamp);
     const metadata = {
       size: transcript.stat.size,
       mtimeMs: transcript.stat.mtimeMs,
       realCwd: await realpathCwd(transcriptCwd(transcript.records)),
+      createdAt: Number.isFinite(createdAtMs) ? new Date(createdAtMs).toISOString() : "",
       title: extractText(firstUser?.value?.message?.content).slice(0, 200),
       modelId: transcriptModelId(transcript.records),
     };
@@ -1019,6 +1044,7 @@ export function createClaudeBackend({
       sessions.push({
         sessionRef: { backendId: "claude", nativeSessionId: entry.nativeSessionId },
         canonicalCwd: metadata.realCwd,
+        createdAt: metadata.createdAt,
         updatedAt: metadata.stat.mtime.toISOString(),
         title: metadata.title,
         modelId: metadata.modelId,
@@ -1071,11 +1097,7 @@ export function createClaudeBackend({
     if (sinceCursor) throw agentError("capability_unsupported", "Claude history delta is not supported", { backendId: "claude" });
     const transcript = await findTranscript(sessionRef?.nativeSessionId);
     if (!transcript) throw agentError("session_not_found", "Claude session was not found", { backendId: "claude" });
-    const identity = `${String(transcript.stat.dev)}:${String(transcript.stat.ino)}:${transcript.stat.size}:${transcript.stat.mtimeMs}`;
     const decoded = cursor ? cursorDecode(cursor) : null;
-    if (cursor && (!decoded || decoded.identity !== identity || !Number.isInteger(decoded.offset))) {
-      throw agentError("history_cursor_invalid", "Claude history cursor is invalid", { backendId: "claude" });
-    }
     const isSubagentTranscript = SUBAGENT_SESSION_ID_PATTERN.test(path.basename(transcript.real, ".jsonl"));
     const display = [];
     for (const record of transcript.records) {
@@ -1093,13 +1115,23 @@ export function createClaudeBackend({
       });
     }
     const pageLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+    const identity = `${String(transcript.stat.dev)}:${String(transcript.stat.ino)}`;
+    if (cursor && (!decoded || decoded.identity !== identity || !Number.isInteger(decoded.offset)
+      || decoded.offset < 0 || decoded.offset > display.length
+      || decoded.boundary !== historyBoundaryFingerprint(display, decoded.offset))) {
+      throw agentError("history_cursor_invalid", "Claude history cursor is invalid", { backendId: "claude" });
+    }
     const end = decoded ? decoded.offset : display.length;
     const start = Math.max(0, end - pageLimit);
     const contextUsage = await transcriptContextUsage(transcript.records, { isSubagentTranscript });
     return {
       items: display.slice(start, end),
       modelId: transcriptModelId(transcript.records),
-      olderCursor: start > 0 ? cursorEncode({ identity, offset: start }) : null,
+      olderCursor: start > 0 ? cursorEncode({
+        identity,
+        offset: start,
+        boundary: historyBoundaryFingerprint(display, start),
+      }) : null,
       newerCursor: null,
       ...(contextUsage ? { contextUsage } : {}),
     };

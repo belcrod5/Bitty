@@ -284,6 +284,8 @@ export function ChatScreen({
     handleAssistantAudioButtonPress,
     sessionHistoryPagingById,
     loadOlderSessionHistory,
+    sessionDeepLinkJumpTarget,
+    clearSessionDeepLinkJumpTarget,
   } = useChatScreen();
   const {
     addFile: addSkiaBoardFile,
@@ -824,6 +826,11 @@ export function ChatScreen({
     isAtBottomRef.current = true;
   }, []);
   const {
+    handleScrollInteractionBegin: handleChatScrollInteractionBegin,
+    handleScrollInteractionEnd: handleChatScrollInteractionEnd,
+    handleTouchCancel: handleChatTouchCancelForAutoScroll,
+    handleTouchEnd: handleChatTouchEndForAutoScroll,
+    handleTouchStart: handleChatTouchStartForAutoScroll,
     handleViewableItemsChanged: handleChatViewableItemsChanged,
     resetNavigation: resetChatScrollNavigation,
     scrollToBottomAndResume: resumeChatAtBottom,
@@ -832,29 +839,17 @@ export function ChatScreen({
   } = useChatScrollNavigation({
     messages: conversationMessagesForView,
     listRef: chatListRefForView,
+    isAtBottomRef,
+    interactionActiveRef: chatScrollDragActiveRef,
     pauseAutoScroll: pauseChatAutoScrollForInteraction,
     resumeAutoScroll: resumeChatAutoScroll,
     scrollToBottom: scrollChatListToBottom,
+    onTouchStart: handleChatTouchStartForView,
+    onTouchEnd: handleChatTouchEndForView,
+    deepLinkTarget: sessionDeepLinkJumpTarget,
+    sessionId: selectedSessionIdForView,
+    onDeepLinkHandled: clearSessionDeepLinkJumpTarget,
   });
-  const handleChatTouchEndForAutoScroll = useCallback(() => {
-    handleChatTouchEndForView?.();
-    if (chatScrollDragActiveRef.current) return;
-    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
-  }, [handleChatTouchEndForView, shouldKeepAutoScrollPaused]);
-  const handleChatTouchCancelForAutoScroll = useCallback(() => {
-    chatScrollDragActiveRef.current = false;
-    handleChatTouchEndForView?.();
-    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
-  }, [handleChatTouchEndForView, shouldKeepAutoScrollPaused]);
-  const handleChatScrollInteractionBegin = useCallback(() => {
-    chatScrollDragActiveRef.current = true;
-    chatAutoScrollPausedRef.current = true;
-    cancelPendingChatBottomSettling();
-  }, [cancelPendingChatBottomSettling]);
-  const handleChatScrollInteractionEnd = useCallback(() => {
-    chatScrollDragActiveRef.current = false;
-    if (isAtBottomRef.current && !shouldKeepAutoScrollPaused(true)) chatAutoScrollPausedRef.current = false;
-  }, [shouldKeepAutoScrollPaused]);
   const scrollChatListToBottomSettled = useCallback((animated = false) => {
     clearPendingBottomScrollFrames();
     const scrollToBottomOnNextFrame = (nextAnimated: boolean) => {
@@ -1952,10 +1947,7 @@ export function ChatScreen({
               waitForInitialLayout
               contentContainerStyle={styles.chatScrollContent}
               keyboardShouldPersistTaps="handled"
-              onTouchStart={() => {
-                pauseChatAutoScrollForInteraction();
-                handleChatTouchStartForView?.();
-              }}
+              onTouchStart={handleChatTouchStartForAutoScroll}
               onTouchEnd={handleChatTouchEndForAutoScroll}
               onTouchCancel={handleChatTouchCancelForAutoScroll}
               onScrollBeginDrag={handleChatScrollInteractionBegin}

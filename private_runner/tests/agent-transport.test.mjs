@@ -103,6 +103,78 @@ test("agent session lists carry the authenticated owner on both transports", asy
   assert.equal(sent.at(-1).op, "sessions.list.result");
 });
 
+test("agent HTTP and WebSocket forward bounded conversation search and read requests", async () => {
+  const calls = [];
+  const service = {
+    async searchConversationHistory(options, context) {
+      calls.push({ kind: "search", options, context });
+      return { results: [{ snippet: "match" }] };
+    },
+    async readConversationHistory(options, context) {
+      calls.push({ kind: "read", options, context });
+      return { items: [{ role: "assistant", text: "answer" }] };
+    },
+  };
+  const handler = createAgentHttpHandler({
+    service,
+    runnerToken: "test-token",
+    parseAuthToken: (req) => req.token || "",
+    json,
+    normalizeSessionListLimit: (value) => Number(value || 20),
+    normalizeSessionMessagesLimit: (value) => Number(value || 20),
+  });
+  const searchUrl = new URL("http://runner.test/agent/session-history/search?query=needle&cwd=/one&cwd=/two&backendId=all&limit=7&order=newest&since=2026-08-22T00%3A00%3A00.000Z&cursor=next");
+  const searchResponse = response();
+  await handler({ method: "GET", token: "test-token" }, searchResponse, searchUrl, searchUrl.pathname);
+  assert.equal(searchResponse.statusCode, 200);
+  assert.deepEqual(calls[0], {
+    kind: "search",
+    options: {
+      query: "needle", cwds: ["/one", "/two"], backendId: "all", limit: "7", cursor: "next",
+      order: "newest", since: "2026-08-22T00:00:00.000Z",
+    },
+    context: { subjectId: "runner-token" },
+  });
+
+  const readUrl = new URL("http://runner.test/agent/session-conversation?backendId=claude&sessionId=session-1&limit=4&cursor=older");
+  const readResponse = response();
+  await handler({ method: "GET", token: "test-token" }, readResponse, readUrl, readUrl.pathname);
+  assert.equal(readResponse.statusCode, 200);
+  assert.deepEqual(calls[1], {
+    kind: "read",
+    options: {
+      sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+      limit: "4",
+      cursor: "older",
+    },
+    context: { subjectId: "runner-token" },
+  });
+
+  const sent = [];
+  const connection = createAgentWsConnection({
+    service,
+    ws: {},
+    subjectId: "socket-owner",
+    workspaceAdmission: {},
+    sendEnvelope: (_ws, message) => sent.push(message),
+  });
+  assert.equal(connection.handleMessage({
+    channel: "agent", op: "history.search", requestId: "search-1",
+    payload: { query: "needle", cwds: ["/one"], backendId: "all", limit: 5 },
+  }), true);
+  assert.equal(connection.handleMessage({
+    channel: "agent", op: "conversation.read", requestId: "read-1",
+    payload: { sessionRef: { backendId: "codex", nativeSessionId: "thread-1" }, limit: 3 },
+  }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(calls.slice(2).map((call) => ({ kind: call.kind, context: call.context })), [
+    { kind: "search", context: { subjectId: "socket-owner" } },
+    { kind: "read", context: { subjectId: "socket-owner" } },
+  ]);
+  assert.deepEqual(sent.map((message) => message.op).sort(), ["conversation.read.result", "history.search.result"]);
+});
+
 test("agent WebSocket releases a run subscription after its terminal event", async () => {
   let onEvent;
   let unsubscribeCount = 0;

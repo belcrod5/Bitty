@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { parseLlmSessionRelationship } from "./llm-session-metadata.mjs";
 
-const CLI_SESSION_INDEX_VERSION = 3;
+const CLI_SESSION_INDEX_VERSION = 4;
 
 export function createLlmCliSessionIndex(deps = {}) {
   const {
@@ -51,6 +51,7 @@ export function createLlmCliSessionIndex(deps = {}) {
     const directoryCandidate = String(entry.directory || toWorkspaceRelativeFromAbsolutePath(cwd)).trim();
     const directory = directoryCandidate ? normalizeSessionRootRelativePath(directoryCandidate) : "";
     const updatedAt = normalizeSessionUpdatedAt(entry.updatedAt) || new Date(Math.floor(mtimeMs)).toISOString();
+    const createdAt = normalizeSessionUpdatedAt(entry.createdAt);
     const lastReadAt = normalizeSessionUpdatedAt(entry.lastReadAt);
     return {
       filePath,
@@ -59,6 +60,7 @@ export function createLlmCliSessionIndex(deps = {}) {
       sessionId,
       cwd,
       directory,
+      createdAt: createdAt || "",
       updatedAt,
       lastReadAt: lastReadAt || "",
       isSubagent: entry.isSubagent === true,
@@ -211,7 +213,8 @@ export function createLlmCliSessionIndex(deps = {}) {
             sessionId = "";
           }
           if (!sessionId) return null;
-          const updatedAt = normalizeSessionUpdatedAt(payload?.timestamp || parsed?.timestamp) || fallbackUpdatedAt;
+          const createdAt = normalizeSessionUpdatedAt(payload?.timestamp || parsed?.timestamp);
+          const updatedAt = createdAt || fallbackUpdatedAt;
           const lastReadAt = normalizeSessionUpdatedAt(payload?.last_read_at);
           const directoryCandidate = toWorkspaceRelativeFromAbsolutePath(cwd);
           const modelRef = String(payload?.model_ref || "").trim();
@@ -221,6 +224,7 @@ export function createLlmCliSessionIndex(deps = {}) {
             sessionId,
             cwd,
             directory: directoryCandidate ? normalizeSessionRootRelativePath(directoryCandidate) : "",
+            createdAt: createdAt || "",
             updatedAt,
             lastReadAt: lastReadAt || "",
             modelRef,
@@ -275,6 +279,7 @@ export function createLlmCliSessionIndex(deps = {}) {
         sessionId: meta.sessionId,
         cwd: meta.cwd,
         directory: meta.directory,
+        createdAt: meta.createdAt,
         updatedAt: meta.updatedAt,
         // The index is the source of truth for read state; the file-side
         // last_read_at only remains as legacy data in already-annotated files.
@@ -308,6 +313,7 @@ export function createLlmCliSessionIndex(deps = {}) {
       const baseEntry = currentIsAtLeastAsNew ? currentEntry : scannedEntry;
       const merged = normalizeCliSessionIndexEntry({
         ...baseEntry,
+        createdAt: scannedEntry.createdAt || currentEntry?.createdAt || "",
         updatedAt: currentChangedAfterSnapshot
           ? pickNewerTimestamp(currentEntry.updatedAt, scannedEntry.updatedAt)
           : scannedEntry.updatedAt,
@@ -489,6 +495,7 @@ export function createLlmCliSessionIndex(deps = {}) {
           sessionId: entry.sessionId,
           directory: lookup.absolute || resolveCliSessionEntryDirectory(entry),
           cwd: entry.cwd,
+          createdAt: entry.createdAt,
           updatedAt: pickNewerTimestamp(entry.updatedAt, rolloutUpdatedAt),
           lastReadAt: String(entry.lastReadAt || "").trim(),
           source: "cli",
@@ -729,6 +736,7 @@ export function createLlmCliSessionIndex(deps = {}) {
         sessionId: meta.sessionId,
         cwd: meta.cwd,
         directory: meta.directory,
+        createdAt: cached?.createdAt || meta.createdAt || meta.updatedAt,
         updatedAt: fallbackUpdatedAt,
         lastReadAt: cached ? cached.lastReadAt : meta.lastReadAt,
         isSubagent: meta.isSubagent ?? cached?.isSubagent,

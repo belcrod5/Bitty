@@ -11,6 +11,24 @@ import {
   normalizeAgentSessionRef,
   serializeAgentError,
 } from "./agent-protocol.mjs";
+import {
+  CONVERSATION_HISTORY_PAGE_ITEMS,
+  CONVERSATION_READ_MAX_CHARS,
+  CONVERSATION_READ_SCAN_ITEMS,
+  CONVERSATION_READ_SCAN_PAGES,
+  CONVERSATION_SEARCH_SCAN_ITEMS,
+  CONVERSATION_SEARCH_SCAN_PAGES,
+  CONVERSATION_SEARCH_SCAN_SESSIONS,
+  conversationCursorSignature,
+  conversationItems,
+  conversationPageFingerprint,
+  conversationMatch,
+  decodeConversationCursor,
+  encodeConversationCursor,
+  focusedConversationItem,
+  normalizeConversationReadOptions,
+  normalizeConversationSearchOptions,
+} from "./conversation-history.mjs";
 
 const DEFAULT_REPLAY_LIMIT = 512;
 const COMPOSITE_SESSION_LIST_CURSOR_VERSION = 1;
@@ -136,6 +154,9 @@ export function createAgentService({
     typeof sessionStore?.recordActivity !== "function" ||
     typeof sessionStore?.getReadState !== "function"
   ) throw new TypeError("A durable sessionStore is required");
+  if (typeof workspaceAdmission?.assertAllowed !== "function") {
+    throw new TypeError("workspaceAdmission.assertAllowed is required");
+  }
   if (typeof resolveCanonicalCwd !== "function") throw new TypeError("resolveCanonicalCwd is required");
 
   const runs = new Map();
@@ -240,6 +261,19 @@ export function createAgentService({
       }
     }
     throw agentError("session_cwd_mismatch", "session cwd does not match", { backendId: sessionRef.backendId });
+  }
+
+  async function readyHistoryBackend(sessionRef) {
+    const backend = registry.get(sessionRef.backendId);
+    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
+    const status = await backend.getStatus();
+    if (!status?.readiness?.ready) {
+      throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId });
+    }
+    if (status?.capabilities?.session?.history?.read !== true) {
+      throw agentError("capability_unsupported", "session history is not supported", { backendId: backend.backendId });
+    }
+    return backend;
   }
 
   function publish(run, type, payload = {}) {
@@ -1019,6 +1053,328 @@ export function createAgentService({
     handoffSession,
     compactSession,
     cancelRunsInWorkspace,
+    async searchConversationHistory(rawOptions, context = {}) {
+      const options = normalizeConversationSearchOptions(rawOptions);
+      const subjectId = String(context.subjectId || "").trim();
+      const canonicalCwds = [];
+      for (const requestedCwd of options.cwds) {
+        const cwd = await workspaceAdmission.assertAllowed(subjectId, requestedCwd);
+        if (!canonicalCwds.includes(cwd)) canonicalCwds.push(cwd);
+      }
+      const signature = conversationCursorSignature({
+        query: options.query,
+        cwds: canonicalCwds,
+        backendId: options.backendId,
+        order: options.order,
+        since: options.since,
+      });
+      const position = decodeConversationCursor(options.cursor, "search", signature) || {
+        sessionKey: "",
+        historyCursor: "",
+        boundary: null,
+      };
+      if (typeof position.sessionKey !== "string" || typeof position.historyCursor !== "string"
+        || (position.boundary !== null && (!position.boundary || typeof position.boundary !== "object"
+          || typeof position.boundary.itemId !== "string"
+          || typeof position.boundary.fingerprint !== "string"))) {
+        throw agentError("history_cursor_invalid", "conversation history cursor is invalid");
+      }
+      const snapshot = await service.listSessionSnapshot({
+        backendId: options.backendId,
+        cwds: canonicalCwds,
+        includeSubagents: false,
+      });
+      const sessions = snapshot.groups
+        .flatMap((group) => group.sessions.map((session) => {
+          const createdAtMs = Date.parse(String(session?.createdAt || ""));
+          return {
+            ...session,
+            canonicalCwd: group.cwd,
+            createdAt: Number.isFinite(createdAtMs) ? new Date(createdAtMs).toISOString() : "",
+          };
+        }))
+        .filter((session) => !options.since
+          || Date.parse(String(session?.createdAt || "")) >= Date.parse(options.since))
+        .sort((left, right) => {
+          const leftKey = sessionKey(left.sessionRef);
+          const rightKey = sessionKey(right.sessionRef);
+          if (!options.order) return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+          const leftCreatedAt = String(left?.createdAt || "");
+          const rightCreatedAt = String(right?.createdAt || "");
+          if (leftCreatedAt && !rightCreatedAt) return -1;
+          if (!leftCreatedAt && rightCreatedAt) return 1;
+          if (leftCreatedAt !== rightCreatedAt) {
+            return options.order === "newest"
+              ? (leftCreatedAt < rightCreatedAt ? 1 : -1)
+              : (leftCreatedAt < rightCreatedAt ? -1 : 1);
+          }
+          return options.order === "newest"
+            ? (leftKey < rightKey ? 1 : leftKey > rightKey ? -1 : 0)
+            : (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0);
+        });
+
+      let sessionIndex = position.sessionKey
+        ? sessions.findIndex((session) => sessionKey(session.sessionRef) === position.sessionKey)
+        : 0;
+      if (sessionIndex < 0 || sessionIndex > sessions.length) {
+        throw agentError("history_cursor_invalid", "conversation history changed while searching");
+      }
+      let historyCursor = position.historyCursor;
+      let boundary = position.boundary;
+      let scannedItems = 0;
+      let scannedSessions = 0;
+      let scannedPages = 0;
+      let lastScannedSessionIndex = -1;
+      while (sessionIndex < sessions.length
+        && CONVERSATION_SEARCH_SCAN_ITEMS - scannedItems >= CONVERSATION_HISTORY_PAGE_ITEMS
+        && scannedPages < CONVERSATION_SEARCH_SCAN_PAGES) {
+        const session = sessions[sessionIndex];
+        if (lastScannedSessionIndex !== sessionIndex) {
+          if (scannedSessions >= CONVERSATION_SEARCH_SCAN_SESSIONS) break;
+          scannedSessions += 1;
+          lastScannedSessionIndex = sessionIndex;
+        }
+        const backend = await readyHistoryBackend(session.sessionRef);
+        const pageLimit = CONVERSATION_HISTORY_PAGE_ITEMS;
+        const page = await backend.readHistory({
+          sessionRef: session.sessionRef,
+          cursor: historyCursor,
+          limit: pageLimit,
+        });
+        const rawItems = Array.isArray(page?.items) ? page.items : [];
+        if (rawItems.length > pageLimit) {
+          throw agentError("protocol_error", "history page exceeded its requested limit", { backendId: backend.backendId });
+        }
+        scannedItems += rawItems.length;
+        scannedPages += 1;
+        const visible = conversationItems(rawItems);
+        let remaining = visible;
+        if (boundary) {
+          const boundaryIndex = visible.findIndex((item) => item.id === boundary.itemId);
+          if (boundaryIndex < 0) {
+            const olderCursor = String(page?.olderCursor || "");
+            if (!olderCursor) {
+              throw agentError("history_cursor_invalid", "conversation history changed while searching");
+            }
+            if (olderCursor === historyCursor) {
+              throw agentError("protocol_error", "history cursor did not advance", { backendId: backend.backendId });
+            }
+            historyCursor = olderCursor;
+            continue;
+          }
+          if (conversationPageFingerprint([visible[boundaryIndex]]) !== boundary.fingerprint) {
+            throw agentError("history_cursor_invalid", "conversation history changed while searching");
+          }
+          remaining = visible.slice(0, boundaryIndex + 1);
+          boundary = null;
+        }
+        const results = [];
+        let consumed = 0;
+        for (let index = remaining.length - 1; index >= 0; index -= 1) {
+          const item = remaining[index];
+          consumed += 1;
+          const match = conversationMatch(item.text, options.query);
+          if (!match) continue;
+          results.push({
+            sessionRef: session.sessionRef,
+            canonicalCwd: session.canonicalCwd,
+            ...(session.createdAt ? { sessionCreatedAt: session.createdAt } : {}),
+            messageId: item.id,
+            role: item.role,
+            ...(item.createdAt ? { createdAt: item.createdAt } : {}),
+            snippet: match.snippet,
+            conversationCursor: encodeConversationCursor({
+              kind: "read",
+              signature: conversationCursorSignature(session.sessionRef),
+              historyCursor,
+              boundary: null,
+              focus: {
+                itemId: item.id,
+                fingerprint: conversationPageFingerprint([item]),
+                start: match.start,
+                end: match.end,
+              },
+            }),
+          });
+          if (results.length >= options.limit) break;
+        }
+        const olderCursor = String(page?.olderCursor || "");
+        const pageHasMore = consumed < remaining.length;
+        const nextSessionIndex = pageHasMore || olderCursor ? sessionIndex : sessionIndex + 1;
+        const nextHistoryCursor = pageHasMore ? historyCursor : olderCursor;
+        const nextItem = pageHasMore ? remaining[remaining.length - consumed - 1] : null;
+        const nextBoundary = nextItem ? {
+          itemId: nextItem.id,
+          fingerprint: conversationPageFingerprint([nextItem]),
+        } : null;
+        if (results.length > 0) {
+          return {
+            results,
+            ...(nextSessionIndex < sessions.length ? { cursor: encodeConversationCursor({
+              kind: "search",
+              signature,
+              sessionKey: sessionKey(sessions[nextSessionIndex].sessionRef),
+              historyCursor: nextHistoryCursor,
+              boundary: nextBoundary,
+            }) } : {}),
+            scanned: { sessions: scannedSessions, items: scannedItems, pages: scannedPages },
+            ...(snapshot.partial ? { partial: true, failedBackendIds: snapshot.failedBackendIds } : {}),
+          };
+        }
+        if (olderCursor && olderCursor === historyCursor) {
+          throw agentError("protocol_error", "history cursor did not advance", { backendId: backend.backendId });
+        }
+        sessionIndex = nextSessionIndex;
+        historyCursor = nextHistoryCursor;
+        boundary = nextBoundary;
+      }
+      return {
+        results: [],
+        ...(sessionIndex < sessions.length ? { cursor: encodeConversationCursor({
+          kind: "search",
+          signature,
+          sessionKey: sessionKey(sessions[sessionIndex].sessionRef),
+          historyCursor,
+          boundary,
+        }) } : {}),
+        scanned: { sessions: scannedSessions, items: scannedItems, pages: scannedPages },
+        ...(snapshot.partial ? { partial: true, failedBackendIds: snapshot.failedBackendIds } : {}),
+      };
+    },
+    async readConversationHistory(rawOptions, context = {}) {
+      const options = normalizeConversationReadOptions(rawOptions);
+      const backend = await readyHistoryBackend(options.sessionRef);
+      const canonicalCwd = await resolveNativeSessionCwd(options.sessionRef, backend, { reconcileIdle: true });
+      await workspaceAdmission.assertAllowed(String(context.subjectId || "").trim(), canonicalCwd);
+      const signature = conversationCursorSignature(options.sessionRef);
+      const position = decodeConversationCursor(options.cursor, "read", signature) || {
+        historyCursor: "",
+        boundary: null,
+      };
+      if (typeof position.historyCursor !== "string"
+        || (position.boundary !== null && (!position.boundary || typeof position.boundary !== "object"
+          || typeof position.boundary.itemId !== "string"
+          || typeof position.boundary.fingerprint !== "string"))
+        || (position.focus !== undefined && (!position.focus || typeof position.focus !== "object"
+          || typeof position.focus.itemId !== "string" || typeof position.focus.fingerprint !== "string"))) {
+        throw agentError("history_cursor_invalid", "conversation history cursor is invalid");
+      }
+      let historyCursor = position.historyCursor;
+      let boundary = position.boundary;
+      let scannedItems = 0;
+      let scannedPages = 0;
+      while (CONVERSATION_READ_SCAN_ITEMS - scannedItems >= CONVERSATION_HISTORY_PAGE_ITEMS
+        && scannedPages < CONVERSATION_READ_SCAN_PAGES) {
+        const pageLimit = CONVERSATION_HISTORY_PAGE_ITEMS;
+        const page = await backend.readHistory({
+          sessionRef: options.sessionRef,
+          cursor: historyCursor,
+          limit: pageLimit,
+        });
+        const rawItems = Array.isArray(page?.items) ? page.items : [];
+        if (rawItems.length > pageLimit) {
+          throw agentError("protocol_error", "history page exceeded its requested limit", { backendId: backend.backendId });
+        }
+        scannedItems += rawItems.length;
+        scannedPages += 1;
+        const visible = conversationItems(rawItems);
+        if (position.focus) {
+          const focused = visible.find((item) => item.id === position.focus.itemId);
+          if (!focused) {
+            const olderCursor = String(page?.olderCursor || "");
+            if (!olderCursor) throw agentError("history_cursor_invalid", "conversation history focus is invalid");
+            if (olderCursor === historyCursor) {
+              throw agentError("protocol_error", "history cursor did not advance", { backendId: backend.backendId });
+            }
+            historyCursor = olderCursor;
+            continue;
+          }
+          if (conversationPageFingerprint([focused]) !== position.focus.fingerprint) {
+            throw agentError("history_cursor_invalid", "conversation history changed while reading");
+          }
+          const item = focusedConversationItem(focused, position.focus);
+          return {
+            sessionRef: options.sessionRef,
+            canonicalCwd,
+            items: [item],
+            totalChars: item.text.length,
+            focused: true,
+            scanned: { items: scannedItems, pages: scannedPages },
+          };
+        }
+        let remaining = visible;
+        if (boundary) {
+          const boundaryIndex = visible.findIndex((item) => item.id === boundary.itemId);
+          if (boundaryIndex < 0) {
+            const olderCursor = String(page?.olderCursor || "");
+            if (!olderCursor) throw agentError("history_cursor_invalid", "conversation history changed while reading");
+            if (olderCursor === historyCursor) {
+              throw agentError("protocol_error", "history cursor did not advance", { backendId: backend.backendId });
+            }
+            historyCursor = olderCursor;
+            continue;
+          }
+          if (conversationPageFingerprint([visible[boundaryIndex]]) !== boundary.fingerprint) {
+            throw agentError("history_cursor_invalid", "conversation history changed while reading");
+          }
+          remaining = visible.slice(0, boundaryIndex + 1);
+          boundary = null;
+        }
+        const selectedNewestFirst = [];
+        let totalChars = 0;
+        for (let index = remaining.length - 1; index >= 0 && selectedNewestFirst.length < options.limit; index -= 1) {
+          const item = remaining[index];
+          const available = CONVERSATION_READ_MAX_CHARS - totalChars;
+          if (available <= 0) break;
+          const text = item.text.slice(0, available);
+          selectedNewestFirst.push({ ...item, text, ...(text.length < item.text.length ? { truncated: true } : {}) });
+          totalChars += text.length;
+        }
+        if (selectedNewestFirst.length > 0) {
+          const consumed = selectedNewestFirst.length;
+          const pageHasMore = consumed < remaining.length;
+          const olderCursor = String(page?.olderCursor || "");
+          const nextItem = pageHasMore ? remaining[remaining.length - consumed - 1] : null;
+          const nextCursor = pageHasMore
+            ? encodeConversationCursor({
+              kind: "read", signature, historyCursor,
+              boundary: {
+                itemId: nextItem.id,
+                fingerprint: conversationPageFingerprint([nextItem]),
+              },
+            })
+            : olderCursor ? encodeConversationCursor({
+              kind: "read", signature, historyCursor: olderCursor,
+              boundary: null,
+            }) : "";
+          return {
+            sessionRef: options.sessionRef,
+            canonicalCwd,
+            items: selectedNewestFirst.reverse(),
+            ...(nextCursor ? { cursor: nextCursor } : {}),
+            totalChars,
+            scanned: { items: scannedItems, pages: scannedPages },
+          };
+        }
+        const olderCursor = String(page?.olderCursor || "");
+        if (!olderCursor) break;
+        if (olderCursor === historyCursor) {
+          throw agentError("protocol_error", "history cursor did not advance", { backendId: backend.backendId });
+        }
+        historyCursor = olderCursor;
+        boundary = null;
+      }
+      return {
+        sessionRef: options.sessionRef,
+        canonicalCwd,
+        items: [],
+        ...(historyCursor ? { cursor: encodeConversationCursor({
+          kind: "read", signature, historyCursor, boundary,
+        }) } : {}),
+        totalChars: 0,
+        scanned: { items: scannedItems, pages: scannedPages },
+      };
+    },
     async listSessions(options, context = {}) {
       const requestedCwd = String(options?.cwd || "").trim();
       if (!requestedCwd) throw agentError("turn_rejected", "cwd is required");
@@ -1283,17 +1639,10 @@ export function createAgentService({
     },
     async readHistory(options, context = {}) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);
-      const backend = registry.get(sessionRef.backendId);
-      if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
-      const status = await backend.getStatus();
-      if (!status?.readiness?.ready) {
-        throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", { backendId: backend.backendId });
-      }
-      if (status?.capabilities?.session?.history?.read !== true) {
-        throw agentError("capability_unsupported", "session history is not supported", { backendId: backend.backendId });
-      }
-      const page = await backend.readHistory({ ...options, sessionRef });
+      const backend = await readyHistoryBackend(sessionRef);
       const canonicalCwd = await resolveNativeSessionCwd(sessionRef, backend, { reconcileIdle: true });
+      await workspaceAdmission.assertAllowed(String(context.subjectId || "").trim(), canonicalCwd);
+      const page = await backend.readHistory({ ...options, sessionRef });
       const binding = await sessionStore.getBinding(sessionRef);
       return {
         ...page,

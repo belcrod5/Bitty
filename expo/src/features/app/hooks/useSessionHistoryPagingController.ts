@@ -8,6 +8,11 @@ export type SessionHistoryPagingState = {
   errorCode: string;
 };
 
+export type SessionHistoryLoadOlderResult = {
+  loaded: boolean;
+  hasMore: boolean;
+};
+
 type InternalPageState = SessionHistoryPagingState & {
   generation: number;
 };
@@ -59,7 +64,9 @@ export function useSessionHistoryPagingController(options: {
     const sessionId = String(params.sessionId || "").trim();
     const directory = String(params.directory || "").trim();
     const current = pageStateRef.current[sessionId];
-    if (!sessionId || !current?.olderCursor || current.loading || (current.error && !params.retry)) return;
+    if (!sessionId || !current?.olderCursor || current.loading || (current.error && !params.retry)) {
+      return { loaded: false, hasMore: Boolean(current?.olderCursor) };
+    }
     const cursor = current.olderCursor;
     const generation = current.generation;
     publish(sessionId, { ...current, loading: true, error: "", errorCode: "" });
@@ -78,6 +85,7 @@ export function useSessionHistoryPagingController(options: {
         errorCode: "",
         generation,
       });
+      return { loaded: true, hasMore: Boolean(page.olderCursor) };
     } catch (error) {
       const latest = pageStateRef.current[sessionId];
       if (!latest || latest.generation !== generation || latest.olderCursor !== cursor) return;
@@ -89,6 +97,7 @@ export function useSessionHistoryPagingController(options: {
           ? String((error as { code?: unknown }).code || "")
           : "",
       });
+      return { loaded: false, hasMore: Boolean(latest.olderCursor) };
     }
   }, [applyPage, fetchPage, publish]);
 

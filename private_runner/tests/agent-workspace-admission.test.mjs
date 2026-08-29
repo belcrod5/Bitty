@@ -82,3 +82,54 @@ test("revokes a stored workspace after its directory has been removed", async (t
   assert.equal((await admission.revoke("subject", prepared.canonicalRoot))?.canonicalRoot, prepared.canonicalRoot);
   assert.equal(entries.size, 0);
 });
+
+test("registered directories share the workspace admission boundary", async (t) => {
+  const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "bitty-registered-workspace-")));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const explicit = path.join(tempRoot, "explicit");
+  const registered = path.join(tempRoot, "registered");
+  await fs.mkdir(explicit);
+  await fs.mkdir(registered);
+  const explicitStat = await fs.stat(explicit);
+  let registeredDirectories = [registered];
+  const admission = createAgentWorkspaceAdmission({
+    store: {
+      list: async (subjectId) => [{
+        subjectId,
+        canonicalRoot: explicit,
+        identity: `${explicitStat.dev}:${explicitStat.ino}`,
+      }],
+      approve: async () => null,
+      revoke: async () => null,
+    },
+    listRegisteredDirectories: async () => registeredDirectories,
+  });
+
+  assert.deepEqual(
+    (await admission.list("subject")).map((workspace) => workspace.canonicalRoot),
+    [explicit, registered].sort(),
+  );
+  assert.equal(await admission.assertAllowed("subject", registered), registered);
+
+  registeredDirectories = [];
+  await assert.rejects(admission.assertAllowed("subject", registered), /not been approved/);
+  assert.equal(await admission.assertAllowed("subject", explicit), explicit);
+});
+
+test("registered directory replacement cannot authorize a symlink target", async (t) => {
+  const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "bitty-registered-symlink-")));
+  t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  const registered = path.join(tempRoot, "registered");
+  const outside = path.join(tempRoot, "outside");
+  await fs.mkdir(registered);
+  await fs.mkdir(outside);
+  const admission = createAgentWorkspaceAdmission({
+    store: { list: async () => [], approve: async () => null, revoke: async () => null },
+    listRegisteredDirectories: async () => [registered],
+  });
+  await fs.rmdir(registered);
+  await fs.symlink(outside, registered);
+
+  assert.deepEqual(await admission.list("subject"), []);
+  await assert.rejects(admission.assertAllowed("subject", outside), /not been approved/);
+});

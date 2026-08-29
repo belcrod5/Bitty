@@ -1693,7 +1693,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
     claimOperation: claimAgentOperation,
     completeOperation: completeAgentOperation,
     getModelInfo: getAgentModelInfo, setModelInfo: setAgentModelInfo,
-    listWorkspaces: listAgentWorkspaces, approveWorkspace: approveAgentWorkspace, revokeWorkspace: revokeAgentWorkspace,
+    listWorkspaces: listAgentWorkspaces, approveWorkspace: approveAgentWorkspace, revokeWorkspace: revokeAgentWorkspace, listRegisteredDirectories: pushDeviceStore.listDirectories,
   },
   createCodexClient: ({ signal }) => createCodexRpcClient({ signal }), normalizeSessionId: normalizeLlmExecutionSessionId,
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,

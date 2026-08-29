@@ -833,6 +833,8 @@ export function useChatScreenContextValue(
     handleAssistantAudioButtonPress,
     sessionHistoryPagingById,
     loadOlderSessionHistory,
+    sessionDeepLinkJumpTarget,
+    clearSessionDeepLinkJumpTarget,
   } = args;
 
   return useMemo(
@@ -852,6 +854,8 @@ export function useChatScreenContextValue(
       handleAssistantAudioButtonPress,
       sessionHistoryPagingById,
       loadOlderSessionHistory,
+      sessionDeepLinkJumpTarget,
+      clearSessionDeepLinkJumpTarget,
     }),
     [
       approvalDialogPending,
@@ -869,6 +873,8 @@ export function useChatScreenContextValue(
       handleAssistantAudioButtonPress,
       sessionHistoryPagingById,
       loadOlderSessionHistory,
+      sessionDeepLinkJumpTarget,
+      clearSessionDeepLinkJumpTarget,
     ]
   );
 }

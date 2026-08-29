@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const DEFAULT_TOKEN_FILE = path.join(REPOSITORY_ROOT, "private_runner/logs/runner-token");
+const DEFAULT_BASE_URL = "http://127.0.0.1:8788";
+const MAX_SEARCH_WORKSPACES = 8;
+
+function fail(message) {
+  process.stderr.write(`${String(message || "bitty-history failed").trim()}\n`);
+  process.exitCode = 1;
+}
+
+function usage() {
+  return [
+    "Usage:",
+    "  bitty-history search <query> [--cwd <path>] [--workspace-offset <number>] [--backend <id|all>] [--limit <1-20>] [--order <newest|oldest>] [--since <ISO timestamp>] [--cursor <cursor>]",
+    "  bitty-history read <backendId> <sessionId> <conversationCursor> [--limit <1-50>]",
+  ].join("\n");
+}
+
+function option(args, name, fallback = "") {
+  const index = args.indexOf(name);
+  if (index < 0) return fallback;
+  const value = String(args[index + 1] || "").trim();
+  if (!value) throw new Error(`${name} requires a value`);
+  args.splice(index, 2);
+  return value;
+}
+
+function options(args, name) {
+  const values = [];
+  for (;;) {
+    const index = args.indexOf(name);
+    if (index < 0) return values;
+    const value = String(args[index + 1] || "").trim();
+    if (!value) throw new Error(`${name} requires a value`);
+    values.push(value);
+    args.splice(index, 2);
+  }
+}
+
+function integerOption(args, name, fallback, max) {
+  const raw = option(args, name, String(fallback));
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    throw new Error(`${name} must be an integer from 1 to ${max}`);
+  }
+  return value;
+}
+
+function markdownLabel(role, snippet) {
+  return `${role}: ${snippet}`
+    .replace(/\\/g, "\\\\")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function sessionMarkdownLink(result) {
+  const backendId = String(result?.sessionRef?.backendId || "").trim();
+  const sessionId = String(result?.sessionRef?.nativeSessionId || "").trim();
+  const messageId = String(result?.messageId || "").trim();
+  const cwd = String(result?.canonicalCwd || "").trim();
+  if (!backendId || !sessionId || !messageId || !cwd) return "";
+  const url = `bitty://session/${encodeURIComponent(backendId)}/${encodeURIComponent(sessionId)}?messageId=${encodeURIComponent(messageId)}&cwd=${encodeURIComponent(cwd)}`;
+  return `[${markdownLabel(String(result?.role || "message"), String(result?.snippet || "match"))}](${url})`;
+}
+
+async function runnerRequest(pathname, searchParams) {
+  const configuredTokenFile = process.env.BITTY_RUNNER_TOKEN_FILE || process.env.RUNNER_TOKEN_FILE;
+  const tokenFile = configuredTokenFile
+    ? path.resolve(REPOSITORY_ROOT, configuredTokenFile)
+    : DEFAULT_TOKEN_FILE;
+  const token = String(await fs.readFile(tokenFile, "utf8")).trim();
+  if (!token) throw new Error("runner token is unavailable");
+  const baseUrl = String(process.env.BITTY_RUNNER_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const url = new URL(pathname, `${baseUrl}/`);
+  for (const [key, value] of searchParams) url.searchParams.append(key, String(value));
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(payload?.error?.message || payload?.error || `runner returned HTTP ${response.status}`));
+  }
+  return payload;
+}
+
+async function search(args) {
+  let cwdValues = options(args, "--cwd");
+  const explicitCwds = cwdValues.length > 0;
+  const workspaceOffsetRaw = option(args, "--workspace-offset", "0");
+  const workspaceOffset = Number(workspaceOffsetRaw);
+  if (!Number.isInteger(workspaceOffset) || workspaceOffset < 0) {
+    throw new Error("--workspace-offset must be a non-negative integer");
+  }
+  if (explicitCwds && workspaceOffset !== 0) {
+    throw new Error("--workspace-offset cannot be combined with --cwd");
+  }
+  const backendId = option(args, "--backend", "all");
+  const cursor = option(args, "--cursor");
+  const order = option(args, "--order");
+  const since = option(args, "--since");
+  const limit = integerOption(args, "--limit", 5, 20);
+  const query = String(args.shift() || "").trim();
+  if (!query || args.length > 0) throw new Error(usage());
+  let workspaceSearch = null;
+  if (!explicitCwds) {
+    const payload = await runnerRequest("/agent/workspaces", []);
+    const approvedCwds = (Array.isArray(payload?.workspaces) ? payload.workspaces : [])
+      .map((workspace) => String(workspace?.canonicalRoot || "").trim())
+      .filter(Boolean);
+    cwdValues = approvedCwds.slice(workspaceOffset, workspaceOffset + MAX_SEARCH_WORKSPACES);
+    if (cwdValues.length === 0) throw new Error("no approved workspaces are available to search");
+    const nextOffset = workspaceOffset + cwdValues.length;
+    workspaceSearch = {
+      offset: workspaceOffset,
+      searchedCount: cwdValues.length,
+      totalCount: approvedCwds.length,
+      ...(nextOffset < approvedCwds.length ? {
+        partial: true,
+        nextOffset,
+        instruction: `Finish the current result cursor first, then repeat the search with --workspace-offset ${nextOffset} and without --cursor.`,
+      } : {}),
+    };
+  }
+  if (cwdValues.length > MAX_SEARCH_WORKSPACES) {
+    throw new Error(`at most ${MAX_SEARCH_WORKSPACES} --cwd values may be searched at once`);
+  }
+  const params = [["query", query], ["backendId", backendId], ["limit", limit]];
+  for (const cwd of cwdValues) params.push(["cwd", cwd]);
+  if (cursor) params.push(["cursor", cursor]);
+  if (order) params.push(["order", order]);
+  if (since) params.push(["since", since]);
+  const payload = await runnerRequest("/agent/session-history/search", params);
+  const results = (Array.isArray(payload?.results) ? payload.results : []).map((result) => {
+    const backend = String(result?.sessionRef?.backendId || "");
+    const session = String(result?.sessionRef?.nativeSessionId || "");
+    const conversationCursor = String(result?.conversationCursor || "");
+    return {
+      backendId: backend,
+      sessionId: session,
+      messageId: String(result?.messageId || ""),
+      role: String(result?.role || ""),
+      snippet: String(result?.snippet || ""),
+      ...(result?.sessionCreatedAt ? { sessionCreatedAt: String(result.sessionCreatedAt) } : {}),
+      markdownLink: sessionMarkdownLink(result),
+      readCommand: conversationCursor
+        ? `bitty-history read ${backend} ${session} ${conversationCursor}`
+        : "",
+    };
+  });
+  return {
+    results,
+    ...(payload?.cursor ? { cursor: String(payload.cursor) } : {}),
+    scanned: payload?.scanned || {},
+    ...(workspaceSearch ? { workspaceSearch } : {}),
+    ...(payload?.partial || workspaceSearch?.partial ? { partial: true } : {}),
+  };
+}
+
+async function read(args) {
+  const limit = integerOption(args, "--limit", 5, 50);
+  const backendId = String(args.shift() || "").trim();
+  const sessionId = String(args.shift() || "").trim();
+  const cursor = String(args.shift() || "").trim();
+  if (!backendId || !sessionId || !cursor || args.length > 0) throw new Error(usage());
+  const payload = await runnerRequest("/agent/session-conversation", [
+    ["backendId", backendId],
+    ["sessionId", sessionId],
+    ["cursor", cursor],
+    ["limit", limit],
+  ]);
+  return {
+    backendId,
+    sessionId,
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    totalChars: Number(payload?.totalChars || 0),
+    focused: payload?.focused === true,
+    ...(payload?.cursor ? { cursor: String(payload.cursor) } : {}),
+    scanned: payload?.scanned || {},
+  };
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  const args = [...argv];
+  const command = String(args.shift() || "").trim();
+  if (command === "--help" || command === "-h" || !command) {
+    process.stdout.write(`${usage()}\n`);
+    return;
+  }
+  const payload = command === "search"
+    ? await search(args)
+    : command === "read"
+      ? await read(args)
+      : null;
+  if (!payload) throw new Error(usage());
+  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+if (path.resolve(process.argv[1] || "") === fileURLToPath(import.meta.url)) {
+  main().catch((error) => fail(error instanceof Error ? error.message : String(error)));
+}

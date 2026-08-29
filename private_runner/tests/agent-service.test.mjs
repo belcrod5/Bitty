@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAgentService } from "../src/agent/agent-service.mjs";
+import { createAgentService as createBaseAgentService } from "../src/agent/agent-service.mjs";
+
+function createAgentService(options) {
+  return createBaseAgentService({
+    workspaceAdmission: { assertAllowed: async (_subjectId, cwd) => cwd },
+    ...options,
+  });
+}
 
 function operationStore() {
   const entries = new Map();

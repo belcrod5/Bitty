@@ -2,7 +2,11 @@ import { createContext, useContext, type Dispatch, type MutableRefObject, type R
 import type { NativeScrollEvent, NativeSyntheticEvent, View } from "react-native";
 import type { RunnerRouteSelectionState } from "../hooks/useRunnerRouteSelection";
 import type { ConversationMessage, TtsPlaybackTarget } from "../types/appTypes";
-import type { SessionHistoryPagingState } from "../hooks/useSessionHistoryPagingController";
+import type {
+  SessionHistoryLoadOlderResult,
+  SessionHistoryPagingState,
+} from "../hooks/useSessionHistoryPagingController";
+import type { SessionDeepLinkJumpTarget } from "../utils/sessionDeepLink";
 
 export type ChatScreenContextValue = {
   approvalDialogPending: boolean;
@@ -27,7 +31,9 @@ export type ChatScreenContextValue = {
     sessionId: string;
     directory: string;
     retry?: boolean;
-  }) => Promise<void>;
+  }) => Promise<SessionHistoryLoadOlderResult | undefined>;
+  sessionDeepLinkJumpTarget: SessionDeepLinkJumpTarget | null;
+  clearSessionDeepLinkJumpTarget: (requestId: number) => void;
 };
 
 const ChatScreenContext = createContext<ChatScreenContextValue | null>(null);
