@@ -45,6 +45,10 @@ function sessionKey(sessionRef) {
   return `${sessionRef.backendId}\u0000${sessionRef.nativeSessionId}`;
 }
 
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error || "unknown error");
+}
+
 function newerTimestamp(first, second) {
   const firstMs = Date.parse(String(first || ""));
   const secondMs = Date.parse(String(second || ""));
@@ -108,6 +112,7 @@ export function createAgentService({
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
   onRunEvent,
+  log = console,
 } = {}) {
   const registry = new Map();
   for (const backend of backends || []) {
@@ -252,9 +257,16 @@ export function createAgentService({
     run.updatedAt = event.at;
     if (run.events.length > replayLimit) run.events.shift();
     if (typeof onRunEvent === "function") {
+      // 観測側(push通知等)の失敗はrun本体へ波及させないが、無音では
+      // 「通知が来ない」系の診断ができないためwarnで残す。
+      const warnRunEventFailure = (error) => {
+        log.warn(`[agent] run event observer failed type=${type} run=${run.runId}: ${errorText(error)}`);
+      };
       try {
-        Promise.resolve(onRunEvent(event)).catch(() => {});
-      } catch {}
+        Promise.resolve(onRunEvent(event)).catch(warnRunEventFailure);
+      } catch (error) {
+        warnRunEventFailure(error);
+      }
     }
     const requestedAction = type === "action.requested"
       ? run.activeActions.get(String(payload?.requestId || ""))
@@ -376,12 +388,17 @@ export function createAgentService({
     ]);
     const lastReadAt = String(readState?.lastReadAt || "").trim()
       || newerTimestamp(binding?.lastReadAt, session?.lastReadAt);
+    // binding.updatedAtはターン完了時にrecordActivityが記録した完了時刻。
+    // native側のupdatedAt(rolloutファイルmtime由来)が完了より古い場合でも
+    // 未読判定(updatedAt > lastReadAt)が完了時刻を基準にできるよう新しい方を採用する。
+    const updatedAt = newerTimestamp(binding?.updatedAt, session?.updatedAt);
     return {
       ...session,
       // Neutral selection is authoritative until an explicit raw handoff clears it.
       // Native metadata remains the legacy/raw fallback when no stored selection exists.
       modelId: String(binding?.modelId || session?.modelId || "").trim(),
       reasoningEffort: String(binding?.reasoningEffort || session?.reasoningEffort || "").trim(),
+      ...(updatedAt ? { updatedAt } : {}),
       ...(lastReadAt ? { lastReadAt } : {}),
     };
   }
@@ -1216,11 +1233,18 @@ export function createAgentService({
           }
           return { groups };
         } catch (error) {
-          return { error };
+          return { backendId: backend.backendId, error };
         }
       }));
-      const failure = listed.find((entry) => entry?.error);
-      if (failure) throw failure.error;
+      // 一部Backendの失敗で全体をthrowすると、他Backendのセッション表示や
+      // 未読判定(=完了push通知)まで巻き込まれる。成功分があれば失敗分は
+      // warnで残して続行し、全滅時のみ従来どおりthrowする。
+      const failures = listed.filter((entry) => entry?.error);
+      const succeededCount = listed.filter((entry) => entry && !entry.error).length;
+      if (failures.length > 0 && succeededCount === 0) throw failures[0].error;
+      for (const entry of failures) {
+        log.warn(`[agent] session snapshot skipped backend=${entry.backendId}: ${errorText(entry.error)}`);
+      }
       const sessionsByCwd = new Map(canonicalCwds.map((cwd) => [cwd, []]));
       for (const result of listed.filter(Boolean)) {
         for (const group of Array.isArray(result?.groups) ? result.groups : []) {
@@ -1242,6 +1266,12 @@ export function createAgentService({
             return left < right ? 1 : left > right ? -1 : 0;
           }),
         })),
+        // 部分失敗の印。ウォーターマーク前進を伴う消費側(Skiaボードingest)が
+        // 不完全なスナップショットで失敗Backendのセッションを恒久スキップ
+        // しないよう、続行しつつ「欠けている」ことを明示する。
+        ...(failures.length > 0
+          ? { partial: true, failedBackendIds: failures.map((entry) => entry.backendId) }
+          : {}),
       };
     },
     async readHistory(options, context = {}) {

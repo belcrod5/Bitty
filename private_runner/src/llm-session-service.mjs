@@ -237,7 +237,7 @@ export function createLlmSessionService(deps = {}) {
     let foundSessionIds = [];
 
     if (sessionIds.length > 0) {
-      const [group] = await listAgentSessionsForDirectories(
+      const { groups: [group] } = await listAgentSessionsForDirectories(
         [directory],
         { backendId, includeSubagents: true },
       );
@@ -329,7 +329,7 @@ export function createLlmSessionService(deps = {}) {
     const directory = await resolveCanonicalDirectoryIdentity(rawDirectory);
     const source = normalizeSessionSource(opts?.source, "all");
     const lastReadAt = normalizeSessionUpdatedAt(opts?.lastReadAt) || new Date().toISOString();
-    const [snapshotGroup] = await listAgentSessionsForDirectories(
+    const { groups: [snapshotGroup] } = await listAgentSessionsForDirectories(
       [directory],
       { backendId: source === "all" ? "all" : "codex", includeSubagents: true },
     );
@@ -549,7 +549,7 @@ export function createLlmSessionService(deps = {}) {
     { backendId = "all", includeSubagents = false } = {},
   ) {
     const snapshot = await listAgentSessionSnapshot({ backendId, cwds: directories, includeSubagents });
-    return (Array.isArray(snapshot?.groups) ? snapshot.groups : []).map((group) => {
+    const groups = (Array.isArray(snapshot?.groups) ? snapshot.groups : []).map((group) => {
       const directory = String(group?.cwd || "").trim();
       const sessions = [];
       for (const session of Array.isArray(group?.sessions) ? group.sessions : []) {
@@ -572,10 +572,26 @@ export function createLlmSessionService(deps = {}) {
         ])),
       };
     });
+    // 部分失敗の印(partial / failedBackendIds)をそのまま引き継ぐ。
+    // 未読判定(push通知)は成功分だけで続行してよいが、Skiaボードingestの
+    // ウォーターマーク前進は不完全スナップショットでは行えないため。
+    return {
+      groups,
+      ...(snapshot?.partial === true
+        ? {
+          partial: true,
+          failedBackendIds: Array.isArray(snapshot?.failedBackendIds)
+            ? snapshot.failedBackendIds.map((id) => String(id || "")).filter(Boolean)
+            : [],
+        }
+        : {}),
+    };
   }
 
   async function loadUnreadSessionSnapshot(directories) {
-    return await listAgentSessionsForDirectories(directories, { backendId: "all" });
+    // 未読判定は成功したBackend分だけで続行する(partialはここでは無視)。
+    const { groups } = await listAgentSessionsForDirectories(directories, { backendId: "all" });
+    return groups;
   }
 
   async function getPushUnreadSnapshot({ directorySets, targetBackendId = "codex", targetSessionId, targetDirectory }) {

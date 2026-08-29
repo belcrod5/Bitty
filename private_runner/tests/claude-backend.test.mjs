@@ -730,6 +730,107 @@ test("Claude no-output watchdog pauses while a tool is running", async () => {
   assert.equal(result.outcome, "completed");
 });
 
+test("Claude Backend completes a turn with multiple results and treats the last result as final", async () => {
+  // バックグラウンドタスク(Task/Workflowのbackground実行)を含むターンでは、CLIは
+  // 中間resultの後にtask-notificationをuserメッセージとして注入し同一プロセス内で
+  // 自動継続、最終resultを再度出す(実測: assistant→result#1→user(task-notification)
+  // →assistant→result#2→exit)。2つ目のresultでprotocol_errorにせず、最後のresultを
+  // 正としてturn完了へ到達しなければならない(push通知欠落の根本原因)。
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "assistant", uuid: "assistant-launch", message: { content: [{ type: "text", text: "起動しました" }], usage: { input_tokens: 2, output_tokens: 1 } } },
+    { type: "result", subtype: "success", result: "起動しました", session_id: SESSION_ID, usage: { input_tokens: 2, output_tokens: 1 } },
+    { type: "user", message: { content: "<task-notification>\n<task-id>abc</task-id>\n</task-notification>" } },
+    { type: "assistant", uuid: "assistant-final", message: { content: [{ type: "text", text: "最終報告" }], usage: { input_tokens: 10, output_tokens: 5 } } },
+    { type: "result", subtype: "success", result: "最終報告", session_id: SESSION_ID, usage: { input_tokens: 10, output_tokens: 5 } },
+  ]);
+  const events = [];
+  const result = await backend.startTurn({
+    runId: "run-multi-result",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run background task" }] },
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  assert.deepEqual(result, { outcome: "completed", nativeTerminal: true });
+  // 最後のassistant item(=完了通知previewの元)が最終報告のテキストになる
+  const completions = events.filter((event) => event.type === "item.completed" && event.payload.itemType === "assistant");
+  assert.equal(completions.length, 2);
+  assert.equal(completions.at(-1).payload.content?.[0]?.text, "最終報告");
+  // usageはresultごとに最新assistant usage(#103のcontext表示仕様)でemitされ、
+  // 最後の値が最終値になる(累積しない)
+  const usageEvents = events.filter((event) => event.type === "usage.updated");
+  assert.equal(usageEvents.length, 2);
+  assert.equal(usageEvents.at(-1).payload.usage.input_tokens, 10);
+});
+
+test("Claude Backend fails the turn when the final result is an error even after an intermediate success", async () => {
+  // 「最後のresultが正」: 中間resultがsuccessでも最終resultがerrorならturn失敗
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "途中経過", session_id: SESSION_ID },
+    { type: "result", subtype: "error_during_execution", is_error: true, result: "failed", session_id: SESSION_ID },
+  ]);
+  await assert.rejects(backend.startTurn({
+    runId: "run-multi-result-error",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  }), (error) => error.code === "turn_failed" && /failed result/i.test(error.message));
+});
+
+test("Claude Backend rejects a later result that changes the session ID", async () => {
+  const otherSessionId = "22222222-2222-4222-8222-222222222222";
+  const { backend } = backendWith([
+    { type: "system", subtype: "init", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "one", session_id: SESSION_ID },
+    { type: "result", subtype: "success", result: "two", session_id: otherSessionId },
+  ]);
+  await assert.rejects(backend.startTurn({
+    runId: "run-multi-result-session",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  }), (error) => error.code === "protocol_error" && /changed the session ID/i.test(error.message));
+});
+
+test("Claude no-output watchdog stays disarmed after the first result while a background task finishes", async () => {
+  const child = fakeChild([], { exitAfterInput: false });
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    runFile: async (file, args) => ({ stdout: file === "ps" ? "started\n" : args?.[0] === "--version" ? "2.1.214" : "" }),
+    fileSystem: { ...fs, realpath: async (value) => value },
+    spawnProcess: () => child,
+    sessionStore: { getBinding: async () => null },
+    noOutputTimeoutMs: 100,
+    interruptGraceMs: 10,
+    generateSessionId: () => SESSION_ID,
+  });
+  const writeLine = (line) => child.stdout.write(`${JSON.stringify(line)}\n`);
+  const turn = backend.startTurn({
+    runId: "run-background-wait",
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run background task" }] },
+    resolveSession: async () => {},
+    emit: () => {},
+  });
+  writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  writeLine({ type: "assistant", uuid: "a-launch", message: { content: [{ type: "text", text: "起動しました" }] } });
+  writeLine({ type: "result", subtype: "success", result: "起動しました", session_id: SESSION_ID });
+  // 中間result後、CLIはバックグラウンドタスク完了を静かに待つ。noOutputTimeoutMsの
+  // 3倍以上の無音でもタイムアウトしてはならない(turnTimerだけがbackstop)。
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  writeLine({ type: "user", message: { content: "<task-notification>\n<task-id>abc</task-id>\n</task-notification>" } });
+  writeLine({ type: "assistant", uuid: "a-final", message: { content: [{ type: "text", text: "最終報告" }] } });
+  writeLine({ type: "result", subtype: "success", result: "最終報告", session_id: SESSION_ID });
+  child.stdout.end();
+  child.emit("exit", 0, null);
+  const result = await turn;
+  assert.equal(result.outcome, "completed");
+});
+
 test("Claude transcript metadata is cached until the file changes", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-claude-meta-cache-"));
   t.after(() => fs.rm(tempRoot, { recursive: true, force: true }));

@@ -30,6 +30,8 @@ async function withHarness(fn, { sessionsByDirectory = {} } = {}) {
   try {
     const events = [];
     const listCalls = [];
+    // 部分失敗スナップショットの注入用(テスト側で書き換えられる)。
+    const snapshotMeta = { partial: false, failedBackendIds: [] };
     let nowMs = 1_000_000;
     const service = createSkiaBoardService({
       storePath: path.join(dir, "skia_board_state.json"),
@@ -39,9 +41,14 @@ async function withHarness(fn, { sessionsByDirectory = {} } = {}) {
       boardService: service,
       listAgentSessionsForDirectories: async (directories) => {
         listCalls.push([...directories]);
-        return directories.map((directory) => (
-          sessionsGroup(directory, sessionsByDirectory[directory] || [])
-        ));
+        return {
+          groups: directories.map((directory) => (
+            sessionsGroup(directory, sessionsByDirectory[directory] || [])
+          )),
+          ...(snapshotMeta.partial
+            ? { partial: true, failedBackendIds: [...snapshotMeta.failedBackendIds] }
+            : {}),
+        };
       },
       resolveDirectory: (value) => value,
       now: () => new Date(nowMs),
@@ -52,6 +59,7 @@ async function withHarness(fn, { sessionsByDirectory = {} } = {}) {
       ingest,
       events,
       listCalls,
+      snapshotMeta,
       advance: (ms) => { nowMs += ms; },
     });
   } finally {
@@ -230,6 +238,66 @@ test("ingest failures are contained and do not reject", async () => {
       assert.equal(await failing.onTurnCompleted({ directory: "/work" }), null);
       assert.equal(ingest !== null, true);
     });
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("partial session snapshot skips ingest so the watermark never advances past failed backends", async () => {
+  // 一部Backend失敗の不完全スナップショットで取り込むと、生き残ったBackendの
+  // 最大updatedAtまでウォーターマークが前進し、失敗中Backendのセッションが
+  // 復旧後も「updatedAt > ウォーターマーク」を満たせず恒久スキップされる。
+  const sessionsByDirectory = {
+    "/work": [
+      candidate(9),
+      { ...candidate(3), sessionId: "claude-session", backendId: "claude" },
+    ],
+  };
+  const warns = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warns.push(args.join(" "));
+  try {
+    await withHarness(async ({ service, ingest, snapshotMeta }) => {
+      await service.syncIngestDirectories({ directories: ["/work"] });
+      await service.importBoard({
+        board: {
+          cards: [{ kind: "session", sessionId: "session-1", col: 0, row: 0 }],
+          sections: [],
+          excludedSessionIds: [],
+          ingestedUpdatedAtMs: new Date("2026-06-01T00:00:00.000Z").getTime(),
+        },
+      });
+
+      // claude側が失敗した不完全スナップショット: ingest自体を見送る。
+      snapshotMeta.partial = true;
+      snapshotMeta.failedBackendIds = ["claude"];
+      assert.equal(await ingest.sweep({ force: true }), null);
+      assert.equal(await ingest.onTurnCompleted({ directory: "/work" }), null);
+      const skipped = await service.getBoard();
+      assert.deepEqual(skipped.board.cards.map((card) => card.sessionId), ["session-1"]);
+      assert.equal(
+        skipped.board.ingestedUpdatedAtMs,
+        new Date("2026-06-01T00:00:00.000Z").getTime()
+      );
+      assert.match(
+        warns.join("\n"),
+        /ingest skipped: session snapshot is partial \(failed backends: claude\)/
+      );
+
+      // 復旧後の完全なスナップショットでは、claude側の古いセッションも
+      // ウォーターマーク(据え置き)より新しいため取り込まれる。
+      snapshotMeta.partial = false;
+      snapshotMeta.failedBackendIds = [];
+      const recovered = await ingest.sweep({ force: true });
+      assert.deepEqual(
+        recovered.board.cards.map((card) => card.sessionId).sort(),
+        ["claude-session", "session-1", "session-9"]
+      );
+      assert.equal(
+        recovered.board.ingestedUpdatedAtMs,
+        new Date("2026-06-09T00:00:00.000Z").getTime()
+      );
+    }, { sessionsByDirectory });
   } finally {
     console.warn = originalWarn;
   }
