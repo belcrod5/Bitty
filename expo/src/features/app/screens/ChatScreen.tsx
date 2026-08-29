@@ -7,7 +7,6 @@ import {
   PanResponder,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
@@ -56,6 +55,7 @@ import { RunnerFileViewer } from "../components/RunnerFileViewer";
 import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDialog";
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
+import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import type { ReasoningEffort } from "../utils/settingsParsers";
@@ -245,9 +245,9 @@ export function ChatScreen({
     autoSpeechDetected,
     composerDirectSttVisible,
     directNativeSttPreviewText,
+    composerMessageHistory,
     chatComposerInputRef,
     showComposerFullscreenToggle,
-    openComposerFullscreen,
     setComposerInputFocused,
     isDirectNativeSttProvider,
     directNativeSttEnabled,
@@ -1094,13 +1094,9 @@ export function ChatScreen({
     usesPanelComposerState,
   ]);
   const openComposerFullscreenForView = useCallback(() => {
-    if (!isMiniBoardPopupMode) {
-      openComposerFullscreen();
-      return;
-    }
     setComposerInputFocused(false);
     setPopupComposerFullscreenOpen(true);
-  }, [isMiniBoardPopupMode, openComposerFullscreen, setComposerInputFocused]);
+  }, [setComposerInputFocused]);
   const closePopupComposerFullscreen = useCallback(() => {
     setPopupComposerFullscreenOpen(false);
     setTimeout(() => {
@@ -1286,13 +1282,6 @@ export function ChatScreen({
     }
     clearPendingBottomScrollFrames();
   }, [clearPendingBottomScrollFrames]);
-  useEffect(() => {
-    if (!popupComposerFullscreenOpen) return;
-    const timer = setTimeout(() => {
-      popupComposerFullscreenInputRef.current?.focus();
-    }, 60);
-    return () => clearTimeout(timer);
-  }, [popupComposerFullscreenOpen]);
   const getPathLabel = useCallback((pathRaw: unknown) => {
     const normalized = normalizeRunnerPath(pathRaw);
     const fallbackLabel = String(selectedDirectoryDisplayNameForView || "").trim() || "Directory";
@@ -2444,54 +2433,22 @@ export function ChatScreen({
             onSwitchAuthProfile={onSwitchCodexAuthProfile}
           />
         </View>
-        <AppModal
+        <ComposerFullscreenEditor
           visible={popupComposerFullscreenOpen && !approvalDialogPending}
-          animationType="slide"
-          presentationStyle="fullScreen"
-          onRequestClose={closePopupComposerFullscreen}
-        >
-          <SafeAreaView style={styles.chatComposerFullscreenRoot}>
-            <KeyboardAvoidingView
-              style={styles.chatComposerFullscreenKeyboardAvoiding}
-              behavior={Platform.OS === "ios" ? "padding" : "height"}
-              automaticOffset={Platform.OS === "ios"}
-            >
-              <View style={styles.chatComposerFullscreenHeader}>
-                <Text style={styles.chatComposerFullscreenTitle}>Input Editor</Text>
-                <TouchableOpacity
-                  style={styles.chatComposerFullscreenClose}
-                  onPress={closePopupComposerFullscreen}
-                  accessibilityRole="button"
-                  accessibilityLabel="全画面入力を閉じる"
-                >
-                  <Ionicons name="contract-outline" size={18} color="#334155" />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.chatComposerFullscreenInputWrap}>
-                <TextInput
-                  ref={popupComposerFullscreenInputRef}
-                  style={styles.chatComposerFullscreenInput}
-                  value={transcriptForView}
-                  onChangeText={setTranscriptForView}
-                  placeholder="メッセージを入力"
-                  multiline
-                  scrollEnabled
-                  textAlignVertical="top"
-                  autoCorrect={false}
-                  autoCapitalize="none"
-                  onFocus={() => {
-                    if (usesPanelComposerState) setPanelComposerFocused(true);
-                    setComposerInputFocused(true);
-                  }}
-                  onBlur={() => {
-                    if (usesPanelComposerState) setPanelComposerFocused(false);
-                    setComposerInputFocused(false);
-                  }}
-                />
-              </View>
-            </KeyboardAvoidingView>
-          </SafeAreaView>
-        </AppModal>
+          inputRef={popupComposerFullscreenInputRef}
+          value={transcriptForView}
+          history={composerMessageHistory}
+          onChangeText={setTranscriptForView}
+          onClose={closePopupComposerFullscreen}
+          onFocus={() => {
+            if (usesPanelComposerState) setPanelComposerFocused(true);
+            setComposerInputFocused(true);
+          }}
+          onBlur={() => {
+            if (usesPanelComposerState) setPanelComposerFocused(false);
+            setComposerInputFocused(false);
+          }}
+        />
         <AppModal
           visible={footerSelectOpen !== null && !approvalDialogPending}
           transparent

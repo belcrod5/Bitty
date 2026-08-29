@@ -1,17 +1,13 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import {
   ActivityIndicator,
-  Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { KeyboardAvoidingView } from "../keyboardController";
 import type { ApprovalAction } from "../../codex/approvalFlow";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { effortOptionsForModel } from "../modelOptions";
@@ -24,10 +20,6 @@ import { AppModal } from "./AppModal";
 const APPROVAL_MODAL_PRESENT_DELAY_MS = 350;
 
 type AppOverlaysProps = {
-  composerFullscreenOpen: boolean;
-  closeComposerFullscreen: () => void;
-  chatComposerFullscreenInputRef: RefObject<TextInput | null>;
-  setComposerInputFocused: (focused: boolean) => void;
   slashCommandSelectOpen: boolean;
   setSlashCommandSelectOpen: (open: boolean) => void;
   slashCommandOptions: SlashCommandOption[];
@@ -37,10 +29,6 @@ type AppOverlaysProps = {
 };
 
 export function AppOverlays({
-  composerFullscreenOpen,
-  closeComposerFullscreen,
-  chatComposerFullscreenInputRef,
-  setComposerInputFocused,
   slashCommandSelectOpen,
   setSlashCommandSelectOpen,
   slashCommandOptions,
@@ -63,8 +51,6 @@ export function AppOverlays({
     selectThinkOption,
   } = useAppSettings();
   const {
-    transcript,
-    setTranscript,
     directorySelectOpen,
     setDirectorySelectOpen,
     directoryExplorerPathLabel,
@@ -170,48 +156,6 @@ export function AppOverlays({
             </View>
           </View>
         </View>
-      </AppModal>
-      <AppModal
-        visible={composerFullscreenOpen && !approvalDialogPending}
-        animationType="slide"
-        presentationStyle="fullScreen"
-        onRequestClose={closeComposerFullscreen}
-      >
-        <SafeAreaView style={styles.chatComposerFullscreenRoot}>
-          <KeyboardAvoidingView
-            style={styles.chatComposerFullscreenKeyboardAvoiding}
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            automaticOffset={Platform.OS === "ios"}
-          >
-            <View style={styles.chatComposerFullscreenHeader}>
-              <Text style={styles.chatComposerFullscreenTitle}>Input Editor</Text>
-              <TouchableOpacity
-                style={styles.chatComposerFullscreenClose}
-                onPress={closeComposerFullscreen}
-                accessibilityRole="button"
-                accessibilityLabel="全画面入力を閉じる"
-              >
-                <Ionicons name="contract-outline" size={18} color="#334155" />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.chatComposerFullscreenInputWrap}>
-              <TextInput
-                ref={chatComposerFullscreenInputRef}
-                style={styles.chatComposerFullscreenInput}
-                value={transcript}
-                onChangeText={setTranscript}
-                placeholder="メッセージを入力"
-                multiline
-                scrollEnabled
-                textAlignVertical="top"
-                autoCorrect={false}
-                autoCapitalize="none"
-                onFocus={() => setComposerInputFocused(true)}
-                onBlur={() => setComposerInputFocused(false)}
-              />
-            </View>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
       </AppModal>
       <SlashCommandSelectMenu
         visible={slashCommandSelectOpen && !approvalDialogPending}

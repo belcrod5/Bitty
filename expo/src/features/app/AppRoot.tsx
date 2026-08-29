@@ -64,6 +64,7 @@ import { useAutoWaveformStateController } from "./hooks/useAutoWaveformStateCont
 import { useAudioSettingsInputController } from "./hooks/useAudioSettingsInputController";
 import { useChatDerivedState } from "./hooks/useChatDerivedState";
 import { useChatBottomToast } from "./hooks/useChatBottomToast";
+import { useComposerMessageHistory } from "./hooks/useComposerMessageHistory";
 import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteRequestController";
@@ -737,8 +738,11 @@ export default function App() {
   const [waitingApprovalResumeLoading, setWaitingApprovalResumeLoading] = useState(false);
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
+  const {
+    messages: composerMessageHistory,
+    recordMessage: recordComposerMessageHistory,
+  } = useComposerMessageHistory();
   const [composerInputFocused, setComposerInputFocused] = useState(false);
-  const [composerFullscreenOpen, setComposerFullscreenOpen] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("返答は1文で");
   const [reply, setReply] = useState("");
   const [error, setError] = useState("");
@@ -1323,7 +1327,6 @@ export default function App() {
   const llmSessionRestoreRequestSeqRef = useRef(0);
   const sessionSwitchQueuedSendRef = useRef<SessionSwitchQueuedSend | null>(null);
   const chatComposerInputRef = useRef<TextInput | null>(null);
-  const chatComposerFullscreenInputRef = useRef<TextInput | null>(null);
   const {
     chatBottomToast,
     chatBottomToastAnimRef,
@@ -2252,32 +2255,11 @@ export default function App() {
     waitingApprovalResumeStatusText,
   ]);
   useEffect(() => {
-    if (!composerFullscreenOpen) return;
-    const timer = setTimeout(() => {
-      chatComposerFullscreenInputRef.current?.focus();
-    }, 60);
-    return () => clearTimeout(timer);
-  }, [composerFullscreenOpen]);
-  useEffect(() => {
     if (composerTextInputVisible) return;
-    if (composerFullscreenOpen) {
-      setComposerFullscreenOpen(false);
-    }
     if (composerInputFocused) {
       setComposerInputFocused(false);
     }
-  }, [composerFullscreenOpen, composerInputFocused, composerTextInputVisible]);
-  function openComposerFullscreen() {
-    setComposerInputFocused(false);
-    setComposerFullscreenOpen(true);
-  }
-  function closeComposerFullscreen() {
-    setComposerFullscreenOpen(false);
-    if (!composerTextInputVisible) return;
-    setTimeout(() => {
-      chatComposerInputRef.current?.focus();
-    }, 60);
-  }
+  }, [composerInputFocused, composerTextInputVisible]);
   const {
     clearYouTubePauseConfirmTimer,
     clearYouTubeControlToDragTimer,
@@ -5153,6 +5135,7 @@ export default function App() {
   });
   const { runSlashCommand } = useSlashCommandController({
     setTranscript,
+    onCommandAccepted: recordComposerMessageHistory,
     runSlashStatusCommand,
     runSlashCompactCommand,
     runSlashCancelQueueCommand,
@@ -5226,6 +5209,7 @@ export default function App() {
     streamTtsSuppressedRef,
     llmRequestStartedAtRef,
     setTranscript,
+    onMessageAccepted: recordComposerMessageHistory,
     setReply,
     setReplyLoadingWithRef,
     setError,
@@ -5454,18 +5438,6 @@ export default function App() {
       panelId: resolvedPanelId,
       sessionSnapshot: options?.sessionSnapshot || panelSessionSnapshot,
     };
-    const effectiveTranscript = (transcriptOverride ?? transcript).trim();
-    if (queueSendReplyAfterSessionRestore(transcriptOverride, effectiveOptions, "send_reply_transcript")) {
-      return;
-    }
-    if (await runSlashCommand(effectiveTranscript, {
-      clearInput: typeof transcriptOverride === "undefined",
-      sttMeta: effectiveOptions?.sttMeta,
-      panelId: resolvedPanelId,
-      sessionSnapshot: effectiveOptions?.sessionSnapshot,
-    })) {
-      return;
-    }
     await sendReplyRequest(transcriptOverride, effectiveOptions);
   }
 
@@ -5563,7 +5535,6 @@ export default function App() {
   useEffect(() => {
     if (!approvalDialog) return;
     closeDrawer();
-    setComposerFullscreenOpen(false);
     setComposerInputFocused(false);
     setSlashCommandSelectOpen(false);
     setModelSelectOpen(false);
@@ -6822,9 +6793,9 @@ export default function App() {
     autoSpeechDetected,
     composerDirectSttVisible,
     directNativeSttPreviewText,
+    composerMessageHistory,
     chatComposerInputRef,
     showComposerFullscreenToggle,
-    openComposerFullscreen,
     setComposerInputFocused,
     isDirectNativeSttProvider,
     directNativeSttEnabled,
@@ -7116,10 +7087,6 @@ export default function App() {
       />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>
       <AppOverlays
-        composerFullscreenOpen={composerFullscreenOpen}
-        closeComposerFullscreen={closeComposerFullscreen}
-        chatComposerFullscreenInputRef={chatComposerFullscreenInputRef}
-        setComposerInputFocused={setComposerInputFocused}
         slashCommandSelectOpen={slashCommandSelectOpen}
         setSlashCommandSelectOpen={setSlashCommandSelectOpen}
         slashCommandOptions={SLASH_COMMAND_OPTIONS}

@@ -9,9 +9,9 @@ export type ChatComposerContextValue = {
   autoSpeechDetected: boolean;
   composerDirectSttVisible: boolean;
   directNativeSttPreviewText: string;
+  composerMessageHistory: readonly string[];
   chatComposerInputRef: MutableRefObject<TextInput | null>;
   showComposerFullscreenToggle: boolean;
-  openComposerFullscreen: () => void;
   setComposerInputFocused: (focused: boolean) => void;
   isDirectNativeSttProvider: boolean;
   directNativeSttEnabled: boolean;
