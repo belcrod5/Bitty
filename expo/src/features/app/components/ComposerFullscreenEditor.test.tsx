@@ -1,5 +1,6 @@
 import React from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import { ComposerFullscreenEditor } from "./ComposerFullscreenEditor";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
@@ -47,6 +48,13 @@ test("replaces the draft with a selected long history message and closes the lis
 
   await act(async () => {
     fireEvent.press(view.getByLabelText("送信履歴を開く"));
+  });
+  expect(StyleSheet.flatten(view.getByTestId("composer-history-list").props.style)).toMatchObject({
+    position: "absolute",
+  });
+  expect(StyleSheet.flatten(view.getByLabelText("送信履歴 2").props.style)).toMatchObject({
+    borderTopWidth: 1,
+    borderTopColor: "#94a3b8",
   });
   await act(async () => {
     fireEvent.press(view.getByLabelText("送信履歴 1"));

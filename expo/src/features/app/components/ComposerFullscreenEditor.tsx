@@ -98,7 +98,10 @@ export function ComposerFullscreenEditor({
                   {history.map((message, index) => (
                     <TouchableOpacity
                       key={`${index}:${message}`}
-                      style={componentStyles.historyItem}
+                      style={[
+                        componentStyles.historyItem,
+                        index > 0 && componentStyles.historyItemSeparated,
+                      ]}
                       onPress={() => selectHistoryMessage(message)}
                       accessibilityRole="button"
                       accessibilityLabel={`送信履歴 ${index + 1}`}
@@ -165,20 +168,30 @@ const componentStyles = StyleSheet.create({
   },
   headerButtonActive: { backgroundColor: "#e2e8f0" },
   historyPanel: {
+    position: "absolute",
+    top: 48,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+    elevation: 4,
     maxHeight: "45%",
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderColor: "#94a3b8",
     backgroundColor: "#f8fafc",
     padding: 10,
     gap: 8,
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
   },
   historyTitle: { color: "#475569", fontSize: 12, fontWeight: "700" },
   historyItem: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#cbd5e1",
-    paddingVertical: 10,
+    paddingHorizontal: 4,
+    paddingVertical: 12,
   },
+  historyItemSeparated: { borderTopWidth: 1, borderTopColor: "#94a3b8" },
   historyItemText: { color: "#0f172a", fontSize: 14, lineHeight: 20 },
   emptyHistory: { color: "#64748b", fontSize: 13, paddingVertical: 16, textAlign: "center" },
   inputWrap: {
