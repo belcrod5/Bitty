@@ -11,6 +11,7 @@ type RunSlashCommandOptions = {
 
 type UseSlashCommandControllerArgs = {
   setTranscript: Dispatch<SetStateAction<string>>;
+  onCommandAccepted: (commandText: string) => void;
   runSlashStatusCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
   runSlashCompactCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
   runSlashCancelQueueCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
@@ -18,6 +19,7 @@ type UseSlashCommandControllerArgs = {
 
 export function useSlashCommandController({
   setTranscript,
+  onCommandAccepted,
   runSlashStatusCommand,
   runSlashCompactCommand,
   runSlashCancelQueueCommand,
@@ -32,17 +34,18 @@ export function useSlashCommandController({
     if (options?.clearInput) {
       setTranscript("");
     }
+    let accepted = false;
     if (parsed.name === "/status") {
-      return runSlashStatusCommand(commandText, options);
+      accepted = await runSlashStatusCommand(commandText, options);
+    } else if (parsed.name === "/compact") {
+      accepted = await runSlashCompactCommand(commandText, options);
+    } else if (parsed.name === "/cancel-queue" || parsed.name === "/queue-cancel") {
+      accepted = await runSlashCancelQueueCommand(commandText, options);
     }
-    if (parsed.name === "/compact") {
-      return runSlashCompactCommand(commandText, options);
-    }
-    if (parsed.name === "/cancel-queue" || parsed.name === "/queue-cancel") {
-      return runSlashCancelQueueCommand(commandText, options);
-    }
-    return false;
+    if (accepted) onCommandAccepted(commandText);
+    return accepted;
   }, [
+    onCommandAccepted,
     runSlashCancelQueueCommand,
     runSlashCompactCommand,
     runSlashStatusCommand,

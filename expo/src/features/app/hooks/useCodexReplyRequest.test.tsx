@@ -63,6 +63,7 @@ function createHarness() {
     streamTtsSuppressedRef: { current: false },
     llmRequestStartedAtRef: { current: 0 },
     setTranscript: jest.fn(),
+    onMessageAccepted: jest.fn(),
     setReply: jest.fn(),
     setReplyLoadingWithRef: jest.fn(),
     setError: jest.fn(),
@@ -198,6 +199,7 @@ function createOptions() {
     streamTtsSuppressedRef: ref(false),
     llmRequestStartedAtRef: ref(0),
     setTranscript: jest.fn(),
+    onMessageAccepted: jest.fn(),
     setReply: jest.fn(),
     setReplyLoadingWithRef: jest.fn(),
     setError: jest.fn(),
@@ -860,6 +862,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+    expect(options.onMessageAccepted).toHaveBeenCalledWith("first message");
 
     await act(async () => {
       turns[0].options.onTurnAccepted?.({
@@ -985,6 +988,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       })).resolves.toEqual({ rejected: "active_request" });
     });
     expect(options.setTranscript).not.toHaveBeenCalled();
+    expect(options.onMessageAccepted).toHaveBeenCalledTimes(1);
   });
 
   test("missing codex ws url send keeps the composer and reports the rejection", async () => {
@@ -1000,6 +1004,22 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       })).resolves.toEqual({ rejected: "missing_codex_ws_url" });
     });
     expect(options.setTranscript).not.toHaveBeenCalled();
+    expect(options.onMessageAccepted).not.toHaveBeenCalled();
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+  });
+
+  test("empty input is rejected without recording history", async () => {
+    const { options } = createOptions();
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await expect(result.current.sendReplyRequest("  \n ", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      })).resolves.toEqual({ rejected: "empty_transcript" });
+    });
+
+    expect(options.onMessageAccepted).not.toHaveBeenCalled();
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 
@@ -1023,6 +1043,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       })).resolves.toEqual({ rejected: "model_backend_mismatch" });
     });
     expect(options.setTranscript).not.toHaveBeenCalled();
+    expect(options.onMessageAccepted).not.toHaveBeenCalled();
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 

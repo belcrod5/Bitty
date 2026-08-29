@@ -81,6 +81,7 @@ type UseCodexReplyRequestOptions<
   streamTtsSuppressedRef: MutableRefObject<boolean>;
   llmRequestStartedAtRef: MutableRefObject<number>;
   setTranscript: (value: string) => void;
+  onMessageAccepted: (message: string) => void;
   setReply: (value: string) => void;
   setReplyLoadingWithRef: (loading: boolean) => void;
   setError: (value: string) => void;
@@ -565,6 +566,7 @@ export function useCodexReplyRequest<
     }, { throttleMs: 0 });
     // Acceptance choke point: the request is committed to a turn, so clear the
     // composer synchronously before network I/O. A rejected send never reaches here.
+    current.onMessageAccepted(effectiveTranscript);
     if (clearInput) {
       current.setTranscript("");
     }
