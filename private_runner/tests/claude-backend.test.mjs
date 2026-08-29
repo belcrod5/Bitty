@@ -738,10 +738,10 @@ test("Claude Backend completes a turn with multiple results and treats the last 
   // 正としてturn完了へ到達しなければならない(push通知欠落の根本原因)。
   const { backend } = backendWith([
     { type: "system", subtype: "init", session_id: SESSION_ID },
-    { type: "assistant", uuid: "assistant-launch", message: { content: [{ type: "text", text: "起動しました" }] } },
+    { type: "assistant", uuid: "assistant-launch", message: { content: [{ type: "text", text: "起動しました" }], usage: { input_tokens: 2, output_tokens: 1 } } },
     { type: "result", subtype: "success", result: "起動しました", session_id: SESSION_ID, usage: { input_tokens: 2, output_tokens: 1 } },
     { type: "user", message: { content: "<task-notification>\n<task-id>abc</task-id>\n</task-notification>" } },
-    { type: "assistant", uuid: "assistant-final", message: { content: [{ type: "text", text: "最終報告" }] } },
+    { type: "assistant", uuid: "assistant-final", message: { content: [{ type: "text", text: "最終報告" }], usage: { input_tokens: 10, output_tokens: 5 } } },
     { type: "result", subtype: "success", result: "最終報告", session_id: SESSION_ID, usage: { input_tokens: 10, output_tokens: 5 } },
   ]);
   const events = [];
@@ -757,7 +757,8 @@ test("Claude Backend completes a turn with multiple results and treats the last 
   const completions = events.filter((event) => event.type === "item.completed" && event.payload.itemType === "assistant");
   assert.equal(completions.length, 2);
   assert.equal(completions.at(-1).payload.content?.[0]?.text, "最終報告");
-  // usageはresultごとにemitされ、最後のresultの値が最終値になる(累積しない)
+  // usageはresultごとに最新assistant usage(#103のcontext表示仕様)でemitされ、
+  // 最後の値が最終値になる(累積しない)
   const usageEvents = events.filter((event) => event.type === "usage.updated");
   assert.equal(usageEvents.length, 2);
   assert.equal(usageEvents.at(-1).payload.usage.input_tokens, 10);
