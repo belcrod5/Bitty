@@ -862,7 +862,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
-    expect(options.onMessageAccepted).toHaveBeenCalledWith("first message");
+    expect(options.onMessageAccepted).toHaveBeenCalledWith("first message", "thread-1");
 
     await act(async () => {
       turns[0].options.onTurnAccepted?.({

@@ -73,6 +73,11 @@ import {
   type SkiaBoardAppearanceTarget,
 } from "../components/SkiaBoardCardAppearanceEditor";
 import { useSkiaBoardCardImage } from "../hooks/useSkiaBoardCardImage";
+import {
+  SKIA_BOARD_MAX_SCALE as MAX_SCALE,
+  SKIA_BOARD_MIN_SCALE as MIN_SCALE,
+  useSkiaBoardViewportPersistence,
+} from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -97,33 +102,18 @@ import {
   type SkiaBoardSectionRect,
 } from "../utils/skiaBoardSectionGeometry";
 
-const MIN_SCALE = 0.25;
-const MAX_SCALE = 2.5;
 const ZOOM_ANIMATION = {
   duration: 100,
   easing: Easing.out(Easing.cubic),
 };
-// 指を止めてから離した場合など、この時間より古いピンチ速度では慣性を開始しない。
 const PINCH_MOMENTUM_MAX_AGE_MS = 120;
-// ピンチ終了(2本→1本)後の残り指の許容移動量。2本の指は完全同時には離れず微小な
-// moveがほぼ必ず入るため、この範囲内なら速度サンプルを保持する。超えたら意図的な
-// ドラッグとみなして破棄する(PanのminDistance=10と整合)。
 const PINCH_REMAINING_TOUCH_SLOP = 10;
-// 慣性を開始する最低速度。指を止めて離した時のジッター(数十px/s)では滑らせず、
-// フリック(数百px/s以上)だけを通すための下限。scaleも同様の趣旨の下限。
 const CAMERA_INERTIA_MIN_SPEED = 50;
 const CAMERA_INERTIA_MIN_SCALE_SPEED = 0.5;
-// 離し際の指の転がりは「静止→ごく短い高速移動」で、瞬間速度はしきい値を超えうる。
-// フリックとの構造的な違いは連続した移動量なので、連続サンプル列(間隔<=64ms)内の
-// 累積移動量がこの値に満たない成分は慣性へ採用しない。
 const PINCH_MOMENTUM_MIN_FOCAL_TRAVEL = 24;
 const PINCH_MOMENTUM_MIN_SCALE_TRAVEL = 0.08;
-// 指では物理的に出せない速度(px/s)のfocal移動は座標系のジャンプとみなし、
-// 速度サンプルとして採用せず基準位置だけを更新する。
 const PINCH_FOCAL_JUMP_SPEED = 5000;
 
-// ピンチ中に計測した直近のカメラ速度(focal移動とスケール変化)。
-// focalDistance/scaleDistanceは連続サンプル列内の累積移動量(ギャップでリセット)。
 type PinchMomentum = {
   focalX: number;
   focalY: number;
@@ -647,6 +637,9 @@ export function SkiaMiniBoardScreen({
   const boardX = useSharedValue(0);
   const boardY = useSharedValue(0);
   const scale = useSharedValue(1);
+  const { markViewportInteraction, persistViewport } = useSkiaBoardViewportPersistence({
+    x: boardX, y: boardY, scale,
+  });
   const gestureStartX = useSharedValue(0);
   const gestureStartY = useSharedValue(0);
   const gestureStartScale = useSharedValue(1);
@@ -664,17 +657,12 @@ export function SkiaMiniBoardScreen({
   const panStartScreenX = useSharedValue(0);
   const panStartScreenY = useSharedValue(0);
 
-  // カメラ慣性: パン・ピンチ共通の1経路。画面上の基準点(focal)とscaleをwithDecayで
-  // 減衰させ、boardX/boardY = focal - anchor * scale の関係で追従させる。anchorは
-  // 慣性開始時のfocalが指すボード座標なので、scaleが減衰してもfocal点のズーム
-  // 不変性が保たれる。パンはscale速度0の特殊ケースにすぎない。
   const cameraInertiaCount = useSharedValue(0);
   const cameraFocalX = useSharedValue(0);
   const cameraFocalY = useSharedValue(0);
   const cameraAnchorX = useSharedValue(0);
   const cameraAnchorY = useSharedValue(0);
   const pinchMomentum = useSharedValue<PinchMomentum>(EMPTY_PINCH_MOMENTUM);
-  // ピンチ終了後に残った指の基準位置(スロップ判定用)。x/yはtracked=trueの時のみ有効。
   const remainingTouchTracked = useSharedValue(false);
   const remainingTouchStartX = useSharedValue(0);
   const remainingTouchStartY = useSharedValue(0);
@@ -696,8 +684,6 @@ export function SkiaMiniBoardScreen({
     scaleVelocity: number
   ) => {
     "worklet";
-    // 指を止めて離した時の測定ジッター程度の速度では滑らせない(フリックとの区別)。
-    // しきい値未満の成分は0として扱い、パン・ピンチ共通で同じ判定を通す。
     const hasPanVelocity =
       velocityX * velocityX + velocityY * velocityY
       >= CAMERA_INERTIA_MIN_SPEED * CAMERA_INERTIA_MIN_SPEED;
@@ -732,7 +718,6 @@ export function SkiaMiniBoardScreen({
     scale,
   ]);
 
-  // 慣性中だけfocal/scaleの減衰からカメラ位置を導出する。
   useAnimatedReaction(
     () => (cameraInertiaCount.value > 0
       ? {
@@ -747,12 +732,20 @@ export function SkiaMiniBoardScreen({
     },
     [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale]
   );
+  useAnimatedReaction(
+    () => cameraInertiaCount.value,
+    (count, previousCount) => {
+      if (count === 0 && Number(previousCount) > 0) {
+        runOnJS(persistViewport)(
+          cameraFocalX.value - cameraAnchorX.value * scale.value,
+          cameraFocalY.value - cameraAnchorY.value * scale.value,
+          scale.value
+        );
+      }
+    },
+    [cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, persistViewport, scale]
+  );
 
-  // ドラッグ・ピンチの入力反映のフレーム駆動化。タッチイベントはvsyncと位相が揃わず、
-  // onUpdateで直接カメラへ反映すると「更新0回のフレーム」と「2回のフレーム」が混ざって
-  // ガクつく(慣性=withDecayが滑らかなのはフレーム駆動のため)。onUpdateは目標値を
-  // 書くだけにし、毎フレーム1回ここでboardX/boardY/scaleとドラッグ中カード座標へ
-  // 反映して、カメラ更新経路を慣性と同じフレーム駆動に揃える。
   const cameraTargetX = useSharedValue(0);
   const cameraTargetY = useSharedValue(0);
   const cameraTargetScale = useSharedValue(1);
@@ -1189,6 +1182,7 @@ export function SkiaMiniBoardScreen({
       .maxPointers(2)
       .minDistance(10)
       .onTouchesDown((event) => {
+        runOnJS(markViewportInteraction)();
         // 慣性中に画面へ触れたら、その場でカメラを止める。
         stopCameraInertia();
         remainingTouchTracked.value = false;
@@ -1228,8 +1222,6 @@ export function SkiaMiniBoardScreen({
         }
       })
       .onTouchesUp((event) => {
-        // ピンチの慣性は全指が離れた時点で開始する(onTouchesUpのnumberOfTouchesは
-        // 残っている指の数)。片指が残っている間はカメラを動かさない。
         if (event.numberOfTouches > 0) return;
         if (!touchSequenceHadMultiplePointers.value) return;
         const momentum = pinchMomentum.value;
@@ -1239,7 +1231,6 @@ export function SkiaMiniBoardScreen({
         const focalValid = momentum.focalDistance >= PINCH_MOMENTUM_MIN_FOCAL_TRAVEL;
         const scaleValid = momentum.scaleDistance >= PINCH_MOMENTUM_MIN_SCALE_TRAVEL;
         if (!focalValid && !scaleValid) return;
-        // 慣性のanchor計算が最新のカメラ値を見るよう、未反映の目標値を先に適用する。
         flushGestureTargets();
         startCameraInertia(
           momentum.focalX,
@@ -1378,8 +1369,10 @@ export function SkiaMiniBoardScreen({
         startCameraInertia(event.x, event.y, event.velocityX, event.velocityY, 0);
       })
       .onFinalize(() => {
-        // 未反映の目標値を適用してからループを止める(最終座標の整合)。
         releaseGestureFrameLoop();
+        if (cameraInertiaCount.value === 0) {
+          runOnJS(persistViewport)(boardX.value, boardY.value, scale.value);
+        }
         const index = activeCardIndex.value;
         const cardId = activeCardId.value;
         const x = activeCardX.value;
@@ -1478,6 +1471,7 @@ export function SkiaMiniBoardScreen({
         // macOSのホイールズーム(1ポインタ)はPanのタッチイベントを発生させないため、
         // ここでも慣性を止める(タッチ端末ではonTouchesDown済みで冪等)。
         stopCameraInertia();
+        runOnJS(markViewportInteraction)();
         touchSequenceHadMultiplePointers.value = true;
       })
       .onStart((event) => {
@@ -1552,7 +1546,9 @@ export function SkiaMiniBoardScreen({
           requestGestureFrameLoop();
           return;
         }
-        scale.value = withTiming(nextScale, ZOOM_ANIMATION);
+        scale.value = withTiming(nextScale, ZOOM_ANIMATION, (finished) => {
+          if (finished) runOnJS(persistViewport)(nextBoardX, nextBoardY, nextScale);
+        });
         boardX.value = withTiming(nextBoardX, ZOOM_ANIMATION);
         boardY.value = withTiming(nextBoardY, ZOOM_ANIMATION);
       })
@@ -1584,6 +1580,7 @@ export function SkiaMiniBoardScreen({
     cameraTargetScale,
     cameraTargetX,
     cameraTargetY,
+    cameraInertiaCount,
     cardDragDirty,
     cardIds,
     flushGestureTargets,
@@ -1591,11 +1588,13 @@ export function SkiaMiniBoardScreen({
     requestGestureFrameLoop,
     handleCardTap,
     handleSectionTap,
+    markViewportInteraction,
     openCardContextMenu,
     openSectionContextMenu,
     pinchBoardX,
     pinchBoardY,
     pinchMomentum,
+    persistViewport,
     positions,
     remainingTouchTracked,
     remainingTouchStartX,
@@ -1618,6 +1617,7 @@ export function SkiaMiniBoardScreen({
     boardX.value = 0;
     boardY.value = 0;
     scale.value = 1;
+    persistViewport(0, 0, 1);
     selectedCardIndex.value = -1;
     selectedSectionIndex.value = -1;
     setSelectedCardId("");

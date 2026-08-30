@@ -4,6 +4,17 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 
+const mockPersistViewport = jest.fn();
+const mockMarkViewportInteraction = jest.fn();
+jest.mock("../hooks/useSkiaBoardViewportPersistence", () => ({
+  SKIA_BOARD_MIN_SCALE: 0.25,
+  SKIA_BOARD_MAX_SCALE: 2.5,
+  useSkiaBoardViewportPersistence: () => ({
+    persistViewport: mockPersistViewport,
+    markViewportInteraction: mockMarkViewportInteraction,
+  }),
+}));
+
 // Skia Canvasはjest環境で描画できないため、レイアウトに影響しないスタブへ置換する。
 jest.mock("@shopify/react-native-skia", () => {
   const ReactModule = require("react");
@@ -368,8 +379,17 @@ beforeEach(() => {
   mockUpdateBoardCardAppearance.mockClear();
   mockTidyBoard.mockClear();
   mockSetBoardCardTextScale.mockClear();
+  mockPersistViewport.mockClear();
+  mockMarkViewportInteraction.mockClear();
   mockSessions = [mockDefaultSession];
   mockSections = [];
+});
+
+test("persists viewport reset through the local viewport owner", async () => {
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
+  await fireEvent.press(screen.getByLabelText("表示位置とズームをリセット"));
+  expect(mockPersistViewport).toHaveBeenCalledWith(0, 0, 1);
 });
 
 test("renders Japanese and emoji through system-fallback paragraphs", async () => {

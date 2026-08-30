@@ -64,7 +64,7 @@ import { useAutoWaveformStateController } from "./hooks/useAutoWaveformStateCont
 import { useAudioSettingsInputController } from "./hooks/useAudioSettingsInputController";
 import { useChatDerivedState } from "./hooks/useChatDerivedState";
 import { useChatBottomToast } from "./hooks/useChatBottomToast";
-import { useComposerMessageHistory } from "./hooks/useComposerMessageHistory";
+import { useComposerPersistence } from "./hooks/useComposerPersistence";
 import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteRequestController";
@@ -743,10 +743,9 @@ export default function App() {
   const [waitingApprovalResumeLoading, setWaitingApprovalResumeLoading] = useState(false);
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
-  const {
-    messages: composerMessageHistory,
-    recordMessage: recordComposerMessageHistory,
-  } = useComposerMessageHistory();
+  const { messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
+    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded,
+    setDraft: setComposerDraft, clearDraft: clearComposerDraft } = useComposerPersistence();
   const [composerInputFocused, setComposerInputFocused] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("返答は1文で");
   const [reply, setReply] = useState("");
@@ -5138,14 +5137,14 @@ export default function App() {
     setCodexCompactRunning,
     logSessionDiag,
   });
+  const recordAcceptedComposerMessage = useCallback((message: string, sessionIdRaw?: string) => { recordComposerMessageHistory(message); clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current); }, [clearComposerDraft, recordComposerMessageHistory]);
   const { runSlashCommand } = useSlashCommandController({
     setTranscript,
-    onCommandAccepted: recordComposerMessageHistory,
+    onCommandAccepted: recordAcceptedComposerMessage,
     runSlashStatusCommand,
     runSlashCompactCommand,
     runSlashCancelQueueCommand,
   });
-
   const { uploadCodexWsPreflightLog } = useCodexWsPreflightLogger({
     nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     executionEnvironment: EXPO_EXECUTION_ENVIRONMENT,
@@ -5214,7 +5213,7 @@ export default function App() {
     streamTtsSuppressedRef,
     llmRequestStartedAtRef,
     setTranscript,
-    onMessageAccepted: recordComposerMessageHistory,
+    onMessageAccepted: recordAcceptedComposerMessage,
     setReply,
     setReplyLoadingWithRef,
     setError,
@@ -6799,6 +6798,7 @@ export default function App() {
     composerDirectSttVisible,
     directNativeSttPreviewText,
     composerMessageHistory,
+    composerDrafts, composerDraftsLoaded, setComposerDraft,
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,

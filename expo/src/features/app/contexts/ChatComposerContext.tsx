@@ -1,6 +1,7 @@
 import { createContext, useContext, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
 import type { ImageSourcePropType, TextInput } from "react-native";
 import type { SlashCommandOption } from "../components/SlashCommandSelectMenu";
+import type { ComposerDraft } from "../hooks/useComposerPersistence";
 
 export type ChatComposerContextValue = {
   composerWaveformVisible: boolean;
@@ -10,6 +11,9 @@ export type ChatComposerContextValue = {
   composerDirectSttVisible: boolean;
   directNativeSttPreviewText: string;
   composerMessageHistory: readonly string[];
+  composerDrafts: readonly ComposerDraft[];
+  composerDraftsLoaded: boolean;
+  setComposerDraft: (sessionId: string, text: string) => void;
   chatComposerInputRef: MutableRefObject<TextInput | null>;
   showComposerFullscreenToggle: boolean;
   setComposerInputFocused: (focused: boolean) => void;

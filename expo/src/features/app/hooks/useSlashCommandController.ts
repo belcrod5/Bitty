@@ -11,7 +11,7 @@ type RunSlashCommandOptions = {
 
 type UseSlashCommandControllerArgs = {
   setTranscript: Dispatch<SetStateAction<string>>;
-  onCommandAccepted: (commandText: string) => void;
+  onCommandAccepted: (commandText: string, sessionId?: string) => void;
   runSlashStatusCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
   runSlashCompactCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
   runSlashCancelQueueCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
@@ -31,9 +31,6 @@ export function useSlashCommandController({
     const parsed = parseSlashCommandInput(commandTextRaw);
     if (!parsed) return false;
     const commandText = parsed.raw;
-    if (options?.clearInput) {
-      setTranscript("");
-    }
     let accepted = false;
     if (parsed.name === "/status") {
       accepted = await runSlashStatusCommand(commandText, options);
@@ -42,7 +39,12 @@ export function useSlashCommandController({
     } else if (parsed.name === "/cancel-queue" || parsed.name === "/queue-cancel") {
       accepted = await runSlashCancelQueueCommand(commandText, options);
     }
-    if (accepted) onCommandAccepted(commandText);
+    if (accepted) {
+      if (options?.clearInput) setTranscript("");
+      const sessionId = options?.sessionSnapshot?.sessionId;
+      if (sessionId) onCommandAccepted(commandText, sessionId);
+      else onCommandAccepted(commandText);
+    }
     return accepted;
   }, [
     onCommandAccepted,
