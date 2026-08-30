@@ -20,6 +20,47 @@ export type DrawerConversationSearchPage = {
   partial: boolean;
 };
 
+function invalidSearchResponse(): never {
+  throw new Error("検索結果の応答形式が不正です。");
+}
+
+function requiredResultText(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return invalidSearchResponse();
+  return value.trim();
+}
+
+function optionalResultText(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return invalidSearchResponse();
+  return value.trim() || undefined;
+}
+
+function normalizeSearchResult(value: unknown): DrawerConversationSearchResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalidSearchResponse();
+  const result = value as Record<string, unknown>;
+  if (!result.sessionRef || typeof result.sessionRef !== "object" || Array.isArray(result.sessionRef)) {
+    return invalidSearchResponse();
+  }
+  const sessionRef = result.sessionRef as Record<string, unknown>;
+  const role = requiredResultText(result.role).toLowerCase();
+  if (role !== "user" && role !== "assistant") return invalidSearchResponse();
+  const sessionCreatedAt = optionalResultText(result.sessionCreatedAt);
+  const createdAt = optionalResultText(result.createdAt);
+  return {
+    sessionRef: {
+      backendId: requiredResultText(sessionRef.backendId),
+      nativeSessionId: requiredResultText(sessionRef.nativeSessionId),
+    },
+    canonicalCwd: requiredResultText(result.canonicalCwd),
+    messageId: requiredResultText(result.messageId),
+    role,
+    snippet: requiredResultText(result.snippet),
+    conversationCursor: requiredResultText(result.conversationCursor),
+    ...(sessionCreatedAt ? { sessionCreatedAt } : {}),
+    ...(createdAt ? { createdAt } : {}),
+  };
+}
+
 export async function searchDrawerConversations(params: {
   runnerUrl: string;
   runnerToken: string;
@@ -52,9 +93,12 @@ export async function searchDrawerConversations(params: {
   if (!response.ok) {
     throw new Error(String(payload?.error?.message || payload?.message || `検索に失敗しました (${response.status})`));
   }
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.results)) return invalidSearchResponse();
+  if (payload.cursor !== undefined && typeof payload.cursor !== "string") return invalidSearchResponse();
+  if (payload.partial !== undefined && typeof payload.partial !== "boolean") return invalidSearchResponse();
   return {
-    results: Array.isArray(payload?.results) ? payload.results : [],
-    cursor: String(payload?.cursor || ""),
-    partial: payload?.partial === true,
+    results: payload.results.map(normalizeSearchResult),
+    cursor: String(payload.cursor || "").trim(),
+    partial: payload.partial === true,
   };
 }

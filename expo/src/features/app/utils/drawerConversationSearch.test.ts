@@ -7,7 +7,20 @@ afterEach(() => {
 test("searches conversation history with the registered directory scope and options", async () => {
   const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
     ok: true,
-    json: async () => ({ results: [{ messageId: "message-1" }], cursor: "next", partial: true }),
+    json: async () => ({
+      results: [{
+        sessionRef: { backendId: " codex ", nativeSessionId: " session-1 " },
+        canonicalCwd: " /work/one ",
+        sessionCreatedAt: " 2026-08-01T00:00:00.000Z ",
+        messageId: " message-1 ",
+        role: " Assistant ",
+        createdAt: " 2026-08-02T00:00:00.000Z ",
+        snippet: " matching text ",
+        conversationCursor: " read-cursor ",
+      }],
+      cursor: " next ",
+      partial: true,
+    }),
   } as Response);
 
   const page = await searchDrawerConversations({
@@ -33,7 +46,20 @@ test("searches conversation history with the registered directory scope and opti
   expect(requestInit).toEqual(expect.objectContaining({
     headers: { authorization: "Bearer token" },
   }));
-  expect(page).toEqual({ results: [{ messageId: "message-1" }], cursor: "next", partial: true });
+  expect(page).toEqual({
+    results: [{
+      sessionRef: { backendId: "codex", nativeSessionId: "session-1" },
+      canonicalCwd: "/work/one",
+      sessionCreatedAt: "2026-08-01T00:00:00.000Z",
+      messageId: "message-1",
+      role: "assistant",
+      createdAt: "2026-08-02T00:00:00.000Z",
+      snippet: "matching text",
+      conversationCursor: "read-cursor",
+    }],
+    cursor: "next",
+    partial: true,
+  });
 });
 
 test("uses the runner error message", async () => {
@@ -51,4 +77,42 @@ test("uses the runner error message", async () => {
     backendId: "all",
     order: "newest",
   })).rejects.toThrow("query is required");
+});
+
+test.each([
+  { results: {} },
+  {
+    results: [{
+      sessionRef: { backendId: "codex", nativeSessionId: "session-1" },
+      canonicalCwd: "/work",
+      messageId: "message-1",
+      role: "tool",
+      snippet: "text",
+      conversationCursor: "cursor",
+    }],
+  },
+  {
+    results: [{
+      sessionRef: { backendId: "codex", nativeSessionId: "" },
+      canonicalCwd: "/work",
+      messageId: "message-1",
+      role: "user",
+      snippet: "text",
+      conversationCursor: "cursor",
+    }],
+  },
+])("rejects a malformed successful response", async (payload) => {
+  jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => payload,
+  } as Response);
+
+  await expect(searchDrawerConversations({
+    runnerUrl: "http://runner",
+    runnerToken: "token",
+    query: "drawer",
+    directories: ["/work"],
+    backendId: "all",
+    order: "newest",
+  })).rejects.toThrow("検索結果の応答形式が不正です。");
 });

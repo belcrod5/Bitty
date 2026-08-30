@@ -46,6 +46,18 @@ function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryE
   };
 }
 
+function conversationSearchResult(snippet: string, messageId: string) {
+  return {
+    sessionRef: { backendId: "codex", nativeSessionId: `session-${messageId}` },
+    canonicalCwd: "/work/bitty",
+    sessionCreatedAt: "2026-08-30T00:00:00.000Z",
+    messageId,
+    role: "assistant",
+    snippet,
+    conversationCursor: `read-${messageId}`,
+  };
+}
+
 function directoryState(
   entries: LlmSessionHistoryEntry[],
   childrenByParentId: DirectorySessionTreeState["childrenByParentId"] = {},
@@ -425,6 +437,89 @@ test("continues chat search across every registered directory in API-sized pages
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
   expect(secondUrl.searchParams.getAll("cwd")).toEqual(["/work/8"]);
+  fetchMock.mockRestore();
+});
+
+test("keeps the period boundary fixed while continuing an API cursor", async () => {
+  const firstNow = Date.parse("2026-08-31T00:00:00.000Z");
+  const nowSpy = jest.spyOn(Date, "now").mockReturnValue(firstNow);
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("First page", "message-1")], cursor: "next" }),
+    } as Response)
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  await fireEvent.press(drawer.getByText("検索オプション"));
+  await fireEvent.press(drawer.getByText("7日以内"));
+  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "fixed period");
+
+  await waitFor(() => expect(drawer.getByText("First page")).toBeTruthy());
+  nowSpy.mockReturnValue(firstNow + 60_000);
+  await fireEvent.press(drawer.getByText("検索を続ける"));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+  const firstUrl = new URL(String(fetchMock.mock.calls[0][0]));
+  const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  expect(secondUrl.searchParams.get("cursor")).toBe("next");
+  expect(secondUrl.searchParams.get("since")).toBe(firstUrl.searchParams.get("since"));
+  expect(firstUrl.searchParams.get("since")).toBe("2026-08-24T00:00:00.000Z");
+  nowSpy.mockRestore();
+  fetchMock.mockRestore();
+});
+
+test("removes old results immediately when the chat query changes", async () => {
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("Old query result", "old-message")] }),
+    } as Response)
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("New query result", "new-message")] }),
+    } as Response);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "old query");
+  await waitFor(() => expect(drawer.getByText("Old query result")).toBeTruthy());
+
+  await fireEvent.changeText(chatInput, "new query");
+  expect(drawer.queryByText("Old query result")).toBeNull();
+  expect(drawer.getByText("チャットを検索しています…")).toBeTruthy();
+  await waitFor(() => expect(drawer.getByText("New query result")).toBeTruthy());
+  fetchMock.mockRestore();
+});
+
+test("removes old results immediately when a chat search option changes", async () => {
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("Newest result", "newest-message")] }),
+    } as Response)
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("Oldest result", "oldest-message")] }),
+    } as Response);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "sort result");
+  await waitFor(() => expect(drawer.getByText("Newest result")).toBeTruthy());
+
+  await fireEvent.press(drawer.getByText("検索オプション"));
+  await fireEvent.press(drawer.getByText("古い順"));
+  expect(drawer.queryByText("Newest result")).toBeNull();
+  expect(drawer.getByText("チャットを検索しています…")).toBeTruthy();
+  await waitFor(() => expect(drawer.getByText("Oldest result")).toBeTruthy());
+  const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  expect(secondUrl.searchParams.get("order")).toBe("oldest");
   fetchMock.mockRestore();
 });
 

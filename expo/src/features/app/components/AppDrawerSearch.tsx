@@ -24,7 +24,7 @@ export const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAcce
 
 type SearchMode = "directory" | "chat";
 type SearchAge = "all" | "7" | "30";
-type SearchPosition = { directoryOffset: number; cursor: string };
+type SearchPosition = { directoryOffset: number; cursor: string; since: string };
 
 const DIRECTORY_PAGE_SIZE = 8;
 
@@ -83,6 +83,17 @@ export function AppDrawerSearch({
     registeredDirectories.map((entry) => String(entry.path || "").trim()).filter(Boolean)
   )), [registeredDirectories]);
 
+  const invalidateSearch = useCallback((searching: boolean) => {
+    abortRef.current?.abort();
+    requestRef.current += 1;
+    setLoading(searching);
+    setLoadingMore(false);
+    setResults([]);
+    setNextPosition(null);
+    setError("");
+    setPartial(false);
+  }, []);
+
   const executeSearch = useCallback(async (position: SearchPosition, append: boolean) => {
     const directoryPage = directories.slice(
       position.directoryOffset,
@@ -105,7 +116,7 @@ export function AppDrawerSearch({
         directories: directoryPage,
         backendId: "all",
         order,
-        since: sinceTimestamp(age),
+        since: position.since,
         cursor: position.cursor,
         signal: controller.signal,
       });
@@ -122,9 +133,9 @@ export function AppDrawerSearch({
       });
       setPartial((current) => (append ? current : false) || page.partial);
       setNextPosition(page.cursor
-        ? { directoryOffset: position.directoryOffset, cursor: page.cursor }
+        ? { ...position, cursor: page.cursor }
         : position.directoryOffset + DIRECTORY_PAGE_SIZE < directories.length
-          ? { directoryOffset: position.directoryOffset + DIRECTORY_PAGE_SIZE, cursor: "" }
+          ? { ...position, directoryOffset: position.directoryOffset + DIRECTORY_PAGE_SIZE, cursor: "" }
           : null);
     } catch (searchError) {
       if (requestRef.current !== requestId || controller.signal.aborted) return;
@@ -135,31 +146,27 @@ export function AppDrawerSearch({
         setLoadingMore(false);
       }
     }
-  }, [age, directories, normalizedQuery, order, runnerToken, runnerUrl]);
+  }, [directories, normalizedQuery, order, runnerToken, runnerUrl]);
 
   useEffect(() => {
-    abortRef.current?.abort();
-    requestRef.current += 1;
     if (!active || mode !== "chat" || normalizedQuery.length < 2 || directories.length <= 0) {
-      setLoading(false);
-      setLoadingMore(false);
-      setResults([]);
-      setNextPosition(null);
-      setError("");
-      setPartial(false);
+      invalidateSearch(false);
       return undefined;
     }
+    invalidateSearch(true);
+    const position = { directoryOffset: 0, cursor: "", since: sinceTimestamp(age) };
     const timer = setTimeout(() => {
-      void executeSearch({ directoryOffset: 0, cursor: "" }, false);
+      void executeSearch(position, false);
     }, 350);
     return () => {
       clearTimeout(timer);
       abortRef.current?.abort();
       requestRef.current += 1;
     };
-  }, [active, directories.length, executeSearch, mode, normalizedQuery]);
+  }, [active, age, directories.length, executeSearch, invalidateSearch, mode, normalizedQuery]);
 
   const selectMode = (nextMode: SearchMode) => {
+    invalidateSearch(false);
     setMode(nextMode);
     setQuery("");
     onChangeDirectoryQuery("");
@@ -167,8 +174,23 @@ export function AppDrawerSearch({
   };
 
   const changeQuery = (value: string) => {
+    if (mode === "chat") {
+      invalidateSearch(active && value.trim().length >= 2 && directories.length > 0);
+    }
     setQuery(value);
     if (mode === "directory") onChangeDirectoryQuery(value);
+  };
+
+  const changeOrder = (value: DrawerConversationSearchOrder) => {
+    if (value === order) return;
+    invalidateSearch(active && normalizedQuery.length >= 2 && directories.length > 0);
+    setOrder(value);
+  };
+
+  const changeAge = (value: SearchAge) => {
+    if (value === age) return;
+    invalidateSearch(active && normalizedQuery.length >= 2 && directories.length > 0);
+    setAge(value);
   };
 
   return (
@@ -265,7 +287,7 @@ export function AppDrawerSearch({
                       <Pressable
                         key={value}
                         style={[styles.appDrawerSearchChip, order === value && styles.appDrawerSearchChipSelected]}
-                        onPress={() => setOrder(value)}
+                        onPress={() => changeOrder(value)}
                         accessibilityRole="radio"
                         accessibilityState={{ checked: order === value }}
                       >
@@ -279,7 +301,7 @@ export function AppDrawerSearch({
                       <Pressable
                         key={value}
                         style={[styles.appDrawerSearchChip, age === value && styles.appDrawerSearchChipSelected]}
-                        onPress={() => setAge(value)}
+                        onPress={() => changeAge(value)}
                         accessibilityRole="radio"
                         accessibilityState={{ checked: age === value }}
                       >
@@ -289,7 +311,7 @@ export function AppDrawerSearch({
                   </View>
                 </View>
               ) : null}
-              <Text style={styles.appDrawerSearchScopeText}>登録済みディレクトリ {directories.length}件を検索</Text>
+              <Text style={styles.appDrawerSearchScopeText}>登録済みディレクトリ {directories.length}件を順に検索</Text>
               <ScrollView
                 style={styles.appDrawerSearchResults}
                 keyboardShouldPersistTaps="handled"
@@ -309,7 +331,11 @@ export function AppDrawerSearch({
                     <Text style={styles.appDrawerSearchError} accessibilityRole="alert">{error}</Text>
                     <Pressable
                       style={styles.appDrawerSearchMoreButton}
-                      onPress={() => void executeSearch({ directoryOffset: 0, cursor: "" }, false)}
+                      onPress={() => void executeSearch({
+                        directoryOffset: 0,
+                        cursor: "",
+                        since: sinceTimestamp(age),
+                      }, false)}
                       accessibilityRole="button"
                     >
                       <Text style={styles.appDrawerSearchMoreButtonText}>再試行</Text>
