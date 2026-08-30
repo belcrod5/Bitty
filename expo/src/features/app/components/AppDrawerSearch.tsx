@@ -1,0 +1,366 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Keyboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  type GestureResponderEvent,
+} from "react-native";
+import { useChatScreen } from "../contexts/ChatScreenContext";
+import { styles } from "../styles";
+import type { RegisteredDirectoryEntry } from "../types/directorySessions";
+import {
+  searchDrawerConversations,
+  type DrawerConversationSearchOrder,
+  type DrawerConversationSearchResult,
+} from "../utils/drawerConversationSearch";
+
+export const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAccessory";
+
+type SearchMode = "directory" | "chat";
+type SearchAge = "all" | "7" | "30";
+type SearchPosition = { directoryOffset: number; cursor: string };
+
+const DIRECTORY_PAGE_SIZE = 8;
+
+function optionLabel(value: SearchAge): string {
+  if (value === "7") return "7日以内";
+  if (value === "30") return "30日以内";
+  return "すべて";
+}
+
+function sinceTimestamp(value: SearchAge): string {
+  if (value === "all") return "";
+  return new Date(Date.now() - Number(value) * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function resultDate(value: string | undefined): string {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })
+    : "";
+}
+
+export function AppDrawerSearch({
+  directoryQuery,
+  onChangeDirectoryQuery,
+  active,
+  onActiveChange,
+  directoryMatchCount,
+  registeredDirectories,
+  onSelectChatResult,
+}: {
+  directoryQuery: string;
+  onChangeDirectoryQuery: (query: string) => void;
+  active: boolean;
+  onActiveChange: (active: boolean) => void;
+  directoryMatchCount: number;
+  registeredDirectories: RegisteredDirectoryEntry[];
+  onSelectChatResult: (result: DrawerConversationSearchResult, event: GestureResponderEvent) => void;
+}) {
+  const { runnerUrl, runnerToken } = useChatScreen();
+  const inputRef = useRef<TextInput>(null);
+  const requestRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const [mode, setMode] = useState<SearchMode>("directory");
+  const [query, setQuery] = useState(directoryQuery);
+  const [order, setOrder] = useState<DrawerConversationSearchOrder>("newest");
+  const [age, setAge] = useState<SearchAge>("all");
+  const [showOptions, setShowOptions] = useState(false);
+  const [results, setResults] = useState<DrawerConversationSearchResult[]>([]);
+  const [nextPosition, setNextPosition] = useState<SearchPosition | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const [partial, setPartial] = useState(false);
+  const normalizedQuery = query.trim();
+  const directories = useMemo(() => Array.from(new Set(
+    registeredDirectories.map((entry) => String(entry.path || "").trim()).filter(Boolean)
+  )), [registeredDirectories]);
+
+  const executeSearch = useCallback(async (position: SearchPosition, append: boolean) => {
+    const directoryPage = directories.slice(
+      position.directoryOffset,
+      position.directoryOffset + DIRECTORY_PAGE_SIZE
+    );
+    if (directoryPage.length <= 0) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    setError("");
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+    try {
+      const page = await searchDrawerConversations({
+        runnerUrl,
+        runnerToken,
+        query: normalizedQuery,
+        directories: directoryPage,
+        backendId: "all",
+        order,
+        since: sinceTimestamp(age),
+        cursor: position.cursor,
+        signal: controller.signal,
+      });
+      if (requestRef.current !== requestId) return;
+      setResults((current) => {
+        const combined = append ? [...current, ...page.results] : page.results;
+        const seen = new Set<string>();
+        return combined.filter((result) => {
+          const key = `${result.sessionRef?.backendId}:${result.sessionRef?.nativeSessionId}:${result.messageId}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      });
+      setPartial((current) => (append ? current : false) || page.partial);
+      setNextPosition(page.cursor
+        ? { directoryOffset: position.directoryOffset, cursor: page.cursor }
+        : position.directoryOffset + DIRECTORY_PAGE_SIZE < directories.length
+          ? { directoryOffset: position.directoryOffset + DIRECTORY_PAGE_SIZE, cursor: "" }
+          : null);
+    } catch (searchError) {
+      if (requestRef.current !== requestId || controller.signal.aborted) return;
+      setError(searchError instanceof Error ? searchError.message : "検索に失敗しました。");
+    } finally {
+      if (requestRef.current === requestId) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  }, [age, directories, normalizedQuery, order, runnerToken, runnerUrl]);
+
+  useEffect(() => {
+    abortRef.current?.abort();
+    requestRef.current += 1;
+    if (!active || mode !== "chat" || normalizedQuery.length < 2 || directories.length <= 0) {
+      setLoading(false);
+      setLoadingMore(false);
+      setResults([]);
+      setNextPosition(null);
+      setError("");
+      setPartial(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      void executeSearch({ directoryOffset: 0, cursor: "" }, false);
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      abortRef.current?.abort();
+      requestRef.current += 1;
+    };
+  }, [active, directories.length, executeSearch, mode, normalizedQuery]);
+
+  const selectMode = (nextMode: SearchMode) => {
+    setMode(nextMode);
+    setQuery("");
+    onChangeDirectoryQuery("");
+    inputRef.current?.focus();
+  };
+
+  const changeQuery = (value: string) => {
+    setQuery(value);
+    if (mode === "directory") onChangeDirectoryQuery(value);
+  };
+
+  return (
+    <View style={styles.appDrawerSearchContainer}>
+      <View style={[styles.appDrawerSearchBox, active && styles.appDrawerSearchBoxFocused]}>
+        <TextInput
+          ref={inputRef}
+          style={styles.appDrawerSearchInput}
+          value={query}
+          onChangeText={changeQuery}
+          onFocus={() => onActiveChange(true)}
+          placeholder={mode === "directory" ? "ディレクトリを検索" : "チャット内を検索"}
+          placeholderTextColor="#94a3b8"
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="never"
+          inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
+          onSubmitEditing={() => {
+            onActiveChange(false);
+            Keyboard.dismiss();
+          }}
+          returnKeyType="search"
+          submitBehavior="blurAndSubmit"
+          accessibilityLabel={mode === "directory" ? "ディレクトリ検索" : "チャット検索"}
+        />
+        {query ? (
+          <TouchableOpacity
+            style={styles.appDrawerSearchClearButton}
+            onPress={() => changeQuery("")}
+            accessibilityRole="button"
+            accessibilityLabel="検索をクリア"
+          >
+            <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+      {active ? (
+        <View style={styles.appDrawerSearchPopover} testID="app-drawer-search-popover">
+          <View style={styles.appDrawerSearchTabs} accessibilityRole="tablist">
+            {(["directory", "chat"] as const).map((tab) => (
+              <Pressable
+                key={tab}
+                style={[styles.appDrawerSearchTab, mode === tab && styles.appDrawerSearchTabSelected]}
+                onPress={() => selectMode(tab)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: mode === tab }}
+              >
+                <Text style={[
+                  styles.appDrawerSearchTabText,
+                  mode === tab && styles.appDrawerSearchTabTextSelected,
+                ]}>
+                  {tab === "directory" ? "ディレクトリ" : "チャット"}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable
+              style={styles.appDrawerSearchDismissButton}
+              onPress={() => {
+                onActiveChange(false);
+                Keyboard.dismiss();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="検索を閉じる"
+            >
+              <Text style={styles.appDrawerSearchDismissButtonText}>×</Text>
+            </Pressable>
+          </View>
+          {mode === "directory" ? (
+            <View style={styles.appDrawerSearchDirectoryStatus}>
+              <Text style={styles.appDrawerSearchStatusText}>
+                {normalizedQuery
+                  ? `${directoryMatchCount}件の登録ディレクトリに一致`
+                  : `登録ディレクトリ ${registeredDirectories.length}件を名前・パスで絞り込み`}
+              </Text>
+            </View>
+          ) : (
+            <>
+              <Pressable
+                style={styles.appDrawerSearchOptionsSummary}
+                onPress={() => setShowOptions((current) => !current)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showOptions }}
+              >
+                <Text style={styles.appDrawerSearchOptionsSummaryText}>検索オプション</Text>
+                <Text style={styles.appDrawerSearchOptionsValue}>
+                  {`${order === "newest" ? "新しい順" : "古い順"}・${optionLabel(age)}`}
+                </Text>
+              </Pressable>
+              {showOptions ? (
+                <View style={styles.appDrawerSearchOptions}>
+                  <Text style={styles.appDrawerSearchOptionLabel}>並び順</Text>
+                  <View style={styles.appDrawerSearchOptionRow}>
+                    {(["newest", "oldest"] as const).map((value) => (
+                      <Pressable
+                        key={value}
+                        style={[styles.appDrawerSearchChip, order === value && styles.appDrawerSearchChipSelected]}
+                        onPress={() => setOrder(value)}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: order === value }}
+                      >
+                        <Text style={styles.appDrawerSearchChipText}>{value === "newest" ? "新しい順" : "古い順"}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Text style={styles.appDrawerSearchOptionLabel}>期間</Text>
+                  <View style={styles.appDrawerSearchOptionRow}>
+                    {(["all", "7", "30"] as const).map((value) => (
+                      <Pressable
+                        key={value}
+                        style={[styles.appDrawerSearchChip, age === value && styles.appDrawerSearchChipSelected]}
+                        onPress={() => setAge(value)}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: age === value }}
+                      >
+                        <Text style={styles.appDrawerSearchChipText}>{optionLabel(value)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+              <Text style={styles.appDrawerSearchScopeText}>登録済みディレクトリ {directories.length}件を検索</Text>
+              <ScrollView
+                style={styles.appDrawerSearchResults}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                {normalizedQuery.length < 2 ? (
+                  <Text style={styles.appDrawerSearchStatusText}>2文字以上入力してください。</Text>
+                ) : directories.length <= 0 ? (
+                  <Text style={styles.appDrawerSearchStatusText}>検索対象の登録ディレクトリがありません。</Text>
+                ) : loading ? (
+                  <View style={styles.appDrawerSearchLoading} accessibilityRole="progressbar">
+                    <ActivityIndicator size="small" color="#0f766e" />
+                    <Text style={styles.appDrawerSearchStatusText}>チャットを検索しています…</Text>
+                  </View>
+                ) : error && results.length <= 0 ? (
+                  <View>
+                    <Text style={styles.appDrawerSearchError} accessibilityRole="alert">{error}</Text>
+                    <Pressable
+                      style={styles.appDrawerSearchMoreButton}
+                      onPress={() => void executeSearch({ directoryOffset: 0, cursor: "" }, false)}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.appDrawerSearchMoreButtonText}>再試行</Text>
+                    </Pressable>
+                  </View>
+                ) : results.length <= 0 ? (
+                  <Text style={styles.appDrawerSearchStatusText}>一致するチャットはありません。</Text>
+                ) : results.map((result) => (
+                  <Pressable
+                    key={`${result.sessionRef.backendId}:${result.sessionRef.nativeSessionId}:${result.messageId}`}
+                    style={styles.appDrawerSearchResult}
+                    onPress={(event) => {
+                      onActiveChange(false);
+                      Keyboard.dismiss();
+                      onSelectChatResult(result, event);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${result.role === "user" ? "ユーザー" : "アシスタント"}の検索結果 ${result.snippet}`}
+                  >
+                    <View style={styles.appDrawerSearchResultMetaRow}>
+                      <Text style={styles.appDrawerSearchResultRole}>
+                        {result.role === "user" ? "ユーザー" : "アシスタント"}
+                      </Text>
+                      <Text style={styles.appDrawerSearchResultMeta} numberOfLines={1}>
+                        {`${result.sessionRef.backendId} ${resultDate(result.createdAt || result.sessionCreatedAt)}`.trim()}
+                      </Text>
+                    </View>
+                    <Text style={styles.appDrawerSearchResultSnippet} numberOfLines={3}>{result.snippet}</Text>
+                    <Text style={styles.appDrawerSearchResultPath} numberOfLines={1}>{result.canonicalCwd}</Text>
+                  </Pressable>
+                ))}
+                {error && results.length > 0 ? (
+                  <Text style={styles.appDrawerSearchError} accessibilityRole="alert">{error}</Text>
+                ) : null}
+                {partial ? <Text style={styles.appDrawerSearchWarning}>一部のバックエンドを検索できませんでした。</Text> : null}
+                {nextPosition && !loading ? (
+                  <Pressable
+                    style={styles.appDrawerSearchMoreButton}
+                    disabled={loadingMore}
+                    onPress={() => void executeSearch(nextPosition, true)}
+                    accessibilityRole="button"
+                  >
+                    {loadingMore ? <ActivityIndicator size="small" color="#1e40af" /> : null}
+                    <Text style={styles.appDrawerSearchMoreButtonText}>検索を続ける</Text>
+                  </Pressable>
+                ) : null}
+              </ScrollView>
+            </>
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}

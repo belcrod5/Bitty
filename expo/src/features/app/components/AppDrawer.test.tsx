@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, userEvent } from "@testing-library/react-native";
+import { fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
@@ -21,6 +21,9 @@ jest.mock("../contexts/SkiaBoardContext", () => ({
     hasSession: mockHasSession,
     loaded: mockSkiaBoardLoaded,
   }),
+}));
+jest.mock("../contexts/ChatScreenContext", () => ({
+  useChatScreen: () => ({ runnerUrl: "http://runner", runnerToken: "runner-token" }),
 }));
 
 function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
@@ -302,34 +305,127 @@ test("runs the directory read action from the long-press menu", async () => {
   expect(onMarkDirectorySessionsRead).toHaveBeenCalledWith("/work/bitty");
 });
 
-test("filters only loaded drawer sessions", async () => {
+test("filters directories without filtering their loaded sessions", async () => {
   const drawer = await renderDrawer();
 
   expect(drawer.getByText("Fix drawer search")).toBeTruthy();
   expect(drawer.getByText("Restore title override")).toBeTruthy();
 
-  const searchInput = drawer.getByPlaceholderText("ディレクトリ・履歴を検索");
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent.changeText(searchInput, "bitty");
+
+  expect(drawer.getByText("Fix drawer search")).toBeTruthy();
+  expect(drawer.getByText("Restore title override")).toBeTruthy();
+
   await fireEvent.changeText(searchInput, "restore title");
 
   expect(drawer.queryByText("Fix drawer search")).toBeNull();
-  expect(drawer.getByText("Restore title override")).toBeTruthy();
-
-  await fireEvent.changeText(searchInput, "unloaded deploy note");
-
-  expect(drawer.queryByText("Fix drawer search")).toBeNull();
   expect(drawer.queryByText("Restore title override")).toBeNull();
-  expect(drawer.getByText("一致するディレクトリまたは履歴はありません。")).toBeTruthy();
+  expect(drawer.getByText("一致するディレクトリはありません。")).toBeTruthy();
 });
 
 test("clears drawer search back to the loaded session list", async () => {
   const drawer = await renderDrawer();
 
-  const searchInput = drawer.getByPlaceholderText("ディレクトリ・履歴を検索");
-  await fireEvent.changeText(searchInput, "restore title");
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent.changeText(searchInput, "not-a-directory");
   await fireEvent.press(drawer.getByLabelText("検索をクリア"));
 
   expect(drawer.getByText("Fix drawer search")).toBeTruthy();
   expect(drawer.getByText("Restore title override")).toBeTruthy();
+});
+
+test("opens the floating search on focus and closes it explicitly", async () => {
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+
+  expect(drawer.queryByTestId("app-drawer-search-popover")).toBeNull();
+  await fireEvent(searchInput, "focus");
+  expect(drawer.getByTestId("app-drawer-search-popover")).toBeTruthy();
+  expect(drawer.getByRole("tab", { name: "ディレクトリ" })).toBeTruthy();
+  expect(drawer.getByRole("tab", { name: "チャット" })).toBeTruthy();
+
+  await fireEvent.press(drawer.getByLabelText("検索を閉じる"));
+  await waitFor(() => expect(drawer.queryByTestId("app-drawer-search-popover")).toBeNull());
+});
+
+test("keeps the floating search open while switching modes inside it", async () => {
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent(searchInput, "blur");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+
+  await waitFor(() => expect(drawer.getByTestId("app-drawer-search-popover")).toBeTruthy());
+  expect(drawer.getByPlaceholderText("チャット内を検索")).toBeTruthy();
+});
+
+test("searches registered directories through the conversation API and opens the result", async () => {
+  const onSelectSessionHistoryEntry = jest.fn();
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      results: [{
+        sessionRef: { backendId: "codex", nativeSessionId: "found-session" },
+        canonicalCwd: "/work/bitty",
+        sessionCreatedAt: "2026-08-30T00:00:00.000Z",
+        messageId: "message-1",
+        role: "assistant",
+        snippet: "Found the drawer conversation",
+        conversationCursor: "read-cursor",
+      }],
+      scanned: { sessions: 1, items: 4, pages: 1 },
+    }),
+  } as Response);
+  const drawer = await renderDrawer({ onSelectSessionHistoryEntry });
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "drawer conversation");
+
+  await waitFor(() => expect(drawer.getByText("Found the drawer conversation")).toBeTruthy());
+  const url = new URL(String(fetchMock.mock.calls[0][0]));
+  expect(url.searchParams.getAll("cwd")).toEqual(["/work/bitty"]);
+  expect(url.searchParams.get("backendId")).toBe("all");
+
+  await fireEvent.press(drawer.getByText("Found the drawer conversation"));
+  expect(onSelectSessionHistoryEntry).toHaveBeenCalledWith(
+    "codex",
+    "found-session",
+    "all",
+    "/work/bitty",
+    expect.objectContaining({ width: 68, height: 48 })
+  );
+  fetchMock.mockRestore();
+});
+
+test("continues chat search across every registered directory in API-sized pages", async () => {
+  const registeredDirectories = Array.from({ length: 9 }, (_, index) => ({
+    id: `dir-${index}`,
+    path: `/work/${index}`,
+    displayName: `Directory ${index}`,
+    markerColor: "none" as const,
+  }));
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response)
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response);
+  const drawer = await renderDrawer({ registeredDirectories });
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "search all directories");
+
+  await waitFor(() => expect(drawer.getByText("検索を続ける")).toBeTruthy());
+  const firstUrl = new URL(String(fetchMock.mock.calls[0][0]));
+  expect(firstUrl.searchParams.getAll("cwd")).toEqual(
+    registeredDirectories.slice(0, 8).map((directory) => directory.path)
+  );
+
+  await fireEvent.press(drawer.getByText("検索を続ける"));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  expect(secondUrl.searchParams.getAll("cwd")).toEqual(["/work/8"]);
+  fetchMock.mockRestore();
 });
 
 test("refreshes and expands loaded subagent children in the drawer", async () => {

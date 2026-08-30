@@ -8,7 +8,6 @@ import {
   SafeAreaView,
   ScrollView,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   type GestureResponderEvent,
@@ -29,6 +28,10 @@ import type {
   SessionChildTreeState,
 } from "../types/directorySessions";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
+import {
+  AppDrawerSearch,
+  APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID,
+} from "./AppDrawerSearch";
 
 export type {
   DirectoryMarkerColor,
@@ -72,8 +75,6 @@ export type AppDrawerProps = {
   onMarkSessionUnread: (backendId: string, sessionId: string, source: LlmSessionSource, directoryPath: string) => void;
   onMarkDirectorySessionsRead: (directoryPath: string) => void;
 };
-
-const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAccessory";
 
 function DrawerChevron({ expanded }: { expanded: boolean }) {
   const path = expanded ? "M4 6L8 10L12 6" : "M10 4L6 8L10 12";
@@ -141,6 +142,7 @@ export const AppDrawer = memo(function AppDrawer({
   } = useSkiaBoard();
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchActive, setSearchActive] = useState(false);
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const expandedSessionSet = useMemo(() => new Set(expandedSessionIds), [expandedSessionIds]);
@@ -203,39 +205,21 @@ export const AppDrawer = memo(function AppDrawer({
       directoryLabel,
       directory.path,
     ]);
-    const matchingSessionEntries = !normalizedSearchQuery
-      ? baseVisibleSessionEntries
-      : sessionEntries.filter((session) => {
-        const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
-        return drawerSearchIncludes(normalizedSearchQuery, [
-          titleOverride,
-          session.firstUserMessage,
-          session.sessionId,
-          session.source,
-          session.modelRef,
-          session.reasoningEffort,
-        ]);
-      });
-    const visibleSessionEntries = directoryMatches && normalizedSearchQuery
-      ? sessionEntries
-      : matchingSessionEntries;
-
-    if (normalizedSearchQuery && !directoryMatches && matchingSessionEntries.length <= 0) return [];
+    if (!directoryMatches) return [];
 
     return [{
       directory,
       directoryLabel,
       expanded,
       selectedDirectory,
-      showLoadMoreSessions: expanded || (!!normalizedSearchQuery && directoryMatches),
+      showLoadMoreSessions: expanded,
       sessionState,
       readProgress,
       unreadCount,
-      visibleSessionEntries,
+      visibleSessionEntries: baseVisibleSessionEntries,
       shouldShowSessionBlock: (
         expanded ||
-        visibleSessionEntries.length > 0 ||
-        !!normalizedSearchQuery
+        baseVisibleSessionEntries.length > 0
       ),
     }];
   }), [
@@ -246,7 +230,6 @@ export const AppDrawer = memo(function AppDrawer({
     normalizedSearchQuery,
     registeredDirectories,
     selectedDirectoryPath,
-    sessionTitleOverridesById,
   ]);
 
   const renderSessionEntry = (
@@ -361,40 +344,32 @@ export const AppDrawer = memo(function AppDrawer({
 
   return (
     <SafeAreaView style={styles.appDrawerRoot}>
+      <AppDrawerSearch
+        directoryQuery={searchQuery}
+        onChangeDirectoryQuery={setSearchQuery}
+        active={searchActive}
+        onActiveChange={setSearchActive}
+        directoryMatchCount={directoryViews.length}
+        registeredDirectories={registeredDirectories}
+        onSelectChatResult={(result, event) => onSelectSessionHistoryEntry(
+          result.sessionRef.backendId,
+          result.sessionRef.nativeSessionId,
+          "all",
+          result.canonicalCwd,
+          eventToPopupSourceRect(event)
+        )}
+      />
       <ScrollView
         style={styles.appDrawerScroll}
         contentContainerStyle={styles.appDrawerContent}
         keyboardShouldPersistTaps="handled"
-        stickyHeaderIndices={[0]}
+        onTouchStart={() => {
+          if (searchActive) {
+            setSearchActive(false);
+            Keyboard.dismiss();
+          }
+        }}
       >
-        <View style={styles.appDrawerSearchSticky}>
-          <View style={styles.appDrawerSearchBox}>
-            <TextInput
-              style={styles.appDrawerSearchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="ディレクトリ・履歴を検索"
-              placeholderTextColor="#94a3b8"
-              autoCapitalize="none"
-              autoCorrect={false}
-              clearButtonMode="never"
-              inputAccessoryViewID={Platform.OS === "ios" ? APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID : undefined}
-              onSubmitEditing={Keyboard.dismiss}
-              returnKeyType="search"
-              submitBehavior="blurAndSubmit"
-            />
-            {searchQuery ? (
-              <TouchableOpacity
-                style={styles.appDrawerSearchClearButton}
-                onPress={() => setSearchQuery("")}
-                accessibilityRole="button"
-                accessibilityLabel="検索をクリア"
-              >
-                <Text style={styles.appDrawerSearchClearButtonText}>×</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </View>
         <Text style={styles.appDrawerTitle}>メニュー</Text>
         <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSettings}>
           <Text style={styles.menuNavTitle}>設定</Text>
@@ -456,7 +431,7 @@ export const AppDrawer = memo(function AppDrawer({
           {registeredDirectories.length <= 0 ? (
             <Text style={styles.hint}>登録ディレクトリはありません。追加ボタンから登録してください。</Text>
           ) : directoryViews.length <= 0 ? (
-            <Text style={styles.hint}>一致するディレクトリまたは履歴はありません。</Text>
+            <Text style={styles.hint}>一致するディレクトリはありません。</Text>
           ) : (
             directoryViews.map(({
               directory,
@@ -680,7 +655,10 @@ export const AppDrawer = memo(function AppDrawer({
           <View style={styles.appDrawerKeyboardAccessory}>
             <TouchableOpacity
               style={styles.appDrawerKeyboardDismissButton}
-              onPress={Keyboard.dismiss}
+              onPress={() => {
+                setSearchActive(false);
+                Keyboard.dismiss();
+              }}
               accessibilityRole="button"
               accessibilityLabel="キーボードを閉じる"
             >
