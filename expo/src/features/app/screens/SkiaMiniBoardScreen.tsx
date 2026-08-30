@@ -1675,7 +1675,14 @@ export function SkiaMiniBoardScreen({
         style={screenStyles.menuAction}
         onPress={() => {
           setBoardMenuOpen(false);
-          tidyBoard();
+          Alert.alert(
+            "カードを整頓",
+            "すべてのカードをグリッドに整頓しますか?",
+            [
+              { text: "キャンセル", style: "cancel" },
+              { text: "整頓", onPress: tidyBoard },
+            ]
+          );
         }}
         accessibilityRole="button"
         accessibilityLabel="カードをグリッドに整頓"
@@ -1745,8 +1752,12 @@ export function SkiaMiniBoardScreen({
 
   return (
     <View style={screenStyles.screen}>
-      <SafeAreaView style={screenStyles.headerSafeArea}>
-        <View style={screenStyles.header}>
+      <SafeAreaView
+        pointerEvents="box-none"
+        style={screenStyles.headerSafeArea}
+        testID="skia-board-header-safe-area"
+      >
+        <View pointerEvents="box-none" style={screenStyles.header} testID="skia-board-header">
           <TouchableOpacity
             style={screenStyles.headerButton}
             onPress={openDrawer}
@@ -1755,7 +1766,6 @@ export function SkiaMiniBoardScreen({
           >
             <Text style={screenStyles.headerButtonText}>☰</Text>
           </TouchableOpacity>
-          <View style={screenStyles.headerSpacer} />
           <TouchableOpacity
             style={screenStyles.headerButton}
             onPress={() => setBoardMenuOpen(true)}
@@ -1924,30 +1934,31 @@ const screenStyles = StyleSheet.create({
     backgroundColor: "#eef2f7",
   },
   headerSafeArea: {
-    backgroundColor: "transparent",
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
   },
   header: {
     minHeight: 54,
     paddingHorizontal: 12,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "transparent",
+    justifyContent: "space-between",
   },
   headerButton: {
     width: 44,
     height: 44,
-    borderRadius: 12,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "transparent",
+    backgroundColor: "#e8eef6",
   },
   headerButtonText: {
     color: "#27364b",
     fontSize: 20,
     fontWeight: "700",
-  },
-  headerSpacer: {
-    flex: 1,
   },
   canvasHost: {
     flex: 1,

@@ -957,7 +957,8 @@ test("opens a new session from a directory card on its second tap", async () => 
   expect(onStartNewSessionInDirectory).toHaveBeenCalledWith("/workspace/projects/bitty");
 });
 
-test("tidies board cards without touching the viewport", async () => {
+test("tidies board cards only after confirmation without touching the viewport", async () => {
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
   const screen = await render(
     <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
@@ -965,7 +966,24 @@ test("tidies board cards without touching the viewport", async () => {
   await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
   await fireEvent.press(screen.getByLabelText("カードをグリッドに整頓"));
 
+  expect(screen.queryByLabelText("カードをグリッドに整頓")).toBeNull();
+  expect(mockTidyBoard).not.toHaveBeenCalled();
+  expect(alertSpy).toHaveBeenCalledTimes(1);
+  expect(alertSpy).toHaveBeenCalledWith(
+    "カードを整頓",
+    "すべてのカードをグリッドに整頓しますか?",
+    [
+      { text: "キャンセル", style: "cancel" },
+      { text: "整頓", onPress: expect.any(Function) },
+    ]
+  );
+  const buttons = alertSpy.mock.calls[0]?.[2];
+  buttons?.[0]?.onPress?.();
+  expect(mockTidyBoard).not.toHaveBeenCalled();
+  buttons?.[1]?.onPress?.();
   expect(mockTidyBoard).toHaveBeenCalledTimes(1);
+  expect(mockPersistViewport).not.toHaveBeenCalled();
+  alertSpy.mockRestore();
 });
 
 test("keeps board menu actions clickable through the shared modal", async () => {
@@ -1254,15 +1272,39 @@ test("keeps an explicit fallback for unsupported file types on second tap", asyn
   alertSpy.mockRestore();
 });
 
-test("shows only transparent navigation controls in the header and adjusts card text", async () => {
+test("floats circular navigation controls over the full-height canvas", async () => {
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(screen.queryByText("Board")).toBeNull();
   expect(screen.queryByText(/タップで選択/)).toBeNull();
-  expect(StyleSheet.flatten(screen.getByLabelText("ナビゲーションを開く").props.style)).toMatchObject({
-    width: 44,
-    height: 44,
+  const headerStyle = StyleSheet.flatten(
+    screen.getByTestId("skia-board-header-safe-area").props.style
+  );
+  expect(headerStyle).toMatchObject({
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
   });
+  expect(headerStyle.backgroundColor).toBeUndefined();
+  expect(screen.getByTestId("skia-board-header-safe-area").props.pointerEvents).toBe("box-none");
+  const header = screen.getByTestId("skia-board-header");
+  expect(header.props.pointerEvents).toBe("box-none");
+  expect(StyleSheet.flatten(header.props.style)).toMatchObject({
+    justifyContent: "space-between",
+  });
+  expect(header.children).toHaveLength(2);
+  expect(header.children.map((child) => (
+    typeof child === "string" ? child : child.props.accessibilityLabel
+  ))).toEqual(["ナビゲーションを開く", "ボードメニューを開く"]);
+  for (const label of ["ナビゲーションを開く", "ボードメニューを開く"]) {
+    expect(StyleSheet.flatten(screen.getByLabelText(label).props.style)).toMatchObject({
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: "#e8eef6",
+    });
+  }
   await fireEvent.press(screen.getByLabelText("ボードメニューを開く"));
   expect(StyleSheet.flatten(screen.getByLabelText("カードをグリッドに整頓").props.style)).toMatchObject({
     minHeight: 44,
