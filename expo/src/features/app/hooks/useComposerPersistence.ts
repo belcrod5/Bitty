@@ -176,7 +176,7 @@ export function useComposerDraftSync(options: {
   const bindingRef = useRef<{
     sessionId: string;
     observedText: string;
-    restored: boolean;
+    pendingDraftText: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -188,20 +188,23 @@ export function useComposerDraftSync(options: {
 
     let binding = bindingRef.current;
     if (!binding || binding.sessionId !== sessionId) {
-      binding = { sessionId, observedText: text, restored: false };
+      binding = { sessionId, observedText: text, pendingDraftText: null };
       bindingRef.current = binding;
     }
 
     if (text !== binding.observedText) {
       binding.observedText = text;
-      binding.restored = true;
+      binding.pendingDraftText = text;
       setDraft(sessionId, text);
       return;
     }
 
-    if (!loaded || binding.restored) return;
+    if (!loaded) return;
     const persistedText = drafts.find((draft) => draft.sessionId === sessionId)?.text || "";
-    binding.restored = true;
+    if (binding.pendingDraftText !== null) {
+      if (persistedText === binding.pendingDraftText) binding.pendingDraftText = null;
+      return;
+    }
     if (persistedText === text) return;
     binding.observedText = persistedText;
     setText(persistedText);

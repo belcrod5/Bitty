@@ -137,3 +137,24 @@ test("keeps a newer source update when persisted drafts finish loading", async (
   await rerender({});
   expect(result.current.text).toBe("spoken before load");
 });
+
+test("clears every composer bound to a draft after an accepted send removes it", async () => {
+  let drafts = [{ sessionId: "popup-session", text: "send me", updatedAt: 2 }];
+  const { result, rerender } = await renderHook(() => {
+    const [text, setText] = useState("");
+    useComposerDraftSync({
+      sessionId: "popup-session",
+      text,
+      drafts,
+      loaded: true,
+      setDraft: jest.fn(),
+      setText,
+    });
+    return text;
+  });
+  await waitFor(() => expect(result.current).toBe("send me"));
+
+  drafts = [];
+  await rerender({});
+  await waitFor(() => expect(result.current).toBe(""));
+});
