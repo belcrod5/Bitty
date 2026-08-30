@@ -29,11 +29,13 @@ jest.mock("expo-file-system/legacy", () => ({
 }));
 
 import {
+  COMPOSER_DRAFTS_FIELD,
   COMPOSER_MESSAGE_HISTORY_FIELD,
   mutatePersistedSettings,
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
   readPersistedSettingsField,
+  SKIA_BOARD_VIEWPORT_FIELD,
 } from "./persistedSettingsFile";
 
 // ボード配置の正本はランナーへ移行済み。旧skiaBoardStateをPRESERVEDへ戻すと
@@ -41,6 +43,8 @@ import {
 test("preserved settings fields no longer carry the legacy skia board state", () => {
   expect(PRESERVED_SETTINGS_FIELDS).not.toContain("skiaBoardState");
   expect(PRESERVED_SETTINGS_FIELDS).toContain(COMPOSER_MESSAGE_HISTORY_FIELD);
+  expect(PRESERVED_SETTINGS_FIELDS).toContain(COMPOSER_DRAFTS_FIELD);
+  expect(PRESERVED_SETTINGS_FIELDS).toContain(SKIA_BOARD_VIEWPORT_FIELD);
 });
 
 beforeEach(() => {

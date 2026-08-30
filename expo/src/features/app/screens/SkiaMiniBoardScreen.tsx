@@ -73,6 +73,11 @@ import {
   type SkiaBoardAppearanceTarget,
 } from "../components/SkiaBoardCardAppearanceEditor";
 import { useSkiaBoardCardImage } from "../hooks/useSkiaBoardCardImage";
+import {
+  SKIA_BOARD_MAX_SCALE as MAX_SCALE,
+  SKIA_BOARD_MIN_SCALE as MIN_SCALE,
+  useSkiaBoardViewportPersistence,
+} from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -97,8 +102,6 @@ import {
   type SkiaBoardSectionRect,
 } from "../utils/skiaBoardSectionGeometry";
 
-const MIN_SCALE = 0.25;
-const MAX_SCALE = 2.5;
 const ZOOM_ANIMATION = {
   duration: 100,
   easing: Easing.out(Easing.cubic),
@@ -647,6 +650,9 @@ export function SkiaMiniBoardScreen({
   const boardX = useSharedValue(0);
   const boardY = useSharedValue(0);
   const scale = useSharedValue(1);
+  const { markViewportInteraction, persistViewport } = useSkiaBoardViewportPersistence({
+    x: boardX, y: boardY, scale,
+  });
   const gestureStartX = useSharedValue(0);
   const gestureStartY = useSharedValue(0);
   const gestureStartScale = useSharedValue(1);
@@ -746,6 +752,19 @@ export function SkiaMiniBoardScreen({
       boardY.value = position.y;
     },
     [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale]
+  );
+  useAnimatedReaction(
+    () => cameraInertiaCount.value,
+    (count, previousCount) => {
+      if (count === 0 && Number(previousCount) > 0) {
+        runOnJS(persistViewport)(
+          cameraFocalX.value - cameraAnchorX.value * scale.value,
+          cameraFocalY.value - cameraAnchorY.value * scale.value,
+          scale.value
+        );
+      }
+    },
+    [cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, persistViewport, scale]
   );
 
   // ドラッグ・ピンチの入力反映のフレーム駆動化。タッチイベントはvsyncと位相が揃わず、
@@ -1189,6 +1208,7 @@ export function SkiaMiniBoardScreen({
       .maxPointers(2)
       .minDistance(10)
       .onTouchesDown((event) => {
+        runOnJS(markViewportInteraction)();
         // 慣性中に画面へ触れたら、その場でカメラを止める。
         stopCameraInertia();
         remainingTouchTracked.value = false;
@@ -1380,6 +1400,9 @@ export function SkiaMiniBoardScreen({
       .onFinalize(() => {
         // 未反映の目標値を適用してからループを止める(最終座標の整合)。
         releaseGestureFrameLoop();
+        if (cameraInertiaCount.value === 0) {
+          runOnJS(persistViewport)(boardX.value, boardY.value, scale.value);
+        }
         const index = activeCardIndex.value;
         const cardId = activeCardId.value;
         const x = activeCardX.value;
@@ -1478,6 +1501,7 @@ export function SkiaMiniBoardScreen({
         // macOSのホイールズーム(1ポインタ)はPanのタッチイベントを発生させないため、
         // ここでも慣性を止める(タッチ端末ではonTouchesDown済みで冪等)。
         stopCameraInertia();
+        runOnJS(markViewportInteraction)();
         touchSequenceHadMultiplePointers.value = true;
       })
       .onStart((event) => {
@@ -1552,7 +1576,9 @@ export function SkiaMiniBoardScreen({
           requestGestureFrameLoop();
           return;
         }
-        scale.value = withTiming(nextScale, ZOOM_ANIMATION);
+        scale.value = withTiming(nextScale, ZOOM_ANIMATION, (finished) => {
+          if (finished) runOnJS(persistViewport)(nextBoardX, nextBoardY, nextScale);
+        });
         boardX.value = withTiming(nextBoardX, ZOOM_ANIMATION);
         boardY.value = withTiming(nextBoardY, ZOOM_ANIMATION);
       })
@@ -1584,6 +1610,7 @@ export function SkiaMiniBoardScreen({
     cameraTargetScale,
     cameraTargetX,
     cameraTargetY,
+    cameraInertiaCount,
     cardDragDirty,
     cardIds,
     flushGestureTargets,
@@ -1591,11 +1618,13 @@ export function SkiaMiniBoardScreen({
     requestGestureFrameLoop,
     handleCardTap,
     handleSectionTap,
+    markViewportInteraction,
     openCardContextMenu,
     openSectionContextMenu,
     pinchBoardX,
     pinchBoardY,
     pinchMomentum,
+    persistViewport,
     positions,
     remainingTouchTracked,
     remainingTouchStartX,
@@ -1618,6 +1647,7 @@ export function SkiaMiniBoardScreen({
     boardX.value = 0;
     boardY.value = 0;
     scale.value = 1;
+    persistViewport(0, 0, 1);
     selectedCardIndex.value = -1;
     selectedSectionIndex.value = -1;
     setSelectedCardId("");

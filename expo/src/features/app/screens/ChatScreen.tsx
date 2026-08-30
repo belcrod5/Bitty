@@ -57,6 +57,7 @@ import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
+import { useComposerDraftSync } from "../hooks/useComposerPersistence";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 import { useChatModelSelection } from "../hooks/useChatModelSelection";
@@ -246,6 +247,7 @@ export function ChatScreen({
     composerDirectSttVisible,
     directNativeSttPreviewText,
     composerMessageHistory,
+    composerDrafts, composerDraftsLoaded, setComposerDraft,
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,
@@ -566,14 +568,13 @@ export function ChatScreen({
   const miniBoardMountLoggedRef = useRef(false);
   const miniBoardPrevSessionIdRef = useRef("");
   const usesPanelComposerState = isMiniBoardPopupMode && !!panelId;
+  useComposerDraftSync({
+    sessionId: selectedSessionIdForView, text: panelTranscript, enabled: usesPanelComposerState,
+    drafts: composerDrafts, loaded: composerDraftsLoaded,
+    setText: setPanelTranscript, setDraft: setComposerDraft,
+  });
   const transcriptForView = usesPanelComposerState ? panelTranscript : transcript;
-  const setTranscriptForView = useCallback((nextText: string) => {
-    if (usesPanelComposerState) {
-      setPanelTranscript(nextText);
-      return;
-    }
-    setTranscript(nextText);
-  }, [setTranscript, usesPanelComposerState]);
+  const setTranscriptForView = usesPanelComposerState ? setPanelTranscript : setTranscript;
   const hasComposerTextForView = useMemo(() => !!transcriptForView.trim(), [transcriptForView]);
   const showComposerFullscreenToggleForView = usesPanelComposerState
     ? panelComposerFocused
@@ -1079,7 +1080,6 @@ export function ChatScreen({
     }
     const text = transcriptForView.trim();
     if (!text) return;
-    setPanelTranscript("");
     void sendReplyTranscriptForPanel(panelId, text);
   }, [
     panelId,

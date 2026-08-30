@@ -251,7 +251,12 @@ jest.mock("../contexts/ChatDiagnosticsContext", () => ({
 }));
 
 jest.mock("../contexts/ChatComposerContext", () => ({
-  useChatComposer: () => ({
+  useChatComposer: () => {
+    const ReactModule = jest.requireActual<typeof React>("react");
+    const [composerDrafts, setComposerDrafts] = ReactModule.useState<Array<{
+      sessionId: string; text: string; updatedAt: number;
+    }>>([]);
+    return ({
     composerWaveformVisible: false,
     autoWaveformAnimationEnabled: false,
     waveformDotGif: 0,
@@ -259,6 +264,12 @@ jest.mock("../contexts/ChatComposerContext", () => ({
     composerDirectSttVisible: false,
     directNativeSttPreviewText: "",
     composerMessageHistory: [],
+    composerDrafts,
+    composerDraftsLoaded: true,
+    setComposerDraft: (sessionId: string, text: string) => setComposerDrafts((current) => [
+      ...(text ? [{ sessionId, text, updatedAt: Date.now() }] : []),
+      ...current.filter((draft) => draft.sessionId !== sessionId),
+    ]),
     chatComposerInputRef: { current: null },
     showComposerFullscreenToggle: false,
     setComposerInputFocused: jest.fn(),
@@ -280,7 +291,8 @@ jest.mock("../contexts/ChatComposerContext", () => ({
     setSlashCommandSelectOpen: jest.fn(),
     slashCommandOptions: [],
     onSelectSlashCommand: jest.fn(),
-  }),
+    });
+  },
 }));
 
 jest.mock("../contexts/ChatVisualContext", () => ({
