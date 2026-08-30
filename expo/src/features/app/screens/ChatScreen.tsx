@@ -57,7 +57,7 @@ import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
-import { useSessionComposerDraft } from "../hooks/useComposerPersistence";
+import { useComposerDraftSync } from "../hooks/useComposerPersistence";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 import { useChatModelSelection } from "../hooks/useChatModelSelection";
@@ -560,6 +560,7 @@ export function ChatScreen({
     });
   }, [backendIdForView, loadOlderSessionHistory, selectedDirectoryPathForView, selectedSessionIdForView]);
   const popupComposerFullscreenInputRef = useRef<TextInput | null>(null);
+  const [panelTranscript, setPanelTranscript] = useState("");
   const [panelComposerFocused, setPanelComposerFocused] = useState(false);
   const [chatViewportSize, setChatViewportSize] = useState({ width: 0, height: 0 });
   const [popupChatViewportSize, setPopupChatViewportSize] = useState({ width: 0, height: 0 });
@@ -567,10 +568,13 @@ export function ChatScreen({
   const miniBoardMountLoggedRef = useRef(false);
   const miniBoardPrevSessionIdRef = useRef("");
   const usesPanelComposerState = isMiniBoardPopupMode && !!panelId;
-  const [transcriptForView, setTranscriptForView] = useSessionComposerDraft({
-    sessionId: selectedSessionIdForView, panelScoped: usesPanelComposerState, transcript,
-    drafts: composerDrafts, loaded: composerDraftsLoaded, setTranscript, setDraft: setComposerDraft,
+  useComposerDraftSync({
+    sessionId: selectedSessionIdForView, text: panelTranscript, enabled: usesPanelComposerState,
+    drafts: composerDrafts, loaded: composerDraftsLoaded,
+    setText: setPanelTranscript, setDraft: setComposerDraft,
   });
+  const transcriptForView = usesPanelComposerState ? panelTranscript : transcript;
+  const setTranscriptForView = usesPanelComposerState ? setPanelTranscript : setTranscript;
   const hasComposerTextForView = useMemo(() => !!transcriptForView.trim(), [transcriptForView]);
   const showComposerFullscreenToggleForView = usesPanelComposerState
     ? panelComposerFocused

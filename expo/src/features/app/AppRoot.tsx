@@ -64,7 +64,7 @@ import { useAutoWaveformStateController } from "./hooks/useAutoWaveformStateCont
 import { useAudioSettingsInputController } from "./hooks/useAudioSettingsInputController";
 import { useChatDerivedState } from "./hooks/useChatDerivedState";
 import { useChatBottomToast } from "./hooks/useChatBottomToast";
-import { useComposerPersistence } from "./hooks/useComposerPersistence";
+import { useComposerDraftSync, useComposerPersistence } from "./hooks/useComposerPersistence";
 import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteRequestController";
@@ -744,8 +744,8 @@ export default function App() {
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
   const { messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
-    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded,
-    setDraft: setComposerDraft, clearDraft: clearComposerDraft } = useComposerPersistence();
+    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft } = useComposerPersistence();
+  useComposerDraftSync({ sessionId: selectedLlmSessionId, text: transcript, drafts: composerDrafts, loaded: composerDraftsLoaded, setText: setTranscript, setDraft: setComposerDraft });
   const [composerInputFocused, setComposerInputFocused] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("返答は1文で");
   const [reply, setReply] = useState("");

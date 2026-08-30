@@ -163,27 +163,47 @@ export function useComposerPersistence() {
   return { messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft };
 }
 
-export function useSessionComposerDraft(options: {
+export function useComposerDraftSync(options: {
   sessionId: string;
-  panelScoped: boolean;
-  transcript: string;
+  text: string;
   drafts: readonly ComposerDraft[];
   loaded: boolean;
-  setTranscript: (text: string) => void;
+  enabled?: boolean;
+  setText: (text: string) => void;
   setDraft: (sessionId: string, text: string) => void;
 }) {
-  const { sessionId, panelScoped, transcript, drafts, loaded, setTranscript, setDraft } = options;
-  const [panelTranscript, setPanelTranscript] = useState("");
-  const persistedText = drafts.find((draft) => draft.sessionId === sessionId)?.text || "";
+  const { sessionId: sessionIdRaw, text, drafts, loaded, enabled = true, setText, setDraft } = options;
+  const bindingRef = useRef<{
+    sessionId: string;
+    observedText: string;
+    restored: boolean;
+  } | null>(null);
+
   useEffect(() => {
-    if (!loaded) return;
-    if (panelScoped) setPanelTranscript(persistedText);
-    else setTranscript(persistedText);
-  }, [loaded, panelScoped, persistedText, sessionId, setTranscript]);
-  const setText = useCallback((text: string) => {
-    setDraft(sessionId, text);
-    if (panelScoped) setPanelTranscript(text);
-    else setTranscript(text);
-  }, [panelScoped, sessionId, setDraft, setTranscript]);
-  return [panelScoped ? panelTranscript : transcript, setText] as const;
+    const sessionId = String(sessionIdRaw || "").trim();
+    if (!enabled || !sessionId) {
+      bindingRef.current = null;
+      return;
+    }
+
+    let binding = bindingRef.current;
+    if (!binding || binding.sessionId !== sessionId) {
+      binding = { sessionId, observedText: text, restored: false };
+      bindingRef.current = binding;
+    }
+
+    if (text !== binding.observedText) {
+      binding.observedText = text;
+      binding.restored = true;
+      setDraft(sessionId, text);
+      return;
+    }
+
+    if (!loaded || binding.restored) return;
+    const persistedText = drafts.find((draft) => draft.sessionId === sessionId)?.text || "";
+    binding.restored = true;
+    if (persistedText === text) return;
+    binding.observedText = persistedText;
+    setText(persistedText);
+  }, [drafts, enabled, loaded, sessionIdRaw, setDraft, setText, text]);
 }

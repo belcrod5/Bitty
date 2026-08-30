@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react-native";
 import {
   COMPOSER_DRAFTS_FIELD,
@@ -8,10 +9,11 @@ import {
 import {
   COMPOSER_DRAFT_LIMIT,
   COMPOSER_MESSAGE_HISTORY_LIMIT,
+  type ComposerDraft,
   parseComposerDrafts,
   parseComposerMessageHistory,
+  useComposerDraftSync,
   useComposerPersistence,
-  useSessionComposerDraft,
 } from "./useComposerPersistence";
 
 jest.mock("../utils/persistedSettingsFile", () => ({
@@ -92,28 +94,46 @@ test("restores, debounces updates, limits sessions, and clears only the accepted
   expect(mockMutate).toHaveBeenCalledTimes(2);
 });
 
-test("binds popup composer state to the selected local or materialized session", async () => {
-  let sessionId = "local-session";
-  let drafts = [{ sessionId, text: "local draft", updatedAt: 2 }];
+test("restores each session once and persists source-of-truth updates from any input path", async () => {
+  let drafts = [{ sessionId: "local-session", text: "local draft", updatedAt: 2 }];
   const setDraft = jest.fn();
-  const setTranscript = jest.fn();
-  const { result, rerender } = await renderHook(() => useSessionComposerDraft({
-    sessionId,
-    panelScoped: true,
-    transcript: "",
-    drafts,
-    loaded: true,
-    setDraft,
-    setTranscript,
-  }));
-  await waitFor(() => expect(result.current[0]).toBe("local draft"));
+  const { result, rerender } = await renderHook(({ sessionId }: { sessionId: string }) => {
+    const [text, setText] = useState("");
+    useComposerDraftSync({ sessionId, text, drafts, loaded: true, setDraft, setText });
+    return { text, setText };
+  }, { initialProps: { sessionId: "local-session" } });
+  await waitFor(() => expect(result.current.text).toBe("local draft"));
 
-  await act(async () => result.current[1]("edited"));
-  expect(setDraft).toHaveBeenCalledWith("local-session", "edited");
-  expect(result.current[0]).toBe("edited");
+  setDraft.mockClear();
+  await act(async () => result.current.setText("voice input"));
+  await waitFor(() => expect(setDraft).toHaveBeenCalledWith("local-session", "voice input"));
+  expect(result.current.text).toBe("voice input");
 
-  sessionId = "server-session";
-  drafts = [{ sessionId, text: "server draft", updatedAt: 3 }];
+  await rerender({ sessionId: "local-session" });
+  expect(result.current.text).toBe("voice input");
+
+  drafts = [{ sessionId: "server-session", text: "server draft", updatedAt: 3 }];
+  await rerender({ sessionId: "server-session" });
+  await waitFor(() => expect(result.current.text).toBe("server draft"));
+});
+
+test("keeps a newer source update when persisted drafts finish loading", async () => {
+  let loaded = false;
+  let drafts: ComposerDraft[] = [];
+  const setDraft = jest.fn();
+  const { result, rerender } = await renderHook(() => {
+    const [text, setText] = useState("");
+    useComposerDraftSync({
+      sessionId: "local-session", text, drafts, loaded, setDraft, setText,
+    });
+    return { text, setText };
+  });
+
+  await act(async () => result.current.setText("spoken before load"));
+  await waitFor(() => expect(setDraft).toHaveBeenCalledWith("local-session", "spoken before load"));
+
+  loaded = true;
+  drafts = [{ sessionId: "local-session", text: "older draft", updatedAt: 1 }];
   await rerender({});
-  await waitFor(() => expect(result.current[0]).toBe("server draft"));
+  expect(result.current.text).toBe("spoken before load");
 });
