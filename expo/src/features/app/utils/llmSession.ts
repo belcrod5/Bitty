@@ -35,6 +35,18 @@ export function formatLlmSessionDisplayTitle(raw: unknown): string {
   return `${codePoints.slice(0, LLM_SESSION_DISPLAY_TITLE_MAX_CODE_POINTS - 1).join("")}…`;
 }
 
+export function resolveLlmSessionDisplayTitle(
+  session: { agentDisplayName?: unknown; firstUserMessage?: unknown },
+  override?: unknown,
+): string {
+  return (
+    formatLlmSessionDisplayTitle(override) ||
+    formatLlmSessionDisplayTitle(session.agentDisplayName) ||
+    formatLlmSessionDisplayTitle(session.firstUserMessage) ||
+    "（ユーザーメッセージなし）"
+  );
+}
+
 export function llmStreamSessionKey(raw: unknown, fallback: string): string {
   const sessionId = parseOptionalSessionId(raw);
   if (sessionId) return sessionId;

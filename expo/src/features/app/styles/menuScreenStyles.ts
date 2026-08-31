@@ -218,11 +218,33 @@ export const menuScreenStyles = {
     paddingVertical: 10,
   },
   appDrawerSearchResult: {
-    borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
-    paddingHorizontal: 4,
-    paddingVertical: 10,
-    gap: 4,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 6,
+  },
+  appDrawerSearchResultPressed: {
+    backgroundColor: "#f0fdfa",
+    borderColor: "#99f6e4",
+  },
+  appDrawerSearchResultTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  appDrawerSearchResultTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: "#0f172a",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  appDrawerSearchResultDate: {
+    color: "#94a3b8",
+    fontSize: 10,
   },
   appDrawerSearchResultMetaRow: {
     flexDirection: "row",
@@ -230,13 +252,13 @@ export const menuScreenStyles = {
     justifyContent: "space-between",
     gap: 8,
   },
-  appDrawerSearchResultRole: {
+  appDrawerSearchResultDirectory: {
+    flex: 1,
     color: "#0f766e",
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   appDrawerSearchResultMeta: {
-    flex: 1,
     color: "#64748b",
     fontSize: 10,
     textAlign: "right",
@@ -245,10 +267,6 @@ export const menuScreenStyles = {
     color: "#0f172a",
     fontSize: 13,
     lineHeight: 19,
-  },
-  appDrawerSearchResultPath: {
-    color: "#94a3b8",
-    fontSize: 10,
   },
   appDrawerSearchWarning: {
     color: "#b45309",
@@ -266,6 +284,11 @@ export const menuScreenStyles = {
     color: "#1e40af",
     fontSize: 13,
     fontWeight: "700",
+  },
+  appDrawerSearchProgressText: {
+    color: "#64748b",
+    fontSize: 12,
+    textAlign: "center",
   },
   appDrawerKeyboardAccessory: {
     minHeight: 44,

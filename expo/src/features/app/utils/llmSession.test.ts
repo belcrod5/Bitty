@@ -1,4 +1,4 @@
-import { formatLlmSessionDisplayTitle } from "./llmSession";
+import { formatLlmSessionDisplayTitle, resolveLlmSessionDisplayTitle } from "./llmSession";
 
 describe("formatLlmSessionDisplayTitle", () => {
   it("normalizes whitespace in a short title", () => {
@@ -17,5 +17,16 @@ describe("formatLlmSessionDisplayTitle", () => {
     const title = "界".repeat(200);
 
     expect(formatLlmSessionDisplayTitle(title)).toBe(title);
+  });
+});
+
+describe("resolveLlmSessionDisplayTitle", () => {
+  it("uses the same override, agent, message, and empty-title precedence", () => {
+    const session = { agentDisplayName: "Agent title", firstUserMessage: "First message" };
+
+    expect(resolveLlmSessionDisplayTitle(session, "Custom title")).toBe("Custom title");
+    expect(resolveLlmSessionDisplayTitle(session)).toBe("Agent title");
+    expect(resolveLlmSessionDisplayTitle({ firstUserMessage: "First message" })).toBe("First message");
+    expect(resolveLlmSessionDisplayTitle({})).toBe("（ユーザーメッセージなし）");
   });
 });

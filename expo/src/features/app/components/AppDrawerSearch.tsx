@@ -15,7 +15,9 @@ import {
 } from "react-native";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { styles } from "../styles";
-import type { RegisteredDirectoryEntry } from "../types/directorySessions";
+import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../types/directorySessions";
+import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
+import { resolveLlmSessionDisplayTitle } from "../utils/llmSession";
 import {
   listDrawerConversationSearchDirectories,
   searchDrawerConversations,
@@ -27,7 +29,13 @@ export const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAcce
 
 type SearchMode = "directory" | "chat";
 type SearchAge = "all" | "7" | "30";
-type SearchPosition = { directories: string[]; directoryOffset: number; cursor: string; since: string };
+type SearchPosition = {
+  directories: string[];
+  directoryOffset: number;
+  cursor: string;
+  pageNumber: number;
+  since: string;
+};
 
 const DIRECTORY_PAGE_SIZE = 8;
 const POPOVER_BOTTOM_GAP = 12;
@@ -57,6 +65,8 @@ export function AppDrawerSearch({
   onActiveChange,
   directoryMatchCount,
   registeredDirectories,
+  directorySessionsById,
+  sessionTitleOverridesById,
   viewportBottom,
   onSelectChatResult,
 }: {
@@ -66,6 +76,8 @@ export function AppDrawerSearch({
   onActiveChange: (active: boolean) => void;
   directoryMatchCount: number;
   registeredDirectories: RegisteredDirectoryEntry[];
+  directorySessionsById: Record<string, DirectorySessionTreeState>;
+  sessionTitleOverridesById: Record<string, string>;
   viewportBottom: number | null;
   onSelectChatResult: (result: DrawerConversationSearchResult, event: GestureResponderEvent) => void;
 }) {
@@ -93,9 +105,21 @@ export function AppDrawerSearch({
   const popoverHeight = viewportBottom === null || containerY === null || popoverY === null
     ? Math.max(0, windowHeight / 2)
     : Math.max(0, viewportBottom - containerY - popoverY - POPOVER_BOTTOM_GAP);
-  const registeredDirectoryPaths = useMemo(() => new Set(
-    registeredDirectories.map((entry) => String(entry.path || "").trim()).filter(Boolean)
+  const registeredDirectoryNamesByPath = useMemo(() => new Map(
+    registeredDirectories.flatMap((entry) => {
+      const path = String(entry.path || "").trim();
+      if (!path) return [];
+      return [[path, String(entry.displayName || "").trim() || "登録ディレクトリ"] as const];
+    })
   ), [registeredDirectories]);
+  const cachedSessionsByRef = useMemo(() => new Map(
+    Object.values(directorySessionsById).flatMap((state) => (
+      getCachedDirectorySessions(state).map((session) => [
+        `${String(session.backendId || "codex").trim() || "codex"}:${session.sessionId}`,
+        session,
+      ] as const)
+    ))
+  ), [directorySessionsById]);
 
   const invalidateSearch = useCallback(() => {
     abortRef.current?.abort();
@@ -157,13 +181,22 @@ export function AppDrawerSearch({
         });
       });
       setPartial((current) => (append ? current : false) || page.partial);
+      if (position.cursor && page.cursor === position.cursor) {
+        throw new Error("検索カーソルが進みませんでした。");
+      }
       setNextPosition(page.cursor
-        ? { ...position, cursor: page.cursor }
+        ? { ...position, cursor: page.cursor, pageNumber: position.pageNumber + 1 }
         : position.directoryOffset + DIRECTORY_PAGE_SIZE < position.directories.length
-          ? { ...position, directoryOffset: position.directoryOffset + DIRECTORY_PAGE_SIZE, cursor: "" }
+          ? {
+            ...position,
+            directoryOffset: position.directoryOffset + DIRECTORY_PAGE_SIZE,
+            cursor: "",
+            pageNumber: position.pageNumber + 1,
+          }
           : null);
     } catch (searchError) {
       if (requestRef.current !== requestId || controller.signal.aborted) return;
+      setNextPosition(position);
       setError(searchError instanceof Error ? searchError.message : "検索に失敗しました。");
     } finally {
       if (requestRef.current === requestId) {
@@ -179,7 +212,7 @@ export function AppDrawerSearch({
       abortRef.current?.abort();
       requestRef.current += 1;
     };
-  }, [active, invalidateSearch, mode, registeredDirectoryPaths, runnerToken, runnerUrl]);
+  }, [active, invalidateSearch, mode, registeredDirectoryNamesByPath, runnerToken, runnerUrl]);
 
   const selectMode = (nextMode: SearchMode) => {
     invalidateSearch();
@@ -216,6 +249,7 @@ export function AppDrawerSearch({
     setHasSubmitted(true);
     setLoading(true);
     setLoadingMore(false);
+    setSearchDirectoryCount(null);
     setResults([]);
     setNextPosition(null);
     setError("");
@@ -227,7 +261,7 @@ export function AppDrawerSearch({
         signal: controller.signal,
       });
       if (requestRef.current !== requestId) return;
-      const directories = searchableDirectories.filter((directory) => registeredDirectoryPaths.has(directory));
+      const directories = searchableDirectories.filter((directory) => registeredDirectoryNamesByPath.has(directory));
       setSearchDirectoryCount(directories.length);
       if (directories.length <= 0) {
         setLoading(false);
@@ -237,6 +271,7 @@ export function AppDrawerSearch({
         directories,
         directoryOffset: 0,
         cursor: "",
+        pageNumber: 1,
         since: sinceTimestamp(age),
       }, false);
     } catch (searchError) {
@@ -393,7 +428,7 @@ export function AppDrawerSearch({
               <Text style={styles.appDrawerSearchScopeText}>
                 {searchDirectoryCount === null
                   ? `登録済みディレクトリ ${registeredDirectories.length}件`
-                  : `検索可能なディレクトリ ${searchDirectoryCount}件を順に検索`}
+                  : `対象 ${searchDirectoryCount}ディレクトリ　結果 ${results.length}件`}
               </Text>
               {normalizedQuery.length < 2 ? (
                   <Text style={styles.appDrawerSearchStatusText}>2文字以上入力してください。</Text>
@@ -411,52 +446,90 @@ export function AppDrawerSearch({
                     <Text style={styles.appDrawerSearchError} accessibilityRole="alert">{error}</Text>
                     <Pressable
                       style={styles.appDrawerSearchMoreButton}
-                      onPress={() => void submitSearch()}
+                      onPress={() => void (nextPosition
+                        ? executeSearch(nextPosition, false)
+                        : submitSearch())}
                       accessibilityRole="button"
                     >
                       <Text style={styles.appDrawerSearchMoreButtonText}>再試行</Text>
                     </Pressable>
                   </View>
-                ) : results.length <= 0 ? (
-                  <Text style={styles.appDrawerSearchStatusText}>一致するチャットはありません。</Text>
-                ) : results.map((result) => (
-                  <Pressable
-                    key={`${result.sessionRef.backendId}:${result.sessionRef.nativeSessionId}:${result.messageId}`}
-                    style={styles.appDrawerSearchResult}
-                    onPress={(event) => {
-                      onActiveChange(false);
-                      Keyboard.dismiss();
-                      onSelectChatResult(result, event);
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${result.role === "user" ? "ユーザー" : "アシスタント"}の検索結果 ${result.snippet}`}
-                  >
-                    <View style={styles.appDrawerSearchResultMetaRow}>
-                      <Text style={styles.appDrawerSearchResultRole}>
-                        {result.role === "user" ? "ユーザー" : "アシスタント"}
-                      </Text>
-                      <Text style={styles.appDrawerSearchResultMeta} numberOfLines={1}>
-                        {`${result.sessionRef.backendId} ${resultDate(result.createdAt || result.sessionCreatedAt)}`.trim()}
-                      </Text>
-                    </View>
-                    <Text style={styles.appDrawerSearchResultSnippet} numberOfLines={3}>{result.snippet}</Text>
-                    <Text style={styles.appDrawerSearchResultPath} numberOfLines={1}>{result.canonicalCwd}</Text>
-                  </Pressable>
-                ))}
+                ) : results.length <= 0 ? null : results.map((result) => {
+                  const sessionTitle = resolveLlmSessionDisplayTitle(
+                    cachedSessionsByRef.get(
+                      `${result.sessionRef.backendId}:${result.sessionRef.nativeSessionId}`
+                    ) || {},
+                    sessionTitleOverridesById[result.sessionRef.nativeSessionId]
+                  );
+                  const directoryName = registeredDirectoryNamesByPath.get(result.canonicalCwd) || "登録ディレクトリ";
+                  const roleLabel = result.role === "user" ? "ユーザー" : "アシスタント";
+                  return (
+                    <Pressable
+                      key={`${result.sessionRef.backendId}:${result.sessionRef.nativeSessionId}:${result.messageId}`}
+                      style={({ pressed }) => [
+                        styles.appDrawerSearchResult,
+                        pressed && styles.appDrawerSearchResultPressed,
+                      ]}
+                      onPress={(event) => {
+                        onActiveChange(false);
+                        Keyboard.dismiss();
+                        onSelectChatResult(result, event);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${sessionTitle} ${directoryName} ${roleLabel}の検索結果 ${result.snippet}`}
+                    >
+                      <View style={styles.appDrawerSearchResultTitleRow}>
+                        <Text
+                          style={styles.appDrawerSearchResultTitle}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {sessionTitle}
+                        </Text>
+                        <Text style={styles.appDrawerSearchResultDate} numberOfLines={1}>
+                          {resultDate(result.createdAt || result.sessionCreatedAt)}
+                        </Text>
+                      </View>
+                      <Text style={styles.appDrawerSearchResultSnippet} numberOfLines={3}>{result.snippet}</Text>
+                      <View style={styles.appDrawerSearchResultMetaRow}>
+                        <Text style={styles.appDrawerSearchResultDirectory} numberOfLines={1}>
+                          {directoryName}
+                        </Text>
+                        <Text style={styles.appDrawerSearchResultMeta} numberOfLines={1}>
+                          {`${roleLabel} · ${result.sessionRef.backendId}`}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
                 {error && results.length > 0 ? (
                   <Text style={styles.appDrawerSearchError} accessibilityRole="alert">{error}</Text>
                 ) : null}
                 {partial ? <Text style={styles.appDrawerSearchWarning}>一部のバックエンドを検索できませんでした。</Text> : null}
-                {nextPosition && !loading ? (
-                  <Pressable
-                    style={styles.appDrawerSearchMoreButton}
-                    disabled={loadingMore}
-                    onPress={() => void executeSearch(nextPosition, true)}
-                    accessibilityRole="button"
-                  >
-                    {loadingMore ? <ActivityIndicator size="small" color="#1e40af" /> : null}
-                    <Text style={styles.appDrawerSearchMoreButtonText}>検索を続ける</Text>
-                  </Pressable>
+                {nextPosition && !loading && !(error && results.length <= 0) ? (
+                  loadingMore ? (
+                    <View style={styles.appDrawerSearchMoreButton} accessibilityRole="progressbar">
+                      <ActivityIndicator size="small" color="#1e40af" />
+                      <Text style={styles.appDrawerSearchStatusText}>
+                        {`${nextPosition.pageNumber}ページ目を検索中…`}
+                      </Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Text style={styles.appDrawerSearchProgressText}>
+                        {`${nextPosition.pageNumber - 1}ページ検索済み`}
+                      </Text>
+                      <Pressable
+                        style={styles.appDrawerSearchMoreButton}
+                        onPress={() => void executeSearch(nextPosition, true)}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.appDrawerSearchMoreButtonText}>さらに検索</Text>
+                      </Pressable>
+                    </>
+                  )
+                ) : searchDirectoryCount !== null && searchDirectoryCount > 0 && !loading && !error ? (
+                  <Text style={styles.appDrawerSearchProgressText}>{`検索完了　${results.length}件`}</Text>
                 ) : null}
             </ScrollView>
           )}

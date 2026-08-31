@@ -4,6 +4,7 @@ import test from "node:test";
 import { createAgentService } from "../src/agent/agent-service.mjs";
 
 function createConversationService({ sessions, readHistory, allowedCwds = ["/workspace"] }) {
+  const listCalls = [];
   const backend = {
     backendId: "test",
     getStatus: async () => ({
@@ -14,11 +15,14 @@ function createConversationService({ sessions, readHistory, allowedCwds = ["/wor
     resolveSessionCwd: async (sessionRef) => sessions
       .find((session) => session.sessionRef.nativeSessionId === sessionRef.nativeSessionId)?.canonicalCwd
       || "/workspace",
-    async listSessionsForDirectories({ cwds }) {
+    async listSessionsForDirectories({ cwds, includeSubagents }) {
+      listCalls.push({ cwds, includeSubagents });
       return {
         groups: cwds.map((cwd) => ({
           cwd,
-          sessions: sessions.filter((session) => session.canonicalCwd === cwd),
+          sessions: sessions.filter((session) => (
+            session.canonicalCwd === cwd && (includeSubagents !== false || !session.parentSessionRef)
+          )),
         })),
       };
     },
@@ -52,7 +56,7 @@ function createConversationService({ sessions, readHistory, allowedCwds = ["/wor
     },
     resolveCanonicalCwd: async (cwd) => cwd,
   });
-  return { service, admitted };
+  return { service, admitted, listCalls };
 }
 
 test("conversation search returns only bounded user and assistant text and resumes with its cursor", async () => {
@@ -111,6 +115,37 @@ test("conversation search returns only bounded user and assistant text and resum
   assert.equal(second.cursor, undefined);
   assert.deepEqual(calls.map((call) => call.cursor || ""), ["", "", "older-1"]);
   assert.deepEqual(admitted, ["/workspace", "/workspace", "/workspace"]);
+});
+
+test("conversation search excludes subagent sessions at the session-list boundary", async () => {
+  const parentRef = { backendId: "test", nativeSessionId: "parent" };
+  const subagentRef = { backendId: "test", nativeSessionId: "subagent" };
+  const historyCalls = [];
+  const { service, listCalls } = createConversationService({
+    sessions: [
+      { sessionRef: parentRef, canonicalCwd: "/workspace" },
+      { sessionRef: subagentRef, parentSessionRef: parentRef, canonicalCwd: "/workspace" },
+    ],
+    async readHistory({ sessionRef }) {
+      historyCalls.push(sessionRef.nativeSessionId);
+      return {
+        items: [{
+          id: `${sessionRef.nativeSessionId}-message`,
+          role: "assistant",
+          content: [{ type: "text", text: "target" }],
+        }],
+        olderCursor: null,
+      };
+    },
+  });
+
+  const result = await service.searchConversationHistory({
+    query: "target", cwds: ["/workspace"], backendId: "test", limit: 10,
+  }, { subjectId: "owner" });
+
+  assert.deepEqual(result.results.map((entry) => entry.sessionRef), [parentRef]);
+  assert.deepEqual(historyCalls, ["parent"]);
+  assert.deepEqual(listCalls, [{ cwds: ["/workspace"], includeSubagents: false }]);
 });
 
 test("conversation search stops at the scan budget and continues without an index", async () => {

@@ -1,5 +1,5 @@
 import React from "react";
-import { act, fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, userEvent, waitFor, within } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
@@ -418,14 +418,21 @@ test("lets chat results use the remaining viewport without a fixed height cap", 
 
 test("waits for Enter before searching registered directories and opens the result", async () => {
   const onSelectSessionHistoryEntry = jest.fn();
+  const customSessionTitle = "カスタマイズした長いチャットセッションタイトル";
+  const registeredDirectories = [{
+    id: "dir-1",
+    path: "/work/client-project",
+    displayName: "顧客ポータル",
+    markerColor: "none" as const,
+  }];
   const fetchMock = jest.spyOn(global, "fetch")
-    .mockResolvedValueOnce(workspacesResponse())
+    .mockResolvedValueOnce(workspacesResponse([registeredDirectories[0].path]))
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         results: [{
           sessionRef: { backendId: "codex", nativeSessionId: "found-session" },
-          canonicalCwd: "/work/bitty",
+          canonicalCwd: registeredDirectories[0].path,
           sessionCreatedAt: "2026-08-30T00:00:00.000Z",
           messageId: "message-1",
           role: "assistant",
@@ -435,7 +442,11 @@ test("waits for Enter before searching registered directories and opens the resu
         scanned: { sessions: 1, items: 4, pages: 1 },
       }),
     } as Response);
-  const drawer = await renderDrawer({ onSelectSessionHistoryEntry });
+  const drawer = await renderDrawer({
+    registeredDirectories,
+    sessionTitleOverridesById: { "found-session": customSessionTitle },
+    onSelectSessionHistoryEntry,
+  });
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
   await fireEvent(searchInput, "focus");
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
@@ -446,9 +457,19 @@ test("waits for Enter before searching registered directories and opens the resu
   await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("Found the drawer conversation")).toBeTruthy());
+  expect(drawer.getByText("対象 1ディレクトリ　結果 1件")).toBeTruthy();
+  expect(drawer.getByText("検索完了　1件")).toBeTruthy();
+  const title = drawer.getByText(customSessionTitle);
+  expect(title.props.numberOfLines).toBe(1);
+  expect(title.props.ellipsizeMode).toBe("tail");
+  const resultCard = drawer.getByLabelText(
+    `${customSessionTitle} 顧客ポータル アシスタントの検索結果 Found the drawer conversation`
+  );
+  expect(within(resultCard).getByText("顧客ポータル")).toBeTruthy();
+  expect(within(resultCard).queryByText("/work/client-project")).toBeNull();
   expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe("/agent/workspaces");
   const url = new URL(String(fetchMock.mock.calls[1][0]));
-  expect(url.searchParams.getAll("cwd")).toEqual(["/work/bitty"]);
+  expect(url.searchParams.getAll("cwd")).toEqual([registeredDirectories[0].path]);
   expect(url.searchParams.get("backendId")).toBe("all");
 
   await fireEvent.press(drawer.getByText("Found the drawer conversation"));
@@ -456,9 +477,54 @@ test("waits for Enter before searching registered directories and opens the resu
     "codex",
     "found-session",
     "all",
-    "/work/bitty",
+    registeredDirectories[0].path,
     expect.objectContaining({ width: 68, height: 48 })
   );
+  fetchMock.mockRestore();
+});
+
+test("uses the cached regular session title when a chat result has no override", async () => {
+  const claudeSession = session({
+    backendId: "claude",
+    sessionId: "shared-session",
+    agentDisplayName: "Claudeの通常タイトル",
+    firstUserMessage: "Claude first message",
+  });
+  const codexSession = session({
+    backendId: "codex",
+    sessionId: "shared-session",
+    agentDisplayName: "Codexの通常タイトル",
+  });
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        results: [{
+          ...conversationSearchResult("Backend-specific result", "shared-message"),
+          sessionRef: { backendId: "claude", nativeSessionId: "shared-session" },
+        }],
+      }),
+    } as Response);
+  const drawer = await renderDrawer({
+    directorySessionsById: {
+      "dir-1": directoryState([claudeSession]),
+      other: directoryState([codexSession]),
+    },
+    sessionTitleOverridesById: {},
+  });
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "regular title");
+  await fireEvent(chatInput, "submitEditing");
+
+  const resultCard = await waitFor(() => drawer.getByLabelText(
+    "Claudeの通常タイトル Bitty アシスタントの検索結果 Backend-specific result"
+  ));
+  expect(within(resultCard).getByText("Claudeの通常タイトル")).toBeTruthy();
+  expect(within(resultCard).queryByText("Codexの通常タイトル")).toBeNull();
   fetchMock.mockRestore();
 });
 
@@ -536,15 +602,21 @@ test("invalidates an in-flight result when runner authentication changes", async
 });
 
 test("continues chat search across every registered directory in API-sized pages", async () => {
-  const registeredDirectories = Array.from({ length: 9 }, (_, index) => ({
+  const registeredDirectories = Array.from({ length: 22 }, (_, index) => ({
     id: `dir-${index}`,
     path: `/work/${index}`,
     displayName: `Directory ${index}`,
     markerColor: "none" as const,
   }));
+  let resolveSecondDirectoryPage: ((response: Response) => void) | undefined;
+  const secondDirectoryPage = new Promise<Response>((resolve) => {
+    resolveSecondDirectoryPage = resolve;
+  });
   const fetchMock = jest.spyOn(global, "fetch")
     .mockResolvedValueOnce(workspacesResponse(registeredDirectories.map((directory) => directory.path)))
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [], cursor: "next" }) } as Response)
     .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response)
+    .mockImplementationOnce(() => secondDirectoryPage)
     .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response);
   const drawer = await renderDrawer({ registeredDirectories });
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
@@ -554,29 +626,65 @@ test("continues chat search across every registered directory in API-sized pages
   await fireEvent.changeText(chatInput, "search all directories");
   await fireEvent(chatInput, "submitEditing");
 
-  await waitFor(() => expect(drawer.getByText("検索を続ける")).toBeTruthy());
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(drawer.getByText("1ページ検索済み")).toBeTruthy());
+  expect(drawer.getByText("対象 22ディレクトリ　結果 0件")).toBeTruthy();
+  expect(drawer.getByText("さらに検索")).toBeTruthy();
   const firstUrl = new URL(String(fetchMock.mock.calls[1][0]));
   expect(firstUrl.searchParams.getAll("cwd")).toEqual(
     registeredDirectories.slice(0, 8).map((directory) => directory.path)
   );
 
-  await fireEvent.press(drawer.getByText("検索を続ける"));
+  await fireEvent.press(drawer.getByText("さらに検索"));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-  const secondUrl = new URL(String(fetchMock.mock.calls[2][0]));
-  expect(secondUrl.searchParams.getAll("cwd")).toEqual(["/work/8"]);
+  const cursorUrl = new URL(String(fetchMock.mock.calls[2][0]));
+  expect(cursorUrl.searchParams.get("cursor")).toBe("next");
+  expect(cursorUrl.searchParams.getAll("cwd")).toEqual(
+    registeredDirectories.slice(0, 8).map((directory) => directory.path)
+  );
+  await waitFor(() => expect(drawer.getByText("2ページ検索済み")).toBeTruthy());
+
+  await fireEvent.press(drawer.getByText("さらに検索"));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+  expect(drawer.getByText("3ページ目を検索中…")).toBeTruthy();
+  expect(drawer.queryByText("2ページ検索済み")).toBeNull();
+  expect(drawer.queryByText("さらに検索")).toBeNull();
+  const secondDirectoryPageUrl = new URL(String(fetchMock.mock.calls[3][0]));
+  expect(secondDirectoryPageUrl.searchParams.getAll("cwd")).toEqual(
+    registeredDirectories.slice(8, 16).map((directory) => directory.path)
+  );
+  await act(async () => {
+    resolveSecondDirectoryPage?.({ ok: true, json: async () => ({ results: [] }) } as Response);
+    await secondDirectoryPage;
+  });
+  await waitFor(() => expect(drawer.getByText("3ページ検索済み")).toBeTruthy());
+
+  await fireEvent.press(drawer.getByText("さらに検索"));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+  const lastDirectoryPageUrl = new URL(String(fetchMock.mock.calls[4][0]));
+  expect(lastDirectoryPageUrl.searchParams.getAll("cwd")).toEqual(
+    registeredDirectories.slice(16).map((directory) => directory.path)
+  );
+  await waitFor(() => expect(drawer.getByText("検索完了　0件")).toBeTruthy());
+  expect(drawer.queryByText("さらに検索")).toBeNull();
   fetchMock.mockRestore();
 });
 
 test("keeps the period boundary fixed while continuing an API cursor", async () => {
   const firstNow = Date.parse("2026-08-31T00:00:00.000Z");
   const nowSpy = jest.spyOn(Date, "now").mockReturnValue(firstNow);
+  let resolveFirstPage: ((response: Response) => void) | undefined;
+  const firstPage = new Promise<Response>((resolve) => {
+    resolveFirstPage = resolve;
+  });
+  let resolveSecondPage: ((response: Response) => void) | undefined;
+  const secondPage = new Promise<Response>((resolve) => {
+    resolveSecondPage = resolve;
+  });
   const fetchMock = jest.spyOn(global, "fetch")
     .mockResolvedValueOnce(workspacesResponse())
-    .mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ results: [conversationSearchResult("First page", "message-1")], cursor: "next" }),
-    } as Response)
-    .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response);
+    .mockImplementationOnce(() => firstPage)
+    .mockImplementationOnce(() => secondPage);
   const drawer = await renderDrawer();
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
   await fireEvent(searchInput, "focus");
@@ -587,10 +695,28 @@ test("keeps the period boundary fixed while continuing an API cursor", async () 
   await fireEvent.changeText(chatInput, "fixed period");
   await fireEvent(chatInput, "submitEditing");
 
-  await waitFor(() => expect(drawer.getByText("First page")).toBeTruthy());
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   nowSpy.mockReturnValue(firstNow + 60_000);
-  await fireEvent.press(drawer.getByText("検索を続ける"));
+  await act(async () => {
+    resolveFirstPage?.({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("First page", "message-1")], cursor: "next" }),
+    } as Response);
+    await firstPage;
+  });
+  await waitFor(() => expect(drawer.getByText("First page")).toBeTruthy());
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+
+  expect(drawer.getByText("1ページ検索済み")).toBeTruthy();
+  await fireEvent.press(drawer.getByText("さらに検索"));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  expect(drawer.getByText("First page")).toBeTruthy();
+  expect(drawer.getByText("2ページ目を検索中…")).toBeTruthy();
+  await act(async () => {
+    resolveSecondPage?.({ ok: true, json: async () => ({ results: [] }) } as Response);
+    await secondPage;
+  });
+  await waitFor(() => expect(drawer.getByText("検索完了　1件")).toBeTruthy());
 
   const firstUrl = new URL(String(fetchMock.mock.calls[1][0]));
   const secondUrl = new URL(String(fetchMock.mock.calls[2][0]));
@@ -598,6 +724,113 @@ test("keeps the period boundary fixed while continuing an API cursor", async () 
   expect(secondUrl.searchParams.get("since")).toBe(firstUrl.searchParams.get("since"));
   expect(firstUrl.searchParams.get("since")).toBe("2026-08-24T00:00:00.000Z");
   nowSpy.mockRestore();
+  fetchMock.mockRestore();
+});
+
+test("keeps collected results and retries the exact cursor after a continuation error", async () => {
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        results: [conversationSearchResult("Collected result", "collected")],
+        cursor: "retry-cursor",
+      }),
+    } as Response)
+    .mockRejectedValueOnce(new Error("temporary failure"))
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        results: [
+          conversationSearchResult("Collected result", "collected"),
+          conversationSearchResult("Recovered result", "recovered"),
+        ],
+      }),
+    } as Response);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "retry cursor");
+  await fireEvent(chatInput, "submitEditing");
+
+  await waitFor(() => expect(drawer.getByText("Collected result")).toBeTruthy());
+  expect(drawer.getByText("1ページ検索済み")).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+
+  await fireEvent.press(drawer.getByText("さらに検索"));
+  await waitFor(() => expect(drawer.getByText("temporary failure")).toBeTruthy());
+  expect(new URL(String(fetchMock.mock.calls[2][0])).searchParams.get("cursor")).toBe("retry-cursor");
+  expect(drawer.getByText("1ページ検索済み")).toBeTruthy();
+
+  await fireEvent.press(drawer.getByText("さらに検索"));
+  await waitFor(() => expect(drawer.getByText("Recovered result")).toBeTruthy());
+  expect(new URL(String(fetchMock.mock.calls[3][0])).searchParams.get("cursor")).toBe("retry-cursor");
+  expect(drawer.getAllByText("Collected result")).toHaveLength(1);
+  expect(drawer.getByText("検索完了　2件")).toBeTruthy();
+  expect(drawer.queryByText("さらに検索")).toBeNull();
+  fetchMock.mockRestore();
+});
+
+test("stops when a requested conversation search cursor does not advance", async () => {
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [], cursor: "stuck" }),
+    } as Response)
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [], cursor: "stuck" }),
+    } as Response);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "stuck cursor");
+  await fireEvent(chatInput, "submitEditing");
+
+  await waitFor(() => expect(drawer.getByText("1ページ検索済み")).toBeTruthy());
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  await fireEvent.press(drawer.getByText("さらに検索"));
+
+  await waitFor(() => expect(drawer.getByText("検索カーソルが進みませんでした。")).toBeTruthy());
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(drawer.getByText("再試行")).toBeTruthy();
+  expect(drawer.queryByText("さらに検索")).toBeNull();
+  fetchMock.mockRestore();
+});
+
+test("shows only retry when the first conversation search request fails", async () => {
+  let resolveRetry: ((response: Response) => void) | undefined;
+  const retryRequest = new Promise<Response>((resolve) => {
+    resolveRetry = resolve;
+  });
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
+    .mockRejectedValueOnce(new Error("first request failed"))
+    .mockImplementationOnce(() => retryRequest);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "first failure");
+  await fireEvent(chatInput, "submitEditing");
+
+  await waitFor(() => expect(drawer.getByText("first request failed")).toBeTruthy());
+  expect(drawer.getByText("再試行")).toBeTruthy();
+  expect(drawer.queryByText("さらに検索")).toBeNull();
+
+  await fireEvent.press(drawer.getByText("再試行"));
+  expect(drawer.getByText("チャットを検索しています…").parent?.props.accessibilityRole).toBe("progressbar");
+  await act(async () => {
+    resolveRetry?.({ ok: true, json: async () => ({ results: [] }) } as Response);
+    await retryRequest;
+  });
+  await waitFor(() => expect(drawer.getByText("検索完了　0件")).toBeTruthy());
   fetchMock.mockRestore();
 });
 
@@ -684,14 +917,20 @@ test("searches only registered directories confirmed by the runner", async () =>
   await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-  expect(drawer.getByText("検索可能なディレクトリ 1件を順に検索")).toBeTruthy();
+  expect(drawer.getByText("対象 1ディレクトリ　結果 0件")).toBeTruthy();
   const url = new URL(String(fetchMock.mock.calls[1][0]));
   expect(url.searchParams.getAll("cwd")).toEqual(["/work/valid"]);
   fetchMock.mockRestore();
 });
 
-test("does not call chat search when the runner confirms no registered directory", async () => {
-  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue(workspacesResponse(["/work/unrelated"]));
+test("shows loading and errors when retrying after the runner confirms no registered directory", async () => {
+  let rejectWorkspaceRetry: ((error: Error) => void) | undefined;
+  const workspaceRetry = new Promise<Response>((_resolve, reject) => {
+    rejectWorkspaceRetry = reject;
+  });
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse(["/work/unrelated"]))
+    .mockImplementationOnce(() => workspaceRetry);
   const drawer = await renderDrawer({
     registeredDirectories: [
       { id: "dot", path: ".", displayName: "Current", markerColor: "none" },
@@ -708,7 +947,19 @@ test("does not call chat search when the runner confirms no registered directory
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe("/agent/workspaces");
   expect(drawer.getByText("検索対象の登録ディレクトリがありません。")).toBeTruthy();
-  expect(drawer.getByText("検索可能なディレクトリ 0件を順に検索")).toBeTruthy();
+  expect(drawer.getByText("対象 0ディレクトリ　結果 0件")).toBeTruthy();
+
+  await fireEvent(chatInput, "submitEditing");
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  expect(drawer.getByText("チャットを検索しています…")).toBeTruthy();
+  expect(drawer.queryByText("検索対象の登録ディレクトリがありません。")).toBeNull();
+  await act(async () => {
+    rejectWorkspaceRetry?.(new Error("workspace refresh failed"));
+    await workspaceRetry.catch(() => undefined);
+  });
+
+  await waitFor(() => expect(drawer.getByText("workspace refresh failed")).toBeTruthy());
+  expect(drawer.getByText("再試行")).toBeTruthy();
   fetchMock.mockRestore();
 });
 

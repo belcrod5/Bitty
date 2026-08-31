@@ -17,7 +17,7 @@ import Svg, { Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { PopupChatSourceRect } from "./popupChatTypes";
 import { styles } from "../styles";
-import { formatLlmSessionDisplayTitle, isLlmSessionUnread } from "../utils/llmSession";
+import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
 import type {
@@ -245,12 +245,9 @@ export const AppDrawer = memo(function AppDrawer({
     depth: number
   ): ReactNode => {
     const selected = highlightedSessionId === session.sessionId;
-    const titleOverride = String(sessionTitleOverridesById[session.sessionId] || "").trim();
-    const sessionPrimaryTitle = formatLlmSessionDisplayTitle(
-      titleOverride ||
-      String(session.agentDisplayName || "").trim() ||
-      String(session.firstUserMessage || "").trim() ||
-      "（ユーザーメッセージなし）"
+    const sessionPrimaryTitle = resolveLlmSessionDisplayTitle(
+      session,
+      sessionTitleOverridesById[session.sessionId]
     );
     const sessionMarkerColor = parseSessionMarkerColor(sessionMarkerColorsById[session.sessionId]);
     const sessionMarkerColorHex = markerColorToDotHex(sessionMarkerColor);
@@ -357,6 +354,8 @@ export const AppDrawer = memo(function AppDrawer({
         onActiveChange={setSearchActive}
         directoryMatchCount={directoryViews.length}
         registeredDirectories={registeredDirectories}
+        directorySessionsById={directorySessionsById}
+        sessionTitleOverridesById={sessionTitleOverridesById}
         viewportBottom={searchViewportBottom}
         onSelectChatResult={(result, event) => onSelectSessionHistoryEntry(
           result.sessionRef.backendId,
