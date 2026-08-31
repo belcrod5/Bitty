@@ -372,7 +372,7 @@ test("keeps the floating search open while switching modes inside it", async () 
   expect(drawer.getByPlaceholderText("チャット内を検索")).toBeTruthy();
 });
 
-test("searches registered directories through the conversation API and opens the result", async () => {
+test("waits for Enter before searching registered directories and opens the result", async () => {
   const onSelectSessionHistoryEntry = jest.fn();
   const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
     ok: true,
@@ -393,7 +393,11 @@ test("searches registered directories through the conversation API and opens the
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
   await fireEvent(searchInput, "focus");
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
-  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "drawer conversation");
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "drawer conversation");
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(drawer.getByText("Enterキーで検索します。")).toBeTruthy();
+  await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("Found the drawer conversation")).toBeTruthy());
   const url = new URL(String(fetchMock.mock.calls[0][0]));
@@ -425,7 +429,9 @@ test("continues chat search across every registered directory in API-sized pages
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
   await fireEvent(searchInput, "focus");
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
-  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "search all directories");
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "search all directories");
+  await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("検索を続ける")).toBeTruthy());
   const firstUrl = new URL(String(fetchMock.mock.calls[0][0]));
@@ -455,7 +461,9 @@ test("keeps the period boundary fixed while continuing an API cursor", async () 
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
   await fireEvent.press(drawer.getByText("検索オプション"));
   await fireEvent.press(drawer.getByText("7日以内"));
-  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "fixed period");
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "fixed period");
+  await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("First page")).toBeTruthy());
   nowSpy.mockReturnValue(firstNow + 60_000);
@@ -487,11 +495,14 @@ test("removes old results immediately when the chat query changes", async () => 
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
   const chatInput = drawer.getByPlaceholderText("チャット内を検索");
   await fireEvent.changeText(chatInput, "old query");
+  await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("Old query result")).toBeTruthy());
 
   await fireEvent.changeText(chatInput, "new query");
   expect(drawer.queryByText("Old query result")).toBeNull();
-  expect(drawer.getByText("チャットを検索しています…")).toBeTruthy();
+  expect(drawer.getByText("Enterキーで検索します。")).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("New query result")).toBeTruthy());
   fetchMock.mockRestore();
 });
@@ -510,16 +521,69 @@ test("removes old results immediately when a chat search option changes", async 
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
   await fireEvent(searchInput, "focus");
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
-  await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "sort result");
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "sort result");
+  await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("Newest result")).toBeTruthy());
 
   await fireEvent.press(drawer.getByText("検索オプション"));
   await fireEvent.press(drawer.getByText("古い順"));
   expect(drawer.queryByText("Newest result")).toBeNull();
-  expect(drawer.getByText("チャットを検索しています…")).toBeTruthy();
+  expect(drawer.getByText("Enterキーで検索します。")).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("Oldest result")).toBeTruthy());
   const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
   expect(secondUrl.searchParams.get("order")).toBe("oldest");
+  fetchMock.mockRestore();
+});
+
+test("sends only absolute registered paths to chat search", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => ({ results: [] }),
+  } as Response);
+  const drawer = await renderDrawer({
+    registeredDirectories: [
+      { id: "relative", path: ".", displayName: "Relative", markerColor: "none" },
+      { id: "absolute", path: "/work/absolute", displayName: "Absolute", markerColor: "none" },
+    ],
+  });
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "absolute only");
+  expect(drawer.getByText("絶対パス 1件を順に検索（対象外 1件）")).toBeTruthy();
+  await fireEvent(chatInput, "submitEditing");
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const url = new URL(String(fetchMock.mock.calls[0][0]));
+  expect(url.searchParams.getAll("cwd")).toEqual(["/work/absolute"]);
+  fetchMock.mockRestore();
+});
+
+test("does not call chat search when every registered path is relative", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => ({ results: [] }),
+  } as Response);
+  const drawer = await renderDrawer({
+    registeredDirectories: [
+      { id: "dot", path: ".", displayName: "Current", markerColor: "none" },
+      { id: "nested", path: "relative/path", displayName: "Nested", markerColor: "none" },
+    ],
+  });
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "nothing valid");
+  await fireEvent(chatInput, "submitEditing");
+
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(drawer.getByText("検索対象の登録ディレクトリがありません。")).toBeTruthy();
+  expect(drawer.getByText("絶対パス 0件を順に検索（対象外 2件）")).toBeTruthy();
   fetchMock.mockRestore();
 });
 
