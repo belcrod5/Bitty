@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
@@ -11,6 +11,8 @@ const mockAddDirectory = jest.fn();
 const mockRemoveDirectory = jest.fn();
 const mockHasDirectory = jest.fn(() => false);
 let mockSkiaBoardLoaded = true;
+let mockRunnerUrl = "http://runner";
+let mockRunnerToken = "runner-token";
 jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
     addDirectory: mockAddDirectory,
@@ -23,7 +25,7 @@ jest.mock("../contexts/SkiaBoardContext", () => ({
   }),
 }));
 jest.mock("../contexts/ChatScreenContext", () => ({
-  useChatScreen: () => ({ runnerUrl: "http://runner", runnerToken: "runner-token" }),
+  useChatScreen: () => ({ runnerUrl: mockRunnerUrl, runnerToken: mockRunnerToken }),
 }));
 
 function session(overrides: Partial<LlmSessionHistoryEntry>): LlmSessionHistoryEntry {
@@ -133,6 +135,8 @@ beforeEach(() => {
   mockHasSession.mockReturnValue(false);
   mockHasDirectory.mockReturnValue(false);
   mockSkiaBoardLoaded = true;
+  mockRunnerUrl = "http://runner";
+  mockRunnerToken = "runner-token";
 });
 
 test("starts a new chat in the pressed drawer directory", async () => {
@@ -396,7 +400,7 @@ test("waits for Enter before searching registered directories and opens the resu
   const chatInput = drawer.getByPlaceholderText("チャット内を検索");
   await fireEvent.changeText(chatInput, "drawer conversation");
   expect(fetchMock).not.toHaveBeenCalled();
-  expect(drawer.getByText("Enterキーで検索します。")).toBeTruthy();
+  expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
   await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("Found the drawer conversation")).toBeTruthy());
@@ -412,6 +416,76 @@ test("waits for Enter before searching registered directories and opens the resu
     "/work/bitty",
     expect.objectContaining({ width: 68, height: 48 })
   );
+  fetchMock.mockRestore();
+});
+
+test("does not restore debounced chat search while waiting for submit", async () => {
+  jest.useFakeTimers();
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => ({ results: [] }),
+  } as Response);
+  try {
+    const drawer = await renderDrawer();
+    const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+    await fireEvent(searchInput, "focus");
+    await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+    await fireEvent.changeText(drawer.getByPlaceholderText("チャット内を検索"), "still waiting");
+
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
+  } finally {
+    fetchMock.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+test("invalidates an in-flight result when runner authentication changes", async () => {
+  let resolveFirstRequest: ((response: Response) => void) | undefined;
+  const firstRequest = new Promise<Response>((resolve) => {
+    resolveFirstRequest = resolve;
+  });
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockImplementationOnce(() => firstRequest)
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("New runner result", "new-runner")] }),
+    } as Response);
+  const drawer = await renderDrawer();
+  const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
+  await fireEvent(searchInput, "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  const chatInput = drawer.getByPlaceholderText("チャット内を検索");
+  await fireEvent.changeText(chatInput, "runner change");
+  await fireEvent(chatInput, "submitEditing");
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  mockRunnerUrl = "http://new-runner";
+  mockRunnerToken = "new-token";
+  await fireEvent.press(drawer.getByText("検索オプション"));
+  expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
+
+  await act(async () => {
+    resolveFirstRequest?.({
+      ok: true,
+      json: async () => ({ results: [conversationSearchResult("Old runner result", "old-runner")] }),
+    } as Response);
+    await Promise.resolve();
+  });
+  expect(drawer.queryByText("Old runner result")).toBeNull();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  await fireEvent(chatInput, "submitEditing");
+  await waitFor(() => expect(drawer.getByText("New runner result")).toBeTruthy());
+  const [secondUrl, secondInit] = fetchMock.mock.calls[1];
+  expect(String(secondUrl)).toContain("http://new-runner/agent/session-history/search");
+  expect(secondInit).toEqual(expect.objectContaining({
+    headers: { authorization: "Bearer new-token" },
+  }));
   fetchMock.mockRestore();
 });
 
@@ -500,7 +574,7 @@ test("removes old results immediately when the chat query changes", async () => 
 
   await fireEvent.changeText(chatInput, "new query");
   expect(drawer.queryByText("Old query result")).toBeNull();
-  expect(drawer.getByText("Enterキーで検索します。")).toBeTruthy();
+  expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledTimes(1);
   await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("New query result")).toBeTruthy());
@@ -529,7 +603,7 @@ test("removes old results immediately when a chat search option changes", async 
   await fireEvent.press(drawer.getByText("検索オプション"));
   await fireEvent.press(drawer.getByText("古い順"));
   expect(drawer.queryByText("Newest result")).toBeNull();
-  expect(drawer.getByText("Enterキーで検索します。")).toBeTruthy();
+  expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledTimes(1);
   await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("Oldest result")).toBeTruthy());

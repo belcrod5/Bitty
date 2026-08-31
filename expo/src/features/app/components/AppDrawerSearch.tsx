@@ -165,7 +165,7 @@ export function AppDrawerSearch({
       abortRef.current?.abort();
       requestRef.current += 1;
     };
-  }, [active, directories, invalidateSearch, mode]);
+  }, [active, directories, invalidateSearch, mode, runnerToken, runnerUrl]);
 
   const selectMode = (nextMode: SearchMode) => {
     invalidateSearch();
@@ -337,7 +337,7 @@ export function AppDrawerSearch({
                 ) : directories.length <= 0 ? (
                   <Text style={styles.appDrawerSearchStatusText}>検索対象の登録ディレクトリがありません。</Text>
                 ) : !hasSubmitted ? (
-                  <Text style={styles.appDrawerSearchStatusText}>Enterキーで検索します。</Text>
+                  <Text style={styles.appDrawerSearchStatusText}>検索キーで検索します。</Text>
                 ) : loading ? (
                   <View style={styles.appDrawerSearchLoading} accessibilityRole="progressbar">
                     <ActivityIndicator size="small" color="#0f766e" />
