@@ -1,7 +1,34 @@
-import { searchDrawerConversations } from "./drawerConversationSearch";
+import {
+  listDrawerConversationSearchDirectories,
+  searchDrawerConversations,
+} from "./drawerConversationSearch";
 
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+test("loads and deduplicates searchable workspaces from the runner", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      workspaces: [
+        { canonicalRoot: " /work/one " },
+        { canonicalRoot: "/work/one" },
+        { canonicalRoot: "/work/two" },
+      ],
+    }),
+  } as Response);
+
+  await expect(listDrawerConversationSearchDirectories({
+    runnerUrl: "http://runner/",
+    runnerToken: " token ",
+  })).resolves.toEqual(["/work/one", "/work/two"]);
+
+  const [requestUrl, requestInit] = fetchMock.mock.calls[0];
+  expect(new URL(String(requestUrl)).pathname).toBe("/agent/workspaces");
+  expect(requestInit).toEqual(expect.objectContaining({
+    headers: { authorization: "Bearer token" },
+  }));
 });
 
 test("searches conversation history with the registered directory scope and options", async () => {
@@ -77,6 +104,19 @@ test("uses the runner error message", async () => {
     backendId: "all",
     order: "newest",
   })).rejects.toThrow("query is required");
+});
+
+test("uses the HTTP status when the runner error body is empty", async () => {
+  jest.spyOn(global, "fetch").mockResolvedValue({
+    ok: false,
+    status: 502,
+    json: async () => null,
+  } as Response);
+
+  await expect(listDrawerConversationSearchDirectories({
+    runnerUrl: "http://runner",
+    runnerToken: "token",
+  })).rejects.toThrow("検索に失敗しました (502)");
 });
 
 test.each([

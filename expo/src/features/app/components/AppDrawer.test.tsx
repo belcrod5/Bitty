@@ -60,6 +60,15 @@ function conversationSearchResult(snippet: string, messageId: string) {
   };
 }
 
+function workspacesResponse(directories: string[] = ["/work/bitty"]): Response {
+  return {
+    ok: true,
+    json: async () => ({
+      workspaces: directories.map((canonicalRoot) => ({ canonicalRoot })),
+    }),
+  } as Response;
+}
+
 function directoryState(
   entries: LlmSessionHistoryEntry[],
   childrenByParentId: DirectorySessionTreeState["childrenByParentId"] = {},
@@ -378,21 +387,23 @@ test("keeps the floating search open while switching modes inside it", async () 
 
 test("waits for Enter before searching registered directories and opens the result", async () => {
   const onSelectSessionHistoryEntry = jest.fn();
-  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
-    ok: true,
-    json: async () => ({
-      results: [{
-        sessionRef: { backendId: "codex", nativeSessionId: "found-session" },
-        canonicalCwd: "/work/bitty",
-        sessionCreatedAt: "2026-08-30T00:00:00.000Z",
-        messageId: "message-1",
-        role: "assistant",
-        snippet: "Found the drawer conversation",
-        conversationCursor: "read-cursor",
-      }],
-      scanned: { sessions: 1, items: 4, pages: 1 },
-    }),
-  } as Response);
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        results: [{
+          sessionRef: { backendId: "codex", nativeSessionId: "found-session" },
+          canonicalCwd: "/work/bitty",
+          sessionCreatedAt: "2026-08-30T00:00:00.000Z",
+          messageId: "message-1",
+          role: "assistant",
+          snippet: "Found the drawer conversation",
+          conversationCursor: "read-cursor",
+        }],
+        scanned: { sessions: 1, items: 4, pages: 1 },
+      }),
+    } as Response);
   const drawer = await renderDrawer({ onSelectSessionHistoryEntry });
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
   await fireEvent(searchInput, "focus");
@@ -404,7 +415,8 @@ test("waits for Enter before searching registered directories and opens the resu
   await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("Found the drawer conversation")).toBeTruthy());
-  const url = new URL(String(fetchMock.mock.calls[0][0]));
+  expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe("/agent/workspaces");
+  const url = new URL(String(fetchMock.mock.calls[1][0]));
   expect(url.searchParams.getAll("cwd")).toEqual(["/work/bitty"]);
   expect(url.searchParams.get("backendId")).toBe("all");
 
@@ -451,6 +463,7 @@ test("invalidates an in-flight result when runner authentication changes", async
   });
   const fetchMock = jest.spyOn(global, "fetch")
     .mockImplementationOnce(() => firstRequest)
+    .mockResolvedValueOnce(workspacesResponse())
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ results: [conversationSearchResult("New runner result", "new-runner")] }),
@@ -481,9 +494,11 @@ test("invalidates an in-flight result when runner authentication changes", async
 
   await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("New runner result")).toBeTruthy());
-  const [secondUrl, secondInit] = fetchMock.mock.calls[1];
-  expect(String(secondUrl)).toContain("http://new-runner/agent/session-history/search");
-  expect(secondInit).toEqual(expect.objectContaining({
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(String(fetchMock.mock.calls[1][0])).toContain("http://new-runner/agent/workspaces");
+  const [searchUrl, searchInit] = fetchMock.mock.calls[2];
+  expect(String(searchUrl)).toContain("http://new-runner/agent/session-history/search");
+  expect(searchInit).toEqual(expect.objectContaining({
     headers: { authorization: "Bearer new-token" },
   }));
   fetchMock.mockRestore();
@@ -497,6 +512,7 @@ test("continues chat search across every registered directory in API-sized pages
     markerColor: "none" as const,
   }));
   const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse(registeredDirectories.map((directory) => directory.path)))
     .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response)
     .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response);
   const drawer = await renderDrawer({ registeredDirectories });
@@ -508,14 +524,14 @@ test("continues chat search across every registered directory in API-sized pages
   await fireEvent(chatInput, "submitEditing");
 
   await waitFor(() => expect(drawer.getByText("検索を続ける")).toBeTruthy());
-  const firstUrl = new URL(String(fetchMock.mock.calls[0][0]));
+  const firstUrl = new URL(String(fetchMock.mock.calls[1][0]));
   expect(firstUrl.searchParams.getAll("cwd")).toEqual(
     registeredDirectories.slice(0, 8).map((directory) => directory.path)
   );
 
   await fireEvent.press(drawer.getByText("検索を続ける"));
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-  const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  const secondUrl = new URL(String(fetchMock.mock.calls[2][0]));
   expect(secondUrl.searchParams.getAll("cwd")).toEqual(["/work/8"]);
   fetchMock.mockRestore();
 });
@@ -524,6 +540,7 @@ test("keeps the period boundary fixed while continuing an API cursor", async () 
   const firstNow = Date.parse("2026-08-31T00:00:00.000Z");
   const nowSpy = jest.spyOn(Date, "now").mockReturnValue(firstNow);
   const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ results: [conversationSearchResult("First page", "message-1")], cursor: "next" }),
@@ -542,10 +559,10 @@ test("keeps the period boundary fixed while continuing an API cursor", async () 
   await waitFor(() => expect(drawer.getByText("First page")).toBeTruthy());
   nowSpy.mockReturnValue(firstNow + 60_000);
   await fireEvent.press(drawer.getByText("検索を続ける"));
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
 
-  const firstUrl = new URL(String(fetchMock.mock.calls[0][0]));
-  const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  const firstUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  const secondUrl = new URL(String(fetchMock.mock.calls[2][0]));
   expect(secondUrl.searchParams.get("cursor")).toBe("next");
   expect(secondUrl.searchParams.get("since")).toBe(firstUrl.searchParams.get("since"));
   expect(firstUrl.searchParams.get("since")).toBe("2026-08-24T00:00:00.000Z");
@@ -555,10 +572,12 @@ test("keeps the period boundary fixed while continuing an API cursor", async () 
 
 test("removes old results immediately when the chat query changes", async () => {
   const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ results: [conversationSearchResult("Old query result", "old-message")] }),
     } as Response)
+    .mockResolvedValueOnce(workspacesResponse())
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ results: [conversationSearchResult("New query result", "new-message")] }),
@@ -575,7 +594,7 @@ test("removes old results immediately when the chat query changes", async () => 
   await fireEvent.changeText(chatInput, "new query");
   expect(drawer.queryByText("Old query result")).toBeNull();
   expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
   await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("New query result")).toBeTruthy());
   fetchMock.mockRestore();
@@ -583,10 +602,12 @@ test("removes old results immediately when the chat query changes", async () => 
 
 test("removes old results immediately when a chat search option changes", async () => {
   const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse())
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ results: [conversationSearchResult("Newest result", "newest-message")] }),
     } as Response)
+    .mockResolvedValueOnce(workspacesResponse())
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ results: [conversationSearchResult("Oldest result", "oldest-message")] }),
@@ -604,23 +625,23 @@ test("removes old results immediately when a chat search option changes", async 
   await fireEvent.press(drawer.getByText("古い順"));
   expect(drawer.queryByText("Newest result")).toBeNull();
   expect(drawer.getByText("検索キーで検索します。")).toBeTruthy();
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
   await fireEvent(chatInput, "submitEditing");
   await waitFor(() => expect(drawer.getByText("Oldest result")).toBeTruthy());
-  const secondUrl = new URL(String(fetchMock.mock.calls[1][0]));
+  const secondUrl = new URL(String(fetchMock.mock.calls[3][0]));
   expect(secondUrl.searchParams.get("order")).toBe("oldest");
   fetchMock.mockRestore();
 });
 
-test("sends only absolute registered paths to chat search", async () => {
-  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
-    ok: true,
-    json: async () => ({ results: [] }),
-  } as Response);
+test("searches only registered directories confirmed by the runner", async () => {
+  const fetchMock = jest.spyOn(global, "fetch")
+    .mockResolvedValueOnce(workspacesResponse(["/work/valid", "/work/unrelated"]))
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ results: [] }) } as Response);
   const drawer = await renderDrawer({
     registeredDirectories: [
       { id: "relative", path: ".", displayName: "Relative", markerColor: "none" },
-      { id: "absolute", path: "/work/absolute", displayName: "Absolute", markerColor: "none" },
+      { id: "missing", path: "/work/missing", displayName: "Missing", markerColor: "none" },
+      { id: "valid", path: "/work/valid", displayName: "Valid", markerColor: "none" },
     ],
   });
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");
@@ -628,20 +649,18 @@ test("sends only absolute registered paths to chat search", async () => {
   await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
   const chatInput = drawer.getByPlaceholderText("チャット内を検索");
   await fireEvent.changeText(chatInput, "absolute only");
-  expect(drawer.getByText("絶対パス 1件を順に検索（対象外 1件）")).toBeTruthy();
+  expect(drawer.getByText("登録済みディレクトリ 3件")).toBeTruthy();
   await fireEvent(chatInput, "submitEditing");
 
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-  const url = new URL(String(fetchMock.mock.calls[0][0]));
-  expect(url.searchParams.getAll("cwd")).toEqual(["/work/absolute"]);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  expect(drawer.getByText("検索可能なディレクトリ 1件を順に検索")).toBeTruthy();
+  const url = new URL(String(fetchMock.mock.calls[1][0]));
+  expect(url.searchParams.getAll("cwd")).toEqual(["/work/valid"]);
   fetchMock.mockRestore();
 });
 
-test("does not call chat search when every registered path is relative", async () => {
-  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
-    ok: true,
-    json: async () => ({ results: [] }),
-  } as Response);
+test("does not call chat search when the runner confirms no registered directory", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue(workspacesResponse(["/work/unrelated"]));
   const drawer = await renderDrawer({
     registeredDirectories: [
       { id: "dot", path: ".", displayName: "Current", markerColor: "none" },
@@ -655,9 +674,10 @@ test("does not call chat search when every registered path is relative", async (
   await fireEvent.changeText(chatInput, "nothing valid");
   await fireEvent(chatInput, "submitEditing");
 
-  expect(fetchMock).not.toHaveBeenCalled();
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe("/agent/workspaces");
   expect(drawer.getByText("検索対象の登録ディレクトリがありません。")).toBeTruthy();
-  expect(drawer.getByText("絶対パス 0件を順に検索（対象外 2件）")).toBeTruthy();
+  expect(drawer.getByText("検索可能なディレクトリ 0件を順に検索")).toBeTruthy();
   fetchMock.mockRestore();
 });
 

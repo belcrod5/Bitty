@@ -20,6 +20,12 @@ export type DrawerConversationSearchPage = {
   partial: boolean;
 };
 
+type RunnerRequest = {
+  runnerUrl: string;
+  runnerToken: string;
+  signal?: AbortSignal;
+};
+
 function invalidSearchResponse(): never {
   throw new Error("検索結果の応答形式が不正です。");
 }
@@ -61,6 +67,47 @@ function normalizeSearchResult(value: unknown): DrawerConversationSearchResult {
   };
 }
 
+async function fetchRunnerJson(
+  request: RunnerRequest,
+  pathname: string,
+  searchParams?: URLSearchParams,
+): Promise<Record<string, unknown>> {
+  const baseUrl = String(request.runnerUrl || "").trim().replace(/\/$/, "");
+  const token = String(request.runnerToken || "").trim();
+  if (!baseUrl || !token) throw new Error("Runnerへ接続する設定がありません。");
+
+  const url = new URL(`${baseUrl}${pathname}`);
+  if (searchParams) url.search = searchParams.toString();
+  const response = await fetch(url.toString(), {
+    headers: { authorization: `Bearer ${token}` },
+    signal: request.signal,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const errorPayload = payload && typeof payload === "object"
+      ? payload as { error?: { message?: unknown } | string; message?: unknown }
+      : {};
+    const message = typeof errorPayload.error === "object"
+      ? errorPayload.error?.message
+      : errorPayload.error || errorPayload.message;
+    throw new Error(String(message || `検索に失敗しました (${response.status})`));
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return invalidSearchResponse();
+  return payload as Record<string, unknown>;
+}
+
+export async function listDrawerConversationSearchDirectories(
+  request: RunnerRequest,
+): Promise<string[]> {
+  const payload = await fetchRunnerJson(request, "/agent/workspaces");
+  if (!Array.isArray(payload.workspaces)) return invalidSearchResponse();
+  const directories = payload.workspaces.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return invalidSearchResponse();
+    return requiredResultText((value as Record<string, unknown>).canonicalRoot);
+  });
+  return Array.from(new Set(directories));
+}
+
 export async function searchDrawerConversations(params: {
   runnerUrl: string;
   runnerToken: string;
@@ -72,28 +119,17 @@ export async function searchDrawerConversations(params: {
   cursor?: string;
   signal?: AbortSignal;
 }): Promise<DrawerConversationSearchPage> {
-  const baseUrl = String(params.runnerUrl || "").trim().replace(/\/$/, "");
-  const token = String(params.runnerToken || "").trim();
-  if (!baseUrl || !token) throw new Error("Runnerへ接続する設定がありません。");
+  const searchParams = new URLSearchParams();
+  searchParams.set("query", params.query.trim());
+  params.directories.forEach((directory) => searchParams.append("cwd", directory));
+  searchParams.set("backendId", params.backendId);
+  searchParams.set("limit", "10");
+  searchParams.set("order", params.order);
+  if (params.since) searchParams.set("since", params.since);
+  if (params.cursor) searchParams.set("cursor", params.cursor);
 
-  const url = new URL(`${baseUrl}/agent/session-history/search`);
-  url.searchParams.set("query", params.query.trim());
-  params.directories.forEach((directory) => url.searchParams.append("cwd", directory));
-  url.searchParams.set("backendId", params.backendId);
-  url.searchParams.set("limit", "10");
-  url.searchParams.set("order", params.order);
-  if (params.since) url.searchParams.set("since", params.since);
-  if (params.cursor) url.searchParams.set("cursor", params.cursor);
-
-  const response = await fetch(url.toString(), {
-    headers: { authorization: `Bearer ${token}` },
-    signal: params.signal,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(String(payload?.error?.message || payload?.message || `検索に失敗しました (${response.status})`));
-  }
-  if (!payload || typeof payload !== "object" || !Array.isArray(payload.results)) return invalidSearchResponse();
+  const payload = await fetchRunnerJson(params, "/agent/session-history/search", searchParams);
+  if (!Array.isArray(payload.results)) return invalidSearchResponse();
   if (payload.cursor !== undefined && typeof payload.cursor !== "string") return invalidSearchResponse();
   if (payload.partial !== undefined && typeof payload.partial !== "boolean") return invalidSearchResponse();
   return {

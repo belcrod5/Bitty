@@ -15,6 +15,7 @@ import { useChatScreen } from "../contexts/ChatScreenContext";
 import { styles } from "../styles";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import {
+  listDrawerConversationSearchDirectories,
   searchDrawerConversations,
   type DrawerConversationSearchOrder,
   type DrawerConversationSearchResult,
@@ -24,7 +25,7 @@ export const APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID = "appDrawerSearchKeyboardAcce
 
 type SearchMode = "directory" | "chat";
 type SearchAge = "all" | "7" | "30";
-type SearchPosition = { directoryOffset: number; cursor: string; since: string };
+type SearchPosition = { directories: string[]; directoryOffset: number; cursor: string; since: string };
 
 const DIRECTORY_PAGE_SIZE = 8;
 
@@ -77,20 +78,13 @@ export function AppDrawerSearch({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [searchDirectoryCount, setSearchDirectoryCount] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [partial, setPartial] = useState(false);
   const normalizedQuery = query.trim();
-  const searchScope = useMemo(() => {
-    const absoluteDirectories = new Set<string>();
-    let excludedCount = 0;
-    registeredDirectories.forEach((entry) => {
-      const directory = String(entry.path || "").trim();
-      if (directory.startsWith("/")) absoluteDirectories.add(directory);
-      else excludedCount += 1;
-    });
-    return { directories: Array.from(absoluteDirectories), excludedCount };
-  }, [registeredDirectories]);
-  const { directories } = searchScope;
+  const registeredDirectoryPaths = useMemo(() => new Set(
+    registeredDirectories.map((entry) => String(entry.path || "").trim()).filter(Boolean)
+  ), [registeredDirectories]);
 
   const invalidateSearch = useCallback(() => {
     abortRef.current?.abort();
@@ -98,6 +92,7 @@ export function AppDrawerSearch({
     setLoading(false);
     setLoadingMore(false);
     setHasSubmitted(false);
+    setSearchDirectoryCount(null);
     setResults([]);
     setNextPosition(null);
     setError("");
@@ -105,7 +100,7 @@ export function AppDrawerSearch({
   }, []);
 
   const executeSearch = useCallback(async (position: SearchPosition, append: boolean) => {
-    const directoryPage = directories.slice(
+    const directoryPage = position.directories.slice(
       position.directoryOffset,
       position.directoryOffset + DIRECTORY_PAGE_SIZE
     );
@@ -145,7 +140,7 @@ export function AppDrawerSearch({
       setPartial((current) => (append ? current : false) || page.partial);
       setNextPosition(page.cursor
         ? { ...position, cursor: page.cursor }
-        : position.directoryOffset + DIRECTORY_PAGE_SIZE < directories.length
+        : position.directoryOffset + DIRECTORY_PAGE_SIZE < position.directories.length
           ? { ...position, directoryOffset: position.directoryOffset + DIRECTORY_PAGE_SIZE, cursor: "" }
           : null);
     } catch (searchError) {
@@ -157,7 +152,7 @@ export function AppDrawerSearch({
         setLoadingMore(false);
       }
     }
-  }, [directories, normalizedQuery, order, runnerToken, runnerUrl]);
+  }, [normalizedQuery, order, runnerToken, runnerUrl]);
 
   useEffect(() => {
     invalidateSearch();
@@ -165,7 +160,7 @@ export function AppDrawerSearch({
       abortRef.current?.abort();
       requestRef.current += 1;
     };
-  }, [active, directories, invalidateSearch, mode, runnerToken, runnerUrl]);
+  }, [active, invalidateSearch, mode, registeredDirectoryPaths, runnerToken, runnerUrl]);
 
   const selectMode = (nextMode: SearchMode) => {
     invalidateSearch();
@@ -193,16 +188,49 @@ export function AppDrawerSearch({
     setAge(value);
   };
 
+  const prepareSearch = async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    setHasSubmitted(true);
+    setLoading(true);
+    setLoadingMore(false);
+    setResults([]);
+    setNextPosition(null);
+    setError("");
+    setPartial(false);
+    try {
+      const searchableDirectories = await listDrawerConversationSearchDirectories({
+        runnerUrl,
+        runnerToken,
+        signal: controller.signal,
+      });
+      if (requestRef.current !== requestId) return;
+      const directories = searchableDirectories.filter((directory) => registeredDirectoryPaths.has(directory));
+      setSearchDirectoryCount(directories.length);
+      if (directories.length <= 0) {
+        setLoading(false);
+        return;
+      }
+      void executeSearch({
+        directories,
+        directoryOffset: 0,
+        cursor: "",
+        since: sinceTimestamp(age),
+      }, false);
+    } catch (searchError) {
+      if (requestRef.current !== requestId || controller.signal.aborted) return;
+      setError(searchError instanceof Error ? searchError.message : "検索に失敗しました。");
+      setLoading(false);
+    }
+  };
+
   const submitSearch = () => {
     if (mode === "chat") {
-      if (normalizedQuery.length >= 2 && directories.length > 0) {
-        void executeSearch({
-          directoryOffset: 0,
-          cursor: "",
-          since: sinceTimestamp(age),
-        }, false);
-      }
       Keyboard.dismiss();
+      if (normalizedQuery.length >= 2) void prepareSearch();
       return;
     }
     onActiveChange(false);
@@ -325,7 +353,9 @@ export function AppDrawerSearch({
                 </View>
               ) : null}
               <Text style={styles.appDrawerSearchScopeText}>
-                {`絶対パス ${directories.length}件を順に検索${searchScope.excludedCount > 0 ? `（対象外 ${searchScope.excludedCount}件）` : ""}`}
+                {searchDirectoryCount === null
+                  ? `登録済みディレクトリ ${registeredDirectories.length}件`
+                  : `検索可能なディレクトリ ${searchDirectoryCount}件を順に検索`}
               </Text>
               <ScrollView
                 style={styles.appDrawerSearchResults}
@@ -334,7 +364,7 @@ export function AppDrawerSearch({
               >
                 {normalizedQuery.length < 2 ? (
                   <Text style={styles.appDrawerSearchStatusText}>2文字以上入力してください。</Text>
-                ) : directories.length <= 0 ? (
+                ) : hasSubmitted && searchDirectoryCount === 0 ? (
                   <Text style={styles.appDrawerSearchStatusText}>検索対象の登録ディレクトリがありません。</Text>
                 ) : !hasSubmitted ? (
                   <Text style={styles.appDrawerSearchStatusText}>検索キーで検索します。</Text>
@@ -348,11 +378,7 @@ export function AppDrawerSearch({
                     <Text style={styles.appDrawerSearchError} accessibilityRole="alert">{error}</Text>
                     <Pressable
                       style={styles.appDrawerSearchMoreButton}
-                      onPress={() => void executeSearch({
-                        directoryOffset: 0,
-                        cursor: "",
-                        since: sinceTimestamp(age),
-                      }, false)}
+                      onPress={() => void submitSearch()}
                       accessibilityRole="button"
                     >
                       <Text style={styles.appDrawerSearchMoreButtonText}>再試行</Text>
