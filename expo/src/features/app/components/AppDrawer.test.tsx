@@ -1,5 +1,6 @@
 import React from "react";
 import { act, fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
@@ -383,6 +384,36 @@ test("keeps the floating search open while switching modes inside it", async () 
 
   await waitFor(() => expect(drawer.getByTestId("app-drawer-search-popover")).toBeTruthy());
   expect(drawer.getByPlaceholderText("チャット内を検索")).toBeTruthy();
+});
+
+test("lets chat results use the remaining viewport without a fixed height cap", async () => {
+  const drawer = await renderDrawer();
+  await fireEvent(drawer.getByTestId("app-drawer-scroll"), "layout", {
+    nativeEvent: { layout: { x: 0, y: 54, width: 360, height: 646 } },
+  });
+  await fireEvent(drawer.getByPlaceholderText("ディレクトリを検索"), "focus");
+  await fireEvent.press(drawer.getByRole("tab", { name: "チャット" }));
+  await fireEvent(drawer.getByTestId("app-drawer-search-container"), "layout", {
+    nativeEvent: { layout: { x: 16, y: 12, width: 328, height: 42 } },
+  });
+  await fireEvent(drawer.getByTestId("app-drawer-search-popover"), "layout", {
+    nativeEvent: { layout: { x: 0, y: 48, width: 328, height: 350 } },
+  });
+
+  await waitFor(() => expect(
+    StyleSheet.flatten(drawer.getByTestId("app-drawer-search-popover").props.style).height
+  ).toBe(628));
+  const resultsStyle = StyleSheet.flatten(drawer.getByTestId("app-drawer-search-results").props.style);
+
+  await fireEvent(drawer.getByTestId("app-drawer-scroll"), "layout", {
+    nativeEvent: { layout: { x: 0, y: 54, width: 360, height: 446 } },
+  });
+  await waitFor(() => expect(
+    StyleSheet.flatten(drawer.getByTestId("app-drawer-search-popover").props.style).height
+  ).toBe(428));
+  expect(StyleSheet.flatten(drawer.getByTestId("app-drawer-search-popover").props.style).maxHeight).toBeUndefined();
+  expect(resultsStyle).toMatchObject({ flex: 1, minHeight: 0 });
+  expect(resultsStyle.maxHeight).toBeUndefined();
 });
 
 test("waits for Enter before searching registered directories and opens the result", async () => {

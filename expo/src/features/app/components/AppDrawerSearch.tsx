@@ -8,8 +8,10 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
   type GestureResponderEvent,
+  type LayoutChangeEvent,
 } from "react-native";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { styles } from "../styles";
@@ -28,6 +30,7 @@ type SearchAge = "all" | "7" | "30";
 type SearchPosition = { directories: string[]; directoryOffset: number; cursor: string; since: string };
 
 const DIRECTORY_PAGE_SIZE = 8;
+const POPOVER_BOTTOM_GAP = 12;
 
 function optionLabel(value: SearchAge): string {
   if (value === "7") return "7日以内";
@@ -54,6 +57,7 @@ export function AppDrawerSearch({
   onActiveChange,
   directoryMatchCount,
   registeredDirectories,
+  viewportBottom,
   onSelectChatResult,
 }: {
   directoryQuery: string;
@@ -62,9 +66,11 @@ export function AppDrawerSearch({
   onActiveChange: (active: boolean) => void;
   directoryMatchCount: number;
   registeredDirectories: RegisteredDirectoryEntry[];
+  viewportBottom: number | null;
   onSelectChatResult: (result: DrawerConversationSearchResult, event: GestureResponderEvent) => void;
 }) {
   const { runnerUrl, runnerToken } = useChatScreen();
+  const { height: windowHeight } = useWindowDimensions();
   const inputRef = useRef<TextInput>(null);
   const requestRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -81,7 +87,12 @@ export function AppDrawerSearch({
   const [searchDirectoryCount, setSearchDirectoryCount] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [partial, setPartial] = useState(false);
+  const [containerY, setContainerY] = useState<number | null>(null);
+  const [popoverY, setPopoverY] = useState<number | null>(null);
   const normalizedQuery = query.trim();
+  const popoverHeight = viewportBottom === null || containerY === null || popoverY === null
+    ? Math.max(0, windowHeight / 2)
+    : Math.max(0, viewportBottom - containerY - popoverY - POPOVER_BOTTOM_GAP);
   const registeredDirectoryPaths = useMemo(() => new Set(
     registeredDirectories.map((entry) => String(entry.path || "").trim()).filter(Boolean)
   ), [registeredDirectories]);
@@ -97,6 +108,14 @@ export function AppDrawerSearch({
     setNextPosition(null);
     setError("");
     setPartial(false);
+  }, []);
+
+  const updateContainerY = useCallback((event: LayoutChangeEvent) => {
+    setContainerY(event.nativeEvent.layout.y);
+  }, []);
+
+  const updatePopoverY = useCallback((event: LayoutChangeEvent) => {
+    setPopoverY(event.nativeEvent.layout.y);
   }, []);
 
   const executeSearch = useCallback(async (position: SearchPosition, append: boolean) => {
@@ -238,7 +257,11 @@ export function AppDrawerSearch({
   };
 
   return (
-    <View style={styles.appDrawerSearchContainer}>
+    <View
+      style={styles.appDrawerSearchContainer}
+      onLayout={updateContainerY}
+      testID="app-drawer-search-container"
+    >
       <View style={[styles.appDrawerSearchBox, active && styles.appDrawerSearchBoxFocused]}>
         <TextInput
           ref={inputRef}
@@ -269,7 +292,16 @@ export function AppDrawerSearch({
         ) : null}
       </View>
       {active ? (
-        <View style={styles.appDrawerSearchPopover} testID="app-drawer-search-popover">
+        <View
+          style={[
+            styles.appDrawerSearchPopover,
+            mode === "chat"
+              ? { height: popoverHeight }
+              : styles.appDrawerSearchPopoverCompact,
+          ]}
+          onLayout={updatePopoverY}
+          testID="app-drawer-search-popover"
+        >
           <View style={styles.appDrawerSearchTabs} accessibilityRole="tablist">
             {(["directory", "chat"] as const).map((tab) => (
               <Pressable
@@ -308,7 +340,13 @@ export function AppDrawerSearch({
               </Text>
             </View>
           ) : (
-            <>
+            <ScrollView
+              style={styles.appDrawerSearchResults}
+              contentContainerStyle={styles.appDrawerSearchResultsContent}
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+              testID="app-drawer-search-results"
+            >
               <Pressable
                 style={styles.appDrawerSearchOptionsSummary}
                 onPress={() => setShowOptions((current) => !current)}
@@ -357,12 +395,7 @@ export function AppDrawerSearch({
                   ? `登録済みディレクトリ ${registeredDirectories.length}件`
                   : `検索可能なディレクトリ ${searchDirectoryCount}件を順に検索`}
               </Text>
-              <ScrollView
-                style={styles.appDrawerSearchResults}
-                keyboardShouldPersistTaps="handled"
-                nestedScrollEnabled
-              >
-                {normalizedQuery.length < 2 ? (
+              {normalizedQuery.length < 2 ? (
                   <Text style={styles.appDrawerSearchStatusText}>2文字以上入力してください。</Text>
                 ) : hasSubmitted && searchDirectoryCount === 0 ? (
                   <Text style={styles.appDrawerSearchStatusText}>検索対象の登録ディレクトリがありません。</Text>
@@ -425,8 +458,7 @@ export function AppDrawerSearch({
                     <Text style={styles.appDrawerSearchMoreButtonText}>検索を続ける</Text>
                   </Pressable>
                 ) : null}
-              </ScrollView>
-            </>
+            </ScrollView>
           )}
         </View>
       ) : null}

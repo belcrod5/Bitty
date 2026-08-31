@@ -76,7 +76,6 @@ export const menuScreenStyles = {
     top: 48,
     left: 0,
     right: 0,
-    maxHeight: 430,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#cbd5e1",
@@ -88,6 +87,9 @@ export const menuScreenStyles = {
     shadowOpacity: 0.18,
     shadowRadius: 18,
     elevation: 12,
+  },
+  appDrawerSearchPopoverCompact: {
+    maxHeight: 430,
   },
   appDrawerSearchTabs: {
     flexDirection: "row",
@@ -196,8 +198,11 @@ export const menuScreenStyles = {
     paddingHorizontal: 4,
   },
   appDrawerSearchResults: {
-    maxHeight: 250,
-    flexShrink: 1,
+    flex: 1,
+    minHeight: 0,
+  },
+  appDrawerSearchResultsContent: {
+    gap: 8,
   },
   appDrawerSearchLoading: {
     minHeight: 56,

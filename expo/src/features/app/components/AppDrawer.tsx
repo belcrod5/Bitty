@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   View,
   type GestureResponderEvent,
+  type LayoutChangeEvent,
 } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
@@ -143,6 +144,7 @@ export const AppDrawer = memo(function AppDrawer({
   const expandedSet = useMemo(() => new Set(expandedDirectoryIds), [expandedDirectoryIds]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchActive, setSearchActive] = useState(false);
+  const [searchViewportBottom, setSearchViewportBottom] = useState<number | null>(null);
   const normalizedSearchQuery = normalizeDrawerSearchText(searchQuery);
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const expandedSessionSet = useMemo(() => new Set(expandedSessionIds), [expandedSessionIds]);
@@ -156,6 +158,10 @@ export const AppDrawer = memo(function AppDrawer({
     directoryPath: string;
     directoryName: string;
   } | null>(null);
+  const updateSearchViewportBottom = useCallback((event: LayoutChangeEvent) => {
+    const { y, height } = event.nativeEvent.layout;
+    setSearchViewportBottom(y + height);
+  }, []);
   const formatThinkTag = (reasoningEffortRaw: unknown) => {
     const reasoningEffort = String(reasoningEffortRaw || "").trim().toLowerCase();
     if (!reasoningEffort) return "-";
@@ -351,6 +357,7 @@ export const AppDrawer = memo(function AppDrawer({
         onActiveChange={setSearchActive}
         directoryMatchCount={directoryViews.length}
         registeredDirectories={registeredDirectories}
+        viewportBottom={searchViewportBottom}
         onSelectChatResult={(result, event) => onSelectSessionHistoryEntry(
           result.sessionRef.backendId,
           result.sessionRef.nativeSessionId,
@@ -363,6 +370,8 @@ export const AppDrawer = memo(function AppDrawer({
         style={styles.appDrawerScroll}
         contentContainerStyle={styles.appDrawerContent}
         keyboardShouldPersistTaps="handled"
+        onLayout={updateSearchViewportBottom}
+        testID="app-drawer-scroll"
         onTouchStart={() => {
           if (searchActive) {
             setSearchActive(false);
