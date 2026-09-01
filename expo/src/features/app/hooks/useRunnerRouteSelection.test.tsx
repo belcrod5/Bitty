@@ -132,6 +132,28 @@ describe("useRunnerRouteSelection", () => {
     expect(setRunnerUrl).toHaveBeenCalledWith(localRunnerUrl);
   });
 
+  it("rechecks when the Cloudflare runner candidate changes", async () => {
+    jest.mocked(fetch).mockResolvedValue({ ok: false } as Response);
+    const { rendered, setRunnerUrl } = await renderSelection();
+
+    await runPendingTimers();
+    expect(setRunnerUrl).not.toHaveBeenCalled();
+
+    const nextCloudflareRunnerUrl = "https://next-runner.example.com";
+    await rendered.rerender(<RouteSelectionProbe
+      enabled={true}
+      localRunnerUrl={localRunnerUrl}
+      cloudflareRunnerUrl={nextCloudflareRunnerUrl}
+      runnerToken={runnerToken}
+      runnerUrl={cloudflareRunnerUrl}
+      setRunnerUrl={setRunnerUrl}
+    />);
+
+    await runPendingTimers();
+
+    expect(setRunnerUrl).toHaveBeenCalledWith(nextCloudflareRunnerUrl);
+  });
+
   it("rechecks again after a network event so local can win once Wi-Fi stabilizes", async () => {
     jest.mocked(fetch).mockResolvedValueOnce({ ok: false } as Response);
     const { setRunnerUrl } = await renderSelection();

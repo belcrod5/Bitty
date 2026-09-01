@@ -1,5 +1,23 @@
 # Local dependency patches
 
+`expo-secure-store+15.0.8.patch` adds macOS pod support and uses a String
+Keychain account on macOS. It migrates the previous account-less items only
+when no canonical item exists; if both exist, the canonical value wins. The
+macOS migration is exercised against the real Security API by
+`scripts/test-secure-store-macos.sh`. iOS keeps Expo's original Data account
+behavior. Remove the patch after Expo ships equivalent macOS support and
+migration.
+
+`expo-modules-core+3.0.30.patch` keeps Expo's app-private document directory out
+of the user's protected `~/Documents` folder on macOS. Expo Modules Core otherwise
+uses that shared folder as the default app context, which makes unsigned builds
+subject to macOS Files and Folders privacy denial. The macOS default is now the
+bundle identifier directory under Application Support. Existing CFBundleName
+directories are copied through a temporary sibling before becoming canonical;
+the source is never deleted. iOS behavior is unchanged. Recheck the patch when
+Expo Modules Core changes and remove it after upstream provides a macOS-safe
+app-private default.
+
 `react-native+0.81.6.patch` fixes the iOS Fabric responder state corruption
 reported in [Shopify/react-native-skia #4006](https://github.com/Shopify/react-native-skia/issues/4006).
 A batched touch cancel can end multiple touches in one event, but React Native's

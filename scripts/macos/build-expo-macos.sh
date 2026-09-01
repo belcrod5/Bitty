@@ -28,12 +28,33 @@ if ! command -v pod >/dev/null 2>&1; then
   exit 1
 fi
 
+SIGNING_IDENTITY="$(
+  security find-identity -v -p codesigning 2>/dev/null |
+    awk '/"Developer ID Application:|"Apple Development:|"Mac Developer:/{print $2; exit}'
+)"
+if [[ -n "${SIGNING_IDENTITY}" ]]; then
+  echo "[build-macos] Using an available macOS code signing identity"
+  CODE_SIGN_ARGS=(
+    CODE_SIGNING_ALLOWED=YES
+    CODE_SIGNING_REQUIRED=YES
+    CODE_SIGN_STYLE=Manual
+    CODE_SIGN_IDENTITY="${SIGNING_IDENTITY}"
+  )
+else
+  echo "[build-macos] No macOS code signing identity found; building unsigned"
+  CODE_SIGN_ARGS=(
+    CODE_SIGNING_ALLOWED=NO
+    CODE_SIGNING_REQUIRED=NO
+  )
+fi
+
 echo "[build-macos] Preparing native dependencies"
 (cd "${EXPO_DIR}/macos" && pod install --silent)
 
 cd "${EXPO_DIR}"
 
 echo "[build-macos] Building Release"
+# Keep Application Support outside the sandbox container regardless of signing availability.
 xcodebuild \
   -quiet \
   -workspace "${WORKSPACE_PATH}" \
@@ -44,8 +65,8 @@ xcodebuild \
   -derivedDataPath "${DERIVED_DATA_PATH}" \
   ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=YES \
-  CODE_SIGNING_ALLOWED=NO \
-  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGN_ENTITLEMENTS= \
+  "${CODE_SIGN_ARGS[@]}" \
   build
 
 if [[ ! -d "${APP_PATH}" ]]; then

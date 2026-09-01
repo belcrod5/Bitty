@@ -20,7 +20,8 @@ const REASONING_LABELS = {
 
 export function ConnectionSettings() {
   const {
-    runnerUrl,
+    cloudflareRunnerUrl,
+    localRunnerUrl,
     llmBackend,
     modelRef,
     runnerToken,
@@ -29,7 +30,8 @@ export function ConnectionSettings() {
     reasoningEffort,
     modelOptions,
     thinkOptions,
-    changeRunnerUrl,
+    changeCloudflareRunnerUrl,
+    changeLocalRunnerUrl,
     changeRunnerToken,
     selectCodexApprovalPolicy,
     selectModel,
@@ -60,12 +62,29 @@ export function ConnectionSettings() {
         <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
           <Ionicons name="server-outline" size={22} color="#111827" />
           <View style={styles.settingsInputContent}>
-            <Text style={styles.settingsRowLabel}>Runner URL</Text>
+            <Text style={styles.settingsRowLabel}>ローカルURL</Text>
             <TextInput
               style={styles.settingsInlineInput}
-              value={runnerUrl}
-              onChangeText={changeRunnerUrl}
-              accessibilityLabel="Runner URL"
+              value={localRunnerUrl}
+              onChangeText={changeLocalRunnerUrl}
+              accessibilityLabel="ローカルURL"
+              placeholder="http://mac.local:8788"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+          </View>
+        </View>
+
+        <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
+          <Ionicons name="cloud-outline" size={22} color="#111827" />
+          <View style={styles.settingsInputContent}>
+            <Text style={styles.settingsRowLabel}>Cloudflare経由URL</Text>
+            <TextInput
+              style={styles.settingsInlineInput}
+              value={cloudflareRunnerUrl}
+              onChangeText={changeCloudflareRunnerUrl}
+              accessibilityLabel="Cloudflare経由URL"
               placeholder="https://runner.example.com"
               autoCapitalize="none"
               autoCorrect={false}

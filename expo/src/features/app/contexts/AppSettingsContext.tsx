@@ -52,7 +52,8 @@ export type AppSettingsContextValue = {
   autoSpeakAfterReply: boolean;
   faceIdRequiredForApproval: boolean;
   toolAutoApprovalRuleCount: number;
-  changeRunnerUrl: (value: string) => void;
+  changeCloudflareRunnerUrl: (value: string) => void;
+  changeLocalRunnerUrl: (value: string) => void;
   changeLlmDirectory: (value: string) => void;
   changeRunnerToken: (value: string) => void;
   clearCloudflareAccessCredentials: () => Promise<void>;

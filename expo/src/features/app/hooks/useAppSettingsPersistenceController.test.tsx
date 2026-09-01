@@ -21,10 +21,6 @@ jest.mock("expo-av", () => ({
   },
 }));
 
-jest.mock("expo-file-system/legacy", () => ({
-  documentDirectory: "file:///documents/",
-}));
-
 jest.mock("../clipboard", () => ({
   getStringAsync: jest.fn(),
   setStringAsync: jest.fn(),
@@ -53,7 +49,6 @@ const setter = jest.fn();
 
 function createArgs() {
   return {
-    settingsFileName: "bitty-settings.json",
     modelOptions: [{ modelId: "default-model", backendId: "codex" }],
     defaultModelRef: "default-model",
     defaultReasoningEffort: "medium",
@@ -253,7 +248,7 @@ test("clipboard import ignores the skia board state in old backups", async () =>
     await hook.result.current.importSettingsJson();
   });
   const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
-  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void }> | undefined)
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
     ?.find(({ text }) => text === "インポート");
 
   mockMutatePersistedSettings.mockClear();
@@ -282,6 +277,62 @@ test("import confirmation identifies settings that must be reconfigured", async 
     expect.stringMatching(/認証トークン.*Cloudflare認証情報.*保存済み承認ルール.*移行先で再設定/),
     expect.any(Array)
   );
+});
+
+test("clipboard import is persisted before it is applied", async () => {
+  mockGetStringAsync.mockResolvedValue(JSON.stringify({
+    appDefaultSettings: { runnerUrl: "https://migrated.example.com" },
+  }));
+  let finishSave = () => {};
+  const setRunnerUrl = jest.fn();
+  const hook = await renderPersistenceController({ setRunnerUrl });
+  mockMutatePersistedSettings.mockImplementationOnce(() => new Promise<void>((resolve) => {
+    finishSave = resolve;
+  }));
+
+  await act(async () => {
+    await hook.result.current.importSettingsJson();
+  });
+  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
+    ?.find(({ text }) => text === "インポート");
+
+  let importPromise: void | Promise<void>;
+  await act(async () => {
+    importPromise = importButton?.onPress?.();
+    await Promise.resolve();
+  });
+  expect(setRunnerUrl).not.toHaveBeenCalledWith("https://migrated.example.com");
+
+  finishSave();
+  await act(async () => {
+    await importPromise;
+  });
+  expect(setRunnerUrl).toHaveBeenCalledWith("https://migrated.example.com");
+  expect(Alert.alert).toHaveBeenCalledWith("インポート完了", expect.any(String));
+});
+
+test("clipboard import leaves current state unchanged when persistence fails", async () => {
+  mockGetStringAsync.mockResolvedValue(JSON.stringify({
+    appDefaultSettings: { runnerUrl: "https://migrated.example.com" },
+  }));
+  const setRunnerUrl = jest.fn();
+  const hook = await renderPersistenceController({ setRunnerUrl });
+  mockMutatePersistedSettings.mockRejectedValueOnce(new Error("settings write failed"));
+
+  await act(async () => {
+    await hook.result.current.importSettingsJson();
+  });
+  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
+    ?.find(({ text }) => text === "インポート");
+
+  await act(async () => {
+    await importButton?.onPress?.();
+  });
+
+  expect(setRunnerUrl).not.toHaveBeenCalledWith("https://migrated.example.com");
+  expect(Alert.alert).toHaveBeenCalledWith("インポート失敗", "settings write failed");
 });
 
 test("clipboard import never restores credentials from an old settings payload", async () => {
@@ -313,7 +364,7 @@ test("clipboard import never restores credentials from an old settings payload",
     await hook.result.current.importSettingsJson();
   });
   const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
-  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void }> | undefined)
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
     ?.find(({ text }) => text === "インポート");
 
   setRunnerToken.mockClear();

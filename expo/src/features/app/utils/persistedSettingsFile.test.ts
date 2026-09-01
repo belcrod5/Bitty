@@ -1,4 +1,5 @@
 const mockFiles = new Map<string, string>();
+let mockDocumentDirectory: string | null = "file:///documents/";
 let mockReadError: Error | null = null;
 let mockMoveBarrier: Promise<void> | null = null;
 let mockWriteStarted: Promise<void>;
@@ -16,7 +17,9 @@ const mockMoveAsync = jest.fn(async ({ from, to }: { from: string; to: string })
 });
 
 jest.mock("expo-file-system/legacy", () => ({
-  documentDirectory: "file:///documents/",
+  get documentDirectory() {
+    return mockDocumentDirectory;
+  },
   getInfoAsync: jest.fn(async (path: string) => ({ exists: mockFiles.has(path) })),
   readAsStringAsync: jest.fn(async (path: string) => {
     if (mockReadError) throw mockReadError;
@@ -49,6 +52,7 @@ test("preserved settings fields no longer carry the legacy skia board state", ()
 
 beforeEach(() => {
   mockFiles.clear();
+  mockDocumentDirectory = "file:///documents/";
   mockReadError = null;
   mockMoveBarrier = null;
   mockWriteStarted = new Promise<void>((resolve) => { resolveMockWriteStarted = resolve; });
@@ -64,6 +68,12 @@ test("distinguishes an unreadable settings file from a missing file", async () =
 
 test("returns undefined when no settings file exists", async () => {
   await expect(readPersistedSettings()).resolves.toBeUndefined();
+});
+
+test("reports an unavailable persistence directory instead of silently dropping writes", async () => {
+  mockDocumentDirectory = null;
+  await expect(mutatePersistedSettings(() => ({ runnerUrl: "http://runner" })))
+    .rejects.toThrow("Persistent settings directory is unavailable");
 });
 
 test("serializes background and React-style updates without losing either field set", async () => {
