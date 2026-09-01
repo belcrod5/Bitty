@@ -1,0 +1,34 @@
+diff --git a/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift b/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift
+index 2f3061d..ca40540 100644
+--- a/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift
++++ b/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift
+@@ -7,7 +7,7 @@ public struct AppContextConfig {
+   public let scoped: Bool
+
+   public init(documentDirectory: URL?, cacheDirectory: URL?, appGroups: [String]?) {
+-    self.documentDirectory = documentDirectory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
++    self.documentDirectory = documentDirectory ?? Self.defaultDocumentDirectory()
+     self.cacheDirectory = cacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+     self.scoped = documentDirectory != nil ? true : false
+
+@@ -19,4 +19,20 @@ public struct AppContextConfig {
+     }
+     self.appGroupSharedDirectories = sharedDirectories
+   }
++
++  private static func defaultDocumentDirectory() -> URL? {
++    #if os(macOS)
++    guard let applicationSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
++      return nil
++    }
++    let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
++      ?? Bundle.main.bundleIdentifier
++      ?? ProcessInfo.processInfo.processName
++    let appDirectory = applicationSupportDirectory.appendingPathComponent(appName, isDirectory: true)
++    try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
++    return appDirectory
++    #else
++    return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
++    #endif
++  }
+ }

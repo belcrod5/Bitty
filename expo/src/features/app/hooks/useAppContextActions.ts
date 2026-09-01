@@ -130,9 +130,6 @@ export function useAppContextActions({
   const openSkiaBoardScreen = useCallback(() => {
     setActiveScreen("skia_board");
   }, [setActiveScreen]);
-  const changeRunnerUrl = useCallback((value: string) => {
-    setRunnerUrl(value);
-  }, [setRunnerUrl]);
   const changeLlmDirectory = useCallback((value: string) => {
     selectLlmDirectory(value);
   }, [selectLlmDirectory]);
@@ -303,7 +300,6 @@ export function useAppContextActions({
     openSettingsScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
-    changeRunnerUrl,
     changeLlmDirectory,
     changeRunnerToken,
     clearCloudflareAccessCredentials,

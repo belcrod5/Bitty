@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as Clipboard from "../clipboard";
-import * as FileSystem from "expo-file-system/legacy";
 import { Alert, AppState } from "react-native";
 import { parseSttProvider, type SttProvider } from "../../stt/sttConfig";
 import {
@@ -31,7 +30,6 @@ import {
 type UseAppSettingsPersistenceControllerArgs = {
   settingsLoaded: boolean;
   setSettingsLoaded: Dispatch<SetStateAction<boolean>>;
-  settingsFileName: string;
   modelOptions: readonly { modelId: string; backendId?: string }[];
   defaultModelRef: string;
   defaultReasoningEffort: ReasoningEffort;
@@ -109,7 +107,6 @@ type UseAppSettingsPersistenceControllerArgs = {
 export function useAppSettingsPersistenceController({
   settingsLoaded,
   setSettingsLoaded,
-  settingsFileName,
   modelOptions,
   defaultModelRef,
   defaultReasoningEffort,
@@ -183,7 +180,7 @@ export function useAppSettingsPersistenceController({
   parseSessionMarkerColors,
   parseExpandedDirectoryIds,
 }: UseAppSettingsPersistenceControllerArgs) {
-  const loadedSettingsPathRef = useRef<string | null>(null);
+  const settingsLoadStartedRef = useRef(false);
   const writablePersistenceRef = useRef({
     settings: false,
     secureCredentials: false,
@@ -208,12 +205,6 @@ export function useAppSettingsPersistenceController({
     applyValue(setCloudflareAccessClientId, secureCredentials.cloudflareAccessClientId);
     applyValue(setCloudflareAccessClientSecret, secureCredentials.cloudflareAccessClientSecret);
   }, [setCloudflareAccessClientId, setCloudflareAccessClientSecret, setRunnerToken]);
-
-  const settingsPath = useCallback(() => {
-    const baseDir = FileSystem.documentDirectory;
-    if (!baseDir) return "";
-    return `${baseDir}${settingsFileName}`;
-  }, [settingsFileName]);
 
   const buildPersistedSettingsPayload = useCallback(() => {
     return {
@@ -489,7 +480,7 @@ export function useAppSettingsPersistenceController({
           { text: "キャンセル", style: "cancel" },
           {
             text: "インポート",
-            onPress: () => {
+            onPress: async () => {
               const importedSettings = { ...imported };
               for (const field of [
                 "runnerToken",
@@ -503,8 +494,20 @@ export function useAppSettingsPersistenceController({
               ]) {
                 delete importedSettings[field];
               }
-              applyPersistedSettings(importedSettings);
-              Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
+              try {
+                await mutatePersistedSettings((current) => {
+                  const next = { ...importedSettings };
+                  for (const field of PRESERVED_SETTINGS_FIELDS) {
+                    if (field in current) next[field] = current[field];
+                  }
+                  return next;
+                });
+                applyPersistedSettings(importedSettings);
+                Alert.alert("インポート完了", "移行対象の端末設定を反映しました。");
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                Alert.alert("インポート失敗", message || "設定JSONを保存できませんでした。");
+              }
             },
           },
         ]
@@ -517,17 +520,16 @@ export function useAppSettingsPersistenceController({
 
   useEffect(() => {
     async function loadSettings() {
-      const path = settingsPath();
-      if (loadedSettingsPathRef.current === path) return;
-      loadedSettingsPathRef.current = path;
+      if (settingsLoadStartedRef.current) return;
+      settingsLoadStartedRef.current = true;
 
       const [settingsResult, credentialsResult] = await Promise.allSettled([
-        path ? readPersistedSettings() : Promise.resolve(undefined),
+        readPersistedSettings(),
         loadSecureRunnerCredentials(),
       ]);
 
       if (settingsResult.status === "fulfilled") {
-        writablePersistenceRef.current.settings = Boolean(path);
+        writablePersistenceRef.current.settings = true;
         if (settingsResult.value) {
           applyPersistedSettings(settingsResult.value);
         }
@@ -548,7 +550,6 @@ export function useAppSettingsPersistenceController({
     applyPersistedSettings,
     applySecureCredentials,
     setSettingsLoaded,
-    settingsPath,
   ]);
 
   // A credentials read that failed at launch (e.g. a background launch while the
@@ -586,9 +587,6 @@ export function useAppSettingsPersistenceController({
 
   useEffect(() => {
     if (!settingsLoaded) return;
-
-    const path = settingsPath();
-    if (!path) return;
 
     // Snapshot the writable flags now: if a recovery unlocks the credential store
     // while this timer is pending, the timer must not save this render's stale
@@ -631,7 +629,6 @@ export function useAppSettingsPersistenceController({
     recoverSecureCredentials,
     runnerToken,
     settingsLoaded,
-    settingsPath,
   ]);
 
   return {

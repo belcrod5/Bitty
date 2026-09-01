@@ -4,12 +4,12 @@ import * as FileSystem from "expo-file-system/legacy";
 // useAppSettingsPersistenceController.ts via AppRoot.tsx and read directly from disk by
 // background-safe code paths (e.g. pushApprovalActions.ts) that can run before the React
 // provider tree has loaded settings into context.
-export const SETTINGS_FILE_NAME = "bitty-settings.json";
+const SETTINGS_FILE_NAME = "bitty-settings.json";
 let settingsMutationQueue: Promise<unknown> = Promise.resolve();
 
 function settingsPaths() {
   const baseDir = FileSystem.documentDirectory;
-  if (!baseDir) return null;
+  if (!baseDir) throw new Error("Persistent settings directory is unavailable");
   const path = `${baseDir}${SETTINGS_FILE_NAME}`;
   return { path, pendingPath: `${path}.pending` };
 }
@@ -26,7 +26,6 @@ async function readSettingsAtPath(path: string) {
 
 async function readPersistedSettingsWithoutBarrier() {
   const paths = settingsPaths();
-  if (!paths) return undefined;
   const pending = await readSettingsAtPath(paths.pendingPath);
   if (pending) return pending;
   const persisted = await readSettingsAtPath(paths.path);
@@ -46,7 +45,6 @@ export async function mutatePersistedSettings(
 ): Promise<void> {
   const operation = settingsMutationQueue.then(async () => {
     const paths = settingsPaths();
-    if (!paths) return;
     const current = await readPersistedSettingsWithoutBarrier() ?? {};
     await FileSystem.writeAsStringAsync(paths.pendingPath, JSON.stringify(mutate(current)));
     await FileSystem.moveAsync({ from: paths.pendingPath, to: paths.path });

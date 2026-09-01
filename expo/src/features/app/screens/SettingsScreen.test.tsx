@@ -13,7 +13,8 @@ jest.mock("expo-av", () => ({
 
 const mockOpenSkiaBoardScreen = jest.fn();
 const mockOpenDrawer = jest.fn();
-const mockChangeRunnerUrl = jest.fn();
+const mockChangeCloudflareRunnerUrl = jest.fn();
+const mockChangeLocalRunnerUrl = jest.fn();
 const mockToggleAutoReplyAfterStt = jest.fn();
 const mockExportSettingsJson = jest.fn();
 const mockSelectTtsProvider = jest.fn();
@@ -27,6 +28,8 @@ const mockSelectVoiceId = jest.fn();
 
 const mockSettings = {
   runnerUrl: "https://runner.example.com",
+  cloudflareRunnerUrl: "https://runner.example.com",
+  localRunnerUrl: "http://mac.local:8788",
   llmDirectory: "/work/bitty",
   llmBackend: "codex",
   modelRef: "gpt-5.5",
@@ -60,7 +63,8 @@ const mockSettings = {
   autoSpeakerPriorityEnabled: true,
   autoSpeakAfterReply: true,
   toolAutoApprovalRuleCount: 2,
-  changeRunnerUrl: mockChangeRunnerUrl,
+  changeCloudflareRunnerUrl: mockChangeCloudflareRunnerUrl,
+  changeLocalRunnerUrl: mockChangeLocalRunnerUrl,
   changeLlmDirectory: jest.fn(),
   changeRunnerToken: jest.fn(),
   selectCodexApprovalPolicy: mockSelectCodexApprovalPolicy,
@@ -119,12 +123,15 @@ test("renders real settings and wires their actions securely", async () => {
   expect(screen.queryByLabelText("Codexトークン")).toBeNull();
   expect(screen.getByDisplayValue("runner-secret").props.secureTextEntry).toBe(true);
 
-  await fireEvent.changeText(screen.getByLabelText("Runner URL"), "https://next.example.com");
+  expect(screen.queryByLabelText("Runner URL")).toBeNull();
+  await fireEvent.changeText(screen.getByLabelText("ローカルURL"), "http://next.local:8788");
+  await fireEvent.changeText(screen.getByLabelText("Cloudflare経由URL"), "https://next.example.com");
   await fireEvent(screen.getByLabelText("文字起こし後に送信"), "valueChange", true);
   await fireEvent.press(screen.getByText("設定をクリップボードへ書き出す"));
   await fireEvent.press(screen.getByLabelText("メニューに戻る"));
 
-  expect(mockChangeRunnerUrl).toHaveBeenCalledWith("https://next.example.com");
+  expect(mockChangeLocalRunnerUrl).toHaveBeenCalledWith("http://next.local:8788");
+  expect(mockChangeCloudflareRunnerUrl).toHaveBeenCalledWith("https://next.example.com");
   expect(mockToggleAutoReplyAfterStt).toHaveBeenCalledWith(true);
   expect(mockExportSettingsJson).toHaveBeenCalledTimes(1);
   expect(mockOpenSkiaBoardScreen).toHaveBeenCalledTimes(1);

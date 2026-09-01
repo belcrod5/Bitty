@@ -13,7 +13,8 @@
   self.initialProps = @{};
   self.dependencyProvider = [RCTAppDependencyProvider new];
 
-  return [super applicationDidFinishLaunching:notification];
+  [super applicationDidFinishLaunching:notification];
+  self.window.releasedWhenClosed = NO;
 }
 
 - (NSURL *)sourceURLForBridge:(RCTBridge *)bridge

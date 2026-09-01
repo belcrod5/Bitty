@@ -328,7 +328,6 @@ import {
   type ReasoningEffort,
 } from "./utils/settingsParsers";
 import { buildApprovalCommandLabel } from "./utils/tooling";
-import { SETTINGS_FILE_NAME } from "./utils/persistedSettingsFile";
 import { suggestRunnerWsUrlFromRunnerUrl } from "./utils/urlResolvers";
 import { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
 import { RunnerWebSocketProvider } from "../runnerWs/RunnerWebSocketContext";
@@ -4409,7 +4408,6 @@ export default function App() {
   const { importSettingsJson, exportSettingsJson } = useAppSettingsPersistenceController({
     settingsLoaded,
     setSettingsLoaded,
-    settingsFileName: SETTINGS_FILE_NAME,
     modelOptions,
     defaultModelRef: DEFAULT_MODEL_REF,
     defaultReasoningEffort: DEFAULT_REASONING_EFFORT,
@@ -5451,7 +5449,6 @@ export default function App() {
     openSettingsScreen,
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
-    changeRunnerUrl,
     changeLlmDirectory,
     changeRunnerToken,
     clearCloudflareAccessCredentials,
@@ -5622,7 +5619,8 @@ export default function App() {
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
     toolAutoApprovalRuleCount: Object.keys(toolAutoApprovalMap).length,
-    changeRunnerUrl,
+    changeCloudflareRunnerUrl: setCloudflareRunnerUrl,
+    changeLocalRunnerUrl: setLocalRunnerUrl,
     changeLlmDirectory,
     changeRunnerToken,
     clearCloudflareAccessCredentials,
