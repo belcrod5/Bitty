@@ -204,6 +204,46 @@ test("delta re-resolves a user response/event pair across the boundary with a st
   assert.equal(delta.moreAfter, false);
 });
 
+test("delta returns a paginated user.text response as a user message without an event pair", async (t) => {
+  const { filePath } = await makeRollout(t, [sessionMeta, messageRecord(1)]);
+  const readers = createReaders();
+  const snapshot = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+
+  await appendRecords(filePath, [{
+    timestamp: "2026-07-01T00:00:02.000Z",
+    type: "response_item",
+    payload: {
+      type: "message",
+      id: "user-text-response",
+      role: "user",
+      content: [{ type: "input_text", text: "new prompt" }],
+      internal_chat_message_metadata_passthrough: {
+        content_item_kinds: ["user.text"],
+      },
+    },
+  }]);
+  const delta = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+    sinceCursor: snapshot.latestCursor,
+  });
+
+  assert.deepEqual(delta.messages.map((item) => ({
+    itemId: item.itemId,
+    role: item.role,
+    kind: item.kind,
+    content: item.content,
+  })), [{
+    itemId: "user-text-response",
+    role: "user",
+    kind: undefined,
+    content: "new prompt",
+  }]);
+});
+
 test("delta re-resolves an agent event/response pair across the boundary and names the superseded row", async (t) => {
   const { filePath } = await makeRollout(t, [
     sessionMeta,

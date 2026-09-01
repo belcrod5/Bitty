@@ -74,7 +74,7 @@ export function createLlmSessionRolloutReaders(deps) {
     return `tool : ${toolName}`;
   }
 
-  function parseSessionMessageFromResponseItem(parsed) {
+  function parseSessionResponseItem(parsed) {
     if (String(parsed?.type || "") !== "response_item") return null;
     const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
     if (!payload) return null;
@@ -84,11 +84,15 @@ export function createLlmSessionRolloutReaders(deps) {
       const content = String(payload?.message || payload?.text || "").trim();
       if (!content || shouldSkipSessionMessage("assistant", content)) return null;
       return {
-        role: "assistant",
-        content,
-        at,
-        kind: "status_log",
-        itemId: String(payload?.id || "").trim() || undefined,
+        message: {
+          role: "assistant",
+          content,
+          at,
+          kind: "status_log",
+          itemId: String(payload?.id || "").trim() || undefined,
+        },
+        pairRole: "",
+        confirmedUserText: false,
       };
     }
     if (payloadType !== "message") return null;
@@ -98,19 +102,34 @@ export function createLlmSessionRolloutReaders(deps) {
     const role = normalizeSessionMessageRole(payload?.role);
     if (!role) {
       return {
-        role: "assistant",
-        content,
-        at,
-        kind: "unclassified_context",
-        itemId: String(payload?.id || "").trim() || undefined,
+        message: {
+          role: "assistant",
+          content,
+          at,
+          kind: "unclassified_context",
+          itemId: String(payload?.id || "").trim() || undefined,
+        },
+        pairRole: "",
+        confirmedUserText: false,
       };
     }
     if (shouldSkipSessionMessage(role, content)) return null;
+    // Codex CLI 0.151 paginated rollouts can omit event_msg:user_message.
+    // Injected context also uses role=user, so user.text is the authoritative
+    // marker for a prompt that can stand alone without its historical event pair.
+    const contentItemKinds = payload
+      ?.internal_chat_message_metadata_passthrough?.content_item_kinds;
     return {
-      role,
-      content,
-      at,
-      itemId: String(payload?.id || "").trim() || undefined,
+      message: {
+        role,
+        content,
+        at,
+        itemId: String(payload?.id || "").trim() || undefined,
+      },
+      pairRole: role,
+      confirmedUserText: role === "user"
+        && Array.isArray(contentItemKinds)
+        && contentItemKinds.includes("user.text"),
     };
   }
 
@@ -332,7 +351,7 @@ export function createLlmSessionRolloutReaders(deps) {
     normalizeSessionMessagesLimit,
     normalizeSessionUpdatedAt,
     parseSessionMessageFromEventItem,
-    parseSessionMessageFromResponseItem,
+    parseSessionResponseItem,
     readSessionHeaderContext,
   });
 
@@ -352,6 +371,7 @@ export function createLlmSessionRolloutReaders(deps) {
     }
     if (!text) return "";
     const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    let responseItemFallback = "";
     for (const line of lines) {
       let parsed = null;
       try {
@@ -363,8 +383,15 @@ export function createLlmSessionRolloutReaders(deps) {
       if (eventMessage && eventMessage.role === "user") {
         return String(eventMessage.content || "").trim();
       }
+
+      const responseItem = parseSessionResponseItem(parsed);
+      if (!responseItemFallback && responseItem?.confirmedUserText) {
+        responseItemFallback = String(responseItem.message.content || "").trim();
+      }
     }
-    return "";
+    // Prefer the historical event when both forms exist; the fallback keeps
+    // saved sessions readable without requiring support for running an old CLI.
+    return responseItemFallback;
   }
 
   function parseSessionMetaFromRolloutText(text, opts = {}) {

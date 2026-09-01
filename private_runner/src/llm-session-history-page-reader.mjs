@@ -17,7 +17,7 @@ export function createLlmSessionHistoryPageReader(deps) {
     normalizeSessionMessagesLimit,
     normalizeSessionUpdatedAt,
     parseSessionMessageFromEventItem,
-    parseSessionMessageFromResponseItem,
+    parseSessionResponseItem,
     readSessionHeaderContext,
   } = deps;
 
@@ -35,17 +35,6 @@ export function createLlmSessionHistoryPageReader(deps) {
       String(row?.content || ""),
       String(row?.commandExecution?.command || ""),
     ])}`;
-  }
-
-  function responseMessageRole(parsed) {
-    if (
-      String(parsed?.type || "") !== "response_item"
-      || String(parsed?.payload?.type || "").trim().toLowerCase() !== "message"
-    ) {
-      return "";
-    }
-    const role = String(parsed?.payload?.role || "").trim().toLowerCase();
-    return role === "user" || role === "assistant" ? role : "";
   }
 
   function resolveMessageCandidates(candidates, scannedLineCount, reachedStart) {
@@ -79,7 +68,9 @@ export function createLlmSessionHistoryPageReader(deps) {
         index += 1;
         continue;
       }
-      const row = candidate.source === "response_message" && candidate.pairRole === "user"
+      const row = candidate.source === "response_message"
+        && candidate.pairRole === "user"
+        && !candidate.confirmedUserText
         ? { ...candidate.row, role: "assistant", kind: "unclassified_context" }
         : candidate.row;
       resolved.push({
@@ -441,10 +432,13 @@ export function createLlmSessionHistoryPageReader(deps) {
         let kind = row ? "command" : "message";
         let source = row ? "other" : "";
         let pairRole = "";
+        let confirmedUserText = false;
         if (!row) {
-          row = parseSessionMessageFromResponseItem(parsed);
-          pairRole = responseMessageRole(parsed);
-          source = pairRole ? "response_message" : "other";
+          const responseItem = parseSessionResponseItem(parsed);
+          row = responseItem?.message || null;
+          pairRole = responseItem?.pairRole || "";
+          confirmedUserText = responseItem?.confirmedUserText === true;
+          if (row) source = pairRole ? "response_message" : "other";
         }
         if (!row) {
           row = parseSessionMessageFromEventItem(parsed);
@@ -459,7 +453,16 @@ export function createLlmSessionHistoryPageReader(deps) {
           ? Math.max(0, Number(outcomesByCallId.get(String(row.itemId || ""))?.end || 0))
           : 0;
         if (kind === "command") pendingOutcomeCallIds.delete(String(row.itemId || ""));
-        candidates.push({ row, start, lineEnd, outcomeEnd, source, pairRole, recordIndex: scannedLineCount });
+        candidates.push({
+          row,
+          start,
+          lineEnd,
+          outcomeEnd,
+          source,
+          pairRole,
+          confirmedUserText,
+          recordIndex: scannedLineCount,
+        });
         return shouldStopScan();
       });
       const availableRows = resolveMessageCandidates(candidates, scannedLineCount, scan.reachedStart);

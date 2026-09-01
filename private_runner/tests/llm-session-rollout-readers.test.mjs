@@ -520,7 +520,7 @@ test("keeps a reversed non-adjacent pair intact at a page boundary", async (t) =
   ]);
 });
 
-test("uses user_message events instead of injected response items for the session summary", async (t) => {
+test("prefers a historical user_message event when both rollout forms exist", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-summary-user-"));
   t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
   const filePath = path.join(tempDir, "rollout.jsonl");
@@ -533,6 +533,9 @@ test("uses user_message events instead of injected response items for the sessio
         type: "message",
         role: "user",
         content: [{ type: "input_text", text: "<environment_context>internal</environment_context>" }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["environments.environment_context"],
+        },
       },
     },
     { timestamp: "2026-07-01T00:00:01.250Z", type: "world_state", payload: {} },
@@ -542,7 +545,10 @@ test("uses user_message events instead of injected response items for the sessio
       payload: {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: "actual prompt" }],
+        content: [{ type: "input_text", text: "response-item prompt" }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["user.text"],
+        },
       },
     },
     {
@@ -556,6 +562,69 @@ test("uses user_message events instead of injected response items for the sessio
   const summary = await createReaders().readCliSessionSummaryFromRolloutFile(filePath);
 
   assert.equal(summary.firstUserMessage, "actual prompt");
+});
+
+test("uses the user.text response item when paginated rollouts omit user_message events", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-summary-response-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-1" } },
+    {
+      timestamp: "2026-07-01T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        id: "internal-context",
+        role: "user",
+        content: [{ type: "input_text", text: "<environment_context>internal</environment_context>" }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["agents_md.instructions", "environments.environment_context"],
+        },
+      },
+    },
+    {
+      timestamp: "2026-07-01T00:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        id: "actual-prompt",
+        role: "user",
+        content: [{ type: "input_text", text: "actual prompt" }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["user.text"],
+        },
+      },
+    },
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const summary = await createReaders().readCliSessionSummaryFromRolloutFile(filePath);
+  const history = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-1",
+    limit: 20,
+  });
+
+  assert.equal(summary.firstUserMessage, "actual prompt");
+  assert.deepEqual(history.messages.map((message) => ({
+    itemId: message.itemId,
+    role: message.role,
+    kind: message.kind,
+    content: message.content,
+  })), [
+    {
+      itemId: "internal-context",
+      role: "assistant",
+      kind: "unclassified_context",
+      content: "<environment_context>internal</environment_context>",
+    },
+    {
+      itemId: "actual-prompt",
+      role: "user",
+      kind: undefined,
+      content: "actual prompt",
+    },
+  ]);
 });
 
 test("keeps an issued older cursor valid after the rollout is appended", async (t) => {
