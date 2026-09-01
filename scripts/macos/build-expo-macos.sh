@@ -54,6 +54,7 @@ echo "[build-macos] Preparing native dependencies"
 cd "${EXPO_DIR}"
 
 echo "[build-macos] Building Release"
+# Keep Application Support outside the sandbox container regardless of signing availability.
 xcodebuild \
   -quiet \
   -workspace "${WORKSPACE_PATH}" \
@@ -64,6 +65,7 @@ xcodebuild \
   -derivedDataPath "${DERIVED_DATA_PATH}" \
   ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=YES \
+  CODE_SIGN_ENTITLEMENTS= \
   "${CODE_SIGN_ARGS[@]}" \
   build
 

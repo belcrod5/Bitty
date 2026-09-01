@@ -10,8 +10,102 @@ index 64ecafe..2347795 100644
    }
    s.swift_version  = '5.9'
    s.source         = { git: 'https://github.com/expo/expo.git' }
+diff --git a/node_modules/expo-secure-store/ios/SecureStoreMacOSKeychain.swift b/node_modules/expo-secure-store/ios/SecureStoreMacOSKeychain.swift
+new file mode 100644
+index 0000000..7759c09
+--- /dev/null
++++ b/node_modules/expo-secure-store/ios/SecureStoreMacOSKeychain.swift
+@@ -0,0 +1,88 @@
++#if os(macOS)
++import Foundation
++import Security
++
++enum SecureStoreMacOSKeychain {
++  enum MigrationResult {
++    case missing
++    case value(Data)
++    case failure(OSStatus)
++  }
++
++  static func migrateItem(
++    canonicalQuery: [String: Any],
++    legacyQuery: [String: Any]
++  ) -> MigrationResult {
++    switch read(query: canonicalQuery) {
++    case .value(let value):
++      SecItemDelete(legacyQuery as CFDictionary)
++      return .value(value)
++    case .failure(let status):
++      return .failure(status)
++    case .missing:
++      break
++    }
++
++    let legacyValue: Data
++    switch read(query: legacyQuery) {
++    case .value(let value):
++      legacyValue = value
++    case .missing:
++      return .missing
++    case .failure(let status):
++      return .failure(status)
++    }
++
++    guard let canonicalAccount = canonicalQuery[kSecAttrAccount as String] else {
++      return .failure(errSecParam)
++    }
++    let status = SecItemUpdate(
++      legacyQuery as CFDictionary,
++      [kSecAttrAccount as String: canonicalAccount] as CFDictionary
++    )
++
++    switch status {
++    case errSecSuccess:
++      return .value(legacyValue)
++    case errSecDuplicateItem:
++      switch read(query: canonicalQuery) {
++      case .value(let value):
++        SecItemDelete(legacyQuery as CFDictionary)
++        return .value(value)
++      case .missing:
++        return .failure(status)
++      case .failure(let readStatus):
++        return .failure(readStatus)
++      }
++    default:
++      return .failure(status)
++    }
++  }
++
++  static func deleteItems(matching queries: [[String: Any]]) {
++    for query in queries {
++      SecItemDelete(query as CFDictionary)
++    }
++  }
++
++  private static func read(query: [String: Any]) -> MigrationResult {
++    var searchQuery = query
++    searchQuery[kSecMatchLimit as String] = kSecMatchLimitOne
++    searchQuery[kSecReturnData as String] = kCFBooleanTrue
++
++    var item: CFTypeRef?
++    let status = SecItemCopyMatching(searchQuery as CFDictionary, &item)
++    switch status {
++    case errSecSuccess:
++      guard let value = item as? Data else {
++        return .failure(errSecInternalError)
++      }
++      return .value(value)
++    case errSecItemNotFound:
++      return .missing
++    default:
++      return .failure(status)
++    }
++  }
++}
++#endif
 diff --git a/node_modules/expo-secure-store/ios/SecureStoreModule.swift b/node_modules/expo-secure-store/ios/SecureStoreModule.swift
-index 584df21..fc33469 100644
+index 584df21..f36434a 100644
 --- a/node_modules/expo-secure-store/ios/SecureStoreModule.swift
 +++ b/node_modules/expo-secure-store/ios/SecureStoreModule.swift
 @@ -48,6 +48,7 @@ public final class SecureStoreModule: Module {
@@ -83,56 +177,46 @@ index 584df21..fc33469 100644
 
      query[kSecMatchLimit as String] = kSecMatchLimitOne
      query[kSecReturnData as String] = kCFBooleanTrue
-@@ -169,19 +189,73 @@ public final class SecureStoreModule: Module {
+@@ -169,19 +189,63 @@ public final class SecureStoreModule: Module {
      }
    }
 
 -  private func query(with key: String, options: SecureStoreOptions, requireAuthentication: Bool? = nil) -> [String: Any] {
 +  #if os(macOS)
 +  private func migrateLegacyMacOSItem(with key: String, options: SecureStoreOptions, requireAuthentication: Bool? = nil) throws -> Data? {
-+    guard let value = try searchKeyChain(
-+      with: key,
-+      options: options,
-+      requireAuthentication: requireAuthentication,
-+      useLegacyMacOSAccount: true
-+    ) else {
-+      return nil
-+    }
-+
-+    let legacyQuery = query(
++    var canonicalQuery = query(with: key, options: options, requireAuthentication: requireAuthentication)
++    var legacyQuery = query(
 +      with: key,
 +      options: options,
 +      requireAuthentication: requireAuthentication,
 +      useLegacyMacOSAccount: true
 +    )
-+    let accountUpdate = [kSecAttrAccount as String: key]
-+    let migrationStatus = SecItemUpdate(legacyQuery as CFDictionary, accountUpdate as CFDictionary)
-+
-+    switch migrationStatus {
-+    case errSecSuccess:
++    if let authPrompt = options.authenticationPrompt {
++      canonicalQuery[kSecUseOperationPrompt as String] = authPrompt
++      legacyQuery[kSecUseOperationPrompt as String] = authPrompt
++    }
++    switch SecureStoreMacOSKeychain.migrateItem(
++      canonicalQuery: canonicalQuery,
++      legacyQuery: legacyQuery
++    ) {
++    case .missing:
++      return nil
++    case .value(let value):
 +      deleteLegacyMacOSItems(with: key, options: options)
 +      return value
-+    case errSecDuplicateItem:
-+      guard let canonicalValue = try searchKeyChain(
-+        with: key,
-+        options: options,
-+        requireAuthentication: requireAuthentication
-+      ) else {
-+        throw KeyChainException(migrationStatus)
-+      }
-+      deleteLegacyMacOSItems(with: key, options: options)
-+      return canonicalValue
-+    default:
-+      throw KeyChainException(migrationStatus)
++    case .failure(let status):
++      throw KeyChainException(status)
 +    }
 +  }
 +  #endif
 +
 +  private func deleteLegacyMacOSItems(with key: String, options: SecureStoreOptions) {
 +    #if os(macOS)
-+    SecItemDelete(query(with: key, options: options, useLegacyMacOSAccount: true) as CFDictionary)
-+    SecItemDelete(query(with: key, options: options, requireAuthentication: true, useLegacyMacOSAccount: true) as CFDictionary)
-+    SecItemDelete(query(with: key, options: options, requireAuthentication: false, useLegacyMacOSAccount: true) as CFDictionary)
++    SecureStoreMacOSKeychain.deleteItems(matching: [
++      query(with: key, options: options, useLegacyMacOSAccount: true),
++      query(with: key, options: options, requireAuthentication: true, useLegacyMacOSAccount: true),
++      query(with: key, options: options, requireAuthentication: false, useLegacyMacOSAccount: true)
++    ])
 +    #endif
 +  }
 +

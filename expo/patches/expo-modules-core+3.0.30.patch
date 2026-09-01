@@ -1,8 +1,19 @@
 diff --git a/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift b/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift
-index 2f3061d..ca40540 100644
+index 2f3061d..2bcb33c 100644
 --- a/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift
 +++ b/node_modules/expo-modules-core/ios/Core/AppContextConfig.swift
-@@ -7,7 +7,7 @@ public struct AppContextConfig {
+@@ -1,5 +1,10 @@
+ // Copyright 2023-present 650 Industries. All rights reserved.
+
++import Foundation
++#if os(macOS)
++import Darwin
++#endif
++
+ public struct AppContextConfig {
+   public let documentDirectory: URL?
+   public let cacheDirectory: URL?
+@@ -7,7 +12,7 @@ public struct AppContextConfig {
    public let scoped: Bool
 
    public init(documentDirectory: URL?, cacheDirectory: URL?, appGroups: [String]?) {
@@ -11,7 +22,7 @@ index 2f3061d..ca40540 100644
      self.cacheDirectory = cacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
      self.scoped = documentDirectory != nil ? true : false
 
-@@ -19,4 +19,20 @@ public struct AppContextConfig {
+@@ -19,4 +24,103 @@ public struct AppContextConfig {
      }
      self.appGroupSharedDirectories = sharedDirectories
    }
@@ -21,14 +32,97 @@ index 2f3061d..ca40540 100644
 +    guard let applicationSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
 +      return nil
 +    }
++    let bundleIdentifier = Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName
++    let appDirectory = applicationSupportDirectory.appendingPathComponent(bundleIdentifier, isDirectory: true)
++
++    if FileManager.default.fileExists(atPath: appDirectory.path),
++       !directoryIsEmpty(appDirectory) {
++      return appDirectory
++    }
++
 +    let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
-+      ?? Bundle.main.bundleIdentifier
 +      ?? ProcessInfo.processInfo.processName
-+    let appDirectory = applicationSupportDirectory.appendingPathComponent(appName, isDirectory: true)
-+    try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
-+    return appDirectory
++    let regularLegacyDirectory = applicationSupportDirectory.appendingPathComponent(appName, isDirectory: true)
++    let sandboxLegacyDirectory = FileManager.default.homeDirectoryForCurrentUser
++      .appendingPathComponent("Library/Containers/\(bundleIdentifier)/Data/Library/Application Support", isDirectory: true)
++      .appendingPathComponent(appName, isDirectory: true)
++    let legacyDirectories = [sandboxLegacyDirectory, regularLegacyDirectory]
++      .filter { legacyDirectory in
++        legacyDirectory.standardizedFileURL != appDirectory.standardizedFileURL
++          && directoryHasContents(legacyDirectory)
++      }
++      .sorted { latestModificationDate(in: $0) > latestModificationDate(in: $1) }
++
++    if let legacyDirectory = legacyDirectories.first {
++      if FileManager.default.fileExists(atPath: appDirectory.path) {
++        if rmdir(appDirectory.path) != 0 {
++          if FileManager.default.fileExists(atPath: appDirectory.path) {
++            return directoryHasContents(appDirectory) ? appDirectory : legacyDirectory
++          }
++        }
++      }
++      let stagingDirectory = applicationSupportDirectory
++        .appendingPathComponent(".\(bundleIdentifier).migration-\(UUID().uuidString)", isDirectory: true)
++      do {
++        try FileManager.default.copyItem(at: legacyDirectory, to: stagingDirectory)
++        if FileManager.default.fileExists(atPath: appDirectory.path) {
++          try? FileManager.default.removeItem(at: stagingDirectory)
++          return directoryHasContents(appDirectory) ? appDirectory : legacyDirectory
++        }
++        try FileManager.default.moveItem(at: stagingDirectory, to: appDirectory)
++        return appDirectory
++      } catch {
++        try? FileManager.default.removeItem(at: stagingDirectory)
++        return directoryHasContents(appDirectory) ? appDirectory : legacyDirectory
++      }
++    }
++
++    do {
++      try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
++      return appDirectory
++    } catch {
++      return nil
++    }
 +    #else
 +    return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
 +    #endif
 +  }
++
++  #if os(macOS)
++  private static func directoryIsEmpty(_ directory: URL) -> Bool {
++    var isDirectory = ObjCBool(false)
++    guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
++          isDirectory.boolValue,
++          let contents = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
++      return false
++    }
++    return contents.isEmpty
++  }
++
++  private static func directoryHasContents(_ directory: URL) -> Bool {
++    guard let contents = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
++      return false
++    }
++    return !contents.isEmpty
++  }
++
++  private static func latestModificationDate(in directory: URL) -> Date {
++    let keys: [URLResourceKey] = [.contentModificationDateKey]
++    guard let enumerator = FileManager.default.enumerator(
++      at: directory,
++      includingPropertiesForKeys: keys,
++      options: [.skipsPackageDescendants]
++    ) else {
++      return .distantPast
++    }
++    var latestDate = Date.distantPast
++    for case let item as URL in enumerator {
++      if let modificationDate = try? item.resourceValues(forKeys: Set(keys)).contentModificationDate,
++         modificationDate > latestDate {
++        latestDate = modificationDate
++      }
++    }
++    return latestDate
++  }
++  #endif
  }
