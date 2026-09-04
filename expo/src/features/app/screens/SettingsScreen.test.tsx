@@ -3,6 +3,8 @@ import { fireEvent, render } from "@testing-library/react-native";
 import { SettingsScreen } from "./SettingsScreen";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
+const mockSetStringAsync = jest.fn(async (_text: string) => true);
+jest.mock("../clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
 jest.mock("expo-av", () => ({
   Audio: {
     RecordingOptionsPresets: {
@@ -136,6 +138,20 @@ test("renders real settings and wires their actions securely", async () => {
   expect(mockExportSettingsJson).toHaveBeenCalledTimes(1);
   expect(mockOpenSkiaBoardScreen).toHaveBeenCalledTimes(1);
   expect(mockOpenDrawer).toHaveBeenCalledTimes(1);
+});
+
+test("shows the build stamp and copies it to the clipboard", async () => {
+  const screen = await render(<SettingsScreen />);
+
+  expect(screen.getByText("アプリ情報")).toBeTruthy();
+  expect(screen.getByText("ビルド")).toBeTruthy();
+  const stampText = screen.getByText(/^dev$|^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(.+\)$/);
+
+  await fireEvent.press(screen.getByLabelText("ビルドIDをコピー"));
+
+  expect(mockSetStringAsync).toHaveBeenCalledWith(stampText.props.children);
+  expect(screen.getByText("コピーしました")).toBeTruthy();
+  await screen.unmount();
 });
 
 test("uses dropdowns for selectable settings", async () => {
