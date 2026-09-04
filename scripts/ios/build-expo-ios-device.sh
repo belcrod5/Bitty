@@ -18,6 +18,15 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
+# ビルドスタンプ(設定画面に表示)。expo/ios は prebuild 生成物で git 管理外のため、
+# macOS のように .xcode.env へは書けない。ここで export した環境変数は xcodebuild の
+# バンドルフェーズ(export:embed)へ引き継がれ、babel が EXPO_PUBLIC_* をインライン化する。
+BITTY_GIT_SHA=$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]]; then
+  BITTY_GIT_SHA="${BITTY_GIT_SHA}+dirty"
+fi
+export EXPO_PUBLIC_BUILD_STAMP="$(date '+%Y-%m-%d %H:%M:%S') (${BITTY_GIT_SHA})"
+
 DEVICE_ID="${IOS_DEVICE_ID:-}"
 CONFIGURATION="${IOS_CONFIGURATION:-Release}"
 SCHEME="${IOS_SCHEME:-Bitty}"
