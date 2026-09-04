@@ -8,6 +8,7 @@ const INTERRUPTED_TURN_STATUSES = new Set(["interrupted", "cancelled", "canceled
 const ACTIVE_TURN_STATUSES = new Set(["inprogress", "in_progress", "running", "active", "waiting", "waitingapproval", "waiting_approval"]);
 const STOPPED_TURN_STATUSES = new Set(["completed", "complete", "succeeded", "success", "interrupted", "cancelled", "canceled", "failed"]);
 const CODEX_MODELS = [
+  { modelId: "gpt-6-astra", label: "GPT-6-Astra" },
   { modelId: "gpt-5.6-sol", label: "ChatGPT 5.6 Sol" },
   { modelId: "gpt-5.6-terra", label: "ChatGPT 5.6 Terra" },
   { modelId: "gpt-5.6-luna", label: "ChatGPT 5.6 Luna" },

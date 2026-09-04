@@ -355,6 +355,10 @@ test("Codex Backend status advertises its full decision superset", async () => {
   const status = await backend.getStatus();
   assert.deepEqual(status.capabilities.action.decisions, ["allow", "allow_for_session", "deny"]);
   assert.deepEqual(status.capabilities.action.policyProfiles[0].decisions, ["allow", "allow_for_session", "deny"]);
+  assert.deepEqual(
+    status.capabilities.model.catalog.find((model) => model.modelId === "gpt-6-astra"),
+    { modelId: "gpt-6-astra", label: "GPT-6-Astra" },
+  );
 });
 
 for (const method of ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]) {
