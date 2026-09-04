@@ -66,6 +66,32 @@ describe("useSendReplyRequestController rejection feedback", () => {
     expect(args.showChatBottomToast).not.toHaveBeenCalled();
   });
 
+  test("notifies acceptance immediately when a send is queued for session restore", async () => {
+    const args = createArgs(undefined);
+    args.queueSendReplyAfterSessionRestore.mockReturnValue(true);
+    const onAccepted = jest.fn();
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.sendReplyRequestWithSessionGuard("hello", { ...sendOptions, onAccepted });
+    });
+
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(args.sendReplyRequestFromCodex).not.toHaveBeenCalled();
+  });
+
+  test("does not notify acceptance for a rejected send", async () => {
+    const args = createArgs({ rejected: "active_request" });
+    const onAccepted = jest.fn();
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.sendReplyRequestWithSessionGuard("hello", { ...sendOptions, onAccepted });
+    });
+
+    expect(onAccepted).not.toHaveBeenCalled();
+  });
+
   test("preserves the saved backend through the guarded send", async () => {
     const args = createArgs(undefined);
     const { result } = await renderHook(() => useSendReplyRequestController(args));

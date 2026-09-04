@@ -56,6 +56,7 @@ import { WorkspaceFileRenameDialog } from "../components/WorkspaceFileRenameDial
 import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
+import { ChatComposerInput, MACOS_CHAT_SUBMIT_KEY_EVENTS } from "../components/ChatComposerInput";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { useComposerDraftSync } from "../hooks/useComposerPersistence";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
@@ -575,9 +576,10 @@ export function ChatScreen({
   });
   const transcriptForView = usesPanelComposerState ? panelTranscript : transcript;
   const setTranscriptForView = usesPanelComposerState ? setPanelTranscript : setTranscript;
+  const [composerSubmitRequestId, setComposerSubmitRequestId] = useState(0);
   const hasComposerTextForView = useMemo(() => !!transcriptForView.trim(), [transcriptForView]);
   const showComposerFullscreenToggleForView = usesPanelComposerState
-    ? panelComposerFocused
+    ? Platform.OS === "macos" || panelComposerFocused
     : showComposerFullscreenToggle;
   const hasRunnerWsEndpoint = !!suggestRunnerWsUrlFromRunnerUrl(runnerUrl);
   const baseCanSendForView = usesPanelComposerState
@@ -1073,16 +1075,18 @@ export function ChatScreen({
     panelSnapshot.selectedSessionId,
     panelSnapshot.selectedSessionTitle,
   ]);
-  const sendReplyTranscriptByPanel = useCallback(() => {
-    if (!usesPanelComposerState) {
-      void sendReplyTranscript();
-      return;
-    }
-    const text = transcriptForView.trim();
-    if (!text) return;
-    void sendReplyTranscriptForPanel(panelId, text);
+  const sendReplyTranscriptByPanel = useCallback((transcriptOverride?: string, onAccepted?: () => void) => {
+    const text = (transcriptOverride ?? transcriptForView).trim();
+    if (!text || llmSessionRestoreLoadingForView || !hasRunnerWsEndpoint
+      || (replyLoadingForView && !codexCompactRunningForView)) return Promise.resolve();
+    const options = onAccepted ? { onAccepted } : undefined;
+    return usesPanelComposerState ? sendReplyTranscriptForPanel(panelId, text, options) : sendReplyTranscript(transcriptOverride, options);
   }, [
+    codexCompactRunningForView,
+    hasRunnerWsEndpoint,
+    llmSessionRestoreLoadingForView,
     panelId,
+    replyLoadingForView,
     sendReplyTranscript,
     sendReplyTranscriptForPanel,
     transcriptForView,
@@ -1853,6 +1857,8 @@ export function ChatScreen({
               setDirectoryMenuMode("actions");
               setDirectoryMenuOpen(true);
             }}
+            accessibilityRole="button"
+            accessibilityLabel="チャットタイトルメニューを開く"
           >
             <View style={styles.chatDirectoryHeaderPrimaryRow}>
               {directoryHeaderMarkerColorHex ? (
@@ -2229,39 +2235,23 @@ export function ChatScreen({
                 <Text style={styles.chatDirectSttText}>{directNativeSttPreviewText || "話してください..."}</Text>
               </View>
             ) : (
-              <View style={styles.chatComposerInputArea}>
-                <TextInput
-                  ref={chatComposerInputRef}
-                  style={[
-                    styles.chatInput,
-                    styles.chatComposerInput,
-                    showComposerFullscreenToggleForView ? styles.chatComposerInputWithExpandButton : null,
-                  ]}
-                  value={transcriptForView}
-                  onChangeText={setTranscriptForView}
-                  placeholder="メッセージを入力"
-                  multiline
-                  textAlignVertical="top"
-                  onFocus={() => {
-                    if (usesPanelComposerState) setPanelComposerFocused(true);
-                    setComposerInputFocused(true);
-                  }}
-                  onBlur={() => {
-                    if (usesPanelComposerState) setPanelComposerFocused(false);
-                    setComposerInputFocused(false);
-                  }}
-                />
-                {showComposerFullscreenToggleForView ? (
-                  <TouchableOpacity
-                    style={styles.chatComposerExpandButton}
-                    onPress={openComposerFullscreenForView}
-                    accessibilityRole="button"
-                    accessibilityLabel="入力欄を全画面表示"
-                  >
-                    <Ionicons name="expand-outline" size={16} color="#334155" />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
+              <ChatComposerInput
+                inputRef={chatComposerInputRef}
+                value={transcriptForView}
+                showFullscreenButton={showComposerFullscreenToggleForView}
+                onChangeText={setTranscriptForView}
+                onFocus={() => {
+                  if (usesPanelComposerState) setPanelComposerFocused(true);
+                  setComposerInputFocused(true);
+                }}
+                onBlur={() => {
+                  if (usesPanelComposerState) setPanelComposerFocused(false);
+                  setComposerInputFocused(false);
+                }}
+                onSubmit={sendReplyTranscriptByPanel}
+                submitRequestId={composerSubmitRequestId}
+                onOpenFullscreen={openComposerFullscreenForView}
+              />
             )}
             <View style={styles.chatComposerIconRow}>
               {(() => {
@@ -2315,6 +2305,10 @@ export function ChatScreen({
                     return;
                   }
                   if (showSendAction) {
+                    if (Platform.OS === "macos") {
+                      setComposerSubmitRequestId((requestId) => requestId + 1);
+                      return;
+                    }
                     chatComposerInputRef.current?.blur();
                     sendReplyTranscriptByPanel();
                     return;
@@ -2431,6 +2425,8 @@ export function ChatScreen({
           value={transcriptForView}
           history={composerMessageHistory}
           onChangeText={setTranscriptForView}
+          onSubmit={sendReplyTranscriptByPanel}
+          submitKeyEvents={Platform.OS === "macos" ? MACOS_CHAT_SUBMIT_KEY_EVENTS : undefined}
           onClose={closePopupComposerFullscreen}
           onFocus={() => {
             if (usesPanelComposerState) setPanelComposerFocused(true);
@@ -2511,7 +2507,11 @@ export function ChatScreen({
               setDirectoryMenuOpen(false);
             }}
           >
-            <Pressable style={styles.chatDirectoryModalCard} onPress={() => {}}>
+            <Pressable
+              testID="chat-title-menu"
+              style={[styles.chatDirectoryModalCard, Platform.OS === "macos" && styles.chatContentWidth]}
+              onPress={() => {}}
+            >
               <Text style={styles.chatDirectoryModalTitle}>ディレクトリー</Text>
               <Text style={styles.chatDirectoryMenuPathText} numberOfLines={2}>
                 {selectedDirectoryPathForView}

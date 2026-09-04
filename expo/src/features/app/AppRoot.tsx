@@ -5317,6 +5317,7 @@ export default function App() {
     reasoningEffort?: ReasoningEffort | string;
     source?: string;
   };
+  type SendReplyOptions = { sttMeta?: SttMessageMeta; panelId?: string; sessionSnapshot?: WriteSessionSnapshot; onAccepted?: () => void };
 
   function resolveWritePanelId(panelIdRaw: unknown): string | null {
     const panelId = normalizeRuntimePanelId(panelIdRaw);
@@ -5373,7 +5374,7 @@ export default function App() {
 
   async function sendReplyRequest(
     transcriptOverride?: string,
-    options?: { sttMeta?: SttMessageMeta; panelId?: string; sessionSnapshot?: WriteSessionSnapshot }
+    options?: SendReplyOptions
   ) {
     const requestPanelId = normalizeRuntimePanelId(options?.panelId);
     const requestSessionSnapshot = options?.sessionSnapshot;
@@ -5423,7 +5424,7 @@ export default function App() {
 
   async function sendReplyTranscript(
     transcriptOverride?: string,
-    options?: { sttMeta?: SttMessageMeta; panelId?: string; sessionSnapshot?: WriteSessionSnapshot }
+    options?: SendReplyOptions
   ) {
     const resolvedPanelId = resolveWritePanelId(options?.panelId);
     if (!resolvedPanelId) {
@@ -5556,7 +5557,7 @@ export default function App() {
     }, { throttleMs: 0 });
     return sendReplyRequest(transcriptValue, { panelId: panel });
   }, [sendReplyRequest]);
-  const sendReplyTranscriptForPanelFromContext = useCallback((panelId: string, transcriptOverride?: string) => {
+  const sendReplyTranscriptForPanelFromContext = useCallback((panelId: string, transcriptOverride?: string, options?: SendReplyOptions) => {
     const panel = normalizeRuntimePanelId(panelId);
     const transcriptChars = typeof transcriptOverride === "string"
       ? transcriptOverride.trim().length
@@ -5566,7 +5567,7 @@ export default function App() {
       transcriptChars,
       route: "sendReplyTranscriptForPanel",
     }, { throttleMs: 0 });
-    return sendReplyTranscript(transcriptOverride, { panelId: panel });
+    return sendReplyTranscript(transcriptOverride, { ...options, panelId: panel });
   }, [sendReplyTranscript]);
   const cancelReplyRequestForPanelFromContext = useCallback((panelId: string) => {
     const panel = normalizeRuntimePanelId(panelId);
@@ -5764,9 +5765,7 @@ export default function App() {
     sendReplyRequest: () => {
       void sendReplyRequest();
     },
-    sendReplyTranscript: () => {
-      void sendReplyTranscript();
-    },
+    sendReplyTranscript,
     sendReplyRequestForPanelWithTranscript: sendReplyRequestForPanelWithTranscriptFromContext,
     sendReplyTranscriptForPanel: sendReplyTranscriptForPanelFromContext,
     cancelReplyRequestForPanel: cancelReplyRequestForPanelFromContext,

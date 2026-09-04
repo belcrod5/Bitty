@@ -1,7 +1,8 @@
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { Alert } from "react-native";
+import { Alert, Platform, StyleSheet } from "react-native";
 import { ChatScreen } from "./ChatScreen";
+import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 
 const mockStartAutoRecordingMode = jest.fn();
 const mockLogSessionDiag = jest.fn();
@@ -21,10 +22,18 @@ const mockRenameBoardFile = jest.fn();
 const mockMarkSessionRead = jest.fn();
 const mockMarkSessionUnread = jest.fn();
 const mockHydratePanelFromSessionHistory = jest.fn(async () => "applied");
+const mockSendReplyTranscriptForPanel = jest.fn(async (
+  _panelId?: string,
+  _text?: string,
+  _options?: { onAccepted?: () => void }
+) => {});
+const mockSetSlashCommandSelectOpen = jest.fn();
+const mockGitDiffPanelProps: { current: Record<string, any> | null } = { current: null };
 const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
 let mockPanelBackendId = "codex";
 let mockRunnerUrl = "http://runner.test";
 let mockPanelConversationMessages: Array<{ id: string; role: "user" | "assistant"; content: string }> = [];
+const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   renameTarget: null,
   requestRename: jest.fn(),
@@ -92,7 +101,12 @@ jest.mock("../components/PixelRobotIndicator", () => ({ PixelRobotIndicator: () 
 jest.mock("../components/SlashCommandSelectMenu", () => ({ SlashCommandSelectMenu: () => null }));
 jest.mock("../components/TtsWaveformPlayer", () => ({ TtsWaveformPlayer: () => null }));
 jest.mock("../components/YouTubeVideoList", () => ({ YouTubeVideoList: () => null }));
-jest.mock("../components/GitDiffPanel", () => ({ GitDiffPanel: () => null }));
+jest.mock("../components/GitDiffPanel", () => ({
+  GitDiffPanel: (props: Record<string, any>) => {
+    mockGitDiffPanelProps.current = props;
+    return null;
+  },
+}));
 jest.mock("../components/RunnerMediaViewer", () => ({ RunnerMediaViewer: () => null }));
 jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
 jest.mock("../components/ChatSessionSubagentList", () => ({
@@ -288,7 +302,7 @@ jest.mock("../contexts/ChatComposerContext", () => ({
     startAutoRecordingMode: mockStartAutoRecordingMode,
     setFaceTrackingEnabledWithRef: jest.fn(),
     faceTrackingRunning: false,
-    setSlashCommandSelectOpen: jest.fn(),
+    setSlashCommandSelectOpen: mockSetSlashCommandSelectOpen,
     slashCommandOptions: [],
     onSelectSlashCommand: jest.fn(),
     });
@@ -378,7 +392,7 @@ jest.mock("../contexts/ConversationContext", () => ({
     setTranscript: jest.fn(),
     sendReplyTranscript: jest.fn(),
     sendReplyRequestForPanelWithTranscript: jest.fn(),
-    sendReplyTranscriptForPanel: jest.fn(),
+    sendReplyTranscriptForPanel: mockSendReplyTranscriptForPanel,
     cancelReplyRequestForPanel: jest.fn(),
     cancelCodexQueuedTurnForMessage: jest.fn(),
     logSessionDiag: mockLogSessionDiag,
@@ -389,12 +403,18 @@ jest.mock("../contexts/ConversationContext", () => ({
 describe("ChatScreen auto recording panel target", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSendReplyTranscriptForPanel.mockResolvedValue(undefined);
     mockCodexScheduleProps.current = null;
     mockLocationScheduleProps.current = null;
     mockChatSessionSubagentProps.current = null;
+    mockGitDiffPanelProps.current = null;
     mockPanelBackendId = "codex";
     mockRunnerUrl = "http://runner.test";
     mockPanelConversationMessages = [{ id: "message-1", role: "assistant", content: "hello" }];
+  });
+
+  afterEach(() => {
+    if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
   });
 
   it("passes the current panel ID from a panel runtime view", async () => {
@@ -403,7 +423,7 @@ describe("ChatScreen auto recording panel target", () => {
     await fireEvent.press(screen.getByText("mic"));
 
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith("panel-a");
-    await fireEvent.press(screen.getByText("Workspace"));
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
     expect(mockCodexScheduleProps.current?.currentThreadId).toBe("session-1");
     await screen.unmount();
   });
@@ -418,12 +438,196 @@ describe("ChatScreen auto recording panel target", () => {
   });
 
   it("disables panel send when the runner URL cannot produce a WebSocket endpoint", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
     mockRunnerUrl = "invalid";
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
 
     await fireEvent.changeText(screen.getByPlaceholderText("メッセージを入力"), "hello");
 
     expect(screen.getByTestId("chat-composer-action")).toBeDisabled();
+    await fireEvent(screen.getByPlaceholderText("メッセージを入力"), "submitEditing", {
+      nativeEvent: { text: "hello" },
+    });
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
+  it("submits the normal macOS composer only through its Command+Enter event", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const input = screen.getByPlaceholderText("メッセージを入力");
+
+    await fireEvent.changeText(input, "hello");
+    expect(screen.getByPlaceholderText("メッセージを入力").props.submitKeyEvents).toEqual([
+      { key: "Enter", metaKey: true },
+    ]);
+    await fireEvent(screen.getByPlaceholderText("メッセージを入力"), "submitEditing", {
+      nativeEvent: { text: "hello" },
+    });
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledTimes(1);
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith(
+      "panel-a",
+      "hello",
+      expect.objectContaining({ onAccepted: expect.any(Function) })
+    );
+
+    await screen.unmount();
+  });
+
+  it("submits the latest native IME text instead of a delayed controlled value", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const input = screen.getByTestId("chat-composer-input");
+
+    await fireEvent.changeText(input, "t");
+    await fireEvent(input, "submitEditing", { nativeEvent: { text: "続けて" } });
+
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith(
+      "panel-a",
+      "続けて",
+      expect.objectContaining({ onAccepted: expect.any(Function) })
+    );
+
+    await screen.unmount();
+  });
+
+  it("waits for macOS end editing before a send-button submission", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const input = screen.getByTestId("chat-composer-input");
+
+    await fireEvent.changeText(input, "t");
+    await fireEvent(input, "focus");
+    await fireEvent.press(screen.getByTestId("chat-composer-action"));
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+
+    await fireEvent(input, "endEditing", { nativeEvent: { text: "続けて" } });
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith(
+      "panel-a",
+      "続けて",
+      expect.objectContaining({ onAccepted: expect.any(Function) })
+    );
+
+    await fireEvent(input, "endEditing", { nativeEvent: { text: "続けて" } });
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledTimes(1);
+    await screen.unmount();
+  });
+
+  it("uses text committed by macOS end editing before the send-button press", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const input = screen.getByTestId("chat-composer-input");
+
+    await fireEvent.changeText(input, "t");
+    await fireEvent(input, "focus");
+    await fireEvent(input, "endEditing", { nativeEvent: { text: "続けて" } });
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+
+    await fireEvent.press(screen.getByTestId("chat-composer-action"));
+    await waitFor(() => expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith(
+      "panel-a",
+      "続けて",
+      expect.objectContaining({ onAccepted: expect.any(Function) })
+    ));
+    await screen.unmount();
+  });
+
+  it("does not erase a new normal draft when an accepted fullscreen turn completes", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    let finishTurn!: () => void;
+    let acceptTurn!: () => void;
+    const turnCompletion = new Promise<void>((resolve) => { finishTurn = resolve; });
+    mockSendReplyTranscriptForPanel.mockImplementation(async (
+      _panelId?: string,
+      _text?: string,
+      options?: { onAccepted?: () => void }
+    ) => {
+      acceptTurn = () => options?.onAccepted?.();
+      await turnCompletion;
+    });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "initial draft");
+    await fireEvent(screen.getByTestId("chat-composer-input"), "focus");
+    await fireEvent.press(screen.getByLabelText("入力欄を全画面表示"));
+
+    await act(async () => {
+      const fullscreenInput = screen.getByTestId("composer-fullscreen-input");
+      fullscreenInput.props.onChangeText("send me");
+      fullscreenInput.props.onSubmitEditing();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith(
+      "panel-a",
+      "send me",
+      expect.objectContaining({ onAccepted: expect.any(Function) })
+    ));
+    await act(async () => {
+      acceptTurn();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("");
+    await fireEvent.press(screen.getByLabelText("全画面入力を閉じる"));
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "new draft");
+
+    await act(async () => {
+      finishTurn();
+      await turnCompletion;
+    });
+
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("new draft");
+    await screen.unmount();
+  });
+
+  it("keeps the macOS fullscreen button mounted across input blur", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const input = screen.getByPlaceholderText("メッセージを入力");
+
+    expect(screen.getByLabelText("入力欄を全画面表示")).toBeTruthy();
+    await fireEvent(input, "focus");
+    await fireEvent(input, "blur");
+    await fireEvent.press(screen.getByLabelText("入力欄を全画面表示"));
+    expect(screen.getByTestId("composer-fullscreen-input")).toBeTruthy();
+    await screen.unmount();
+  });
+
+  it("keeps the fullscreen button focus-gated on non-macOS platforms", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    const input = screen.getByPlaceholderText("メッセージを入力");
+
+    expect(screen.queryByLabelText("入力欄を全画面表示")).toBeNull();
+    await fireEvent(input, "focus");
+    expect(screen.getByLabelText("入力欄を全画面表示")).toBeTruthy();
+    await fireEvent(input, "blur");
+    expect(screen.queryByLabelText("入力欄を全画面表示")).toBeNull();
+    await screen.unmount();
+  });
+
+  it("opens the Git diff panel from the chat header", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    expect(mockGitDiffPanelProps.current?.visible).toBe(false);
+    await fireEvent.press(screen.getByLabelText("Git差分パネルを開く"));
+    expect(mockGitDiffPanelProps.current?.visible).toBe(true);
+    await screen.unmount();
+  });
+
+  it("constrains the macOS chat title menu to the shared chat width", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId("chat-title-menu").props.style)).toMatchObject({
+        width: "100%",
+        maxWidth: CHAT_CONTENT_MAX_WIDTH,
+        alignSelf: "center",
+      });
+    });
     await screen.unmount();
   });
 

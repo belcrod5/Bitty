@@ -98,9 +98,13 @@ export type ConversationContextValue = {
   setTranscript: (value: string) => void;
   setSystemPrompt: (value: string) => void;
   sendReplyRequest: () => void;
-  sendReplyTranscript: () => void;
+  sendReplyTranscript: (transcript?: string, options?: { onAccepted?: () => void }) => Promise<void>;
   sendReplyRequestForPanelWithTranscript: (panelId: string, transcript: string) => Promise<void>;
-  sendReplyTranscriptForPanel: (panelId: string, transcript?: string) => Promise<void>;
+  sendReplyTranscriptForPanel: (
+    panelId: string,
+    transcript?: string,
+    options?: { onAccepted?: () => void }
+  ) => Promise<void>;
   cancelReplyRequestForPanel: (panelId: string) => void;
   cancelCodexQueuedTurnForMessage: (params: {
     queuedTurnId: string;
