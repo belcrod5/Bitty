@@ -97,4 +97,8 @@ if [[ ! -d "${APP_PATH}" ]]; then
   exit 1
 fi
 
+# Incremental builds can replace icon resources without updating the bundle directory,
+# leaving Finder and Dock displaying their cached icon.
+touch "${APP_PATH}"
+
 echo "[build-macos] Built ${APP_PATH}"
