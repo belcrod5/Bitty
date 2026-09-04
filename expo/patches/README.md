@@ -1,5 +1,37 @@
 # Local dependency patches
 
+`react-native-macos+0.81.9.patch` keeps Fabric scroll interactions bracketed for
+React Native, smooths phase-less mouse-wheel ticks, and doubles only their
+vertical distance. Precise trackpad and horizontal scrolling remain native. It
+also maps a macOS secondary click to Pressability's existing `onLongPress`
+contract immediately without emitting primary-button press feedback or changing
+primary-button and mobile timing. Click dispatch itself stays upstream: mouse
+clicks (including clicks on text and icon descendants) are handled once by the
+responder path, and Pressability's `onClick` keeps ignoring pointer-typed click
+events. A previous revision added a `targetIsDescendant` fallback that re-fired
+`onPress` from `onClick`; real-device tracing showed the responder path already
+handles descendant clicks, and the fallback caused a double `onPress`, so it was
+withdrawn — do not reintroduce it. The patch also restores
+Fabric's missing `submitKeyEvents` prop
+conversion so multiline inputs can use Command+Enter without changing plain
+Enter into submit. If Command+Enter is pressed while an IME composition is
+active, the native text view commits the marked text before running that same
+submit-key matcher, so the first shortcut sends the finalized text.
+
+`react-native-gesture-handler+2.28.0.patch` maps an unmodified, discrete vertical
+macOS wheel over a pinch target into the existing pinch lifecycle, so the Skia
+board keeps one zoom-transform owner. Precise trackpad scrolling still requires
+Command, and horizontal scrolling passes through. The patch also activates macOS
+LongPress gestures immediately on a secondary click while preserving drag
+cancellation, while Tap gestures no longer receive that secondary click. Native
+pinch, tap, and touch long presses on iOS remain unchanged.
+
+`react-native-enriched-markdown+0.5.0.patch` casts Objective-C `BOOL` values to
+C++ `bool` in event-emitter payload initializers. The macOS SDK treats the
+implicit narrowing as a compile error (`-Wc++11-narrowing`), which breaks the
+Release build. Behavior is unchanged; remove the patch once upstream builds
+cleanly for macOS.
+
 `expo-secure-store+15.0.8.patch` adds macOS pod support and uses a String
 Keychain account on macOS. It migrates the previous account-less items only
 when no canonical item exists; if both exist, the canonical value wins. The

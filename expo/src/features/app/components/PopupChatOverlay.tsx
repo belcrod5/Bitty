@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
+import { Platform, Pressable, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   Easing,
   interpolate,
@@ -10,6 +10,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { ChatScreen } from "../screens/ChatScreen";
+import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import type { PopupChatPresentation, PopupChatSourceRect } from "./popupChatTypes";
 
 type PopupChatOverlayProps = {
@@ -79,12 +80,18 @@ export function PopupChatOverlay({
     sourceRect,
   ]);
 
-  const popupRect = useMemo(() => ({
-    x: POPUP_MARGIN_HORIZONTAL,
-    y: POPUP_MARGIN_TOP,
-    width: Math.max(1, containerSize.width - POPUP_MARGIN_HORIZONTAL * 2),
-    height: Math.max(1, containerSize.height - POPUP_MARGIN_TOP - POPUP_MARGIN_BOTTOM),
-  }), [containerSize.height, containerSize.width]);
+  const popupRect = useMemo(() => {
+    const availableWidth = Math.max(1, containerSize.width - POPUP_MARGIN_HORIZONTAL * 2);
+    const width = Platform.OS === "macos"
+      ? Math.min(CHAT_CONTENT_MAX_WIDTH, availableWidth)
+      : availableWidth;
+    return {
+      x: (containerSize.width - width) / 2,
+      y: POPUP_MARGIN_TOP,
+      width,
+      height: Math.max(1, containerSize.height - POPUP_MARGIN_TOP - POPUP_MARGIN_BOTTOM),
+    };
+  }, [containerSize.height, containerSize.width]);
 
   const fullscreenRect = useMemo(() => ({
     x: 0,

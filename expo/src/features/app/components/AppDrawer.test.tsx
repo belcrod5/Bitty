@@ -1,9 +1,12 @@
 import React from "react";
 import { act, fireEvent, render, userEvent, waitFor, within } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { Platform, StyleSheet } from "react-native";
 import { AppDrawer, type AppDrawerProps, type DirectorySessionTreeState } from "./AppDrawer";
 import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 import { IDLE_DIRECTORY_SESSION_SYNC } from "../types/directorySessions";
+import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
+
+const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
 
 const mockAddSession = jest.fn();
 const mockRemoveSession = jest.fn();
@@ -149,6 +152,10 @@ beforeEach(() => {
   mockRunnerToken = "runner-token";
 });
 
+afterEach(() => {
+  if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+});
+
 test("starts a new chat in the pressed drawer directory", async () => {
   const onStartNewSessionInDirectory = jest.fn();
   const drawer = await renderDrawer({ onStartNewSessionInDirectory });
@@ -185,6 +192,28 @@ test("adds a long-pressed session to the Skia board", async () => {
   await fireEvent.press(drawer.getByText("Skiaボードへ追加"));
 
   expect(mockAddSession).toHaveBeenCalledWith("loaded-search");
+});
+
+test("constrains directory and session context menus to the chat width", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+  const drawer = await renderDrawer();
+  const user = userEvent.setup();
+
+  await user.longPress(drawer.getByText("Bitty"));
+  expect(StyleSheet.flatten(drawer.getByTestId("app-drawer-directory-context-menu").props.style)).toMatchObject({
+    width: "100%",
+    maxWidth: CHAT_CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+  });
+  await fireEvent.press(drawer.getByText("このディレクトリの未読をすべて既読にする"));
+
+  await user.longPress(drawer.getByText("Fix drawer search"));
+  expect(StyleSheet.flatten(drawer.getByTestId("app-drawer-session-context-menu").props.style)).toMatchObject({
+    width: "100%",
+    maxWidth: CHAT_CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+  });
+  await drawer.unmount();
 });
 
 test("keeps the Skia board action available while persisted board state is unavailable", async () => {

@@ -1,4 +1,6 @@
-import { fireEvent, render, userEvent } from "@testing-library/react-native";
+import { fireEvent, render, userEvent, waitFor } from "@testing-library/react-native";
+import { Platform, StyleSheet } from "react-native";
+import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import { ChatContextUsageMenu } from "./ChatContextUsageMenu";
 
 function renderMenu(contextPctText: string, onStartNewSession = jest.fn()) {
@@ -13,6 +15,12 @@ function renderMenu(contextPctText: string, onStartNewSession = jest.fn()) {
     />
   );
 }
+
+const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
+
+afterEach(() => {
+  if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+});
 
 describe("ChatContextUsageMenu", () => {
   it("shows the placeholder as-is while context usage is not fetched yet", async () => {
@@ -37,5 +45,20 @@ describe("ChatContextUsageMenu", () => {
     await fireEvent.press(menu.getByText("同じディレクトリーで新規セッション"));
 
     expect(onStartNewSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("constrains the macOS context menu to the shared chat width", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const menu = await renderMenu("25%");
+
+    fireEvent(menu.getByLabelText("コンテキスト使用量 25%"), "longPress");
+
+    await waitFor(() => {
+      expect(StyleSheet.flatten(menu.getByTestId("chat-context-menu").props.style)).toMatchObject({
+        width: "100%",
+        maxWidth: CHAT_CONTENT_MAX_WIDTH,
+        alignSelf: "center",
+      });
+    });
   });
 });

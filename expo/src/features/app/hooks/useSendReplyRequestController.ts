@@ -20,6 +20,7 @@ type ReplyRequestOptions<TSttMeta> = {
   sttMeta?: TSttMeta;
   panelId?: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;
+  onAccepted?: () => void;
 };
 
 type SessionDiagLogOptions = {
@@ -100,6 +101,7 @@ export function useSendReplyRequestController<TSttMeta>({
       logSessionDiag("reply_send_guard_queued_after_session_restore", {
         panelId: writePanelId,
       }, { throttleMs: 0 });
+      options?.onAccepted?.();
       return;
     }
     if (!hasForcedSnapshot) {

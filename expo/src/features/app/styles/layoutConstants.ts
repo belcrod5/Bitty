@@ -1,0 +1,1 @@
+export const CHAT_CONTENT_MAX_WIDTH = 720;

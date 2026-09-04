@@ -62,7 +62,9 @@ export const chatComposerStyles = {
     position: "relative",
   },
   chatComposerInputWithExpandButton: {
-    paddingRight: 34,
+    // paddingではなくmarginで空ける: TextInput(NSTextView)のフレームがボタンの
+    // 下まで伸びていると、macOSではクリックが選択トラッキングに飲まれる。
+    marginRight: 34,
   },
   chatComposerExpandButton: {
     position: "absolute",

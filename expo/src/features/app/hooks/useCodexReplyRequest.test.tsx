@@ -818,6 +818,7 @@ describe("useCodexReplyRequest send gate liveness", () => {
 describe("useCodexReplyRequest send acceptance contract", () => {
   test("dispatches accepted sends directly to the provider-neutral turn facade", async () => {
     const { options } = createOptions();
+    const onAccepted = jest.fn();
     (options as { transcript: string }).transcript = "hello world";
     mockStartCodexAppServerTurn.mockImplementation((() => ({
       promise: new Promise(() => {}),
@@ -829,12 +830,32 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       void result.current.sendReplyRequest(undefined, {
         panelId: "panel-1",
         sessionSnapshot: { threadId: "thread-1" },
+        onAccepted,
       });
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
 
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
+    expect(onAccepted).toHaveBeenCalledTimes(1);
     expect(options.setTranscript).toHaveBeenCalledWith("");
+  });
+
+  test("notifies slash-command acceptance exactly once without starting a turn", async () => {
+    const { options } = createOptions();
+    const onAccepted = jest.fn();
+    options.runSlashCommand.mockResolvedValue(true);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest("/status", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+        onAccepted,
+      });
+    });
+
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 
   test("server-queued turns release the send gate while retaining each run observer through completion", async () => {

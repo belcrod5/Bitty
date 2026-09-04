@@ -197,6 +197,7 @@ type ReplyRequestOptions<TSttMeta> = {
   sttMeta?: TSttMeta;
   panelId?: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;
+  onAccepted?: () => void;
 };
 
 export type SendReplyRequestRejectReason =
@@ -444,6 +445,7 @@ export function useCodexReplyRequest<
         directory: String(requestOptions?.sessionSnapshot?.directory || "").trim() || undefined,
         transcriptChars: effectiveTranscript.length,
       }, { throttleMs: 0 });
+      requestOptions?.onAccepted?.();
       return;
     }
     if (modelBackendId !== requestBackendId) {
@@ -567,6 +569,7 @@ export function useCodexReplyRequest<
     // Acceptance choke point: the request is committed to a turn, so clear the
     // composer synchronously before network I/O. A rejected send never reaches here.
     current.onMessageAccepted(effectiveTranscript, requestUiSessionId || requestThreadId);
+    requestOptions?.onAccepted?.();
     if (clearInput) {
       current.setTranscript("");
     }

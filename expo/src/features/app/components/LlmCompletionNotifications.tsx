@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 import { styles } from "../styles";
 
 const LLM_COMPLETION_NOTIFICATION_COLLAPSE_DELAY_MS = 5_000;
@@ -64,17 +65,17 @@ function LlmCompletionNotificationCard({
       Animated.timing(opacityRef.current, {
         toValue: 1,
         duration: 180,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
       }),
       Animated.timing(translateYRef.current, {
         toValue: 0,
         duration: 180,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
       }),
       Animated.timing(scaleRef.current, {
         toValue: 1,
         duration: 180,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
       }),
     ]).start();
   }, []);

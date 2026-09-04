@@ -555,7 +555,11 @@ export const AppDrawer = memo(function AppDrawer({
           onRequestClose={() => setDirectoryContextMenuTarget(null)}
         >
           <Pressable style={styles.modalBackdrop} onPress={() => setDirectoryContextMenuTarget(null)}>
-            <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Pressable
+              testID="app-drawer-directory-context-menu"
+              style={[styles.modalCard, Platform.OS === "macos" && styles.chatContentWidth]}
+              onPress={() => {}}
+            >
               <TouchableOpacity
                 style={styles.modalOption}
                 onPress={() => {
@@ -599,7 +603,11 @@ export const AppDrawer = memo(function AppDrawer({
           onRequestClose={() => setSessionContextMenuTarget(null)}
         >
           <Pressable style={styles.modalBackdrop} onPress={() => setSessionContextMenuTarget(null)}>
-            <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Pressable
+              testID="app-drawer-session-context-menu"
+              style={[styles.modalCard, Platform.OS === "macos" && styles.chatContentWidth]}
+              onPress={() => {}}
+            >
               <TouchableOpacity
                 style={styles.modalOption}
                 onPress={() => {

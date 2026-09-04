@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Platform } from "react-native";
 import {
   isLlmActiveStatus,
   liveLlmStatusPrefix,
@@ -165,7 +166,7 @@ export function useChatDerivedState({
   const composerTextInputVisible = !composerWaveformVisible && !composerDirectSttVisible;
   const showComposerFullscreenToggle = (
     composerTextInputVisible &&
-    composerInputFocused
+    (Platform.OS === "macos" || composerInputFocused)
   );
   const directNativeSttPreviewText = useMemo(() => {
     const text = String(directNativeSttInterimText || "").trim();

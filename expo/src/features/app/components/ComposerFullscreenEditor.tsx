@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import {
   Platform,
@@ -9,9 +9,14 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  type NativeSyntheticEvent,
+  type TextInputSubmitEditingEventData,
 } from "react-native";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
+import type { MACOS_CHAT_SUBMIT_KEY_EVENTS } from "./ChatComposerInput";
+
+type SubmitKeyEvent = (typeof MACOS_CHAT_SUBMIT_KEY_EVENTS)[number];
 
 type ComposerFullscreenEditorProps = {
   visible: boolean;
@@ -19,6 +24,8 @@ type ComposerFullscreenEditorProps = {
   value: string;
   history: readonly string[];
   onChangeText: (value: string) => void;
+  onSubmit: (value: string, onAccepted: () => void) => Promise<void>;
+  submitKeyEvents?: SubmitKeyEvent[];
   onClose: () => void;
   onFocus: () => void;
   onBlur: () => void;
@@ -30,27 +37,12 @@ export function ComposerFullscreenEditor({
   value,
   history,
   onChangeText,
+  onSubmit,
+  submitKeyEvents,
   onClose,
   onFocus,
   onBlur,
 }: ComposerFullscreenEditorProps) {
-  const [historyOpen, setHistoryOpen] = useState(false);
-
-  useEffect(() => {
-    if (!visible) {
-      setHistoryOpen(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => inputRef.current?.focus(), 60);
-    return () => clearTimeout(timer);
-  }, [inputRef, visible]);
-
-  const selectHistoryMessage = (message: string) => {
-    onChangeText(message);
-    setHistoryOpen(false);
-    setTimeout(() => inputRef.current?.focus(), 60);
-  };
-
   return (
     <AppModal
       visible={visible}
@@ -58,85 +50,157 @@ export function ComposerFullscreenEditor({
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
-      <SafeAreaView style={componentStyles.root}>
-        <KeyboardAvoidingView
-          style={componentStyles.keyboardAvoiding}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          automaticOffset={Platform.OS === "ios"}
-        >
-          <View style={componentStyles.header}>
-            <Text style={componentStyles.title}>Input Editor</Text>
-            <View style={componentStyles.headerActions}>
-              <TouchableOpacity
-                style={[componentStyles.headerButton, historyOpen && componentStyles.headerButtonActive]}
-                onPress={() => {
-                  inputRef.current?.blur();
-                  setHistoryOpen((open) => !open);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel="送信履歴を開く"
-                accessibilityState={{ expanded: historyOpen }}
-                testID="composer-history-button"
-              >
-                <Ionicons name="time-outline" size={19} color="#334155" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={componentStyles.headerButton}
-                onPress={onClose}
-                accessibilityRole="button"
-                accessibilityLabel="全画面入力を閉じる"
-              >
-                <Ionicons name="contract-outline" size={18} color="#334155" />
-              </TouchableOpacity>
-            </View>
-          </View>
-          {historyOpen ? (
-            <View style={componentStyles.historyPanel} testID="composer-history-list">
-              <Text style={componentStyles.historyTitle}>送信履歴</Text>
-              {history.length > 0 ? (
-                <ScrollView keyboardShouldPersistTaps="handled">
-                  {history.map((message, index) => (
-                    <TouchableOpacity
-                      key={`${index}:${message}`}
-                      style={[
-                        componentStyles.historyItem,
-                        index > 0 && componentStyles.historyItemSeparated,
-                      ]}
-                      onPress={() => selectHistoryMessage(message)}
-                      accessibilityRole="button"
-                      accessibilityLabel={`送信履歴 ${index + 1}: ${message}`}
-                      accessibilityHint="入力欄に反映"
-                    >
-                      <Text style={componentStyles.historyItemText} numberOfLines={5}>
-                        {message}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              ) : (
-                <Text style={componentStyles.emptyHistory}>送信履歴はまだありません</Text>
-              )}
-            </View>
-          ) : null}
-          <View style={componentStyles.inputWrap}>
-            <TextInput
-              ref={inputRef}
-              style={componentStyles.input}
-              value={value}
-              onChangeText={onChangeText}
-              placeholder="メッセージを入力"
-              multiline
-              scrollEnabled
-              textAlignVertical="top"
-              autoCorrect={false}
-              autoCapitalize="none"
-              onFocus={onFocus}
-              onBlur={onBlur}
-            />
-          </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
+      <ComposerFullscreenContent
+        inputRef={inputRef}
+        initialValue={value}
+        history={history}
+        onChangeText={onChangeText}
+        onSubmit={onSubmit}
+        submitKeyEvents={submitKeyEvents}
+        onClose={onClose}
+        onFocus={onFocus}
+        onBlur={onBlur}
+      />
     </AppModal>
+  );
+}
+
+type ComposerFullscreenContentProps = Omit<ComposerFullscreenEditorProps, "visible" | "value"> & {
+  initialValue: string;
+};
+
+function ComposerFullscreenContent({
+  inputRef,
+  initialValue,
+  history,
+  onChangeText,
+  onSubmit,
+  submitKeyEvents,
+  onClose,
+  onFocus,
+  onBlur,
+}: ComposerFullscreenContentProps) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [draft, setDraft] = useState(initialValue);
+  const draftRef = useRef(initialValue);
+  const submitPendingRef = useRef(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => inputRef.current?.focus(), 60);
+    return () => clearTimeout(timer);
+  }, [inputRef]);
+
+  const changeDraft = (next: string) => {
+    if (Platform.OS === "macos") {
+      draftRef.current = next;
+      setDraft(next);
+    }
+    onChangeText(next);
+  };
+
+  const selectHistoryMessage = (message: string) => {
+    changeDraft(message);
+    setHistoryOpen(false);
+    setTimeout(() => inputRef.current?.focus(), 60);
+  };
+
+  const submit = (event?: NativeSyntheticEvent<TextInputSubmitEditingEventData>) => {
+    const submittedDraft = event?.nativeEvent.text ?? draftRef.current;
+    if (!submittedDraft.trim() || submitPendingRef.current) return;
+    if (submittedDraft !== draftRef.current) changeDraft(submittedDraft);
+    submitPendingRef.current = true;
+    void onSubmit(submittedDraft, () => {
+      if (draftRef.current !== submittedDraft) return;
+      draftRef.current = "";
+      setDraft("");
+      onChangeText("");
+    }).finally(() => {
+      submitPendingRef.current = false;
+    });
+  };
+
+  return (
+    <SafeAreaView style={componentStyles.root}>
+      <KeyboardAvoidingView
+        style={componentStyles.keyboardAvoiding}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        automaticOffset={Platform.OS === "ios"}
+      >
+        <View style={componentStyles.header}>
+          <Text style={componentStyles.title}>Input Editor</Text>
+          <View style={componentStyles.headerActions}>
+            <TouchableOpacity
+              style={[componentStyles.headerButton, historyOpen && componentStyles.headerButtonActive]}
+              onPress={() => {
+                inputRef.current?.blur();
+                setHistoryOpen((open) => !open);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="送信履歴を開く"
+              accessibilityState={{ expanded: historyOpen }}
+              testID="composer-history-button"
+            >
+              <Ionicons name="time-outline" size={19} color="#334155" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={componentStyles.headerButton}
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="全画面入力を閉じる"
+            >
+              <Ionicons name="contract-outline" size={18} color="#334155" />
+            </TouchableOpacity>
+          </View>
+        </View>
+        {historyOpen ? (
+          <View style={componentStyles.historyPanel} testID="composer-history-list">
+            <Text style={componentStyles.historyTitle}>送信履歴</Text>
+            {history.length > 0 ? (
+              <ScrollView keyboardShouldPersistTaps="handled">
+                {history.map((message, index) => (
+                  <TouchableOpacity
+                    key={`${index}:${message}`}
+                    style={[
+                      componentStyles.historyItem,
+                      index > 0 && componentStyles.historyItemSeparated,
+                    ]}
+                    onPress={() => selectHistoryMessage(message)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`送信履歴 ${index + 1}: ${message}`}
+                    accessibilityHint="入力欄に反映"
+                  >
+                    <Text style={componentStyles.historyItemText} numberOfLines={5}>
+                      {message}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : (
+              <Text style={componentStyles.emptyHistory}>送信履歴はまだありません</Text>
+            )}
+          </View>
+        ) : null}
+        <View style={componentStyles.inputWrap}>
+          <TextInput
+            testID="composer-fullscreen-input"
+            ref={inputRef}
+            style={componentStyles.input}
+            value={Platform.OS === "macos" ? draft : initialValue}
+            onChangeText={changeDraft}
+            onSubmitEditing={submitKeyEvents ? submit : undefined}
+            {...(submitKeyEvents ? { submitKeyEvents } : {})}
+            placeholder="メッセージを入力"
+            multiline
+            scrollEnabled
+            textAlignVertical="top"
+            autoCorrect={false}
+            autoCapitalize="none"
+            onFocus={onFocus}
+            onBlur={onBlur}
+          />
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
