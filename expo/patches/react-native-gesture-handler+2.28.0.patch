@@ -1,5 +1,65 @@
+diff --git a/node_modules/react-native-gesture-handler/apple/Handlers/RNLongPressHandler.m b/node_modules/react-native-gesture-handler/apple/Handlers/RNLongPressHandler.m
+index 23b2613..f20a234 100644
+--- a/node_modules/react-native-gesture-handler/apple/Handlers/RNLongPressHandler.m
++++ b/node_modules/react-native-gesture-handler/apple/Handlers/RNLongPressHandler.m
+@@ -136,23 +136,40 @@ - (void)mouseDown:(NSEvent *)event
+       block);
+ }
+
++- (void)rightMouseDown:(NSEvent *)event
++{
++  [self mouseDown:event];
++  if (block != nil) {
++    dispatch_block_cancel(block);
++    block = nil;
++  }
++  self.state = NSGestureRecognizerStateChanged;
++}
++
+ - (void)mouseDragged:(NSEvent *)event
+ {
+   [_gestureHandler.pointerTracker touchesMoved:[NSSet setWithObject:event] withEvent:event];
+
+-  if (block == nil) {
++  if (block == nil && self.state != NSGestureRecognizerStateChanged) {
+     return;
+   }
+
+   if ([self shouldCancelGesture]) {
+-    dispatch_block_cancel(block);
+-    block = nil;
++    if (block != nil) {
++      dispatch_block_cancel(block);
++      block = nil;
++    }
+
+     self.state = self.state == NSGestureRecognizerStateChanged ? NSGestureRecognizerStateCancelled
+                                                                : NSGestureRecognizerStateFailed;
+   }
+ }
+
++- (void)rightMouseDragged:(NSEvent *)event
++{
++  [self mouseDragged:event];
++}
++
+ - (void)mouseUp:(NSEvent *)event
+ {
+   [_gestureHandler.pointerTracker touchesEnded:[NSSet setWithObject:event] withEvent:event];
+@@ -166,6 +183,11 @@ - (void)mouseUp:(NSEvent *)event
+       self.state == NSGestureRecognizerStateChanged ? NSGestureRecognizerStateEnded : NSGestureRecognizerStateFailed;
+ }
+
++- (void)rightMouseUp:(NSEvent *)event
++{
++  [self mouseUp:event];
++}
++
+ #endif
+
+ - (BOOL)shouldCancelGesture
 diff --git a/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m b/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m
-index dd61b99..3873ecf 100644
+index dd61b99..89da327 100644
 --- a/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m
 +++ b/node_modules/react-native-gesture-handler/apple/Handlers/RNPinchHandler.m
 @@ -10,6 +10,8 @@
@@ -67,7 +127,7 @@ index dd61b99..3873ecf 100644
  - (void)handleGesture:(UIGestureRecognizer *)recognizer
  {
    if (self.state == UIGestureRecognizerStateBegan) {
-@@ -76,6 +109,132 @@ - (void)interactionsCancelled:(NSSet *)touches withEvent:(UIEvent *)event
+@@ -76,6 +109,141 @@ - (void)interactionsCancelled:(NSSet *)touches withEvent:(UIEvent *)event
  }
 
  #if TARGET_OS_OSX
@@ -158,27 +218,36 @@ index dd61b99..3873ecf 100644
 +
 +- (BOOL)handleCommandWheelEvent:(NSEvent *)event
 +{
++  CGFloat delta = event.scrollingDeltaY;
++  BOOL hasVerticalDelta = fabs(delta) > 0.0001;
 +  BOOL commandPressed = (event.modifierFlags & NSEventModifierFlagCommand) != 0;
-+  if (!commandPressed || !self.enabled || ![self isEventInsideView:event]) {
++  BOOL acceptsWheel = hasVerticalDelta && (!event.hasPreciseScrollingDeltas || commandPressed);
++  NSEventPhase phase = event.phase != NSEventPhaseNone ? event.phase : event.momentumPhase;
++  BOOL cancelled = (phase & NSEventPhaseCancelled) != 0;
++  BOOL ended = cancelled || (phase & NSEventPhaseEnded) != 0;
++
++  if (_commandWheelActive && ended) {
++    if (!cancelled && hasVerticalDelta) {
++      [self updateCommandWheelWithEvent:event delta:delta];
++    }
++    [self finishCommandWheelWithEvent:event cancelled:cancelled];
++    return YES;
++  }
++
++  if (!acceptsWheel || !self.enabled || ![self isEventInsideView:event]) {
 +    if (_commandWheelActive) {
 +      [self finishCommandWheelWithEvent:event cancelled:YES];
 +    }
 +    return NO;
 +  }
 +
-+  NSEventPhase phase = event.phase != NSEventPhaseNone ? event.phase : event.momentumPhase;
 +  BOOL phaseLessTick = phase == NSEventPhaseNone;
 +  if (![self beginCommandWheelWithEvent:event]) {
 +    return NO;
 +  }
 +
-+  CGFloat delta = event.scrollingDeltaY;
-+  if (fabs(delta) > 0.0001) {
-+    [self updateCommandWheelWithEvent:event delta:delta];
-+  }
++  [self updateCommandWheelWithEvent:event delta:delta];
 +
-+  BOOL cancelled = (phase & NSEventPhaseCancelled) != 0;
-+  BOOL ended = cancelled || (phase & NSEventPhaseEnded) != 0;
 +  if (ended) {
 +    [self finishCommandWheelWithEvent:event cancelled:cancelled];
 +  } else if (phaseLessTick) {
@@ -200,7 +269,7 @@ index dd61b99..3873ecf 100644
  - (void)magnifyWithEvent:(NSEvent *)event
  {
    [super magnifyWithEvent:event];
-@@ -129,6 +288,11 @@ - (void)touchesCancelled:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)ev
+@@ -129,6 +297,11 @@ - (void)touchesCancelled:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)ev
 
  - (void)reset
  {
@@ -212,7 +281,7 @@ index dd61b99..3873ecf 100644
    [_gestureHandler.pointerTracker reset];
    [super reset];
    [_gestureHandler reset];
-@@ -155,9 +319,9 @@ - (instancetype)initWithTag:(NSNumber *)tag
+@@ -155,9 +328,9 @@ - (instancetype)initWithTag:(NSNumber *)tag
  - (RNGestureHandlerEventExtraData *)eventExtraData:(NSMagnificationGestureRecognizer *)recognizer
  {
    return [RNGestureHandlerEventExtraData forPinch:recognizer.magnification
@@ -224,3 +293,43 @@ index dd61b99..3873ecf 100644
                                    withPointerType:RNGestureHandlerMouse];
  }
  #else
+diff --git a/node_modules/react-native-gesture-handler/apple/Handlers/RNTapHandler.m b/node_modules/react-native-gesture-handler/apple/Handlers/RNTapHandler.m
+index d10c05a..55649d1 100644
+--- a/node_modules/react-native-gesture-handler/apple/Handlers/RNTapHandler.m
++++ b/node_modules/react-native-gesture-handler/apple/Handlers/RNTapHandler.m
+@@ -152,35 +152,17 @@ - (void)mouseDown:(NSEvent *)event
+   [self interactionsBegan:[NSSet setWithObject:event] withEvent:event];
+ }
+
+-- (void)rightMouseDown:(NSEvent *)event
+-{
+-  [super rightMouseDown:event];
+-  [self interactionsBegan:[NSSet setWithObject:event] withEvent:event];
+-}
+-
+ - (void)mouseDragged:(NSEvent *)event
+ {
+   [super mouseDragged:event];
+   [self interactionsMoved:[NSSet setWithObject:event] withEvent:event];
+ }
+
+-- (void)rightMouseDragged:(NSEvent *)event
+-{
+-  [super rightMouseDragged:event];
+-  [self interactionsMoved:[NSSet setWithObject:event] withEvent:event];
+-}
+-
+ - (void)mouseUp:(NSEvent *)event
+ {
+   [super mouseUp:event];
+   [self interactionsEnded:[NSSet setWithObject:event] withEvent:event];
+ }
+-
+-- (void)rightMouseUp:(NSEvent *)event
+-{
+-  [super rightMouseUp:event];
+-  [self interactionsEnded:[NSSet setWithObject:event] withEvent:event];
+-}
+ #else
+
+ - (void)touchesBegan:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)event

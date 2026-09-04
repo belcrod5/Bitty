@@ -1,17 +1,104 @@
+diff --git a/node_modules/react-native-macos/Libraries/Pressability/Pressability.js b/node_modules/react-native-macos/Libraries/Pressability/Pressability.js
+index bbee6d1..fc2ad8c 100644
+--- a/node_modules/react-native-macos/Libraries/Pressability/Pressability.js
++++ b/node_modules/react-native-macos/Libraries/Pressability/Pressability.js
+@@ -488,7 +488,12 @@ export default class Pressability {
+         this._touchState = 'NOT_RESPONDER';
+         this._receiveSignal('RESPONDER_GRANT', event);
+ 
+-        const delayPressIn = normalizeDelay(this._config.delayPressIn);
++        const isMacOSSecondaryClick =
++          Platform.OS === 'macos' &&
++          getTouchFromPressEvent(event).button === 2;
++        const delayPressIn = isMacOSSecondaryClick
++          ? 0
++          : normalizeDelay(this._config.delayPressIn);
+         if (delayPressIn > 0) {
+           this._pressDelayTimeout = setTimeout(() => {
+             this._receiveSignal('DELAY', event);
+@@ -497,6 +502,14 @@ export default class Pressability {
+           this._receiveSignal('DELAY', event);
+         }
+ 
++        // [macOS A secondary click is the native context-menu gesture. Treat it
++        // as an immediate long press while preserving primary-button timing.
++        if (isMacOSSecondaryClick) {
++          this._handleLongPress(event);
++          return this._config.blockNativeResponder === true;
++        }
++        // macOS]
++
+         const delayLongPress = normalizeDelay(
+           this._config.delayLongPress,
+           10,
+@@ -806,14 +819,15 @@ export default class Pressability {
+       this._measureResponderRegion();
+     }
+ 
++    // [macOS Don't activate press visual feedback for non-primary mouse buttons.
++    const button = getTouchFromPressEvent(event).button;
++    const isPrimaryButton = this._isDefaultPressButton(button);
++    const isMacOSSecondaryClick = Platform.OS === 'macos' && button === 2;
++    // macOS]
++
+     if (isPressInSignal(prevState) && signal === 'LONG_PRESS_DETECTED') {
+       const {onLongPress} = this._config;
+-      if (
+-        onLongPress != null &&
+-        this._isDefaultPressButton(
+-          getTouchFromPressEvent(event).button,
+-        ) /* [macOS] */
+-      ) {
++      if (onLongPress != null && (isPrimaryButton || isMacOSSecondaryClick) /* [macOS] */) {
+         onLongPress(event);
+       }
+     }
+@@ -821,16 +835,9 @@ export default class Pressability {
+     const isPrevActive = isActiveSignal(prevState);
+     const isNextActive = isActiveSignal(nextState);
+ 
+-    // [macOS Don't activate press visual feedback for non-primary mouse buttons
+-    // (e.g. right-click, middle-click). They should fire onAuxClick, not onPress.
+-    const isPrimaryButton = this._isDefaultPressButton(
+-      getTouchFromPressEvent(event).button,
+-    );
+-    // macOS]
+-
+     if (!isPrevActive && isNextActive && isPrimaryButton /* [macOS] */) {
+       this._activate(event);
+-    } else if (isPrevActive && !isNextActive) {
++    } else if (isPrevActive && !isNextActive && isPrimaryButton /* [macOS] */) {
+       this._deactivate(event);
+     }
+ 
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
+index a5b5a6a..b6c2642 100644
+--- a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
+@@ -671,6 +671,9 @@ - (void)keyDown:(NSEvent *)event {
+   // Do this check before textInputShouldHandleKeyEvent as that one attempts to send the event to JS
+   if (self.hasMarkedText) {
+     [super keyDown:event];
++    if (!self.hasMarkedText && (event.modifierFlags & NSEventModifierFlagCommand)) {
++      [self.textInputDelegate submitOnKeyDownIfNeeded:event];
++    }
+     return;
+   }
+ 
 diff --git a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
 index f344c5b..8550ff9 100644
 --- a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
 +++ b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
 @@ -53,6 +53,7 @@ NS_ASSUME_NONNULL_BEGIN
  @property (nonatomic, copy) NSArray<NSNumber *> *snapToOffsets;
-
+ 
  #if TARGET_OS_OSX // [macOS
 ++ (BOOL)isCompatibleWithResponsiveScrolling;
  - (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated;
  - (void)zoomToRect:(CGRect)rect animated:(BOOL)animated;
  - (void)flashScrollIndicators;
 diff --git a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.mm b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.mm
-index 1ab801d..324ec5f 100644
+index 1ab801d..5a741b5 100644
 --- a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.mm
 +++ b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.mm
 @@ -8,6 +8,9 @@
@@ -21,7 +108,7 @@ index 1ab801d..324ec5f 100644
 +#if TARGET_OS_OSX // [macOS
 +#import <QuartzCore/CADisplayLink.h>
 +#endif // macOS]
-
+ 
  @interface RCTEnhancedScrollView () <RCTUIScrollViewDelegate> // [macOS]
  @end
 @@ -15,7 +18,20 @@ @interface RCTEnhancedScrollView () <RCTUIScrollViewDelegate> // [macOS]
@@ -42,12 +129,12 @@ index 1ab801d..324ec5f 100644
 +  return YES;
  }
 +#endif // macOS]
-
+ 
  + (BOOL)automaticallyNotifiesObserversForKey:(NSString *)key
  {
 @@ -153,6 +169,89 @@ - (void)setFrame:(CGRect)frame
  }
-
+ 
  #if TARGET_OS_OSX // [macOS
 +- (void)stopDiscreteScrollAnimation
 +{
@@ -94,7 +181,7 @@ index 1ab801d..324ec5f 100644
 +  CGPoint currentOffset = self.documentVisibleRect.origin;
 +  CGPoint previousTarget = _discreteScrollDisplayLink == nil ? currentOffset : _discreteScrollTargetOffset;
 +  CGFloat deltaX = -event.scrollingDeltaX * self.horizontalLineScroll;
-+  CGFloat deltaY = -event.scrollingDeltaY * self.verticalLineScroll;
++  CGFloat deltaY = -event.scrollingDeltaY * self.verticalLineScroll * 2;
 +  if (deltaX * (previousTarget.x - currentOffset.x) < 0) {
 +    previousTarget.x = currentOffset.x;
 +  }
@@ -142,7 +229,7 @@ index a14a864..fc0200b 100644
 @@ -725,6 +725,30 @@ - (void)prepareForRecycle
  #if TARGET_OS_OSX // [macOS
  #pragma mark - NSScrollView scroll notification
-
+ 
 +- (void)scrollViewWillStartLiveScroll:(__unused NSNotification *)notification
 +{
 +  if (!_isUserTriggeredScrolling) {
@@ -173,14 +260,14 @@ index a14a864..fc0200b 100644
 @@ -830,6 +854,11 @@ - (void)scrollViewDidEndDragging:(RCTUIScrollView *)scrollView willDecelerate:(B
      return;
    }
-
+ 
 +#if TARGET_OS_OSX // [macOS
 +  auto metrics = [self _scrollViewMetricsWithVelocity:{} andTargetContentOffset:scrollView.contentOffset];
 +  static_cast<const ScrollViewEventEmitter &>(*_eventEmitter).onScrollEndDrag(metrics);
 +#endif // macOS]
 +
    [self _updateStateWithContentOffset];
-
+ 
    if (!decelerate) {
 @@ -891,6 +920,15 @@ - (void)viewDidMoveToWindow // [macOS]
      [defaultCenter removeObserver:self
@@ -198,7 +285,7 @@ index a14a864..fc0200b 100644
    } else {
      // Register for scrollview's clipview bounds change notifications so we can track scrolling
      [defaultCenter addObserver:self
-@@ -901,5 +939,17 @@ - (void)viewDidMoveToWindow // [macOS]
+@@ -901,6 +939,18 @@ - (void)viewDidMoveToWindow // [macOS]
                        selector:@selector(_preferredScrollerStyleDidChange:)
                            name:NSPreferredScrollerStyleDidChangeNotification
                          object:nil];
@@ -216,3 +303,21 @@ index a14a864..fc0200b 100644
 +                        object:_scrollView];
    }
  #endif // macOS]
+ 
+diff --git a/node_modules/react-native-macos/ReactCommon/react/renderer/components/textinput/platform/ios/react/renderer/components/iostextinput/propsConversions.h b/node_modules/react-native-macos/ReactCommon/react/renderer/components/textinput/platform/ios/react/renderer/components/iostextinput/propsConversions.h
+index 47c96c8..9b37539 100644
+--- a/node_modules/react-native-macos/ReactCommon/react/renderer/components/textinput/platform/ios/react/renderer/components/iostextinput/propsConversions.h
++++ b/node_modules/react-native-macos/ReactCommon/react/renderer/components/textinput/platform/ios/react/renderer/components/iostextinput/propsConversions.h
+@@ -149,6 +149,12 @@ static TextInputTraits convertRawProp(
+       "pastedTypes",
+       sourceTraits.pastedTypes,
+       defaultTraits.pastedTypes);
++  traits.submitKeyEvents = convertRawProp(
++      context,
++      rawProps,
++      "submitKeyEvents",
++      sourceTraits.submitKeyEvents,
++      defaultTraits.submitKeyEvents);
+ #endif // macOS]
+ 
+   traits.dataDetectorTypes = convertRawProp(
