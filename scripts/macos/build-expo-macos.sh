@@ -33,6 +33,11 @@ fi
 # 種類の異なる証明書間で揺れると許可が切れるので、優先順位を固定して選ぶ
 # (BITTY_MACOS_SIGN_IDENTITY で明示指定も可能)。
 SIGNING_IDENTITY="${BITTY_MACOS_SIGN_IDENTITY:-}"
+if [[ -n "${SIGNING_IDENTITY}" ]] &&
+  ! security find-identity -v -p codesigning 2>/dev/null | grep -Fq "${SIGNING_IDENTITY}"; then
+  echo "[build-macos] BITTY_MACOS_SIGN_IDENTITY not found in keychain: ${SIGNING_IDENTITY}" >&2
+  exit 1
+fi
 if [[ -z "${SIGNING_IDENTITY}" ]]; then
   for pattern in '"Developer ID Application:' '"Apple Development:' '"Mac Developer:'; do
     SIGNING_IDENTITY="$(

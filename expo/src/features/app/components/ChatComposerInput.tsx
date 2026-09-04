@@ -39,6 +39,7 @@ export function ChatComposerInput({
   const latestValueRef = useRef(value);
   const focusedRef = useRef(false);
   const pendingSubmitRef = useRef(false);
+  const submitInFlightRef = useRef(false);
   const handledSubmitRequestIdRef = useRef(submitRequestId);
 
   useEffect(() => {
@@ -64,12 +65,16 @@ export function ChatComposerInput({
   const submit = (
     valueOrEvent?: string | NativeSyntheticEvent<TextInputSubmitEditingEventData>
   ) => {
+    if (submitInFlightRef.current) return;
     const submittedValue = typeof valueOrEvent === "string"
       ? valueOrEvent
       : valueOrEvent?.nativeEvent.text ?? value;
     if (submittedValue !== latestValueRef.current) changeText(submittedValue);
+    submitInFlightRef.current = true;
     void onSubmit(submittedValue, () => {
       if (latestValueRef.current === submittedValue) changeText("");
+    }).finally(() => {
+      submitInFlightRef.current = false;
     });
   };
 
@@ -92,6 +97,9 @@ export function ChatComposerInput({
         textAlignVertical="top"
         onFocus={() => {
           focusedRef.current = true;
+          // blur経由の送信予約がonEndEditing未達で残留した場合に、後続の
+          // 無関係な編集終了で誤送信しないよう、再フォーカス時に破棄する。
+          pendingSubmitRef.current = false;
           onFocus();
         }}
         onBlur={() => {
