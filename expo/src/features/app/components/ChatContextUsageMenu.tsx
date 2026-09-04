@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Pressable, Text, TouchableOpacity, View } from "react-native";
+import { Platform, Pressable, Text, TouchableOpacity, View } from "react-native";
 import { styles } from "../styles";
 import { CircularProgressRing } from "./CircularProgressRing";
 import { AppModal } from "./AppModal";
@@ -57,7 +57,11 @@ export function ChatContextUsageMenu({
         onRequestClose={() => setMenuOpen(false)}
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setMenuOpen(false)}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
+          <Pressable
+            testID="chat-context-menu"
+            style={[styles.modalCard, Platform.OS === "macos" && styles.chatContentWidth]}
+            onPress={() => {}}
+          >
             <Text style={styles.modalTitle}>コンテキスト</Text>
             <TouchableOpacity
               style={styles.modalOption}
