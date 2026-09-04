@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Animated } from "react-native";
+import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 
 export type ChatBottomToast = {
   id: string;
@@ -47,14 +48,14 @@ export function useChatBottomToast(options: UseChatBottomToastOptions) {
     Animated.timing(chatBottomToastAnimRef.current, {
       toValue: 1,
       duration: 180,
-      useNativeDriver: true,
+      useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
     }).start();
     chatBottomToastHideTimerRef.current = setTimeout(() => {
       if (chatBottomToastTokenRef.current !== token) return;
       Animated.timing(chatBottomToastAnimRef.current, {
         toValue: 0,
         duration: 160,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
       }).start(({ finished }) => {
         if (!finished) return;
         if (chatBottomToastTokenRef.current !== token) return;

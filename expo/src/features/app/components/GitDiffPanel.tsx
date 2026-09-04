@@ -10,6 +10,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 import { Ionicons } from "@expo/vector-icons";
 import { styles } from "../styles";
 import { GitBranchDropdown, type GitBranchOption } from "./GitBranchDropdown";
@@ -345,7 +346,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
     Animated.timing(panelAnim, {
       toValue: visible ? 1 : 0,
       duration: 180,
-      useNativeDriver: true,
+      useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
     }).start();
   }, [panelAnim, visible]);
 

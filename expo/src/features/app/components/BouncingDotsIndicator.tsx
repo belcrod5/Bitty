@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Animated, Easing, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 
 export type BouncingDotsIndicatorProps = {
   color?: string;
@@ -26,7 +27,7 @@ export function BouncingDotsIndicator(props: BouncingDotsIndicatorProps) {
         toValue: 1,
         duration: 1080,
         easing: Easing.linear,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_ANIMATION_DRIVER,
       })
     );
     loop.start();
