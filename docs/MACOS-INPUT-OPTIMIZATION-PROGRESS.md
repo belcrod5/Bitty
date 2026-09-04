@@ -97,7 +97,7 @@
 
 ## 2026-09-04: keychain毎回ポップアップの恒久対応
 
-adhoc署名が原因(designated requirement = バイナリハッシュ → リビルドごとに別アプリ扱い)。`expo/scripts/sign-macos-release.sh` を新設し、Developer ID Application (COLLABO Inc., U8SYKSPD98) で再署名する運用に変更。06:56ビルドは再署名済み。**Releaseビルド後は毎回このスクリプトを実行すること。** 初回起動時のみ既存keychain項目の許可を1回求められる(旧adhocバイナリにACLされているため)ので「常に許可」を選ぶ。以後はリビルドしても許可が持続する。
+adhoc署名が原因(designated requirement = バイナリハッシュ → リビルドごとに別アプリ扱い)。`scripts/macos/build-expo-macos.sh` は元々ビルド時署名の仕組みを持っており、adhoc になったのはこのスクリプトを使わず xcodebuild を直接叩いていたため。**Releaseビルドは必ず `scripts/macos/build-expo-macos.sh` 経由で行うこと。** 同スクリプトの証明書選択を優先順位固定(Developer ID → Apple Development → Mac Developer、`BITTY_MACOS_SIGN_IDENTITY` で明示指定可)に改善済み。署名種別が変わった直後の初回起動のみ keychain 許可を1回求められるので「常に許可」を選ぶ。以後はリビルドしても許可が持続する。
 
 ## 注意(引き継ぎ)
 

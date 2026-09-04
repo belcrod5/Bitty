@@ -28,12 +28,22 @@ if ! command -v pod >/dev/null 2>&1; then
   exit 1
 fi
 
-SIGNING_IDENTITY="$(
-  security find-identity -v -p codesigning 2>/dev/null |
-    awk '/"Developer ID Application:|"Apple Development:|"Mac Developer:/{print $2; exit}'
-)"
+# keychainのアクセス許可は署名のdesignated requirementに紐づく。adhocだと
+# リビルドごとに別アプリ扱いで毎回パスワードを要求されるため、必ず署名する。
+# 種類の異なる証明書間で揺れると許可が切れるので、優先順位を固定して選ぶ
+# (BITTY_MACOS_SIGN_IDENTITY で明示指定も可能)。
+SIGNING_IDENTITY="${BITTY_MACOS_SIGN_IDENTITY:-}"
+if [[ -z "${SIGNING_IDENTITY}" ]]; then
+  for pattern in '"Developer ID Application:' '"Apple Development:' '"Mac Developer:'; do
+    SIGNING_IDENTITY="$(
+      security find-identity -v -p codesigning 2>/dev/null |
+        awk -v pat="${pattern}" 'index($0, pat){print $2; exit}'
+    )"
+    [[ -n "${SIGNING_IDENTITY}" ]] && break
+  done
+fi
 if [[ -n "${SIGNING_IDENTITY}" ]]; then
-  echo "[build-macos] Using an available macOS code signing identity"
+  echo "[build-macos] Using code signing identity ${SIGNING_IDENTITY}"
   CODE_SIGN_ARGS=(
     CODE_SIGNING_ALLOWED=YES
     CODE_SIGNING_REQUIRED=YES
