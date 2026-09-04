@@ -18,6 +18,14 @@ if [[ ! -d "${WORKSPACE_PATH}" ]]; then
   exit 1
 fi
 
+# node_modules のパッチ不整合ビルドを防ぐ(git pull では node_modules は更新されない)。
+# 未適用なら適用し、半端に壊れた状態ならここでビルドを止める。
+echo "[build-macos] Verifying patch-package state"
+if ! (cd "${EXPO_DIR}" && npx patch-package --error-on-fail --error-on-warn); then
+  echo "[build-macos] patch-package failed; node_modules is inconsistent. Run 'npm ci' in expo/ and retry." >&2
+  exit 1
+fi
+
 if ! command -v xcodebuild >/dev/null 2>&1; then
   echo "[build-macos] xcodebuild is not available." >&2
   exit 1
