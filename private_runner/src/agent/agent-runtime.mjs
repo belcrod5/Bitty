@@ -40,6 +40,7 @@ export function createPrivateRunnerAgentRuntime({
   dynamicTools,
   stores,
   createCodexClient,
+  listCodexModels,
   normalizeSessionId,
   findSession,
   resolveSessionDirectory,
@@ -95,6 +96,7 @@ export function createPrivateRunnerAgentRuntime({
 
   const codexBackend = createCodexBackend({
     createClient: createCodexClient,
+    listModels: listCodexModels,
     resolveSessionCwd: resolveCodexSessionCwd,
     dynamicTools,
     developerInstructions: CONVERSATION_HISTORY_TOOL_INSTRUCTIONS,

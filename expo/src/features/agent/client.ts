@@ -33,7 +33,7 @@ export type BackendStatus = {
       select?: boolean;
       effort?: boolean;
       effortOptions?: string[];
-      catalog?: Array<{ modelId?: string; label?: string }>;
+      catalog?: Array<{ modelId?: string; label?: string; effortOptions?: string[] }>;
     };
     workspace?: { admission?: boolean };
     operations?: { compact?: boolean; schedule?: boolean };

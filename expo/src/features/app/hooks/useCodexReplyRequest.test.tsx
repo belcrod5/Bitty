@@ -1044,6 +1044,90 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 
+  test("a fresh chat waits for the catalog and sends only after its first advertised model is selected", async () => {
+    const { options } = createOptions();
+    Object.assign(options, { transcript: "hello", modelRef: "", modelOptions: [] });
+    const { result, rerender } = await renderHook<ReturnType<typeof useCodexReplyRequest>, {
+      modelRef: string;
+      modelOptions: any[];
+    }>(
+      ({ modelRef, modelOptions }) => useCodexReplyRequest({ ...options, modelRef, modelOptions } as never),
+      { initialProps: { modelRef: "", modelOptions: [] as any[] } },
+    );
+
+    await act(async () => {
+      await expect(result.current.sendReplyRequest(undefined, { panelId: "panel-1" }))
+        .resolves.toEqual({ rejected: "model_unavailable" });
+    });
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+
+    mockStartCodexAppServerTurn.mockImplementationOnce(((turnOptions: any) => ({
+      promise: Promise.resolve({ threadId: "new-thread", turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    await rerender({
+      modelRef: "first-upstream",
+      modelOptions: [{ modelId: "first-upstream", backendId: "codex", effortOptions: ["low"] }],
+    });
+    await act(async () => {
+      await result.current.sendReplyRequest(undefined, { panelId: "panel-1" });
+    });
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({ model: "first-upstream" }));
+  });
+
+  test("an advertised empty effort catalog omits the saved effort", async () => {
+    const { options } = createOptions();
+    Object.assign(options, {
+      transcript: "hello",
+      modelRef: "no-effort-model",
+      modelOptions: [{
+        modelId: "no-effort-model",
+        backendId: "codex",
+        supportsReasoningEffort: true,
+        effortOptions: [],
+      }],
+    });
+    mockStartCodexAppServerTurn.mockImplementationOnce((() => ({
+      promise: Promise.resolve({ threadId: "new-thread", turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => result.current.sendReplyRequest(undefined, { panelId: "panel-1" }));
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
+      model: "no-effort-model",
+      effort: undefined,
+    }));
+  });
+
+  test("a materialized session keeps an unselectable historical model without overriding its native model", async () => {
+    const { options } = createOptions();
+    Object.assign(options, {
+      transcript: "hello",
+      modelRef: "historical-model",
+      modelOptions: [
+        { modelId: "historical-model", backendId: "claude", selectable: true },
+        { modelId: "current-model", backendId: "codex", selectable: true },
+        { modelId: "historical-model", backendId: "codex", selectable: false },
+      ],
+    });
+    mockStartCodexAppServerTurn.mockImplementationOnce((() => ({
+      promise: Promise.resolve({ threadId: "thread-1", turnId: "turn-1", reply: "done", contextUsage: null }),
+      interrupt: jest.fn(),
+    })) as never);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => result.current.sendReplyRequest(undefined, {
+      panelId: "panel-1",
+      sessionSnapshot: { backendId: "codex", threadId: "thread-1", modelRef: "historical-model" },
+    }));
+    expect(mockStartCodexAppServerTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-1",
+      model: undefined,
+      effort: undefined,
+    }));
+  });
+
   test("rejects a model whose backend does not match the saved session backend", async () => {
     const { options } = createOptions();
     Object.assign(options, {

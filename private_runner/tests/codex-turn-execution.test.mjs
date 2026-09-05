@@ -21,6 +21,7 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
       if (method === "thread/start") return { thread: { id: "thread-new" } };
       if (method === "thread/resume") return { thread: { id: params.threadId } };
       if (method === "modelProvider/capabilities/read") return { namespaceTools: true };
+      if (method === "model/list") return { data: [], nextCursor: null };
       if (method === "plugin/list") return { marketplaces: [] };
       if (method === "mcpServerStatus/list") return { data: [], nextCursor: null };
       if (method === "turn/start") {
@@ -54,6 +55,7 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
       serverRequestHandlers.add(handler);
       return () => serverRequestHandlers.delete(handler);
     },
+    close() {},
   };
 }
 
@@ -355,10 +357,106 @@ test("Codex Backend status advertises its full decision superset", async () => {
   const status = await backend.getStatus();
   assert.deepEqual(status.capabilities.action.decisions, ["allow", "allow_for_session", "deny"]);
   assert.deepEqual(status.capabilities.action.policyProfiles[0].decisions, ["allow", "allow_for_session", "deny"]);
+});
+
+test("Codex Backend derives every visible model and its efforts from app-server", async () => {
+  const client = fakeClient();
+  const request = client.request.bind(client);
+  client.request = async (method, params) => {
+    if (method !== "model/list") return await request(method, params);
+    client.calls.push({ kind: "request", method, params });
+    if (!params.cursor) {
+      return {
+        data: [
+          {
+            id: "legacy-astra-id",
+            model: "gpt-6-astra",
+            displayName: "GPT-6 Astra — Upstream",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "LOW" },
+              { reasoningEffort: "max" },
+              { reasoningEffort: "ultra" },
+              { reasoningEffort: "unsupported" },
+            ],
+          },
+          { model: "hidden-model", displayName: "Hidden", hidden: true },
+          { id: "", model: "", displayName: "Missing ID" },
+        ],
+        nextCursor: "page-2",
+      };
+    }
+    return {
+      data: [{
+        id: "gpt-5.6-luna",
+        displayName: "",
+        supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+      }],
+      nextCursor: null,
+    };
+  };
+  let closeCalls = 0;
+  client.close = () => { closeCalls += 1; };
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+  });
+
+  const status = await backend.getStatus();
+  const listed = await backend.listModels();
+  const expected = [
+    { modelId: "gpt-6-astra", label: "GPT-6 Astra — Upstream", effortOptions: ["low", "max", "ultra"] },
+    { modelId: "gpt-5.6-luna", label: "gpt-5.6-luna", effortOptions: ["medium"] },
+  ];
+
+  assert.deepEqual(status.capabilities.model.catalog, expected);
+  assert.deepEqual(listed, expected);
   assert.deepEqual(
-    status.capabilities.model.catalog.find((model) => model.modelId === "gpt-6-astra"),
-    { modelId: "gpt-6-astra", label: "GPT-6-Astra" },
+    client.calls.filter((call) => call.kind === "request").map((call) => call.method),
+    ["initialize", "model/list", "model/list", "initialize", "model/list", "model/list"],
   );
+  assert.deepEqual(
+    client.calls.filter((call) => call.method === "model/list").map((call) => call.params),
+    [{ limit: 100 }, { limit: 100, cursor: "page-2" }, { limit: 100 }, { limit: 100, cursor: "page-2" }],
+  );
+  assert.equal(client.calls.filter((call) => call.kind === "notify" && call.method === "initialized").length, 2);
+  assert.equal(closeCalls, 2);
+});
+
+test("Codex Backend rejects a repeated model catalog cursor and closes the client", async () => {
+  const client = fakeClient();
+  client.request = async (method) => method === "model/list"
+    ? { data: [], nextCursor: "same-cursor" }
+    : {};
+  let closed = false;
+  client.close = () => { closed = true; };
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+  });
+
+  await assert.rejects(backend.listModels(), /repeated a model catalog cursor/);
+  assert.equal(closed, true);
+});
+
+test("Codex Backend becomes unavailable instead of falling back when model discovery fails", async () => {
+  const client = fakeClient();
+  client.request = async (method) => {
+    if (method === "model/list") throw new Error("model catalog unavailable");
+    return {};
+  };
+  let closed = false;
+  client.close = () => { closed = true; };
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+  });
+
+  const status = await backend.getStatus();
+
+  assert.equal(status.available, false);
+  assert.deepEqual(status.readiness, { ready: false, reason: "model catalog unavailable" });
+  assert.equal("capabilities" in status, false);
+  assert.equal(closed, true);
 });
 
 for (const method of ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]) {

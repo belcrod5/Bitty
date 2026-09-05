@@ -4,7 +4,7 @@ import type { LlmBackend } from "./types/appTypes";
 import { isReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "./utils/settingsParsers";
 
 export const DEFAULT_LLM_BACKEND: LlmBackend = "codex";
-export const DEFAULT_MODEL_REF = "gpt-5.6-sol";
+export const DEFAULT_MODEL_REF = "";
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
 export const DEFAULT_CODEX_APPROVAL_POLICY: CodexApprovalPolicy = "on-request";
 export const THINK_OPTIONS: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -23,7 +23,7 @@ export function effortOptionsForModel(
   option: { supportsReasoningEffort?: boolean; effortOptions?: readonly ReasoningEffort[] } | undefined,
 ): readonly ReasoningEffort[] {
   if (option?.supportsReasoningEffort !== true) return [];
-  return option.effortOptions && option.effortOptions.length > 0 ? option.effortOptions : THINK_OPTIONS;
+  return option.effortOptions ?? THINK_OPTIONS;
 }
 
 export function modelSelectionKey(backendIdRaw: unknown, modelIdRaw: unknown): ModelOption["selectionKey"] {
@@ -46,7 +46,9 @@ export function modelOptionsFromStatuses(statuses: readonly BackendStatus[]): Mo
         modelId,
         label: String(model.label || modelId).trim() || modelId,
         supportsReasoningEffort: capability?.effort === true,
-        effortOptions: parseEffortOptions(capability?.effortOptions),
+        effortOptions: model.effortOptions === undefined
+          ? parseEffortOptions(capability?.effortOptions)
+          : parseEffortOptions(model.effortOptions) ?? [],
         supportsScheduling: status.capabilities?.operations?.schedule === true,
         selectable: true,
       }];

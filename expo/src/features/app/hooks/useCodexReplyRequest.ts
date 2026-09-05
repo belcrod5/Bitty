@@ -66,6 +66,7 @@ type UseCodexReplyRequestOptions<
     backendId: string;
     supportsReasoningEffort?: boolean;
     effortOptions?: readonly ReasoningEffort[];
+    selectable?: boolean;
   }[];
   modelRef: string;
   reasoningEffort: ReasoningEffort;
@@ -204,6 +205,7 @@ export type SendReplyRequestRejectReason =
   | "empty_transcript"
   | "active_request"
   | "missing_codex_ws_url"
+  | "model_unavailable"
   | "model_backend_mismatch";
 
 // Contract: sendReplyRequest resolves void when the request was accepted
@@ -414,24 +416,25 @@ export function useCodexReplyRequest<
     let requestThreadKey = requestThreadId || requestUiSessionId;
     const requestSessionAdoptionSourceId = requestThreadKey || requestUiSessionId;
     const requestModelRef = normalizeModelRef(requestSnapshot?.modelRef || current.modelRef);
-    const requestModelOption = current.modelOptions?.find(
+    const hasModelCatalog = Array.isArray(current.modelOptions);
+    const sameBackendModelOption = current.modelOptions?.find(
       (option) => option.modelId === requestModelRef && option.backendId === requestBackendId
     );
+    const requestModelOption = sameBackendModelOption?.selectable === false ? undefined : sameBackendModelOption;
     const modelBackendId = String(
-      requestModelOption?.backendId || current.modelOptions?.find((option) => option.modelId === requestModelRef)?.backendId || requestBackendId
+      sameBackendModelOption?.backendId || current.modelOptions?.find((option) => option.modelId === requestModelRef)?.backendId || requestBackendId
     ).trim() || requestBackendId;
-    const normalizedReasoningEffort = requestModelOption?.supportsReasoningEffort === false
+    const normalizedReasoningEffort = requestModelOption?.supportsReasoningEffort === false || (hasModelCatalog && !requestModelOption)
       ? ""
       : normalizeReasoningEffort(requestSnapshot?.reasoningEffort, current.reasoningEffort);
     // Backendがadvertiseしたeffort catalog外の値は送らず、Backend既定に任せる
     // (例: Codexで保存したultraをClaude modelへ持ち込んだ場合)。
-    const requestModelEffortOptions = requestModelOption?.effortOptions?.length
-      ? requestModelOption.effortOptions
-      : null;
-    const requestReasoningEffort = requestModelEffortOptions && normalizedReasoningEffort &&
+    const requestModelEffortOptions = requestModelOption?.effortOptions;
+    const requestReasoningEffort = requestModelEffortOptions !== undefined && normalizedReasoningEffort &&
       !requestModelEffortOptions.includes(normalizedReasoningEffort)
       ? ""
       : normalizedReasoningEffort;
+    const requestTurnModelRef = hasModelCatalog && !requestModelOption ? "" : requestModelRef;
     if (await current.runSlashCommand(effectiveTranscript, {
       clearInput,
       sttMeta: requestOptions?.sttMeta,
@@ -456,6 +459,14 @@ export function useCodexReplyRequest<
         requestModelRef,
       }, { throttleMs: 0 });
       return { rejected: "model_backend_mismatch" };
+    }
+    if (hasModelCatalog && !requestThreadId && !requestModelOption) {
+      current.logSessionDiag("reply_http_send_skipped", {
+        reason: "model_unavailable",
+        requestBackendId,
+        requestModelRef,
+      }, { throttleMs: 0 });
+      return { rejected: "model_unavailable" };
     }
     // Send-gate liveness: an in-flight turn that stopped producing events (and is not
     // waiting on an approval) must not block this thread's sends forever. Interrupt it,
@@ -1060,7 +1071,7 @@ export function useCodexReplyRequest<
         threadId: requestThreadId || undefined,
         strictThreadResume: !!requestThreadId,
         serviceName: "expo-ios-client",
-        model: requestModelRef || undefined,
+        model: requestTurnModelRef || undefined,
         // Backendがeffort対応ならresumeでもturn単位で送る。
         effort: requestReasoningEffort || undefined,
         approvalPolicy: current.codexApprovalPolicy,

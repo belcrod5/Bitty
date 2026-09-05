@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_REF,
   THINK_OPTIONS,
   currentModelFallback,
   effortOptionsForModel,
@@ -7,6 +8,7 @@ import {
 } from "./modelOptions";
 
 test("builds stable composite selections when backends publish the same model id", () => {
+  expect(DEFAULT_MODEL_REF).toBe("");
   const options = modelOptionsFromStatuses([
     {
       backendId: "first",
@@ -36,7 +38,11 @@ test("maps the backend's advertised effort catalog and renders only advertised v
         model: {
           effort: true,
           effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"],
-          catalog: [{ modelId: "gpt-5.6-sol", label: "Sol" }],
+          catalog: [{
+            modelId: "gpt-6-astra",
+            label: "GPT-6 Astra — Upstream",
+            effortOptions: ["low", "max", "ultra"],
+          }],
         },
         operations: { compact: true },
       },
@@ -54,7 +60,8 @@ test("maps the backend's advertised effort catalog and renders only advertised v
     },
   ]);
 
-  expect(effortOptionsForModel(options[0])).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  expect(options[0]?.label).toBe("GPT-6 Astra — Upstream");
+  expect(effortOptionsForModel(options[0])).toEqual(["low", "max", "ultra"]);
   expect(effortOptionsForModel(options[1])).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(effortOptionsForModel(options[1])).not.toContain("ultra");
 });
@@ -67,6 +74,7 @@ test("falls back to the full effort list only when a backend advertises no effor
     },
   ]);
   expect(effortOptionsForModel(option)).toEqual(THINK_OPTIONS);
+  expect(effortOptionsForModel({ supportsReasoningEffort: true, effortOptions: [] })).toEqual([]);
   expect(effortOptionsForModel({ supportsReasoningEffort: false })).toEqual([]);
   expect(effortOptionsForModel(undefined)).toEqual([]);
 });

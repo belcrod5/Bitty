@@ -23,8 +23,8 @@ const sendOptions = {
 };
 
 describe("useSendReplyRequestController rejection feedback", () => {
-  test("surfaces a gate-blocked rejection as a toast (no silent skip)", async () => {
-    const args = createArgs({ rejected: "active_request" });
+  test.each(["active_request", "model_unavailable"] as const)("surfaces %s rejection as a toast (no silent skip)", async (reason) => {
+    const args = createArgs({ rejected: reason });
     const { result } = await renderHook(() => useSendReplyRequestController(args));
 
     await act(async () => {
@@ -38,7 +38,7 @@ describe("useSendReplyRequestController rejection feedback", () => {
     );
     expect(args.logSessionDiag).toHaveBeenCalledWith(
       "reply_send_guard_rejected",
-      expect.objectContaining({ reason: "active_request" }),
+      expect.objectContaining({ reason }),
       expect.anything()
     );
   });

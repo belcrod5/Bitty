@@ -668,8 +668,19 @@ export function createAgentService({
     if (request.effort && status?.capabilities?.model?.effort !== true) {
       throw agentError("capability_unsupported", "effort selection is not supported", { backendId: request.backendId });
     }
-    const effortOptions = status?.capabilities?.model?.effortOptions;
-    if (request.effort && Array.isArray(effortOptions) && effortOptions.length > 0 && !effortOptions.includes(request.effort)) {
+    const modelCapability = status?.capabilities?.model;
+    const modelCatalog = modelCapability?.catalog;
+    const selectedModel = request.model && Array.isArray(modelCatalog)
+      ? modelCatalog.find((model) => model?.modelId === request.model)
+      : undefined;
+    if (request.model && Array.isArray(modelCatalog) && !selectedModel) {
+      throw agentError("capability_unsupported", "model value is not supported", { backendId: request.backendId });
+    }
+    const modelEffortOptions = selectedModel?.effortOptions;
+    const hasModelEffortOptions = Array.isArray(modelEffortOptions);
+    const effortOptions = hasModelEffortOptions ? modelEffortOptions : modelCapability?.effortOptions;
+    if (request.effort && Array.isArray(effortOptions) &&
+      (hasModelEffortOptions || effortOptions.length > 0) && !effortOptions.includes(request.effort)) {
       throw agentError("capability_unsupported", "effort value is not supported", { backendId: request.backendId });
     }
     const canonicalCwd = request.sessionRef

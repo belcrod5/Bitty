@@ -81,6 +81,26 @@ test("a local panel draft can select Claude before its first send", async () => 
   alert.mockRestore();
 });
 
+test("an unmaterialized panel draft adopts its backend's first advertised model", async () => {
+  const updatePanelSettings = jest.fn();
+  await renderHook(() => useChatModelSelection({
+    isPanelRuntimeView: true,
+    panelId: "drawer-session-popup",
+    panelSnapshot: { ...localDraft(), modelRef: "" },
+    conversationMessageCount: 0,
+    llmBackend: "codex",
+    modelRef: "",
+    reasoningEffort: "medium",
+    selectedModelLabel: "",
+    modelOptions,
+    selectModel: jest.fn(),
+    updatePanelSettings,
+    closePicker: jest.fn(),
+  }));
+
+  expect(updatePanelSettings).toHaveBeenCalledWith("drawer-session-popup", { modelRef: "gpt-5.6-sol" });
+});
+
 test("the effort picker renders only the backend-advertised catalog for the selected model", async () => {
   const { result } = await renderHook(() => useChatModelSelection({
     isPanelRuntimeView: true,
