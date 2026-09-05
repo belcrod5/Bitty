@@ -16,12 +16,7 @@ Fabric's missing `submitKeyEvents` prop
 conversion so multiline inputs can use Command+Enter without changing plain
 Enter into submit. If Command+Enter is pressed while an IME composition is
 active, the native text view commits the marked text before running that same
-submit-key matcher, so the first shortcut sends the finalized text. The patch
-also removes the blocking `nextEventMatchingMask:` peek from selectable
-paragraph `mouseDown` (Fabric `RCTParagraphComponentView`). The click-vs-drag
-decision happens in `mouseDragged:`/`mouseUp:`: double/triple clicks and real
-drags still forward to the embedded `NSTextView`, and single clicks clear the
-selection. This change alone did not fix overlay clicks above native text.
+submit-key matcher, so the first shortcut sends the finalized text.
 
 Fabric `RCTViewComponentView` now consumes native `mouseDown` without calling
 super. `RCTSurfaceTouchHandler` already handles the React Native press lifecycle;
