@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { KeyboardAvoidingView } from "../keyboardController";
 import {
-  getRunnerFileViewerLocation,
+  getRunnerFileLocation,
   getRunnerMediaKind,
 } from "../utils/runnerFileContextMenu";
 import { AppModal } from "./AppModal";
@@ -53,7 +53,7 @@ export function SkiaBoardCardAppearanceEditor({
     setDisplayName(target?.displayNameOverride || "");
     setImagePath(target?.imagePath || "");
     const imageDirectory = target?.imagePath
-      ? getRunnerFileViewerLocation(target.imagePath, target.rootPath).rootDirectory
+      ? getRunnerFileLocation(target.imagePath, target.rootPath).rootDirectory
       : "";
     setRootPath(() => directories.find((directory) => (
       target?.imagePath?.startsWith(`${directory.path}/`)

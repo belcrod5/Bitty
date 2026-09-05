@@ -273,7 +273,15 @@ jest.mock("../components/RunnerFileViewer", () => {
   };
 });
 jest.mock("../components/WorkspaceFileRenameDialog", () => ({ WorkspaceFileRenameDialog: () => null }));
-jest.mock("../components/WorkspaceTextFileEditor", () => ({ WorkspaceTextFileEditor: () => null }));
+jest.mock("../components/WorkspaceTextFileEditor", () => {
+  const ReactModule = require("react");
+  const { Text } = require("react-native");
+  return {
+    WorkspaceTextFileEditor: ({ target }: { target?: { path?: string } | null }) => (
+      target ? ReactModule.createElement(Text, { testID: "text-editor-target" }, target.path) : null
+    ),
+  };
+});
 
 const mockMoveBoardCard = jest.fn();
 const mockAddBoardSection = jest.fn();
@@ -1248,10 +1256,10 @@ test("opens a supported file on its second tap without opening the context menu"
 test("keeps an explicit fallback for unsupported file types on second tap", async () => {
   mockSessions = [{
     kind: "file",
-    cardId: "file:/workspace\ndocs/readme.md",
+    cardId: "file:/workspace\ndocs/data.json",
     rootDir: "/workspace",
-    path: "docs/readme.md",
-    name: "readme.md",
+    path: "docs/data.json",
+    name: "data.json",
     col: 0,
     row: 0,
   } as unknown as typeof mockDefaultSession];
@@ -1267,9 +1275,33 @@ test("keeps an explicit fallback for unsupported file types on second tap", asyn
 
   expect(alertSpy).toHaveBeenCalledWith(
     "開けません",
-    "readme.md に対応する表示方法がありません。",
+    "data.json に対応する表示方法がありません。",
   );
   alertSpy.mockRestore();
+});
+
+test("opens a Markdown file in the text editor on its second tap", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ndocs/readme.md",
+    rootDir: "/workspace",
+    path: "docs/readme.md",
+    name: "readme.md",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const screen = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+
+  await act(async () => {
+    fireCardTap();
+  });
+  await act(async () => {
+    fireCardTap();
+  });
+
+  expect(screen.getByTestId("text-editor-target").props.children).toBe("docs/readme.md");
 });
 
 test("floats circular navigation controls over the full-height canvas", async () => {

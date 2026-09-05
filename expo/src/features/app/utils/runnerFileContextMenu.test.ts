@@ -1,8 +1,9 @@
 import { Alert } from "react-native";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
+  getRunnerFileOpenKind,
   getRunnerFileViewerKind,
-  getRunnerFileViewerLocation,
+  getRunnerFileLocation,
   isRunnerEditableTextFile,
   openRunnerFile,
   openRunnerFileContextMenu,
@@ -33,6 +34,8 @@ function openContextMenuButtons(params: {
   filePath: string;
   rootDir?: string;
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
+  onRequestEdit?: (target: { path: string; name: string; rootDirectory?: string }) => void;
+  allowMutate?: boolean;
   onSpeakText?: (text: string, target: { path: string; name: string }) => void;
   showInfoToast?: (textRaw: unknown) => void;
   skiaBoard?: {
@@ -52,6 +55,8 @@ function openContextMenuButtons(params: {
     showInfoToast: params.showInfoToast || (() => {}),
     onOpenMedia: () => {},
     onOpenFile: params.onOpenFile,
+    onRequestEdit: params.onRequestEdit,
+    allowMutate: params.allowMutate,
     onSpeakText: params.onSpeakText,
     skiaBoard: params.skiaBoard,
   });
@@ -74,6 +79,16 @@ test("getRunnerFileViewerKind detects supported extensions case-insensitively", 
   expect(getRunnerFileViewerKind("docs/readme.md")).toBeNull();
   expect(getRunnerFileViewerKind("Makefile")).toBeNull();
   expect(getRunnerFileViewerKind("")).toBeNull();
+});
+
+test("classifies every default open behavior at one extension boundary", () => {
+  expect(getRunnerFileOpenKind("docs/readme.MD")).toBe("text");
+  expect(getRunnerFileOpenKind("notes.TXT")).toBe("text");
+  expect(getRunnerFileOpenKind("docs/index.html")).toBe("html");
+  expect(getRunnerFileOpenKind("tasks/today.checklist")).toBe("checklist");
+  expect(getRunnerFileOpenKind("images/map.png")).toBe("image");
+  expect(getRunnerFileOpenKind("videos/clip.mp4")).toBe("video");
+  expect(getRunnerFileOpenKind("Makefile")).toBeNull();
 });
 
 test("routes checklist files only to the dedicated viewer", () => {
@@ -119,41 +134,41 @@ test.each([
 });
 
 test("keeps relative viewer paths with normalized POSIX and Windows roots", () => {
-  expect(getRunnerFileViewerLocation("docs/report.html", "/work/current")).toEqual({
+  expect(getRunnerFileLocation("docs/report.html", "/work/current")).toEqual({
     path: "docs/report.html",
     rootDirectory: "/work/current",
   });
-  expect(getRunnerFileViewerLocation("report.html", "/")).toEqual({
+  expect(getRunnerFileLocation("report.html", "/")).toEqual({
     path: "report.html",
     rootDirectory: "/",
   });
-  expect(getRunnerFileViewerLocation("report.html", "C:/")).toEqual({
+  expect(getRunnerFileLocation("report.html", "C:/")).toEqual({
     path: "report.html",
     rootDirectory: "C:/",
   });
 });
 
 test("keeps absolute paths owned by POSIX or Windows drive roots", () => {
-  expect(getRunnerFileViewerLocation("/report.html", "/")).toEqual({
+  expect(getRunnerFileLocation("/report.html", "/")).toEqual({
     path: "/report.html",
     rootDirectory: "/",
   });
-  expect(getRunnerFileViewerLocation("/work/current/report.html", "/work/current")).toEqual({
+  expect(getRunnerFileLocation("/work/current/report.html", "/work/current")).toEqual({
     path: "/work/current/report.html",
     rootDirectory: "/work/current",
   });
-  expect(getRunnerFileViewerLocation("C:/report.html", "C:/")).toEqual({
+  expect(getRunnerFileLocation("C:/report.html", "C:/")).toEqual({
     path: "C:/report.html",
     rootDirectory: "C:/",
   });
 });
 
 test("uses the correct POSIX or drive root for external root-level files", () => {
-  expect(getRunnerFileViewerLocation("/report.html", "/work/current")).toEqual({
+  expect(getRunnerFileLocation("/report.html", "/work/current")).toEqual({
     path: "/report.html",
     rootDirectory: "/",
   });
-  expect(getRunnerFileViewerLocation("D:/report.html", "C:/work/current")).toEqual({
+  expect(getRunnerFileLocation("D:/report.html", "C:/work/current")).toEqual({
     path: "D:/report.html",
     rootDirectory: "D:/",
   });
@@ -164,10 +179,74 @@ test("hides the open button when onOpenFile is not provided", () => {
   expect(buttons.some((button) => button.text === "開く")).toBe(false);
 });
 
+test("shows the open button for editable text files", () => {
+  const onRequestEdit = jest.fn();
+  const buttons = openContextMenuButtons({
+    filePath: "docs/readme.md",
+    onRequestEdit,
+    allowMutate: true,
+  });
+  const openButton = buttons.find((button) => button.text === "開く");
+  expect(openButton).toBeDefined();
+  expect(buttons.some((button) => button.text === "編集")).toBe(false);
+  openButton?.onPress?.();
+  expect(onRequestEdit).toHaveBeenCalledWith({
+    path: "docs/readme.md",
+    name: "docs/readme.md",
+    rootDirectory: "project",
+  });
+});
+
+test.each(["docs/readme.md", "notes.txt"])(
+  "keeps open, copy, and speech actions together for %s",
+  (filePath) => {
+    const buttons = openContextMenuButtons({
+      filePath,
+      onRequestEdit: jest.fn(),
+      onSpeakText: jest.fn(),
+      allowMutate: true,
+    });
+
+    expect(buttons.map((button) => button.text)).toEqual(expect.arrayContaining([
+      "開く",
+      "ファイル内容をコピー",
+      "読み上げ",
+    ]));
+  },
+);
+
+test("does not expose text editing from a read-only context", () => {
+  const onRequestEdit = jest.fn();
+  const buttons = openContextMenuButtons({
+    filePath: "docs/readme.md",
+    onRequestEdit,
+    allowMutate: false,
+  });
+
+  expect(buttons.some((button) => button.text === "開く")).toBe(false);
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  expect(openRunnerFile({
+    filePathRaw: "docs/readme.md",
+    runnerUrl: "http://runner.test",
+    runnerToken: "token",
+    rootDir: "/workspace",
+    getPathLabel: String,
+    showInfoToast: jest.fn(),
+    onOpenMedia: jest.fn(),
+    onRequestEdit,
+    allowMutate: false,
+  })).toBe(false);
+  expect(onRequestEdit).not.toHaveBeenCalled();
+  expect(alertSpy).toHaveBeenCalledWith(
+    "開けません",
+    "docs/readme.md に対応する表示方法がありません。",
+  );
+});
+
 test("hides the open button for unsupported files", () => {
   const onOpenFile = jest.fn();
   const buttons = openContextMenuButtons({
-    filePath: "docs/readme.md",
+    filePath: "docs/data.json",
     onOpenFile,
   });
   expect(buttons.some((button) => button.text === "開く")).toBe(false);
@@ -203,12 +282,42 @@ test("opens files directly with the same viewer and media behavior as the contex
   }));
 });
 
+test("opens text files directly in the editor with their safe location", () => {
+  const onRequestEdit = jest.fn();
+  const common = {
+    fileNameRaw: "",
+    runnerUrl: "http://runner.test",
+    runnerToken: "token",
+    rootDir: "/workspace",
+    getPathLabel: (pathRaw: unknown) => String(pathRaw || ""),
+    showInfoToast: jest.fn(),
+    onOpenMedia: jest.fn(),
+    onOpenFile: jest.fn(),
+    onRequestEdit,
+    allowMutate: true,
+  };
+
+  expect(openRunnerFile({ ...common, filePathRaw: "docs/readme.md" })).toBe(true);
+  expect(onRequestEdit).toHaveBeenLastCalledWith({
+    path: "docs/readme.md",
+    name: "docs/readme.md",
+    rootDirectory: "/workspace",
+  });
+
+  expect(openRunnerFile({ ...common, filePathRaw: "/external/notes.txt" })).toBe(true);
+  expect(onRequestEdit).toHaveBeenLastCalledWith({
+    path: "/external/notes.txt",
+    name: "/external/notes.txt",
+    rootDirectory: "/external",
+  });
+});
+
 test("shows an explicit fallback when a file type has no default open behavior", () => {
   const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
 
   expect(openRunnerFile({
-    filePathRaw: "docs/readme.md",
-    fileNameRaw: "readme.md",
+    filePathRaw: "docs/data.json",
+    fileNameRaw: "data.json",
     runnerUrl: "http://runner.test",
     runnerToken: "token",
     rootDir: "/workspace",
@@ -219,7 +328,7 @@ test("shows an explicit fallback when a file type has no default open behavior",
   })).toBe(false);
   expect(alertSpy).toHaveBeenCalledWith(
     "開けません",
-    "readme.md に対応する表示方法がありません。",
+    "data.json に対応する表示方法がありません。",
   );
 });
 

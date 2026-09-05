@@ -14,6 +14,13 @@ jest.mock("@expo/vector-icons", () => {
     Ionicons: (props: Record<string, unknown>) => React.createElement(Text, props, "icon"),
   };
 });
+jest.mock("./MarkdownText", () => {
+  const React = require("react");
+  const { Text } = require("react-native");
+  return {
+    MarkdownText: ({ content }: { content: string }) => React.createElement(Text, null, content),
+  };
+});
 jest.mock("../keyboardController", () => {
   const React = require("react");
   const { View } = require("react-native");
