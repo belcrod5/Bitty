@@ -24,7 +24,11 @@ function fakeChild(lines, { code = 0, exitOnSignal = true, exitAfterInput = true
     if (exitOnSignal) queueMicrotask(() => child.emit("exit", null, signal));
     return true;
   };
-  child.stdin.on("finish", () => {
+  // 実CLI(--input-format stream-json)はstdinのpromptを受信すると出力を流し始める。
+  // stdinのcloseは待たずに応答・exitする(closeを待つとresult無しで終わるケース
+  // =認証エラー等のテストがハングするため。成功ケースでのbackendのstdinクローズは
+  // 専用テストが'finish'イベントで直接検証する)。
+  child.stdin.once("data", () => {
     if (!exitAfterInput) return;
     queueMicrotask(() => {
       for (const line of lines) child.stdout.write(`${JSON.stringify(line)}\n`);
@@ -200,13 +204,13 @@ test("Claude Backend uses one-shot stream-json, resolves native session, and nor
   assert.deepEqual(sessions, [{ backendId: "claude", nativeSessionId: SESSION_ID }]);
   assert.deepEqual(processIdentities, [JSON.stringify({ pid: 12345, startedAt })]);
   assert.equal(calls[0].binary, "/test/claude");
-  assert.deepEqual(calls[0].args.slice(0, 6), [
-    "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--session-id",
+  assert.deepEqual(calls[0].args.slice(0, 8), [
+    "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--session-id",
   ]);
   // --safe-modeはprofile固有の断片(末尾)へ移った(§4.2)。同値性は順序不問の
   // フラグ集合一致で確認する(--safe-modeの位置が動いても回帰ではない)。
   assert.deepEqual(new Set(calls[0].args), new Set([
-    "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "-p", "--output-format", "stream-json", "--input-format", "--verbose", "--include-partial-messages",
     "--session-id", SESSION_ID, "--model", "haiku", "--safe-mode", "--permission-mode", "dontAsk",
   ]));
   assert.equal(calls[0].args.includes("say hello"), false);
@@ -844,6 +848,181 @@ test("Claude no-output watchdog stays disarmed after the first result while a ba
   child.emit("exit", 0, null);
   const result = await turn;
   assert.equal(result.outcome, "completed");
+});
+
+// バックグラウンド待ちテスト共通のbackend+手動stdout駆動セットアップ
+function manualBackgroundRun(runId) {
+  const child = fakeChild([], { exitAfterInput: false });
+  const backend = createClaudeBackend({
+    binary: "/test/claude",
+    runFile: async (file, args) => ({ stdout: file === "ps" ? "started\n" : args?.[0] === "--version" ? "2.1.214" : "" }),
+    fileSystem: { ...fs, realpath: async (value) => value },
+    spawnProcess: () => child,
+    sessionStore: { getBinding: async () => null },
+    interruptGraceMs: 10,
+    generateSessionId: () => SESSION_ID,
+  });
+  let stdinFinished = false;
+  let stdinData = "";
+  child.stdin.on("data", (chunk) => { stdinData += chunk.toString("utf8"); });
+  child.stdin.on("finish", () => { stdinFinished = true; });
+  const events = [];
+  const turn = backend.startTurn({
+    runId,
+    cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run background task" }] },
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  const writeLine = (line) => child.stdout.write(`${JSON.stringify(line)}\n`);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+  return { backend, child, turn, writeLine, settle, events, stdin: { get finished() { return stdinFinished; }, get data() { return stdinData; } } };
+}
+
+test("Claude Backend holds stdin open while a background task is pending and closes it after the final result", async () => {
+  // 根本原因の回帰テスト: バックグラウンドタスク実行中にresultが来ても、CLIを
+  // exitさせない(=stdinを閉じない)。テキスト入力時代はここでプロセスが死に、
+  // タスクが道連れkillされて「終わったらお知らせします」のまま無反応になっていた。
+  // イベント列は実測(CLI 2.1.238)のstdoutシーケンスに合わせる:
+  // background_tasks_changed→tool_result→result#1→(無音)→background_tasks_changed[]
+  // →task_notification→assistant→result#2→exit。
+  const run = manualBackgroundRun("run-hold-stdin");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_1", task_type: "local_bash", description: "build" }], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "task_started", task_id: "task_1", tool_use_id: "tool-1", is_backgrounded: true, task_type: "local_bash", session_id: SESSION_ID });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_1. Output is being written to: /tmp/task_1.output" }] } });
+  run.writeLine({ type: "assistant", uuid: "a-launch", message: { content: [{ type: "text", text: "ビルド完了後にお知らせします" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "ビルド完了後にお知らせします", session_id: SESSION_ID });
+  await run.settle();
+  // promptはstream-jsonの1行userメッセージとして書かれている
+  const promptRecord = JSON.parse(run.stdin.data.split("\n")[0]);
+  assert.equal(promptRecord.type, "user");
+  assert.equal(promptRecord.message.content[0].text, "run background task");
+  // 未完了タスクが残っている間はstdinを閉じない
+  assert.equal(run.stdin.finished, false);
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "task_notification", task_id: "task_1", tool_use_id: "tool-1", status: "completed", summary: "Background command completed (exit code 0)", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-final", message: { content: [{ type: "text", text: "ビルドが完了しました" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "ビルドが完了しました", session_id: SESSION_ID });
+  await run.settle();
+  // 全タスク完了後の最終resultでstdinを閉じ、CLIの自然exitを促す
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  const result = await run.turn;
+  assert.equal(result.outcome, "completed");
+  const completions = run.events.filter((event) => event.type === "item.completed" && event.payload.itemType === "assistant");
+  assert.equal(completions.at(-1).payload.content?.[0]?.text, "ビルドが完了しました");
+});
+
+test("Claude Backend does not close stdin on task completion events alone before the next result", async () => {
+  // background_tasks_changed([])やtask_notificationの時点で閉じると、自動継続の
+  // assistant/result#2が出る前にCLIがexitし得る。クローズ判定はresult受信時のみ。
+  const run = manualBackgroundRun("run-close-only-on-result");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_9" }], session_id: SESSION_ID });
+  run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, false);
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "task_notification", task_id: "task_9", status: "completed", session_id: SESSION_ID });
+  await run.settle();
+  // 通知だけではまだ閉じない(自動継続の途中でexitさせない)
+  assert.equal(run.stdin.finished, false);
+  run.writeLine({ type: "result", subtype: "success", result: "完了", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
+});
+
+test("Claude Backend closes stdin at the first result when no background task is pending", async () => {
+  const run = manualBackgroundRun("run-close-stdin");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-final", message: { content: [{ type: "text", text: "done" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  const result = await run.turn;
+  assert.equal(result.outcome, "completed");
+});
+
+test("Claude Backend can interrupt a turn that is waiting for a pending background task", async () => {
+  const run = manualBackgroundRun("run-interrupt-pending");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_2" }], session_id: SESSION_ID });
+  run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, false);
+  await run.backend.interrupt({ runId: "run-interrupt-pending" });
+  assert.deepEqual(await run.turn, { outcome: "interrupted", nativeTerminal: true });
+  assert.equal(run.child.signals.includes("SIGINT"), true);
+});
+
+test("Claude Backend ignores background-start text quoted in tool results", async () => {
+  // pendingはsystemイベント(タスクレジストリ)だけを真実源とし、tool_result本文の
+  // 文言(catやReadでログを読んだ出力)からは作らない。幻のpendingでターンが
+  // 滞留しないことの回帰テスト。
+  const run = manualBackgroundRun("run-foreground-noise");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-read", message: { content: [{ type: "tool_use", id: "tool-fg", name: "Read", input: { file_path: "/tmp/old.log" } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-fg", content: "log: Command running in background with ID: ghost_1. done" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
+});
+
+test("Claude Backend closes stdin on an error result even while a background task is pending", async () => {
+  const run = manualBackgroundRun("run-error-with-pending");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_err" }], session_id: SESSION_ID });
+  run.writeLine({ type: "result", subtype: "error_during_execution", is_error: true, result: "failed", session_id: SESSION_ID });
+  await run.settle();
+  // エラーresultでは自動継続を期待できないため、pending残でも即クローズする
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  await assert.rejects(run.turn, (error) => error.code === "turn_failed");
+});
+
+test("Claude Backend clears pending tasks when the registry reports them stopped", async () => {
+  // KillShell等の手動停止でも background_tasks_changed が新しい全量一覧で発火する
+  // ため、通知が無くても待機が解除される。
+  const run = manualBackgroundRun("run-killshell");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_3" }], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION_ID });
+  run.writeLine({ type: "result", subtype: "success", result: "停止しました", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
+});
+
+test("Claude Backend clears a pending task from a user-message task-notification as a fallback", async () => {
+  // stdoutの正式経路はsystem/task_notificationだが、userメッセージ経由で届く
+  // 変種(textブロック配列)でも解除できるbeltを検証する。
+  const run = manualBackgroundRun("run-user-notification");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent_x1" }], session_id: SESSION_ID });
+  run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, false);
+  run.writeLine({ type: "user", message: { content: [{ type: "text", text: "<task-notification>\n<task-id>agent_x1</task-id>\n<status>completed</status>\n</task-notification>" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "完了", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
 });
 
 test("Claude transcript metadata is cached until the file changes", async (t) => {

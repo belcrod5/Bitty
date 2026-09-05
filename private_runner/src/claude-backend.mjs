@@ -111,6 +111,11 @@ function extractText(content) {
 // ないため、履歴表示では折りたたみ対象(internal_context)として返す。
 const INTERNAL_CONTEXT_TAG_PATTERN = /^<(system-reminder|recommended_plugins|command-name|command-message|command-args|command-contents|local-command-caveat|local-command-stdout|local-command-stderr|task-notification)\b/;
 
+// トランスクリプトにuserメッセージとして記録される完了通知(実測: stdoutでは
+// system/task_notificationイベントが正式経路。この正規表現はuserメッセージ経由で
+// 届いた場合のbelt。statusは問わず該当タスクの待機を解除してよい)。
+const TASK_NOTIFICATION_ID_PATTERN = /<task-notification>[\s\S]*?<task-id>\s*([^<\s]+)\s*<\/task-id>/g;
+
 function classifyHistoryItemType(record, text, { isSubagentTranscript = false } = {}) {
   // サブエージェント自身のtranscriptは全recordがisSidechain: trueで記録される。
   // その文脈では本人のメイン会話なのでsidechain扱い(折りたたみ)にしない。
@@ -372,6 +377,10 @@ export function createClaudeBackend({
       closed: false,
       resetNoOutput: null,
       nativeSessionId: freshSessionId,
+      // 実行中バックグラウンドタスク(system/background_tasks_changedの一覧と同期)。
+      // 空でない間はresult後もstdinを保持し、CLIの自動継続を待つ。
+      pendingBackgroundTaskIds: new Set(),
+      stdinClosed: false,
       emit,
     };
     activeRuns.set(runId, state);
@@ -400,6 +409,21 @@ export function createClaudeBackend({
       noOutputTimer.unref?.();
     };
     state.resetNoOutput = resetNoOutput;
+
+    // print modeのCLIはstdinが開いている限りターン終了後もプロセスを維持し、
+    // バックグラウンドタスク完了時にtask-notificationを注入して自動継続する
+    // (実測: CLI 2.1.238、--input-format stream-json)。resultを受けるたびに
+    // ここで判定し、未完了タスクが無くなった時点でstdinを閉じてexitさせる。
+    // 既知の制限: 完了しない常駐タスク(devサーバー等)を残したままターンが
+    // 終わると最終resultまでターンが開き続ける(turnTimer 24hとユーザーの
+    // 中断操作がbackstop)。
+    const maybeEndStdin = () => {
+      if (state.stdinClosed || !state.child) return;
+      const failed = state.result?.is_error === true || String(state.result?.subtype || "").includes("error");
+      if (!failed && state.pendingBackgroundTaskIds.size > 0) return;
+      state.stdinClosed = true;
+      try { state.child.stdin.end(); } catch {}
+    };
 
     // bridgeのonRequest callback。stdout処理チェーンとは独立に、CLIが承認委譲した
     // ツール呼び出しごとに1回呼ばれる(§4.5)。
@@ -445,8 +469,12 @@ export function createClaudeBackend({
         throw error;
       }
     }
+    // 入力はstream-json(1行のuserメッセージ)で渡し、stdinはmaybeEndStdinが閉じる
+    // まで保持する。テキスト入力(EOF必須)ではresult直後にCLIがexitし、実行中の
+    // バックグラウンドタスクを道連れにkillしてしまうため(完了通知による自動継続が
+    // 永遠に来ない=「終わったらお知らせします」のまま無反応になる根本原因)。
     const args = [
-      "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+      "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages",
       ...(String(developerInstructions || "").trim()
         ? ["--append-system-prompt", String(developerInstructions).trim()]
         : []),
@@ -605,6 +633,13 @@ export function createClaudeBackend({
         return;
       }
       if (type === "user") {
+        // CLI注入のtask-notification(contentは文字列またはtextブロック)。statusに
+        // 関わらず該当タスクの待機を解除する(stopped/failedでも自動継続は来る)。
+        const rawContent = message.message?.content;
+        const userText = typeof rawContent === "string" ? rawContent : extractText(rawContent);
+        for (const match of userText.matchAll(TASK_NOTIFICATION_ID_PATTERN)) {
+          state.pendingBackgroundTaskIds.delete(match[1]);
+        }
         for (const block of Array.isArray(message.message?.content) ? message.message.content : []) {
           if (block?.type !== "tool_result") continue;
           const toolCallId = String(block.tool_use_id || "");
@@ -625,6 +660,26 @@ export function createClaudeBackend({
       }
       if (type === "system" && message?.subtype === "api_retry") {
         emit("provider.event", { backendId: "claude", nativeType: "system/api_retry", data: { attempt: Number(message.attempt || 0) } });
+        return;
+      }
+      if (type === "system" && message?.subtype === "background_tasks_changed") {
+        // CLI自身のタスクレジストリが唯一の真実源: 実行中バックグラウンドタスクの
+        // 全量一覧で同期する。起動・完了・手動停止(KillShell等)のすべてで発火する
+        // (実測: CLI 2.1.238)。旧CLIがこのイベントを出さない場合、pendingは常に
+        // 空のままresultで即クローズ=従来挙動に落ちるだけで、ハングは生まない。
+        state.pendingBackgroundTaskIds = new Set(
+          (Array.isArray(message.tasks) ? message.tasks : [])
+            .map((task) => String(task?.task_id || "").trim())
+            .filter(Boolean),
+        );
+        return;
+      }
+      if (type === "system" && message?.subtype === "task_notification") {
+        // 完了通知(status: completed/stopped/failedいずれでも待機解除)。この後CLIは
+        // 同一プロセス内で自動継続し、最終resultを出す。stdinクローズ判定はresult
+        // 受信時のみ行う(ここで閉じると自動継続前にCLIがexitし得るため)。
+        const taskId = String(message.task_id || "").trim();
+        if (taskId) state.pendingBackgroundTaskIds.delete(taskId);
         return;
       }
       if (type === "result") {
@@ -678,6 +733,9 @@ export function createClaudeBackend({
             },
           });
         }
+        // 未完了バックグラウンドタスクが無ければstdinを閉じ、CLIをexitさせて
+        // ターンを完了する。残っている間は閉じずに自動継続(次のresult)を待つ。
+        maybeEndStdin();
       }
     }
 
@@ -756,8 +814,7 @@ export function createClaudeBackend({
         state.stderr = `${state.stderr}${chunk.toString("utf8")}`.slice(-MAX_STDERR_BYTES);
       });
       child.stdin.on?.("error", () => {});
-      child.stdin.write(prompt);
-      child.stdin.end();
+      child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: prompt }] } })}\n`);
       const ended = await Promise.race([exit, protocolFailure]);
       if (state.fragment.trim()) {
         if (Buffer.byteLength(state.fragment) > MAX_LINE_BYTES) throw agentError("output_limit_exceeded", "Claude output fragment exceeded the limit", { backendId: "claude" });
@@ -814,6 +871,10 @@ export function createClaudeBackend({
       // run終了処理の開始を先に確定させる: 以後に滑り込むbridge requestはstaleな
       // pending/activeActionsを作らず即denyになる(handlePermissionRequestのガード)。
       state.closed = true;
+      if (!state.stdinClosed) {
+        state.stdinClosed = true;
+        try { state.child?.stdin?.end(); } catch {}
+      }
       for (const pending of state.pendingActions.values()) pending.resolve({ decision: "deny" });
       state.pendingActions.clear();
       if (state.bridge) await state.bridge.close();
