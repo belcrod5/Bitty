@@ -46,19 +46,21 @@ Avoid these unless there is a strong existing reason in the codebase:
 * new configuration options without a current concrete need
 * business logic leaking into UI, routing, persistence, or infrastructure layers
 * infrastructure concerns leaking into domain logic
-* large files becoming larger
+* adding unrelated responsibilities to an existing file
 * clever abstractions that hide simple behavior
 * changes that duplicate logic instead of removing the duplication
 * changes that fix one symptom while preserving the broken structure
 
 File size rule
 
-Do not create files over 2,000 lines.
+Treat 2,000 lines as a prompt to review the design, not a hard limit.
 
-Do not make an existing file over 2,000 lines worse.
+Evaluate files by the cohesion of their responsibilities, their dependencies, and how much code a reader must understand to make a change.
 
-If a file is already too large, prefer extracting a real responsibility or deleting unnecessary code.
-Do not split files mechanically if the split only moves complexity without improving boundaries.
+Split a file when extracting an independent responsibility makes the code easier to understand, change, or test.
+Do not split files or compress code solely to meet a line count. Do not include unrelated file splitting in a small fix.
+
+When creating a file over 2,000 lines or substantially expanding an existing large file, briefly explain why the chosen structure is appropriate.
 
 Abstraction rule
 
@@ -112,7 +114,7 @@ Check:
 * Did I add any thin wrappers?
 * Did I create premature abstraction?
 * Did I leak logic across layers?
-* Did I make any large file larger?
+* Did I add unrelated responsibilities or make a file harder to understand, change, or test?
 * Did I add indirection that is not needed today?
 * Did I preserve or improve testability?
 * Would this change be easy to modify later?
