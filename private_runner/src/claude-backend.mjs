@@ -116,12 +116,19 @@ const INTERNAL_CONTEXT_TAG_PATTERN = /^<(system-reminder|recommended_plugins|com
 // ため、ここで拾ったtaskIdが未完了の間はstdinを閉じずプロセスを生かし、CLI自身の
 // task-notification注入→自動継続→最終resultを同一ターン内で待つ(maybeEndStdin)。
 // 検知漏れは「従来どおりresultで即クローズ」に落ちるだけで、ハングは生まない。
-const BACKGROUND_TASK_START_PATTERNS = [
-  // Bash tool の run_in_background 実行
-  /Command running in background with ID:\s*([A-Za-z0-9_-]+)/g,
+// 誤検知(幻のpendingが残りstdinが閉じない)を防ぐため、スキャンは起動元ツールの
+// tool_resultに限定する(catやReadでログを読んだ出力に同じ文言があっても拾わない)。
+const BACKGROUND_TASK_START_PATTERNS_BY_TOOL = new Map([
+  // Bash tool の run_in_background 実行(input.run_in_background === true のみ)
+  ["Bash", /Command running in background with ID:\s*([A-Za-z0-9_-]+)/g],
   // Agent tool のバックグラウンド起動(完了通知のtask-idはagentIdと同一)
-  /Async agent launched successfully[\s\S]*?agentId:\s*([A-Za-z0-9_-]+)/g,
-];
+  ["Agent", /Async agent launched successfully[\s\S]*?agentId:\s*([A-Za-z0-9_-]+)/g],
+]);
+// これらのツールが成功したら、inputに含まれるpending taskは手動停止済みとみなして
+// 待機を解除する(task-notificationが注入されない停止経路のbackstop)。
+const BACKGROUND_TASK_STOP_TOOLS = new Set(["KillShell", "TaskStop"]);
+// 敵対的に長いtool_result(最大1MB/行)での正規表現走査コストを抑える上限
+const MAX_BACKGROUND_SCAN_BYTES = 64 * 1024;
 // CLIが注入する完了通知。statusは問わない(completed/stopped/failedいずれでも
 // 当該タスクの待機は解除してよい)。
 const TASK_NOTIFICATION_ID_PATTERN = /<task-notification>[\s\S]*?<task-id>\s*([^<\s]+)\s*<\/task-id>/g;
@@ -387,9 +394,13 @@ export function createClaudeBackend({
       closed: false,
       resetNoOutput: null,
       nativeSessionId: freshSessionId,
-      // 未完了バックグラウンドタスク(BACKGROUND_TASK_START_PATTERNSで検知)。
+      // 未完了バックグラウンドタスク(BACKGROUND_TASK_START_PATTERNS_BY_TOOLで検知)。
       // 空でない間はresult後もstdinを保持し、CLIの自動継続を待つ。
       pendingBackgroundTaskIds: new Set(),
+      // toolCallId → { name, runInBackground, inputJson }。tool_resultのスキャンを
+      // 起動元ツールに限定するための参照(assistant完全メッセージはtool_resultより
+      // 先に届くため、tool_result処理時点で必ず引ける)。
+      toolCallMeta: new Map(),
       stdinClosed: false,
       emit,
     };
@@ -630,8 +641,16 @@ export function createClaudeBackend({
         for (const block of blocks) {
           if (block?.type !== "tool_use") continue;
           hasToolUse = true;
+          const toolCallId = String(block.id || "").trim();
+          if (toolCallId && !state.toolCallMeta.has(toolCallId)) {
+            state.toolCallMeta.set(toolCallId, {
+              name: String(block.name || ""),
+              runInBackground: block.input?.run_in_background === true,
+              inputJson: JSON.stringify(block.input || {}).slice(0, 4096),
+            });
+          }
           announceTool({
-            toolCallId: String(block.id || "").trim(),
+            toolCallId,
             name: String(block.name || "tool"),
             inputSummary: JSON.stringify(block.input || {}).slice(0, 4096),
           });
@@ -652,9 +671,18 @@ export function createClaudeBackend({
         }
         for (const block of Array.isArray(message.message?.content) ? message.message.content : []) {
           if (block?.type !== "tool_result") continue;
-          const blockText = extractText(block.content);
-          for (const pattern of BACKGROUND_TASK_START_PATTERNS) {
-            for (const match of blockText.matchAll(pattern)) state.pendingBackgroundTaskIds.add(match[1]);
+          const meta = state.toolCallMeta.get(String(block.tool_use_id || ""));
+          if (meta) {
+            const startPattern = BACKGROUND_TASK_START_PATTERNS_BY_TOOL.get(meta.name);
+            if (startPattern && (meta.name !== "Bash" || meta.runInBackground)) {
+              const scanText = extractText(block.content).slice(0, MAX_BACKGROUND_SCAN_BYTES);
+              for (const match of scanText.matchAll(startPattern)) state.pendingBackgroundTaskIds.add(match[1]);
+            }
+            if (BACKGROUND_TASK_STOP_TOOLS.has(meta.name) && block.is_error !== true) {
+              for (const taskId of [...state.pendingBackgroundTaskIds]) {
+                if (meta.inputJson.includes(taskId)) state.pendingBackgroundTaskIds.delete(taskId);
+              }
+            }
           }
           const toolCallId = String(block.tool_use_id || "");
           if (!toolCallId || state.completedToolIds.has(toolCallId)) continue;

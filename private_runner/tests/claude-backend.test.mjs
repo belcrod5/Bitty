@@ -926,6 +926,7 @@ test("Claude Backend closes stdin at the first result when no background task is
 test("Claude Backend can interrupt a turn that is waiting for a pending background task", async () => {
   const run = manualBackgroundRun("run-interrupt-pending");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
   run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_2. Output is being written to: /tmp/task_2.output" }] } });
   run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
   await run.settle();
@@ -933,6 +934,71 @@ test("Claude Backend can interrupt a turn that is waiting for a pending backgrou
   await run.backend.interrupt({ runId: "run-interrupt-pending" });
   assert.deepEqual(await run.turn, { outcome: "interrupted", nativeTerminal: true });
   assert.equal(run.child.signals.includes("SIGINT"), true);
+});
+
+test("Claude Backend ignores background-start text in results of foreground tools", async () => {
+  // 誤検知ガード: catやRead等のフォアグラウンド出力に同じ文言が含まれていても
+  // pendingにせず、resultで即クローズする(幻のpendingでターンが滞留しない)。
+  const run = manualBackgroundRun("run-foreground-noise");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-read", message: { content: [{ type: "tool_use", id: "tool-fg", name: "Read", input: { file_path: "/tmp/old.log" } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-fg", content: "log: Command running in background with ID: ghost_1. done" }] } });
+  run.writeLine({ type: "assistant", uuid: "a-fg2", message: { content: [{ type: "tool_use", id: "tool-fg2", name: "Bash", input: { command: "cat /tmp/old.log" } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-fg2", content: "Command running in background with ID: ghost_2" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
+});
+
+test("Claude Backend closes stdin on an error result even while a background task is pending", async () => {
+  const run = manualBackgroundRun("run-error-with-pending");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_err. Output is being written to: /tmp/task_err.output" }] } });
+  run.writeLine({ type: "result", subtype: "error_during_execution", is_error: true, result: "failed", session_id: SESSION_ID });
+  await run.settle();
+  // エラーresultでは自動継続を期待できないため、pending残でも即クローズする
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  await assert.rejects(run.turn, (error) => error.code === "turn_failed");
+});
+
+test("Claude Backend clears a pending background task when the model stops it via KillShell", async () => {
+  // task-notificationが注入されない手動停止経路(KillShell/TaskStop)のbackstop
+  const run = manualBackgroundRun("run-killshell");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_3. Output is being written to: /tmp/task_3.output" }] } });
+  run.writeLine({ type: "assistant", uuid: "a-kill", message: { content: [{ type: "tool_use", id: "tool-kill", name: "KillShell", input: { shell_id: "task_3" } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-kill", content: "Successfully killed shell task_3" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "停止しました", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
+});
+
+test("Claude Backend tracks an async agent launch and a text-block task-notification", async () => {
+  const run = manualBackgroundRun("run-async-agent");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "assistant", uuid: "a-agent", message: { content: [{ type: "tool_use", id: "tool-agent", name: "Agent", input: { prompt: "do work" } }] } });
+  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-agent", content: "Async agent launched successfully.\nagentId: agent_x1 (internal ID)" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, false);
+  // 通知が文字列ではなくtextブロック配列で届いても解除できる
+  run.writeLine({ type: "user", message: { content: [{ type: "text", text: "<task-notification>\n<task-id>agent_x1</task-id>\n<status>completed</status>\n</task-notification>" }] } });
+  run.writeLine({ type: "result", subtype: "success", result: "完了", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
 });
 
 test("Claude transcript metadata is cached until the file changes", async (t) => {
