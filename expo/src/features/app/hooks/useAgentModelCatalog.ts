@@ -12,6 +12,9 @@ type UseAgentModelCatalogOptions = {
   backendId: LlmBackend;
   modelId: string;
   pickerOpen: boolean;
+  settingsLoaded: boolean;
+  selectionLocked: boolean;
+  setModelId: (modelId: string) => void;
 };
 
 export function useAgentModelCatalog({
@@ -19,6 +22,9 @@ export function useAgentModelCatalog({
   backendId,
   modelId,
   pickerOpen,
+  settingsLoaded,
+  selectionLocked,
+  setModelId,
 }: UseAgentModelCatalogOptions) {
   const [backendStatuses, setBackendStatuses] = useState<BackendStatus[]>([]);
   const refreshInFlightRef = useRef(false);
@@ -50,8 +56,17 @@ export function useAgentModelCatalog({
     if (pickerOpen) void refresh();
   }, [pickerOpen, refresh]);
 
+  const catalog = useMemo(() => modelOptionsFromStatuses(backendStatuses), [backendStatuses]);
+  useEffect(() => {
+    if (!settingsLoaded || selectionLocked) return;
+    const currentIsSelectable = catalog.some((option) => (
+      option.backendId === backendId && option.modelId === modelId
+    ));
+    const firstAdvertisedModel = catalog.find((option) => option.backendId === backendId);
+    if (!currentIsSelectable && firstAdvertisedModel) setModelId(firstAdvertisedModel.modelId);
+  }, [backendId, catalog, modelId, selectionLocked, setModelId, settingsLoaded]);
+
   return useMemo(() => {
-    const catalog = modelOptionsFromStatuses(backendStatuses);
     const status = backendStatuses.find((item) => item.backendId === backendId);
     const capability = {
       ...status?.capabilities?.model,
@@ -59,6 +74,6 @@ export function useAgentModelCatalog({
     };
     return catalog.some((option) => option.backendId === backendId && option.modelId === modelId)
       ? catalog
-      : [...catalog, currentModelFallback(backendId, modelId, capability)];
-  }, [backendId, backendStatuses, modelId]);
+      : modelId.trim() ? [...catalog, currentModelFallback(backendId, modelId, capability)] : catalog;
+  }, [backendId, backendStatuses, catalog, modelId]);
 }

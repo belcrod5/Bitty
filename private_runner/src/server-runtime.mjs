@@ -1680,7 +1680,6 @@ const approvalPushService = createApprovalPushService({
   forwardRawData: (relay, data) => forwardCodexRelayClientData(relay, data, false),
   parseAuthToken, readJsonBody, json, writeJsonRequestError,
 });
-
 const agentRuntime = createPrivateRunnerAgentRuntime({
   claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
   stores: {
@@ -1696,6 +1695,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
     listWorkspaces: listAgentWorkspaces, approveWorkspace: approveAgentWorkspace, revokeWorkspace: revokeAgentWorkspace, listRegisteredDirectories: pushDeviceStore.listDirectories,
   },
   createCodexClient: ({ signal }) => createCodexRpcClient({ signal }), normalizeSessionId: normalizeLlmExecutionSessionId,
+  listCodexModels: RUNNER_MOCK ? async () => [{ modelId: "gpt-5.6-sol", label: "Mock Codex", effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"] }] : undefined,
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
   listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
   listMessages: listLlmSessionMessages,

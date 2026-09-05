@@ -717,8 +717,6 @@ export default function App() {
   const drawerSessionPrefetchRequestedForOpenRef = useRef(false);
   const [modelRef, setModelRef] = useState<string>(DEFAULT_MODEL_REF);
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
-  const modelOptions = useAgentModelCatalog({ runnerWebSocketManager,
-    backendId: llmBackend, modelId: modelRef, pickerOpen: modelSelectOpen });
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(DEFAULT_REASONING_EFFORT);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>(DEFAULT_CODEX_APPROVAL_POLICY);
   const [directorySelectOpen, setDirectorySelectOpen] = useState(false);
@@ -738,6 +736,8 @@ export default function App() {
   const [llmSessionRestoreLoading, setLlmSessionRestoreLoading] = useState(false);
   const [llmSessionRestoreTargetId, setLlmSessionRestoreTargetId] = useState("");
   const [llmSessionRestoreError, setLlmSessionRestoreError] = useState("");
+  const modelOptions = useAgentModelCatalog({ runnerWebSocketManager, backendId: llmBackend, modelId: modelRef,
+    pickerOpen: modelSelectOpen, settingsLoaded, selectionLocked: selectedLlmSessionMaterialized || llmSessionRestoreLoading, setModelId: setModelRef });
   const [selectedThreadStatusType, setSelectedThreadStatusType] = useState("unknown");
   const [waitingApprovalResumeLoading, setWaitingApprovalResumeLoading] = useState(false);
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Alert } from "react-native";
 import type { ModelOption } from "../contexts/AppSettingsContext";
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
@@ -36,6 +36,14 @@ export function useChatModelSelection(options: {
     () => options.modelOptions.filter((option) => option.selectable !== false),
     [options.modelOptions],
   );
+  useEffect(() => {
+    if (!options.isPanelRuntimeView || options.panelSnapshot.sessionMaterialized || options.conversationMessageCount > 0) return;
+    const firstAdvertisedModel = selectableModelOptions.find((option) => option.backendId === backendIdForView);
+    if (modelOptionForView?.selectable === true || !firstAdvertisedModel) return;
+    options.updatePanelSettings(options.panelId, { modelRef: firstAdvertisedModel.modelId });
+  }, [backendIdForView, modelOptionForView?.selectable, options.conversationMessageCount,
+    options.isPanelRuntimeView, options.panelId, options.panelSnapshot.sessionMaterialized,
+    options.updatePanelSettings, selectableModelOptions]);
   const scheduleModelOptions = useMemo(() => selectableModelOptions
     .filter((option) => option.supportsScheduling === true)
     .map((option) => ({ value: option.modelId, label: option.label })), [selectableModelOptions]);

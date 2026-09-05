@@ -13,6 +13,7 @@ import type { SendReplyRequestRejectReason, SendReplyRequestResult } from "./use
 const SEND_REJECT_TOAST_TEXT: Partial<Record<SendReplyRequestRejectReason, string>> = {
   active_request: "前の応答が完了していないため送信できませんでした。完了を待つか停止してから再送してください。",
   missing_codex_ws_url: "Codex WS URLが未設定のため送信できませんでした。設定を確認してください。",
+  model_unavailable: "利用可能なモデルを取得できていないため送信できませんでした。接続を確認してください。",
   model_backend_mismatch: "このチャットではAgent Providerを変更できません。新規チャットを作成してください。",
 };
 
