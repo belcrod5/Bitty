@@ -376,6 +376,7 @@ export function ChatScreen({
     cancelCodexQueuedTurnForMessage,
     logSessionDiag,
     selectedLlmSessionId,
+    selectedLlmSessionMaterialized,
   } = useConversation();
   const panelSnapshot = getSnapshot(panelId);
   const miniSourceMessages = panelSnapshot.conversationMessages;
@@ -446,6 +447,9 @@ export function ChatScreen({
   const selectedSessionIdForView = isPanelSnapshotView
     ? String(panelSnapshot.selectedSessionId || "").trim()
     : String(selectedLlmSessionId || "").trim();
+  const selectedSessionMaterializedForView = isPanelSnapshotView
+    ? panelSnapshot.sessionMaterialized !== false
+    : selectedLlmSessionMaterialized;
   const sessionHistoryPagingState = sessionHistoryPagingById[selectedSessionIdForView];
   const openSessionHistoryEntryForView = useCallback((params: {
     backendId: string;
@@ -1317,6 +1321,17 @@ export function ChatScreen({
         Alert.alert("コピー失敗", message || "メッセージをコピーできませんでした。");
       });
   }, [showInfoToast]);
+  const copySessionHistoryReference = useCallback(() => {
+    if (!selectedSessionMaterializedForView || !backendIdForView || !selectedSessionIdForView) return;
+    Clipboard.setStringAsync(`bitty-history read ${backendIdForView} ${selectedSessionIdForView}`)
+      .then(() => {
+        showInfoToast("履歴参照をコピーしました");
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        Alert.alert("コピー失敗", message || "履歴参照をコピーできませんでした。");
+      });
+  }, [backendIdForView, selectedSessionIdForView, selectedSessionMaterializedForView, showInfoToast]);
   const {
     renameTarget: chatFileRenameTarget,
     requestRename: requestChatFileRename,
@@ -2207,6 +2222,10 @@ export function ChatScreen({
               turnState={replyLoadingForView ? "running" : selectedThreadStatusTypeForView}
               dataSync={connectionDataSync}
               selectedRoute={runnerRouteSelection.selectedRoute}
+              sessionBackendId={backendIdForView}
+              sessionId={selectedSessionIdForView}
+              sessionMaterialized={selectedSessionMaterializedForView}
+              onCopySessionHistoryReference={copySessionHistoryReference}
             />
           </View>
           <View style={styles.chatInputWrapper}>

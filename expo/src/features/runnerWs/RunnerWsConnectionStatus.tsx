@@ -14,6 +14,10 @@ type RunnerWsConnectionStatusProps = {
   turnState?: string;
   dataSync?: RunnerWsDataSyncStatus;
   selectedRoute?: "local" | "cloudflare" | "unknown";
+  sessionBackendId?: string;
+  sessionId?: string;
+  sessionMaterialized?: boolean;
+  onCopySessionHistoryReference?: () => void;
 };
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -87,6 +91,10 @@ export function RunnerWsConnectionStatus({
   turnState = "",
   dataSync,
   selectedRoute = "unknown",
+  sessionBackendId = "",
+  sessionId = "",
+  sessionMaterialized = false,
+  onCopySessionHistoryReference,
 }: RunnerWsConnectionStatusProps) {
   const [open, setOpen] = useState(false);
   const [networkUsage, setNetworkUsage] = useState(getNetworkUsageSnapshot);
@@ -106,6 +114,9 @@ export function RunnerWsConnectionStatus({
     (singletonConnectionCount > 1)
   );
   const color = singletonWarn ? STATUS_WARN : (dataSync ? statusColor(dataSync.status) : STATUS_NEUTRAL);
+  const backendId = String(sessionBackendId || "").trim();
+  const nativeSessionId = String(sessionId || "").trim();
+  const canCopySessionHistoryReference = sessionMaterialized && !!backendId && !!nativeSessionId;
   const rows = [
     ["状態", label],
     ["詳細", dataSync?.detail || "-"],
@@ -115,6 +126,8 @@ export function RunnerWsConnectionStatus({
     ["エラー", String(dataSync?.errorCount ?? 0)],
     ["最終更新", dataSync?.lastUpdatedAgeText || formatAge(Date.now(), dataSync?.lastUpdatedAtMs)],
     ["処理状態", String(turnState || "-")],
+    ["backendId", backendId || "-"],
+    ["sessionId", canCopySessionHistoryReference ? nativeSessionId : "未実体化"],
     ["経路", routeLabel(selectedRoute)],
     ["RTT", rttLabel || "-"],
     ["WS状態", runnerWsSnapshot.connectionState],
@@ -179,6 +192,18 @@ export function RunnerWsConnectionStatus({
                 ))}
               </View>
             </ScrollView>
+            <Pressable
+              style={[
+                styles.copyButton,
+                !canCopySessionHistoryReference && styles.copyButtonDisabled,
+              ]}
+              onPress={onCopySessionHistoryReference}
+              disabled={!canCopySessionHistoryReference || !onCopySessionHistoryReference}
+              accessibilityRole="button"
+              accessibilityLabel="履歴参照をコピー"
+            >
+              <Text style={styles.copyButtonText}>履歴参照をコピー</Text>
+            </Pressable>
             <Pressable
               style={styles.resetButton}
               onPress={() => {
@@ -258,5 +283,15 @@ const styles = StyleSheet.create({
     borderColor: "#e2e8f0",
     backgroundColor: "#f8fafc",
   },
+  copyButton: {
+    marginTop: 10,
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#0f766e",
+  },
+  copyButtonDisabled: { opacity: 0.4 },
+  copyButtonText: { fontSize: 12, fontWeight: "700", color: "#ffffff" },
   resetButtonText: { fontSize: 12, fontWeight: "700", color: "#334155" },
 });
