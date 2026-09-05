@@ -2,15 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
 import { RUNNER_FILE_HTTP_TIMEOUT_MS } from "../utils/runnerFileContextMenu";
 import type {
@@ -18,6 +21,7 @@ import type {
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
+import { MarkdownText } from "./MarkdownText";
 
 type WorkspaceTextFileEditorProps = {
   target: WorkspaceFileTarget | null;
@@ -46,8 +50,11 @@ export function WorkspaceTextFileEditor({
   const [initialContent, setInitialContent] = useState("");
   const [version, setVersion] = useState("");
   const [saving, setSaving] = useState(false);
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
 
   const targetPath = target?.path || "";
+  const targetRootDirectory = target?.rootDirectory || rootDirectory;
+  const isMarkdown = /\.md$/iu.test(targetPath);
 
   useEffect(() => {
     setContent("");
@@ -55,13 +62,14 @@ export function WorkspaceTextFileEditor({
     setVersion("");
     setLoadError("");
     setSaving(false);
+    setMode("edit");
     if (!targetPath) return;
     let cancelled = false;
     setLoading(true);
     fetchRunnerTextFileContent({
       runnerUrl,
       runnerToken,
-      rootDir: rootDirectory,
+      rootDir: targetRootDirectory,
       path: targetPath,
       timeoutMs: RUNNER_FILE_HTTP_TIMEOUT_MS,
     })
@@ -82,7 +90,7 @@ export function WorkspaceTextFileEditor({
     return () => {
       cancelled = true;
     };
-  }, [rootDirectory, runnerToken, runnerUrl, targetPath]);
+  }, [runnerToken, runnerUrl, targetPath, targetRootDirectory]);
 
   const dirty = !loading && !loadError && content !== initialContent;
 
@@ -111,6 +119,13 @@ export function WorkspaceTextFileEditor({
         setSaving(false);
       });
   }, [content, dirty, onClose, onSave, saving, target, version]);
+
+  const toggleMode = useCallback(() => {
+    setMode((currentMode) => {
+      if (currentMode === "edit") Keyboard.dismiss();
+      return currentMode === "edit" ? "preview" : "edit";
+    });
+  }, []);
 
   return (
     <AppModal
@@ -141,6 +156,23 @@ export function WorkspaceTextFileEditor({
             </View>
             <TouchableOpacity
               style={[
+                editorStyles.modeButton,
+                (loading || loadError || saving) ? editorStyles.disabledButton : null,
+              ]}
+              onPress={toggleMode}
+              disabled={loading || Boolean(loadError) || saving}
+              accessibilityRole="button"
+              accessibilityLabel={mode === "edit" ? "プレビューを表示" : "編集モードに戻る"}
+              testID="workspace-text-file-editor-mode-toggle"
+            >
+              <Ionicons
+                name={mode === "edit" ? "eye-outline" : "create-outline"}
+                size={20}
+                color="#334155"
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
                 editorStyles.headerButton,
                 editorStyles.saveButton,
                 (!dirty || saving) ? editorStyles.disabledButton : null,
@@ -163,7 +195,7 @@ export function WorkspaceTextFileEditor({
             <View style={editorStyles.centerArea}>
               <Text style={editorStyles.errorText}>{loadError}</Text>
             </View>
-          ) : (
+          ) : mode === "edit" ? (
             <TextInput
               testID="workspace-text-file-editor-input"
               style={editorStyles.textInput}
@@ -176,6 +208,22 @@ export function WorkspaceTextFileEditor({
               spellCheck={false}
               textAlignVertical="top"
             />
+          ) : (
+            <ScrollView
+              style={editorStyles.previewScroll}
+              contentContainerStyle={editorStyles.previewContent}
+              testID="workspace-text-file-editor-preview"
+            >
+              {isMarkdown ? (
+                <MarkdownText
+                  content={content}
+                  tone="assistant"
+                  textStyle={editorStyles.previewText}
+                />
+              ) : (
+                <Text style={editorStyles.previewText} selectable>{content}</Text>
+              )}
+            </ScrollView>
           )}
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -211,6 +259,7 @@ const editorStyles = StyleSheet.create({
   },
   headerTitleArea: {
     flex: 1,
+    minWidth: 0,
     alignItems: "center",
   },
   headerTitle: {
@@ -226,6 +275,14 @@ const editorStyles = StyleSheet.create({
     minWidth: 64,
     alignItems: "center",
     backgroundColor: "#0f766e",
+  },
+  modeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f1f5f9",
   },
   saveButtonText: {
     color: "#ffffff",
@@ -252,5 +309,17 @@ const editorStyles = StyleSheet.create({
     lineHeight: 20,
     color: "#0f172a",
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  previewScroll: {
+    flex: 1,
+  },
+  previewContent: {
+    flexGrow: 1,
+    padding: 16,
+  },
+  previewText: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: "#0f172a",
   },
 });

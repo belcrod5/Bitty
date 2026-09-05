@@ -19,43 +19,36 @@ export type StartRunnerShellScriptResult = {
   pid: number;
 };
 
-const RUNNER_VIDEO_FILE_EXTENSIONS = new Set([
-  "mp4",
-  "m4v",
-  "mov",
-  "webm",
-  "mkv",
-  "avi",
-]);
-
-const RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS = new Set([
-  "txt",
-  "md",
-]);
-
-const RUNNER_FILE_VIEWER_KIND_BY_EXTENSION: Record<string, RunnerFileViewerKind> = {
+const RUNNER_FILE_OPEN_KIND_BY_EXTENSION: Record<string, RunnerFileOpenKind> = {
   html: "html",
   htm: "html",
   drawio: "drawio",
   checklist: "checklist",
+  txt: "text",
+  md: "text",
+  mp4: "video",
+  m4v: "video",
+  mov: "video",
+  webm: "video",
+  mkv: "video",
+  avi: "video",
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  gif: "image",
+  webp: "image",
+  heic: "image",
+  heif: "image",
+  bmp: "image",
+  tif: "image",
+  tiff: "image",
 };
-
-const RUNNER_IMAGE_FILE_EXTENSIONS = new Set([
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "webp",
-  "heic",
-  "heif",
-  "bmp",
-  "tif",
-  "tiff",
-]);
 
 export type RunnerMediaKind = "video" | "image";
 
 export type RunnerFileViewerKind = "html" | "drawio" | "checklist";
+
+export type RunnerFileOpenKind = RunnerMediaKind | RunnerFileViewerKind | "text";
 
 export type RunnerFileViewerTarget = WorkspaceFileTarget & {
   kind: RunnerFileViewerKind;
@@ -162,22 +155,26 @@ export type RunnerFileActionParams = {
 
 type RunnerFileOpenPresentation =
   | { kind: RunnerMediaKind; buttonText: string }
-  | { kind: "viewer"; buttonText: string; viewerKind: RunnerFileViewerKind };
+  | { kind: "viewer"; buttonText: string; viewerKind: RunnerFileViewerKind }
+  | { kind: "editor"; buttonText: string };
 
 function getRunnerFileOpenPresentation(
   filePath: string,
   canOpenViewer: boolean,
+  canOpenEditor: boolean,
 ): RunnerFileOpenPresentation | null {
-  const mediaKind = getRunnerMediaKind(filePath);
-  if (mediaKind) {
+  const openKind = getRunnerFileOpenKind(filePath);
+  if (openKind === "video" || openKind === "image") {
     return {
-      kind: mediaKind,
-      buttonText: mediaKind === "video" ? "再生" : "表示",
+      kind: openKind,
+      buttonText: openKind === "video" ? "再生" : "表示",
     };
   }
-  const viewerKind = getRunnerFileViewerKind(filePath);
-  return canOpenViewer && viewerKind
-    ? { kind: "viewer", buttonText: "開く", viewerKind }
+  if (openKind === "text") {
+    return canOpenEditor ? { kind: "editor", buttonText: "開く" } : null;
+  }
+  return canOpenViewer && openKind
+    ? { kind: "viewer", buttonText: "開く", viewerKind: openKind }
     : null;
 }
 
@@ -187,14 +184,28 @@ export function openRunnerFile(params: RunnerFileActionParams): boolean {
     || params.getPathLabel(filePath)
     || filePath
     || "file";
-  const presentation = getRunnerFileOpenPresentation(filePath, Boolean(params.onOpenFile));
+  const presentation = getRunnerFileOpenPresentation(
+    filePath,
+    Boolean(params.onOpenFile),
+    params.allowMutate === true && Boolean(params.onRequestEdit),
+  );
   if (!presentation) {
     Alert.alert("開けません", `${fileName} に対応する表示方法がありません。`);
     return false;
   }
+  if (presentation.kind === "editor") {
+    if (!params.onRequestEdit) return false;
+    const location = getRunnerFileLocation(filePath, params.rootDir);
+    params.onRequestEdit({
+      path: location.path,
+      name: fileName,
+      rootDirectory: location.rootDirectory,
+    });
+    return true;
+  }
   if (presentation.kind === "viewer") {
     if (!params.onOpenFile) return false;
-    const location = getRunnerFileViewerLocation(filePath, params.rootDir);
+    const location = getRunnerFileLocation(filePath, params.rootDir);
     params.onOpenFile({
       kind: presentation.viewerKind,
       path: location.path,
@@ -265,9 +276,13 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
   const filePath = normalizeRunnerPath(filePathRaw);
   const fileName = String(fileNameRaw || "").trim() || getPathLabel(filePath) || filePath || "file";
   if (!filePath) return;
-  const fileLocation = getRunnerFileViewerLocation(filePath, rootDir);
+  const fileLocation = getRunnerFileLocation(filePath, rootDir);
   const isShellScript = allowExecute && filePath.toLowerCase().endsWith(".sh");
-  const openPresentation = getRunnerFileOpenPresentation(filePath, Boolean(onOpenFile));
+  const openPresentation = getRunnerFileOpenPresentation(
+    filePath,
+    Boolean(onOpenFile),
+    allowMutate && Boolean(onRequestEdit),
+  );
   const copyPathAction = () => {
     void Clipboard.setStringAsync(filePath)
       .then(() => {
@@ -387,7 +402,7 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
       onPress: copyPathAction,
     },
   ];
-  if (openPresentation && openPresentation.kind !== "viewer") {
+  if (openPresentation?.kind === "video" || openPresentation?.kind === "image") {
     buttons.push({
       text: openPresentation.buttonText,
       onPress: () => {
@@ -419,17 +434,6 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
       text: "実行する",
       style: "destructive",
       onPress: executeAction,
-    });
-  }
-  if (allowMutate && onRequestEdit && isRunnerEditableTextFile(filePath)) {
-    buttons.push({
-      text: "編集",
-      onPress: () => {
-        onRequestEdit({
-          path: filePath,
-          name: fileName,
-        });
-      },
     });
   }
   if (allowMutate && onRequestRename) {
@@ -528,7 +532,7 @@ export function isRunnerPathInsideDirectory(pathRaw: unknown, directoryRaw: unkn
   return targetPath === directory || targetPath.startsWith(`${directory}/`);
 }
 
-export function getRunnerFileViewerLocation(pathRaw: unknown, rootDirectoryRaw: unknown) {
+export function getRunnerFileLocation(pathRaw: unknown, rootDirectoryRaw: unknown) {
   const path = normalizeRunnerPath(pathRaw);
   const rootDirectory = normalizeRunnerDirectoryPath(rootDirectoryRaw);
   if (!isAbsoluteRunnerPath(path) || isRunnerPathInsideDirectory(path, rootDirectory)) {
@@ -571,24 +575,23 @@ function getRunnerScriptExecutionWarning(filePath: string, rootDir: string) {
 }
 
 export function isRunnerEditableTextFile(pathRaw: unknown) {
-  const path = normalizeRunnerPath(pathRaw).toLowerCase();
-  const match = /\.([a-z0-9]+)$/.exec(path);
-  return Boolean(match && RUNNER_EDITABLE_TEXT_FILE_EXTENSIONS.has(match[1]));
+  return getRunnerFileOpenKind(pathRaw) === "text";
 }
 
 export function getRunnerFileViewerKind(pathRaw: unknown): RunnerFileViewerKind | null {
+  const kind = getRunnerFileOpenKind(pathRaw);
+  return kind === "html" || kind === "drawio" || kind === "checklist" ? kind : null;
+}
+
+export function getRunnerFileOpenKind(pathRaw: unknown): RunnerFileOpenKind | null {
   const path = normalizeRunnerPath(pathRaw).toLowerCase();
   const match = /\.([a-z0-9]+)$/.exec(path);
-  return match ? RUNNER_FILE_VIEWER_KIND_BY_EXTENSION[match[1]] ?? null : null;
+  return match ? RUNNER_FILE_OPEN_KIND_BY_EXTENSION[match[1]] ?? null : null;
 }
 
 export function getRunnerMediaKind(pathRaw: unknown): RunnerMediaKind | null {
-  const path = normalizeRunnerPath(pathRaw).toLowerCase();
-  const match = /\.([a-z0-9]+)$/.exec(path);
-  if (!match) return null;
-  if (RUNNER_VIDEO_FILE_EXTENSIONS.has(match[1])) return "video";
-  if (RUNNER_IMAGE_FILE_EXTENSIONS.has(match[1])) return "image";
-  return null;
+  const kind = getRunnerFileOpenKind(pathRaw);
+  return kind === "video" || kind === "image" ? kind : null;
 }
 
 export function buildRunnerMediaItem(params: {
