@@ -1325,11 +1325,11 @@ export function ChatScreen({
     if (!selectedSessionMaterializedForView || !backendIdForView || !selectedSessionIdForView) return;
     Clipboard.setStringAsync(`bitty-history read ${backendIdForView} ${selectedSessionIdForView}`)
       .then(() => {
-        showInfoToast("履歴参照をコピーしました");
+        showInfoToast("セッションIDをコピーしました");
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        Alert.alert("コピー失敗", message || "履歴参照をコピーできませんでした。");
+        Alert.alert("コピー失敗", message || "セッションIDをコピーできませんでした。");
       });
   }, [backendIdForView, selectedSessionIdForView, selectedSessionMaterializedForView, showInfoToast]);
   const {

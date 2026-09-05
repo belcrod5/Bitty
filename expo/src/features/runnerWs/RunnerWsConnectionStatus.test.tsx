@@ -1,5 +1,6 @@
 import React from "react";
 import { fireEvent, render } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import { RunnerWsConnectionStatus } from "./RunnerWsConnectionStatus";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
@@ -17,7 +18,7 @@ jest.mock("./RunnerWebSocketContext", () => ({
   }),
 }));
 
-test("shows and copies a materialized session history reference", async () => {
+test("shows a materialized session and closes the modal before copying its reference", async () => {
   const onCopy = jest.fn();
   const screen = await render(
     <RunnerWsConnectionStatus
@@ -31,10 +32,15 @@ test("shows and copies a materialized session history reference", async () => {
   await fireEvent.press(screen.getByLabelText("セッション同期状態を開く"));
   expect(screen.getByText("claude")).toBeTruthy();
   expect(screen.getByText("session-1")).toBeTruthy();
-  const copyButton = screen.getByLabelText("履歴参照をコピー");
+  expect(StyleSheet.flatten(screen.getByTestId("session-sync-actions").props.style)).toMatchObject({
+    flexDirection: "row",
+  });
+  const copyButton = screen.getByLabelText("セッションIDコピー");
+  expect(screen.getByText("セッションIDコピー")).toBeTruthy();
   expect(copyButton).not.toBeDisabled();
   await fireEvent.press(copyButton);
   expect(onCopy).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText("セッション同期状態")).toBeNull();
   await screen.unmount();
 });
 
@@ -51,7 +57,7 @@ test("does not allow copying a local draft session", async () => {
 
   await fireEvent.press(screen.getByLabelText("セッション同期状態を開く"));
   expect(screen.getByText("未実体化")).toBeTruthy();
-  const copyButton = screen.getByLabelText("履歴参照をコピー");
+  const copyButton = screen.getByLabelText("セッションIDコピー");
   expect(copyButton).toBeDisabled();
   await fireEvent.press(copyButton);
   expect(onCopy).not.toHaveBeenCalled();

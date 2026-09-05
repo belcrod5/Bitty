@@ -192,29 +192,34 @@ export function RunnerWsConnectionStatus({
                 ))}
               </View>
             </ScrollView>
-            <Pressable
-              style={[
-                styles.copyButton,
-                !canCopySessionHistoryReference && styles.copyButtonDisabled,
-              ]}
-              onPress={onCopySessionHistoryReference}
-              disabled={!canCopySessionHistoryReference || !onCopySessionHistoryReference}
-              accessibilityRole="button"
-              accessibilityLabel="履歴参照をコピー"
-            >
-              <Text style={styles.copyButtonText}>履歴参照をコピー</Text>
-            </Pressable>
-            <Pressable
-              style={styles.resetButton}
-              onPress={() => {
-                resetNetworkUsage();
-                setNetworkUsage(getNetworkUsageSnapshot());
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="通信量をリセット"
-            >
-              <Text style={styles.resetButtonText}>通信量をリセット</Text>
-            </Pressable>
+            <View style={styles.actionButtons} testID="session-sync-actions">
+              <Pressable
+                style={[
+                  styles.copyButton,
+                  !canCopySessionHistoryReference && styles.copyButtonDisabled,
+                ]}
+                onPress={() => {
+                  setOpen(false);
+                  onCopySessionHistoryReference?.();
+                }}
+                disabled={!canCopySessionHistoryReference || !onCopySessionHistoryReference}
+                accessibilityRole="button"
+                accessibilityLabel="セッションIDコピー"
+              >
+                <Text style={styles.copyButtonText}>セッションIDコピー</Text>
+              </Pressable>
+              <Pressable
+                style={styles.resetButton}
+                onPress={() => {
+                  resetNetworkUsage();
+                  setNetworkUsage(getNetworkUsageSnapshot());
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="通信量をリセット"
+              >
+                <Text style={styles.resetButtonText}>通信量をリセット</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </AppModal>
@@ -273,9 +278,13 @@ const styles = StyleSheet.create({
   },
   cellLabel: { fontSize: 11, color: "#64748b" },
   cellValue: { marginTop: 2, fontSize: 14, fontWeight: "700", color: "#0f172a" },
-  resetButton: {
+  actionButtons: {
     marginTop: 10,
-    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  resetButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
@@ -284,8 +293,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#f8fafc",
   },
   copyButton: {
-    marginTop: 10,
-    alignSelf: "flex-start",
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
