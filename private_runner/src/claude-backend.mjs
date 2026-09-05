@@ -111,26 +111,9 @@ function extractText(content) {
 // ないため、履歴表示では折りたたみ対象(internal_context)として返す。
 const INTERNAL_CONTEXT_TAG_PATTERN = /^<(system-reminder|recommended_plugins|command-name|command-message|command-args|command-contents|local-command-caveat|local-command-stdout|local-command-stderr|task-notification)\b/;
 
-// バックグラウンドタスクの開始をtool_result本文から検知するパターン表(拡張可能)。
-// CLIはターン終了時にプロセスをexitするとバックグラウンドタスクを道連れにkillする
-// ため、ここで拾ったtaskIdが未完了の間はstdinを閉じずプロセスを生かし、CLI自身の
-// task-notification注入→自動継続→最終resultを同一ターン内で待つ(maybeEndStdin)。
-// 検知漏れは「従来どおりresultで即クローズ」に落ちるだけで、ハングは生まない。
-// 誤検知(幻のpendingが残りstdinが閉じない)を防ぐため、スキャンは起動元ツールの
-// tool_resultに限定する(catやReadでログを読んだ出力に同じ文言があっても拾わない)。
-const BACKGROUND_TASK_START_PATTERNS_BY_TOOL = new Map([
-  // Bash tool の run_in_background 実行(input.run_in_background === true のみ)
-  ["Bash", /Command running in background with ID:\s*([A-Za-z0-9_-]+)/g],
-  // Agent tool のバックグラウンド起動(完了通知のtask-idはagentIdと同一)
-  ["Agent", /Async agent launched successfully[\s\S]*?agentId:\s*([A-Za-z0-9_-]+)/g],
-]);
-// これらのツールが成功したら、inputに含まれるpending taskは手動停止済みとみなして
-// 待機を解除する(task-notificationが注入されない停止経路のbackstop)。
-const BACKGROUND_TASK_STOP_TOOLS = new Set(["KillShell", "TaskStop"]);
-// 敵対的に長いtool_result(最大1MB/行)での正規表現走査コストを抑える上限
-const MAX_BACKGROUND_SCAN_BYTES = 64 * 1024;
-// CLIが注入する完了通知。statusは問わない(completed/stopped/failedいずれでも
-// 当該タスクの待機は解除してよい)。
+// トランスクリプトにuserメッセージとして記録される完了通知(実測: stdoutでは
+// system/task_notificationイベントが正式経路。この正規表現はuserメッセージ経由で
+// 届いた場合のbelt。statusは問わず該当タスクの待機を解除してよい)。
 const TASK_NOTIFICATION_ID_PATTERN = /<task-notification>[\s\S]*?<task-id>\s*([^<\s]+)\s*<\/task-id>/g;
 
 function classifyHistoryItemType(record, text, { isSubagentTranscript = false } = {}) {
@@ -394,13 +377,9 @@ export function createClaudeBackend({
       closed: false,
       resetNoOutput: null,
       nativeSessionId: freshSessionId,
-      // 未完了バックグラウンドタスク(BACKGROUND_TASK_START_PATTERNS_BY_TOOLで検知)。
+      // 実行中バックグラウンドタスク(system/background_tasks_changedの一覧と同期)。
       // 空でない間はresult後もstdinを保持し、CLIの自動継続を待つ。
       pendingBackgroundTaskIds: new Set(),
-      // toolCallId → { name, runInBackground, inputJson }。tool_resultのスキャンを
-      // 起動元ツールに限定するための参照(assistant完全メッセージはtool_resultより
-      // 先に届くため、tool_result処理時点で必ず引ける)。
-      toolCallMeta: new Map(),
       stdinClosed: false,
       emit,
     };
@@ -641,16 +620,8 @@ export function createClaudeBackend({
         for (const block of blocks) {
           if (block?.type !== "tool_use") continue;
           hasToolUse = true;
-          const toolCallId = String(block.id || "").trim();
-          if (toolCallId && !state.toolCallMeta.has(toolCallId)) {
-            state.toolCallMeta.set(toolCallId, {
-              name: String(block.name || ""),
-              runInBackground: block.input?.run_in_background === true,
-              inputJson: JSON.stringify(block.input || {}).slice(0, 4096),
-            });
-          }
           announceTool({
-            toolCallId,
+            toolCallId: String(block.id || "").trim(),
             name: String(block.name || "tool"),
             inputSummary: JSON.stringify(block.input || {}).slice(0, 4096),
           });
@@ -671,19 +642,6 @@ export function createClaudeBackend({
         }
         for (const block of Array.isArray(message.message?.content) ? message.message.content : []) {
           if (block?.type !== "tool_result") continue;
-          const meta = state.toolCallMeta.get(String(block.tool_use_id || ""));
-          if (meta) {
-            const startPattern = BACKGROUND_TASK_START_PATTERNS_BY_TOOL.get(meta.name);
-            if (startPattern && (meta.name !== "Bash" || meta.runInBackground)) {
-              const scanText = extractText(block.content).slice(0, MAX_BACKGROUND_SCAN_BYTES);
-              for (const match of scanText.matchAll(startPattern)) state.pendingBackgroundTaskIds.add(match[1]);
-            }
-            if (BACKGROUND_TASK_STOP_TOOLS.has(meta.name) && block.is_error !== true) {
-              for (const taskId of [...state.pendingBackgroundTaskIds]) {
-                if (meta.inputJson.includes(taskId)) state.pendingBackgroundTaskIds.delete(taskId);
-              }
-            }
-          }
           const toolCallId = String(block.tool_use_id || "");
           if (!toolCallId || state.completedToolIds.has(toolCallId)) continue;
           // このフォールバックはtool.startedの直後にtool.completedへ進むため、
@@ -702,6 +660,26 @@ export function createClaudeBackend({
       }
       if (type === "system" && message?.subtype === "api_retry") {
         emit("provider.event", { backendId: "claude", nativeType: "system/api_retry", data: { attempt: Number(message.attempt || 0) } });
+        return;
+      }
+      if (type === "system" && message?.subtype === "background_tasks_changed") {
+        // CLI自身のタスクレジストリが唯一の真実源: 実行中バックグラウンドタスクの
+        // 全量一覧で同期する。起動・完了・手動停止(KillShell等)のすべてで発火する
+        // (実測: CLI 2.1.238)。旧CLIがこのイベントを出さない場合、pendingは常に
+        // 空のままresultで即クローズ=従来挙動に落ちるだけで、ハングは生まない。
+        state.pendingBackgroundTaskIds = new Set(
+          (Array.isArray(message.tasks) ? message.tasks : [])
+            .map((task) => String(task?.task_id || "").trim())
+            .filter(Boolean),
+        );
+        return;
+      }
+      if (type === "system" && message?.subtype === "task_notification") {
+        // 完了通知(status: completed/stopped/failedいずれでも待機解除)。この後CLIは
+        // 同一プロセス内で自動継続し、最終resultを出す。stdinクローズ判定はresult
+        // 受信時のみ行う(ここで閉じると自動継続前にCLIがexitし得るため)。
+        const taskId = String(message.task_id || "").trim();
+        if (taskId) state.pendingBackgroundTaskIds.delete(taskId);
         return;
       }
       if (type === "result") {

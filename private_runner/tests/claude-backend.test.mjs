@@ -883,9 +883,14 @@ test("Claude Backend holds stdin open while a background task is pending and clo
   // 根本原因の回帰テスト: バックグラウンドタスク実行中にresultが来ても、CLIを
   // exitさせない(=stdinを閉じない)。テキスト入力時代はここでプロセスが死に、
   // タスクが道連れkillされて「終わったらお知らせします」のまま無反応になっていた。
+  // イベント列は実測(CLI 2.1.238)のstdoutシーケンスに合わせる:
+  // background_tasks_changed→tool_result→result#1→(無音)→background_tasks_changed[]
+  // →task_notification→assistant→result#2→exit。
   const run = manualBackgroundRun("run-hold-stdin");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
   run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_1", task_type: "local_bash", description: "build" }], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "task_started", task_id: "task_1", tool_use_id: "tool-1", is_backgrounded: true, task_type: "local_bash", session_id: SESSION_ID });
   run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_1. Output is being written to: /tmp/task_1.output" }] } });
   run.writeLine({ type: "assistant", uuid: "a-launch", message: { content: [{ type: "text", text: "ビルド完了後にお知らせします" }] } });
   run.writeLine({ type: "result", subtype: "success", result: "ビルド完了後にお知らせします", session_id: SESSION_ID });
@@ -896,7 +901,8 @@ test("Claude Backend holds stdin open while a background task is pending and clo
   assert.equal(promptRecord.message.content[0].text, "run background task");
   // 未完了タスクが残っている間はstdinを閉じない
   assert.equal(run.stdin.finished, false);
-  run.writeLine({ type: "user", message: { content: "<task-notification>\n<task-id>task_1</task-id>\n<status>completed</status>\n</task-notification>" } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "task_notification", task_id: "task_1", tool_use_id: "tool-1", status: "completed", summary: "Background command completed (exit code 0)", session_id: SESSION_ID });
   run.writeLine({ type: "assistant", uuid: "a-final", message: { content: [{ type: "text", text: "ビルドが完了しました" }] } });
   run.writeLine({ type: "result", subtype: "success", result: "ビルドが完了しました", session_id: SESSION_ID });
   await run.settle();
@@ -908,6 +914,28 @@ test("Claude Backend holds stdin open while a background task is pending and clo
   assert.equal(result.outcome, "completed");
   const completions = run.events.filter((event) => event.type === "item.completed" && event.payload.itemType === "assistant");
   assert.equal(completions.at(-1).payload.content?.[0]?.text, "ビルドが完了しました");
+});
+
+test("Claude Backend does not close stdin on task completion events alone before the next result", async () => {
+  // background_tasks_changed([])やtask_notificationの時点で閉じると、自動継続の
+  // assistant/result#2が出る前にCLIがexitし得る。クローズ判定はresult受信時のみ。
+  const run = manualBackgroundRun("run-close-only-on-result");
+  run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_9" }], session_id: SESSION_ID });
+  run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, false);
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "task_notification", task_id: "task_9", status: "completed", session_id: SESSION_ID });
+  await run.settle();
+  // 通知だけではまだ閉じない(自動継続の途中でexitさせない)
+  assert.equal(run.stdin.finished, false);
+  run.writeLine({ type: "result", subtype: "success", result: "完了", session_id: SESSION_ID });
+  await run.settle();
+  assert.equal(run.stdin.finished, true);
+  run.child.stdout.end();
+  run.child.emit("exit", 0, null);
+  assert.equal((await run.turn).outcome, "completed");
 });
 
 test("Claude Backend closes stdin at the first result when no background task is pending", async () => {
@@ -926,8 +954,7 @@ test("Claude Backend closes stdin at the first result when no background task is
 test("Claude Backend can interrupt a turn that is waiting for a pending background task", async () => {
   const run = manualBackgroundRun("run-interrupt-pending");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
-  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
-  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_2. Output is being written to: /tmp/task_2.output" }] } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_2" }], session_id: SESSION_ID });
   run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
   await run.settle();
   assert.equal(run.stdin.finished, false);
@@ -936,15 +963,14 @@ test("Claude Backend can interrupt a turn that is waiting for a pending backgrou
   assert.equal(run.child.signals.includes("SIGINT"), true);
 });
 
-test("Claude Backend ignores background-start text in results of foreground tools", async () => {
-  // 誤検知ガード: catやRead等のフォアグラウンド出力に同じ文言が含まれていても
-  // pendingにせず、resultで即クローズする(幻のpendingでターンが滞留しない)。
+test("Claude Backend ignores background-start text quoted in tool results", async () => {
+  // pendingはsystemイベント(タスクレジストリ)だけを真実源とし、tool_result本文の
+  // 文言(catやReadでログを読んだ出力)からは作らない。幻のpendingでターンが
+  // 滞留しないことの回帰テスト。
   const run = manualBackgroundRun("run-foreground-noise");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
   run.writeLine({ type: "assistant", uuid: "a-read", message: { content: [{ type: "tool_use", id: "tool-fg", name: "Read", input: { file_path: "/tmp/old.log" } }] } });
   run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-fg", content: "log: Command running in background with ID: ghost_1. done" }] } });
-  run.writeLine({ type: "assistant", uuid: "a-fg2", message: { content: [{ type: "tool_use", id: "tool-fg2", name: "Bash", input: { command: "cat /tmp/old.log" } }] } });
-  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-fg2", content: "Command running in background with ID: ghost_2" }] } });
   run.writeLine({ type: "result", subtype: "success", result: "done", session_id: SESSION_ID });
   await run.settle();
   assert.equal(run.stdin.finished, true);
@@ -956,8 +982,7 @@ test("Claude Backend ignores background-start text in results of foreground tool
 test("Claude Backend closes stdin on an error result even while a background task is pending", async () => {
   const run = manualBackgroundRun("run-error-with-pending");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
-  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
-  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_err. Output is being written to: /tmp/task_err.output" }] } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_err" }], session_id: SESSION_ID });
   run.writeLine({ type: "result", subtype: "error_during_execution", is_error: true, result: "failed", session_id: SESSION_ID });
   await run.settle();
   // エラーresultでは自動継続を期待できないため、pending残でも即クローズする
@@ -967,14 +992,13 @@ test("Claude Backend closes stdin on an error result even while a background tas
   await assert.rejects(run.turn, (error) => error.code === "turn_failed");
 });
 
-test("Claude Backend clears a pending background task when the model stops it via KillShell", async () => {
-  // task-notificationが注入されない手動停止経路(KillShell/TaskStop)のbackstop
+test("Claude Backend clears pending tasks when the registry reports them stopped", async () => {
+  // KillShell等の手動停止でも background_tasks_changed が新しい全量一覧で発火する
+  // ため、通知が無くても待機が解除される。
   const run = manualBackgroundRun("run-killshell");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
-  run.writeLine({ type: "assistant", uuid: "a-tool", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } });
-  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Command running in background with ID: task_3. Output is being written to: /tmp/task_3.output" }] } });
-  run.writeLine({ type: "assistant", uuid: "a-kill", message: { content: [{ type: "tool_use", id: "tool-kill", name: "KillShell", input: { shell_id: "task_3" } }] } });
-  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-kill", content: "Successfully killed shell task_3" }] } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_3" }], session_id: SESSION_ID });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: SESSION_ID });
   run.writeLine({ type: "result", subtype: "success", result: "停止しました", session_id: SESSION_ID });
   await run.settle();
   assert.equal(run.stdin.finished, true);
@@ -983,15 +1007,15 @@ test("Claude Backend clears a pending background task when the model stops it vi
   assert.equal((await run.turn).outcome, "completed");
 });
 
-test("Claude Backend tracks an async agent launch and a text-block task-notification", async () => {
-  const run = manualBackgroundRun("run-async-agent");
+test("Claude Backend clears a pending task from a user-message task-notification as a fallback", async () => {
+  // stdoutの正式経路はsystem/task_notificationだが、userメッセージ経由で届く
+  // 変種(textブロック配列)でも解除できるbeltを検証する。
+  const run = manualBackgroundRun("run-user-notification");
   run.writeLine({ type: "system", subtype: "init", session_id: SESSION_ID });
-  run.writeLine({ type: "assistant", uuid: "a-agent", message: { content: [{ type: "tool_use", id: "tool-agent", name: "Agent", input: { prompt: "do work" } }] } });
-  run.writeLine({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-agent", content: "Async agent launched successfully.\nagentId: agent_x1 (internal ID)" }] } });
+  run.writeLine({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent_x1" }], session_id: SESSION_ID });
   run.writeLine({ type: "result", subtype: "success", result: "待機します", session_id: SESSION_ID });
   await run.settle();
   assert.equal(run.stdin.finished, false);
-  // 通知が文字列ではなくtextブロック配列で届いても解除できる
   run.writeLine({ type: "user", message: { content: [{ type: "text", text: "<task-notification>\n<task-id>agent_x1</task-id>\n<status>completed</status>\n</task-notification>" }] } });
   run.writeLine({ type: "result", subtype: "success", result: "完了", session_id: SESSION_ID });
   await run.settle();
