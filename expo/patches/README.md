@@ -5,7 +5,7 @@ React Native, smooths phase-less mouse-wheel ticks, and doubles only their
 vertical distance. Precise trackpad and horizontal scrolling remain native. It
 also maps a macOS secondary click to Pressability's existing `onLongPress`
 contract immediately without emitting primary-button press feedback or changing
-primary-button and mobile timing. Click dispatch itself stays upstream: mouse
+primary-button and mobile timing. JS press dispatch stays upstream: mouse
 clicks (including clicks on text and icon descendants) are handled once by the
 responder path, and Pressability's `onClick` keeps ignoring pointer-typed click
 events. A previous revision added a `targetIsDescendant` fallback that re-fired
@@ -16,7 +16,25 @@ Fabric's missing `submitKeyEvents` prop
 conversion so multiline inputs can use Command+Enter without changing plain
 Enter into submit. If Command+Enter is pressed while an IME composition is
 active, the native text view commits the marked text before running that same
-submit-key matcher, so the first shortcut sends the finalized text.
+submit-key matcher, so the first shortcut sends the finalized text. The patch
+also removes the blocking `nextEventMatchingMask:` peek from selectable
+paragraph `mouseDown` (Fabric `RCTParagraphComponentView`). The click-vs-drag
+decision happens in `mouseDragged:`/`mouseUp:`: double/triple clicks and real
+drags still forward to the embedded `NSTextView`, and single clicks clear the
+selection. This change alone did not fix overlay clicks above native text.
+
+Fabric `RCTViewComponentView` now consumes native `mouseDown` without calling
+super. `RCTSurfaceTouchHandler` already handles the React Native press lifecycle;
+AppKit's default mouse forwarding can also deliver that same event to an
+underlapping sibling, bypassing the initial hit test (see
+[Apple TN3212](https://developer.apple.com/documentation/technotes/tn3212-adopting-gesture-recognizers-for-sidecar-touch-support)).
+Traces showed foreground labels forwarding into the background composer or
+Markdown text view, followed by a cancelled RN touch without `mouseUp`.
+Stopping that forwarding at the Fabric view boundary keeps background text
+from entering its selection tracking loop. Native text descendants and
+selectable paragraphs retain their own `mouseDown` implementations. No changes
+to gesture arbitration or JS press dispatch are needed. Validate overlay clicks,
+text selection, composer focus/editing, and native window dragging on macOS.
 
 `react-native-gesture-handler+2.28.0.patch` maps an unmodified, discrete vertical
 macOS wheel over a pinch target into the existing pinch lifecycle, so the Skia
