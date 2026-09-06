@@ -176,6 +176,52 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+test("legacy settings-JSON credentials migrate to the secure store once", async () => {
+  // 250ms autosaveの認証情報保存(移行を兼ねていた)は削除済み。移行しないと
+  // 初回autosaveがJSONから認証キーを落とした時点でtokenが失われる。
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerToken: "legacy-json-token",
+    cloudflareAccessClientId: "legacy-id",
+  });
+  mockLoadSecureRunnerCredentials.mockResolvedValue({
+    runnerToken: "",
+    cloudflareAccessClientId: "",
+    cloudflareAccessClientSecret: "",
+  });
+  await renderPersistenceController();
+
+  expect(mockSaveSecureRunnerCredentials).toHaveBeenCalledWith({
+    runnerToken: "legacy-json-token",
+    cloudflareAccessClientId: "legacy-id",
+  });
+});
+
+test("legacy settings-JSON credentials never overwrite existing secure store values", async () => {
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerToken: "legacy-json-token",
+  });
+  mockLoadSecureRunnerCredentials.mockResolvedValue({
+    runnerToken: "stored-token",
+    cloudflareAccessClientId: "",
+    cloudflareAccessClientSecret: "",
+  });
+  await renderPersistenceController();
+
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
+});
+
+test("no migration runs when the secure store could not be read", async () => {
+  // 既存値の有無を判定できないまま書くと、読めなかっただけの正しい値を
+  // 旧JSONの値で潰しかねない。
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerToken: "legacy-json-token",
+  });
+  mockLoadSecureRunnerCredentials.mockRejectedValue(new Error("keychain locked"));
+  await renderPersistenceController();
+
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
+});
+
 test("a non-URL runnerUrl in persisted settings is dropped so the default heals it", async () => {
   // 実例: 旧UIでRunner URL欄へtokenが貼られたままJSONに残ると、runnerUrlは
   // 現UIに編集欄がなく経路選択(両URL設定時のみ動作)でも直らないため、

@@ -3,6 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import * as Clipboard from "../clipboard";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
+import { tokenFingerprint } from "../../ws/tokenFingerprint";
 
 type RouteDebugProbe = {
   label: string;
@@ -70,18 +71,7 @@ function selectedRouteLabel(runnerUrl: string, localRunnerUrl: string, cloudflar
 
 function tokenStatus(value: string) {
   const token = String(value || "").trim();
-  return token ? `保存済み (${token.length} chars, id ${debugTokenId(token)})` : "未設定";
-}
-
-function debugTokenId(raw: string) {
-  const token = String(raw || "").trim();
-  if (!token) return "-";
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < token.length; i += 1) {
-    hash ^= token.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
+  return token ? `保存済み (${token.length} chars, id ${tokenFingerprint(token)})` : "未設定";
 }
 
 function routeDiagnosis(localRunnerUrl: string, cloudflareRunnerUrl: string, selectedRoute: string) {

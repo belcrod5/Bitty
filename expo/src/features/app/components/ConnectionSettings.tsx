@@ -43,6 +43,9 @@ export function ConnectionSettings() {
     toggleFaceIdRequiredForApproval,
   } = useAppSettings();
   const [runnerTokenDraft, setRunnerTokenDraft] = useState(runnerToken);
+  // ユーザーが編集を始めた後は、遅延ロード(起動時に読めなかったKeychainの回復等)で
+  // runnerToken stateが変わっても入力中のdraftを上書きしない。保存成功で解除する。
+  const [runnerTokenDraftDirty, setRunnerTokenDraftDirty] = useState(false);
   const [runnerTokenSaving, setRunnerTokenSaving] = useState(false);
   const [runnerTokenStatus, setRunnerTokenStatus] = useState<{
     kind: "success" | "error";
@@ -50,8 +53,9 @@ export function ConnectionSettings() {
   } | null>(null);
 
   useEffect(() => {
+    if (runnerTokenDraftDirty) return;
     setRunnerTokenDraft(runnerToken);
-  }, [runnerToken]);
+  }, [runnerToken, runnerTokenDraftDirty]);
 
   // macOSではTextInputへの⌘V貼り付けがdraftへ反映されないことがある(RN macOSの
   // 既知不具合領域)。クリップボードを直接読むこのボタンがtoken入力の正攻法。
@@ -64,6 +68,7 @@ export function ConnectionSettings() {
         return;
       }
       setRunnerTokenDraft(value);
+      setRunnerTokenDraftDirty(true);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       setRunnerTokenStatus({ kind: "error", message: `クリップボードを読めませんでした。${detail ? ` (${detail})` : ""}` });
@@ -75,6 +80,7 @@ export function ConnectionSettings() {
     setRunnerTokenStatus(null);
     try {
       await saveRunnerToken(runnerTokenDraft);
+      setRunnerTokenDraftDirty(false);
       setRunnerTokenStatus({ kind: "success", message: "保存を確認し、接続に反映しました。" });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -153,6 +159,7 @@ export function ConnectionSettings() {
               value={runnerTokenDraft}
               onChangeText={(value) => {
                 setRunnerTokenDraft(value);
+                setRunnerTokenDraftDirty(true);
                 setRunnerTokenStatus(null);
               }}
               accessibilityLabel="Runnerトークン"
@@ -162,7 +169,7 @@ export function ConnectionSettings() {
               secureTextEntry
               editable={!runnerTokenSaving}
             />
-            <Text style={styles.runnerTokenFingerprintText}>
+            <Text style={styles.hint}>
               {runnerTokenDraft.trim()
                 ? `入力中: ${tokenLength(runnerTokenDraft)}文字・指紋 ${tokenFingerprint(runnerTokenDraft)}`
                 : "入力中: なし"}

@@ -86,8 +86,10 @@ function makeError(code: string, detail?: string) {
 function isAuthFailureCloseReason(reason: string) {
   const normalized = normalizeText(reason).toLowerCase();
   return (
-    normalized.includes("401") ||
-    normalized.includes("403") ||
+    // 401/403は独立した数値としてのみ照合する。エラー文字列にはポート番号や
+    // アドレス(例: "connect to host:8401")が混入するため、単純なincludesだと
+    // ネットワーク障害を認証失敗と誤分類して再接続を止めてしまう。
+    /(^|[^0-9])40[13]([^0-9]|$)/.test(normalized) ||
     normalized.includes("unauthorized") ||
     normalized.includes("forbidden") ||
     normalized.includes("token_mismatch")
@@ -620,6 +622,9 @@ export class RunnerWebSocketManager {
     socket.onopen = () => {
       if (!this.isCurrent(socket, generation)) return;
       this.openedAtMs = Date.now();
+      // handshakeが成立した時点で、接続確立前のonerror文言は無効。残しておくと
+      // 後続の通常切断(空reason)が認証失敗と誤分類される。
+      this.lastSocketErrorMessage = undefined;
       this.connectionState = "handshaking";
       this.emitSnapshot();
     };
@@ -974,18 +979,18 @@ export class RunnerWebSocketManager {
   }
 
   private connectionUnavailableError() {
-    if (this.lastError?.startsWith("runner_ws_auth_failed")) {
+    // 非リトライのauth_failedは、認証ブロックが実際に発動している(=再接続が
+    // もう走らない)場合だけ返す。ブロック閾値前の一時的なreconnecting中は
+    // retriableなnot_readyを返し、再接続で救える送信を上位が打ち切らないようにする。
+    if (this.blockedAuthGeneration === this.connectionOptionsGeneration) {
       return makeError("runner_ws_auth_failed");
     }
     // 設定不備で接続前に止まっている場合は、その理由まで含めて返す。
     // 例: "runner_ws_not_ready: idle (runner_ws_url_required)"
-    const startBlockReasons = [
-      "runner_ws_url_required",
-      "runner_token_required",
-      "cloudflare_access_credentials_required",
-    ];
-    if (this.lastError && startBlockReasons.includes(this.lastError)) {
-      return makeError("runner_ws_not_ready", `${this.connectionState} (${this.lastError})`);
+    // 理由の一覧を手書きせずconnectionStartError()を直接参照し、将来の追加にも追随する。
+    const startError = this.connectionStartError();
+    if (startError) {
+      return makeError("runner_ws_not_ready", `${this.connectionState} (${startError.message})`);
     }
     return makeError("runner_ws_not_ready", this.connectionState);
   }

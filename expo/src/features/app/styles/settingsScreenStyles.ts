@@ -139,11 +139,6 @@ export const settingsScreenStyles = {
     fontSize: 14,
     fontWeight: "700",
   },
-  runnerTokenFingerprintText: {
-    color: "#6b7280",
-    fontSize: 12,
-    lineHeight: 17,
-  },
   runnerTokenSuccessText: {
     color: "#15803d",
     fontSize: 12,

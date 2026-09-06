@@ -19,6 +19,7 @@ import type { LlmBackend } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import {
   loadSecureRunnerCredentials,
+  saveSecureRunnerCredentials,
   type SecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
 import {
@@ -534,6 +535,36 @@ export function useAppSettingsPersistenceController({
         console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
       }
       setSettingsLoaded(true);
+
+      // 旧settings JSONに残る認証情報のSecureStoreへの一回限り移行。以前は250ms
+      // autosaveの認証情報保存が移行を兼ねていたが、その経路は削除済み。ここで
+      // 移行しないと、初回autosaveがJSONを認証キーなしで書き直した時点で値が失われる。
+      // SecureStoreの読み取りに失敗したセッションでは、既存値の有無を判定できない
+      // ため移行しない(上書き事故防止)。
+      if (settingsResult.status === "fulfilled" && settingsResult.value && credentialsResult.status === "fulfilled") {
+        const parsed = settingsResult.value;
+        const stored = credentialsResult.value;
+        const legacyCredentials: Partial<SecureRunnerCredentials> = {};
+        const legacyRunnerToken = String(parsed.runnerToken || "").trim();
+        if (legacyRunnerToken && !stored.runnerToken) {
+          legacyCredentials.runnerToken = legacyRunnerToken;
+        }
+        const legacyClientId = String(parsed.cloudflareAccessClientId || "").trim();
+        if (legacyClientId && !stored.cloudflareAccessClientId) {
+          legacyCredentials.cloudflareAccessClientId = legacyClientId;
+        }
+        const legacyClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
+        if (legacyClientSecret && !stored.cloudflareAccessClientSecret) {
+          legacyCredentials.cloudflareAccessClientSecret = legacyClientSecret;
+        }
+        if (Object.keys(legacyCredentials).length > 0) {
+          try {
+            await saveSecureRunnerCredentials(legacyCredentials);
+          } catch (error) {
+            console.warn("[settings] failed to migrate legacy credentials to secure store", error);
+          }
+        }
+      }
     }
 
     void loadSettings();

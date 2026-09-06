@@ -799,7 +799,11 @@ test("recognizes an explicit token_mismatch close as an authentication failure",
   socket.closeWithReason("token_mismatch");
 
   expect(manager.getSnapshot().lastError).toBe("runner_ws_auth_failed: token_mismatch");
-  expect(() => manager.send({ channel: "control", op: "ping" })).toThrow("runner_ws_auth_failed");
+  // 1回目の認証失敗はまだ再接続で回復し得るため、sendはretriableな
+  // not_readyを返す。非リトライのauth_failedはブロック発動(3連続)後のみ
+  // (「repeated authentication failures…」テストで検証)。
+  expect(() => manager.send({ channel: "control", op: "ping" }))
+    .toThrow("runner_ws_not_ready: reconnecting");
 });
 
 test.each([
@@ -1191,6 +1195,70 @@ test("a socket error from a previous socket does not classify the next empty-rea
   fourthSocket.closeWithReason("", 1006);
 
   expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  manager.disconnect("manual");
+});
+
+test("a port number containing 401 is not classified as an auth failure", async () => {
+  // エラー文言にはポート番号やアドレスが混入する。"…:8401"の"401"を認証失敗と
+  // 誤分類すると、ネットワーク障害で再接続が永久停止してしまう。
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const firstSocket = nextSocket();
+  const manager = createManager();
+
+  void manager.connect().catch(() => undefined);
+  firstSocket.error("Failed to connect to /192.168.0.10:8401");
+  firstSocket.closeWithReason("", 1006);
+
+  const secondSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(1_000);
+  secondSocket.error("Failed to connect to /192.168.0.10:8401");
+  secondSocket.closeWithReason("", 1006);
+
+  const thirdSocket = nextSocket();
+  await jest.advanceTimersByTimeAsync(2_000);
+  thirdSocket.error("Failed to connect to /192.168.0.10:8401");
+  thirdSocket.closeWithReason("", 1006);
+
+  expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  expect(manager.getSnapshot().lastError).not.toContain("runner_ws_auth_failed");
+  manager.disconnect("manual");
+});
+
+test("a pre-open auth-looking socket error does not classify a close after a successful open", async () => {
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const socket = nextSocket();
+  const manager = createManager();
+
+  const connecting = manager.connect();
+  // openの前に一度authらしきerrorが出ても、handshake成立でリセットされること。
+  socket.error("Received bad response code from server: 401.");
+  socket.open();
+  socket.message({ channel: "control", op: "ready" });
+  await connecting;
+
+  socket.closeWithReason("", 1006);
+
+  expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  expect(manager.getSnapshot().lastError).not.toContain("runner_ws_auth_failed");
+  manager.disconnect("manual");
+});
+
+test("send during a transient auth-failure backoff stays retriable", async () => {
+  // 認証ブロック(3連続)発動前のreconnecting中は、上位がリトライできる
+  // runner_ws_not_readyを返すこと。auth_failedを返すとturn側が即時打ち切る。
+  jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0);
+  const firstSocket = nextSocket();
+  const manager = createManager();
+
+  void manager.connect().catch(() => undefined);
+  firstSocket.closeWithReason("Received bad response code from server: 401.");
+
+  expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  expect(() => manager.send({ channel: "control", op: "ping" }))
+    .toThrow("runner_ws_not_ready: reconnecting");
   manager.disconnect("manual");
 });
 

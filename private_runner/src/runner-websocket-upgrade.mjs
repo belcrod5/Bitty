@@ -50,7 +50,8 @@ export function installRunnerWebSocketUpgradeHandler({
     const tokenDiag = {
       tokenFp: tokenFingerprint(providedToken),
       expectedTokenFp: tokenFingerprint(runnerToken),
-      expectedTokenLength: String(runnerToken || "").length,
+      // tokenFingerprintのtrim基準と揃える(アプリ側tokenLengthもtrim後の長さ)。
+      expectedTokenLength: String(runnerToken || "").trim().length,
     };
 
     if (logRequests) console.log(`[request] WS ${endpoint} from ${remoteAddress}`);
