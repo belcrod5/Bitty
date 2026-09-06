@@ -2,6 +2,7 @@ import {
   createWebSocketWithOptionalAuth,
   isWebSocketForCloudflareRunner,
 } from "../ws/webSocketAuth";
+import { tokenFingerprint, tokenLength } from "../ws/tokenFingerprint";
 import { recordNetworkUsage, utf8ByteLength } from "../ws/networkUsageMetrics";
 import {
   isRunnerWsMessage,
@@ -88,8 +89,25 @@ function isAuthFailureCloseReason(reason: string) {
     normalized.includes("401") ||
     normalized.includes("403") ||
     normalized.includes("unauthorized") ||
-    normalized.includes("forbidden")
+    normalized.includes("forbidden") ||
+    normalized.includes("token_mismatch")
   );
+}
+
+// 診断ログ用にURLからorigin/pathだけを取り出す。query(秘密値が載り得る)は含めない。
+function urlDiagParts(rawUrl: string): { urlOrigin?: string; urlPath?: string } {
+  try {
+    const url = new URL(String(rawUrl || "").trim());
+    return { urlOrigin: url.origin, urlPath: url.pathname };
+  } catch {
+    return {};
+  }
+}
+
+const SOCKET_ERROR_MESSAGE_MAX_CHARS = 200;
+
+function normalizeSocketErrorMessage(value: unknown) {
+  return normalizeText(value).slice(0, SOCKET_ERROR_MESSAGE_MAX_CHARS);
 }
 
 function createClientInstanceId() {
@@ -182,6 +200,10 @@ export class RunnerWebSocketManager {
   private nextSubscriberId = 1;
   private nextRequestId = 1;
   private lastError: string | undefined;
+  // 現在のsocketで最後に観測したonerror message。RN(macOS含む)はhandshake拒否の
+  // HTTP statusをonerrorにしか載せず、oncloseのreasonが空になることがあるため、
+  // close時の認証失敗分類のフォールバックに使う。attachSocketでsocketごとにリセット。
+  private lastSocketErrorMessage: string | undefined;
   private openedAtMs: number | undefined;
   private lastMessageAtMs: number | undefined;
   private lastCloseAtMs: number | undefined;
@@ -246,6 +268,15 @@ export class RunnerWebSocketManager {
       nextCloudflareAccessClientId === this.cloudflareAccessClientId &&
       nextCloudflareAccessClientSecret === this.cloudflareAccessClientSecret
     ) return;
+    const changedFields = {
+      bootstrapReadyChanged: nextBootstrapReady !== this.bootstrapReady,
+      urlChanged: nextUrl !== this.url,
+      tokenChanged: nextToken !== this.token,
+      cloudflareChanged:
+        nextCloudflareRunnerUrl !== this.cloudflareRunnerUrl ||
+        nextCloudflareAccessClientId !== this.cloudflareAccessClientId ||
+        nextCloudflareAccessClientSecret !== this.cloudflareAccessClientSecret,
+    };
     this.bootstrapReady = nextBootstrapReady;
     this.url = nextUrl;
     this.token = nextToken;
@@ -254,6 +285,17 @@ export class RunnerWebSocketManager {
     this.cloudflareAccessClientSecret = nextCloudflareAccessClientSecret;
     this.connectionOptionsGeneration += 1;
     this.consecutiveAuthFailureCount = 0;
+    // token世代の切り替わり(保存直後・起動時ロード)を接続試行と突合するための1行。
+    // token本文は出さず指紋と長さのみ。
+    this.emitDiag("runner_ws_options_changed", {
+      ...changedFields,
+      connectionOptionsGeneration: this.connectionOptionsGeneration,
+      bootstrapReady: this.bootstrapReady,
+      tokenFp: tokenFingerprint(this.token),
+      tokenLength: tokenLength(this.token),
+      ...urlDiagParts(this.url),
+      appState: this.appState,
+    });
     // When we reconnect right away, pass "config-changed" so the intermediate snapshot
     // is "idle" (transient) instead of "stopped" (terminal): turn admission treats an
     // active+stopped snapshot as a fatal error and must not observe it here.
@@ -270,6 +312,27 @@ export class RunnerWebSocketManager {
     if (willReconnect) {
       this.connect().catch(() => undefined);
     }
+  }
+
+  // 「保存して接続」など明示的なユーザー操作からの再試行。認証ブロックを解除して
+  // 必ず1回は接続を試みる。保存された値が既存tokenと同一のとき、setConnectionOptionsは
+  // 変更なしで早期returnして再接続が走らないため、この経路がないと認証失敗停止
+  // (stopped)から抜けられない。
+  retryConnect() {
+    this.blockedAuthGeneration = null;
+    this.consecutiveAuthFailureCount = 0;
+    if (this.connectionState === "stopped") {
+      this.connectionState = "idle";
+    }
+    this.emitDiag("runner_ws_retry_connect", {
+      connectionOptionsGeneration: this.connectionOptionsGeneration,
+      tokenFp: tokenFingerprint(this.token),
+      ...urlDiagParts(this.url),
+      appState: this.appState,
+      connectionState: this.connectionState,
+    });
+    this.emitSnapshot();
+    this.connect().catch(() => undefined);
   }
 
   connect(): Promise<void> {
@@ -296,6 +359,21 @@ export class RunnerWebSocketManager {
       ) {
         return bootstrapConnectPromise;
       }
+      // 接続前チェックで止まった理由(url未設定・token未設定等)をsnapshotへ残す。
+      // これがないと設定不備が無言の"idle"になり、診断画面から原因が読めない
+      // (実例: Runner URL欄へtokenが貼られてWS URLが空になったケース)。
+      this.lastError = startError.message;
+      this.emitDiag("runner_ws_start_blocked", {
+        reason: startError.message,
+        connectionOptionsGeneration: this.connectionOptionsGeneration,
+        tokenFp: tokenFingerprint(this.token),
+        tokenLength: tokenLength(this.token),
+        ...urlDiagParts(this.url),
+        hasUrl: !!this.url,
+        appState: this.appState,
+        connectionState: this.connectionState,
+      });
+      this.emitSnapshot();
       this.rejectBootstrapConnectWaiter(startError);
       return bootstrapConnectPromise || Promise.reject(startError);
     }
@@ -304,6 +382,23 @@ export class RunnerWebSocketManager {
     this.connectionState = this.connectionState === "reconnecting" ? "reconnecting" : "connecting";
     this.lastError = undefined;
     this.emitSnapshot();
+
+    // 接続試行1回=1行。runner側upgrade_request(tokenFp/expectedTokenFp)と時刻・指紋で
+    // 突合し、どの世代のtokenがWebSocket生成に使われたかを確定させる。
+    this.emitDiag("runner_ws_connect_attempt", {
+      generation: this.generation + 1,
+      connectionOptionsGeneration: this.connectionOptionsGeneration,
+      tokenFp: tokenFingerprint(this.token),
+      tokenLength: tokenLength(this.token),
+      ...urlDiagParts(this.url),
+      hasCloudflareAccess:
+        isWebSocketForCloudflareRunner(this.url, this.cloudflareRunnerUrl) &&
+        !!this.cloudflareAccessClientId &&
+        !!this.cloudflareAccessClientSecret,
+      connectionState: this.connectionState,
+      appState: this.appState,
+      reconnectCount: this.reconnectCount,
+    });
 
     let socket: WebSocket;
     try {
@@ -396,7 +491,7 @@ export class RunnerWebSocketManager {
     if (this.connectionState !== "ready" || !this.ws) {
       this.sendErrorCount += 1;
       this.emitSnapshot();
-      throw makeError("runner_ws_not_ready", this.connectionState);
+      throw this.connectionUnavailableError();
     }
     if (this.appState === "inactive" && isStartStyleMessage(message)) {
       this.sendErrorCount += 1;
@@ -435,7 +530,7 @@ export class RunnerWebSocketManager {
     options: { timeoutMs?: number; signal?: AbortSignal } = {}
   ): Promise<TResponse> {
     if (this.connectionState !== "ready") {
-      return Promise.reject(makeError("runner_ws_not_ready", this.connectionState));
+      return Promise.reject(this.connectionUnavailableError());
     }
     if (this.pendingRequests.size >= RUNNER_WS_MAX_PENDING_REQUESTS) {
       return Promise.reject(makeError("runner_ws_pending_limit_exceeded"));
@@ -521,6 +616,7 @@ export class RunnerWebSocketManager {
   private attachSocket(socket: WebSocket, generation: number) {
     this.generation = generation;
     this.ws = socket;
+    this.lastSocketErrorMessage = undefined;
     socket.onopen = () => {
       if (!this.isCurrent(socket, generation)) return;
       this.openedAtMs = Date.now();
@@ -534,12 +630,24 @@ export class RunnerWebSocketManager {
     socket.onerror = (event) => {
       if (!this.isCurrent(socket, generation)) return;
       this.errorCount += 1;
-      this.lastError = String((event as ErrorEvent)?.message || "runner_ws_socket_error");
+      const message = normalizeSocketErrorMessage((event as ErrorEvent)?.message);
+      this.lastSocketErrorMessage = message || "runner_ws_socket_error";
+      this.lastError = this.lastSocketErrorMessage;
+      // RN macOSがhandshake失敗時に何をonerrorへ載せるか(HTTP status露出の有無)を
+      // 実機で観測するための1行。messageは長さ制限のみで秘密値は含まれない。
+      this.emitDiag("runner_ws_socket_error", {
+        eventType: normalizeText((event as Event)?.type) || undefined,
+        message: this.lastSocketErrorMessage,
+        generation,
+        readyState: socket.readyState,
+        connectionState: this.connectionState,
+      });
       this.emitSnapshot();
     };
     socket.onclose = (event) => {
       if (!this.isCurrent(socket, generation)) return;
-      this.handleClose(String((event as CloseEvent)?.reason || ""));
+      const closeEvent = event as CloseEvent;
+      this.handleClose(String(closeEvent?.reason || ""), closeEvent?.code);
     };
     this.emitSnapshot();
   }
@@ -622,40 +730,53 @@ export class RunnerWebSocketManager {
     }
   }
 
-  private handleClose(reason: string) {
+  private handleClose(reason: string, closeCode?: number) {
     this.ws = null;
     this.clearHeartbeatTimer();
     this.closeCount += 1;
     this.lastCloseAtMs = Date.now();
+    const normalizedReason = normalizeText(reason);
+    // RN(macOS含む)はhandshake拒否(401等)のHTTP statusをonerrorのmessageにしか
+    // 載せず、oncloseのreasonが空になり得る。reasonが空のときだけ直前のsocket error
+    // messageで認証失敗を分類し、無限のreconnectingに落ちないようにする。
+    const authClassifiedBy = isAuthFailureCloseReason(normalizedReason)
+      ? "close_reason"
+      : !normalizedReason && isAuthFailureCloseReason(this.lastSocketErrorMessage || "")
+        ? "socket_error"
+        : null;
+    const authFailureDetail = normalizedReason || this.lastSocketErrorMessage || undefined;
     // 切断1回につき1行の理由ログ。ready側は再同期ログ(reason=runner_ws_ready+generation)と
     // 突き合わせて、フラップの原因(heartbeat_timeout / 経路切替等)を切り分ける。
-    try {
-      this.onDiagEvent?.("runner_ws_closed", {
-        reason: normalizeText(reason) || undefined,
-        lastError: this.lastError,
-        generation: this.generation,
-        closeCount: this.closeCount,
-        reconnectCount: this.reconnectCount,
-        connectionState: this.connectionState,
-        appState: this.appState,
-        sinceOpenMs: this.openedAtMs ? Math.max(0, this.lastCloseAtMs - this.openedAtMs) : undefined,
-      });
-    } catch {
-      // Diagnostics must never interfere with close handling.
-    }
+    this.emitDiag("runner_ws_closed", {
+      reason: normalizedReason || undefined,
+      reasonLength: normalizedReason.length,
+      closeCode,
+      lastError: this.lastError,
+      lastSocketError: this.lastSocketErrorMessage,
+      authClassifiedBy: authClassifiedBy || undefined,
+      generation: this.generation,
+      connectionOptionsGeneration: this.connectionOptionsGeneration,
+      tokenFp: tokenFingerprint(this.token),
+      ...urlDiagParts(this.url),
+      closeCount: this.closeCount,
+      reconnectCount: this.reconnectCount,
+      connectionState: this.connectionState,
+      appState: this.appState,
+      sinceOpenMs: this.openedAtMs ? Math.max(0, this.lastCloseAtMs - this.openedAtMs) : undefined,
+    });
     this.rejectConnectWaiter(makeError("runner_ws_closed_before_ready", reason || undefined));
     this.rejectAllPending(makeError("runner_ws_disconnected", reason || undefined));
     if (this.connectionState === "background" || this.connectionState === "stopped") {
       this.emitSnapshot();
       return;
     }
-    if (isAuthFailureCloseReason(reason)) {
+    if (authClassifiedBy) {
       this.consecutiveAuthFailureCount += 1;
-      this.lastError = makeError("runner_ws_auth_failed", reason || undefined).message;
+      this.lastError = makeError("runner_ws_auth_failed", authFailureDetail).message;
       if (this.consecutiveAuthFailureCount >= RUNNER_WS_MAX_CONSECUTIVE_AUTH_FAILURES) {
         this.blockedAuthGeneration = this.connectionOptionsGeneration;
         this.connectionState = "stopped";
-        this.rejectBootstrapConnectWaiter(makeError("runner_ws_auth_failed", reason || undefined));
+        this.rejectBootstrapConnectWaiter(makeError("runner_ws_auth_failed", authFailureDetail));
         this.emitSnapshot();
         return;
       }
@@ -671,6 +792,14 @@ export class RunnerWebSocketManager {
     }
     this.connectionState = "idle";
     this.emitSnapshot();
+  }
+
+  private emitDiag(event: string, payload: Record<string, unknown>) {
+    try {
+      this.onDiagEvent?.(event, payload);
+    } catch {
+      // Diagnostics must never interfere with connection handling.
+    }
   }
 
   private scheduleReconnect() {
@@ -842,6 +971,23 @@ export class RunnerWebSocketManager {
     if (this.appState === "background") return makeError("runner_ws_background");
     if (this.appState !== "active") return makeError("runner_ws_inactive");
     return null;
+  }
+
+  private connectionUnavailableError() {
+    if (this.lastError?.startsWith("runner_ws_auth_failed")) {
+      return makeError("runner_ws_auth_failed");
+    }
+    // 設定不備で接続前に止まっている場合は、その理由まで含めて返す。
+    // 例: "runner_ws_not_ready: idle (runner_ws_url_required)"
+    const startBlockReasons = [
+      "runner_ws_url_required",
+      "runner_token_required",
+      "cloudflare_access_credentials_required",
+    ];
+    if (this.lastError && startBlockReasons.includes(this.lastError)) {
+      return makeError("runner_ws_not_ready", `${this.connectionState} (${this.lastError})`);
+    }
+    return makeError("runner_ws_not_ready", this.connectionState);
   }
 
   private buildSnapshot(): RunnerWsConnectionSnapshot {

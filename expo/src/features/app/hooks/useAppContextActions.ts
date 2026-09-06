@@ -28,6 +28,8 @@ type UseAppContextActionsArgs = {
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   selectLlmDirectory: (value: string) => void;
   setRunnerToken: Dispatch<SetStateAction<string>>;
+  // Runner WSの認証ブロックを解除して接続を再試行する(RunnerWebSocketManager.retryConnect)。
+  retryRunnerWsConnection?: () => void;
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientSecret: Dispatch<SetStateAction<string>>;
   setCloudflareRunnerUrl: Dispatch<SetStateAction<string>>;
@@ -82,6 +84,7 @@ export function useAppContextActions({
   setRunnerUrl,
   selectLlmDirectory,
   setRunnerToken,
+  retryRunnerWsConnection,
   setCloudflareAccessClientId,
   setCloudflareAccessClientSecret,
   setCloudflareRunnerUrl,
@@ -133,9 +136,15 @@ export function useAppContextActions({
   const changeLlmDirectory = useCallback((value: string) => {
     selectLlmDirectory(value);
   }, [selectLlmDirectory]);
-  const changeRunnerToken = useCallback((value: string) => {
+  const saveRunnerToken = useCallback(async (valueRaw: string) => {
+    const value = String(valueRaw || "").trim();
+    if (!value) throw new Error("runner_token_required");
+    await saveSecureRunnerCredentials({ runnerToken: value });
     setRunnerToken(value);
-  }, [setRunnerToken]);
+    // 保存値が既存tokenと同一だとManagerのoptionsは変化せず再接続が走らないため、
+    // 「保存して接続」の意図どおり認証ブロックを解除して必ず接続を試みる。
+    retryRunnerWsConnection?.();
+  }, [retryRunnerWsConnection, setRunnerToken]);
   const clearCloudflareAccessCredentials = useCallback(async () => {
     // Only the Cloudflare fields: passing runnerToken here would delete it whenever
     // this runs in a session whose credential load failed (state still empty).
@@ -301,7 +310,7 @@ export function useAppContextActions({
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeLlmDirectory,
-    changeRunnerToken,
+    saveRunnerToken,
     clearCloudflareAccessCredentials,
     applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,

@@ -15,6 +15,7 @@ export type SecureRunnerCredentials = {
 // credential, never zero.
 const KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+  authenticationPrompt: "Runner認証情報を使用するため、キーチェーンへのアクセスを許可してください。",
 };
 
 const FIELDS = [
@@ -75,9 +76,41 @@ export async function loadSecureRunnerCredentials(): Promise<SecureRunnerCredent
 // deletes that credential, an omitted field is never touched. Callers therefore cannot
 // delete a credential they did not intend to change.
 export async function saveSecureRunnerCredentials(credentials: Partial<SecureRunnerCredentials>) {
-  await Promise.all(
-    FIELDS
-      .filter((field) => typeof credentials[field] === "string")
-      .map((field) => writeField(field, credentials[field] as string))
-  );
+  const fields = FIELDS.filter((field) => typeof credentials[field] === "string");
+  const previousValues = new Map<SecureCredentialField, string>();
+  for (const field of fields) {
+    previousValues.set(field, await readField(field));
+  }
+
+  try {
+    for (const field of fields) {
+      await writeField(field, credentials[field] as string);
+    }
+    for (const field of fields) {
+      const expected = String(credentials[field] || "").trim();
+      if (await readField(field) !== expected) {
+        throw new Error(`secure_credentials_readback_mismatch: ${field}`);
+      }
+    }
+  } catch (error) {
+    try {
+      const changedFields: SecureCredentialField[] = [];
+      for (const field of fields) {
+        if (await readField(field) !== (previousValues.get(field) || "")) {
+          changedFields.push(field);
+        }
+      }
+      for (const field of changedFields) {
+        await writeField(field, previousValues.get(field) || "");
+      }
+      for (const field of changedFields) {
+        if (await readField(field) !== (previousValues.get(field) || "")) {
+          throw new Error(`secure_credentials_rollback_mismatch: ${field}`);
+        }
+      }
+    } catch (rollbackError) {
+      throw new Error("secure_credentials_rollback_failed", { cause: rollbackError });
+    }
+    throw error;
+  }
 }

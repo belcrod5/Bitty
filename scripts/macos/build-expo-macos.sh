@@ -64,11 +64,9 @@ if [[ -n "${SIGNING_IDENTITY}" ]]; then
     CODE_SIGN_IDENTITY="${SIGNING_IDENTITY}"
   )
 else
-  echo "[build-macos] No macOS code signing identity found; building unsigned"
-  CODE_SIGN_ARGS=(
-    CODE_SIGNING_ALLOWED=NO
-    CODE_SIGNING_REQUIRED=NO
-  )
+  echo "[build-macos] No macOS code signing identity found; refusing an unstable unsigned Keychain identity." >&2
+  echo "[build-macos] Install a signing identity or set BITTY_MACOS_SIGN_IDENTITY to an existing identity." >&2
+  exit 1
 fi
 
 echo "[build-macos] Preparing native dependencies"
@@ -77,7 +75,7 @@ echo "[build-macos] Preparing native dependencies"
 cd "${EXPO_DIR}"
 
 echo "[build-macos] Building Release"
-# Keep Application Support outside the sandbox container regardless of signing availability.
+# Keep Application Support outside the sandbox container under the existing Release entitlement policy.
 xcodebuild \
   -quiet \
   -workspace "${WORKSPACE_PATH}" \
@@ -94,6 +92,13 @@ xcodebuild \
 
 if [[ ! -d "${APP_PATH}" ]]; then
   echo "[build-macos] app not found: ${APP_PATH}" >&2
+  exit 1
+fi
+
+codesign --verify --deep --strict "${APP_PATH}"
+ACTUAL_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP_PATH}/Contents/Info.plist")"
+if [[ "${ACTUAL_BUNDLE_ID}" != "org.reactjs.native.bitty" ]]; then
+  echo "[build-macos] unexpected bundle identifier: ${ACTUAL_BUNDLE_ID}" >&2
   exit 1
 fi
 
