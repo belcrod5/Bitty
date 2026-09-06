@@ -123,22 +123,6 @@ export const settingsScreenStyles = {
     alignItems: "center",
     gap: 8,
   },
-  runnerTokenPasteButton: {
-    minHeight: 40,
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-    borderRadius: 9,
-    backgroundColor: "#e5e5ea",
-    paddingHorizontal: 14,
-  },
-  runnerTokenPasteButtonText: {
-    color: "#111111",
-    fontSize: 14,
-    fontWeight: "700",
-  },
   runnerTokenSuccessText: {
     color: "#15803d",
     fontSize: 12,

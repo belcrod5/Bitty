@@ -85,6 +85,37 @@ index a5b5a6a..b6c2642 100644
      return;
    }
  
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
+index 6f332dc..ac6f75c 100644
+--- a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
+@@ -78,6 +78,26 @@ + (Class)cellClass
+   return RCTUISecureTextFieldCell.class;
+ }
+ 
++- (BOOL)isKindOfClass:(Class)aClass
++{
++  // AppKit's secure field editor (NSSecureTextView) requires its delegate to be an
++  // NSSecureTextField and raises NSInternalInconsistencyException from
++  // -[NSSecureTextView setDelegate:] otherwise ("NSSecureTextFieldCell is not secure
++  // because the secure field editor's delegate must be an NSSecureTextField!").
++  // RCTUISecureTextField inherits from RCTUITextField (NSTextField), not
++  // NSSecureTextField, so that exception aborts the field editor setup inside
++  // -[NSCell selectWithFrame:inView:editor:delegate:start:length:] before the
++  // delegate is wired up. Editing then still appears to work visually, but
++  // -textDidChange: / -textView:shouldChangeTextInRange:replacementString: are never
++  // delivered to this control, so no onChange/onChangeText events reach React.
++  // This class is a secure text field in every behavioral sense (secure cell and
++  // secure field editor), so satisfy AppKit's kind-of check explicitly.
++  if (aClass == [NSSecureTextField class]) {
++    return YES;
++  }
++  return [super isKindOfClass:aClass];
++}
++
+ @end
+ 
+ #endif // TARGET_OS_OSX
 diff --git a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
 index f344c5b..8550ff9 100644
 --- a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
