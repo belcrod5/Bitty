@@ -143,7 +143,6 @@ export const settingsScreenStyles = {
     color: "#6b7280",
     fontSize: 12,
     lineHeight: 17,
-    fontVariant: ["tabular-nums"],
   },
   runnerTokenSuccessText: {
     color: "#15803d",
