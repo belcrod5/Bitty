@@ -1,5 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Switch, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, Switch, Text, TextInput, View } from "react-native";
+import * as Clipboard from "../clipboard";
+import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { styles } from "../styles";
 import { SettingsSelect } from "./SettingsSelect";
@@ -32,13 +35,67 @@ export function ConnectionSettings() {
     thinkOptions,
     changeCloudflareRunnerUrl,
     changeLocalRunnerUrl,
-    changeRunnerToken,
+    saveRunnerToken,
     selectCodexApprovalPolicy,
     selectModel,
     selectThinkOption,
     faceIdRequiredForApproval,
     toggleFaceIdRequiredForApproval,
   } = useAppSettings();
+  const [runnerTokenDraft, setRunnerTokenDraft] = useState(runnerToken);
+  // ユーザーが編集を始めた後は、遅延ロード(起動時に読めなかったKeychainの回復等)で
+  // runnerToken stateが変わっても入力中のdraftを上書きしない。保存成功で解除する。
+  const [runnerTokenDraftDirty, setRunnerTokenDraftDirty] = useState(false);
+  const [runnerTokenSaving, setRunnerTokenSaving] = useState(false);
+  const [runnerTokenStatus, setRunnerTokenStatus] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (runnerTokenDraftDirty) return;
+    setRunnerTokenDraft(runnerToken);
+  }, [runnerToken, runnerTokenDraftDirty]);
+
+  // macOSではTextInputへの⌘V貼り付けがdraftへ反映されないことがある(RN macOSの
+  // 既知不具合領域)。クリップボードを直接読むこのボタンがtoken入力の正攻法。
+  const pasteRunnerTokenFromClipboard = async () => {
+    setRunnerTokenStatus(null);
+    try {
+      const value = String(await Clipboard.getStringAsync() || "").trim();
+      if (!value) {
+        setRunnerTokenStatus({ kind: "error", message: "クリップボードが空です。" });
+        return;
+      }
+      setRunnerTokenDraft(value);
+      setRunnerTokenDraftDirty(true);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setRunnerTokenStatus({ kind: "error", message: `クリップボードを読めませんでした。${detail ? ` (${detail})` : ""}` });
+    }
+  };
+
+  const commitRunnerToken = async () => {
+    setRunnerTokenSaving(true);
+    setRunnerTokenStatus(null);
+    try {
+      await saveRunnerToken(runnerTokenDraft);
+      setRunnerTokenDraftDirty(false);
+      setRunnerTokenStatus({ kind: "success", message: "保存を確認し、接続に反映しました。" });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = detail.includes("secure_credentials_readback_mismatch")
+        ? "保存後の読み戻し結果が一致しません。接続トークンは変更していません。"
+        : detail.includes("secure_credentials_rollback_failed")
+          ? "保存に失敗し、以前のキーチェーン値も復元できませんでした。アプリを再起動せず、再度保存してください。"
+          : detail === "runner_token_required"
+            ? "Runnerトークンを入力してください。"
+            : `キーチェーンへの保存に失敗しました。接続トークンは変更していません。${detail ? ` (${detail})` : ""}`;
+      setRunnerTokenStatus({ kind: "error", message });
+    } finally {
+      setRunnerTokenSaving(false);
+    }
+  };
 
   const selectableModels = modelOptions
     .filter((option) => option.selectable !== false)
@@ -99,14 +156,59 @@ export function ConnectionSettings() {
             <Text style={styles.settingsRowLabel}>Runnerトークン</Text>
             <TextInput
               style={styles.settingsInlineInput}
-              value={runnerToken}
-              onChangeText={changeRunnerToken}
+              value={runnerTokenDraft}
+              onChangeText={(value) => {
+                setRunnerTokenDraft(value);
+                setRunnerTokenDraftDirty(true);
+                setRunnerTokenStatus(null);
+              }}
               accessibilityLabel="Runnerトークン"
               placeholder="Runner token"
               autoCapitalize="none"
               autoCorrect={false}
               secureTextEntry
+              editable={!runnerTokenSaving}
             />
+            <Text style={styles.hint}>
+              {runnerTokenDraft.trim()
+                ? `入力中: ${tokenLength(runnerTokenDraft)}文字・指紋 ${tokenFingerprint(runnerTokenDraft)}`
+                : "入力中: なし"}
+              {`  /  保存済み: ${runnerToken.trim() ? `指紋 ${tokenFingerprint(runnerToken)}` : "なし"}`}
+            </Text>
+            <View style={styles.runnerTokenButtonRow}>
+              <Pressable
+                style={[styles.runnerTokenPasteButton, runnerTokenSaving && styles.buttonDisabled]}
+                onPress={() => void pasteRunnerTokenFromClipboard()}
+                disabled={runnerTokenSaving}
+                accessibilityRole="button"
+                accessibilityLabel="クリップボードからRunnerトークンを貼り付け"
+              >
+                <Text style={styles.runnerTokenPasteButtonText}>クリップボードから貼り付け</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.runnerTokenSaveButton,
+                  (!runnerTokenDraft.trim() || runnerTokenSaving) && styles.buttonDisabled,
+                ]}
+                onPress={() => void commitRunnerToken()}
+                disabled={!runnerTokenDraft.trim() || runnerTokenSaving}
+                accessibilityRole="button"
+                accessibilityLabel="Runnerトークンを保存して接続"
+              >
+                {runnerTokenSaving ? <ActivityIndicator size="small" color="#ffffff" /> : null}
+                <Text style={styles.runnerTokenSaveButtonText}>
+                  {runnerTokenSaving ? "保存中" : "保存して接続"}
+                </Text>
+              </Pressable>
+            </View>
+            {runnerTokenStatus ? (
+              <Text
+                style={runnerTokenStatus.kind === "error" ? styles.runnerTokenErrorText : styles.runnerTokenSuccessText}
+                accessibilityRole="alert"
+              >
+                {runnerTokenStatus.message}
+              </Text>
+            ) : null}
           </View>
         </View>
       </View>

@@ -679,6 +679,11 @@ export default function App() {
   const [runnerWebSocketManager] = useState(() => new RunnerWebSocketManager({
     bootstrapReady: false, url: codexWsUrl, token: runnerToken,
   }));
+  // 毎レンダーの新規arrowを渡すとsaveRunnerToken経由でAppSettingsContextのmemoが
+  // 全レンダーで無効化されるため、必ず安定したcallbackにする。
+  const retryRunnerWsConnection = useCallback(() => {
+    runnerWebSocketManager.retryConnect();
+  }, [runnerWebSocketManager]);
   const [cloudflareAccessClientId, setCloudflareAccessClientId] = useState("");
   const [cloudflareAccessClientSecret, setCloudflareAccessClientSecret] = useState("");
   const [cloudflareRunnerUrl, setCloudflareRunnerUrl] = useState("");
@@ -4414,9 +4419,6 @@ export default function App() {
     defaultRecordingQualityPreset: DEFAULT_RECORDING_QUALITY_PRESET,
     defaultSelectedVoiceIds: DEFAULT_SELECTED_VOICE_IDS,
     runnerUrl,
-    runnerToken,
-    cloudflareAccessClientId,
-    cloudflareAccessClientSecret,
     cloudflareRunnerUrl,
     localRunnerUrl,
     llmBackend,
@@ -5451,7 +5453,7 @@ export default function App() {
     openCloudflareTunnelMonitorScreen,
     openSkiaBoardScreen,
     changeLlmDirectory,
-    changeRunnerToken,
+    saveRunnerToken,
     clearCloudflareAccessCredentials,
     applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,
@@ -5501,6 +5503,7 @@ export default function App() {
     setRunnerUrl,
     selectLlmDirectory,
     setRunnerToken,
+    retryRunnerWsConnection,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
@@ -5623,7 +5626,7 @@ export default function App() {
     changeCloudflareRunnerUrl: setCloudflareRunnerUrl,
     changeLocalRunnerUrl: setLocalRunnerUrl,
     changeLlmDirectory,
-    changeRunnerToken,
+    saveRunnerToken,
     clearCloudflareAccessCredentials,
     applyCloudflareRunnerPairing,
     selectCodexApprovalPolicy,

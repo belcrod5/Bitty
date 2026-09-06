@@ -118,6 +118,7 @@ export function RunnerWsConnectionStatus({
     ["経路", routeLabel(selectedRoute)],
     ["RTT", rttLabel || "-"],
     ["WS状態", runnerWsSnapshot.connectionState],
+    ["WSエラー", runnerWsSnapshot.lastError || "-"],
     ["clientInstanceId", runnerWsSnapshot.clientInstanceId || "-"],
     ["connectionId", runnerWsSnapshot.connectionId || "-"],
     ["generation", String(runnerWsSnapshot.generation)],

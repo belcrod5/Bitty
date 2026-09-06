@@ -1,4 +1,5 @@
 import { recordRunnerConnectionRejected } from "./runner-connection-events.mjs";
+import { tokenFingerprint } from "./token-fingerprint.mjs";
 
 function parseRequestUrl(req) {
   try {
@@ -19,9 +20,9 @@ function routeFor(pathname, runnerWsPath) {
   return "unsupported-ws";
 }
 
-function rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason, status }) {
+function rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason, status, tokenDiag }) {
   const remoteAddress = String(req?.socket?.remoteAddress || "unknown");
-  void appendDebug("upgrade_rejected", { remoteAddress, endpoint, reason });
+  void appendDebug("upgrade_rejected", { remoteAddress, endpoint, reason, ...tokenDiag });
   recordRunnerConnectionRejected(req, { route, endpoint, reason });
   if (status) socket.write(`HTTP/1.1 ${status}\r\n\r\n`);
   socket.destroy();
@@ -44,6 +45,14 @@ export function installRunnerWebSocketUpgradeHandler({
     const authToken = bearerToken(req);
     const queryToken = String(reqUrl.searchParams.get("token") || "").trim();
     const providedToken = authToken;
+    // 診断用の一方向指紋のみ。token本文はログへ出さない。アプリ側の
+    // runner_ws_connect_attempt(tokenFp)や起動時のRUNNER_TOKEN_IDと突合する。
+    const tokenDiag = {
+      tokenFp: tokenFingerprint(providedToken),
+      expectedTokenFp: tokenFingerprint(runnerToken),
+      // tokenFingerprintのtrim基準と揃える(アプリ側tokenLengthもtrim後の長さ)。
+      expectedTokenLength: String(runnerToken || "").trim().length,
+    };
 
     if (logRequests) console.log(`[request] WS ${endpoint} from ${remoteAddress}`);
     void appendDebug("upgrade_request", {
@@ -54,10 +63,11 @@ export function installRunnerWebSocketUpgradeHandler({
       hasQueryToken: !!queryToken,
       tokenSource: authToken ? "authorization" : (queryToken ? "query_rejected" : "none"),
       tokenLength: providedToken.length,
+      ...tokenDiag,
     });
 
     if (route === "unsupported-ws") {
-      rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason: "path_not_supported" });
+      rejectUpgrade({ req, socket, appendDebug, route, endpoint, reason: "path_not_supported", tokenDiag });
       return;
     }
     if (!runnerToken) {
@@ -69,6 +79,7 @@ export function installRunnerWebSocketUpgradeHandler({
         endpoint,
         reason: "runner_token_missing",
         status: "500 Internal Server Error",
+        tokenDiag,
       });
       return;
     }
@@ -81,6 +92,7 @@ export function installRunnerWebSocketUpgradeHandler({
         endpoint,
         reason: providedToken ? "token_mismatch" : "token_missing",
         status: "401 Unauthorized",
+        tokenDiag,
       });
       return;
     }

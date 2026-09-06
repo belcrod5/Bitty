@@ -1,10 +1,14 @@
 import React from "react";
-import { fireEvent, render } from "@testing-library/react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { SettingsScreen } from "./SettingsScreen";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 const mockSetStringAsync = jest.fn(async (_text: string) => true);
-jest.mock("../clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
+const mockGetStringAsync = jest.fn(async () => "");
+jest.mock("../clipboard", () => ({
+  setStringAsync: (text: string) => mockSetStringAsync(text),
+  getStringAsync: () => mockGetStringAsync(),
+}));
 jest.mock("expo-av", () => ({
   Audio: {
     RecordingOptionsPresets: {
@@ -27,6 +31,7 @@ const mockSelectSttProvider = jest.fn();
 const mockApplyRecordingQualityPreset = jest.fn();
 const mockLoadVoices = jest.fn();
 const mockSelectVoiceId = jest.fn();
+const mockSaveRunnerToken = jest.fn(async (_token: string) => undefined);
 
 const mockSettings = {
   runnerUrl: "https://runner.example.com",
@@ -68,7 +73,7 @@ const mockSettings = {
   changeCloudflareRunnerUrl: mockChangeCloudflareRunnerUrl,
   changeLocalRunnerUrl: mockChangeLocalRunnerUrl,
   changeLlmDirectory: jest.fn(),
-  changeRunnerToken: jest.fn(),
+  saveRunnerToken: mockSaveRunnerToken,
   selectCodexApprovalPolicy: mockSelectCodexApprovalPolicy,
   openModelSelect: jest.fn(),
   openThinkSelect: jest.fn(),
@@ -138,6 +143,78 @@ test("renders real settings and wires their actions securely", async () => {
   expect(mockExportSettingsJson).toHaveBeenCalledTimes(1);
   expect(mockOpenSkiaBoardScreen).toHaveBeenCalledTimes(1);
   expect(mockOpenDrawer).toHaveBeenCalledTimes(1);
+});
+
+test("keeps runner token edits as a draft until Save and Connect succeeds", async () => {
+  const screen = await render(<SettingsScreen />);
+
+  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), " next-token ");
+  expect(mockSaveRunnerToken).not.toHaveBeenCalled();
+
+  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
+
+  expect(mockSaveRunnerToken).toHaveBeenCalledWith(" next-token ");
+  await waitFor(() => {
+    expect(screen.getByText("保存を確認し、接続に反映しました。")).toBeTruthy();
+  });
+});
+
+test("the paste button fills the token draft from the clipboard and shows its fingerprint", async () => {
+  // macOSではTextInputへの⌘Vがdraftに反映されないことがあるため、クリップボードを
+  // 直接読むボタンが正攻法。指紋表示で「何が入ったか」を●●●のまま検証できる。
+  mockGetStringAsync.mockResolvedValueOnce(" runner-token \n");
+  const screen = await render(<SettingsScreen />);
+
+  await fireEvent.press(screen.getByLabelText("クリップボードからRunnerトークンを貼り付け"));
+
+  await waitFor(() => {
+    // FNV-1a("runner-token") = 07b20b97 (tokenFingerprint.test.tsの共有ベクター)
+    expect(screen.getByText(/入力中: 12文字・指紋 07b20b97/)).toBeTruthy();
+  });
+  expect(mockSaveRunnerToken).not.toHaveBeenCalled();
+
+  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
+  expect(mockSaveRunnerToken).toHaveBeenCalledWith("runner-token");
+});
+
+test("the paste button reports an empty clipboard instead of clearing the draft", async () => {
+  mockGetStringAsync.mockResolvedValueOnce("   ");
+  const screen = await render(<SettingsScreen />);
+
+  await fireEvent.press(screen.getByLabelText("クリップボードからRunnerトークンを貼り付け"));
+
+  await waitFor(() => {
+    expect(screen.getByText("クリップボードが空です。")).toBeTruthy();
+  });
+  expect(mockSaveRunnerToken).not.toHaveBeenCalled();
+});
+
+test("shows a readback mismatch without reporting a successful connection update", async () => {
+  mockSaveRunnerToken.mockRejectedValueOnce(
+    new Error("secure_credentials_readback_mismatch: runnerToken")
+  );
+  const screen = await render(<SettingsScreen />);
+
+  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), "next-token");
+  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
+
+  await waitFor(() => {
+    expect(screen.getByText("保存後の読み戻し結果が一致しません。接続トークンは変更していません。")).toBeTruthy();
+  });
+  expect(screen.queryByText("保存を確認し、接続に反映しました。")).toBeNull();
+});
+
+test("shows a keychain rejection without reporting a successful connection update", async () => {
+  mockSaveRunnerToken.mockRejectedValueOnce(new Error("User denied keychain access"));
+  const screen = await render(<SettingsScreen />);
+
+  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), "next-token");
+  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
+
+  await waitFor(() => {
+    expect(screen.getByText(/キーチェーンへの保存に失敗しました.*User denied keychain access/)).toBeTruthy();
+  });
+  expect(screen.queryByText("保存を確認し、接続に反映しました。")).toBeNull();
 });
 
 test("shows the build stamp and copies it to the clipboard", async () => {

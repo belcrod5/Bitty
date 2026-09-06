@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import qrcode from "qrcode-terminal";
 
+import { tokenFingerprint } from "./token-fingerprint.mjs";
+
 function readKeychain(service) {
   if (!service || process.platform !== "darwin") return "";
   const result = spawnSync("security", ["find-generic-password", "-s", service, "-w"], {
@@ -79,17 +81,6 @@ function buildLocalRunnerUrl() {
   return normalizeLocalHttpUrl(`http://${localHostName}.local:${port}`);
 }
 
-function debugTokenId(raw) {
-  const token = String(raw || "").trim();
-  if (!token) return "-";
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < token.length; i += 1) {
-    hash ^= token.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-
 const runnerUrl = normalizeHttpUrl(
   process.env.RUNNER_PUBLIC_URL || process.env.CLOUDFLARE_RUNNER_PUBLIC_URL
 );
@@ -140,4 +131,4 @@ if (!localRunnerUrl) {
 console.error(`[pairing-qr] accessClientId=${cloudflareAccessClientId.slice(0, 8)}...`);
 console.error("[pairing-qr] Treat the QR as a secret. Do not screenshot or share it.");
 qrcode.generate(JSON.stringify(payload), { small: true });
-console.error(`[pairing-qr] RUNNER_TOKEN_ID=${debugTokenId(runnerToken)}`);
+console.error(`[pairing-qr] RUNNER_TOKEN_ID=${tokenFingerprint(runnerToken)}`);

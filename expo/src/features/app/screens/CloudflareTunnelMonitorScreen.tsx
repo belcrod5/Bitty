@@ -8,6 +8,7 @@ import {
 } from "../camera";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { tokenFingerprint } from "../../ws/tokenFingerprint";
 import { RouteDebugPanel } from "./RouteDebugPanel";
 
 type RunnerConnectionEvent = {
@@ -36,16 +37,6 @@ function normalizeRunnerBaseUrl(value: string) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
-function debugTokenId(raw: string) {
-  const token = String(raw || "").trim();
-  if (!token) return "-";
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < token.length; i += 1) {
-    hash ^= token.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
 
 function sanitizedPairingDebugText(rawText: string) {
   const rawLength = rawText.length;
@@ -59,7 +50,7 @@ function sanitizedPairingDebugText(rawText: string) {
       version: parsed.version || "",
       runnerUrl: parsed.runnerUrl || "",
       localRunnerUrl: parsed.localRunnerUrl || "",
-      runnerToken: runnerToken ? `redacted (${runnerToken.length} chars, id ${debugTokenId(runnerToken)})` : "",
+      runnerToken: runnerToken ? `redacted (${runnerToken.length} chars, id ${tokenFingerprint(runnerToken)})` : "",
       cloudflareAccessClientId: accessClientId ? `${accessClientId.slice(0, 8)}... (${accessClientId.length} chars)` : "",
       cloudflareAccessClientSecret: accessSecret ? `redacted (${accessSecret.length} chars)` : "",
       issuedAt: parsed.issuedAt || "",

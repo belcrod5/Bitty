@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useState } from "react";
-import { Alert } from "react-native";
+import { Alert, AppState } from "react-native";
 import * as Clipboard from "../clipboard";
 import { useAppSettingsPersistenceController } from "./useAppSettingsPersistenceController";
 import {
@@ -46,6 +46,7 @@ const mockSaveSecureRunnerCredentials = jest.mocked(saveSecureRunnerCredentials)
 const mockGetStringAsync = jest.mocked(Clipboard.getStringAsync);
 const mockSetStringAsync = jest.mocked(Clipboard.setStringAsync);
 const setter = jest.fn();
+let appStateChangeListener: ((state: string) => void) | undefined;
 
 function createArgs() {
   return {
@@ -150,8 +151,13 @@ async function renderPersistenceController(
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
+  appStateChangeListener = undefined;
   jest.spyOn(console, "warn").mockImplementation(() => {});
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  jest.spyOn(AppState, "addEventListener").mockImplementation(((_event, listener) => {
+    appStateChangeListener = listener as (state: string) => void;
+    return { remove: jest.fn() };
+  }) as typeof AppState.addEventListener);
   mockReadPersistedSettings.mockResolvedValue({});
   mockReadPersistedSettingsField.mockResolvedValue(undefined);
   mockLoadSecureRunnerCredentials.mockResolvedValue({
@@ -170,13 +176,85 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+test("legacy settings-JSON credentials migrate to the secure store once", async () => {
+  // 250ms autosaveの認証情報保存(移行を兼ねていた)は削除済み。移行しないと
+  // 初回autosaveがJSONから認証キーを落とした時点でtokenが失われる。
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerToken: "legacy-json-token",
+    cloudflareAccessClientId: "legacy-id",
+  });
+  mockLoadSecureRunnerCredentials.mockResolvedValue({
+    runnerToken: "",
+    cloudflareAccessClientId: "",
+    cloudflareAccessClientSecret: "",
+  });
+  await renderPersistenceController();
+
+  expect(mockSaveSecureRunnerCredentials).toHaveBeenCalledWith({
+    runnerToken: "legacy-json-token",
+    cloudflareAccessClientId: "legacy-id",
+  });
+});
+
+test("legacy settings-JSON credentials never overwrite existing secure store values", async () => {
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerToken: "legacy-json-token",
+  });
+  mockLoadSecureRunnerCredentials.mockResolvedValue({
+    runnerToken: "stored-token",
+    cloudflareAccessClientId: "",
+    cloudflareAccessClientSecret: "",
+  });
+  await renderPersistenceController();
+
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
+});
+
+test("no migration runs when the secure store could not be read", async () => {
+  // 既存値の有無を判定できないまま書くと、読めなかっただけの正しい値を
+  // 旧JSONの値で潰しかねない。
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerToken: "legacy-json-token",
+  });
+  mockLoadSecureRunnerCredentials.mockRejectedValue(new Error("keychain locked"));
+  await renderPersistenceController();
+
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
+});
+
+test("a non-URL runnerUrl in persisted settings is dropped so the default heals it", async () => {
+  // 実例: 旧UIでRunner URL欄へtokenが貼られたままJSONに残ると、runnerUrlは
+  // 現UIに編集欄がなく経路選択(両URL設定時のみ動作)でも直らないため、
+  // 読み込み時に捨てて既定値へ戻すしかない。
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerUrl: "Ex2S13FWLtoken-shaped-not-a-url",
+    localRunnerUrl: "http://127.0.0.1:8788",
+  });
+  const setRunnerUrl = jest.fn();
+  const setLocalRunnerUrl = jest.fn();
+  await renderPersistenceController({ setRunnerUrl, setLocalRunnerUrl });
+
+  expect(setRunnerUrl).not.toHaveBeenCalled();
+  expect(setLocalRunnerUrl).toHaveBeenCalledWith("http://127.0.0.1:8788");
+});
+
+test("a valid persisted runnerUrl is still applied", async () => {
+  mockReadPersistedSettings.mockResolvedValue({
+    runnerUrl: "https://runner.example.com",
+  });
+  const setRunnerUrl = jest.fn();
+  await renderPersistenceController({ setRunnerUrl });
+
+  expect(setRunnerUrl).toHaveBeenCalledWith("https://runner.example.com");
+});
+
 test("does not overwrite settings after their initial read fails", async () => {
   mockReadPersistedSettings.mockRejectedValue(new Error("settings read failed"));
 
   await renderPersistenceController();
 
   expect(mockMutatePersistedSettings).not.toHaveBeenCalled();
-  expect(mockSaveSecureRunnerCredentials).toHaveBeenCalled();
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
   expect(console.warn).toHaveBeenCalledWith(
     "[settings] failed to read persisted settings",
     expect.any(Error)
@@ -187,6 +265,7 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
   await renderPersistenceController();
 
   expect(mockMutatePersistedSettings).toHaveBeenCalled();
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
   const mutate = mockMutatePersistedSettings.mock.calls[0][0];
   const next = mutate({
     skiaBoardCardTextScale: 1.1,
@@ -202,11 +281,7 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
 });
 
 test("clipboard export excludes authentication credentials and approval rules", async () => {
-  const hook = await renderPersistenceController({
-    runnerToken: "runner-secret",
-    cloudflareAccessClientId: "cloudflare-client-id",
-    cloudflareAccessClientSecret: "cloudflare-client-secret",
-  });
+  const hook = await renderPersistenceController();
 
   await act(async () => {
     await hook.result.current.exportSettingsJson();
@@ -474,22 +549,18 @@ test("does not delete credentials after their initial read fails", async () => {
   );
 });
 
-test("retries a failed credentials read on the next save attempt and unlocks saving after recovery", async () => {
+test("retries a failed credentials read when the app becomes active without auto-saving", async () => {
   mockLoadSecureRunnerCredentials.mockRejectedValueOnce(new Error("secure store read failed"));
 
   await renderPersistenceController();
-  // The first autosave pass runs while the credential store is still locked.
   expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
 
-  // Its retry read succeeds (the mock only failed once); the recovery tick re-arms
-  // the autosave timer, which may then persist credentials.
-  await act(async () => {});
   await act(async () => {
-    jest.advanceTimersByTime(250);
+    appStateChangeListener?.("active");
   });
 
   expect(mockLoadSecureRunnerCredentials).toHaveBeenCalledTimes(2);
-  expect(mockSaveSecureRunnerCredentials).toHaveBeenCalled();
+  expect(mockSaveSecureRunnerCredentials).not.toHaveBeenCalled();
 });
 
 test("keeps retry reads from clobbering a credential the user re-entered", async () => {
@@ -497,7 +568,9 @@ test("keeps retry reads from clobbering a credential the user re-entered", async
   const setRunnerToken = jest.fn();
 
   await renderPersistenceController({ setRunnerToken } as Parameters<typeof renderPersistenceController>[0]);
-  await act(async () => {});
+  await act(async () => {
+    appStateChangeListener?.("active");
+  });
 
   // Recovery applies stored values through functional updates that keep an existing
   // non-empty value, so a token typed during the degraded session survives.

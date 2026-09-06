@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as Clipboard from "../clipboard";
 import { Alert, AppState } from "react-native";
 import { parseSttProvider, type SttProvider } from "../../stt/sttConfig";
@@ -13,6 +13,7 @@ import {
   type TtsProvider,
 } from "../utils/audioConfig";
 import { parseOptionalSessionId } from "../utils/llmSession";
+import { sanitizePersistedHttpUrl } from "../utils/urlResolvers";
 import { parseCodexApprovalPolicy, parseLlmDirectory, parseModelRef, parseReasoningEffort, type CodexApprovalPolicy, type ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmBackend } from "../types/appTypes";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
@@ -36,9 +37,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   defaultRecordingQualityPreset: RecordingQualityPreset;
   defaultSelectedVoiceIds: SelectedVoiceIdByProvider;
   runnerUrl: string;
-  runnerToken: string;
-  cloudflareAccessClientId: string;
-  cloudflareAccessClientSecret: string;
   cloudflareRunnerUrl: string;
   localRunnerUrl: string;
   llmBackend: LlmBackend;
@@ -113,9 +111,6 @@ export function useAppSettingsPersistenceController({
   defaultRecordingQualityPreset,
   defaultSelectedVoiceIds,
   runnerUrl,
-  runnerToken,
-  cloudflareAccessClientId,
-  cloudflareAccessClientSecret,
   cloudflareRunnerUrl,
   localRunnerUrl,
   llmBackend,
@@ -186,10 +181,6 @@ export function useAppSettingsPersistenceController({
     secureCredentials: false,
   });
   const credentialsRecoveryInFlightRef = useRef(false);
-  // Bumped when a recovery unlocks the credential store, so the autosave effect
-  // re-runs with fresh values instead of persisting a snapshot captured before the
-  // recovery.
-  const [persistenceRetryTick, setPersistenceRetryTick] = useState(0);
 
   // keepExistingValues: on a retry the user may have re-typed a credential during the
   // degraded session; the stored value must not clobber that input.
@@ -262,8 +253,6 @@ export function useAppSettingsPersistenceController({
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     runnerUrl,
-    cloudflareAccessClientId,
-    cloudflareAccessClientSecret,
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,
     selectedVoiceIdByProvider,
@@ -273,12 +262,15 @@ export function useAppSettingsPersistenceController({
   ]);
 
   const applyPersistedSettings = useCallback((parsed: Record<string, unknown>) => {
-    const savedRunnerUrl = String(parsed.runnerUrl || "").trim();
+    // URL値はhttp(s)として解釈できるものだけ採用する。誤ってtokenが貼られた
+    // runnerUrl(UIに編集欄がなく自己修復不能)などの壊れた値は捨て、既定値へ
+    // フォールバックさせる。次回autosaveで設定ファイル側も直る。
+    const savedRunnerUrl = sanitizePersistedHttpUrl(parsed.runnerUrl);
     const savedRunnerToken = String(parsed.runnerToken || "").trim();
     const legacyCloudflareAccessClientId = String(parsed.cloudflareAccessClientId || "").trim();
     const legacyCloudflareAccessClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
-    const savedCloudflareRunnerUrl = String(parsed.cloudflareRunnerUrl || parsed.tunnelRunnerUrl || "").trim();
-    const savedLocalRunnerUrl = String(parsed.localRunnerUrl || "").trim();
+    const savedCloudflareRunnerUrl = sanitizePersistedHttpUrl(parsed.cloudflareRunnerUrl || parsed.tunnelRunnerUrl);
+    const savedLocalRunnerUrl = sanitizePersistedHttpUrl(parsed.localRunnerUrl);
 
     const savedVoiceIds = {
       ...defaultSelectedVoiceIds,
@@ -543,6 +535,36 @@ export function useAppSettingsPersistenceController({
         console.warn("[settings] failed to read secure credentials", credentialsResult.reason);
       }
       setSettingsLoaded(true);
+
+      // 旧settings JSONに残る認証情報のSecureStoreへの一回限り移行。以前は250ms
+      // autosaveの認証情報保存が移行を兼ねていたが、その経路は削除済み。ここで
+      // 移行しないと、初回autosaveがJSONを認証キーなしで書き直した時点で値が失われる。
+      // SecureStoreの読み取りに失敗したセッションでは、既存値の有無を判定できない
+      // ため移行しない(上書き事故防止)。
+      if (settingsResult.status === "fulfilled" && settingsResult.value && credentialsResult.status === "fulfilled") {
+        const parsed = settingsResult.value;
+        const stored = credentialsResult.value;
+        const legacyCredentials: Partial<SecureRunnerCredentials> = {};
+        const legacyRunnerToken = String(parsed.runnerToken || "").trim();
+        if (legacyRunnerToken && !stored.runnerToken) {
+          legacyCredentials.runnerToken = legacyRunnerToken;
+        }
+        const legacyClientId = String(parsed.cloudflareAccessClientId || "").trim();
+        if (legacyClientId && !stored.cloudflareAccessClientId) {
+          legacyCredentials.cloudflareAccessClientId = legacyClientId;
+        }
+        const legacyClientSecret = String(parsed.cloudflareAccessClientSecret || "").trim();
+        if (legacyClientSecret && !stored.cloudflareAccessClientSecret) {
+          legacyCredentials.cloudflareAccessClientSecret = legacyClientSecret;
+        }
+        if (Object.keys(legacyCredentials).length > 0) {
+          try {
+            await saveSecureRunnerCredentials(legacyCredentials);
+          } catch (error) {
+            console.warn("[settings] failed to migrate legacy credentials to secure store", error);
+          }
+        }
+      }
     }
 
     void loadSettings();
@@ -566,7 +588,6 @@ export function useAppSettingsPersistenceController({
       .then((credentials) => {
         writablePersistenceRef.current.secureCredentials = true;
         applySecureCredentials(credentials, { keepExistingValues: true });
-        setPersistenceRetryTick((tick) => tick + 1);
       })
       .catch((error) => {
         console.warn("[settings] failed to read secure credentials", error);
@@ -588,12 +609,9 @@ export function useAppSettingsPersistenceController({
   useEffect(() => {
     if (!settingsLoaded) return;
 
-    // Snapshot the writable flags now: if a recovery unlocks the credential store
-    // while this timer is pending, the timer must not save this render's stale
-    // (possibly empty) values — the recovery tick re-runs the effect with fresh ones.
-    const writableAtArm = { ...writablePersistenceRef.current };
+    const settingsWritableAtArm = writablePersistenceRef.current.settings;
     const timer = setTimeout(() => {
-      if (writableAtArm.settings) {
+      if (settingsWritableAtArm) {
         void mutatePersistedSettings((current) => {
           const next: Record<string, unknown> = buildPersistedSettingsPayload();
           for (const field of PRESERVED_SETTINGS_FIELDS) {
@@ -604,30 +622,11 @@ export function useAppSettingsPersistenceController({
           console.warn("[settings] failed to save persisted settings", error);
         });
       }
-      if (writableAtArm.secureCredentials) {
-        void saveSecureRunnerCredentials({
-          runnerToken,
-          cloudflareAccessClientId,
-          cloudflareAccessClientSecret,
-        }).catch((error) => {
-          console.warn("[settings] failed to save secure credentials", error);
-        });
-      } else {
-        // A locked credential store gets one more chance here so a credential the
-        // user just re-entered is not silently dropped: on recovery the tick re-runs
-        // this effect, which then saves the current values through the branch above.
-        recoverSecureCredentials();
-      }
     }, 250);
 
     return () => clearTimeout(timer);
   }, [
     buildPersistedSettingsPayload,
-    cloudflareAccessClientId,
-    cloudflareAccessClientSecret,
-    persistenceRetryTick,
-    recoverSecureCredentials,
-    runnerToken,
     settingsLoaded,
   ]);
 
