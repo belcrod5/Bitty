@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Switch, Text, TextInput, View } from "react-native";
-import * as Clipboard from "../clipboard";
 import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { styles } from "../styles";
@@ -56,24 +55,6 @@ export function ConnectionSettings() {
     if (runnerTokenDraftDirty) return;
     setRunnerTokenDraft(runnerToken);
   }, [runnerToken, runnerTokenDraftDirty]);
-
-  // macOSではTextInputへの⌘V貼り付けがdraftへ反映されないことがある(RN macOSの
-  // 既知不具合領域)。クリップボードを直接読むこのボタンがtoken入力の正攻法。
-  const pasteRunnerTokenFromClipboard = async () => {
-    setRunnerTokenStatus(null);
-    try {
-      const value = String(await Clipboard.getStringAsync() || "").trim();
-      if (!value) {
-        setRunnerTokenStatus({ kind: "error", message: "クリップボードが空です。" });
-        return;
-      }
-      setRunnerTokenDraft(value);
-      setRunnerTokenDraftDirty(true);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      setRunnerTokenStatus({ kind: "error", message: `クリップボードを読めませんでした。${detail ? ` (${detail})` : ""}` });
-    }
-  };
 
   const commitRunnerToken = async () => {
     setRunnerTokenSaving(true);
@@ -176,15 +157,6 @@ export function ConnectionSettings() {
               {`  /  保存済み: ${runnerToken.trim() ? `指紋 ${tokenFingerprint(runnerToken)}` : "なし"}`}
             </Text>
             <View style={styles.runnerTokenButtonRow}>
-              <Pressable
-                style={[styles.runnerTokenPasteButton, runnerTokenSaving && styles.buttonDisabled]}
-                onPress={() => void pasteRunnerTokenFromClipboard()}
-                disabled={runnerTokenSaving}
-                accessibilityRole="button"
-                accessibilityLabel="クリップボードからRunnerトークンを貼り付け"
-              >
-                <Text style={styles.runnerTokenPasteButtonText}>クリップボードから貼り付け</Text>
-              </Pressable>
               <Pressable
                 style={[
                   styles.runnerTokenSaveButton,

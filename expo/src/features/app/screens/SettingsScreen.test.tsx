@@ -4,10 +4,8 @@ import { SettingsScreen } from "./SettingsScreen";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 const mockSetStringAsync = jest.fn(async (_text: string) => true);
-const mockGetStringAsync = jest.fn(async () => "");
 jest.mock("../clipboard", () => ({
   setStringAsync: (text: string) => mockSetStringAsync(text),
-  getStringAsync: () => mockGetStringAsync(),
 }));
 jest.mock("expo-av", () => ({
   Audio: {
@@ -159,32 +157,14 @@ test("keeps runner token edits as a draft until Save and Connect succeeds", asyn
   });
 });
 
-test("the paste button fills the token draft from the clipboard and shows its fingerprint", async () => {
-  // macOSではTextInputへの⌘Vがdraftに反映されないことがあるため、クリップボードを
-  // 直接読むボタンが正攻法。指紋表示で「何が入ったか」を●●●のまま検証できる。
-  mockGetStringAsync.mockResolvedValueOnce(" runner-token \n");
+test("shows the typed token's length and fingerprint so input can be verified while masked", async () => {
   const screen = await render(<SettingsScreen />);
 
-  await fireEvent.press(screen.getByLabelText("クリップボードからRunnerトークンを貼り付け"));
+  await fireEvent.changeText(screen.getByLabelText("Runnerトークン"), " runner-token \n");
 
   await waitFor(() => {
     // FNV-1a("runner-token") = 07b20b97 (tokenFingerprint.test.tsの共有ベクター)
     expect(screen.getByText(/入力中: 12文字・指紋 07b20b97/)).toBeTruthy();
-  });
-  expect(mockSaveRunnerToken).not.toHaveBeenCalled();
-
-  await fireEvent.press(screen.getByLabelText("Runnerトークンを保存して接続"));
-  expect(mockSaveRunnerToken).toHaveBeenCalledWith("runner-token");
-});
-
-test("the paste button reports an empty clipboard instead of clearing the draft", async () => {
-  mockGetStringAsync.mockResolvedValueOnce("   ");
-  const screen = await render(<SettingsScreen />);
-
-  await fireEvent.press(screen.getByLabelText("クリップボードからRunnerトークンを貼り付け"));
-
-  await waitFor(() => {
-    expect(screen.getByText("クリップボードが空です。")).toBeTruthy();
   });
   expect(mockSaveRunnerToken).not.toHaveBeenCalled();
 });
