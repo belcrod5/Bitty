@@ -71,6 +71,19 @@ index bbee6d1..fc2ad8c 100644
        this._deactivate(event);
      }
  
+diff --git a/node_modules/react-native-macos/Libraries/Text/React-RCTText.podspec b/node_modules/react-native-macos/Libraries/Text/React-RCTText.podspec
+index b850acf..305e92b 100644
+--- a/node_modules/react-native-macos/Libraries/Text/React-RCTText.podspec
++++ b/node_modules/react-native-macos/Libraries/Text/React-RCTText.podspec
+@@ -29,7 +29,7 @@ Pod::Spec.new do |s|
+   s.source_files           = podspec_sources("**/*.{h,m,mm}", "**/*.h")
+   s.ios.exclude_files      = "**/macOS/*" # [macOS]
+   s.visionos.exclude_files = "**/macOS/*" # [visionOS]
+-  s.preserve_paths         = "package.json", "LICENSE", "LICENSE-docs"
++  s.preserve_paths         = "package.json", "LICENSE", "LICENSE-docs", "**/*.inc"
+   s.header_dir             = "RCTText"
+   # [macOS MobileCoreServices Not available on macOS
+   s.ios.frameworks         = "MobileCoreServices" 
 diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
 index a5b5a6a..b6c2642 100644
 --- a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
@@ -85,37 +98,1606 @@ index a5b5a6a..b6c2642 100644
      return;
    }
  
-diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
-index 6f332dc..ac6f75c 100644
---- a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
-+++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
-@@ -78,6 +78,26 @@ + (Class)cellClass
-   return RCTUISecureTextFieldCell.class;
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTSinglelineTextInputView.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTSinglelineTextInputView.mm
+index 9973da7..d19dfa4 100644
+--- a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTSinglelineTextInputView.mm
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTSinglelineTextInputView.mm
+@@ -15,7 +15,7 @@
+ #endif // macOS]
+ 
+ @implementation RCTSinglelineTextInputView {
+-  RCTUITextField *_backedTextInputView;
++  UITextField<RCTBackedTextInputViewProtocol> *_backedTextInputView;
+   BOOL _useSecureTextField; // [macOS]
  }
  
-+- (BOOL)isKindOfClass:(Class)aClass
+@@ -49,7 +49,7 @@ - (void)setReactPaddingInsets:(UIEdgeInsets)reactPaddingInsets
+ {
+   [super setReactPaddingInsets:reactPaddingInsets];
+   // We apply `paddingInsets` as `backedTextInputView`'s `textContainerInsets` on mac.
+-  ((RCTUITextField*)self.backedTextInputView).textContainerInset = reactPaddingInsets;
++  self.backedTextInputView.textContainerInset = reactPaddingInsets;
+   [self setNeedsLayout];
+ }
+ 
+@@ -57,16 +57,16 @@ - (void)setReactBorderInsets:(UIEdgeInsets)reactBorderInsets
+ {
+   [super setReactBorderInsets:reactBorderInsets];
+   // We apply `borderInsets` as `backedTextInputView`'s layout offset on mac.
+-  ((RCTUITextField*)self.backedTextInputView).frame = UIEdgeInsetsInsetRect(self.bounds, reactBorderInsets);
++  ((NSView *)self.backedTextInputView).frame = UIEdgeInsetsInsetRect(self.bounds, reactBorderInsets);
+   [self setNeedsLayout];
+ }
+ 
+ - (void)setUseSecureTextField:(BOOL)useSecureTextField {
+   if (_useSecureTextField != useSecureTextField) {
+     _useSecureTextField = useSecureTextField;
+-    RCTUITextField *previousTextField = _backedTextInputView;
++    NSTextField<RCTBackedTextInputViewProtocol> *previousTextField = _backedTextInputView;
+     if (useSecureTextField) {
+-      _backedTextInputView = (RCTUITextField *)[[RCTUISecureTextField alloc] initWithFrame:self.bounds];
++      _backedTextInputView = [[RCTUISecureTextField alloc] initWithFrame:self.bounds];
+     } else {
+       _backedTextInputView = [[RCTUITextField alloc] initWithFrame:self.bounds];
+     }
+@@ -81,12 +81,12 @@ - (void)setUseSecureTextField:(BOOL)useSecureTextField {
+     _backedTextInputView.editable = previousTextField.editable;
+     _backedTextInputView.placeholder = previousTextField.placeholder;
+     _backedTextInputView.placeholderColor = previousTextField.placeholderColor;
+-    _backedTextInputView.selectionColor = previousTextField.selectionColor;
+-    _backedTextInputView.textAlignment = previousTextField.textAlignment;
++    [(id)_backedTextInputView setSelectionColor:[(id)previousTextField selectionColor]];
++    [(id)_backedTextInputView setTextAlignment:[(id)previousTextField textAlignment]];
+     _backedTextInputView.textContainerInset = previousTextField.textContainerInset;
+     _backedTextInputView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+     _backedTextInputView.textInputDelegate = self;
+-    _backedTextInputView.text = previousTextField.text;
++    _backedTextInputView.stringValue = previousTextField.stringValue;
+     [self replaceSubview:previousTextField with:_backedTextInputView];
+   }
+ }
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextField.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextField.mm
+index 137d0ee..0ea83dc 100644
+--- a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextField.mm
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextField.mm
+@@ -31,686 +31,24 @@ @interface RCTUITextFieldCell : NSTextFieldCell
+ 
+ @implementation RCTUITextFieldCell
+ 
+-- (NSRect)titleRectForBounds:(NSRect)rect
+-{
+-  return UIEdgeInsetsInsetRect([super titleRectForBounds:rect], self.textContainerInset);
+-}
+-
+-- (void)editWithFrame:(NSRect)rect inView:(NSView *)controlView editor:(NSText *)textObj delegate:(id)delegate event:(NSEvent *)event
+-{
+-  [super editWithFrame:[self titleRectForBounds:rect] inView:controlView editor:textObj delegate:delegate event:event];
+-}
+-
+-- (void)selectWithFrame:(NSRect)rect inView:(NSView *)controlView editor:(NSText *)textObj delegate:(id)delegate start:(NSInteger)selStart length:(NSInteger)selLength
+-{
+-  [super selectWithFrame:[self titleRectForBounds:rect] inView:controlView editor:textObj delegate:delegate start:selStart length:selLength];
+-}
+-
+-- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)controlView
+-{
+-  if (self.drawsBackground && self.backgroundColor && self.backgroundColor.alphaComponent > 0) {
+-    [self.backgroundColor set];
+-    NSRectFill(cellFrame);
+-  }
+-
+-  [super drawInteriorWithFrame:[self titleRectForBounds:cellFrame] inView:controlView];
+-}
+-
+-- (NSText *)setUpFieldEditorAttributes:(NSText *)textObj
+-{
+-  NSTextView *fieldEditor = (NSTextView *)[super setUpFieldEditorAttributes:textObj];
+-  fieldEditor.automaticSpellingCorrectionEnabled = self.isAutomaticSpellingCorrectionEnabled;
+-  fieldEditor.automaticTextReplacementEnabled = self.isAutomaticTextReplacementEnabled;
+-  fieldEditor.continuousSpellCheckingEnabled = self.isContinuousSpellCheckingEnabled;
+-  fieldEditor.grammarCheckingEnabled = self.isGrammarCheckingEnabled;
+-  NSMutableDictionary *selectTextAttributes = fieldEditor.selectedTextAttributes.mutableCopy;
+-  selectTextAttributes[NSBackgroundColorAttributeName] = self.selectionColor ?: [NSColor selectedControlColor];
+-  fieldEditor.selectedTextAttributes = selectTextAttributes;
+-  fieldEditor.insertionPointColor = self.insertionPointColor ?: [NSColor textColor];
+-  return fieldEditor;
+-}
++#include "RCTUITextFieldCellImplementation.inc"
+ 
+ @end
+ #endif // macOS]
+ 
+-@implementation RCTUITextField {
+-  RCTBackedTextFieldDelegateAdapter *_textInputDelegateAdapter;
+-  NSDictionary<NSAttributedStringKey, id> *_defaultTextAttributes;
+-#if !TARGET_OS_OSX // [macOS]
+-  NSArray<UIBarButtonItemGroup *> *_initialValueLeadingBarButtonGroups;
+-  NSArray<UIBarButtonItemGroup *> *_initialValueTrailingBarButtonGroups;
+-#endif // [macOS]
+-  NSArray<NSString *> *_acceptDragAndDropTypes;
+-#if TARGET_OS_OSX // [macOS
+-  BOOL _isUpdatingPlaceholderText;
+-  NSArray<NSPasteboardType> *_readablePasteboardTypes;
+-#endif // macOS]
+-}
+-
+-#if TARGET_OS_OSX // [macOS
+-@dynamic delegate;
+-#endif // macOS]
+-
+-// This should not be needed but internal build were failing without it.
+-// This variable is unused.
+-#if !TARGET_OS_OSX // [macOS
+-@synthesize dataDetectorTypes;
+-#endif // macOS]
+-
+-- (instancetype)initWithFrame:(CGRect)frame
+-{
+-  if (self = [super initWithFrame:frame]) {
+-
+-    [[NSNotificationCenter defaultCenter] addObserver:self
+-                                             selector:@selector(_textDidChange)
+-                                                 name:UITextFieldTextDidChangeNotification
+-                                               object:self];
+-
+-#if TARGET_OS_OSX // [macOS
+-    [self setBordered:NO];
+-    [self setAllowsEditingTextAttributes:YES];
+-    [self setBackgroundColor:[NSColor clearColor]];
+-#endif // macOS]
+-
+-    _textInputDelegateAdapter = [[RCTBackedTextFieldDelegateAdapter alloc] initWithTextField:self];
+-    _scrollEnabled = YES;
+-#if !TARGET_OS_OSX // [macOS]
+-    _initialValueLeadingBarButtonGroups = nil;
+-    _initialValueTrailingBarButtonGroups = nil;
+-#endif // [macOS]
+-#if TARGET_OS_OSX // [macOS
+-    _isUpdatingPlaceholderText = NO;
+-#endif // macOS]
+-  }
+-
+-  return self;
+-}
+-
+ #if TARGET_OS_OSX
+-- (NSRange)selectedRange {
+-  return [[self currentEditor] selectedRange];
+-}
+-#endif
+-
+-- (void)_textDidChange
+-{
+-  _textWasPasted = NO;
+-#if TARGET_OS_OSX // [macOS
+-  [self setAttributedText:[[NSAttributedString alloc] initWithString:[self text]
+-                                                          attributes:[self defaultTextAttributes]]];
+-  if([[self text] length] == 0) {
+-    self.font = [[self defaultTextAttributes] objectForKey:NSFontAttributeName];
+-  }
+-#endif // macOS]
+-}
+-
+-#if TARGET_OS_OSX // [macOS
+-- (BOOL)hasMarkedText
+-{
+-  return ((NSTextView *)self.currentEditor).hasMarkedText;
+-}
++typedef RCTUITextFieldCell RCTTextInputCell;
+ 
+-- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText
+-{
+-	return ((NSTextView *)self.currentEditor).validAttributesForMarkedText ?: @[];
+-}
+-
+-#endif // macOS]
+-
+-#pragma mark - Accessibility
+-
+-#if !TARGET_OS_OSX // [macOS]
+-- (void)setIsAccessibilityElement:(BOOL)isAccessibilityElement
+-#else // [macOS
+-- (void)setAccessibilityElement:(BOOL)isAccessibilityElement
+-#endif // macOS]
+-{
+-  // UITextField is accessible by default (some nested views are) and disabling that is not supported.
+-  // On iOS accessible elements cannot be nested, therefore enabling accessibility for some container view
+-  // (even in a case where this view is a part of public API of TextInput on iOS) shadows some features implemented
+-  // inside the component.
+-}
+-
+-#pragma mark - Properties
+-
+-- (void)setAcceptDragAndDropTypes:(NSArray<NSString *> *)acceptDragAndDropTypes
+-{
+-  _acceptDragAndDropTypes = acceptDragAndDropTypes;
+-}
+-
+-- (nullable NSArray<NSString *> *)acceptDragAndDropTypes
+-{
+-  return _acceptDragAndDropTypes;
+-}
+-
+-- (void)setTextContainerInset:(UIEdgeInsets)textContainerInset
+-{
+-  if (UIEdgeInsetsEqualToEdgeInsets(textContainerInset, _textContainerInset)) {
+-    return;
+-  }
+-
+-  _textContainerInset = textContainerInset;
+-#if !TARGET_OS_OSX // [macOS]
+-  [self setNeedsLayout];
+-#else // [macOS
+-  ((RCTUITextFieldCell*)self.cell).textContainerInset = _textContainerInset;
+-
+-  if (self.currentEditor) {
+-    NSRange selectedRange = self.currentEditor.selectedRange;
+-
+-    // Relocate the NSTextView without changing the selection.
+-    [self.cell selectWithFrame:self.bounds
+-                        inView:self
+-                        editor:self.currentEditor
+-                      delegate:self
+-                         start:selectedRange.location
+-                        length:selectedRange.length];
+-  }
+-#endif // macOS]
+-}
+-
+-#if TARGET_OS_OSX // [macOS
++#endif
+ 
+-- (NSResponder *)responder
+-{
+-  return self;
+-}
++@implementation RCTUITextField
++#include "RCTUITextFieldImplementation.inc"
+ 
++#if TARGET_OS_OSX
+ + (Class)cellClass
+ {
+   return RCTUITextFieldCell.class;
+ }
+-
+-- (void)setAttributedText:(NSAttributedString *)attributedText
+-{
+-  self.attributedStringValue = attributedText;
+-}
+-
+-- (NSAttributedString *)attributedText
+-{
+-  return self.attributedStringValue;
+-}
+-
+-- (void)setText:(NSString *)text
+-{
+-  self.stringValue = text;
+-}
+-
+-- (NSString*)text
+-{
+-  return self.stringValue;
+-}
+-
+-- (void)setAutomaticTextReplacementEnabled:(BOOL)automaticTextReplacementEnabled
+-{
+-  ((RCTUITextFieldCell*)self.cell).automaticTextReplacementEnabled = automaticTextReplacementEnabled;
+-}
+-
+-- (BOOL)isAutomaticTextReplacementEnabled
+-{
+-  return ((RCTUITextFieldCell*)self.cell).isAutomaticTextReplacementEnabled;
+-}
+-
+-- (void)setAutomaticSpellingCorrectionEnabled:(BOOL)automaticSpellingCorrectionEnabled
+-{
+-  ((RCTUITextFieldCell*)self.cell).automaticSpellingCorrectionEnabled = automaticSpellingCorrectionEnabled;
+-}
+-
+-- (BOOL)isAutomaticSpellingCorrectionEnabled
+-{
+-  return ((RCTUITextFieldCell*)self.cell).isAutomaticSpellingCorrectionEnabled;
+-}
+-
+-- (void)setContinuousSpellCheckingEnabled:(BOOL)continuousSpellCheckingEnabled
+-{
+-  ((RCTUITextFieldCell*)self.cell).continuousSpellCheckingEnabled = continuousSpellCheckingEnabled;
+-}
+-
+-- (BOOL)isContinuousSpellCheckingEnabled
+-{
+-  return ((RCTUITextFieldCell*)self.cell).isContinuousSpellCheckingEnabled;
+-}
+-
+-- (void)setGrammarCheckingEnabled:(BOOL)grammarCheckingEnabled
+-{
+-  ((RCTUITextFieldCell*)self.cell).grammarCheckingEnabled = grammarCheckingEnabled;
+-}
+-
+-- (BOOL)isGrammarCheckingEnabled
+-{
+-  return ((RCTUITextFieldCell*)self.cell).isGrammarCheckingEnabled;
+-}
+-
+-- (void)setSelectionColor:(RCTUIColor *)selectionColor
+-{
+-  ((RCTUITextFieldCell*)self.cell).selectionColor = selectionColor;
+-}
+-
+-- (RCTUIColor*)selectionColor
+-{
+-  return ((RCTUITextFieldCell*)self.cell).selectionColor;
+-}
+-
+-- (void)setCursorColor:(NSColor *)cursorColor
+-{
+-    ((RCTUITextFieldCell*)self.cell).insertionPointColor = cursorColor;
+-}
+-
+-- (RCTUIColor*)cursorColor
+-{
+-  return ((RCTUITextFieldCell*)self.cell).insertionPointColor;
+-}
+-
+-- (void)setFont:(UIFont *)font
+-{
+-  ((RCTUITextFieldCell*)self.cell).font = font;
+-}
+-
+-- (UIFont *)font
+-{
+-  return ((RCTUITextFieldCell*)self.cell).font;
+-}
+-
+-- (void)setEnableFocusRing:(BOOL)enableFocusRing {
+-  if (_enableFocusRing != enableFocusRing) {
+-    _enableFocusRing = enableFocusRing;
+-  }
+-
+-  if (enableFocusRing) {
+-    [self setFocusRingType:NSFocusRingTypeDefault];
+-  } else {
+-    [self setFocusRingType:NSFocusRingTypeNone];
+-  }
+-}
+-
+-#endif // macOS]
+-
+-- (void)setPlaceholder:(NSString *)placeholder
+-{
+-#if !TARGET_OS_OSX // [macOS]
+-  [super setPlaceholder:placeholder];
+-#else // [macOS
+-  [super setPlaceholderString:placeholder];
+-#endif // macOS]
+-  [self _updatePlaceholder];
+-}
+-
+-- (NSString*)placeholder // [macOS
+-{
+-#if !TARGET_OS_OSX // [macOS]
+-  return super.placeholder;
+-#else
+-  return self.placeholderAttributedString.string ?: self.placeholderString;
+ #endif
+-} // macOS]
+-
+-- (void)setPlaceholderColor:(RCTUIColor *)placeholderColor // [macOS]
+-{
+-  _placeholderColor = placeholderColor;
+-  [self _updatePlaceholder];
+-}
+-
+-- (void)setDefaultTextAttributes:(NSDictionary<NSAttributedStringKey, id> *)defaultTextAttributes
+-{
+-  if ([_defaultTextAttributes isEqualToDictionary:defaultTextAttributes]) {
+-    return;
+-  }
+-
+-  _defaultTextAttributes = defaultTextAttributes;
+-#if !TARGET_OS_OSX // [macOS]
+-  [super setDefaultTextAttributes:defaultTextAttributes];
+-#endif // [macOS]
+-  [self _updatePlaceholder];
+-
+-#if TARGET_OS_OSX // [macOS
+-  [self setAttributedText:[[NSAttributedString alloc] initWithString:[self text]
+-                                                          attributes:[self defaultTextAttributes]]];
+-
+-  self.font = [[self defaultTextAttributes] objectForKey:NSFontAttributeName];
+-#endif // macOS]
+-}
+-
+-- (NSDictionary<NSAttributedStringKey, id> *)defaultTextAttributes
+-{
+-  return _defaultTextAttributes;
+-}
+-
+-- (void)_updatePlaceholder
+-{
+-#if !TARGET_OS_OSX // [macOS]
+-  self.attributedPlaceholder = [[NSAttributedString alloc] initWithString:self.placeholder ?: @""
+-                                                               attributes:[self _placeholderTextAttributes]];
+-#else // [macOS
+-  // Set _isUpdatingPlaceholderText to manually suppress RCTUITextFieldDelegate's textFieldEndEditing
+-  _isUpdatingPlaceholderText = YES;
+-  self.placeholderAttributedString = [[NSAttributedString alloc] initWithString:self.placeholder ?: @""
+-																	 attributes:[self _placeholderTextAttributes]];
+-  _isUpdatingPlaceholderText = NO;
+-#endif // macOS]
+-}
+-
+-- (BOOL)isEditable
+-{
+-  return self.isEnabled;
+-}
+-
+-- (void)setEditable:(BOOL)editable
+-{
+-#if TARGET_OS_OSX // [macOS
+-  // on macos the super must be called otherwise its NSTextFieldCell editable property doesn't get set.
+-  [super setEditable:editable];
+-#endif // macOS]
+-  self.enabled = editable;
+-}
+-
+-#if !TARGET_OS_OSX // [macOS]
+-- (void)setSecureTextEntry:(BOOL)secureTextEntry
+-{
+-  if (self.secureTextEntry == secureTextEntry) {
+-    return;
+-  }
+-
+-  [super setSecureTextEntry:secureTextEntry];
+-
+-  // Fix for trailing whitespate issue
+-  // Read more:
+-  // https://stackoverflow.com/questions/14220187/uitextfield-has-trailing-whitespace-after-securetextentry-toggle/22537788#22537788
+-  NSAttributedString *originalText = [self.attributedText copy];
+-  self.attributedText = [NSAttributedString new];
+-  self.attributedText = originalText;
+-}
+-#endif // [macOS]
+-
+-- (void)setDisableKeyboardShortcuts:(BOOL)disableKeyboardShortcuts
+-{
+-  _disableKeyboardShortcuts = disableKeyboardShortcuts;
+-#if TARGET_OS_IOS
+-  // Initialize the initial values only once
+-  if (_initialValueLeadingBarButtonGroups == nil) {
+-    // Capture initial values of leading and trailing button groups
+-    _initialValueLeadingBarButtonGroups = self.inputAssistantItem.leadingBarButtonGroups;
+-    _initialValueTrailingBarButtonGroups = self.inputAssistantItem.trailingBarButtonGroups;
+-  }
+-
+-  if (disableKeyboardShortcuts) {
+-    self.inputAssistantItem.leadingBarButtonGroups = @[];
+-    self.inputAssistantItem.trailingBarButtonGroups = @[];
+-  } else {
+-    // Restore the initial values
+-    self.inputAssistantItem.leadingBarButtonGroups = _initialValueLeadingBarButtonGroups;
+-    self.inputAssistantItem.trailingBarButtonGroups = _initialValueTrailingBarButtonGroups;
+-  }
+-#endif
+-}
+-
+-#pragma mark - Placeholder
+-
+-- (NSDictionary<NSAttributedStringKey, id> *)_placeholderTextAttributes
+-{
+-  NSMutableDictionary<NSAttributedStringKey, id> *textAttributes =
+-      [_defaultTextAttributes mutableCopy] ?: [NSMutableDictionary new];
+-
+-    [textAttributes setValue:self.placeholderColor ?: [RCTUIColor placeholderTextColor]
+-                      forKey:NSForegroundColorAttributeName]; // [macOS]
+-
+-  return textAttributes;
+-}
+-
+-#pragma mark - Context Menu
+-
+-#if !TARGET_OS_OSX // [macOS]
+-
+-- (BOOL)canPerformAction:(SEL)action withSender:(id)sender
+-{
+-  if (_contextMenuHidden) {
+-    return NO;
+-  }
+-
+-  return [super canPerformAction:action withSender:sender];
+-}
+-
+-- (void)buildMenuWithBuilder:(id<UIMenuBuilder>)builder
+-{
+-#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 170000
+-  if (@available(iOS 17.0, *)) {
+-    if (_contextMenuHidden) {
+-      [builder removeMenuForIdentifier:UIMenuAutoFill];
+-    }
+-  }
+-#endif
+-
+-  [super buildMenuWithBuilder:builder];
+-}
+-
+-#pragma mark - Dictation
+-
+-- (void)dictationRecordingDidEnd
+-{
+-  _dictationRecognizing = YES;
+-}
+-
+-- (void)removeDictationResultPlaceholder:(id)placeholder willInsertResult:(BOOL)willInsertResult
+-{
+-  [super removeDictationResultPlaceholder:placeholder willInsertResult:willInsertResult];
+-  _dictationRecognizing = NO;
+-}
+-
+-#pragma mark - Caret Manipulation
+-
+-- (CGRect)caretRectForPosition:(UITextPosition *)position
+-{
+-  if (_caretHidden) {
+-    return CGRectZero;
+-  }
+-
+-  return [super caretRectForPosition:position];
+-}
+-
+-#pragma mark - Positioning Overrides
+-
+-- (CGRect)textRectForBounds:(CGRect)bounds
+-{
+-  return UIEdgeInsetsInsetRect([super textRectForBounds:bounds], _textContainerInset);
+-}
+-
+-- (CGRect)editingRectForBounds:(CGRect)bounds
+-{
+-  return [self textRectForBounds:bounds];
+-}
+-
+-#else // [macOS
+-
+-#pragma mark - NSTextFieldDelegate methods
+-
+-- (void)textDidChange:(NSNotification *)notification
+-{
+-  [super textDidChange:notification];
+-  id<RCTUITextFieldDelegate> delegate = self.delegate;
+-  if ([delegate respondsToSelector:@selector(textFieldDidChange:)]) {
+-    [delegate textFieldDidChange:self];
+-  }
+-}
+-
+-- (void)textDidEndEditing:(NSNotification *)notification
+-{
+-  [super textDidEndEditing:notification];
+-
+-  // On macOS, setting placeholderAttributedString causes AppKit to call textDidEndEditing.
+-  // We don't want this to propagate or else we get unexpected onBlur/onEndEditing events.
+-  if (_isUpdatingPlaceholderText) {
+-    return;
+-  }
+-
+-  id<RCTUITextFieldDelegate> delegate = self.delegate;
+-  if ([delegate respondsToSelector:@selector(textFieldEndEditing:)]) {
+-    [delegate textFieldEndEditing:self];
+-  }
+-}
+-
+-- (void)textViewDidChangeSelection:(NSNotification *)notification
+-{
+-  id<RCTUITextFieldDelegate> delegate = self.delegate;
+-  if ([delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
+-    [delegate textFieldDidChangeSelection:self];
+-  }
+-}
+-
+-- (BOOL)textView:(NSTextView *)aTextView shouldChangeTextInRange:(NSRange)aRange replacementString:(NSString *)aString
+-{
+-  id<RCTUITextFieldDelegate> delegate = self.delegate;
+-  if ([delegate respondsToSelector:@selector(textField:shouldChangeCharactersInRange:replacementString:)]) {
+-    return [delegate textField:self shouldChangeCharactersInRange:aRange replacementString:aString];
+-  }
+-  return NO;
+-}
+-
+-- (NSMenu *)textView:(NSTextView *)view menu:(NSMenu *)menu forEvent:(NSEvent *)event atIndex:(NSUInteger)charIndex
+-{
+-  if (menu) {
+-    [[RCTTouchHandler touchHandlerForView:self] willShowMenuWithEvent:event];
+-  }
+-
+-  return menu;
+-}
+-
+-#endif // macOS]
+-
+-#pragma mark - Overrides
+-
+-#if !TARGET_OS_OSX // [macOS]
+-#pragma clang diagnostic push
+-#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+-// Overrides selectedTextRange setter to get notify when selectedTextRange changed.
+-- (void)setSelectedTextRange:(UITextRange *)selectedTextRange
+-{
+-  [super setSelectedTextRange:selectedTextRange];
+-  [_textInputDelegateAdapter selectedTextRangeWasSet];
+-}
+-#pragma clang diagnostic pop
+-#endif // [macOS]
+-
+-#if TARGET_OS_OSX // [macOS
+-- (BOOL)becomeFirstResponder
+-{
+-  BOOL isFirstResponder = [super becomeFirstResponder];
+-  if (isFirstResponder) {
+-    id<RCTUITextFieldDelegate> delegate = self.delegate;
+-    if ([delegate respondsToSelector:@selector(textFieldBeginEditing:)]) {
+-      // The AppKit -[NSTextField textDidBeginEditing:] notification is only called when the user
+-      // makes the first change to the text in the text field.
+-      // The react-native -[RCTUITextFieldDelegate textFieldBeginEditing:] is intended to be
+-      // called when the text field is focused so call it here in becomeFirstResponder.
+-      [delegate textFieldBeginEditing:self];
+-    }
+-
+-    NSScrollView *scrollView = [self enclosingScrollView];
+-    if (scrollView != nil) {
+-      NSRect visibleRect = [[scrollView documentView] convertRect:self.frame fromView:self];
+-      [[scrollView documentView] scrollRectToVisible:visibleRect];
+-    }
+-  }
+-  return isFirstResponder;
+-}
+-
+-- (BOOL)performKeyEquivalent:(NSEvent *)event
+-{
+-  // The currentEditor is NSText for historical reasons, but documented to be NSTextView.
+-  NSTextView *currentEditor = (NSTextView *)self.currentEditor;
+-  // The currentEditor is non-nil when focused and hasMarkedText means an IME is open.
+-  if (currentEditor && !currentEditor.hasMarkedText && ![self.textInputDelegate textInputShouldHandleKeyEvent:event]) {
+-    return YES; // Don't send currentEditor the keydown event.
+-  }
+-  return [super performKeyEquivalent:event];
+-}
+-#endif // macOS]
+-
+-#if !TARGET_OS_OSX // [macOS]
+-- (void)setSelectedTextRange:(UITextRange *)selectedTextRange notifyDelegate:(BOOL)notifyDelegate
+-{
+-  if (!notifyDelegate) {
+-    // We have to notify an adapter that following selection change was initiated programmatically,
+-    // so the adapter must not generate a notification for it.
+-    [_textInputDelegateAdapter skipNextTextInputDidChangeSelectionEventWithTextRange:selectedTextRange];
+-  }
+-
+-  [super setSelectedTextRange:selectedTextRange];
+-}
+-
+-- (void)scrollRangeToVisible:(NSRange)range
+-{
+-  // Singleline TextInput does not require scrolling after calling setSelectedTextRange (PR 38679).
+-}
+-
+-- (void)paste:(id)sender
+-{
+-  _textWasPasted = YES;
+-  [super paste:sender];
+-}
+-#else // [macOS
+-- (void)setSelectedTextRange:(NSRange)selectedTextRange notifyDelegate:(BOOL)notifyDelegate
+-{
+-  if (!notifyDelegate) {
+-    // We have to notify an adapter that following selection change was initiated programmatically,
+-    // so the adapter must not generate a notification for it.
+-    [_textInputDelegateAdapter skipNextTextInputDidChangeSelectionEventWithTextRange:selectedTextRange];
+-  }
+-
+-  [[self currentEditor] setSelectedRange:selectedTextRange];
+-}
+-
+-- (NSRange)selectedTextRange
+-{
+-  return [[self currentEditor] selectedRange];
+-}
+-#endif // macOS]
+-
+-#pragma mark - Layout
+-
+-- (CGSize)contentSize
+-{
+-  // Returning size DOES contain `textContainerInset` (aka `padding`).
+-  return self.intrinsicContentSize;
+-}
+-
+-- (CGSize)intrinsicContentSize
+-{
+-  // Note: `placeholder` defines intrinsic size for `<TextInput>`.
+-  NSString *text = self.placeholder ?: @"";
+-  CGSize size = [text sizeWithAttributes:[self _placeholderTextAttributes]];
+-  size = CGSizeMake(RCTCeilPixelValue(size.width), RCTCeilPixelValue(size.height));
+-  size.width += _textContainerInset.left + _textContainerInset.right;
+-  size.height += _textContainerInset.top + _textContainerInset.bottom;
+-  // Returning size DOES contain `textContainerInset` (aka `padding`).
+-  return size;
+-}
+-
+-- (CGSize)sizeThatFits:(CGSize)size
+-{
+-  // All size values here contain `textContainerInset` (aka `padding`).
+-  CGSize intrinsicSize = self.intrinsicContentSize;
+-  return CGSizeMake(MIN(size.width, intrinsicSize.width), MIN(size.height, intrinsicSize.height));
+-}
+-
+-#if !TARGET_OS_OSX // [macOS]
+-- (void)deleteBackward {
+-  id<RCTBackedTextInputDelegate> textInputDelegate = [self textInputDelegate];
+-  if ([textInputDelegate textInputShouldHandleDeleteBackward:self]) {
+-    [super deleteBackward];
+-  }
+-}
+-#else // [macOS
+-- (void)keyUp:(NSEvent *)event {
+-  if ([self.textInputDelegate textInputShouldHandleKeyEvent:event]) {
+-    [super keyUp:event];
+-  }
+-}
+-#endif // macOS]
+-  
+-#if TARGET_OS_OSX // [macOS
+-- (void)setReadablePasteBoardTypes:(NSArray<NSPasteboardType> *)readablePasteboardTypes
+-{
+-  _readablePasteboardTypes = readablePasteboardTypes;
+-}
+-#endif // macOS]
+ 
+ @end
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextFieldCellImplementation.inc b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextFieldCellImplementation.inc
+new file mode 100644
+index 0000000..13f70be
+--- /dev/null
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextFieldCellImplementation.inc
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the MIT license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++// Shared cell layout and field editor attributes; super retains native security behavior.
++- (NSRect)titleRectForBounds:(NSRect)rect
 +{
-+  // AppKit's secure field editor (NSSecureTextView) requires its delegate to be an
-+  // NSSecureTextField and raises NSInternalInconsistencyException from
-+  // -[NSSecureTextView setDelegate:] otherwise ("NSSecureTextFieldCell is not secure
-+  // because the secure field editor's delegate must be an NSSecureTextField!").
-+  // RCTUISecureTextField inherits from RCTUITextField (NSTextField), not
-+  // NSSecureTextField, so that exception aborts the field editor setup inside
-+  // -[NSCell selectWithFrame:inView:editor:delegate:start:length:] before the
-+  // delegate is wired up. Editing then still appears to work visually, but
-+  // -textDidChange: / -textView:shouldChangeTextInRange:replacementString: are never
-+  // delivered to this control, so no onChange/onChangeText events reach React.
-+  // This class is a secure text field in every behavioral sense (secure cell and
-+  // secure field editor), so satisfy AppKit's kind-of check explicitly.
-+  if (aClass == [NSSecureTextField class]) {
-+    return YES;
-+  }
-+  return [super isKindOfClass:aClass];
++  return UIEdgeInsetsInsetRect([super titleRectForBounds:rect], self.textContainerInset);
 +}
 +
++- (void)editWithFrame:(NSRect)rect inView:(NSView *)controlView editor:(NSText *)textObj delegate:(id)delegate event:(NSEvent *)event
++{
++  [super editWithFrame:[self titleRectForBounds:rect] inView:controlView editor:textObj delegate:delegate event:event];
++}
++
++- (void)selectWithFrame:(NSRect)rect inView:(NSView *)controlView editor:(NSText *)textObj delegate:(id)delegate start:(NSInteger)selStart length:(NSInteger)selLength
++{
++  [super selectWithFrame:[self titleRectForBounds:rect] inView:controlView editor:textObj delegate:delegate start:selStart length:selLength];
++}
++
++- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)controlView
++{
++  if (self.drawsBackground && self.backgroundColor && self.backgroundColor.alphaComponent > 0) {
++    [self.backgroundColor set];
++    NSRectFill(cellFrame);
++  }
++
++  [super drawInteriorWithFrame:[self titleRectForBounds:cellFrame] inView:controlView];
++}
++
++- (NSText *)setUpFieldEditorAttributes:(NSText *)textObj
++{
++  NSTextView *fieldEditor = (NSTextView *)[super setUpFieldEditorAttributes:textObj];
++  fieldEditor.automaticSpellingCorrectionEnabled = self.isAutomaticSpellingCorrectionEnabled;
++  fieldEditor.automaticTextReplacementEnabled = self.isAutomaticTextReplacementEnabled;
++  fieldEditor.continuousSpellCheckingEnabled = self.isContinuousSpellCheckingEnabled;
++  fieldEditor.grammarCheckingEnabled = self.isGrammarCheckingEnabled;
++  NSMutableDictionary *selectTextAttributes = fieldEditor.selectedTextAttributes.mutableCopy;
++  selectTextAttributes[NSBackgroundColorAttributeName] = self.selectionColor ?: [NSColor selectedControlColor];
++  fieldEditor.selectedTextAttributes = selectTextAttributes;
++  fieldEditor.insertionPointColor = self.insertionPointColor ?: [NSColor textColor];
++  return fieldEditor;
++}
++
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextFieldImplementation.inc b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextFieldImplementation.inc
+new file mode 100644
+index 0000000..1db7f20
+--- /dev/null
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/RCTUITextFieldImplementation.inc
+@@ -0,0 +1,647 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the MIT license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++// Shared React behavior. Each includer keeps its actual AppKit superclass and cell.
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wnullability-completeness"
++{
++  RCTBackedTextFieldDelegateAdapter *_textInputDelegateAdapter;
++  NSDictionary<NSAttributedStringKey, id> *_defaultTextAttributes;
++#if !TARGET_OS_OSX // [macOS]
++  NSArray<UIBarButtonItemGroup *> *_initialValueLeadingBarButtonGroups;
++  NSArray<UIBarButtonItemGroup *> *_initialValueTrailingBarButtonGroups;
++#endif // [macOS]
++  NSArray<NSString *> *_acceptDragAndDropTypes;
++#if TARGET_OS_OSX // [macOS
++  BOOL _isUpdatingPlaceholderText;
++  NSArray<NSPasteboardType> *_readablePasteboardTypes;
++#endif // macOS]
++}
++
++#if TARGET_OS_OSX // [macOS
++@dynamic delegate;
++#endif // macOS]
++
++// This should not be needed but internal build were failing without it.
++// This variable is unused.
++#if !TARGET_OS_OSX // [macOS
++@synthesize dataDetectorTypes;
++#endif // macOS]
++
++- (instancetype)initWithFrame:(CGRect)frame
++{
++  if (self = [super initWithFrame:frame]) {
++
++    [[NSNotificationCenter defaultCenter] addObserver:self
++                                             selector:@selector(_textDidChange)
++                                                 name:UITextFieldTextDidChangeNotification
++                                               object:self];
++
++#if TARGET_OS_OSX // [macOS
++    [self setBordered:NO];
++    [self setAllowsEditingTextAttributes:YES];
++    [self setBackgroundColor:[NSColor clearColor]];
++#endif // macOS]
++
++    _textInputDelegateAdapter = [[RCTBackedTextFieldDelegateAdapter alloc] initWithTextField:self];
++    _scrollEnabled = YES;
++#if !TARGET_OS_OSX // [macOS]
++    _initialValueLeadingBarButtonGroups = nil;
++    _initialValueTrailingBarButtonGroups = nil;
++#endif // [macOS]
++#if TARGET_OS_OSX // [macOS
++    _isUpdatingPlaceholderText = NO;
++#endif // macOS]
++  }
++
++  return self;
++}
++
++#if TARGET_OS_OSX
++- (NSRange)selectedRange {
++  return [[self currentEditor] selectedRange];
++}
++#endif
++
++- (void)_textDidChange
++{
++  _textWasPasted = NO;
++#if TARGET_OS_OSX // [macOS
++  [self setAttributedText:[[NSAttributedString alloc] initWithString:[self text]
++                                                          attributes:[self defaultTextAttributes]]];
++  if([[self text] length] == 0) {
++    self.font = [[self defaultTextAttributes] objectForKey:NSFontAttributeName];
++  }
++#endif // macOS]
++}
++
++#if TARGET_OS_OSX // [macOS
++- (BOOL)hasMarkedText
++{
++  return ((NSTextView *)self.currentEditor).hasMarkedText;
++}
++
++- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText
++{
++	return ((NSTextView *)self.currentEditor).validAttributesForMarkedText ?: @[];
++}
++
++#endif // macOS]
++
++#pragma mark - Accessibility
++
++#if !TARGET_OS_OSX // [macOS]
++- (void)setIsAccessibilityElement:(BOOL)isAccessibilityElement
++#else // [macOS
++- (void)setAccessibilityElement:(BOOL)isAccessibilityElement
++#endif // macOS]
++{
++  // UITextField is accessible by default (some nested views are) and disabling that is not supported.
++  // On iOS accessible elements cannot be nested, therefore enabling accessibility for some container view
++  // (even in a case where this view is a part of public API of TextInput on iOS) shadows some features implemented
++  // inside the component.
++}
++
++#pragma mark - Properties
++
++- (void)setAcceptDragAndDropTypes:(NSArray<NSString *> *)acceptDragAndDropTypes
++{
++  _acceptDragAndDropTypes = acceptDragAndDropTypes;
++}
++
++- (nullable NSArray<NSString *> *)acceptDragAndDropTypes
++{
++  return _acceptDragAndDropTypes;
++}
++
++- (void)setTextContainerInset:(UIEdgeInsets)textContainerInset
++{
++  if (UIEdgeInsetsEqualToEdgeInsets(textContainerInset, _textContainerInset)) {
++    return;
++  }
++
++  _textContainerInset = textContainerInset;
++#if !TARGET_OS_OSX // [macOS]
++  [self setNeedsLayout];
++#else // [macOS
++  ((RCTTextInputCell *)self.cell).textContainerInset = _textContainerInset;
++
++  if (self.currentEditor) {
++    NSRange selectedRange = self.currentEditor.selectedRange;
++
++    // Relocate the NSTextView without changing the selection.
++    [self.cell selectWithFrame:self.bounds
++                        inView:self
++                        editor:self.currentEditor
++                      delegate:self
++                         start:selectedRange.location
++                        length:selectedRange.length];
++  }
++#endif // macOS]
++}
++
++#if TARGET_OS_OSX // [macOS
++
++- (NSResponder *)responder
++{
++  return self;
++}
++
++- (void)setAttributedText:(NSAttributedString *)attributedText
++{
++  self.attributedStringValue = attributedText;
++}
++
++- (NSAttributedString *)attributedText
++{
++  return self.attributedStringValue;
++}
++
++- (void)setText:(NSString *)text
++{
++  self.stringValue = text;
++}
++
++- (NSString*)text
++{
++  return self.stringValue;
++}
++
++- (void)setAutomaticTextReplacementEnabled:(BOOL)automaticTextReplacementEnabled
++{
++  ((RCTTextInputCell *)self.cell).automaticTextReplacementEnabled = automaticTextReplacementEnabled;
++}
++
++- (BOOL)isAutomaticTextReplacementEnabled
++{
++  return ((RCTTextInputCell *)self.cell).isAutomaticTextReplacementEnabled;
++}
++
++- (void)setAutomaticSpellingCorrectionEnabled:(BOOL)automaticSpellingCorrectionEnabled
++{
++  ((RCTTextInputCell *)self.cell).automaticSpellingCorrectionEnabled = automaticSpellingCorrectionEnabled;
++}
++
++- (BOOL)isAutomaticSpellingCorrectionEnabled
++{
++  return ((RCTTextInputCell *)self.cell).isAutomaticSpellingCorrectionEnabled;
++}
++
++- (void)setContinuousSpellCheckingEnabled:(BOOL)continuousSpellCheckingEnabled
++{
++  ((RCTTextInputCell *)self.cell).continuousSpellCheckingEnabled = continuousSpellCheckingEnabled;
++}
++
++- (BOOL)isContinuousSpellCheckingEnabled
++{
++  return ((RCTTextInputCell *)self.cell).isContinuousSpellCheckingEnabled;
++}
++
++- (void)setGrammarCheckingEnabled:(BOOL)grammarCheckingEnabled
++{
++  ((RCTTextInputCell *)self.cell).grammarCheckingEnabled = grammarCheckingEnabled;
++}
++
++- (BOOL)isGrammarCheckingEnabled
++{
++  return ((RCTTextInputCell *)self.cell).isGrammarCheckingEnabled;
++}
++
++- (void)setSelectionColor:(RCTUIColor *)selectionColor
++{
++  ((RCTTextInputCell *)self.cell).selectionColor = selectionColor;
++}
++
++- (RCTUIColor*)selectionColor
++{
++  return ((RCTTextInputCell *)self.cell).selectionColor;
++}
++
++- (void)setCursorColor:(NSColor *)cursorColor
++{
++    ((RCTTextInputCell *)self.cell).insertionPointColor = cursorColor;
++}
++
++- (RCTUIColor*)cursorColor
++{
++  return ((RCTTextInputCell *)self.cell).insertionPointColor;
++}
++
++- (void)setFont:(UIFont *)font
++{
++  ((RCTTextInputCell *)self.cell).font = font;
++}
++
++- (UIFont *)font
++{
++  return ((RCTTextInputCell *)self.cell).font;
++}
++
++- (void)setEnableFocusRing:(BOOL)enableFocusRing {
++  if (_enableFocusRing != enableFocusRing) {
++    _enableFocusRing = enableFocusRing;
++  }
++
++  if (enableFocusRing) {
++    [self setFocusRingType:NSFocusRingTypeDefault];
++  } else {
++    [self setFocusRingType:NSFocusRingTypeNone];
++  }
++}
++
++#endif // macOS]
++
++- (void)setPlaceholder:(NSString *)placeholder
++{
++#if !TARGET_OS_OSX // [macOS]
++  [super setPlaceholder:placeholder];
++#else // [macOS
++  [super setPlaceholderString:placeholder];
++#endif // macOS]
++  [self _updatePlaceholder];
++}
++
++- (NSString*)placeholder // [macOS
++{
++#if !TARGET_OS_OSX // [macOS]
++  return super.placeholder;
++#else
++  return self.placeholderAttributedString.string ?: self.placeholderString;
++#endif
++} // macOS]
++
++- (void)setPlaceholderColor:(RCTUIColor *)placeholderColor // [macOS]
++{
++  _placeholderColor = placeholderColor;
++  [self _updatePlaceholder];
++}
++
++- (void)setDefaultTextAttributes:(NSDictionary<NSAttributedStringKey, id> *)defaultTextAttributes
++{
++  if ([_defaultTextAttributes isEqualToDictionary:defaultTextAttributes]) {
++    return;
++  }
++
++  _defaultTextAttributes = defaultTextAttributes;
++#if !TARGET_OS_OSX // [macOS]
++  [super setDefaultTextAttributes:defaultTextAttributes];
++#endif // [macOS]
++  [self _updatePlaceholder];
++
++#if TARGET_OS_OSX // [macOS
++  [self setAttributedText:[[NSAttributedString alloc] initWithString:[self text]
++                                                          attributes:[self defaultTextAttributes]]];
++
++  self.font = [[self defaultTextAttributes] objectForKey:NSFontAttributeName];
++#endif // macOS]
++}
++
++- (NSDictionary<NSAttributedStringKey, id> *)defaultTextAttributes
++{
++  return _defaultTextAttributes;
++}
++
++- (void)_updatePlaceholder
++{
++#if !TARGET_OS_OSX // [macOS]
++  self.attributedPlaceholder = [[NSAttributedString alloc] initWithString:self.placeholder ?: @""
++                                                               attributes:[self _placeholderTextAttributes]];
++#else // [macOS
++  // Set _isUpdatingPlaceholderText to manually suppress RCTUITextFieldDelegate's textFieldEndEditing
++  _isUpdatingPlaceholderText = YES;
++  self.placeholderAttributedString = [[NSAttributedString alloc] initWithString:self.placeholder ?: @""
++																	 attributes:[self _placeholderTextAttributes]];
++  _isUpdatingPlaceholderText = NO;
++#endif // macOS]
++}
++
++- (BOOL)isEditable
++{
++  return self.isEnabled;
++}
++
++- (void)setEditable:(BOOL)editable
++{
++#if TARGET_OS_OSX // [macOS
++  // on macos the super must be called otherwise its NSTextFieldCell editable property doesn't get set.
++  [super setEditable:editable];
++#endif // macOS]
++  self.enabled = editable;
++}
++
++#if !TARGET_OS_OSX // [macOS]
++- (void)setSecureTextEntry:(BOOL)secureTextEntry
++{
++  if (self.secureTextEntry == secureTextEntry) {
++    return;
++  }
++
++  [super setSecureTextEntry:secureTextEntry];
++
++  // Fix for trailing whitespate issue
++  // Read more:
++  // https://stackoverflow.com/questions/14220187/uitextfield-has-trailing-whitespace-after-securetextentry-toggle/22537788#22537788
++  NSAttributedString *originalText = [self.attributedText copy];
++  self.attributedText = [NSAttributedString new];
++  self.attributedText = originalText;
++}
++#endif // [macOS]
++
++- (void)setDisableKeyboardShortcuts:(BOOL)disableKeyboardShortcuts
++{
++  _disableKeyboardShortcuts = disableKeyboardShortcuts;
++#if TARGET_OS_IOS
++  // Initialize the initial values only once
++  if (_initialValueLeadingBarButtonGroups == nil) {
++    // Capture initial values of leading and trailing button groups
++    _initialValueLeadingBarButtonGroups = self.inputAssistantItem.leadingBarButtonGroups;
++    _initialValueTrailingBarButtonGroups = self.inputAssistantItem.trailingBarButtonGroups;
++  }
++
++  if (disableKeyboardShortcuts) {
++    self.inputAssistantItem.leadingBarButtonGroups = @[];
++    self.inputAssistantItem.trailingBarButtonGroups = @[];
++  } else {
++    // Restore the initial values
++    self.inputAssistantItem.leadingBarButtonGroups = _initialValueLeadingBarButtonGroups;
++    self.inputAssistantItem.trailingBarButtonGroups = _initialValueTrailingBarButtonGroups;
++  }
++#endif
++}
++
++#pragma mark - Placeholder
++
++- (NSDictionary<NSAttributedStringKey, id> *)_placeholderTextAttributes
++{
++  NSMutableDictionary<NSAttributedStringKey, id> *textAttributes =
++      [_defaultTextAttributes mutableCopy] ?: [NSMutableDictionary new];
++
++    [textAttributes setValue:self.placeholderColor ?: [RCTUIColor placeholderTextColor]
++                      forKey:NSForegroundColorAttributeName]; // [macOS]
++
++  return textAttributes;
++}
++
++#pragma mark - Context Menu
++
++#if !TARGET_OS_OSX // [macOS]
++
++- (BOOL)canPerformAction:(SEL)action withSender:(id)sender
++{
++  if (_contextMenuHidden) {
++    return NO;
++  }
++
++  return [super canPerformAction:action withSender:sender];
++}
++
++- (void)buildMenuWithBuilder:(id<UIMenuBuilder>)builder
++{
++#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 170000
++  if (@available(iOS 17.0, *)) {
++    if (_contextMenuHidden) {
++      [builder removeMenuForIdentifier:UIMenuAutoFill];
++    }
++  }
++#endif
++
++  [super buildMenuWithBuilder:builder];
++}
++
++#pragma mark - Dictation
++
++- (void)dictationRecordingDidEnd
++{
++  _dictationRecognizing = YES;
++}
++
++- (void)removeDictationResultPlaceholder:(id)placeholder willInsertResult:(BOOL)willInsertResult
++{
++  [super removeDictationResultPlaceholder:placeholder willInsertResult:willInsertResult];
++  _dictationRecognizing = NO;
++}
++
++#pragma mark - Caret Manipulation
++
++- (CGRect)caretRectForPosition:(UITextPosition *)position
++{
++  if (_caretHidden) {
++    return CGRectZero;
++  }
++
++  return [super caretRectForPosition:position];
++}
++
++#pragma mark - Positioning Overrides
++
++- (CGRect)textRectForBounds:(CGRect)bounds
++{
++  return UIEdgeInsetsInsetRect([super textRectForBounds:bounds], _textContainerInset);
++}
++
++- (CGRect)editingRectForBounds:(CGRect)bounds
++{
++  return [self textRectForBounds:bounds];
++}
++
++#else // [macOS
++
++#pragma mark - NSTextFieldDelegate methods
++
++- (void)textDidChange:(NSNotification *)notification
++{
++  [super textDidChange:notification];
++  id<RCTUITextFieldDelegate> delegate = self.delegate;
++  if ([delegate respondsToSelector:@selector(textFieldDidChange:)]) {
++    [delegate textFieldDidChange:self];
++  }
++}
++
++- (void)textDidEndEditing:(NSNotification *)notification
++{
++  [super textDidEndEditing:notification];
++
++  // On macOS, setting placeholderAttributedString causes AppKit to call textDidEndEditing.
++  // We don't want this to propagate or else we get unexpected onBlur/onEndEditing events.
++  if (_isUpdatingPlaceholderText) {
++    return;
++  }
++
++  id<RCTUITextFieldDelegate> delegate = self.delegate;
++  if ([delegate respondsToSelector:@selector(textFieldEndEditing:)]) {
++    [delegate textFieldEndEditing:self];
++  }
++}
++
++- (void)textViewDidChangeSelection:(NSNotification *)notification
++{
++  id<RCTUITextFieldDelegate> delegate = self.delegate;
++  if ([delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
++    [delegate textFieldDidChangeSelection:self];
++  }
++}
++
++- (BOOL)textView:(NSTextView *)aTextView shouldChangeTextInRange:(NSRange)aRange replacementString:(NSString *)aString
++{
++  id<RCTUITextFieldDelegate> delegate = self.delegate;
++  if ([delegate respondsToSelector:@selector(textField:shouldChangeCharactersInRange:replacementString:)]) {
++    return [delegate textField:self shouldChangeCharactersInRange:aRange replacementString:aString];
++  }
++  return NO;
++}
++
++- (NSMenu *)textView:(NSTextView *)view menu:(NSMenu *)menu forEvent:(NSEvent *)event atIndex:(NSUInteger)charIndex
++{
++  if (menu) {
++    [[RCTTouchHandler touchHandlerForView:self] willShowMenuWithEvent:event];
++  }
++
++  return menu;
++}
++
++#endif // macOS]
++
++#pragma mark - Overrides
++
++#if !TARGET_OS_OSX // [macOS]
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-implementations"
++// Overrides selectedTextRange setter to get notify when selectedTextRange changed.
++- (void)setSelectedTextRange:(UITextRange *)selectedTextRange
++{
++  [super setSelectedTextRange:selectedTextRange];
++  [_textInputDelegateAdapter selectedTextRangeWasSet];
++}
++#pragma clang diagnostic pop
++#endif // [macOS]
++
++#if TARGET_OS_OSX // [macOS
++- (BOOL)becomeFirstResponder
++{
++  BOOL isFirstResponder = [super becomeFirstResponder];
++  if (isFirstResponder) {
++    id<RCTUITextFieldDelegate> delegate = self.delegate;
++    if ([delegate respondsToSelector:@selector(textFieldBeginEditing:)]) {
++      // The AppKit -[NSTextField textDidBeginEditing:] notification is only called when the user
++      // makes the first change to the text in the text field.
++      // The react-native -[RCTUITextFieldDelegate textFieldBeginEditing:] is intended to be
++      // called when the text field is focused so call it here in becomeFirstResponder.
++      [delegate textFieldBeginEditing:self];
++    }
++
++    NSScrollView *scrollView = [self enclosingScrollView];
++    if (scrollView != nil) {
++      NSRect visibleRect = [[scrollView documentView] convertRect:self.frame fromView:self];
++      [[scrollView documentView] scrollRectToVisible:visibleRect];
++    }
++  }
++  return isFirstResponder;
++}
++
++- (BOOL)performKeyEquivalent:(NSEvent *)event
++{
++  // The currentEditor is NSText for historical reasons, but documented to be NSTextView.
++  NSTextView *currentEditor = (NSTextView *)self.currentEditor;
++  // The currentEditor is non-nil when focused and hasMarkedText means an IME is open.
++  if (currentEditor && !currentEditor.hasMarkedText && ![self.textInputDelegate textInputShouldHandleKeyEvent:event]) {
++    return YES; // Don't send currentEditor the keydown event.
++  }
++  return [super performKeyEquivalent:event];
++}
++#endif // macOS]
++
++#if !TARGET_OS_OSX // [macOS]
++- (void)setSelectedTextRange:(UITextRange *)selectedTextRange notifyDelegate:(BOOL)notifyDelegate
++{
++  if (!notifyDelegate) {
++    // We have to notify an adapter that following selection change was initiated programmatically,
++    // so the adapter must not generate a notification for it.
++    [_textInputDelegateAdapter skipNextTextInputDidChangeSelectionEventWithTextRange:selectedTextRange];
++  }
++
++  [super setSelectedTextRange:selectedTextRange];
++}
++
++- (void)scrollRangeToVisible:(NSRange)range
++{
++  // Singleline TextInput does not require scrolling after calling setSelectedTextRange (PR 38679).
++}
++
++- (void)paste:(id)sender
++{
++  _textWasPasted = YES;
++  [super paste:sender];
++}
++#else // [macOS
++- (void)setSelectedTextRange:(NSRange)selectedTextRange notifyDelegate:(BOOL)notifyDelegate
++{
++  if (!notifyDelegate) {
++    // We have to notify an adapter that following selection change was initiated programmatically,
++    // so the adapter must not generate a notification for it.
++    [_textInputDelegateAdapter skipNextTextInputDidChangeSelectionEventWithTextRange:selectedTextRange];
++  }
++
++  [[self currentEditor] setSelectedRange:selectedTextRange];
++}
++
++- (NSRange)selectedTextRange
++{
++  return [[self currentEditor] selectedRange];
++}
++#endif // macOS]
++
++#pragma mark - Layout
++
++- (CGSize)contentSize
++{
++  // Returning size DOES contain `textContainerInset` (aka `padding`).
++  return self.intrinsicContentSize;
++}
++
++- (CGSize)intrinsicContentSize
++{
++  // Note: `placeholder` defines intrinsic size for `<TextInput>`.
++  NSString *text = self.placeholder ?: @"";
++  CGSize size = [text sizeWithAttributes:[self _placeholderTextAttributes]];
++  size = CGSizeMake(RCTCeilPixelValue(size.width), RCTCeilPixelValue(size.height));
++  size.width += _textContainerInset.left + _textContainerInset.right;
++  size.height += _textContainerInset.top + _textContainerInset.bottom;
++  // Returning size DOES contain `textContainerInset` (aka `padding`).
++  return size;
++}
++
++- (CGSize)sizeThatFits:(CGSize)size
++{
++  // All size values here contain `textContainerInset` (aka `padding`).
++  CGSize intrinsicSize = self.intrinsicContentSize;
++  return CGSizeMake(MIN(size.width, intrinsicSize.width), MIN(size.height, intrinsicSize.height));
++}
++
++#if !TARGET_OS_OSX // [macOS]
++- (void)deleteBackward {
++  id<RCTBackedTextInputDelegate> textInputDelegate = [self textInputDelegate];
++  if ([textInputDelegate textInputShouldHandleDeleteBackward:self]) {
++    [super deleteBackward];
++  }
++}
++#else // [macOS
++- (void)keyUp:(NSEvent *)event {
++  if ([self.textInputDelegate textInputShouldHandleKeyEvent:event]) {
++    [super keyUp:event];
++  }
++}
++#endif // macOS]
++  
++#if TARGET_OS_OSX // [macOS
++- (void)setReadablePasteBoardTypes:(NSArray<NSPasteboardType> *)readablePasteboardTypes
++{
++  _readablePasteboardTypes = readablePasteboardTypes;
++}
++#endif // macOS]
++
++
++#pragma clang diagnostic pop
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.h b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.h
+index 8fb7ad6..904745a 100644
+--- a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.h
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.h
+@@ -11,7 +11,48 @@
+ 
+ #import <React/RCTUITextField.h>
+ 
+-@interface RCTUISecureTextField : RCTUITextField
++NS_ASSUME_NONNULL_BEGIN
++
++// AppKit requires the secure field editor's delegate to inherit NSSecureTextField.
++@interface RCTUISecureTextField : NSSecureTextField <RCTBackedTextInputViewProtocol>
++- (instancetype)initWithCoder:(NSCoder *)decoder NS_UNAVAILABLE;
++
++@property (nonatomic, weak) id<RCTBackedTextInputDelegate> textInputDelegate;
++
++@property (nonatomic, assign) BOOL caretHidden;
++@property (nonatomic, assign) BOOL contextMenuHidden;
++@property (nonatomic, assign) BOOL textWasPasted;
++@property (nonatomic, assign, readonly) BOOL dictationRecognizing;
++@property (nonatomic, strong, nullable) RCTUIColor *placeholderColor; // [macOS]
++@property (nonatomic, assign) UIEdgeInsets textContainerInset;
++@property (atomic, assign, getter=isEditable) BOOL editable;
++@property (nonatomic, getter=isScrollEnabled) BOOL scrollEnabled;
++@property (nonatomic, strong, nullable) NSString *inputAccessoryViewID;
++@property (nonatomic, strong, nullable) NSString *inputAccessoryViewButtonLabel;
++@property (nonatomic, assign, readonly) CGFloat zoomScale;
++@property (nonatomic, assign, readonly) CGPoint contentOffset;
++@property (nonatomic, assign, readonly) UIEdgeInsets contentInset;
++@property (nonatomic, assign) BOOL disableKeyboardShortcuts;
++
++@property (nonatomic, copy, nullable) NSString *text;
++@property (nonatomic, copy, nullable) NSAttributedString *attributedText;
++@property (nonatomic, strong, nullable) NSDictionary<NSAttributedStringKey, id> *defaultTextAttributes;
++@property (nullable, nonatomic, copy) NSDictionary<NSAttributedStringKey, id> *typingAttributes;
++@property (nonatomic, assign) NSTextAlignment textAlignment;
++@property (nonatomic, getter=isAutomaticTextReplacementEnabled) BOOL automaticTextReplacementEnabled;
++@property (nonatomic, getter=isAutomaticSpellingCorrectionEnabled) BOOL automaticSpellingCorrectionEnabled;
++@property (nonatomic, getter=isContinuousSpellCheckingEnabled) BOOL continuousSpellCheckingEnabled;
++@property (nonatomic, getter=isGrammarCheckingEnabled) BOOL grammarCheckingEnabled;
++@property (nonatomic, assign) BOOL enableFocusRing;
++@property (nonatomic, strong, nullable) RCTUIColor *selectionColor;
++@property (weak, nullable) id<RCTUITextFieldDelegate> delegate;
++@property (nonatomic, assign) CGFloat pointScaleFactor;
++
++- (void)setReadablePasteBoardTypes:(NSArray<NSPasteboardType> *)readablePasteboardTypes;
++
++@property (nonatomic, getter=isGhostTextChanging) BOOL ghostTextChanging; // [macOS]
  @end
  
- #endif // TARGET_OS_OSX
++NS_ASSUME_NONNULL_END
++
+ #endif
+diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
+index 6f332dc..dfaa3b5 100644
+--- a/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
++++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Singleline/macOS/RCTUISecureTextField.mm
+@@ -11,6 +11,11 @@
+ 
+ #import <React/RCTUISecureTextField.h>
+ #import <React/RCTUIKit.h>
++#import <React/RCTBackedTextInputDelegateAdapter.h>
++#import <React/RCTTextAttributes.h>
++#import <React/RCTUtils.h>
++#import <React/UIView+React.h>
++#import <React/RCTTouchHandler.h>
+ 
+ #pragma mark - RCTUISecureTextFieldCell
+ 
+@@ -28,50 +33,14 @@ @interface RCTUISecureTextFieldCell : NSSecureTextFieldCell
+ 
+ @implementation RCTUISecureTextFieldCell
+ 
+-- (NSRect)titleRectForBounds:(NSRect)rect
+-{
+-  return UIEdgeInsetsInsetRect([super titleRectForBounds:rect], self.textContainerInset);
+-}
+-
+-- (void)editWithFrame:(NSRect)rect inView:(NSView *)controlView editor:(NSText *)textObj delegate:(id)delegate event:(NSEvent *)event
+-{
+-  [super editWithFrame:[self titleRectForBounds:rect] inView:controlView editor:textObj delegate:delegate event:event];
+-}
+-
+-- (void)selectWithFrame:(NSRect)rect inView:(NSView *)controlView editor:(NSText *)textObj delegate:(id)delegate start:(NSInteger)selStart length:(NSInteger)selLength
+-{
+-  [super selectWithFrame:[self titleRectForBounds:rect] inView:controlView editor:textObj delegate:delegate start:selStart length:selLength];
+-}
+-
+-- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)controlView
+-{
+-  if (self.drawsBackground && self.backgroundColor && self.backgroundColor.alphaComponent > 0) {
+-    [self.backgroundColor set];
+-    NSRectFill(cellFrame);
+-  }
+-
+-  [super drawInteriorWithFrame:[self titleRectForBounds:cellFrame] inView:controlView];
+-}
+-
+-- (NSText *)setUpFieldEditorAttributes:(NSText *)textObj
+-{
+-  NSTextView *fieldEditor = (NSTextView *)[super setUpFieldEditorAttributes:textObj];
+-  fieldEditor.automaticSpellingCorrectionEnabled = self.isAutomaticSpellingCorrectionEnabled;
+-  fieldEditor.automaticTextReplacementEnabled = self.isAutomaticTextReplacementEnabled;
+-  fieldEditor.continuousSpellCheckingEnabled = self.isContinuousSpellCheckingEnabled;
+-  fieldEditor.grammarCheckingEnabled = self.isGrammarCheckingEnabled;
+-  NSMutableDictionary *selectTextAttributes = fieldEditor.selectedTextAttributes.mutableCopy;
+-  selectTextAttributes[NSBackgroundColorAttributeName] = self.selectionColor ?: [NSColor selectedControlColor];
+-  fieldEditor.selectedTextAttributes = selectTextAttributes;
+-  fieldEditor.insertionPointColor = self.insertionPointColor ?: [NSColor textColor];
+-  return fieldEditor;
+-}
++#include "../RCTUITextFieldCellImplementation.inc"
+ 
+ @end
+ 
+-#pragma mark - RCTUISecureTextField
++typedef RCTUISecureTextFieldCell RCTTextInputCell;
+ 
+ @implementation RCTUISecureTextField
++#include "../RCTUITextFieldImplementation.inc"
+ 
+ + (Class)cellClass
+ {
+diff --git a/node_modules/react-native-macos/React/Base/RCTTouchHandler.m b/node_modules/react-native-macos/React/Base/RCTTouchHandler.m
+index b85ee3d..1543705 100644
+--- a/node_modules/react-native-macos/React/Base/RCTTouchHandler.m
++++ b/node_modules/react-native-macos/React/Base/RCTTouchHandler.m
+@@ -144,8 +144,8 @@ - (void)_recordNewTouches:(NSSet *)touches
+     } else if ([targetView isKindOfClass:[NSText class]]) {
+       _shouldSendMouseUpOnSystemBehalf = [(NSText*)targetView isSelectable];
+     }
+-    else if ([targetView.superview isKindOfClass:[RCTUITextField class]]) {
+-      _shouldSendMouseUpOnSystemBehalf = [(RCTUITextField*)targetView.superview isSelectable];
++    else if ([targetView.superview isKindOfClass:[NSTextField class]]) {
++      _shouldSendMouseUpOnSystemBehalf = [(NSTextField*)targetView.superview isSelectable];
+     } else {
+       _shouldSendMouseUpOnSystemBehalf = NO;
+     }
 diff --git a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
 index f344c5b..8550ff9 100644
 --- a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/ScrollView/RCTEnhancedScrollView.h
@@ -335,6 +1917,27 @@ index a14a864..fc0200b 100644
    }
  #endif // macOS]
  
+diff --git a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
+index e725490..64e1a73 100644
+--- a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
++++ b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
+@@ -1372,11 +1372,11 @@ - (void)_setSecureTextEntry:(BOOL)secureTextEntry
+   RCTCopyBackedTextInput(_backedTextInputView, backedTextInputView);
+ 
+   // Copy the text field specific properties if we came from a single line input before the switch
+-  if ([_backedTextInputView isKindOfClass:[RCTUITextField class]]) {
+-    RCTUITextField *previousTextField = (RCTUITextField *)_backedTextInputView;
+-    RCTUITextField *newTextField = (RCTUITextField *)backedTextInputView;
+-    newTextField.textAlignment = previousTextField.textAlignment;
+-    newTextField.text = previousTextField.text;
++  if ([_backedTextInputView isKindOfClass:[NSTextField class]]) {
++    NSTextField *previousTextField = (NSTextField *)_backedTextInputView;
++    NSTextField *newTextField = (NSTextField *)backedTextInputView;
++    [(id)newTextField setTextAlignment:[(id)previousTextField textAlignment]];
++    newTextField.stringValue = previousTextField.stringValue;
+   }
+ 
+   _backedTextInputView = backedTextInputView;
 diff --git a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/View/RCTViewComponentView.mm b/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/View/RCTViewComponentView.mm
 index 6e20d03..2fd83a7 100644
 --- a/node_modules/react-native-macos/React/Fabric/Mounting/ComponentViews/View/RCTViewComponentView.mm
