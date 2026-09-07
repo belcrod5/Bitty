@@ -37,6 +37,7 @@ export type ConversationContextValue = {
   sessionTitleOverridesById: Record<string, string>;
   sessionMarkerColorsById: Record<string, DirectoryMarkerColor>;
   selectedLlmSessionId: string;
+  selectedLlmSessionMaterialized: boolean;
   hasSelectedDirectory: boolean;
   selectedDirectoryDisplayName: string;
   selectedSessionMarkerColor: DirectoryMarkerColor;

@@ -30,7 +30,11 @@ const mockSendReplyTranscriptForPanel = jest.fn(async (
 const mockSetSlashCommandSelectOpen = jest.fn();
 const mockGitDiffPanelProps: { current: Record<string, any> | null } = { current: null };
 const mockChatSessionSubagentProps: { current: Record<string, any> | null } = { current: null };
+const mockRunnerWsConnectionStatusProps: { current: Record<string, any> | null } = { current: null };
+const mockSetStringAsync = jest.fn(async (_text: string) => {});
 let mockPanelBackendId = "codex";
+let mockPanelSessionMaterialized: boolean | undefined = true;
+let mockSelectedLlmSessionMaterialized = true;
 let mockRunnerUrl = "http://runner.test";
 let mockPanelConversationMessages: Array<{ id: string; role: "user" | "assistant"; content: string }> = [];
 const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
@@ -76,7 +80,7 @@ jest.mock("react-native-keyboard-controller", () => {
 });
 
 jest.mock("react-native-webview", () => ({ WebView: () => null }));
-jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => {}) }));
+jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
 jest.mock("../../faceTracking/iosFaceTrackingClient", () => ({
   isIosFaceTrackingAvailable: () => false,
 }));
@@ -115,7 +119,12 @@ jest.mock("../components/ChatSessionSubagentList", () => ({
     return null;
   },
 }));
-jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({ RunnerWsConnectionStatus: () => null }));
+jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({
+  RunnerWsConnectionStatus: (props: Record<string, any>) => {
+    mockRunnerWsConnectionStatusProps.current = props;
+    return null;
+  },
+}));
 jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({
   LocationScheduleSettings: (props: Record<string, any>) => {
     mockLocationScheduleProps.current = props;
@@ -191,6 +200,7 @@ jest.mock("../contexts/PanelRuntimeStoreContext", () => ({
       selectedSessionMarkerColor: "none",
       selectedThreadStatusType: "idle",
       backendId: mockPanelBackendId,
+      sessionMaterialized: mockPanelSessionMaterialized,
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
       contextUsedPct: 0,
@@ -397,6 +407,7 @@ jest.mock("../contexts/ConversationContext", () => ({
     cancelCodexQueuedTurnForMessage: jest.fn(),
     logSessionDiag: mockLogSessionDiag,
     selectedLlmSessionId: "session-1",
+    selectedLlmSessionMaterialized: mockSelectedLlmSessionMaterialized,
   }),
 }));
 
@@ -408,7 +419,10 @@ describe("ChatScreen auto recording panel target", () => {
     mockLocationScheduleProps.current = null;
     mockChatSessionSubagentProps.current = null;
     mockGitDiffPanelProps.current = null;
+    mockRunnerWsConnectionStatusProps.current = null;
     mockPanelBackendId = "codex";
+    mockPanelSessionMaterialized = true;
+    mockSelectedLlmSessionMaterialized = true;
     mockRunnerUrl = "http://runner.test";
     mockPanelConversationMessages = [{ id: "message-1", role: "assistant", content: "hello" }];
   });
@@ -425,6 +439,47 @@ describe("ChatScreen auto recording panel target", () => {
     expect(mockStartAutoRecordingMode).toHaveBeenCalledWith("panel-a");
     await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
     expect(mockCodexScheduleProps.current?.currentThreadId).toBe("session-1");
+    await screen.unmount();
+  });
+
+  it("copies the current panel session history reference", async () => {
+    mockPanelBackendId = "claude";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    expect(mockRunnerWsConnectionStatusProps.current).toMatchObject({
+      sessionBackendId: "claude",
+      sessionId: "session-1",
+      sessionMaterialized: true,
+    });
+    await act(async () => {
+      mockRunnerWsConnectionStatusProps.current?.onCopySessionHistoryReference();
+    });
+
+    expect(mockSetStringAsync).toHaveBeenCalledWith("bitty-history read claude session-1");
+    await screen.unmount();
+  });
+
+  it("does not expose an unmaterialized panel session as a history reference", async () => {
+    mockPanelSessionMaterialized = false;
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    expect(mockRunnerWsConnectionStatusProps.current?.sessionMaterialized).toBe(false);
+    mockRunnerWsConnectionStatusProps.current?.onCopySessionHistoryReference();
+    expect(mockSetStringAsync).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
+  it("does not expose an unmaterialized main session as a history reference", async () => {
+    mockSelectedLlmSessionMaterialized = false;
+    const screen = await render(<ChatScreen mode="mini_board_popup" />);
+
+    expect(mockRunnerWsConnectionStatusProps.current).toMatchObject({
+      sessionBackendId: "claude",
+      sessionId: "session-1",
+      sessionMaterialized: false,
+    });
+    mockRunnerWsConnectionStatusProps.current?.onCopySessionHistoryReference();
+    expect(mockSetStringAsync).not.toHaveBeenCalled();
     await screen.unmount();
   });
 

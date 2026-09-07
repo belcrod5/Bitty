@@ -147,6 +147,45 @@ test("conversation history CLI honors the documented runner token file relative 
   assert.equal(authorization, "Bearer documented-token");
 });
 
+test("conversation history CLI reads the latest page without a cursor and preserves focused reads", async (t) => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-read-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const tokenFile = path.join(temp, "token");
+  await fs.writeFile(tokenFile, "test-token\n", { mode: 0o600 });
+  const requestedUrls = [];
+  const server = http.createServer((request, response) => {
+    requestedUrls.push(request.url);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ items: [], scanned: {} }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const environment = {
+    ...process.env,
+    BITTY_RUNNER_TOKEN_FILE: tokenFile,
+    BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+  };
+
+  await execFile(CLI, ["read", "codex", "session-1"], { env: environment });
+  await execFile(CLI, ["read", "claude", "session-2", "focused-cursor", "--limit", "7"], {
+    env: environment,
+  });
+
+  const latestRead = new URL(requestedUrls[0], "http://runner.test");
+  assert.equal(latestRead.pathname, "/agent/session-conversation");
+  assert.equal(latestRead.searchParams.get("backendId"), "codex");
+  assert.equal(latestRead.searchParams.get("sessionId"), "session-1");
+  assert.equal(latestRead.searchParams.has("cursor"), false);
+  assert.equal(latestRead.searchParams.get("limit"), "5");
+  const focusedRead = new URL(requestedUrls[1], "http://runner.test");
+  assert.equal(focusedRead.searchParams.get("backendId"), "claude");
+  assert.equal(focusedRead.searchParams.get("sessionId"), "session-2");
+  assert.equal(focusedRead.searchParams.get("cursor"), "focused-cursor");
+  assert.equal(focusedRead.searchParams.get("limit"), "7");
+});
+
 test("session Markdown link requires the admitted canonical cwd", () => {
   assert.equal(sessionMarkdownLink({
     sessionRef: { backendId: "codex", nativeSessionId: "session-1" },

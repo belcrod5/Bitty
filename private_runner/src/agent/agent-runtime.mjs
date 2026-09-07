@@ -8,6 +8,7 @@ import { createAgentWorkspaceAdmission } from "./agent-workspace-admission.mjs";
 
 export const CONVERSATION_HISTORY_TOOL_INSTRUCTIONS = [
   "When asked to find a previous Bitty conversation, use the read-only `bitty-history` command instead of reading Codex or Claude session files.",
+  "When backendId and sessionId are already known, skip search and read the latest items directly with `bitty-history read <backendId> <sessionId>`.",
   "Run `bitty-history search <query>` for bounded snippets, then run the returned `readCommand` only when more context is needed.",
   "For time-scoped searches, use `--order newest --since <ISO timestamp>` to skip older sessions before reading conversation text.",
   "If search returns no result and a cursor, repeat it with `--cursor <cursor>` until a result is found or no cursor remains.",

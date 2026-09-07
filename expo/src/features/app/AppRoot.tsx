@@ -5726,6 +5726,7 @@ export default function App() {
     sessionTitleOverridesById,
     sessionMarkerColorsById,
     selectedLlmSessionId,
+    selectedLlmSessionMaterialized,
     hasSelectedDirectory: hasSelectedRegisteredDirectory,
     selectedDirectoryDisplayName,
     selectedSessionMarkerColor,

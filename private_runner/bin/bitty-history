@@ -18,7 +18,7 @@ function usage() {
   return [
     "Usage:",
     "  bitty-history search <query> [--cwd <path>] [--workspace-offset <number>] [--backend <id|all>] [--limit <1-20>] [--order <newest|oldest>] [--since <ISO timestamp>] [--cursor <cursor>]",
-    "  bitty-history read <backendId> <sessionId> <conversationCursor> [--limit <1-50>]",
+    "  bitty-history read <backendId> <sessionId> [conversationCursor] [--limit <1-50>]",
   ].join("\n");
 }
 
@@ -170,13 +170,14 @@ async function read(args) {
   const backendId = String(args.shift() || "").trim();
   const sessionId = String(args.shift() || "").trim();
   const cursor = String(args.shift() || "").trim();
-  if (!backendId || !sessionId || !cursor || args.length > 0) throw new Error(usage());
-  const payload = await runnerRequest("/agent/session-conversation", [
+  if (!backendId || !sessionId || args.length > 0) throw new Error(usage());
+  const params = [
     ["backendId", backendId],
     ["sessionId", sessionId],
-    ["cursor", cursor],
     ["limit", limit],
-  ]);
+  ];
+  if (cursor) params.push(["cursor", cursor]);
+  const payload = await runnerRequest("/agent/session-conversation", params);
   return {
     backendId,
     sessionId,
