@@ -144,6 +144,7 @@ test("keeps non-macOS fullscreen input controlled by its parent", async () => {
 test("submits only Command+Enter on macOS and clears after the parent accepts the draft", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
   const onSubmit = jest.fn(async (_value: string, onAccepted: () => void) => onAccepted());
+  const onClose = jest.fn();
   const view = await render(
     <ComposerFullscreenEditor
       visible
@@ -153,7 +154,7 @@ test("submits only Command+Enter on macOS and clears after the parent accepts th
       onChangeText={jest.fn()}
       onSubmit={onSubmit}
       submitKeyEvents={[{ key: "Enter", metaKey: true }]}
-      onClose={jest.fn()}
+      onClose={onClose}
       onFocus={jest.fn()}
       onBlur={jest.fn()}
     />
@@ -164,6 +165,7 @@ test("submits only Command+Enter on macOS and clears after the parent accepts th
   await fireEvent(input, "submitEditing");
   await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("send me", expect.any(Function)));
   await waitFor(() => expect(view.getByTestId("composer-fullscreen-input").props.value).toBe(""));
+  expect(onClose).toHaveBeenCalledTimes(1);
 
   await view.unmount();
 });
@@ -199,6 +201,7 @@ test("submits the latest native IME text from the fullscreen editor", async () =
 test("keeps a macOS draft when the send is rejected", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
   const onSubmit = jest.fn(async () => {});
+  const onClose = jest.fn();
   const view = await render(
     <ComposerFullscreenEditor
       visible
@@ -208,7 +211,7 @@ test("keeps a macOS draft when the send is rejected", async () => {
       onChangeText={jest.fn()}
       onSubmit={onSubmit}
       submitKeyEvents={[{ key: "Enter", metaKey: true }]}
-      onClose={jest.fn()}
+      onClose={onClose}
       onFocus={jest.fn()}
       onBlur={jest.fn()}
     />
@@ -217,15 +220,17 @@ test("keeps a macOS draft when the send is rejected", async () => {
   await fireEvent(view.getByTestId("composer-fullscreen-input"), "submitEditing");
   await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("retry me", expect.any(Function)));
   expect(view.getByTestId("composer-fullscreen-input").props.value).toBe("retry me");
+  expect(onClose).not.toHaveBeenCalled();
   await view.unmount();
 });
 
-test("keeps text entered while an accepted macOS send is pending", async () => {
+test("closes an accepted macOS send without clearing text entered while it was pending", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
   let finishSend!: () => void;
   let acceptSend!: () => void;
   const sendCompletion = new Promise<void>((resolve) => { finishSend = resolve; });
   const onChangeText = jest.fn();
+  const onClose = jest.fn();
   const onSubmit = jest.fn((_value: string, onAccepted: () => void) => {
     acceptSend = onAccepted;
     return sendCompletion;
@@ -239,7 +244,7 @@ test("keeps text entered while an accepted macOS send is pending", async () => {
       onChangeText={onChangeText}
       onSubmit={onSubmit}
       submitKeyEvents={[{ key: "Enter", metaKey: true }]}
-      onClose={jest.fn()}
+      onClose={onClose}
       onFocus={jest.fn()}
       onBlur={jest.fn()}
     />
@@ -247,13 +252,16 @@ test("keeps text entered while an accepted macOS send is pending", async () => {
 
   await fireEvent(view.getByTestId("composer-fullscreen-input"), "submitEditing");
   await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("send me", expect.any(Function)));
+  onChangeText.mockClear();
+  await fireEvent.changeText(view.getByTestId("composer-fullscreen-input"), "next message");
   await act(async () => {
     acceptSend();
     await Promise.resolve();
   });
-  expect(onChangeText).toHaveBeenCalledWith("");
-  onChangeText.mockClear();
-  await fireEvent.changeText(view.getByTestId("composer-fullscreen-input"), "next message");
+  expect(view.getByTestId("composer-fullscreen-input").props.value).toBe("next message");
+  expect(onChangeText).not.toHaveBeenCalledWith("");
+  expect(onClose).toHaveBeenCalledTimes(1);
+
   await act(async () => {
     finishSend();
     await sendCompletion;

@@ -587,7 +587,7 @@ describe("ChatScreen auto recording panel target", () => {
     await screen.unmount();
   });
 
-  it("does not erase a new normal draft when an accepted fullscreen turn completes", async () => {
+  it("closes an accepted fullscreen turn without erasing a new normal draft", async () => {
     Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
     let finishTurn!: () => void;
     let acceptTurn!: () => void;
@@ -621,8 +621,8 @@ describe("ChatScreen auto recording panel target", () => {
       acceptTurn();
       await Promise.resolve();
     });
+    await waitFor(() => expect(screen.queryByTestId("composer-fullscreen-input")).toBeNull());
     expect(screen.getByTestId("chat-composer-input").props.value).toBe("");
-    await fireEvent.press(screen.getByLabelText("全画面入力を閉じる"));
     await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "new draft");
 
     await act(async () => {
