@@ -110,10 +110,12 @@ function ComposerFullscreenContent({
     if (submittedDraft !== draftRef.current) changeDraft(submittedDraft);
     submitPendingRef.current = true;
     void onSubmit(submittedDraft, () => {
-      if (draftRef.current !== submittedDraft) return;
-      draftRef.current = "";
-      setDraft("");
-      onChangeText("");
+      if (draftRef.current === submittedDraft) {
+        draftRef.current = "";
+        setDraft("");
+        onChangeText("");
+      }
+      onClose();
     }).finally(() => {
       submitPendingRef.current = false;
     });
