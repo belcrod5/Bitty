@@ -2317,7 +2317,7 @@ export function ChatScreen({
                       route: isPanelRuntimeView ? "cancelReplyRequestForPanel" : "stopLlmTurn",
                     }, { throttleMs: 0 });
                     if (isPanelRuntimeView) {
-                      cancelReplyRequestForPanel(panelId);
+                      cancelReplyRequestForPanel(panelId, selectedSessionIdForView);
                       return;
                     }
                     void stopLlmTurn();

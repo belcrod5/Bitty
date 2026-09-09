@@ -106,7 +106,7 @@ export type ConversationContextValue = {
     transcript?: string,
     options?: { onAccepted?: () => void }
   ) => Promise<void>;
-  cancelReplyRequestForPanel: (panelId: string) => void;
+  cancelReplyRequestForPanel: (panelId: string, threadId: string) => void;
   cancelCodexQueuedTurnForMessage: (params: {
     queuedTurnId: string;
     messageId: string;

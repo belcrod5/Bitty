@@ -5416,7 +5416,7 @@ export default function App() {
     await sendReplyRequestWithSessionGuard(transcriptOverride, nextOptions);
   }
 
-  async function cancelCodexTurnRequest(options?: { panelId?: string }) {
+  async function cancelCodexTurnRequest(options?: { panelId?: string; threadId?: string }) {
     await cancelCodexTurnRequestGuarded(options);
   }
 
@@ -5572,13 +5572,16 @@ export default function App() {
     }, { throttleMs: 0 });
     return sendReplyTranscript(transcriptOverride, { ...options, panelId: panel });
   }, [sendReplyTranscript]);
-  const cancelReplyRequestForPanelFromContext = useCallback((panelId: string) => {
+  const cancelReplyRequestForPanelFromContext = useCallback((panelId: string, threadId: string) => {
     const panel = normalizeRuntimePanelId(panelId);
+    const thread = String(threadId || "").trim();
     logSessionDiag("panel_cancel_triggered", {
       panelId: panel,
+      threadId: thread || undefined,
       route: "cancelReplyRequestForPanel",
     }, { throttleMs: 0 });
-    void cancelCodexTurnRequest({ panelId: panel });
+    if (!thread) return;
+    void cancelCodexTurnRequest({ panelId: panel, threadId: thread });
   }, [cancelCodexTurnRequest]);
   const selectedDirectoryPathForConversationContext = normalizedLlmDirectoryForRequest();
   const appShellContextValue = useAppShellContextValue({

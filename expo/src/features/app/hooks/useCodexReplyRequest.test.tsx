@@ -983,6 +983,81 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     });
   });
 
+  test("thread cancel interrupts every accepted compact-time run without stopping another thread", async () => {
+    const { options } = createOptions();
+    const turns: Array<{
+      options: any;
+      resolve: (result: any) => void;
+      reject: (error: unknown) => void;
+      interrupt: jest.Mock;
+    }> = [];
+    mockStartCodexAppServerTurn.mockImplementation(((turnOptions: any) => {
+      let resolve = (_result: any) => {};
+      let reject = (_error: unknown) => {};
+      const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const interrupt = jest.fn(async () => {});
+      turns.push({ options: turnOptions, resolve, reject, interrupt });
+      return { promise, interrupt };
+    }) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    let firstSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      firstSend = result.current.sendReplyRequest("first message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      turns[0].options.onTurnAccepted?.({ runId: "run-1", queued: true });
+    });
+
+    let secondSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      secondSend = result.current.sendReplyRequest("second message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      turns[1].options.onTurnAccepted?.({ runId: "run-2", queued: true });
+    });
+
+    let otherThreadSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      otherThreadSend = result.current.sendReplyRequest("other thread message", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-2" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      turns[2].options.onTurnAccepted?.({ runId: "run-3", queued: true });
+    });
+
+    await act(async () => {
+      await expect(result.current.cancelReplyRequest({
+        panelId: "panel-1",
+        threadId: "thread-1",
+      })).resolves.toBe(true);
+    });
+    expect(turns.map((turn) => turn.interrupt.mock.calls.length)).toEqual([1, 1, 0]);
+
+    await act(async () => {
+      const interrupted = Object.assign(new Error("turn interrupted"), { isInterrupted: true });
+      turns[0].reject(interrupted);
+      turns[1].reject(interrupted);
+      turns[2].options.onDelta?.("other thread reply", { itemId: "item-3" });
+      turns[2].resolve({
+        threadId: "thread-2",
+        turnId: "turn-3",
+        reply: "other thread reply",
+        contextUsage: null,
+      });
+      await Promise.all([firstSend, secondSend, otherThreadSend]);
+    });
+    expect(options.applyAssistantReply).toHaveBeenCalledWith("other thread reply");
+  });
+
   test("gate-blocked send keeps the composer and reports the rejection", async () => {
     const { options } = createOptions();
     mockStartCodexAppServerTurn.mockImplementation((() => ({
