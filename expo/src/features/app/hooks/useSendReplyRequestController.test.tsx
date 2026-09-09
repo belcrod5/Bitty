@@ -123,6 +123,28 @@ describe("useSendReplyRequestController rejection feedback", () => {
     });
   });
 
+  test("stops the requested observer thread when the panel selection has changed", async () => {
+    const args = createArgs(undefined);
+    args.cancelReplyRequestFromCodex.mockResolvedValue(false);
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.cancelCodexTurnRequestGuarded({
+        panelId: "panel-1",
+        threadId: "thread-2",
+      });
+    });
+
+    expect(args.cancelReplyRequestFromCodex).toHaveBeenCalledWith({
+      panelId: "panel-1",
+      threadId: "thread-2",
+    });
+    expect(args.interruptCodexRelayObserver).toHaveBeenCalledWith({
+      panelId: "panel-1",
+      threadId: "thread-2",
+    });
+  });
+
   test("does not stop a different session when the target panel has no session", async () => {
     const args = createArgs(undefined);
     args.cancelReplyRequestFromCodex.mockResolvedValue(false);

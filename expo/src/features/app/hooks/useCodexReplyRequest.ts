@@ -1599,13 +1599,17 @@ export function useCodexReplyRequest<
     }
   }, [clearPanelRequestTracking, getPanelRequestState]);
 
-  const cancelReplyRequest = useCallback(async (options?: { panelId?: string }) => {
+  const cancelReplyRequest = useCallback(async (options?: { panelId?: string; threadId?: string }) => {
     const current = optionsRef.current;
     const targetPanelId = normalizePanelId(options?.panelId);
+    const targetThreadId = String(options?.threadId || "").trim();
     const targetPanelState = getPanelRequestState(targetPanelId);
     const inFlightRequests = Object.values(targetPanelState?.inFlightTurnRequestBySeq || {})
+      .filter((request) => !targetThreadId || request.threadId === targetThreadId)
       .sort((left, right) => left.requestSeq - right.requestSeq);
-    const fallbackRequestSeq = targetPanelState?.activeRequestSeq || 0;
+    const fallbackRequestSeq = targetThreadId
+      ? (targetPanelState?.activeRequestSeqByThreadId[targetThreadId] || 0)
+      : (targetPanelState?.activeRequestSeq || 0);
     if (inFlightRequests.length === 0 && fallbackRequestSeq <= 0) return false;
     for (const request of inFlightRequests) {
       targetPanelState?.cancelledRequestSeqs.add(request.requestSeq);
@@ -1613,6 +1617,7 @@ export function useCodexReplyRequest<
     current.logAuto("reply_http_cancel_requested", {
       requestSeqs: inFlightRequests.map((request) => request.requestSeq),
       panelId: targetPanelId,
+      threadId: targetThreadId || undefined,
     });
     const cancelledAtMs = Date.now();
     if (typeof current.updateConversationRuntimeRequest === "function") {
@@ -1645,7 +1650,7 @@ export function useCodexReplyRequest<
       });
     }
     if (inFlightRequests.length === 0) {
-      clearPanelRequestTracking(targetPanelId, fallbackRequestSeq);
+      clearPanelRequestTracking(targetPanelId, fallbackRequestSeq, targetThreadId);
       return false;
     }
     await Promise.all(inFlightRequests.map(async (request) => {
