@@ -42,8 +42,11 @@ pinch, tap, and touch long presses on iOS remain unchanged.
 `react-native-enriched-markdown+0.5.0.patch` casts Objective-C `BOOL` values to
 C++ `bool` in event-emitter payload initializers. The macOS SDK treats the
 implicit narrowing as a compile error (`-Wc++11-narrowing`), which breaks the
-Release build. Behavior is unchanged; remove the patch once upstream builds
-cleanly for macOS.
+Release build. On macOS, it also leaves primary-button text selection to AppKit
+instead of opening a context menu after every drag. Secondary clicks still use
+the native context-menu path, and closing that menu no longer clears the current
+selection. Remove the patch once upstream builds cleanly and provides the same
+native mouse behavior on macOS.
 
 `expo-secure-store+15.0.8.patch` adds macOS pod support and uses a String
 Keychain account on macOS. It migrates the previous account-less items only
