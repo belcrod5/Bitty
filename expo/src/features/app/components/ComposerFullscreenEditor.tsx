@@ -15,6 +15,10 @@ import {
 import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
 import type { MACOS_CHAT_SUBMIT_KEY_EVENTS } from "./ChatComposerInput";
+import {
+  ModalTextInputDraft,
+  type ModalTextInputDraftValue,
+} from "./ModalTextInputDraft";
 
 type SubmitKeyEvent = (typeof MACOS_CHAT_SUBMIT_KEY_EVENTS)[number];
 
@@ -50,30 +54,35 @@ export function ComposerFullscreenEditor({
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
-      <ComposerFullscreenContent
-        inputRef={inputRef}
-        initialValue={value}
-        history={history}
-        onChangeText={onChangeText}
-        onSubmit={onSubmit}
-        submitKeyEvents={submitKeyEvents}
-        onClose={onClose}
-        onFocus={onFocus}
-        onBlur={onBlur}
-      />
+      <ModalTextInputDraft value={value} onChangeText={onChangeText}>
+        {(draft) => (
+          <ComposerFullscreenContent
+            inputRef={inputRef}
+            draft={draft}
+            history={history}
+            onSubmit={onSubmit}
+            submitKeyEvents={submitKeyEvents}
+            onClose={onClose}
+            onFocus={onFocus}
+            onBlur={onBlur}
+          />
+        )}
+      </ModalTextInputDraft>
     </AppModal>
   );
 }
 
-type ComposerFullscreenContentProps = Omit<ComposerFullscreenEditorProps, "visible" | "value"> & {
-  initialValue: string;
+type ComposerFullscreenContentProps = Omit<
+  ComposerFullscreenEditorProps,
+  "visible" | "value" | "onChangeText"
+> & {
+  draft: ModalTextInputDraftValue;
 };
 
 function ComposerFullscreenContent({
   inputRef,
-  initialValue,
+  draft,
   history,
-  onChangeText,
   onSubmit,
   submitKeyEvents,
   onClose,
@@ -81,8 +90,6 @@ function ComposerFullscreenContent({
   onBlur,
 }: ComposerFullscreenContentProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [draft, setDraft] = useState(initialValue);
-  const draftRef = useRef(initialValue);
   const submitPendingRef = useRef(false);
 
   useEffect(() => {
@@ -90,31 +97,19 @@ function ComposerFullscreenContent({
     return () => clearTimeout(timer);
   }, [inputRef]);
 
-  const changeDraft = (next: string) => {
-    if (Platform.OS === "macos") {
-      draftRef.current = next;
-      setDraft(next);
-    }
-    onChangeText(next);
-  };
-
   const selectHistoryMessage = (message: string) => {
-    changeDraft(message);
+    draft.changeText(message);
     setHistoryOpen(false);
     setTimeout(() => inputRef.current?.focus(), 60);
   };
 
   const submit = (event?: NativeSyntheticEvent<TextInputSubmitEditingEventData>) => {
-    const submittedDraft = event?.nativeEvent.text ?? draftRef.current;
+    const submittedDraft = event?.nativeEvent.text ?? draft.getValue();
     if (!submittedDraft.trim() || submitPendingRef.current) return;
-    if (submittedDraft !== draftRef.current) changeDraft(submittedDraft);
+    if (submittedDraft !== draft.getValue()) draft.changeText(submittedDraft);
     submitPendingRef.current = true;
     void onSubmit(submittedDraft, () => {
-      if (draftRef.current === submittedDraft) {
-        draftRef.current = "";
-        setDraft("");
-        onChangeText("");
-      }
+      if (draft.getValue() === submittedDraft) draft.changeText("");
       onClose();
     }).finally(() => {
       submitPendingRef.current = false;
@@ -187,8 +182,8 @@ function ComposerFullscreenContent({
             testID="composer-fullscreen-input"
             ref={inputRef}
             style={componentStyles.input}
-            value={Platform.OS === "macos" ? draft : initialValue}
-            onChangeText={changeDraft}
+            value={draft.value}
+            onChangeText={draft.changeText}
             onSubmitEditing={submitKeyEvents ? submit : undefined}
             {...(submitKeyEvents ? { submitKeyEvents } : {})}
             placeholder="メッセージを入力"
