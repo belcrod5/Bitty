@@ -9,6 +9,10 @@ const macOSPatch = readFileSync(
   resolve(__dirname, "../../../../patches/react-native-macos+0.81.9.patch"),
   "utf8"
 );
+const enrichedMarkdownPatch = readFileSync(
+  resolve(__dirname, "../../../../patches/react-native-enriched-markdown+0.5.0.patch"),
+  "utf8"
+);
 
 test("react-native-macos forwards Fabric submit key combinations to TextInput traits", () => {
   expect(macOSPatch).toContain('traits.submitKeyEvents = convertRawProp(');
@@ -70,6 +74,22 @@ test("macOS right-click long press keeps drag cancellation active", () => {
   expect(gesturePatch).toContain("- (void)rightMouseUp:(NSEvent *)event");
   expect(gesturePatch).toContain("if ([self shouldCancelGesture])");
   expect(gesturePatch).toContain("NSGestureRecognizerStateCancelled");
+});
+
+test("macOS markdown uses native mouse selection and context-menu behavior", () => {
+  const textViewPatchStart = enrichedMarkdownPatch.indexOf(
+    "diff --git a/node_modules/react-native-enriched-markdown/ios/views/ENRMContextMenuTextView+macOS.m"
+  );
+  const textViewPatch = enrichedMarkdownPatch.slice(textViewPatchStart);
+
+  expect(textViewPatchStart).toBeGreaterThanOrEqual(0);
+  expect(textViewPatch).toContain("+        if (tv != self && tv.selectedRange.length > 0)");
+  expect(textViewPatch).toContain("-      [menu popUpMenuPositioningItem:nil");
+  expect(textViewPatch).not.toContain("+      [menu popUpMenuPositioningItem:nil");
+  expect(textViewPatch).toContain("\n   [super rightMouseDown:event];");
+  expect(textViewPatch).toContain("-- (void)menuDidClose:(NSMenu *)menu");
+  expect(textViewPatch).toContain("-    self.selectedRange = NSMakeRange(0, 0);");
+  expect(textViewPatch).not.toContain("+    self.selectedRange = NSMakeRange(0, 0);");
 });
 
 test("macOS wheel zoom accepts only supported vertical input", () => {
