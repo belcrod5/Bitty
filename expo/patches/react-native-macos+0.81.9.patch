@@ -88,6 +88,19 @@ diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/
 index a5b5a6a..b6c2642 100644
 --- a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
 +++ b/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
+@@ -659,10 +659,11 @@ - (void)deleteBackward {
+ }
+ #else // [macOS
+ - (BOOL)performKeyEquivalent:(NSEvent *)event {
+-  if (self.window.firstResponder == self && !self.hasMarkedText && ![self.textInputDelegate textInputShouldHandleKeyEvent:event]) {
++  id<RCTBackedTextInputDelegate> textInputDelegate = self.textInputDelegate;
++  if (textInputDelegate && self.window.firstResponder == self && !self.hasMarkedText && ![textInputDelegate textInputShouldHandleKeyEvent:event]) {
+     return YES;
+   }
+ 
+   return [super performKeyEquivalent:event];
+ }
+ 
 @@ -671,6 +671,9 @@ - (void)keyDown:(NSEvent *)event {
    // Do this check before textInputShouldHandleKeyEvent as that one attempts to send the event to JS
    if (self.hasMarkedText) {
