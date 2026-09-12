@@ -22,6 +22,7 @@ import type {
 } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
 import { MarkdownText } from "./MarkdownText";
+import { ModalTextInputDraft } from "./ModalTextInputDraft";
 
 type WorkspaceTextFileEditorProps = {
   target: WorkspaceFileTarget | null;
@@ -195,35 +196,45 @@ export function WorkspaceTextFileEditor({
             <View style={editorStyles.centerArea}>
               <Text style={editorStyles.errorText}>{loadError}</Text>
             </View>
-          ) : mode === "edit" ? (
-            <TextInput
-              testID="workspace-text-file-editor-input"
-              style={editorStyles.textInput}
+          ) : (
+            <ModalTextInputDraft
+              key={`${targetRootDirectory}\0${targetPath}\0${version}`}
               value={content}
               onChangeText={setContent}
-              editable={!saving}
-              multiline
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-              textAlignVertical="top"
-            />
-          ) : (
-            <ScrollView
-              style={editorStyles.previewScroll}
-              contentContainerStyle={editorStyles.previewContent}
-              testID="workspace-text-file-editor-preview"
             >
-              {isMarkdown ? (
-                <MarkdownText
-                  content={content}
-                  tone="assistant"
-                  textStyle={editorStyles.previewText}
-                />
-              ) : (
-                <Text style={editorStyles.previewText} selectable>{content}</Text>
-              )}
-            </ScrollView>
+              {(draft) =>
+                mode === "edit" ? (
+                  <TextInput
+                    testID="workspace-text-file-editor-input"
+                    style={editorStyles.textInput}
+                    value={draft.value}
+                    onChangeText={draft.changeText}
+                    editable={!saving}
+                    multiline
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    spellCheck={false}
+                    textAlignVertical="top"
+                  />
+                ) : (
+                  <ScrollView
+                    style={editorStyles.previewScroll}
+                    contentContainerStyle={editorStyles.previewContent}
+                    testID="workspace-text-file-editor-preview"
+                  >
+                    {isMarkdown ? (
+                      <MarkdownText
+                        content={draft.value}
+                        tone="assistant"
+                        textStyle={editorStyles.previewText}
+                      />
+                    ) : (
+                      <Text style={editorStyles.previewText} selectable>{draft.value}</Text>
+                    )}
+                  </ScrollView>
+                )
+              }
+            </ModalTextInputDraft>
           )}
         </KeyboardAvoidingView>
       </SafeAreaView>

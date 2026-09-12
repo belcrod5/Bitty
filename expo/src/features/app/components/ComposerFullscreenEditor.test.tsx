@@ -38,6 +38,7 @@ test("shows an empty history state", async () => {
 });
 
 test("replaces the draft with a selected long history message and closes the list", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
   const onChangeText = jest.fn();
   const message = "長い送信メッセージ\n".repeat(10);
   const view = await render(
@@ -70,6 +71,7 @@ test("replaces the draft with a selected long history message and closes the lis
     fireEvent.press(view.getByLabelText(`送信履歴 1: ${message}`));
   });
   expect(onChangeText).toHaveBeenCalledWith(message);
+  expect(view.getByTestId("composer-fullscreen-input").props.value).toBe(message);
   expect(view.queryByTestId("composer-history-list")).toBeNull();
   await view.unmount();
 });
