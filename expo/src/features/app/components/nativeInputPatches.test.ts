@@ -39,6 +39,24 @@ test("react-native-macos submits Command+Enter after committing marked IME text"
   );
 });
 
+test("react-native-macos leaves key equivalents native without a TextInput delegate", () => {
+  const textViewPatchStart = macOSPatch.indexOf(
+    "diff --git a/node_modules/react-native-macos/Libraries/Text/TextInput/Multiline/RCTUITextView.mm"
+  );
+  const nextPatchStart = macOSPatch.indexOf("\ndiff --git ", textViewPatchStart + 1);
+  const textViewPatch = macOSPatch.slice(textViewPatchStart, nextPatchStart);
+
+  expect(textViewPatchStart).toBeGreaterThanOrEqual(0);
+  expect(nextPatchStart).toBeGreaterThan(textViewPatchStart);
+  expect(textViewPatch).toContain(
+    "+  id<RCTBackedTextInputDelegate> textInputDelegate = self.textInputDelegate;"
+  );
+  expect(textViewPatch).toContain(
+    "+  if (textInputDelegate && self.window.firstResponder == self && !self.hasMarkedText && ![textInputDelegate textInputShouldHandleKeyEvent:event]) {"
+  );
+  expect(textViewPatch).toContain("   return [super performKeyEquivalent:event];");
+});
+
 test("react-native-macos keeps upstream click dispatch (child-click fallback withdrawn)", () => {
   // 子ビュークリックはresponder経路が正常に処理する(実測確認済み)。かつての
   // targetIsDescendantフォールバックはonPress二重発火の原因だったため撤回した。
