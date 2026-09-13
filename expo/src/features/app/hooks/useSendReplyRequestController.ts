@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import type {
+  ComposerInputDisposition,
   ReplyRequestSessionSnapshot,
   SessionSwitchQueuedSend,
 } from "../types/appTypes";
@@ -18,6 +19,7 @@ const SEND_REJECT_TOAST_TEXT: Partial<Record<SendReplyRequestRejectReason, strin
 };
 
 type ReplyRequestOptions<TSttMeta> = {
+  inputDisposition?: ComposerInputDisposition;
   sttMeta?: TSttMeta;
   panelId?: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;
@@ -102,7 +104,6 @@ export function useSendReplyRequestController<TSttMeta>({
       logSessionDiag("reply_send_guard_queued_after_session_restore", {
         panelId: writePanelId,
       }, { throttleMs: 0 });
-      options?.onAccepted?.();
       return;
     }
     if (!hasForcedSnapshot) {

@@ -287,8 +287,11 @@ export type PersistedDirectoryUiState = {
   expandedDirectoryIds: string[];
 };
 
+export type ComposerInputDisposition = "clear" | "preserve";
+
 export type SessionSwitchQueuedSend = {
   transcript: string;
+  inputDisposition: ComposerInputDisposition;
   sttMeta?: SttMessageMeta;
   panelId: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;

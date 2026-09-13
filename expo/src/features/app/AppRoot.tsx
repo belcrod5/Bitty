@@ -103,10 +103,7 @@ import { useCodexStatusRefreshEffects } from "./hooks/useCodexStatusRefreshEffec
 import { useGitChangedFilesController } from "./hooks/useGitChangedFilesController";
 import { useLlmRuntimeLimitsReader } from "./hooks/useLlmRuntimeLimitsReader";
 import { useSlashCompactCommandController } from "./hooks/useSlashCompactCommandController";
-import {
-  useSlashCommandController,
-  type SlashCommandInputDisposition,
-} from "./hooks/useSlashCommandController";
+import { useSlashCommandController } from "./hooks/useSlashCommandController";
 import { useSlashCommandResultAppender } from "./hooks/useSlashCommandResultAppender";
 import { useSlashStatusCommandController } from "./hooks/useSlashStatusCommandController";
 import { useSendReplyRequestController } from "./hooks/useSendReplyRequestController";
@@ -187,6 +184,7 @@ import type {
   AutoClientLogEntry,
   CodexAuthProfilesSnapshot,
   CodexCliStatusSnapshot,
+  ComposerInputDisposition,
   ConversationMessage,
   GitChangedFilesDirectoryState,
   HistoryEntry,
@@ -5142,7 +5140,7 @@ export default function App() {
   const recordAcceptedComposerMessage = useCallback((
     message: string,
     sessionIdRaw?: string,
-    inputDisposition: SlashCommandInputDisposition = "clear"
+    inputDisposition: ComposerInputDisposition = "clear"
   ) => {
     recordComposerMessageHistory(message);
     if (inputDisposition === "clear") {
@@ -5330,7 +5328,13 @@ export default function App() {
     reasoningEffort?: ReasoningEffort | string;
     source?: string;
   };
-  type SendReplyOptions = { sttMeta?: SttMessageMeta; panelId?: string; sessionSnapshot?: WriteSessionSnapshot; onAccepted?: () => void };
+  type SendReplyOptions = {
+    inputDisposition?: ComposerInputDisposition;
+    sttMeta?: SttMessageMeta;
+    panelId?: string;
+    sessionSnapshot?: WriteSessionSnapshot;
+    onAccepted?: () => void;
+  };
 
   function resolveWritePanelId(panelIdRaw: unknown): string | null {
     const panelId = normalizeRuntimePanelId(panelIdRaw);

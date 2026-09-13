@@ -19,7 +19,11 @@ import {
   upsertCommandExecutionMessage,
 } from "../utils/sessionRuntimeStatus";
 import type { LlmUiStatus } from "./useLlmRequestStatus";
-import type { LlmMessageCompletion, TtsPlaybackTarget } from "../types/appTypes";
+import type {
+  ComposerInputDisposition,
+  LlmMessageCompletion,
+  TtsPlaybackTarget,
+} from "../types/appTypes";
 import type {
   ConversationRuntimeRequestLifecycle,
   ConversationRuntimeRequestSnapshotInput,
@@ -102,6 +106,7 @@ type UseCodexReplyRequestOptions<
     text: string,
     options: {
       clearInput: boolean;
+      inputDisposition?: ComposerInputDisposition;
       onAccepted?: () => void;
       sttMeta?: TSttMeta;
       panelId?: string;
@@ -196,6 +201,7 @@ type ReplyRequestSessionSnapshot = {
 };
 
 type ReplyRequestOptions<TSttMeta> = {
+  inputDisposition?: ComposerInputDisposition;
   sttMeta?: TSttMeta;
   panelId?: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;
@@ -438,6 +444,7 @@ export function useCodexReplyRequest<
     const requestTurnModelRef = hasModelCatalog && !requestModelOption ? "" : requestModelRef;
     if (await current.runSlashCommand(effectiveTranscript, {
       clearInput,
+      inputDisposition: requestOptions?.inputDisposition,
       onAccepted: requestOptions?.onAccepted,
       sttMeta: requestOptions?.sttMeta,
       panelId: requestPanelId,

@@ -1,23 +1,26 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
-import type { ReplyRequestSessionSnapshot, SttMessageMeta } from "../types/appTypes";
+import type {
+  ComposerInputDisposition,
+  ReplyRequestSessionSnapshot,
+  SttMessageMeta,
+} from "../types/appTypes";
 import { parseSlashCommandInput } from "../utils/statusText";
 
 type RunSlashCommandOptions = {
   clearInput?: boolean;
+  inputDisposition?: ComposerInputDisposition;
   onAccepted?: () => void;
   sttMeta?: SttMessageMeta;
   panelId?: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;
 };
 
-export type SlashCommandInputDisposition = "clear" | "preserve";
-
 type UseSlashCommandControllerArgs = {
   setTranscript: Dispatch<SetStateAction<string>>;
   onCommandAccepted: (
     commandText: string,
     sessionId: string | undefined,
-    inputDisposition: SlashCommandInputDisposition
+    inputDisposition: ComposerInputDisposition
   ) => void;
   runSlashStatusCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<void>;
   runSlashCompactCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<void>;
@@ -38,9 +41,7 @@ export function useSlashCommandController({
     const parsed = parseSlashCommandInput(commandTextRaw);
     if (!parsed) return false;
     const commandText = parsed.raw;
-    const inputDisposition: SlashCommandInputDisposition = parsed.name === "/compact"
-      ? "preserve"
-      : "clear";
+    const inputDisposition = options?.inputDisposition || parsed.inputDisposition;
     let runCommand: UseSlashCommandControllerArgs["runSlashStatusCommand"];
     if (parsed.name === "/status") {
       runCommand = runSlashStatusCommand;
