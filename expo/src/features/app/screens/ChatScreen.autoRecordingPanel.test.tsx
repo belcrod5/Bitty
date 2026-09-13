@@ -686,6 +686,34 @@ describe("ChatScreen auto recording panel target", () => {
     await screen.unmount();
   });
 
+  it("remounts the title menu scroll view when switching to and from subagents", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
+
+    expect(StyleSheet.flatten(screen.getByTestId("chat-title-menu").props.style)).toMatchObject({
+      maxHeight: "85%",
+      backgroundColor: "#f2f2f7",
+    });
+    const actionsScrollView = screen.getByTestId("chat-title-menu-scroll");
+    expect(actionsScrollView.props.nestedScrollEnabled).toBe(true);
+    expect(mockChatSessionSubagentProps.current).toBeNull();
+
+    await fireEvent.press(screen.getByLabelText("サブエージェント一覧を開く"));
+
+    const subagentsScrollView = screen.getByTestId("chat-title-menu-scroll");
+    expect(subagentsScrollView).not.toBe(actionsScrollView);
+    expect(screen.getByText("サブエージェント")).toBeTruthy();
+    expect(screen.getByLabelText("ディレクトリーメニューに戻る")).toBeTruthy();
+    expect(mockChatSessionSubagentProps.current).not.toBeNull();
+
+    await fireEvent.press(screen.getByLabelText("ディレクトリーメニューに戻る"));
+
+    expect(screen.getByTestId("chat-title-menu-scroll")).not.toBe(subagentsScrollView);
+    expect(screen.getByText("チャット")).toBeTruthy();
+    await screen.unmount();
+  });
+
   it("keeps Codex-only schedule models when the active chat uses Claude", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" />);
 
@@ -938,6 +966,7 @@ describe("ChatScreen auto recording panel target", () => {
   it("marks a hydrated Claude subagent read with its Backend identity", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     await fireEvent.press(screen.getByText("Workspace"));
+    await fireEvent.press(screen.getByLabelText("サブエージェント一覧を開く"));
 
     await act(async () => {
       await mockChatSessionSubagentProps.current?.openSessionHistoryEntry?.({

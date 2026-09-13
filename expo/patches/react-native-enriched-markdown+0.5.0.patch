@@ -149,3 +149,56 @@ index 3da7fe6..a1360be 100644
  @end
  
  #endif
+diff --git a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
+index f24ed21..25cbe9e 100644
+--- a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
++++ b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
+@@ -11,31 +11,29 @@
+ 
+ - (void)drawBackgroundForGlyphRange:(NSRange)glyphsToShow atPoint:(CGPoint)origin
+ {
+-  // 1. UIKit standard background drawing
+-  [super drawBackgroundForGlyphRange:glyphsToShow atPoint:origin];
+-
+   NSTextStorage *storage = self.textStorage;
+-  if (!storage || storage.length == 0)
+-    return;
+-
+-  // 2. Safely get the container and config
+-  NSTextContainer *textContainer = [self textContainerForGlyphAtIndex:glyphsToShow.location effectiveRange:NULL];
+-  if (!textContainer)
+-    return;
+-
+-  StyleConfig *config = self.config;
+-  if (!config)
+-    return;
++  NSTextContainer *textContainer = nil;
++  StyleConfig *config = nil;
++  if (storage && storage.length > 0) {
++    textContainer = [self textContainerForGlyphAtIndex:glyphsToShow.location effectiveRange:NULL];
++    config = self.config;
++  }
+ 
+-  // 3. Draw specialized layers
++  // Draw code backgrounds first so the native selection background remains visible.
+   // We fetch the objects into local variables FIRST to ensure they don't
+   // disappear mid-method if setConfig: is called on another thread.
++  if (textContainer && config) {
++    CodeBackground *codeBg = [self getCodeBackgroundWithConfig:config];
++    [codeBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++
++    CodeBlockBackground *codeBlockBg = [self getCodeBlockBackgroundWithConfig:config];
++    [codeBlockBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  }
+ 
+-  CodeBackground *codeBg = [self getCodeBackgroundWithConfig:config];
+-  [codeBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  [super drawBackgroundForGlyphRange:glyphsToShow atPoint:origin];
+ 
+-  CodeBlockBackground *codeBlockBg = [self getCodeBlockBackgroundWithConfig:config];
+-  [codeBlockBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  if (!textContainer || !config)
++    return;
+ 
+   BlockquoteBorder *quoteBorder = [self getBlockquoteBorderWithConfig:config];
+   [quoteBorder drawBordersForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
