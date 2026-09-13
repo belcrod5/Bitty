@@ -96,65 +96,79 @@ export function ChatSessionSubagentList({
   return (
     <View style={styles.chatDirectorySubagentSection}>
       {parentSession ? (
-        <>
+        <View style={styles.settingsSection}>
           <Text style={styles.chatDirectorySubagentSectionTitle}>Parent agent</Text>
-          <TouchableOpacity
-            style={styles.chatDirectorySubagentOption}
-            onPress={() => {
-              onCloseMenu();
-              openSessionHistoryEntry({
-                backendId: parentSession.backendId,
-                sessionId: parentSession.sessionId,
-                source: parentSession.source,
-                directory: parentSession.directory || selectedDirectoryPath,
-              });
-            }}
-          >
-            <Text style={styles.chatDirectorySubagentOptionText} numberOfLines={1}>
-              {sessionTitle(parentSession, sessionTitleOverridesById)}
-            </Text>
-            <Text style={styles.chatDirectorySubagentMetaText}>
-              {`${formatSessionUpdatedAt(parentSession.updatedAt)} [${parentSession.source.toUpperCase()}]`}
-            </Text>
-          </TouchableOpacity>
-        </>
-      ) : null}
-      <Text style={styles.chatDirectorySubagentSectionTitle}>Subagents</Text>
-      {childState?.loading ? (
-        <View style={styles.chatDirectorySubagentStatusRow}>
-          <ActivityIndicator size="small" color="#0f766e" />
-          <Text style={styles.chatDirectorySubagentMetaText}>取得中</Text>
+          <View style={styles.settingsGroup}>
+            <TouchableOpacity
+              style={styles.chatDirectorySubagentOption}
+              onPress={() => {
+                onCloseMenu();
+                openSessionHistoryEntry({
+                  backendId: parentSession.backendId,
+                  sessionId: parentSession.sessionId,
+                  source: parentSession.source,
+                  directory: parentSession.directory || selectedDirectoryPath,
+                });
+              }}
+            >
+              <Text style={styles.chatDirectorySubagentOptionText} numberOfLines={1}>
+                {sessionTitle(parentSession, sessionTitleOverridesById)}
+              </Text>
+              <Text style={styles.chatDirectorySubagentMetaText}>
+                {`${formatSessionUpdatedAt(parentSession.updatedAt)} [${parentSession.source.toUpperCase()}]`}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      ) : childState?.error ? (
-        <TouchableOpacity onPress={() => void loadSessionChildren(selectedSessionId, selectedDirectoryPath)}>
-          <Text style={styles.chatDirectorySubagentErrorText}>{`${childState.error} 再取得`}</Text>
-        </TouchableOpacity>
-      ) : children.length <= 0 ? (
-        <Text style={styles.chatDirectorySubagentMetaText}>直下のサブエージェントはありません。</Text>
-      ) : children.map((session) => {
-        return (
-          <TouchableOpacity
-            key={session.sessionId}
-            style={styles.chatDirectorySubagentOption}
-            onPress={() => {
-              onCloseMenu();
-              openSessionHistoryEntry({
-                backendId: session.backendId,
-                sessionId: session.sessionId,
-                source: session.source,
-                directory: session.directory || selectedDirectoryPath,
-              });
-            }}
-          >
-            <Text style={styles.chatDirectorySubagentOptionText} numberOfLines={1}>
-              {sessionTitle(session, sessionTitleOverridesById)}
-            </Text>
-            <Text style={styles.chatDirectorySubagentMetaText}>
-              {`${formatSessionUpdatedAt(session.updatedAt)} [${session.source.toUpperCase()}]`}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
+      ) : null}
+      <View style={styles.settingsSection}>
+        <Text style={styles.chatDirectorySubagentSectionTitle}>Subagents</Text>
+        <View style={styles.settingsGroup}>
+          {childState?.loading ? (
+            <View style={styles.chatDirectorySubagentStatusRow}>
+              <ActivityIndicator size="small" color="#0a84ff" />
+              <Text style={styles.chatDirectorySubagentMetaText}>取得中</Text>
+            </View>
+          ) : childState?.error ? (
+            <TouchableOpacity
+              style={styles.chatDirectorySubagentOption}
+              onPress={() => void loadSessionChildren(selectedSessionId, selectedDirectoryPath)}
+            >
+              <Text style={styles.chatDirectorySubagentErrorText}>{`${childState.error} 再取得`}</Text>
+            </TouchableOpacity>
+          ) : children.length <= 0 ? (
+            <View style={styles.chatDirectorySubagentStatusRow}>
+              <Text style={styles.chatDirectorySubagentMetaText}>直下のサブエージェントはありません。</Text>
+            </View>
+          ) : children.map((session, index) => {
+            return (
+              <TouchableOpacity
+                key={session.sessionId}
+                style={[
+                  styles.chatDirectorySubagentOption,
+                  index < children.length - 1 && styles.settingsRowDivider,
+                ]}
+                onPress={() => {
+                  onCloseMenu();
+                  openSessionHistoryEntry({
+                    backendId: session.backendId,
+                    sessionId: session.sessionId,
+                    source: session.source,
+                    directory: session.directory || selectedDirectoryPath,
+                  });
+                }}
+              >
+                <Text style={styles.chatDirectorySubagentOptionText} numberOfLines={1}>
+                  {sessionTitle(session, sessionTitleOverridesById)}
+                </Text>
+                <Text style={styles.chatDirectorySubagentMetaText}>
+                  {`${formatSessionUpdatedAt(session.updatedAt)} [${session.source.toUpperCase()}]`}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
     </View>
   );
 }

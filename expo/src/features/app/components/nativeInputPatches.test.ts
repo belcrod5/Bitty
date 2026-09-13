@@ -110,6 +110,21 @@ test("macOS markdown uses native mouse selection and context-menu behavior", () 
   expect(textViewPatch).not.toContain("+    self.selectedRange = NSMakeRange(0, 0);");
 });
 
+test("markdown draws code backgrounds before the native selection highlight", () => {
+  const layoutPatchStart = enrichedMarkdownPatch.indexOf(
+    "diff --git a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm"
+  );
+  const layoutPatch = enrichedMarkdownPatch.slice(layoutPatchStart);
+  const codeBackground = layoutPatch.indexOf("+    CodeBackground *codeBg");
+  const nativeBackground = layoutPatch.indexOf("+  [super drawBackgroundForGlyphRange");
+  const decoration = layoutPatch.indexOf("   BlockquoteBorder *quoteBorder");
+
+  expect(layoutPatchStart).toBeGreaterThanOrEqual(0);
+  expect(codeBackground).toBeGreaterThanOrEqual(0);
+  expect(nativeBackground).toBeGreaterThan(codeBackground);
+  expect(decoration).toBeGreaterThan(nativeBackground);
+});
+
 test("macOS wheel zoom accepts only supported vertical input", () => {
   expect(gesturePatch).toContain("BOOL hasVerticalDelta = fabs(delta) > 0.0001;");
   expect(gesturePatch).toContain(

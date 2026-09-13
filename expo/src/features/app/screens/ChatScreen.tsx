@@ -77,7 +77,7 @@ import { LocationScheduleSettings } from "../../locationSchedules/LocationSchedu
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
-type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker";
+type DirectoryMenuMode = "actions" | "rename_directory" | "edit_session_title" | "select_marker" | "subagents";
 type ChatScreenMode = "mini_board_popup";
 type ChatScreenProps = {
   mode?: ChatScreenMode;
@@ -2531,12 +2531,34 @@ export function ChatScreen({
               style={[styles.chatDirectoryModalCard, Platform.OS === "macos" && styles.chatContentWidth]}
               onPress={() => {}}
             >
-              <Text style={styles.chatDirectoryModalTitle}>ディレクトリー</Text>
-              <Text style={styles.chatDirectoryMenuPathText} numberOfLines={2}>
-                {selectedDirectoryPathForView}
-              </Text>
+              <ScrollView
+                key={directoryMenuMode}
+                testID="chat-title-menu-scroll"
+                style={styles.chatDirectoryModalScroll}
+                contentContainerStyle={styles.chatDirectoryModalContent}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                <View style={styles.chatDirectoryModalHeader}>
+                  {directoryMenuMode === "subagents" ? (
+                    <TouchableOpacity
+                      style={styles.chatDirectoryModalBackButton}
+                      onPress={() => setDirectoryMenuMode("actions")}
+                      accessibilityRole="button"
+                      accessibilityLabel="ディレクトリーメニューに戻る"
+                    >
+                      <Text style={styles.settingsBackButtonText}>‹ 戻る</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  <Text style={styles.chatDirectoryModalTitle}>
+                    {directoryMenuMode === "subagents" ? "サブエージェント" : "ディレクトリー"}
+                  </Text>
+                  <Text style={styles.chatDirectoryMenuPathText} numberOfLines={2}>
+                    {selectedDirectoryPathForView}
+                  </Text>
+                </View>
               {directoryMenuMode === "rename_directory" ? (
-                <View style={styles.chatDirectoryRenameBlock}>
+                <View style={[styles.chatDirectoryRenameBlock, styles.settingsGroup, styles.chatDirectoryEditorGroup]}>
                   <Text style={styles.chatDirectoryRenameTitle}>名前を編集</Text>
                   <TextInput
                     style={styles.chatDirectoryRenameInput}
@@ -2562,7 +2584,7 @@ export function ChatScreen({
                   </View>
                 </View>
               ) : directoryMenuMode === "edit_session_title" ? (
-                <View style={styles.chatDirectoryRenameBlock}>
+                <View style={[styles.chatDirectoryRenameBlock, styles.settingsGroup, styles.chatDirectoryEditorGroup]}>
                   <Text style={styles.chatDirectoryRenameTitle}>セッションタイトルを編集</Text>
                   <View style={styles.chatDirectoryRenameInputRow}>
                     <TextInput
@@ -2602,34 +2624,38 @@ export function ChatScreen({
               ) : directoryMenuMode === "select_marker" ? (
                 <View style={styles.chatDirectoryRenameBlock}>
                   <Text style={styles.chatDirectoryRenameTitle}>ドット色</Text>
-                  {DIRECTORY_MARKER_OPTIONS.map((option) => {
-                    const selected = option.value === selectedSessionMarkerColorForView;
-                    return (
-                      <TouchableOpacity
-                        key={option.value}
-                        style={styles.chatDirectoryMenuOption}
-                        onPress={() => {
-                          selectSessionMarkerColorForView(option.value);
-                          setDirectoryMenuMode("actions");
-                          setDirectoryMenuOpen(false);
-                        }}
-                      >
-                        <View style={styles.chatDirectoryMarkerOptionRow}>
-                          <View
-                            style={[
-                              styles.chatDirectoryMarkerOptionDot,
-                              option.value === "none"
-                                ? styles.chatDirectoryMarkerOptionDotNone
-                                : { backgroundColor: option.color },
-                            ]}
-                          />
-                          <Text style={styles.chatDirectoryMenuOptionText}>
-                            {selected ? `✓ ${option.label}` : option.label}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
+                  <View style={styles.settingsGroup}>
+                    {DIRECTORY_MARKER_OPTIONS.map((option, index) => {
+                      const selected = option.value === selectedSessionMarkerColorForView;
+                      return (
+                        <TouchableOpacity
+                          key={option.value}
+                          style={[
+                            styles.chatDirectoryMenuOption,
+                            index < DIRECTORY_MARKER_OPTIONS.length - 1 && styles.settingsRowDivider,
+                          ]}
+                          onPress={() => {
+                            selectSessionMarkerColorForView(option.value);
+                            setDirectoryMenuMode("actions");
+                            setDirectoryMenuOpen(false);
+                          }}
+                        >
+                          <View style={styles.chatDirectoryMarkerOptionRow}>
+                            <View
+                              style={[
+                                styles.chatDirectoryMarkerOptionDot,
+                                option.value === "none"
+                                  ? styles.chatDirectoryMarkerOptionDotNone
+                                  : { backgroundColor: option.color },
+                              ]}
+                            />
+                            <Text style={styles.chatDirectoryMenuOptionText}>{option.label}</Text>
+                            {selected ? <Ionicons name="checkmark" size={18} color="#0a84ff" /> : null}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                   <TouchableOpacity
                     style={styles.chatDirectoryRenameSecondaryButton}
                     onPress={() => setDirectoryMenuMode("actions")}
@@ -2637,87 +2663,129 @@ export function ChatScreen({
                     <Text style={styles.chatDirectoryRenameSecondaryButtonText}>戻る</Text>
                   </TouchableOpacity>
                 </View>
+              ) : directoryMenuMode === "subagents" ? (
+                <ChatSessionSubagentList
+                  selectedSessionId={selectedSessionIdForView}
+                  selectedDirectoryPath={selectedDirectoryPathForView}
+                  registeredDirectories={registeredDirectories}
+                  directorySessionsById={directorySessionsById}
+                  sessionTitleOverridesById={sessionTitleOverridesById}
+                  formatSessionUpdatedAt={formatSessionUpdatedAt}
+                  loadSessionChildren={loadSessionChildren}
+                  openSessionHistoryEntry={openSessionHistoryEntryForView}
+                  onCloseMenu={() => {
+                    setDirectoryMenuMode("actions");
+                    setDirectoryMenuOpen(false);
+                  }}
+                />
               ) : (
                 <>
-                  <TouchableOpacity
-                    style={styles.chatDirectoryMenuOption}
-                    onPress={() => {
-                      setDirectoryMenuMode("rename_directory");
-                    }}
-                  >
-                    <Text style={styles.chatDirectoryMenuOptionText}>名前を編集</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.chatDirectoryMenuOption}
-                    onPress={() => {
-                      setDirectoryMenuMode("edit_session_title");
-                    }}
-                  >
-                    <Text style={styles.chatDirectoryMenuOptionText}>
-                      {`セッションタイトル: ${String(selectedSessionTitleForView || "").trim() || "未設定"}`}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.chatDirectoryMenuOption}
-                    onPress={() => {
-                      setDirectoryMenuMode("select_marker");
-                    }}
-                  >
-                    <Text style={styles.chatDirectoryMenuOptionText}>
-                      {`ドット色: ${selectedSessionMarkerLabel}`}
-                    </Text>
-                  </TouchableOpacity>
-                  <LocationScheduleSettings
-                    currentCwd={selectedDirectoryPathForView}
-                    currentModelRef={scheduleModelRef}
-                    currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
-                    directories={registeredDirectories}
-                    modelOptions={scheduleModelOptions}
-                    thinkOptions={thinkOptions}
-                  />
-                  <CodexScheduleSettings
-                    runnerUrl={runnerUrl}
-                    runnerToken={runnerToken}
-                    currentCwd={selectedDirectoryPathForView}
-                    currentModelRef={scheduleModelRef}
-                    currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
-                    currentThreadId={backendIdForView === "codex" && (!isPanelRuntimeView || panelSnapshot.sessionMaterialized !== false) ? selectedSessionIdForView : ""}
-                    directories={registeredDirectories}
-                    modelOptions={scheduleModelOptions}
-                    thinkOptions={thinkOptions}
-                  />
-                  <ChatSessionSubagentList
-                    selectedSessionId={selectedSessionIdForView}
-                    selectedDirectoryPath={selectedDirectoryPathForView}
-                    registeredDirectories={registeredDirectories}
-                    directorySessionsById={directorySessionsById}
-                    sessionTitleOverridesById={sessionTitleOverridesById}
-                    formatSessionUpdatedAt={formatSessionUpdatedAt}
-                    loadSessionChildren={loadSessionChildren}
-                    openSessionHistoryEntry={openSessionHistoryEntryForView}
-                    onCloseMenu={() => {
-                      setDirectoryMenuMode("actions");
-                      setDirectoryMenuOpen(false);
-                    }}
-                  />
-                  <TouchableOpacity
-                    style={styles.chatDirectoryMenuOption}
-                    onPress={() => {
-                      setDirectoryMenuOpen(false);
-                      Alert.alert("ディレクトリーを非表示にしますか？", selectedDirectoryDisplayNameForView, [
-                        { text: "キャンセル", style: "cancel" },
-                        {
-                          text: "削除",
-                          style: "destructive",
-                          onPress: removeDirectoryForView,
-                        },
-                      ]);
-                    }}
-                  >
-                    <Text style={styles.chatDirectoryMenuDangerText}>表示から削除</Text>
-                  </TouchableOpacity>
+                  <View style={styles.settingsSection}>
+                    <View style={styles.settingsSectionHeader}>
+                      <Text style={styles.settingsSectionTitle}>チャット</Text>
+                    </View>
+                    <View style={styles.settingsGroup}>
+                      <TouchableOpacity
+                        style={[styles.settingsRow, styles.settingsRowDivider]}
+                        onPress={() => setDirectoryMenuMode("rename_directory")}
+                      >
+                        <View style={styles.settingsRowLabelWrap}>
+                          <Text style={styles.settingsRowLabel}>ディレクトリー名</Text>
+                        </View>
+                        <Text style={styles.settingsRowValue} numberOfLines={1}>{selectedDirectoryDisplayNameForView}</Text>
+                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.settingsRow, styles.settingsRowDivider]}
+                        onPress={() => setDirectoryMenuMode("edit_session_title")}
+                      >
+                        <View style={styles.settingsRowLabelWrap}>
+                          <Text style={styles.settingsRowLabel}>セッションタイトル</Text>
+                        </View>
+                        <Text style={styles.settingsRowValue} numberOfLines={1}>
+                          {String(selectedSessionTitleForView || "").trim() || "未設定"}
+                        </Text>
+                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.settingsRow} onPress={() => setDirectoryMenuMode("select_marker")}>
+                        <View style={styles.settingsRowLabelWrap}>
+                          <Text style={styles.settingsRowLabel}>ドット色</Text>
+                        </View>
+                        <Text style={styles.settingsRowValue}>{selectedSessionMarkerLabel}</Text>
+                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <View style={styles.settingsSection}>
+                    <View style={styles.settingsSectionHeader}>
+                      <Text style={styles.settingsSectionTitle}>自動実行</Text>
+                    </View>
+                    <View style={styles.settingsGroup}>
+                      <View style={styles.settingsRowDivider}>
+                        <LocationScheduleSettings
+                          currentCwd={selectedDirectoryPathForView}
+                          currentModelRef={scheduleModelRef}
+                          currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
+                          directories={registeredDirectories}
+                          modelOptions={scheduleModelOptions}
+                          thinkOptions={thinkOptions}
+                        />
+                      </View>
+                      <CodexScheduleSettings
+                        runnerUrl={runnerUrl}
+                        runnerToken={runnerToken}
+                        currentCwd={selectedDirectoryPathForView}
+                        currentModelRef={scheduleModelRef}
+                        currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
+                        currentThreadId={backendIdForView === "codex" && (!isPanelRuntimeView || panelSnapshot.sessionMaterialized !== false) ? selectedSessionIdForView : ""}
+                        directories={registeredDirectories}
+                        modelOptions={scheduleModelOptions}
+                        thinkOptions={thinkOptions}
+                      />
+                    </View>
+                  </View>
+                  <View style={styles.settingsSection}>
+                    <View style={styles.settingsSectionHeader}>
+                      <Text style={styles.settingsSectionTitle}>セッション</Text>
+                    </View>
+                    <View style={styles.settingsGroup}>
+                      <TouchableOpacity
+                        style={styles.settingsRow}
+                        onPress={() => setDirectoryMenuMode("subagents")}
+                        accessibilityRole="button"
+                        accessibilityLabel="サブエージェント一覧を開く"
+                      >
+                        <View style={styles.settingsRowLabelWrap}>
+                          <Text style={styles.settingsRowLabel}>サブエージェント</Text>
+                          <Text style={styles.settingsRowDescription}>親エージェントと子セッションを表示</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <View style={styles.settingsSection}>
+                    <View style={styles.settingsGroup}>
+                      <TouchableOpacity
+                        style={styles.settingsRow}
+                        onPress={() => {
+                          setDirectoryMenuOpen(false);
+                          Alert.alert("ディレクトリーを非表示にしますか？", selectedDirectoryDisplayNameForView, [
+                            { text: "キャンセル", style: "cancel" },
+                            {
+                              text: "削除",
+                              style: "destructive",
+                              onPress: removeDirectoryForView,
+                            },
+                          ]);
+                        }}
+                      >
+                        <Text style={styles.settingsDangerText}>表示から削除</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
                 </>
               )}
+              </ScrollView>
             </Pressable>
           </Pressable>
         </AppModal>
