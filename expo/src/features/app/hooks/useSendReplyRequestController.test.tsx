@@ -4,7 +4,10 @@ import type { SendReplyRequestResult } from "./useCodexReplyRequest";
 
 function createArgs(sendResult: SendReplyRequestResult) {
   return {
-    queueSendReplyAfterSessionRestore: jest.fn(() => false),
+    queueSendReplyAfterSessionRestore: jest.fn((
+      _text?: string,
+      _options?: { onAccepted?: () => void }
+    ) => false),
     showChatBottomToast: jest.fn(),
     normalizedLlmDirectoryForRequest: jest.fn(() => ""),
     closeCodexRelayObserver: jest.fn(),
@@ -68,7 +71,10 @@ describe("useSendReplyRequestController rejection feedback", () => {
 
   test("notifies acceptance immediately when a send is queued for session restore", async () => {
     const args = createArgs(undefined);
-    args.queueSendReplyAfterSessionRestore.mockReturnValue(true);
+    args.queueSendReplyAfterSessionRestore.mockImplementation((_text, options) => {
+      options?.onAccepted?.();
+      return true;
+    });
     const onAccepted = jest.fn();
     const { result } = await renderHook(() => useSendReplyRequestController(args));
 
@@ -77,6 +83,20 @@ describe("useSendReplyRequestController rejection feedback", () => {
     });
 
     expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(args.sendReplyRequestFromCodex).not.toHaveBeenCalled();
+  });
+
+  test("does not independently clear input for a preserving queued send", async () => {
+    const args = createArgs(undefined);
+    args.queueSendReplyAfterSessionRestore.mockReturnValue(true);
+    const onAccepted = jest.fn();
+    const { result } = await renderHook(() => useSendReplyRequestController(args));
+
+    await act(async () => {
+      await result.current.sendReplyRequestWithSessionGuard("/compact", { ...sendOptions, onAccepted });
+    });
+
+    expect(onAccepted).not.toHaveBeenCalled();
     expect(args.sendReplyRequestFromCodex).not.toHaveBeenCalled();
   });
 

@@ -1,9 +1,19 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type {
+  ComposerInputDisposition,
   ReplyRequestSessionSnapshot,
   SessionSwitchQueuedSend,
   SttMessageMeta,
 } from "../types/appTypes";
+import { parseSlashCommandInput } from "../utils/statusText";
+
+type QueuedSendOptions = {
+  inputDisposition?: ComposerInputDisposition;
+  onAccepted?: () => void;
+  sttMeta?: SttMessageMeta;
+  panelId?: string;
+  sessionSnapshot?: ReplyRequestSessionSnapshot;
+};
 
 type UseSessionSwitchQueuedSendControllerArgs = {
   llmSessionRestoreInFlightRef: MutableRefObject<boolean>;
@@ -17,11 +27,7 @@ type UseSessionSwitchQueuedSendControllerArgs = {
   shouldProjectQueuedSendDebug: (panelId: string) => boolean;
   sendReplyRequest: (
     transcriptOverride?: string,
-    options?: {
-      sttMeta?: SttMessageMeta;
-      panelId?: string;
-      sessionSnapshot?: ReplyRequestSessionSnapshot;
-    }
+    options?: QueuedSendOptions
   ) => Promise<void>;
 };
 
@@ -43,24 +49,27 @@ export function useSessionSwitchQueuedSendController({
 
   const queueSendReplyAfterSessionRestore = useCallback((
     transcriptOverride?: string,
-    options?: {
-      sttMeta?: SttMessageMeta;
-      panelId?: string;
-      sessionSnapshot?: ReplyRequestSessionSnapshot;
-    },
+    options?: QueuedSendOptions,
     source: SessionSwitchQueuedSend["source"] = "send_reply_request"
   ) => {
     if (!isSessionRestoreSwitching()) return false;
     const normalized = String((transcriptOverride ?? transcript) || "").trim();
-    if (!normalized) return true;
+    if (!normalized) {
+      options?.onAccepted?.();
+      return true;
+    }
     const restoreRequestSeq = llmSessionRestoreRequestSeqRef.current;
     if (restoreRequestSeq <= 0) return false;
     const writePanelId = String(options?.panelId || "").trim();
     const sessionSnapshot = options?.sessionSnapshot
       ? { ...options.sessionSnapshot }
       : undefined;
+    const inputDisposition = options?.inputDisposition
+      || parseSlashCommandInput(normalized)?.inputDisposition
+      || "clear";
     sessionSwitchQueuedSendRef.current = {
       transcript: normalized,
+      inputDisposition,
       sttMeta: options?.sttMeta,
       panelId: writePanelId,
       sessionSnapshot,
@@ -68,8 +77,9 @@ export function useSessionSwitchQueuedSendController({
       queuedAt: Date.now(),
       source,
     };
-    if (typeof transcriptOverride === "undefined") {
-      setTranscript("");
+    if (inputDisposition === "clear") {
+      if (typeof transcriptOverride === "undefined") setTranscript("");
+      options?.onAccepted?.();
     }
     if (shouldProjectQueuedSendDebug(writePanelId)) {
       setReplyDebug((prev) => (
@@ -117,6 +127,7 @@ export function useSessionSwitchQueuedSendController({
     }
     setTimeout(() => {
       void sendReplyRequest(queued.transcript, {
+        inputDisposition: queued.inputDisposition,
         sttMeta: queued.sttMeta,
         panelId: queued.panelId,
         sessionSnapshot: queued.sessionSnapshot,

@@ -1,9 +1,15 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
-import type { ReplyRequestSessionSnapshot, SttMessageMeta } from "../types/appTypes";
+import type {
+  ComposerInputDisposition,
+  ReplyRequestSessionSnapshot,
+  SttMessageMeta,
+} from "../types/appTypes";
 import { parseSlashCommandInput } from "../utils/statusText";
 
 type RunSlashCommandOptions = {
   clearInput?: boolean;
+  inputDisposition?: ComposerInputDisposition;
+  onAccepted?: () => void;
   sttMeta?: SttMessageMeta;
   panelId?: string;
   sessionSnapshot?: ReplyRequestSessionSnapshot;
@@ -11,10 +17,14 @@ type RunSlashCommandOptions = {
 
 type UseSlashCommandControllerArgs = {
   setTranscript: Dispatch<SetStateAction<string>>;
-  onCommandAccepted: (commandText: string, sessionId?: string) => void;
-  runSlashStatusCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
-  runSlashCompactCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
-  runSlashCancelQueueCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<boolean>;
+  onCommandAccepted: (
+    commandText: string,
+    sessionId: string | undefined,
+    inputDisposition: ComposerInputDisposition
+  ) => void;
+  runSlashStatusCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<void>;
+  runSlashCompactCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<void>;
+  runSlashCancelQueueCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<void>;
 };
 
 export function useSlashCommandController({
@@ -31,21 +41,23 @@ export function useSlashCommandController({
     const parsed = parseSlashCommandInput(commandTextRaw);
     if (!parsed) return false;
     const commandText = parsed.raw;
-    let accepted = false;
+    const inputDisposition = options?.inputDisposition || parsed.inputDisposition;
+    let runCommand: UseSlashCommandControllerArgs["runSlashStatusCommand"];
     if (parsed.name === "/status") {
-      accepted = await runSlashStatusCommand(commandText, options);
+      runCommand = runSlashStatusCommand;
     } else if (parsed.name === "/compact") {
-      accepted = await runSlashCompactCommand(commandText, options);
+      runCommand = runSlashCompactCommand;
     } else if (parsed.name === "/cancel-queue" || parsed.name === "/queue-cancel") {
-      accepted = await runSlashCancelQueueCommand(commandText, options);
+      runCommand = runSlashCancelQueueCommand;
+    } else {
+      return false;
     }
-    if (accepted) {
-      if (options?.clearInput) setTranscript("");
-      const sessionId = options?.sessionSnapshot?.sessionId;
-      if (sessionId) onCommandAccepted(commandText, sessionId);
-      else onCommandAccepted(commandText);
-    }
-    return accepted;
+    if (options?.clearInput && inputDisposition === "clear") setTranscript("");
+    const sessionId = options?.sessionSnapshot?.sessionId;
+    onCommandAccepted(commandText, sessionId, inputDisposition);
+    if (inputDisposition === "clear") options?.onAccepted?.();
+    await runCommand(commandText, options);
+    return true;
   }, [
     onCommandAccepted,
     runSlashCancelQueueCommand,

@@ -1,4 +1,5 @@
 import { stripYouTubeTags } from "./youtube";
+import type { ComposerInputDisposition } from "../types/appTypes";
 
 export type LlmUiStatus =
   | "idle"
@@ -97,13 +98,21 @@ export function isLlmActiveStatus(status: LlmUiStatus): boolean {
   );
 }
 
-export function parseSlashCommandInput(rawInput: string): { name: SlashCommandName; raw: string } | null {
+export function parseSlashCommandInput(rawInput: string): {
+  name: SlashCommandName;
+  raw: string;
+  inputDisposition: ComposerInputDisposition;
+} | null {
   const raw = String(rawInput || "").trim();
   if (!raw.startsWith("/")) return null;
   const command = raw.toLowerCase();
   const name = command.split(/\s+/, 1)[0] || "";
   if (name === "/status" || name === "/compact" || name === "/cancel-queue" || name === "/queue-cancel") {
-    return { name: name as SlashCommandName, raw };
+    return {
+      name: name as SlashCommandName,
+      raw,
+      inputDisposition: name === "/compact" ? "preserve" : "clear",
+    };
   }
   return null;
 }

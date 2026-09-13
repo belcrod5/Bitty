@@ -184,6 +184,7 @@ import type {
   AutoClientLogEntry,
   CodexAuthProfilesSnapshot,
   CodexCliStatusSnapshot,
+  ComposerInputDisposition,
   ConversationMessage,
   GitChangedFilesDirectoryState,
   HistoryEntry,
@@ -5043,7 +5044,7 @@ export default function App() {
         "キャンセルする queueId を指定してください。例: /cancel-queue codexq_xxx",
         options
       );
-      return true;
+      return;
     }
     try {
       const result = await cancelRunnerCodexQueuedTurn({
@@ -5067,7 +5068,6 @@ export default function App() {
         options
       );
     }
-    return true;
   }, [appendSlashCommandResult, codexWsUrl, runnerToken]);
   const cancelCodexQueuedTurnForMessage = useCallback(async (params: {
     queuedTurnId: string;
@@ -5137,7 +5137,16 @@ export default function App() {
     setCodexCompactRunning,
     logSessionDiag,
   });
-  const recordAcceptedComposerMessage = useCallback((message: string, sessionIdRaw?: string) => { recordComposerMessageHistory(message); clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current); }, [clearComposerDraft, recordComposerMessageHistory]);
+  const recordAcceptedComposerMessage = useCallback((
+    message: string,
+    sessionIdRaw?: string,
+    inputDisposition: ComposerInputDisposition = "clear"
+  ) => {
+    recordComposerMessageHistory(message);
+    if (inputDisposition === "clear") {
+      clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current);
+    }
+  }, [clearComposerDraft, recordComposerMessageHistory]);
   const { runSlashCommand } = useSlashCommandController({
     setTranscript,
     onCommandAccepted: recordAcceptedComposerMessage,
@@ -5319,7 +5328,13 @@ export default function App() {
     reasoningEffort?: ReasoningEffort | string;
     source?: string;
   };
-  type SendReplyOptions = { sttMeta?: SttMessageMeta; panelId?: string; sessionSnapshot?: WriteSessionSnapshot; onAccepted?: () => void };
+  type SendReplyOptions = {
+    inputDisposition?: ComposerInputDisposition;
+    sttMeta?: SttMessageMeta;
+    panelId?: string;
+    sessionSnapshot?: WriteSessionSnapshot;
+    onAccepted?: () => void;
+  };
 
   function resolveWritePanelId(panelIdRaw: unknown): string | null {
     const panelId = normalizeRuntimePanelId(panelIdRaw);

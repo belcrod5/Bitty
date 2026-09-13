@@ -79,7 +79,7 @@ function createHarness() {
     setTtsPlaybackMessageIdWithRef: jest.fn(),
     setStreamReplyYouTubeVideoIdsWithRef: jest.fn(),
     clearStreamAudioQueue: jest.fn(),
-    runSlashCommand: jest.fn(async () => false),
+    runSlashCommand: jest.fn(async (_text: string, _options?: { onAccepted?: () => void }) => false),
     prepareChatForOutgoingMessageWindow: jest.fn(),
     setConversationMessagesWithLimit: (messages: StoredMessage[]) => messages,
     buildConversationMessage: (
@@ -215,7 +215,7 @@ function createOptions() {
     setTtsPlaybackMessageIdWithRef: jest.fn(),
     setStreamReplyYouTubeVideoIdsWithRef: jest.fn(),
     clearStreamAudioQueue: jest.fn(),
-    runSlashCommand: jest.fn(async () => false),
+    runSlashCommand: jest.fn(async (_text: string, _options?: { onAccepted?: () => void }) => false),
     prepareChatForOutgoingMessageWindow: jest.fn(),
     setConversationMessagesWithLimit: jest.fn((messages: never[]) => messages),
     buildConversationMessage: jest.fn((role: "user" | "assistant", content: string, extra?: Record<string, unknown>) => {
@@ -843,7 +843,10 @@ describe("useCodexReplyRequest send acceptance contract", () => {
   test("notifies slash-command acceptance exactly once without starting a turn", async () => {
     const { options } = createOptions();
     const onAccepted = jest.fn();
-    options.runSlashCommand.mockResolvedValue(true);
+    options.runSlashCommand.mockImplementation(async (_text, slashOptions) => {
+      slashOptions?.onAccepted?.();
+      return true;
+    });
     const { result } = await renderHook(() => useCodexReplyRequest(options as never));
 
     await act(async () => {
@@ -855,6 +858,28 @@ describe("useCodexReplyRequest send acceptance contract", () => {
     });
 
     expect(onAccepted).toHaveBeenCalledTimes(1);
+    expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
+  });
+
+  test("does not clear composer input after a preserving slash command completes", async () => {
+    const { options } = createOptions();
+    const onAccepted = jest.fn();
+    options.runSlashCommand.mockResolvedValue(true);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      await result.current.sendReplyRequest("/compact", {
+        panelId: "panel-1",
+        sessionSnapshot: { threadId: "thread-1" },
+        onAccepted,
+      });
+    });
+
+    expect(options.runSlashCommand).toHaveBeenCalledWith(
+      "/compact",
+      expect.objectContaining({ onAccepted })
+    );
+    expect(onAccepted).not.toHaveBeenCalled();
     expect(mockStartCodexAppServerTurn).not.toHaveBeenCalled();
   });
 

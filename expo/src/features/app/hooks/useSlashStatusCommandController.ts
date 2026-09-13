@@ -62,7 +62,7 @@ export function useSlashStatusCommandController({
           `slash /status source=codex_cli limits=${codexCliStatus.limitLines.length} fetchedAt=${codexCliStatus.fetchedAt}`
         );
       }
-      return true;
+      return;
     }
     const latestLimits = await fetchRunnerLlmRuntimeLimitsForStatus();
     const snapshot = latestLimits || llmRuntimeLimits;
@@ -83,7 +83,6 @@ export function useSlashStatusCommandController({
     if (projectDebugToActiveSession) {
       setReplyDebug(`slash /status source=fallback session=${options?.sessionSnapshot?.sessionId || options?.sessionSnapshot?.threadId || "-"}`);
     }
-    return true;
   }, [
     appendSlashCommandResult,
     applyCodexCliStatusSnapshot,
