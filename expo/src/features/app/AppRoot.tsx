@@ -103,7 +103,10 @@ import { useCodexStatusRefreshEffects } from "./hooks/useCodexStatusRefreshEffec
 import { useGitChangedFilesController } from "./hooks/useGitChangedFilesController";
 import { useLlmRuntimeLimitsReader } from "./hooks/useLlmRuntimeLimitsReader";
 import { useSlashCompactCommandController } from "./hooks/useSlashCompactCommandController";
-import { useSlashCommandController } from "./hooks/useSlashCommandController";
+import {
+  useSlashCommandController,
+  type SlashCommandInputDisposition,
+} from "./hooks/useSlashCommandController";
 import { useSlashCommandResultAppender } from "./hooks/useSlashCommandResultAppender";
 import { useSlashStatusCommandController } from "./hooks/useSlashStatusCommandController";
 import { useSendReplyRequestController } from "./hooks/useSendReplyRequestController";
@@ -5043,7 +5046,7 @@ export default function App() {
         "キャンセルする queueId を指定してください。例: /cancel-queue codexq_xxx",
         options
       );
-      return true;
+      return;
     }
     try {
       const result = await cancelRunnerCodexQueuedTurn({
@@ -5067,7 +5070,6 @@ export default function App() {
         options
       );
     }
-    return true;
   }, [appendSlashCommandResult, codexWsUrl, runnerToken]);
   const cancelCodexQueuedTurnForMessage = useCallback(async (params: {
     queuedTurnId: string;
@@ -5137,7 +5139,16 @@ export default function App() {
     setCodexCompactRunning,
     logSessionDiag,
   });
-  const recordAcceptedComposerMessage = useCallback((message: string, sessionIdRaw?: string) => { recordComposerMessageHistory(message); clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current); }, [clearComposerDraft, recordComposerMessageHistory]);
+  const recordAcceptedComposerMessage = useCallback((
+    message: string,
+    sessionIdRaw?: string,
+    inputDisposition: SlashCommandInputDisposition = "clear"
+  ) => {
+    recordComposerMessageHistory(message);
+    if (inputDisposition === "clear") {
+      clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current);
+    }
+  }, [clearComposerDraft, recordComposerMessageHistory]);
   const { runSlashCommand } = useSlashCommandController({
     setTranscript,
     onCommandAccepted: recordAcceptedComposerMessage,

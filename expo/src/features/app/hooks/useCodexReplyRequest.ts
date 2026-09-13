@@ -102,6 +102,7 @@ type UseCodexReplyRequestOptions<
     text: string,
     options: {
       clearInput: boolean;
+      onAccepted?: () => void;
       sttMeta?: TSttMeta;
       panelId?: string;
       sessionSnapshot?: ReplyRequestSessionSnapshot;
@@ -437,6 +438,7 @@ export function useCodexReplyRequest<
     const requestTurnModelRef = hasModelCatalog && !requestModelOption ? "" : requestModelRef;
     if (await current.runSlashCommand(effectiveTranscript, {
       clearInput,
+      onAccepted: requestOptions?.onAccepted,
       sttMeta: requestOptions?.sttMeta,
       panelId: requestPanelId,
       sessionSnapshot: requestOptions?.sessionSnapshot,
@@ -448,7 +450,6 @@ export function useCodexReplyRequest<
         directory: String(requestOptions?.sessionSnapshot?.directory || "").trim() || undefined,
         transcriptChars: effectiveTranscript.length,
       }, { throttleMs: 0 });
-      requestOptions?.onAccepted?.();
       return;
     }
     if (modelBackendId !== requestBackendId) {

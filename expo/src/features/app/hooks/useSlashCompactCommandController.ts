@@ -94,11 +94,11 @@ export function useSlashCompactCommandController({
     }, { throttleMs: 0 });
     if (!wsUrl) {
       appendFinalResult("Codex WS URL が未設定のため /compact を実行できません。", options);
-      return true;
+      return;
     }
     if (!threadId) {
       appendFinalResult("セッションが未作成です。先に通常の会話を1回実行してから /compact を実行してください。", options);
-      return true;
+      return;
     }
     setCodexCompactRunning?.(threadId, true);
     appendSlashCommandProgress(
@@ -214,7 +214,6 @@ export function useSlashCompactCommandController({
     } finally {
       setCodexCompactRunning?.(threadId, false);
     }
-    return true;
   }, [
     appendSlashCommandResult,
     appendSlashCommandProgress,
