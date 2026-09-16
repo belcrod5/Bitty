@@ -921,15 +921,6 @@ if [ "$CLOUDFLARE_TUNNEL_ENABLE" = "1" ]; then
   printf '%s\n' "$CLOUDFLARE_TUNNEL_PID" >"$CLOUDFLARE_TUNNEL_PID_FILE"
 fi
 
-if [ "$RUNNER_ENABLE" = "1" ] && [ "$RUNNER_REUSED" != "1" ]; then
-  (
-    export RUNNER_LOG_REQUESTS
-    export PORT="$RUNNER_PORT"
-    exec node "$SCRIPT_DIR/server.mjs"
-  ) &
-  RUNNER_PID="$!"
-fi
-
 if [ "$CODEX_ENABLE" = "1" ] && [ "$CODEX_REUSED" != "1" ]; then
   CODEX_CMD=(codex app-server --listen "$CODEX_APP_SERVER_LISTEN")
   if [ -n "$CODEX_APP_SERVER_WS_AUTH" ]; then
@@ -957,12 +948,42 @@ if [ "$CODEX_ENABLE" = "1" ] && [ "$CODEX_REUSED" != "1" ]; then
   CODEX_PID="$!"
 fi
 
-sleep 0.3
 if [ "$CODEX_ENABLE" = "1" ] && [ "$CODEX_REUSED" != "1" ] && ! kill -0 "$CODEX_PID" >/dev/null 2>&1; then
   echo "[run-local] codex app-server failed to start; see logs above" >&2
   wait "$CODEX_PID"
   exit 1
 fi
+
+# Runner auth initialization depends on a responsive App Server. Keep this
+# bounded so a failed Codex start cannot leave a half-started Runner behind.
+if [ "$CODEX_ENABLE" = "1" ] && [ "$CODEX_REUSED" != "1" ]; then
+  codex_health_ready=0
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50; do
+    if http_ok "http://127.0.0.1:${LISTEN_PORT}/healthz"; then
+      codex_health_ready=1
+      break
+    fi
+    if ! kill -0 "$CODEX_PID" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.2
+  done
+  if [ "$codex_health_ready" != "1" ]; then
+    echo "[run-local] codex app-server did not become healthy within 10s; see logs above" >&2
+    exit 1
+  fi
+fi
+
+if [ "$RUNNER_ENABLE" = "1" ] && [ "$RUNNER_REUSED" != "1" ]; then
+  (
+    export RUNNER_LOG_REQUESTS
+    export PORT="$RUNNER_PORT"
+    exec node "$SCRIPT_DIR/server.mjs"
+  ) &
+  RUNNER_PID="$!"
+fi
+
+sleep 0.3
 if [ "$RUNNER_ENABLE" = "1" ] && [ "$RUNNER_REUSED" != "1" ] && ! kill -0 "$RUNNER_PID" >/dev/null 2>&1; then
   echo "[run-local] runner failed to start; see logs above" >&2
   wait "$RUNNER_PID"

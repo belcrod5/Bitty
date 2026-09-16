@@ -4,6 +4,7 @@ import type {
   GitChangedFilesDirectoryState,
   GitChangedFilesSnapshot,
 } from "../types/appTypes";
+import type { CodexAuthRegistration } from "../hooks/useCodexStatusAuthController";
 
 export type ChatDiagnosticsContextValue = {
   codexCliStatusText: string;
@@ -22,6 +23,11 @@ export type ChatDiagnosticsContextValue = {
   refreshCodexCliStatus: () => void;
   loadCodexAuthProfiles: () => void;
   switchCodexAuthProfile: (authId: string) => Promise<boolean>;
+  startCodexAuthRegistration: (authId: string) => Promise<CodexAuthRegistration>;
+  getCodexAuthRegistration: (id: string) => Promise<Partial<CodexAuthRegistration>>;
+  cancelCodexAuthRegistration: (id: string) => Promise<void>;
+  reauthCodexAuthProfile: (authId: string) => Promise<CodexAuthRegistration>;
+  deleteCodexAuthProfile: (authId: string) => Promise<void>;
 };
 
 const ChatDiagnosticsContext = createContext<ChatDiagnosticsContextValue | null>(null);

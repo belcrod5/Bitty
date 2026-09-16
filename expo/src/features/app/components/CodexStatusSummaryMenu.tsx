@@ -3,6 +3,7 @@ import { Dimensions, Pressable, ScrollView, Text, TouchableOpacity, View } from 
 import { styles } from "../styles";
 import type { CodexAuthProfileEntry } from "../types/appTypes";
 import { AppModal } from "./AppModal";
+import { formatCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
 
 type AnchorRect = {
   x: number;
@@ -43,6 +44,7 @@ function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
   const elapsedHour = Math.floor(elapsedMin / 60);
   return `${elapsedHour}時間前`;
 }
+
 
 export function CodexStatusSummaryMenu({
   dismissed = false,
@@ -192,6 +194,7 @@ export function CodexStatusSummaryMenu({
                       const authId = String(item?.authId || "").trim();
                       if (!authId) return null;
                       const isCurrent = Boolean(item?.isCurrent);
+                      const limits = formatCodexAuthRateLimits(item);
                       return (
                         <TouchableOpacity
                           key={authId}
@@ -210,6 +213,7 @@ export function CodexStatusSummaryMenu({
                         >
                           <Text style={[styles.chatFooterSelectOptionText, isCurrent && styles.chatFooterSelectOptionTextSelected]}>
                             {isCurrent ? `✓ ${authId}` : authId}
+                            {limits ? ` (${limits})` : ""}
                           </Text>
                         </TouchableOpacity>
                       );

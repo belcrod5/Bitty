@@ -224,8 +224,17 @@ export type CodexCliStatusSnapshot = {
 
 export type CodexAuthProfileEntry = {
   authId: string;
-  fileName: string;
+  displayName?: string;
+  planType?: string;
+  status?: string;
+  rateLimits?: CodexAuthRateLimit[];
   isCurrent: boolean;
+};
+
+export type CodexAuthRateLimit = {
+  windowDurationMins: number;
+  usedPercent: number;
+  resetsAt?: string;
 };
 
 export type CodexAuthProfilesSnapshot = {

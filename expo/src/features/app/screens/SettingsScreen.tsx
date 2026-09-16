@@ -3,6 +3,7 @@ import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { setStringAsync } from "../clipboard";
 import { ConnectionSettings } from "../components/ConnectionSettings";
 import { SpeechSettings } from "../components/SpeechSettings";
+import { CodexAccountSettings } from "../components/CodexAccountSettings";
 import { useAppShell } from "../contexts/AppShellContext";
 import { BUILD_STAMP } from "../buildStamp";
 import { styles } from "../styles";
@@ -45,6 +46,7 @@ export function SettingsScreen() {
       </View>
       <ConnectionSettings />
       <SpeechSettings />
+      <CodexAccountSettings />
       <View style={styles.settingsSection}>
         <View style={styles.settingsSectionHeader}>
           <Text style={styles.settingsSectionTitle}>アプリ情報</Text>

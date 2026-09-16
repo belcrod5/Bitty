@@ -7,6 +7,8 @@ export function createCodexAppServerClient({
   upstreamUrl,
   upstreamToken = "",
   turnCompletionTimeoutMs = 24 * 60 * 60 * 1000,
+  authRefreshHandler,
+  onClose,
   WebSocketImpl = WebSocket,
 } = {}) {
   const headers = {};
@@ -27,6 +29,7 @@ export function createCodexAppServerClient({
   const close = (code = 1000, reason = "closed") => {
     if (closed) return;
     closed = true;
+    try { onClose?.(); } catch {}
     detachAbortListener();
     for (const entry of pending.values()) {
       entry.reject(new Error("Codex app-server request cancelled"));
@@ -49,6 +52,7 @@ export function createCodexAppServerClient({
       const reason = Buffer.isBuffer(reasonBuf) ? reasonBuf.toString("utf8") : String(reasonBuf || "");
       if (closed) return;
       closed = true;
+      try { onClose?.(); } catch {}
       const message = `Codex app-server WebSocket closed code=${Number(code) || 0} reason=${reason || "-"}`;
       for (const entry of pending.values()) {
         entry.reject(new Error(message));
@@ -69,15 +73,26 @@ export function createCodexAppServerClient({
       return;
     }
     if (message?.method && (typeof message.id === "string" || typeof message.id === "number")) {
-      for (const handler of serverRequestHandlers) {
-        Promise.resolve(handler(message)).then((result) => {
-          if (closed || ws.readyState !== WebSocketImpl.OPEN) return;
-          ws.send(JSON.stringify({ id: message.id, result }));
-        }).catch(() => {
-          if (closed || ws.readyState !== WebSocketImpl.OPEN) return;
-          ws.send(JSON.stringify({ id: message.id, result: { success: false, contentItems: [] } }));
-        });
-      }
+      const respond = (payload) => {
+        if (closed || ws.readyState !== WebSocketImpl.OPEN) return;
+        ws.send(JSON.stringify({ id: message.id, ...payload }));
+      };
+      const handle = async () => {
+        const handlers = message.method === "account/chatgptAuthTokens/refresh"
+          ? (typeof authRefreshHandler === "function" ? [authRefreshHandler] : [])
+          : [...serverRequestHandlers];
+        for (const handler of handlers) {
+          const result = await handler(message);
+          if (typeof result !== "undefined") {
+            respond({ result });
+            return;
+          }
+        }
+        respond({ error: { code: -32601, message: "Codex server request method not handled" } });
+      };
+      Promise.resolve(handle()).catch(() => {
+        respond({ error: { code: -32603, message: "Codex server request failed" } });
+      });
       return;
     }
     if (message?.method) {
