@@ -1,6 +1,13 @@
 import React from "react";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
+
+jest.mock("../keyboardController", () => ({
+  KeyboardAvoidingView: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+}));
+
 import { SettingsScreen } from "./SettingsScreen";
+
+jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 const mockSetStringAsync = jest.fn(async (_text: string) => true);

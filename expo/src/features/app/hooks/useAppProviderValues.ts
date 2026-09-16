@@ -12,6 +12,7 @@ import type {
   CodexCliStatusSnapshot,
   GitChangedFilesDirectoryState,
 } from "../types/appTypes";
+import type { CodexAuthRegistration } from "./useCodexStatusAuthController";
 
 export function useAppShellContextValue(args: AppShellContextValue): AppShellContextValue {
   const {
@@ -480,6 +481,12 @@ type UseChatDiagnosticsContextValueArgs = {
   refreshCodexCliStatus: () => void;
   loadCodexAuthProfiles: () => void;
   switchCodexAuthProfile: (authId: string) => Promise<boolean>;
+  startCodexAuthRegistration: () => Promise<CodexAuthRegistration>;
+  completeCodexAuthRegistration: (id: string, displayName: string) => Promise<{ authId: string; status: string }>;
+  getCodexAuthRegistration: (id: string) => Promise<Partial<CodexAuthRegistration>>;
+  cancelCodexAuthRegistration: (id: string) => Promise<void>;
+  reauthCodexAuthProfile: (authId: string) => Promise<CodexAuthRegistration>;
+  deleteCodexAuthProfile: (authId: string) => Promise<void>;
 };
 
 export function useChatDiagnosticsContextValue(
@@ -498,6 +505,7 @@ export function useChatDiagnosticsContextValue(
     refreshCodexCliStatus,
     loadCodexAuthProfiles,
     switchCodexAuthProfile,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
   } = args;
 
   return useMemo(
@@ -515,6 +523,7 @@ export function useChatDiagnosticsContextValue(
       refreshCodexCliStatus,
       loadCodexAuthProfiles,
       switchCodexAuthProfile,
+      startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
     }),
     [
       codexCliStatusSnapshot,
@@ -529,6 +538,7 @@ export function useChatDiagnosticsContextValue(
       refreshCodexCliStatus,
       loadCodexAuthProfiles,
       switchCodexAuthProfile,
+      startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
     ]
   );
 }

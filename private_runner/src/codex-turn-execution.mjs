@@ -69,11 +69,11 @@ function firstNonEmptyString(...values) {
   return "";
 }
 
-async function initializeCodexClient(client, clientName, experimentalApi = false) {
+async function initializeCodexClient(client, clientName) {
   await client.openPromise;
   await client.request("initialize", {
     clientInfo: { name: clientName, title: clientName, version: "0.1.0" },
-    capabilities: { experimentalApi, optOutNotificationMethods: [] },
+    capabilities: { experimentalApi: true, optOutNotificationMethods: [] },
   }, 30000);
   client.notify("initialized", {});
 }
@@ -200,7 +200,7 @@ export async function startCodexTurn({
   }
 
   // resume時のexcludeTurns(experimental API)を常用するため無条件で有効化
-  await initializeCodexClient(client, clientName, true);
+  await initializeCodexClient(client, clientName);
 
   let removeServerRequestHandler = () => {};
   if (configuredDynamicTools) {

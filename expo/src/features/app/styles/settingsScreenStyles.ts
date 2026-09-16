@@ -102,7 +102,7 @@ export const settingsScreenStyles = {
     color: "#111111",
     fontSize: 14,
   },
-  runnerTokenSaveButton: {
+  settingsPrimaryButton: {
     minHeight: 40,
     alignSelf: "flex-start",
     flexDirection: "row",
@@ -113,22 +113,22 @@ export const settingsScreenStyles = {
     backgroundColor: "#0a84ff",
     paddingHorizontal: 14,
   },
-  runnerTokenSaveButtonText: {
+  settingsPrimaryButtonText: {
     color: "#ffffff",
     fontSize: 14,
     fontWeight: "700",
   },
-  runnerTokenButtonRow: {
+  settingsButtonRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  runnerTokenSuccessText: {
+  settingsSuccessText: {
     color: "#15803d",
     fontSize: 12,
     lineHeight: 17,
   },
-  runnerTokenErrorText: {
+  settingsErrorText: {
     color: "#b91c1c",
     fontSize: 12,
     lineHeight: 17,

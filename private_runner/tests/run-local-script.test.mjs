@@ -212,6 +212,19 @@ test("Cloudflare tunnel startup and preflight are explicit opt-in", async () => 
   assert.match(publicRunner, /preflight_cloudflare_tunnel\(\) \{\s+if \[ "\$CLOUDFLARE_TUNNEL_ENABLE" != "1" \]; then\s+return 0/s);
 });
 
+test("full startup waits for Codex health before spawning Runner", async () => {
+  const runLocal = await readFile("private_runner/run-local.sh", "utf8");
+  const codexStart = runLocal.indexOf('CODEX_CMD=(codex app-server');
+  const healthWait = runLocal.indexOf('codex app-server did not become healthy within 10s');
+  const runnerStart = runLocal.indexOf('exec node "$SCRIPT_DIR/server.mjs"');
+
+  assert.ok(codexStart >= 0);
+  assert.ok(healthWait > codexStart);
+  assert.ok(runnerStart > healthWait);
+  assert.match(runLocal, /curl -fsS --max-time 1 "\$url"/);
+  assert.match(runLocal, /for _ in 1 2 3 .* 49 50;/);
+});
+
 test("bootstrap uses a standalone clone as its own main repository", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "bitty-standalone-clone-"));
   const fakeBin = join(repoRoot, "bin");

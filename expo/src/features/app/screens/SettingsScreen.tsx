@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { Platform, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { setStringAsync } from "../clipboard";
 import { ConnectionSettings } from "../components/ConnectionSettings";
 import { SpeechSettings } from "../components/SpeechSettings";
+import { CodexAccountSettings } from "../components/CodexAccountSettings";
 import { useAppShell } from "../contexts/AppShellContext";
 import { BUILD_STAMP } from "../buildStamp";
 import { styles } from "../styles";
+import { KeyboardAvoidingView } from "../keyboardController";
 
 export function SettingsScreen() {
   const { openSkiaBoardScreen, openDrawer } = useAppShell();
@@ -24,11 +26,15 @@ export function SettingsScreen() {
   };
 
   return (
-    <ScrollView
+    <KeyboardAvoidingView
       style={styles.settingsScreen}
-      contentContainerStyle={styles.settingsContent}
-      keyboardShouldPersistTaps="handled"
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      automaticOffset={Platform.OS === "ios"}
     >
+      <ScrollView
+        contentContainerStyle={styles.settingsContent}
+        keyboardShouldPersistTaps="handled"
+      >
       <TouchableOpacity
         style={styles.settingsBackButton}
         onPress={() => {
@@ -45,6 +51,7 @@ export function SettingsScreen() {
       </View>
       <ConnectionSettings />
       <SpeechSettings />
+      <CodexAccountSettings />
       <View style={styles.settingsSection}>
         <View style={styles.settingsSectionHeader}>
           <Text style={styles.settingsSectionTitle}>アプリ情報</Text>
@@ -69,6 +76,7 @@ export function SettingsScreen() {
           </View>
         </View>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }

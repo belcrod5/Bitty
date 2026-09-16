@@ -1,5 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { AppScreen, CodexAuthProfileEntry, CodexAuthProfilesSnapshot, CodexCliStatusLimitLine, CodexCliStatusSnapshot } from "../types/appTypes";
+import { parseCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
 
 type RefreshCodexCliStatusOptions = {
   force?: boolean;
@@ -16,7 +17,6 @@ type UseCodexStatusAuthControllerArgs = {
   codexCliStatusLastAttemptAtMsRef: MutableRefObject<number>;
   codexCliStatusRefreshInFlightRef: MutableRefObject<boolean>;
   codexAuthProfilesRefreshInFlightRef: MutableRefObject<boolean>;
-  codexAuthProfilesSnapshot: CodexAuthProfilesSnapshot | null;
   setCodexCliStatusSnapshot: Dispatch<SetStateAction<CodexCliStatusSnapshot | null>>;
   setCodexCliStatusFetchedAtMs: Dispatch<SetStateAction<number>>;
   setCodexCliStatusLoading: Dispatch<SetStateAction<boolean>>;
@@ -24,8 +24,8 @@ type UseCodexStatusAuthControllerArgs = {
   setCodexAuthProfilesLoading: Dispatch<SetStateAction<boolean>>;
   setCodexAuthSwitching: Dispatch<SetStateAction<boolean>>;
   setCodexAuthSwitchError: Dispatch<SetStateAction<string>>;
-  onAuthSwitchStarted: () => void;
 };
+export type CodexAuthRegistration = { authId: string; registrationId: string; verificationUrl?: string; userCode?: string; expiresAt?: string; status?: string; errorCode?: string };
 
 function parseCodexCliStatusSnapshot(data: unknown): CodexCliStatusSnapshot | null {
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
@@ -50,7 +50,7 @@ function parseCodexCliStatusSnapshot(data: unknown): CodexCliStatusSnapshot | nu
   };
 }
 
-function parseCodexAuthProfilesSnapshot(data: unknown, fallbackAuthId = ""): CodexAuthProfilesSnapshot {
+export function parseCodexAuthProfilesSnapshot(data: unknown, fallbackAuthId = ""): CodexAuthProfilesSnapshot {
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
   const currentAuthId = String(record.currentAuthId || fallbackAuthId).trim();
   const rawProfiles = Array.isArray(record.profiles) ? record.profiles : [];
@@ -59,12 +59,15 @@ function parseCodexAuthProfilesSnapshot(data: unknown, fallbackAuthId = ""): Cod
       if (!item || typeof item !== "object") return null;
       const profile = item as Record<string, unknown>;
       const authId = String(profile.authId || "").trim();
-      const fileName = String(profile.fileName || "").trim();
-      if (!authId || !fileName) return null;
+      if (!authId) return null;
+      const rateLimits = parseCodexAuthRateLimits(profile.rateLimits);
       return {
         authId,
-        fileName,
-        isCurrent: Boolean(profile.isCurrent),
+        displayName: String(profile.displayName || "").trim() || undefined,
+        planType: String(profile.planType || "").trim() || undefined,
+        status: String(profile.status || "").trim() || undefined,
+        rateLimits,
+        isCurrent: authId === currentAuthId,
       };
     })
     .filter((item: CodexAuthProfileEntry | null): item is CodexAuthProfileEntry => Boolean(item));
@@ -85,7 +88,6 @@ export function useCodexStatusAuthController({
   codexCliStatusLastAttemptAtMsRef,
   codexCliStatusRefreshInFlightRef,
   codexAuthProfilesRefreshInFlightRef,
-  codexAuthProfilesSnapshot,
   setCodexCliStatusSnapshot,
   setCodexCliStatusFetchedAtMs,
   setCodexCliStatusLoading,
@@ -93,7 +95,6 @@ export function useCodexStatusAuthController({
   setCodexAuthProfilesLoading,
   setCodexAuthSwitching,
   setCodexAuthSwitchError,
-  onAuthSwitchStarted,
 }: UseCodexStatusAuthControllerArgs) {
   const isCodexStatusScreenActive = activeScreen === "skia_board";
 
@@ -154,16 +155,16 @@ export function useCodexStatusAuthController({
     codexCliStatusMinRefreshGapMs,
     codexCliStatusRefreshInFlightRef,
     fetchRunnerCodexCliStatusForSlash,
-    isCodexStatusScreenActive,
     setCodexCliStatusLoading,
   ]);
 
-  const fetchRunnerCodexAuthProfiles = useCallback(async (): Promise<CodexAuthProfilesSnapshot | null> => {
+  const fetchRunnerCodexAuthProfiles = useCallback(async (force = false): Promise<CodexAuthProfilesSnapshot | null> => {
     const targetLlmUrl = auxServerBaseUrl();
     const token = runnerToken.trim();
     if (!targetLlmUrl || !token) return null;
     try {
       const url = new URL(`${targetLlmUrl}/codex-auth/profiles`);
+      if (force) url.searchParams.set("refresh", "1");
       const res = await fetch(url.toString(), {
         method: "GET",
         headers: {
@@ -184,13 +185,11 @@ export function useCodexStatusAuthController({
   }, [setCodexAuthProfilesSnapshot, setCodexAuthSwitchError]);
 
   const refreshCodexAuthProfiles = useCallback(async (options?: { force?: boolean }) => {
-    if (!isCodexStatusScreenActive) return;
-    if (!options?.force && codexAuthProfilesSnapshot) return;
     if (codexAuthProfilesRefreshInFlightRef.current) return;
     codexAuthProfilesRefreshInFlightRef.current = true;
     setCodexAuthProfilesLoading(true);
     try {
-      const snapshot = await fetchRunnerCodexAuthProfiles();
+      const snapshot = await fetchRunnerCodexAuthProfiles(Boolean(options?.force));
       if (snapshot) {
         applyCodexAuthProfilesSnapshot(snapshot);
       }
@@ -201,9 +200,7 @@ export function useCodexStatusAuthController({
   }, [
     applyCodexAuthProfilesSnapshot,
     codexAuthProfilesRefreshInFlightRef,
-    codexAuthProfilesSnapshot,
     fetchRunnerCodexAuthProfiles,
-    isCodexStatusScreenActive,
     setCodexAuthProfilesLoading,
   ]);
 
@@ -242,7 +239,6 @@ export function useCodexStatusAuthController({
         force: true,
         source: "manual",
       });
-      onAuthSwitchStarted();
       return true;
     } catch (err) {
       setCodexAuthSwitchError(err instanceof Error ? err.message : String(err));
@@ -253,12 +249,26 @@ export function useCodexStatusAuthController({
   }, [
     applyCodexAuthProfilesSnapshot,
     auxServerBaseUrl,
-    onAuthSwitchStarted,
     refreshCodexCliStatusForWidget,
     runnerToken,
     setCodexAuthSwitchError,
     setCodexAuthSwitching,
   ]);
+
+  const authRequest = useCallback(async (path: string, method = "GET", body?: unknown) => {
+    const base = auxServerBaseUrl(); const token = runnerToken.trim();
+    if (!base || !token) throw new Error("Runner URL または token が未設定です。");
+    const res = await fetch(new URL(path, `${base}/`).toString(), { method, headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.message || data?.error || `HTTP ${res.status}`));
+    return data;
+  }, [auxServerBaseUrl, runnerToken]);
+  const startCodexAuthRegistration = useCallback(async () => authRequest("/codex-auth/registrations", "POST") as Promise<CodexAuthRegistration>, [authRequest]);
+  const completeCodexAuthRegistration = useCallback(async (id: string, displayName: string) => authRequest(`/codex-auth/registrations/${encodeURIComponent(id)}`, "POST", { displayName }), [authRequest]);
+  const getCodexAuthRegistration = useCallback(async (id: string) => authRequest(`/codex-auth/registrations/${encodeURIComponent(id)}`) as Promise<Partial<CodexAuthRegistration>>, [authRequest]);
+  const cancelCodexAuthRegistration = useCallback(async (id: string) => { await authRequest(`/codex-auth/registrations/${encodeURIComponent(id)}`, "DELETE"); }, [authRequest]);
+  const reauthCodexAuthProfile = useCallback(async (authId: string) => authRequest(`/codex-auth/profiles/${encodeURIComponent(authId)}/reauth`, "POST") as Promise<CodexAuthRegistration>, [authRequest]);
+  const deleteCodexAuthProfile = useCallback(async (authId: string) => { await authRequest(`/codex-auth/profiles/${encodeURIComponent(authId)}`, "DELETE"); }, [authRequest]);
 
   return {
     fetchRunnerCodexCliStatusForSlash,
@@ -266,5 +276,6 @@ export function useCodexStatusAuthController({
     refreshCodexCliStatusForWidget,
     refreshCodexAuthProfiles,
     switchCodexAuthProfile,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
   };
 }

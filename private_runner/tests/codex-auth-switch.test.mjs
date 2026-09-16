@@ -2,280 +2,252 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-// Isolate CODEX_HOME so these tests never touch a real ~/.codex/profiles
-// directory or a real auth.json.
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-auth-switch-"));
-const profilesDir = path.join(tempDir, "profiles");
-await fs.mkdir(profilesDir, { recursive: true });
-await fs.writeFile(path.join(profilesDir, "profile-a_auth.json"), '{"OPENAI_API_KEY":"a"}\n');
-await fs.writeFile(path.join(profilesDir, "profile-b_auth.json"), '{"OPENAI_API_KEY":"b"}\n');
-
+const storeDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-auth-store-"));
 process.env.CODEX_HOME = tempDir;
+process.env.CODEX_AUTH_STORE_DIR = storeDir;
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_TOKEN = "test-runner-token";
-// Kept generous on purpose: none of these tests ever let the process reach
-// restartRunnerForAuthSwitch(), so this timeout is never actually exercised.
-process.env.CODEX_AUTH_SWITCH_RESTART_TIMEOUT_MS = "5000";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
-const {
-  server,
-  RUNNER_TOKEN,
-  CODEX_AUTH_SWITCH_LOCK_PATH,
-  acquireCodexAuthSwitchLock,
-  isCodexAuthSwitchLockStale,
-  buildAuthSwitchRestartInvocation,
-  persistActiveCodexAuthProfileSnapshot,
-  switchCodexAuthProfile,
-} = __TESTING__;
+const { server, RUNNER_TOKEN, codexAuthService, codexAuthRuntime } = __TESTING__;
+
+const profile = (authId) => ({
+  version: 1,
+  authId,
+  accountId: `account-${authId}`,
+  tokens: { access_token: `access-${authId}`, refresh_token: `refresh-${authId}` },
+});
 
 test.after(async () => {
+  await new Promise((resolve) => server.close(() => resolve()));
   await fs.rm(tempDir, { recursive: true, force: true });
+  await fs.rm(storeDir, { recursive: true, force: true });
 });
 
 async function withServer(fn) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const { port } = server.address();
+  try { return await fn(`http://127.0.0.1:${port}`); }
+  finally { await new Promise((resolve) => server.close(() => resolve())); }
+}
+
+test("skip-start runtime does not acquire the owner lock", async () => {
+  await assert.rejects(fs.access(path.join(storeDir, "profiles", ".owner.lock")), { code: "ENOENT" });
+});
+
+test("profiles snapshot is canonical, safe, and token-free", async () => {
+  await codexAuthService.save(profile("canonical"));
+  await codexAuthService.setActiveAuthId("canonical");
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/codex-auth/profiles`, { headers: { authorization: `Bearer ${RUNNER_TOKEN}` } });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.currentAuthId, "canonical");
+    assert.equal(body.profiles[0].authId, "canonical");
+    assert.equal("accountId" in body.profiles[0], false);
+    assert.equal(JSON.stringify(body).includes("access-canonical"), false);
+  });
+});
+
+test("profile endpoint requires bearer authentication", async () => {
+  await withServer(async (base) => assert.equal((await fetch(`${base}/codex-auth/profiles`)).status, 401));
+});
+
+test("switch endpoint requires bearer authentication", async () => {
+  await withServer(async (base) => assert.equal((await fetch(`${base}/codex-auth/switch`, { method: "POST", body: "{}" })).status, 401));
+});
+
+test("switch endpoint maps invalid and unknown auth ids without route-local validation", async () => {
+  const original = codexAuthRuntime.switchAccount;
+  codexAuthRuntime.switchAccount = async (authId) => {
+    if (authId === "../invalid") throw new Error("invalid auth id");
+    throw new Error("auth profile not found");
+  };
   try {
-    return await fn(baseUrl);
-  } finally {
-    await new Promise((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
+    await withServer(async (base) => {
+      const headers = { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" };
+      const invalid = await fetch(`${base}/codex-auth/switch`, { method: "POST", headers, body: JSON.stringify({ authId: "../invalid" }) });
+      assert.deepEqual([invalid.status, await invalid.json()], [400, { error: "invalid_auth_id", message: "Invalid auth id" }]);
+      const unknown = await fetch(`${base}/codex-auth/switch`, { method: "POST", headers, body: JSON.stringify({ authId: "unknown" }) });
+      assert.deepEqual([unknown.status, await unknown.json()], [404, { error: "auth_profile_not_found", message: "Auth profile not found" }]);
     });
-  }
-}
-
-async function removeLockFileIfPresent() {
-  await fs.unlink(CODEX_AUTH_SWITCH_LOCK_PATH).catch(() => {});
-}
-
-// --- restartEnv / argv shape -------------------------------------------------
-
-test("buildAuthSwitchRestartInvocation hands the runner token over via env only, never argv", () => {
-  const invocation = buildAuthSwitchRestartInvocation();
-  assert.equal(invocation.env.RUN_LOCAL_RUNNER_TOKEN, RUNNER_TOKEN);
-  assert.equal(invocation.env.RUN_LOCAL_REUSE_EXISTING, "0");
-  assert.ok(!invocation.args.some((arg) => arg.includes(RUNNER_TOKEN)));
-  assert.ok(!invocation.command.includes(RUNNER_TOKEN));
+  } finally { codexAuthRuntime.switchAccount = original; }
 });
 
-// --- switchCodexAuthProfile no longer waits on (or performs) a restart ------
-
-test("switchCodexAuthProfile replaces auth.json, updates the marker, and releases the lock without running a restart", async () => {
-  await removeLockFileIfPresent();
-  const startedAt = Date.now();
-  const result = await switchCodexAuthProfile("profile-a");
-  const elapsedMs = Date.now() - startedAt;
-
-  // A real restart (or even just launching run-local.sh) takes well over a
-  // second; if switchCodexAuthProfile ever awaited it again this would be slow.
-  assert.ok(elapsedMs < 1000, `switchCodexAuthProfile took ${elapsedMs}ms, expected < 1000ms`);
-
-  assert.equal(result.authId, "profile-a");
-  assert.equal(typeof result.restartCommand, "string");
-  assert.ok(result.restartCommand.length > 0);
-  assert.equal(result.snapshot.currentAuthId, "profile-a");
-
-  const authJson = await fs.readFile(path.join(tempDir, "auth.json"), "utf8");
-  assert.equal(authJson.trim(), '{"OPENAI_API_KEY":"a"}');
-
-  const marker = await fs.readFile(path.join(profilesDir, ".active_auth_id"), "utf8");
-  assert.equal(marker.trim(), "profile-a");
-
-  await assert.rejects(() => fs.access(CODEX_AUTH_SWITCH_LOCK_PATH));
-});
-
-test("switchCodexAuthProfile rejects an unknown authId with 404 before touching the lock", async () => {
-  await removeLockFileIfPresent();
-  await assert.rejects(
-    () => switchCodexAuthProfile("does-not-exist"),
-    (err) => {
-      assert.equal(err.apiStatus, 404);
-      assert.equal(err.apiPayload.error, "auth_profile_not_found");
-      return true;
-    }
-  );
-  await assert.rejects(() => fs.access(CODEX_AUTH_SWITCH_LOCK_PATH));
-});
-
-// --- stale-lock recovery ------------------------------------------------------
-
-test("acquireCodexAuthSwitchLock removes a lock left by a dead pid and retries once", async () => {
-  await removeLockFileIfPresent();
-
-  // Spawn and let a child exit so its pid is (almost certainly) free again.
-  const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
-  const deadPid = dead.pid;
-  assert.ok(Number.isInteger(deadPid) && deadPid > 0);
-
-  await fs.writeFile(CODEX_AUTH_SWITCH_LOCK_PATH, `${deadPid}\n${new Date().toISOString()}\n`);
-  assert.equal(await isCodexAuthSwitchLockStale(), true);
-
-  const releaseLock = await acquireCodexAuthSwitchLock();
-  const lockContents = await fs.readFile(CODEX_AUTH_SWITCH_LOCK_PATH, "utf8");
-  assert.equal(lockContents.split("\n")[0], String(process.pid));
-
-  await releaseLock();
-  await assert.rejects(() => fs.access(CODEX_AUTH_SWITCH_LOCK_PATH));
-});
-
-test("acquireCodexAuthSwitchLock still returns 409 when the lock holder is alive", async () => {
-  await removeLockFileIfPresent();
-  // The current test process is trivially alive.
-  await fs.writeFile(CODEX_AUTH_SWITCH_LOCK_PATH, `${process.pid}\n${new Date().toISOString()}\n`);
-  assert.equal(await isCodexAuthSwitchLockStale(), false);
-
-  await assert.rejects(
-    () => acquireCodexAuthSwitchLock(),
-    (err) => {
-      assert.equal(err.apiStatus, 409);
-      assert.equal(err.apiPayload.error, "auth_switch_busy");
-      return true;
-    }
-  );
-  await removeLockFileIfPresent();
-});
-
-// --- HTTP-level checks that never reach the restart trigger ------------------
-// (A real success response fires restartRunnerForAuthSwitch() after res
-// "finish", which would spawn the real run-local.sh restart. That is exactly
-// the server-stopping E2E this test suite intentionally does not perform, so
-// only error paths that return before scheduling a restart are exercised here.)
-
-test("POST /codex-auth/switch requires a bearer token", async () => {
-  await withServer(async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/codex-auth/switch`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ authId: "profile-a" }),
+test("successful switch response exposes no account id or tokens", async () => {
+  const original = codexAuthRuntime.switchAccount;
+  codexAuthRuntime.switchAccount = async (authId) => {
+    await codexAuthService.setActiveAuthId(authId);
+    return { accessToken: "secret-access", chatgptAccountId: "secret-account" };
+  };
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/codex-auth/switch`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ authId: "canonical" }),
+      });
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.currentAuthId, "canonical");
+      assert.equal("account" in body, false);
+      assert.equal(JSON.stringify(body).includes("secret-access"), false);
+      assert.equal(JSON.stringify(body).includes("secret-account"), false);
     });
-    assert.equal(response.status, 401);
-  });
+  } finally { codexAuthRuntime.switchAccount = original; }
 });
 
-test("POST /codex-auth/switch returns 404 for an unknown authId (never schedules a restart)", async () => {
-  await removeLockFileIfPresent();
-  await withServer(async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/codex-auth/switch`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${RUNNER_TOKEN}`,
-      },
-      body: JSON.stringify({ authId: "does-not-exist" }),
-    });
-    assert.equal(response.status, 404);
-    const payload = await response.json();
-    assert.equal(payload.error, "auth_profile_not_found");
-  });
-});
-
-// --- source wiring: the success path really does defer the restart ----------
-// (Complements the runtime tests above, which cannot safely exercise the
-// success path end-to-end because it would spawn a real run-local.sh restart.)
-
-test("the /codex-auth/switch handler sends its 200 response before scheduling the restart", async () => {
+test("switch source no longer schedules a Runner restart", async () => {
   const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
-  const handlerMatch = source.match(
-    /if \(req\.method === "POST" && pathname === "\/codex-auth\/switch"\) \{[\s\S]*?\n {2}\}\n/
-  );
-  assert.ok(handlerMatch, "could not locate the /codex-auth/switch handler block");
-  const handlerBody = handlerMatch[0];
-
-  const jsonCallIndex = handlerBody.indexOf("json(res, 200, {");
-  const scheduleCallIndex = handlerBody.indexOf("scheduleAuthSwitchRestartAfterResponse(res)");
-  assert.ok(jsonCallIndex >= 0, "expected a 200 json() response in the handler");
-  assert.ok(scheduleCallIndex >= 0, "expected scheduleAuthSwitchRestartAfterResponse(res) in the handler");
-  assert.ok(
-    jsonCallIndex < scheduleCallIndex,
-    "the 200 response must be sent before the restart is scheduled"
-  );
-
-  // scheduleAuthSwitchRestartAfterResponse itself must wait for the response
-  // to actually flush (or the connection to close) before restarting.
-  assert.match(source, /res\.once\("finish", trigger\)/);
-  assert.match(source, /res\.once\("close", trigger\)/);
-  assert.match(source, /let authSwitchRestartInFlight = false;/);
+  assert.doesNotMatch(source, /scheduleAuthSwitchRestartAfterResponse|restartRunnerForAuthSwitch|authSwitchRestartInFlight/);
+  assert.doesNotMatch(source, /CODEX_AUTH_SWITCH_RESTART/);
 });
 
-test("run-local-public-runner.sh reuses a handed-over RUNNER_TOKEN before the random/env case", async () => {
-  const source = await fs.readFile("private_runner/src/run-local-public-runner.sh", "utf8");
-  assert.match(
-    source,
-    /prepare_runner_runtime_token\(\) \{\s+if \[ "\$RUNNER_ENABLE" != "1" \]; then\s+return 0\s+fi\s+if \[ -n "\$\{RUN_LOCAL_RUNNER_TOKEN:-\}" \]; then\s+RUNNER_TOKEN="\$RUN_LOCAL_RUNNER_TOKEN"\s+export RUNNER_TOKEN\s+write_runner_token_file\s+RUN_LOCAL_REUSE_EXISTING=0/
-  );
+test("owner lock startup releases after an early stop request and never listens", async () => {
+  const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
+  assert.match(source, /let stopRequested = false;/);
+  assert.match(source, /stopRequested = true;/);
+  assert.match(source, /if \(stopRequested\) \{\s+await releaseCodexAuthOwnerLock\(\);\s+return;/);
+  assert.match(source, /if \(!release \|\| codexAuthOwnerLockReleased\) return;/);
 });
 
-// --- write-back of the live auth.json before a switch ------------------------
-// (Codex rotates tokens inside auth.json while running; a switch must save the
-// live file back to its own profile before overwriting it, or switching back
-// later would restore expired tokens.)
-
-test("switchCodexAuthProfile saves the live auth.json back to the current profile before overwriting", async () => {
-  await removeLockFileIfPresent();
-  // Make profile-a current, then simulate Codex rotating tokens in place.
-  await switchCodexAuthProfile("profile-a");
-  const rotated = '{"OPENAI_API_KEY":"a","last_refresh":"rotated"}\n';
-  await fs.writeFile(path.join(tempDir, "auth.json"), rotated);
-
-  const result = await switchCodexAuthProfile("profile-b");
-  assert.equal(result.authId, "profile-b");
-
-  const savedProfileA = await fs.readFile(path.join(profilesDir, "profile-a_auth.json"), "utf8");
-  assert.equal(savedProfileA, rotated);
-  const authJson = await fs.readFile(path.join(tempDir, "auth.json"), "utf8");
-  assert.equal(authJson.trim(), '{"OPENAI_API_KEY":"b"}');
+test("schedule services start only after auth initialization", async () => {
+  const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
+  const auth = source.indexOf("await codexAuthRuntime.initialize()");
+  const location = source.indexOf("await locationScheduleService.start()");
+  const codex = source.indexOf("await codexScheduleService.start()");
+  assert.ok(auth >= 0 && location > auth && codex > location);
 });
 
-test("persistActiveCodexAuthProfileSnapshot refuses to save into a profile that belongs to a different account", async () => {
-  // The marker points at profile-b after the previous test, but the live
-  // auth.json now holds a different account's tokens (a stale marker after a
-  // manual auth.json swap).
-  const profileB = '{"tokens":{"account_id":"acct-b"}}\n';
-  await fs.writeFile(path.join(profilesDir, "profile-b_auth.json"), profileB);
-  await fs.writeFile(path.join(tempDir, "auth.json"), '{"tokens":{"account_id":"acct-other"}}\n');
-
-  const result = await persistActiveCodexAuthProfileSnapshot();
-  assert.equal(result.saved, false);
-  assert.match(result.reason, /different account/);
-  assert.equal(await fs.readFile(path.join(profilesDir, "profile-b_auth.json"), "utf8"), profileB);
+test("inactive profile deletion succeeds and active profile returns stable 409", async () => {
+  await codexAuthService.save(profile("inactive"));
+  await withServer(async (base) => {
+    const headers = { authorization: `Bearer ${RUNNER_TOKEN}` };
+    const deleted = await fetch(`${base}/codex-auth/profiles/inactive`, { method: "DELETE", headers });
+    assert.equal(deleted.status, 200);
+    assert.equal((await fetch(`${base}/codex-auth/profiles/inactive`, { method: "DELETE", headers })).status, 404);
+    const active = await fetch(`${base}/codex-auth/profiles/canonical`, { method: "DELETE", headers });
+    assert.equal(active.status, 409);
+    assert.deepEqual(await active.json(), { error: "active_auth_profile", message: "Active auth profile cannot be deleted" });
+  });
 });
 
-test("persistActiveCodexAuthProfileSnapshot skips when the current profile cannot be resolved", async () => {
-  await fs.unlink(path.join(profilesDir, ".active_auth_id"));
-  await fs.writeFile(path.join(tempDir, "auth.json"), '{"OPENAI_API_KEY":"unsaved"}\n');
+test("profile mutations expose stable conflicts", async () => {
+  await codexAuthService.save(profile("existing-inactive"));
+  await withServer(async (base) => {
+    const headers = { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" };
+    const originalStart = codexAuthService.startRegistration;
+    codexAuthService.startRegistration = async (authId, options) => {
+      assert.equal(options?.reauth, true);
+      if (authId === "existing-inactive") throw new Error("registration already pending");
+      throw new Error("auth profile busy");
+    };
+    try {
+      const pending = await fetch(`${base}/codex-auth/profiles/existing-inactive/reauth`, {
+        method: "POST",
+        headers,
+      });
+      assert.equal(pending.status, 409);
+      assert.ok(["registration_already_pending", "auth_profile_busy"].includes((await pending.json()).error));
+      const busy = await fetch(`${base}/codex-auth/profiles/canonical/reauth`, { method: "POST", headers });
+      assert.deepEqual([busy.status, await busy.json()], [409, { error: "auth_profile_busy", message: "Auth profile has an active registration" }]);
+    } finally { codexAuthService.startRegistration = originalStart; }
+    assert.equal((await codexAuthService.read("canonical")).tokens.access_token, "access-canonical");
+    assert.equal((await codexAuthService.read("existing-inactive")).tokens.access_token, "access-existing-inactive");
 
-  const result = await persistActiveCodexAuthProfileSnapshot();
-  assert.equal(result.saved, false);
-  assert.match(result.reason, /could not be resolved/);
+    const originalDelete = codexAuthService.deleteProfile;
+    codexAuthService.deleteProfile = async () => { throw new Error("auth profile busy"); };
+    try {
+      const busy = await fetch(`${base}/codex-auth/profiles/existing-inactive`, { method: "DELETE", headers });
+      assert.deepEqual([busy.status, await busy.json()], [409, { error: "auth_profile_busy", message: "Auth profile has an active registration" }]);
+    } finally { codexAuthService.deleteProfile = originalDelete; }
+  });
 });
 
-test("persistActiveCodexAuthProfileSnapshot skips an invalid live auth.json instead of corrupting a profile", async () => {
-  await fs.writeFile(path.join(profilesDir, ".active_auth_id"), "profile-b\n");
-  await fs.writeFile(path.join(tempDir, "auth.json"), "not json\n");
-
-  const result = await persistActiveCodexAuthProfileSnapshot();
-  assert.equal(result.saved, false);
-  assert.match(result.reason, /not valid JSON/);
-  assert.equal(
-    await fs.readFile(path.join(profilesDir, "profile-b_auth.json"), "utf8"),
-    '{"tokens":{"account_id":"acct-b"}}\n'
-  );
+test("refresh query uses the canonical rate-limit refresh path", async () => {
+  const original = codexAuthService.refreshAllRateLimits;
+  let called = 0;
+  codexAuthService.refreshAllRateLimits = async () => { called += 1; return {}; };
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/codex-auth/profiles?refresh=1`, { headers: { authorization: `Bearer ${RUNNER_TOKEN}` } });
+      assert.equal(response.status, 200);
+      assert.equal(called, 1);
+    });
+  } finally { codexAuthService.refreshAllRateLimits = original; }
 });
 
-test("run-local.sh unsets RUN_LOCAL_RUNNER_TOKEN only after prepare_runner_runtime_token has consumed it", async () => {
-  const source = await fs.readFile("private_runner/run-local.sh", "utf8");
-  const prepareIndex = source.indexOf("prepare_runner_runtime_token\n");
-  const unsetIndex = source.indexOf("unset RUN_LOCAL_RUNNER_TOKEN");
-  assert.ok(prepareIndex >= 0, "expected a prepare_runner_runtime_token call");
-  assert.ok(unsetIndex >= 0, "expected an unset RUN_LOCAL_RUNNER_TOKEN line");
-  assert.ok(
-    prepareIndex < unsetIndex,
-    "RUN_LOCAL_RUNNER_TOKEN must be unset after prepare_runner_runtime_token reads it, " +
-      "not in the earlier unset-RUN_LOCAL_* block (which runs before that call)"
-  );
+test("isolated rate-limit refresh does not hold the live identity gate", async () => {
+  const original = codexAuthService.refreshAllRateLimits;
+  let started;
+  let finish;
+  const entered = new Promise((resolve) => { started = resolve; });
+  const blocked = new Promise((resolve) => { finish = resolve; });
+  codexAuthService.refreshAllRateLimits = async () => { started(); await blocked; return {}; };
+  try {
+    await withServer(async (base) => {
+      const response = fetch(`${base}/codex-auth/profiles?refresh=1`, { headers: { authorization: `Bearer ${RUNNER_TOKEN}` } });
+      await entered;
+      assert.deepEqual(codexAuthService.gateSnapshot(), { state: "open", leases: 0 });
+      await codexAuthService.closeAndDrain({ timeoutMs: 20 });
+      finish();
+      assert.equal((await response).status, 200);
+      codexAuthService.openGate();
+    });
+  } finally {
+    finish?.();
+    codexAuthService.openGate();
+    codexAuthService.refreshAllRateLimits = original;
+  }
+});
+
+test("dropped relay RPC releases its auth lease and request metadata", async () => {
+  const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
+  assert.match(source, /if \(relay\.upstreamWs\.readyState !== WebSocket\.OPEN\) \{[\s\S]*?releaseCodexRelayRpcLease\(relay, codexRpcIdKey\(meta\?\.id\)\);[\s\S]*?return;/);
+  assert.match(source, /if \(admission\) \{[\s\S]*?forwarded === false[\s\S]*?releaseCodexRelayRpcLease/);
+  assert.match(source, /relay\.upstreamWs\.send\(data,[\s\S]*?catch \(error\) \{[\s\S]*?releaseCodexRelayRpcLease/);
+});
+
+test("rate-limit refresh is blocked while unready but profile snapshots remain readable", async () => {
+  const original = codexAuthService.refreshAllRateLimits;
+  let called = 0;
+  codexAuthService.refreshAllRateLimits = async () => { called += 1; return {}; };
+  codexAuthService.markUnready();
+  try {
+    await withServer(async (base) => {
+      const headers = { authorization: `Bearer ${RUNNER_TOKEN}` };
+      const refresh = await fetch(`${base}/codex-auth/profiles?refresh=1`, { headers });
+      assert.deepEqual([refresh.status, await refresh.json()], [503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" }]);
+      assert.equal(called, 0);
+
+      const snapshot = await fetch(`${base}/codex-auth/profiles`, { headers });
+      assert.equal(snapshot.status, 200);
+      assert.equal((await snapshot.json()).currentAuthId, "canonical");
+    });
+  } finally { codexAuthService.refreshAllRateLimits = original; }
+});
+
+test("auth mutations return stable unavailable response when gate is unready", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/codex-auth/registrations`, { method: "POST", headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" }, body: "{}" });
+    assert.deepEqual([response.status, await response.json()], [503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" }]);
+  });
+});
+
+test("complete registration is gated while auth service is unready", async () => {
+  const gate = codexAuthService.gateSnapshot;
+  const complete = codexAuthService.completeRegistration;
+  let called = 0;
+  codexAuthService.gateSnapshot = () => ({ state: "unready", leases: 0 });
+  codexAuthService.completeRegistration = async () => { called += 1; };
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/codex-auth/registrations/some-id`, { method: "POST", headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ displayName: "x" }) });
+      assert.equal(response.status, 503);
+      assert.equal(called, 0);
+    });
+  } finally { codexAuthService.gateSnapshot = gate; codexAuthService.completeRegistration = complete; }
 });

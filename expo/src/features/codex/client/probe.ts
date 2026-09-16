@@ -46,7 +46,7 @@ export async function probeCodexAppServerConnection(options: {
     timeoutMs,
     clientName: "expo-ios-client-probe",
     clientTitle: "Expo iOS Client Probe",
-    experimentalApi: false,
+    experimentalApi: true,
     runnerWebSocketManager: options.runnerWebSocketManager,
     run: async (_rpc, initialized = {}) => {
       return {

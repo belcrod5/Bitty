@@ -3187,6 +3187,8 @@ export default function App() {
     refreshCodexCliStatusForWidget,
     refreshCodexAuthProfiles,
     switchCodexAuthProfile,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
+    reauthCodexAuthProfile, deleteCodexAuthProfile,
   } = useCodexStatusAuthController({
     activeScreen,
     appStateRef,
@@ -3197,7 +3199,6 @@ export default function App() {
     codexCliStatusLastAttemptAtMsRef,
     codexCliStatusRefreshInFlightRef,
     codexAuthProfilesRefreshInFlightRef,
-    codexAuthProfilesSnapshot,
     setCodexCliStatusSnapshot,
     setCodexCliStatusFetchedAtMs,
     setCodexCliStatusLoading,
@@ -3205,12 +3206,6 @@ export default function App() {
     setCodexAuthProfilesLoading,
     setCodexAuthSwitching,
     setCodexAuthSwitchError,
-    onAuthSwitchStarted: () => {
-      Alert.alert(
-        "認証切替を開始しました",
-        "Codex App Server を昇格再起動します。数秒後に再接続してください。"
-      );
-    },
   });
   const { closeCodexRelayObserver, clearCodexRelayObserverForMiss, interruptCodexRelayObserver } =
     useCodexRelayObserverLifecycleController({
@@ -6804,6 +6799,8 @@ export default function App() {
     refreshCodexCliStatus: refreshCodexCliStatusFromContext,
     loadCodexAuthProfiles: loadCodexAuthProfilesFromContext,
     switchCodexAuthProfile: switchCodexAuthProfileFromContext,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
+    reauthCodexAuthProfile, deleteCodexAuthProfile,
   });
   const handleSelectSlashCommand = useCallback((command: string) => {
     chatComposerInputRef.current?.blur();

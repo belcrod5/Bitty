@@ -41,6 +41,8 @@ import {
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
+import { createCodexAuthService } from "./codex-auth-service.mjs";
+import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
 import { createScheduledCodexTurnStarter } from "./codex-scheduled-turn.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
@@ -68,6 +70,18 @@ const HOST = process.env.HOST || "127.0.0.1";
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN || "";
 const RUNNER_MOCK = process.env.RUNNER_MOCK === "1";
 const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
+const CODEX_AUTH_STORE_DIR = path.resolve(process.env.CODEX_AUTH_STORE_DIR || "private_runner/logs/codex-auth");
+const CODEX_BIN = String(process.env.CODEX_BIN || "codex").trim() || "codex";
+const codexAuthService = createCodexAuthService({ rootDir: CODEX_AUTH_STORE_DIR, codexBin: CODEX_BIN });
+let codexAuthOwnerLockRelease = null;
+let codexAuthOwnerLockReleased = false;
+const releaseCodexAuthOwnerLock = async () => {
+  const release = codexAuthOwnerLockRelease;
+  if (!release || codexAuthOwnerLockReleased) return;
+  codexAuthOwnerLockReleased = true;
+  codexAuthOwnerLockRelease = null;
+  await release();
+};
 const AGENT_CLAUDE_BINARY = String(process.env.AGENT_CLAUDE_BINARY || "claude").trim() || "claude";
 const AGENT_PROCESS_EPOCH = randomUUID();
 const RUNNER_WS_PATH = "/runner-ws";
@@ -139,18 +153,6 @@ const CLI_SESSION_META_VERSION = String(process.env.CLI_SESSION_META_VERSION || 
 const DEFAULT_CODEX_HOME = path.resolve(os.homedir(), ".codex");
 const CODEX_HOME = path.resolve(process.env.CODEX_HOME || DEFAULT_CODEX_HOME);
 const CODEX_AUTH_PATH = path.join(CODEX_HOME, "auth.json");
-const CODEX_AUTH_PROFILES_DIR = path.join(CODEX_HOME, "profiles");
-const CODEX_AUTH_PROFILE_SUFFIX = "_auth.json";
-const CODEX_AUTH_SWITCH_LOCK_PATH = path.join(CODEX_AUTH_PROFILES_DIR, ".switch.lock");
-const CODEX_AUTH_ACTIVE_ID_PATH = path.join(CODEX_AUTH_PROFILES_DIR, ".active_auth_id");
-const CODEX_AUTH_SWITCH_RESTART_SCRIPT_PATH = path.resolve(WORKSPACE_ROOT, "private_runner/run-local.sh");
-const CODEX_AUTH_SWITCH_RESTART_TIMEOUT_MS = Math.max(
-  1000,
-  Number(process.env.CODEX_AUTH_SWITCH_RESTART_TIMEOUT_MS || 8000)
-);
-const CODEX_AUTH_SWITCH_REQUIRE_SUDO = !["0", "false", "no", "off"].includes(
-  String(process.env.CODEX_AUTH_SWITCH_REQUIRE_SUDO ?? "0").trim().toLowerCase()
-);
 const CODEX_CLI_SESSIONS_DIR = path.resolve(
   process.env.CODEX_CLI_SESSIONS_DIR || path.join(os.homedir(), ".codex", "sessions")
 );
@@ -928,7 +930,7 @@ function resolveOAuthProfileRecord(authJson, profileName = OPENAI_CODEX_OAUTH_PR
 
 let oauthRefreshInFlight = null;
 
-async function refreshOAuthTokens({ force = false } = {}) {
+async function refreshNativeOAuthTokens({ force = false } = {}) {
   if (oauthRefreshInFlight) return oauthRefreshInFlight;
   oauthRefreshInFlight = (async () => {
     const authJson = await readOAuthAuthJson();
@@ -1017,6 +1019,25 @@ async function refreshOAuthTokens({ force = false } = {}) {
     return await oauthRefreshInFlight;
   } finally {
     oauthRefreshInFlight = null;
+  }
+}
+
+async function resolveCodexResponseAuth({ forceRefresh = false } = {}) {
+  const snapshot = await codexAuthService.snapshot();
+  if (snapshot.profiles.length > 0) {
+    if (!snapshot.activeAuthId) throw new Error("active auth profile unavailable");
+    const payload = await codexAuthService.externalTokenPayload(snapshot.activeAuthId, { forceRefresh });
+    return { accessToken: payload.accessToken, accountId: payload.chatgptAccountId };
+  }
+  return refreshNativeOAuthTokens({ force: forceRefresh });
+}
+
+async function withCodexAuthLease(operation) {
+  const release = await codexAuthService.acquireLease();
+  try {
+    return await operation();
+  } finally {
+    release();
   }
 }
 
@@ -1799,6 +1820,10 @@ function parseSseEventBlock(block) {
 }
 
 async function runCodexStream(prompt, opts = {}) {
+  return withCodexAuthLease(() => runCodexStreamLeased(prompt, opts));
+}
+
+async function runCodexStreamLeased(prompt, opts = {}) {
   const onText = typeof opts.onText === "function" ? opts.onText : null;
   const onMode = typeof opts.onMode === "function" ? opts.onMode : null;
   const externalSignal = opts.signal;
@@ -1818,7 +1843,7 @@ async function runCodexStream(prompt, opts = {}) {
   let upstreamRetryCount = 0;
 
   while (true) {
-    const auth = await refreshOAuthTokens({ force: triedAuthRefresh });
+    const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
     const requestId = randomUUID();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), OPENAI_CODEX_TIMEOUT_MS);
@@ -3311,10 +3336,14 @@ async function fetchWhamUsage(accessToken, accountId) {
 }
 
 async function fetchCodexCliStatusSnapshot() {
+  return withCodexAuthLease(fetchCodexCliStatusSnapshotLeased);
+}
+
+async function fetchCodexCliStatusSnapshotLeased() {
   const startedAt = Date.now();
   let triedAuthRefresh = false;
   while (true) {
-    const auth = await refreshOAuthTokens({ force: triedAuthRefresh });
+    const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
     const whamUsage = await fetchWhamUsage(auth.accessToken, auth.accountId);
     if (!whamUsage?.rate_limit && !triedAuthRefresh) {
       triedAuthRefresh = true;
@@ -3695,364 +3724,11 @@ function killWorkspaceShellScriptJob(rawJobId) {
     throw makeApiError(400, "job_id_required", "jobId is required");
   }
   const job = scriptJobsById.get(jobId);
-  if (!job) {
-    throw makeApiError(404, "job_not_found", "job not found");
-  }
+  if (!job) throw makeApiError(404, "job_not_found", "job not found");
   const running = job.status === "running";
-  if (running) {
-    requestScriptJobTermination(job, "manual");
-  }
-  return {
-    ok: true,
-    running,
-    ...toScriptJobSnapshot(job),
-  };
+  if (running) requestScriptJobTermination(job, "manual");
+  return { ok: true, running, ...toScriptJobSnapshot(job) };
 }
-
-function normalizeCodexAuthId(rawAuthId) {
-  const authId = String(rawAuthId || "").trim();
-  if (!authId) {
-    throw makeApiError(400, "auth_id_required", "authId is required");
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(authId)) {
-    throw makeApiError(
-      400,
-      "auth_id_invalid",
-      "authId must match /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/"
-    );
-  }
-  return authId;
-}
-
-function parseAuthIdFromProfileFileName(fileName) {
-  const normalized = String(fileName || "").trim();
-  if (!normalized.endsWith(CODEX_AUTH_PROFILE_SUFFIX)) return "";
-  const authId = normalized.slice(0, -CODEX_AUTH_PROFILE_SUFFIX.length);
-  try {
-    return normalizeCodexAuthId(authId);
-  } catch {
-    return "";
-  }
-}
-
-function authProfilePathForId(authId) {
-  return path.join(CODEX_AUTH_PROFILES_DIR, `${authId}${CODEX_AUTH_PROFILE_SUFFIX}`);
-}
-
-async function readActiveAuthIdMarker() {
-  try {
-    const raw = await fs.readFile(CODEX_AUTH_ACTIVE_ID_PATH, "utf8");
-    return normalizeCodexAuthId(raw);
-  } catch {
-    return "";
-  }
-}
-
-async function writeActiveAuthIdMarker(authId) {
-  await fs.mkdir(CODEX_AUTH_PROFILES_DIR, { recursive: true });
-  await fs.writeFile(CODEX_AUTH_ACTIVE_ID_PATH, `${authId}\n`, { encoding: "utf8", mode: 0o600 });
-}
-
-function resetCodexAuthRuntimeCache() {
-  codexCliStatusCache = {
-    fetchedAtMs: 0,
-    snapshot: null,
-  };
-  oauthRefreshInFlight = null;
-}
-
-async function listCodexAuthProfileCandidates() {
-  const entries = await fs.readdir(CODEX_AUTH_PROFILES_DIR, { withFileTypes: true }).catch((err) => {
-    if (String(err?.code || "") === "ENOENT") return [];
-    throw err;
-  });
-  const profiles = [];
-  for (const entry of entries) {
-    if (!entry || !entry.isFile?.()) continue;
-    const authId = parseAuthIdFromProfileFileName(entry.name);
-    if (!authId) continue;
-    profiles.push({
-      authId,
-      fileName: entry.name,
-      filePath: path.join(CODEX_AUTH_PROFILES_DIR, entry.name),
-    });
-  }
-  profiles.sort((a, b) => a.authId.localeCompare(b.authId));
-  return profiles;
-}
-
-async function resolveCurrentAuthIdFromProfiles(profileCandidates) {
-  if (!Array.isArray(profileCandidates) || profileCandidates.length <= 0) return "";
-  const authIdSet = new Set(profileCandidates.map((item) => item.authId));
-  const markerAuthId = await readActiveAuthIdMarker();
-  if (markerAuthId && authIdSet.has(markerAuthId)) {
-    return markerAuthId;
-  }
-  try {
-    const activeRealPath = await fs.realpath(CODEX_AUTH_PATH);
-    for (const profile of profileCandidates) {
-      const profileRealPath = await fs.realpath(profile.filePath).catch(() => "");
-      if (profileRealPath && profileRealPath === activeRealPath) {
-        return profile.authId;
-      }
-    }
-  } catch {}
-
-  const activeRaw = await fs.readFile(CODEX_AUTH_PATH, "utf8").catch(() => "");
-  const activeTrimmed = activeRaw.trim();
-  if (!activeTrimmed) return "";
-  for (const profile of profileCandidates) {
-    const profileRaw = await fs.readFile(profile.filePath, "utf8").catch(() => "");
-    if (profileRaw.trim() === activeTrimmed) {
-      return profile.authId;
-    }
-  }
-  return "";
-}
-
-async function listCodexAuthProfilesSnapshot() {
-  const candidates = await listCodexAuthProfileCandidates();
-  const currentAuthId = await resolveCurrentAuthIdFromProfiles(candidates);
-  return {
-    currentAuthId,
-    profiles: candidates.map((item) => ({
-      authId: item.authId,
-      fileName: item.fileName,
-      isCurrent: Boolean(currentAuthId && item.authId === currentAuthId),
-    })),
-    fetchedAt: new Date().toISOString(),
-  };
-}
-
-async function acquireCodexAuthSwitchLock({ allowStaleRetry = true } = {}) {
-  await fs.mkdir(CODEX_AUTH_PROFILES_DIR, { recursive: true });
-  let handle;
-  try {
-    handle = await fs.open(CODEX_AUTH_SWITCH_LOCK_PATH, "wx", 0o600);
-  } catch (err) {
-    if (String(err?.code || "") === "EEXIST") {
-      if (allowStaleRetry && (await isCodexAuthSwitchLockStale())) {
-        await fs.unlink(CODEX_AUTH_SWITCH_LOCK_PATH).catch(() => {});
-        return acquireCodexAuthSwitchLock({ allowStaleRetry: false });
-      }
-      throw makeApiError(409, "auth_switch_busy", "another auth switch is in progress");
-    }
-    throw err;
-  }
-  try {
-    await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, "utf8");
-  } catch (err) {
-    await handle.close().catch(() => {});
-    await fs.unlink(CODEX_AUTH_SWITCH_LOCK_PATH).catch(() => {});
-    throw err;
-  }
-  return async () => {
-    await handle.close().catch(() => {});
-    await fs.unlink(CODEX_AUTH_SWITCH_LOCK_PATH).catch(() => {});
-  };
-}
-
-// A lock file left behind by a killed runner (e.g. an auth-switch restart
-// that was mid-flight) has a PID that no longer exists. Detect that case so
-// a crashed/killed holder doesn't wedge every future switch behind a 409.
-async function isCodexAuthSwitchLockStale() {
-  const raw = await fs.readFile(CODEX_AUTH_SWITCH_LOCK_PATH, "utf8").catch(() => "");
-  const pid = Number.parseInt(String(raw).split("\n", 1)[0], 10);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return false; // still alive (or we lack permission to know otherwise)
-  } catch (err) {
-    return String(err?.code || "") === "ESRCH";
-  }
-}
-
-function buildAuthSwitchRestartInvocation() {
-  const restartEnv = {
-    ...process.env,
-    RUN_LOCAL_REUSE_EXISTING: "0",
-    // Hand the current runner token to the restarted process so the app's
-    // existing bearer token keeps working after an auth-switch restart
-    // (unlike a manual/CLI restart, which is still free to rotate it).
-    // Passed via env only, never argv, so it never shows up in `ps`.
-    RUN_LOCAL_RUNNER_TOKEN: RUNNER_TOKEN,
-  };
-  const bin = CODEX_AUTH_SWITCH_REQUIRE_SUDO ? "sudo" : CODEX_AUTH_SWITCH_RESTART_SCRIPT_PATH;
-  const args = CODEX_AUTH_SWITCH_REQUIRE_SUDO
-    ? [
-        "-n",
-        "env",
-        "RUN_LOCAL_REUSE_EXISTING=0",
-        CODEX_AUTH_SWITCH_RESTART_SCRIPT_PATH,
-        "restart",
-        "--mode",
-        "full",
-      ]
-    : ["restart", "--mode", "full"];
-  const command = CODEX_AUTH_SWITCH_REQUIRE_SUDO
-    ? `${bin} ${args.join(" ")}`.trim()
-    : `RUN_LOCAL_REUSE_EXISTING=0 ${bin} ${args.join(" ")}`.trim();
-  return { bin, args, env: restartEnv, command };
-}
-
-async function restartRunnerForAuthSwitch() {
-  const invocation = buildAuthSwitchRestartInvocation();
-  const result = await runCommandWithCapture(invocation.bin, invocation.args, {
-    timeoutMs: CODEX_AUTH_SWITCH_RESTART_TIMEOUT_MS,
-    cwd: WORKSPACE_ROOT,
-    env: invocation.env,
-    maxOutputBytes: 64 * 1024,
-  });
-  if (result.timedOut) {
-    throw new Error(`restart command timed out (${result.timeoutMs}ms)`);
-  }
-  if (result.exitCode !== 0) {
-    const stderrText = String(result.stderr || "").trim();
-    const stdoutText = String(result.stdout || "").trim();
-    throw new Error(
-      `restart command failed (${result.exitCode}): ${stderrText || stdoutText || "no output"}`
-    );
-  }
-  return { command: invocation.command };
-}
-
-// Guards against overlapping fire-and-forget restarts triggered from the
-// HTTP handler below (the auth-switch lock is released before this runs, so
-// nothing else serializes concurrent switch requests).
-let authSwitchRestartInFlight = false;
-
-// Runs the deferred restart after the HTTP response for /codex-auth/switch
-// has already been flushed to the client, so the ~2s+ restart lead time
-// never races with (or delays) the response itself. Failures are logged
-// only; the client already received its 200 with restart.scheduled=true.
-function scheduleAuthSwitchRestartAfterResponse(res) {
-  let triggered = false;
-  const trigger = () => {
-    if (triggered) return;
-    triggered = true;
-    if (authSwitchRestartInFlight) {
-      console.error("[codex-auth-switch] restart already in flight, skipping duplicate trigger");
-      return;
-    }
-    authSwitchRestartInFlight = true;
-    restartRunnerForAuthSwitch()
-      .then((result) => {
-        console.log(`[codex-auth-switch] restart command completed: ${result.command}`);
-      })
-      .catch((err) => {
-        console.error(`[codex-auth-switch] restart command failed: ${errorMessage(err)}`);
-      })
-      .finally(() => {
-        authSwitchRestartInFlight = false;
-      });
-  };
-  res.once("finish", trigger);
-  res.once("close", trigger);
-}
-
-// Codex rewrites ~/.codex/auth.json in place as its tokens refresh, so the
-// copy under profiles/ goes stale over time. Before a switch overwrites
-// auth.json, save the live file back to its own profile so switching back
-// later restores current tokens instead of expired ones. Best-effort: when
-// in doubt about which profile the live file belongs to, skip rather than
-// overwrite the wrong one.
-async function persistActiveCodexAuthProfileSnapshot() {
-  const activeRaw = await fs.readFile(CODEX_AUTH_PATH, "utf8").catch(() => "");
-  if (!activeRaw.trim()) return { saved: false, reason: "auth.json is missing or empty" };
-  let activeJson;
-  try {
-    activeJson = JSON.parse(activeRaw);
-  } catch {
-    return { saved: false, reason: "auth.json is not valid JSON" };
-  }
-  const candidates = await listCodexAuthProfileCandidates();
-  const currentAuthId = await resolveCurrentAuthIdFromProfiles(candidates);
-  if (!currentAuthId) {
-    return { saved: false, reason: "current auth profile could not be resolved" };
-  }
-  const profilePath = authProfilePathForId(currentAuthId);
-  const profileRaw = await fs.readFile(profilePath, "utf8").catch(() => "");
-  if (profileRaw.trim()) {
-    // The marker can be stale after a manual auth.json swap; never save one
-    // account's tokens into another account's profile.
-    try {
-      const activeAccountId = resolveAccountId(activeJson?.tokens || {});
-      const profileAccountId = resolveAccountId(JSON.parse(profileRaw)?.tokens || {});
-      if (activeAccountId && profileAccountId && activeAccountId !== profileAccountId) {
-        return {
-          saved: false,
-          reason: `auth.json belongs to a different account than profile ${currentAuthId}`,
-        };
-      }
-    } catch {
-      // An unreadable/invalid profile is safe to overwrite with the valid live file.
-    }
-  }
-  const tmpPath = `${profilePath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    await fs.writeFile(tmpPath, activeRaw.endsWith("\n") ? activeRaw : `${activeRaw}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await fs.rename(tmpPath, profilePath);
-    await fs.chmod(profilePath, 0o600).catch(() => {});
-  } finally {
-    await fs.unlink(tmpPath).catch(() => {});
-  }
-  return { saved: true, authId: currentAuthId };
-}
-
-async function switchCodexAuthProfile(authIdRaw) {
-  const authId = normalizeCodexAuthId(authIdRaw);
-  const releaseLock = await acquireCodexAuthSwitchLock();
-  let tmpAuthPath = "";
-  try {
-    const writeBack = await persistActiveCodexAuthProfileSnapshot();
-    if (writeBack.saved) {
-      console.log(`[codex-auth-switch] saved live auth.json back to profile ${writeBack.authId}`);
-    } else {
-      console.error(`[codex-auth-switch] skipped auth.json write-back: ${writeBack.reason}`);
-    }
-    const profilePath = authProfilePathForId(authId);
-    const profileRaw = await fs.readFile(profilePath, "utf8").catch((err) => {
-      if (String(err?.code || "") === "ENOENT") {
-        throw makeApiError(404, "auth_profile_not_found", `auth profile not found: ${authId}`);
-      }
-      throw err;
-    });
-    try {
-      JSON.parse(profileRaw);
-    } catch (err) {
-      throw makeApiError(
-        400,
-        "auth_profile_invalid_json",
-        `auth profile JSON is invalid: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-
-    tmpAuthPath = `${CODEX_AUTH_PATH}.tmp-${process.pid}-${Date.now()}`;
-    await fs.writeFile(tmpAuthPath, profileRaw.endsWith("\n") ? profileRaw : `${profileRaw}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await fs.rename(tmpAuthPath, CODEX_AUTH_PATH);
-    await fs.chmod(CODEX_AUTH_PATH, 0o600).catch(() => {});
-    await writeActiveAuthIdMarker(authId);
-    resetCodexAuthRuntimeCache();
-    const snapshot = await listCodexAuthProfilesSnapshot();
-    return {
-      authId,
-      restartCommand: buildAuthSwitchRestartInvocation().command,
-      snapshot,
-    };
-  } finally {
-    if (tmpAuthPath) {
-      await fs.unlink(tmpAuthPath).catch(() => {});
-    }
-    await releaseLock();
-  }
-}
-
 async function getGoogleCloudAccessToken() {
   try {
     const adc = await runCommandCapture("gcloud", ["auth", "application-default", "print-access-token"]);
@@ -5992,10 +5668,14 @@ function parseResponsePayload(rawBody) {
 }
 
 async function createOpenAICodexResponseJson(payload) {
+  return withCodexAuthLease(() => createOpenAICodexResponseJsonLeased(payload));
+}
+
+async function createOpenAICodexResponseJsonLeased(payload) {
   let triedAuthRefresh = false;
   let upstreamRetryCount = 0;
   while (true) {
-    const auth = await refreshOAuthTokens({ force: triedAuthRefresh });
+    const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
     const requestId = randomUUID();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), OPENAI_CODEX_TIMEOUT_MS);
@@ -6968,14 +6648,33 @@ function markCodexQueuedTurn(turn, patch) {
   return turn;
 }
 
-function createCodexRpcClient({ signal, upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL, upstreamToken = CODEX_WS_PROXY_UPSTREAM_TOKEN } = {}) {
-  return createCodexAppServerClient({
-    signal,
-    upstreamUrl,
-    upstreamToken,
-    turnCompletionTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
-  });
+function createCodexRpcClient({
+  signal,
+  upstreamUrl = CODEX_WS_PROXY_UPSTREAM_URL,
+  upstreamToken = CODEX_WS_PROXY_UPSTREAM_TOKEN,
+  authRefreshHandler,
+  bypassAuthGate = false,
+} = {}) {
+  const authLease = bypassAuthGate ? null : codexAuthService.acquireLease();
+  try {
+    return createCodexAppServerClient({
+      signal,
+      upstreamUrl,
+      upstreamToken,
+      authRefreshHandler: authRefreshHandler || ((request) => codexAuthRuntime.handleRefresh(request)),
+      onClose: () => authLease?.(),
+      turnCompletionTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
+    });
+  } catch (error) {
+    authLease?.();
+    throw error;
+  }
 }
+
+const codexAuthRuntime = createCodexAuthRuntime({
+  authService: codexAuthService,
+  createClient: (options) => createCodexRpcClient(options),
+});
 
 function parseCodexThreadStatus(params) {
   const values = [
@@ -8348,12 +8047,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, 401, { error: "unauthorized" });
     }
     try {
-      const snapshot = await listCodexAuthProfilesSnapshot();
+      if (reqUrl.searchParams.get("refresh") === "1") {
+        try {
+          const release = codexAuthService.acquireLease();
+          release();
+        } catch {
+          return json(res, 503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" });
+        }
+        await codexAuthService.refreshAllRateLimits();
+      }
+      const snapshot = await codexAuthService.snapshot();
       return json(res, 200, {
         ok: true,
-        currentAuthId: snapshot.currentAuthId,
+        currentAuthId: snapshot.activeAuthId,
         profiles: snapshot.profiles,
-        fetchedAt: snapshot.fetchedAt,
+        fetchedAt: new Date().toISOString(),
       });
     } catch (err) {
       if (isApiError(err)) {
@@ -8378,31 +8086,82 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const body = await readJsonBody(req);
-      const authId = normalizeCodexAuthId(body?.authId);
-      const switchResult = await switchCodexAuthProfile(authId);
+      const authId = String(body?.authId ?? "");
+      await codexAuthRuntime.switchAccount(authId);
+      const snapshot = await codexAuthService.snapshot();
       json(res, 200, {
         ok: true,
-        authId: switchResult.authId,
-        currentAuthId: switchResult.snapshot.currentAuthId,
-        profiles: switchResult.snapshot.profiles,
-        fetchedAt: switchResult.snapshot.fetchedAt,
-        restart: {
-          scheduled: true,
-          command: switchResult.restartCommand,
-        },
+        authId,
+        currentAuthId: snapshot.activeAuthId,
+        profiles: snapshot.profiles,
+        fetchedAt: new Date().toISOString(),
       });
-      // Restart only after the response is flushed so the deferred restart's
-      // lead time can never race with (or be blamed for) this request.
-      scheduleAuthSwitchRestartAfterResponse(res);
       return;
     } catch (err) {
       if (isApiError(err)) {
         return json(res, err.apiStatus, err.apiPayload);
       }
-      return json(res, 500, {
-        error: "codex_auth_switch_failed",
-        message: errorMessage(err),
-      });
+      if (["auth profile not found", "auth profile unavailable"].includes(String(err?.message))) return json(res, 404, { error: "auth_profile_not_found", message: "Auth profile not found" });
+      if (String(err?.message) === "invalid auth id") return json(res, 400, { error: "invalid_auth_id", message: "Invalid auth id" });
+      return json(res, 409, { error: "codex_auth_switch_unavailable", message: "Account switch unavailable" });
+    }
+  }
+
+  const codexAuthRegistrationMatch = pathname.match(/^\/codex-auth\/registrations\/([^/]+)$/);
+  const codexAuthDeleteMatch = pathname.match(/^\/codex-auth\/profiles\/([^/]+)$/);
+  const codexAuthReauthMatch = pathname.match(/^\/codex-auth\/profiles\/([^/]+)\/reauth$/);
+  const isCodexAuthManagementRoute = pathname === "/codex-auth/registrations" || codexAuthRegistrationMatch || codexAuthReauthMatch || codexAuthDeleteMatch;
+  if (isCodexAuthManagementRoute) {
+    if (!RUNNER_TOKEN) return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    const isCodexAuthMutation = (req.method === "POST" && (pathname === "/codex-auth/registrations" || codexAuthReauthMatch || codexAuthRegistrationMatch)) || (req.method === "DELETE" && codexAuthDeleteMatch);
+    if (isCodexAuthMutation && codexAuthService.gateSnapshot().state === "unready") {
+      return json(res, 503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" });
+    }
+    const decodeSegment = (value) => {
+      try { return decodeURIComponent(value); } catch { throw Object.assign(new Error("invalid_uri"), { status: 400 }); }
+    };
+    try {
+      if (req.method === "POST" && pathname === "/codex-auth/registrations") {
+        const body = await readJsonBody(req);
+        const registration = await codexAuthService.startRegistration(body?.authId);
+        return json(res, 202, { ok: true, ...registration });
+      }
+      if (req.method === "POST" && codexAuthReauthMatch) {
+        const authId = decodeSegment(codexAuthReauthMatch[1]);
+        const registration = await codexAuthService.startRegistration(authId, { reauth: true });
+        return json(res, 202, { ok: true, ...registration });
+      }
+      if (req.method === "DELETE" && codexAuthDeleteMatch) {
+        const authId = decodeSegment(codexAuthDeleteMatch[1]);
+        await codexAuthService.deleteProfile(authId);
+        return json(res, 200, { ok: true });
+      }
+      if (codexAuthRegistrationMatch && req.method === "POST") {
+        const registrationId = decodeSegment(codexAuthRegistrationMatch[1]);
+        const body = await readJsonBody(req);
+        const result = await codexAuthService.completeRegistration(registrationId, body?.displayName);
+        return json(res, 200, { ok: true, ...result });
+      }
+      if (codexAuthRegistrationMatch && (req.method === "GET" || req.method === "DELETE")) {
+        const registrationId = decodeSegment(codexAuthRegistrationMatch[1]);
+        if (req.method === "GET") return json(res, 200, { ok: true, ...(await codexAuthService.registrationStatus(registrationId)) });
+        await codexAuthService.cancelRegistration(registrationId);
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 404, { error: "not_found", message: "Not found" });
+    } catch (err) {
+      if (err?.status === 400) return json(res, 400, { error: "invalid_uri", message: "Invalid URI" });
+      const text = String(err?.message || "");
+      if (text === "registration already pending") return json(res, 409, { error: "registration_already_pending", message: "Registration already pending" });
+      if (text === "auth profile exists") return json(res, 409, { error: "auth_profile_exists", message: "Auth profile already exists" });
+      if (text === "auth profile busy") return json(res, 409, { error: "auth_profile_busy", message: "Auth profile has an active registration" });
+      if (text === "auth profile not found") return json(res, 404, { error: "auth_profile_not_found", message: "Auth profile not found" });
+      if (text === "active auth profile") return json(res, 409, { error: "active_auth_profile", message: "Active auth profile cannot be deleted" });
+      if (text === "invalid auth id") return json(res, 400, { error: "invalid_auth_id", message: "Invalid auth id" });
+      if (text === "display_name_required") return json(res, 400, { error: "display_name_required", message: "Display name is required" });
+      if (text === "registration_not_ready") return json(res, 409, { error: "registration_not_ready", message: "Registration is not ready" });
+      return json(res, 503, { error: "registration_unavailable", message: "Registration unavailable" });
     }
   }
 
@@ -11008,6 +10767,10 @@ function cleanupCodexRelay(relay, reason = "cleanup") {
   if (relay.requestMetaByRpcId instanceof Map) {
     relay.requestMetaByRpcId.clear();
   }
+  if (relay.authLeasesByRpcId instanceof Map) {
+    for (const release of relay.authLeasesByRpcId.values()) release();
+    relay.authLeasesByRpcId.clear();
+  }
   if (Array.isArray(relay.pendingInitializeReplies)) {
     relay.pendingInitializeReplies.length = 0;
   }
@@ -11167,6 +10930,7 @@ function createCodexRelayContext(params) {
     requestIdByRpcId: new Map(),
     requestMethodByRpcId: new Map(),
     requestMetaByRpcId: new Map(),
+    authLeasesByRpcId: new Map(),
     runnerWsLlmOperationId: "",
     runnerWsLlmSessionId: "",
     runnerWsSharedThreadless: false,
@@ -11297,6 +11061,23 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (meta?.method === "account/chatgptAuthTokens/refresh" && meta.id !== null) {
+    void (async () => {
+      let response;
+      try {
+        const result = await codexAuthRuntime.handleRefresh(rpcPayload);
+        response = { jsonrpc: "2.0", id: meta.id, result };
+      } catch {
+        response = {
+          jsonrpc: "2.0",
+          id: meta.id,
+          error: { code: -32603, message: "Codex auth refresh failed" },
+        };
+      }
+      if (relay.upstreamWs?.readyState === WebSocket.OPEN) relay.upstreamWs.send(JSON.stringify(response));
+    })();
+    return;
+  }
   const metaThreadId = String(meta?.threadId || "").trim();
   const relayThreadId = String(relay.threadId || "").trim();
   if (isCodexRelayThreadMismatch(relayThreadId, metaThreadId)) {
@@ -11328,6 +11109,9 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   }
   const responseRpcId = meta?.id ?? null;
   const responseRpcKey = codexRpcIdKey(responseRpcId);
+  const responseLease = responseRpcKey && relay.authLeasesByRpcId instanceof Map
+    ? relay.authLeasesByRpcId.get(responseRpcKey)
+    : null;
   const responseRequestId = (
     responseRpcKey &&
     relay.requestIdByRpcId instanceof Map
@@ -11348,6 +11132,9 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   ) {
     relay.requestIdByRpcId.delete(responseRpcKey);
   }
+  if (responseLease && (Boolean(meta?.hasResult) || Boolean(meta?.hasError)) && (responseRpcMethod !== "turn/start" || meta?.hasError)) {
+    releaseCodexRelayRpcLease(relay, responseRpcKey);
+  }
   if (meta?.method === "turn/started") {
     const turnId = String(rpcPayload?.params?.turn?.id || rpcPayload?.params?.turnId || "").trim();
     if (relay.calendarOwner && turnId) relay.calendarOwner.turnId = turnId;
@@ -11355,14 +11142,16 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   if (
     responseRpcKey &&
     relay.requestMethodByRpcId instanceof Map &&
-    (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
+    (Boolean(meta?.hasResult) || Boolean(meta?.hasError)) &&
+    responseRpcMethod !== "turn/start"
   ) {
     relay.requestMethodByRpcId.delete(responseRpcKey);
   }
   if (
     responseRpcKey &&
     relay.requestMetaByRpcId instanceof Map &&
-    (Boolean(meta?.hasResult) || Boolean(meta?.hasError))
+    (Boolean(meta?.hasResult) || Boolean(meta?.hasError)) &&
+    responseRpcMethod !== "turn/start"
   ) {
     relay.requestMetaByRpcId.delete(responseRpcKey);
   }
@@ -11499,10 +11288,12 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       if (isTerminalTurnStatus(meta.threadStatus) || !meta.threadStatus) {
         relay.turnCompleted = true;
         codexRawSessionOwnership.settle(relay, "released", "turn");
+        releaseCodexRelayTurnLease(relay);
       }
     } else if (meta.method === "turn/interrupted" && ownsCurrentTurn) {
       relay.turnCompleted = true;
       codexRawSessionOwnership.settle(relay, "released", "turn");
+      releaseCodexRelayTurnLease(relay);
     } else if (meta.method === "turn/started" && ownsCurrentTurn) {
       relay.turnStarted = true;
       relay.turnCompleted = false;
@@ -11603,6 +11394,25 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       safeWsSend(subscriber, data, { binary: isBinary });
     }
   }
+}
+
+function releaseCodexRelayTurnLease(relay) {
+  if (!relay?.authLeasesByRpcId) return;
+  for (const rpcId of relay.authLeasesByRpcId.keys()) {
+    if (relay.requestMethodByRpcId.get(rpcId) === "turn/start") {
+      releaseCodexRelayRpcLease(relay, rpcId);
+    }
+  }
+}
+
+function releaseCodexRelayRpcLease(relay, rpcId) {
+  if (!rpcId) return;
+  const release = relay.authLeasesByRpcId?.get(rpcId);
+  if (release) release();
+  relay.authLeasesByRpcId?.delete(rpcId);
+  relay.requestMethodByRpcId?.delete(rpcId);
+  relay.requestMetaByRpcId?.delete(rpcId);
+  relay.requestIdByRpcId?.delete(rpcId);
 }
 
 function attachCodexRelayUpstreamHandlers(relay, params = {}) {
@@ -11786,6 +11596,21 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (meta?.method && meta.method !== "initialize" && meta.id !== null && params.authLeaseAcquired !== true) {
+    const rpcIdKey = codexRpcIdKey(meta.id);
+    if (relay.authLeasesByRpcId instanceof Map && relay.authLeasesByRpcId.has(rpcIdKey)) {
+      if (requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32600, message: "Codex RPC id already in flight" } }));
+      return;
+    }
+    let lease;
+    try { lease = codexAuthService.acquireLease(); } catch {
+      if (meta.id !== null && requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32001, message: "Codex auth gate unavailable" } }));
+      return;
+    }
+    if (relay.authLeasesByRpcId instanceof Map) relay.authLeasesByRpcId.set(rpcIdKey, lease);
+    else lease();
+    params = { ...params, authLeaseAcquired: true };
+  }
   if (
     meta?.method === "thread/start" ||
     meta?.method === "thread/resume" ||
@@ -11799,7 +11624,12 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
     relay, rpcPayload, meta?.method, params,
     (admittedParams) => forwardCodexRelayClientData(relay, data, isBinary, admittedParams),
   );
-  if (admission) return admission;
+  if (admission) {
+    return admission.then((forwarded) => {
+      if (forwarded === false) releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+      return forwarded;
+    });
+  }
   if (handleCalendarClientResponse(relay, rpcPayload, data, isBinary, {
     ws: requestClientWs,
     operationId: requestOperationId,
@@ -11972,6 +11802,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (relay.upstreamWs.readyState !== WebSocket.OPEN) {
     if (answeredApproval) relay.pendingApprovalRequestIds.add(Number(meta.id));
     logForwardState("dropped_upstream_not_open");
+    releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
     return;
   }
   logForwardState("sent_to_upstream");
@@ -11981,7 +11812,12 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (meta?.method === "initialized") {
     relay.upstreamInitializedNotificationForwarded = true;
   }
-  relay.upstreamWs.send(data, { binary: isBinary });
+  try {
+    relay.upstreamWs.send(data, { binary: isBinary });
+  } catch (error) {
+    releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+    throw error;
+  }
   if (answeredApproval && relay.pendingApprovalRequestIds.size === 0) {
     cleanupOrScheduleDetachedRelay(relay, "approval_answered");
   }
@@ -12100,7 +11936,16 @@ async function initializeCodexWsDebugRuntime() {
 }
 
 if (!RUNNER_SKIP_SERVER_START) {
-  const stopAgentsForSignal = (signal) => void agentRuntime.close().finally(() => process.kill(process.pid, signal));
+  let stopRequested = false;
+  const stopAgentsForSignal = (signal) => {
+    stopRequested = true;
+    codexAuthService.markUnready();
+    void codexAuthService.shutdown()
+      .catch(() => {})
+      .finally(() => releaseCodexAuthOwnerLock())
+      .finally(() => agentRuntime.close())
+      .finally(() => process.kill(process.pid, signal));
+  };
   process.once("SIGTERM", () => stopAgentsForSignal("SIGTERM"));
   process.once("SIGINT", () => stopAgentsForSignal("SIGINT"));
   void initializeLlmRequestLogRuntime();
@@ -12110,33 +11955,44 @@ if (!RUNNER_SKIP_SERVER_START) {
   void initializeCliSessionIndexRuntime();
   void initializeTtsMediaRuntime();
   void initializeCodexWsDebugRuntime();
-  void locationScheduleService.start().catch((error) => {
-    console.warn(`[location-schedule] initialization failed: ${errorMessage(error)}`);
-  });
-  void codexScheduleService.start().catch((error) => {
-    console.warn(`[codex-schedule] initialization failed: ${errorMessage(error)}`);
-  });
-
-  server.listen(PORT, HOST, () => {
-    console.log(
-      `private runner server listening on http://${HOST}:${PORT} (mode=${
-        RUNNER_MOCK ? "mock" : OPENAI_CODEX_PROVIDER
-      })`
-    );
-  });
+  void (async () => {
+    try {
+      codexAuthOwnerLockRelease = await codexAuthService.acquireOwnerLock();
+      if (stopRequested) {
+        await releaseCodexAuthOwnerLock();
+        return;
+      }
+      await codexAuthRuntime.initialize();
+    } catch {
+      codexAuthService.markUnready();
+      console.warn("[codex-auth] initialization unavailable; auth management is unready");
+    }
+    await locationScheduleService.start().catch((error) => {
+      console.warn(`[location-schedule] initialization failed: ${errorMessage(error)}`);
+    });
+    await codexScheduleService.start().catch((error) => {
+      console.warn(`[codex-schedule] initialization failed: ${errorMessage(error)}`);
+    });
+    if (stopRequested) {
+      await releaseCodexAuthOwnerLock();
+      return;
+    }
+    server.listen(PORT, HOST, () => {
+      console.log(
+        `private runner server listening on http://${HOST}:${PORT} (mode=${
+          RUNNER_MOCK ? "mock" : OPENAI_CODEX_PROVIDER
+        })`
+      );
+    });
+  })();
 }
 
 export const __TESTING__ = {
   server,
+  codexAuthService,
+  codexAuthRuntime,
   RUNNER_TOKEN,
-  CODEX_AUTH_PROFILES_DIR,
-  CODEX_AUTH_SWITCH_LOCK_PATH,
-  acquireCodexAuthSwitchLock,
-  isCodexAuthSwitchLockStale,
-  buildAuthSwitchRestartInvocation,
   buildCodexStatusFromWham,
-  persistActiveCodexAuthProfileSnapshot,
-  switchCodexAuthProfile,
   pushDeviceStore,
   apnsClient,
   pushSummarizer,

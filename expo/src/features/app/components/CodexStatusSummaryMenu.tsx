@@ -3,6 +3,7 @@ import { Dimensions, Pressable, ScrollView, Text, TouchableOpacity, View } from 
 import { styles } from "../styles";
 import type { CodexAuthProfileEntry } from "../types/appTypes";
 import { AppModal } from "./AppModal";
+import { formatCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
 
 type AnchorRect = {
   x: number;
@@ -43,6 +44,7 @@ function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
   const elapsedHour = Math.floor(elapsedMin / 60);
   return `${elapsedHour}時間前`;
 }
+
 
 export function CodexStatusSummaryMenu({
   dismissed = false,
@@ -86,7 +88,9 @@ export function CodexStatusSummaryMenu({
   const fiveHourPct = parseLimitPct(statusFullText, "5h");
   const weeklyPct = parseLimitPct(statusFullText, "Weekly");
   const statusSummaryText = `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
-  const currentAuthIdText = String(authProfileId || "").trim() || "(未選択)";
+  const currentAuthId = String(authProfileId || "").trim();
+  const currentDisplayName = String(authProfileItems.find((item) => item.authId === currentAuthId)?.displayName || "").trim();
+  const currentAuthIdText = currentDisplayName || currentAuthId || "(未選択)";
 
   const closePreview = useCallback(() => {
     setAuthSelectOpen(false);
@@ -192,6 +196,7 @@ export function CodexStatusSummaryMenu({
                       const authId = String(item?.authId || "").trim();
                       if (!authId) return null;
                       const isCurrent = Boolean(item?.isCurrent);
+                      const limits = formatCodexAuthRateLimits(item);
                       return (
                         <TouchableOpacity
                           key={authId}
@@ -209,7 +214,8 @@ export function CodexStatusSummaryMenu({
                           }}
                         >
                           <Text style={[styles.chatFooterSelectOptionText, isCurrent && styles.chatFooterSelectOptionTextSelected]}>
-                            {isCurrent ? `✓ ${authId}` : authId}
+                            {isCurrent ? "✓ " : ""}{String(item?.displayName || "").trim() || authId}
+                            {limits ? ` (${limits})` : ""}
                           </Text>
                         </TouchableOpacity>
                       );
