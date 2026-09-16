@@ -6,6 +6,10 @@ export const chatMessageStyles = {
     width: "100%",
     marginBottom: 30,
   },
+  chatFindFocusedMessage: {
+    backgroundColor: "#fef9c3",
+    borderRadius: 8,
+  },
   chatBubble: {
     borderRadius: 12,
     borderWidth: 0,
