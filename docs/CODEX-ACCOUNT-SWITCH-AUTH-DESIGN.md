@@ -186,9 +186,10 @@ App Server生存中のcredentialを読まない。`account/login/completed`成�
 
 | API | 契約 |
 |---|---|
-| `POST /codex-auth/registrations` | `{ authId }`でdevice-code登録開始。`202 { registrationId, verificationUrl, userCode, expiresAt }` |
-| `GET /codex-auth/registrations/:registrationId` | `pending / completed / failed / cancelled`と安全なerror codeを返す |
-| `DELETE /codex-auth/registrations/:registrationId` | `account/login/cancel`後にprocess停止・exit待ち・staging破棄 |
+| `POST /codex-auth/registrations` | bodyなしでserver生成IDのdevice-code登録開始。`202 { registrationId, authId, verificationUrl, userCode, expiresAt }` |
+| `GET /codex-auth/registrations/:registrationId` | `pending / authenticated / completed / failed / cancelled`と安全なerror codeを返す |
+| `POST /codex-auth/registrations/:registrationId` | `{ displayName }`を受け、authenticated candidateを重複確認後atomic saveしてcompleted化 |
+| `DELETE /codex-auth/registrations/:registrationId` | pending/authenticatedを破棄。process停止・staging破棄 |
 | `POST /codex-auth/profiles/:authId/reauth` | 同じdevice-code flowを開始。完了時に同一account IDを確認してprofileを置換 |
 
 同じauth IDへの登録は一つに直列化する。取消・期限切れ・失敗ではcanonical profileとactive markerを変更しない。
@@ -236,6 +237,7 @@ POST /codex-auth/switch { authId }
 - 注入失敗時はmarkerを変更せず直前profileを再注入する。rollbackにも失敗した場合はgateを`unready`に固定し、全Codex送信を停止する
 
 status dropdownの利用制限はlive processを切り替えず、Runner cacheのlast-known値を表示する。
+managed profileの表示名はtrim後の`displayName`を優先し、空の場合のみ`authId`へfallbackする。利用制限は`usedPercent`を残量へ変換し、全UIで残り％（標準窓は`5h n% | 週 n%`）として表示する。
 
 ## 7. 401時の更新
 
@@ -393,7 +395,7 @@ profileごとの隔離`CODEX_HOME`方式は採用しない。native fallbackはp
 - startup: token注入前のCodex requestを拒否
 - direct Responses / usage: 共有auth.jsonではなく選択中canonical profileを使う
 - initialize: model / turn / compact / recovery / probeの全接続が`experimentalApi: true`で、対応するrefresh handlerを持つ
-- UI: auth IDだけを送受信し、再認証要否を表示する
+- UI: 新規追加はserver生成のauth IDを使い、認証完了後に保存名を入力して明示commitする。認証中はAppModalで表示する
 - 回帰: thread start/resume、approval、calendar tool、shared relay initialize cache
 
 ### 受け入れ条件

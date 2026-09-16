@@ -156,10 +156,10 @@ export function ConnectionSettings() {
                 : "入力中: なし"}
               {`  /  保存済み: ${runnerToken.trim() ? `指紋 ${tokenFingerprint(runnerToken)}` : "なし"}`}
             </Text>
-            <View style={styles.runnerTokenButtonRow}>
+            <View style={styles.settingsButtonRow}>
               <Pressable
                 style={[
-                  styles.runnerTokenSaveButton,
+                  styles.settingsPrimaryButton,
                   (!runnerTokenDraft.trim() || runnerTokenSaving) && styles.buttonDisabled,
                 ]}
                 onPress={() => void commitRunnerToken()}
@@ -168,14 +168,14 @@ export function ConnectionSettings() {
                 accessibilityLabel="Runnerトークンを保存して接続"
               >
                 {runnerTokenSaving ? <ActivityIndicator size="small" color="#ffffff" /> : null}
-                <Text style={styles.runnerTokenSaveButtonText}>
+                <Text style={styles.settingsPrimaryButtonText}>
                   {runnerTokenSaving ? "保存中" : "保存して接続"}
                 </Text>
               </Pressable>
             </View>
             {runnerTokenStatus ? (
               <Text
-                style={runnerTokenStatus.kind === "error" ? styles.runnerTokenErrorText : styles.runnerTokenSuccessText}
+                style={runnerTokenStatus.kind === "error" ? styles.settingsErrorText : styles.settingsSuccessText}
                 accessibilityRole="alert"
               >
                 {runnerTokenStatus.message}

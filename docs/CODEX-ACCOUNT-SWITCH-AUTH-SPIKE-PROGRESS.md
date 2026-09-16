@@ -53,6 +53,9 @@ experimental `chatgptAuthTokens`方式が、通常CLI / VSCodeの`~/.codex/auth.
 
 ## 判定
 
+- 2026-09-16: 新規登録をstaged credential→authenticated→保存名付きexplicit commitへ変更。認証前はcanonical profileへ保存しない。新規auth IDはserver生成。
+- 2026-09-16: status表示名を保存名優先、利用制限を全UIで残り％へ統一し、認証後の保存UIを設定画面の既存レイアウトへ統一。
+
 * 総合: external token方式を採用し実装済み。隔離環境で注入、A→B→A、refresh/rotation、rateLimits、実送信を確認。
 * 未実測: 本番統合での実401再試行、既存thread resume。
 * 制約: 最後のactive profile削除は409。別profileへ切替後のみ削除可能。

@@ -3187,7 +3187,7 @@ export default function App() {
     refreshCodexCliStatusForWidget,
     refreshCodexAuthProfiles,
     switchCodexAuthProfile,
-    startCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
     reauthCodexAuthProfile, deleteCodexAuthProfile,
   } = useCodexStatusAuthController({
     activeScreen,
@@ -3199,7 +3199,6 @@ export default function App() {
     codexCliStatusLastAttemptAtMsRef,
     codexCliStatusRefreshInFlightRef,
     codexAuthProfilesRefreshInFlightRef,
-    codexAuthProfilesSnapshot,
     setCodexCliStatusSnapshot,
     setCodexCliStatusFetchedAtMs,
     setCodexCliStatusLoading,
@@ -6800,7 +6799,7 @@ export default function App() {
     refreshCodexCliStatus: refreshCodexCliStatusFromContext,
     loadCodexAuthProfiles: loadCodexAuthProfilesFromContext,
     switchCodexAuthProfile: switchCodexAuthProfileFromContext,
-    startCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
     reauthCodexAuthProfile, deleteCodexAuthProfile,
   });
   const handleSelectSlashCommand = useCallback((command: string) => {

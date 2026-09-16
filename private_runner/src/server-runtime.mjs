@@ -8114,7 +8114,7 @@ const server = http.createServer(async (req, res) => {
   if (isCodexAuthManagementRoute) {
     if (!RUNNER_TOKEN) return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
     if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
-    const isCodexAuthMutation = (req.method === "POST" && (pathname === "/codex-auth/registrations" || codexAuthReauthMatch)) || (req.method === "DELETE" && codexAuthDeleteMatch);
+    const isCodexAuthMutation = (req.method === "POST" && (pathname === "/codex-auth/registrations" || codexAuthReauthMatch || codexAuthRegistrationMatch)) || (req.method === "DELETE" && codexAuthDeleteMatch);
     if (isCodexAuthMutation && codexAuthService.gateSnapshot().state === "unready") {
       return json(res, 503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" });
     }
@@ -8137,6 +8137,12 @@ const server = http.createServer(async (req, res) => {
         await codexAuthService.deleteProfile(authId);
         return json(res, 200, { ok: true });
       }
+      if (codexAuthRegistrationMatch && req.method === "POST") {
+        const registrationId = decodeSegment(codexAuthRegistrationMatch[1]);
+        const body = await readJsonBody(req);
+        const result = await codexAuthService.completeRegistration(registrationId, body?.displayName);
+        return json(res, 200, { ok: true, ...result });
+      }
       if (codexAuthRegistrationMatch && (req.method === "GET" || req.method === "DELETE")) {
         const registrationId = decodeSegment(codexAuthRegistrationMatch[1]);
         if (req.method === "GET") return json(res, 200, { ok: true, ...(await codexAuthService.registrationStatus(registrationId)) });
@@ -8153,6 +8159,8 @@ const server = http.createServer(async (req, res) => {
       if (text === "auth profile not found") return json(res, 404, { error: "auth_profile_not_found", message: "Auth profile not found" });
       if (text === "active auth profile") return json(res, 409, { error: "active_auth_profile", message: "Active auth profile cannot be deleted" });
       if (text === "invalid auth id") return json(res, 400, { error: "invalid_auth_id", message: "Invalid auth id" });
+      if (text === "display_name_required") return json(res, 400, { error: "display_name_required", message: "Display name is required" });
+      if (text === "registration_not_ready") return json(res, 409, { error: "registration_not_ready", message: "Registration is not ready" });
       return json(res, 503, { error: "registration_unavailable", message: "Registration unavailable" });
     }
   }

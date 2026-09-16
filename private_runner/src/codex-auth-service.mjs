@@ -281,14 +281,23 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
     }
   };
   const activeAuthId = async () => {
+    let contents;
     try {
-      return checkedAuthId((await fs.readFile(markerPath, "utf8")).trim());
-    } catch {
-      return "";
+      contents = await fs.readFile(markerPath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return "";
+      throw error;
     }
+    return checkedAuthId(contents.trim());
   };
   const profileIds = async () => {
-    const entries = await fs.readdir(profilesDir, { withFileTypes: true }).catch(() => []);
+    let entries;
+    try {
+      entries = await fs.readdir(profilesDir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
     return entries.filter((entry) => entry.isFile() && entry.name.endsWith('.json') && !entry.name.startsWith('.')).map((entry) => entry.name.slice(0, -5));
   };
   const accessTokenNeedsRefresh = (token, skewMs = 60_000) => {
@@ -388,9 +397,9 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
     shuttingDown = true;
     shutdownPromise = (async () => {
       await Promise.all(Array.from(registrations.values()).map(async (state) => {
-        if (!["starting", "pending", "finalizing"].includes(state.status)) return;
+        if (!["starting", "pending", "finalizing", "authenticated"].includes(state.status)) return;
         await mutationMutex(async () => {
-          if (["starting", "pending", "finalizing"].includes(state.status)) state.status = "cancelled";
+          if (["starting", "pending", "finalizing", "authenticated"].includes(state.status)) { state.status = "cancelled"; state.candidate = null; }
         });
         try { await state.startPromise; } catch {}
         try { await state.process?.request("account/login/cancel", { loginId: state.loginId }); } catch {}
@@ -402,8 +411,28 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
     return shutdownPromise;
   };
   const failRegistration = async (state, code) => {
-    if (!["completed", "failed", "cancelled"].includes(state.status)) { state.status = "failed"; state.errorCode = code; }
+    if (!["completed", "failed", "cancelled"].includes(state.status)) { state.status = "failed"; state.errorCode = code; state.candidate = null; }
     await cleanupRegistration(state);
+  };
+  const persistRegistrationProfile = async (state, credential, metadata, displayName) => {
+    const account = metadata?.account || {};
+    const tokens = credential.tokens;
+    if (state.expectedAccountId && tokens.account_id !== state.expectedAccountId) throw new Error("reauth_account_mismatch");
+    let entries;
+    try { entries = await fs.readdir(profilesDir, { withFileTypes: true }); }
+    catch (error) { if (error?.code === "ENOENT") entries = []; else throw error; }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const otherId = entry.name.slice(0, -5);
+      if (otherId === state.authId) continue;
+      try {
+        const other = await read(otherId);
+        if (other.accountId === tokens.account_id || other.tokens.refresh_token === tokens.refresh_token) throw new Error("duplicate_account");
+      } catch (error) { if (error.message !== "invalid auth profile") throw error; }
+    }
+    const name = String(displayName || credential.displayName || account.email || account.displayName || "").trim();
+    await save({ version: VERSION, authId: state.authId, accountId: tokens.account_id, tokens, ...(credential.clientId ? { clientId: credential.clientId } : {}), ...(credential.tokenEndpoint ? { tokenEndpoint: credential.tokenEndpoint } : {}), ...(credential.planType || account.planType ? { planType: credential.planType || account.planType } : {}), ...(name ? { displayName: name } : {}) });
+    return { authId: state.authId, status: "completed" };
   };
   const finalizeRegistration = async (state) => {
     if (state.status !== "pending") return;
@@ -416,25 +445,13 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
       if (state.status !== "finalizing") return;
       const tokens = credential?.tokens;
       if (typeof tokens?.access_token !== "string" || typeof tokens?.refresh_token !== "string" || typeof tokens?.account_id !== "string") throw new Error("credential_invalid");
-      const saved = await mutationMutex(async () => {
+      const commit = async (displayName = "") => mutationMutex(async () => {
         if (state.status !== "finalizing") return false;
-        if (state.expectedAccountId && tokens.account_id !== state.expectedAccountId) throw new Error("reauth_account_mismatch");
-        const entries = await fs.readdir(profilesDir, { withFileTypes: true }).catch(() => []);
-        for (const entry of entries) {
-          if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-          const otherId = entry.name.slice(0, -5);
-          if (otherId === state.authId) continue;
-          try {
-            const other = await read(otherId);
-            if (other.accountId === tokens.account_id || other.tokens.refresh_token === tokens.refresh_token) throw new Error("duplicate_account");
-          } catch (error) { if (error.message === "duplicate_account") throw error; }
-        }
-        const account = metadata?.account || {};
-        const displayName = String(credential.displayName || account.email || account.displayName || "").trim();
-        if (state.status !== "finalizing") return false;
-        await save({ version: VERSION, authId: state.authId, accountId: tokens.account_id, tokens, ...(credential.clientId ? { clientId: credential.clientId } : {}), ...(credential.tokenEndpoint ? { tokenEndpoint: credential.tokenEndpoint } : {}), ...(credential.planType || account.planType ? { planType: credential.planType || account.planType } : {}), ...(displayName ? { displayName } : {}) });
+        await persistRegistrationProfile(state, credential, metadata, displayName);
         return true;
       });
+      if (!state.reauth) { state.candidate = { credential, metadata }; state.status = "authenticated"; await cleanupRegistration(state); return; }
+      const saved = await commit();
       if (!saved || state.status !== "finalizing") return;
       await cleanupRegistration(state);
       if (state.status === "finalizing") state.status = "completed";
@@ -445,7 +462,7 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
   };
   const startRegistration = async (authId, { reauth = false } = {}) => {
     if (shuttingDown) throw new Error("auth service is shutting down");
-    const checked = checkedAuthId(authId);
+    const checked = reauth ? checkedAuthId(authId) : `account-${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
     const processFactory = registrationProcessFactory || (() => createCodexRegistrationProcess({ codexBin, spawnImpl, registrationTempRoot, childEnv }));
     const state = await mutationMutex(async () => {
       if (shuttingDown) throw new Error("auth service is shutting down");
@@ -465,7 +482,7 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
         }
       }
       const registrationId = crypto.randomUUID();
-      const claimed = { registrationId, authId: checked, expectedAccountId, process: null, startPromise: null, status: "starting" };
+      const claimed = { registrationId, authId: checked, expectedAccountId, reauth, process: null, startPromise: null, status: "starting" };
       registrations.set(registrationId, claimed);
       return claimed;
     });
@@ -497,7 +514,7 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
       throw new Error("registration unavailable");
     }
     state.loginId = login.loginId;
-    return { registrationId, verificationUrl: login.verificationUrl, userCode: login.userCode, ...(login.expiresAt ? { expiresAt: login.expiresAt } : {}) };
+    return { registrationId, authId: checked, verificationUrl: login.verificationUrl, userCode: login.userCode, ...(login.expiresAt ? { expiresAt: login.expiresAt } : {}) };
   };
   return {
     save, read, refresh, acquireOwnerLock, shutdown, activeAuthId, activeExternalTokenPayload,
@@ -506,12 +523,22 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
       const state = registrations.get(String(registrationId));
       if (!state) return { status: "failed", errorCode: "registration_not_found" };
       const status = ["starting", "finalizing"].includes(state.status) ? "pending" : state.status;
-      return { status, ...(state.errorCode ? { errorCode: state.errorCode } : {}) };
+      return { status, ...(status === "authenticated" ? { authId: state.authId } : {}), ...(state.errorCode ? { errorCode: state.errorCode } : {}) };
     },
+    completeRegistration: async (registrationId, displayName) => mutationMutex(async () => {
+      const state = registrations.get(String(registrationId));
+      if (!state || state.status !== "authenticated" || !state.candidate) throw new Error("registration_not_ready");
+      const { credential, metadata } = state.candidate;
+      const name = String(displayName || "").trim();
+      if (!name) throw new Error("display_name_required");
+      await persistRegistrationProfile(state, credential, metadata, name);
+      state.candidate = null; state.status = "completed"; return { authId: state.authId, status: state.status };
+    }),
     cancelRegistration: async (registrationId) => {
       const state = registrations.get(String(registrationId));
-      if (!state || state.status !== "pending") return;
-      state.status = "cancelled";
+      if (!state || !["pending", "finalizing", "authenticated"].includes(state.status)) return;
+      const claimed = await mutationMutex(async () => { if (!["pending", "finalizing", "authenticated"].includes(state.status)) return false; state.status = "cancelled"; state.candidate = null; return true; });
+      if (!claimed) return;
       try { await state.process.request("account/login/cancel", { loginId: state.loginId }); } catch {}
       await cleanupRegistration(state);
     },
@@ -552,7 +579,13 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
       await atomicWrite(markerPath, `${checkedAuthId(authId)}\n`);
     },
     async snapshot() {
-      const entries = await fs.readdir(profilesDir, { withFileTypes: true }).catch(() => []);
+      let entries;
+      try {
+        entries = await fs.readdir(profilesDir, { withFileTypes: true });
+      } catch (error) {
+        if (error?.code === "ENOENT") entries = [];
+        else throw error;
+      }
       const profiles = [];
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name.startsWith(".")) continue;
@@ -566,7 +599,8 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
             ...(profile.planType ? { planType: profile.planType } : {}),
             ...(profile.rateLimits ? { rateLimits: profile.rateLimits } : {}),
           });
-        } catch {
+        } catch (error) {
+          if (error?.message !== "invalid auth profile") throw error;
           profiles.push({ authId: AUTH_ID.test(authId) ? authId : "invalid", status: "invalid" });
         }
       }

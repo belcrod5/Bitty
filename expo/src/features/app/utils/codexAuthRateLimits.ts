@@ -16,7 +16,7 @@ export function parseCodexAuthRateLimits(value: unknown): CodexAuthRateLimit[] {
 export function formatCodexAuthRateLimits(profile: Pick<CodexAuthProfileEntry, "rateLimits">): string {
   return (profile.rateLimits || []).map((limit) => {
     const minutes = limit.windowDurationMins;
-    const window = minutes % 1440 === 0 ? `${minutes / 1440}日` : minutes % 60 === 0 ? `${minutes / 60}時間` : `${minutes}分`;
-    return `${window} ${Math.round(limit.usedPercent)}%使用`;
+    const window = minutes === 300 ? "5h" : minutes === 10080 ? "週" : minutes % 1440 === 0 ? `${minutes / 1440}日` : minutes % 60 === 0 ? `${minutes / 60}時間` : `${minutes}分`;
+    return `${window} ${Math.round(100 - limit.usedPercent)}%`;
   }).join(" | ");
 }

@@ -481,7 +481,8 @@ type UseChatDiagnosticsContextValueArgs = {
   refreshCodexCliStatus: () => void;
   loadCodexAuthProfiles: () => void;
   switchCodexAuthProfile: (authId: string) => Promise<boolean>;
-  startCodexAuthRegistration: (authId: string) => Promise<CodexAuthRegistration>;
+  startCodexAuthRegistration: () => Promise<CodexAuthRegistration>;
+  completeCodexAuthRegistration: (id: string, displayName: string) => Promise<{ authId: string; status: string }>;
   getCodexAuthRegistration: (id: string) => Promise<Partial<CodexAuthRegistration>>;
   cancelCodexAuthRegistration: (id: string) => Promise<void>;
   reauthCodexAuthProfile: (authId: string) => Promise<CodexAuthRegistration>;
@@ -504,7 +505,7 @@ export function useChatDiagnosticsContextValue(
     refreshCodexCliStatus,
     loadCodexAuthProfiles,
     switchCodexAuthProfile,
-    startCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
   } = args;
 
   return useMemo(
@@ -522,7 +523,7 @@ export function useChatDiagnosticsContextValue(
       refreshCodexCliStatus,
       loadCodexAuthProfiles,
       switchCodexAuthProfile,
-      startCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
+      startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
     }),
     [
       codexCliStatusSnapshot,
@@ -537,7 +538,7 @@ export function useChatDiagnosticsContextValue(
       refreshCodexCliStatus,
       loadCodexAuthProfiles,
       switchCodexAuthProfile,
-      startCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
+      startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
     ]
   );
 }

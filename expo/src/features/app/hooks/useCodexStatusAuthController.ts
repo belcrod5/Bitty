@@ -17,7 +17,6 @@ type UseCodexStatusAuthControllerArgs = {
   codexCliStatusLastAttemptAtMsRef: MutableRefObject<number>;
   codexCliStatusRefreshInFlightRef: MutableRefObject<boolean>;
   codexAuthProfilesRefreshInFlightRef: MutableRefObject<boolean>;
-  codexAuthProfilesSnapshot: CodexAuthProfilesSnapshot | null;
   setCodexCliStatusSnapshot: Dispatch<SetStateAction<CodexCliStatusSnapshot | null>>;
   setCodexCliStatusFetchedAtMs: Dispatch<SetStateAction<number>>;
   setCodexCliStatusLoading: Dispatch<SetStateAction<boolean>>;
@@ -89,7 +88,6 @@ export function useCodexStatusAuthController({
   codexCliStatusLastAttemptAtMsRef,
   codexCliStatusRefreshInFlightRef,
   codexAuthProfilesRefreshInFlightRef,
-  codexAuthProfilesSnapshot,
   setCodexCliStatusSnapshot,
   setCodexCliStatusFetchedAtMs,
   setCodexCliStatusLoading,
@@ -187,7 +185,6 @@ export function useCodexStatusAuthController({
   }, [setCodexAuthProfilesSnapshot, setCodexAuthSwitchError]);
 
   const refreshCodexAuthProfiles = useCallback(async (options?: { force?: boolean }) => {
-    if (!options?.force && codexAuthProfilesSnapshot) return;
     if (codexAuthProfilesRefreshInFlightRef.current) return;
     codexAuthProfilesRefreshInFlightRef.current = true;
     setCodexAuthProfilesLoading(true);
@@ -203,7 +200,6 @@ export function useCodexStatusAuthController({
   }, [
     applyCodexAuthProfilesSnapshot,
     codexAuthProfilesRefreshInFlightRef,
-    codexAuthProfilesSnapshot,
     fetchRunnerCodexAuthProfiles,
     setCodexAuthProfilesLoading,
   ]);
@@ -267,7 +263,8 @@ export function useCodexStatusAuthController({
     if (!res.ok) throw new Error(String(data?.message || data?.error || `HTTP ${res.status}`));
     return data;
   }, [auxServerBaseUrl, runnerToken]);
-  const startCodexAuthRegistration = useCallback(async (authId: string) => authRequest("/codex-auth/registrations", "POST", { authId }) as Promise<CodexAuthRegistration>, [authRequest]);
+  const startCodexAuthRegistration = useCallback(async () => authRequest("/codex-auth/registrations", "POST") as Promise<CodexAuthRegistration>, [authRequest]);
+  const completeCodexAuthRegistration = useCallback(async (id: string, displayName: string) => authRequest(`/codex-auth/registrations/${encodeURIComponent(id)}`, "POST", { displayName }), [authRequest]);
   const getCodexAuthRegistration = useCallback(async (id: string) => authRequest(`/codex-auth/registrations/${encodeURIComponent(id)}`) as Promise<Partial<CodexAuthRegistration>>, [authRequest]);
   const cancelCodexAuthRegistration = useCallback(async (id: string) => { await authRequest(`/codex-auth/registrations/${encodeURIComponent(id)}`, "DELETE"); }, [authRequest]);
   const reauthCodexAuthProfile = useCallback(async (authId: string) => authRequest(`/codex-auth/profiles/${encodeURIComponent(authId)}/reauth`, "POST") as Promise<CodexAuthRegistration>, [authRequest]);
@@ -279,6 +276,6 @@ export function useCodexStatusAuthController({
     refreshCodexCliStatusForWidget,
     refreshCodexAuthProfiles,
     switchCodexAuthProfile,
-    startCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
+    startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration, reauthCodexAuthProfile, deleteCodexAuthProfile,
   };
 }

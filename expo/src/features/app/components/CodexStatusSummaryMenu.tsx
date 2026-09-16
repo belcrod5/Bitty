@@ -88,7 +88,9 @@ export function CodexStatusSummaryMenu({
   const fiveHourPct = parseLimitPct(statusFullText, "5h");
   const weeklyPct = parseLimitPct(statusFullText, "Weekly");
   const statusSummaryText = `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
-  const currentAuthIdText = String(authProfileId || "").trim() || "(未選択)";
+  const currentAuthId = String(authProfileId || "").trim();
+  const currentDisplayName = String(authProfileItems.find((item) => item.authId === currentAuthId)?.displayName || "").trim();
+  const currentAuthIdText = currentDisplayName || currentAuthId || "(未選択)";
 
   const closePreview = useCallback(() => {
     setAuthSelectOpen(false);
@@ -212,7 +214,7 @@ export function CodexStatusSummaryMenu({
                           }}
                         >
                           <Text style={[styles.chatFooterSelectOptionText, isCurrent && styles.chatFooterSelectOptionTextSelected]}>
-                            {isCurrent ? `✓ ${authId}` : authId}
+                            {isCurrent ? "✓ " : ""}{String(item?.displayName || "").trim() || authId}
                             {limits ? ` (${limits})` : ""}
                           </Text>
                         </TouchableOpacity>

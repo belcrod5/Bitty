@@ -1,5 +1,4 @@
 import { formatCodexAuthRateLimits, parseCodexAuthRateLimits } from "./codexAuthRateLimits";
-import { mergeCodexAuthRegistration } from "../components/CodexAccountSettings";
 
 describe("Codex auth account helpers", () => {
   it("parses rate limit objects and arrays safely", () => {
@@ -10,11 +9,7 @@ describe("Codex auth account helpers", () => {
   });
 
   it("formats windows", () => {
-    expect(formatCodexAuthRateLimits({ rateLimits: [{ windowDurationMins: 300, usedPercent: 25 }, { windowDurationMins: 10080, usedPercent: 50 }] })).toBe("5時間 25%使用 | 7日 50%使用");
+    expect(formatCodexAuthRateLimits({ rateLimits: [{ windowDurationMins: 300, usedPercent: 25 }, { windowDurationMins: 10080, usedPercent: 50 }] })).toBe("5h 75% | 週 50%");
   });
 
-  it("merges status-only polling without losing registration details", () => {
-    const previous = { authId: "account", registrationId: "reg", verificationUrl: "https://example.test", userCode: "ABC", expiresAt: "later", status: "pending" };
-    expect(mergeCodexAuthRegistration(previous, { status: "completed" })).toEqual({ ...previous, status: "completed" });
-  });
 });

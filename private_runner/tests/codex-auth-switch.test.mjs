@@ -139,14 +139,22 @@ test("profile mutations expose stable conflicts", async () => {
   await codexAuthService.save(profile("existing-inactive"));
   await withServer(async (base) => {
     const headers = { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" };
-    for (const authId of ["canonical", "existing-inactive"]) {
-      const existing = await fetch(`${base}/codex-auth/registrations`, {
+    const originalStart = codexAuthService.startRegistration;
+    codexAuthService.startRegistration = async (authId, options) => {
+      assert.equal(options?.reauth, true);
+      if (authId === "existing-inactive") throw new Error("registration already pending");
+      throw new Error("auth profile busy");
+    };
+    try {
+      const pending = await fetch(`${base}/codex-auth/profiles/existing-inactive/reauth`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ authId }),
       });
-      assert.deepEqual([existing.status, await existing.json()], [409, { error: "auth_profile_exists", message: "Auth profile already exists" }]);
-    }
+      assert.equal(pending.status, 409);
+      assert.ok(["registration_already_pending", "auth_profile_busy"].includes((await pending.json()).error));
+      const busy = await fetch(`${base}/codex-auth/profiles/canonical/reauth`, { method: "POST", headers });
+      assert.deepEqual([busy.status, await busy.json()], [409, { error: "auth_profile_busy", message: "Auth profile has an active registration" }]);
+    } finally { codexAuthService.startRegistration = originalStart; }
     assert.equal((await codexAuthService.read("canonical")).tokens.access_token, "access-canonical");
     assert.equal((await codexAuthService.read("existing-inactive")).tokens.access_token, "access-existing-inactive");
 
@@ -227,4 +235,19 @@ test("auth mutations return stable unavailable response when gate is unready", a
     const response = await fetch(`${base}/codex-auth/registrations`, { method: "POST", headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" }, body: "{}" });
     assert.deepEqual([response.status, await response.json()], [503, { error: "codex_auth_unready", message: "Codex auth service is unavailable" }]);
   });
+});
+
+test("complete registration is gated while auth service is unready", async () => {
+  const gate = codexAuthService.gateSnapshot;
+  const complete = codexAuthService.completeRegistration;
+  let called = 0;
+  codexAuthService.gateSnapshot = () => ({ state: "unready", leases: 0 });
+  codexAuthService.completeRegistration = async () => { called += 1; };
+  try {
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/codex-auth/registrations/some-id`, { method: "POST", headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ displayName: "x" }) });
+      assert.equal(response.status, 503);
+      assert.equal(called, 0);
+    });
+  } finally { codexAuthService.gateSnapshot = gate; codexAuthService.completeRegistration = complete; }
 });

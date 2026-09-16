@@ -1,5 +1,10 @@
 import React from "react";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
+
+jest.mock("../keyboardController", () => ({
+  KeyboardAvoidingView: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+}));
+
 import { SettingsScreen } from "./SettingsScreen";
 
 jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));

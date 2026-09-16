@@ -252,7 +252,7 @@ test("default registration transport rejects unknown server requests once", asyn
     const { captures, spawnImpl } = createFakeSpawn();
     try {
       const service = createCodexAuthService({ rootDir: root, spawnImpl, registrationTempRoot: registrationRoot });
-      const result = await service.startRegistration("transport");
+      const result = await service.startRegistration();
       const child = captures[0].child;
       const replies = [];
       child.stdin.on("data", (chunk) => { for (const line of chunk.toString().split("\n").filter(Boolean)) replies.push(JSON.parse(line)); });
@@ -270,7 +270,7 @@ test("registration child error fails and cleans staging without hanging", async 
     const { captures, spawnImpl } = createFakeSpawn();
     try {
       const service = createCodexAuthService({ rootDir: root, spawnImpl, registrationTempRoot: registrationRoot });
-      const result = await service.startRegistration("transport");
+      const result = await service.startRegistration();
       const staging = captures[0].options.env.CODEX_HOME;
       captures[0].child.emit("error", new Error("transport failed"));
       const deadline = Date.now() + 1000;
@@ -288,7 +288,7 @@ test("default registration transport stages an isolated restricted CODEX_HOME", 
     const original = { ...process.env };
     try {
       const service = createCodexAuthService({ rootDir: root, spawnImpl, registrationTempRoot: registrationRoot, childEnv: { ...process.env, OPENAI_API_KEY: "original-openai", CODEX_ACCESS_TOKEN: "original-codex" } });
-      const result = await service.startRegistration("transport");
+      const result = await service.startRegistration();
       const capture = captures[0];
       assert.deepEqual(capture.args.slice(0, 3), ["app-server", "--strict-config", "--stdio"]);
       assert.equal(capture.options.shell, false);
@@ -312,17 +312,48 @@ test("default registration transport persists completed credentials and removes 
     const { captures, spawnImpl } = createFakeSpawn();
     try {
       const service = createCodexAuthService({ rootDir: root, spawnImpl, registrationTempRoot: registrationRoot });
-      const result = await service.startRegistration("transport");
+      const result = await service.startRegistration();
       const staging = captures[0].options.env.CODEX_HOME;
       await fs.writeFile(path.join(staging, "auth.json"), JSON.stringify({ tokens: { access_token: "access", refresh_token: "refresh", account_id: "account" }, clientId: "client" }));
       captures[0].child.stdout.write(`${JSON.stringify({ method: "account/login/completed", params: { success: true }})}\n`);
-      for (let i = 0; i < 50 && (await service.registrationStatus(result.registrationId)).status !== "completed"; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      for (let i = 0; i < 50 && (await service.registrationStatus(result.registrationId)).status !== "authenticated"; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.deepEqual(await service.registrationStatus(result.registrationId), { status: "authenticated", authId: result.authId });
+      await service.completeRegistration(result.registrationId, "Saved account");
       assert.deepEqual(await service.registrationStatus(result.registrationId), { status: "completed" });
-      assert.equal((await service.read("transport")).accountId, "account");
+      assert.equal((await service.read(result.authId)).accountId, "account");
+      assert.equal((await service.read(result.authId)).displayName, "Saved account");
       assert.equal((await fs.readFile(sentinel, "utf8")), "keep");
       assert.equal(JSON.stringify(await service.snapshot()).includes("refresh"), false);
       await assert.rejects(() => fs.stat(staging), { code: "ENOENT" });
     } finally { await fs.rm(registrationRoot, { recursive: true, force: true }); await fs.rm(sentinel, { force: true }); }
+  });
+});
+
+test("staged registration does not save before explicit nonblank commit", async () => {
+  await withService(async (root) => {
+    const process = createFakeRegistrationProcess({ credential: { tokens: { access_token: "access", refresh_token: "refresh", account_id: "staged" } } });
+    const service = createCodexAuthService({ rootDir: root, registrationProcessFactory: async () => process });
+    const result = await service.startRegistration();
+    await process.emit({ method: "account/login/completed", params: { success: true } });
+    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    await assert.rejects(() => service.read(result.authId), /auth profile not found/);
+    await assert.rejects(() => service.completeRegistration(result.registrationId, "  "), /display_name_required/);
+    await assert.rejects(() => service.read(result.authId), /auth profile not found/);
+    await service.completeRegistration(result.registrationId, "Staged");
+    assert.equal((await service.read(result.authId)).displayName, "Staged");
+  });
+});
+
+test("authenticated registration cancellation removes candidate without profile", async () => {
+  await withService(async (root) => {
+    const process = createFakeRegistrationProcess({ credential: { tokens: { access_token: "access", refresh_token: "refresh", account_id: "cancelled" } } });
+    const service = createCodexAuthService({ rootDir: root, registrationProcessFactory: async () => process });
+    const result = await service.startRegistration();
+    await process.emit({ method: "account/login/completed", params: { success: true } });
+    for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    await service.cancelRegistration(result.registrationId);
+    assert.deepEqual(await service.registrationStatus(result.registrationId), { status: "cancelled" });
+    await assert.rejects(() => service.read(result.authId), /auth profile not found/);
   });
 });
 
@@ -357,13 +388,13 @@ test("rejects empty tokens, mismatches, and invalid JSON without leaking secrets
   });
 });
 
-test("round-trips a valid marker and treats invalid marker as empty", async () => {
+test("round-trips a valid marker and rejects invalid marker content", async () => {
   await withService(async (root, service) => {
     await service.save(profile("a"));
     await service.setActiveAuthId("a");
     assert.equal(await service.activeAuthId(), "a");
     await fs.writeFile(path.join(root, "profiles", ".active_auth_id"), "../bad\n");
-    assert.equal(await service.activeAuthId(), "");
+    await assert.rejects(() => service.activeAuthId(), /invalid auth id/);
   });
 });
 
@@ -424,7 +455,23 @@ test("external payload fails closed for a missing or invalid active marker", asy
     await assert.rejects(() => service.activeExternalTokenPayload(), /auth profiles unready/);
     await service.setActiveAuthId("a");
     await fs.writeFile(path.join(_root, "profiles", ".active_auth_id"), "../outside\n");
-    await assert.rejects(() => service.activeExternalTokenPayload(), /auth profiles unready/);
+    await assert.rejects(() => service.activeExternalTokenPayload(), /invalid auth id/);
+  });
+});
+
+test("profile store I/O errors do not become native fallback", async () => {
+  await withService(async (root, service) => {
+    await fs.writeFile(path.join(root, "profiles"), "not a directory");
+    await assert.rejects(() => service.snapshot(), /ENOTDIR|not a directory/);
+    await assert.rejects(() => service.activeExternalTokenPayload(), /ENOTDIR|not a directory/);
+  });
+});
+
+test("active marker I/O errors fail closed", async () => {
+  await withService(async (root, service) => {
+    await service.save(profile("a"));
+    await fs.mkdir(path.join(root, "profiles", ".active_auth_id"));
+    await assert.rejects(() => service.activeExternalTokenPayload(), /EISDIR|directory/);
   });
 });
 
@@ -646,7 +693,7 @@ test("registration starts with initialize, initialized, and device login in orde
   await withService(async (_root) => {
     const process = createFakeRegistrationProcess();
     const service = createCodexAuthService({ rootDir: _root, registrationProcessFactory: async () => process });
-    const result = await service.startRegistration("a");
+    const result = await service.startRegistration();
     assert.ok(result.registrationId);
     assert.equal(result.verificationUrl, "https://example.test/login");
     assert.equal(result.userCode, "CODE-1");
@@ -658,14 +705,16 @@ test("registration starts with initialize, initialized, and device login in orde
   });
 });
 
-test("duplicate pending registration is rejected", async () => {
+test("multiple new registrations get unique ids", async () => {
   await withService(async (_root) => {
     const process = createFakeRegistrationProcess();
     let factories = 0;
     const service = createCodexAuthService({ rootDir: _root, registrationProcessFactory: async () => { factories += 1; return process; } });
-    await service.startRegistration("a");
-    await assert.rejects(() => service.startRegistration("a"), /already pending/);
-    assert.equal(factories, 1);
+    const first = await service.startRegistration();
+    const second = await service.startRegistration();
+    assert.equal(factories, 2);
+    await service.cancelRegistration(first.registrationId);
+    await service.cancelRegistration(second.registrationId);
   });
 });
 
@@ -682,12 +731,14 @@ test("add registration cannot overwrite an existing active or inactive profile",
       registrationProcessFactory: async () => { factories += 1; return createFakeRegistrationProcess(); },
     });
 
-    await assert.rejects(() => managed.startRegistration("active"), /auth profile exists/);
-    await assert.rejects(() => managed.startRegistration("inactive"), /auth profile exists/);
+    const first = await managed.startRegistration();
+    const second = await managed.startRegistration();
 
-    assert.equal(factories, 0);
+    assert.equal(factories, 2);
     assert.deepEqual(await service.read("active"), beforeActive);
     assert.deepEqual(await service.read("inactive"), beforeInactive);
+    await managed.cancelRegistration(first.registrationId);
+    await managed.cancelRegistration(second.registrationId);
   });
 });
 
@@ -705,12 +756,13 @@ test("concurrent add registrations claim an auth id before spawning", async () =
       },
     });
 
-    const first = service.startRegistration("same-id");
+    const first = service.startRegistration();
     await new Promise((resolve) => setImmediate(resolve));
-    await assert.rejects(() => service.startRegistration("same-id"), /already pending/);
+    const second = service.startRegistration();
     releaseFactory();
     await first;
-    assert.equal(factories, 1);
+    await second;
+    assert.equal(factories, 2);
   });
 });
 
@@ -718,7 +770,7 @@ test("failed login stops and cleans registration safely", async () => {
   await withService(async (_root) => {
     const process = createFakeRegistrationProcess();
     const service = createCodexAuthService({ rootDir: _root, registrationProcessFactory: async () => process });
-    const result = await service.startRegistration("a");
+    const result = await service.startRegistration();
     await process.emit({ method: "account/login/completed", params: { success: false, error: "dummy-secret" } });
     assert.deepEqual(await service.registrationStatus(result.registrationId), { status: "failed", errorCode: "login_failed" });
     assert.equal(process.stopCount, 1);
@@ -731,7 +783,7 @@ test("cancel sends login id and is idempotent", async () => {
   await withService(async (_root) => {
     const process = createFakeRegistrationProcess();
     const service = createCodexAuthService({ rootDir: _root, registrationProcessFactory: async () => process });
-    const result = await service.startRegistration("a");
+    const result = await service.startRegistration();
     await service.cancelRegistration(result.registrationId);
     await service.cancelRegistration(result.registrationId);
     assert.equal(process.calls.filter((call) => call.method === "account/login/cancel").length, 1);
@@ -745,7 +797,7 @@ test("unexpected process exit marks pending registration failed", async () => {
   await withService(async (_root) => {
     const process = createFakeRegistrationProcess();
     const service = createCodexAuthService({ rootDir: _root, registrationProcessFactory: async () => process });
-    const result = await service.startRegistration("a");
+    const result = await service.startRegistration();
     process.exit();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal((await service.registrationStatus(result.registrationId)).status, "failed");
@@ -755,6 +807,9 @@ test("unexpected process exit marks pending registration failed", async () => {
 async function completeRegistration(service, process, registrationId) {
   await process.emit({ method: "account/login/completed", params: { success: true } });
   for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  const authenticated = await service.registrationStatus(registrationId);
+  assert.equal(authenticated.status, "authenticated");
+  await service.completeRegistration(registrationId, "Test account");
   assert.deepEqual(await service.registrationStatus(registrationId), { status: "completed" });
 }
 
@@ -765,10 +820,10 @@ test("successful registration saves canonical metadata without changing marker",
       credential: { clientId: "client", tokens: { access_token: "dummy-access", refresh_token: "dummy-refresh", account_id: "a" } },
     });
     const service = createCodexAuthService({ rootDir: root, registrationProcessFactory: async () => process });
-    const result = await service.startRegistration("a");
+    const result = await service.startRegistration();
     await completeRegistration(service, process, result.registrationId);
-    assert.equal((await service.read("a")).displayName, "meta@example.test");
-    assert.equal((await service.read("a")).planType, "pro");
+    assert.equal((await service.read(result.authId)).displayName, "Test account");
+    assert.equal((await service.read(result.authId)).planType, "pro");
     assert.equal((await service.snapshot()).activeAuthId, "");
     const order = process.calls.map((call) => call.method);
     assert.ok(order.indexOf("account/read") < order.indexOf("stop"));
@@ -786,7 +841,7 @@ test("invalid credential fails without creating a profile", async () => {
   await withService(async (root) => {
     const process = createFakeRegistrationProcess({ credential: { tokens: { access_token: "dummy-access" } } });
     const service = createCodexAuthService({ rootDir: root, registrationProcessFactory: async () => process });
-    const result = await service.startRegistration("a");
+    const result = await service.startRegistration();
     await completeRegistration(service, process, result.registrationId).catch(() => {});
     assert.deepEqual(await service.registrationStatus(result.registrationId), { status: "failed", errorCode: "credential_invalid" });
     await assert.rejects(() => service.read("a"), /not found/);
@@ -844,11 +899,11 @@ test("duplicate account and refresh token are rejected", async () => {
     await service.save(profile("existing"));
     const duplicateAccount = createFakeRegistrationProcess({ credential: { tokens: { access_token: "new", refresh_token: "new-refresh", account_id: "existing" } } });
     const managed = createCodexAuthService({ rootDir: root, registrationProcessFactory: async () => duplicateAccount });
-    const first = await managed.startRegistration("new-account");
+    const first = await managed.startRegistration();
     await duplicateAccount.emit({ method: "account/login/completed", params: { success: true } });
     for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.equal((await managed.registrationStatus(first.registrationId)).errorCode, "duplicate_account");
-    assert.equal((await service.snapshot()).profiles.some((item) => item.authId === "new-account"), false);
+    assert.equal((await managed.registrationStatus(first.registrationId)).status, "authenticated");
+    await assert.rejects(() => managed.completeRegistration(first.registrationId, "Duplicate"), /duplicate_account/);
   });
 });
 
@@ -858,10 +913,10 @@ test("duplicate refresh token with a different account is rejected", async () =>
     await service.save(profile("existing"));
     const process = createFakeRegistrationProcess({ credential: { tokens: { access_token: "new", refresh_token: "refresh", account_id: "other" } } });
     const managed = createCodexAuthService({ rootDir: root, registrationProcessFactory: async () => process });
-    const result = await managed.startRegistration("new-account");
+    const result = await managed.startRegistration();
     await process.emit({ method: "account/login/completed", params: { success: true } });
     for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.equal((await managed.registrationStatus(result.registrationId)).errorCode, "duplicate_account");
-    assert.equal((await service.snapshot()).profiles.some((item) => item.authId === "new-account"), false);
+    assert.equal((await managed.registrationStatus(result.registrationId)).status, "authenticated");
+    await assert.rejects(() => managed.completeRegistration(result.registrationId, "Duplicate"), /duplicate_account/);
   });
 });
