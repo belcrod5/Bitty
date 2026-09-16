@@ -3,4 +3,6 @@
 
 @interface AppDelegate : RCTAppDelegate
 
+- (IBAction)openChatFind:(id)sender;
+
 @end

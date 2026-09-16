@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  DeviceEventEmitter,
   Image,
   PanResponder,
   Platform,
@@ -73,6 +74,7 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
+import { findChatMessageMatches } from "../utils/chatFind";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
@@ -115,6 +117,8 @@ const CHAT_ESTIMATED_ITEM_SIZE = 120;
 const CHAT_INITIAL_SCROLL_SETTLE_MS = 350;
 const CHAT_BOTTOM_SETTLE_RETRY_DELAYS_MS = [96, 220] as const;
 const CHAT_BOTTOM_RESUME_THRESHOLD_PX = 4;
+export const CHAT_FIND_REQUEST_EVENT = "bittyChatFindRequested";
+export const CHAT_FIND_CANCEL_EVENT = "bittyChatFindCancelRequested";
 const DIRECTORY_MARKER_OPTIONS: { value: DirectoryMarkerColor; label: string; color: string }[] = [
   { value: "gray", label: "灰", color: "#94a3b8" },
   { value: "red", label: "赤", color: "#dc2626" },
@@ -518,6 +522,10 @@ export function ChatScreen({
   const [gitDiffPanelOpen, setGitDiffPanelOpen] = useState(false);
   const [runnerMedia, setRunnerMedia] = useState<RunnerMediaFile | null>(null);
   const [runnerFileViewerTarget, setRunnerFileViewerTarget] = useState<RunnerFileViewerTarget | null>(null);
+  const [chatFindOpen, setChatFindOpen] = useState(false);
+  const [chatFindQuery, setChatFindQuery] = useState("");
+  const [chatFindCurrentIndex, setChatFindCurrentIndex] = useState(-1);
+  const chatFindInputRef = useRef<TextInput | null>(null);
   const modelSelectTriggerRef = useRef<View | null>(null);
   const thinkSelectTriggerRef = useRef<View | null>(null);
   const embeddedChatListRef = useRef<LegendListRef | null>(null);
@@ -841,6 +849,7 @@ export function ChatScreen({
     handleViewableItemsChanged: handleChatViewableItemsChanged,
     resetNavigation: resetChatScrollNavigation,
     scrollToBottomAndResume: resumeChatAtBottom,
+    scrollToMessage,
     scrollToPreviousUser: scrollChatListToPreviousUser,
     shouldKeepAutoScrollPaused,
   } = useChatScrollNavigation({
@@ -857,6 +866,71 @@ export function ChatScreen({
     sessionId: selectedSessionIdForView,
     onDeepLinkHandled: clearSessionDeepLinkJumpTarget,
   });
+  const chatFindMatches = useMemo(
+    () => findChatMessageMatches(conversationMessagesForView, chatFindQuery),
+    [chatFindQuery, conversationMessagesForView]
+  );
+  const safeChatFindCurrentIndex = chatFindMatches.length > 0
+    ? Math.min(Math.max(chatFindCurrentIndex, 0), chatFindMatches.length - 1)
+    : -1;
+  const activeChatFindMatch = safeChatFindCurrentIndex >= 0
+    ? chatFindMatches[safeChatFindCurrentIndex]
+    : null;
+  const openChatFind = useCallback(() => {
+    setChatFindOpen(true);
+    requestAnimationFrame(() => chatFindInputRef.current?.focus());
+  }, []);
+  const closeChatFind = useCallback(() => {
+    setChatFindOpen(false);
+    setChatFindQuery("");
+    setChatFindCurrentIndex(-1);
+    chatFindInputRef.current?.blur();
+  }, []);
+  const scrollToChatFindMatch = useCallback((match: (typeof chatFindMatches)[number] | undefined) => {
+    if (!match) return;
+    const message = conversationMessagesForView[match.messageIndex];
+    if (!message || message.id !== match.messageId) return;
+    scrollToMessage(message, 0.2);
+  }, [conversationMessagesForView, scrollToMessage]);
+  const changeChatFindQuery = useCallback((query: string) => {
+    const matches = findChatMessageMatches(conversationMessagesForView, query);
+    setChatFindQuery(query);
+    setChatFindCurrentIndex(matches.length > 0 ? 0 : -1);
+    scrollToChatFindMatch(matches[0]);
+  }, [conversationMessagesForView, scrollToChatFindMatch]);
+  const moveChatFind = useCallback((direction: -1 | 1) => {
+    if (chatFindMatches.length === 0) return;
+    const nextIndex = (safeChatFindCurrentIndex + direction + chatFindMatches.length) % chatFindMatches.length;
+    setChatFindCurrentIndex(nextIndex);
+    scrollToChatFindMatch(chatFindMatches[nextIndex]);
+  }, [chatFindMatches, safeChatFindCurrentIndex, scrollToChatFindMatch]);
+  useEffect(() => {
+    if (Platform.OS !== "macos") return;
+    const subscription = DeviceEventEmitter.addListener(CHAT_FIND_REQUEST_EVENT, openChatFind);
+    return () => subscription.remove();
+  }, [openChatFind]);
+
+  useEffect(() => {
+    if (Platform.OS !== "macos" || !chatFindOpen) return;
+    const subscription = DeviceEventEmitter.addListener(CHAT_FIND_CANCEL_EVENT, closeChatFind);
+    return () => subscription.remove();
+  }, [chatFindOpen, closeChatFind]);
+
+  useEffect(() => {
+    setChatFindCurrentIndex(chatFindMatches.length > 0 ? 0 : -1);
+  }, [conversationScrollResetKey]);
+
+  useEffect(() => {
+    if (chatFindMatches.length === 0) {
+      if (chatFindCurrentIndex !== -1) setChatFindCurrentIndex(-1);
+      return;
+    }
+    if (chatFindCurrentIndex < 0 || chatFindCurrentIndex >= chatFindMatches.length) {
+      setChatFindCurrentIndex(0);
+    }
+  }, [chatFindCurrentIndex, chatFindMatches.length]);
+
+  const chatListExtraData = `${chatListLayoutVersion}|find:${chatFindOpen ? activeChatFindMatch?.messageId || "" : ""}:${activeChatFindMatch?.offset ?? -1}`;
   const scrollChatListToBottomSettled = useCallback((animated = false) => {
     clearPendingBottomScrollFrames();
     const scrollToBottomOnNextFrame = (nextAnimated: boolean) => {
@@ -1622,8 +1696,12 @@ export function ChatScreen({
     const queuedTurnId = String(codexQueue?.queuedTurnId || "").trim();
     const queueStatus = String(codexQueue?.status || "").trim();
     const queueCanCancel = !!queuedTurnId && (queueStatus === "queued" || queueStatus === "waiting_compact");
+    const isChatFindFocused = chatFindOpen && activeChatFindMatch?.messageIndex === index;
     return (
-      <View style={styles.chatMessageGroup}>
+      <View
+        testID={`chat-message-${message.id}`}
+        style={[styles.chatMessageGroup, isChatFindFocused ? styles.chatFindFocusedMessage : null]}
+      >
         {showSubagentBoundary ? (
           <View style={styles.chatSubagentBoundary}>
             <View style={styles.chatSubagentBoundaryLine} />
@@ -1924,6 +2002,48 @@ export function ChatScreen({
           </View>
         </View>
       </View>
+      {chatFindOpen ? (
+        <View style={styles.chatFindBar} testID="chat-find-bar">
+          <TextInput
+            ref={chatFindInputRef}
+            style={styles.chatFindInput}
+            value={chatFindQuery}
+            onChangeText={changeChatFindQuery}
+            onSubmitEditing={() => moveChatFind(1)}
+            placeholder="検索"
+            accessibilityLabel="チャット内を検索"
+          />
+          <Text style={styles.chatFindCount} accessibilityLabel="検索結果数">
+            {`${safeChatFindCurrentIndex >= 0 ? safeChatFindCurrentIndex + 1 : 0} / ${chatFindMatches.length}`}
+          </Text>
+          <TouchableOpacity
+            style={[styles.chatFindButton, chatFindMatches.length === 0 ? styles.chatFindButtonDisabled : null]}
+            onPress={() => moveChatFind(-1)}
+            disabled={chatFindMatches.length === 0}
+            accessibilityRole="button"
+            accessibilityLabel="前の検索結果"
+          >
+            <Ionicons name="chevron-up" size={17} color="#334155" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.chatFindButton, chatFindMatches.length === 0 ? styles.chatFindButtonDisabled : null]}
+            onPress={() => moveChatFind(1)}
+            disabled={chatFindMatches.length === 0}
+            accessibilityRole="button"
+            accessibilityLabel="次の検索結果"
+          >
+            <Ionicons name="chevron-down" size={17} color="#334155" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.chatFindButton}
+            onPress={closeChatFind}
+            accessibilityRole="button"
+            accessibilityLabel="検索を閉じる"
+          >
+            <Ionicons name="close" size={18} color="#334155" />
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <KeyboardAvoidingView
         style={styles.chatKeyboardAvoiding}
         behavior={Platform.OS === "ios" ? "position" : "height"}
@@ -1961,7 +2081,7 @@ export function ChatScreen({
               onStartReachedThreshold={0.1}
               estimatedItemSize={CHAT_ESTIMATED_ITEM_SIZE}
               estimatedListSize={estimatedChatListSize}
-              extraData={chatListLayoutVersion}
+              extraData={chatListExtraData}
               getItemType={getConversationMessageItemType}
               getEstimatedItemSize={getEstimatedConversationMessageSize}
               suggestEstimatedItemSize={__DEV__}

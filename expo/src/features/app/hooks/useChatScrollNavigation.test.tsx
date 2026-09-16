@@ -48,3 +48,20 @@ it("keeps scroll interaction state inside chat navigation", async () => {
   expect(interactionActiveRef.current).toBe(false);
   expect(resumeAutoScroll).toHaveBeenCalledTimes(1);
 });
+
+it("does not pause or report a message scroll before the list ref is set", async () => {
+  const pauseAutoScroll = jest.fn();
+  const message = { id: "message-1", role: "assistant" as const, content: "target" };
+  const { result } = await renderHook(() => useChatScrollNavigation({
+    messages: [message],
+    listRef: { current: null },
+    isAtBottomRef: { current: true },
+    interactionActiveRef: { current: false },
+    pauseAutoScroll,
+    resumeAutoScroll: jest.fn(),
+    scrollToBottom: jest.fn(),
+  }));
+
+  expect(result.current.scrollToMessage(message)).toBe(false);
+  expect(pauseAutoScroll).not.toHaveBeenCalled();
+});

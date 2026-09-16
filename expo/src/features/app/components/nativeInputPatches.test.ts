@@ -13,6 +13,39 @@ const enrichedMarkdownPatch = readFileSync(
   resolve(__dirname, "../../../../patches/react-native-enriched-markdown+0.5.0.patch"),
   "utf8"
 );
+const macOSAppDelegateHeader = readFileSync(
+  resolve(__dirname, "../../../../macos/bitty-macOS/AppDelegate.h"),
+  "utf8"
+);
+const macOSAppDelegate = readFileSync(
+  resolve(__dirname, "../../../../macos/bitty-macOS/AppDelegate.mm"),
+  "utf8"
+);
+const macOSStoryboard = readFileSync(
+  resolve(__dirname, "../../../../macos/bitty-macOS/Base.lproj/Main.storyboard"),
+  "utf8"
+);
+
+test("macOS routes the standard Command+F menu item to the chat Find event", () => {
+  expect(macOSAppDelegateHeader).toContain("- (IBAction)openChatFind:(id)sender;");
+  expect(macOSAppDelegate).toContain('- (IBAction)openChatFind:(id)sender');
+  expect(macOSAppDelegate).toContain("self.rootViewFactory.reactHost");
+  expect(macOSAppDelegate).toContain('callFunctionOnJSModule:@"RCTDeviceEventEmitter"');
+  expect(macOSAppDelegate).toContain('enqueueJSCall:@"RCTDeviceEventEmitter"');
+  expect(macOSAppDelegate).toContain('[self emitDeviceEvent:@"bittyChatFindRequested"]');
+  expect(macOSAppDelegate).toContain("addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown");
+  expect(macOSAppDelegate).toContain("event.keyCode == 53 && modifiers == 0");
+  expect(macOSAppDelegate).toContain('[weakSelf emitDeviceEvent:@"bittyChatFindCancelRequested"]');
+  expect(macOSAppDelegate).toContain("return event;");
+  expect(macOSAppDelegate).toContain("[NSEvent removeMonitor:self.chatFindKeyMonitor]");
+
+  const findMenuStart = macOSStoryboard.indexOf('<menuItem title="Find…"');
+  const findMenuEnd = macOSStoryboard.indexOf("</menuItem>", findMenuStart);
+  const findMenu = macOSStoryboard.slice(findMenuStart, findMenuEnd);
+  expect(findMenuStart).toBeGreaterThanOrEqual(0);
+  expect(findMenu).toContain('action selector="openChatFind:" target="Voe-Tx-rLC"');
+  expect(findMenu).not.toContain("performFindPanelAction:");
+});
 
 test("react-native-macos forwards Fabric submit key combinations to TextInput traits", () => {
   expect(macOSPatch).toContain('traits.submitKeyEvents = convertRawProp(');

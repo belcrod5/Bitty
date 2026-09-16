@@ -1,8 +1,9 @@
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { Alert, Platform, StyleSheet } from "react-native";
-import { ChatScreen } from "./ChatScreen";
+import { Alert, DeviceEventEmitter, Platform, StyleSheet } from "react-native";
+import { CHAT_FIND_CANCEL_EVENT, CHAT_FIND_REQUEST_EVENT, ChatScreen } from "./ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
+import type { ConversationMessage } from "../types/appTypes";
 
 const mockStartAutoRecordingMode = jest.fn();
 const mockLogSessionDiag = jest.fn();
@@ -36,7 +37,7 @@ let mockPanelBackendId = "codex";
 let mockPanelSessionMaterialized: boolean | undefined = true;
 let mockSelectedLlmSessionMaterialized = true;
 let mockRunnerUrl = "http://runner.test";
-let mockPanelConversationMessages: Array<{ id: string; role: "user" | "assistant"; content: string }> = [];
+let mockPanelConversationMessages: ConversationMessage[] = [];
 const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
   renameTarget: null,
@@ -542,6 +543,113 @@ describe("ChatScreen auto recording panel target", () => {
       "続けて",
       expect.objectContaining({ onAccepted: expect.any(Function) })
     );
+
+    await screen.unmount();
+  });
+
+  it("searches all stored message content and cycles matches from the native Find command", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    mockPanelConversationMessages = [
+      { id: "message-1", role: "assistant", content: "Alpha alpha" },
+      { id: "message-2", role: "assistant", kind: "internal_context", content: "collapsed ALPHA" },
+    ];
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_REQUEST_EVENT));
+    expect(screen.getByTestId("chat-find-bar")).toBeTruthy();
+
+    await fireEvent.changeText(screen.getByLabelText("チャット内を検索"), "alpha");
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("1 / 3");
+    await fireEvent.press(screen.getByLabelText("次の検索結果"));
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("2 / 3");
+    await fireEvent.press(screen.getByLabelText("次の検索結果"));
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("3 / 3");
+    await waitFor(() => expect(mockScrollItemIntoView).toHaveBeenLastCalledWith({
+      item: mockPanelConversationMessages[1],
+      animated: true,
+    }));
+    await fireEvent.press(screen.getByLabelText("次の検索結果"));
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("1 / 3");
+    await fireEvent.press(screen.getByLabelText("前の検索結果"));
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("3 / 3");
+    await fireEvent.changeText(screen.getByLabelText("チャット内を検索"), "a");
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("1 / 7");
+    await fireEvent.press(screen.getByLabelText("次の検索結果"));
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("2 / 7");
+    await fireEvent.changeText(screen.getByLabelText("チャット内を検索"), "collapsed");
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("1 / 1");
+    const focusedRow = await render(mockLegendListProps.current?.renderItem?.({
+      item: mockPanelConversationMessages[1],
+      index: 1,
+    }));
+    expect(StyleSheet.flatten(focusedRow.getByTestId("chat-message-message-2").props.style)).toMatchObject({
+      backgroundColor: "#fef9c3",
+    });
+
+    await focusedRow.unmount();
+    await screen.unmount();
+  });
+
+  it("keeps the query when native Find fires again and closes search with Escape", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_REQUEST_EVENT));
+    const searchInput = screen.getByLabelText("チャット内を検索");
+    expect(searchInput.props.autoFocus).toBeUndefined();
+    expect(searchInput.props.selectTextOnFocus).toBeUndefined();
+    await fireEvent.changeText(searchInput, "hello");
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_REQUEST_EVENT));
+    expect(screen.getByLabelText("チャット内を検索").props.value).toBe("hello");
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_CANCEL_EVENT));
+    expect(screen.queryByTestId("chat-find-bar")).toBeNull();
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_REQUEST_EVENT));
+    expect(screen.getByLabelText("チャット内を検索").props.value).toBe("");
+    expect(screen.getByLabelText("検索結果数").props.children).toBe("0 / 0");
+
+    await screen.unmount();
+  });
+
+  it("ignores native Escape requests while search is closed", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_CANCEL_EVENT));
+    expect(screen.queryByTestId("chat-find-bar")).toBeNull();
+
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_REQUEST_EVENT));
+    expect(screen.getByTestId("chat-find-bar")).toBeTruthy();
+
+    await screen.unmount();
+  });
+
+  it("scrolls only when a search or result navigation is requested", async () => {
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    mockPanelConversationMessages = [
+      { id: "message-1", role: "assistant", content: "alpha first" },
+      { id: "message-2", role: "assistant", content: "alpha second" },
+    ];
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await act(async () => DeviceEventEmitter.emit(CHAT_FIND_REQUEST_EVENT));
+    mockScrollItemIntoView.mockClear();
+
+    await fireEvent.changeText(screen.getByLabelText("チャット内を検索"), "alpha");
+    expect(mockScrollItemIntoView).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mockLegendListProps.current?.onScroll?.({
+        nativeEvent: {
+          contentOffset: { y: 120 },
+          contentSize: { height: 600 },
+          layoutMeasurement: { height: 200 },
+        },
+      });
+      screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    });
+    expect(mockScrollItemIntoView).toHaveBeenCalledTimes(1);
+
+    await fireEvent.press(screen.getByLabelText("次の検索結果"));
+    expect(mockScrollItemIntoView).toHaveBeenCalledTimes(2);
 
     await screen.unmount();
   });

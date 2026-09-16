@@ -42,6 +42,21 @@ export function useChatScrollNavigation({
   const firstVisibleMessageRef = useRef<{ id: string; index: number } | null>(null);
   const pendingPreviousUserTargetRef = useRef<PendingPreviousUserTarget | null>(null);
 
+  const scrollToMessage = useCallback((message: ConversationMessage, viewPosition?: number) => {
+    const list = listRef.current;
+    if (!list) return false;
+    pauseAutoScroll();
+    try {
+      list.scrollItemIntoView({ item: message, animated: true });
+      return true;
+    } catch {
+      const index = messages.findIndex((candidate) => candidate.id === message.id);
+      if (index < 0) return false;
+      list.scrollToIndex({ index, animated: true, viewPosition });
+      return true;
+    }
+  }, [listRef, messages, pauseAutoScroll]);
+
   useEffect(() => {
     if (!deepLinkTarget || deepLinkTarget.sessionId !== sessionId) return;
     const index = messages.findIndex((message) => message.id === deepLinkTarget.messageId);
@@ -49,15 +64,13 @@ export function useChatScrollNavigation({
     if (!item || !listRef.current) return;
     const frame = requestAnimationFrame(() => {
       try {
-        pauseAutoScroll();
-        listRef.current?.scrollItemIntoView({ item, animated: true });
-        onDeepLinkHandled?.(deepLinkTarget.requestId);
+        if (scrollToMessage(item)) onDeepLinkHandled?.(deepLinkTarget.requestId);
       } catch {
         // Keep the target pending so the next list render can retry it.
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [deepLinkTarget, listRef, messages, onDeepLinkHandled, pauseAutoScroll, sessionId]);
+  }, [deepLinkTarget, listRef, messages, onDeepLinkHandled, scrollToMessage, sessionId]);
 
   const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<ConversationMessage>>>(({
     viewableItems,
@@ -170,6 +183,7 @@ export function useChatScrollNavigation({
     handleViewableItemsChanged,
     resetNavigation,
     scrollToBottomAndResume,
+    scrollToMessage,
     scrollToPreviousUser,
     shouldKeepAutoScrollPaused,
   };
