@@ -13,10 +13,33 @@ export function parseCodexAuthRateLimits(value: unknown): CodexAuthRateLimit[] {
   });
 }
 
-export function formatCodexAuthRateLimits(profile: Pick<CodexAuthProfileEntry, "rateLimits">): string {
-  return (profile.rateLimits || []).map((limit) => {
-    const minutes = limit.windowDurationMins;
-    const window = minutes === 300 ? "5h" : minutes === 10080 ? "週" : minutes % 1440 === 0 ? `${minutes / 1440}日` : minutes % 60 === 0 ? `${minutes / 60}時間` : `${minutes}分`;
-    return `${window} ${Math.round(100 - limit.usedPercent)}%`;
-  }).join(" | ");
+function resetAtMs(value: string | undefined): number {
+  if (!value) return NaN;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  return Date.parse(value);
+}
+
+export function formatCodexAuthRateLimits(
+  profile: Pick<CodexAuthProfileEntry, "rateLimits">,
+  nowMs = Date.now()
+): string {
+  const limits = profile.rateLimits || [];
+  const fiveHour = limits.find((limit) => limit.windowDurationMins === 300);
+  const weekly = limits.find((limit) => limit.windowDurationMins === 10080);
+  const parts = [
+    fiveHour ? `5h ${Math.round(100 - fiveHour.usedPercent)}%` : "",
+    weekly ? `週 ${Math.round(100 - weekly.usedPercent)}%` : "",
+  ].filter(Boolean);
+
+  const weeklyResetAtMs = resetAtMs(weekly?.resetsAt);
+  if (Number.isFinite(weeklyResetAtMs)) {
+    const remainingMinutes = Math.ceil(Math.max(0, weeklyResetAtMs - nowMs) / 60_000);
+    const days = Math.floor(remainingMinutes / 1440);
+    const hours = Math.floor((remainingMinutes % 1440) / 60);
+    const minutes = remainingMinutes % 60;
+    parts.push(`${days}日${hours}:${String(minutes).padStart(2, "0")}`);
+  }
+
+  return parts.join(" | ");
 }
