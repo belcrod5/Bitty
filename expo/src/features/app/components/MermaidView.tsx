@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 const MERMAID_CDN_URL = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
 
@@ -16,8 +18,10 @@ type MermaidViewProps = {
 };
 
 export function MermaidView({ chart, height = 260 }: MermaidViewProps) {
+  const { theme, themeId } = useVisualTheme();
+  const mermaidStyles = mermaidStylesByTheme[themeId];
   const [measuredHeight, setMeasuredHeight] = useState(height);
-  const html = useMemo(() => buildMermaidHtml(chart), [chart]);
+  const html = useMemo(() => buildMermaidHtml(chart, theme), [chart, theme]);
   const resolvedHeight = Math.max(height, measuredHeight);
 
   useEffect(() => {
@@ -45,7 +49,7 @@ export function MermaidView({ chart, height = 260 }: MermaidViewProps) {
   );
 }
 
-function buildMermaidHtml(chart: string) {
+function buildMermaidHtml(chart: string, theme: VisualTheme) {
   return `<!doctype html>
 <html>
   <head>
@@ -54,7 +58,8 @@ function buildMermaidHtml(chart: string) {
       body {
         margin: 0;
         padding: 12px;
-        background: white;
+        background: ${theme.colors.surface};
+        color: ${theme.colors.textPrimary};
       }
       .mermaid {
         display: flex;
@@ -65,7 +70,7 @@ function buildMermaidHtml(chart: string) {
         height: auto;
       }
       .error {
-        color: #b91c1c;
+        color: ${theme.tones.danger.foreground};
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         font-size: 13px;
         white-space: pre-wrap;
@@ -79,7 +84,16 @@ function buildMermaidHtml(chart: string) {
       mermaid.initialize({
         startOnLoad: true,
         securityLevel: "strict",
-        theme: "default"
+        theme: "base",
+        themeVariables: {
+          background: "${theme.colors.surface}",
+          primaryColor: "${theme.colors.surfaceSelected}",
+          primaryTextColor: "${theme.colors.textPrimary}",
+          primaryBorderColor: "${theme.colors.borderStrong}",
+          lineColor: "${theme.colors.textMuted}",
+          secondaryColor: "${theme.colors.surfaceMuted}",
+          tertiaryColor: "${theme.colors.surfaceRaised}"
+        }
       });
 
       function postHeight() {
@@ -106,16 +120,23 @@ function buildMermaidHtml(chart: string) {
 </html>`;
 }
 
-const mermaidStyles = StyleSheet.create({
+function createMermaidStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   wrap: {
     overflow: "hidden",
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   webView: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
   },
-});
+  });
+}
+
+const mermaidStylesByTheme: Record<VisualThemeId, ReturnType<typeof createMermaidStyles>> = {
+  standard: createMermaidStyles(VISUAL_THEMES.standard),
+  highLegibility: createMermaidStyles(VISUAL_THEMES.highLegibility),
+};

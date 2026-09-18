@@ -4,7 +4,8 @@ import { Alert, Linking, Platform, Pressable, ScrollView, Text, TextInput, Touch
 import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
 import { useChatDiagnostics } from "../contexts/ChatDiagnosticsContext";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
 import type { CodexAuthRegistration } from "../hooks/useCodexStatusAuthController";
 
@@ -25,6 +26,8 @@ export function mergeCodexAuthRegistration(previous: RegistrationState, next: Pa
 }
 
 export function CodexAccountSettings() {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const diagnostics = useChatDiagnostics();
   const {
     cancelCodexAuthRegistration,
@@ -138,7 +141,7 @@ export function CodexAccountSettings() {
       <View style={styles.settingsGroup}>
         {diagnostics.codexAuthProfiles.length === 0 ? (
           <View style={styles.settingsRow}>
-            <Ionicons name="person-circle-outline" size={22} color="#111827" />
+            <Ionicons name="person-circle-outline" size={22} color={theme.colors.controlTextPrimary} />
             <View style={styles.settingsRowLabelWrap}>
               <Text style={styles.settingsRowLabel}>登録済みアカウントなし</Text>
               <Text style={styles.settingsRowDescription}>Codex標準の認証を使用します。</Text>
@@ -150,7 +153,7 @@ export function CodexAccountSettings() {
             const isCurrent = profile.authId === currentAuthId;
             return (
               <View key={profile.authId} style={[styles.settingsInputRow, index < diagnostics.codexAuthProfiles.length - 1 && styles.settingsRowDivider]}>
-                <Ionicons name={isCurrent ? "checkmark-circle" : "person-circle-outline"} size={22} color={isCurrent ? "#0a84ff" : "#111827"} />
+                <Ionicons name={isCurrent ? "checkmark-circle" : "person-circle-outline"} size={22} color={isCurrent ? theme.colors.controlAccent : theme.colors.controlTextPrimary} />
                 <View style={styles.settingsInputContent}>
                   <Text style={styles.settingsRowLabel}>{label}</Text>
                   <Text style={styles.settingsRowDescription}>
@@ -194,7 +197,7 @@ export function CodexAccountSettings() {
 
       <View style={styles.settingsGroup}>
         <View style={styles.settingsInputRow}>
-          <Ionicons name="person-add-outline" size={22} color="#111827" />
+          <Ionicons name="person-add-outline" size={22} color={theme.colors.controlTextPrimary} />
           <View style={styles.settingsInputContent}>
             <Text style={styles.settingsRowLabel}>アカウントを追加</Text>
             <Text style={styles.settingsRowDescription}>認証後に保存名を設定します。</Text>
@@ -207,7 +210,7 @@ export function CodexAccountSettings() {
                 disabled={starting || !!registration}
                 accessibilityState={{ disabled: starting || !!registration }}
               >
-                <Ionicons name="add-circle-outline" size={18} color="#ffffff" />
+                <Ionicons name="add-circle-outline" size={18} color={theme.colors.textOnAccent} />
                 <Text style={styles.settingsPrimaryButtonText}>追加して認証</Text>
               </Pressable>
             </View>
@@ -222,19 +225,19 @@ export function CodexAccountSettings() {
               <View style={styles.settingsSelectHeader}>
                 <Text style={styles.settingsSelectTitle}>Codexアカウント認証</Text>
                 <TouchableOpacity onPress={() => void cancel()} accessibilityRole="button" accessibilityLabel="Codexアカウント認証を閉じる" style={styles.settingsSelectCloseButton}>
-                  <Ionicons name="close" size={21} color="#4b5563" />
+                  <Ionicons name="close" size={21} color={theme.colors.iconSecondary} />
                 </TouchableOpacity>
               </View>
               <ScrollView bounces={false} keyboardShouldPersistTaps="handled">
                 <View style={[styles.settingsRow, styles.settingsRowDivider]}>
-                  <Ionicons name="key-outline" size={22} color="#111827" />
+                  <Ionicons name="key-outline" size={22} color={theme.colors.controlTextPrimary} />
                   <Text style={[styles.settingsRowLabel, styles.settingsRowLabelWrap]}>認証コード</Text>
                   <Text style={styles.settingsRowValue} selectable>
                     {registration.userCode || "-"}
                   </Text>
                 </View>
                 <View style={[styles.settingsRow, styles.settingsRowDivider]}>
-                  <Ionicons name="information-circle-outline" size={22} color="#111827" />
+                  <Ionicons name="information-circle-outline" size={22} color={theme.colors.controlTextPrimary} />
                   <Text style={[styles.settingsRowLabel, styles.settingsRowLabelWrap]}>認証状態</Text>
                   <Text style={registration.errorCode ? styles.settingsErrorText : styles.settingsRowValue} accessibilityRole={registration.errorCode ? "alert" : undefined}>
                     {registration.status}
@@ -251,13 +254,13 @@ export function CodexAccountSettings() {
                     disabled: !registration.verificationUrl,
                   }}
                 >
-                  <Ionicons name="open-outline" size={22} color="#0a84ff" />
+                  <Ionicons name="open-outline" size={22} color={theme.colors.controlAccent} />
                   <Text style={[styles.settingsActionText, styles.settingsRowLabelWrap]}>認証ページを開く</Text>
-                  <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                  <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
                 </TouchableOpacity>
                 {registration.status === "authenticated" && !registration.reauth ? (
                   <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
-                    <Ionicons name="create-outline" size={22} color="#111827" />
+                    <Ionicons name="create-outline" size={22} color={theme.colors.controlTextPrimary} />
                     <View style={styles.settingsInputContent}>
                       <Text style={styles.settingsRowLabel}>保存名</Text>
                       <Text style={styles.settingsRowDescription}>このアカウントを識別する名前を入力してください。</Text>
@@ -279,12 +282,12 @@ export function CodexAccountSettings() {
                 ) : null}
                 {registrationPending || registration.status === "authenticated" ? (
                   <TouchableOpacity style={styles.settingsRow} onPress={() => void cancel()} accessibilityRole="button" accessibilityLabel="Codexアカウントの認証をキャンセル">
-                    <Ionicons name="close-circle-outline" size={22} color="#ff3b30" />
+                    <Ionicons name="close-circle-outline" size={22} color={theme.colors.controlDanger} />
                     <Text style={[styles.settingsDangerText, styles.settingsRowLabelWrap]}>{registration.status === "authenticated" ? "保存をやめる" : "認証をキャンセル"}</Text>
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity style={styles.settingsRow} onPress={() => setRegistration(null)} accessibilityRole="button" accessibilityLabel="閉じる">
-                    <Ionicons name="close-outline" size={22} color="#111827" />
+                    <Ionicons name="close-outline" size={22} color={theme.colors.controlTextPrimary} />
                     <Text style={[styles.settingsActionText, styles.settingsRowLabelWrap]}>閉じる</Text>
                   </TouchableOpacity>
                 )}

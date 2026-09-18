@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Switch, Text, TextInput, View } from "react-native";
 import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
 import { useAppSettings } from "../contexts/AppSettingsContext";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SettingsSelect } from "./SettingsSelect";
 
 const APPROVAL_OPTIONS = [
@@ -21,6 +22,8 @@ const REASONING_LABELS = {
 } as const;
 
 export function ConnectionSettings() {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const {
     cloudflareRunnerUrl,
     localRunnerUrl,
@@ -98,7 +101,7 @@ export function ConnectionSettings() {
 
       <View style={styles.settingsGroup}>
         <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
-          <Ionicons name="server-outline" size={22} color="#111827" />
+          <Ionicons name="server-outline" size={22} color={theme.colors.controlTextPrimary} />
           <View style={styles.settingsInputContent}>
             <Text style={styles.settingsRowLabel}>ローカルURL</Text>
             <TextInput
@@ -115,7 +118,7 @@ export function ConnectionSettings() {
         </View>
 
         <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
-          <Ionicons name="cloud-outline" size={22} color="#111827" />
+          <Ionicons name="cloud-outline" size={22} color={theme.colors.controlTextPrimary} />
           <View style={styles.settingsInputContent}>
             <Text style={styles.settingsRowLabel}>Cloudflare経由URL</Text>
             <TextInput
@@ -132,7 +135,7 @@ export function ConnectionSettings() {
         </View>
 
         <View style={styles.settingsInputRow}>
-          <Ionicons name="shield-checkmark-outline" size={22} color="#111827" />
+          <Ionicons name="shield-checkmark-outline" size={22} color={theme.colors.controlTextPrimary} />
           <View style={styles.settingsInputContent}>
             <Text style={styles.settingsRowLabel}>Runnerトークン</Text>
             <TextInput
@@ -167,7 +170,7 @@ export function ConnectionSettings() {
                 accessibilityRole="button"
                 accessibilityLabel="Runnerトークンを保存して接続"
               >
-                {runnerTokenSaving ? <ActivityIndicator size="small" color="#ffffff" /> : null}
+                {runnerTokenSaving ? <ActivityIndicator size="small" color={theme.colors.textOnAccent} /> : null}
                 <Text style={styles.settingsPrimaryButtonText}>
                   {runnerTokenSaving ? "保存中" : "保存して接続"}
                 </Text>
@@ -209,7 +212,7 @@ export function ConnectionSettings() {
           onSelect={selectCodexApprovalPolicy}
         />
         <View style={styles.settingsRow}>
-          <Ionicons name="scan-outline" size={22} color="#111827" />
+          <Ionicons name="scan-outline" size={22} color={theme.colors.controlTextPrimary} />
           <View style={styles.settingsRowLabelWrap}>
             <Text style={styles.settingsRowLabel}>承認時にFace IDを要求</Text>
             <Text style={styles.settingsRowDescription}>ツール実行の確認をこの端末で保護</Text>

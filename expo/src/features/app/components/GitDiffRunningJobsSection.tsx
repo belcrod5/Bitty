@@ -6,7 +6,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { startRunnerShellScript } from "../utils/runnerFileContextMenu";
 
 type ScriptJobStatus = "running" | "stopping" | "completed" | "failed" | "killed" | "timed_out";
@@ -44,6 +45,8 @@ export function GitDiffRunningJobsSection({
   showInfoToast,
   onLoadingChange,
 }: GitDiffRunningJobsSectionProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const [runningScriptJobs, setRunningScriptJobs] = useState<ScriptJob[]>([]);
   const [runningScriptJobsLoading, setRunningScriptJobsLoading] = useState(false);
   const [runningScriptJobsError, setRunningScriptJobsError] = useState("");
@@ -321,7 +324,7 @@ export function GitDiffRunningJobsSection({
         <Text style={styles.gitDiffRunningJobHint}>タップでメニュー</Text>
       </TouchableOpacity>
     );
-  }, [formatDurationMsLabel, openRunningJobContextMenu, runningScriptJobsNowTick]);
+  }, [formatDurationMsLabel, openRunningJobContextMenu, runningScriptJobsNowTick, styles]);
 
   return (
     <View style={styles.gitDiffSectionCard}>
@@ -329,7 +332,7 @@ export function GitDiffRunningJobsSection({
       <Text style={styles.gitDiffSectionHint}>この画面から起動した .sh の実行状態</Text>
       {runningScriptJobsLoading ? (
         <View style={styles.gitDiffPanelStatusRow}>
-          <ActivityIndicator size="small" color="#0f766e" />
+        <ActivityIndicator size="small" color={theme.colors.primaryAction} />
           <Text style={styles.gitDiffPanelStatusText}>読み込み中...</Text>
         </View>
       ) : null}

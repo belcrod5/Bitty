@@ -6,10 +6,15 @@ import { SpeechSettings } from "../components/SpeechSettings";
 import { CodexAccountSettings } from "../components/CodexAccountSettings";
 import { useAppShell } from "../contexts/AppShellContext";
 import { BUILD_STAMP } from "../buildStamp";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
 import { KeyboardAvoidingView } from "../keyboardController";
+import { SettingsSelect } from "../components/SettingsSelect";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEME_OPTIONS } from "../theme/visualThemes";
 
 export function SettingsScreen() {
+  const styles = useAppStyles();
+  const { themeId, selectTheme } = useVisualTheme();
   const { openSkiaBoardScreen, openDrawer } = useAppShell();
   const [buildStampCopied, setBuildStampCopied] = useState(false);
   const buildStampCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -52,6 +57,26 @@ export function SettingsScreen() {
       <ConnectionSettings />
       <SpeechSettings />
       <CodexAccountSettings />
+      <View style={styles.settingsSection}>
+        <View style={styles.settingsSectionHeader}>
+          <Text style={styles.settingsSectionTitle}>表示</Text>
+        </View>
+        <View style={styles.settingsGroup}>
+          <SettingsSelect
+            icon="contrast-outline"
+            label="表示テーマ"
+            description="配色・文字サイズ・境界線をまとめて切り替えます"
+            options={VISUAL_THEME_OPTIONS.map((option) => ({
+              value: option.id,
+              label: option.label,
+              description: option.description,
+            }))}
+            selectedValue={themeId}
+            onSelect={selectTheme}
+            showDivider={false}
+          />
+        </View>
+      </View>
       <View style={styles.settingsSection}>
         <View style={styles.settingsSectionHeader}>
           <Text style={styles.settingsSectionTitle}>アプリ情報</Text>

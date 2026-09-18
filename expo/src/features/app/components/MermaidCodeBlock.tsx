@@ -13,6 +13,8 @@ import { Ionicons } from "@expo/vector-icons";
 import type { MarkdownStyle } from "react-native-enriched-markdown";
 import { MermaidView } from "./MermaidView";
 import { AppModal } from "./AppModal";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type MermaidCodeBlockProps = {
   chart: string;
@@ -20,6 +22,8 @@ type MermaidCodeBlockProps = {
 };
 
 export function MermaidCodeBlock({ chart, codeBlockStyle }: MermaidCodeBlockProps) {
+  const { theme, themeId } = useVisualTheme();
+  const mermaidCodeStyles = mermaidCodeStylesByTheme[themeId];
   const [modalVisible, setModalVisible] = useState(false);
   const { height: windowHeight } = useWindowDimensions();
   const canRender = chart.trim().length > 0;
@@ -50,7 +54,7 @@ export function MermaidCodeBlock({ chart, codeBlockStyle }: MermaidCodeBlockProp
           activeOpacity={0.85}
           accessibilityLabel="Mermaid preview open"
         >
-          <Ionicons name="play" size={13} color="#0f172a" />
+          <Ionicons name="play" size={13} color={theme.colors.textPrimary} />
         </TouchableOpacity>
         <Text selectable style={[mermaidCodeStyles.codeText, blockTextStyle]}>
           {chart}
@@ -73,7 +77,7 @@ export function MermaidCodeBlock({ chart, codeBlockStyle }: MermaidCodeBlockProp
               activeOpacity={0.85}
               accessibilityLabel="Mermaid preview close"
             >
-              <Ionicons name="close" size={18} color="#0f172a" />
+              <Ionicons name="close" size={18} color={theme.colors.textPrimary} />
             </TouchableOpacity>
           </View>
         </SafeAreaView>
@@ -82,7 +86,8 @@ export function MermaidCodeBlock({ chart, codeBlockStyle }: MermaidCodeBlockProp
   );
 }
 
-const mermaidCodeStyles = StyleSheet.create({
+function createMermaidCodeStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   wrap: {
     gap: 6,
     minWidth: 0,
@@ -104,16 +109,16 @@ const mermaidCodeStyles = StyleSheet.create({
     borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    backgroundColor: theme.colors.surface,
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
   },
   renderButtonDisabled: {
     opacity: 0.45,
   },
   modalSafeArea: {
     flex: 1,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   modalContent: {
     flex: 1,
@@ -129,12 +134,18 @@ const mermaidCodeStyles = StyleSheet.create({
     borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f8fafc",
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    backgroundColor: theme.colors.surfaceRaised,
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
   },
   modalBody: {
     flex: 1,
     padding: 8,
   },
-});
+  });
+}
+
+const mermaidCodeStylesByTheme: Record<VisualThemeId, ReturnType<typeof createMermaidCodeStyles>> = {
+  standard: createMermaidCodeStyles(VISUAL_THEMES.standard),
+  highLegibility: createMermaidCodeStyles(VISUAL_THEMES.highLegibility),
+};

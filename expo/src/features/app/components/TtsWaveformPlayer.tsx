@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { CircularProgressRing } from "./CircularProgressRing";
 import { getNetworkUsageSnapshot } from "../../ws/networkUsageMetrics";
 import { formatBytesCompact } from "../utils/formatting";
 import { AppModal } from "./AppModal";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
 const WAVEFORM_DOT_GIF = require("../../../../assets/images/waveform-dots.gif");
 
@@ -22,6 +24,9 @@ function formatBytesOrZero(bytes: number) {
 }
 
 export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
+  const styles = useAppStyles();
+  const { theme, themeId } = useVisualTheme();
+  const usageStyles = usageStylesByTheme[themeId];
   const {
     isPlaybackActive,
     playButtonDisabled,
@@ -62,8 +67,8 @@ export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
               size={36}
               strokeWidth={2}
               progress={statusRingProgress}
-              trackColor="#dbeafe"
-              progressColor="#0ea5e9"
+              trackColor={theme.colors.infoMuted}
+              progressColor={theme.colors.audioGenerationProgress}
             />
           </View>
           <View style={styles.chatTtsPlaybackRingWrap}>
@@ -71,8 +76,8 @@ export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
               size={32}
               strokeWidth={2}
               progress={playbackRingProgress}
-              trackColor="#fecaca"
-              progressColor="#dc2626"
+              trackColor={theme.dark.danger}
+              progressColor={theme.colors.negativeText}
             />
           </View>
           <TouchableOpacity
@@ -87,7 +92,7 @@ export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
             <Ionicons
               name={isPlaybackActive ? "stop" : "volume-high"}
               size={14}
-              color="#1e293b"
+              color={theme.colors.textStrong}
             />
           </TouchableOpacity>
         </View>
@@ -123,11 +128,12 @@ export function TtsWaveformPlayer(props: TtsWaveformPlayerProps) {
   );
 }
 
-const usageStyles = StyleSheet.create({
+function createUsageStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   backdrop: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(15, 23, 42, 0.36)",
+    backgroundColor: theme.colors.sheetBackdrop,
   },
   sheet: {
     paddingHorizontal: 16,
@@ -135,7 +141,7 @@ const usageStyles = StyleSheet.create({
     paddingBottom: 26,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
   },
   header: {
     minHeight: 38,
@@ -144,15 +150,21 @@ const usageStyles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 8,
   },
-  title: { fontSize: 16, fontWeight: "800", color: "#0f172a" },
-  close: { fontSize: 28, lineHeight: 30, color: "#334155" },
+  title: { ...theme.typography.control, fontWeight: "800", color: theme.colors.textPrimary },
+  close: { ...theme.typography.displayLarge, color: theme.colors.textSecondary },
   row: {
     minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  rowLabel: { fontSize: 12, color: "#64748b" },
-  rowValue: { fontSize: 14, fontWeight: "700", color: "#0f172a" },
-  note: { marginTop: 10, fontSize: 11, color: "#94a3b8" },
-});
+  rowLabel: { ...theme.typography.small, color: theme.colors.textMuted },
+  rowValue: { ...theme.typography.body, fontWeight: "700", color: theme.colors.textPrimary },
+  note: { marginTop: 10, ...theme.typography.caption, color: theme.colors.borderStrong },
+  });
+}
+
+const usageStylesByTheme = {
+  standard: createUsageStyles(VISUAL_THEMES.standard),
+  highLegibility: createUsageStyles(VISUAL_THEMES.highLegibility),
+} as const;

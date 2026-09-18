@@ -2,7 +2,7 @@ import type { RefObject } from "react";
 import { Image, Text, TouchableOpacity, View } from "react-native";
 import type { View as RNView } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
 
 type YouTubeVideoItem = {
   videoId: string;
@@ -45,6 +45,7 @@ export function YouTubeVideoList({
   setYoutubeInlineAnchor,
   onUpdateYouTubeInlineLayout,
 }: YouTubeVideoListProps) {
+  const styles = useAppStyles();
   return (
     <View style={styles.youtubeList}>
       {videos.map((video, videoIndex) => {

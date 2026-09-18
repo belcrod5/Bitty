@@ -1,6 +1,8 @@
-import { Text, TouchableOpacity, View } from "react-native";
+import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import type { CalendarWriteConfirmation } from "../../calendar/calendarToolHandler";
 import { AppModal } from "./AppModal";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
 function formatCalendarDate(value: string, allDay: boolean, timeZone: string | null) {
   const date = new Date(value);
@@ -25,24 +27,72 @@ export function CalendarWriteApprovalModal(props: {
   request: CalendarWriteConfirmation | null;
   onDecide: (accepted: boolean) => void;
 }) {
+  const { themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const value = props.request?.view;
   return (
     <AppModal visible={!!props.request} transparent animationType="fade" onRequestClose={() => props.onDecide(false)}>
-      <View style={{ flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(0,0,0,0.45)" }}>
-        <View style={{ backgroundColor: "white", borderRadius: 12, padding: 20, gap: 12 }}>
-          <Text style={{ fontWeight: "700", fontSize: 18 }}>カレンダーの変更を確認</Text>
-          <Text>{String(props.request?.operation || "")}</Text>
-          <Text>予定: {value?.title || "予定"}</Text>
-          {value?.start ? <Text>開始: {formatCalendarDate(value.start, value.allDay, value.timeZone)}</Text> : null}
-          {value?.end ? <Text>終了: {formatCalendarDate(value.end, value.allDay, value.timeZone)}</Text> : null}
-          {value?.location ? <Text>場所: {value.location}</Text> : null}
-          {value?.notes ? <Text>メモ: {value.notes}</Text> : null}
-          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 12 }}>
-            <TouchableOpacity onPress={() => props.onDecide(false)}><Text>キャンセル</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => props.onDecide(true)}><Text>実行</Text></TouchableOpacity>
+      <View style={styles.backdrop}>
+        <View style={styles.card}>
+          <Text style={styles.title}>カレンダーの変更を確認</Text>
+          <Text style={styles.body}>{String(props.request?.operation || "")}</Text>
+          <Text style={styles.body}>予定: {value?.title || "予定"}</Text>
+          {value?.start ? <Text style={styles.body}>開始: {formatCalendarDate(value.start, value.allDay, value.timeZone)}</Text> : null}
+          {value?.end ? <Text style={styles.body}>終了: {formatCalendarDate(value.end, value.allDay, value.timeZone)}</Text> : null}
+          {value?.location ? <Text style={styles.body}>場所: {value.location}</Text> : null}
+          {value?.notes ? <Text style={styles.body}>メモ: {value.notes}</Text> : null}
+          <View style={styles.actions}>
+            <TouchableOpacity onPress={() => props.onDecide(false)}><Text style={styles.action}>キャンセル</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => props.onDecide(true)}><Text style={styles.action}>実行</Text></TouchableOpacity>
           </View>
         </View>
       </View>
     </AppModal>
   );
 }
+
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: theme.approval.backdrop,
+    },
+    card: {
+      backgroundColor: theme.colors.surface,
+      borderRadius: 12,
+      borderWidth: theme.id === "highLegibility" ? theme.borders.strong : 0,
+      borderColor: theme.colors.borderStrong,
+      padding: 20,
+      gap: 12,
+    },
+    title: {
+      color: theme.colors.textPrimary,
+      fontSize: theme.typography.title.fontSize,
+      lineHeight: theme.typography.title.lineHeight,
+      fontWeight: "700",
+    },
+    body: {
+      color: theme.colors.textPrimary,
+      fontSize: theme.typography.body.fontSize,
+      lineHeight: theme.typography.body.lineHeight,
+    },
+    actions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: 12,
+    },
+    action: {
+      color: theme.colors.controlAccent,
+      fontSize: theme.typography.body.fontSize,
+      lineHeight: theme.typography.body.lineHeight,
+      fontWeight: "700",
+    },
+  });
+}
+
+const stylesByTheme = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+} as const;

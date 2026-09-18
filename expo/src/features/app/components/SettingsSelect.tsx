@@ -1,7 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useState, type ComponentProps } from "react";
 import { Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { AppModal } from "./AppModal";
 
 export type SettingsSelectOption<T extends string> = {
@@ -43,6 +44,8 @@ export function SettingsSelect<T extends string>({
   onOpen,
   showDivider = true,
 }: SettingsSelectProps<T>) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const [open, setOpen] = useState(false);
   const selected = options.find((option) => option.value === selectedValue);
   const selectedLabel = selected?.label || selectedLabelOverride || selectedValue || placeholder;
@@ -61,7 +64,7 @@ export function SettingsSelect<T extends string>({
         accessibilityLabel={label}
         accessibilityValue={{ text: selectedLabel }}
       >
-        <Ionicons name={icon} size={22} color="#111827" />
+        <Ionicons name={icon} size={22} color={theme.colors.controlTextPrimary} />
         <View style={styles.settingsRowLabelWrap}>
           <Text style={styles.settingsRowLabel}>{label}</Text>
           {description ? <Text style={styles.settingsRowDescription}>{description}</Text> : null}
@@ -69,7 +72,7 @@ export function SettingsSelect<T extends string>({
         <Text style={styles.settingsRowValue} numberOfLines={1}>
           {loading ? "取得中…" : selectedLabel}
         </Text>
-        <Ionicons name="chevron-expand-outline" size={20} color="#9ca3af" />
+        <Ionicons name="chevron-expand-outline" size={20} color={theme.colors.iconMuted} />
       </TouchableOpacity>
 
       <AppModal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
@@ -88,7 +91,7 @@ export function SettingsSelect<T extends string>({
                 accessibilityLabel={`${label}を閉じる`}
                 style={styles.settingsSelectCloseButton}
               >
-                <Ionicons name="close" size={21} color="#4b5563" />
+                <Ionicons name="close" size={21} color={theme.colors.iconSecondary} />
               </TouchableOpacity>
             </View>
             {onSearchChange ? (
@@ -123,7 +126,7 @@ export function SettingsSelect<T extends string>({
                         <Text style={styles.settingsSelectOptionDescription}>{option.description}</Text>
                       ) : null}
                     </View>
-                    {selectedOption ? <Ionicons name="checkmark" size={20} color="#0a84ff" /> : null}
+                    {selectedOption ? <Ionicons name="checkmark" size={20} color={theme.colors.controlAccent} /> : null}
                   </TouchableOpacity>
                 );
               })}

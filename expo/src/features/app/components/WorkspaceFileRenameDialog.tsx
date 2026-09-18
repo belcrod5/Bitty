@@ -12,6 +12,8 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type WorkspaceFileRenameDialogProps = {
   target: WorkspaceFileTarget | null;
@@ -28,6 +30,8 @@ export function WorkspaceFileRenameDialog({
   onCancel,
   onRename,
 }: WorkspaceFileRenameDialogProps) {
+  const { theme, themeId } = useVisualTheme();
+  const dialogStyles = dialogStylesByTheme[themeId];
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<TextInput | null>(null);
@@ -94,7 +98,7 @@ export function WorkspaceFileRenameDialog({
                 disabled={!name.trim() || saving}
               >
                 {saving ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
+                  <ActivityIndicator size="small" color={theme.colors.textOnAccent} />
                 ) : (
                   <Text style={dialogStyles.primaryButtonText}>{submitLabel}</Text>
                 )}
@@ -107,38 +111,39 @@ export function WorkspaceFileRenameDialog({
   );
 }
 
-const dialogStyles = StyleSheet.create({
+function createWorkspaceFileRenameDialogStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   backdrop: {
     flex: 1,
     padding: 24,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    backgroundColor: theme.colors.backdropStrong,
   },
   keyboardAvoiding: { flex: 1, justifyContent: "center" },
   card: {
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.surface,
     padding: 16,
     gap: 12,
   },
   title: {
-    fontSize: 16,
+    fontSize: theme.typography.control.fontSize,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   path: {
-    fontSize: 12,
-    color: "#64748b",
+    fontSize: theme.typography.small.fontSize,
+    color: theme.colors.textMuted,
   },
   input: {
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 15,
-    color: "#0f172a",
+    fontSize: theme.typography.input.fontSize,
+    color: theme.colors.textPrimary,
   },
   actions: {
     flexDirection: "row",
@@ -147,28 +152,34 @@ const dialogStyles = StyleSheet.create({
   },
   secondaryButton: {
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     paddingHorizontal: 14,
     paddingVertical: 9,
   },
   secondaryButtonText: {
-    color: "#334155",
+    color: theme.colors.textSecondary,
     fontWeight: "600",
   },
   primaryButton: {
     minWidth: 72,
     alignItems: "center",
     borderRadius: 8,
-    backgroundColor: "#0f766e",
+    backgroundColor: theme.colors.primaryAction,
     paddingHorizontal: 14,
     paddingVertical: 9,
   },
   primaryButtonText: {
-    color: "#ffffff",
+    color: theme.colors.textOnAccent,
     fontWeight: "700",
   },
   disabledButton: {
     opacity: 0.5,
   },
-});
+  });
+}
+
+const dialogStylesByTheme: Record<VisualThemeId, ReturnType<typeof createWorkspaceFileRenameDialogStyles>> = {
+  standard: createWorkspaceFileRenameDialogStyles(VISUAL_THEMES.standard),
+  highLegibility: createWorkspaceFileRenameDialogStyles(VISUAL_THEMES.highLegibility),
+};

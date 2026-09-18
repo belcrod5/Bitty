@@ -9,6 +9,8 @@ import {
 } from "../ws/networkUsageMetrics";
 import { formatBytesCompact } from "../app/utils/formatting";
 import { AppModal } from "../app/components/AppModal";
+import { useVisualTheme } from "../app/theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
 
 type RunnerWsConnectionStatusProps = {
   turnState?: string;
@@ -20,11 +22,6 @@ type RunnerWsConnectionStatusProps = {
   onCopySessionHistoryReference?: () => void;
 };
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
-
-const STATUS_OK = "#16a34a";
-const STATUS_WARN = "#d97706";
-const STATUS_BAD = "#dc2626";
-const STATUS_NEUTRAL = "#64748b";
 
 export type RunnerWsDataSyncStatus = {
   status: "ok" | "loading" | "stale" | "error" | "unknown";
@@ -48,11 +45,11 @@ function formatAge(nowMs: number, atMsRaw: unknown) {
   return `${Math.floor(minutes / 60)}h`;
 }
 
-function statusColor(status: RunnerWsDataSyncStatus["status"]) {
-  if (status === "ok") return STATUS_OK;
-  if (status === "loading" || status === "stale") return STATUS_WARN;
-  if (status === "error") return STATUS_BAD;
-  return STATUS_NEUTRAL;
+function statusColor(theme: VisualTheme, status: RunnerWsDataSyncStatus["status"]) {
+  if (status === "ok") return theme.tones.success.foreground;
+  if (status === "loading" || status === "stale") return theme.tones.warning.foreground;
+  if (status === "error") return theme.tones.danger.foreground;
+  return theme.tones.neutral.foreground;
 }
 
 function statusLabel(dataSync?: RunnerWsDataSyncStatus) {
@@ -96,6 +93,8 @@ export function RunnerWsConnectionStatus({
   sessionMaterialized = false,
   onCopySessionHistoryReference,
 }: RunnerWsConnectionStatusProps) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const [open, setOpen] = useState(false);
   const [networkUsage, setNetworkUsage] = useState(getNetworkUsageSnapshot);
   const runnerWsSnapshot = useRunnerWebSocketSnapshot();
@@ -113,7 +112,9 @@ export function RunnerWsConnectionStatus({
     runnerWsSnapshot.connectionState !== "ready" ||
     (singletonConnectionCount > 1)
   );
-  const color = singletonWarn ? STATUS_WARN : (dataSync ? statusColor(dataSync.status) : STATUS_NEUTRAL);
+  const color = singletonWarn
+    ? theme.tones.warning.foreground
+    : (dataSync ? statusColor(theme, dataSync.status) : theme.tones.neutral.foreground);
   const backendId = String(sessionBackendId || "").trim();
   const nativeSessionId = String(sessionId || "").trim();
   const canCopySessionHistoryReference = sessionMaterialized && !!backendId && !!nativeSessionId;
@@ -165,7 +166,7 @@ export function RunnerWsConnectionStatus({
           <Ionicons
             name={routeIcon}
             size={14}
-            color="#334155"
+            color={theme.colors.iconSecondary}
           />
         ) : null}
         <View style={[styles.dot, { backgroundColor: color }]} />
@@ -228,7 +229,8 @@ export function RunnerWsConnectionStatus({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   badge: {
     alignSelf: "flex-end",
     minHeight: 30,
@@ -238,18 +240,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
+    backgroundColor: theme.colors.surface,
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderSubtle,
   },
   dot: { width: 8, height: 8, borderRadius: 999 },
-  badgeText: { fontSize: 12, fontWeight: "700", color: "#0f172a" },
-  rttText: { fontSize: 11, fontWeight: "700", color: "#64748b" },
-  chevron: { fontSize: 18, lineHeight: 18, color: "#94a3b8" },
+  badgeText: { ...theme.typography.small, fontWeight: "700", color: theme.colors.textPrimary },
+  rttText: { ...theme.typography.caption, fontWeight: "700", color: theme.colors.textMuted },
+  chevron: { fontSize: theme.typography.title.fontSize, lineHeight: theme.typography.title.fontSize, color: theme.colors.iconMuted },
   backdrop: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(15, 23, 42, 0.36)",
+    backgroundColor: theme.colors.backdropStrong,
   },
   sheet: {
     maxHeight: "82%",
@@ -258,7 +260,7 @@ const styles = StyleSheet.create({
     paddingBottom: 26,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
   },
   gridScroll: { flexGrow: 0 },
   header: {
@@ -268,8 +270,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 8,
   },
-  title: { fontSize: 16, fontWeight: "800", color: "#0f172a" },
-  close: { fontSize: 28, lineHeight: 30, color: "#334155" },
+  title: { ...theme.typography.control, fontWeight: "800", color: theme.colors.textPrimary },
+  close: { fontSize: theme.typography.display.fontSize, lineHeight: theme.typography.display.lineHeight, color: theme.colors.textSecondary },
   grid: { flexDirection: "row", flexWrap: "wrap" },
   cell: {
     width: "50%",
@@ -277,8 +279,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     paddingRight: 8,
   },
-  cellLabel: { fontSize: 11, color: "#64748b" },
-  cellValue: { marginTop: 2, fontSize: 14, fontWeight: "700", color: "#0f172a" },
+  cellLabel: { ...theme.typography.caption, color: theme.colors.textMuted },
+  cellValue: { marginTop: 2, ...theme.typography.body, fontWeight: "700", color: theme.colors.textPrimary },
   actionButtons: {
     marginTop: 10,
     flexDirection: "row",
@@ -289,17 +291,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#f8fafc",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.surfaceRaised,
   },
   copyButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "#0f766e",
+    backgroundColor: theme.colors.primaryAction,
   },
   copyButtonDisabled: { opacity: 0.4 },
-  copyButtonText: { fontSize: 12, fontWeight: "700", color: "#ffffff" },
-  resetButtonText: { fontSize: 12, fontWeight: "700", color: "#334155" },
-});
+  copyButtonText: { ...theme.typography.small, fontWeight: "700", color: theme.colors.textOnAccent },
+  resetButtonText: { ...theme.typography.small, fontWeight: "700", color: theme.colors.textSecondary },
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

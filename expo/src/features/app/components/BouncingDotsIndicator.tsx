@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Animated, Easing, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 
 export type BouncingDotsIndicatorProps = {
   color?: string;
@@ -11,8 +12,9 @@ export type BouncingDotsIndicatorProps = {
 };
 
 export function BouncingDotsIndicator(props: BouncingDotsIndicatorProps) {
+  const { theme } = useVisualTheme();
   const {
-    color = "#8b8b84",
+    color = theme.colors.textWarmMuted,
     dotSize = 5,
     gap = 4,
     jumpHeight = 5,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dimensions, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
 import type { CodexAuthProfileEntry } from "../types/appTypes";
 import { AppModal } from "./AppModal";
 import { formatCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
@@ -60,6 +60,7 @@ export function CodexStatusSummaryMenu({
   onLoadAuthProfiles,
   onSwitchAuthProfile,
 }: CodexStatusSummaryMenuProps) {
+  const styles = useAppStyles();
   const triggerRef = useRef<View | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [authSelectOpen, setAuthSelectOpen] = useState(false);

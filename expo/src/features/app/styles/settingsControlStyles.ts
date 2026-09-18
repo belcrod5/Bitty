@@ -1,32 +1,34 @@
-import { audioControlStyles } from "./audioControlStyles";
-import { menuScreenStyles } from "./menuScreenStyles";
-import { settingsScreenStyles } from "./settingsScreenStyles";
+import { audioControlStylesByTheme } from "./audioControlStyles";
+import { menuScreenStylesByTheme } from "./menuScreenStyles";
+import { settingsScreenStylesByTheme } from "./settingsScreenStyles";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
-export const settingsControlStyles = {
-  ...menuScreenStyles,
-  ...audioControlStyles,
-  ...settingsScreenStyles,
+export function createSettingsControlStyles(theme: VisualTheme) {
+  return {
+  ...menuScreenStylesByTheme[theme.id],
+  ...audioControlStylesByTheme[theme.id],
+  ...settingsScreenStylesByTheme[theme.id],
   errorText: {
-    color: "#b91c1c",
-    fontSize: 13,
+    color: theme.tones.danger.foreground,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "600",
   },
   label: {
     marginTop: 6,
-    color: "#374151",
-    fontSize: 13,
+    color: theme.colors.formLabel,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
   },
   input: {
     minHeight: 44,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.groupedBorder,
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: "#111827",
-    fontSize: 15,
+    color: theme.colors.controlTextPrimary,
+    fontSize: theme.typography.input.fontSize,
   },
   row: {
     marginTop: 4,
@@ -38,20 +40,25 @@ export const settingsControlStyles = {
   },
   hint: {
     marginTop: 2,
-    color: "#6b7280",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.colors.textSubtle,
+    ...theme.typography.small,
   },
   switchRow: {
     minHeight: 50,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderSubtle,
     borderRadius: 10,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-} as const;
+  } as const;
+}
+
+export const settingsControlStylesByTheme: Record<VisualThemeId, ReturnType<typeof createSettingsControlStyles>> = {
+  standard: createSettingsControlStyles(VISUAL_THEMES.standard),
+  highLegibility: createSettingsControlStyles(VISUAL_THEMES.highLegibility),
+};

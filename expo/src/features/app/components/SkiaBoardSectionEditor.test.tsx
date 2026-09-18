@@ -1,6 +1,8 @@
 import { fireEvent, render } from "@testing-library/react-native";
-import { Keyboard } from "react-native";
+import { Keyboard, StyleSheet } from "react-native";
 import { SkiaBoardSectionEditor } from "./SkiaBoardSectionEditor";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES } from "../theme/visualThemes";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 
@@ -50,4 +52,19 @@ test("keeps the label focused when the label itself is touched", async () => {
   expect(stopPropagation).toHaveBeenCalledTimes(1);
   expect(dismiss).not.toHaveBeenCalled();
   dismiss.mockRestore();
+});
+
+test("uses the selected visual theme for editor inputs", async () => {
+  const screen = await render(
+    <VisualThemeProvider themeId="highLegibility" onSelectTheme={jest.fn()}>
+      <SkiaBoardSectionEditor section={section} onClose={jest.fn()} onSave={jest.fn()} onDelete={jest.fn()} />
+    </VisualThemeProvider>,
+  );
+
+  expect(StyleSheet.flatten(screen.getByLabelText("セクションのラベル").props.style)).toMatchObject({
+    color: VISUAL_THEMES.highLegibility.colors.textPrimary,
+    backgroundColor: VISUAL_THEMES.highLegibility.colors.surfaceRaised,
+    borderWidth: VISUAL_THEMES.highLegibility.borders.thin,
+    fontSize: VISUAL_THEMES.highLegibility.typography.input.fontSize,
+  });
 });

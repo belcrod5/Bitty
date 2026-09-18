@@ -79,6 +79,8 @@ import {
   useSkiaBoardViewportPersistence,
 } from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
   SKIA_BOARD_MIN_TEXT_SCALE,
@@ -344,6 +346,7 @@ const BoardCard = memo(function BoardCard({
   runnerUrl,
   runnerToken,
 }: BoardCardProps) {
+  const { theme } = useVisualTheme();
   const transform = useDerivedValue(() => {
     const position = positions.value[index] || { x: 0, y: 0 };
     return [{ translateX: position.x }, { translateY: position.y }];
@@ -352,206 +355,219 @@ const BoardCard = memo(function BoardCard({
   const boardImage = useSkiaBoardCardImage(
     runnerUrl,
     runnerToken,
-    item.kind === "session" ? undefined : item.imagePath
+    item.kind === "session" ? undefined : item.imagePath,
   );
-  const messageContent = item.kind === "session"
-    ? item.lastMessageContent.replace(/\s+/g, " ").trim() || "メッセージを読み込み中…"
-    : "";
+  const messageContent =
+    item.kind === "session" ? item.lastMessageContent.replace(/\s+/g, " ").trim() || "メッセージを読み込み中…" : "";
   const messageLines = useMemo(() => {
     if (!messageContent) return [];
     const widths = new Map<string, number>();
-    return fitTailTextLines(messageContent, {
-      getTextWidth: (text) => {
-        const cached = widths.get(text);
-        if (cached !== undefined) return cached;
-        const width = paragraphTextWidth(text, bodyFontSize);
-        widths.set(text, width);
-        return width;
+    return fitTailTextLines(
+      messageContent,
+      {
+        getTextWidth: (text) => {
+          const cached = widths.get(text);
+          if (cached !== undefined) return cached;
+          const width = paragraphTextWidth(text, bodyFontSize);
+          widths.set(text, width);
+          return width;
+        },
       },
-    }, contentWidth);
+      contentWidth,
+    );
   }, [bodyFontSize, contentWidth, messageContent]);
   const messageLineHeight = bodyFontSize * 1.25;
   const messageFirstBaseline = messageLines.length === 1 ? 69 : 69 - messageLineHeight / 2;
-  const subagentText = item.kind !== "session"
-    ? ""
-    : item.subagentLoading
-      ? "..."
-      : `${item.subagentRunningCount}/${item.subagentTotalCount}`;
+  const subagentText =
+    item.kind !== "session"
+      ? ""
+      : item.subagentLoading
+        ? "..."
+        : `${item.subagentRunningCount}/${item.subagentTotalCount}`;
   const subagentTextWidth = useMemo(
-    () => subagentText ? paragraphTextWidth(subagentText, bodyFontSize) : 0,
-    [bodyFontSize, subagentText]
+    () => (subagentText ? paragraphTextWidth(subagentText, bodyFontSize) : 0),
+    [bodyFontSize, subagentText],
   );
   const subagentIconX = cardWidth - 30 - subagentTextWidth;
-  const footerRightStart = item.kind === "session"
-    ? subagentIconX - (item.activityTrail.length > 0 ? item.activityTrail.length * 15 + 8 : 8)
-    : cardWidth - 16;
-  const header = item.kind === "session"
-    ? item.directoryName
-    : item.kind === "file"
-      ? item.rootDir.split("/").filter(Boolean).pop() || item.rootDir
-      : "ディレクトリ";
+  const footerRightStart =
+    item.kind === "session"
+      ? subagentIconX - (item.activityTrail.length > 0 ? item.activityTrail.length * 15 + 8 : 8)
+      : cardWidth - 16;
+  const header =
+    item.kind === "session"
+      ? item.directoryName
+      : item.kind === "file"
+        ? item.rootDir.split("/").filter(Boolean).pop() || item.rootDir
+        : "ディレクトリ";
   const title = item.kind === "session" ? item.title : item.name;
-  const detail = item.kind === "session"
-    ? ""
-    : item.kind === "file"
-      ? item.unavailable ? "ファイルが削除または移動されました" : item.path
-      : item.directory;
-  const footer = item.kind === "session"
-    ? item.updatedAtLabel
-    : item.kind === "file"
-      ? item.unavailable ? "FILE NOT FOUND" : "FILE"
-      : "NEW SESSION";
+  const detail =
+    item.kind === "session"
+      ? ""
+      : item.kind === "file"
+        ? item.unavailable
+          ? "ファイルが削除または移動されました"
+          : item.path
+        : item.directory;
+  const footer =
+    item.kind === "session"
+      ? item.updatedAtLabel
+      : item.kind === "file"
+        ? item.unavailable
+          ? "FILE NOT FOUND"
+          : "FILE"
+        : "NEW SESSION";
   const isSession = item.kind === "session";
-  const markerFill = isSession ? markerColor(item.markerColor) : "#2563eb";
+  const markerFill = isSession ? markerColor(item.markerColor) : theme.colors.accent;
   const showUnread = isSession && item.unread;
   const activityTrail = isSession ? item.activityTrail : [];
   // 配列の参照はitemsの再構築ごとに変わるため、内容ベースのキーでPicture再生成を判定する。
-  const activityTrailKey = activityTrail
-    .map((activity) => `${activity.kind}:${activity.active ? 1 : 0}`)
-    .join("|");
+  const activityTrailKey = activityTrail.map((activity) => `${activity.kind}:${activity.active ? 1 : 0}`).join("|");
 
   // カード内容(位置transform以外)は変わった時だけSkPictureへ焼き直す。パン・ズーム中の
   // 毎フレーム再生がカード1枚あたり save/concat/drawPicture の約3コマンドに減り、
   // ベクタ再生なのでズームしても劣化しない。選択枠もキーに含める(選択変更時のみ再生成)。
-  const picture = useMemo(() => createPicture((canvas) => {
-    const fillPaint = (color: string, alpha?: number) => {
-      const paint = Skia.Paint();
-      paint.setAntiAlias(true);
-      paint.setColor(Skia.Color(color));
-      if (alpha !== undefined) paint.setAlphaf(alpha);
-      return paint;
-    };
-    const strokePaint = (color: string, width: number) => {
-      const paint = fillPaint(color);
-      paint.setStyle(PaintStyle.Stroke);
-      paint.setStrokeWidth(width);
-      return paint;
-    };
-    const drawCardRect = (x: number, y: number, paint: SkPaint) => {
-      canvas.drawRRect(
-        Skia.RRectXY(Skia.XYWHRect(x, y, cardWidth, CARD_HEIGHT), 14, 14),
-        paint
-      );
-    };
-    const drawText = (
-      text: string,
-      x: number,
-      y: number,
-      width: number,
-      style: BoardTextStyle
-    ) => {
-      const paragraph = createBoardParagraph(text, width, style);
-      paragraph.paint(canvas, x, y);
-      paragraph.dispose();
-    };
-    const drawFooterIcon = (kind: BoardFooterIconKind, x: number, color: string) => {
-      const path = Skia.Path.MakeFromSVGString(BOARD_FOOTER_ICON_PATHS[kind]);
-      if (!path) return;
-      const paint = strokePaint(color, 1.2);
-      paint.setStrokeCap(StrokeCap.Round);
-      paint.setStrokeJoin(StrokeJoin.Round);
-      canvas.save();
-      canvas.translate(x, 90.5);
-      canvas.drawPath(path, paint);
-      canvas.restore();
-      path.dispose();
-    };
+  const picture = useMemo(
+    () =>
+      createPicture(
+        (canvas) => {
+          const fillPaint = (color: string, alpha?: number) => {
+            const paint = Skia.Paint();
+            paint.setAntiAlias(true);
+            paint.setColor(Skia.Color(color));
+            if (alpha !== undefined) paint.setAlphaf(alpha);
+            return paint;
+          };
+          const strokePaint = (color: string, width: number) => {
+            const paint = fillPaint(color);
+            paint.setStyle(PaintStyle.Stroke);
+            paint.setStrokeWidth(width);
+            return paint;
+          };
+          const drawCardRect = (x: number, y: number, paint: SkPaint) => {
+            canvas.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, y, cardWidth, CARD_HEIGHT), 14, 14), paint);
+          };
+          const drawText = (text: string, x: number, y: number, width: number, style: BoardTextStyle) => {
+            const paragraph = createBoardParagraph(text, width, style);
+            paragraph.paint(canvas, x, y);
+            paragraph.dispose();
+          };
+          const drawFooterIcon = (kind: BoardFooterIconKind, x: number, color: string) => {
+            const path = Skia.Path.MakeFromSVGString(BOARD_FOOTER_ICON_PATHS[kind]);
+            if (!path) return;
+            const paint = strokePaint(color, 1.2);
+            paint.setStrokeCap(StrokeCap.Round);
+            paint.setStrokeJoin(StrokeJoin.Round);
+            canvas.save();
+            canvas.translate(x, 90.5);
+            canvas.drawPath(path, paint);
+            canvas.restore();
+            path.dispose();
+          };
 
-    drawCardRect(2, 4, fillPaint("#cbd5e1", 0.42));
-    drawCardRect(0, 0, fillPaint("#ffffff"));
-    drawCardRect(0, 0, strokePaint(selected ? "#2563eb" : "#d7dee8", selected ? 2.5 : 1));
-    if (boardImage) {
-      const availableWidth = cardWidth - 16;
-      const availableHeight = CARD_HEIGHT - 16;
-      const imageWidth = boardImage.width();
-      const imageHeight = boardImage.height();
-      const imageScale = Math.min(availableWidth / imageWidth, availableHeight / imageHeight);
-      const width = imageWidth * imageScale;
-      const height = imageHeight * imageScale;
-      canvas.drawImageRect(
-        boardImage,
-        Skia.XYWHRect(0, 0, imageWidth, imageHeight),
-        Skia.XYWHRect((cardWidth - width) / 2, (CARD_HEIGHT - height) / 2, width, height),
-        fillPaint("#ffffff")
-      );
-      return;
-    }
-    if (showUnread) {
-      canvas.drawCircle(cardWidth - 12, 12, 4, fillPaint("#2563eb"));
-    }
-    canvas.save();
-    canvas.clipRect(
-      Skia.XYWHRect(10, 8, cardWidth - 20, CARD_HEIGHT - 16),
-      ClipOp.Intersect,
-      true
-    );
-    canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
-    drawText(header, 31, 14, cardWidth - 47, { fontSize: bodyFontSize, color: "#64748b" });
-    drawText(title, 16, 34, contentWidth, { fontSize: titleFontSize, bold: true, color: "#172033" });
-    if (isSession) {
-      messageLines.forEach((line, lineIndex) => {
-        drawText(
-          line,
-          16,
-          messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize,
-          contentWidth,
-          { fontSize: bodyFontSize, color: "#64748b" }
-        );
-      });
-    } else {
-      drawText(detail, 16, 69 - bodyFontSize, contentWidth, {
-        fontSize: bodyFontSize,
-        color: "#64748b",
-      });
-    }
-    canvas.drawLine(16, 88, cardWidth - 16, 88, strokePaint("#e2e8f0", 1));
-    drawText(footer, 16, 100 - bodyFontSize, Math.max(20, footerRightStart - 24), {
-      fontSize: bodyFontSize,
-      color: "#64748b",
-    });
-    activityTrail.forEach((activity, iconIndex) => {
-      drawFooterIcon(
-        activity.kind,
-        footerRightStart + iconIndex * 15,
-        activity.active ? "#f97316" : "#94a3b8"
-      );
-    });
-    if (isSession) {
-      drawFooterIcon("subagent", subagentIconX, "#64748b");
-      drawText(
-        subagentText,
-        cardWidth - 16 - subagentTextWidth,
-        100 - bodyFontSize,
-        subagentTextWidth + 1,
-        { fontSize: bodyFontSize, color: "#64748b" }
-      );
-    }
-    canvas.restore();
-    // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
-  }, Skia.XYWHRect(-2, -2, cardWidth + 8, CARD_HEIGHT + 10)), [
-    // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
-    activityTrailKey,
-    bodyFontSize,
-    boardImage,
-    cardWidth,
-    contentWidth,
-    detail,
-    footer,
-    footerRightStart,
-    header,
-    isSession,
-    markerFill,
-    messageFirstBaseline,
-    messageLineHeight,
-    messageLines,
-    selected,
-    showUnread,
-    subagentIconX,
-    subagentText,
-    subagentTextWidth,
-    title,
-    titleFontSize,
-  ]);
+          drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
+          drawCardRect(0, 0, fillPaint(theme.colors.surface));
+          drawCardRect(
+            0,
+            0,
+            strokePaint(
+              selected ? theme.colors.accent : theme.colors.borderMuted,
+              selected ? theme.borders.focus : theme.borders.thin,
+            ),
+          );
+          if (boardImage) {
+            const availableWidth = cardWidth - 16;
+            const availableHeight = CARD_HEIGHT - 16;
+            const imageWidth = boardImage.width();
+            const imageHeight = boardImage.height();
+            const imageScale = Math.min(availableWidth / imageWidth, availableHeight / imageHeight);
+            const width = imageWidth * imageScale;
+            const height = imageHeight * imageScale;
+            canvas.drawImageRect(
+              boardImage,
+              Skia.XYWHRect(0, 0, imageWidth, imageHeight),
+              Skia.XYWHRect((cardWidth - width) / 2, (CARD_HEIGHT - height) / 2, width, height),
+              fillPaint(theme.colors.surface),
+            );
+            return;
+          }
+          if (showUnread) {
+            canvas.drawCircle(cardWidth - 12, 12, 4, fillPaint(theme.colors.accent));
+          }
+          canvas.save();
+          canvas.clipRect(Skia.XYWHRect(10, 8, cardWidth - 20, CARD_HEIGHT - 16), ClipOp.Intersect, true);
+          canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
+          drawText(header, 31, 14, cardWidth - 47, {
+            fontSize: bodyFontSize,
+            color: theme.colors.textMuted,
+          });
+          drawText(title, 16, 34, contentWidth, {
+            fontSize: titleFontSize,
+            bold: true,
+            color: theme.colors.textPrimary,
+          });
+          if (isSession) {
+            messageLines.forEach((line, lineIndex) => {
+              drawText(line, 16, messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize, contentWidth, {
+                fontSize: bodyFontSize,
+                color: theme.colors.textMuted,
+              });
+            });
+          } else {
+            drawText(detail, 16, 69 - bodyFontSize, contentWidth, {
+              fontSize: bodyFontSize,
+              color: theme.colors.textMuted,
+            });
+          }
+          canvas.drawLine(16, 88, cardWidth - 16, 88, strokePaint(theme.colors.borderSubtle, theme.borders.thin));
+          drawText(footer, 16, 100 - bodyFontSize, Math.max(20, footerRightStart - 24), {
+            fontSize: bodyFontSize,
+            color: theme.colors.textMuted,
+          });
+          activityTrail.forEach((activity, iconIndex) => {
+            drawFooterIcon(
+              activity.kind,
+              footerRightStart + iconIndex * 15,
+              activity.active ? theme.colors.activityActive : theme.colors.borderStrong,
+            );
+          });
+          if (isSession) {
+            drawFooterIcon("subagent", subagentIconX, theme.colors.textMuted);
+            drawText(subagentText, cardWidth - 16 - subagentTextWidth, 100 - bodyFontSize, subagentTextWidth + 1, {
+              fontSize: bodyFontSize,
+              color: theme.colors.textMuted,
+            });
+          }
+          canvas.restore();
+          // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
+        },
+        Skia.XYWHRect(-2, -2, cardWidth + 8, CARD_HEIGHT + 10),
+      ),
+    [
+      // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
+      activityTrailKey,
+      bodyFontSize,
+      boardImage,
+      cardWidth,
+      contentWidth,
+      detail,
+      footer,
+      footerRightStart,
+      header,
+      isSession,
+      markerFill,
+      messageFirstBaseline,
+      messageLineHeight,
+      messageLines,
+      selected,
+      showUnread,
+      subagentIconX,
+      subagentText,
+      subagentTextWidth,
+      title,
+      titleFontSize,
+      theme,
+    ],
+  );
 
   return (
     <Group transform={transform}>
@@ -575,14 +591,11 @@ export function SkiaMiniBoardScreen({
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
 }: SkiaMiniBoardScreenProps) {
+  const { theme, themeId } = useVisualTheme();
+  const screenStyles = screenStylesByTheme[themeId];
   const { width: windowWidth } = useWindowDimensions();
   const { openDrawer } = useAppShell();
-  const {
-    runnerUrl,
-    runnerToken,
-    sanitizeTextForTts,
-    handleAssistantAudioButtonPress,
-  } = useChatScreen();
+  const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
   const { registeredDirectories } = useConversation();
   const {
     directorySync,
@@ -694,64 +707,49 @@ export function SkiaMiniBoardScreen({
     cancelAnimation(scale);
   }, [cameraFocalX, cameraFocalY, cameraInertiaCount, scale]);
 
-  const startCameraInertia = useCallback((
-    focalX: number,
-    focalY: number,
-    velocityX: number,
-    velocityY: number,
-    scaleVelocity: number
-  ) => {
-    "worklet";
-    // 指を止めて離した時の測定ジッター程度の速度では滑らせない(フリックとの区別)。
-    // しきい値未満の成分は0として扱い、パン・ピンチ共通で同じ判定を通す。
-    const hasPanVelocity =
-      velocityX * velocityX + velocityY * velocityY
-      >= CAMERA_INERTIA_MIN_SPEED * CAMERA_INERTIA_MIN_SPEED;
-    const hasScaleVelocity = Math.abs(scaleVelocity) >= CAMERA_INERTIA_MIN_SCALE_SPEED;
-    if (!hasPanVelocity && !hasScaleVelocity) return;
-    const settle = (finished?: boolean) => {
-      if (finished) {
-        cameraInertiaCount.value = Math.max(0, cameraInertiaCount.value - 1);
+  const startCameraInertia = useCallback(
+    (focalX: number, focalY: number, velocityX: number, velocityY: number, scaleVelocity: number) => {
+      "worklet";
+      // 指を止めて離した時の測定ジッター程度の速度では滑らせない(フリックとの区別)。
+      // しきい値未満の成分は0として扱い、パン・ピンチ共通で同じ判定を通す。
+      const hasPanVelocity =
+        velocityX * velocityX + velocityY * velocityY >= CAMERA_INERTIA_MIN_SPEED * CAMERA_INERTIA_MIN_SPEED;
+      const hasScaleVelocity = Math.abs(scaleVelocity) >= CAMERA_INERTIA_MIN_SCALE_SPEED;
+      if (!hasPanVelocity && !hasScaleVelocity) return;
+      const settle = (finished?: boolean) => {
+        if (finished) {
+          cameraInertiaCount.value = Math.max(0, cameraInertiaCount.value - 1);
+        }
+      };
+      cameraAnchorX.value = (focalX - boardX.value) / scale.value;
+      cameraAnchorY.value = (focalY - boardY.value) / scale.value;
+      cameraFocalX.value = focalX;
+      cameraFocalY.value = focalY;
+      cameraInertiaCount.value = hasScaleVelocity ? 3 : 2;
+      cameraFocalX.value = withDecay({ velocity: hasPanVelocity ? velocityX : 0 }, settle);
+      cameraFocalY.value = withDecay({ velocity: hasPanVelocity ? velocityY : 0 }, settle);
+      if (hasScaleVelocity) {
+        scale.value = withDecay({ velocity: scaleVelocity, clamp: [MIN_SCALE, MAX_SCALE] }, settle);
       }
-    };
-    cameraAnchorX.value = (focalX - boardX.value) / scale.value;
-    cameraAnchorY.value = (focalY - boardY.value) / scale.value;
-    cameraFocalX.value = focalX;
-    cameraFocalY.value = focalY;
-    cameraInertiaCount.value = hasScaleVelocity ? 3 : 2;
-    cameraFocalX.value = withDecay({ velocity: hasPanVelocity ? velocityX : 0 }, settle);
-    cameraFocalY.value = withDecay({ velocity: hasPanVelocity ? velocityY : 0 }, settle);
-    if (hasScaleVelocity) {
-      scale.value = withDecay(
-        { velocity: scaleVelocity, clamp: [MIN_SCALE, MAX_SCALE] },
-        settle
-      );
-    }
-  }, [
-    boardX,
-    boardY,
-    cameraAnchorX,
-    cameraAnchorY,
-    cameraFocalX,
-    cameraFocalY,
-    cameraInertiaCount,
-    scale,
-  ]);
+    },
+    [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale],
+  );
 
   // 慣性中だけfocal/scaleの減衰からカメラ位置を導出する。
   useAnimatedReaction(
-    () => (cameraInertiaCount.value > 0
-      ? {
-          x: cameraFocalX.value - cameraAnchorX.value * scale.value,
-          y: cameraFocalY.value - cameraAnchorY.value * scale.value,
-        }
-      : null),
+    () =>
+      cameraInertiaCount.value > 0
+        ? {
+            x: cameraFocalX.value - cameraAnchorX.value * scale.value,
+            y: cameraFocalY.value - cameraAnchorY.value * scale.value,
+          }
+        : null,
     (position) => {
       if (!position) return;
       boardX.value = position.x;
       boardY.value = position.y;
     },
-    [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale]
+    [boardX, boardY, cameraAnchorX, cameraAnchorY, cameraFocalX, cameraFocalY, cameraInertiaCount, scale],
   );
   useAnimatedReaction(
     () => cameraInertiaCount.value,
@@ -833,47 +831,40 @@ export function SkiaMiniBoardScreen({
     runOnJS(setGestureFrameLoopActive)(false);
   }, [flushGestureTargets, gestureFrameLoopRequested, setGestureFrameLoopActive]);
 
-  const titleFontSize = 12 * cardTextScale;
-  const bodyFontSize = 9 * cardTextScale;
+  const titleFontSize = theme.typography.small.fontSize * cardTextScale;
+  const bodyFontSize = theme.typography.micro.fontSize * cardTextScale;
   const sectionLabelParagraphs = useMemo(
-    () => sections.map((section) => createBoardParagraph(section.label, 1000, {
-      color: section.id === selectedSectionId ? "#1d4ed8" : "#475569",
-      fontSize: 12,
-      bold: true,
-    })),
-    [sections, selectedSectionId]
+    () =>
+      sections.map((section) =>
+        createBoardParagraph(section.label, 1000, {
+          color: section.id === selectedSectionId ? theme.colors.accentStrong : theme.colors.textSecondary,
+          fontSize: theme.typography.small.fontSize,
+          bold: true,
+        }),
+      ),
+    [sections, selectedSectionId, theme],
   );
 
   // ボードステート(col/row)から画面座標を再構築する。ドラッグ中はSharedValueのみが
   // 動き、ドラッグ終了時のcommitでステートへ反映されるため、同値の再適用になる。
-  const positionsKey = useMemo(() => (
-    items.map((item) => `${item.cardId}:${item.col}:${item.row}`).join("|")
-  ), [items]);
+  const positionsKey = useMemo(() => items.map((item) => `${item.cardId}:${item.col}:${item.row}`).join("|"), [items]);
   // 描画前(useLayoutEffect)に反映し、原点に一瞬固まって見えるフレームを避ける。
   const appliedPositionsKeyRef = useRef("");
   useLayoutEffect(() => {
     const key = `${cardWidth}|${positionsKey}`;
     if (appliedPositionsKeyRef.current === key) return;
     appliedPositionsKeyRef.current = key;
-    positions.value = items.map((item) => (
-      cardPositionFromGrid(item.col, item.row, cardWidth)
-    ));
+    positions.value = items.map((item) => cardPositionFromGrid(item.col, item.row, cardWidth));
   }, [cardWidth, items, positions, positionsKey]);
 
   const renderedSectionRects = useMemo(
     () => sections.map((section) => sectionRectFromGrid(section, cardWidth)),
-    [cardWidth, sections]
+    [cardWidth, sections],
   );
   useLayoutEffect(() => {
     sectionRects.value = renderedSectionRects;
     selectedSectionIndex.value = sections.findIndex((section) => section.id === selectedSectionId);
-  }, [
-    renderedSectionRects,
-    sectionRects,
-    sections,
-    selectedSectionId,
-    selectedSectionIndex,
-  ]);
+  }, [renderedSectionRects, sectionRects, sections, selectedSectionId, selectedSectionIndex]);
 
   // カードの並び(搭載セッション)が変わったら、indexベースの選択をクリアする。
   const cardIdsKey = useMemo(() => items.map((item) => item.cardId).join("|"), [items]);
@@ -924,116 +915,127 @@ export function SkiaMiniBoardScreen({
           style: "destructive",
           onPress: () => removeBoardFile(item.rootDir, item.path),
         },
-      ]
-    );
-  }, [openAppearanceEditor, removeBoardFile]);
+      ]);
+    },
+    [openAppearanceEditor, removeBoardFile],
+  );
 
-  const handleCardTap = useCallback((index: number) => {
-    if (index < 0) {
-      selectedCardIndex.value = -1;
-      setSelectedCardId("");
-      return;
-    }
-    const item = itemsRef.current[index];
-    if (!item) return;
-    selectedSectionIndex.value = -1;
-    setSelectedSectionId("");
-    if (item.kind === "file") {
-      if (selectedCardId === item.cardId) {
-        if (item.unavailable) {
-          showUnavailableFileMenu(item);
+  const handleCardTap = useCallback(
+    (index: number) => {
+      if (index < 0) {
+        selectedCardIndex.value = -1;
+        setSelectedCardId("");
+        return;
+      }
+      const item = itemsRef.current[index];
+      if (!item) return;
+      selectedSectionIndex.value = -1;
+      setSelectedSectionId("");
+      if (item.kind === "file") {
+        if (selectedCardId === item.cardId) {
+          if (item.unavailable) {
+            showUnavailableFileMenu(item);
+            return;
+          }
+          setFileMenuRootDir(item.rootDir);
+          setPendingFileAction({ item, action: "open" });
           return;
         }
-        setFileMenuRootDir(item.rootDir);
-        setPendingFileAction({ item, action: "open" });
+        selectedCardIndex.value = index;
+        setSelectedCardId(item.cardId);
         return;
       }
-      selectedCardIndex.value = index;
-      setSelectedCardId(item.cardId);
-      return;
-    }
-    if (item.kind === "directory") {
+      if (item.kind === "directory") {
+        if (selectedCardId === item.cardId) {
+          onStartNewSessionInDirectory(item.directory);
+          return;
+        }
+        selectedCardIndex.value = index;
+        setSelectedCardId(item.cardId);
+        return;
+      }
       if (selectedCardId === item.cardId) {
-        onStartNewSessionInDirectory(item.directory);
+        // プレビュー用パネルは直接開かず、ドロワーと同じ専用パネルのポップアップで開く
+        // (毎オープン時にJSONLからhydrateされ、常に最新の本文になる)。
+        openSessionHistoryPopup({
+          backendId: item.backendId,
+          sessionId: item.sessionId,
+          directory: item.directory,
+          source: item.source,
+          origin: "skia_board",
+        });
         return;
       }
       selectedCardIndex.value = index;
       setSelectedCardId(item.cardId);
-      return;
-    }
-    if (selectedCardId === item.cardId) {
-      // プレビュー用パネルは直接開かず、ドロワーと同じ専用パネルのポップアップで開く
-      // (毎オープン時にJSONLからhydrateされ、常に最新の本文になる)。
-      openSessionHistoryPopup({
-        backendId: item.backendId,
-        sessionId: item.sessionId,
-        directory: item.directory,
-        source: item.source,
-        origin: "skia_board",
-      });
-      return;
-    }
-    selectedCardIndex.value = index;
-    setSelectedCardId(item.cardId);
-  }, [
-    onStartNewSessionInDirectory,
-    openSessionHistoryPopup,
-    selectedCardId,
-    selectedCardIndex,
-    selectedSectionIndex,
-    showUnavailableFileMenu,
-  ]);
+    },
+    [
+      onStartNewSessionInDirectory,
+      openSessionHistoryPopup,
+      selectedCardId,
+      selectedCardIndex,
+      selectedSectionIndex,
+      showUnavailableFileMenu,
+    ],
+  );
 
-  const handleSectionTap = useCallback((index: number) => {
-    selectedCardIndex.value = -1;
-    setSelectedCardId("");
-    selectedSectionIndex.value = index;
-    setSelectedSectionId(sections[index]?.id || "");
-  }, [sections, selectedCardIndex, selectedSectionIndex]);
+  const handleSectionTap = useCallback(
+    (index: number) => {
+      selectedCardIndex.value = -1;
+      setSelectedCardId("");
+      selectedSectionIndex.value = index;
+      setSelectedSectionId(sections[index]?.id || "");
+    },
+    [sections, selectedCardIndex, selectedSectionIndex],
+  );
 
   // ドラッグ終了時に画面座標をグリッド単位へ戻してボードステートへ保存する。
   // ドラッグ中に候補が増減してindexがずれても別セッションを上書きしないよう、
   // 対象と座標はドラッグ開始時のカードに紐づけ、候補の増減後もindexから引き直さない。
-  const commitCardPosition = useCallback((cardId: string, x: number, y: number) => {
-    if (!cardId) return;
-    const grid = gridFromCardPosition(x, y, cardWidth);
-    moveBoardCard(cardId, grid.col, grid.row);
-  }, [cardWidth, moveBoardCard]);
+  const commitCardPosition = useCallback(
+    (cardId: string, x: number, y: number) => {
+      if (!cardId) return;
+      const grid = gridFromCardPosition(x, y, cardWidth);
+      moveBoardCard(cardId, grid.col, grid.row);
+    },
+    [cardWidth, moveBoardCard],
+  );
 
-  const commitSectionRect = useCallback((sectionId: string, rect: SkiaBoardSectionRect) => {
-    if (!sectionId) return;
-    updateBoardSection(sectionId, gridFromSectionRect(rect, cardWidth));
-  }, [cardWidth, updateBoardSection]);
+  const commitSectionRect = useCallback(
+    (sectionId: string, rect: SkiaBoardSectionRect) => {
+      if (!sectionId) return;
+      updateBoardSection(sectionId, gridFromSectionRect(rect, cardWidth));
+    },
+    [cardWidth, updateBoardSection],
+  );
 
-  const commitNewSection = useCallback((rect: SkiaBoardSectionRect) => {
-    if (
-      rect.width < SKIA_BOARD_MIN_SECTION_SIZE
-      || rect.height < SKIA_BOARD_MIN_SECTION_SIZE
-    ) return;
-    const id = `section:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-    const grid = gridFromSectionRect(rect, cardWidth);
-    addBoardSection({
-      id,
-      label: "セクション",
-      ...grid,
-      color: DEFAULT_SECTION_COLOR,
-      opacity: 0.2,
-      borderOnly: false,
-    });
-    setSelectedSectionId(id);
-    setSelectedCardId("");
-    toolMode.value = "select";
-    setTool("select");
-  }, [addBoardSection, cardWidth, toolMode]);
+  const commitNewSection = useCallback(
+    (rect: SkiaBoardSectionRect) => {
+      if (rect.width < SKIA_BOARD_MIN_SECTION_SIZE || rect.height < SKIA_BOARD_MIN_SECTION_SIZE) return;
+      const id = `section:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      const grid = gridFromSectionRect(rect, cardWidth);
+      addBoardSection({
+        id,
+        label: "セクション",
+        ...grid,
+        color: DEFAULT_SECTION_COLOR,
+        opacity: 0.2,
+        borderOnly: false,
+      });
+      setSelectedSectionId(id);
+      setSelectedCardId("");
+      toolMode.value = "select";
+      setTool("select");
+    },
+    [addBoardSection, cardWidth, toolMode],
+  );
 
-  const confirmRemoveCard = useCallback((index: number) => {
-    const item = itemsRef.current[index];
-    if (!item || item.kind !== "session") return;
-    const label = item.title || item.sessionId;
-    Alert.alert(
-      "カードを削除",
-      `「${label}」をボードから外しますか?\n外したセッションは自動では再追加されません。`,
-      [
+  const confirmRemoveCard = useCallback(
+    (index: number) => {
+      const item = itemsRef.current[index];
+      if (!item || item.kind !== "session") return;
+      const label = item.title || item.sessionId;
+      Alert.alert("カードを削除", `「${label}」をボードから外しますか?\n外したセッションは自動では再追加されません。`, [
         { text: "キャンセル", style: "cancel" },
         {
           text: "削除",
@@ -1042,71 +1044,87 @@ export function SkiaMiniBoardScreen({
             removeBoardSession(item.sessionId);
           },
         },
-      ]
-    );
-  }, [removeBoardSession]);
+      ]);
+    },
+    [removeBoardSession],
+  );
 
-  const openCardContextMenu = useCallback((index: number) => {
-    const item = itemsRef.current[index];
-    if (!item) return;
-    if (item.kind === "session") {
-      confirmRemoveCard(index);
-      return;
-    }
-    if (item.kind === "directory") {
-      Alert.alert(item.name, item.directory, [
+  const openCardContextMenu = useCallback(
+    (index: number) => {
+      const item = itemsRef.current[index];
+      if (!item) return;
+      if (item.kind === "session") {
+        confirmRemoveCard(index);
+        return;
+      }
+      if (item.kind === "directory") {
+        Alert.alert(item.name, item.directory, [
+          { text: "キャンセル", style: "cancel" },
+          {
+            text: "表示をカスタマイズ",
+            onPress: () => openAppearanceEditor(item),
+          },
+          {
+            text: "削除",
+            style: "destructive",
+            onPress: () => removeBoardDirectory(item.directory),
+          },
+        ]);
+        return;
+      }
+      if (item.unavailable) {
+        showUnavailableFileMenu(item);
+        return;
+      }
+      Alert.alert(item.name, item.path, [
         { text: "キャンセル", style: "cancel" },
-        { text: "表示をカスタマイズ", onPress: () => openAppearanceEditor(item) },
+        {
+          text: "表示をカスタマイズ",
+          onPress: () => openAppearanceEditor(item),
+        },
+        {
+          text: "ファイル操作",
+          onPress: () => {
+            setFileMenuRootDir(item.rootDir);
+            setPendingFileAction({ item, action: "menu" });
+          },
+        },
+      ]);
+    },
+    [confirmRemoveCard, openAppearanceEditor, removeBoardDirectory, showUnavailableFileMenu],
+  );
+
+  const openSectionContextMenu = useCallback(
+    (index: number) => {
+      const section = sections[index];
+      if (!section) return;
+      selectedCardIndex.value = -1;
+      selectedSectionIndex.value = index;
+      setSelectedCardId("");
+      setSelectedSectionId(section.id);
+      setEditingSectionId(section.id);
+    },
+    [sections, selectedCardIndex, selectedSectionIndex],
+  );
+
+  const confirmRemoveSection = useCallback(
+    (section: { id: string }) => {
+      setEditingSectionId("");
+      Alert.alert("セクションを削除", "このセクションをボードから削除しますか?", [
+        { text: "キャンセル", style: "cancel" },
         {
           text: "削除",
           style: "destructive",
-          onPress: () => removeBoardDirectory(item.directory),
+          onPress: () => {
+            removeBoardSection(section.id);
+            setSelectedSectionId("");
+            selectedSectionIndex.value = -1;
+          },
         },
       ]);
-      return;
-    }
-    if (item.unavailable) {
-      showUnavailableFileMenu(item);
-      return;
-    }
-    Alert.alert(item.name, item.path, [
-      { text: "キャンセル", style: "cancel" },
-      { text: "表示をカスタマイズ", onPress: () => openAppearanceEditor(item) },
-      {
-        text: "ファイル操作",
-        onPress: () => {
-          setFileMenuRootDir(item.rootDir);
-          setPendingFileAction({ item, action: "menu" });
-        },
-      },
-    ]);
-  }, [confirmRemoveCard, openAppearanceEditor, removeBoardDirectory, showUnavailableFileMenu]);
-
-  const openSectionContextMenu = useCallback((index: number) => {
-    const section = sections[index];
-    if (!section) return;
-    selectedCardIndex.value = -1;
-    selectedSectionIndex.value = index;
-    setSelectedCardId("");
-    setSelectedSectionId(section.id);
-    setEditingSectionId(section.id);
-  }, [sections, selectedCardIndex, selectedSectionIndex]);
-
-  const confirmRemoveSection = useCallback((section: { id: string }) => {
-    setEditingSectionId("");
-    Alert.alert("セクションを削除", "このセクションをボードから削除しますか?", [
-      { text: "キャンセル", style: "cancel" },
-      {
-        text: "削除",
-        style: "destructive",
-        onPress: () => {
-          removeBoardSection(section.id);
-          setSelectedSectionId("");
-          selectedSectionIndex.value = -1;
-        },
-      },
-    ]);
-  }, [removeBoardSection, selectedSectionIndex]);
+    },
+    [removeBoardSection, selectedSectionIndex],
+  );
 
   const showInfoToast = useCallback((textRaw: unknown) => {
     const text = String(textRaw || "").trim();
@@ -1675,19 +1693,15 @@ export function SkiaMiniBoardScreen({
         style={screenStyles.menuAction}
         onPress={() => {
           setBoardMenuOpen(false);
-          Alert.alert(
-            "カードを整頓",
-            "すべてのカードをグリッドに整頓しますか?",
-            [
-              { text: "キャンセル", style: "cancel" },
-              { text: "整頓", onPress: tidyBoard },
-            ]
-          );
+          Alert.alert("カードを整頓", "すべてのカードをグリッドに整頓しますか?", [
+            { text: "キャンセル", style: "cancel" },
+            { text: "整頓", onPress: tidyBoard },
+          ]);
         }}
         accessibilityRole="button"
         accessibilityLabel="カードをグリッドに整頓"
       >
-        <Ionicons name="grid-outline" size={17} color="#334155" />
+        <Ionicons name="grid-outline" size={17} color={theme.colors.iconSecondary} />
         <Text style={screenStyles.menuActionText}>Tidy</Text>
       </TouchableOpacity>
       <TouchableOpacity
@@ -1699,7 +1713,7 @@ export function SkiaMiniBoardScreen({
         accessibilityRole="button"
         accessibilityLabel="表示位置とズームをリセット"
       >
-        <Ionicons name="locate-outline" size={17} color="#334155" />
+        <Ionicons name="locate-outline" size={17} color={theme.colors.iconSecondary} />
         <Text style={screenStyles.menuActionText}>Reset</Text>
       </TouchableOpacity>
       <View style={screenStyles.menuDivider} />
@@ -1715,7 +1729,7 @@ export function SkiaMiniBoardScreen({
           <Ionicons
             name="remove"
             size={17}
-            color={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE ? "#94a3b8" : "#334155"}
+            color={cardTextScale <= SKIA_BOARD_MIN_TEXT_SCALE ? theme.colors.iconMuted : theme.colors.iconSecondary}
           />
         </TouchableOpacity>
         <Text style={screenStyles.fontScaleValue}>{Math.round(cardTextScale * 100)}%</Text>
@@ -1729,7 +1743,7 @@ export function SkiaMiniBoardScreen({
           <Ionicons
             name="add"
             size={17}
-            color={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE ? "#94a3b8" : "#334155"}
+            color={cardTextScale >= SKIA_BOARD_MAX_TEXT_SCALE ? theme.colors.iconMuted : theme.colors.iconSecondary}
           />
         </TouchableOpacity>
       </View>
@@ -1772,7 +1786,7 @@ export function SkiaMiniBoardScreen({
             accessibilityRole="button"
             accessibilityLabel="ボードメニューを開く"
           >
-            <Ionicons name="ellipsis-horizontal" size={22} color="#334155" />
+            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.iconSecondary} />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -1787,7 +1801,12 @@ export function SkiaMiniBoardScreen({
           <Canvas style={StyleSheet.absoluteFill}>
             <Group transform={boardTranslate}>
               <Group transform={boardScale}>
-                <Path path={gridPath} color="#dce4ed" style="stroke" strokeWidth={1} />
+                <Path
+                  path={gridPath}
+                  color={theme.colors.borderSubtle}
+                  style="stroke"
+                  strokeWidth={theme.borders.thin}
+                />
                 {sections.map((section, index) => (
                   <SkiaBoardSectionRegion
                     key={section.id}
@@ -1845,7 +1864,11 @@ export function SkiaMiniBoardScreen({
             accessibilityState={{ selected: tool === "select" }}
             accessibilityLabel="選択と移動"
           >
-            <Ionicons name="navigate-outline" size={21} color={tool === "select" ? "#ffffff" : "#334155"} />
+            <Ionicons
+              name="navigate-outline"
+              size={21}
+              color={tool === "select" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
+            />
           </TouchableOpacity>
           <TouchableOpacity
             style={[screenStyles.toolButton, tool === "section" && screenStyles.toolButtonSelected]}
@@ -1854,28 +1877,21 @@ export function SkiaMiniBoardScreen({
             accessibilityState={{ selected: tool === "section" }}
             accessibilityLabel="セクションを作成"
           >
-            <Ionicons name="scan-outline" size={22} color={tool === "section" ? "#ffffff" : "#334155"} />
+            <Ionicons
+              name="scan-outline"
+              size={22}
+              color={tool === "section" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
+            />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
 
-      <SafeAreaView
-        pointerEvents="none"
-        style={screenStyles.statusSafeArea}
-        testID="skia-board-status-safe-area"
-      >
+      <SafeAreaView pointerEvents="none" style={screenStyles.statusSafeArea} testID="skia-board-status-safe-area">
         <View style={screenStyles.statusPill} testID="skia-board-status-pill">
-          <Text style={screenStyles.statusText}>
-            {syncStatusText}
-          </Text>
+          <Text style={screenStyles.statusText}>{syncStatusText}</Text>
         </View>
       </SafeAreaView>
-      <AppModal
-        visible={boardMenuOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setBoardMenuOpen(false)}
-      >
+      <AppModal visible={boardMenuOpen} transparent animationType="fade" onRequestClose={() => setBoardMenuOpen(false)}>
         {boardMenu}
       </AppModal>
       <SkiaBoardSectionEditor
@@ -1928,151 +1944,162 @@ export function SkiaMiniBoardScreen({
   );
 }
 
-const screenStyles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: "#eef2f7",
-  },
-  headerSafeArea: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 1,
-  },
-  header: {
-    minHeight: 54,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  headerButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#e8eef6",
-  },
-  headerButtonText: {
-    color: "#27364b",
-    fontSize: 20,
-    fontWeight: "700",
-  },
-  canvasHost: {
-    flex: 1,
-    overflow: "hidden",
-  },
-  toolsSafeArea: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: "center",
-  },
-  tools: {
-    marginBottom: 12,
-    padding: 5,
-    borderRadius: 14,
-    flexDirection: "row",
-    gap: 4,
-    backgroundColor: "rgba(255, 255, 255, 0.96)",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.16,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
-  toolButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toolButtonSelected: {
-    backgroundColor: "#2563eb",
-  },
-  statusPill: {
-    marginLeft: 14,
-    marginBottom: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 16,
-    backgroundColor: "rgba(23, 32, 51, 0.84)",
-  },
-  statusSafeArea: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: "flex-start",
-  },
-  statusText: {
-    color: "#ffffff",
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  menuBackdrop: {
-    flex: 1,
-    backgroundColor: "transparent",
-  },
-  menuSafeArea: {
-    flex: 1,
-    alignItems: "flex-end",
-    paddingHorizontal: 12,
-    paddingTop: 6,
-  },
-  menuPanel: {
-    width: 220,
-    padding: 8,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.16,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 8,
-  },
-  menuAction: {
-    minHeight: 44,
-    paddingHorizontal: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-  },
-  menuActionText: {
-    color: "#334155",
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  menuDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginVertical: 5,
-    backgroundColor: "#e2e8f0",
-  },
-  fontScaleRow: {
-    minHeight: 44,
-    paddingLeft: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  fontScaleButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#f1f5f9",
-  },
-  fontScaleValue: {
-    minWidth: 35,
-    color: "#64748b",
-    fontSize: 11,
-    textAlign: "center",
-  },
-});
+function createScreenStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: theme.colors.surfaceMuted,
+    },
+    headerSafeArea: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      zIndex: 1,
+    },
+    header: {
+      minHeight: 54,
+      paddingHorizontal: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    headerButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.colors.floatingControlSurface,
+    },
+    headerButtonText: {
+      color: theme.colors.floatingControlText,
+      fontSize: theme.typography.sectionTitle.fontSize,
+      lineHeight: theme.typography.sectionTitle.lineHeight,
+      fontWeight: "700",
+    },
+    canvasHost: {
+      flex: 1,
+      overflow: "hidden",
+    },
+    toolsSafeArea: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      alignItems: "center",
+    },
+    tools: {
+      marginBottom: 12,
+      padding: 5,
+      borderRadius: 14,
+      flexDirection: "row",
+      gap: 4,
+      backgroundColor: theme.colors.floatingSurface,
+      shadowColor: theme.colors.shadow,
+      shadowOpacity: 0.16,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 6,
+    },
+    toolButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 10,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    toolButtonSelected: {
+      backgroundColor: theme.colors.accent,
+    },
+    statusPill: {
+      marginLeft: 14,
+      marginBottom: 14,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 16,
+      backgroundColor: theme.dark.surface,
+    },
+    statusSafeArea: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      alignItems: "flex-start",
+    },
+    statusText: {
+      color: theme.dark.text,
+      fontSize: theme.typography.caption.fontSize,
+      lineHeight: theme.typography.caption.lineHeight,
+      fontWeight: "700",
+    },
+    menuBackdrop: {
+      flex: 1,
+      backgroundColor: "transparent",
+    },
+    menuSafeArea: {
+      flex: 1,
+      alignItems: "flex-end",
+      paddingHorizontal: 12,
+      paddingTop: 6,
+    },
+    menuPanel: {
+      width: 220,
+      padding: 8,
+      borderRadius: 12,
+      borderWidth: theme.borders.thin,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface,
+      shadowColor: theme.colors.shadow,
+      shadowOpacity: 0.16,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 5 },
+      elevation: 8,
+    },
+    menuAction: {
+      minHeight: 44,
+      paddingHorizontal: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+    },
+    menuActionText: {
+      color: theme.colors.textSecondary,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "700",
+    },
+    menuDivider: {
+      height: theme.borders.thin,
+      marginVertical: 5,
+      backgroundColor: theme.colors.borderSubtle,
+    },
+    fontScaleRow: {
+      minHeight: 44,
+      paddingLeft: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    fontScaleButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.colors.surfaceMuted,
+    },
+    fontScaleValue: {
+      minWidth: 35,
+      color: theme.colors.textMuted,
+      fontSize: theme.typography.caption.fontSize,
+      lineHeight: theme.typography.caption.lineHeight,
+      textAlign: "center",
+    },
+  });
+}
+
+const screenStylesByTheme: Record<VisualThemeId, ReturnType<typeof createScreenStyles>> = {
+  standard: createScreenStyles(VISUAL_THEMES.standard),
+  highLegibility: createScreenStyles(VISUAL_THEMES.highLegibility),
+};

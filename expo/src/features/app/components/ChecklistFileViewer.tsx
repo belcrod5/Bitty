@@ -23,6 +23,8 @@ import type { RunnerFileViewerTarget } from "../utils/runnerFileContextMenu";
 import type {
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 const CHECKLIST_ROW_HEIGHT = 68;
 
@@ -75,6 +77,8 @@ function ChecklistRow({
   onDrop,
   onDraggingChange,
 }: ChecklistRowProps) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const dragY = useRef(new Animated.Value(0)).current;
   const dragGesture = useMemo(() => Gesture.Pan()
     .enabled(!disabled)
@@ -119,7 +123,7 @@ function ChecklistRow({
         <Ionicons
           name={item.checked ? "checkbox" : "square-outline"}
           size={30}
-          color={item.checked ? "#0f172a" : "#64748b"}
+          color={item.checked ? theme.colors.textPrimary : theme.colors.textMuted}
         />
       </TouchableOpacity>
 
@@ -143,7 +147,7 @@ function ChecklistRow({
             accessibilityRole="button"
             accessibilityLabel="項目の修正を確定"
           >
-            <Ionicons name="checkmark" size={22} color="#15803d" />
+            <Ionicons name="checkmark" size={22} color={theme.colors.successText} />
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.inlineButton}
@@ -152,7 +156,7 @@ function ChecklistRow({
             accessibilityRole="button"
             accessibilityLabel="項目の修正をキャンセル"
           >
-            <Ionicons name="close" size={22} color="#64748b" />
+            <Ionicons name="close" size={22} color={theme.colors.textMuted} />
           </TouchableOpacity>
         </View>
       ) : (
@@ -195,7 +199,7 @@ function ChecklistRow({
               }}
               testID={`checklist-drag-${index}`}
             >
-              <Ionicons name="reorder-three" size={28} color="#64748b" />
+              <Ionicons name="reorder-three" size={28} color={theme.colors.textMuted} />
             </View>
           </GestureDetector>
           <TouchableOpacity
@@ -206,7 +210,7 @@ function ChecklistRow({
             accessibilityLabel={`${item.text}を削除`}
             testID={`checklist-delete-${index}`}
           >
-            <Ionicons name="trash-outline" size={23} color="#dc2626" />
+            <Ionicons name="trash-outline" size={23} color={theme.colors.negativeText} />
           </TouchableOpacity>
         </>
       ) : null}
@@ -221,6 +225,8 @@ export function ChecklistFileViewer({
   onSave,
   onSavingChange,
 }: ChecklistFileViewerProps) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const nextIdRef = useRef(1);
   const savingRef = useRef(false);
   const versionRef = useRef(initialVersion);
@@ -386,7 +392,7 @@ export function ChecklistFileViewer({
         <Text style={styles.summary}>{items.length}件</Text>
         {saving ? (
           <View style={styles.savingStatus}>
-            <ActivityIndicator size="small" color="#475569" />
+            <ActivityIndicator size="small" color={theme.colors.textMuted} />
             <Text style={styles.savingText}>保存中</Text>
           </View>
         ) : (
@@ -403,7 +409,7 @@ export function ChecklistFileViewer({
           accessibilityLabel="チェック済みをまとめて削除"
           testID="checklist-delete-checked"
         >
-          <Ionicons name="trash-outline" size={17} color="#dc2626" />
+          <Ionicons name="trash-outline" size={17} color={theme.colors.negativeText} />
           <Text style={styles.deleteCheckedText}>チェック済みを削除</Text>
         </TouchableOpacity>
       </View>
@@ -439,7 +445,7 @@ export function ChecklistFileViewer({
         )}
         ListEmptyComponent={(
           <View style={styles.emptyArea}>
-            <Ionicons name="checkmark-circle-outline" size={42} color="#94a3b8" />
+            <Ionicons name="checkmark-circle-outline" size={42} color={theme.colors.borderStrong} />
             <Text style={styles.emptyText}>項目はありません</Text>
           </View>
         )}
@@ -452,7 +458,7 @@ export function ChecklistFileViewer({
           onChangeText={setNewItemText}
           editable={!interactionDisabled}
           placeholder="項目を入力（改行で複数行）"
-          placeholderTextColor="#94a3b8"
+          placeholderTextColor={theme.colors.borderStrong}
           multiline
           textAlignVertical="top"
           testID="checklist-new-item-input"
@@ -468,30 +474,31 @@ export function ChecklistFileViewer({
           accessibilityLabel="項目を追加"
           testID="checklist-add"
         >
-          <Ionicons name="add" size={27} color="#ffffff" />
+          <Ionicons name="add" size={27} color={theme.colors.textOnAccent} />
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
+function createChecklistStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   actionBar: {
     minHeight: 48,
     paddingHorizontal: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#cbd5e1",
+    borderBottomColor: theme.colors.border,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
   summary: {
-    color: "#334155",
-    fontSize: 13,
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
   },
   savingStatus: {
@@ -500,12 +507,12 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   savingText: {
-    color: "#475569",
-    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.small.fontSize,
   },
   savedText: {
-    color: "#64748b",
-    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.small.fontSize,
   },
   deleteCheckedButton: {
     marginLeft: "auto",
@@ -516,8 +523,8 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   deleteCheckedText: {
-    color: "#dc2626",
-    fontSize: 13,
+    color: theme.colors.negativeText,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
   },
   list: {
@@ -538,15 +545,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyText: {
-    color: "#64748b",
-    fontSize: 14,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.body.fontSize,
   },
   row: {
     height: CHECKLIST_ROW_HEIGHT,
     paddingHorizontal: 5,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e2e8f0",
-    backgroundColor: "#f8fafc",
+    borderBottomColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.surfaceRaised,
     flexDirection: "row",
     alignItems: "center",
   },
@@ -563,12 +570,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   itemText: {
-    color: "#0f172a",
-    fontSize: 16,
-    lineHeight: 22,
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.control.fontSize,
+    lineHeight: theme.typography.control.lineHeight,
   },
   checkedItemText: {
-    color: "#94a3b8",
+    color: theme.colors.borderStrong,
     textDecorationLine: "line-through",
   },
   editArea: {
@@ -583,12 +590,12 @@ const styles = StyleSheet.create({
     minWidth: 0,
     height: 42,
     paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: "#94a3b8",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderStrong,
     borderRadius: 8,
-    backgroundColor: "#ffffff",
-    color: "#0f172a",
-    fontSize: 16,
+    backgroundColor: theme.colors.surface,
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.control.fontSize,
   },
   inlineButton: {
     width: 36,
@@ -608,9 +615,9 @@ const styles = StyleSheet.create({
   composer: {
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
+    borderTopWidth: theme.borders.thin,
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
     flexDirection: "row",
     alignItems: "stretch",
     gap: 8,
@@ -621,19 +628,25 @@ const styles = StyleSheet.create({
     maxHeight: 100,
     paddingHorizontal: 12,
     paddingVertical: 11,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     borderRadius: 9,
-    backgroundColor: "#ffffff",
-    color: "#0f172a",
-    fontSize: 15,
+    backgroundColor: theme.colors.surface,
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.input.fontSize,
   },
   addButton: {
     width: 48,
     minHeight: 46,
     borderRadius: 9,
-    backgroundColor: "#0f172a",
+    backgroundColor: theme.colors.textPrimary,
     alignItems: "center",
     justifyContent: "center",
   },
-});
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createChecklistStyles>> = {
+  standard: createChecklistStyles(VISUAL_THEMES.standard),
+  highLegibility: createChecklistStyles(VISUAL_THEMES.highLegibility),
+};

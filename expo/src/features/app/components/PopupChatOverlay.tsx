@@ -12,6 +12,8 @@ import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerCon
 import { ChatScreen } from "../screens/ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import type { PopupChatPresentation, PopupChatSourceRect } from "./popupChatTypes";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
 type PopupChatOverlayProps = {
   visible: boolean;
@@ -37,6 +39,8 @@ export function PopupChatOverlay({
   sourceRect,
   onClose,
 }: PopupChatOverlayProps) {
+  const { themeId } = useVisualTheme();
+  const popupChatOverlayStyles = popupChatOverlayStylesByTheme[themeId];
   const { setPanelAutoSpeechOpen } = usePanelRuntimeController();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const rootRef = useRef<View | null>(null);
@@ -258,7 +262,8 @@ export function PopupChatOverlay({
   );
 }
 
-const popupChatOverlayStyles = StyleSheet.create({
+function createPopupChatOverlayStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     ...StyleSheet.absoluteFillObject,
     flex: 1,
@@ -267,7 +272,7 @@ const popupChatOverlayStyles = StyleSheet.create({
   },
   backdropVisual: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(15, 23, 42, 0.28)",
+    backgroundColor: theme.colors.backdrop,
   },
   backdropTouch: {
     ...StyleSheet.absoluteFillObject,
@@ -275,9 +280,9 @@ const popupChatOverlayStyles = StyleSheet.create({
   card: {
     position: "absolute",
     overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(15, 118, 110, 0.25)",
-    backgroundColor: "#f8fafc",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.primaryActionOutlineSoft,
+    backgroundColor: theme.colors.surfaceRaised,
   },
   content: {
     flex: 1,
@@ -288,7 +293,7 @@ const popupChatOverlayStyles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 16,
     gap: 12,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   skeletonHeader: {
     flexDirection: "row",
@@ -300,30 +305,36 @@ const popupChatOverlayStyles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#e2e8f0",
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   skeletonTitle: {
     width: "42%",
     height: 14,
     borderRadius: 7,
-    backgroundColor: "#e2e8f0",
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   skeletonLineWide: {
     width: "86%",
     height: 12,
     borderRadius: 6,
-    backgroundColor: "#e5e7eb",
+    backgroundColor: theme.colors.skeleton,
   },
   skeletonLine: {
     width: "68%",
     height: 12,
     borderRadius: 6,
-    backgroundColor: "#e5e7eb",
+    backgroundColor: theme.colors.skeleton,
   },
   skeletonLineShort: {
     width: "52%",
     height: 12,
     borderRadius: 6,
-    backgroundColor: "#e5e7eb",
+    backgroundColor: theme.colors.skeleton,
   },
-});
+  });
+}
+
+const popupChatOverlayStylesByTheme = {
+  standard: createPopupChatOverlayStyles(VISUAL_THEMES.standard),
+  highLegibility: createPopupChatOverlayStyles(VISUAL_THEMES.highLegibility),
+} as const;

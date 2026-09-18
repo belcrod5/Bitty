@@ -9,7 +9,8 @@ import {
   type TextInputEndEditingEventData,
   type TextInputSubmitEditingEventData,
 } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 
 export const MACOS_CHAT_SUBMIT_KEY_EVENTS = [{ key: "Enter", metaKey: true }];
 
@@ -36,6 +37,8 @@ export function ChatComposerInput({
   submitRequestId,
   onOpenFullscreen,
 }: ChatComposerInputProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const latestValueRef = useRef(value);
   const focusedRef = useRef(false);
   const pendingSubmitRef = useRef(false);
@@ -121,7 +124,7 @@ export function ChatComposerInput({
           accessibilityRole="button"
           accessibilityLabel="入力欄を全画面表示"
         >
-          <Ionicons name="expand-outline" size={16} color="#334155" />
+          <Ionicons name="expand-outline" size={16} color={theme.colors.textSecondary} />
         </TouchableOpacity>
       ) : null}
     </View>

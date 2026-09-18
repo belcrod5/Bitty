@@ -1,0 +1,55 @@
+import { fireEvent, render } from "@testing-library/react-native";
+import { Pressable, Text } from "react-native";
+import { AppModal, AppModalHost } from "../components/AppModal.macos";
+import { VisualThemeProvider, useVisualTheme } from "./VisualThemeContext";
+
+function ThemeProbe() {
+  const { selectTheme, theme, themeId } = useVisualTheme();
+  return (
+    <Pressable testID="select-high-legibility" onPress={() => selectTheme("highLegibility")}>
+      <Text>{`${themeId}:${theme.colors.textPrimary}`}</Text>
+    </Pressable>
+  );
+}
+
+test("provides the selected theme and switches when the controlled id changes", async () => {
+  const onSelectTheme = jest.fn();
+  const screen = await render(
+    <VisualThemeProvider themeId="standard" onSelectTheme={onSelectTheme}>
+      <ThemeProbe />
+    </VisualThemeProvider>
+  );
+
+  expect(screen.getByText("standard:#0f172a")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("select-high-legibility"));
+  expect(onSelectTheme).toHaveBeenCalledWith("highLegibility");
+
+  await screen.rerender(
+    <VisualThemeProvider themeId="highLegibility" onSelectTheme={onSelectTheme}>
+      <ThemeProbe />
+    </VisualThemeProvider>
+  );
+  expect(screen.getByText("highLegibility:#020617")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("uses the standard theme when a component is rendered in isolation", async () => {
+  const screen = await render(<ThemeProbe />);
+  expect(screen.getByText("standard:#0f172a")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("keeps the selected theme in content rehosted by the macOS modal", async () => {
+  const screen = await render(
+    <VisualThemeProvider themeId="highLegibility" onSelectTheme={() => undefined}>
+      <AppModalHost>
+        <AppModal visible animationType="none">
+          <ThemeProbe />
+        </AppModal>
+      </AppModalHost>
+    </VisualThemeProvider>
+  );
+
+  expect(screen.getByText("highLegibility:#020617")).toBeTruthy();
+  await screen.unmount();
+});

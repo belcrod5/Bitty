@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View, type StyleProp, type TextStyle } from "react-native";
 import { MarkdownText } from "./MarkdownText";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type InternalContextMessageProps = {
   content: string;
@@ -13,6 +15,8 @@ type InternalContextMessageProps = {
 };
 
 export function InternalContextMessage(props: InternalContextMessageProps) {
+  const { themeId } = useVisualTheme();
+  const componentStyles = componentStylesByTheme[themeId];
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -42,10 +46,11 @@ export function InternalContextMessage(props: InternalContextMessageProps) {
   );
 }
 
-const componentStyles = StyleSheet.create({
+function createInternalContextStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   container: {
-    borderLeftWidth: 2,
-    borderLeftColor: "#cbd5e1",
+    borderLeftWidth: theme.borders.strong,
+    borderLeftColor: theme.colors.border,
     paddingLeft: 10,
   },
   header: {
@@ -55,14 +60,20 @@ const componentStyles = StyleSheet.create({
     minHeight: 32,
   },
   title: {
-    color: "#64748b",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "800",
     letterSpacing: 0.5,
   },
   action: {
-    color: "#475569",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
   },
-});
+  });
+}
+
+const componentStylesByTheme: Record<VisualThemeId, ReturnType<typeof createInternalContextStyles>> = {
+  standard: createInternalContextStyles(VISUAL_THEMES.standard),
+  highLegibility: createInternalContextStyles(VISUAL_THEMES.highLegibility),
+};

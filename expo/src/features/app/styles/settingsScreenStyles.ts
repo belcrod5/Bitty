@@ -1,7 +1,10 @@
-export const settingsScreenStyles = {
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+
+export function createSettingsScreenStyles(theme: VisualTheme) {
+  return {
   settingsScreen: {
     flex: 1,
-    backgroundColor: "#f2f2f7",
+    backgroundColor: theme.colors.surfaceGrouped,
   },
   settingsContent: {
     width: "100%",
@@ -19,14 +22,13 @@ export const settingsScreenStyles = {
     paddingHorizontal: 2,
   },
   settingsBackButtonText: {
-    color: "#0a84ff",
-    fontSize: 16,
+    color: theme.colors.controlAccent,
+    fontSize: theme.typography.control.fontSize,
     fontWeight: "600",
   },
   settingsTitle: {
-    color: "#111111",
-    fontSize: 32,
-    lineHeight: 38,
+    color: theme.colors.groupedTextPrimary,
+    ...theme.typography.hero,
     fontWeight: "800",
   },
   settingsSection: {
@@ -36,15 +38,14 @@ export const settingsScreenStyles = {
     paddingHorizontal: 10,
   },
   settingsSectionTitle: {
-    color: "#8e8e93",
-    fontSize: 17,
-    lineHeight: 22,
+    color: theme.colors.groupedTextMuted,
+    ...theme.typography.subtitleDense,
     fontWeight: "700",
   },
   settingsGroup: {
     overflow: "hidden",
     borderRadius: 22,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 16,
   },
   settingsRow: {
@@ -55,30 +56,27 @@ export const settingsScreenStyles = {
     paddingVertical: 11,
   },
   settingsRowDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e5ea",
+    borderBottomWidth: theme.borders.thin,
+    borderBottomColor: theme.colors.groupedDivider,
   },
   settingsRowLabelWrap: {
     flex: 1,
     minWidth: 0,
   },
   settingsRowLabel: {
-    color: "#111111",
-    fontSize: 15,
-    lineHeight: 20,
+    color: theme.colors.groupedTextPrimary,
+    ...theme.typography.inputDense,
     fontWeight: "600",
   },
   settingsRowDescription: {
     marginTop: 2,
-    color: "#8e8e93",
-    fontSize: 11,
-    lineHeight: 15,
+    color: theme.colors.groupedTextMuted,
+    ...theme.typography.captionDense,
   },
   settingsRowValue: {
     maxWidth: "42%",
-    color: "#8e8e93",
-    fontSize: 15,
-    lineHeight: 20,
+    color: theme.colors.groupedTextMuted,
+    ...theme.typography.inputDense,
     textAlign: "right",
   },
   settingsInputRow: {
@@ -96,11 +94,11 @@ export const settingsScreenStyles = {
   settingsInlineInput: {
     minHeight: 34,
     borderRadius: 9,
-    backgroundColor: "#f2f2f7",
+    backgroundColor: theme.colors.surfaceGrouped,
     paddingHorizontal: 10,
     paddingVertical: 7,
-    color: "#111111",
-    fontSize: 14,
+    color: theme.colors.groupedTextPrimary,
+    fontSize: theme.typography.body.fontSize,
   },
   settingsPrimaryButton: {
     minHeight: 40,
@@ -110,12 +108,12 @@ export const settingsScreenStyles = {
     justifyContent: "center",
     gap: 7,
     borderRadius: 9,
-    backgroundColor: "#0a84ff",
+    backgroundColor: theme.colors.controlAccent,
     paddingHorizontal: 14,
   },
   settingsPrimaryButtonText: {
-    color: "#ffffff",
-    fontSize: 14,
+    color: theme.colors.textOnAccent,
+    fontSize: theme.typography.label.fontSize,
     fontWeight: "700",
   },
   settingsButtonRow: {
@@ -124,21 +122,19 @@ export const settingsScreenStyles = {
     gap: 8,
   },
   settingsSuccessText: {
-    color: "#15803d",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.colors.successText,
+    ...theme.typography.small,
   },
   settingsErrorText: {
-    color: "#b91c1c",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.tones.danger.foreground,
+    ...theme.typography.small,
   },
   settingsStepper: {
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#d1d1d6",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.groupedBorder,
     borderRadius: 9,
   },
   settingsStepperButton: {
@@ -146,42 +142,39 @@ export const settingsScreenStyles = {
     minHeight: 34,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f7f7f9",
+    backgroundColor: theme.colors.groupedControlSurface,
   },
   settingsStepperInput: {
     width: 48,
     minHeight: 34,
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: "#d1d1d6",
+    borderLeftWidth: theme.borders.thin,
+    borderRightWidth: theme.borders.thin,
+    borderColor: theme.colors.groupedBorder,
     paddingHorizontal: 5,
     paddingVertical: 6,
-    color: "#111111",
-    fontSize: 14,
+    color: theme.colors.groupedTextPrimary,
+    fontSize: theme.typography.body.fontSize,
     textAlign: "center",
   },
   settingsActionText: {
-    color: "#0a84ff",
-    fontSize: 15,
-    lineHeight: 20,
+    color: theme.colors.controlAccent,
+    ...theme.typography.inputDense,
     fontWeight: "600",
   },
   settingsDangerText: {
-    color: "#ff3b30",
-    fontSize: 15,
-    lineHeight: 20,
+    color: theme.colors.controlDanger,
+    ...theme.typography.inputDense,
     fontWeight: "600",
   },
   settingsFooterText: {
     paddingHorizontal: 10,
-    color: "#8e8e93",
-    fontSize: 11,
-    lineHeight: 16,
+    color: theme.colors.groupedTextMuted,
+    ...theme.typography.captionRelaxed,
   },
   settingsSelectBackdrop: {
     flex: 1,
     justifyContent: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.32)",
+    backgroundColor: theme.colors.controlBackdrop,
     padding: 20,
   },
   settingsSelectCard: {
@@ -191,7 +184,7 @@ export const settingsScreenStyles = {
     alignSelf: "center",
     overflow: "hidden",
     borderRadius: 20,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 16,
     paddingBottom: 10,
   },
@@ -200,12 +193,12 @@ export const settingsScreenStyles = {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e5ea",
+    borderBottomWidth: theme.borders.thin,
+    borderBottomColor: theme.colors.groupedDivider,
   },
   settingsSelectTitle: {
-    color: "#111111",
-    fontSize: 18,
+    color: theme.colors.groupedTextPrimary,
+    fontSize: theme.typography.title.fontSize,
     fontWeight: "700",
   },
   settingsSelectCloseButton: {
@@ -218,18 +211,18 @@ export const settingsScreenStyles = {
     minHeight: 40,
     marginVertical: 10,
     borderRadius: 10,
-    backgroundColor: "#f2f2f7",
+    backgroundColor: theme.colors.surfaceGrouped,
     paddingHorizontal: 12,
-    color: "#111111",
-    fontSize: 14,
+    color: theme.colors.groupedTextPrimary,
+    fontSize: theme.typography.body.fontSize,
   },
   settingsSelectOption: {
     minHeight: 50,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e5ea",
+    borderBottomWidth: theme.borders.thin,
+    borderBottomColor: theme.colors.groupedDivider,
     paddingVertical: 10,
   },
   settingsSelectOptionTextWrap: {
@@ -237,24 +230,28 @@ export const settingsScreenStyles = {
     minWidth: 0,
   },
   settingsSelectOptionLabel: {
-    color: "#111111",
-    fontSize: 15,
-    lineHeight: 20,
+    color: theme.colors.groupedTextPrimary,
+    ...theme.typography.inputDense,
   },
   settingsSelectOptionLabelSelected: {
-    color: "#0a84ff",
+    color: theme.colors.controlAccent,
     fontWeight: "700",
   },
   settingsSelectOptionDescription: {
     marginTop: 2,
-    color: "#8e8e93",
-    fontSize: 11,
-    lineHeight: 15,
+    color: theme.colors.groupedTextMuted,
+    ...theme.typography.captionDense,
   },
   settingsSelectEmpty: {
     paddingVertical: 24,
-    color: "#8e8e93",
-    fontSize: 14,
+    color: theme.colors.groupedTextMuted,
+    fontSize: theme.typography.body.fontSize,
     textAlign: "center",
   },
-} as const;
+  } as const;
+}
+
+export const settingsScreenStylesByTheme = {
+  standard: createSettingsScreenStyles(VISUAL_THEMES.standard),
+  highLegibility: createSettingsScreenStyles(VISUAL_THEMES.highLegibility),
+};

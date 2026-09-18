@@ -329,7 +329,7 @@ jest.mock("../contexts/ChatVisualContext", () => ({
     chatContextRingTrackColor: "#000",
     chatContextRingProgressColor: "#000",
     formatElapsedHhMmSs: () => "00:00",
-    llmStatusVisual: () => ({ text: "#000", background: "#fff", border: "#000" }),
+    llmStatusVisual: () => ({ icon: "○", tone: "neutral" }),
     llmStatusLabel: () => "",
     resolvePixelStatusIconKey: () => "idle",
     buildSttMetaChips: () => [],

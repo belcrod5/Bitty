@@ -16,6 +16,8 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { OptionSelectField } from "../app/components/OptionSelectField";
 import { RunnerFilePicker } from "../app/components/RunnerFilePicker";
 import type { RunnerFileExplorerEntry } from "../app/components/RunnerFileExplorer";
+import { useVisualTheme } from "../app/theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
 import type { ReasoningEffort } from "../app/utils/settingsParsers";
 import {
   CODEX_SCHEDULE_REPEAT_OPTIONS,
@@ -63,6 +65,8 @@ export function CodexScheduleEditor({
   onClose,
   onDelete,
 }: Props) {
+  const { themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const startDate = useMemo(
     () => schedule ? dateFromCodexScheduleStartLocal(schedule.startLocal) : new Date(),
     [schedule],
@@ -261,23 +265,30 @@ export function CodexScheduleEditor({
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#f1f5f9" },
-  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#cbd5e1", backgroundColor: "#fff" },
-  headerAction: { color: "#2563eb", fontSize: 16, minWidth: 48 },
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.surfaceMuted },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: theme.borders.thin, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  headerAction: { color: theme.colors.accent, ...theme.typography.control, minWidth: 48 },
   headerSpacer: { width: 48 },
-  title: { fontSize: 17, fontWeight: "700", color: "#0f172a" },
+  title: { ...theme.typography.subtitleDense, fontWeight: "700", color: theme.colors.textPrimary },
   content: { padding: 16, paddingBottom: 60, gap: 16 },
-  section: { padding: 14, gap: 10, backgroundColor: "#fff", borderRadius: 12 },
-  sectionTitle: { fontSize: 13, fontWeight: "700", color: "#64748b", textTransform: "uppercase" },
+  section: { padding: 14, gap: 10, backgroundColor: theme.colors.surface, borderRadius: 12 },
+  sectionTitle: { ...theme.typography.compact, fontWeight: "700", color: theme.colors.textMuted, textTransform: "uppercase" },
   switchRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  label: { fontSize: 13, fontWeight: "600", color: "#475569" },
-  input: { minHeight: 42, borderWidth: 1, borderColor: "#cbd5e1", borderRadius: 8, paddingHorizontal: 10, color: "#0f172a" },
+  label: { ...theme.typography.compact, fontWeight: "600", color: theme.colors.textSecondary },
+  input: { minHeight: 42, borderWidth: theme.borders.thin, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 10, color: theme.colors.textPrimary, ...theme.typography.input },
   prompt: { minHeight: 150, paddingTop: 10 },
-  count: { color: "#64748b", textAlign: "right", fontSize: 12 },
-  timeZone: { color: "#334155" },
-  secondaryButton: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8, backgroundColor: "#e2e8f0" },
-  secondaryText: { color: "#0f172a", fontWeight: "600" },
-  deleteButton: { minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: "#fff" },
-  deleteText: { color: "#dc2626", fontWeight: "700" },
-});
+  count: { color: theme.colors.textMuted, textAlign: "right", ...theme.typography.small },
+  timeZone: { color: theme.colors.textSecondary, ...theme.typography.body },
+  secondaryButton: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8, backgroundColor: theme.colors.surfaceSubtle },
+  secondaryText: { color: theme.colors.textPrimary, fontWeight: "600", ...theme.typography.body },
+  deleteButton: { minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: theme.colors.surface },
+  deleteText: { color: theme.colors.negativeText, fontWeight: "700", ...theme.typography.body },
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

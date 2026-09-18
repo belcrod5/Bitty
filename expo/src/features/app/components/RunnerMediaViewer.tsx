@@ -20,6 +20,8 @@ import { WorkspaceFileRenameDialog } from "./WorkspaceFileRenameDialog";
 import type { RunnerMediaFile, RunnerMediaItem } from "../utils/runnerFileContextMenu";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type RunnerMediaViewerProps = {
   media: RunnerMediaFile | null;
@@ -31,6 +33,8 @@ const VIEWER_HEADER_HEIGHT = 64;
 const VIEWER_THUMBNAIL_HEIGHT = 94;
 
 export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerProps) {
+  const { theme, themeId } = useVisualTheme();
+  const viewerStyles = viewerStylesByTheme[themeId];
   const [error, setError] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -131,7 +135,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
         }}
       />
     );
-  }, [selectedIndex, sourceForItem]);
+  }, [selectedIndex, sourceForItem, viewerStyles.media]);
 
   const openThumbnail = useCallback((index: number) => {
     setSelectedIndex(index);
@@ -184,13 +188,13 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
           />
         ) : (
           <View style={viewerStyles.thumbnailVideo}>
-            <Ionicons name="play" size={18} color="#e2e8f0" />
+            <Ionicons name="play" size={18} color={theme.dark.textMuted} />
           </View>
         )}
         <Text style={viewerStyles.thumbnailLabel} numberOfLines={1}>{item.name}</Text>
       </TouchableOpacity>
     );
-  }, [activeIndex, openThumbnail, sourceForItem]);
+  }, [activeIndex, openThumbnail, sourceForItem, theme.dark.textMuted, viewerStyles]);
 
   const viewerKey = media
     ? `${media.path}:${items.length}:${initialIndex}`
@@ -224,7 +228,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
               accessibilityRole="button"
               accessibilityLabel="メディアの操作メニューを開く"
             >
-              <Ionicons name="ellipsis-horizontal" size={24} color="#e2e8f0" />
+              <Ionicons name="ellipsis-horizontal" size={24} color={theme.dark.textMuted} />
             </TouchableOpacity>
           ) : null}
           <TouchableOpacity
@@ -233,7 +237,7 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
             accessibilityRole="button"
             accessibilityLabel="メディアビューアーを閉じる"
           >
-            <Ionicons name="close" size={24} color="#e2e8f0" />
+            <Ionicons name="close" size={24} color={theme.dark.textMuted} />
           </TouchableOpacity>
         </View>
         <View style={viewerStyles.content} onLayout={handleContentLayout}>
@@ -281,10 +285,11 @@ export function RunnerMediaViewer({ media, onRequestClose }: RunnerMediaViewerPr
   );
 }
 
-const viewerStyles = StyleSheet.create({
+function createRunnerMediaViewerStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#020617",
+    backgroundColor: theme.dark.canvas,
   },
   header: {
     minHeight: VIEWER_HEADER_HEIGHT,
@@ -292,7 +297,7 @@ const viewerStyles = StyleSheet.create({
     paddingRight: 10,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#334155",
+    borderBottomColor: theme.dark.border,
     flexDirection: "row",
     alignItems: "center",
   },
@@ -301,14 +306,14 @@ const viewerStyles = StyleSheet.create({
     minWidth: 0,
   },
   title: {
-    color: "#f8fafc",
-    fontSize: 16,
+    color: theme.dark.text,
+    fontSize: theme.typography.control.fontSize,
     fontWeight: "700",
   },
   path: {
     marginTop: 2,
-    color: "#94a3b8",
-    fontSize: 11,
+    color: theme.dark.textMuted,
+    fontSize: theme.typography.caption.fontSize,
   },
   closeButton: {
     width: 44,
@@ -323,10 +328,10 @@ const viewerStyles = StyleSheet.create({
     overflow: "hidden",
   },
   viewerBackdrop: {
-    backgroundColor: "#020617",
+    backgroundColor: theme.dark.canvas,
   },
   viewerContainer: {
-    backgroundColor: "#020617",
+    backgroundColor: theme.dark.canvas,
   },
   media: {
     width: "100%",
@@ -339,9 +344,9 @@ const viewerStyles = StyleSheet.create({
     bottom: 0,
     height: VIEWER_THUMBNAIL_HEIGHT,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#334155",
+    borderTopColor: theme.dark.border,
     justifyContent: "center",
-    backgroundColor: "#020617",
+    backgroundColor: theme.dark.canvas,
   },
   thumbnailStripContent: {
     alignItems: "center",
@@ -352,30 +357,30 @@ const viewerStyles = StyleSheet.create({
     width: 66,
     height: 72,
     borderRadius: 8,
-    borderWidth: 1,
+    borderWidth: theme.borders.thin,
     borderColor: "transparent",
     overflow: "hidden",
-    backgroundColor: "#0f172a",
+    backgroundColor: theme.dark.surface,
   },
   thumbnailButtonActive: {
-    borderColor: "#38bdf8",
+    borderColor: theme.dark.accent,
   },
   thumbnailImage: {
     width: "100%",
     height: 50,
-    backgroundColor: "#111827",
+    backgroundColor: theme.dark.surfaceRaised,
   },
   thumbnailVideo: {
     width: "100%",
     height: 50,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#1e293b",
+    backgroundColor: theme.dark.surfaceSelected,
   },
   thumbnailLabel: {
-    color: "#cbd5e1",
-    fontSize: 9,
-    lineHeight: 16,
+    color: theme.dark.textMuted,
+    fontSize: theme.typography.micro.fontSize,
+    lineHeight: theme.typography.captionRelaxed.lineHeight,
     paddingHorizontal: 4,
   },
   error: {
@@ -383,11 +388,17 @@ const viewerStyles = StyleSheet.create({
     left: 20,
     right: 20,
     bottom: 24,
-    color: "#fecaca",
-    backgroundColor: "rgba(127, 29, 29, 0.92)",
+    color: theme.dark.danger,
+    backgroundColor: theme.dark.dangerOverlay,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     textAlign: "center",
   },
-});
+  });
+}
+
+const viewerStylesByTheme: Record<VisualThemeId, ReturnType<typeof createRunnerMediaViewerStyles>> = {
+  standard: createRunnerMediaViewerStyles(VISUAL_THEMES.standard),
+  highLegibility: createRunnerMediaViewerStyles(VISUAL_THEMES.highLegibility),
+};

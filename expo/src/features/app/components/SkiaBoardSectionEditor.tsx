@@ -1,27 +1,12 @@
 import { useEffect, useState } from "react";
-import {
-  Keyboard,
-  Pressable,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { Keyboard, Pressable, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { AppModal } from "./AppModal";
 import type { SkiaBoardSection } from "../utils/skiaBoardState";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
-export const SKIA_BOARD_SECTION_COLORS = [
-  "#3b82f6",
-  "#8b5cf6",
-  "#ec4899",
-  "#ef4444",
-  "#f59e0b",
-  "#22c55e",
-  "#64748b",
-];
+export const SKIA_BOARD_SECTION_COLORS = ["#3b82f6", "#8b5cf6", "#ec4899", "#ef4444", "#f59e0b", "#22c55e", "#64748b"];
 
 export function SkiaBoardSectionEditor({
   section,
@@ -34,6 +19,8 @@ export function SkiaBoardSectionEditor({
   onSave: (update: Pick<SkiaBoardSection, "label" | "color" | "opacity" | "borderOnly">) => void;
   onDelete: () => void;
 }) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const [label, setLabel] = useState("");
   const [color, setColor] = useState(SKIA_BOARD_SECTION_COLORS[0]);
   const [opacity, setOpacity] = useState(0.2);
@@ -61,6 +48,7 @@ export function SkiaBoardSectionEditor({
               value={label}
               onChangeText={setLabel}
               placeholder="ラベル"
+              placeholderTextColor={theme.colors.textMuted}
               selectTextOnFocus
               style={styles.input}
               accessibilityLabel="セクションのラベル"
@@ -76,7 +64,7 @@ export function SkiaBoardSectionEditor({
                   accessibilityRole="button"
                   accessibilityLabel={`背景色 ${option}`}
                 >
-                  {color === option ? <Ionicons name="checkmark" size={18} color="#ffffff" /> : null}
+                  {color === option ? <Ionicons name="checkmark" size={18} color={theme.colors.textOnAccent} /> : null}
                 </TouchableOpacity>
               ))}
             </View>
@@ -87,7 +75,7 @@ export function SkiaBoardSectionEditor({
                 onPress={() => setOpacity((current) => Number(Math.max(0, current - 0.1).toFixed(1)))}
                 accessibilityLabel="透明度を下げる"
               >
-                <Ionicons name="remove" size={18} color="#334155" />
+                <Ionicons name="remove" size={18} color={theme.colors.iconSecondary} />
               </TouchableOpacity>
               <Text style={styles.value}>{opacityPercent}%</Text>
               <TouchableOpacity
@@ -95,7 +83,7 @@ export function SkiaBoardSectionEditor({
                 onPress={() => setOpacity((current) => Number(Math.min(1, current + 0.1).toFixed(1)))}
                 accessibilityLabel="透明度を上げる"
               >
-                <Ionicons name="add" size={18} color="#334155" />
+                <Ionicons name="add" size={18} color={theme.colors.iconSecondary} />
               </TouchableOpacity>
             </View>
             <TouchableOpacity
@@ -108,7 +96,7 @@ export function SkiaBoardSectionEditor({
               <Ionicons
                 name={borderOnly ? "checkbox" : "square-outline"}
                 size={22}
-                color={borderOnly ? "#2563eb" : "#64748b"}
+                color={borderOnly ? theme.colors.accent : theme.colors.iconMuted}
               />
               <Text style={styles.rowLabel}>ボーダーのみ</Text>
             </TouchableOpacity>
@@ -139,35 +127,125 @@ export function SkiaBoardSectionEditor({
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(15, 23, 42, 0.28)" },
-  safeArea: { flex: 1, justifyContent: "center", padding: 24 },
-  panel: { padding: 18, borderRadius: 16, backgroundColor: "#ffffff", gap: 12 },
-  title: { color: "#172033", fontSize: 17, fontWeight: "800" },
-  caption: { color: "#475569", fontSize: 12, fontWeight: "700" },
-  input: {
-    minHeight: 44,
-    paddingHorizontal: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#94a3b8",
-    borderRadius: 9,
-    color: "#172033",
-    backgroundColor: "#f8fafc",
-  },
-  colors: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  colorButton: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
-  colorSelected: { borderWidth: 3, borderColor: "#dbeafe" },
-  row: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 },
-  rowLabel: { color: "#334155", fontSize: 13, fontWeight: "700" },
-  stepButton: { width: 40, height: 40, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#f1f5f9" },
-  value: { minWidth: 38, color: "#475569", fontSize: 12, textAlign: "center" },
-  toggleRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9 },
-  actions: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
-  actionSpacer: { flex: 1 },
-  deleteButton: { minHeight: 40, paddingHorizontal: 10, justifyContent: "center" },
-  deleteText: { color: "#dc2626", fontSize: 13, fontWeight: "700" },
-  cancelButton: { minHeight: 40, paddingHorizontal: 12, justifyContent: "center" },
-  cancelText: { color: "#475569", fontSize: 13, fontWeight: "700" },
-  saveButton: { minHeight: 40, paddingHorizontal: 16, borderRadius: 9, justifyContent: "center", backgroundColor: "#2563eb" },
-  saveText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
-});
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+    backdrop: { flex: 1, backgroundColor: theme.colors.backdrop },
+    safeArea: { flex: 1, justifyContent: "center", padding: 24 },
+    panel: {
+      padding: 18,
+      borderRadius: 16,
+      backgroundColor: theme.colors.surface,
+      gap: 12,
+    },
+    title: {
+      color: theme.colors.textPrimary,
+      fontSize: theme.typography.subtitle.fontSize,
+      lineHeight: theme.typography.subtitle.lineHeight,
+      fontWeight: "800",
+    },
+    caption: {
+      color: theme.colors.formLabel,
+      fontSize: theme.typography.small.fontSize,
+      lineHeight: theme.typography.small.lineHeight,
+      fontWeight: "700",
+    },
+    input: {
+      minHeight: 44,
+      paddingHorizontal: 12,
+      borderWidth: theme.borders.thin,
+      borderColor: theme.colors.borderStrong,
+      borderRadius: 9,
+      color: theme.colors.textPrimary,
+      backgroundColor: theme.colors.surfaceRaised,
+      fontSize: theme.typography.input.fontSize,
+      lineHeight: theme.typography.input.lineHeight,
+    },
+    colors: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+    colorButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    colorSelected: {
+      borderWidth: theme.borders.focus,
+      borderColor: theme.colors.focus,
+    },
+    row: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 },
+    rowLabel: {
+      color: theme.colors.textSecondary,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "700",
+    },
+    stepButton: {
+      width: 40,
+      height: 40,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.colors.surfaceMuted,
+    },
+    value: {
+      minWidth: 38,
+      color: theme.colors.textMuted,
+      fontSize: theme.typography.small.fontSize,
+      lineHeight: theme.typography.small.lineHeight,
+      textAlign: "center",
+    },
+    toggleRow: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+    },
+    actions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      marginTop: 4,
+    },
+    actionSpacer: { flex: 1 },
+    deleteButton: {
+      minHeight: 40,
+      paddingHorizontal: 10,
+      justifyContent: "center",
+    },
+    deleteText: {
+      color: theme.colors.negativeText,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "700",
+    },
+    cancelButton: {
+      minHeight: 40,
+      paddingHorizontal: 12,
+      justifyContent: "center",
+    },
+    cancelText: {
+      color: theme.colors.textSecondary,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "700",
+    },
+    saveButton: {
+      minHeight: 40,
+      paddingHorizontal: 16,
+      borderRadius: 9,
+      justifyContent: "center",
+      backgroundColor: theme.colors.accent,
+    },
+    saveText: {
+      color: theme.colors.textOnAccent,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "800",
+    },
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

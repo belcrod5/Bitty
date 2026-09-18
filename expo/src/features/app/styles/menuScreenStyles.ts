@@ -1,19 +1,22 @@
-export const menuScreenStyles = {
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+
+export function createMenuScreenStyles(theme: VisualTheme) {
+  return {
   appDrawerPanel: {
     width: "86%",
     maxWidth: 360,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   appDrawerOverlay: {
-    backgroundColor: "rgba(15, 23, 42, 0.28)",
+    backgroundColor: theme.colors.backdrop,
   },
   appDrawerRoot: {
     flex: 1,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   appDrawerScroll: {
     flex: 1,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   appDrawerContent: {
     paddingHorizontal: 16,
@@ -22,9 +25,9 @@ export const menuScreenStyles = {
     gap: 14,
   },
   appDrawerTitle: {
-    fontSize: 20,
+    fontSize: theme.typography.sectionTitle.fontSize,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
     letterSpacing: 0.2,
   },
   appDrawerSearchContainer: {
@@ -36,17 +39,17 @@ export const menuScreenStyles = {
   appDrawerSearchBox: {
     minHeight: 42,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
     flexDirection: "row",
     alignItems: "center",
     paddingLeft: 12,
     paddingRight: 4,
   },
   appDrawerSearchBoxFocused: {
-    borderColor: "#0f766e",
-    borderWidth: 2,
+    borderColor: theme.colors.primaryAction,
+    borderWidth: theme.borders.strong,
     paddingLeft: 11,
     paddingRight: 3,
   },
@@ -55,8 +58,8 @@ export const menuScreenStyles = {
     minHeight: 40,
     paddingVertical: 8,
     paddingRight: 8,
-    fontSize: 14,
-    color: "#0f172a",
+    fontSize: theme.typography.body.fontSize,
+    color: theme.colors.textPrimary,
   },
   appDrawerSearchClearButton: {
     width: 34,
@@ -66,9 +69,9 @@ export const menuScreenStyles = {
     justifyContent: "center",
   },
   appDrawerSearchClearButtonText: {
-    fontSize: 22,
-    lineHeight: 24,
-    color: "#64748b",
+    fontSize: theme.typography.headline.fontSize,
+    lineHeight: theme.typography.title.lineHeight,
+    color: theme.colors.textMuted,
     fontWeight: "500",
   },
   appDrawerSearchPopover: {
@@ -77,12 +80,12 @@ export const menuScreenStyles = {
     left: 0,
     right: 0,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
     padding: 10,
     gap: 8,
-    shadowColor: "#0f172a",
+    shadowColor: theme.colors.textPrimary,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.18,
     shadowRadius: 18,
@@ -95,7 +98,7 @@ export const menuScreenStyles = {
     flexDirection: "row",
     borderRadius: 9,
     padding: 3,
-    backgroundColor: "#f1f5f9",
+    backgroundColor: theme.colors.surfaceMuted,
   },
   appDrawerSearchTab: {
     flex: 1,
@@ -105,20 +108,20 @@ export const menuScreenStyles = {
     justifyContent: "center",
   },
   appDrawerSearchTabSelected: {
-    backgroundColor: "#ffffff",
-    shadowColor: "#0f172a",
+    backgroundColor: theme.colors.surface,
+    shadowColor: theme.colors.textPrimary,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.12,
     shadowRadius: 2,
     elevation: 2,
   },
   appDrawerSearchTabText: {
-    color: "#64748b",
-    fontSize: 13,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
   },
   appDrawerSearchTabTextSelected: {
-    color: "#0f766e",
+    color: theme.colors.primaryAction,
   },
   appDrawerSearchDismissButton: {
     width: 36,
@@ -128,9 +131,9 @@ export const menuScreenStyles = {
     justifyContent: "center",
   },
   appDrawerSearchDismissButtonText: {
-    color: "#64748b",
-    fontSize: 20,
-    lineHeight: 22,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.sectionTitle.fontSize,
+    lineHeight: theme.typography.subtitleDense.lineHeight,
   },
   appDrawerSearchDirectoryStatus: {
     minHeight: 42,
@@ -138,35 +141,35 @@ export const menuScreenStyles = {
     paddingHorizontal: 6,
   },
   appDrawerSearchStatusText: {
-    color: "#64748b",
-    fontSize: 13,
-    lineHeight: 19,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.compact.fontSize,
+    lineHeight: theme.typography.compactRelaxed.lineHeight,
   },
   appDrawerSearchOptionsSummary: {
     minHeight: 42,
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 6,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
     justifyContent: "center",
     gap: 2,
   },
   appDrawerSearchOptionsSummaryText: {
-    color: "#334155",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.small.fontSize,
     fontWeight: "700",
   },
   appDrawerSearchOptionsValue: {
-    color: "#64748b",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
   },
   appDrawerSearchOptions: {
     gap: 6,
     paddingHorizontal: 4,
   },
   appDrawerSearchOptionLabel: {
-    color: "#475569",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
   },
   appDrawerSearchOptionRow: {
@@ -177,24 +180,24 @@ export const menuScreenStyles = {
   appDrawerSearchChip: {
     minHeight: 32,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     paddingHorizontal: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   appDrawerSearchChipSelected: {
-    borderColor: "#0f766e",
-    backgroundColor: "#ccfbf1",
+    borderColor: theme.colors.primaryAction,
+    backgroundColor: theme.colors.primaryActionMuted,
   },
   appDrawerSearchChipText: {
-    color: "#334155",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.small.fontSize,
     fontWeight: "600",
   },
   appDrawerSearchScopeText: {
-    color: "#64748b",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
     paddingHorizontal: 4,
   },
   appDrawerSearchResults: {
@@ -212,23 +215,23 @@ export const menuScreenStyles = {
     gap: 8,
   },
   appDrawerSearchError: {
-    color: "#b91c1c",
-    fontSize: 13,
-    lineHeight: 19,
+    color: theme.tones.danger.foreground,
+    fontSize: theme.typography.compact.fontSize,
+    lineHeight: theme.typography.compactRelaxed.lineHeight,
     paddingVertical: 10,
   },
   appDrawerSearchResult: {
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderSubtle,
     borderRadius: 10,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 10,
     paddingVertical: 9,
     gap: 6,
   },
   appDrawerSearchResultPressed: {
-    backgroundColor: "#f0fdfa",
-    borderColor: "#99f6e4",
+    backgroundColor: theme.colors.surfaceActionSoft,
+    borderColor: theme.colors.primaryActionBorder,
   },
   appDrawerSearchResultTitleRow: {
     flexDirection: "row",
@@ -238,13 +241,13 @@ export const menuScreenStyles = {
   appDrawerSearchResultTitle: {
     flex: 1,
     minWidth: 0,
-    color: "#0f172a",
-    fontSize: 13,
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
   },
   appDrawerSearchResultDate: {
-    color: "#94a3b8",
-    fontSize: 10,
+    color: theme.colors.borderStrong,
+    fontSize: theme.typography.micro.fontSize,
   },
   appDrawerSearchResultMetaRow: {
     flexDirection: "row",
@@ -254,23 +257,23 @@ export const menuScreenStyles = {
   },
   appDrawerSearchResultDirectory: {
     flex: 1,
-    color: "#0f766e",
-    fontSize: 11,
+    color: theme.colors.primaryAction,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "600",
   },
   appDrawerSearchResultMeta: {
-    color: "#64748b",
-    fontSize: 10,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.micro.fontSize,
     textAlign: "right",
   },
   appDrawerSearchResultSnippet: {
-    color: "#0f172a",
-    fontSize: 13,
-    lineHeight: 19,
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.compact.fontSize,
+    lineHeight: theme.typography.compactRelaxed.lineHeight,
   },
   appDrawerSearchWarning: {
-    color: "#b45309",
-    fontSize: 11,
+    color: theme.colors.warningText,
+    fontSize: theme.typography.caption.fontSize,
     paddingVertical: 6,
   },
   appDrawerSearchMoreButton: {
@@ -281,13 +284,13 @@ export const menuScreenStyles = {
     gap: 6,
   },
   appDrawerSearchMoreButtonText: {
-    color: "#1e40af",
-    fontSize: 13,
+    color: theme.colors.infoAction,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
   },
   appDrawerSearchProgressText: {
-    color: "#64748b",
-    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.small.fontSize,
     textAlign: "center",
   },
   appDrawerKeyboardAccessory: {
@@ -308,8 +311,8 @@ export const menuScreenStyles = {
     justifyContent: "center",
   },
   appDrawerKeyboardDismissButtonText: {
-    fontSize: 14,
-    color: "#0f172a",
+    fontSize: theme.typography.body.fontSize,
+    color: theme.colors.textPrimary,
     fontWeight: "700",
   },
   appDrawerSection: {
@@ -323,9 +326,9 @@ export const menuScreenStyles = {
     gap: 12,
   },
   appDrawerSectionTitle: {
-    fontSize: 13,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
-    color: "#334155",
+    color: theme.colors.textSecondary,
     letterSpacing: 0.5,
     textTransform: "uppercase",
   },
@@ -334,12 +337,12 @@ export const menuScreenStyles = {
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 7,
-    backgroundColor: "#eff6ff",
+    backgroundColor: theme.colors.surfaceSelected,
   },
   appDrawerAddButtonText: {
-    fontSize: 13,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
-    color: "#1e40af",
+    color: theme.colors.infoAction,
   },
   appDrawerDirectoryItem: {
     gap: 8,
@@ -370,24 +373,24 @@ export const menuScreenStyles = {
     height: 5,
     borderRadius: 3,
     overflow: "hidden",
-    backgroundColor: "#ccfbf1",
+    backgroundColor: theme.colors.primaryActionMuted,
   },
   appDrawerSessionSyncFill: {
     height: "100%",
-    backgroundColor: "#0f766e",
+    backgroundColor: theme.colors.primaryAction,
   },
   appDrawerSessionSyncText: {
-    color: "#475569",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
   },
   appDrawerSessionSyncError: {
     marginBottom: 8,
-    color: "#b45309",
-    fontSize: 11,
+    color: theme.colors.warningText,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
   },
   appDrawerSessionSyncFatalError: {
-    color: "#b91c1c",
+    color: theme.tones.danger.foreground,
   },
   appDrawerDirectoryReadProgress: {
     gap: 4,
@@ -397,15 +400,15 @@ export const menuScreenStyles = {
     height: 4,
     borderRadius: 2,
     overflow: "hidden",
-    backgroundColor: "#dbeafe",
+    backgroundColor: theme.colors.infoMuted,
   },
   appDrawerDirectoryReadProgressFill: {
     height: "100%",
-    backgroundColor: "#2563eb",
+    backgroundColor: theme.colors.accent,
   },
   appDrawerDirectoryReadProgressText: {
-    color: "#475569",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
   },
   appDrawerUnreadCountBadge: {
     minWidth: 22,
@@ -414,12 +417,12 @@ export const menuScreenStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#dbeafe",
+    backgroundColor: theme.colors.infoMuted,
   },
   appDrawerUnreadCountText: {
-    fontSize: 11,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
-    color: "#1d4ed8",
+    color: theme.colors.accentStrong,
   },
   appDrawerDirectorySelectButton: {
     flex: 1,
@@ -431,20 +434,20 @@ export const menuScreenStyles = {
     gap: 4,
   },
   appDrawerDirectoryName: {
-    fontSize: 16,
-    color: "#0f172a",
+    fontSize: theme.typography.control.fontSize,
+    color: theme.colors.textPrimary,
     fontWeight: "500",
   },
   appDrawerDirectoryNameSelected: {
-    color: "#1e3a8a",
+    color: theme.colors.accentStrong,
     fontWeight: "700",
   },
   appDrawerDirectoryPath: {
-    fontSize: 12,
-    color: "#64748b",
+    fontSize: theme.typography.small.fontSize,
+    color: theme.colors.textMuted,
   },
   appDrawerDirectoryPathSelected: {
-    color: "#475569",
+    color: theme.colors.textMuted,
   },
   appDrawerSessionBlock: {
     gap: 8,
@@ -459,7 +462,7 @@ export const menuScreenStyles = {
     backgroundColor: "transparent",
   },
   appDrawerSessionItemSelected: {
-    backgroundColor: "#f1f5f9",
+    backgroundColor: theme.colors.surfaceMuted,
   },
   appDrawerSessionTreeNode: {
     gap: 4,
@@ -468,8 +471,8 @@ export const menuScreenStyles = {
     gap: 6,
     marginTop: 4,
     paddingLeft: 8,
-    borderLeftWidth: 1,
-    borderLeftColor: "#e2e8f0",
+    borderLeftWidth: theme.borders.thin,
+    borderLeftColor: theme.colors.borderSubtle,
   },
   appDrawerSessionPrimaryRow: {
     flexDirection: "row",
@@ -487,30 +490,30 @@ export const menuScreenStyles = {
     width: 9,
     height: 9,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.18)",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderTranslucent,
     flexShrink: 0,
   },
   appDrawerSessionPrimary: {
     flex: 1,
-    fontSize: 14,
-    color: "#0f172a",
+    fontSize: theme.typography.body.fontSize,
+    color: theme.colors.textPrimary,
     fontWeight: "500",
   },
   appDrawerSessionPrimarySelected: {
-    color: "#0f766e",
+    color: theme.colors.primaryAction,
   },
   appDrawerSessionContextPct: {
-    fontSize: 13,
-    color: "#0f766e",
+    fontSize: theme.typography.compact.fontSize,
+    color: theme.colors.primaryAction,
     fontWeight: "700",
     textAlign: "right",
     minWidth: 40,
   },
   appDrawerSessionMetaText: {
     marginTop: 3,
-    fontSize: 12,
-    color: "#64748b",
+    fontSize: theme.typography.small.fontSize,
+    color: theme.colors.textMuted,
   },
   appDrawerSessionUnreadDot: {
     position: "absolute",
@@ -519,15 +522,15 @@ export const menuScreenStyles = {
     width: 8,
     height: 8,
     borderRadius: 999,
-    backgroundColor: "#2563eb",
+    backgroundColor: theme.colors.accent,
   },
   appDrawerSessionLoadMoreButton: {
     marginTop: 4,
     minHeight: 34,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#bfdbfe",
-    backgroundColor: "#eff6ff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.infoBorder,
+    backgroundColor: theme.colors.surfaceSelected,
     paddingHorizontal: 10,
     paddingVertical: 6,
     alignSelf: "flex-start",
@@ -536,25 +539,31 @@ export const menuScreenStyles = {
     gap: 8,
   },
   appDrawerSessionLoadMoreButtonText: {
-    fontSize: 12,
+    fontSize: theme.typography.small.fontSize,
     fontWeight: "700",
-    color: "#1e40af",
+    color: theme.colors.infoAction,
   },
   menuNavButton: {
     marginTop: 2,
     borderRadius: 12,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 4,
   },
   menuNavTitle: {
-    fontSize: 13,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   menuNavValue: {
-    fontSize: 11,
-    color: "#475569",
+    fontSize: theme.typography.caption.fontSize,
+    color: theme.colors.textMuted,
   },
-} as const;
+  } as const;
+}
+
+export const menuScreenStylesByTheme = {
+  standard: createMenuScreenStyles(VISUAL_THEMES.standard),
+  highLegibility: createMenuScreenStyles(VISUAL_THEMES.highLegibility),
+};

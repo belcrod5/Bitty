@@ -12,7 +12,8 @@ import {
 } from "react-native";
 import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
 import { Ionicons } from "@expo/vector-icons";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { GitBranchDropdown, type GitBranchOption } from "./GitBranchDropdown";
 import { GitDiffRunningJobsSection } from "./GitDiffRunningJobsSection";
 import {
@@ -96,6 +97,8 @@ export const GitDiffPanel = memo(function GitDiffPanel({
   onSpeakText,
   logSessionDiag,
 }: GitDiffPanelProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const {
     addFile,
     removeFile,
@@ -461,7 +464,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
               accessibilityRole="button"
               accessibilityLabel={gitPanelTab === "running" ? "実行ジョブを再読み込み" : "差分を再読み込み"}
             >
-              <Ionicons name="refresh" size={15} color="#0f172a" />
+              <Ionicons name="refresh" size={15} color={theme.colors.textPrimary} />
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.gitDiffPanelHeaderButton}
@@ -469,7 +472,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
               accessibilityRole="button"
               accessibilityLabel="差分パネルを閉じる"
             >
-              <Ionicons name="close" size={16} color="#0f172a" />
+              <Ionicons name="close" size={16} color={theme.colors.textPrimary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -532,7 +535,7 @@ export const GitDiffPanel = memo(function GitDiffPanel({
         <ScrollView style={styles.gitDiffPanelScroll} contentContainerStyle={styles.gitDiffPanelScrollContent}>
           {(gitPanelTab !== "running" && gitChangedFilesLoading) ? (
             <View style={styles.gitDiffPanelStatusRow}>
-              <ActivityIndicator size="small" color="#0f766e" />
+              <ActivityIndicator size="small" color={theme.colors.primaryAction} />
               <Text style={styles.gitDiffPanelStatusText}>差分を読み込み中...</Text>
             </View>
           ) : null}

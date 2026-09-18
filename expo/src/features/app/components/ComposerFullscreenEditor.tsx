@@ -19,6 +19,8 @@ import {
   ModalTextInputDraft,
   type ModalTextInputDraftValue,
 } from "./ModalTextInputDraft";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
 type SubmitKeyEvent = (typeof MACOS_CHAT_SUBMIT_KEY_EVENTS)[number];
 
@@ -89,6 +91,8 @@ function ComposerFullscreenContent({
   onFocus,
   onBlur,
 }: ComposerFullscreenContentProps) {
+  const { theme, themeId } = useVisualTheme();
+  const componentStyles = componentStylesByTheme[themeId];
   const [historyOpen, setHistoryOpen] = useState(false);
   const submitPendingRef = useRef(false);
 
@@ -137,7 +141,7 @@ function ComposerFullscreenContent({
               accessibilityState={{ expanded: historyOpen }}
               testID="composer-history-button"
             >
-              <Ionicons name="time-outline" size={19} color="#334155" />
+              <Ionicons name="time-outline" size={19} color={theme.colors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
               style={componentStyles.headerButton}
@@ -145,7 +149,7 @@ function ComposerFullscreenContent({
               accessibilityRole="button"
               accessibilityLabel="全画面入力を閉じる"
             >
-              <Ionicons name="contract-outline" size={18} color="#334155" />
+              <Ionicons name="contract-outline" size={18} color={theme.colors.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -201,10 +205,11 @@ function ComposerFullscreenContent({
   );
 }
 
-const componentStyles = StyleSheet.create({
+function createComponentStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 12,
@@ -216,19 +221,19 @@ const componentStyles = StyleSheet.create({
     justifyContent: "space-between",
     minHeight: 40,
   },
-  title: { fontSize: 13, fontWeight: "700", color: "#334155" },
+  title: { ...theme.typography.compact, fontWeight: "700", color: theme.colors.textSecondary },
   headerActions: { flexDirection: "row", gap: 8 },
   headerButton: {
     width: 36,
     height: 36,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
     alignItems: "center",
     justifyContent: "center",
   },
-  headerButtonActive: { backgroundColor: "#e2e8f0" },
+  headerButtonActive: { backgroundColor: theme.colors.surfaceSubtle },
   historyPanel: {
     position: "absolute",
     top: 48,
@@ -238,30 +243,30 @@ const componentStyles = StyleSheet.create({
     elevation: 4,
     maxHeight: "45%",
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#94a3b8",
-    backgroundColor: "#f8fafc",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.surfaceRaised,
     padding: 10,
     gap: 8,
-    shadowColor: "#0f172a",
+    shadowColor: theme.colors.textPrimary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.16,
     shadowRadius: 10,
   },
-  historyTitle: { color: "#475569", fontSize: 12, fontWeight: "700" },
+  historyTitle: { color: theme.tones.neutral.foreground, ...theme.typography.small, fontWeight: "700" },
   historyItem: {
     paddingHorizontal: 4,
     paddingVertical: 12,
   },
-  historyItemSeparated: { borderTopWidth: 1, borderTopColor: "#94a3b8" },
-  historyItemText: { color: "#0f172a", fontSize: 14, lineHeight: 20 },
-  emptyHistory: { color: "#64748b", fontSize: 13, paddingVertical: 16, textAlign: "center" },
+  historyItemSeparated: { borderTopWidth: theme.borders.thin, borderTopColor: theme.colors.borderStrong },
+  historyItemText: { color: theme.colors.textPrimary, ...theme.typography.body },
+  emptyHistory: { color: theme.colors.textMuted, ...theme.typography.compact, paddingVertical: 16, textAlign: "center" },
   inputWrap: {
     flex: 1,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
@@ -270,11 +275,17 @@ const componentStyles = StyleSheet.create({
     minHeight: 200,
     borderWidth: 0,
     backgroundColor: "transparent",
-    color: "#111827",
-    fontSize: 15,
+    color: theme.colors.controlTextPrimary,
+    fontSize: theme.typography.input.fontSize,
     paddingHorizontal: 0,
     paddingTop: 0,
     paddingBottom: 80,
     textAlignVertical: "top",
   },
-});
+  });
+}
+
+const componentStylesByTheme = {
+  standard: createComponentStyles(VISUAL_THEMES.standard),
+  highLegibility: createComponentStyles(VISUAL_THEMES.highLegibility),
+} as const;

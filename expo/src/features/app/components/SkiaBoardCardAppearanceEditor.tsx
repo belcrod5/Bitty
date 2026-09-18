@@ -11,10 +11,9 @@ import {
   View,
 } from "react-native";
 import { KeyboardAvoidingView } from "../keyboardController";
-import {
-  getRunnerFileLocation,
-  getRunnerMediaKind,
-} from "../utils/runnerFileContextMenu";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { getRunnerFileLocation, getRunnerMediaKind } from "../utils/runnerFileContextMenu";
 import { AppModal } from "./AppModal";
 import { OptionSelectField } from "./OptionSelectField";
 import { RunnerFilePicker } from "./RunnerFilePicker";
@@ -45,6 +44,8 @@ export function SkiaBoardCardAppearanceEditor({
   onClose: () => void;
   onSave: (appearance: { displayNameOverride?: string; imagePath?: string }) => void;
 }) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const [displayName, setDisplayName] = useState("");
   const [imagePath, setImagePath] = useState("");
   const [rootPath, setRootPath] = useState("");
@@ -55,22 +56,28 @@ export function SkiaBoardCardAppearanceEditor({
     const imageDirectory = target?.imagePath
       ? getRunnerFileLocation(target.imagePath, target.rootPath).rootDirectory
       : "";
-    setRootPath(() => directories.find((directory) => (
-      target?.imagePath?.startsWith(`${directory.path}/`)
-    ))?.path || imageDirectory || target?.rootPath || directories[0]?.path || "");
+    setRootPath(
+      () =>
+        directories.find((directory) => target?.imagePath?.startsWith(`${directory.path}/`))?.path ||
+        imageDirectory ||
+        target?.rootPath ||
+        directories[0]?.path ||
+        "",
+    );
   }, [directories, target]);
 
-  const directoryOptions = useMemo(() => [
-    ...directories.map((directory) => ({
-      value: directory.path,
-      label: directory.displayName || directory.path,
-    })),
-    ...(
-      rootPath && !directories.some((directory) => directory.path === rootPath)
+  const directoryOptions = useMemo(
+    () => [
+      ...directories.map((directory) => ({
+        value: directory.path,
+        label: directory.displayName || directory.path,
+      })),
+      ...(rootPath && !directories.some((directory) => directory.path === rootPath)
         ? [{ value: rootPath, label: `登録解除済み: ${rootPath}` }]
-        : []
-    ),
-  ], [directories, rootPath]);
+        : []),
+    ],
+    [directories, rootPath],
+  );
 
   const save = () => {
     const nextDisplayName = displayName.trim();
@@ -93,12 +100,15 @@ export function SkiaBoardCardAppearanceEditor({
             <Pressable style={styles.panel} onPress={() => {}}>
               <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
                 <Text style={styles.title}>カード表示</Text>
-                <Text style={styles.currentName} numberOfLines={1}>{target?.name || ""}</Text>
+                <Text style={styles.currentName} numberOfLines={1}>
+                  {target?.name || ""}
+                </Text>
                 <Text style={styles.label}>ボード上の表示名</Text>
                 <TextInput
                   value={displayName}
                   onChangeText={setDisplayName}
                   placeholder="空欄で通常名を使用"
+                  placeholderTextColor={theme.colors.textMuted}
                   selectTextOnFocus
                   style={styles.input}
                   accessibilityLabel="ボード上の表示名"
@@ -175,40 +185,102 @@ export function SkiaBoardCardAppearanceEditor({
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(15, 23, 42, 0.28)" },
-  keyboardAvoiding: { flex: 1 },
-  safeArea: { flex: 1, justifyContent: "center", padding: 24 },
-  panel: { maxHeight: "100%", borderRadius: 16, backgroundColor: "#ffffff" },
-  content: { padding: 18, gap: 10 },
-  title: { color: "#172033", fontSize: 17, fontWeight: "800" },
-  currentName: { color: "#64748b", fontSize: 12 },
-  label: { color: "#475569", fontSize: 12, fontWeight: "700", marginTop: 2 },
-  input: {
-    minHeight: 44,
-    paddingHorizontal: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#94a3b8",
-    borderRadius: 9,
-    color: "#172033",
-    backgroundColor: "#f8fafc",
-  },
-  help: { color: "#64748b", fontSize: 11 },
-  imageSelection: { gap: 6, padding: 10, borderRadius: 9, backgroundColor: "#f1f5f9" },
-  imagePath: { color: "#334155", fontSize: 12 },
-  clearImageText: { color: "#dc2626", fontSize: 12, fontWeight: "700" },
-  actions: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
-  spacer: { flex: 1 },
-  resetButton: { minHeight: 40, paddingHorizontal: 8, justifyContent: "center" },
-  resetText: { color: "#dc2626", fontSize: 13, fontWeight: "700" },
-  cancelButton: { minHeight: 40, paddingHorizontal: 10, justifyContent: "center" },
-  cancelText: { color: "#475569", fontSize: 13, fontWeight: "700" },
-  saveButton: {
-    minHeight: 40,
-    paddingHorizontal: 16,
-    borderRadius: 9,
-    justifyContent: "center",
-    backgroundColor: "#2563eb",
-  },
-  saveText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
-});
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+    backdrop: { flex: 1, backgroundColor: theme.colors.backdrop },
+    keyboardAvoiding: { flex: 1 },
+    safeArea: { flex: 1, justifyContent: "center", padding: 24 },
+    panel: {
+      maxHeight: "100%",
+      borderRadius: 16,
+      backgroundColor: theme.colors.surface,
+    },
+    content: { padding: 18, gap: 10 },
+    title: {
+      color: theme.colors.textPrimary,
+      fontSize: theme.typography.subtitle.fontSize,
+      lineHeight: theme.typography.subtitle.lineHeight,
+      fontWeight: "800",
+    },
+    currentName: { color: theme.colors.textMuted, ...theme.typography.small },
+    label: {
+      color: theme.colors.formLabel,
+      fontSize: theme.typography.small.fontSize,
+      lineHeight: theme.typography.small.lineHeight,
+      fontWeight: "700",
+      marginTop: 2,
+    },
+    input: {
+      minHeight: 44,
+      paddingHorizontal: 12,
+      borderWidth: theme.borders.thin,
+      borderColor: theme.colors.borderStrong,
+      borderRadius: 9,
+      color: theme.colors.textPrimary,
+      backgroundColor: theme.colors.surfaceRaised,
+      fontSize: theme.typography.input.fontSize,
+      lineHeight: theme.typography.input.lineHeight,
+    },
+    help: { color: theme.colors.textMuted, ...theme.typography.caption },
+    imageSelection: {
+      gap: 6,
+      padding: 10,
+      borderRadius: 9,
+      backgroundColor: theme.colors.surfaceMuted,
+    },
+    imagePath: { color: theme.colors.textSecondary, ...theme.typography.small },
+    clearImageText: {
+      color: theme.colors.negativeText,
+      fontSize: theme.typography.small.fontSize,
+      lineHeight: theme.typography.small.lineHeight,
+      fontWeight: "700",
+    },
+    actions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      marginTop: 4,
+    },
+    spacer: { flex: 1 },
+    resetButton: {
+      minHeight: 40,
+      paddingHorizontal: 8,
+      justifyContent: "center",
+    },
+    resetText: {
+      color: theme.colors.negativeText,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "700",
+    },
+    cancelButton: {
+      minHeight: 40,
+      paddingHorizontal: 10,
+      justifyContent: "center",
+    },
+    cancelText: {
+      color: theme.colors.textSecondary,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "700",
+    },
+    saveButton: {
+      minHeight: 40,
+      paddingHorizontal: 16,
+      borderRadius: 9,
+      justifyContent: "center",
+      backgroundColor: theme.colors.accent,
+    },
+    saveText: {
+      color: theme.colors.textOnAccent,
+      fontSize: theme.typography.compact.fontSize,
+      lineHeight: theme.typography.compact.lineHeight,
+      fontWeight: "800",
+    },
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};
