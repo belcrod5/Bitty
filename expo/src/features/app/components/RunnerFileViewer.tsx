@@ -23,6 +23,8 @@ import type {
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 const DRAWIO_VIEWER_SCRIPT_URL =
   "https://viewer.diagrams.net/js/viewer-static.min.js";
@@ -96,6 +98,8 @@ export function RunnerFileViewer({
   onRequestClose,
   onAutoSave,
 }: RunnerFileViewerProps) {
+  const { theme, themeId } = useVisualTheme();
+  const viewerStyles = viewerStylesByTheme[themeId];
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [content, setContent] = useState("");
@@ -183,15 +187,15 @@ export function RunnerFileViewer({
               testID="runner-file-viewer-close"
             >
               {checklistSaving ? (
-                <ActivityIndicator size="small" color="#94a3b8" />
+                <ActivityIndicator size="small" color={theme.dark.textMuted} />
               ) : (
-                <Ionicons name="close" size={24} color="#e2e8f0" />
+                <Ionicons name="close" size={24} color={theme.dark.textMuted} />
               )}
             </TouchableOpacity>
           </View>
           {loading ? (
             <View style={viewerStyles.centerArea}>
-              <ActivityIndicator size="large" color="#38bdf8" />
+              <ActivityIndicator size="large" color={theme.dark.accent} />
             </View>
           ) : loadError ? (
             <View style={viewerStyles.centerArea}>
@@ -219,10 +223,11 @@ export function RunnerFileViewer({
   );
 }
 
-const viewerStyles = StyleSheet.create({
+function createRunnerFileViewerStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#020617",
+    backgroundColor: theme.dark.canvas,
   },
   header: {
     minHeight: 64,
@@ -230,7 +235,7 @@ const viewerStyles = StyleSheet.create({
     paddingRight: 10,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#334155",
+    borderBottomColor: theme.dark.border,
     flexDirection: "row",
     alignItems: "center",
   },
@@ -239,14 +244,14 @@ const viewerStyles = StyleSheet.create({
     minWidth: 0,
   },
   title: {
-    color: "#f8fafc",
-    fontSize: 16,
+    color: theme.dark.text,
+    fontSize: theme.typography.control.fontSize,
     fontWeight: "700",
   },
   path: {
     marginTop: 2,
-    color: "#94a3b8",
-    fontSize: 11,
+    color: theme.dark.textMuted,
+    fontSize: theme.typography.caption.fontSize,
   },
   closeButton: {
     width: 44,
@@ -261,12 +266,18 @@ const viewerStyles = StyleSheet.create({
     padding: 24,
   },
   errorText: {
-    color: "#fecaca",
-    fontSize: 14,
+    color: theme.dark.danger,
+    fontSize: theme.typography.body.fontSize,
     textAlign: "center",
   },
   webview: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
   },
-});
+  });
+}
+
+const viewerStylesByTheme: Record<VisualThemeId, ReturnType<typeof createRunnerFileViewerStyles>> = {
+  standard: createRunnerFileViewerStyles(VISUAL_THEMES.standard),
+  highLegibility: createRunnerFileViewerStyles(VISUAL_THEMES.highLegibility),
+};

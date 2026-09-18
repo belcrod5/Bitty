@@ -16,7 +16,8 @@ import {
 import Svg, { Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { PopupChatSourceRect } from "./popupChatTypes";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
@@ -78,10 +79,11 @@ export type AppDrawerProps = {
 };
 
 function DrawerChevron({ expanded }: { expanded: boolean }) {
+  const { theme } = useVisualTheme();
   const path = expanded ? "M4 6L8 10L12 6" : "M10 4L6 8L10 12";
   return (
     <Svg width={16} height={16} viewBox="0 0 16 16" fill="none">
-      <Path d={path} stroke="#475569" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d={path} stroke={theme.colors.textMuted} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
   );
 }
@@ -132,6 +134,8 @@ export const AppDrawer = memo(function AppDrawer({
   onMarkSessionUnread,
   onMarkDirectorySessionsRead,
 }: AppDrawerProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const {
     addDirectory,
     removeDirectory,
@@ -303,7 +307,7 @@ export const AppDrawer = memo(function AppDrawer({
               accessibilityRole="button"
               accessibilityLabel={childrenExpanded ? "サブエージェントを閉じる" : "サブエージェントを開く"}
             >
-              {childState?.loading ? <ActivityIndicator size="small" color="#64748b" /> : (
+              {childState?.loading ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : (
                 <DrawerChevron expanded={childrenExpanded} />
               )}
             </TouchableOpacity>
@@ -324,7 +328,7 @@ export const AppDrawer = memo(function AppDrawer({
             >
               {sessionPrimaryTitle}
             </Text>
-            {restoringThisSession ? <ActivityIndicator size="small" color="#0f766e" /> : null}
+            {restoringThisSession ? <ActivityIndicator size="small" color={theme.colors.primaryAction} /> : null}
             <Text style={styles.appDrawerSessionContextPct}>{contextUsedPctText}</Text>
           </View>
           {hasUnread ? <View style={styles.appDrawerSessionUnreadDot} /> : null}
@@ -537,7 +541,7 @@ export const AppDrawer = memo(function AppDrawer({
                           disabled={sessionState.loading || sessionState.refreshing || sessionState.loadingMore || llmSessionRestoreLoading}
                           onPress={() => onLoadMoreSessions(directory.id, directory.path)}
                         >
-                          {sessionState.loadingMore ? <ActivityIndicator size="small" color="#1e40af" /> : null}
+                          {sessionState.loadingMore ? <ActivityIndicator size="small" color={theme.colors.infoAction} /> : null}
                           <Text style={styles.appDrawerSessionLoadMoreButtonText}>もっと読み込む</Text>
                         </TouchableOpacity>
                       ) : null}
@@ -667,7 +671,7 @@ export const AppDrawer = memo(function AppDrawer({
         </AppModal>
       </ScrollView>
       {Platform.OS === "ios" ? (
-        <InputAccessoryView nativeID={APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID} backgroundColor="#f8fafc">
+        <InputAccessoryView nativeID={APP_DRAWER_SEARCH_INPUT_ACCESSORY_ID} backgroundColor={theme.colors.surfaceRaised}>
           <View style={styles.appDrawerKeyboardAccessory}>
             <TouchableOpacity
               style={styles.appDrawerKeyboardDismissButton}

@@ -4,12 +4,11 @@ import type { LlmUiStatus } from "../hooks/useLlmRequestStatus";
 import type { ChatBottomToast } from "../hooks/useChatBottomToast";
 import type { SttMessageMeta } from "../types/appTypes";
 import type { PixelStatusIconKey } from "../utils/statusIcons";
+import type { VisualThemeToneId } from "../theme/visualThemes";
 
 type LlmVisual = {
   icon: string;
-  bg: string;
-  border: string;
-  text: string;
+  tone: VisualThemeToneId;
 };
 
 type TtsSegmentProgress = {

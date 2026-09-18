@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
 import { AppModal } from "./AppModal";
 
 export type SlashCommandOption = {
@@ -22,6 +22,7 @@ export function SlashCommandSelectMenu({
   onClose,
   onSelect,
 }: SlashCommandSelectMenuProps) {
+  const styles = useAppStyles();
   const content = (
     <Pressable style={styles.modalBackdrop} onPress={onClose}>
       <Pressable style={styles.modalCard} onPress={() => {}}>

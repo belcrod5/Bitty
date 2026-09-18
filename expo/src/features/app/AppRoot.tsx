@@ -18,8 +18,9 @@ import { Audio } from "./audio";
 import Constants from "expo-constants";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { WebView } from "react-native-webview";
-import { styles } from "./styles";
+import { appStylesByTheme } from "./styles";
 import { AppProviders } from "./AppProviders";
+import { AppModalHost } from "./components/AppModal";
 import { AppDrawer } from "./components/AppDrawer";
 import { AppDrawerLayout } from "./components/AppDrawerLayout";
 import { AppScreenContent } from "./components/AppScreenContent";
@@ -33,6 +34,12 @@ import {
 } from "./components/LlmCompletionNotifications";
 import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
+import { VisualThemeProvider } from "./theme/VisualThemeContext";
+import {
+  DEFAULT_VISUAL_THEME_ID,
+  VISUAL_THEMES,
+  type VisualThemeId,
+} from "./theme/visualThemes";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
 import {
@@ -672,6 +679,8 @@ function parseExpandedDirectoryIds(raw: unknown, directories: RegisteredDirector
 }
 
 export default function App() {
+  const [visualThemeId, setVisualThemeId] = useState<VisualThemeId>(DEFAULT_VISUAL_THEME_ID);
+  const styles = appStylesByTheme[visualThemeId];
   const [runnerUrl, setRunnerUrl] = useState(DEFAULT_RUNNER_URL);
   const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
@@ -2092,6 +2101,7 @@ export default function App() {
     autoSpeechDetected,
     autoWaveformDebugText,
   } = useChatDerivedState({
+    visualTheme: VISUAL_THEMES[visualThemeId],
     codexWsUrl,
     transcript,
     replyLoading,
@@ -4442,6 +4452,7 @@ export default function App() {
     autoReplyAfterStt,
     autoSpeakAfterReply,
     faceIdRequiredForApproval,
+    visualThemeId,
     setRunnerUrl,
     setRunnerToken,
     setCloudflareAccessClientId,
@@ -4474,6 +4485,7 @@ export default function App() {
     setAutoReplyAfterStt,
     setAutoSpeakAfterReply,
     setFaceIdRequiredForApproval,
+    setVisualThemeId,
     parseRegisteredDirectories,
     parseSessionTitleOverrides,
     parseSessionMarkerColors,
@@ -7031,7 +7043,9 @@ export default function App() {
     [appDrawerProps]
   );
   return (
-    <GestureHandlerRootView style={styles.safeArea}>
+    <VisualThemeProvider themeId={visualThemeId} onSelectTheme={setVisualThemeId}>
+      <AppModalHost>
+      <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
         bootstrapReady={settingsLoaded}
         url={codexWsUrl}
@@ -7114,6 +7128,8 @@ export default function App() {
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
-    </GestureHandlerRootView>
+      </GestureHandlerRootView>
+      </AppModalHost>
+    </VisualThemeProvider>
   );
 }

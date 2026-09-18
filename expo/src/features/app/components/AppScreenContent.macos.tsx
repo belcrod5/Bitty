@@ -4,6 +4,8 @@ import { CloudflareTunnelMonitorScreen } from "../screens/CloudflareTunnelMonito
 import { SettingsScreen } from "../screens/SettingsScreen";
 import { SkiaMiniBoardScreen } from "../screens/SkiaMiniBoardScreen";
 import type { AppScreen } from "../types/appTypes";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
 type AppScreenContentProps = {
   activeScreen: AppScreen;
@@ -17,6 +19,8 @@ export function AppScreenContent({
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
 }: AppScreenContentProps) {
+  const { themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const boardVisible = activeScreen === "skia_board";
   return (
     <View style={styles.root}>
@@ -44,15 +48,22 @@ export function AppScreenContent({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     flex: 1,
   },
   screen: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.canvas,
   },
   hiddenBoard: {
     ...StyleSheet.absoluteFillObject,
   },
-});
+  });
+}
+
+const stylesByTheme = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+} as const;

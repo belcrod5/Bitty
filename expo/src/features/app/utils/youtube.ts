@@ -1,3 +1,5 @@
+import { VISUAL_THEMES } from "../theme/visualThemes";
+
 const YOUTUBE_FLOATING_PLAYER_WIDTH = 176;
 const YOUTUBE_FLOATING_PLAYER_HEIGHT = 110;
 const YOUTUBE_FLOATING_PLAYER_MARGIN = 12;
@@ -82,17 +84,24 @@ export function isSameStringArray(a: string[], b: string[]) {
   return true;
 }
 
-export function buildYouTubeEmbedHtml(videoId: string, session: number) {
+export function buildYouTubeEmbedHtml(
+  videoId: string,
+  session: number,
+  backgroundColor = VISUAL_THEMES.standard.dark.surfaceRaised
+) {
   const normalized = String(videoId || "").trim();
   if (!/^[A-Za-z0-9_-]{11}$/.test(normalized)) return "";
   const safeSession = Number.isFinite(Number(session)) ? Math.max(0, Number(session)) : 0;
+  const safeBackgroundColor = /^#[0-9a-f]{6}$/i.test(backgroundColor)
+    ? backgroundColor
+    : VISUAL_THEMES.standard.dark.surfaceRaised;
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
     <style>
-      html, body { margin: 0; padding: 0; background: #0f172a; height: 100%; }
+      html, body { margin: 0; padding: 0; background: ${safeBackgroundColor}; height: 100%; }
       .wrap { position: fixed; inset: 0; }
       #player { width: 100%; height: 100%; }
       #player iframe { width: 100%; height: 100%; border: 0; }

@@ -7,7 +7,8 @@ import {
 } from "react-native";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "./AppDrawer";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { findDirectoryForSessionTree, getCachedDirectorySessions } from "../utils/sessionHistoryContext";
 import { resolveLlmSessionDisplayTitle } from "../utils/llmSession";
 
@@ -46,6 +47,8 @@ export function ChatSessionSubagentList({
   openSessionHistoryEntry,
   onCloseMenu,
 }: ChatSessionSubagentListProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const sessionContext = useMemo(() => {
     const directoryPath = String(selectedDirectoryPath || "").trim();
     const sessionId = String(selectedSessionId || "").trim();
@@ -126,7 +129,7 @@ export function ChatSessionSubagentList({
         <View style={styles.settingsGroup}>
           {childState?.loading ? (
             <View style={styles.chatDirectorySubagentStatusRow}>
-              <ActivityIndicator size="small" color="#0a84ff" />
+              <ActivityIndicator size="small" color={theme.colors.controlAccent} />
               <Text style={styles.chatDirectorySubagentMetaText}>取得中</Text>
             </View>
           ) : childState?.error ? (

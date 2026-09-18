@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Platform, Pressable, Text, TouchableOpacity, View } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
 import { CircularProgressRing } from "./CircularProgressRing";
 import { AppModal } from "./AppModal";
 
@@ -23,6 +23,7 @@ export function ChatContextUsageMenu({
   trackColor,
   onStartNewSession,
 }: ChatContextUsageMenuProps) {
+  const styles = useAppStyles();
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     if (dismissed) setMenuOpen(false);

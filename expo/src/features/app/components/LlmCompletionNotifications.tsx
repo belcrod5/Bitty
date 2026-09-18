@@ -9,7 +9,8 @@ import {
   View,
 } from "react-native";
 import { USE_NATIVE_ANIMATION_DRIVER } from "../utils/animationDriver";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 
 const LLM_COMPLETION_NOTIFICATION_COLLAPSE_DELAY_MS = 5_000;
 const LLM_COMPLETION_NOTIFICATION_EDGE_GAP = 10;
@@ -56,6 +57,8 @@ function LlmCompletionNotificationCard({
   onOpen: (sessionRef: { backendId: string; sessionId: string }) => void;
   onDismiss: (id: string) => void;
 }) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const opacityRef = useRef(new Animated.Value(0));
   const translateYRef = useRef(new Animated.Value(-8));
   const scaleRef = useRef(new Animated.Value(0.98));
@@ -112,7 +115,7 @@ function LlmCompletionNotificationCard({
           accessibilityRole="button"
           accessibilityLabel="通知を閉じる"
         >
-          <Ionicons name="close" size={14} color="#64748b" />
+          <Ionicons name="close" size={14} color={theme.colors.textMuted} />
         </TouchableOpacity>
         {notification.directoryName ? (
           <Text style={styles.llmCompletionNotificationDirectory} numberOfLines={1}>
@@ -133,6 +136,8 @@ export function LlmCompletionNotifications({
   onOpenSession,
   onDismiss,
 }: LlmCompletionNotificationsProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const [expanded, setExpanded] = useState(true);
   const [viewport, setViewport] = useState<NotificationViewport>({ width: 0, height: 0 });
   const [position, setPosition] = useState<NotificationPosition>({
@@ -281,7 +286,7 @@ export function LlmCompletionNotifications({
               accessibilityRole="button"
               accessibilityLabel={`完了通知 ${visibleNotifications.length}件を表示`}
             >
-              <Ionicons name="notifications-outline" size={22} color="#0f766e" />
+              <Ionicons name="notifications-outline" size={22} color={theme.colors.primaryAction} />
               <View style={styles.llmCompletionNotificationCountBadge}>
                 <Text style={styles.llmCompletionNotificationCountText}>
                   {visibleNotifications.length}

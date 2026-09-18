@@ -1,9 +1,13 @@
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from "react-native";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 export type CommandExecutionRowProps = CodexCommandExecutionInfo;
 
 export function CommandExecutionRow({ command, status, exitCode }: CommandExecutionRowProps) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const isRunning = status === "running";
   const isFailed = status === "failed";
   const label = isRunning ? "Running" : "Ran";
@@ -12,7 +16,7 @@ export function CommandExecutionRow({ command, status, exitCode }: CommandExecut
   return (
     <View style={styles.root}>
       {isRunning ? (
-        <ActivityIndicator size="small" color="#64748b" style={styles.spinner} />
+        <ActivityIndicator size="small" color={theme.colors.textMuted} style={styles.spinner} />
       ) : (
         <Text style={[styles.marker, isFailed ? styles.toneFailed : styles.toneDefault]}>⏺</Text>
       )}
@@ -29,7 +33,8 @@ export function CommandExecutionRow({ command, status, exitCode }: CommandExecut
   );
 }
 
-const styles = StyleSheet.create({
+function createCommandExecutionStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   root: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -42,20 +47,20 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   marker: {
-    fontSize: 12,
+    fontSize: theme.typography.small.fontSize,
     width: 14,
     textAlign: "center",
   },
   text: {
     flex: 1,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: theme.typography.small.fontSize,
+    lineHeight: theme.typography.captionRelaxed.lineHeight,
   },
   toneDefault: {
-    color: "#64748b",
+    color: theme.colors.textMuted,
   },
   toneFailed: {
-    color: "#dc2626",
+    color: theme.colors.negativeText,
   },
   label: {
     fontWeight: "700",
@@ -63,4 +68,10 @@ const styles = StyleSheet.create({
   command: {
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
   },
-});
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createCommandExecutionStyles>> = {
+  standard: createCommandExecutionStyles(VISUAL_THEMES.standard),
+  highLegibility: createCommandExecutionStyles(VISUAL_THEMES.highLegibility),
+};

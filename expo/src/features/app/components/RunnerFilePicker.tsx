@@ -13,6 +13,8 @@ import {
   RunnerFileExplorer,
   type RunnerFileExplorerEntry,
 } from "./RunnerFileExplorer";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type Props = {
   title: string;
@@ -44,6 +46,8 @@ export function RunnerFilePicker({
   onSelect,
 }: Props) {
   const [visible, setVisible] = useState(false);
+  const { themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
 
   return (
     <>
@@ -89,16 +93,23 @@ export function RunnerFilePicker({
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#f8fafc" },
-  field: { minHeight: 44, paddingHorizontal: 10, borderWidth: 1, borderColor: "#cbd5e1", borderRadius: 8, flexDirection: "row", alignItems: "center", gap: 8 },
-  value: { flex: 1, color: "#0f172a", fontSize: 13 },
-  placeholder: { flex: 1, color: "#94a3b8", fontSize: 14 },
-  chevron: { color: "#64748b", fontSize: 22 },
-  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#cbd5e1", backgroundColor: "#fff" },
-  headerAction: { color: "#2563eb", fontSize: 16, minWidth: 48 },
+function createRunnerFilePickerStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.surfaceRaised },
+  field: { minHeight: 44, paddingHorizontal: 10, borderWidth: theme.borders.thin, borderColor: theme.colors.border, borderRadius: 8, flexDirection: "row", alignItems: "center", gap: 8 },
+  value: { flex: 1, color: theme.colors.textPrimary, fontSize: theme.typography.compact.fontSize },
+  placeholder: { flex: 1, color: theme.colors.borderStrong, fontSize: theme.typography.body.fontSize },
+  chevron: { color: theme.colors.textMuted, fontSize: theme.typography.headline.fontSize },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  headerAction: { color: theme.colors.accent, fontSize: theme.typography.control.fontSize, minWidth: 48 },
   headerSpacer: { width: 48 },
-  title: { fontSize: 17, fontWeight: "700", color: "#0f172a" },
-  path: { paddingHorizontal: 16, paddingVertical: 12, color: "#475569", backgroundColor: "#fff", fontSize: 12 },
+  title: { fontSize: theme.typography.subtitle.fontSize, fontWeight: "700", color: theme.colors.textPrimary },
+  path: { paddingHorizontal: 16, paddingVertical: 12, color: theme.tones.neutral.foreground, backgroundColor: theme.colors.surface, fontSize: theme.typography.small.fontSize },
   content: { padding: 12 },
-});
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createRunnerFilePickerStyles>> = {
+  standard: createRunnerFilePickerStyles(VISUAL_THEMES.standard),
+  highLegibility: createRunnerFilePickerStyles(VISUAL_THEMES.highLegibility),
+};

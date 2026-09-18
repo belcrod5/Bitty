@@ -9,6 +9,8 @@ import {
 } from "react-native";
 import MapView, { Circle, Marker, type Region } from "react-native-maps";
 import * as Location from "expo-location";
+import { useVisualTheme } from "../app/theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
 
 export type LocationMapPickerTarget = {
   latitude: number;
@@ -36,6 +38,8 @@ function regionForCoordinate(latitude: number, longitude: number, radiusMeters: 
 }
 
 export function LocationMapPicker({ target, onCancel, onConfirm }: Props) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const [coordinate, setCoordinate] = useState<{ latitude: number; longitude: number } | null>(null);
   const [initialRegion, setInitialRegion] = useState<Region | null>(null);
   const openedRef = useRef(false);
@@ -108,8 +112,8 @@ export function LocationMapPicker({ target, onCancel, onConfirm }: Props) {
               <Circle
                 center={coordinate}
                 radius={radiusMeters}
-                strokeColor="rgba(15, 118, 110, 0.9)"
-                fillColor="rgba(15, 118, 110, 0.15)"
+                strokeColor={theme.colors.primaryAction}
+                fillColor={theme.colors.primaryActionMuted}
               />
             ) : null}
           </MapView>
@@ -121,12 +125,19 @@ export function LocationMapPicker({ target, onCancel, onConfirm }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#f8fafc" },
-  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#cbd5e1", backgroundColor: "#fff" },
-  title: { fontSize: 17, fontWeight: "700", color: "#0f172a" },
-  headerAction: { fontSize: 16, color: "#2563eb", minWidth: 64 },
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.surfaceRaised },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: theme.borders.thin, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  title: { ...theme.typography.subtitleDense, fontWeight: "700", color: theme.colors.textPrimary },
+  headerAction: { ...theme.typography.control, color: theme.colors.accent, minWidth: 64 },
   disabled: { opacity: 0.4 },
-  help: { paddingHorizontal: 16, paddingVertical: 8, color: "#475569", fontSize: 12 },
+  help: { paddingHorizontal: 16, paddingVertical: 8, color: theme.colors.textSecondary, ...theme.typography.small },
   map: { flex: 1 },
-});
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

@@ -1,9 +1,11 @@
 import { CHAT_CONTENT_MAX_WIDTH } from "./layoutConstants";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
-export const appCommonStyles = {
+export function createAppCommonStyles(theme: VisualTheme) {
+  return {
   safeArea: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.canvas,
   },
   keyboardAvoiding: {
     flex: 1,
@@ -17,4 +19,10 @@ export const appCommonStyles = {
     maxWidth: CHAT_CONTENT_MAX_WIDTH,
     alignSelf: "center",
   },
-} as const;
+  } as const;
+}
+
+export const appCommonStylesByTheme = {
+  standard: createAppCommonStyles(VISUAL_THEMES.standard),
+  highLegibility: createAppCommonStyles(VISUAL_THEMES.highLegibility),
+};

@@ -23,6 +23,8 @@ import type {
 import { AppModal } from "./AppModal";
 import { MarkdownText } from "./MarkdownText";
 import { ModalTextInputDraft } from "./ModalTextInputDraft";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type WorkspaceTextFileEditorProps = {
   target: WorkspaceFileTarget | null;
@@ -45,6 +47,8 @@ export function WorkspaceTextFileEditor({
   onClose,
   onSave,
 }: WorkspaceTextFileEditorProps) {
+  const { theme, themeId } = useVisualTheme();
+  const editorStyles = editorStylesByTheme[themeId];
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [content, setContent] = useState("");
@@ -169,7 +173,7 @@ export function WorkspaceTextFileEditor({
               <Ionicons
                 name={mode === "edit" ? "eye-outline" : "create-outline"}
                 size={20}
-                color="#334155"
+                color={theme.colors.textSecondary}
               />
             </TouchableOpacity>
             <TouchableOpacity
@@ -182,7 +186,7 @@ export function WorkspaceTextFileEditor({
               disabled={!dirty || saving}
             >
               {saving ? (
-                <ActivityIndicator size="small" color="#ffffff" />
+                <ActivityIndicator size="small" color={theme.colors.textOnAccent} />
               ) : (
                 <Text style={editorStyles.saveButtonText}>保存</Text>
               )}
@@ -190,7 +194,7 @@ export function WorkspaceTextFileEditor({
           </View>
           {loading ? (
             <View style={editorStyles.centerArea}>
-              <ActivityIndicator size="large" color="#0f766e" />
+              <ActivityIndicator size="large" color={theme.colors.primaryAction} />
             </View>
           ) : loadError ? (
             <View style={editorStyles.centerArea}>
@@ -242,10 +246,12 @@ export function WorkspaceTextFileEditor({
   );
 }
 
-const editorStyles = StyleSheet.create({
+function createWorkspaceTextFileEditorStyles(theme: VisualTheme) {
+  const compactControlSize = theme.id === "highLegibility" ? 44 : 36;
+  return StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
   },
   body: {
     flex: 1,
@@ -256,8 +262,8 @@ const editorStyles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
+    borderBottomWidth: theme.borders.thin,
+    borderBottomColor: theme.colors.borderSubtle,
   },
   headerButton: {
     borderRadius: 8,
@@ -265,7 +271,7 @@ const editorStyles = StyleSheet.create({
     paddingVertical: 8,
   },
   headerCloseText: {
-    color: "#334155",
+    color: theme.colors.textSecondary,
     fontWeight: "600",
   },
   headerTitleArea: {
@@ -274,29 +280,29 @@ const editorStyles = StyleSheet.create({
     alignItems: "center",
   },
   headerTitle: {
-    fontSize: 15,
+    fontSize: theme.typography.input.fontSize,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   headerPath: {
-    fontSize: 11,
-    color: "#64748b",
+    fontSize: theme.typography.caption.fontSize,
+    color: theme.colors.textMuted,
   },
   saveButton: {
     minWidth: 64,
     alignItems: "center",
-    backgroundColor: "#0f766e",
+    backgroundColor: theme.colors.primaryAction,
   },
   modeButton: {
-    width: 36,
-    height: 36,
+    width: compactControlSize,
+    height: compactControlSize,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f1f5f9",
+    backgroundColor: theme.colors.surfaceMuted,
   },
   saveButtonText: {
-    color: "#ffffff",
+    color: theme.colors.textOnAccent,
     fontWeight: "700",
   },
   disabledButton: {
@@ -309,16 +315,16 @@ const editorStyles = StyleSheet.create({
     padding: 24,
   },
   errorText: {
-    color: "#b91c1c",
-    fontSize: 14,
+    color: theme.tones.danger.foreground,
+    fontSize: theme.typography.body.fontSize,
     textAlign: "center",
   },
   textInput: {
     flex: 1,
     padding: 12,
-    fontSize: 14,
-    lineHeight: 20,
-    color: "#0f172a",
+    fontSize: theme.typography.body.fontSize,
+    lineHeight: theme.typography.body.lineHeight,
+    color: theme.colors.textPrimary,
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
   previewScroll: {
@@ -329,8 +335,14 @@ const editorStyles = StyleSheet.create({
     padding: 16,
   },
   previewText: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: "#0f172a",
+    fontSize: theme.typography.body.fontSize,
+    lineHeight: theme.id === "standard" ? 22 : theme.typography.body.lineHeight,
+    color: theme.colors.textPrimary,
   },
-});
+  });
+}
+
+const editorStylesByTheme: Record<VisualThemeId, ReturnType<typeof createWorkspaceTextFileEditorStyles>> = {
+  standard: createWorkspaceTextFileEditorStyles(VISUAL_THEMES.standard),
+  highLegibility: createWorkspaceTextFileEditorStyles(VISUAL_THEMES.highLegibility),
+};

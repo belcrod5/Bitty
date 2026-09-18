@@ -24,7 +24,8 @@ import { WebView } from "react-native-webview";
 import { isIosFaceTrackingAvailable } from "../../faceTracking/iosFaceTrackingClient";
 import type { ConversationMessage } from "../types/appTypes";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { AppModal } from "../components/AppModal";
 import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
@@ -164,6 +165,8 @@ export function ChatScreen({
   onPopupHeaderDragEnd,
   showPopupMessagesSkeleton = false,
 }: ChatScreenProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const panelId = normalizeChatPanelId(panelIdRaw);
   const isMiniBoardPopupMode = mode === "mini_board_popup";
   const isPanelRuntimeView = isPanelScopedChatView(mode, panelId);
@@ -1629,6 +1632,7 @@ export function ChatScreen({
     const messageStatus = message.llmStatus || "completed";
     if (messageStatus === "completed") return null;
     const messageVisual = llmStatusVisual(messageStatus);
+    const messageTone = theme.tones[messageVisual.tone];
     const messageStatusText = llmStatusLabel(messageStatus);
     const messagePixelIconKey = resolvePixelStatusIconKey(messageStatus, message.llmStatusDetail || "");
     const useBouncingDotsStatus = messagePixelIconKey === "model_generating" || messagePixelIconKey === "model_processing";
@@ -1642,13 +1646,13 @@ export function ChatScreen({
           <View
             style={[
               styles.chatStatusChip,
-              { backgroundColor: messageVisual.bg, borderColor: messageVisual.border },
+              { backgroundColor: messageTone.background, borderColor: messageTone.border },
             ]}
           >
             <View style={styles.chatStatusLottieWrap}>
               <Image source={pixelStatusAnimations[messagePixelIconKey]} style={styles.chatStatusLottie} />
             </View>
-            <Text style={[styles.chatStatusText, { color: messageVisual.text }]}> {messageStatusText}</Text>
+            <Text style={[styles.chatStatusText, { color: messageTone.foreground }]}> {messageStatusText}</Text>
           </View>
         )}
       </View>
@@ -1658,6 +1662,8 @@ export function ChatScreen({
     llmStatusVisual,
     pixelStatusAnimations,
     resolvePixelStatusIconKey,
+    styles,
+    theme.tones,
   ]);
 
   const renderConversationMessage = ({
@@ -1840,7 +1846,7 @@ export function ChatScreen({
               accessibilityRole="button"
               accessibilityLabel="セッションを未読にする"
             >
-              <Ionicons name="mail-unread-outline" size={13} color="#94a3b8" />
+              <Ionicons name="mail-unread-outline" size={13} color={theme.colors.borderStrong} />
             </TouchableOpacity>
             {message.content ? (
               <TouchableOpacity
@@ -1849,7 +1855,7 @@ export function ChatScreen({
                 accessibilityRole="button"
                 accessibilityLabel="メッセージをコピー"
               >
-                <Ionicons name="copy-outline" size={13} color="#94a3b8" />
+                <Ionicons name="copy-outline" size={13} color={theme.colors.borderStrong} />
               </TouchableOpacity>
             ) : null}
           </View>
@@ -2023,7 +2029,7 @@ export function ChatScreen({
             accessibilityRole="button"
             accessibilityLabel="前の検索結果"
           >
-            <Ionicons name="chevron-up" size={17} color="#334155" />
+            <Ionicons name="chevron-up" size={17} color={theme.colors.textSecondary} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.chatFindButton, chatFindMatches.length === 0 ? styles.chatFindButtonDisabled : null]}
@@ -2032,7 +2038,7 @@ export function ChatScreen({
             accessibilityRole="button"
             accessibilityLabel="次の検索結果"
           >
-            <Ionicons name="chevron-down" size={17} color="#334155" />
+            <Ionicons name="chevron-down" size={17} color={theme.colors.textSecondary} />
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.chatFindButton}
@@ -2040,7 +2046,7 @@ export function ChatScreen({
             accessibilityRole="button"
             accessibilityLabel="検索を閉じる"
           >
-            <Ionicons name="close" size={18} color="#334155" />
+            <Ionicons name="close" size={18} color={theme.colors.textSecondary} />
           </TouchableOpacity>
         </View>
       ) : null}
@@ -2110,7 +2116,7 @@ export function ChatScreen({
               ListHeaderComponent={sessionHistoryPagingState ? (
                 <View style={{ height: 44, justifyContent: "center" }}>
                   {sessionHistoryPagingState.loading ? (
-                    <ActivityIndicator size="small" color="#0f766e" />
+                    <ActivityIndicator size="small" color={theme.colors.primaryAction} />
                   ) : sessionHistoryPagingState.errorCode === "stale_history_cursor" ? (
                     <Text style={styles.chatEmpty} numberOfLines={1}>
                       履歴が更新されました。セッションを開き直してください
@@ -2177,7 +2183,7 @@ export function ChatScreen({
         {llmSessionRestoreLoadingForView ? (
           <View pointerEvents="auto" style={styles.chatSessionRestoreOverlay}>
             <View style={styles.chatSessionRestoreCard}>
-              <ActivityIndicator size="large" color="#0f766e" />
+              <ActivityIndicator size="large" color={theme.colors.primaryAction} />
               <Text style={styles.chatSessionRestoreText}>セッションを復元中...</Text>
               <TouchableOpacity
                 style={styles.chatSessionRestoreReloadButton}
@@ -2237,7 +2243,7 @@ export function ChatScreen({
                 accessibilityRole="button"
                 accessibilityLabel="YouTube ミニプレイヤーを閉じる"
               >
-                <Ionicons name="close" size={14} color="#e2e8f0" />
+                <Ionicons name="close" size={14} color={theme.colors.surfaceSubtle} />
               </TouchableOpacity>
             </Animated.View>
           </View>
@@ -2326,7 +2332,7 @@ export function ChatScreen({
                 accessibilityRole="button"
                 accessibilityLabel="前のユーザーメッセージまでスクロール"
               >
-                <Ionicons name="chevron-up" size={14} color="#64748b" />
+                <Ionicons name="chevron-up" size={14} color={theme.colors.textMuted} />
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.chatScrollControlButton}
@@ -2335,7 +2341,7 @@ export function ChatScreen({
                 accessibilityRole="button"
                 accessibilityLabel="チャットの末尾までスクロール"
               >
-                <Ionicons name="chevron-down" size={14} color="#64748b" />
+                <Ionicons name="chevron-down" size={14} color={theme.colors.textMuted} />
               </TouchableOpacity>
             </View>
             <RunnerWsConnectionStatus
@@ -2362,7 +2368,7 @@ export function ChatScreen({
                       width: 14,
                       height: 14,
                       borderRadius: 999,
-                      backgroundColor: autoSpeechDetected ? "#22c55e" : "#94a3b8",
+                      backgroundColor: autoSpeechDetected ? theme.colors.positiveText : theme.colors.borderStrong,
                       opacity: autoSpeechDetected ? 1 : 0.6,
                     }}
                   />
@@ -2495,7 +2501,7 @@ export function ChatScreen({
                         accessibilityRole="button"
                         accessibilityLabel={faceToggleActive ? "Face Trackingをオフ" : "Face Trackingをオン"}
                       >
-                        <Ionicons name={faceIconName as keyof typeof Ionicons.glyphMap} size={17} color="#0f172a" />
+                        <Ionicons name={faceIconName as keyof typeof Ionicons.glyphMap} size={17} color={theme.colors.textPrimary} />
                       </TouchableOpacity>
                     ) : null}
                     <TouchableOpacity
@@ -2504,7 +2510,7 @@ export function ChatScreen({
                       disabled={disabled}
                       testID="chat-composer-action"
                     >
-                      <Ionicons name={iconName as keyof typeof Ionicons.glyphMap} size={18} color="#ffffff" />
+                      <Ionicons name={iconName as keyof typeof Ionicons.glyphMap} size={18} color={theme.colors.textOnAccent} />
                     </TouchableOpacity>
                   </>
                 );
@@ -2722,7 +2728,7 @@ export function ChatScreen({
                         accessibilityRole="button"
                         accessibilityLabel="セッションタイトル入力をクリア"
                       >
-                        <Ionicons name="close" size={16} color="#334155" />
+                        <Ionicons name="close" size={16} color={theme.colors.textSecondary} />
                       </TouchableOpacity>
                     ) : null}
                   </View>
@@ -2770,7 +2776,7 @@ export function ChatScreen({
                               ]}
                             />
                             <Text style={styles.chatDirectoryMenuOptionText}>{option.label}</Text>
-                            {selected ? <Ionicons name="checkmark" size={18} color="#0a84ff" /> : null}
+                            {selected ? <Ionicons name="checkmark" size={18} color={theme.colors.controlAccent} /> : null}
                           </View>
                         </TouchableOpacity>
                       );
@@ -2813,7 +2819,7 @@ export function ChatScreen({
                           <Text style={styles.settingsRowLabel}>ディレクトリー名</Text>
                         </View>
                         <Text style={styles.settingsRowValue} numberOfLines={1}>{selectedDirectoryDisplayNameForView}</Text>
-                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.settingsRow, styles.settingsRowDivider]}
@@ -2825,14 +2831,14 @@ export function ChatScreen({
                         <Text style={styles.settingsRowValue} numberOfLines={1}>
                           {String(selectedSessionTitleForView || "").trim() || "未設定"}
                         </Text>
-                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
                       </TouchableOpacity>
                       <TouchableOpacity style={styles.settingsRow} onPress={() => setDirectoryMenuMode("select_marker")}>
                         <View style={styles.settingsRowLabelWrap}>
                           <Text style={styles.settingsRowLabel}>ドット色</Text>
                         </View>
                         <Text style={styles.settingsRowValue}>{selectedSessionMarkerLabel}</Text>
-                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -2879,7 +2885,7 @@ export function ChatScreen({
                           <Text style={styles.settingsRowLabel}>サブエージェント</Text>
                           <Text style={styles.settingsRowDescription}>親エージェントと子セッションを表示</Text>
                         </View>
-                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
                       </TouchableOpacity>
                     </View>
                   </View>

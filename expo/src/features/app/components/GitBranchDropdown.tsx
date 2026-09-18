@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 export type GitBranchOption = {
   name: string;
@@ -43,6 +45,8 @@ export function GitBranchDropdown({
   currentBranchName,
   branches,
 }: GitBranchDropdownProps) {
+  const { theme, themeId } = useVisualTheme();
+  const branchStyles = branchStylesByTheme[themeId];
   const current = normalizeBranchName(currentBranchName) || "HEAD";
   const detached = current === "HEAD";
   const [open, setOpen] = useState(false);
@@ -89,7 +93,7 @@ export function GitBranchDropdown({
         <Text style={branchStyles.triggerText} numberOfLines={1}>
           {current}
         </Text>
-        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={15} color="#334155" />
+        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={15} color={theme.colors.textSecondary} />
       </TouchableOpacity>
       {open ? (
         <View style={branchStyles.menu}>
@@ -109,27 +113,28 @@ export function GitBranchDropdown({
   );
 }
 
-const branchStyles = StyleSheet.create({
+function createGitBranchStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   card: {
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.borderSubtle,
     borderRadius: 8,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     paddingHorizontal: 8,
     paddingVertical: 8,
     gap: 6,
   },
   label: {
-    fontSize: 12,
+    fontSize: theme.typography.small.fontSize,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   trigger: {
     minHeight: 34,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     borderRadius: 8,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
     paddingHorizontal: 9,
     flexDirection: "row",
     alignItems: "center",
@@ -137,22 +142,22 @@ const branchStyles = StyleSheet.create({
   },
   triggerKind: {
     minWidth: 42,
-    fontSize: 11,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
-    color: "#0f766e",
+    color: theme.colors.primaryAction,
     textTransform: "uppercase",
   },
   triggerText: {
     flex: 1,
-    fontSize: 12,
+    fontSize: theme.typography.small.fontSize,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   menu: {
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     borderRadius: 8,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     overflow: "hidden",
   },
   menuScroll: {
@@ -162,9 +167,9 @@ const branchStyles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 8,
     paddingBottom: 4,
-    fontSize: 11,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "800",
-    color: "#64748b",
+    color: theme.colors.textMuted,
     textTransform: "uppercase",
   },
   optionRow: {
@@ -175,27 +180,33 @@ const branchStyles = StyleSheet.create({
     gap: 6,
   },
   optionRowSelected: {
-    backgroundColor: "#ecfeff",
+    backgroundColor: theme.colors.surfaceActionSelected,
   },
   optionCheck: {
     width: 14,
-    fontSize: 12,
+    fontSize: theme.typography.small.fontSize,
     fontWeight: "800",
-    color: "#0f766e",
+    color: theme.colors.primaryAction,
   },
   optionText: {
     flex: 1,
-    fontSize: 12,
-    color: "#334155",
+    fontSize: theme.typography.small.fontSize,
+    color: theme.colors.textSecondary,
   },
   optionTextSelected: {
     fontWeight: "700",
-    color: "#0f766e",
+    color: theme.colors.primaryAction,
   },
   emptyText: {
     paddingHorizontal: 10,
     paddingBottom: 8,
-    fontSize: 12,
-    color: "#64748b",
+    fontSize: theme.typography.small.fontSize,
+    color: theme.colors.textMuted,
   },
-});
+  });
+}
+
+const branchStylesByTheme: Record<VisualThemeId, ReturnType<typeof createGitBranchStyles>> = {
+  standard: createGitBranchStyles(VISUAL_THEMES.standard),
+  highLegibility: createGitBranchStyles(VISUAL_THEMES.highLegibility),
+};

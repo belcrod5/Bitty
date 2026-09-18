@@ -27,6 +27,7 @@ import {
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
 } from "../utils/persistedSettingsFile";
+import { parseVisualThemeId, type VisualThemeId } from "../theme/visualThemes";
 
 type UseAppSettingsPersistenceControllerArgs = {
   settingsLoaded: boolean;
@@ -63,6 +64,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   autoReplyAfterStt: boolean;
   autoSpeakAfterReply: boolean;
   faceIdRequiredForApproval: boolean;
+  visualThemeId: VisualThemeId;
   setRunnerUrl: Dispatch<SetStateAction<string>>;
   setRunnerToken: Dispatch<SetStateAction<string>>;
   setCloudflareAccessClientId: Dispatch<SetStateAction<string>>;
@@ -96,6 +98,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setAutoReplyAfterStt: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakAfterReply: Dispatch<SetStateAction<boolean>>;
   setFaceIdRequiredForApproval: Dispatch<SetStateAction<boolean>>;
+  setVisualThemeId: Dispatch<SetStateAction<VisualThemeId>>;
   parseRegisteredDirectories: (raw: unknown) => RegisteredDirectoryEntry[];
   parseSessionTitleOverrides: (raw: unknown) => Record<string, string>;
   parseSessionMarkerColors: (raw: unknown) => Record<string, RegisteredDirectoryEntry["markerColor"]>;
@@ -137,6 +140,7 @@ export function useAppSettingsPersistenceController({
   autoReplyAfterStt,
   autoSpeakAfterReply,
   faceIdRequiredForApproval,
+  visualThemeId,
   setRunnerUrl,
   setRunnerToken,
   setCloudflareAccessClientId,
@@ -170,6 +174,7 @@ export function useAppSettingsPersistenceController({
   setAutoReplyAfterStt,
   setAutoSpeakAfterReply,
   setFaceIdRequiredForApproval,
+  setVisualThemeId,
   parseRegisteredDirectories,
   parseSessionTitleOverrides,
   parseSessionMarkerColors,
@@ -230,6 +235,7 @@ export function useAppSettingsPersistenceController({
       autoReplyAfterStt,
       autoSpeakAfterReply,
       faceIdRequiredForApproval,
+      visualThemeId,
     };
   }, [
     autoBargeInEnabled,
@@ -238,6 +244,7 @@ export function useAppSettingsPersistenceController({
     autoSpeakAfterReply,
     autoTranscribeOnStop,
     faceIdRequiredForApproval,
+    visualThemeId,
     cloudflareRunnerUrl,
     codexApprovalPolicy,
     expandedDirectoryIds,
@@ -387,6 +394,7 @@ export function useAppSettingsPersistenceController({
     if (typeof parsed.faceIdRequiredForApproval === "boolean") {
       setFaceIdRequiredForApproval(parsed.faceIdRequiredForApproval);
     }
+    setVisualThemeId(parseVisualThemeId(parsed.visualThemeId));
   }, [
     defaultModelRef,
     defaultReasoningEffort,
@@ -406,6 +414,7 @@ export function useAppSettingsPersistenceController({
     setAutoSpeakAfterReply,
     setAutoTranscribeOnStop,
     setFaceIdRequiredForApproval,
+    setVisualThemeId,
     setCodexApprovalPolicy,
     setCloudflareAccessClientId,
     setCloudflareAccessClientSecret,

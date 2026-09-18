@@ -14,7 +14,8 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { useChatScreen } from "../contexts/ChatScreenContext";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../types/directorySessions";
 import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
 import { resolveLlmSessionDisplayTitle } from "../utils/llmSession";
@@ -81,6 +82,8 @@ export function AppDrawerSearch({
   viewportBottom: number | null;
   onSelectChatResult: (result: DrawerConversationSearchResult, event: GestureResponderEvent) => void;
 }) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const { runnerUrl, runnerToken } = useChatScreen();
   const { height: windowHeight } = useWindowDimensions();
   const inputRef = useRef<TextInput>(null);
@@ -305,7 +308,7 @@ export function AppDrawerSearch({
           onChangeText={changeQuery}
           onFocus={() => onActiveChange(true)}
           placeholder={mode === "directory" ? "ディレクトリを検索" : "チャット内を検索"}
-          placeholderTextColor="#94a3b8"
+          placeholderTextColor={theme.colors.borderStrong}
           autoCapitalize="none"
           autoCorrect={false}
           clearButtonMode="never"
@@ -438,7 +441,7 @@ export function AppDrawerSearch({
                   <Text style={styles.appDrawerSearchStatusText}>検索キーで検索します。</Text>
                 ) : loading ? (
                   <View style={styles.appDrawerSearchLoading} accessibilityRole="progressbar">
-                    <ActivityIndicator size="small" color="#0f766e" />
+                    <ActivityIndicator size="small" color={theme.colors.primaryAction} />
                     <Text style={styles.appDrawerSearchStatusText}>チャットを検索しています…</Text>
                   </View>
                 ) : error && results.length <= 0 ? (
@@ -509,7 +512,7 @@ export function AppDrawerSearch({
                 {nextPosition && !loading && !(error && results.length <= 0) ? (
                   loadingMore ? (
                     <View style={styles.appDrawerSearchMoreButton} accessibilityRole="progressbar">
-                      <ActivityIndicator size="small" color="#1e40af" />
+                      <ActivityIndicator size="small" color={theme.colors.infoAction} />
                       <Text style={styles.appDrawerSearchStatusText}>
                         {`${nextPosition.pageNumber}ページ目を検索中…`}
                       </Text>

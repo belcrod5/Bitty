@@ -1,9 +1,11 @@
 import { renderHook } from "@testing-library/react-native";
 
 import { useChatDerivedState } from "./useChatDerivedState";
+import { VISUAL_THEMES } from "../theme/visualThemes";
 
 function baseParams(overrides: Partial<Parameters<typeof useChatDerivedState>[0]> = {}) {
   return {
+    visualTheme: VISUAL_THEMES.standard,
     codexWsUrl: "ws://localhost",
     transcript: "",
     replyLoading: false,
@@ -72,6 +74,20 @@ describe("useChatDerivedState chatContextUsedPct", () => {
 
     expect(result.current.chatContextUsedPct).toBe(42);
     expect(result.current.chatContextRingProgress).toBeCloseTo(0.42);
+  });
+
+  it("uses the selected theme for context rings and YouTube HTML", async () => {
+    const { result } = await renderHook(() => useChatDerivedState(baseParams({
+      visualTheme: VISUAL_THEMES.highLegibility,
+      youtubePlayerVideoId: "abcdefghijk",
+      youtubePlayerSession: 1,
+    })));
+
+    expect(result.current.chatContextRingTrackColor).toBe(VISUAL_THEMES.highLegibility.colors.infoMuted);
+    expect(result.current.chatContextRingProgressColor).toBe(VISUAL_THEMES.highLegibility.colors.contextProgress);
+    expect(result.current.youtubeEmbedHtml).toContain(
+      `background: ${VISUAL_THEMES.highLegibility.dark.surfaceRaised}`
+    );
   });
 });
 

@@ -1,13 +1,15 @@
 import { Platform } from "react-native";
+import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
 
-export const chatMessageStyles = {
+export function createChatMessageStyles(theme: VisualTheme) {
+  return {
   chatMessageGroup: {
     gap: 6,
     width: "100%",
     marginBottom: 30,
   },
   chatFindFocusedMessage: {
-    backgroundColor: "#fef9c3",
+    backgroundColor: theme.colors.searchHighlight,
     borderRadius: 8,
   },
   chatBubble: {
@@ -21,7 +23,7 @@ export const chatMessageStyles = {
   chatBubbleUser: {
     alignSelf: "flex-end",
     maxWidth: "84%",
-    backgroundColor: "#f1f5f9",
+    backgroundColor: theme.colors.surfaceMuted,
     borderWidth: 0,
     borderColor: "transparent",
   },
@@ -50,36 +52,36 @@ export const chatMessageStyles = {
   chatSubagentBoundaryLine: {
     flex: 1,
     height: 1,
-    backgroundColor: "#cbd5e1",
+    backgroundColor: theme.colors.border,
   },
   chatSubagentBoundaryText: {
-    color: "#64748b",
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
     letterSpacing: 0.3,
   },
   chatBubbleLabel: {
-    fontSize: 10,
+    fontSize: theme.typography.micro.fontSize,
     fontWeight: "800",
     letterSpacing: 0.6,
   },
   chatBubbleLabelUser: {
-    color: "#64748b",
+    color: theme.colors.textMuted,
   },
   chatBubbleLabelAssistant: {
-    color: "#64748b",
+    color: theme.colors.textMuted,
   },
   chatBubbleText: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: theme.typography.body.fontSize,
+    lineHeight: theme.typography.body.lineHeight,
     flexShrink: 1,
     minWidth: 0,
   },
   chatBubbleTextUser: {
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   chatBubbleTextAssistant: {
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   chatUserMetaRow: {
     marginTop: 2,
@@ -88,11 +90,11 @@ export const chatMessageStyles = {
     gap: 4,
   },
   chatUserMetaChip: {
-    fontSize: 10,
-    color: "#e2e8f0",
-    backgroundColor: "rgba(15,23,42,0.28)",
-    borderWidth: 1,
-    borderColor: "rgba(226,232,240,0.26)",
+    fontSize: theme.typography.micro.fontSize,
+    color: theme.colors.userCodeText,
+    backgroundColor: theme.colors.userCodeSurface,
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.userMetaBorder,
     borderRadius: 999,
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -106,21 +108,21 @@ export const chatMessageStyles = {
     gap: 6,
   },
   chatUserQueueText: {
-    fontSize: 10,
-    color: "#475569",
+    fontSize: theme.typography.micro.fontSize,
+    color: theme.tones.neutral.foreground,
     fontWeight: "700",
   },
   chatUserQueueCancelButton: {
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
   },
   chatUserQueueCancelButtonText: {
-    fontSize: 10,
-    color: "#334155",
+    fontSize: theme.typography.micro.fontSize,
+    color: theme.colors.textSecondary,
     fontWeight: "800",
   },
   markdownRoot: {
@@ -150,7 +152,7 @@ export const chatMessageStyles = {
   },
   markdownLinkText: {
     textDecorationLine: "underline",
-    color: "#1d4ed8",
+    color: theme.colors.accentStrong,
   },
   markdownInlineCode: {
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
@@ -159,24 +161,24 @@ export const chatMessageStyles = {
     paddingHorizontal: 4,
   },
   markdownInlineCodeUser: {
-    backgroundColor: "rgba(15, 23, 42, 0.28)",
+    backgroundColor: theme.colors.userCodeSurface,
   },
   markdownInlineCodeAssistant: {
-    backgroundColor: "#e2e8f0",
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   markdownCodeBlock: {
     borderRadius: 8,
-    borderWidth: 1,
+    borderWidth: theme.borders.thin,
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
   markdownCodeBlockUser: {
-    borderColor: "rgba(226, 232, 240, 0.4)",
-    backgroundColor: "rgba(15, 23, 42, 0.24)",
+    borderColor: theme.colors.userCodeBorder,
+    backgroundColor: theme.colors.userCodeBlockSurface,
   },
   markdownCodeBlockAssistant: {
-    borderColor: "#cbd5e1",
-    backgroundColor: "#f8fafc",
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceRaised,
   },
   markdownCodeBlockText: {
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
@@ -203,7 +205,7 @@ export const chatMessageStyles = {
   markdownQuoteBar: {
     width: 3,
     borderRadius: 999,
-    backgroundColor: "#94a3b8",
+    backgroundColor: theme.colors.borderStrong,
   },
   markdownQuoteText: {
     flex: 1,
@@ -302,7 +304,7 @@ export const chatMessageStyles = {
   chatStatusChip: {
     flexDirection: "row",
     alignItems: "center",
-    borderWidth: 1,
+    borderWidth: theme.borders.thin,
     borderRadius: 999,
     paddingHorizontal: 7,
     paddingVertical: 2,
@@ -312,7 +314,7 @@ export const chatMessageStyles = {
     gap: 0,
   },
   chatStatusIcon: {
-    fontSize: 10,
+    fontSize: theme.typography.micro.fontSize,
     fontWeight: "800",
     minWidth: 10,
     textAlign: "center",
@@ -330,13 +332,13 @@ export const chatMessageStyles = {
     overflow: "hidden",
   },
   chatStatusText: {
-    fontSize: 11,
+    fontSize: theme.typography.caption.fontSize,
     fontWeight: "700",
   },
   chatStatusDetailText: {
     marginTop: 2,
-    fontSize: 11,
-    color: "#64748b",
+    fontSize: theme.typography.caption.fontSize,
+    color: theme.colors.textMuted,
   },
   chatMessageMetaRow: {
     marginTop: 2,
@@ -351,8 +353,8 @@ export const chatMessageStyles = {
     justifyContent: "flex-start",
   },
   chatMessageTimestampText: {
-    fontSize: 10,
-    color: "#94a3b8",
+    fontSize: theme.typography.micro.fontSize,
+    color: theme.colors.borderStrong,
   },
   chatMessageTimestampTextUser: {
     textAlign: "right",
@@ -371,23 +373,29 @@ export const chatMessageStyles = {
     width: 28,
     height: 28,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#f8fafc",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
     zIndex: 2,
   },
   chatAudioIconButtonActive: {
-    borderColor: "#dc2626",
-    backgroundColor: "#fee2e2",
+    borderColor: theme.tones.danger.border,
+    backgroundColor: theme.tones.danger.background,
   },
   chatSection: {
     gap: 4,
   },
   chatSectionTitle: {
-    fontSize: 13,
+    fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
-    color: "#1f2937",
+    color: theme.colors.textBodyStrong,
   },
+  } as const;
+}
+
+export const chatMessageStylesByTheme = {
+  standard: createChatMessageStyles(VISUAL_THEMES.standard),
+  highLegibility: createChatMessageStyles(VISUAL_THEMES.highLegibility),
 } as const;

@@ -27,6 +27,8 @@ import { LocationMapPicker, type LocationMapPickerTarget } from "./LocationMapPi
 import { OptionSelectField } from "../app/components/OptionSelectField";
 import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
 import { requestCalendarPermission } from "../calendar/calendarService";
+import { useVisualTheme } from "../app/theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
 
 function newRule(props: LocationScheduleSettingsProps): LocationScheduleRule {
   return {
@@ -48,6 +50,8 @@ function newRule(props: LocationScheduleSettingsProps): LocationScheduleRule {
 }
 
 export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
+  const { themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const [visible, setVisible] = useState(false);
   const [rules, setRules] = useState<LocationScheduleRule[]>([]);
   const [busy, setBusy] = useState(false);
@@ -248,32 +252,39 @@ export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#f8fafc" },
-  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#cbd5e1", backgroundColor: "#fff" },
-  title: { fontSize: 17, fontWeight: "700", color: "#0f172a" },
-  headerAction: { fontSize: 16, color: "#2563eb", minWidth: 48 },
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.surfaceRaised },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: theme.borders.thin, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  title: { ...theme.typography.subtitleDense, fontWeight: "700", color: theme.colors.textPrimary },
+  headerAction: { ...theme.typography.control, color: theme.colors.accent, minWidth: 48 },
   disabled: { opacity: 0.4 },
   loader: { marginTop: 12 },
   content: { padding: 16, paddingBottom: 60, gap: 14 },
-  help: { color: "#475569", fontSize: 13, lineHeight: 19 },
-  card: { padding: 14, gap: 8, borderRadius: 12, backgroundColor: "#fff", borderWidth: StyleSheet.hairlineWidth, borderColor: "#cbd5e1" },
+  help: { color: theme.colors.textSecondary, ...theme.typography.compactRelaxed },
+  card: { padding: 14, gap: 8, borderRadius: 12, backgroundColor: theme.colors.surface, borderWidth: theme.borders.thin, borderColor: theme.colors.border },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  cardTitle: { fontSize: 16, fontWeight: "700", color: "#0f172a" },
-  label: { marginTop: 5, fontSize: 12, fontWeight: "600", color: "#475569" },
+  cardTitle: { ...theme.typography.control, fontWeight: "700", color: theme.colors.textPrimary },
+  label: { marginTop: 5, ...theme.typography.small, fontWeight: "600", color: theme.colors.textSecondary },
   row: { flexDirection: "row", alignItems: "center", gap: 8 },
-  input: { minHeight: 40, paddingHorizontal: 10, borderWidth: 1, borderColor: "#cbd5e1", borderRadius: 8, backgroundColor: "#fff", color: "#0f172a" },
+  input: { minHeight: 40, paddingHorizontal: 10, borderWidth: theme.borders.thin, borderColor: theme.colors.border, borderRadius: 8, backgroundColor: theme.colors.surface, color: theme.colors.textPrimary, ...theme.typography.input },
   half: { flex: 1 },
-  separator: { color: "#64748b" },
+  separator: { color: theme.colors.textMuted, ...theme.typography.body },
   coordinate: { flex: 1 },
   radius: { flex: 1 },
   prompt: { minHeight: 100, paddingTop: 10 },
-  secondaryButton: { minHeight: 40, justifyContent: "center", paddingHorizontal: 14, borderRadius: 8, backgroundColor: "#e2e8f0" },
-  secondaryButtonText: { color: "#0f172a", fontWeight: "600" },
+  secondaryButton: { minHeight: 40, justifyContent: "center", paddingHorizontal: 14, borderRadius: 8, backgroundColor: theme.colors.surfaceSubtle },
+  secondaryButtonText: { color: theme.colors.textPrimary, fontWeight: "600", ...theme.typography.body },
   deleteButton: { alignSelf: "flex-start", paddingVertical: 8 },
-  deleteText: { color: "#dc2626", fontWeight: "600" },
-  addButton: { minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: "#0f172a" },
-  addButtonText: { color: "#fff", fontWeight: "700" },
+  deleteText: { color: theme.colors.negativeText, fontWeight: "600", ...theme.typography.body },
+  addButton: { minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: theme.colors.primaryActionStrong },
+  addButtonText: { color: theme.colors.textOnAccent, fontWeight: "700", ...theme.typography.body },
   menuButton: { minHeight: 42, justifyContent: "center", paddingHorizontal: 12, borderRadius: 8 },
-  menuButtonText: { color: "#0f172a", fontSize: 14, fontWeight: "600" },
-});
+  menuButtonText: { color: theme.colors.textPrimary, ...theme.typography.body, fontWeight: "600" },
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

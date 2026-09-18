@@ -4,6 +4,8 @@ import * as Clipboard from "../clipboard";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { tokenFingerprint } from "../../ws/tokenFingerprint";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type RouteDebugProbe = {
   label: string;
@@ -185,6 +187,8 @@ export function RouteDebugPanel({
   lastPairingLocalRunnerUrl,
   lastPairingSanitizedText,
 }: RouteDebugPanelProps) {
+  const { themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const {
     runnerUrl,
     runnerToken,
@@ -331,13 +335,14 @@ export function RouteDebugPanel({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   card: {
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     borderRadius: 12,
     padding: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     gap: 8,
   },
   cardHeader: {
@@ -347,29 +352,26 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   label: {
-    fontSize: 13,
+    ...theme.typography.compact,
     fontWeight: "700",
-    color: "#334155",
+    color: theme.colors.textSecondary,
   },
   meta: {
-    color: "#475569",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
   },
   hint: {
-    color: "#64748b",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.colors.textMuted,
+    ...theme.typography.small,
   },
   rawText: {
-    color: "#334155",
+    color: theme.colors.textSecondary,
     fontFamily: "Courier",
-    fontSize: 11,
-    lineHeight: 15,
+    ...theme.typography.captionDense,
   },
   error: {
-    color: "#b91c1c",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.tones.danger.foreground,
+    ...theme.typography.small,
   },
   buttonRow: {
     flexDirection: "row",
@@ -377,47 +379,53 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   linkButton: {
-    backgroundColor: "#f1f5f9",
+    backgroundColor: theme.colors.surfaceMuted,
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   linkButtonText: {
-    color: "#334155",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
     fontWeight: "700",
   },
   detailBox: {
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
     borderRadius: 10,
     padding: 10,
     gap: 4,
   },
   probeRow: {
     alignItems: "flex-start",
-    borderTopColor: "#e2e8f0",
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.borderSubtle,
+    borderTopWidth: theme.borders.thin,
     flexDirection: "row",
     gap: 8,
     paddingTop: 8,
   },
   probeStatus: {
     borderRadius: 6,
-    color: "#ffffff",
-    fontSize: 11,
+    color: theme.colors.textOnAccent,
+    ...theme.typography.caption,
     fontWeight: "800",
     overflow: "hidden",
     paddingHorizontal: 6,
     paddingVertical: 3,
   },
   probeOk: {
-    backgroundColor: "#16a34a",
+    backgroundColor: theme.tones.success.foreground,
   },
   probeNg: {
-    backgroundColor: "#dc2626",
+    backgroundColor: theme.tones.danger.foreground,
   },
   probeText: {
     flex: 1,
     gap: 2,
   },
-});
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

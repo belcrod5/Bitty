@@ -14,6 +14,8 @@ import {
 } from "react-native";
 
 import type { CodexScheduleSettingsProps } from "./CodexScheduleSettings.contract";
+import { useVisualTheme } from "../app/theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
 import { CodexScheduleApiError, getCodexSchedules, putCodexSchedules } from "./codexScheduleApi";
 import { CodexScheduleEditor } from "./CodexScheduleEditor";
 import {
@@ -72,6 +74,8 @@ function scheduleSubtitle(schedule: CodexSchedule) {
 }
 
 export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
+  const { theme, themeId } = useVisualTheme();
+  const styles = stylesByTheme[themeId];
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -218,7 +222,7 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
               disabled={!dirty || saving || loading}
               onPress={() => void save()}
             >
-              {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>保存</Text>}
+              {saving ? <ActivityIndicator color={theme.colors.textOnAccent} /> : <Text style={styles.saveText}>保存</Text>}
             </TouchableOpacity>
           ) : null}
           <CodexScheduleEditor
@@ -242,27 +246,34 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#f8fafc" },
-  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#cbd5e1", backgroundColor: "#fff" },
-  headerAction: { fontSize: 16, color: "#2563eb", minWidth: 48 },
-  title: { fontSize: 17, fontWeight: "700", color: "#0f172a" },
-  add: { fontSize: 28, color: "#2563eb", minWidth: 48, textAlign: "right" },
+function createStyles(theme: VisualTheme) {
+  return StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.surfaceRaised },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: theme.borders.thin, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  headerAction: { ...theme.typography.control, color: theme.colors.accent, minWidth: 48 },
+  title: { ...theme.typography.subtitleDense, fontWeight: "700", color: theme.colors.textPrimary },
+  add: { fontSize: theme.typography.display.fontSize, lineHeight: theme.typography.display.lineHeight, color: theme.colors.accent, minWidth: 48, textAlign: "right" },
   loader: { marginTop: 24 },
   content: { padding: 16, paddingBottom: 100, gap: 10 },
-  empty: { color: "#64748b", textAlign: "center", marginTop: 40 },
-  row: { minHeight: 72, flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, backgroundColor: "#fff", borderWidth: StyleSheet.hairlineWidth, borderColor: "#cbd5e1" },
+  empty: { color: theme.colors.textMuted, textAlign: "center", marginTop: 40, ...theme.typography.body },
+  row: { minHeight: 72, flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, backgroundColor: theme.colors.surface, borderWidth: theme.borders.thin, borderColor: theme.colors.border },
   rowBody: { flex: 1, gap: 4 },
-  rowTitle: { color: "#0f172a", fontSize: 16, fontWeight: "700" },
-  subtitle: { color: "#64748b", fontSize: 13, flexShrink: 1 },
-  chevron: { color: "#94a3b8", fontSize: 24 },
+  rowTitle: { color: theme.colors.textPrimary, ...theme.typography.control, fontWeight: "700" },
+  subtitle: { color: theme.colors.textMuted, ...theme.typography.compact, flexShrink: 1 },
+  chevron: { color: theme.colors.iconMuted, ...theme.typography.display },
   failure: { padding: 24, gap: 16, alignItems: "center" },
-  failureText: { color: "#b91c1c", textAlign: "center" },
-  retryButton: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, backgroundColor: "#e2e8f0" },
-  retryText: { color: "#0f172a", fontWeight: "700" },
-  saveButton: { position: "absolute", left: 16, right: 16, bottom: 16, minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: "#2563eb" },
-  saveText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  failureText: { color: theme.tones.danger.foreground, textAlign: "center", ...theme.typography.body },
+  retryButton: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, backgroundColor: theme.colors.surfaceSubtle },
+  retryText: { color: theme.colors.textPrimary, fontWeight: "700", ...theme.typography.body },
+  saveButton: { position: "absolute", left: 16, right: 16, bottom: 16, minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: 10, backgroundColor: theme.colors.accent },
+  saveText: { color: theme.colors.textOnAccent, fontWeight: "700", ...theme.typography.control },
   disabled: { opacity: 0.4 },
   menuButton: { minHeight: 42, justifyContent: "center", paddingHorizontal: 12, borderRadius: 8 },
-  menuButtonText: { color: "#0f172a", fontSize: 14, fontWeight: "600" },
-});
+  menuButtonText: { color: theme.colors.textPrimary, ...theme.typography.body, fontWeight: "600" },
+  });
+}
+
+const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
+  standard: createStyles(VISUAL_THEMES.standard),
+  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
+};

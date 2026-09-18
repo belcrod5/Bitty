@@ -85,6 +85,7 @@ function createArgs() {
     autoReplyAfterStt: false,
     autoSpeakAfterReply: false,
     faceIdRequiredForApproval: false,
+    visualThemeId: "standard",
     setRunnerUrl: setter,
     setRunnerToken: setter,
     setCloudflareAccessClientId: setter,
@@ -119,6 +120,7 @@ function createArgs() {
     setAutoReplyAfterStt: setter,
     setAutoSpeakAfterReply: setter,
     setFaceIdRequiredForApproval: setter,
+    setVisualThemeId: setter,
     parseRegisteredDirectories: () => [],
     parseSessionTitleOverrides: () => ({}),
     parseSessionMarkerColors: () => ({}),
@@ -248,6 +250,18 @@ test("a valid persisted runnerUrl is still applied", async () => {
   expect(setRunnerUrl).toHaveBeenCalledWith("https://runner.example.com");
 });
 
+test("loads a supported visual theme and falls back for an unknown id", async () => {
+  const setVisualThemeId = jest.fn();
+  mockReadPersistedSettings.mockResolvedValue({ visualThemeId: "highLegibility" });
+  await renderPersistenceController({ setVisualThemeId });
+  expect(setVisualThemeId).toHaveBeenLastCalledWith("highLegibility");
+
+  setVisualThemeId.mockClear();
+  mockReadPersistedSettings.mockResolvedValue({ visualThemeId: "removed-theme" });
+  await renderPersistenceController({ setVisualThemeId });
+  expect(setVisualThemeId).toHaveBeenLastCalledWith("standard");
+});
+
 test("does not overwrite settings after their initial read fails", async () => {
   mockReadPersistedSettings.mockRejectedValue(new Error("settings read failed"));
 
@@ -278,6 +292,39 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
   // PRESERVED対象から外れた旧ボード保存(skiaBoardState)は自動保存で消える。
   expect(next).not.toHaveProperty("skiaBoardState");
   expect(next.runnerUrl).toBe("http://default-runner");
+});
+
+test("persists and exports the selected visual theme", async () => {
+  const hook = await renderPersistenceController({ visualThemeId: "highLegibility" });
+  const mutate = mockMutatePersistedSettings.mock.calls[0][0];
+  expect(mutate({}).visualThemeId).toBe("highLegibility");
+
+  await act(async () => {
+    await hook.result.current.exportSettingsJson();
+  });
+  const exported = JSON.parse(mockSetStringAsync.mock.calls[0][0]);
+  expect(exported.appDefaultSettings.visualThemeId).toBe("highLegibility");
+});
+
+test("imports the selected visual theme", async () => {
+  mockGetStringAsync.mockResolvedValue(JSON.stringify({
+    appDefaultSettings: { visualThemeId: "highLegibility" },
+  }));
+  const setVisualThemeId = jest.fn();
+  const hook = await renderPersistenceController({ setVisualThemeId });
+  setVisualThemeId.mockClear();
+
+  await act(async () => {
+    await hook.result.current.importSettingsJson();
+  });
+  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
+    ?.find(({ text }) => text === "インポート");
+  await act(async () => {
+    await importButton?.onPress?.();
+  });
+
+  expect(setVisualThemeId).toHaveBeenCalledWith("highLegibility");
 });
 
 test("clipboard export excludes authentication credentials and approval rules", async () => {

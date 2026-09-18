@@ -2,7 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { FORCED_STT_LANGUAGE, STT_PROVIDERS, sttProviderLabel } from "../../stt/sttConfig";
 import { useAppSettings } from "../contexts/AppSettingsContext";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import {
   RECORDING_QUALITY_PRESETS,
   TTS_PROVIDERS,
@@ -26,6 +27,8 @@ const SETTING_ICONS = [
 ] as const;
 
 export function SpeechSettings() {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const {
     ttsProvider,
     sttProvider,
@@ -105,7 +108,7 @@ export function SpeechSettings() {
           />
 
           <View style={[styles.settingsRow, styles.settingsRowDivider]}>
-            <Ionicons name="speedometer-outline" size={22} color="#111827" />
+            <Ionicons name="speedometer-outline" size={22} color={theme.colors.controlTextPrimary} />
             <View style={styles.settingsRowLabelWrap}>
               <Text style={styles.settingsRowLabel}>読み上げ速度</Text>
               <Text style={styles.settingsRowDescription}>0.5〜2.0（現在 {ttsSpeed.toFixed(1)}）</Text>
@@ -117,7 +120,7 @@ export function SpeechSettings() {
                 accessibilityRole="button"
                 accessibilityLabel="速度を下げる"
               >
-                <Ionicons name="remove" size={18} color="#0a84ff" />
+                <Ionicons name="remove" size={18} color={theme.colors.controlAccent} />
               </TouchableOpacity>
               <TextInput
                 style={styles.settingsStepperInput}
@@ -135,7 +138,7 @@ export function SpeechSettings() {
                 accessibilityRole="button"
                 accessibilityLabel="速度を上げる"
               >
-                <Ionicons name="add" size={18} color="#0a84ff" />
+                <Ionicons name="add" size={18} color={theme.colors.controlAccent} />
               </TouchableOpacity>
             </View>
           </View>
@@ -182,7 +185,7 @@ export function SpeechSettings() {
               style={[styles.settingsRow, index < behaviorSettings.length - 1 && styles.settingsRowDivider]}
               key={label}
             >
-              <Ionicons name={SETTING_ICONS[index]} size={22} color="#111827" />
+              <Ionicons name={SETTING_ICONS[index]} size={22} color={theme.colors.controlTextPrimary} />
               <Text style={[styles.settingsRowLabel, styles.settingsRowLabelWrap]}>{label}</Text>
               <Switch value={value} onValueChange={onChange} accessibilityLabel={label} />
             </View>
@@ -200,18 +203,18 @@ export function SpeechSettings() {
             onPress={exportSettingsJson}
             accessibilityRole="button"
           >
-            <Ionicons name="copy-outline" size={22} color="#0a84ff" />
+            <Ionicons name="copy-outline" size={22} color={theme.colors.controlAccent} />
             <Text style={[styles.settingsActionText, styles.settingsRowLabelWrap]}>設定をクリップボードへ書き出す</Text>
-            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+            <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.settingsRow, styles.settingsRowDivider]}
             onPress={importSettingsJson}
             accessibilityRole="button"
           >
-            <Ionicons name="download-outline" size={22} color="#0a84ff" />
+            <Ionicons name="download-outline" size={22} color={theme.colors.controlAccent} />
             <Text style={[styles.settingsActionText, styles.settingsRowLabelWrap]}>クリップボードから設定を読み込む</Text>
-            <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+            <Ionicons name="chevron-forward" size={18} color={theme.colors.disclosure} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.settingsRow, toolAutoApprovalRuleCount === 0 && styles.buttonDisabled]}
@@ -220,7 +223,7 @@ export function SpeechSettings() {
             accessibilityRole="button"
             accessibilityState={{ disabled: toolAutoApprovalRuleCount === 0 }}
           >
-            <Ionicons name="trash-outline" size={22} color="#ff3b30" />
+            <Ionicons name="trash-outline" size={22} color={theme.colors.controlDanger} />
             <Text style={[styles.settingsDangerText, styles.settingsRowLabelWrap]}>
               保存済み承認ルールを削除（{toolAutoApprovalRuleCount}件）
             </Text>

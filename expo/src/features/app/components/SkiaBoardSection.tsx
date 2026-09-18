@@ -1,13 +1,8 @@
-import {
-  Circle,
-  Group,
-  Paragraph,
-  RoundedRect,
-  type SkParagraph,
-} from "@shopify/react-native-skia";
+import { Circle, Group, Paragraph, RoundedRect, type SkParagraph } from "@shopify/react-native-skia";
 import { useDerivedValue, type SharedValue } from "react-native-reanimated";
 import type { SkiaBoardSection as Section } from "../utils/skiaBoardState";
 import type { SkiaBoardSectionRect } from "../utils/skiaBoardSectionGeometry";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 
 export function SkiaBoardSectionRegion({
   index,
@@ -22,6 +17,7 @@ export function SkiaBoardSectionRegion({
   initialRect: SkiaBoardSectionRect;
   selected: boolean;
 }) {
+  const { theme } = useVisualTheme();
   const transform = useDerivedValue(() => {
     const current = sections.value[index] || initialRect;
     return [{ translateX: current.x }, { translateY: current.y }];
@@ -47,10 +43,10 @@ export function SkiaBoardSectionRegion({
         width={width}
         height={height}
         r={8}
-        color={selected ? "#2563eb" : section.color}
+        color={selected ? theme.colors.accent : section.color}
         opacity={selected ? 1 : Math.max(0.65, section.opacity)}
         style="stroke"
-        strokeWidth={selected ? 2.5 : 1.5}
+        strokeWidth={selected ? theme.borders.focus : theme.borders.strong}
       />
     </Group>
   );
@@ -75,6 +71,7 @@ export function SkiaBoardSectionOverlay({
   scale: SharedValue<number>;
   labelParagraph: SkParagraph;
 }) {
+  const { theme } = useVisualTheme();
   const left = useDerivedValue(() => {
     const current = sections.value[index] || initialRect;
     return boardX.value + current.x * scale.value;
@@ -94,39 +91,54 @@ export function SkiaBoardSectionOverlay({
   const labelY = useDerivedValue(() => top.value - 22);
   return (
     <>
-      <Paragraph
-        x={left}
-        y={labelY}
-        width={1000}
-        paragraph={labelParagraph}
-      />
+      <Paragraph x={left} y={labelY} width={1000} paragraph={labelParagraph} />
       {selected ? (
         <>
-          <Circle cx={left} cy={top} r={5} color="#ffffff" style="fill" />
-          <Circle cx={left} cy={top} r={5} color="#2563eb" style="stroke" strokeWidth={2} />
-          <Circle cx={right} cy={top} r={5} color="#ffffff" style="fill" />
-          <Circle cx={right} cy={top} r={5} color="#2563eb" style="stroke" strokeWidth={2} />
-          <Circle cx={right} cy={bottom} r={5} color="#ffffff" style="fill" />
-          <Circle cx={right} cy={bottom} r={5} color="#2563eb" style="stroke" strokeWidth={2} />
-          <Circle cx={left} cy={bottom} r={5} color="#ffffff" style="fill" />
-          <Circle cx={left} cy={bottom} r={5} color="#2563eb" style="stroke" strokeWidth={2} />
+          <Circle cx={left} cy={top} r={5} color={theme.colors.surface} style="fill" />
+          <Circle
+            cx={left}
+            cy={top}
+            r={5}
+            color={theme.colors.accent}
+            style="stroke"
+            strokeWidth={theme.borders.strong}
+          />
+          <Circle cx={right} cy={top} r={5} color={theme.colors.surface} style="fill" />
+          <Circle
+            cx={right}
+            cy={top}
+            r={5}
+            color={theme.colors.accent}
+            style="stroke"
+            strokeWidth={theme.borders.strong}
+          />
+          <Circle cx={right} cy={bottom} r={5} color={theme.colors.surface} style="fill" />
+          <Circle
+            cx={right}
+            cy={bottom}
+            r={5}
+            color={theme.colors.accent}
+            style="stroke"
+            strokeWidth={theme.borders.strong}
+          />
+          <Circle cx={left} cy={bottom} r={5} color={theme.colors.surface} style="fill" />
+          <Circle
+            cx={left}
+            cy={bottom}
+            r={5}
+            color={theme.colors.accent}
+            style="stroke"
+            strokeWidth={theme.borders.strong}
+          />
         </>
       ) : null}
     </>
   );
 }
 
-export function SkiaBoardSectionDraft({
-  draft,
-  color,
-}: {
-  draft: SharedValue<SkiaBoardSectionRect>;
-  color: string;
-}) {
-  const transform = useDerivedValue(() => [
-    { translateX: draft.value.x },
-    { translateY: draft.value.y },
-  ]);
+export function SkiaBoardSectionDraft({ draft, color }: { draft: SharedValue<SkiaBoardSectionRect>; color: string }) {
+  const { theme } = useVisualTheme();
+  const transform = useDerivedValue(() => [{ translateX: draft.value.x }, { translateY: draft.value.y }]);
   const width = useDerivedValue(() => draft.value.width);
   const height = useDerivedValue(() => draft.value.height);
   return (
@@ -140,7 +152,7 @@ export function SkiaBoardSectionDraft({
         r={8}
         color={color}
         style="stroke"
-        strokeWidth={2}
+        strokeWidth={theme.borders.strong}
       />
     </Group>
   );

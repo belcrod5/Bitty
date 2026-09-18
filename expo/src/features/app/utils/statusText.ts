@@ -1,5 +1,6 @@
 import { stripYouTubeTags } from "./youtube";
 import type { ComposerInputDisposition } from "../types/appTypes";
+import type { VisualThemeToneId } from "../theme/visualThemes";
 
 export type LlmUiStatus =
   | "idle"
@@ -49,32 +50,30 @@ export function llmStatusLabel(status: LlmUiStatus): string {
 
 export function llmStatusVisual(status: LlmUiStatus): {
   icon: string;
-  bg: string;
-  border: string;
-  text: string;
+  tone: VisualThemeToneId;
 } {
   if (status === "connecting") {
-    return { icon: "◌", bg: "#eff6ff", border: "#93c5fd", text: "#1d4ed8" };
+    return { icon: "◌", tone: "info" };
   }
   if (status === "model_processing") {
-    return { icon: "◔", bg: "#f8fafc", border: "#cbd5e1", text: "#334155" };
+    return { icon: "◔", tone: "neutral" };
   }
   if (status === "tool_waiting_approval") {
-    return { icon: "!", bg: "#fff7ed", border: "#fdba74", text: "#c2410c" };
+    return { icon: "!", tone: "warning" };
   }
   if (status === "tool_running") {
-    return { icon: "◆", bg: "#ecfdf5", border: "#86efac", text: "#166534" };
+    return { icon: "◆", tone: "success" };
   }
   if (status === "model_generating") {
-    return { icon: "✎", bg: "#eef2ff", border: "#a5b4fc", text: "#4338ca" };
+    return { icon: "✎", tone: "progress" };
   }
   if (status === "completed") {
-    return { icon: "✓", bg: "#ecfdf5", border: "#86efac", text: "#166534" };
+    return { icon: "✓", tone: "success" };
   }
   if (status === "error") {
-    return { icon: "✕", bg: "#fef2f2", border: "#fca5a5", text: "#b91c1c" };
+    return { icon: "✕", tone: "danger" };
   }
-  return { icon: "○", bg: "#f8fafc", border: "#d1d5db", text: "#475569" };
+  return { icon: "○", tone: "neutral" };
 }
 
 export function liveLlmStatusPrefix(status: LlmUiStatus): string {

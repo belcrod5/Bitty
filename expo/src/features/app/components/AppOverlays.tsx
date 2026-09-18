@@ -13,7 +13,8 @@ import { useAppSettings } from "../contexts/AppSettingsContext";
 import { effortOptionsForModel } from "../modelOptions";
 import { useConversation } from "../contexts/ConversationContext";
 import type { ApprovalDialogViewState } from "../hooks/useApprovalRequestController";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SlashCommandSelectMenu, type SlashCommandOption } from "./SlashCommandSelectMenu";
 import { AppModal } from "./AppModal";
 
@@ -36,6 +37,8 @@ export function AppOverlays({
   approvalDialog,
   onApprovalDialogAction,
 }: AppOverlaysProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const approvalDialogPending = !!approvalDialog;
   const [approvalPresentationReady, setApprovalPresentationReady] = useState(false);
   const {
@@ -195,7 +198,7 @@ export function AppOverlays({
                   accessibilityRole="button"
                   accessibilityLabel="ディレクトリエクスプローラーを閉じる"
                 >
-                  <Ionicons name="close" size={18} color="#334155" />
+                  <Ionicons name="close" size={18} color={theme.colors.textSecondary} />
                 </TouchableOpacity>
               </View>
               <Text style={styles.directoryExplorerCurrentPathText} numberOfLines={2}>
@@ -206,7 +209,7 @@ export function AppOverlays({
               {directoryExplorerError ? <Text style={styles.errorText}>{directoryExplorerError}</Text> : null}
               {directoryExplorerLoading ? (
                 <View style={styles.directoryExplorerLoadingRow}>
-                  <ActivityIndicator size="small" color="#2563eb" />
+                  <ActivityIndicator size="small" color={theme.colors.accent} />
                   <Text style={styles.hint}>読み込み中...</Text>
                 </View>
               ) : null}
@@ -217,7 +220,7 @@ export function AppOverlays({
               >
                 {directoryExplorerEntries.length === 0 ? (
                   <View style={styles.directoryExplorerEmptyState}>
-                    <Ionicons name="folder-open-outline" size={16} color="#64748b" />
+                    <Ionicons name="folder-open-outline" size={16} color={theme.colors.textMuted} />
                     <Text style={styles.hint}>サブディレクトリはありません。</Text>
                   </View>
                 ) : (
@@ -228,14 +231,14 @@ export function AppOverlays({
                       onPress={() => openDirectoryEntry(entry.path)}
                     >
                       <View style={styles.directoryExplorerEntryMain}>
-                        <Ionicons name="folder-outline" size={18} color="#1d4ed8" />
+                        <Ionicons name="folder-outline" size={18} color={theme.colors.accentStrong} />
                         <View style={styles.directoryExplorerEntryTextWrap}>
                           <Text style={styles.directoryExplorerEntryName} numberOfLines={1}>
                             {entry.name}
                           </Text>
                         </View>
                       </View>
-                      <Ionicons name="chevron-forward" size={16} color="#64748b" />
+                      <Ionicons name="chevron-forward" size={16} color={theme.colors.textMuted} />
                     </TouchableOpacity>
                   ))
                 )}
@@ -251,7 +254,7 @@ export function AppOverlays({
                   disabled={!directoryExplorerHasParent || directoryExplorerLoading}
                   onPress={goDirectoryParent}
                 >
-                  <Ionicons name="arrow-up" size={15} color="#1e40af" />
+                  <Ionicons name="arrow-up" size={15} color={theme.colors.infoAction} />
                   <Text style={styles.directoryExplorerSecondaryButtonText}>上の階層</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -259,7 +262,7 @@ export function AppOverlays({
                   disabled={directoryExplorerLoading}
                   onPress={goDirectoryRoot}
                 >
-                  <Ionicons name="home-outline" size={15} color="#1e40af" />
+                  <Ionicons name="home-outline" size={15} color={theme.colors.infoAction} />
                   <Text style={styles.directoryExplorerSecondaryButtonText}>ルート</Text>
                 </TouchableOpacity>
               </View>
@@ -268,7 +271,7 @@ export function AppOverlays({
                 disabled={directoryExplorerLoading}
                 onPress={selectCurrentDirectory}
               >
-                <Ionicons name="add-circle-outline" size={16} color="#1e40af" />
+                <Ionicons name="add-circle-outline" size={16} color={theme.colors.infoAction} />
                 <Text style={styles.directoryExplorerPrimaryButtonText}>このディレクトリを登録</Text>
               </TouchableOpacity>
             </View>

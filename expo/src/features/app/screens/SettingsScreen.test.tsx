@@ -6,6 +6,7 @@ jest.mock("../keyboardController", () => ({
 }));
 
 import { SettingsScreen } from "./SettingsScreen";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
 jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));
 
@@ -249,4 +250,18 @@ test("uses dropdowns for selectable settings", async () => {
   await fireEvent.press(screen.getByLabelText("承認ポリシー"));
   await fireEvent.press(screen.getByText("確認しない"));
   expect(mockSelectCodexApprovalPolicy).toHaveBeenCalledWith("never");
+});
+
+test("switches the visual theme from the display settings", async () => {
+  const selectTheme = jest.fn();
+  const screen = await render(
+    <VisualThemeProvider themeId="standard" onSelectTheme={selectTheme}>
+      <SettingsScreen />
+    </VisualThemeProvider>
+  );
+
+  await fireEvent.press(screen.getByLabelText("表示テーマ"));
+  await fireEvent.press(screen.getByText("高視認性"));
+
+  expect(selectTheme).toHaveBeenCalledWith("highLegibility");
 });

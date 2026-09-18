@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ImageSourcePropType } from "react-native";
 import { Image, View } from "react-native";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
 
 export type PixelRobotIndicatorProps = {
   active: boolean;
@@ -10,6 +10,7 @@ export type PixelRobotIndicatorProps = {
 };
 
 export function PixelRobotIndicator(props: PixelRobotIndicatorProps) {
+  const styles = useAppStyles();
   const { active, activeSource, idleSource } = props;
   const [offset, setOffset] = useState({ x: 0, y: 0 });
 

@@ -13,6 +13,7 @@ import { resolvePixelStatusIconKey } from "../utils/statusIcons";
 import { findLatestAssistantMessageIndex } from "../utils/sessionRuntimeStatus";
 import { buildYouTubeEmbedHtml, normalizeYouTubeVideoIds } from "../utils/youtube";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
+import type { VisualTheme } from "../theme/visualThemes";
 
 type LlmUiStatus =
   | "idle"
@@ -51,6 +52,7 @@ type VideoMetaLike = {
 };
 
 type UseChatDerivedStateParams = {
+  visualTheme: VisualTheme;
   codexWsUrl: string;
   transcript: string;
   replyLoading: boolean;
@@ -101,6 +103,7 @@ type UseChatDerivedStateParams = {
 };
 
 export function useChatDerivedState({
+  visualTheme,
   codexWsUrl,
   transcript,
   replyLoading,
@@ -188,8 +191,8 @@ export function useChatDerivedState({
     return `${normalized.slice(0, 12)}...`;
   }, [selectedLlmSessionId]);
   const youtubeEmbedHtml = useMemo(
-    () => buildYouTubeEmbedHtml(youtubePlayerVideoId, youtubePlayerSession),
-    [youtubePlayerSession, youtubePlayerVideoId]
+    () => buildYouTubeEmbedHtml(youtubePlayerVideoId, youtubePlayerSession, visualTheme.dark.surfaceRaised),
+    [visualTheme.dark.surfaceRaised, youtubePlayerSession, youtubePlayerVideoId]
   );
   const latestAssistantYouTubeMessage = useMemo(() => {
     for (let i = conversationMessages.length - 1; i >= 0; i -= 1) {
@@ -294,8 +297,8 @@ export function useChatDerivedState({
   const chatContextRingProgress = chatContextUsedPct === null
     ? 0
     : Math.max(0, Math.min(1, chatContextUsedPct / 100));
-  const chatContextRingTrackColor = "#dbeafe";
-  const chatContextRingProgressColor = "#0284c7";
+  const chatContextRingTrackColor = visualTheme.colors.infoMuted;
+  const chatContextRingProgressColor = visualTheme.colors.contextProgress;
   const isRobotAnimating = useMemo(
     () => (
       replyLoading ||

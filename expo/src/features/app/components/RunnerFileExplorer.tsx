@@ -9,7 +9,8 @@ import {
 } from "react";
 import { ActivityIndicator, Text, TouchableOpacity, View } from "react-native";
 
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { normalizeRunnerPath, RUNNER_FILE_HTTP_TIMEOUT_MS } from "../utils/runnerFileContextMenu";
 
 export type RunnerFileExplorerEntry = {
@@ -62,6 +63,8 @@ export const RunnerFileExplorer = forwardRef<RunnerFileExplorerRef, Props>(funct
   fileAccessibilityLabel = (entry) => `${entry.name}のメニューを表示`,
   logSessionDiag,
 }, ref) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const [rootPath, setRootPath] = useState("");
   const [nodesByPath, setNodesByPath] = useState<Record<string, ExplorerNode>>({});
   const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({});
@@ -321,7 +324,7 @@ export const RunnerFileExplorer = forwardRef<RunnerFileExplorerRef, Props>(funct
           <Text style={styles.gitDiffTreeNodeIcon}>{expanded ? "▾" : "▸"}</Text>
           <Text style={styles.gitDiffTreeNodeDirText}>{node.name}</Text>
           {node.loading || normalizeRunnerPath(loadingDirectoryPath) === node.path ? (
-            <ActivityIndicator size="small" color="#0f766e" style={styles.gitDiffTreeNodeSpinner} />
+            <ActivityIndicator size="small" color={theme.colors.primaryAction} style={styles.gitDiffTreeNodeSpinner} />
           ) : null}
         </TouchableOpacity>
         {node.error ? <Text style={[styles.gitDiffPanelErrorText, styles.gitDiffTreeNodeErrorText]}>{node.error}</Text> : null}
@@ -340,7 +343,7 @@ export const RunnerFileExplorer = forwardRef<RunnerFileExplorerRef, Props>(funct
       {!rootPath ? <Text style={styles.gitDiffEmptyText}>ディレクトリーが未選択です</Text> : null}
       {root?.loading && !root.loaded ? (
         <View style={styles.gitDiffPanelStatusRow}>
-          <ActivityIndicator size="small" color="#0f766e" />
+          <ActivityIndicator size="small" color={theme.colors.primaryAction} />
           <Text style={styles.gitDiffPanelStatusText}>読み込み中...</Text>
         </View>
       ) : null}

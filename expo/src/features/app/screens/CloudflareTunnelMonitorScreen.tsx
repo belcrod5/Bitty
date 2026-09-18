@@ -10,6 +10,8 @@ import { useAppShell } from "../contexts/AppShellContext";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { tokenFingerprint } from "../../ws/tokenFingerprint";
 import { RouteDebugPanel } from "./RouteDebugPanel";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
 
 type RunnerConnectionEvent = {
   seq: number;
@@ -181,6 +183,8 @@ function ConnectionEventCard({
   nowMs: number;
   onToggle: () => void;
 }) {
+  const { themeId } = useVisualTheme();
+  const screenStyles = screenStylesByTheme[themeId];
   const tone = eventTone(event.type);
   const repeatCount = Math.max(1, Number(event.repeatCount || 1));
   const repeatLabel = event.type === "connection_opened" ? "同じ接続元" : "同じ拒否";
@@ -228,6 +232,8 @@ function ConnectionEventCard({
 }
 
 export function CloudflareTunnelMonitorScreen() {
+  const { themeId } = useVisualTheme();
+  const screenStyles = screenStylesByTheme[themeId];
   const { openSkiaBoardScreen, openDrawer } = useAppShell();
   const {
     runnerUrl,
@@ -558,10 +564,11 @@ export function CloudflareTunnelMonitorScreen() {
   );
 }
 
-const screenStyles = StyleSheet.create({
+function createScreenStyles(theme: VisualTheme) {
+  return StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
   },
   content: {
     padding: 16,
@@ -571,14 +578,14 @@ const screenStyles = StyleSheet.create({
     flexDirection: "row",
   },
   menuButton: {
-    backgroundColor: "#e2e8f0",
+    backgroundColor: theme.colors.surfaceSubtle,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   menuButtonText: {
-    color: "#1e293b",
-    fontSize: 12,
+    color: theme.colors.textStrong,
+    ...theme.typography.small,
     fontWeight: "700",
   },
   header: {
@@ -587,16 +594,16 @@ const screenStyles = StyleSheet.create({
     gap: 12,
   },
   title: {
-    fontSize: 22,
+    ...theme.typography.headline,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   card: {
-    backgroundColor: "#ffffff",
+    backgroundColor: theme.colors.surface,
     borderRadius: 12,
     padding: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#cbd5e1",
+    borderWidth: theme.borders.thin,
+    borderColor: theme.colors.border,
     gap: 8,
   },
   cardHeader: {
@@ -606,39 +613,37 @@ const screenStyles = StyleSheet.create({
     gap: 12,
   },
   label: {
-    fontSize: 13,
+    ...theme.typography.compact,
     fontWeight: "700",
-    color: "#334155",
+    color: theme.colors.textSecondary,
   },
   value: {
-    fontSize: 18,
+    ...theme.typography.title,
     fontWeight: "700",
-    color: "#0f172a",
+    color: theme.colors.textPrimary,
   },
   compactStatus: {
-    color: "#0f172a",
-    fontSize: 15,
+    color: theme.colors.textPrimary,
+    ...theme.typography.input,
     fontWeight: "700",
     marginTop: 3,
   },
   lastActivity: {
-    color: "#334155",
-    fontSize: 14,
+    color: theme.colors.textSecondary,
+    ...theme.typography.body,
     fontWeight: "700",
   },
   meta: {
-    color: "#475569",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
   },
   hint: {
-    color: "#64748b",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.colors.textMuted,
+    ...theme.typography.small,
   },
   error: {
-    color: "#b91c1c",
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.tones.danger.foreground,
+    ...theme.typography.small,
   },
   buttonRow: {
     flexDirection: "row",
@@ -646,39 +651,39 @@ const screenStyles = StyleSheet.create({
     gap: 8,
   },
   button: {
-    backgroundColor: "#2563eb",
+    backgroundColor: theme.colors.accent,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 9,
     alignSelf: "flex-start",
   },
   dangerButton: {
-    backgroundColor: "#dc2626",
+    backgroundColor: theme.tones.danger.foreground,
   },
   buttonText: {
-    color: "#ffffff",
+    color: theme.colors.textOnAccent,
     fontWeight: "700",
-    fontSize: 12,
+    ...theme.typography.small,
   },
   linkButton: {
-    backgroundColor: "#f1f5f9",
+    backgroundColor: theme.colors.surfaceMuted,
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
   linkButtonText: {
-    color: "#334155",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
     fontWeight: "700",
   },
   detailBox: {
-    backgroundColor: "#f8fafc",
+    backgroundColor: theme.colors.surfaceRaised,
     borderRadius: 10,
     padding: 10,
     gap: 4,
   },
   cameraCard: {
-    backgroundColor: "#0f172a",
+    backgroundColor: theme.dark.surface,
     borderRadius: 12,
     padding: 12,
     gap: 10,
@@ -691,16 +696,16 @@ const screenStyles = StyleSheet.create({
   eventCard: {
     borderRadius: 14,
     padding: 12,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: theme.borders.thin,
     gap: 8,
   },
   eventCardSuccess: {
-    backgroundColor: "#ecfdf5",
-    borderColor: "#86efac",
+    backgroundColor: theme.tones.success.background,
+    borderColor: theme.tones.success.border,
   },
   eventCardDanger: {
-    backgroundColor: "#fef2f2",
-    borderColor: "#fca5a5",
+    backgroundColor: theme.tones.danger.background,
+    borderColor: theme.tones.danger.border,
   },
   eventMainRow: {
     alignItems: "center",
@@ -711,17 +716,17 @@ const screenStyles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    color: "#ffffff",
-    fontSize: 19,
+    color: theme.colors.textOnAccent,
+    fontSize: theme.typography.title.fontSize,
     fontWeight: "900",
     lineHeight: 32,
     textAlign: "center",
   },
   eventIconSuccess: {
-    backgroundColor: "#16a34a",
+    backgroundColor: theme.tones.success.foreground,
   },
   eventIconDanger: {
-    backgroundColor: "#dc2626",
+    backgroundColor: theme.tones.danger.foreground,
   },
   eventMainText: {
     flex: 1,
@@ -734,33 +739,39 @@ const screenStyles = StyleSheet.create({
     gap: 6,
   },
   eventStatus: {
-    color: "#0f172a",
-    fontSize: 14,
+    color: theme.colors.textPrimary,
+    ...theme.typography.body,
     fontWeight: "800",
   },
   eventRoute: {
-    color: "#475569",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
     fontWeight: "700",
   },
   eventTime: {
-    color: "#0f172a",
-    fontSize: 24,
+    color: theme.colors.textPrimary,
+    ...theme.typography.display,
     fontWeight: "900",
   },
   eventSubText: {
-    color: "#475569",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
   },
   expandText: {
-    color: "#334155",
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    ...theme.typography.small,
     fontWeight: "700",
   },
   eventDetails: {
-    borderTopColor: "rgba(15, 23, 42, 0.12)",
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.borderTranslucent,
+    borderTopWidth: theme.borders.thin,
     gap: 3,
     paddingTop: 8,
   },
-});
+  });
+}
+
+const screenStylesByTheme: Record<VisualThemeId, ReturnType<typeof createScreenStyles>> = {
+  standard: createScreenStyles(VISUAL_THEMES.standard),
+  highLegibility: createScreenStyles(VISUAL_THEMES.highLegibility),
+};

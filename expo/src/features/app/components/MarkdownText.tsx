@@ -15,7 +15,8 @@ import {
   type TextContextMenuItem,
 } from "react-native-enriched-markdown";
 import * as Clipboard from "../clipboard";
-import { styles } from "../styles";
+import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import {
   prepareMarkdownForDisplay,
   splitMarkdownForMermaid,
@@ -66,6 +67,8 @@ export type MarkdownTextProps = {
 };
 
 export function MarkdownText(props: MarkdownTextProps) {
+  const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const { content, tone, textStyle, onLocalFileLinkPress, onSelectedTextTtsPress } = props;
   const markdown = useMemo(
     () => prepareMarkdownForDisplay(content),
@@ -96,7 +99,7 @@ export function MarkdownText(props: MarkdownTextProps) {
     const baseColor =
       typeof flattenedTextStyle.color === "string"
         ? flattenedTextStyle.color
-        : "#0f172a";
+        : theme.colors.textPrimary;
     const baseFontFamily =
       typeof flattenedTextStyle.fontFamily === "string"
         ? flattenedTextStyle.fontFamily
@@ -117,11 +120,11 @@ export function MarkdownText(props: MarkdownTextProps) {
     };
 
     const codeBackgroundColor =
-      tone === "user" ? "rgba(15, 23, 42, 0.28)" : "#e2e8f0";
+      tone === "user" ? theme.colors.backdrop : theme.colors.surfaceSubtle;
     const codeBlockBackgroundColor =
-      tone === "user" ? "rgba(15, 23, 42, 0.24)" : "#f8fafc";
+      tone === "user" ? theme.colors.backdrop : theme.colors.surfaceRaised;
     const codeBlockBorderColor =
-      tone === "user" ? "rgba(226, 232, 240, 0.4)" : "#cbd5e1";
+      tone === "user" ? theme.colors.borderStrong : theme.colors.border;
 
     return {
       paragraph: {
@@ -166,7 +169,7 @@ export function MarkdownText(props: MarkdownTextProps) {
         fontStyle: "italic",
       },
       link: {
-        color: "#1d4ed8",
+        color: theme.colors.accentStrong,
         underline: true,
       },
       code: {
@@ -182,13 +185,13 @@ export function MarkdownText(props: MarkdownTextProps) {
         backgroundColor: codeBlockBackgroundColor,
         borderColor: codeBlockBorderColor,
         borderRadius: 8,
-        borderWidth: 1,
+    borderWidth: theme.borders.thin,
         padding: 8,
       },
       blockquote: {
         ...sharedBlockStyle,
-        borderColor: "#94a3b8",
-        borderWidth: 3,
+        borderColor: theme.colors.borderStrong,
+    borderWidth: theme.borders.focus,
         gapWidth: 8,
       },
       list: {
@@ -198,7 +201,7 @@ export function MarkdownText(props: MarkdownTextProps) {
         marginLeft: 0,
       },
     };
-  }, [flattenedTextStyle, tone]);
+  }, [flattenedTextStyle, theme, tone]);
 
   const containerStyle = useMemo<ViewStyle>(
     () => ({
@@ -207,7 +210,7 @@ export function MarkdownText(props: MarkdownTextProps) {
         ? (styles.markdownRootAssistant as ViewStyle)
         : (styles.markdownRootUser as ViewStyle)),
     }),
-    [tone]
+    [styles, tone]
   );
 
   const handleOpenLink = useCallback((rawUrl: string) => {

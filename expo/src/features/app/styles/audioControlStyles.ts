@@ -1,18 +1,27 @@
-export const audioControlStyles = {
-  autoWaveformCard: {
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    backgroundColor: "#ffffff",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  autoWaveformGif: {
-    borderRadius: 8,
-    opacity: 0.84,
-  },
-  autoWaveformGifActive: {
-    opacity: 1,
-  },
-} as const;
+import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+
+export function createAudioControlStyles(theme: VisualTheme) {
+  return {
+    autoWaveformCard: {
+      marginTop: 6,
+      borderWidth: theme.borders.thin,
+      borderColor: theme.tones.neutral.border,
+      borderRadius: 10,
+      backgroundColor: theme.colors.surface,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    autoWaveformGif: {
+      borderRadius: 8,
+      opacity: 0.84,
+    },
+    autoWaveformGifActive: {
+      opacity: 1,
+    },
+  } as const;
+}
+
+export const audioControlStylesByTheme: Record<VisualThemeId, ReturnType<typeof createAudioControlStyles>> = {
+  standard: createAudioControlStyles(VISUAL_THEMES.standard),
+  highLegibility: createAudioControlStyles(VISUAL_THEMES.highLegibility),
+};
