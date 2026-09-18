@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 const MERMAID_CDN_URL = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
 
@@ -72,7 +72,7 @@ function buildMermaidHtml(chart: string, theme: VisualTheme) {
       .error {
         color: ${theme.tones.danger.foreground};
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: 13px;
+        font-size: ${theme.typography.compact.fontSize}px;
         white-space: pre-wrap;
       }
     </style>
@@ -136,7 +136,4 @@ function createMermaidStyles(theme: VisualTheme) {
   });
 }
 
-const mermaidStylesByTheme: Record<VisualThemeId, ReturnType<typeof createMermaidStyles>> = {
-  standard: createMermaidStyles(VISUAL_THEMES.standard),
-  highLegibility: createMermaidStyles(VISUAL_THEMES.highLegibility),
-};
+const mermaidStylesByTheme = createStylesByTheme(createMermaidStyles);

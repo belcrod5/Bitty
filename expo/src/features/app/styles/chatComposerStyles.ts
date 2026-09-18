@@ -1,4 +1,4 @@
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createChatComposerStyles(theme: VisualTheme) {
   return {
@@ -452,7 +452,4 @@ export function createChatComposerStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const chatComposerStylesByTheme = {
-  standard: createChatComposerStyles(VISUAL_THEMES.standard),
-  highLegibility: createChatComposerStyles(VISUAL_THEMES.highLegibility),
-} as const;
+export const chatComposerStylesByTheme = createStylesByTheme(createChatComposerStyles);

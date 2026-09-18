@@ -5,7 +5,7 @@ import { SettingsScreen } from "../screens/SettingsScreen";
 import { SkiaMiniBoardScreen } from "../screens/SkiaMiniBoardScreen";
 import type { AppScreen } from "../types/appTypes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type AppScreenContentProps = {
   activeScreen: AppScreen;
@@ -63,7 +63,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-} as const;
+const stylesByTheme = createStylesByTheme(createStyles);

@@ -14,7 +14,7 @@ import {
   type RunnerFileExplorerEntry,
 } from "./RunnerFileExplorer";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type Props = {
   title: string;
@@ -100,7 +100,7 @@ function createRunnerFilePickerStyles(theme: VisualTheme) {
   value: { flex: 1, color: theme.colors.textPrimary, fontSize: theme.typography.compact.fontSize },
   placeholder: { flex: 1, color: theme.colors.borderStrong, fontSize: theme.typography.body.fontSize },
   chevron: { color: theme.colors.textMuted, fontSize: theme.typography.headline.fontSize },
-  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
+  header: { height: 52, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: theme.borders.divider, borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface },
   headerAction: { color: theme.colors.accent, fontSize: theme.typography.control.fontSize, minWidth: 48 },
   headerSpacer: { width: 48 },
   title: { fontSize: theme.typography.subtitle.fontSize, fontWeight: "700", color: theme.colors.textPrimary },
@@ -109,7 +109,4 @@ function createRunnerFilePickerStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createRunnerFilePickerStyles>> = {
-  standard: createRunnerFilePickerStyles(VISUAL_THEMES.standard),
-  highLegibility: createRunnerFilePickerStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createRunnerFilePickerStyles);

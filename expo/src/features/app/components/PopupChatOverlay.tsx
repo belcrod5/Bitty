@@ -13,7 +13,7 @@ import { ChatScreen } from "../screens/ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import type { PopupChatPresentation, PopupChatSourceRect } from "./popupChatTypes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type PopupChatOverlayProps = {
   visible: boolean;
@@ -334,7 +334,4 @@ function createPopupChatOverlayStyles(theme: VisualTheme) {
   });
 }
 
-const popupChatOverlayStylesByTheme = {
-  standard: createPopupChatOverlayStyles(VISUAL_THEMES.standard),
-  highLegibility: createPopupChatOverlayStyles(VISUAL_THEMES.highLegibility),
-} as const;
+const popupChatOverlayStylesByTheme = createStylesByTheme(createPopupChatOverlayStyles);

@@ -327,6 +327,30 @@ test("imports the selected visual theme", async () => {
   expect(setVisualThemeId).toHaveBeenCalledWith("highLegibility");
 });
 
+test("keeps the selected theme when importing an older backup without a theme", async () => {
+  mockGetStringAsync.mockResolvedValue(JSON.stringify({
+    appDefaultSettings: { runnerUrl: "https://migrated.example.com" },
+  }));
+  const setVisualThemeId = jest.fn();
+  const hook = await renderPersistenceController({
+    visualThemeId: "highLegibility",
+    setVisualThemeId,
+  });
+  setVisualThemeId.mockClear();
+
+  await act(async () => {
+    await hook.result.current.importSettingsJson();
+  });
+  const confirmation = jest.mocked(Alert.alert).mock.calls.find(([title]) => title === "設定をインポート");
+  const importButton = (confirmation?.[2] as Array<{ text?: string; onPress?: () => void | Promise<void> }> | undefined)
+    ?.find(({ text }) => text === "インポート");
+  await act(async () => {
+    await importButton?.onPress?.();
+  });
+
+  expect(setVisualThemeId).not.toHaveBeenCalled();
+});
+
 test("clipboard export excludes authentication credentials and approval rules", async () => {
   const hook = await renderPersistenceController();
 

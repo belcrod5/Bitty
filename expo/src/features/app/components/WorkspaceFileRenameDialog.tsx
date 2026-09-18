@@ -13,7 +13,7 @@ import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type WorkspaceFileRenameDialogProps = {
   target: WorkspaceFileTarget | null;
@@ -179,7 +179,4 @@ function createWorkspaceFileRenameDialogStyles(theme: VisualTheme) {
   });
 }
 
-const dialogStylesByTheme: Record<VisualThemeId, ReturnType<typeof createWorkspaceFileRenameDialogStyles>> = {
-  standard: createWorkspaceFileRenameDialogStyles(VISUAL_THEMES.standard),
-  highLegibility: createWorkspaceFileRenameDialogStyles(VISUAL_THEMES.highLegibility),
-};
+const dialogStylesByTheme = createStylesByTheme(createWorkspaceFileRenameDialogStyles);

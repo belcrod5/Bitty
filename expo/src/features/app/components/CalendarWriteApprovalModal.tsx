@@ -2,7 +2,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import type { CalendarWriteConfirmation } from "../../calendar/calendarToolHandler";
 import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 function formatCalendarDate(value: string, allDay: boolean, timeZone: string | null) {
   const date = new Date(value);
@@ -62,7 +62,7 @@ function createStyles(theme: VisualTheme) {
     card: {
       backgroundColor: theme.colors.surface,
       borderRadius: 12,
-      borderWidth: theme.id === "highLegibility" ? theme.borders.strong : 0,
+      borderWidth: theme.approval.borderWidth,
       borderColor: theme.colors.borderStrong,
       padding: 20,
       gap: 12,
@@ -92,7 +92,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-} as const;
+const stylesByTheme = createStylesByTheme(createStyles);

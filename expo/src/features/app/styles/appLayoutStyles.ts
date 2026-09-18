@@ -1,7 +1,7 @@
 import { appCommonStylesByTheme } from "./appCommonStyles";
 import { chatComposerStylesByTheme } from "./chatComposerStyles";
 import { chatMessageStylesByTheme } from "./chatMessageStyles";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createAppLayoutStyles(theme: VisualTheme) {
   return {
@@ -887,7 +887,4 @@ export function createAppLayoutStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const appLayoutStylesByTheme: Record<VisualThemeId, ReturnType<typeof createAppLayoutStyles>> = {
-  standard: createAppLayoutStyles(VISUAL_THEMES.standard),
-  highLegibility: createAppLayoutStyles(VISUAL_THEMES.highLegibility),
-};
+export const appLayoutStylesByTheme = createStylesByTheme(createAppLayoutStyles);

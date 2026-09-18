@@ -18,15 +18,16 @@ import { Audio } from "./audio";
 import Constants from "expo-constants";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { WebView } from "react-native-webview";
-import { appStylesByTheme } from "./styles";
+import { useAppStyles } from "./styles";
 import { AppProviders } from "./AppProviders";
 import { AppModalHost } from "./components/AppModal";
 import { AppDrawer } from "./components/AppDrawer";
 import { AppDrawerLayout } from "./components/AppDrawerLayout";
 import { AppScreenContent } from "./components/AppScreenContent";
-import type {
-  DirectorySessionTreeState,
-  RegisteredDirectoryEntry,
+import {
+  parseDirectoryMarkerColor,
+  type DirectorySessionTreeState,
+  type RegisteredDirectoryEntry,
 } from "./types/directorySessions";
 import { AppOverlays } from "./components/AppOverlays";
 import {
@@ -34,10 +35,9 @@ import {
 } from "./components/LlmCompletionNotifications";
 import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
-import { VisualThemeProvider } from "./theme/VisualThemeContext";
+import { VisualThemeProvider, useVisualTheme } from "./theme/VisualThemeContext";
 import {
   DEFAULT_VISUAL_THEME_ID,
-  VISUAL_THEMES,
   type VisualThemeId,
 } from "./theme/visualThemes";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
@@ -157,7 +157,6 @@ import {
   buildPanelRuntimeSnapshot,
   cloneConversationMessages,
   normalizeRuntimePanelId,
-  parseDirectoryMarkerColor,
   type PanelRuntimeSnapshotPatch,
 } from "./utils/panelRuntimeSnapshot";
 import {
@@ -678,9 +677,18 @@ function parseExpandedDirectoryIds(raw: unknown, directories: RegisteredDirector
     .filter((id) => !!id && validIds.has(id));
 }
 
-export default function App() {
+export default function App({ onReady }: { onReady?: () => void }) {
   const [visualThemeId, setVisualThemeId] = useState<VisualThemeId>(DEFAULT_VISUAL_THEME_ID);
-  const styles = appStylesByTheme[visualThemeId];
+  return (
+    <VisualThemeProvider themeId={visualThemeId} onSelectTheme={setVisualThemeId}>
+      <AppContent onReady={onReady} />
+    </VisualThemeProvider>
+  );
+}
+
+function AppContent({ onReady }: { onReady?: () => void }) {
+  const { theme: visualTheme, themeId: visualThemeId, selectTheme: setVisualThemeId } = useVisualTheme();
+  const styles = useAppStyles();
   const [runnerUrl, setRunnerUrl] = useState(DEFAULT_RUNNER_URL);
   const [llmBackend, setLlmBackend] = useState<LlmBackend>(DEFAULT_LLM_BACKEND);
   const [llmDirectory, setLlmDirectory] = useState(DEFAULT_LLM_DIRECTORY);
@@ -701,6 +709,9 @@ export default function App() {
   const auxServerBaseUrl = useCallback(() => runnerUrl.trim().replace(/\/$/, ""), [runnerUrl]);
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  useEffect(() => {
+    if (settingsLoaded) onReady?.();
+  }, [onReady, settingsLoaded]);
   useEffect(() => {
     if (!settingsLoaded || AppState.currentState !== "active") return;
     void bootstrapLocationSchedules().catch(() => {});
@@ -2101,7 +2112,7 @@ export default function App() {
     autoSpeechDetected,
     autoWaveformDebugText,
   } = useChatDerivedState({
-    visualTheme: VISUAL_THEMES[visualThemeId],
+    visualTheme,
     codexWsUrl,
     transcript,
     replyLoading,
@@ -7043,8 +7054,7 @@ export default function App() {
     [appDrawerProps]
   );
   return (
-    <VisualThemeProvider themeId={visualThemeId} onSelectTheme={setVisualThemeId}>
-      <AppModalHost>
+    <AppModalHost>
       <GestureHandlerRootView style={styles.safeArea}>
       <RunnerWebSocketProvider
         bootstrapReady={settingsLoaded}
@@ -7130,6 +7140,5 @@ export default function App() {
       </RunnerWebSocketProvider>
       </GestureHandlerRootView>
       </AppModalHost>
-    </VisualThemeProvider>
   );
 }

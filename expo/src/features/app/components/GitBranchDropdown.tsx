@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export type GitBranchOption = {
   name: string;
@@ -206,7 +206,4 @@ function createGitBranchStyles(theme: VisualTheme) {
   });
 }
 
-const branchStylesByTheme: Record<VisualThemeId, ReturnType<typeof createGitBranchStyles>> = {
-  standard: createGitBranchStyles(VISUAL_THEMES.standard),
-  highLegibility: createGitBranchStyles(VISUAL_THEMES.highLegibility),
-};
+const branchStylesByTheme = createStylesByTheme(createGitBranchStyles);

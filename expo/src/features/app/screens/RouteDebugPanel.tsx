@@ -5,7 +5,7 @@ import { useAppSettings } from "../contexts/AppSettingsContext";
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { tokenFingerprint } from "../../ws/tokenFingerprint";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type RouteDebugProbe = {
   label: string;
@@ -425,7 +425,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createStyles);

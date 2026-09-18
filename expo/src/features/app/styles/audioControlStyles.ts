@@ -1,4 +1,4 @@
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createAudioControlStyles(theme: VisualTheme) {
   return {
@@ -21,7 +21,4 @@ export function createAudioControlStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const audioControlStylesByTheme: Record<VisualThemeId, ReturnType<typeof createAudioControlStyles>> = {
-  standard: createAudioControlStyles(VISUAL_THEMES.standard),
-  highLegibility: createAudioControlStyles(VISUAL_THEMES.highLegibility),
-};
+export const audioControlStylesByTheme = createStylesByTheme(createAudioControlStyles);

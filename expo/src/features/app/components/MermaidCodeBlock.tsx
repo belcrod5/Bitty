@@ -14,7 +14,7 @@ import type { MarkdownStyle } from "react-native-enriched-markdown";
 import { MermaidView } from "./MermaidView";
 import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type MermaidCodeBlockProps = {
   chart: string;
@@ -145,7 +145,4 @@ function createMermaidCodeStyles(theme: VisualTheme) {
   });
 }
 
-const mermaidCodeStylesByTheme: Record<VisualThemeId, ReturnType<typeof createMermaidCodeStyles>> = {
-  standard: createMermaidCodeStyles(VISUAL_THEMES.standard),
-  highLegibility: createMermaidCodeStyles(VISUAL_THEMES.highLegibility),
-};
+const mermaidCodeStylesByTheme = createStylesByTheme(createMermaidCodeStyles);

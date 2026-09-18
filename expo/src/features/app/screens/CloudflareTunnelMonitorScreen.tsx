@@ -11,7 +11,7 @@ import { useAppSettings } from "../contexts/AppSettingsContext";
 import { tokenFingerprint } from "../../ws/tokenFingerprint";
 import { RouteDebugPanel } from "./RouteDebugPanel";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type RunnerConnectionEvent = {
   seq: number;
@@ -771,7 +771,4 @@ function createScreenStyles(theme: VisualTheme) {
   });
 }
 
-const screenStylesByTheme: Record<VisualThemeId, ReturnType<typeof createScreenStyles>> = {
-  standard: createScreenStyles(VISUAL_THEMES.standard),
-  highLegibility: createScreenStyles(VISUAL_THEMES.highLegibility),
-};
+const screenStylesByTheme = createStylesByTheme(createScreenStyles);

@@ -24,7 +24,7 @@ import { AppModal } from "./AppModal";
 import { MarkdownText } from "./MarkdownText";
 import { ModalTextInputDraft } from "./ModalTextInputDraft";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type WorkspaceTextFileEditorProps = {
   target: WorkspaceFileTarget | null;
@@ -247,7 +247,6 @@ export function WorkspaceTextFileEditor({
 }
 
 function createWorkspaceTextFileEditorStyles(theme: VisualTheme) {
-  const compactControlSize = theme.id === "highLegibility" ? 44 : 36;
   return StyleSheet.create({
   root: {
     flex: 1,
@@ -294,8 +293,8 @@ function createWorkspaceTextFileEditorStyles(theme: VisualTheme) {
     backgroundColor: theme.colors.primaryAction,
   },
   modeButton: {
-    width: compactControlSize,
-    height: compactControlSize,
+    width: theme.controls.compactSize,
+    height: theme.controls.compactSize,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -335,14 +334,11 @@ function createWorkspaceTextFileEditorStyles(theme: VisualTheme) {
     padding: 16,
   },
   previewText: {
-    fontSize: theme.typography.body.fontSize,
-    lineHeight: theme.id === "standard" ? 22 : theme.typography.body.lineHeight,
+    fontSize: theme.typography.bodyRelaxed.fontSize,
+    lineHeight: theme.typography.bodyRelaxed.lineHeight,
     color: theme.colors.textPrimary,
   },
   });
 }
 
-const editorStylesByTheme: Record<VisualThemeId, ReturnType<typeof createWorkspaceTextFileEditorStyles>> = {
-  standard: createWorkspaceTextFileEditorStyles(VISUAL_THEMES.standard),
-  highLegibility: createWorkspaceTextFileEditorStyles(VISUAL_THEMES.highLegibility),
-};
+const editorStylesByTheme = createStylesByTheme(createWorkspaceTextFileEditorStyles);

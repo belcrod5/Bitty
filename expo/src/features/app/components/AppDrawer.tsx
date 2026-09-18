@@ -17,12 +17,14 @@ import Svg, { Path } from "react-native-svg";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "../hooks/useLlmSessionExplorer";
 import type { PopupChatSourceRect } from "./popupChatTypes";
 import { useAppStyles } from "../styles";
+import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
-import type {
-  DirectoryMarkerColor,
+import {
+  parseDirectoryMarkerColor,
+  type DirectoryMarkerColor,
   DirectoryReadProgress,
   DirectorySessionSyncState,
   DirectorySessionTreeState,
@@ -171,19 +173,6 @@ export const AppDrawer = memo(function AppDrawer({
     if (!reasoningEffort) return "-";
     return reasoningEffort;
   };
-  const parseSessionMarkerColor = (raw: unknown): DirectoryMarkerColor => {
-    const value = String(raw || "").trim().toLowerCase();
-    if (value === "gray" || value === "red" || value === "yellow" || value === "green" || value === "black") return value;
-    return "none";
-  };
-  const markerColorToDotHex = (color: DirectoryMarkerColor): string | null => {
-    if (color === "gray") return "#94a3b8";
-    if (color === "red") return "#ef4444";
-    if (color === "yellow") return "#eab308";
-    if (color === "green") return "#16a34a";
-    if (color === "black") return "#111827";
-    return null;
-  };
   const toggleSessionChildren = useCallback((
     directoryId: string,
     directoryPath: string,
@@ -253,8 +242,8 @@ export const AppDrawer = memo(function AppDrawer({
       session,
       sessionTitleOverridesById[session.sessionId]
     );
-    const sessionMarkerColor = parseSessionMarkerColor(sessionMarkerColorsById[session.sessionId]);
-    const sessionMarkerColorHex = markerColorToDotHex(sessionMarkerColor);
+    const sessionMarkerColor = parseDirectoryMarkerColor(sessionMarkerColorsById[session.sessionId]);
+    const sessionMarkerColorHex = DIRECTORY_MARKER_COLORS[sessionMarkerColor];
     const restoringThisSession = (
       llmSessionRestoreLoading &&
       llmSessionRestoreTargetId === session.sessionId

@@ -10,7 +10,7 @@ import {
 import MapView, { Circle, Marker, type Region } from "react-native-maps";
 import * as Location from "expo-location";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
 
 export type LocationMapPickerTarget = {
   latitude: number;
@@ -137,7 +137,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createStyles);

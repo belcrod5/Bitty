@@ -28,7 +28,7 @@ import { OptionSelectField } from "../app/components/OptionSelectField";
 import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
 import { requestCalendarPermission } from "../calendar/calendarService";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
 
 function newRule(props: LocationScheduleSettingsProps): LocationScheduleRule {
   return {
@@ -284,7 +284,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createStyles);
