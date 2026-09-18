@@ -27,7 +27,7 @@ type CodexStatusSummaryMenuProps = {
   onSwitchAuthProfile?: (authId: string) => Promise<boolean> | boolean;
 };
 
-const STATUS_PREVIEW_WIDTH = 236;
+const STATUS_PREVIEW_WIDTH = 320;
 
 function parseLimitPct(statusFullText: string, label: "5h" | "Weekly") {
   const match = statusFullText.match(new RegExp(`${label} limit:[^\\n]*?(\\d+)%\\s*left`, "i"));
@@ -132,11 +132,12 @@ export function CodexStatusSummaryMenu({
     : 0;
   const previewEstimatedHeight = Math.max(84, previewLineCount * 16 + 18 + authPanelEstimatedHeight);
   const screenWidth = Dimensions.get("window").width;
+  const previewWidth = Math.min(STATUS_PREVIEW_WIDTH, screenWidth - 16);
   const previewLeft = Math.max(
     8,
     Math.min(
-      anchor.x + anchor.width - STATUS_PREVIEW_WIDTH,
-      Math.max(8, screenWidth - STATUS_PREVIEW_WIDTH - 8)
+      anchor.x + anchor.width - previewWidth,
+      Math.max(8, screenWidth - previewWidth - 8)
     )
   );
   const previewTop = Math.max(8, anchor.y - previewEstimatedHeight - 6);
@@ -169,6 +170,7 @@ export function CodexStatusSummaryMenu({
               {
                 left: previewLeft,
                 top: previewTop,
+                width: previewWidth,
               },
             ]}
             onPress={() => {}}
@@ -215,8 +217,15 @@ export function CodexStatusSummaryMenu({
                         >
                           <Text style={[styles.chatFooterSelectOptionText, isCurrent && styles.chatFooterSelectOptionTextSelected]}>
                             {isCurrent ? "✓ " : ""}{String(item?.displayName || "").trim() || authId}
-                            {limits ? ` (${limits})` : ""}
                           </Text>
+                          {limits ? (
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.chatStatusAuthOptionLimits, isCurrent && styles.chatFooterSelectOptionTextSelected]}
+                            >
+                              {limits}
+                            </Text>
+                          ) : null}
                         </TouchableOpacity>
                       );
                     })}

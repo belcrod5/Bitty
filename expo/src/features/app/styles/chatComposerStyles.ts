@@ -243,7 +243,6 @@ export const chatComposerStyles = {
   },
   chatStatusPreviewCard: {
     position: "absolute",
-    width: 236,
     backgroundColor: "#ffffff",
     borderWidth: 1,
     borderColor: "#cbd5e1",
@@ -298,6 +297,11 @@ export const chatComposerStyles = {
   },
   chatStatusAuthSelectInlineList: {
     maxHeight: 180,
+  },
+  chatStatusAuthOptionLimits: {
+    color: "#475569",
+    fontSize: 11,
+    lineHeight: 15,
   },
   chatStatusPreviewText: {
     fontSize: 10,
