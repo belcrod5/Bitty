@@ -100,6 +100,71 @@ test("successful switch response exposes no account id or tokens", async () => {
   } finally { codexAuthRuntime.switchAccount = original; }
 });
 
+test("status cache follows the active auth profile after a switch", async () => {
+  const originalSwitch = codexAuthRuntime.switchAccount;
+  const originalExternalTokenPayload = codexAuthService.externalTokenPayload;
+  const originalFetch = globalThis.fetch;
+  const firstAuthId = "status-first";
+  const secondAuthId = "status-second";
+  await codexAuthService.save(profile(firstAuthId));
+  await codexAuthService.save(profile(secondAuthId));
+  await codexAuthService.setActiveAuthId(firstAuthId);
+  codexAuthService.externalTokenPayload = async (authId) => ({
+    accessToken: `access-${authId}`,
+    chatgptAccountId: `account-${authId}`,
+  });
+  codexAuthRuntime.switchAccount = async (authId) => {
+    await codexAuthService.setActiveAuthId(authId);
+  };
+  let usageRequests = 0;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).startsWith("http://127.0.0.1:")) return originalFetch(input, init);
+    usageRequests += 1;
+    const accountId = init?.headers?.["ChatGPT-Account-Id"];
+    const usedPercent = accountId === `account-${firstAuthId}` ? 10 : 70;
+    return new Response(JSON.stringify({
+      rate_limit: {
+        primary_window: {
+          limit_window_seconds: 5 * 60 * 60,
+          used_percent: usedPercent,
+          reset_at: 1_800_000_000,
+        },
+      },
+    }), { status: 200 });
+  };
+  try {
+    await withServer(async (base) => {
+      const headers = { authorization: `Bearer ${RUNNER_TOKEN}` };
+      const first = await fetch(`${base}/codex-cli/status?force=1`, { headers });
+      assert.equal(first.status, 200);
+      assert.match((await first.json()).statusText, /90% left/);
+
+      const switched = await fetch(`${base}/codex-auth/switch`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ authId: secondAuthId }),
+      });
+      assert.equal(switched.status, 200);
+
+      const second = await fetch(`${base}/codex-cli/status`, { headers });
+      assert.equal(second.status, 200);
+      const secondBody = await second.json();
+      assert.equal(secondBody.cached, false);
+      assert.match(secondBody.statusText, /30% left/);
+
+      const cached = await fetch(`${base}/codex-cli/status`, { headers });
+      assert.equal(cached.status, 200);
+      assert.equal((await cached.json()).cached, true);
+      assert.equal(usageRequests, 2);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    codexAuthService.externalTokenPayload = originalExternalTokenPayload;
+    codexAuthRuntime.switchAccount = originalSwitch;
+    await codexAuthService.setActiveAuthId("canonical");
+  }
+});
+
 test("switch source no longer schedules a Runner restart", async () => {
   const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
   assert.doesNotMatch(source, /scheduleAuthSwitchRestartAfterResponse|restartRunnerForAuthSwitch|authSwitchRestartInFlight/);

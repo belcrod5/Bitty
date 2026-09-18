@@ -254,6 +254,7 @@ const LLM_FILE_MAX_READ_LINES = Math.max(1, Number(process.env.LLM_FILE_MAX_READ
 const LLM_FILE_MAX_TOOL_ROUNDS_DEFAULT = Number(process.env.LLM_FILE_MAX_TOOL_ROUNDS || 500);
 let llmFileMaxToolRoundsRuntime = LLM_FILE_MAX_TOOL_ROUNDS_DEFAULT;
 let codexCliStatusCache = {
+  authId: "",
   fetchedAtMs: 0,
   snapshot: null,
 };
@@ -3333,10 +3334,6 @@ async function fetchWhamUsage(accessToken, accountId) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function fetchCodexCliStatusSnapshot() {
-  return withCodexAuthLease(fetchCodexCliStatusSnapshotLeased);
 }
 
 async function fetchCodexCliStatusSnapshotLeased() {
@@ -7868,28 +7865,30 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const forceRefresh = String(reqUrl.searchParams.get("force") || "").trim() === "1";
-      const cacheFresh = (
-        !forceRefresh &&
-        CODEX_CLI_STATUS_CACHE_TTL_MS > 0 &&
-        codexCliStatusCache.snapshot &&
-        (Date.now() - Number(codexCliStatusCache.fetchedAtMs || 0)) <= CODEX_CLI_STATUS_CACHE_TTL_MS
-      );
-      if (cacheFresh) {
-        return json(res, 200, {
-          ok: true,
-          cached: true,
-          ...codexCliStatusCache.snapshot,
-        });
-      }
-      const snapshot = await fetchCodexCliStatusSnapshot();
-      codexCliStatusCache = {
-        fetchedAtMs: Date.now(),
-        snapshot,
-      };
+      const status = await withCodexAuthLease(async () => {
+        const authId = await codexAuthService.activeAuthId();
+        const cacheFresh = (
+          !forceRefresh &&
+          CODEX_CLI_STATUS_CACHE_TTL_MS > 0 &&
+          codexCliStatusCache.authId === authId &&
+          codexCliStatusCache.snapshot &&
+          (Date.now() - Number(codexCliStatusCache.fetchedAtMs || 0)) <= CODEX_CLI_STATUS_CACHE_TTL_MS
+        );
+        if (cacheFresh) {
+          return { cached: true, snapshot: codexCliStatusCache.snapshot };
+        }
+        const snapshot = await fetchCodexCliStatusSnapshotLeased();
+        codexCliStatusCache = {
+          authId,
+          fetchedAtMs: Date.now(),
+          snapshot,
+        };
+        return { cached: false, snapshot };
+      });
       return json(res, 200, {
         ok: true,
-        cached: false,
-        ...snapshot,
+        cached: status.cached,
+        ...status.snapshot,
       });
     } catch (err) {
       return json(res, 500, {
