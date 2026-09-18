@@ -98,7 +98,7 @@ type UseAppSettingsPersistenceControllerArgs = {
   setAutoReplyAfterStt: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakAfterReply: Dispatch<SetStateAction<boolean>>;
   setFaceIdRequiredForApproval: Dispatch<SetStateAction<boolean>>;
-  setVisualThemeId: Dispatch<SetStateAction<VisualThemeId>>;
+  setVisualThemeId: (themeId: VisualThemeId) => void;
   parseRegisteredDirectories: (raw: unknown) => RegisteredDirectoryEntry[];
   parseSessionTitleOverrides: (raw: unknown) => Record<string, string>;
   parseSessionMarkerColors: (raw: unknown) => Record<string, RegisteredDirectoryEntry["markerColor"]>;
@@ -394,7 +394,9 @@ export function useAppSettingsPersistenceController({
     if (typeof parsed.faceIdRequiredForApproval === "boolean") {
       setFaceIdRequiredForApproval(parsed.faceIdRequiredForApproval);
     }
-    setVisualThemeId(parseVisualThemeId(parsed.visualThemeId));
+    if (Object.prototype.hasOwnProperty.call(parsed, "visualThemeId")) {
+      setVisualThemeId(parseVisualThemeId(parsed.visualThemeId));
+    }
   }, [
     defaultModelRef,
     defaultReasoningEffort,

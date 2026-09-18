@@ -1,3 +1,5 @@
+import { StyleSheet } from "react-native";
+
 export type VisualThemeId = "standard" | "highLegibility";
 
 export type VisualThemeTone = {
@@ -100,6 +102,7 @@ export type VisualTheme = {
     compact: { fontSize: number; lineHeight: number };
     compactRelaxed: { fontSize: number; lineHeight: number };
     body: { fontSize: number; lineHeight: number };
+    bodyRelaxed: { fontSize: number; lineHeight: number };
     input: { fontSize: number; lineHeight: number };
     inputDense: { fontSize: number; lineHeight: number };
     control: { fontSize: number; lineHeight: number };
@@ -114,9 +117,13 @@ export type VisualTheme = {
     hero: { fontSize: number; lineHeight: number };
   };
   borders: {
+    divider: number;
     thin: number;
     strong: number;
     focus: number;
+  };
+  controls: {
+    compactSize: number;
   };
   tones: {
     neutral: VisualThemeTone;
@@ -150,6 +157,7 @@ export type VisualTheme = {
     danger: string;
     backdrop: string;
     shadow: string;
+    borderWidth: number;
   };
 };
 
@@ -251,6 +259,7 @@ const standardTheme: VisualTheme = {
     compact: { fontSize: 13, lineHeight: 18 },
     compactRelaxed: { fontSize: 13, lineHeight: 19 },
     body: { fontSize: 14, lineHeight: 20 },
+    bodyRelaxed: { fontSize: 14, lineHeight: 22 },
     input: { fontSize: 15, lineHeight: 21 },
     inputDense: { fontSize: 15, lineHeight: 20 },
     control: { fontSize: 16, lineHeight: 22 },
@@ -265,9 +274,13 @@ const standardTheme: VisualTheme = {
     hero: { fontSize: 32, lineHeight: 38 },
   },
   borders: {
+    divider: StyleSheet.hairlineWidth,
     thin: 1,
     strong: 2,
     focus: 2,
+  },
+  controls: {
+    compactSize: 36,
   },
   tones: {
     neutral: { foreground: "#475569", background: "#f8fafc", border: "#d1d5db" },
@@ -301,6 +314,7 @@ const standardTheme: VisualTheme = {
     danger: "#ff3b30",
     backdrop: "rgba(0, 0, 0, 0.28)",
     shadow: "#000000",
+    borderWidth: 0,
   },
 };
 
@@ -398,6 +412,7 @@ const highLegibilityTheme: VisualTheme = {
     compact: { fontSize: 15, lineHeight: 22 },
     compactRelaxed: { fontSize: 15, lineHeight: 22 },
     body: { fontSize: 16, lineHeight: 23 },
+    bodyRelaxed: { fontSize: 16, lineHeight: 23 },
     input: { fontSize: 17, lineHeight: 24 },
     inputDense: { fontSize: 17, lineHeight: 24 },
     control: { fontSize: 18, lineHeight: 25 },
@@ -412,9 +427,13 @@ const highLegibilityTheme: VisualTheme = {
     hero: { fontSize: 34, lineHeight: 42 },
   },
   borders: {
+    divider: 2,
     thin: 2,
     strong: 3,
     focus: 3,
+  },
+  controls: {
+    compactSize: 44,
   },
   tones: {
     neutral: { foreground: "#334155", background: "#f8fafc", border: "#64748b" },
@@ -448,6 +467,7 @@ const highLegibilityTheme: VisualTheme = {
     danger: "#b91c1c",
     backdrop: "rgba(2, 6, 23, 0.42)",
     shadow: "#000000",
+    borderWidth: 3,
   },
 };
 
@@ -462,6 +482,14 @@ export const VISUAL_THEME_OPTIONS = Object.values(VISUAL_THEMES).map((theme) => 
   description: theme.description,
 }));
 
+export function createStylesByTheme<T>(factory: (theme: VisualTheme) => T): Record<VisualThemeId, T> {
+  return Object.fromEntries(
+    Object.values(VISUAL_THEMES).map((theme) => [theme.id, factory(theme)])
+  ) as Record<VisualThemeId, T>;
+}
+
 export function parseVisualThemeId(raw: unknown): VisualThemeId {
-  return raw === "highLegibility" || raw === "standard" ? raw : DEFAULT_VISUAL_THEME_ID;
+  return typeof raw === "string" && Object.prototype.hasOwnProperty.call(VISUAL_THEMES, raw)
+    ? raw as VisualThemeId
+    : DEFAULT_VISUAL_THEME_ID;
 }

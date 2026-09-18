@@ -20,7 +20,7 @@ import {
   type ModalTextInputDraftValue,
 } from "./ModalTextInputDraft";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type SubmitKeyEvent = (typeof MACOS_CHAT_SUBMIT_KEY_EVENTS)[number];
 
@@ -285,7 +285,4 @@ function createComponentStyles(theme: VisualTheme) {
   });
 }
 
-const componentStylesByTheme = {
-  standard: createComponentStyles(VISUAL_THEMES.standard),
-  highLegibility: createComponentStyles(VISUAL_THEMES.highLegibility),
-} as const;
+const componentStylesByTheme = createStylesByTheme(createComponentStyles);

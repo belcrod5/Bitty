@@ -1,5 +1,5 @@
 import { Platform, StyleSheet } from "react-native";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 const YOUTUBE_INLINE_PLAYER_HEIGHT = 220;
 
@@ -495,7 +495,7 @@ export function createMediaModalStyles(theme: VisualTheme) {
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
   },
   approvalActionList: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: theme.borders.divider,
     borderTopColor: theme.approval.divider,
   },
   approvalAlertButton: {
@@ -504,7 +504,7 @@ export function createMediaModalStyles(theme: VisualTheme) {
     justifyContent: "center",
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: theme.borders.divider,
     borderTopColor: theme.approval.divider,
     backgroundColor: theme.approval.buttonSurface,
   },
@@ -526,7 +526,4 @@ export function createMediaModalStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const mediaModalStylesByTheme = {
-  standard: createMediaModalStyles(VISUAL_THEMES.standard),
-  highLegibility: createMediaModalStyles(VISUAL_THEMES.highLegibility),
-};
+export const mediaModalStylesByTheme = createStylesByTheme(createMediaModalStyles);

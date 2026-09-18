@@ -2,7 +2,7 @@ import { useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View, type StyleProp, type TextStyle } from "react-native";
 import { MarkdownText } from "./MarkdownText";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type InternalContextMessageProps = {
   content: string;
@@ -73,7 +73,4 @@ function createInternalContextStyles(theme: VisualTheme) {
   });
 }
 
-const componentStylesByTheme: Record<VisualThemeId, ReturnType<typeof createInternalContextStyles>> = {
-  standard: createInternalContextStyles(VISUAL_THEMES.standard),
-  highLegibility: createInternalContextStyles(VISUAL_THEMES.highLegibility),
-};
+const componentStylesByTheme = createStylesByTheme(createInternalContextStyles);

@@ -25,6 +25,7 @@ import { isIosFaceTrackingAvailable } from "../../faceTracking/iosFaceTrackingCl
 import type { ConversationMessage } from "../types/appTypes";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { useAppStyles } from "../styles";
+import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { AppModal } from "../components/AppModal";
 import { useAppShell } from "../contexts/AppShellContext";
@@ -121,22 +122,13 @@ const CHAT_BOTTOM_RESUME_THRESHOLD_PX = 4;
 export const CHAT_FIND_REQUEST_EVENT = "bittyChatFindRequested";
 export const CHAT_FIND_CANCEL_EVENT = "bittyChatFindCancelRequested";
 const DIRECTORY_MARKER_OPTIONS: { value: DirectoryMarkerColor; label: string; color: string }[] = [
-  { value: "gray", label: "灰", color: "#94a3b8" },
-  { value: "red", label: "赤", color: "#dc2626" },
-  { value: "yellow", label: "黄", color: "#eab308" },
-  { value: "green", label: "緑", color: "#16a34a" },
-  { value: "black", label: "黒", color: "#111827" },
+  { value: "gray", label: "灰", color: DIRECTORY_MARKER_COLORS.gray },
+  { value: "red", label: "赤", color: DIRECTORY_MARKER_COLORS.red },
+  { value: "yellow", label: "黄", color: DIRECTORY_MARKER_COLORS.yellow },
+  { value: "green", label: "緑", color: DIRECTORY_MARKER_COLORS.green },
+  { value: "black", label: "黒", color: DIRECTORY_MARKER_COLORS.black },
   { value: "none", label: "なし", color: "transparent" },
 ];
-
-function markerColorToDotHex(color: DirectoryMarkerColor) {
-  if (color === "gray") return "#94a3b8";
-  if (color === "red") return "#dc2626";
-  if (color === "yellow") return "#eab308";
-  if (color === "green") return "#16a34a";
-  if (color === "black") return "#111827";
-  return "";
-}
 
 function formatMessageTimestampLabel(atRaw: unknown) {
   const raw = String(atRaw || "").trim();
@@ -1541,7 +1533,7 @@ export function ChatScreen({
     const found = DIRECTORY_MARKER_OPTIONS.find((item) => item.value === selectedSessionMarkerColorForView);
     return found?.label || "なし";
   }, [selectedSessionMarkerColorForView]);
-  const directoryHeaderMarkerColorHex = markerColorToDotHex(selectedSessionMarkerColorForView);
+  const directoryHeaderMarkerColorHex = DIRECTORY_MARKER_COLORS[selectedSessionMarkerColorForView] ?? "";
   const actionSessionIdForView = isPanelSnapshotView
     ? String(panelSnapshot.selectedSessionId || "").trim()
     : String(selectedLlmSessionId || "").trim();

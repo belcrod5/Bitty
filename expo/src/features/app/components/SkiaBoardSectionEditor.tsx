@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { AppModal } from "./AppModal";
 import type { SkiaBoardSection } from "../utils/skiaBoardState";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export const SKIA_BOARD_SECTION_COLORS = ["#3b82f6", "#8b5cf6", "#ec4899", "#ef4444", "#f59e0b", "#22c55e", "#64748b"];
 
@@ -245,7 +245,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createStyles);

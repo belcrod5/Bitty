@@ -1,4 +1,4 @@
-import type { RegisteredDirectoryEntry } from "../types/directorySessions";
+import { parseDirectoryMarkerColor } from "../types/directorySessions";
 import type { PanelRuntimeSnapshot } from "../contexts/PanelRuntimeStoreContext";
 import type { ConversationMessage } from "../types/appTypes";
 import { deriveSessionExecutionStatusType } from "./sessionExecutionStatus";
@@ -11,13 +11,6 @@ export type PanelRuntimeSnapshotPatch = Partial<Omit<PanelRuntimeSnapshot, "conv
 export function normalizeRuntimePanelId(panelIdRaw: unknown) {
   const panelId = String(panelIdRaw || "").trim();
   return !panelId || panelId === "main" ? "" : panelId;
-}
-
-export function parseDirectoryMarkerColor(raw: unknown): RegisteredDirectoryEntry["markerColor"] {
-  const value = String(raw || "").trim().toLowerCase();
-  return value === "gray" || value === "red" || value === "yellow" || value === "green" || value === "black"
-    ? value
-    : "none";
 }
 
 export function cloneConversationMessages(messages: ConversationMessage[]): ConversationMessage[] {

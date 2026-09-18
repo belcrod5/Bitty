@@ -24,7 +24,7 @@ import type {
 } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 const DRAWIO_VIEWER_SCRIPT_URL =
   "https://viewer.diagrams.net/js/viewer-static.min.js";
@@ -234,7 +234,7 @@ function createRunnerFileViewerStyles(theme: VisualTheme) {
     paddingLeft: 16,
     paddingRight: 10,
     paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: theme.borders.divider,
     borderBottomColor: theme.dark.border,
     flexDirection: "row",
     alignItems: "center",
@@ -277,7 +277,4 @@ function createRunnerFileViewerStyles(theme: VisualTheme) {
   });
 }
 
-const viewerStylesByTheme: Record<VisualThemeId, ReturnType<typeof createRunnerFileViewerStyles>> = {
-  standard: createRunnerFileViewerStyles(VISUAL_THEMES.standard),
-  highLegibility: createRunnerFileViewerStyles(VISUAL_THEMES.highLegibility),
-};
+const viewerStylesByTheme = createStylesByTheme(createRunnerFileViewerStyles);

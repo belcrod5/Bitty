@@ -3,7 +3,7 @@ import { appLayoutStylesByTheme } from "./styles/appLayoutStyles";
 import { settingsControlStylesByTheme } from "./styles/settingsControlStyles";
 import { mediaModalStylesByTheme } from "./styles/mediaModalStyles";
 import { useVisualTheme } from "./theme/VisualThemeContext";
-import type { VisualThemeId } from "./theme/visualThemes";
+import { createStylesByTheme, type VisualThemeId } from "./theme/visualThemes";
 
 function createAppStyles(themeId: VisualThemeId) {
   return StyleSheet.create({
@@ -13,12 +13,7 @@ function createAppStyles(themeId: VisualThemeId) {
   });
 }
 
-const standardStyles = createAppStyles("standard");
-
-export const appStylesByTheme: Record<VisualThemeId, typeof standardStyles> = {
-  standard: standardStyles,
-  highLegibility: createAppStyles("highLegibility"),
-};
+export const appStylesByTheme = createStylesByTheme((theme) => createAppStyles(theme.id));
 
 export function useAppStyles() {
   return appStylesByTheme[useVisualTheme().themeId];

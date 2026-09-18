@@ -49,6 +49,7 @@ import {
   type SkiaMiniBoardItem,
   type SkiaMiniChatSession,
 } from "../hooks/useSkiaMiniChatSessions";
+import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import {
   normalizeRunnerPath,
   openRunnerFile,
@@ -80,7 +81,7 @@ import {
 } from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
   SKIA_BOARD_MIN_TEXT_SCALE,
@@ -302,15 +303,6 @@ export function fitTailTextLines(
   ];
 }
 
-function markerColor(color: SkiaMiniChatSession["markerColor"]) {
-  if (color === "red") return "#ef4444";
-  if (color === "yellow") return "#eab308";
-  if (color === "green") return "#22c55e";
-  if (color === "black") return "#111827";
-  if (color === "gray") return "#94a3b8";
-  return "#cbd5e1";
-}
-
 type BoardFooterIconKind = SkiaMiniChatSession["activityTrail"][number]["kind"] | "subagent";
 
 const BOARD_FOOTER_ICON_PATHS: Record<BoardFooterIconKind, string> = {
@@ -417,7 +409,9 @@ const BoardCard = memo(function BoardCard({
           : "FILE"
         : "NEW SESSION";
   const isSession = item.kind === "session";
-  const markerFill = isSession ? markerColor(item.markerColor) : theme.colors.accent;
+  const markerFill = isSession
+    ? DIRECTORY_MARKER_COLORS[item.markerColor] ?? theme.colors.border
+    : theme.colors.accent;
   const showUnread = isSession && item.unread;
   const activityTrail = isSession ? item.activityTrail : [];
   // 配列の参照はitemsの再構築ごとに変わるため、内容ベースのキーでPicture再生成を判定する。
@@ -2099,7 +2093,4 @@ function createScreenStyles(theme: VisualTheme) {
   });
 }
 
-const screenStylesByTheme: Record<VisualThemeId, ReturnType<typeof createScreenStyles>> = {
-  standard: createScreenStyles(VISUAL_THEMES.standard),
-  highLegibility: createScreenStyles(VISUAL_THEMES.highLegibility),
-};
+const screenStylesByTheme = createStylesByTheme(createScreenStyles);

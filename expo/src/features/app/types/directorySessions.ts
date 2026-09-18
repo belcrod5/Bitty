@@ -2,6 +2,13 @@ import type { LlmSessionHistoryEntry } from "../hooks/useLlmSessionExplorer";
 
 export type DirectoryMarkerColor = "none" | "gray" | "red" | "yellow" | "green" | "black";
 
+export function parseDirectoryMarkerColor(raw: unknown): DirectoryMarkerColor {
+  const value = String(raw || "").trim().toLowerCase();
+  return value === "gray" || value === "red" || value === "yellow" || value === "green" || value === "black"
+    ? value
+    : "none";
+}
+
 export type RegisteredDirectoryEntry = {
   id: string;
   path: string;

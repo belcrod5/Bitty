@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import { getRunnerFileLocation, getRunnerMediaKind } from "../utils/runnerFileContextMenu";
 import { AppModal } from "./AppModal";
 import { OptionSelectField } from "./OptionSelectField";
@@ -280,7 +280,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createStyles);

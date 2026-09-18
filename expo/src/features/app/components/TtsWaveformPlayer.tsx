@@ -7,7 +7,7 @@ import { CircularProgressRing } from "./CircularProgressRing";
 import { getNetworkUsageSnapshot } from "../../ws/networkUsageMetrics";
 import { formatBytesCompact } from "../utils/formatting";
 import { AppModal } from "./AppModal";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 const WAVEFORM_DOT_GIF = require("../../../../assets/images/waveform-dots.gif");
 
@@ -164,7 +164,4 @@ function createUsageStyles(theme: VisualTheme) {
   });
 }
 
-const usageStylesByTheme = {
-  standard: createUsageStyles(VISUAL_THEMES.standard),
-  highLegibility: createUsageStyles(VISUAL_THEMES.highLegibility),
-} as const;
+const usageStylesByTheme = createStylesByTheme(createUsageStyles);

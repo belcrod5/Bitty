@@ -1,4 +1,4 @@
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createSettingsScreenStyles(theme: VisualTheme) {
   return {
@@ -251,7 +251,4 @@ export function createSettingsScreenStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const settingsScreenStylesByTheme = {
-  standard: createSettingsScreenStyles(VISUAL_THEMES.standard),
-  highLegibility: createSettingsScreenStyles(VISUAL_THEMES.highLegibility),
-};
+export const settingsScreenStylesByTheme = createStylesByTheme(createSettingsScreenStyles);

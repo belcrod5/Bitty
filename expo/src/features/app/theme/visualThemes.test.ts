@@ -1,7 +1,10 @@
+import { StyleSheet } from "react-native";
+
 import {
   DEFAULT_VISUAL_THEME_ID,
   VISUAL_THEMES,
   VISUAL_THEME_OPTIONS,
+  createStylesByTheme,
   parseVisualThemeId,
 } from "./visualThemes";
 
@@ -23,6 +26,8 @@ test("parses supported theme ids and falls back to standard", () => {
   expect(parseVisualThemeId("standard")).toBe("standard");
   expect(parseVisualThemeId("highLegibility")).toBe("highLegibility");
   expect(parseVisualThemeId("dark")).toBe(DEFAULT_VISUAL_THEME_ID);
+  expect(parseVisualThemeId("constructor")).toBe(DEFAULT_VISUAL_THEME_ID);
+  expect(parseVisualThemeId("toString")).toBe(DEFAULT_VISUAL_THEME_ID);
   expect(parseVisualThemeId(null)).toBe(DEFAULT_VISUAL_THEME_ID);
 });
 
@@ -39,6 +44,20 @@ test("exposes both selectable themes from the same definitions", () => {
       description: VISUAL_THEMES.highLegibility.description,
     },
   ]);
+});
+
+test("creates every theme's styles from the theme registry", () => {
+  const styles = createStylesByTheme((theme) => `${theme.id}:${theme.borders.thin}`);
+
+  expect(styles).toEqual({
+    standard: "standard:1",
+    highLegibility: "highLegibility:2",
+  });
+});
+
+test("preserves hairline dividers in standard and strengthens them for high legibility", () => {
+  expect(VISUAL_THEMES.standard.borders.divider).toBe(StyleSheet.hairlineWidth);
+  expect(VISUAL_THEMES.highLegibility.borders.divider).toBe(2);
 });
 
 test("keeps high-legibility text and controls above their contrast targets", () => {

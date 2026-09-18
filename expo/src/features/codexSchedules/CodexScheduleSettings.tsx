@@ -15,7 +15,7 @@ import {
 
 import type { CodexScheduleSettingsProps } from "./CodexScheduleSettings.contract";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../app/theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
 import { CodexScheduleApiError, getCodexSchedules, putCodexSchedules } from "./codexScheduleApi";
 import { CodexScheduleEditor } from "./CodexScheduleEditor";
 import {
@@ -273,7 +273,4 @@ function createStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createStyles>> = {
-  standard: createStyles(VISUAL_THEMES.standard),
-  highLegibility: createStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createStyles);

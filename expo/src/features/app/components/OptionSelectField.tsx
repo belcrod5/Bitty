@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export type OptionSelectItem = {
   value: string;
@@ -97,7 +97,4 @@ function createOptionSelectStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createOptionSelectStyles>> = {
-  standard: createOptionSelectStyles(VISUAL_THEMES.standard),
-  highLegibility: createOptionSelectStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createOptionSelectStyles);

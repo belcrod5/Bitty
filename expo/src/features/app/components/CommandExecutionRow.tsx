@@ -1,7 +1,7 @@
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from "react-native";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export type CommandExecutionRowProps = CodexCommandExecutionInfo;
 
@@ -71,7 +71,4 @@ function createCommandExecutionStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createCommandExecutionStyles>> = {
-  standard: createCommandExecutionStyles(VISUAL_THEMES.standard),
-  highLegibility: createCommandExecutionStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createCommandExecutionStyles);

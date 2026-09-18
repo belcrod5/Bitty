@@ -1,4 +1,4 @@
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createMenuScreenStyles(theme: VisualTheme) {
   return {
@@ -563,7 +563,4 @@ export function createMenuScreenStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const menuScreenStylesByTheme = {
-  standard: createMenuScreenStyles(VISUAL_THEMES.standard),
-  highLegibility: createMenuScreenStyles(VISUAL_THEMES.highLegibility),
-};
+export const menuScreenStylesByTheme = createStylesByTheme(createMenuScreenStyles);

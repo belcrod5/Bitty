@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createChatMessageStyles(theme: VisualTheme) {
   return {
@@ -395,7 +395,4 @@ export function createChatMessageStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const chatMessageStylesByTheme = {
-  standard: createChatMessageStyles(VISUAL_THEMES.standard),
-  highLegibility: createChatMessageStyles(VISUAL_THEMES.highLegibility),
-} as const;
+export const chatMessageStylesByTheme = createStylesByTheme(createChatMessageStyles);

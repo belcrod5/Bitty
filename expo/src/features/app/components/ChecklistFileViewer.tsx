@@ -24,7 +24,7 @@ import type {
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 const CHECKLIST_ROW_HEIGHT = 68;
 
@@ -490,7 +490,7 @@ function createChecklistStyles(theme: VisualTheme) {
   actionBar: {
     minHeight: 48,
     paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: theme.borders.divider,
     borderBottomColor: theme.colors.border,
     flexDirection: "row",
     alignItems: "center",
@@ -551,7 +551,7 @@ function createChecklistStyles(theme: VisualTheme) {
   row: {
     height: CHECKLIST_ROW_HEIGHT,
     paddingHorizontal: 5,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: theme.borders.divider,
     borderBottomColor: theme.colors.borderSubtle,
     backgroundColor: theme.colors.surfaceRaised,
     flexDirection: "row",
@@ -646,7 +646,4 @@ function createChecklistStyles(theme: VisualTheme) {
   });
 }
 
-const stylesByTheme: Record<VisualThemeId, ReturnType<typeof createChecklistStyles>> = {
-  standard: createChecklistStyles(VISUAL_THEMES.standard),
-  highLegibility: createChecklistStyles(VISUAL_THEMES.highLegibility),
-};
+const stylesByTheme = createStylesByTheme(createChecklistStyles);

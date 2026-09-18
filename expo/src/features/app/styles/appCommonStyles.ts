@@ -1,5 +1,5 @@
 import { CHAT_CONTENT_MAX_WIDTH } from "./layoutConstants";
-import { VISUAL_THEMES, type VisualTheme } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createAppCommonStyles(theme: VisualTheme) {
   return {
@@ -22,7 +22,4 @@ export function createAppCommonStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const appCommonStylesByTheme = {
-  standard: createAppCommonStyles(VISUAL_THEMES.standard),
-  highLegibility: createAppCommonStyles(VISUAL_THEMES.highLegibility),
-};
+export const appCommonStylesByTheme = createStylesByTheme(createAppCommonStyles);

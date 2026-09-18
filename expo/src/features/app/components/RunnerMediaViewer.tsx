@@ -21,7 +21,7 @@ import type { RunnerMediaFile, RunnerMediaItem } from "../utils/runnerFileContex
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type RunnerMediaViewerProps = {
   media: RunnerMediaFile | null;
@@ -296,7 +296,7 @@ function createRunnerMediaViewerStyles(theme: VisualTheme) {
     paddingLeft: 16,
     paddingRight: 10,
     paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: theme.borders.divider,
     borderBottomColor: theme.dark.border,
     flexDirection: "row",
     alignItems: "center",
@@ -343,7 +343,7 @@ function createRunnerMediaViewerStyles(theme: VisualTheme) {
     right: 0,
     bottom: 0,
     height: VIEWER_THUMBNAIL_HEIGHT,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: theme.borders.divider,
     borderTopColor: theme.dark.border,
     justifyContent: "center",
     backgroundColor: theme.dark.canvas,
@@ -398,7 +398,4 @@ function createRunnerMediaViewerStyles(theme: VisualTheme) {
   });
 }
 
-const viewerStylesByTheme: Record<VisualThemeId, ReturnType<typeof createRunnerMediaViewerStyles>> = {
-  standard: createRunnerMediaViewerStyles(VISUAL_THEMES.standard),
-  highLegibility: createRunnerMediaViewerStyles(VISUAL_THEMES.highLegibility),
-};
+const viewerStylesByTheme = createStylesByTheme(createRunnerMediaViewerStyles);

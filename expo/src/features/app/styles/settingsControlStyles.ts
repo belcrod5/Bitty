@@ -1,7 +1,7 @@
 import { audioControlStylesByTheme } from "./audioControlStyles";
 import { menuScreenStylesByTheme } from "./menuScreenStyles";
 import { settingsScreenStylesByTheme } from "./settingsScreenStyles";
-import { VISUAL_THEMES, type VisualTheme, type VisualThemeId } from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 export function createSettingsControlStyles(theme: VisualTheme) {
   return {
@@ -58,7 +58,4 @@ export function createSettingsControlStyles(theme: VisualTheme) {
   } as const;
 }
 
-export const settingsControlStylesByTheme: Record<VisualThemeId, ReturnType<typeof createSettingsControlStyles>> = {
-  standard: createSettingsControlStyles(VISUAL_THEMES.standard),
-  highLegibility: createSettingsControlStyles(VISUAL_THEMES.highLegibility),
-};
+export const settingsControlStylesByTheme = createStylesByTheme(createSettingsControlStyles);
