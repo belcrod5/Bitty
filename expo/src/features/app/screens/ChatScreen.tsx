@@ -161,6 +161,12 @@ export function ChatScreen({
   const { theme } = useVisualTheme();
   const panelId = normalizeChatPanelId(panelIdRaw);
   const isMiniBoardPopupMode = mode === "mini_board_popup";
+  const chatScreenStyle = isMiniBoardPopupMode
+    ? [styles.chatScreen, styles.chatScreenPopup]
+    : styles.chatScreen;
+  const chatHeaderStyle = isMiniBoardPopupMode
+    ? [styles.chatHeader, styles.chatHeaderPopup]
+    : styles.chatHeader;
   const isPanelRuntimeView = isPanelScopedChatView(mode, panelId);
   const { getSnapshot } = usePanelRuntimeStore();
   const {
@@ -1875,8 +1881,12 @@ export function ChatScreen({
 
   if (!hasSelectedDirectoryForView) {
     return (
-      <View style={styles.chatScreen}>
-        <View style={styles.chatHeader} {...popupHeaderPanResponder.panHandlers}>
+      <View style={chatScreenStyle} testID="chat-screen">
+        <View
+          style={chatHeaderStyle}
+          testID="chat-header"
+          {...popupHeaderPanResponder.panHandlers}
+        >
           <View style={styles.chatHeaderLeft}>
             <TouchableOpacity
               onPress={isMiniBoardPopupMode && onTogglePopupPresentation ? onTogglePopupPresentation : openDrawer}
@@ -1916,7 +1926,8 @@ export function ChatScreen({
 
   return (
     <View
-      style={styles.chatScreen}
+      style={chatScreenStyle}
+      testID="chat-screen"
       onLayout={(event) => {
         const layout = event.nativeEvent.layout;
         const width = Number(layout?.width || 0);
@@ -1929,7 +1940,11 @@ export function ChatScreen({
         });
       }}
     >
-      <View style={styles.chatHeader} {...popupHeaderPanResponder.panHandlers}>
+      <View
+        style={chatHeaderStyle}
+        testID="chat-header"
+        {...popupHeaderPanResponder.panHandlers}
+      >
         <View style={styles.chatHeaderLeft}>
           <TouchableOpacity
             onPress={isMiniBoardPopupMode && onTogglePopupPresentation ? onTogglePopupPresentation : openDrawer}

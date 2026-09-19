@@ -3,6 +3,8 @@ import { Alert, Platform, StyleSheet } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES } from "../theme/visualThemes";
 
 const mockPersistViewport = jest.fn();
 const mockMarkViewportInteraction = jest.fn();
@@ -21,6 +23,16 @@ jest.mock("@shopify/react-native-skia", () => {
   const { View } = require("react-native");
   const Stub = ({ children }: { children?: React.ReactNode }) =>
     ReactModule.createElement(View, null, children);
+  // NativeのCanvasはchildrenを別React rootで描画し、外側Contextを継承しない。
+  // standardのProviderを挟んで同じ境界を再現し、Canvas外で解決したthemeだけを検証する。
+  const CanvasStub = ({ children }: { children?: React.ReactNode }) => {
+    const { VisualThemeProvider: DefaultThemeProvider } = require("../theme/VisualThemeContext");
+    return ReactModule.createElement(
+      DefaultThemeProvider,
+      { themeId: "standard", onSelectTheme: () => undefined },
+      ReactModule.createElement(View, null, children),
+    );
+  };
   // 文字列パス=アイコン。グリッド等のPathオブジェクト描画はアイコン数の検証に含めない。
   const PathStub = ({ path, color }: { path: unknown; color: string }) => (
     typeof path === "string"
@@ -46,7 +58,11 @@ jest.mock("@shopify/react-native-skia", () => {
       restore: () => undefined,
       translate: () => undefined,
       clipRect: () => undefined,
-      drawRRect: () => undefined,
+      drawRRect: (_rect: unknown, paint: { color?: string }) => {
+        const target = globalThis as Record<string, unknown>;
+        const colors = target.__skiaBoardRRectColors as string[] | undefined;
+        target.__skiaBoardRRectColors = [...(colors || []), String(paint.color)];
+      },
       drawCircle: () => undefined,
       drawLine: () => undefined,
       drawPath: (_path: unknown, paint: { color?: string }) => {
@@ -74,7 +90,7 @@ jest.mock("@shopify/react-native-skia", () => {
         })),
     ]);
   return {
-    Canvas: Stub,
+    Canvas: CanvasStub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
@@ -372,6 +388,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 
 beforeEach(() => {
   (globalThis as Record<string, unknown>).__skiaBoardParagraphStyles = [];
+  (globalThis as Record<string, unknown>).__skiaBoardRRectColors = [];
   (globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs = 0;
   (globalThis as Record<string, unknown>).__skiaBoardDisposedRenderedParagraphs = 0;
   mockMoveBoardCard.mockClear();
@@ -420,6 +437,35 @@ test("renders Japanese and emoji through system-fallback paragraphs", async () =
   expect(styles.some((style) => !("fontStyle" in style))).toBe(true);
   expect(styles.some((style) => style.fontStyle !== undefined)).toBe(true);
   expect((globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs).not.toBe(0);
+});
+
+test("passes the selected board theme across the isolated Skia Canvas root", async () => {
+  const screen = await render(
+    <VisualThemeProvider themeId="standard" onSelectTheme={jest.fn()}>
+      <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+    </VisualThemeProvider>,
+  );
+  (globalThis as Record<string, unknown>).__skiaBoardParagraphStyles = [];
+  (globalThis as Record<string, unknown>).__skiaBoardRRectColors = [];
+
+  await screen.rerender(
+    <VisualThemeProvider themeId="cyberpunk" onSelectTheme={jest.fn()}>
+      <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+    </VisualThemeProvider>,
+  );
+
+  const theme = VISUAL_THEMES.cyberpunk;
+  const rrectColors = (globalThis as Record<string, unknown>).__skiaBoardRRectColors as string[];
+  const paragraphStyles = (globalThis as Record<string, unknown>)
+    .__skiaBoardParagraphStyles as Array<{ color?: string }>;
+  expect(rrectColors).toEqual(expect.arrayContaining([
+    theme.board.cardSurface,
+    theme.board.cardBorder,
+  ]));
+  expect(paragraphStyles).toEqual(expect.arrayContaining([
+    expect.objectContaining({ color: theme.board.textPrimary }),
+    expect.objectContaining({ color: theme.board.textMuted }),
+  ]));
 });
 
 function gestureRegistry() {

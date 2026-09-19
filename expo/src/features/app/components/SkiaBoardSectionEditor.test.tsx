@@ -56,15 +56,15 @@ test("keeps the label focused when the label itself is touched", async () => {
 
 test("uses the selected visual theme for editor inputs", async () => {
   const screen = await render(
-    <VisualThemeProvider themeId="highLegibility" onSelectTheme={jest.fn()}>
+    <VisualThemeProvider themeId="cyberpunk" onSelectTheme={jest.fn()}>
       <SkiaBoardSectionEditor section={section} onClose={jest.fn()} onSave={jest.fn()} onDelete={jest.fn()} />
     </VisualThemeProvider>,
   );
 
   expect(StyleSheet.flatten(screen.getByLabelText("セクションのラベル").props.style)).toMatchObject({
-    color: VISUAL_THEMES.highLegibility.colors.textPrimary,
-    backgroundColor: VISUAL_THEMES.highLegibility.colors.surfaceRaised,
-    borderWidth: VISUAL_THEMES.highLegibility.borders.thin,
-    fontSize: VISUAL_THEMES.highLegibility.typography.input.fontSize,
+    color: VISUAL_THEMES.cyberpunk.colors.textPrimary,
+    backgroundColor: VISUAL_THEMES.cyberpunk.colors.surfaceRaised,
+    borderWidth: VISUAL_THEMES.cyberpunk.borders.thin,
+    fontSize: VISUAL_THEMES.cyberpunk.typography.input.fontSize,
   });
 });

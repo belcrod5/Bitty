@@ -3,6 +3,8 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Alert, DeviceEventEmitter, Platform, StyleSheet } from "react-native";
 import { CHAT_FIND_CANCEL_EVENT, CHAT_FIND_REQUEST_EVENT, ChatScreen } from "./ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES } from "../theme/visualThemes";
 import type { ConversationMessage } from "../types/appTypes";
 
 const mockStartAutoRecordingMode = jest.fn();
@@ -443,6 +445,23 @@ describe("ChatScreen auto recording panel target", () => {
     await screen.unmount();
   });
 
+  it("uses the selected theme's raised surface throughout popup chat", async () => {
+    const screen = await render(
+      <VisualThemeProvider themeId="cyberpunk" onSelectTheme={jest.fn()}>
+        <ChatScreen mode="mini_board_popup" panelId="panel-a" />
+      </VisualThemeProvider>,
+    );
+
+    expect(StyleSheet.flatten(screen.getByTestId("chat-screen").props.style)).toMatchObject({
+      backgroundColor: VISUAL_THEMES.cyberpunk.colors.surfaceRaised,
+    });
+    expect(StyleSheet.flatten(screen.getByTestId("chat-header").props.style)).toMatchObject({
+      backgroundColor: VISUAL_THEMES.cyberpunk.colors.surfaceRaised,
+    });
+    expect(StyleSheet.flatten(mockLegendListProps.current?.style)).not.toHaveProperty("backgroundColor");
+    await screen.unmount();
+  });
+
   it("copies the current panel session history reference", async () => {
     mockPanelBackendId = "claude";
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
@@ -801,7 +820,7 @@ describe("ChatScreen auto recording panel target", () => {
 
     expect(StyleSheet.flatten(screen.getByTestId("chat-title-menu").props.style)).toMatchObject({
       maxHeight: "85%",
-      backgroundColor: "#f2f2f7",
+      backgroundColor: VISUAL_THEMES.standard.colors.surfaceRaised,
     });
     const actionsScrollView = screen.getByTestId("chat-title-menu-scroll");
     expect(actionsScrollView.props.nestedScrollEnabled).toBe(true);

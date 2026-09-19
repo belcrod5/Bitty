@@ -136,6 +136,9 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     gap: 8,
     backgroundColor: theme.colors.canvas,
   },
+  chatScreenPopup: {
+    backgroundColor: theme.colors.surfaceRaised,
+  },
   chatKeyboardAvoiding: {
     flex: 1,
     minHeight: 0,
@@ -159,6 +162,9 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     zIndex: 10,
     elevation: 10,
     backgroundColor: theme.colors.canvas,
+  },
+  chatHeaderPopup: {
+    backgroundColor: theme.colors.surfaceRaised,
   },
   chatHeaderLeft: {
     flexDirection: "row",
@@ -375,7 +381,7 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     maxHeight: "85%",
     overflow: "hidden",
     borderRadius: 22,
-    backgroundColor: theme.colors.surfaceGrouped,
+    backgroundColor: theme.colors.surfaceRaised,
   },
   chatDirectoryModalScroll: {
     flexShrink: 1,
@@ -781,7 +787,6 @@ export function createAppLayoutStyles(theme: VisualTheme) {
   chatScroll: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: theme.colors.canvas,
   },
   chatScrollEndSentinel: {
     width: 1,
@@ -798,7 +803,6 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     paddingHorizontal: 4,
     paddingTop: 8,
     gap: 10,
-    backgroundColor: theme.colors.canvas,
   },
   popupMessagesSkeletonBubbleWide: {
     alignSelf: "flex-start",
