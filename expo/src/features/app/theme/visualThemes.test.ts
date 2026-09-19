@@ -24,7 +24,8 @@ function contrastRatio(first: string, second: string) {
 
 test("parses supported theme ids and falls back to standard", () => {
   expect(parseVisualThemeId("standard")).toBe("standard");
-  expect(parseVisualThemeId("highLegibility")).toBe("highLegibility");
+  expect(parseVisualThemeId("cyberpunk")).toBe("cyberpunk");
+  expect(parseVisualThemeId("highLegibility")).toBe(DEFAULT_VISUAL_THEME_ID);
   expect(parseVisualThemeId("dark")).toBe(DEFAULT_VISUAL_THEME_ID);
   expect(parseVisualThemeId("constructor")).toBe(DEFAULT_VISUAL_THEME_ID);
   expect(parseVisualThemeId("toString")).toBe(DEFAULT_VISUAL_THEME_ID);
@@ -39,9 +40,9 @@ test("exposes both selectable themes from the same definitions", () => {
       description: VISUAL_THEMES.standard.description,
     },
     {
-      id: "highLegibility",
-      label: VISUAL_THEMES.highLegibility.label,
-      description: VISUAL_THEMES.highLegibility.description,
+      id: "cyberpunk",
+      label: VISUAL_THEMES.cyberpunk.label,
+      description: VISUAL_THEMES.cyberpunk.description,
     },
   ]);
 });
@@ -51,17 +52,17 @@ test("creates every theme's styles from the theme registry", () => {
 
   expect(styles).toEqual({
     standard: "standard:1",
-    highLegibility: "highLegibility:2",
+    cyberpunk: "cyberpunk:1",
   });
 });
 
-test("preserves hairline dividers in standard and strengthens them for high legibility", () => {
+test("uses crisp dividers for the cyberpunk theme", () => {
   expect(VISUAL_THEMES.standard.borders.divider).toBe(StyleSheet.hairlineWidth);
-  expect(VISUAL_THEMES.highLegibility.borders.divider).toBe(2);
+  expect(VISUAL_THEMES.cyberpunk.borders.divider).toBe(1);
 });
 
-test("keeps high-legibility text and controls above their contrast targets", () => {
-  const theme = VISUAL_THEMES.highLegibility;
+test("keeps cyberpunk text and controls above their contrast targets", () => {
+  const theme = VISUAL_THEMES.cyberpunk;
   for (const foreground of [
     theme.colors.textPrimary,
     theme.colors.textSecondary,
@@ -69,10 +70,12 @@ test("keeps high-legibility text and controls above their contrast targets", () 
     theme.colors.accent,
     theme.colors.primaryAction,
     theme.colors.controlAccent,
-    theme.colors.floatingControlText,
   ]) {
     expect(contrastRatio(foreground, theme.colors.surface)).toBeGreaterThanOrEqual(4.5);
   }
+  expect(contrastRatio(theme.colors.textOnAccent, theme.colors.primaryAction)).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio(theme.colors.floatingControlText, theme.colors.floatingControlSurface))
+    .toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(theme.colors.border, theme.colors.surface)).toBeGreaterThanOrEqual(3);
   expect(contrastRatio(theme.colors.activityActive, theme.colors.surface)).toBeGreaterThanOrEqual(3);
 

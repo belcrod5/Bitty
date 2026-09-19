@@ -261,7 +261,7 @@ test("switches the visual theme from the display settings", async () => {
   );
 
   await fireEvent.press(screen.getByLabelText("表示テーマ"));
-  await fireEvent.press(screen.getByText("高視認性"));
+  await fireEvent.press(screen.getByText("cyberpunk"));
 
-  expect(selectTheme).toHaveBeenCalledWith("highLegibility");
+  expect(selectTheme).toHaveBeenCalledWith("cyberpunk");
 });

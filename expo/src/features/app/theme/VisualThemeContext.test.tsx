@@ -6,7 +6,7 @@ import { VisualThemeProvider, useVisualTheme } from "./VisualThemeContext";
 function ThemeProbe() {
   const { selectTheme, theme, themeId } = useVisualTheme();
   return (
-    <Pressable testID="select-high-legibility" onPress={() => selectTheme("highLegibility")}>
+    <Pressable testID="select-cyberpunk" onPress={() => selectTheme("cyberpunk")}>
       <Text>{`${themeId}:${theme.colors.textPrimary}`}</Text>
     </Pressable>
   );
@@ -21,15 +21,15 @@ test("provides the selected theme and switches when the controlled id changes", 
   );
 
   expect(screen.getByText("standard:#0f172a")).toBeTruthy();
-  await fireEvent.press(screen.getByTestId("select-high-legibility"));
-  expect(onSelectTheme).toHaveBeenCalledWith("highLegibility");
+  await fireEvent.press(screen.getByTestId("select-cyberpunk"));
+  expect(onSelectTheme).toHaveBeenCalledWith("cyberpunk");
 
   await screen.rerender(
-    <VisualThemeProvider themeId="highLegibility" onSelectTheme={onSelectTheme}>
+    <VisualThemeProvider themeId="cyberpunk" onSelectTheme={onSelectTheme}>
       <ThemeProbe />
     </VisualThemeProvider>
   );
-  expect(screen.getByText("highLegibility:#020617")).toBeTruthy();
+  expect(screen.getByText("cyberpunk:#f2f7f7")).toBeTruthy();
   await screen.unmount();
 });
 
@@ -41,7 +41,7 @@ test("uses the standard theme when a component is rendered in isolation", async 
 
 test("keeps the selected theme in content rehosted by the macOS modal", async () => {
   const screen = await render(
-    <VisualThemeProvider themeId="highLegibility" onSelectTheme={() => undefined}>
+    <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
       <AppModalHost>
         <AppModal visible animationType="none">
           <ThemeProbe />
@@ -50,6 +50,6 @@ test("keeps the selected theme in content rehosted by the macOS modal", async ()
     </VisualThemeProvider>
   );
 
-  expect(screen.getByText("highLegibility:#020617")).toBeTruthy();
+  expect(screen.getByText("cyberpunk:#f2f7f7")).toBeTruthy();
   await screen.unmount();
 });

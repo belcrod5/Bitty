@@ -252,12 +252,12 @@ test("a valid persisted runnerUrl is still applied", async () => {
 
 test("loads a supported visual theme and falls back for an unknown id", async () => {
   const setVisualThemeId = jest.fn();
-  mockReadPersistedSettings.mockResolvedValue({ visualThemeId: "highLegibility" });
+  mockReadPersistedSettings.mockResolvedValue({ visualThemeId: "cyberpunk" });
   await renderPersistenceController({ setVisualThemeId });
-  expect(setVisualThemeId).toHaveBeenLastCalledWith("highLegibility");
+  expect(setVisualThemeId).toHaveBeenLastCalledWith("cyberpunk");
 
   setVisualThemeId.mockClear();
-  mockReadPersistedSettings.mockResolvedValue({ visualThemeId: "removed-theme" });
+  mockReadPersistedSettings.mockResolvedValue({ visualThemeId: "highLegibility" });
   await renderPersistenceController({ setVisualThemeId });
   expect(setVisualThemeId).toHaveBeenLastCalledWith("standard");
 });
@@ -295,20 +295,20 @@ test("autosave preserves externally owned fields instead of rebuilding them", as
 });
 
 test("persists and exports the selected visual theme", async () => {
-  const hook = await renderPersistenceController({ visualThemeId: "highLegibility" });
+  const hook = await renderPersistenceController({ visualThemeId: "cyberpunk" });
   const mutate = mockMutatePersistedSettings.mock.calls[0][0];
-  expect(mutate({}).visualThemeId).toBe("highLegibility");
+  expect(mutate({}).visualThemeId).toBe("cyberpunk");
 
   await act(async () => {
     await hook.result.current.exportSettingsJson();
   });
   const exported = JSON.parse(mockSetStringAsync.mock.calls[0][0]);
-  expect(exported.appDefaultSettings.visualThemeId).toBe("highLegibility");
+  expect(exported.appDefaultSettings.visualThemeId).toBe("cyberpunk");
 });
 
 test("imports the selected visual theme", async () => {
   mockGetStringAsync.mockResolvedValue(JSON.stringify({
-    appDefaultSettings: { visualThemeId: "highLegibility" },
+    appDefaultSettings: { visualThemeId: "cyberpunk" },
   }));
   const setVisualThemeId = jest.fn();
   const hook = await renderPersistenceController({ setVisualThemeId });
@@ -324,7 +324,7 @@ test("imports the selected visual theme", async () => {
     await importButton?.onPress?.();
   });
 
-  expect(setVisualThemeId).toHaveBeenCalledWith("highLegibility");
+  expect(setVisualThemeId).toHaveBeenCalledWith("cyberpunk");
 });
 
 test("keeps the selected theme when importing an older backup without a theme", async () => {
@@ -333,7 +333,7 @@ test("keeps the selected theme when importing an older backup without a theme", 
   }));
   const setVisualThemeId = jest.fn();
   const hook = await renderPersistenceController({
-    visualThemeId: "highLegibility",
+    visualThemeId: "cyberpunk",
     setVisualThemeId,
   });
   setVisualThemeId.mockClear();

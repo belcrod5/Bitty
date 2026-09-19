@@ -78,15 +78,15 @@ describe("useChatDerivedState chatContextUsedPct", () => {
 
   it("uses the selected theme for context rings and YouTube HTML", async () => {
     const { result } = await renderHook(() => useChatDerivedState(baseParams({
-      visualTheme: VISUAL_THEMES.highLegibility,
+      visualTheme: VISUAL_THEMES.cyberpunk,
       youtubePlayerVideoId: "abcdefghijk",
       youtubePlayerSession: 1,
     })));
 
-    expect(result.current.chatContextRingTrackColor).toBe(VISUAL_THEMES.highLegibility.colors.infoMuted);
-    expect(result.current.chatContextRingProgressColor).toBe(VISUAL_THEMES.highLegibility.colors.contextProgress);
+    expect(result.current.chatContextRingTrackColor).toBe(VISUAL_THEMES.cyberpunk.colors.infoMuted);
+    expect(result.current.chatContextRingProgressColor).toBe(VISUAL_THEMES.cyberpunk.colors.contextProgress);
     expect(result.current.youtubeEmbedHtml).toContain(
-      `background: ${VISUAL_THEMES.highLegibility.dark.surfaceRaised}`
+      `background: ${VISUAL_THEMES.cyberpunk.dark.surfaceRaised}`
     );
   });
 });
