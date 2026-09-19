@@ -318,6 +318,7 @@ type BoardCardProps = {
   index: number;
   positions: SharedValue<CardPosition[]>;
   item: SkiaMiniBoardItem;
+  theme: VisualTheme;
   selected: boolean;
   titleFontSize: number;
   bodyFontSize: number;
@@ -332,13 +333,13 @@ const BoardCard = memo(function BoardCard({
   index,
   positions,
   item,
+  theme,
   selected,
   titleFontSize,
   bodyFontSize,
   runnerUrl,
   runnerToken,
 }: BoardCardProps) {
-  const { theme } = useVisualTheme();
   const transform = useDerivedValue(() => {
     const position = positions.value[index] || { x: 0, y: 0 };
     return [{ translateX: position.x }, { translateY: position.y }];
@@ -1808,10 +1809,15 @@ export function SkiaMiniBoardScreen({
                     sections={sectionRects}
                     section={section}
                     initialRect={renderedSectionRects[index]}
+                    theme={theme}
                     selected={section.id === selectedSectionId}
                   />
                 ))}
-                <SkiaBoardSectionDraft draft={draftSection} color={DEFAULT_SECTION_COLOR} />
+                <SkiaBoardSectionDraft
+                  draft={draftSection}
+                  color={DEFAULT_SECTION_COLOR}
+                  theme={theme}
+                />
               </Group>
             </Group>
             {sections.map((section, index) => (
@@ -1825,6 +1831,7 @@ export function SkiaMiniBoardScreen({
                 boardY={boardY}
                 scale={scale}
                 labelParagraph={sectionLabelParagraphs[index]}
+                theme={theme}
               />
             ))}
             <Group transform={boardTranslate}>
@@ -1836,6 +1843,7 @@ export function SkiaMiniBoardScreen({
                     index={index}
                     positions={positions}
                     item={item}
+                    theme={theme}
                     selected={item.cardId === selectedCardId}
                     titleFontSize={titleFontSize}
                     bodyFontSize={bodyFontSize}

@@ -23,6 +23,16 @@ jest.mock("@shopify/react-native-skia", () => {
   const { View } = require("react-native");
   const Stub = ({ children }: { children?: React.ReactNode }) =>
     ReactModule.createElement(View, null, children);
+  // NativeのCanvasはchildrenを別React rootで描画し、外側Contextを継承しない。
+  // standardのProviderを挟んで同じ境界を再現し、Canvas外で解決したthemeだけを検証する。
+  const CanvasStub = ({ children }: { children?: React.ReactNode }) => {
+    const { VisualThemeProvider: DefaultThemeProvider } = require("../theme/VisualThemeContext");
+    return ReactModule.createElement(
+      DefaultThemeProvider,
+      { themeId: "standard", onSelectTheme: () => undefined },
+      ReactModule.createElement(View, null, children),
+    );
+  };
   // 文字列パス=アイコン。グリッド等のPathオブジェクト描画はアイコン数の検証に含めない。
   const PathStub = ({ path, color }: { path: unknown; color: string }) => (
     typeof path === "string"
@@ -80,7 +90,7 @@ jest.mock("@shopify/react-native-skia", () => {
         })),
     ]);
   return {
-    Canvas: Stub,
+    Canvas: CanvasStub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
@@ -429,7 +439,7 @@ test("renders Japanese and emoji through system-fallback paragraphs", async () =
   expect((globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs).not.toBe(0);
 });
 
-test("rebuilds Skia cards with the selected board theme palette", async () => {
+test("passes the selected board theme across the isolated Skia Canvas root", async () => {
   const screen = await render(
     <VisualThemeProvider themeId="standard" onSelectTheme={jest.fn()}>
       <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />

@@ -2,22 +2,23 @@ import { Circle, Group, Paragraph, RoundedRect, type SkParagraph } from "@shopif
 import { useDerivedValue, type SharedValue } from "react-native-reanimated";
 import type { SkiaBoardSection as Section } from "../utils/skiaBoardState";
 import type { SkiaBoardSectionRect } from "../utils/skiaBoardSectionGeometry";
-import { useVisualTheme } from "../theme/VisualThemeContext";
+import type { VisualTheme } from "../theme/visualThemes";
 
 export function SkiaBoardSectionRegion({
   index,
   sections,
   section,
   initialRect,
+  theme,
   selected,
 }: {
   index: number;
   sections: SharedValue<SkiaBoardSectionRect[]>;
   section: Section;
   initialRect: SkiaBoardSectionRect;
+  theme: VisualTheme;
   selected: boolean;
 }) {
-  const { theme } = useVisualTheme();
   const transform = useDerivedValue(() => {
     const current = sections.value[index] || initialRect;
     return [{ translateX: current.x }, { translateY: current.y }];
@@ -61,6 +62,7 @@ export function SkiaBoardSectionOverlay({
   boardY,
   scale,
   labelParagraph,
+  theme,
 }: {
   index: number;
   sections: SharedValue<SkiaBoardSectionRect[]>;
@@ -70,8 +72,8 @@ export function SkiaBoardSectionOverlay({
   boardY: SharedValue<number>;
   scale: SharedValue<number>;
   labelParagraph: SkParagraph;
+  theme: VisualTheme;
 }) {
-  const { theme } = useVisualTheme();
   const left = useDerivedValue(() => {
     const current = sections.value[index] || initialRect;
     return boardX.value + current.x * scale.value;
@@ -136,8 +138,15 @@ export function SkiaBoardSectionOverlay({
   );
 }
 
-export function SkiaBoardSectionDraft({ draft, color }: { draft: SharedValue<SkiaBoardSectionRect>; color: string }) {
-  const { theme } = useVisualTheme();
+export function SkiaBoardSectionDraft({
+  draft,
+  color,
+  theme,
+}: {
+  draft: SharedValue<SkiaBoardSectionRect>;
+  color: string;
+  theme: VisualTheme;
+}) {
   const transform = useDerivedValue(() => [{ translateX: draft.value.x }, { translateY: draft.value.y }]);
   const width = useDerivedValue(() => draft.value.width);
   const height = useDerivedValue(() => draft.value.height);
