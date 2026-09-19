@@ -458,6 +458,7 @@ describe("ChatScreen auto recording panel target", () => {
     expect(StyleSheet.flatten(screen.getByTestId("chat-header").props.style)).toMatchObject({
       backgroundColor: VISUAL_THEMES.cyberpunk.colors.surfaceRaised,
     });
+    expect(StyleSheet.flatten(mockLegendListProps.current?.style)).not.toHaveProperty("backgroundColor");
     await screen.unmount();
   });
 
@@ -819,7 +820,7 @@ describe("ChatScreen auto recording panel target", () => {
 
     expect(StyleSheet.flatten(screen.getByTestId("chat-title-menu").props.style)).toMatchObject({
       maxHeight: "85%",
-      backgroundColor: "#f2f2f7",
+      backgroundColor: VISUAL_THEMES.standard.colors.surfaceRaised,
     });
     const actionsScrollView = screen.getByTestId("chat-title-menu-scroll");
     expect(actionsScrollView.props.nestedScrollEnabled).toBe(true);

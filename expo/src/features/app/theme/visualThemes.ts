@@ -341,7 +341,7 @@ const cyberpunkTheme: VisualTheme = {
   colors: {
     canvas: "#05080d",
     surface: "#0a1018",
-    surfaceRaised: "#182a36",
+    surfaceRaised: "#14232e",
     surfaceMuted: "#141f2b",
     surfaceSelected: "#192a35",
     surfaceGrouped: "#080d13",
