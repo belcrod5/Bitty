@@ -1,9 +1,11 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useMemo,
   type ReactNode,
 } from "react";
+import { Appearance } from "react-native";
 import {
   DEFAULT_VISUAL_THEME_ID,
   VISUAL_THEMES,
@@ -32,11 +34,17 @@ export function VisualThemeProvider({
   onSelectTheme: (themeId: VisualThemeId) => void;
   themeId: VisualThemeId;
 }) {
+  const theme = VISUAL_THEMES[themeId];
+
+  useEffect(() => {
+    Appearance.setColorScheme(theme.colorScheme);
+  }, [theme.colorScheme]);
+
   const value = useMemo(() => ({
     themeId,
-    theme: VISUAL_THEMES[themeId],
+    theme,
     selectTheme: onSelectTheme,
-  }), [onSelectTheme, themeId]);
+  }), [onSelectTheme, theme, themeId]);
 
   return <VisualThemeContext.Provider value={value}>{children}</VisualThemeContext.Provider>;
 }

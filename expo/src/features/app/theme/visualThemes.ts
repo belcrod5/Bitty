@@ -12,6 +12,7 @@ export type VisualTheme = {
   id: VisualThemeId;
   label: string;
   description: string;
+  colorScheme: "light" | "dark";
   colors: {
     canvas: string;
     surface: string;
@@ -177,6 +178,7 @@ const standardTheme: VisualTheme = {
   id: "standard",
   label: "標準",
   description: "現在の表示に近い配色と文字サイズ",
+  colorScheme: "light",
   colors: {
     canvas: "#ffffff",
     surface: "#ffffff",
@@ -338,6 +340,7 @@ const cyberpunkTheme: VisualTheme = {
   id: "cyberpunk",
   label: "cyberpunk",
   description: "暗色とネオンカラーの未来的な表示",
+  colorScheme: "dark",
   colors: {
     canvas: "#05080d",
     surface: "#0a1018",

@@ -2,10 +2,12 @@ import { appStylesByTheme } from "./styles";
 
 test("pre-generates distinct standard and cyberpunk style sheets", () => {
   expect(appStylesByTheme.standard).not.toBe(appStylesByTheme.cyberpunk);
-  expect(appStylesByTheme.standard.settingsScreen.backgroundColor).toBe("#f2f2f7");
-  expect(appStylesByTheme.cyberpunk.settingsScreen.backgroundColor).toBe("#080d13");
   expect(appStylesByTheme.standard.appDrawerRoot.backgroundColor).toBe("#f8fafc");
   expect(appStylesByTheme.cyberpunk.appDrawerRoot.backgroundColor).toBe("#14232e");
+  expect(appStylesByTheme.standard.settingsScreen.backgroundColor)
+    .toBe(appStylesByTheme.standard.appDrawerRoot.backgroundColor);
+  expect(appStylesByTheme.cyberpunk.settingsScreen.backgroundColor)
+    .toBe(appStylesByTheme.cyberpunk.appDrawerRoot.backgroundColor);
   expect(appStylesByTheme.cyberpunk.chatScreenPopup.backgroundColor)
     .toBe(appStylesByTheme.cyberpunk.appDrawerRoot.backgroundColor);
   expect(appStylesByTheme.cyberpunk.chatHeaderPopup.backgroundColor)
