@@ -94,7 +94,7 @@ export function SkiaBoardSectionOverlay({
       <Paragraph x={left} y={labelY} width={1000} paragraph={labelParagraph} />
       {selected ? (
         <>
-          <Circle cx={left} cy={top} r={5} color={theme.colors.surface} style="fill" />
+          <Circle cx={left} cy={top} r={5} color={theme.board.cardSurface} style="fill" />
           <Circle
             cx={left}
             cy={top}
@@ -103,7 +103,7 @@ export function SkiaBoardSectionOverlay({
             style="stroke"
             strokeWidth={theme.borders.strong}
           />
-          <Circle cx={right} cy={top} r={5} color={theme.colors.surface} style="fill" />
+          <Circle cx={right} cy={top} r={5} color={theme.board.cardSurface} style="fill" />
           <Circle
             cx={right}
             cy={top}
@@ -112,7 +112,7 @@ export function SkiaBoardSectionOverlay({
             style="stroke"
             strokeWidth={theme.borders.strong}
           />
-          <Circle cx={right} cy={bottom} r={5} color={theme.colors.surface} style="fill" />
+          <Circle cx={right} cy={bottom} r={5} color={theme.board.cardSurface} style="fill" />
           <Circle
             cx={right}
             cy={bottom}
@@ -121,7 +121,7 @@ export function SkiaBoardSectionOverlay({
             style="stroke"
             strokeWidth={theme.borders.strong}
           />
-          <Circle cx={left} cy={bottom} r={5} color={theme.colors.surface} style="fill" />
+          <Circle cx={left} cy={bottom} r={5} color={theme.board.cardSurface} style="fill" />
           <Circle
             cx={left}
             cy={bottom}

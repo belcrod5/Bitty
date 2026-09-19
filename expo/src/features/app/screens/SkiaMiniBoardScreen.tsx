@@ -459,12 +459,12 @@ const BoardCard = memo(function BoardCard({
           };
 
           drawCardRect(2, 4, fillPaint(theme.colors.shadow, 0.16));
-          drawCardRect(0, 0, fillPaint(theme.colors.surface));
+          drawCardRect(0, 0, fillPaint(theme.board.cardSurface));
           drawCardRect(
             0,
             0,
             strokePaint(
-              selected ? theme.colors.accent : theme.colors.borderMuted,
+              selected ? theme.colors.accent : theme.board.cardBorder,
               selected ? theme.borders.focus : theme.borders.thin,
             ),
           );
@@ -480,7 +480,7 @@ const BoardCard = memo(function BoardCard({
               boardImage,
               Skia.XYWHRect(0, 0, imageWidth, imageHeight),
               Skia.XYWHRect((cardWidth - width) / 2, (CARD_HEIGHT - height) / 2, width, height),
-              fillPaint(theme.colors.surface),
+              fillPaint(theme.board.cardSurface),
             );
             return;
           }
@@ -492,30 +492,30 @@ const BoardCard = memo(function BoardCard({
           canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
           drawText(header, 31, 14, cardWidth - 47, {
             fontSize: bodyFontSize,
-            color: theme.colors.textMuted,
+            color: theme.board.textMuted,
           });
           drawText(title, 16, 34, contentWidth, {
             fontSize: titleFontSize,
             bold: true,
-            color: theme.colors.textPrimary,
+            color: theme.board.textPrimary,
           });
           if (isSession) {
             messageLines.forEach((line, lineIndex) => {
               drawText(line, 16, messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize, contentWidth, {
                 fontSize: bodyFontSize,
-                color: theme.colors.textMuted,
+                color: theme.board.textMuted,
               });
             });
           } else {
             drawText(detail, 16, 69 - bodyFontSize, contentWidth, {
               fontSize: bodyFontSize,
-              color: theme.colors.textMuted,
+              color: theme.board.textMuted,
             });
           }
           canvas.drawLine(16, 88, cardWidth - 16, 88, strokePaint(theme.colors.borderSubtle, theme.borders.thin));
           drawText(footer, 16, 100 - bodyFontSize, Math.max(20, footerRightStart - 24), {
             fontSize: bodyFontSize,
-            color: theme.colors.textMuted,
+            color: theme.board.textMuted,
           });
           activityTrail.forEach((activity, iconIndex) => {
             drawFooterIcon(
@@ -525,10 +525,10 @@ const BoardCard = memo(function BoardCard({
             );
           });
           if (isSession) {
-            drawFooterIcon("subagent", subagentIconX, theme.colors.textMuted);
+            drawFooterIcon("subagent", subagentIconX, theme.board.textMuted);
             drawText(subagentText, cardWidth - 16 - subagentTextWidth, 100 - bodyFontSize, subagentTextWidth + 1, {
               fontSize: bodyFontSize,
-              color: theme.colors.textMuted,
+              color: theme.board.textMuted,
             });
           }
           canvas.restore();
@@ -831,7 +831,7 @@ export function SkiaMiniBoardScreen({
     () =>
       sections.map((section) =>
         createBoardParagraph(section.label, 1000, {
-          color: section.id === selectedSectionId ? theme.colors.accentStrong : theme.colors.textSecondary,
+          color: section.id === selectedSectionId ? theme.colors.accentStrong : theme.board.textMuted,
           fontSize: theme.typography.small.fontSize,
           bold: true,
         }),
@@ -1797,7 +1797,7 @@ export function SkiaMiniBoardScreen({
               <Group transform={boardScale}>
                 <Path
                   path={gridPath}
-                  color={theme.colors.borderSubtle}
+                  color={theme.board.grid}
                   style="stroke"
                   strokeWidth={theme.borders.thin}
                 />
@@ -1942,7 +1942,7 @@ function createScreenStyles(theme: VisualTheme) {
   return StyleSheet.create({
     screen: {
       flex: 1,
-      backgroundColor: theme.colors.surfaceMuted,
+      backgroundColor: theme.board.canvas,
     },
     headerSafeArea: {
       position: "absolute",

@@ -145,6 +145,14 @@ export type VisualTheme = {
     danger: string;
     dangerOverlay: string;
   };
+  board: {
+    canvas: string;
+    grid: string;
+    cardSurface: string;
+    cardBorder: string;
+    textPrimary: string;
+    textMuted: string;
+  };
   approval: {
     surface: string;
     text: string;
@@ -302,6 +310,14 @@ const standardTheme: VisualTheme = {
     danger: "#fecaca",
     dangerOverlay: "rgba(127, 29, 29, 0.92)",
   },
+  board: {
+    canvas: "#f1f5f9",
+    grid: "#e2e8f0",
+    cardSurface: "#ffffff",
+    cardBorder: "#dbe3ee",
+    textPrimary: "#0f172a",
+    textMuted: "#64748b",
+  },
   approval: {
     surface: "rgba(242, 242, 247, 0.96)",
     text: "#000000",
@@ -325,7 +341,7 @@ const cyberpunkTheme: VisualTheme = {
   colors: {
     canvas: "#05080d",
     surface: "#0a1018",
-    surfaceRaised: "#101923",
+    surfaceRaised: "#182a36",
     surfaceMuted: "#141f2b",
     surfaceSelected: "#192a35",
     surfaceGrouped: "#080d13",
@@ -454,6 +470,14 @@ const cyberpunkTheme: VisualTheme = {
     accent: "#00e5ff",
     danger: "#ff8aa0",
     dangerOverlay: "rgba(91, 8, 28, 0.96)",
+  },
+  board: {
+    canvas: "#05080d",
+    grid: "#1d3842",
+    cardSurface: "#182a36",
+    cardBorder: "#00b8cc",
+    textPrimary: "#f2f7f7",
+    textMuted: "#9dc8cc",
   },
   approval: {
     surface: "#0a1018",
