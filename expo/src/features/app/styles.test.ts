@@ -6,6 +6,8 @@ test("pre-generates distinct standard and cyberpunk style sheets", () => {
   expect(appStylesByTheme.cyberpunk.settingsScreen.backgroundColor).toBe("#080d13");
   expect(appStylesByTheme.standard.appDrawerRoot.backgroundColor).toBe("#f8fafc");
   expect(appStylesByTheme.cyberpunk.appDrawerRoot.backgroundColor).toBe("#182a36");
+  expect(appStylesByTheme.cyberpunk.chatScreenPopup.backgroundColor).toBe("#182a36");
+  expect(appStylesByTheme.cyberpunk.chatHeaderPopup.backgroundColor).toBe("#182a36");
   expect(appStylesByTheme.standard.chatBubbleText.fontSize).toBe(14);
   expect(appStylesByTheme.cyberpunk.chatBubbleText.fontSize).toBe(14);
   expect(appStylesByTheme.standard.chatInput.fontSize).toBe(15);

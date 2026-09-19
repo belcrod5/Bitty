@@ -136,6 +136,9 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     gap: 8,
     backgroundColor: theme.colors.canvas,
   },
+  chatScreenPopup: {
+    backgroundColor: theme.colors.surfaceRaised,
+  },
   chatKeyboardAvoiding: {
     flex: 1,
     minHeight: 0,
@@ -159,6 +162,9 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     zIndex: 10,
     elevation: 10,
     backgroundColor: theme.colors.canvas,
+  },
+  chatHeaderPopup: {
+    backgroundColor: theme.colors.surfaceRaised,
   },
   chatHeaderLeft: {
     flexDirection: "row",
