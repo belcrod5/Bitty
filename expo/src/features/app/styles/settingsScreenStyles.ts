@@ -4,7 +4,7 @@ export function createSettingsScreenStyles(theme: VisualTheme) {
   return {
   settingsScreen: {
     flex: 1,
-    backgroundColor: theme.colors.surfaceGrouped,
+    backgroundColor: theme.colors.surfaceRaised,
   },
   settingsContent: {
     width: "100%",

@@ -47,6 +47,11 @@ test("exposes both selectable themes from the same definitions", () => {
   ]);
 });
 
+test("declares the native color scheme for each visual theme", () => {
+  expect(VISUAL_THEMES.standard.colorScheme).toBe("light");
+  expect(VISUAL_THEMES.cyberpunk.colorScheme).toBe("dark");
+});
+
 test("creates every theme's styles from the theme registry", () => {
   const styles = createStylesByTheme((theme) => `${theme.id}:${theme.borders.thin}`);
 

@@ -1,7 +1,19 @@
 import { fireEvent, render } from "@testing-library/react-native";
-import { Pressable, Text } from "react-native";
+import { Appearance, Pressable, Text } from "react-native";
 import { AppModal, AppModalHost } from "../components/AppModal.macos";
 import { VisualThemeProvider, useVisualTheme } from "./VisualThemeContext";
+
+const setColorSchemeSpy = jest
+  .spyOn(Appearance, "setColorScheme")
+  .mockImplementation(() => undefined);
+
+beforeEach(() => {
+  setColorSchemeSpy.mockClear();
+});
+
+afterAll(() => {
+  setColorSchemeSpy.mockRestore();
+});
 
 function ThemeProbe() {
   const { selectTheme, theme, themeId } = useVisualTheme();
@@ -12,7 +24,7 @@ function ThemeProbe() {
   );
 }
 
-test("provides the selected theme and switches when the controlled id changes", async () => {
+test("provides the selected theme and synchronizes appearance when the controlled id changes", async () => {
   const onSelectTheme = jest.fn();
   const screen = await render(
     <VisualThemeProvider themeId="standard" onSelectTheme={onSelectTheme}>
@@ -21,6 +33,7 @@ test("provides the selected theme and switches when the controlled id changes", 
   );
 
   expect(screen.getByText("standard:#0f172a")).toBeTruthy();
+  expect(setColorSchemeSpy).toHaveBeenLastCalledWith("light");
   await fireEvent.press(screen.getByTestId("select-cyberpunk"));
   expect(onSelectTheme).toHaveBeenCalledWith("cyberpunk");
 
@@ -30,6 +43,7 @@ test("provides the selected theme and switches when the controlled id changes", 
     </VisualThemeProvider>
   );
   expect(screen.getByText("cyberpunk:#f2f7f7")).toBeTruthy();
+  expect(setColorSchemeSpy).toHaveBeenLastCalledWith("dark");
   await screen.unmount();
 });
 
