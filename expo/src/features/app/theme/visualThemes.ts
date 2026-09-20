@@ -10,11 +10,17 @@ export type VisualThemeTone = {
 
 export type VisualThemeTransitionEvent = "splash" | "popupOpen" | "popupClose";
 
-export type VisualThemeMotion = {
+export type VisualThemePopupTransition = "soft" | "flash-blink";
+
+export type VisualThemeSplashMotion = {
   durationMs: number;
   flashCount: number;
   flashOpacity: number;
   flashDurationMs: number;
+};
+
+export type VisualThemePopupMotion = {
+  durationMs: number;
 };
 
 export type VisualThemeSound = {
@@ -27,7 +33,12 @@ export type VisualTheme = {
   label: string;
   description: string;
   colorScheme: "light" | "dark";
-  motion: Record<VisualThemeTransitionEvent, VisualThemeMotion>;
+  motion: {
+    popupTransition: VisualThemePopupTransition;
+    splash: VisualThemeSplashMotion;
+    popupOpen: VisualThemePopupMotion;
+    popupClose: VisualThemePopupMotion;
+  };
   sounds: Record<VisualThemeTransitionEvent, VisualThemeSound>;
   colors: {
     canvas: string;
@@ -196,9 +207,10 @@ const standardTheme: VisualTheme = {
   description: "現在の表示に近い配色と文字サイズ",
   colorScheme: "light",
   motion: {
+    popupTransition: "soft",
     splash: { durationMs: 620, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
-    popupOpen: { durationMs: 260, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
-    popupClose: { durationMs: 220, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+    popupOpen: { durationMs: 260 },
+    popupClose: { durationMs: 220 },
   },
   sounds: {
     splash: {
@@ -377,9 +389,10 @@ const cyberpunkTheme: VisualTheme = {
   description: "暗色とネオンカラーの未来的な表示",
   colorScheme: "dark",
   motion: {
+    popupTransition: "flash-blink",
     splash: { durationMs: 720, flashCount: 2, flashOpacity: 0.7, flashDurationMs: 62 },
-    popupOpen: { durationMs: 260, flashCount: 2, flashOpacity: 0.72, flashDurationMs: 48 },
-    popupClose: { durationMs: 220, flashCount: 1, flashOpacity: 0.76, flashDurationMs: 54 },
+    popupOpen: { durationMs: 260 },
+    popupClose: { durationMs: 220 },
   },
   sounds: {
     splash: {

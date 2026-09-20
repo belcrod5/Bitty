@@ -8,7 +8,6 @@ import Animated, {
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
-  withRepeat,
   withTiming,
 } from "react-native-reanimated";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
@@ -21,6 +20,10 @@ import {
   type VisualTheme,
   type VisualThemeTransitionEvent,
 } from "../theme/visualThemes";
+import {
+  startCyberpunkPopupTransition,
+  startStandardPopupTransition,
+} from "./popupChatTransitions";
 
 type PopupChatOverlayProps = {
   visible: boolean;
@@ -80,7 +83,8 @@ export function PopupChatOverlay({
 
   const progress = useSharedValue(1);
   const dragTranslateY = useSharedValue(0);
-  const flashOpacity = useSharedValue(1);
+  const cardOpacity = useSharedValue(1);
+  const transitionFlashOpacity = useSharedValue(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -227,26 +231,26 @@ export function PopupChatOverlay({
     syncRootWindowOrigin();
     progress.value = 0;
     dragTranslateY.value = 0;
-    flashOpacity.value = 1;
+    cardOpacity.value = 0;
+    transitionFlashOpacity.value = 0;
     const motion = theme.motion.popupOpen;
-    if (!reduceMotion && motion.flashCount > 0) {
-      flashOpacity.value = withRepeat(
-        withTiming(motion.flashOpacity, {
-          duration: motion.flashDurationMs,
-          easing: Easing.linear,
-        }),
-        motion.flashCount * 2,
-        true
-      );
-    }
     setTimeout(() => {
       if (mountedRef.current) playPopupSoundOnce("popupOpen", soundEventId);
     }, 0);
-    progress.value = withTiming(1, {
-      duration: reduceMotion ? 0 : motion.durationMs,
-      easing: Easing.out(Easing.cubic),
-    }, (finished) => {
-      if (finished) runOnJS(completeOpen)(generation, soundEventId);
+    const startTransition = theme.motion.popupTransition === "flash-blink"
+      ? startCyberpunkPopupTransition
+      : startStandardPopupTransition;
+    startTransition({
+      direction: "open",
+      durationMs: motion.durationMs,
+      reduceMotion,
+      progress,
+      cardOpacity,
+      flashOpacity: transitionFlashOpacity,
+      onFinish: (finished) => {
+        "worklet";
+        if (finished) runOnJS(completeOpen)(generation, soundEventId);
+      },
     });
 
     return () => {
@@ -255,7 +259,8 @@ export function PopupChatOverlay({
       }
       cancelAnimation(progress);
       cancelAnimation(dragTranslateY);
-      cancelAnimation(flashOpacity);
+      cancelAnimation(cardOpacity);
+      cancelAnimation(transitionFlashOpacity);
     };
   }, [
     cycleId,
@@ -297,19 +302,11 @@ export function PopupChatOverlay({
     const generation = ++transitionGenerationRef.current;
     setContentReady(false);
     setMessageSkeletonVisible(false);
-    cancelAnimation(flashOpacity);
-    flashOpacity.value = 1;
+    cancelAnimation(cardOpacity);
+    cancelAnimation(transitionFlashOpacity);
+    cardOpacity.value = 1;
+    transitionFlashOpacity.value = 0;
     const motion = theme.motion.popupClose;
-    if (!reduceMotion && motion.flashCount > 0) {
-      flashOpacity.value = withRepeat(
-        withTiming(motion.flashOpacity, {
-          duration: motion.flashDurationMs,
-          easing: Easing.linear,
-        }),
-        motion.flashCount * 2,
-        true
-      );
-    }
     setTimeout(() => {
       if (mountedRef.current) playPopupSoundOnce("popupClose", soundEventId);
     }, 0);
@@ -318,11 +315,20 @@ export function PopupChatOverlay({
       () => completeClose(generation, eventId, soundEventId),
       durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
     );
-    progress.value = withTiming(0, {
-      duration: durationMs,
-      easing: Easing.out(Easing.cubic),
-    }, (finished) => {
-      if (finished) runOnJS(completeClose)(generation, eventId, soundEventId);
+    const startTransition = theme.motion.popupTransition === "flash-blink"
+      ? startCyberpunkPopupTransition
+      : startStandardPopupTransition;
+    startTransition({
+      direction: "close",
+      durationMs,
+      reduceMotion,
+      progress,
+      cardOpacity,
+      flashOpacity: transitionFlashOpacity,
+      onFinish: (finished) => {
+        "worklet";
+        if (finished) runOnJS(completeClose)(generation, eventId, soundEventId);
+      },
     });
 
     return () => {
@@ -332,7 +338,8 @@ export function PopupChatOverlay({
       closingRef.current = false;
       clearTimeout(closeTimer);
       cancelAnimation(progress);
-      cancelAnimation(flashOpacity);
+      cancelAnimation(cardOpacity);
+      cancelAnimation(transitionFlashOpacity);
     };
   }, [
     completeClose,
@@ -365,9 +372,9 @@ export function PopupChatOverlay({
     width: interpolate(progress.value, [0, 1, 2], [initialRect.width, popupRect.width, fullscreenRect.width]),
     height: interpolate(progress.value, [0, 1, 2], [initialRect.height, popupRect.height, fullscreenRect.height]),
     borderRadius: interpolate(progress.value, [0, 1, 2], [10, POPUP_BORDER_RADIUS, 0]),
-    opacity: flashOpacity.value,
+    opacity: cardOpacity.value,
     transform: [{ translateY: dragTranslateY.value }],
-  }), [dragTranslateY, flashOpacity, fullscreenRect, initialRect, popupRect]);
+  }), [cardOpacity, dragTranslateY, fullscreenRect, initialRect, popupRect]);
 
   const backdropAnimatedStyle = useAnimatedStyle(() => ({
     opacity: interpolate(progress.value, [0, 1, 2], [0, 1, 1]),
@@ -375,6 +382,9 @@ export function PopupChatOverlay({
   const animatedContentStyle = useAnimatedStyle(() => ({
     paddingTop: interpolate(progress.value, [0, 1, 2], [0, 0, FULLSCREEN_PADDING_TOP]),
     paddingBottom: interpolate(progress.value, [0, 1, 2], [0, 0, FULLSCREEN_PADDING_BOTTOM]),
+  }));
+  const transitionFlashStyle = useAnimatedStyle(() => ({
+    opacity: transitionFlashOpacity.value,
   }));
 
   if (!rendered || !panelId) return null;
@@ -420,6 +430,10 @@ export function PopupChatOverlay({
             </View>
           )}
         </Animated.View>
+        <Animated.View
+          pointerEvents="none"
+          style={[popupChatOverlayStyles.transitionFlash, transitionFlashStyle]}
+        />
       </Animated.View>
     </View>
   );
@@ -450,6 +464,10 @@ function createPopupChatOverlayStyles(theme: VisualTheme) {
   content: {
     flex: 1,
     minHeight: 0,
+  },
+  transitionFlash: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: theme.colors.accent,
   },
   skeleton: {
     flex: 1,

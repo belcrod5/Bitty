@@ -1,6 +1,6 @@
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { useReducedMotion, withRepeat, withTiming } from "react-native-reanimated";
+import { useReducedMotion, withSequence, withTiming } from "react-native-reanimated";
 
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { PopupChatOverlay } from "./PopupChatOverlay";
@@ -25,7 +25,7 @@ jest.mock("react-native-reanimated", () => {
   return {
     ...mock,
     useReducedMotion: jest.fn(() => false),
-    withRepeat: jest.fn(mock.withRepeat),
+    withSequence: jest.fn(mock.withSequence),
     withTiming: jest.fn(mock.withTiming),
   };
 });
@@ -63,6 +63,7 @@ test("plays popup open and close sounds once per displayed cycle", async () => {
 
   await waitFor(() => expect(playThemeSfx).toHaveBeenCalledWith("popupOpen"));
   expect(playThemeSfx).toHaveBeenCalledTimes(1);
+  expect(withSequence).toHaveBeenCalledTimes(2);
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
@@ -111,6 +112,7 @@ test("plays popup open and close sounds once per displayed cycle", async () => {
   expect(playThemeSfx).toHaveBeenCalledTimes(2);
   expect(playThemeSfx).toHaveBeenLastCalledWith("popupClose");
   expect(onClose).toHaveBeenCalledTimes(1);
+  expect(withSequence).toHaveBeenCalledTimes(4);
 
   await screen.rerender(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
@@ -147,6 +149,7 @@ test("does not replay the open event when only the theme changes", async () => {
     </VisualThemeProvider>
   );
   await waitFor(() => expect(playThemeSfx).toHaveBeenCalledTimes(1));
+  expect(withSequence).not.toHaveBeenCalled();
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
@@ -171,7 +174,7 @@ test("suppresses popup flashing when Reduce Motion is enabled", async () => {
     </VisualThemeProvider>
   );
 
-  expect(withRepeat).not.toHaveBeenCalled();
+  expect(withSequence).not.toHaveBeenCalled();
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
       <PopupChatOverlay
@@ -184,7 +187,7 @@ test("suppresses popup flashing when Reduce Motion is enabled", async () => {
       />
     </VisualThemeProvider>
   );
-  expect(withRepeat).not.toHaveBeenCalled();
+  expect(withSequence).not.toHaveBeenCalled();
 });
 
 test("skips close effects when the popup was never displayed", async () => {
