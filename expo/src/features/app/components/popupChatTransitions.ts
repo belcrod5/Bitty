@@ -1,5 +1,7 @@
 import {
   Easing,
+  withDelay,
+  withSequence,
   withTiming,
   type SharedValue,
 } from "react-native-reanimated";
@@ -64,11 +66,20 @@ export function startCyberpunkPopupTransition({
   // Cyberpunk transitions always use the final popup geometry. Its motion is
   // flashing plus a short vertical-only signal distortion near the end.
   progress.value = 1;
+  cardScaleY.value = withDelay(
+    Math.max(0, durationMs - 56),
+    withSequence(
+      withTiming(1.045, { duration: 10, easing: Easing.linear }),
+      withTiming(0.955, { duration: 10, easing: Easing.linear }),
+      withTiming(1.025, { duration: 10, easing: Easing.linear }),
+      withTiming(0.98, { duration: 10, easing: Easing.linear }),
+      withTiming(1, { duration: 16, easing: Easing.linear })
+    )
+  );
   startCyberpunkFlashBlinkTransition({
     direction,
     durationMs,
     contentOpacity: cardOpacity,
-    contentScaleY: cardScaleY,
     flashOpacity,
     onFinish,
   });

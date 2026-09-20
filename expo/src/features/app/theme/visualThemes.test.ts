@@ -52,7 +52,7 @@ test("declares the native color scheme for each visual theme", () => {
   expect(VISUAL_THEMES.cyberpunk.colorScheme).toBe("dark");
 });
 
-test("defines splash motion and the two popup sounds without changing the standard popup timing", () => {
+test("keeps standard transitions silent and defines cyberpunk transition sounds", () => {
   expect(VISUAL_THEMES.standard.motion).toEqual({
     popupTransition: "soft",
     drawerTransition: "none",
@@ -60,12 +60,7 @@ test("defines splash motion and the two popup sounds without changing the standa
     popupOpen: { durationMs: 260 },
     popupClose: { durationMs: 220 },
   });
-  expect(Object.keys(VISUAL_THEMES.standard.sounds)).toEqual([
-    "popupOpen",
-    "popupClose",
-    "drawerOpen",
-    "drawerClose",
-  ]);
+  expect(VISUAL_THEMES.standard.sounds).toEqual({});
   expect(Object.keys(VISUAL_THEMES.cyberpunk.sounds)).toEqual([
     "popupOpen",
     "popupClose",
@@ -76,10 +71,10 @@ test("defines splash motion and the two popup sounds without changing the standa
   expect(VISUAL_THEMES.cyberpunk.motion.splash.flashCount).toBeGreaterThan(0);
   expect(VISUAL_THEMES.cyberpunk.motion.popupTransition).toBe("flash-blink");
   expect(VISUAL_THEMES.cyberpunk.motion.drawerTransition).toBe("flash-blink");
-  expect(VISUAL_THEMES.cyberpunk.sounds.drawerOpen.asset)
-    .toBe(VISUAL_THEMES.cyberpunk.sounds.popupOpen.asset);
-  expect(VISUAL_THEMES.cyberpunk.sounds.drawerClose.asset)
-    .toBe(VISUAL_THEMES.cyberpunk.sounds.popupClose.asset);
+  expect(VISUAL_THEMES.cyberpunk.sounds.drawerOpen?.asset)
+    .toBe(VISUAL_THEMES.cyberpunk.sounds.popupOpen?.asset);
+  expect(VISUAL_THEMES.cyberpunk.sounds.drawerClose?.asset)
+    .toBe(VISUAL_THEMES.cyberpunk.sounds.popupClose?.asset);
   expect(VISUAL_THEMES.cyberpunk.motion.splash.flashOpacity).toBeGreaterThanOrEqual(0.7);
 });
 

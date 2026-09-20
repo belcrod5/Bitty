@@ -41,7 +41,7 @@ beforeEach(() => {
   mockReduceMotion = false;
 });
 
-test("keeps standard drawer feedback visual-free while playing the edge sound", async () => {
+test("keeps standard drawer feedback visual-free", async () => {
   await render(surface("standard", { direction: "open", sequence: 1 }));
 
   expect(playThemeSfx).toHaveBeenCalledTimes(1);
@@ -49,26 +49,24 @@ test("keeps standard drawer feedback visual-free while playing the edge sound", 
   expect(withTiming).not.toHaveBeenCalled();
 });
 
-test("runs cyberpunk blink and vertical-only stretch for each rapid edge", async () => {
+test("runs cyberpunk flash and blink without vertical stretch for each rapid edge", async () => {
   const screen = await render(surface("cyberpunk", null));
   expect(playThemeSfx).not.toHaveBeenCalled();
 
   await screen.rerender(surface("cyberpunk", { direction: "open", sequence: 1 }));
   expect(playThemeSfx).toHaveBeenLastCalledWith("drawerOpen");
-  expect((withTiming as jest.Mock).mock.calls.slice(0, 5).map(([target]) => target)).toEqual([
-    1.045,
-    0.955,
-    1.025,
-    0.98,
-    1,
-  ]);
+  const timingTargets = (withTiming as jest.Mock).mock.calls.map(([target]) => target);
+  expect(timingTargets).not.toContain(1.045);
+  expect(timingTargets).not.toContain(0.955);
+  expect(timingTargets).not.toContain(1.025);
+  expect(timingTargets).not.toContain(0.98);
 
   const cancelCountAfterOpen = (cancelAnimation as jest.Mock).mock.calls.length;
   await screen.rerender(surface("cyberpunk", { direction: "close", sequence: 2 }));
   expect(playThemeSfx).toHaveBeenLastCalledWith("drawerClose");
   expect(playThemeSfx).toHaveBeenCalledTimes(2);
   expect((cancelAnimation as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
-    cancelCountAfterOpen + 3
+    cancelCountAfterOpen + 2
   );
 });
 

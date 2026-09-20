@@ -31,6 +31,8 @@ function sounds(offset = 0): Record<VisualThemeSoundEvent, VisualThemeSound> {
   };
 }
 
+const silentSounds: Partial<Record<VisualThemeSoundEvent, VisualThemeSound>> = {};
+
 const createAsync = Audio.Sound.createAsync as jest.Mock;
 
 function deferred<T>() {
@@ -74,6 +76,21 @@ test("does not load theme sounds before persisted settings are ready", async () 
 
   await act(async () => {
     await result.current.playThemeSfx("popupOpen");
+  });
+
+  expect(createAsync).not.toHaveBeenCalled();
+});
+
+test.each<VisualThemeSoundEvent>([
+  "popupOpen",
+  "popupClose",
+  "drawerOpen",
+  "drawerClose",
+])("does not load an undefined %s theme sound", async (event) => {
+  const { result } = await renderHook(() => useThemeSfxController(silentSounds, true));
+
+  await act(async () => {
+    await result.current.playThemeSfx(event);
   });
 
   expect(createAsync).not.toHaveBeenCalled();

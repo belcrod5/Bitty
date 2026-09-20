@@ -180,21 +180,6 @@ function buildThemeSfxPacks() {
   ]);
 
   return {
-    standard: {
-      "popup-open.wav": concat([
-        tone({ freq: 520, toFreq: 610, durationMs: 62, volume: 0.14, wave: "sine", releaseMs: 20 }),
-        silence(12),
-        tone({ freq: 700, durationMs: 72, volume: 0.12, wave: "sine", releaseMs: 32 }),
-      ]),
-      "popup-close.wav": tone({
-        freq: 610,
-        toFreq: 420,
-        durationMs: 132,
-        volume: 0.13,
-        wave: "sine",
-        releaseMs: 42,
-      }),
-    },
     cyberpunk: {
       "popup-open.wav": cyberpunkPopupSound(3760, 3440),
       "popup-close.wav": cyberpunkPopupSound(4060, 3720),

@@ -46,7 +46,6 @@ export function DrawerThemeTransitionSurface({
   const reduceMotion = useReducedMotion();
   const handledSequenceRef = useRef(0);
   const contentOpacity = useSharedValue(1);
-  const contentScaleY = useSharedValue(1);
   const flashOpacity = useSharedValue(0);
 
   useEffect(() => {
@@ -55,10 +54,8 @@ export function DrawerThemeTransitionSurface({
     void playThemeSfx(event.direction === "open" ? "drawerOpen" : "drawerClose");
 
     cancelAnimation(contentOpacity);
-    cancelAnimation(contentScaleY);
     cancelAnimation(flashOpacity);
     contentOpacity.value = 1;
-    contentScaleY.value = 1;
     flashOpacity.value = 0;
 
     if (theme.motion.drawerTransition !== "flash-blink" || reduceMotion) return;
@@ -70,7 +67,6 @@ export function DrawerThemeTransitionSurface({
         ? theme.motion.popupOpen.durationMs
         : theme.motion.popupClose.durationMs,
       contentOpacity,
-      contentScaleY,
       flashOpacity,
       onFinish: () => {
         "worklet";
@@ -80,13 +76,11 @@ export function DrawerThemeTransitionSurface({
 
   useEffect(() => () => {
     cancelAnimation(contentOpacity);
-    cancelAnimation(contentScaleY);
     cancelAnimation(flashOpacity);
-  }, [contentOpacity, contentScaleY, flashOpacity]);
+  }, [contentOpacity, flashOpacity]);
 
   const contentStyle = useAnimatedStyle(() => ({
     opacity: contentOpacity.value,
-    transform: [{ scaleY: contentScaleY.value }],
   }));
   const flashStyle = useAnimatedStyle(() => ({ opacity: flashOpacity.value }));
 

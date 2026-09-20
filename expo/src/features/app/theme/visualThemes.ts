@@ -41,7 +41,7 @@ export type VisualTheme = {
     popupOpen: VisualThemePopupMotion;
     popupClose: VisualThemePopupMotion;
   };
-  sounds: Record<VisualThemeSoundEvent, VisualThemeSound>;
+  sounds: Partial<Record<VisualThemeSoundEvent, VisualThemeSound>>;
   colors: {
     canvas: string;
     surface: string;
@@ -215,24 +215,7 @@ const standardTheme: VisualTheme = {
     popupOpen: { durationMs: 260 },
     popupClose: { durationMs: 220 },
   },
-  sounds: {
-    popupOpen: {
-      asset: require("../../../../assets/themes/standard/sfx/popup-open.wav"),
-      volume: 0.28,
-    },
-    popupClose: {
-      asset: require("../../../../assets/themes/standard/sfx/popup-close.wav"),
-      volume: 0.26,
-    },
-    drawerOpen: {
-      asset: require("../../../../assets/themes/standard/sfx/popup-open.wav"),
-      volume: 0.28,
-    },
-    drawerClose: {
-      asset: require("../../../../assets/themes/standard/sfx/popup-close.wav"),
-      volume: 0.26,
-    },
-  },
+  sounds: {},
   colors: {
     canvas: "#ffffff",
     surface: "#ffffff",
