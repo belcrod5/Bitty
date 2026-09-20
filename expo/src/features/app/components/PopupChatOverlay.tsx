@@ -84,6 +84,7 @@ export function PopupChatOverlay({
   const progress = useSharedValue(1);
   const dragTranslateY = useSharedValue(0);
   const cardOpacity = useSharedValue(1);
+  const cardScaleY = useSharedValue(1);
   const transitionFlashOpacity = useSharedValue(0);
 
   useEffect(() => {
@@ -229,9 +230,10 @@ export function PopupChatOverlay({
     setMessageSkeletonVisible(false);
     presentationRef.current = "popup";
     syncRootWindowOrigin();
-    progress.value = 0;
+    progress.value = theme.motion.popupTransition === "flash-blink" ? 1 : 0;
     dragTranslateY.value = 0;
     cardOpacity.value = 0;
+    cardScaleY.value = 1;
     transitionFlashOpacity.value = 0;
     const motion = theme.motion.popupOpen;
     setTimeout(() => {
@@ -246,6 +248,7 @@ export function PopupChatOverlay({
       reduceMotion,
       progress,
       cardOpacity,
+      cardScaleY,
       flashOpacity: transitionFlashOpacity,
       onFinish: (finished) => {
         "worklet";
@@ -260,6 +263,7 @@ export function PopupChatOverlay({
       cancelAnimation(progress);
       cancelAnimation(dragTranslateY);
       cancelAnimation(cardOpacity);
+      cancelAnimation(cardScaleY);
       cancelAnimation(transitionFlashOpacity);
     };
   }, [
@@ -303,8 +307,10 @@ export function PopupChatOverlay({
     setContentReady(false);
     setMessageSkeletonVisible(false);
     cancelAnimation(cardOpacity);
+    cancelAnimation(cardScaleY);
     cancelAnimation(transitionFlashOpacity);
     cardOpacity.value = 1;
+    cardScaleY.value = 1;
     transitionFlashOpacity.value = 0;
     const motion = theme.motion.popupClose;
     setTimeout(() => {
@@ -324,6 +330,7 @@ export function PopupChatOverlay({
       reduceMotion,
       progress,
       cardOpacity,
+      cardScaleY,
       flashOpacity: transitionFlashOpacity,
       onFinish: (finished) => {
         "worklet";
@@ -339,6 +346,7 @@ export function PopupChatOverlay({
       clearTimeout(closeTimer);
       cancelAnimation(progress);
       cancelAnimation(cardOpacity);
+      cancelAnimation(cardScaleY);
       cancelAnimation(transitionFlashOpacity);
     };
   }, [
@@ -373,8 +381,11 @@ export function PopupChatOverlay({
     height: interpolate(progress.value, [0, 1, 2], [initialRect.height, popupRect.height, fullscreenRect.height]),
     borderRadius: interpolate(progress.value, [0, 1, 2], [10, POPUP_BORDER_RADIUS, 0]),
     opacity: cardOpacity.value,
-    transform: [{ translateY: dragTranslateY.value }],
-  }), [cardOpacity, dragTranslateY, fullscreenRect, initialRect, popupRect]);
+    transform: [
+      { translateY: dragTranslateY.value },
+      { scaleY: cardScaleY.value },
+    ],
+  }), [cardOpacity, cardScaleY, dragTranslateY, fullscreenRect, initialRect, popupRect]);
 
   const backdropAnimatedStyle = useAnimatedStyle(() => ({
     opacity: interpolate(progress.value, [0, 1, 2], [0, 1, 1]),

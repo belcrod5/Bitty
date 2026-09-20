@@ -203,14 +203,14 @@ function buildThemeSfxPacks() {
         tone({ freq: 2520, durationMs: 72, volume: 0.1, wave: "sine", releaseMs: 36 }),
       ]),
       "popup-open.wav": concat([
-        tone({ freq: 1780, toFreq: 2180, durationMs: 34, volume: 0.13, wave: "triangle", releaseMs: 6 }),
-        silence(14),
-        tone({ freq: 2240, toFreq: 2860, durationMs: 42, volume: 0.11, wave: "triangle", releaseMs: 8 }),
+        tone({ freq: 3760, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
+        silence(11),
+        tone({ freq: 3440, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
       ]),
       "popup-close.wav": concat([
-        tone({ freq: 2840, toFreq: 2240, durationMs: 22, volume: 0.1, pulseWidth: 0.24, releaseMs: 4 }),
-        silence(10),
-        tone({ freq: 2160, toFreq: 1260, durationMs: 30, volume: 0.09, pulseWidth: 0.2, releaseMs: 4 }),
+        tone({ freq: 2240, durationMs: 18, volume: 0.1, wave: "sine", attackMs: 1, releaseMs: 4 }),
+        silence(12),
+        tone({ freq: 2480, durationMs: 18, volume: 0.1, wave: "sine", attackMs: 1, releaseMs: 4 }),
       ]),
     },
   };

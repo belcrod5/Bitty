@@ -63,7 +63,7 @@ test("plays popup open and close sounds once per displayed cycle", async () => {
 
   await waitFor(() => expect(playThemeSfx).toHaveBeenCalledWith("popupOpen"));
   expect(playThemeSfx).toHaveBeenCalledTimes(1);
-  expect(withSequence).toHaveBeenCalledTimes(2);
+  expect(withSequence).toHaveBeenCalledTimes(3);
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
@@ -112,7 +112,7 @@ test("plays popup open and close sounds once per displayed cycle", async () => {
   expect(playThemeSfx).toHaveBeenCalledTimes(2);
   expect(playThemeSfx).toHaveBeenLastCalledWith("popupClose");
   expect(onClose).toHaveBeenCalledTimes(1);
-  expect(withSequence).toHaveBeenCalledTimes(4);
+  expect(withSequence).toHaveBeenCalledTimes(6);
 
   await screen.rerender(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
