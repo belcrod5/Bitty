@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { StyleSheet } from "react-native";
-import Animated, {
-  cancelAnimation,
-  useAnimatedStyle,
-  useReducedMotion,
-  useSharedValue,
-} from "react-native-reanimated";
+import { Animated, StyleSheet } from "react-native";
 
+import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import type { VisualThemeSoundEvent } from "../theme/visualThemes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { startCyberpunkFlashBlinkTransition } from "./cyberpunkFlashBlinkTransition";
+import { createCyberpunkFlashBlinkTransition } from "./cyberpunkFlashBlinkTransition";
 
 export type DrawerTransitionEvent = {
   direction: "open" | "close";
@@ -43,53 +38,44 @@ export function DrawerThemeTransitionSurface({
   playThemeSfx: (event: VisualThemeSoundEvent) => Promise<void>;
 }) {
   const { theme } = useVisualTheme();
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useReduceMotionEnabled();
   const handledSequenceRef = useRef(0);
-  const contentOpacity = useSharedValue(1);
-  const flashOpacity = useSharedValue(0);
+  const animationRef = useRef<Animated.CompositeAnimation | null>(null);
+  const contentOpacity = useRef(new Animated.Value(1)).current;
+  const flashOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (!event || handledSequenceRef.current === event.sequence) return;
+    if (!event || reduceMotion === null || handledSequenceRef.current === event.sequence) return;
     handledSequenceRef.current = event.sequence;
     void playThemeSfx(event.direction === "open" ? "drawerOpen" : "drawerClose");
 
-    cancelAnimation(contentOpacity);
-    cancelAnimation(flashOpacity);
-    contentOpacity.value = 1;
-    flashOpacity.value = 0;
+    animationRef.current?.stop();
+    contentOpacity.setValue(1);
+    flashOpacity.setValue(0);
 
     if (theme.motion.drawerTransition !== "flash-blink" || reduceMotion) return;
 
-    contentOpacity.value = event.direction === "open" ? 0 : 1;
-    startCyberpunkFlashBlinkTransition({
+    contentOpacity.setValue(event.direction === "open" ? 0 : 1);
+    const animation = createCyberpunkFlashBlinkTransition({
       direction: event.direction,
       durationMs: event.direction === "open"
         ? theme.motion.popupOpen.durationMs
         : theme.motion.popupClose.durationMs,
       contentOpacity,
       flashOpacity,
-      onFinish: () => {
-        "worklet";
-      },
     });
+    animationRef.current = animation;
+    animation.start();
   }, [event, playThemeSfx, reduceMotion, theme.motion]);
 
-  useEffect(() => () => {
-    cancelAnimation(contentOpacity);
-    cancelAnimation(flashOpacity);
-  }, [contentOpacity, flashOpacity]);
-
-  const contentStyle = useAnimatedStyle(() => ({
-    opacity: contentOpacity.value,
-  }));
-  const flashStyle = useAnimatedStyle(() => ({ opacity: flashOpacity.value }));
+  useEffect(() => () => animationRef.current?.stop(), []);
 
   return (
     <Animated.View style={styles.root}>
-      <Animated.View style={[styles.content, contentStyle]}>{children}</Animated.View>
+      <Animated.View style={[styles.content, { opacity: contentOpacity }]}>{children}</Animated.View>
       <Animated.View
         pointerEvents="none"
-        style={[styles.flash, { backgroundColor: theme.colors.accent }, flashStyle]}
+        style={[styles.flash, { backgroundColor: theme.colors.accent, opacity: flashOpacity }]}
         testID="drawer-theme-transition-flash"
       />
     </Animated.View>

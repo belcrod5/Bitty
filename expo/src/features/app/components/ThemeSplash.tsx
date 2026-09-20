@@ -1,17 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
-import Animated, {
-  cancelAnimation,
-  Easing,
-  runOnJS,
-  useAnimatedStyle,
-  useReducedMotion,
-  useSharedValue,
-  withDelay,
-  withRepeat,
-  withTiming,
-} from "react-native-reanimated";
+import { Animated, Easing, StyleSheet, Text, View } from "react-native";
 
+import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import { SPLASH_FAIL_OPEN_MS } from "../theme/themeSplashTiming";
@@ -26,9 +16,10 @@ const ANIMATION_FAIL_OPEN_BUFFER_MS = 250;
 export function ThemeSplash({ ready, onReady }: ThemeSplashProps) {
   const { theme, themeId } = useVisualTheme();
   const styles = stylesByTheme[themeId];
-  const reduceMotion = useReducedMotion();
-  const opacity = useSharedValue(1);
-  const markOpacity = useSharedValue(1);
+  const reduceMotion = useReduceMotionEnabled();
+  const opacity = useRef(new Animated.Value(1)).current;
+  const markOpacity = useRef(new Animated.Value(1)).current;
+  const animationRef = useRef<Animated.CompositeAnimation | null>(null);
   const dismissedRef = useRef(false);
   const readySignaledRef = useRef(false);
   const animationGenerationRef = useRef(0);
@@ -72,60 +63,83 @@ export function ThemeSplash({ ready, onReady }: ThemeSplashProps) {
   }, [ready, signalReady]);
 
   useEffect(() => {
-    if (!ready || !visible || dismissedRef.current) return;
+    if (!ready || !visible || dismissedRef.current || reduceMotion === null) return;
     const generation = ++animationGenerationRef.current;
-    opacity.value = 1;
-    markOpacity.value = 1;
+    animationRef.current?.stop();
+    opacity.setValue(1);
+    markOpacity.setValue(1);
 
     const motion = theme.motion.splash;
     const animationTimer = setTimeout(
       () => completeAnimation(generation),
       motion.durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
     );
-    const finish = (finished?: boolean) => {
-      "worklet";
-      if (finished) runOnJS(completeAnimation)(generation);
-    };
+    let animation: Animated.CompositeAnimation;
 
     if (reduceMotion) {
-      opacity.value = withTiming(0, { duration: 140 }, finish);
+      animation = Animated.timing(opacity, {
+        toValue: 0,
+        duration: 140,
+        useNativeDriver: false,
+      });
     } else {
       const flashDuration = motion.flashDurationMs * motion.flashCount * 2;
       const fadeDuration = Math.max(120, motion.durationMs - flashDuration);
       if (motion.flashCount > 0) {
-        markOpacity.value = withRepeat(
-          withTiming(motion.flashOpacity, {
-            duration: motion.flashDurationMs,
-            easing: Easing.linear,
-          }),
-          motion.flashCount * 2,
-          true
-        );
-        opacity.value = withDelay(
-          flashDuration,
-          withTiming(0, { duration: fadeDuration, easing: Easing.out(Easing.quad) }, finish)
-        );
+        animation = Animated.parallel([
+          Animated.loop(
+            Animated.sequence([
+              Animated.timing(markOpacity, {
+                toValue: motion.flashOpacity,
+                duration: motion.flashDurationMs,
+                easing: Easing.linear,
+                useNativeDriver: false,
+              }),
+              Animated.timing(markOpacity, {
+                toValue: 1,
+                duration: motion.flashDurationMs,
+                easing: Easing.linear,
+                useNativeDriver: false,
+              }),
+            ]),
+            { iterations: motion.flashCount }
+          ),
+          Animated.sequence([
+            Animated.delay(flashDuration),
+            Animated.timing(opacity, {
+              toValue: 0,
+              duration: fadeDuration,
+              easing: Easing.out(Easing.quad),
+              useNativeDriver: false,
+            }),
+          ]),
+        ]);
       } else {
         const holdDuration = Math.min(180, Math.floor(motion.durationMs / 3));
-        opacity.value = withDelay(holdDuration, withTiming(0, {
-          duration: Math.max(120, motion.durationMs - holdDuration),
-          easing: Easing.out(Easing.quad),
-        }, finish));
+        animation = Animated.sequence([
+          Animated.delay(holdDuration),
+          Animated.timing(opacity, {
+            toValue: 0,
+            duration: Math.max(120, motion.durationMs - holdDuration),
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: false,
+          }),
+        ]);
       }
     }
+    animationRef.current = animation;
+    animation.start(({ finished }) => {
+      if (finished) completeAnimation(generation);
+    });
 
     return () => {
       if (animationGenerationRef.current === generation) {
         animationGenerationRef.current += 1;
       }
       clearTimeout(animationTimer);
-      cancelAnimation(opacity);
-      cancelAnimation(markOpacity);
+      animation.stop();
     };
   }, [completeAnimation, markOpacity, opacity, ready, reduceMotion, theme.motion.splash, visible]);
-
-  const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  const animatedMarkStyle = useAnimatedStyle(() => ({ opacity: markOpacity.value }));
 
   if (!visible) return null;
 
@@ -134,10 +148,10 @@ export function ThemeSplash({ ready, onReady }: ThemeSplashProps) {
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
       pointerEvents="auto"
-      style={[styles.root, animatedStyle]}
+      style={[styles.root, { opacity }]}
       testID="theme-splash"
     >
-      <Animated.View style={[styles.mark, animatedMarkStyle]}>
+      <Animated.View style={[styles.mark, { opacity: markOpacity }]}>
         <View style={styles.markLine} />
         <Text style={styles.title}>BITTY</Text>
         <View style={styles.markLine} />

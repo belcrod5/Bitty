@@ -1,7 +1,6 @@
 import React from "react";
-import { Text } from "react-native";
+import { Text, type Animated } from "react-native";
 import { act, render } from "@testing-library/react-native";
-import { cancelAnimation, withTiming } from "react-native-reanimated";
 
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import {
@@ -10,19 +9,17 @@ import {
 } from "./DrawerThemeTransitionSurface";
 
 let mockReduceMotion = false;
+const mockCreateCyberpunkFlashBlinkTransition = jest.fn();
+const createdAnimations: Animated.CompositeAnimation[] = [];
 
-jest.mock("react-native-worklets", () => require("react-native-worklets/src/mock"));
-jest.mock("react-native-reanimated", () => {
-  const mock = require("react-native-reanimated/mock");
-  return {
-    ...mock,
-    cancelAnimation: jest.fn(),
-    useReducedMotion: () => mockReduceMotion,
-    withDelay: jest.fn((_delay, animation) => animation),
-    withSequence: jest.fn(mock.withSequence),
-    withTiming: jest.fn(mock.withTiming),
-  };
-});
+jest.mock("../hooks/useReduceMotionEnabled", () => ({
+  useReduceMotionEnabled: () => mockReduceMotion,
+}));
+
+jest.mock("./cyberpunkFlashBlinkTransition", () => ({
+  createCyberpunkFlashBlinkTransition: (...args: unknown[]) =>
+    mockCreateCyberpunkFlashBlinkTransition(...args),
+}));
 
 const playThemeSfx = jest.fn(async () => {});
 
@@ -39,6 +36,16 @@ function surface(themeId: "standard" | "cyberpunk", event: DrawerTransitionEvent
 beforeEach(() => {
   jest.clearAllMocks();
   mockReduceMotion = false;
+  createdAnimations.length = 0;
+  mockCreateCyberpunkFlashBlinkTransition.mockImplementation(() => {
+    const animation: Animated.CompositeAnimation = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      reset: jest.fn(),
+    };
+    createdAnimations.push(animation);
+    return animation;
+  });
 });
 
 test("keeps standard drawer feedback visual-free", async () => {
@@ -46,7 +53,7 @@ test("keeps standard drawer feedback visual-free", async () => {
 
   expect(playThemeSfx).toHaveBeenCalledTimes(1);
   expect(playThemeSfx).toHaveBeenCalledWith("drawerOpen");
-  expect(withTiming).not.toHaveBeenCalled();
+  expect(mockCreateCyberpunkFlashBlinkTransition).not.toHaveBeenCalled();
 });
 
 test("runs cyberpunk flash and blink without vertical stretch for each rapid edge", async () => {
@@ -55,19 +62,16 @@ test("runs cyberpunk flash and blink without vertical stretch for each rapid edg
 
   await screen.rerender(surface("cyberpunk", { direction: "open", sequence: 1 }));
   expect(playThemeSfx).toHaveBeenLastCalledWith("drawerOpen");
-  const timingTargets = (withTiming as jest.Mock).mock.calls.map(([target]) => target);
-  expect(timingTargets).not.toContain(1.045);
-  expect(timingTargets).not.toContain(0.955);
-  expect(timingTargets).not.toContain(1.025);
-  expect(timingTargets).not.toContain(0.98);
+  expect(mockCreateCyberpunkFlashBlinkTransition).toHaveBeenCalledWith(
+    expect.objectContaining({ direction: "open" })
+  );
+  expect(createdAnimations[0]?.start).toHaveBeenCalledTimes(1);
 
-  const cancelCountAfterOpen = (cancelAnimation as jest.Mock).mock.calls.length;
   await screen.rerender(surface("cyberpunk", { direction: "close", sequence: 2 }));
   expect(playThemeSfx).toHaveBeenLastCalledWith("drawerClose");
   expect(playThemeSfx).toHaveBeenCalledTimes(2);
-  expect((cancelAnimation as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
-    cancelCountAfterOpen + 2
-  );
+  expect(createdAnimations[0]?.stop).toHaveBeenCalledTimes(1);
+  expect(createdAnimations[1]?.start).toHaveBeenCalledTimes(1);
 });
 
 test("suppresses cyberpunk visual feedback with Reduce Motion", async () => {
@@ -77,5 +81,5 @@ test("suppresses cyberpunk visual feedback with Reduce Motion", async () => {
   });
 
   expect(playThemeSfx).toHaveBeenCalledWith("drawerClose");
-  expect(withTiming).not.toHaveBeenCalled();
+  expect(mockCreateCyberpunkFlashBlinkTransition).not.toHaveBeenCalled();
 });

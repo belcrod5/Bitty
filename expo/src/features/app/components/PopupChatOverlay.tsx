@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
-import Animated, {
-  cancelAnimation,
+import {
+  Animated,
   Easing,
-  interpolate,
-  runOnJS,
-  useAnimatedStyle,
-  useReducedMotion,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
+  Platform,
+  Pressable,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+  type LayoutChangeEvent,
+} from "react-native";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
+import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { ChatScreen } from "../screens/ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import type { PopupChatPresentation, PopupChatSourceRect } from "./popupChatTypes";
@@ -56,7 +56,7 @@ export function PopupChatOverlay({
 }: PopupChatOverlayProps) {
   const { theme, themeId } = useVisualTheme();
   const popupChatOverlayStyles = popupChatOverlayStylesByTheme[themeId];
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useReduceMotionEnabled();
   const { setPanelAutoSpeechOpen } = usePanelRuntimeController();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const rootRef = useRef<View | null>(null);
@@ -73,6 +73,9 @@ export function PopupChatOverlay({
   const mountedRef = useRef(false);
   const onCloseRef = useRef(onClose);
   const playThemeSfxRef = useRef(playThemeSfx);
+  const popupTransitionRef = useRef<Animated.CompositeAnimation | null>(null);
+  const presentationTransitionRef = useRef<Animated.CompositeAnimation | null>(null);
+  const dragResetTransitionRef = useRef<Animated.CompositeAnimation | null>(null);
   onCloseRef.current = onClose;
   playThemeSfxRef.current = playThemeSfx;
   const [rendered, setRendered] = useState(false);
@@ -81,11 +84,11 @@ export function PopupChatOverlay({
   const [containerSize, setContainerSize] = useState({ width: windowWidth, height: windowHeight });
   const [rootWindowOrigin, setRootWindowOrigin] = useState({ x: 0, y: 0 });
 
-  const progress = useSharedValue(1);
-  const dragTranslateY = useSharedValue(0);
-  const cardOpacity = useSharedValue(1);
-  const cardScaleY = useSharedValue(1);
-  const transitionFlashOpacity = useSharedValue(0);
+  const progress = useRef(new Animated.Value(1)).current;
+  const dragTranslateY = useRef(new Animated.Value(0)).current;
+  const cardOpacity = useRef(new Animated.Value(1)).current;
+  const cardScaleY = useRef(new Animated.Value(1)).current;
+  const transitionFlashOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -216,7 +219,7 @@ export function PopupChatOverlay({
   }, [panelId]);
 
   useEffect(() => {
-    if (!visible || !panelId) return;
+    if (!visible || !panelId || reduceMotion === null) return;
 
     const eventId = `${panelId}:${cycleId}`;
     closingRef.current = false;
@@ -230,11 +233,14 @@ export function PopupChatOverlay({
     setMessageSkeletonVisible(false);
     presentationRef.current = "popup";
     syncRootWindowOrigin();
-    progress.value = theme.motion.popupTransition === "flash-blink" ? 1 : 0;
-    dragTranslateY.value = 0;
-    cardOpacity.value = 0;
-    cardScaleY.value = 1;
-    transitionFlashOpacity.value = 0;
+    popupTransitionRef.current?.stop();
+    presentationTransitionRef.current?.stop();
+    dragResetTransitionRef.current?.stop();
+    progress.setValue(theme.motion.popupTransition === "flash-blink" ? 1 : 0);
+    dragTranslateY.setValue(0);
+    cardOpacity.setValue(0);
+    cardScaleY.setValue(1);
+    transitionFlashOpacity.setValue(0);
     const motion = theme.motion.popupOpen;
     setTimeout(() => {
       if (mountedRef.current) playPopupSoundOnce("popupOpen", soundEventId);
@@ -242,7 +248,7 @@ export function PopupChatOverlay({
     const startTransition = theme.motion.popupTransition === "flash-blink"
       ? startCyberpunkPopupTransition
       : startStandardPopupTransition;
-    startTransition({
+    popupTransitionRef.current = startTransition({
       direction: "open",
       durationMs: motion.durationMs,
       reduceMotion,
@@ -251,8 +257,7 @@ export function PopupChatOverlay({
       cardScaleY,
       flashOpacity: transitionFlashOpacity,
       onFinish: (finished) => {
-        "worklet";
-        if (finished) runOnJS(completeOpen)(generation, soundEventId);
+        if (finished) completeOpen(generation, soundEventId);
       },
     });
 
@@ -260,11 +265,9 @@ export function PopupChatOverlay({
       if (transitionGenerationRef.current === generation) {
         transitionGenerationRef.current += 1;
       }
-      cancelAnimation(progress);
-      cancelAnimation(dragTranslateY);
-      cancelAnimation(cardOpacity);
-      cancelAnimation(cardScaleY);
-      cancelAnimation(transitionFlashOpacity);
+      popupTransitionRef.current?.stop();
+      presentationTransitionRef.current?.stop();
+      dragResetTransitionRef.current?.stop();
     };
   }, [
     cycleId,
@@ -272,6 +275,7 @@ export function PopupChatOverlay({
     getSoundEventId,
     panelId,
     playPopupSoundOnce,
+    reduceMotion,
     syncRootWindowOrigin,
     visible,
   ]);
@@ -281,17 +285,22 @@ export function PopupChatOverlay({
     presentationRef.current = nextPresentation;
     setMessageSkeletonVisible(true);
     requestAnimationFrame(() => {
-      progress.value = withTiming(nextPresentation === "fullscreen" ? 2 : 1, {
+      presentationTransitionRef.current?.stop();
+      const animation = Animated.timing(progress, {
+        toValue: nextPresentation === "fullscreen" ? 2 : 1,
         duration: 260,
         easing: Easing.out(Easing.cubic),
-      }, (finished) => {
-        if (finished) runOnJS(setMessageSkeletonVisible)(false);
+        useNativeDriver: false,
+      });
+      presentationTransitionRef.current = animation;
+      animation.start(({ finished }) => {
+        if (finished) setMessageSkeletonVisible(false);
       });
     });
   };
 
   useEffect(() => {
-    if (visible || !panelId) return;
+    if (visible || !panelId || reduceMotion === null) return;
     const eventId = `${panelId}:${cycleId}`;
     pendingSoundEventRef.current.popupOpen = { base: "", id: "" };
     const soundEventId = getSoundEventId("popupClose", eventId);
@@ -306,12 +315,12 @@ export function PopupChatOverlay({
     const generation = ++transitionGenerationRef.current;
     setContentReady(false);
     setMessageSkeletonVisible(false);
-    cancelAnimation(cardOpacity);
-    cancelAnimation(cardScaleY);
-    cancelAnimation(transitionFlashOpacity);
-    cardOpacity.value = 1;
-    cardScaleY.value = 1;
-    transitionFlashOpacity.value = 0;
+    popupTransitionRef.current?.stop();
+    presentationTransitionRef.current?.stop();
+    dragResetTransitionRef.current?.stop();
+    cardOpacity.setValue(1);
+    cardScaleY.setValue(1);
+    transitionFlashOpacity.setValue(0);
     const motion = theme.motion.popupClose;
     setTimeout(() => {
       if (mountedRef.current) playPopupSoundOnce("popupClose", soundEventId);
@@ -324,7 +333,7 @@ export function PopupChatOverlay({
     const startTransition = theme.motion.popupTransition === "flash-blink"
       ? startCyberpunkPopupTransition
       : startStandardPopupTransition;
-    startTransition({
+    popupTransitionRef.current = startTransition({
       direction: "close",
       durationMs,
       reduceMotion,
@@ -333,8 +342,7 @@ export function PopupChatOverlay({
       cardScaleY,
       flashOpacity: transitionFlashOpacity,
       onFinish: (finished) => {
-        "worklet";
-        if (finished) runOnJS(completeClose)(generation, eventId, soundEventId);
+        if (finished) completeClose(generation, eventId, soundEventId);
       },
     });
 
@@ -344,10 +352,7 @@ export function PopupChatOverlay({
       }
       closingRef.current = false;
       clearTimeout(closeTimer);
-      cancelAnimation(progress);
-      cancelAnimation(cardOpacity);
-      cancelAnimation(cardScaleY);
-      cancelAnimation(transitionFlashOpacity);
+      popupTransitionRef.current?.stop();
     };
   }, [
     completeClose,
@@ -355,12 +360,14 @@ export function PopupChatOverlay({
     getSoundEventId,
     panelId,
     playPopupSoundOnce,
+    reduceMotion,
     rendered,
     visible,
   ]);
 
   const handleHeaderDragMove = (offsetY: number) => {
-    dragTranslateY.value = Math.max(0, offsetY);
+    dragResetTransitionRef.current?.stop();
+    dragTranslateY.setValue(Math.max(0, offsetY));
   };
 
   const handleHeaderDragEnd = (offsetY: number, velocityY: number) => {
@@ -368,35 +375,39 @@ export function PopupChatOverlay({
       onRequestClose();
       return;
     }
-    dragTranslateY.value = withTiming(0, {
+    const animation = Animated.timing(dragTranslateY, {
+      toValue: 0,
       duration: 180,
       easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
     });
+    dragResetTransitionRef.current = animation;
+    animation.start();
   };
 
-  const animatedCardStyle = useAnimatedStyle(() => ({
-    left: interpolate(progress.value, [0, 1, 2], [initialRect.x, popupRect.x, fullscreenRect.x]),
-    top: interpolate(progress.value, [0, 1, 2], [initialRect.y, popupRect.y, fullscreenRect.y]),
-    width: interpolate(progress.value, [0, 1, 2], [initialRect.width, popupRect.width, fullscreenRect.width]),
-    height: interpolate(progress.value, [0, 1, 2], [initialRect.height, popupRect.height, fullscreenRect.height]),
-    borderRadius: interpolate(progress.value, [0, 1, 2], [10, POPUP_BORDER_RADIUS, 0]),
-    opacity: cardOpacity.value,
+  const animatedCardStyle = useMemo(() => ({
+    left: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [initialRect.x, popupRect.x, fullscreenRect.x] }),
+    top: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [initialRect.y, popupRect.y, fullscreenRect.y] }),
+    width: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [initialRect.width, popupRect.width, fullscreenRect.width] }),
+    height: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [initialRect.height, popupRect.height, fullscreenRect.height] }),
+    borderRadius: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [10, POPUP_BORDER_RADIUS, 0] }),
+    opacity: cardOpacity,
     transform: [
-      { translateY: dragTranslateY.value },
-      { scaleY: cardScaleY.value },
+      { translateY: dragTranslateY },
+      { scaleY: cardScaleY },
     ],
   }), [cardOpacity, cardScaleY, dragTranslateY, fullscreenRect, initialRect, popupRect]);
 
-  const backdropAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(progress.value, [0, 1, 2], [0, 1, 1]),
-  }));
-  const animatedContentStyle = useAnimatedStyle(() => ({
-    paddingTop: interpolate(progress.value, [0, 1, 2], [0, 0, FULLSCREEN_PADDING_TOP]),
-    paddingBottom: interpolate(progress.value, [0, 1, 2], [0, 0, FULLSCREEN_PADDING_BOTTOM]),
-  }));
-  const transitionFlashStyle = useAnimatedStyle(() => ({
-    opacity: transitionFlashOpacity.value,
-  }));
+  const backdropAnimatedStyle = useMemo(() => ({
+    opacity: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [0, 1, 1] }),
+  }), [progress]);
+  const animatedContentStyle = useMemo(() => ({
+    paddingTop: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [0, 0, FULLSCREEN_PADDING_TOP] }),
+    paddingBottom: progress.interpolate({ inputRange: [0, 1, 2], outputRange: [0, 0, FULLSCREEN_PADDING_BOTTOM] }),
+  }), [progress]);
+  const transitionFlashStyle = useMemo(() => ({
+    opacity: transitionFlashOpacity,
+  }), [transitionFlashOpacity]);
 
   if (!rendered || !panelId) return null;
 

@@ -1,11 +1,22 @@
 import React from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { useReducedMotion, withSequence, withTiming } from "react-native-reanimated";
+import type { Animated } from "react-native";
 
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { PopupChatOverlay } from "./PopupChatOverlay";
 
 const mockSetPanelAutoSpeechOpen = jest.fn();
+let mockReduceMotion = false;
+const mockStartStandardPopupTransition = jest.fn();
+const mockStartCyberpunkPopupTransition = jest.fn();
+
+function mockAnimation(): Animated.CompositeAnimation {
+  return {
+    start: jest.fn(),
+    stop: jest.fn(),
+    reset: jest.fn(),
+  };
+}
 
 jest.mock("../contexts/PanelRuntimeControllerContext", () => ({
   usePanelRuntimeController: () => ({ setPanelAutoSpeechOpen: mockSetPanelAutoSpeechOpen }),
@@ -19,25 +30,25 @@ jest.mock("../screens/ChatScreen", () => ({
   },
 }));
 
-jest.mock("react-native-worklets", () => require("react-native-worklets/src/mock"));
-jest.mock("react-native-reanimated", () => {
-  const mock = require("react-native-reanimated/mock");
-  return {
-    ...mock,
-    useReducedMotion: jest.fn(() => false),
-    withSequence: jest.fn(mock.withSequence),
-    withTiming: jest.fn(mock.withTiming),
-  };
-});
+jest.mock("../hooks/useReduceMotionEnabled", () => ({
+  useReduceMotionEnabled: () => mockReduceMotion,
+}));
 
-const mockUseReducedMotion = useReducedMotion as jest.MockedFunction<typeof useReducedMotion>;
-const mockWithTiming = withTiming as jest.MockedFunction<typeof withTiming>;
-const defaultWithTiming = require("react-native-reanimated/mock").withTiming;
+jest.mock("./popupChatTransitions", () => ({
+  startStandardPopupTransition: (...args: unknown[]) => mockStartStandardPopupTransition(...args),
+  startCyberpunkPopupTransition: (...args: unknown[]) => mockStartCyberpunkPopupTransition(...args),
+}));
+
+const finishImmediately = (options: { onFinish: (finished?: boolean) => void }) => {
+  options.onFinish(true);
+  return mockAnimation();
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockUseReducedMotion.mockReturnValue(false);
-  mockWithTiming.mockImplementation(defaultWithTiming);
+  mockReduceMotion = false;
+  mockStartStandardPopupTransition.mockImplementation(finishImmediately);
+  mockStartCyberpunkPopupTransition.mockImplementation(finishImmediately);
 });
 
 afterEach(() => {
@@ -63,7 +74,7 @@ test("plays popup open and close sounds once per displayed cycle", async () => {
 
   await waitFor(() => expect(playThemeSfx).toHaveBeenCalledWith("popupOpen"));
   expect(playThemeSfx).toHaveBeenCalledTimes(1);
-  expect(withSequence).toHaveBeenCalledTimes(3);
+  expect(mockStartCyberpunkPopupTransition).toHaveBeenCalledTimes(1);
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
@@ -112,7 +123,7 @@ test("plays popup open and close sounds once per displayed cycle", async () => {
   expect(playThemeSfx).toHaveBeenCalledTimes(2);
   expect(playThemeSfx).toHaveBeenLastCalledWith("popupClose");
   expect(onClose).toHaveBeenCalledTimes(1);
-  expect(withSequence).toHaveBeenCalledTimes(6);
+  expect(mockStartCyberpunkPopupTransition).toHaveBeenCalledTimes(2);
 
   await screen.rerender(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
@@ -149,7 +160,7 @@ test("does not replay the open event when only the theme changes", async () => {
     </VisualThemeProvider>
   );
   await waitFor(() => expect(playThemeSfx).toHaveBeenCalledTimes(1));
-  expect(withSequence).not.toHaveBeenCalled();
+  expect(mockStartCyberpunkPopupTransition).not.toHaveBeenCalled();
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
@@ -160,7 +171,7 @@ test("does not replay the open event when only the theme changes", async () => {
 });
 
 test("suppresses popup flashing when Reduce Motion is enabled", async () => {
-  mockUseReducedMotion.mockReturnValue(true);
+  mockReduceMotion = true;
   const screen = await render(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
       <PopupChatOverlay
@@ -174,7 +185,9 @@ test("suppresses popup flashing when Reduce Motion is enabled", async () => {
     </VisualThemeProvider>
   );
 
-  expect(withSequence).not.toHaveBeenCalled();
+  expect(mockStartCyberpunkPopupTransition).toHaveBeenCalledWith(
+    expect.objectContaining({ reduceMotion: true })
+  );
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
       <PopupChatOverlay
@@ -187,7 +200,7 @@ test("suppresses popup flashing when Reduce Motion is enabled", async () => {
       />
     </VisualThemeProvider>
   );
-  expect(withSequence).not.toHaveBeenCalled();
+  expect(mockStartCyberpunkPopupTransition).toHaveBeenCalledTimes(2);
 });
 
 test("skips close effects when the popup was never displayed", async () => {
@@ -212,12 +225,10 @@ test("skips close effects when the popup was never displayed", async () => {
 
 test("ignores a stale close completion after reopening the same cycle", async () => {
   const closeCallbacks: Array<(finished?: boolean) => void> = [];
-  mockWithTiming.mockImplementation((toValue, config, callback) => {
-    if (toValue === 0 && callback) {
-      closeCallbacks.push(callback);
-      return toValue as never;
-    }
-    return defaultWithTiming(toValue, config, callback);
+  mockStartStandardPopupTransition.mockImplementation((options) => {
+    if (options.direction === "close") closeCallbacks.push(options.onFinish);
+    else options.onFinish(true);
+    return mockAnimation();
   });
   const playThemeSfx = jest.fn(async () => {});
   const onClose = jest.fn();
@@ -258,12 +269,10 @@ test("ignores a stale close completion after reopening the same cycle", async ()
 
 test("ignores a stale open completion after closing starts", async () => {
   const openCallbacks: Array<(finished?: boolean) => void> = [];
-  mockWithTiming.mockImplementation((toValue, config, callback) => {
-    if (toValue === 1 && callback) {
-      openCallbacks.push(callback);
-      return toValue as never;
-    }
-    return defaultWithTiming(toValue, config, callback);
+  mockStartStandardPopupTransition.mockImplementation((options) => {
+    if (options.direction === "open") openCallbacks.push(options.onFinish);
+    else options.onFinish(true);
+    return mockAnimation();
   });
   const props = {
     panelId: "popup-panel",
@@ -293,12 +302,10 @@ test("ignores a stale open completion after closing starts", async () => {
 test("finishes closing when the animation callback does not fire", async () => {
   jest.useFakeTimers();
   const closeCallbacks: Array<(finished?: boolean) => void> = [];
-  mockWithTiming.mockImplementation((toValue, config, callback) => {
-    if (toValue === 0 && callback) {
-      closeCallbacks.push(callback);
-      return toValue as never;
-    }
-    return defaultWithTiming(toValue, config, callback);
+  mockStartStandardPopupTransition.mockImplementation((options) => {
+    if (options.direction === "close") closeCallbacks.push(options.onFinish);
+    else options.onFinish(true);
+    return mockAnimation();
   });
   const onClose = jest.fn();
   const props = {
@@ -331,10 +338,10 @@ test("replays StrictMode effects while emitting each popup event once", async ()
   jest.useFakeTimers();
   const openCallbacks: Array<(finished?: boolean) => void> = [];
   const closeCallbacks: Array<(finished?: boolean) => void> = [];
-  mockWithTiming.mockImplementation((toValue, _config, callback) => {
-    if (toValue === 1 && callback) openCallbacks.push(callback);
-    if (toValue === 0 && callback) closeCallbacks.push(callback);
-    return toValue as never;
+  mockStartStandardPopupTransition.mockImplementation((options) => {
+    if (options.direction === "open") openCallbacks.push(options.onFinish);
+    else closeCallbacks.push(options.onFinish);
+    return mockAnimation();
   });
   const playThemeSfx = jest.fn(async () => {});
   const onClose = jest.fn();
@@ -382,7 +389,7 @@ test("replays StrictMode effects while emitting each popup event once", async ()
 
 test("does not play a deferred popup sound after unmount", async () => {
   jest.useFakeTimers();
-  mockWithTiming.mockImplementation((toValue) => toValue as never);
+  mockStartStandardPopupTransition.mockImplementation(() => mockAnimation());
   const playThemeSfx = jest.fn(async () => {});
   const screen = await render(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>

@@ -1,65 +1,60 @@
-import {
-  Easing,
-  withDelay,
-  withSequence,
-  withTiming,
-  type SharedValue,
-} from "react-native-reanimated";
+import { Animated, Easing } from "react-native";
 
 type FlashBlinkTransitionOptions = {
   direction: "open" | "close";
   durationMs: number;
-  contentOpacity: SharedValue<number>;
-  flashOpacity: SharedValue<number>;
-  onFinish: (finished?: boolean) => void;
+  contentOpacity: Animated.Value;
+  flashOpacity: Animated.Value;
 };
 
-export function startCyberpunkFlashBlinkTransition({
+const timing = (value: Animated.Value, toValue: number, duration: number) => Animated.timing(value, {
+  toValue,
+  duration,
+  easing: Easing.linear,
+  useNativeDriver: false,
+});
+
+export function createCyberpunkFlashBlinkTransition({
   direction,
   durationMs,
   contentOpacity,
   flashOpacity,
-  onFinish,
-}: FlashBlinkTransitionOptions) {
+}: FlashBlinkTransitionOptions): Animated.CompositeAnimation {
   if (direction === "open") {
     const blinkDurationMs = 164;
-    contentOpacity.value = withSequence(
-      withTiming(1, { duration: 36, easing: Easing.linear }),
-      withTiming(0.08, { duration: 24, easing: Easing.linear }),
-      withTiming(1, { duration: 28, easing: Easing.linear }),
-      withTiming(0.15, { duration: 24, easing: Easing.linear }),
-      withTiming(1, { duration: 28, easing: Easing.linear }),
-      withTiming(0.22, { duration: 24, easing: Easing.linear }),
-      withTiming(1, {
-        duration: Math.max(0, durationMs - blinkDurationMs),
-        easing: Easing.linear,
-      }, onFinish)
-    );
-    flashOpacity.value = withSequence(
-      withTiming(0.95, { duration: 24, easing: Easing.linear }),
-      withTiming(0, { duration: 42, easing: Easing.linear })
-    );
-    return;
+    return Animated.parallel([
+      Animated.sequence([
+        timing(contentOpacity, 1, 36),
+        timing(contentOpacity, 0.08, 24),
+        timing(contentOpacity, 1, 28),
+        timing(contentOpacity, 0.15, 24),
+        timing(contentOpacity, 1, 28),
+        timing(contentOpacity, 0.22, 24),
+        timing(contentOpacity, 1, Math.max(0, durationMs - blinkDurationMs)),
+      ]),
+      Animated.sequence([
+        timing(flashOpacity, 0.95, 24),
+        timing(flashOpacity, 0, 42),
+      ]),
+    ]);
   }
 
   const blinkDurationMs = 80;
   const flashOutDurationMs = 34;
   const flashOutDelayMs = Math.max(0, durationMs - blinkDurationMs - flashOutDurationMs);
-  contentOpacity.value = withSequence(
-    withTiming(0.16, { duration: 20, easing: Easing.linear }),
-    withTiming(1, { duration: 20, easing: Easing.linear }),
-    withTiming(0.1, { duration: 20, easing: Easing.linear }),
-    withTiming(1, { duration: 20, easing: Easing.linear }),
-    withDelay(
-      flashOutDelayMs,
-      withTiming(0, { duration: flashOutDurationMs, easing: Easing.linear }, onFinish)
-    )
-  );
-  flashOpacity.value = withDelay(
-    blinkDurationMs + flashOutDelayMs,
-    withSequence(
-      withTiming(0.95, { duration: 16, easing: Easing.linear }),
-      withTiming(0, { duration: 18, easing: Easing.linear })
-    )
-  );
+  return Animated.parallel([
+    Animated.sequence([
+      timing(contentOpacity, 0.16, 20),
+      timing(contentOpacity, 1, 20),
+      timing(contentOpacity, 0.1, 20),
+      timing(contentOpacity, 1, 20),
+      Animated.delay(flashOutDelayMs),
+      timing(contentOpacity, 0, flashOutDurationMs),
+    ]),
+    Animated.sequence([
+      Animated.delay(blinkDurationMs + flashOutDelayMs),
+      timing(flashOpacity, 0.95, 16),
+      timing(flashOpacity, 0, 18),
+    ]),
+  ]);
 }

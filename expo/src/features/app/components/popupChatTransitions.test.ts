@@ -1,73 +1,74 @@
-import { withSequence, withTiming, type SharedValue } from "react-native-reanimated";
+import { Animated } from "react-native";
 
 import { startCyberpunkPopupTransition } from "./popupChatTransitions";
 
-jest.mock("react-native-worklets", () => require("react-native-worklets/src/mock"));
-jest.mock("react-native-reanimated", () => {
-  const mock = require("react-native-reanimated/mock");
+function animation(): Animated.CompositeAnimation {
   return {
-    ...mock,
-    withDelay: jest.fn((_delay, animation) => animation),
-    withSequence: jest.fn(mock.withSequence),
-    withTiming: jest.fn(mock.withTiming),
+    start: (callback) => callback?.({ finished: true }),
+    stop: jest.fn(),
+    reset: jest.fn(),
   };
-});
-
-function shared(value: number): SharedValue<number> {
-  return { value } as SharedValue<number>;
 }
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.restoreAllMocks();
+  jest.spyOn(Animated, "timing").mockImplementation(() => animation());
+  jest.spyOn(Animated, "delay").mockImplementation(() => animation());
+  jest.spyOn(Animated, "sequence").mockImplementation(() => animation());
+  jest.spyOn(Animated, "parallel").mockImplementation(() => animation());
 });
 
 test.each(["open", "close"] as const)(
   "keeps cyberpunk %s geometry at the popup rect and animates vertical scale",
   (direction) => {
-    const progress = shared(direction === "open" ? 0 : 2);
-    const cardScaleY = shared(1);
+    const progress = new Animated.Value(direction === "open" ? 0 : 2);
+    const setProgress = jest.spyOn(progress, "setValue");
+    const onFinish = jest.fn();
 
     startCyberpunkPopupTransition({
       direction,
       durationMs: 220,
       reduceMotion: false,
       progress,
-      cardOpacity: shared(direction === "open" ? 0 : 1),
-      cardScaleY,
-      flashOpacity: shared(0),
-      onFinish: jest.fn(),
+      cardOpacity: new Animated.Value(direction === "open" ? 0 : 1),
+      cardScaleY: new Animated.Value(1),
+      flashOpacity: new Animated.Value(0),
+      onFinish,
     });
 
-    expect(progress.value).toBe(1);
-    expect(cardScaleY.value).toBe((withSequence as jest.Mock).mock.results[0]?.value);
-    expect((withTiming as jest.Mock).mock.calls.slice(0, 5).map(([target]) => target)).toEqual([
-      1.045,
-      0.955,
-      1.025,
-      0.98,
-      1,
-    ]);
-    expect(withSequence).toHaveBeenCalledTimes(3);
+    expect(setProgress).toHaveBeenCalledWith(1);
+    const timingTargets = (Animated.timing as jest.Mock).mock.calls.map(([, config]) => config.toValue);
+    expect(timingTargets.slice(0, 5)).toEqual([1.045, 0.955, 1.025, 0.98, 1]);
+    expect((Animated.timing as jest.Mock).mock.calls.every(([, config]) => config.useNativeDriver === false)).toBe(true);
+    expect(Animated.sequence).toHaveBeenCalledTimes(3);
+    expect(onFinish).toHaveBeenCalledWith(true);
   }
 );
 
 test("suppresses cyberpunk blink and vertical stretch with Reduce Motion", () => {
-  const progress = shared(0);
-  const cardScaleY = shared(0.8);
+  const progress = new Animated.Value(0);
+  const cardScaleY = new Animated.Value(0.8);
+  const flashOpacity = new Animated.Value(0.5);
+  const setProgress = jest.spyOn(progress, "setValue");
+  const setCardScaleY = jest.spyOn(cardScaleY, "setValue");
+  const setFlashOpacity = jest.spyOn(flashOpacity, "setValue");
+  const onFinish = jest.fn();
 
   startCyberpunkPopupTransition({
     direction: "open",
     durationMs: 260,
     reduceMotion: true,
     progress,
-    cardOpacity: shared(0),
+    cardOpacity: new Animated.Value(0),
     cardScaleY,
-    flashOpacity: shared(0.5),
-    onFinish: jest.fn(),
+    flashOpacity,
+    onFinish,
   });
 
-  expect(progress.value).toBe(1);
-  expect(cardScaleY.value).toBe(1);
-  expect(withSequence).not.toHaveBeenCalled();
-  expect(withTiming).toHaveBeenCalledTimes(1);
+  expect(setProgress).toHaveBeenCalledWith(1);
+  expect(setCardScaleY).toHaveBeenCalledWith(1);
+  expect(setFlashOpacity).toHaveBeenCalledWith(0);
+  expect(Animated.sequence).not.toHaveBeenCalled();
+  expect(Animated.timing).toHaveBeenCalledTimes(1);
+  expect(onFinish).toHaveBeenCalledWith(true);
 });
