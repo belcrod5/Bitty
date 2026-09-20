@@ -13,6 +13,7 @@
     "start:perf": "expo start --no-dev --minify",
     "ios:release": "expo run:ios --configuration Release",
     "sfx:generate": "node ../scripts/generate-retro-sfx.mjs",
+    "sfx:generate:themes": "node ../scripts/generate-retro-sfx.mjs --themes-only",
     "runner:setup-auth": "node ../private_runner/setup-codex-auth.mjs",
     "runner:setup-auth:device": "node ../private_runner/setup-codex-auth.mjs --device-auth",
     "runner": "bash ../private_runner/run-local.sh",

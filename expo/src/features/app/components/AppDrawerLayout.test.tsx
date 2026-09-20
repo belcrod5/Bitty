@@ -1,13 +1,32 @@
 import React from "react";
 import { Text } from "react-native";
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Drawer } from "react-native-drawer-layout";
 import { AppDrawerLayout as NativeAppDrawerLayout } from "./AppDrawerLayout";
 import { AppDrawerLayout as MacOSAppDrawerLayout } from "./AppDrawerLayout.macos";
 
-jest.mock("react-native-drawer-layout", () => ({
-  Drawer: jest.fn(({ children }: { children: React.ReactNode }) => children),
+jest.mock("react-native-worklets", () => require("react-native-worklets/src/mock"));
+jest.mock("react-native-reanimated", () => ({
+  ...require("react-native-reanimated/mock"),
+  useReducedMotion: () => false,
 }));
+jest.mock("react-native-drawer-layout", () => ({
+  Drawer: jest.fn(({
+    children,
+    renderDrawerContent,
+  }: {
+    children: React.ReactNode;
+    renderDrawerContent: () => React.ReactNode;
+  }) => (
+    <>{children}{renderDrawerContent()}</>
+  )),
+}));
+
+const playThemeSfx = jest.fn(async () => {});
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 test.each([true, false])(
   "forwards swipeEnabled=%s to the native drawer",
@@ -17,6 +36,7 @@ test.each([true, false])(
         open={false}
         onOpen={jest.fn()}
         onClose={jest.fn()}
+        playThemeSfx={playThemeSfx}
         renderDrawerContent={() => <Text>Drawer content</Text>}
         swipeEnabled={swipeEnabled}
       >
@@ -31,6 +51,45 @@ test.each([true, false])(
   }
 );
 
+test("fires drawer sounds only when the controlled open state changes", async () => {
+  const props = {
+    onOpen: jest.fn(),
+    onClose: jest.fn(),
+    playThemeSfx,
+    renderDrawerContent: () => <Text>Drawer content</Text>,
+    swipeEnabled: true,
+  };
+  const screen = await render(
+    <NativeAppDrawerLayout {...props} open={false}>
+      <Text>Screen content</Text>
+    </NativeAppDrawerLayout>
+  );
+
+  expect(playThemeSfx).not.toHaveBeenCalled();
+
+  await screen.rerender(
+    <NativeAppDrawerLayout {...props} open>
+      <Text>Screen content</Text>
+    </NativeAppDrawerLayout>
+  );
+  await waitFor(() => expect(playThemeSfx).toHaveBeenCalledWith("drawerOpen"));
+
+  await screen.rerender(
+    <NativeAppDrawerLayout {...props} open>
+      <Text>Screen content</Text>
+    </NativeAppDrawerLayout>
+  );
+  expect(playThemeSfx).toHaveBeenCalledTimes(1);
+
+  await screen.rerender(
+    <NativeAppDrawerLayout {...props} open={false}>
+      <Text>Screen content</Text>
+    </NativeAppDrawerLayout>
+  );
+  await waitFor(() => expect(playThemeSfx).toHaveBeenLastCalledWith("drawerClose"));
+  expect(playThemeSfx).toHaveBeenCalledTimes(2);
+});
+
 test("uses an animated clickable drawer on macOS", async () => {
   jest.useFakeTimers();
   const onClose = jest.fn();
@@ -41,6 +100,7 @@ test("uses an animated clickable drawer on macOS", async () => {
         open
         onOpen={jest.fn()}
         onClose={onClose}
+        playThemeSfx={playThemeSfx}
         renderDrawerContent={() => <Text>Drawer content</Text>}
         swipeEnabled={false}
       >

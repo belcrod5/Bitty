@@ -3,6 +3,7 @@ import path from "node:path";
 
 const SAMPLE_RATE = 44100;
 const OUT_DIR = path.resolve("assets/sfx");
+const THEME_OUT_DIR = path.resolve("assets/themes");
 
 function clamp01(v) {
   if (v < -1) return -1;
@@ -116,10 +117,11 @@ function wavHeader(dataBytes, sampleRate = SAMPLE_RATE, channels = 1, bitsPerSam
   return buffer;
 }
 
-function writeWav(fileName, samples) {
+function writeWav(outDir, fileName, samples) {
   const pcm = toPcm16(samples);
   const header = wavHeader(pcm.length);
-  const outPath = path.join(OUT_DIR, fileName);
+  const outPath = path.join(outDir, fileName);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, Buffer.concat([header, pcm]));
   return outPath;
 }
@@ -170,15 +172,39 @@ function buildSfxPack() {
   return sfx;
 }
 
+function buildThemeSfxPacks() {
+  const cyberpunkPopupSound = (firstFreq, secondFreq) => concat([
+    tone({ freq: firstFreq, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
+    silence(11),
+    tone({ freq: secondFreq, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
+  ]);
+
+  return {
+    cyberpunk: {
+      "popup-open.wav": cyberpunkPopupSound(3760, 3440),
+      "popup-close.wav": cyberpunkPopupSound(4060, 3720),
+    },
+  };
+}
+
 function main() {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
-  const pack = buildSfxPack();
   const written = [];
-  for (const [fileName, samples] of Object.entries(pack)) {
-    const outPath = writeWav(fileName, samples);
-    written.push(path.relative(process.cwd(), outPath));
+  const themesOnly = process.argv.includes("--themes-only");
+  if (themesOnly) {
+    for (const [themeId, pack] of Object.entries(buildThemeSfxPacks())) {
+      for (const [fileName, samples] of Object.entries(pack)) {
+        const outPath = writeWav(path.join(THEME_OUT_DIR, themeId, "sfx"), fileName, samples);
+        written.push(path.relative(process.cwd(), outPath));
+      }
+    }
+  } else {
+    const pack = buildSfxPack();
+    for (const [fileName, samples] of Object.entries(pack)) {
+      const outPath = writeWav(OUT_DIR, fileName, samples);
+      written.push(path.relative(process.cwd(), outPath));
+    }
   }
-  console.log("Generated retro SFX:");
+  console.log(themesOnly ? "Generated theme SFX:" : "Generated retro SFX:");
   for (const p of written) {
     console.log(`- ${p}`);
   }
