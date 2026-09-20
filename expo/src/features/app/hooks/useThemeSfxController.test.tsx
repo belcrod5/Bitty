@@ -26,6 +26,8 @@ function sounds(offset = 0): Record<VisualThemeSoundEvent, VisualThemeSound> {
   return {
     popupOpen: { asset: 1 + offset, volume: 0.28 },
     popupClose: { asset: 2 + offset, volume: 0.26 },
+    drawerOpen: { asset: 1 + offset, volume: 0.28 },
+    drawerClose: { asset: 2 + offset, volume: 0.26 },
   };
 }
 

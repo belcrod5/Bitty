@@ -8,9 +8,10 @@ export type VisualThemeTone = {
   border: string;
 };
 
-export type VisualThemeSoundEvent = "popupOpen" | "popupClose";
+export type VisualThemeSoundEvent = "popupOpen" | "popupClose" | "drawerOpen" | "drawerClose";
 
 export type VisualThemePopupTransition = "soft" | "flash-blink";
+export type VisualThemeDrawerTransition = "none" | "flash-blink";
 
 export type VisualThemeSplashMotion = {
   durationMs: number;
@@ -35,6 +36,7 @@ export type VisualTheme = {
   colorScheme: "light" | "dark";
   motion: {
     popupTransition: VisualThemePopupTransition;
+    drawerTransition: VisualThemeDrawerTransition;
     splash: VisualThemeSplashMotion;
     popupOpen: VisualThemePopupMotion;
     popupClose: VisualThemePopupMotion;
@@ -208,6 +210,7 @@ const standardTheme: VisualTheme = {
   colorScheme: "light",
   motion: {
     popupTransition: "soft",
+    drawerTransition: "none",
     splash: { durationMs: 620, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
     popupOpen: { durationMs: 260 },
     popupClose: { durationMs: 220 },
@@ -218,6 +221,14 @@ const standardTheme: VisualTheme = {
       volume: 0.28,
     },
     popupClose: {
+      asset: require("../../../../assets/themes/standard/sfx/popup-close.wav"),
+      volume: 0.26,
+    },
+    drawerOpen: {
+      asset: require("../../../../assets/themes/standard/sfx/popup-open.wav"),
+      volume: 0.28,
+    },
+    drawerClose: {
       asset: require("../../../../assets/themes/standard/sfx/popup-close.wav"),
       volume: 0.26,
     },
@@ -386,6 +397,7 @@ const cyberpunkTheme: VisualTheme = {
   colorScheme: "dark",
   motion: {
     popupTransition: "flash-blink",
+    drawerTransition: "flash-blink",
     splash: { durationMs: 720, flashCount: 2, flashOpacity: 0.7, flashDurationMs: 62 },
     popupOpen: { durationMs: 260 },
     popupClose: { durationMs: 220 },
@@ -396,6 +408,14 @@ const cyberpunkTheme: VisualTheme = {
       volume: 0.26,
     },
     popupClose: {
+      asset: require("../../../../assets/themes/cyberpunk/sfx/popup-close.wav"),
+      volume: 0.24,
+    },
+    drawerOpen: {
+      asset: require("../../../../assets/themes/cyberpunk/sfx/popup-open.wav"),
+      volume: 0.26,
+    },
+    drawerClose: {
       asset: require("../../../../assets/themes/cyberpunk/sfx/popup-close.wav"),
       volume: 0.24,
     },

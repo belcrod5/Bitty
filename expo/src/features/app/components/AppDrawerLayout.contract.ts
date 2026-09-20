@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
+import type { VisualThemeSoundEvent } from "../theme/visualThemes";
 
 export type AppDrawerLayoutProps = {
   children: ReactNode;
@@ -11,6 +12,7 @@ export type AppDrawerLayoutProps = {
   open: boolean;
   overlayAccessibilityLabel?: string;
   overlayStyle?: StyleProp<ViewStyle>;
+  playThemeSfx: (event: VisualThemeSoundEvent) => Promise<void>;
   renderDrawerContent: () => ReactNode;
   swipeEnabled: boolean;
   style?: StyleProp<ViewStyle>;

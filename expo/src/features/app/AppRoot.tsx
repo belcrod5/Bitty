@@ -7102,6 +7102,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         open={drawerOpen}
         onOpen={openDrawer}
         onClose={closeDrawer}
+        playThemeSfx={playThemeSfx}
         drawerStyle={styles.appDrawerPanel}
         overlayStyle={styles.appDrawerOverlay}
         renderDrawerContent={renderAppDrawerContent}
