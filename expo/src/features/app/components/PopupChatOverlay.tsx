@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
+  cancelAnimation,
   Easing,
   interpolate,
   runOnJS,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
+  withRepeat,
   withTiming,
 } from "react-native-reanimated";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
@@ -13,7 +16,11 @@ import { ChatScreen } from "../screens/ChatScreen";
 import { CHAT_CONTENT_MAX_WIDTH } from "../styles/layoutConstants";
 import type { PopupChatPresentation, PopupChatSourceRect } from "./popupChatTypes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
+import {
+  createStylesByTheme,
+  type VisualTheme,
+  type VisualThemeTransitionEvent,
+} from "../theme/visualThemes";
 
 type PopupChatOverlayProps = {
   visible: boolean;
@@ -21,6 +28,8 @@ type PopupChatOverlayProps = {
   cycleId?: string;
   sourceRect?: PopupChatSourceRect | null;
   onClose: () => void;
+  onRequestClose: () => void;
+  playThemeSfx: (event: VisualThemeTransitionEvent) => Promise<void>;
 };
 
 const POPUP_MARGIN_HORIZONTAL = 12;
@@ -31,6 +40,7 @@ const FULLSCREEN_PADDING_TOP = 32;
 const FULLSCREEN_PADDING_BOTTOM = 16;
 const HEADER_DISMISS_DISTANCE = 96;
 const HEADER_DISMISS_VELOCITY = 0.85;
+const ANIMATION_FAIL_OPEN_BUFFER_MS = 250;
 
 export function PopupChatOverlay({
   visible,
@@ -38,13 +48,30 @@ export function PopupChatOverlay({
   cycleId = "",
   sourceRect,
   onClose,
+  onRequestClose,
+  playThemeSfx,
 }: PopupChatOverlayProps) {
-  const { themeId } = useVisualTheme();
+  const { theme, themeId } = useVisualTheme();
   const popupChatOverlayStyles = popupChatOverlayStylesByTheme[themeId];
+  const reduceMotion = useReducedMotion();
   const { setPanelAutoSpeechOpen } = usePanelRuntimeController();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const rootRef = useRef<View | null>(null);
   const presentationRef = useRef<PopupChatPresentation>("popup");
+  const closingRef = useRef(false);
+  const transitionGenerationRef = useRef(0);
+  const completedCloseEventRef = useRef("");
+  const playedSoundEventRef = useRef({ popupOpen: "", popupClose: "" });
+  const pendingSoundEventRef = useRef({
+    popupOpen: { base: "", id: "" },
+    popupClose: { base: "", id: "" },
+  });
+  const soundEventSequenceRef = useRef(0);
+  const mountedRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  const playThemeSfxRef = useRef(playThemeSfx);
+  onCloseRef.current = onClose;
+  playThemeSfxRef.current = playThemeSfx;
   const [rendered, setRendered] = useState(false);
   const [contentReady, setContentReady] = useState(false);
   const [messageSkeletonVisible, setMessageSkeletonVisible] = useState(false);
@@ -53,6 +80,14 @@ export function PopupChatOverlay({
 
   const progress = useSharedValue(1);
   const dragTranslateY = useSharedValue(0);
+  const flashOpacity = useSharedValue(1);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const fallbackSourceRect = useMemo(() => ({
     x: Math.max(16, Math.floor(containerSize.width / 2) - 44),
@@ -126,9 +161,33 @@ export function PopupChatOverlay({
     syncRootWindowOrigin();
   }, [syncRootWindowOrigin]);
 
-  const markContentReady = useCallback(() => {
-    setContentReady(true);
+  const playPopupSoundOnce = useCallback((event: "popupOpen" | "popupClose", eventKey: string) => {
+    if (playedSoundEventRef.current[event] === eventKey) return;
+    playedSoundEventRef.current[event] = eventKey;
+    void playThemeSfxRef.current(event);
   }, []);
+
+  const getSoundEventId = useCallback((event: "popupOpen" | "popupClose", base: string) => {
+    const pending = pendingSoundEventRef.current[event];
+    if (pending.base === base) return pending.id;
+    const id = `${base}:${event}:${++soundEventSequenceRef.current}`;
+    pendingSoundEventRef.current[event] = { base, id };
+    return id;
+  }, []);
+
+  const completeOpen = useCallback((generation: number, soundEventId: string) => {
+    if (transitionGenerationRef.current !== generation || closingRef.current) return;
+    playPopupSoundOnce("popupOpen", soundEventId);
+    setContentReady(true);
+  }, [playPopupSoundOnce]);
+
+  const completeClose = useCallback((generation: number, eventKey: string, soundEventId: string) => {
+    if (transitionGenerationRef.current !== generation || !closingRef.current) return;
+    playPopupSoundOnce("popupClose", soundEventId);
+    transitionGenerationRef.current += 1;
+    completedCloseEventRef.current = eventKey;
+    onCloseRef.current();
+  }, [playPopupSoundOnce]);
 
   useEffect(() => {
     if (!visible || !panelId) return;
@@ -139,12 +198,27 @@ export function PopupChatOverlay({
   }, [panelId, setPanelAutoSpeechOpen, visible]);
 
   useEffect(() => {
-    if (!visible || !panelId) {
-      setRendered(false);
-      setContentReady(false);
-      setMessageSkeletonVisible(false);
-      return;
-    }
+    if (panelId) return;
+    closingRef.current = false;
+    completedCloseEventRef.current = "";
+    pendingSoundEventRef.current = {
+      popupOpen: { base: "", id: "" },
+      popupClose: { base: "", id: "" },
+    };
+    setRendered(false);
+    setContentReady(false);
+    setMessageSkeletonVisible(false);
+  }, [panelId]);
+
+  useEffect(() => {
+    if (!visible || !panelId) return;
+
+    const eventId = `${panelId}:${cycleId}`;
+    closingRef.current = false;
+    completedCloseEventRef.current = "";
+    pendingSoundEventRef.current.popupClose = { base: "", id: "" };
+    const soundEventId = getSoundEventId("popupOpen", eventId);
+    const generation = ++transitionGenerationRef.current;
 
     setRendered(true);
     setContentReady(false);
@@ -153,13 +227,45 @@ export function PopupChatOverlay({
     syncRootWindowOrigin();
     progress.value = 0;
     dragTranslateY.value = 0;
+    flashOpacity.value = 1;
+    const motion = theme.motion.popupOpen;
+    if (!reduceMotion && motion.flashCount > 0) {
+      flashOpacity.value = withRepeat(
+        withTiming(motion.flashOpacity, {
+          duration: motion.flashDurationMs,
+          easing: Easing.linear,
+        }),
+        motion.flashCount * 2,
+        true
+      );
+    }
+    setTimeout(() => {
+      if (mountedRef.current) playPopupSoundOnce("popupOpen", soundEventId);
+    }, 0);
     progress.value = withTiming(1, {
-      duration: 260,
+      duration: reduceMotion ? 0 : motion.durationMs,
       easing: Easing.out(Easing.cubic),
     }, (finished) => {
-      if (finished) runOnJS(markContentReady)();
+      if (finished) runOnJS(completeOpen)(generation, soundEventId);
     });
-  }, [cycleId, markContentReady, panelId, progress, syncRootWindowOrigin, visible]);
+
+    return () => {
+      if (transitionGenerationRef.current === generation) {
+        transitionGenerationRef.current += 1;
+      }
+      cancelAnimation(progress);
+      cancelAnimation(dragTranslateY);
+      cancelAnimation(flashOpacity);
+    };
+  }, [
+    cycleId,
+    completeOpen,
+    getSoundEventId,
+    panelId,
+    playPopupSoundOnce,
+    syncRootWindowOrigin,
+    visible,
+  ]);
 
   const togglePresentation = () => {
     const nextPresentation = presentationRef.current === "popup" ? "fullscreen" : "popup";
@@ -175,16 +281,68 @@ export function PopupChatOverlay({
     });
   };
 
-  const closeWithAnimation = () => {
+  useEffect(() => {
+    if (visible || !panelId) return;
+    const eventId = `${panelId}:${cycleId}`;
+    pendingSoundEventRef.current.popupOpen = { base: "", id: "" };
+    const soundEventId = getSoundEventId("popupClose", eventId);
+    if (completedCloseEventRef.current === eventId) return;
+    if (!rendered) {
+      completedCloseEventRef.current = eventId;
+      onCloseRef.current();
+      return;
+    }
+
+    closingRef.current = true;
+    const generation = ++transitionGenerationRef.current;
     setContentReady(false);
     setMessageSkeletonVisible(false);
+    cancelAnimation(flashOpacity);
+    flashOpacity.value = 1;
+    const motion = theme.motion.popupClose;
+    if (!reduceMotion && motion.flashCount > 0) {
+      flashOpacity.value = withRepeat(
+        withTiming(motion.flashOpacity, {
+          duration: motion.flashDurationMs,
+          easing: Easing.linear,
+        }),
+        motion.flashCount * 2,
+        true
+      );
+    }
+    setTimeout(() => {
+      if (mountedRef.current) playPopupSoundOnce("popupClose", soundEventId);
+    }, 0);
+    const durationMs = reduceMotion ? 0 : motion.durationMs;
+    const closeTimer = setTimeout(
+      () => completeClose(generation, eventId, soundEventId),
+      durationMs + ANIMATION_FAIL_OPEN_BUFFER_MS
+    );
     progress.value = withTiming(0, {
-      duration: 220,
+      duration: durationMs,
       easing: Easing.out(Easing.cubic),
     }, (finished) => {
-      if (finished) runOnJS(onClose)();
+      if (finished) runOnJS(completeClose)(generation, eventId, soundEventId);
     });
-  };
+
+    return () => {
+      if (transitionGenerationRef.current === generation) {
+        transitionGenerationRef.current += 1;
+      }
+      closingRef.current = false;
+      clearTimeout(closeTimer);
+      cancelAnimation(progress);
+      cancelAnimation(flashOpacity);
+    };
+  }, [
+    completeClose,
+    cycleId,
+    getSoundEventId,
+    panelId,
+    playPopupSoundOnce,
+    rendered,
+    visible,
+  ]);
 
   const handleHeaderDragMove = (offsetY: number) => {
     dragTranslateY.value = Math.max(0, offsetY);
@@ -192,7 +350,7 @@ export function PopupChatOverlay({
 
   const handleHeaderDragEnd = (offsetY: number, velocityY: number) => {
     if (offsetY >= HEADER_DISMISS_DISTANCE || velocityY >= HEADER_DISMISS_VELOCITY) {
-      closeWithAnimation();
+      onRequestClose();
       return;
     }
     dragTranslateY.value = withTiming(0, {
@@ -207,8 +365,9 @@ export function PopupChatOverlay({
     width: interpolate(progress.value, [0, 1, 2], [initialRect.width, popupRect.width, fullscreenRect.width]),
     height: interpolate(progress.value, [0, 1, 2], [initialRect.height, popupRect.height, fullscreenRect.height]),
     borderRadius: interpolate(progress.value, [0, 1, 2], [10, POPUP_BORDER_RADIUS, 0]),
+    opacity: flashOpacity.value,
     transform: [{ translateY: dragTranslateY.value }],
-  }), [dragTranslateY, fullscreenRect, initialRect, popupRect]);
+  }), [dragTranslateY, flashOpacity, fullscreenRect, initialRect, popupRect]);
 
   const backdropAnimatedStyle = useAnimatedStyle(() => ({
     opacity: interpolate(progress.value, [0, 1, 2], [0, 1, 1]),
@@ -231,7 +390,11 @@ export function PopupChatOverlay({
         pointerEvents="none"
         style={[popupChatOverlayStyles.backdropVisual, backdropAnimatedStyle]}
       />
-      <Pressable style={popupChatOverlayStyles.backdropTouch} onPress={closeWithAnimation} />
+      <Pressable
+        style={popupChatOverlayStyles.backdropTouch}
+        testID="popup-chat-backdrop"
+        onPress={() => onRequestClose()}
+      />
       <Animated.View style={[popupChatOverlayStyles.card, animatedCardStyle]}>
         <Animated.View style={[popupChatOverlayStyles.content, animatedContentStyle]}>
           {contentReady ? (
@@ -240,7 +403,7 @@ export function PopupChatOverlay({
               panelId={panelId}
               miniBoardCycleId={cycleId}
               onTogglePopupPresentation={togglePresentation}
-              onMinimizePopupChat={closeWithAnimation}
+              onMinimizePopupChat={onRequestClose}
               onPopupHeaderDragMove={handleHeaderDragMove}
               onPopupHeaderDragEnd={handleHeaderDragEnd}
               showPopupMessagesSkeleton={messageSkeletonVisible}

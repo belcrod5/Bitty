@@ -3,6 +3,7 @@ import path from "node:path";
 
 const SAMPLE_RATE = 44100;
 const OUT_DIR = path.resolve("assets/sfx");
+const THEME_OUT_DIR = path.resolve("assets/themes");
 
 function clamp01(v) {
   if (v < -1) return -1;
@@ -116,10 +117,11 @@ function wavHeader(dataBytes, sampleRate = SAMPLE_RATE, channels = 1, bitsPerSam
   return buffer;
 }
 
-function writeWav(fileName, samples) {
+function writeWav(outDir, fileName, samples) {
   const pcm = toPcm16(samples);
   const header = wavHeader(pcm.length);
-  const outPath = path.join(OUT_DIR, fileName);
+  const outPath = path.join(outDir, fileName);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, Buffer.concat([header, pcm]));
   return outPath;
 }
@@ -170,15 +172,68 @@ function buildSfxPack() {
   return sfx;
 }
 
+function buildThemeSfxPacks() {
+  return {
+    standard: {
+      "splash.wav": concat([
+        tone({ freq: 440, toFreq: 560, durationMs: 110, volume: 0.16, wave: "sine", releaseMs: 32 }),
+        silence(22),
+        tone({ freq: 660, toFreq: 740, durationMs: 150, volume: 0.14, wave: "sine", releaseMs: 52 }),
+      ]),
+      "popup-open.wav": concat([
+        tone({ freq: 520, toFreq: 610, durationMs: 62, volume: 0.14, wave: "sine", releaseMs: 20 }),
+        silence(12),
+        tone({ freq: 700, durationMs: 72, volume: 0.12, wave: "sine", releaseMs: 32 }),
+      ]),
+      "popup-close.wav": tone({
+        freq: 610,
+        toFreq: 420,
+        durationMs: 132,
+        volume: 0.13,
+        wave: "sine",
+        releaseMs: 42,
+      }),
+    },
+    cyberpunk: {
+      "splash.wav": concat([
+        tone({ freq: 1460, toFreq: 2120, durationMs: 86, volume: 0.15, wave: "triangle", releaseMs: 16 }),
+        silence(28),
+        tone({ freq: 2280, toFreq: 1840, durationMs: 64, volume: 0.12, wave: "sine", releaseMs: 18 }),
+        silence(24),
+        tone({ freq: 2520, durationMs: 72, volume: 0.1, wave: "sine", releaseMs: 36 }),
+      ]),
+      "popup-open.wav": concat([
+        tone({ freq: 1640, toFreq: 2320, durationMs: 54, volume: 0.14, wave: "triangle", releaseMs: 14 }),
+        silence(18),
+        tone({ freq: 2520, durationMs: 48, volume: 0.1, wave: "sine", releaseMs: 22 }),
+      ]),
+      "popup-close.wav": concat([
+        tone({ freq: 2360, toFreq: 1780, durationMs: 48, volume: 0.12, wave: "triangle", releaseMs: 14 }),
+        silence(16),
+        tone({ freq: 1540, toFreq: 1180, durationMs: 58, volume: 0.1, wave: "sine", releaseMs: 28 }),
+      ]),
+    },
+  };
+}
+
 function main() {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
-  const pack = buildSfxPack();
   const written = [];
-  for (const [fileName, samples] of Object.entries(pack)) {
-    const outPath = writeWav(fileName, samples);
-    written.push(path.relative(process.cwd(), outPath));
+  const themesOnly = process.argv.includes("--themes-only");
+  if (themesOnly) {
+    for (const [themeId, pack] of Object.entries(buildThemeSfxPacks())) {
+      for (const [fileName, samples] of Object.entries(pack)) {
+        const outPath = writeWav(path.join(THEME_OUT_DIR, themeId, "sfx"), fileName, samples);
+        written.push(path.relative(process.cwd(), outPath));
+      }
+    }
+  } else {
+    const pack = buildSfxPack();
+    for (const [fileName, samples] of Object.entries(pack)) {
+      const outPath = writeWav(OUT_DIR, fileName, samples);
+      written.push(path.relative(process.cwd(), outPath));
+    }
   }
-  console.log("Generated retro SFX:");
+  console.log(themesOnly ? "Generated theme SFX:" : "Generated retro SFX:");
   for (const p of written) {
     console.log(`- ${p}`);
   }

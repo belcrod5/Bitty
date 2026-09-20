@@ -31,8 +31,8 @@ export function useOpenSessionHistoryPopup(options: {
     contextUsedPct?: number | null;
   }) => Promise<"applied" | "failed" | "superseded">;
   markRead: (sessionId: string, source: LlmSessionSource, directory: string, backendId: string) => void;
-  clearPanel: (panelId: string) => void;
-  setPanelId: Dispatch<SetStateAction<string>>;
+  presentPanel: (panelId: string) => void;
+  requestClose: (options?: { clearHighlight?: boolean }) => void;
   setCycleId: Dispatch<SetStateAction<string>>;
   setSourceRect: Dispatch<SetStateAction<PopupChatSourceRect | null>>;
   setOrigin: Dispatch<SetStateAction<SessionPopupOrigin>>;
@@ -45,8 +45,8 @@ export function useOpenSessionHistoryPopup(options: {
     resolveContext,
     hydrate,
     markRead,
-    clearPanel,
-    setPanelId,
+    presentPanel,
+    requestClose,
     setCycleId,
     setSourceRect,
     setOrigin,
@@ -76,7 +76,7 @@ export function useOpenSessionHistoryPopup(options: {
     setSourceRect(params.sourceRect || null);
     setCycleId(cycleId);
     setOrigin(params.origin || "drawer");
-    setPanelId(panelId);
+    presentPanel(panelId);
     setHighlight(sessionId);
     try {
       const result = await hydrate({
@@ -96,31 +96,27 @@ export function useOpenSessionHistoryPopup(options: {
       if (result === "superseded") return false;
       if (result === "failed") {
         showToast("assistant", "セッションをポップアップに読み込めませんでした。");
-        clearPanel(panelId);
-        setPanelId("");
-        setHighlight("");
+        requestClose({ clearHighlight: true });
         return false;
       }
       markRead(sessionId, params.source, directory, backendId);
       return true;
     } catch (error) {
       showToast("assistant", `セッション読込に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
-      clearPanel(panelId);
-      setPanelId("");
-      setHighlight("");
+      requestClose({ clearHighlight: true });
       return false;
     }
   }, [
-    clearPanel,
     hydrate,
     log,
     markRead,
     panelId,
+    presentPanel,
+    requestClose,
     resolveContext,
     setCycleId,
     setHighlight,
     setOrigin,
-    setPanelId,
     setSourceRect,
     showToast,
   ]);

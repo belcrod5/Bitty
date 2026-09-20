@@ -35,6 +35,7 @@ import {
 } from "./components/LlmCompletionNotifications";
 import { DrawerSessionPopupHost } from "./components/DrawerSessionPopupHost";
 import { PopupChatOverlay } from "./components/PopupChatOverlay";
+import { ThemeSplash } from "./components/ThemeSplash";
 import { VisualThemeProvider, useVisualTheme } from "./theme/VisualThemeContext";
 import {
   DEFAULT_VISUAL_THEME_ID,
@@ -61,6 +62,7 @@ import { useAutoWaveformDiagnostics } from "./hooks/useAutoWaveformDiagnostics";
 import { useAutoRecordingWatchdog } from "./hooks/useAutoRecordingWatchdog";
 import { useAutoRecordingWatchdogResetController } from "./hooks/useAutoRecordingWatchdogResetController";
 import { useUiSfxController } from "./hooks/useUiSfxController";
+import { useThemeSfxController } from "./hooks/useThemeSfxController";
 import { useAssistantEventSfxController } from "./hooks/useAssistantEventSfxController";
 import { useAutoCaptureCycleRecovery } from "./hooks/useAutoCaptureCycleRecovery";
 import { useAutoCaptureCycleCore } from "./hooks/useAutoCaptureCycleCore";
@@ -710,9 +712,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   useEffect(() => {
-    if (settingsLoaded) onReady?.();
-  }, [onReady, settingsLoaded]);
-  useEffect(() => {
     if (!settingsLoaded || AppState.currentState !== "active") return;
     void bootstrapLocationSchedules().catch(() => {});
   }, [settingsLoaded]);
@@ -962,6 +961,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     uiSfxVolumes: UI_SFX_VOLUMES,
     uiSfxMinIntervalMs: UI_SFX_MIN_INTERVAL_MS,
   });
+  const { playThemeSfx } = useThemeSfxController(visualTheme.sounds, settingsLoaded);
 
   const {
     manualRecording,
@@ -1007,6 +1007,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [chatViewportHeight, setChatViewportHeight] = useState(0);
   const [chatScreenLayout, setChatScreenLayout] = useState({ width: 0, height: 0 });
   const [drawerSessionPopupPanelId, setDrawerSessionPopupPanelId] = useState("");
+  const [drawerSessionPopupVisible, setDrawerSessionPopupVisible] = useState(false);
   const [drawerSessionPopupCycleId, setDrawerSessionPopupCycleId] = useState("");
   const [drawerSessionPopupSourceRect, setDrawerSessionPopupSourceRect] = useState<PopupChatSourceRect | null>(null);
   const [drawerSessionPopupOrigin, setDrawerSessionPopupOrigin] = useState<SessionPopupOrigin>("drawer");
@@ -6917,6 +6918,16 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     drawerHighlightedSessionId,
     setDrawerPopupHighlightSessionId,
   } = useDrawerSessionHighlight(selectedLlmSessionId);
+  const clearDrawerPopupHighlightOnCloseRef = useRef(false);
+  const presentDrawerSessionPopup = useCallback((panelId: string) => {
+    clearDrawerPopupHighlightOnCloseRef.current = false;
+    setDrawerSessionPopupVisible(true);
+    setDrawerSessionPopupPanelId(panelId);
+  }, []);
+  const requestDrawerSessionPopupClose = useCallback((options?: { clearHighlight?: boolean }) => {
+    if (options?.clearHighlight) clearDrawerPopupHighlightOnCloseRef.current = true;
+    setDrawerSessionPopupVisible(false);
+  }, []);
   const closeDrawerSessionPopup = useCallback(() => {
     if (drawerSessionPopupPanelId) {
       const popupEntry = panelRuntimeEntriesByIdRef.current[drawerSessionPopupPanelId];
@@ -6925,9 +6936,15 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       );
       // ポップアップ中にセッションIDが変わっていても、閉じた時点の実セッションを
       // ドロワーのハイライトへ反映する。
-      if (popupSessionId) setDrawerPopupHighlightSessionId(popupSessionId);
+      if (clearDrawerPopupHighlightOnCloseRef.current) {
+        setDrawerPopupHighlightSessionId("");
+      } else if (popupSessionId) {
+        setDrawerPopupHighlightSessionId(popupSessionId);
+      }
       clearPanelSnapshot(drawerSessionPopupPanelId);
     }
+    clearDrawerPopupHighlightOnCloseRef.current = false;
+    setDrawerSessionPopupVisible(false);
     setDrawerSessionPopupPanelId("");
     setDrawerSessionPopupCycleId("");
     setDrawerSessionPopupSourceRect(null);
@@ -6944,7 +6961,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setDrawerSessionPopupSourceRect(null);
     setDrawerSessionPopupCycleId(cycleId);
     setDrawerSessionPopupOrigin("drawer");
-    setDrawerSessionPopupPanelId(DRAWER_SESSION_POPUP_PANEL_ID);
+    presentDrawerSessionPopup(DRAWER_SESSION_POPUP_PANEL_ID);
     setDrawerPopupHighlightSessionId(sessionId);
     logSessionDiag("drawer_new_session_popup_opened", {
       panelId: DRAWER_SESSION_POPUP_PANEL_ID,
@@ -6955,6 +6972,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   }, [
     logSessionDiag,
     normalizedLlmDirectoryForRequest,
+    presentDrawerSessionPopup,
     setDrawerPopupHighlightSessionId,
     startNewPanelSession,
   ]);
@@ -6963,8 +6981,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     resolveContext: resolveSessionHistoryContext,
     hydrate: hydratePanelFromSessionHistory,
     markRead: markSessionReadFromContext,
-    clearPanel: clearPanelSnapshot,
-    setPanelId: setDrawerSessionPopupPanelId,
+    presentPanel: presentDrawerSessionPopup,
+    requestClose: requestDrawerSessionPopupClose,
     setCycleId: setDrawerSessionPopupCycleId,
     setSourceRect: setDrawerSessionPopupSourceRect,
     setOrigin: setDrawerSessionPopupOrigin,
@@ -7118,11 +7136,13 @@ function AppContent({ onReady }: { onReady?: () => void }) {
             safeAreaStyle={styles.drawerPopupSafeArea}
           >
             <PopupChatOverlay
-              visible={!!drawerSessionPopupPanelId}
+              visible={drawerSessionPopupVisible}
               panelId={drawerSessionPopupPanelId}
               cycleId={drawerSessionPopupCycleId}
               sourceRect={drawerSessionPopupSourceRect}
               onClose={closeDrawerSessionPopup}
+              onRequestClose={requestDrawerSessionPopupClose}
+              playThemeSfx={playThemeSfx}
             />
           </DrawerSessionPopupHost>
         ) : null}
@@ -7138,6 +7158,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
+      <ThemeSplash ready={settingsLoaded} onReady={onReady} playThemeSfx={playThemeSfx} />
       </GestureHandlerRootView>
       </AppModalHost>
   );

@@ -8,11 +8,27 @@ export type VisualThemeTone = {
   border: string;
 };
 
+export type VisualThemeTransitionEvent = "splash" | "popupOpen" | "popupClose";
+
+export type VisualThemeMotion = {
+  durationMs: number;
+  flashCount: number;
+  flashOpacity: number;
+  flashDurationMs: number;
+};
+
+export type VisualThemeSound = {
+  asset: number;
+  volume: number;
+};
+
 export type VisualTheme = {
   id: VisualThemeId;
   label: string;
   description: string;
   colorScheme: "light" | "dark";
+  motion: Record<VisualThemeTransitionEvent, VisualThemeMotion>;
+  sounds: Record<VisualThemeTransitionEvent, VisualThemeSound>;
   colors: {
     canvas: string;
     surface: string;
@@ -179,6 +195,25 @@ const standardTheme: VisualTheme = {
   label: "標準",
   description: "現在の表示に近い配色と文字サイズ",
   colorScheme: "light",
+  motion: {
+    splash: { durationMs: 620, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+    popupOpen: { durationMs: 260, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+    popupClose: { durationMs: 220, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+  },
+  sounds: {
+    splash: {
+      asset: require("../../../../assets/themes/standard/sfx/splash.wav"),
+      volume: 0.3,
+    },
+    popupOpen: {
+      asset: require("../../../../assets/themes/standard/sfx/popup-open.wav"),
+      volume: 0.28,
+    },
+    popupClose: {
+      asset: require("../../../../assets/themes/standard/sfx/popup-close.wav"),
+      volume: 0.26,
+    },
+  },
   colors: {
     canvas: "#ffffff",
     surface: "#ffffff",
@@ -341,6 +376,25 @@ const cyberpunkTheme: VisualTheme = {
   label: "cyberpunk",
   description: "暗色とネオンカラーの未来的な表示",
   colorScheme: "dark",
+  motion: {
+    splash: { durationMs: 720, flashCount: 2, flashOpacity: 0.7, flashDurationMs: 62 },
+    popupOpen: { durationMs: 260, flashCount: 2, flashOpacity: 0.72, flashDurationMs: 48 },
+    popupClose: { durationMs: 220, flashCount: 1, flashOpacity: 0.76, flashDurationMs: 54 },
+  },
+  sounds: {
+    splash: {
+      asset: require("../../../../assets/themes/cyberpunk/sfx/splash.wav"),
+      volume: 0.28,
+    },
+    popupOpen: {
+      asset: require("../../../../assets/themes/cyberpunk/sfx/popup-open.wav"),
+      volume: 0.26,
+    },
+    popupClose: {
+      asset: require("../../../../assets/themes/cyberpunk/sfx/popup-close.wav"),
+      volume: 0.24,
+    },
+  },
   colors: {
     canvas: "#05080d",
     surface: "#0a1018",

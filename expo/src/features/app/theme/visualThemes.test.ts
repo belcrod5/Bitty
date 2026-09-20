@@ -52,6 +52,28 @@ test("declares the native color scheme for each visual theme", () => {
   expect(VISUAL_THEMES.cyberpunk.colorScheme).toBe("dark");
 });
 
+test("defines the three transition events in each theme without changing the standard popup timing", () => {
+  expect(VISUAL_THEMES.standard.motion).toEqual({
+    splash: { durationMs: 620, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+    popupOpen: { durationMs: 260, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+    popupClose: { durationMs: 220, flashCount: 0, flashOpacity: 1, flashDurationMs: 0 },
+  });
+  expect(Object.keys(VISUAL_THEMES.standard.sounds)).toEqual([
+    "splash",
+    "popupOpen",
+    "popupClose",
+  ]);
+  expect(Object.keys(VISUAL_THEMES.cyberpunk.sounds)).toEqual([
+    "splash",
+    "popupOpen",
+    "popupClose",
+  ]);
+  expect(VISUAL_THEMES.cyberpunk.motion.splash.flashCount).toBeGreaterThan(0);
+  expect(VISUAL_THEMES.cyberpunk.motion.popupOpen.flashCount).toBeGreaterThan(0);
+  expect(VISUAL_THEMES.cyberpunk.motion.popupClose.flashCount).toBeGreaterThan(0);
+  expect(VISUAL_THEMES.cyberpunk.motion.splash.flashOpacity).toBeGreaterThanOrEqual(0.7);
+});
+
 test("creates every theme's styles from the theme registry", () => {
   const styles = createStylesByTheme((theme) => `${theme.id}:${theme.borders.thin}`);
 
