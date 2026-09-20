@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { Audio } from "../audio";
-import type {
-  VisualThemeSound,
-  VisualThemeTransitionEvent,
-} from "../theme/visualThemes";
+import type { VisualThemeSound, VisualThemeSoundEvent } from "../theme/visualThemes";
 
-type ThemeSounds = Record<VisualThemeTransitionEvent, VisualThemeSound>;
+type ThemeSounds = Record<VisualThemeSoundEvent, VisualThemeSound>;
 
 export function useThemeSfxController(sounds: ThemeSounds, enabled: boolean) {
   const activeSoundsRef = useRef(new Set<Audio.Sound>());
@@ -16,7 +13,7 @@ export function useThemeSfxController(sounds: ThemeSounds, enabled: boolean) {
   currentSoundsRef.current = sounds;
   enabledRef.current = enabled;
 
-  const playThemeSfx = useCallback(async (event: VisualThemeTransitionEvent) => {
+  const playThemeSfx = useCallback(async (event: VisualThemeSoundEvent) => {
     if (!enabled) return;
 
     const generation = generationRef.current;

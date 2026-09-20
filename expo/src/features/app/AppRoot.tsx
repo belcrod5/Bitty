@@ -7158,7 +7158,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       </KeyboardProvider>
       </AppProviders>
       </RunnerWebSocketProvider>
-      <ThemeSplash ready={settingsLoaded} onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready={settingsLoaded} onReady={onReady} />
       </GestureHandlerRootView>
       </AppModalHost>
   );

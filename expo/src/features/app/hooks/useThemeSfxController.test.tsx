@@ -2,7 +2,7 @@ import React, { useEffect } from "react";
 import { act, render, renderHook, waitFor } from "@testing-library/react-native";
 
 import { Audio } from "../audio";
-import type { VisualThemeSound, VisualThemeTransitionEvent } from "../theme/visualThemes";
+import type { VisualThemeSound, VisualThemeSoundEvent } from "../theme/visualThemes";
 import { useThemeSfxController } from "./useThemeSfxController";
 
 jest.mock("../audio", () => ({
@@ -22,11 +22,10 @@ function sound() {
   };
 }
 
-function sounds(offset = 0): Record<VisualThemeTransitionEvent, VisualThemeSound> {
+function sounds(offset = 0): Record<VisualThemeSoundEvent, VisualThemeSound> {
   return {
-    splash: { asset: 1 + offset, volume: 0.3 },
-    popupOpen: { asset: 2 + offset, volume: 0.28 },
-    popupClose: { asset: 3 + offset, volume: 0.26 },
+    popupOpen: { asset: 1 + offset, volume: 0.28 },
+    popupClose: { asset: 2 + offset, volume: 0.26 },
   };
 }
 
@@ -72,7 +71,7 @@ test("does not load theme sounds before persisted settings are ready", async () 
   const { result } = await renderHook(() => useThemeSfxController(sounds(), false));
 
   await act(async () => {
-    await result.current.playThemeSfx("splash");
+    await result.current.playThemeSfx("popupOpen");
   });
 
   expect(createAsync).not.toHaveBeenCalled();
@@ -85,14 +84,14 @@ test("unloads an active transition sound when the theme changes", async () => {
   const cyberpunk = sounds(10);
   const { result, rerender } = await renderHook<
     ReturnType<typeof useThemeSfxController>,
-    { themeSounds: Record<VisualThemeTransitionEvent, VisualThemeSound> }
+    { themeSounds: Record<VisualThemeSoundEvent, VisualThemeSound> }
   >(
     ({ themeSounds }) => useThemeSfxController(themeSounds, true),
     { initialProps: { themeSounds: standard } }
   );
 
   await act(async () => {
-    await result.current.playThemeSfx("splash");
+    await result.current.playThemeSfx("popupOpen");
   });
   await rerender({ themeSounds: cyberpunk });
 
@@ -108,7 +107,7 @@ test("unloads a sound that finishes loading after unmount", async () => {
   let playback!: Promise<void>;
 
   await act(async () => {
-    playback = result.current.playThemeSfx("splash");
+    playback = result.current.playThemeSfx("popupOpen");
     await Promise.resolve();
   });
   await act(async () => unmount());
@@ -127,7 +126,7 @@ test("unloads a pending sound from the previous theme", async () => {
   const cyberpunk = sounds(10);
   const { result, rerender } = await renderHook<
     ReturnType<typeof useThemeSfxController>,
-    { themeSounds: Record<VisualThemeTransitionEvent, VisualThemeSound> }
+    { themeSounds: Record<VisualThemeSoundEvent, VisualThemeSound> }
   >(
     ({ themeSounds }) => useThemeSfxController(themeSounds, true),
     { initialProps: { themeSounds: standard } }
@@ -182,7 +181,7 @@ test("starts only the replayed sound request under StrictMode", async () => {
     const { playThemeSfx } = useThemeSfxController(currentSounds, true);
     useEffect(() => {
       const timer = setTimeout(() => {
-        void playThemeSfx("splash");
+        void playThemeSfx("popupOpen");
       }, 0);
       return () => clearTimeout(timer);
     }, [playThemeSfx]);

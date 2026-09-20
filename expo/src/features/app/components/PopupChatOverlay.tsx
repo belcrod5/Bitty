@@ -18,7 +18,7 @@ import { useVisualTheme } from "../theme/VisualThemeContext";
 import {
   createStylesByTheme,
   type VisualTheme,
-  type VisualThemeTransitionEvent,
+  type VisualThemeSoundEvent,
 } from "../theme/visualThemes";
 import {
   startCyberpunkPopupTransition,
@@ -32,7 +32,7 @@ type PopupChatOverlayProps = {
   sourceRect?: PopupChatSourceRect | null;
   onClose: () => void;
   onRequestClose: () => void;
-  playThemeSfx: (event: VisualThemeTransitionEvent) => Promise<void>;
+  playThemeSfx: (event: VisualThemeSoundEvent) => Promise<void>;
 };
 
 const POPUP_MARGIN_HORIZONTAL = 12;

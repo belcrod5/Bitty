@@ -30,38 +30,32 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-test("waits for the persisted theme before playing the splash sound", async () => {
+test("waits for the persisted theme before playing the splash animation", async () => {
   jest.useFakeTimers();
   mockWithTiming.mockImplementation((toValue) => toValue as never);
-  const playThemeSfx = jest.fn(async () => {});
   const onReady = jest.fn();
   const screen = await render(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
-      <ThemeSplash ready={false} onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready={false} onReady={onReady} />
     </VisualThemeProvider>
   );
 
   expect(screen.getByTestId("theme-splash", { includeHiddenElements: true })).toBeTruthy();
-  expect(playThemeSfx).not.toHaveBeenCalled();
   expect(onReady).not.toHaveBeenCalled();
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
-      <ThemeSplash ready onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready onReady={onReady} />
     </VisualThemeProvider>
   );
-  await act(async () => jest.advanceTimersByTime(0));
-  expect(playThemeSfx).toHaveBeenCalledWith("splash");
-  expect(playThemeSfx).toHaveBeenCalledTimes(1);
   expect(onReady).toHaveBeenCalledTimes(1);
   expect(withRepeat).toHaveBeenCalledTimes(1);
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
-      <ThemeSplash ready onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready onReady={onReady} />
     </VisualThemeProvider>
   );
-  expect(playThemeSfx).toHaveBeenCalledTimes(1);
   expect(onReady).toHaveBeenCalledTimes(1);
 });
 
@@ -69,7 +63,7 @@ test("suppresses cyberpunk flashing when Reduce Motion is enabled", async () => 
   mockUseReducedMotion.mockReturnValue(true);
   const screen = await render(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
-      <ThemeSplash ready playThemeSfx={async () => {}} />
+      <ThemeSplash ready />
     </VisualThemeProvider>
   );
 
@@ -77,13 +71,12 @@ test("suppresses cyberpunk flashing when Reduce Motion is enabled", async () => 
   await screen.unmount();
 });
 
-test("fails open without playing an unresolved theme sound", async () => {
+test("fails open when persisted settings do not resolve", async () => {
   jest.useFakeTimers();
-  const playThemeSfx = jest.fn(async () => {});
   const onReady = jest.fn();
   const screen = await render(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
-      <ThemeSplash ready={false} onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready={false} onReady={onReady} />
     </VisualThemeProvider>
   );
 
@@ -91,26 +84,22 @@ test("fails open without playing an unresolved theme sound", async () => {
 
   expect(screen.queryByTestId("theme-splash", { includeHiddenElements: true })).toBeNull();
   expect(onReady).toHaveBeenCalledTimes(1);
-  expect(playThemeSfx).not.toHaveBeenCalled();
 
   await screen.rerender(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
-      <ThemeSplash ready onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready onReady={onReady} />
     </VisualThemeProvider>
   );
-  await act(async () => jest.advanceTimersByTime(0));
   expect(onReady).toHaveBeenCalledTimes(1);
-  expect(playThemeSfx).not.toHaveBeenCalled();
 });
 
 test("fails open when the animation completion callback does not fire", async () => {
   jest.useFakeTimers();
   mockWithTiming.mockImplementation((toValue) => toValue as never);
-  const playThemeSfx = jest.fn(async () => {});
   const onReady = jest.fn();
   const screen = await render(
     <VisualThemeProvider themeId="cyberpunk" onSelectTheme={() => undefined}>
-      <ThemeSplash ready onReady={onReady} playThemeSfx={playThemeSfx} />
+      <ThemeSplash ready onReady={onReady} />
     </VisualThemeProvider>
   );
 
@@ -119,7 +108,6 @@ test("fails open when the animation completion callback does not fire", async ()
 
   expect(screen.queryByTestId("theme-splash", { includeHiddenElements: true })).toBeNull();
   expect(onReady).toHaveBeenCalledTimes(1);
-  expect(playThemeSfx).toHaveBeenCalledTimes(1);
 });
 
 test("cleans up the fail-open timer on unmount", async () => {
@@ -127,7 +115,7 @@ test("cleans up the fail-open timer on unmount", async () => {
   const onReady = jest.fn();
   const screen = await render(
     <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
-      <ThemeSplash ready={false} onReady={onReady} playThemeSfx={async () => {}} />
+      <ThemeSplash ready={false} onReady={onReady} />
     </VisualThemeProvider>
   );
 
@@ -137,48 +125,28 @@ test("cleans up the fail-open timer on unmount", async () => {
   expect(onReady).not.toHaveBeenCalled();
 });
 
-test("replays StrictMode effects without duplicating the splash event", async () => {
+test("replays StrictMode effects without duplicating the ready event", async () => {
   jest.useFakeTimers();
   const completionCallbacks: Array<(finished?: boolean) => void> = [];
   mockWithTiming.mockImplementation((toValue, _config, callback) => {
     if (callback) completionCallbacks.push(callback);
     return toValue as never;
   });
-  const playThemeSfx = jest.fn(async () => {});
   const onReady = jest.fn();
   const screen = await render(
     <React.StrictMode>
       <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
-        <ThemeSplash ready onReady={onReady} playThemeSfx={playThemeSfx} />
+        <ThemeSplash ready onReady={onReady} />
       </VisualThemeProvider>
     </React.StrictMode>
   );
 
   expect(completionCallbacks).toHaveLength(2);
   expect(onReady).toHaveBeenCalledTimes(1);
-  await act(async () => jest.advanceTimersByTime(0));
-  expect(playThemeSfx).toHaveBeenCalledTimes(1);
 
   await act(async () => completionCallbacks[0]?.(true));
   expect(screen.getByTestId("theme-splash", { includeHiddenElements: true })).toBeTruthy();
   await act(async () => completionCallbacks[1]?.(true));
   expect(screen.queryByTestId("theme-splash", { includeHiddenElements: true })).toBeNull();
   expect(onReady).toHaveBeenCalledTimes(1);
-  expect(playThemeSfx).toHaveBeenCalledTimes(1);
-});
-
-test("does not play a deferred splash sound after unmount", async () => {
-  jest.useFakeTimers();
-  mockWithTiming.mockImplementation((toValue) => toValue as never);
-  const playThemeSfx = jest.fn(async () => {});
-  const screen = await render(
-    <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
-      <ThemeSplash ready playThemeSfx={playThemeSfx} />
-    </VisualThemeProvider>
-  );
-
-  await screen.unmount();
-  await act(async () => jest.runOnlyPendingTimers());
-
-  expect(playThemeSfx).not.toHaveBeenCalled();
 });

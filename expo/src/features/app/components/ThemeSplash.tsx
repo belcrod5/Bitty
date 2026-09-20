@@ -13,22 +13,17 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { useVisualTheme } from "../theme/VisualThemeContext";
-import {
-  createStylesByTheme,
-  type VisualTheme,
-  type VisualThemeTransitionEvent,
-} from "../theme/visualThemes";
+import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import { SPLASH_FAIL_OPEN_MS } from "../theme/themeSplashTiming";
 
 type ThemeSplashProps = {
   ready: boolean;
   onReady?: () => void;
-  playThemeSfx: (event: VisualThemeTransitionEvent) => Promise<void>;
 };
 
 const ANIMATION_FAIL_OPEN_BUFFER_MS = 250;
 
-export function ThemeSplash({ ready, onReady, playThemeSfx }: ThemeSplashProps) {
+export function ThemeSplash({ ready, onReady }: ThemeSplashProps) {
   const { theme, themeId } = useVisualTheme();
   const styles = stylesByTheme[themeId];
   const reduceMotion = useReducedMotion();
@@ -36,7 +31,6 @@ export function ThemeSplash({ ready, onReady, playThemeSfx }: ThemeSplashProps) 
   const markOpacity = useSharedValue(1);
   const dismissedRef = useRef(false);
   const readySignaledRef = useRef(false);
-  const soundPlayedRef = useRef(false);
   const animationGenerationRef = useRef(0);
   const failOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onReadyRef = useRef(onReady);
@@ -76,16 +70,6 @@ export function ThemeSplash({ ready, onReady, playThemeSfx }: ThemeSplashProps) 
   useEffect(() => {
     if (ready) signalReady();
   }, [ready, signalReady]);
-
-  useEffect(() => {
-    if (!ready || !visible || dismissedRef.current || soundPlayedRef.current) return;
-    const timer = setTimeout(() => {
-      if (!visible || dismissedRef.current || soundPlayedRef.current) return;
-      soundPlayedRef.current = true;
-      void playThemeSfx("splash");
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [playThemeSfx, ready, visible]);
 
   useEffect(() => {
     if (!ready || !visible || dismissedRef.current) return;

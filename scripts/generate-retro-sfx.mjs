@@ -173,13 +173,14 @@ function buildSfxPack() {
 }
 
 function buildThemeSfxPacks() {
+  const cyberpunkPopupSound = (firstFreq, secondFreq) => concat([
+    tone({ freq: firstFreq, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
+    silence(11),
+    tone({ freq: secondFreq, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
+  ]);
+
   return {
     standard: {
-      "splash.wav": concat([
-        tone({ freq: 440, toFreq: 560, durationMs: 110, volume: 0.16, wave: "sine", releaseMs: 32 }),
-        silence(22),
-        tone({ freq: 660, toFreq: 740, durationMs: 150, volume: 0.14, wave: "sine", releaseMs: 52 }),
-      ]),
       "popup-open.wav": concat([
         tone({ freq: 520, toFreq: 610, durationMs: 62, volume: 0.14, wave: "sine", releaseMs: 20 }),
         silence(12),
@@ -195,23 +196,8 @@ function buildThemeSfxPacks() {
       }),
     },
     cyberpunk: {
-      "splash.wav": concat([
-        tone({ freq: 1460, toFreq: 2120, durationMs: 86, volume: 0.15, wave: "triangle", releaseMs: 16 }),
-        silence(28),
-        tone({ freq: 2280, toFreq: 1840, durationMs: 64, volume: 0.12, wave: "sine", releaseMs: 18 }),
-        silence(24),
-        tone({ freq: 2520, durationMs: 72, volume: 0.1, wave: "sine", releaseMs: 36 }),
-      ]),
-      "popup-open.wav": concat([
-        tone({ freq: 3760, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
-        silence(11),
-        tone({ freq: 3440, durationMs: 15, volume: 0.12, pulseWidth: 0.14, attackMs: 0.5, releaseMs: 3 }),
-      ]),
-      "popup-close.wav": concat([
-        tone({ freq: 2240, durationMs: 18, volume: 0.1, wave: "sine", attackMs: 1, releaseMs: 4 }),
-        silence(12),
-        tone({ freq: 2480, durationMs: 18, volume: 0.1, wave: "sine", attackMs: 1, releaseMs: 4 }),
-      ]),
+      "popup-open.wav": cyberpunkPopupSound(3760, 3440),
+      "popup-close.wav": cyberpunkPopupSound(4060, 3720),
     },
   };
 }

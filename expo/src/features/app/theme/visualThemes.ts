@@ -8,7 +8,7 @@ export type VisualThemeTone = {
   border: string;
 };
 
-export type VisualThemeTransitionEvent = "splash" | "popupOpen" | "popupClose";
+export type VisualThemeSoundEvent = "popupOpen" | "popupClose";
 
 export type VisualThemePopupTransition = "soft" | "flash-blink";
 
@@ -39,7 +39,7 @@ export type VisualTheme = {
     popupOpen: VisualThemePopupMotion;
     popupClose: VisualThemePopupMotion;
   };
-  sounds: Record<VisualThemeTransitionEvent, VisualThemeSound>;
+  sounds: Record<VisualThemeSoundEvent, VisualThemeSound>;
   colors: {
     canvas: string;
     surface: string;
@@ -213,10 +213,6 @@ const standardTheme: VisualTheme = {
     popupClose: { durationMs: 220 },
   },
   sounds: {
-    splash: {
-      asset: require("../../../../assets/themes/standard/sfx/splash.wav"),
-      volume: 0.3,
-    },
     popupOpen: {
       asset: require("../../../../assets/themes/standard/sfx/popup-open.wav"),
       volume: 0.28,
@@ -395,10 +391,6 @@ const cyberpunkTheme: VisualTheme = {
     popupClose: { durationMs: 220 },
   },
   sounds: {
-    splash: {
-      asset: require("../../../../assets/themes/cyberpunk/sfx/splash.wav"),
-      volume: 0.28,
-    },
     popupOpen: {
       asset: require("../../../../assets/themes/cyberpunk/sfx/popup-open.wav"),
       volume: 0.26,
