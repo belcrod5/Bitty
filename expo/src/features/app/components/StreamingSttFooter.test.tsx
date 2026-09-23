@@ -2,10 +2,11 @@ import React from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { ScrollView, StyleSheet } from "react-native";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "./StreamingSttFooter";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
 const mockSharedValues: { value: unknown }[] = [];
 const mockRRects: { x: number; y: number; width: number; height: number }[] = [];
-const mockGradientProps: { mode: string; start: { value: unknown }; end: { value: unknown } }[] = [];
+const mockGradientProps: { colors: string[]; mode: string; start: { value: unknown }; end: { value: unknown } }[] = [];
 let mockPathRenders = 0;
 let mockFrameCallback: ((frame: { timeSincePreviousFrame: number | null }) => void) | null = null;
 
@@ -101,6 +102,7 @@ describe("StreamingSttFooter", () => {
     const renderCount = mockPathRenders;
     await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
     const idleAngle = Number(mockSharedValues[6].value);
+    expect(idleAngle).toBe(1);
     await act(async () => {
       ref.current?.pushSample(0.5);
       mockFrameCallback?.({ timeSincePreviousFrame: 50 });
@@ -110,10 +112,29 @@ describe("StreamingSttFooter", () => {
     expect(mockGradientProps.every(({ mode, start, end }) => mode === "repeat" && start === mockSharedValues[6] && end === mockSharedValues[7])).toBe(true);
     expect(mockSharedValues[2].value).toBeGreaterThan(5);
     expect(Number(mockSharedValues[6].value) - idleAngle).toBeGreaterThan(idleAngle);
+    expect(Number(mockSharedValues[6].value)).toBe(10);
     expect(Number(mockSharedValues[7].value) - Number(mockSharedValues[6].value)).toBe(360);
     const glowReach = 2 + Number(mockSharedValues[2].value) / 2 + Number(mockSharedValues[3].value) * 3;
     expect(glowReach).toBeLessThan(48);
     expect(mockSharedValues[4].value).toBe(1);
     await screen.unmount();
+  });
+
+  it("uses darker rainbow colors against the standard theme's white canvas", async () => {
+    const standard = await render(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()} />);
+    expect(mockSharedValues[4].value).toBe(0.5);
+    expect(mockGradientProps[0].colors).toContain("#927000");
+    expect(mockGradientProps[0].colors).toContain("#006bbb");
+    await standard.unmount();
+
+    mockGradientProps.length = 0;
+    const cyberpunk = await render(
+      <VisualThemeProvider themeId="cyberpunk" onSelectTheme={jest.fn()}>
+        <StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()} />
+      </VisualThemeProvider>
+    );
+    expect(mockGradientProps[0].colors).toContain("#f9ee56");
+    expect(mockGradientProps[0].colors).toContain("#4cc9ff");
+    await cyberpunk.unmount();
   });
 });

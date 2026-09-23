@@ -82,6 +82,17 @@ jest.mock("@expo/vector-icons", () => {
   };
 });
 
+jest.mock("react-native-reanimated", () => {
+  const ReactModule = jest.requireActual<typeof React>("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
+  return {
+    __esModule: true,
+    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props) },
+    FadeIn: { duration: (duration: number) => ({ type: "fade-in", duration }) },
+    FadeOut: { duration: (duration: number) => ({ type: "fade-out", duration }) },
+  };
+});
+
 jest.mock("react-native-keyboard-controller", () => {
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return { KeyboardAvoidingView: View };
@@ -471,6 +482,10 @@ describe("ChatScreen voice input", () => {
       transcript: "既存の入力",
       phase: "recording",
     });
+    expect(screen.getByTestId("streaming-stt-transition").props).toMatchObject({
+      entering: { type: "fade-in", duration: 220 },
+      exiting: { type: "fade-out", duration: 220 },
+    });
     await act(async () => {
       screen.getByTestId("streaming-stt-footer").props.onStop();
     });
@@ -478,9 +493,12 @@ describe("ChatScreen voice input", () => {
 
     mockStreamingSttPhase = "idle";
     await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
-    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("visible");
     expect(screen.getByTestId("chat-composer-input")).toBeTruthy();
     expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
+    });
     await screen.unmount();
   });
 

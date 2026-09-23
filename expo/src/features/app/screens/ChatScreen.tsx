@@ -17,6 +17,7 @@ import {
   View,
 } from "react-native";
 import { LegendList, type LegendListRef } from "@legendapp/list";
+import Reanimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import * as Clipboard from "../clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
@@ -124,6 +125,9 @@ const CHAT_ESTIMATED_ITEM_SIZE = 120;
 const CHAT_INITIAL_SCROLL_SETTLE_MS = 350;
 const CHAT_BOTTOM_SETTLE_RETRY_DELAYS_MS = [96, 220] as const;
 const CHAT_BOTTOM_RESUME_THRESHOLD_PX = 4;
+const VOICE_PANEL_FADE_MS = 220;
+const voicePanelFadeIn = FadeIn.duration(VOICE_PANEL_FADE_MS);
+const voicePanelFadeOut = FadeOut.duration(VOICE_PANEL_FADE_MS);
 export const CHAT_FIND_REQUEST_EVENT = "bittyChatFindRequested";
 export const CHAT_FIND_CANCEL_EVENT = "bittyChatFindCancelRequested";
 const DIRECTORY_MARKER_OPTIONS: { value: DirectoryMarkerColor; label: string; color: string }[] = [
@@ -1200,6 +1204,16 @@ export function ChatScreen({
     ttsPlaybackActive: isTtsPlaybackActive,
     voiceInputDuringTtsAllowed,
   });
+  const [voiceGlowVisible, setVoiceGlowVisible] = useState(streamingStt.active);
+  useEffect(() => {
+    if (streamingStt.active) {
+      if (!voiceGlowVisible) setVoiceGlowVisible(true);
+      return;
+    }
+    if (!voiceGlowVisible) return;
+    const timeout = setTimeout(() => setVoiceGlowVisible(false), VOICE_PANEL_FADE_MS);
+    return () => clearTimeout(timeout);
+  }, [streamingStt.active, voiceGlowVisible]);
   useEffect(() => registerVoiceInputSession({
     isArmed: streamingStt.isArmed,
     isCapturing: streamingStt.isCapturing,
@@ -2093,7 +2107,7 @@ export function ChatScreen({
       ) : null}
       <KeyboardAvoidingView
         testID="chat-keyboard-avoiding"
-        style={[styles.chatKeyboardAvoiding, streamingStt.active && { overflow: "visible" }]}
+        style={[styles.chatKeyboardAvoiding, (streamingStt.active || voiceGlowVisible) && { overflow: "visible" }]}
         behavior={Platform.OS === "ios" ? "position" : "height"}
         contentContainerStyle={Platform.OS === "ios" ? styles.chatKeyboardAvoidingContent : undefined}
         automaticOffset={Platform.OS === "ios"}
@@ -2397,12 +2411,14 @@ export function ChatScreen({
             />
           </View>
           {streamingStt.active ? (
-            <StreamingSttFooter
-              ref={streamingSttFooterRef}
-              transcript={transcriptForView}
-              phase={streamingStt.phase}
-              onStop={streamingStt.stop}
-            />
+            <Reanimated.View testID="streaming-stt-transition" entering={voicePanelFadeIn} exiting={voicePanelFadeOut}>
+              <StreamingSttFooter
+                ref={streamingSttFooterRef}
+                transcript={transcriptForView}
+                phase={streamingStt.phase}
+                onStop={streamingStt.stop}
+              />
+            </Reanimated.View>
           ) : (
           <View style={styles.chatInputWrapper}>
             <ChatComposerInput
