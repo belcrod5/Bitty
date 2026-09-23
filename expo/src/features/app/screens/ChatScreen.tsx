@@ -2395,11 +2395,18 @@ export function ChatScreen({
               onCopySessionHistoryReference={copySessionHistoryReference}
             />
           </View>
+          {streamingStt.active ? (
+            <StreamingSttFooter
+              ref={streamingSttFooterRef}
+              transcript={transcriptForView}
+              phase={streamingStt.phase}
+              onStop={streamingStt.stop}
+            />
+          ) : (
           <View style={styles.chatInputWrapper}>
             <ChatComposerInput
                 inputRef={chatComposerInputRef}
                 value={transcriptForView}
-                editable={!streamingStt.active}
                 showFullscreenButton={showComposerFullscreenToggleForView}
                 onChangeText={setTranscriptForView}
                 onFocus={() => {
@@ -2419,25 +2426,18 @@ export function ChatScreen({
                 const faceToggleVisible = Platform.OS === "ios";
                 const faceToggleActive = faceTrackingEnabled;
                 const faceToggleBlocked = faceToggleActive && !faceTrackingLooking;
-                const shouldStopRecording = streamingStt.active;
-                const shouldStopLlmTurn = !shouldStopRecording && canStopLlmTurnForView;
-                const showSendAction = !shouldStopRecording && !shouldStopLlmTurn && hasComposerTextForView;
-                const disabled = shouldStopRecording
-                  ? false
-                  : shouldStopLlmTurn
+                const shouldStopLlmTurn = canStopLlmTurnForView;
+                const showSendAction = !shouldStopLlmTurn && hasComposerTextForView;
+                const disabled = shouldStopLlmTurn
                     ? false
                     : showSendAction
                       ? !canSendForView
-                      : (streamingStt.active || replyLoadingForView);
-                const iconName = (shouldStopRecording || shouldStopLlmTurn)
+                      : replyLoadingForView;
+                const iconName = shouldStopLlmTurn
                   ? "stop"
                   : (showSendAction ? "caret-forward" : "mic");
                 const faceIconName = !faceToggleActive ? "eye-outline" : (faceToggleBlocked ? "eye-off" : "eye");
                 const onPress = () => {
-                  if (shouldStopRecording) {
-                    streamingStt.stop();
-                    return;
-                  }
                   if (shouldStopLlmTurn) {
                     logSessionDiag("chat_stop_llm_pressed", {
                       panelId: String(panelId || "").trim() || undefined,
@@ -2520,13 +2520,8 @@ export function ChatScreen({
               })()}
             </View>
           </View>
+          )}
         </View>
-        {streamingStt.active ? (
-          <StreamingSttFooter
-            ref={streamingSttFooterRef}
-            finalizing={streamingStt.phase === "finalizing"}
-          />
-        ) : null}
         <View style={styles.chatFooterSettingsRow}>
           <View pointerEvents="none" style={styles.chatThreadStatusCenter}>
             <Text

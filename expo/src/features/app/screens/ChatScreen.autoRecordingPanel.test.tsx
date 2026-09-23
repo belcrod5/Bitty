@@ -8,6 +8,10 @@ import { VISUAL_THEMES } from "../theme/visualThemes";
 import type { ConversationMessage } from "../types/appTypes";
 
 const mockStartStreamingStt = jest.fn();
+const mockStopStreamingStt = jest.fn();
+const mockPushStreamingSample = jest.fn();
+let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = "idle";
+let mockRunnerStatusRenderCount = 0;
 const mockStreamingSttOptions: { current: Record<string, any> | null } = { current: null };
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
@@ -84,15 +88,24 @@ jest.mock("react-native-keyboard-controller", () => {
 });
 
 jest.mock("react-native-webview", () => ({ WebView: () => null }));
-jest.mock("../components/StreamingSttFooter", () => ({ StreamingSttFooter: () => null }));
+jest.mock("../components/StreamingSttFooter", () => {
+  const ReactModule = jest.requireActual<typeof React>("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
+  return {
+    StreamingSttFooter: ReactModule.forwardRef(({ transcript, phase, onStop }: { transcript: string; phase: string; onStop: () => void }, ref) => {
+      ReactModule.useImperativeHandle(ref, () => ({ pushSample: mockPushStreamingSample, updateUsage: jest.fn() }));
+      return ReactModule.createElement(View, { testID: "streaming-stt-footer", transcript, phase, onStop } as any);
+    }),
+  };
+});
 jest.mock("../../stt/useStreamingStt", () => ({
   useStreamingStt: (options: Record<string, any>) => {
     mockStreamingSttOptions.current = options;
     return {
-      active: false,
-      phase: "idle",
+      active: mockStreamingSttPhase !== "idle",
+      phase: mockStreamingSttPhase,
       start: mockStartStreamingStt,
-      stop: jest.fn(),
+      stop: mockStopStreamingStt,
       abort: jest.fn(async () => {}),
       isArmed: () => false,
       isCapturing: () => false,
@@ -140,6 +153,7 @@ jest.mock("../components/ChatSessionSubagentList", () => ({
 }));
 jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({
   RunnerWsConnectionStatus: (props: Record<string, any>) => {
+    mockRunnerStatusRenderCount += 1;
     mockRunnerWsConnectionStatusProps.current = props;
     return null;
   },
@@ -421,6 +435,8 @@ jest.mock("../contexts/ConversationContext", () => ({
 
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
+    mockStreamingSttPhase = "idle";
+    mockRunnerStatusRenderCount = 0;
     jest.clearAllMocks();
     mockSendReplyTranscriptForPanel.mockResolvedValue(undefined);
     mockCodexScheduleProps.current = null;
@@ -437,6 +453,53 @@ describe("ChatScreen voice input", () => {
 
   afterEach(() => {
     if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
+  });
+
+  it("replaces the whole composer with the recording panel at the same position", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "既存の入力");
+
+    mockStreamingSttPhase = "recording";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+
+    expect(screen.queryByTestId("chat-composer-input")).toBeNull();
+    expect(screen.queryByLabelText("スラッシュコマンドを開く")).toBeNull();
+    expect(screen.queryByTestId("chat-composer-action")).toBeNull();
+    expect(screen.getByTestId("streaming-stt-footer").props).toMatchObject({
+      transcript: "既存の入力",
+      phase: "recording",
+    });
+    await act(async () => {
+      screen.getByTestId("streaming-stt-footer").props.onStop();
+    });
+    expect(mockStopStreamingStt).toHaveBeenCalledTimes(1);
+
+    mockStreamingSttPhase = "idle";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.getByTestId("chat-composer-input")).toBeTruthy();
+    expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+    await screen.unmount();
+  });
+
+  it("forwards RMS samples without rendering ChatScreen or its connection status", async () => {
+    mockStreamingSttPhase = "recording";
+    const onRender = jest.fn();
+    const screen = await render(
+      <React.Profiler id="chat-screen" onRender={onRender}>
+        <ChatScreen mode="mini_board_popup" panelId="panel-a" />
+      </React.Profiler>
+    );
+    const commits = onRender.mock.calls.length;
+    const statusRenders = mockRunnerStatusRenderCount;
+
+    await act(async () => {
+      mockStreamingSttOptions.current?.onSample(0.6);
+    });
+
+    expect(mockPushStreamingSample).toHaveBeenCalledWith(0.6);
+    expect(onRender).toHaveBeenCalledTimes(commits);
+    expect(mockRunnerStatusRenderCount).toBe(statusRenders);
+    await screen.unmount();
   });
 
   it("passes the current panel ID from a panel runtime view", async () => {
