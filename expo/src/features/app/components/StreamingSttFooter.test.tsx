@@ -5,7 +5,11 @@ import { StreamingSttFooter, type StreamingSttFooterHandle } from "./StreamingSt
 
 const mockSharedValues: { value: unknown }[] = [];
 const mockRRects: { x: number; y: number; width: number; height: number }[] = [];
+const mockGradientProps: { mode: string; start: { value: unknown }; end: { value: unknown } }[] = [];
 let mockPathRenders = 0;
+let mockFrameCallback: ((frame: { timeSincePreviousFrame: number | null }) => void) | null = null;
+
+jest.mock("../styles", () => ({ useAppStyles: () => ({ chatInputWrapper: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12 } }) }));
 
 jest.mock("@expo/vector-icons", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
@@ -24,7 +28,7 @@ jest.mock("@shopify/react-native-skia", () => {
       mockPathRenders += 1;
       return ReactModule.createElement(View, null, children);
     },
-    SweepGradient: () => null,
+    SweepGradient: (props: typeof mockGradientProps[number]) => { mockGradientProps.push(props); return null; },
     BlurMask: () => null,
     vec: (x: number, y: number) => ({ x, y }),
     Skia: {
@@ -36,6 +40,7 @@ jest.mock("@shopify/react-native-skia", () => {
 });
 
 jest.mock("react-native-reanimated", () => ({
+  useFrameCallback: (callback: typeof mockFrameCallback) => { mockFrameCallback = callback; },
   useSharedValue: (value: unknown) => {
     const ReactModule = jest.requireActual<typeof React>("react");
     const ref = ReactModule.useRef<{ value: unknown } | null>(null);
@@ -52,7 +57,9 @@ describe("StreamingSttFooter", () => {
   beforeEach(() => {
     mockSharedValues.length = 0;
     mockRRects.length = 0;
+    mockGradientProps.length = 0;
     mockPathRenders = 0;
+    mockFrameCallback = null;
   });
 
   it("draws outside its panel, grows to three transcript lines, and stops recording", async () => {
@@ -63,8 +70,10 @@ describe("StreamingSttFooter", () => {
     const glow = screen.getByTestId("streaming-stt-glow");
     const transcript = screen.getByTestId("streaming-stt-transcript");
     const transcriptScroll = screen.getByTestId("streaming-stt-transcript-scroll");
-    expect(StyleSheet.flatten(panel.props.style)).toMatchObject({ overflow: "visible", marginHorizontal: 28 });
-    expect(StyleSheet.flatten(glow.props.style)).toMatchObject({ left: -28, right: -28, top: -28, bottom: -28 });
+    expect(StyleSheet.flatten(panel.props.style)).toMatchObject({ overflow: "visible" });
+    expect(StyleSheet.flatten(panel.props.style).marginHorizontal).toBeUndefined();
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-panel").props.style)).toMatchObject({ minHeight: 62, paddingHorizontal: 10, paddingVertical: 8 });
+    expect(StyleSheet.flatten(glow.props.style)).toMatchObject({ left: -48, right: -48, top: -48, bottom: -48 });
     expect(transcript.props.numberOfLines).toBeUndefined();
     expect(transcript.props.children).toContain("四行目");
 
@@ -78,7 +87,7 @@ describe("StreamingSttFooter", () => {
     await act(async () => {
       fireEvent(panel, "layout", { nativeEvent: { layout: { width: 260, height: 80 } } });
     });
-    expect(mockRRects.at(-1)).toEqual({ x: 26, y: 26, width: 264, height: 84 });
+    expect(mockRRects.at(-1)).toEqual({ x: 46, y: 46, width: 264, height: 84 });
     await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
     expect(onStop).toHaveBeenCalledTimes(1);
     await screen.unmount();
@@ -89,14 +98,21 @@ describe("StreamingSttFooter", () => {
     const ref = React.createRef<StreamingSttFooterHandle>();
     const screen = await render(<StreamingSttFooter ref={ref} transcript="" phase="recording" onStop={jest.fn()} />);
     const renderCount = mockPathRenders;
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    const idleAngle = Number(mockSharedValues[6].value);
     await act(async () => {
       ref.current?.pushSample(0.5);
+      mockFrameCallback?.({ timeSincePreviousFrame: 50 });
     });
     expect(mockPathRenders).toBe(renderCount);
+    expect(mockGradientProps).toHaveLength(2);
+    expect(mockGradientProps.every(({ mode, start, end }) => mode === "repeat" && start === mockSharedValues[6] && end === mockSharedValues[7])).toBe(true);
     expect(mockSharedValues[2].value).toBeGreaterThan(5);
-    expect(mockSharedValues[5].value).not.toEqual([0, 55, 115, 175, 230, 285, 360].map((hue) => `hsl(${hue}, 100%, 65%)`));
+    expect(Number(mockSharedValues[6].value) - idleAngle).toBeGreaterThan(idleAngle);
+    expect(Number(mockSharedValues[7].value) - Number(mockSharedValues[6].value)).toBe(360);
     const glowReach = 2 + Number(mockSharedValues[2].value) / 2 + Number(mockSharedValues[3].value) * 3;
-    expect(glowReach).toBeLessThan(28);
+    expect(glowReach).toBeLessThan(48);
+    expect(mockSharedValues[4].value).toBe(1);
     await screen.unmount();
   });
 });

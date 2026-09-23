@@ -2,12 +2,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { BlurMask, Canvas, Group, Path, Skia, SweepGradient, vec } from "@shopify/react-native-skia";
 import React, { forwardRef, memo, useImperativeHandle, useRef, useState } from "react";
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
-import { useSharedValue, withTiming } from "react-native-reanimated";
+import { useFrameCallback, useSharedValue, withTiming } from "react-native-reanimated";
+import { useAppStyles } from "../styles";
 import type { StreamingSttUsage } from "../../stt/streamingSttClient";
 import type { StreamingSttPhase } from "../../stt/useStreamingStt";
 
-const GLOW_SPACE = 28;
-const RAINBOW = [0, 55, 115, 175, 230, 285, 360];
+const GLOW_SPACE = 48;
+const RAINBOW = ["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"];
 
 export type StreamingSttFooterHandle = {
   pushSample: (sample: number) => void;
@@ -26,6 +27,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   phase: StreamingSttPhase;
   onStop: () => void;
 }>(function StreamingSttFooter({ transcript, phase, onStop }, ref) {
+  const styles = useAppStyles();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
   const lastUsageUpdateRef = useRef(0);
   const pendingUsageRef = useRef<StreamingSttUsage | null>(null);
@@ -33,13 +35,21 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const transcriptScrollRef = useRef<ScrollView>(null);
   const [transcriptHeight, setTranscriptHeight] = useState(22);
   const lastGlowUpdateRef = useRef(0);
-  const hueRef = useRef(0);
   const border = useSharedValue(Skia.Path.Make());
   const center = useSharedValue(vec(0, 0));
-  const glowWidth = useSharedValue(5);
-  const glowBlur = useSharedValue(4);
-  const glowOpacity = useSharedValue(0.45);
-  const colors = useSharedValue(RAINBOW.map((hue) => `hsl(${hue}, 100%, 65%)`));
+  const glowWidth = useSharedValue(4);
+  const glowBlur = useSharedValue(3);
+  const glowOpacity = useSharedValue(0.25);
+  const audioLevel = useSharedValue(0);
+  const gradientStart = useSharedValue(0);
+  const gradientEnd = useSharedValue(360);
+
+  useFrameCallback((frame) => {
+    const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
+    const start = (gradientStart.value + elapsed * (0.008 + audioLevel.value * 0.06)) % 360;
+    gradientStart.value = start;
+    gradientEnd.value = start + 360;
+  });
 
   useImperativeHandle(ref, () => ({
     pushSample(sample) {
@@ -47,11 +57,10 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       if (now - lastGlowUpdateRef.current < 1000 / 30) return;
       lastGlowUpdateRef.current = now;
       const level = Math.min(1, Math.sqrt(Math.max(0, sample) * 5));
-      hueRef.current = (hueRef.current + 2 + level * 8) % 360;
-      colors.value = RAINBOW.map((hue) => `hsl(${(hue + hueRef.current) % 360}, 100%, ${Math.round(60 + level * 16)}%)`);
-      glowWidth.value = withTiming(5 + level * 10, { duration: 90 });
-      glowBlur.value = withTiming(4 + level * 2, { duration: 90 });
-      glowOpacity.value = withTiming(0.45 + level * 0.5, { duration: 90 });
+      audioLevel.value = withTiming(level, { duration: 90 });
+      glowWidth.value = withTiming(4 + level * 24, { duration: 90 });
+      glowBlur.value = withTiming(3 + level * 7, { duration: 90 });
+      glowOpacity.value = withTiming(0.25 + level * 0.75, { duration: 90 });
     },
     updateUsage(next) {
       const elapsed = Date.now() - lastUsageUpdateRef.current;
@@ -69,7 +78,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         pendingUsageRef.current = null;
       }, 1000 - elapsed);
     },
-  }), [colors, glowBlur, glowOpacity, glowWidth]);
+  }), [audioLevel, glowBlur, glowOpacity, glowWidth]);
 
   React.useEffect(() => () => {
     if (usageTimerRef.current) clearTimeout(usageTimerRef.current);
@@ -78,7 +87,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   return (
     <View
       testID="streaming-stt-footer"
-      style={{ position: "relative", marginHorizontal: GLOW_SPACE, marginVertical: 12, overflow: "visible" }}
+      style={{ position: "relative", overflow: "visible" }}
       onLayout={(event) => {
         const { width, height } = event.nativeEvent.layout;
         const path = Skia.Path.Make();
@@ -96,15 +105,15 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       >
         <Group opacity={glowOpacity}>
           <Path path={border} style="stroke" strokeWidth={glowWidth}>
-            <SweepGradient c={center} colors={colors} />
+            <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
             <BlurMask blur={glowBlur} style="normal" />
           </Path>
         </Group>
         <Path path={border} style="stroke" strokeWidth={2}>
-          <SweepGradient c={center} colors={colors} />
+          <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
         </Path>
       </Canvas>
-      <View style={{ minHeight: 58, borderRadius: 14, backgroundColor: "#070b12", paddingHorizontal: 12, paddingVertical: 7, flexDirection: "row", alignItems: "center", gap: 10 }}>
+      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12" }]}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <ScrollView
             ref={transcriptScrollRef}
