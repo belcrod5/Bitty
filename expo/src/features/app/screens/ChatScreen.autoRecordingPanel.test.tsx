@@ -458,9 +458,11 @@ describe("ChatScreen voice input", () => {
   it("replaces the whole composer with the recording panel at the same position", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
     await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "既存の入力");
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
 
     mockStreamingSttPhase = "recording";
     await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("visible");
 
     expect(screen.queryByTestId("chat-composer-input")).toBeNull();
     expect(screen.queryByLabelText("スラッシュコマンドを開く")).toBeNull();
@@ -476,6 +478,7 @@ describe("ChatScreen voice input", () => {
 
     mockStreamingSttPhase = "idle";
     await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
     expect(screen.getByTestId("chat-composer-input")).toBeTruthy();
     expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
     await screen.unmount();

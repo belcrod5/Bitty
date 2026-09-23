@@ -72,7 +72,7 @@ describe("StreamingSttFooter", () => {
     const transcriptScroll = screen.getByTestId("streaming-stt-transcript-scroll");
     expect(StyleSheet.flatten(panel.props.style)).toMatchObject({ overflow: "visible" });
     expect(StyleSheet.flatten(panel.props.style).marginHorizontal).toBeUndefined();
-    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-panel").props.style)).toMatchObject({ minHeight: 62, paddingHorizontal: 10, paddingVertical: 8 });
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-panel").props.style)).toMatchObject({ minHeight: 62, paddingHorizontal: 10, paddingVertical: 8, zIndex: 1 });
     expect(StyleSheet.flatten(glow.props.style)).toMatchObject({ left: -48, right: -48, top: -48, bottom: -48 });
     expect(transcript.props.numberOfLines).toBeUndefined();
     expect(transcript.props.children).toContain("四行目");
@@ -88,6 +88,7 @@ describe("StreamingSttFooter", () => {
       fireEvent(panel, "layout", { nativeEvent: { layout: { width: 260, height: 80 } } });
     });
     expect(mockRRects.at(-1)).toEqual({ x: 46, y: 46, width: 264, height: 84 });
+    expect(screen.getByTestId("streaming-stt-stop").props.hitSlop).toBe(8);
     await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
     expect(onStop).toHaveBeenCalledTimes(1);
     await screen.unmount();

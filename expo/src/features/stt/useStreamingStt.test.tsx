@@ -131,6 +131,8 @@ test("stop finalizes once and preserves the last transcript", async () => {
   expect(session.stop).toHaveBeenCalledTimes(1);
   await finishSpeech(session, "final after stop");
   expect(options.sendTranscript).toHaveBeenCalledWith("final after stop", expect.any(Function));
+  expect(result.current.phase).toBe("idle");
+  expect(result.current.isArmed()).toBe(false);
   expect(options.onError).not.toHaveBeenCalled();
 });
 

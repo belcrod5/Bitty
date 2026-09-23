@@ -113,7 +113,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
         </Path>
       </Canvas>
-      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12" }]}>
+      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12", zIndex: 1 }]}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <ScrollView
             ref={transcriptScrollRef}
@@ -141,6 +141,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           testID="streaming-stt-stop"
           accessibilityRole="button"
           accessibilityLabel="録音を停止"
+          hitSlop={8}
           disabled={phase === "finalizing"}
           onPress={onStop}
           style={{ width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#35465c", opacity: phase === "finalizing" ? 0.5 : 1 }}

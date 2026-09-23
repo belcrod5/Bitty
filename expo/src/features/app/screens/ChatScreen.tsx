@@ -2092,7 +2092,8 @@ export function ChatScreen({
         </View>
       ) : null}
       <KeyboardAvoidingView
-        style={styles.chatKeyboardAvoiding}
+        testID="chat-keyboard-avoiding"
+        style={[styles.chatKeyboardAvoiding, streamingStt.active && { overflow: "visible" }]}
         behavior={Platform.OS === "ios" ? "position" : "height"}
         contentContainerStyle={Platform.OS === "ios" ? styles.chatKeyboardAvoidingContent : undefined}
         automaticOffset={Platform.OS === "ios"}

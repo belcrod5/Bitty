@@ -191,16 +191,18 @@ export function useStreamingStt(options: Options) {
       if (message.hasSpeech && hasFinalSpeech) {
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
-          awaitingReplyCycleRef.current = true;
-          sawReplyLoadingRef.current = latestRef.current.replyLoading;
-          sawTtsPlaybackRef.current = latestRef.current.ttsPlaybackActive;
-          setPhase("connecting");
-          replyCycleTimeoutRef.current = setTimeout(() => {
-            if (!awaitingReplyCycleRef.current || sawReplyLoadingRef.current) return;
-            listeningRef.current = false;
-            clearReplyCycleWait();
-            setPhase("idle");
-          }, REPLY_CYCLE_START_TIMEOUT_MS);
+          if (listeningRef.current) {
+            awaitingReplyCycleRef.current = true;
+            sawReplyLoadingRef.current = latestRef.current.replyLoading;
+            sawTtsPlaybackRef.current = latestRef.current.ttsPlaybackActive;
+            setPhase("connecting");
+            replyCycleTimeoutRef.current = setTimeout(() => {
+              if (!awaitingReplyCycleRef.current || sawReplyLoadingRef.current) return;
+              listeningRef.current = false;
+              clearReplyCycleWait();
+              setPhase("idle");
+            }, REPLY_CYCLE_START_TIMEOUT_MS);
+          }
           try {
             await latestRef.current.sendTranscript(finalText, () => {
               transcriptStateRef.current = startStreamingTranscript("");
