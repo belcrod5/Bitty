@@ -11,9 +11,8 @@ type AudioModeSwitchOptions = {
 type UseStopTtsPlaybackControllerOptions = {
   ttsStopInFlightRef: MutableRefObject<Promise<void> | null>;
   ttsPlaybackTransitionInFlightRef: MutableRefObject<boolean>;
-  autoLastTtsStopRequestedAtRef: MutableRefObject<number>;
-  autoLastBargeInDetectedAtRef: MutableRefObject<number>;
-  autoLastTtsStoppedAtRef: MutableRefObject<number>;
+  lastTtsStopRequestedAtRef: MutableRefObject<number>;
+  lastTtsStoppedAtRef: MutableRefObject<number>;
   ttsPlaybackRunIdRef: MutableRefObject<number>;
   ttsSynthesisRequestIdRef: MutableRefObject<number>;
   ttsPlayingRef: MutableRefObject<boolean>;
@@ -48,9 +47,8 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
   const {
     ttsStopInFlightRef,
     ttsPlaybackTransitionInFlightRef,
-    autoLastTtsStopRequestedAtRef,
-    autoLastBargeInDetectedAtRef,
-    autoLastTtsStoppedAtRef,
+    lastTtsStopRequestedAtRef,
+    lastTtsStoppedAtRef,
     ttsPlaybackRunIdRef,
     ttsSynthesisRequestIdRef,
     ttsPlayingRef,
@@ -91,7 +89,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
       const reason = String(stopOptions?.reason || "unspecified");
       const stopRequestedAt = Date.now();
       ttsPlaybackTransitionInFlightRef.current = true;
-      autoLastTtsStopRequestedAtRef.current = stopRequestedAt;
+      lastTtsStopRequestedAtRef.current = stopRequestedAt;
       logAuto("tts_stop_requested", {
         reason,
         interruptStream,
@@ -102,8 +100,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         streamTtsControlAlive: streamTtsControlRef.current !== null,
         streamQueueSize: streamAudioQueueRef.current.length,
         replyLoading: replyLoadingRef.current,
-        sinceBargeInDetectedMs: elapsedSinceMs(autoLastBargeInDetectedAtRef.current),
-        sinceTtsStoppedMs: elapsedSinceMs(autoLastTtsStoppedAtRef.current),
+        sinceTtsStoppedMs: elapsedSinceMs(lastTtsStoppedAtRef.current),
       });
       setTtsPlaybackWanted(false, "stop_requested", {
         reason,
@@ -134,9 +131,8 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         logAuto("tts_stream_interrupt_cleanup", {
           hadSocket: Boolean(ws),
           hadControl: Boolean(streamTtsControl),
-          sinceBargeInDetectedMs: elapsedSinceMs(autoLastBargeInDetectedAtRef.current),
-          sinceTtsStopRequestedMs: elapsedSinceMs(autoLastTtsStopRequestedAtRef.current),
-          sinceTtsStoppedMs: elapsedSinceMs(autoLastTtsStoppedAtRef.current),
+          sinceTtsStopRequestedMs: elapsedSinceMs(lastTtsStopRequestedAtRef.current),
+          sinceTtsStoppedMs: elapsedSinceMs(lastTtsStoppedAtRef.current),
         });
       } else if (replyLoadingRef.current) {
         streamTtsSuppressedRef.current = true;
@@ -182,9 +178,8 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
       ttsPlaybackTransitionInFlightRef.current = false;
     }
   }, [
-    autoLastBargeInDetectedAtRef,
-    autoLastTtsStopRequestedAtRef,
-    autoLastTtsStoppedAtRef,
+    lastTtsStopRequestedAtRef,
+    lastTtsStoppedAtRef,
     clearStreamAudioQueue,
     clearTtsPlaybackWatchdogTimer,
     elapsedSinceMs,

@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { installRunnerWebSocketUpgradeHandler } from "../src/runner-websocket-upgrade.mjs";
+import { STREAM_STT_MAX_PAYLOAD_BYTES } from "../src/google-streaming-stt.mjs";
 
-function request(token = "") {
+function request(token = "", url = "/runner-ws") {
   return {
-    url: "/runner-ws",
+    url,
     headers: token ? { authorization: `Bearer ${token}` } : {},
     socket: { remoteAddress: "127.0.0.1" },
   };
@@ -20,8 +21,9 @@ function socketProbe() {
   };
 }
 
-function wsServerProbe() {
+function wsServerProbe(options = {}) {
   const server = new EventEmitter();
+  server.options = options;
   server.upgrades = 0;
   server.handleUpgrade = (req, socket, head, done) => {
     server.upgrades += 1;
@@ -33,16 +35,19 @@ function wsServerProbe() {
 function install(runnerToken) {
   const server = new EventEmitter();
   const runnerWsServer = wsServerProbe();
+  const streamTtsWsServer = wsServerProbe();
+  const streamSttWsServer = wsServerProbe({ maxPayload: STREAM_STT_MAX_PAYLOAD_BYTES });
   const debugEvents = [];
   installRunnerWebSocketUpgradeHandler({
     server,
     runnerToken,
     runnerWsPath: "/runner-ws",
     runnerWsServer,
-    streamTtsWsServer: wsServerProbe(),
+    streamTtsWsServer,
+    streamSttWsServer,
     appendDebug: (event, payload) => { debugEvents.push({ event, payload }); },
   });
-  return { server, runnerWsServer, debugEvents };
+  return { server, runnerWsServer, streamTtsWsServer, streamSttWsServer, debugEvents };
 }
 
 test("rejects a WebSocket upgrade with a mismatched runner token", () => {
@@ -64,6 +69,31 @@ test("routes an authenticated WebSocket upgrade", () => {
 
   assert.equal(socket.destroyed, false);
   assert.equal(runnerWsServer.upgrades, 1);
+});
+
+test("routes only the exact authenticated /stream-stt upgrade to the isolated STT server", () => {
+  const { server, runnerWsServer, streamTtsWsServer, streamSttWsServer } = install("expected-token");
+  const accepted = socketProbe();
+  server.emit("upgrade", request("expected-token", "/stream-stt"), accepted, Buffer.alloc(0));
+  assert.equal(accepted.destroyed, false);
+  assert.equal(streamSttWsServer.upgrades, 1);
+  assert.equal(streamSttWsServer.options.maxPayload, 65_536);
+  assert.equal(runnerWsServer.upgrades, 0);
+  assert.equal(streamTtsWsServer.upgrades, 0);
+
+  const rejected = socketProbe();
+  server.emit("upgrade", request("expected-token", "/stream-stt/extra"), rejected, Buffer.alloc(0));
+  assert.equal(rejected.destroyed, true);
+  assert.equal(streamSttWsServer.upgrades, 1);
+});
+
+test("rejects unauthenticated /stream-stt before creating a speech WebSocket", () => {
+  const { server, streamSttWsServer } = install("expected-token");
+  const socket = socketProbe();
+  server.emit("upgrade", request("", "/stream-stt"), socket, Buffer.alloc(0));
+  assert.deepEqual(socket.writes, ["HTTP/1.1 401 Unauthorized\r\n\r\n"]);
+  assert.equal(socket.destroyed, true);
+  assert.equal(streamSttWsServer.upgrades, 0);
 });
 
 test("rejects the removed legacy Codex WebSocket path", () => {

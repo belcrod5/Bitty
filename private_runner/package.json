@@ -1,5 +1,10 @@
 {
+  "scripts": {
+    "gate:gcp-streaming-stt": "node scripts/gcp-streaming-stt-gate.mjs"
+  },
   "dependencies": {
+    "@google-cloud/speech": "8.1.0",
+    "google-auth-library": "11.1.0",
     "qrcode-terminal": "^0.12.0",
     "rrule": "2.8.1",
     "ws": "^8.20.1"

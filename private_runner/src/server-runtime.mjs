@@ -60,6 +60,13 @@ import {
   createTurnCompletionNotifier,
   derivePushDirectoryTitle,
 } from "./turn-completion-notification.mjs";
+import { createGoogleCloudService } from "./google-cloud-service.mjs";
+import { createGoogleCloudUsageLedger } from "./google-cloud-usage.mjs";
+import { createGoogleCloudHttpHandler } from "./google-cloud-http.mjs";
+import {
+  createGoogleStreamingSttHandler,
+  STREAM_STT_MAX_PAYLOAD_BYTES,
+} from "./google-streaming-stt.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -160,11 +167,6 @@ const OPENAI_OAUTH_ISSUER = process.env.OPENAI_OAUTH_ISSUER || "https://auth.ope
 const OPENAI_OAUTH_TOKEN_URL = `${OPENAI_OAUTH_ISSUER.replace(/\/+$/, "")}/oauth/token`;
 const MAX_TRANSCRIPT_CHARS = Number(process.env.MAX_TRANSCRIPT_CHARS || 8000);
 const MAX_MESSAGES_TOTAL_CHARS = Number(process.env.MAX_MESSAGES_TOTAL_CHARS || 24000);
-const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
-const GROQ_API_BASE_URL = process.env.GROQ_API_BASE_URL || "https://api.groq.com/openai/v1";
-const GROQ_STT_MODEL = process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo";
-const GROQ_STT_LANGUAGE = normalizeSttLanguage(process.env.GROQ_STT_LANGUAGE || "ja");
-const GROQ_STT_TIMEOUT_MS = Math.max(1000, Number(process.env.GROQ_STT_TIMEOUT_MS || NEAR_UNLIMITED_TIMEOUT_MS));
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_API_BASE_URL = process.env.ELEVENLABS_API_BASE_URL || "https://api.elevenlabs.io";
 const ELEVENLABS_TTS_MODEL = process.env.ELEVENLABS_TTS_MODEL || "eleven_multilingual_v2";
@@ -192,7 +194,6 @@ const GOOGLE_CLOUD_TTS_LANGUAGE_CODE = process.env.GOOGLE_CLOUD_TTS_LANGUAGE_COD
 const GOOGLE_CLOUD_TTS_VOICE_NAME = process.env.GOOGLE_CLOUD_TTS_VOICE_NAME || "ja-JP-Neural2-B";
 const GOOGLE_CLOUD_TTS_AUDIO_ENCODING = process.env.GOOGLE_CLOUD_TTS_AUDIO_ENCODING || "MP3";
 const AIVISSPEECH_MP3_BITRATE = "96k";
-const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 25 * 1024 * 1024);
 const MAX_WORKSPACE_UPLOAD_BYTES = Number(
   process.env.MAX_WORKSPACE_UPLOAD_BYTES || 25 * 1024 * 1024
 );
@@ -244,6 +245,11 @@ const TTS_MEDIA_MAX_ENTRIES = Math.max(
 const RUNNER_LOG_REQUESTS = process.env.RUNNER_LOG_REQUESTS !== "0";
 const SUPPORTED_TTS_PROVIDERS = new Set(["elevenlabs", "google", "aivisspeech"]);
 const TTS_PROVIDER = SUPPORTED_TTS_PROVIDERS.has(TTS_PROVIDER_RAW) ? TTS_PROVIDER_RAW : "elevenlabs";
+const googleCloudService = createGoogleCloudService({ initialProjectId: GOOGLE_CLOUD_PROJECT_ID });
+const googleCloudUsageLedger = createGoogleCloudUsageLedger({
+  filePath: path.join(googleCloudService.authDir, "usage.json"),
+  getLimitMinutes: async () => (await googleCloudService.getSettings()).monthlyLimitMinutes,
+});
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const DEFAULT_LLM_FILE_ROOT = path.resolve(WORKSPACE_ROOT, process.env.LLM_FILE_ROOT || "llm_root");
 const DEFAULT_LLM_FILE_ROOT_RELATIVE = toUnixPath(path.relative(WORKSPACE_ROOT, DEFAULT_LLM_FILE_ROOT)) || ".";
@@ -2018,61 +2024,6 @@ async function runCodex(prompt, opts = {}) {
   return runCodexStream(prompt, opts);
 }
 
-function normalizeSttLanguage(raw) {
-  const value = String(raw || "").trim().toLowerCase();
-  if (!value) return "";
-  return value.split(/[-_]/)[0];
-}
-
-async function runGroqStt(audioBuffer, opts = {}) {
-  const mimeType = opts.mimeType || "audio/m4a";
-  const fileName = opts.fileName || "recording.m4a";
-  const language = normalizeSttLanguage(opts.language);
-
-  const form = new FormData();
-  form.set("model", GROQ_STT_MODEL);
-  form.set("file", new Blob([audioBuffer], { type: mimeType }), fileName);
-  if (language) {
-    form.set("language", language);
-  }
-
-  const timeoutController = new AbortController();
-  const timeoutTimer = setTimeout(() => {
-    timeoutController.abort();
-  }, GROQ_STT_TIMEOUT_MS);
-  let response;
-  try {
-    response = await fetch(`${GROQ_API_BASE_URL}/audio/transcriptions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${GROQ_API_KEY}`,
-      },
-      signal: timeoutController.signal,
-      body: form,
-    });
-  } catch (err) {
-    const isAbort = String(err?.name || "").toLowerCase() === "aborterror";
-    if (isAbort) {
-      throw new Error(`groq stt timeout (${GROQ_STT_TIMEOUT_MS}ms)`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutTimer);
-  }
-
-  if (!response.ok) {
-    const bodyText = await response.text().catch(() => "");
-    throw new Error(`groq stt failed (${response.status}): ${bodyText}`);
-  }
-
-  const data = await response.json();
-  const text = String(data?.text || "").trim();
-  if (!text) {
-    throw new Error("groq stt returned empty transcript");
-  }
-  return text;
-}
-
 function elevenOutputFormatToMimeType(outputFormat) {
   const value = String(outputFormat || "").toLowerCase();
   if (value.startsWith("mp3_")) return "audio/mpeg";
@@ -3726,7 +3677,7 @@ function killWorkspaceShellScriptJob(rawJobId) {
   if (running) requestScriptJobTermination(job, "manual");
   return { ok: true, running, ...toScriptJobSnapshot(job) };
 }
-async function getGoogleCloudAccessToken() {
+async function getHostGoogleCloudAccessTokenForYouTube() {
   try {
     const adc = await runCommandCapture("gcloud", ["auth", "application-default", "print-access-token"]);
     if (adc.stdout) return adc.stdout;
@@ -3751,13 +3702,13 @@ async function fetchTtsWithTimeout(label, url, init = {}) {
   }
 }
 
-function googleTtsHeaders(accessToken) {
+function googleTtsHeaders(accessToken, projectId) {
   const headers = {
     authorization: `Bearer ${accessToken}`,
     "content-type": "application/json; charset=utf-8",
   };
-  if (GOOGLE_CLOUD_PROJECT_ID) {
-    headers["x-goog-user-project"] = GOOGLE_CLOUD_PROJECT_ID;
+  if (projectId) {
+    headers["x-goog-user-project"] = projectId;
   }
   return headers;
 }
@@ -3802,7 +3753,7 @@ async function fetchYouTubeVideosMetadata(videoIds) {
   if (YOUTUBE_API_KEY) {
     url.searchParams.set("key", YOUTUBE_API_KEY);
   } else {
-    const accessToken = await getGoogleCloudAccessToken();
+    const accessToken = await getHostGoogleCloudAccessTokenForYouTube();
     requestHeaders.authorization = `Bearer ${accessToken}`;
     if (GOOGLE_CLOUD_PROJECT_ID) {
       requestHeaders["x-goog-user-project"] = GOOGLE_CLOUD_PROJECT_ID;
@@ -3841,11 +3792,11 @@ async function runGoogleCloudTts(text, opts = {}) {
   const voiceName = String(opts.voiceId || opts.voiceName || GOOGLE_CLOUD_TTS_VOICE_NAME).trim();
   const audioEncoding = String(opts.audioEncoding || GOOGLE_CLOUD_TTS_AUDIO_ENCODING).trim().toUpperCase();
   const speedScale = typeof opts.speedScale === "number" ? opts.speedScale : undefined;
-  const accessToken = await getGoogleCloudAccessToken();
+  const { accessToken, projectId } = await googleCloudService.accessToken();
 
   const response = await fetchTtsWithTimeout("google tts", `${GOOGLE_CLOUD_TTS_API_BASE_URL}/v1/text:synthesize`, {
     method: "POST",
-    headers: googleTtsHeaders(accessToken),
+    headers: googleTtsHeaders(accessToken, projectId),
     body: JSON.stringify({
       input: { text },
       voice: {
@@ -3860,8 +3811,7 @@ async function runGoogleCloudTts(text, opts = {}) {
   });
 
   if (!response.ok) {
-    const bodyText = await response.text().catch(() => "");
-    throw new Error(`google tts failed (${response.status}): ${bodyText}`);
+    throw new Error(`google tts failed (${response.status})`);
   }
 
   const data = await response.json().catch(() => ({}));
@@ -3881,7 +3831,7 @@ async function runGoogleCloudTts(text, opts = {}) {
 
 async function listGoogleCloudVoices(opts = {}) {
   const languageCode = String(opts.languageCode || GOOGLE_CLOUD_TTS_LANGUAGE_CODE).trim();
-  const accessToken = await getGoogleCloudAccessToken();
+  const { accessToken, projectId } = await googleCloudService.accessToken();
   const url = new URL(`${GOOGLE_CLOUD_TTS_API_BASE_URL}/v1/voices`);
   if (languageCode) {
     url.searchParams.set("languageCode", languageCode);
@@ -3889,11 +3839,10 @@ async function listGoogleCloudVoices(opts = {}) {
 
   const response = await fetchTtsWithTimeout("google voices", url, {
     method: "GET",
-    headers: googleTtsHeaders(accessToken),
+    headers: googleTtsHeaders(accessToken, projectId),
   });
   if (!response.ok) {
-    const bodyText = await response.text().catch(() => "");
-    throw new Error(`google voices failed (${response.status}): ${bodyText}`);
+    throw new Error(`google voices failed (${response.status})`);
   }
 
   const data = await response.json().catch(() => ({}));
@@ -4161,15 +4110,6 @@ function validateTtsProviderRequirements(ttsProvider, endpointName) {
       payload: {
         error: "tts_key_missing",
         message: `ELEVENLABS_API_KEY is required for ${endpointName} when ttsProvider=elevenlabs`,
-      },
-    };
-  }
-  if (ttsProvider === "google" && !GOOGLE_CLOUD_PROJECT_ID) {
-    return {
-      status: 500,
-      payload: {
-        error: "tts_project_missing",
-        message: `GOOGLE_CLOUD_PROJECT_ID is required for ${endpointName} when ttsProvider=google`,
       },
     };
   }
@@ -6897,6 +6837,14 @@ const skiaBoardHttpHandler = createSkiaBoardHttpHandler({
   readJsonBody,
   json,
 });
+const googleCloudHttpHandler = createGoogleCloudHttpHandler({
+  runnerToken: RUNNER_TOKEN,
+  parseAuthToken,
+  readJsonBody,
+  json,
+  googleCloudService,
+  usageLedger: googleCloudUsageLedger,
+});
 
 async function runCodexQueuedTurn(turn) {
   const abortController = new AbortController();
@@ -7692,6 +7640,8 @@ const server = http.createServer(async (req, res) => {
     console.log(`[request] ${req.method} ${pathname} from ${req.socket.remoteAddress || "unknown"}`);
   }
 
+  if (await googleCloudHttpHandler(req, res, pathname)) return;
+
   if (req.method === "GET" && pathname === "/health") {
     if (req.headers.authorization) {
       if (!RUNNER_TOKEN) {
@@ -7786,9 +7736,7 @@ const server = http.createServer(async (req, res) => {
       approval: {
         timeoutMs: toolApprovalTimeoutMsRuntime,
       },
-      stt: {
-        groqTimeoutMs: GROQ_STT_TIMEOUT_MS,
-      },
+      stt: { maxDurationSeconds: 290 },
       tts: {
         maxChars: MAX_TTS_CHARS,
         segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
@@ -8869,83 +8817,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === "POST" && pathname === "/stt") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, {
-        error: "runner_token_missing",
-        message: "RUNNER_TOKEN is required",
-      });
-    }
-
-    if (parseAuthToken(req) !== RUNNER_TOKEN) {
-      return json(res, 401, { error: "unauthorized" });
-    }
-
-    if (!GROQ_API_KEY) {
-      return json(res, 500, {
-        error: "stt_key_missing",
-        message: "GROQ_API_KEY is required for /stt",
-      });
-    }
-
-    try {
-      const contentType = String(req.headers["content-type"] || "").toLowerCase();
-      let audioBuffer = Buffer.alloc(0);
-      let mimeType = "audio/m4a";
-      let fileName = "recording.m4a";
-      let language = normalizeSttLanguage(GROQ_STT_LANGUAGE);
-
-      if (!contentType.includes("multipart/form-data")) {
-        return json(res, 415, {
-          error: "stt_multipart_required",
-          message: "Use multipart/form-data with file field",
-        });
-      }
-
-      const requestForForm = new Request(`http://runner.local${pathname}`, {
-        method: req.method,
-        headers: req.headers,
-        body: req,
-        duplex: "half",
-      });
-      const form = await requestForForm.formData();
-      const filePart = form.get("file");
-      if (!filePart || typeof filePart.arrayBuffer !== "function") {
-        return json(res, 400, { error: "audio_required" });
-      }
-      const ab = await filePart.arrayBuffer();
-      audioBuffer = Buffer.from(ab);
-      mimeType = String(filePart.type || form.get("mimeType") || mimeType).trim() || mimeType;
-      fileName = String(filePart.name || form.get("fileName") || fileName).trim() || fileName;
-      language = normalizeSttLanguage(String(form.get("language") || GROQ_STT_LANGUAGE));
-
-      if (!audioBuffer.length) {
-        return json(res, 400, { error: "audio_empty" });
-      }
-      if (audioBuffer.length > MAX_AUDIO_BYTES) {
-        return json(res, 400, {
-          error: "audio_too_large",
-          max: MAX_AUDIO_BYTES,
-        });
-      }
-
-      const transcript = await runGroqStt(audioBuffer, { mimeType, fileName, language });
-      return json(res, 200, {
-        transcript,
-        provider: "groq",
-        language: language || undefined,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const isTimeout = /timeout/i.test(message);
-      console.error("[stt] failed", { message, isTimeout });
-      return json(res, isTimeout ? 504 : 500, {
-        error: isTimeout ? "stt_timeout" : "stt_failed",
-        message,
-      });
-    }
-  }
-
   if (req.method === "GET" && pathname === "/voices") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -8972,13 +8843,6 @@ const server = http.createServer(async (req, res) => {
         return json(res, 500, {
           error: "tts_key_missing",
           message: "ELEVENLABS_API_KEY is required for /voices when ttsProvider=elevenlabs",
-        });
-      }
-
-      if (ttsProvider === "google" && !GOOGLE_CLOUD_PROJECT_ID) {
-        return json(res, 500, {
-          error: "tts_project_missing",
-          message: "GOOGLE_CLOUD_PROJECT_ID is required for /voices when ttsProvider=google",
         });
       }
 
@@ -9057,13 +8921,6 @@ const server = http.createServer(async (req, res) => {
         return json(res, 500, {
           error: "tts_key_missing",
           message: "ELEVENLABS_API_KEY is required for /tts when ttsProvider=elevenlabs",
-        });
-      }
-
-      if (ttsProvider === "google" && !GOOGLE_CLOUD_PROJECT_ID) {
-        return json(res, 500, {
-          error: "tts_project_missing",
-          message: "GOOGLE_CLOUD_PROJECT_ID is required for /tts when ttsProvider=google",
         });
       }
 
@@ -9155,6 +9012,20 @@ const runnerWsActiveClients = new Set();
 const runnerWsClientInstanceIds = new WeakMap();
 const runnerWsServer = new WebSocketServer({ noServer: true });
 const wsServer = new WebSocketServer({ noServer: true });
+const streamSttWsServer = new WebSocketServer({ noServer: true, maxPayload: STREAM_STT_MAX_PAYLOAD_BYTES });
+const handleGoogleStreamingStt = createGoogleStreamingSttHandler({
+  googleCloudService,
+  usageLedger: googleCloudUsageLedger,
+});
+
+streamSttWsServer.on("connection", (ws, req) => {
+  trackRunnerWebSocket(req, ws, {
+    connectionId: `stream_stt_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+    route: "stream-stt",
+    endpoint: "/stream-stt",
+  });
+  handleGoogleStreamingStt(ws);
+});
 
 runnerWsServer.on("connection", (ws, req) => {
   const reqUrl = req ? parseRequestUrl(req) : { pathname: RUNNER_WS_PATH };
@@ -11828,6 +11699,7 @@ installRunnerWebSocketUpgradeHandler({
   runnerWsPath: RUNNER_WS_PATH,
   runnerWsServer,
   streamTtsWsServer: wsServer,
+  streamSttWsServer,
   appendDebug: appendCodexWsProxyDebug,
   logRequests: RUNNER_LOG_REQUESTS,
 });
@@ -11947,14 +11819,22 @@ if (!RUNNER_SKIP_SERVER_START) {
   };
   process.once("SIGTERM", () => stopAgentsForSignal("SIGTERM"));
   process.once("SIGINT", () => stopAgentsForSignal("SIGINT"));
-  void initializeLlmRequestLogRuntime();
-  void initializeClientAppLogRuntime();
-  void initializeLlmFileRuntime();
-  void initializeAcpSessionStoreRuntime();
-  void initializeCliSessionIndexRuntime();
-  void initializeTtsMediaRuntime();
-  void initializeCodexWsDebugRuntime();
   void (async () => {
+    try {
+      await googleCloudService.initialize();
+      await googleCloudUsageLedger.initialize();
+    } catch {
+      console.error("[google-cloud] credential or usage storage validation failed; runner startup stopped");
+      process.exitCode = 1;
+      return;
+    }
+    void initializeLlmRequestLogRuntime();
+    void initializeClientAppLogRuntime();
+    void initializeLlmFileRuntime();
+    void initializeAcpSessionStoreRuntime();
+    void initializeCliSessionIndexRuntime();
+    void initializeTtsMediaRuntime();
+    void initializeCodexWsDebugRuntime();
     try {
       codexAuthOwnerLockRelease = await codexAuthService.acquireOwnerLock();
       if (stopRequested) {

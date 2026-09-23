@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as Clipboard from "../clipboard";
 import { Alert, AppState } from "react-native";
-import { parseSttProvider, type SttProvider } from "../../stt/sttConfig";
 import {
-  normalizeRecordingTuning,
-  parseRecordingQualityPreset,
   parseTtsProvider,
   parseTtsSpeed,
-  type RecordingQualityPreset,
-  type RecordingTuning,
   type SelectedVoiceIdByProvider,
   type TtsProvider,
 } from "../utils/audioConfig";
@@ -35,7 +30,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   modelOptions: readonly { modelId: string; backendId?: string }[];
   defaultModelRef: string;
   defaultReasoningEffort: ReasoningEffort;
-  defaultRecordingQualityPreset: RecordingQualityPreset;
   defaultSelectedVoiceIds: SelectedVoiceIdByProvider;
   runnerUrl: string;
   cloudflareRunnerUrl: string;
@@ -52,15 +46,11 @@ type UseAppSettingsPersistenceControllerArgs = {
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
   ttsProvider: TtsProvider;
-  sttProvider: SttProvider;
-  recordingQualityPreset: RecordingQualityPreset;
-  recordingTuning: RecordingTuning;
   faceTrackingEnabled: boolean;
   ttsSpeed: number;
   selectedVoiceIdByProvider: SelectedVoiceIdByProvider;
   autoBargeInEnabled: boolean;
   autoSpeakerPriorityEnabled: boolean;
-  autoTranscribeOnStop: boolean;
   autoReplyAfterStt: boolean;
   autoSpeakAfterReply: boolean;
   faceIdRequiredForApproval: boolean;
@@ -87,12 +77,8 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setSelectedVoiceIdByProvider: Dispatch<SetStateAction<SelectedVoiceIdByProvider>>;
   setTtsProvider: Dispatch<SetStateAction<TtsProvider>>;
-  setSttProvider: Dispatch<SetStateAction<SttProvider>>;
-  setRecordingQualityPreset: Dispatch<SetStateAction<RecordingQualityPreset>>;
-  setRecordingTuning: Dispatch<SetStateAction<RecordingTuning>>;
   setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
   setTtsSpeedWithSync: (value: number) => void;
-  setAutoTranscribeOnStop: Dispatch<SetStateAction<boolean>>;
   setAutoBargeInEnabled: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakerPriorityEnabled: Dispatch<SetStateAction<boolean>>;
   setAutoReplyAfterStt: Dispatch<SetStateAction<boolean>>;
@@ -111,7 +97,6 @@ export function useAppSettingsPersistenceController({
   modelOptions,
   defaultModelRef,
   defaultReasoningEffort,
-  defaultRecordingQualityPreset,
   defaultSelectedVoiceIds,
   runnerUrl,
   cloudflareRunnerUrl,
@@ -128,15 +113,11 @@ export function useAppSettingsPersistenceController({
   reasoningEffort,
   codexApprovalPolicy,
   ttsProvider,
-  sttProvider,
-  recordingQualityPreset,
-  recordingTuning,
   faceTrackingEnabled,
   ttsSpeed,
   selectedVoiceIdByProvider,
   autoBargeInEnabled,
   autoSpeakerPriorityEnabled,
-  autoTranscribeOnStop,
   autoReplyAfterStt,
   autoSpeakAfterReply,
   faceIdRequiredForApproval,
@@ -163,12 +144,8 @@ export function useAppSettingsPersistenceController({
   setCodexApprovalPolicy,
   setSelectedVoiceIdByProvider,
   setTtsProvider,
-  setSttProvider,
-  setRecordingQualityPreset,
-  setRecordingTuning,
   setFaceTrackingEnabledWithRef,
   setTtsSpeedWithSync,
-  setAutoTranscribeOnStop,
   setAutoBargeInEnabled,
   setAutoSpeakerPriorityEnabled,
   setAutoReplyAfterStt,
@@ -221,17 +198,12 @@ export function useAppSettingsPersistenceController({
       reasoningEffort,
       codexApprovalPolicy,
       ttsProvider,
-      sttProvider,
-      recordingQualityPreset,
-      recordingTuning: normalizeRecordingTuning(recordingTuning, recordingQualityPreset),
-      recordingHighQuality: recordingQualityPreset === "high",
       faceTrackingEnabled,
       ttsSpeed,
       selectedVoiceId: selectedVoiceIdByProvider.elevenlabs,
       selectedVoiceIdByProvider,
       autoBargeInEnabled,
       autoSpeakerPriorityEnabled,
-      autoTranscribeOnStop,
       autoReplyAfterStt,
       autoSpeakAfterReply,
       faceIdRequiredForApproval,
@@ -242,7 +214,6 @@ export function useAppSettingsPersistenceController({
     autoReplyAfterStt,
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
-    autoTranscribeOnStop,
     faceIdRequiredForApproval,
     visualThemeId,
     cloudflareRunnerUrl,
@@ -254,8 +225,6 @@ export function useAppSettingsPersistenceController({
     localRunnerUrl,
     modelRef,
     reasoningEffort,
-    recordingQualityPreset,
-    recordingTuning,
     registeredDirectories,
     sessionTitleOverridesById,
     sessionMarkerColorsById,
@@ -263,7 +232,6 @@ export function useAppSettingsPersistenceController({
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,
     selectedVoiceIdByProvider,
-    sttProvider,
     ttsProvider,
     ttsSpeed,
   ]);
@@ -360,25 +328,10 @@ export function useAppSettingsPersistenceController({
     setCodexApprovalPolicy(parseCodexApprovalPolicy(parsed.codexApprovalPolicy));
     setSelectedVoiceIdByProvider(savedVoiceIds);
     setTtsProvider(parseTtsProvider(parsed.ttsProvider));
-    setSttProvider(parseSttProvider(parsed.sttProvider));
-    const loadedRecordingPreset = (() => {
-      if (typeof parsed.recordingQualityPreset === "string") {
-        return parseRecordingQualityPreset(parsed.recordingQualityPreset);
-      }
-      if (typeof parsed.recordingHighQuality === "boolean") {
-        return parsed.recordingHighQuality ? "high" : "low";
-      }
-      return defaultRecordingQualityPreset;
-    })();
-    setRecordingQualityPreset(loadedRecordingPreset);
-    setRecordingTuning(normalizeRecordingTuning(parsed.recordingTuning, loadedRecordingPreset));
     if (typeof parsed.faceTrackingEnabled === "boolean") {
       setFaceTrackingEnabledWithRef(parsed.faceTrackingEnabled);
     }
     setTtsSpeedWithSync(parseTtsSpeed(parsed.ttsSpeed));
-    if (typeof parsed.autoTranscribeOnStop === "boolean") {
-      setAutoTranscribeOnStop(parsed.autoTranscribeOnStop);
-    }
     if (typeof parsed.autoBargeInEnabled === "boolean") {
       setAutoBargeInEnabled(parsed.autoBargeInEnabled);
     }
@@ -400,7 +353,6 @@ export function useAppSettingsPersistenceController({
   }, [
     defaultModelRef,
     defaultReasoningEffort,
-    defaultRecordingQualityPreset,
     defaultSelectedVoiceIds,
     llmConversationSessionIdRef,
     modelOptions,
@@ -414,7 +366,6 @@ export function useAppSettingsPersistenceController({
     setAutoReplyAfterStt,
     setAutoSpeakerPriorityEnabled,
     setAutoSpeakAfterReply,
-    setAutoTranscribeOnStop,
     setFaceIdRequiredForApproval,
     setVisualThemeId,
     setCodexApprovalPolicy,
@@ -428,8 +379,6 @@ export function useAppSettingsPersistenceController({
     setLocalRunnerUrl,
     setModelRef,
     setReasoningEffort,
-    setRecordingQualityPreset,
-    setRecordingTuning,
     setRegisteredDirectories,
     setRunnerToken,
     setRunnerUrl,
@@ -438,7 +387,6 @@ export function useAppSettingsPersistenceController({
     setSelectedVoiceIdByProvider,
     setSessionMarkerColorsById,
     setSessionTitleOverridesById,
-    setSttProvider,
     setTtsProvider,
     setTtsSpeedWithSync,
   ]);

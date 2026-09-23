@@ -60,6 +60,11 @@ import { WorkspaceTextFileEditor } from "../components/WorkspaceTextFileEditor";
 import { ChatSessionSubagentList } from "../components/ChatSessionSubagentList";
 import { ComposerFullscreenEditor } from "../components/ComposerFullscreenEditor";
 import { ChatComposerInput, MACOS_CHAT_SUBMIT_KEY_EVENTS } from "../components/ChatComposerInput";
+import {
+  StreamingSttFooter,
+  type StreamingSttFooterHandle,
+} from "../components/StreamingSttFooter";
+import { useStreamingStt } from "../../stt/useStreamingStt";
 import { useWorkspaceFileMutations } from "../hooks/useWorkspaceFileMutations";
 import { useComposerDraftSync } from "../hooks/useComposerPersistence";
 import { RunnerWsConnectionStatus, type RunnerWsDataSyncStatus } from "../../runnerWs/RunnerWsConnectionStatus";
@@ -184,6 +189,7 @@ export function ChatScreen({
     thinkOptions,
     selectModel,
     selectThinkOption,
+    autoReplyAfterStt,
   } = useAppSettings();
   const {
     activeYouTubeQueuePositionLabel,
@@ -246,30 +252,19 @@ export function ChatScreen({
     switchCodexAuthProfile: onSwitchCodexAuthProfile,
   } = useChatDiagnostics();
   const {
-    composerWaveformVisible,
-    autoWaveformAnimationEnabled,
-    waveformDotGif,
-    autoSpeechDetected,
-    composerDirectSttVisible,
-    directNativeSttPreviewText,
     composerMessageHistory,
     composerDrafts, composerDraftsLoaded, setComposerDraft,
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,
-    isDirectNativeSttProvider,
-    directNativeSttEnabled,
-    autoRecordingEnabled,
-    manualRecording,
     faceTrackingEnabled,
     faceTrackingLooking,
+    voiceInputAllowed,
+    onVoiceSpeechBegin,
+    voiceInputDuringTtsAllowed,
+    registerVoiceInputSession,
     canStopLlmTurn,
-    stopDirectNativeStt,
-    stopAutoRecordingMode,
-    stopRecording,
     stopLlmTurn,
-    startDirectNativeStt,
-    startAutoRecordingMode,
     setFaceTrackingEnabledWithRef,
     faceTrackingRunning,
     setSlashCommandSelectOpen,
@@ -352,7 +347,6 @@ export function ChatScreen({
     transcript,
     canSend,
     replyLoading,
-    sttLoading,
     startNewSession,
     markSelectedSessionUnread,
     reloadSelectedSession,
@@ -1171,6 +1165,46 @@ export function ChatScreen({
     transcriptForView,
     usesPanelComposerState,
   ]);
+  const streamingSttFooterRef = useRef<StreamingSttFooterHandle>(null);
+  const handleStreamingSttSample = useCallback((sample: number) => {
+    streamingSttFooterRef.current?.pushSample(sample);
+  }, []);
+  const handleStreamingSttUsage = useCallback((usage: Parameters<StreamingSttFooterHandle["updateUsage"]>[0]) => {
+    streamingSttFooterRef.current?.updateUsage(usage);
+  }, []);
+  const sendStreamingTranscript = useCallback(async (text: string, onAccepted: () => void) => {
+    let accepted = false;
+    await sendReplyTranscriptByPanel(text, () => {
+      accepted = true;
+      setTranscriptForView("");
+      onAccepted();
+    });
+    if (!accepted) throw new Error("streaming_stt_transcript_not_accepted");
+  }, [sendReplyTranscriptByPanel, setTranscriptForView]);
+  const reportStreamingSttError = useCallback((message: string) => {
+    showChatBottomToast("assistant", message);
+  }, [showChatBottomToast]);
+  const streamingStt = useStreamingStt({
+    runnerUrl,
+    runnerToken,
+    transcript: transcriptForView,
+    autoReplyAfterStt,
+    setTranscript: setTranscriptForView,
+    sendTranscript: sendStreamingTranscript,
+    onUsage: handleStreamingSttUsage,
+    onSample: handleStreamingSttSample,
+    onError: reportStreamingSttError,
+    canStart: voiceInputAllowed,
+    onSpeechBegin: onVoiceSpeechBegin,
+    replyLoading: replyLoadingForView,
+    ttsPlaybackActive: isTtsPlaybackActive,
+    voiceInputDuringTtsAllowed,
+  });
+  useEffect(() => registerVoiceInputSession({
+    isArmed: streamingStt.isArmed,
+    isCapturing: streamingStt.isCapturing,
+    abort: streamingStt.abort,
+  }), [registerVoiceInputSession, streamingStt.abort, streamingStt.isArmed, streamingStt.isCapturing]);
   const openComposerFullscreenForView = useCallback(() => {
     setComposerInputFocused(false);
     setPopupComposerFullscreenOpen(true);
@@ -2362,34 +2396,10 @@ export function ChatScreen({
             />
           </View>
           <View style={styles.chatInputWrapper}>
-            {composerWaveformVisible ? (
-              <View style={[styles.autoWaveformCard, styles.chatWaveformBox]}>
-                {autoWaveformAnimationEnabled ? (
-                  <Image
-                    source={waveformDotGif}
-                    style={[styles.autoWaveformGif, autoSpeechDetected && styles.autoWaveformGifActive]}
-                  />
-                ) : (
-                  <View
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: 999,
-                      backgroundColor: autoSpeechDetected ? theme.colors.positiveText : theme.colors.borderStrong,
-                      opacity: autoSpeechDetected ? 1 : 0.6,
-                    }}
-                  />
-                )}
-              </View>
-            ) : composerDirectSttVisible ? (
-              <View style={styles.chatDirectSttBox}>
-                <Text style={styles.chatDirectSttLabel}>Direct Native STT</Text>
-                <Text style={styles.chatDirectSttText}>{directNativeSttPreviewText || "話してください..."}</Text>
-              </View>
-            ) : (
-              <ChatComposerInput
+            <ChatComposerInput
                 inputRef={chatComposerInputRef}
                 value={transcriptForView}
+                editable={!streamingStt.active}
                 showFullscreenButton={showComposerFullscreenToggleForView}
                 onChangeText={setTranscriptForView}
                 onFocus={() => {
@@ -2404,16 +2414,12 @@ export function ChatScreen({
                 submitRequestId={composerSubmitRequestId}
                 onOpenFullscreen={openComposerFullscreenForView}
               />
-            )}
             <View style={styles.chatComposerIconRow}>
               {(() => {
-                const directModeActive = isDirectNativeSttProvider && directNativeSttEnabled;
-                const autoModeActive = autoRecordingEnabled;
-                const manualModeActive = !!manualRecording;
                 const faceToggleVisible = Platform.OS === "ios";
                 const faceToggleActive = faceTrackingEnabled;
                 const faceToggleBlocked = faceToggleActive && !faceTrackingLooking;
-                const shouldStopRecording = autoModeActive || manualModeActive || directModeActive;
+                const shouldStopRecording = streamingStt.active;
                 const shouldStopLlmTurn = !shouldStopRecording && canStopLlmTurnForView;
                 const showSendAction = !shouldStopRecording && !shouldStopLlmTurn && hasComposerTextForView;
                 const disabled = shouldStopRecording
@@ -2422,20 +2428,14 @@ export function ChatScreen({
                     ? false
                     : showSendAction
                       ? !canSendForView
-                      : (sttLoading || replyLoadingForView);
+                      : (streamingStt.active || replyLoadingForView);
                 const iconName = (shouldStopRecording || shouldStopLlmTurn)
                   ? "stop"
                   : (showSendAction ? "caret-forward" : "mic");
                 const faceIconName = !faceToggleActive ? "eye-outline" : (faceToggleBlocked ? "eye-off" : "eye");
                 const onPress = () => {
                   if (shouldStopRecording) {
-                    if (directModeActive) {
-                      void stopDirectNativeStt();
-                    } else if (autoModeActive) {
-                      void stopAutoRecordingMode();
-                    } else if (manualModeActive) {
-                      void stopRecording();
-                    }
+                    streamingStt.stop();
                     return;
                   }
                   if (shouldStopLlmTurn) {
@@ -2465,11 +2465,7 @@ export function ChatScreen({
                     sendReplyTranscriptByPanel();
                     return;
                   }
-                  if (isDirectNativeSttProvider) {
-                    void startDirectNativeStt();
-                  } else {
-                    void startAutoRecordingMode(isPanelRuntimeView ? panelId : undefined);
-                  }
+                  streamingStt.start();
                 };
                 const onPressFaceToggle = () => {
                   if (faceToggleActive) {
@@ -2525,6 +2521,12 @@ export function ChatScreen({
             </View>
           </View>
         </View>
+        {streamingStt.active ? (
+          <StreamingSttFooter
+            ref={streamingSttFooterRef}
+            finalizing={streamingStt.phase === "finalizing"}
+          />
+        ) : null}
         <View style={styles.chatFooterSettingsRow}>
           <View pointerEvents="none" style={styles.chatThreadStatusCenter}>
             <Text

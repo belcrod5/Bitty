@@ -48,15 +48,14 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 - backend は OAuth profile を読んで `openai-codex-responses` を呼び出す（ログイン処理は行わない）
 
 ## 必要なキー（このrunner用）
-- 必須: `RUNNER_TOKEN`（`/runner-ws` `/stream-tts` `/stt` `/tts` `/client-logs` 保護用のBearerトークン）
+- 必須: `RUNNER_TOKEN`（`/runner-ws` `/stream-tts` `/stream-stt` `/tts` `/client-logs` とGoogle Cloud管理API保護用のBearerトークン）
   - `run-local.sh` では既定で `RUNNER_TOKEN_MODE=random` のため、起動ごとにランダム生成し、Expo向けPairing QRで渡します。
   - 固定tokenで検証する場合だけ `RUNNER_TOKEN_MODE=env` と `RUNNER_TOKEN` をlocal `.env` に設定します。
   - detached起動時はQRをログへ残さないため、起動後に `private_runner/run-local.sh pairing-qr` で表示します。
 - 不要: `OPENAI_API_KEY`（このrunnerはCodex認証を利用するため）
-- `/stt` を使う場合のみ必須: `GROQ_API_KEY`
 - `/tts` は `ttsProvider` で `elevenlabs` / `google` / `aivisspeech` を切替可能
 - ElevenLabs を使う場合のみ必須: `ELEVENLABS_API_KEY`
-- Google Cloud TTS を使う場合のみ必須: `GOOGLE_CLOUD_PROJECT_ID`
+- Google Cloud STT/TTS は設定画面からRunner専用ADCへ接続する。API keyやサービスアカウント鍵は設定しない
 - `youtube_search` / `youtube_channel_latest` / `youtube_favorites` は `YOUTUBE_API_KEY` 推奨（未設定時は gcloud トークンへフォールバック）
 - AivisSpeech を使う場合: runner を macOS で動かし、`AIVISSPEECH_API_BASE_URL` は localhost に設定。AivisSpeech の WAV 出力を MP3 配信用に変換するため、runner ホストに `ffmpeg` も必要
 
@@ -67,7 +66,6 @@ CODEX_HOME=$HOME/.codex codex login status -c 'cli_auth_credentials_store="file"
 - アプリのモデルと think の選択肢は Codex App Server の `model/list` から取得するため、利用中のアカウントで選択可能なモデルだけが表示される
 
 ## 参考: 別コンポーネントで必要なキー
-- STT（Groq）を別Workerやサーバーで実行する場合: `GROQ_API_KEY`
 - Cloudflareへデプロイする場合: `CF_ACCOUNT_ID`, `CF_API_TOKEN`（CI/CLI構成次第）
 
 ## 起動
@@ -126,7 +124,7 @@ rg -n '"source":"session_diag"' "$LATEST" | tail -n 200
 - 認証アカウント切替時の restart は既存サービスを再利用せず、必ず停止・再起動します。
 
 ## サーバー構成（現在）
-- runner（既定: 8788）: `/runner-ws` `/stream-tts` `/stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
+- runner（既定: 8788）: `/runner-ws` `/stream-tts` `/stream-stt` `/tts` `/voices` `/client-logs` `/youtube-videos` など
 - codex app-server（既定: 4500）: JSON-RPC本体
 - 推奨接続先（iOS）: `ws://<MacのLocalHostName>.local:8788/runner-ws`
 - iOS/Expo は `RUNNER_TOKEN` をURL queryへ載せず、WebSocket handshakeの `Authorization: Bearer <RUNNER_TOKEN>` で送ります。
@@ -154,18 +152,10 @@ Cloudflare Tunnel も同時に起動する場合だけ、明示的に opt-in し
 private_runner/run-local.sh start --mode full --cloudflare-tunnel
 ```
 
-## Google Cloud TTS ローカル認証（ADC）
-Google Cloud TTS を `ttsProvider=google` で使う場合は、runner ホストで ADC を作成してください。
+## Google Cloud STT/TTS ローカル認証
+設定画面でプロジェクトIDを保存して接続を開始すると、Runner Macのブラウザとlocalhost callbackで認証します。ADCは既定で`$HOME/.bitty/private-runner/google-cloud`へ保存され、ホスト標準のgcloud設定とは共有しません。`BITTY_GOOGLE_AUTH_DIR`で専用ディレクトリだけを変更できます。
 
-```bash
-gcloud init
-gcloud auth application-default login
-gcloud config set project your-google-cloud-project-id
-```
-
-`.env` には最低限この2つを設定します:
-- `TTS_PROVIDER=elevenlabs` または `google` または `aivisspeech`
-- `GOOGLE_CLOUD_PROJECT_ID=your-google-cloud-project-id`
+Google Cloud TTSも同じRunner専用ADCと保存済みプロジェクトを使います。専用ADCが未接続の場合、STT/TTSはホスト標準ADCへfallbackしません。`GOOGLE_CLOUD_PROJECT_ID`は保存済み設定がない初回だけの移行値です。
 
 ## YouTube ツール認証
 `youtube_search` / `youtube_channel_latest` / `youtube_favorites` は、公開データ取得用途では `YOUTUBE_API_KEY` 利用を推奨します。
@@ -205,17 +195,7 @@ curl -sS -X POST http://127.0.0.1:8788/reply-files \
   -d '{"transcript":"llm_root に hello.txt を作成して hello と書いて","rootDir":"llm_root"}'
 ```
 
-5. `/stt` 確認（`GROQ_API_KEY` 設定時）
-推奨（バイナリ直送 / multipart）:
-```bash
-curl -sS -X POST http://127.0.0.1:8788/stt \
-  -H "Authorization: Bearer <RUNNER_TOKEN>" \
-  -F "file=@/path/to/recording.m4a;type=audio/m4a" \
-  -F "language=ja"
-```
-`application/json` は非対応です（`415 stt_multipart_required`）。
-
-6. `/tts` 確認（ElevenLabs）
+5. `/tts` 確認（ElevenLabs）
 ```bash
 curl -sS -X POST http://127.0.0.1:8788/tts \
   -H "Authorization: Bearer <RUNNER_TOKEN>" \
@@ -223,7 +203,7 @@ curl -sS -X POST http://127.0.0.1:8788/tts \
   -d '{"ttsProvider":"elevenlabs","text":"こんにちは、これはAPIテストです。","modelId":"eleven_multilingual_v2","voiceId":"JBFqnCBsd6RMkjVDRZzb"}'
 ```
 
-7. `/tts` 確認（Google Cloud TTS）
+6. `/tts` 確認（Google Cloud TTS）
 ```bash
 curl -sS -X POST http://127.0.0.1:8788/tts \
   -H "Authorization: Bearer <RUNNER_TOKEN>" \
@@ -290,7 +270,7 @@ npm run ios
     "timeoutMs": 86400000
   },
   "stt": {
-    "groqTimeoutMs": 120000
+    "maxDurationSeconds": 290
   },
   "tts": {
     "maxChars": 5000,
@@ -433,21 +413,6 @@ npm run ios
   "sessionId": "uuid",
   "toolCalls": 2,
   "replyRepaired": false
-}
-```
-
-### POST /stt
-- Header: `Authorization: Bearer <RUNNER_TOKEN>`
-- Body: `multipart/form-data`
-  - `file`: 音声ファイル（必須）
-  - `language`: 文字起こし言語（任意）
-- `language` は任意。未指定時は `GROQ_STT_LANGUAGE`（既定 `ja`）を利用。
-- Response:
-```json
-{
-  "transcript": "こんにちは",
-  "provider": "groq",
-  "language": "ja"
 }
 ```
 

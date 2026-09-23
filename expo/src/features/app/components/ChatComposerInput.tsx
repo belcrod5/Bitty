@@ -24,6 +24,7 @@ type ChatComposerInputProps = {
   onSubmit: (value: string, onAccepted: () => void) => Promise<void>;
   submitRequestId: number;
   onOpenFullscreen: () => void;
+  editable?: boolean;
 };
 
 export function ChatComposerInput({
@@ -36,6 +37,7 @@ export function ChatComposerInput({
   onSubmit,
   submitRequestId,
   onOpenFullscreen,
+  editable = true,
 }: ChatComposerInputProps) {
   const styles = useAppStyles();
   const { theme } = useVisualTheme();
@@ -92,6 +94,7 @@ export function ChatComposerInput({
           showFullscreenButton ? styles.chatComposerInputWithExpandButton : null,
         ]}
         value={value}
+        editable={editable}
         onChangeText={changeText}
         onSubmitEditing={Platform.OS === "macos" ? submit : undefined}
         {...(Platform.OS === "macos" ? { submitKeyEvents: MACOS_CHAT_SUBMIT_KEY_EVENTS } : {})}

@@ -20,11 +20,8 @@ type UseCodexWsPreflightLoggerOptions = {
   isExpoGo: boolean;
   runnerToken: string;
   activeScreen: AppScreen;
-  autoRecordingState: string;
-  autoLastEvent: string;
   ttsLoading: boolean;
   autoClientSessionIdRef: MutableRefObject<string>;
-  autoRecordingEnabledRef: MutableRefObject<boolean>;
   ttsPlayingRef: MutableRefObject<boolean>;
   replyLoadingRef: MutableRefObject<boolean>;
   baseUrl: () => string;
@@ -36,11 +33,8 @@ export function useCodexWsPreflightLogger({
   isExpoGo,
   runnerToken,
   activeScreen,
-  autoRecordingState,
-  autoLastEvent,
   ttsLoading,
   autoClientSessionIdRef,
-  autoRecordingEnabledRef,
   ttsPlayingRef,
   replyLoadingRef,
   baseUrl,
@@ -74,9 +68,9 @@ export function useCodexWsPreflightLogger({
         ...(options.extra || {}),
       },
       screen: activeScreen,
-      autoEnabled: autoRecordingEnabledRef.current,
-      autoState: autoRecordingState,
-      autoEvent: autoLastEvent,
+      autoEnabled: false,
+      autoState: "streaming_stt",
+      autoEvent: "",
       ttsPlaying: ttsPlayingRef.current,
       ttsLoading,
       replyLoading: replyLoadingRef.current,

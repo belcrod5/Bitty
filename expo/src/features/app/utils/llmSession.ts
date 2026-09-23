@@ -10,7 +10,6 @@ export type LlmRuntimeLimitsSnapshot = {
   llmTimeoutMs: number | null;
   toolMaxRounds: number | null;
   approvalTimeoutMs: number | null;
-  sttTimeoutMs: number | null;
   fetchedAt: string;
 };
 
@@ -168,12 +167,10 @@ export function parseLlmRuntimeLimitsSnapshot(raw: unknown): LlmRuntimeLimitsSna
   const payload = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const llm = payload.llm && typeof payload.llm === "object" ? payload.llm : {};
   const approval = payload.approval && typeof payload.approval === "object" ? payload.approval : {};
-  const stt = payload.stt && typeof payload.stt === "object" ? payload.stt : {};
   return {
     llmTimeoutMs: parseOptionalFiniteNumber((llm as { timeoutMs?: unknown }).timeoutMs),
     toolMaxRounds: parseOptionalFiniteNumber((llm as { toolMaxRounds?: unknown }).toolMaxRounds),
     approvalTimeoutMs: parseOptionalFiniteNumber((approval as { timeoutMs?: unknown }).timeoutMs),
-    sttTimeoutMs: parseOptionalFiniteNumber((stt as { groqTimeoutMs?: unknown }).groqTimeoutMs),
     fetchedAt: new Date().toISOString(),
   };
 }

@@ -48,7 +48,6 @@ export type ConversationContextValue = {
   systemPrompt: string;
   canSend: boolean;
   replyLoading: boolean;
-  sttLoading: boolean;
   startNewSession: (params?: { directory?: string }) => void;
   setDirectorySelectOpen: (open: boolean) => void;
   goDirectoryParent: () => void;

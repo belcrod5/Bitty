@@ -1,7 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { SttProvider } from "../../stt/sttConfig";
 import type { VoiceOption } from "../hooks/useTtsVoiceCatalog";
-import type { RecordingQualityPreset, TtsProvider } from "../utils/audioConfig";
+import type { TtsProvider } from "../utils/audioConfig";
 import type { ReasoningEffort } from "../utils/settingsParsers";
 import type { LlmBackend } from "../types/appTypes";
 
@@ -37,15 +36,12 @@ export type AppSettingsContextValue = {
   modelOptions: readonly ModelOption[];
   thinkOptions: readonly ReasoningEffort[];
   ttsProvider: TtsProvider;
-  sttProvider: SttProvider;
   voicesLoading: boolean;
   filteredVoices: VoiceOption[];
   ttsSpeedInput: string;
   ttsSpeed: number;
   voiceFilter: string;
   selectedVoiceId: string;
-  recordingQualityPreset: RecordingQualityPreset;
-  autoTranscribeOnStop: boolean;
   autoReplyAfterStt: boolean;
   autoBargeInEnabled: boolean;
   autoSpeakerPriorityEnabled: boolean;
@@ -67,9 +63,6 @@ export type AppSettingsContextValue = {
   changeVoiceFilter: (value: string) => void;
   selectVoiceId: (voiceId: string) => void;
   selectTtsProvider: (provider: TtsProvider) => void;
-  selectSttProvider: (provider: SttProvider) => void;
-  applyRecordingQualityPreset: (preset: RecordingQualityPreset) => void;
-  toggleAutoTranscribeOnStop: (value: boolean) => void;
   toggleAutoReplyAfterStt: (value: boolean) => void;
   toggleAutoBargeInEnabled: (value: boolean) => void;
   toggleAutoSpeakerPriorityEnabled: (value: boolean) => void;

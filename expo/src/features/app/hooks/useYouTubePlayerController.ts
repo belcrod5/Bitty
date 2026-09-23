@@ -1,6 +1,5 @@
 import { useCallback } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { Audio } from "expo-av";
 import type { WebView, WebViewMessageEvent } from "react-native-webview";
 import { isSameStringArray, normalizeYouTubeVideoIds } from "../utils/youtube";
 
@@ -24,10 +23,6 @@ type UseYouTubePlayerControllerOptions = {
   runnerUrl: string;
   runnerToken: string;
   baseUrl: () => string;
-  autoRecordingEnabledRef: MutableRefObject<boolean>;
-  autoRecordingRef: MutableRefObject<Audio.Recording | null>;
-  autoAirPodsInputRef: MutableRefObject<boolean>;
-  autoBargeInEnabledRef: MutableRefObject<boolean>;
   youtubeWebViewRef: MutableRefObject<WebView | null>;
   youtubePauseConfirmTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
   youtubeControlToDragTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
@@ -54,9 +49,8 @@ type UseYouTubePlayerControllerOptions = {
   youtubeControlIdleToDragMs: number;
   playUiSfx: (key: "youtubePlay" | "youtubeStop") => void;
   stopTtsPlayback: (options?: { interruptStream?: boolean }) => Promise<void>;
-  logAuto: (event: string, payload?: Record<string, unknown>) => void;
+  prepareYouTubePlayback: () => Promise<void>;
   reportError: (raw: unknown, scope?: string) => void;
-  finalizeAutoCapture: (shouldTranscribe: boolean, reason: string) => Promise<void>;
 };
 
 export function useYouTubePlayerController(options: UseYouTubePlayerControllerOptions) {
@@ -64,10 +58,6 @@ export function useYouTubePlayerController(options: UseYouTubePlayerControllerOp
     runnerUrl,
     runnerToken,
     baseUrl,
-    autoRecordingEnabledRef,
-    autoRecordingRef,
-    autoAirPodsInputRef,
-    autoBargeInEnabledRef,
     youtubeWebViewRef,
     youtubePauseConfirmTimerRef,
     youtubeControlToDragTimerRef,
@@ -94,9 +84,8 @@ export function useYouTubePlayerController(options: UseYouTubePlayerControllerOp
     youtubeControlIdleToDragMs,
     playUiSfx,
     stopTtsPlayback,
-    logAuto,
+    prepareYouTubePlayback,
     reportError,
-    finalizeAutoCapture,
   } = options;
 
   const clearYouTubePauseConfirmTimer = useCallback(() => {
@@ -137,26 +126,7 @@ export function useYouTubePlayerController(options: UseYouTubePlayerControllerOp
     youtubePlayerIsPlayingRef.current = next;
     setYoutubePlayerIsPlaying(next);
     playUiSfx(next ? "youtubePlay" : "youtubeStop");
-    if (
-      next &&
-      autoRecordingEnabledRef.current &&
-      autoRecordingRef.current &&
-      !autoAirPodsInputRef.current
-    ) {
-      logAuto("youtube_playback_finalize_request", {
-        autoRecordingActive: Boolean(autoRecordingRef.current),
-        autoAirPodsInput: autoAirPodsInputRef.current,
-        autoBargeInEnabled: autoBargeInEnabledRef.current,
-      });
-      void finalizeAutoCapture(false, "youtube_playback");
-    }
   }, [
-    autoAirPodsInputRef,
-    autoBargeInEnabledRef,
-    autoRecordingEnabledRef,
-    autoRecordingRef,
-    finalizeAutoCapture,
-    logAuto,
     playUiSfx,
     setYoutubePlayerIsPlaying,
     youtubePlayerIsPlayingRef,
@@ -494,30 +464,34 @@ export function useYouTubePlayerController(options: UseYouTubePlayerControllerOp
       if (youtubeFloatingInteractionModeRef.current === "control") {
         scheduleYouTubeControlToDrag();
       }
-      sendYouTubePlayerControl({
-        type: "youtube_set_volume",
-        volume: FIXED_YOUTUBE_VOLUME_PERCENT,
-        muted: false,
-      });
-      sendYouTubePlayerControl({
-        type: "youtube_play",
-        seekTo: youtubePlaybackPositionSecRef.current,
-      });
+      void prepareYouTubePlayback().then(() => {
+        sendYouTubePlayerControl({
+          type: "youtube_set_volume",
+          volume: FIXED_YOUTUBE_VOLUME_PERCENT,
+          muted: false,
+        });
+        sendYouTubePlayerControl({
+          type: "youtube_play",
+          seekTo: youtubePlaybackPositionSecRef.current,
+        });
+      }).catch((error) => reportError(error, "youtube_audio_session"));
       return;
     }
     if (type === "youtube_autoplay_blocked") {
       if (youtubeFloatingInteractionModeRef.current === "control") {
         scheduleYouTubeControlToDrag();
       }
-      sendYouTubePlayerControl({
-        type: "youtube_set_volume",
-        volume: FIXED_YOUTUBE_VOLUME_PERCENT,
-        muted: false,
-      });
-      sendYouTubePlayerControl({
-        type: "youtube_play",
-        seekTo: youtubePlaybackPositionSecRef.current,
-      });
+      void prepareYouTubePlayback().then(() => {
+        sendYouTubePlayerControl({
+          type: "youtube_set_volume",
+          volume: FIXED_YOUTUBE_VOLUME_PERCENT,
+          muted: false,
+        });
+        sendYouTubePlayerControl({
+          type: "youtube_play",
+          seekTo: youtubePlaybackPositionSecRef.current,
+        });
+      }).catch((error) => reportError(error, "youtube_audio_session"));
       return;
     }
     if (type === "youtube_playing" || type === "youtube_buffering") {
@@ -543,6 +517,8 @@ export function useYouTubePlayerController(options: UseYouTubePlayerControllerOp
   }, [
     clearYouTubePauseConfirmTimer,
     handleYouTubePlayerEnded,
+    prepareYouTubePlayback,
+    reportError,
     scheduleYouTubeControlToDrag,
     scheduleYouTubePauseConfirmation,
     sendYouTubePlayerControl,

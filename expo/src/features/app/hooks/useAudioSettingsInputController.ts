@@ -1,17 +1,9 @@
 import { useCallback } from "react";
-import type {
-  RecordingQualityPreset,
-  RecordingTuning,
-} from "../utils/audioConfig";
 
 type UseAudioSettingsInputControllerOptions = {
   setTtsSpeed: (value: number) => void;
   setTtsSpeedInput: (value: string) => void;
   clampTtsSpeed: (valueRaw: number) => number;
-  setRecordingQualityPreset: (value: RecordingQualityPreset) => void;
-  setRecordingTuning: (value: RecordingTuning | ((prev: RecordingTuning) => RecordingTuning)) => void;
-  parseRecordingQualityPreset: (valueRaw: unknown) => RecordingQualityPreset;
-  recordingTuningFromPreset: (preset: RecordingQualityPreset) => RecordingTuning;
 };
 
 export function useAudioSettingsInputController(options: UseAudioSettingsInputControllerOptions) {
@@ -19,10 +11,6 @@ export function useAudioSettingsInputController(options: UseAudioSettingsInputCo
     setTtsSpeed,
     setTtsSpeedInput,
     clampTtsSpeed,
-    setRecordingQualityPreset,
-    setRecordingTuning,
-    parseRecordingQualityPreset,
-    recordingTuningFromPreset,
   } = options;
 
   const setTtsSpeedWithSync = useCallback((value: number) => {
@@ -35,19 +23,5 @@ export function useAudioSettingsInputController(options: UseAudioSettingsInputCo
     setTtsSpeedInput,
   ]);
 
-  const applyRecordingQualityPreset = useCallback((nextPreset: RecordingQualityPreset) => {
-    const normalized = parseRecordingQualityPreset(nextPreset);
-    setRecordingQualityPreset(normalized);
-    setRecordingTuning(recordingTuningFromPreset(normalized));
-  }, [
-    parseRecordingQualityPreset,
-    setRecordingQualityPreset,
-    setRecordingTuning,
-    recordingTuningFromPreset,
-  ]);
-
-  return {
-    setTtsSpeedWithSync,
-    applyRecordingQualityPreset,
-  };
+  return { setTtsSpeedWithSync };
 }

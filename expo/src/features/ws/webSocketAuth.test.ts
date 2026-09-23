@@ -21,6 +21,15 @@ test("does not create a runner websocket without a runner token", () => {
   expect(calls).toEqual([]);
 });
 
+test("requires runner authentication for streaming STT", () => {
+  global.WebSocket = jest.fn() as unknown as typeof WebSocket;
+
+  expect(() => {
+    createWebSocketWithOptionalAuth("ws://127.0.0.1:8788/stream-stt", "");
+  }).toThrow("runner_token_required");
+  expect(global.WebSocket).not.toHaveBeenCalled();
+});
+
 test("does not fall back to an unauthenticated websocket when auth headers are needed", () => {
   const calls: unknown[][] = [];
   global.WebSocket = jest.fn((...args: unknown[]) => {
