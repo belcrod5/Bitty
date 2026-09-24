@@ -125,6 +125,7 @@ export function usePlayPreparedStreamAudioController(
     setTtsUiStatus("playing");
     ttsPlaybackProgressUiAtRef.current = 0;
     ttsPlaybackTransitionInFlightRef.current = true;
+    let createdSound: Audio.Sound | null = null;
     try {
       let sound: Audio.Sound;
       while (true) {
@@ -156,6 +157,7 @@ export function usePlayPreparedStreamAudioController(
         await sound.unloadAsync().catch(() => {});
         return false;
       }
+      createdSound = sound;
       attachTtsSoundStatusHandler(sound, runId, item);
       setTtsUri(item.uri);
       setTtsSoundWithRef(sound);
@@ -170,6 +172,10 @@ export function usePlayPreparedStreamAudioController(
       await waitForPlaybackToFinish(runId);
       return runId === ttsPlaybackRunIdRef.current;
     } catch (e) {
+      if (createdSound) {
+        await createdSound.unloadAsync().catch(() => {});
+        setTtsSoundWithRef((current) => (current === createdSound ? null : current));
+      }
       if (runId !== ttsPlaybackRunIdRef.current) return false;
       markTtsPlaybackStopped();
       throw e;

@@ -216,6 +216,50 @@ test("can load a later chunk after a preload error", async () => {
   expect(nextSound.playAsync).toHaveBeenCalledTimes(1);
 });
 
+test("unloads a chunk and clears its sound ref when playAsync fails", async () => {
+  const item = queueItem(0);
+  const failedSound = sound();
+  failedSound.playAsync.mockRejectedValueOnce(new Error("play failed"));
+  createAsync.mockResolvedValueOnce({ sound: failedSound });
+  const options = createOptions();
+  const { result } = await renderHook(() => usePlayPreparedStreamAudioController(options));
+
+  await expect(result.current.playPreparedStreamAudioAndWait(item)).rejects.toThrow("play failed");
+
+  expect(failedSound.unloadAsync).toHaveBeenCalledTimes(1);
+  const clearSound = options.setTtsSoundWithRef.mock.calls[1][0] as
+    (current: Audio.Sound | null) => Audio.Sound | null;
+  expect(clearSound(failedSound as unknown as Audio.Sound)).toBeNull();
+  expect(options.markTtsPlaybackStopped).toHaveBeenCalledTimes(1);
+});
+
+test("a failed stale chunk does not clear a newer sound", async () => {
+  const firstSound = sound();
+  const nextSound = sound();
+  let rejectFirstPlay: (error: Error) => void = () => {};
+  firstSound.playAsync.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+    rejectFirstPlay = reject;
+  }));
+  createAsync
+    .mockResolvedValueOnce({ sound: firstSound })
+    .mockResolvedValueOnce({ sound: nextSound });
+  const options = createOptions();
+  const { result } = await renderHook(() => usePlayPreparedStreamAudioController(options));
+
+  const firstPlayback = result.current.playPreparedStreamAudioAndWait(queueItem(0));
+  await waitFor(() => expect(firstSound.playAsync).toHaveBeenCalledTimes(1));
+  await expect(result.current.playPreparedStreamAudioAndWait(queueItem(1))).resolves.toBe(true);
+  rejectFirstPlay(new Error("stale play failed"));
+  await expect(firstPlayback).resolves.toBe(false);
+
+  expect(firstSound.unloadAsync).toHaveBeenCalledTimes(1);
+  expect(nextSound.unloadAsync).not.toHaveBeenCalled();
+  const clearSound = options.setTtsSoundWithRef.mock.calls[2][0] as
+    (current: Audio.Sound | null) => Audio.Sound | null;
+  expect(clearSound(nextSound as unknown as Audio.Sound)).toBe(nextSound);
+  expect(options.markTtsPlaybackStopped).not.toHaveBeenCalled();
+});
+
 test("restarts a pending chunk with the newly selected theme", async () => {
   const item = queueItem(0);
   const plainSound = sound();
