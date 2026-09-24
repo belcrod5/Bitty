@@ -185,17 +185,16 @@ RCT_REMAP_METHOD(cancel,
   [engine connect:player to:distortion format:format];
   [engine connect:distortion to:delay format:format];
   [engine connect:delay to:reverb format:format];
-  [engine connect:reverb to:engine.mainMixerNode format:format];
-
   AVAudioFormat *renderFormat = [[AVAudioFormat alloc]
-      initStandardFormatWithSampleRate:format.sampleRate channels:format.channelCount];
+      initStandardFormatWithSampleRate:format.sampleRate channels:2];
+  [engine connect:reverb to:engine.mainMixerNode format:renderFormat];
   if (![engine enableManualRenderingMode:AVAudioEngineManualRenderingModeOffline
                                  format:renderFormat maximumFrameCount:4096 error:error]) return NO;
 
   NSDictionary *settings = @{
     AVFormatIDKey: @(kAudioFormatLinearPCM),
     AVSampleRateKey: @(format.sampleRate),
-    AVNumberOfChannelsKey: @(format.channelCount),
+    AVNumberOfChannelsKey: @(renderFormat.channelCount),
     AVLinearPCMBitDepthKey: @32,
     AVLinearPCMIsFloatKey: @YES,
     AVLinearPCMIsNonInterleaved: @YES,
