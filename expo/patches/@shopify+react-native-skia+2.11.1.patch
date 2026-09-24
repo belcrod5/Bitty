@@ -1,0 +1,16 @@
+diff --git a/node_modules/@shopify/react-native-skia/apple/SkiaUIView.mm b/node_modules/@shopify/react-native-skia/apple/SkiaUIView.mm
+--- a/node_modules/@shopify/react-native-skia/apple/SkiaUIView.mm
++++ b/node_modules/@shopify/react-native-skia/apple/SkiaUIView.mm
+@@ -77,6 +77,12 @@
+       }
+       _impl->getDrawView()->setShowDebugOverlays(_debugMode);
+       _impl->setUseP3ColorSpace(_useP3ColorSpace);
+       _impl->setHighBitDepth(_highBitDepth);
++#if TARGET_OS_OSX
++      // A recycled NSView can retain its bounds without another layout pass.
++      if (self.bounds.size.width > 0 && self.bounds.size.height > 0) {
++        _impl->setSize(self.bounds.size.width, self.bounds.size.height);
++      }
++#endif
+     }
+   }
