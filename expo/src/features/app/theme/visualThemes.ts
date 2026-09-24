@@ -412,7 +412,7 @@ const cyberpunkTheme: VisualTheme = {
     },
   },
   ttsEffect: {
-    distortion: { preset: "speechWaves", wetDryMix: 18 },
+    distortion: { preset: "speechWaves", wetDryMix: 0 },
     delay: { time: 0.11, feedback: 18, wetDryMix: 11 },
     reverb: { preset: "smallRoom", wetDryMix: 8 },
   },

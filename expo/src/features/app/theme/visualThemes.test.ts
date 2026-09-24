@@ -55,7 +55,7 @@ test("declares the native color scheme for each visual theme", () => {
 test("defines TTS processing with the theme", () => {
   expect(VISUAL_THEMES.standard.ttsEffect).toBeNull();
   expect(VISUAL_THEMES.cyberpunk.ttsEffect).toEqual({
-    distortion: { preset: "speechWaves", wetDryMix: 18 },
+    distortion: { preset: "speechWaves", wetDryMix: 0 },
     delay: { time: 0.11, feedback: 18, wetDryMix: 11 },
     reverb: { preset: "smallRoom", wetDryMix: 8 },
   });
