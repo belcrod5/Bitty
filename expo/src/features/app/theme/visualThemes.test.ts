@@ -56,7 +56,7 @@ test("defines TTS processing with the theme", () => {
   expect(VISUAL_THEMES.standard.ttsEffect).toBeNull();
   expect(VISUAL_THEMES.cyberpunk.ttsEffect).toEqual({
     distortion: { preset: "speechWaves", wetDryMix: 0 },
-    delay: { time: 0.11, feedback: 18, wetDryMix: 9 },
+    delay: { time: 0.11, feedback: 18, wetDryMix: 7 },
     reverb: { preset: "smallRoom", wetDryMix: 8 },
   });
 });
