@@ -1,5 +1,11 @@
 # Local dependency patches
 
+`@shopify+react-native-skia+2.11.1.patch` initializes a macOS Canvas's new
+Metal drawing surface from its existing view bounds when it attaches. Fabric
+can reattach a view without another layout callback; without this, the surface
+stays uninitialized and animated frames cannot be drawn. Later size changes
+still follow Skia's existing layout path. iOS behavior is unchanged.
+
 `react-native-macos+0.81.9.patch` keeps Fabric scroll interactions bracketed for
 React Native, smooths phase-less mouse-wheel ticks, and doubles only their
 vertical distance. Precise trackpad and horizontal scrolling remain native. It
