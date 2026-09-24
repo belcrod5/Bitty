@@ -7,7 +7,7 @@
 | 判定 | 内容 |
 | --- | --- |
 | 確認済み | **既存 thread の古い先頭だけを除き、直近ターンを残して任意に置換する公開操作は確認できない。** `thread/resume` は同じ会話を継続し、`thread/inject_items` はモデル可視履歴に追記する。[App Server: Threads](https://learn.chatgpt.com/docs/app-server) |
-| ローカル実測と未検証 | **新しい thread に選んだ文脈を投入する構成は候補になる。** 隔離した App Server の localhost 模擬提供先への `/v1/responses` 要求では、`input` 配列にメモリー相当と直近の user／assistant 2往復、今回の発話が順に入り、別 thread の古い識別文字列は入らなかった。ただし実モデルへの要求、tool／reasoning item の継続は未検証。[App Server: start / inject / turn](https://learn.chatgpt.com/docs/app-server) |
+| ローカル実測と未検証 | **新しい thread に選んだ文脈を投入する構成は候補になる。** 隔離した App Server の localhost 模擬提供先への `/v1/responses` 要求では、`input` 配列にメモリー相当と直近の user／assistant 2往復、今回の発話が順に入り、別 thread の古い識別文字列は入らなかった。ephemeral thread でも開始・注入・模擬上流への投入を確認した。ただし実モデルへの要求、tool／reasoning item の継続は未検証。[App Server: start / inject / turn](https://learn.chatgpt.com/docs/app-server) |
 | 確認済み | `thread/fork` は元履歴を複製し、`lastTurnId` で末尾を切る操作。古い先頭だけを除いて直近だけ残す用途ではない。`thread/compact/start` は App Server 内の圧縮を起動し、`MEMORY.md` の要約を指定して置換する操作ではない。[App Server: fork / compact](https://learn.chatgpt.com/docs/app-server) |
 | 制約あり | 公式文書の `thread/rollback` は末尾 N turn を in-memory context から落として marker を保存する deprecated 操作。全 turn を落として再注入する案の動作・再開後の整合性は未検証で、現行 CLI 生成スキーマにはこの method がない。現行スキーマの `thread/revert` は paginated thread の履歴を指定 turn より前の prefix に置換する操作で、古い先頭だけを除けない。公式文書は paginated thread の新規作成を未対応としており、現行音声設計の基盤にはできない。[App Server: rollback / paginated history](https://learn.chatgpt.com/docs/app-server) |
 | 別方式 | Responses API は、`conversation`／`previous_response_id` を使わず選んだ input と前回の出力 item を毎回渡す手動管理を公式に説明する。これは App Server の managed thread とは別の実行方式で、現在の Codex tool・承認・認証がそのまま移ることは意味しない。[Conversation state](https://developers.openai.com/api/docs/guides/conversation-state) |
@@ -24,9 +24,9 @@
 ## 新規 thread 案で残る確認事項
 
 1. **モデル入力:** ローカル模擬提供先では、別 thread の古い識別文字列が新 thread の上流 `input` に含まれず、単純なメッセージ群が順に入ることを確認した。実モデルへの要求でも同じか、複雑な item を加えて確認する。モデルの返答だけでは非投入の証拠にならない。App Server が `cwd` から読み込む指示ファイルなどは別の入力源として扱う。
-2. **item と継続品質:** 単純な user／assistant message の受理と順序は模擬上流で確認したが、tool／reasoning item は未検証。tool 実行・承認状態を新 thread に引き継げるとは限らない。意味的な継続に本文と要約だけで足りるか、raw item の保存が必要かを判定してからログ形式を決める。Responses API で stateless replay を選ぶ場合、公式文書は `output` 全 item（暗号化 reasoning と `phase` を含む）の保持を求める。[Conversation state](https://developers.openai.com/api/docs/guides/conversation-state)、[App Server: tools / approvals / events](https://learn.chatgpt.com/docs/app-server)
-3. **動線:** 新 thread ごとの認証、tool 接続と承認、`item/agentMessage/delta` と完了通知による stream／TTS、interrupt、再起動後の native thread 対応付けを確認する。新規セッションの内部 `cwd` は利用者に選ばせず Runner が与える候補だが、実在・正規化・App Server 権限と workspace 条件を確認する。現行の Agent Service `turn.start` には音声の論理会話 ID がない。
-4. **再送:** 発話受付後・応答完了前に Runner を停止し、同じ送信 ID の再送が既存 native turn を照合できるかを確認する。結果を確定できない場合は再生成を自動開始しない。既存 `operation_status_unknown` と同様に不明状態を表現する。
+2. **item と継続品質:** 単純な user／assistant message の受理と順序は模擬上流で確認したが、tool／reasoning item は未検証。tool 実行・承認状態を新 thread に引き継げるとは限らない。現行設計はユーザー向け tool 操作と tool-state 継続を提供せず、本文と要約による意味的継続に限る。Codex 組み込み read-only tool の実行はあり得るが、その state の完全再生は保証しない。ツール継続が v1 の要件になれば、この保存形式と方式を再検討する。Responses API で stateless replay を選ぶ場合、公式文書は `output` 全 item（暗号化 reasoning と `phase` を含む）の保持を求める。[Conversation state](https://developers.openai.com/api/docs/guides/conversation-state)、[App Server: tools / approvals / events](https://learn.chatgpt.com/docs/app-server)
+3. **動線:** 新 thread ごとの認証、`item/agentMessage/delta` と完了通知による Runner stream／TTS、中断、内部 `cwd` と sandbox の統合動作を確認する。内部 `cwd` は利用者に選ばせず Runner が与えるが、実在・正規化・App Server 権限と workspace 条件を検証する。現行の Agent Service `turn.start` には音声の論理会話 ID がないため、入口の一回の方式選択を実装する。
+4. **再送:** ephemeral thread は App Server 再起動後に `thread/read`／`thread/resume` で復元できないことをローカルで観測した。v1 は発話受付後・応答完了前に Runner が停止し、native 要求済みか不明な送信 ID を `unknown` に固定して自動再生成しない。この fail-closed の再起動・同 ID 再送テストは Runner 統合時に必要であり、native turn の事後照合を前提にしない。
 
 ## 隔離した実動検証と次の手順
 
@@ -46,4 +46,10 @@
 
 localhost 模擬 endpoint が受けた 1 件の `POST /v1/responses` の JSON body を解析すると、`input` は8項目の配列だった。該当部分の役割とテスト文字列は `input[2..7] = [assistant/MEMORY_SUMMARY, user/RECENT_USER_1, assistant/RECENT_ASSISTANT_1, user/RECENT_USER_2, assistant/RECENT_ASSISTANT_2, user/CURRENT_USER]` の順で、`OLD_A_ONLY` は `input` 全体になかった。初回の簡単な A/B テストは HTTP body 全体で文字列の有無を確認したが、この追加テストでは `input` フィールドを直接検査した。模擬 endpoint は受信後に 503 応答を用意してプロセスを止めたため、実モデルへの送信・課金や生成完了は試していない。
 
-この実測は、単純な user／assistant message とメモリー相当文字列の受理・順序・別 thread からの分離に限る。実モデルでの応答、tool／reasoning item、承認、stream／TTS、中断、再起動後の再開は未検証。これらと認証・課金条件が整ってから、本実装の API 方式を確定する。
+対照試験では、非 ephemeral thread に注入した user／assistant item と現在発話から、localhost 模擬提供先の正常 SSE で `item/agentMessage/delta` と成功した `turn/completed` を受けた。App Server 再起動後の `thread/read`／`thread/resume` で完了 turn を確認でき、同 thread の次ターンの上流入力には注入 item と初回 user／assistant が残っていた。一方、`thread/read` の `turns` は注入 item 自体を列挙しなかった。これは既存 thread を継続すると履歴が残ることのローカル対照であり、注入 item の確認を `thread/read` だけに頼れないことも示す。
+
+追加で、同じバージョンの生成スキーマに `ThreadStartParams.ephemeral` があることを確認した。隔離ホームで `thread/start {cwd:<空のテストcwd>, ephemeral:true}` は `thread.ephemeral:true` と `path:null` を返し、assistant item の `thread/inject_items` も成功した。localhost 模擬提供先を指定した別試験では、この ephemeral thread の `turn/start` から `/v1/responses` の `input` に注入した識別文字列が入った。模擬提供先から正常な SSE を返す追加試験では、`item/agentMessage/delta` の `EPHEMERAL_MOCK_REPLY` と成功した `turn/completed` を観測した。App Server 再起動後、同じ隔離ホームで `thread/read` は `-32600: thread not loaded`、`thread/resume` は `-32600: no rollout found for thread id` を返した。`thread/list` も0件だった。これは **単一 item と模擬応答のローカル実測**であり、実モデルの完了や複数 item の ephemeral での順序は未検証。v1 設計は再起動後に ephemeral thread を復元しない。
+
+[公式 App Server 文書の restricted read access](https://learn.chatgpt.com/docs/app-server#sandbox-read-access-readonlyaccess) は `sandboxPolicy.readOnly.access` を記すが、手元の `codex-cli 0.156.0` 生成スキーマには `readOnly.access` がない。上と同じ隔離構成の別試験で `turn/start.sandboxPolicy = { "type": "readOnly", "access": { "type": "restricted", "includePlatformDefaults": true, "readableRoots": ["<空のテストcwd>"] }, "networkAccess": false }` を送ると、App Server は `-32600: Invalid request: readOnly.access is no longer supported; use permissionProfile for restricted reads` と拒否し、localhost 模擬提供先への要求は0件だった。したがって現在の CLI で「空の cwd だけ読める」とは設計できない。`permissionProfile` の代替動作も未検証であり、v1 の通常 read-only sandbox は read tool の非実行・他ファイルの非読取を保証しない。
+
+この実測は、単純な user／assistant message とメモリー相当文字列の受理・順序・別 thread からの分離、および模擬提供先での ephemeral turn 完了に限る。実モデルでの応答、tool／reasoning item、承認、Runner との stream／TTS 接続、中断は未検証。v1 設計の API 方式は新しい App Server thread に固定したが、認証・課金条件を整えた統合検証に合格するまでは本実装を有効化しない。

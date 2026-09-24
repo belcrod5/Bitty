@@ -1,70 +1,66 @@
-# 音声長期会話の文脈管理 設計案
+# 音声長期会話の文脈管理 v1 設計
 
-状態: 設計のみ。API方式と保存先の最終決定は技術検証後に行う。
+状態: v1 の実装契約。v1 は **利用者にファイル・コマンド等のツール操作 UI を提供せず、tool state の継続も保証しない音声会話**。Codex 組み込みの read-only tool が動く可能性はある。実モデルへの送信、認証・承認・TTS の統合動作は未実測で、リリース前の確認が必要。コード実装は本書の対象外。
 
-## 2つの方式
+## 2つの方式と v1 の選択
 
-| 名称 | 対象 | 次回に渡す文脈 |
+| 名称 | 対象 | 文脈の所有者 |
 | --- | --- | --- |
-| **既存のセッションIDで管理** | 左ドロワーと Skia の既存セッションカードから開くチャット | 既存のセッションをそのまま継続する。動線と履歴管理を変えない。 |
-| **自前コンテキスト配列** | Skia に新設する音声長期会話 | アプリ／Private Runner が発話・応答の配列から次回に渡す文脈を選ぶ。 |
+| **既存のセッションIDで管理** | 左ドロワー、Skia の既存セッションカードから開くチャット | 現行の Agent Service／Codex native session。UI・API・保存・継続動線を変えない。 |
+| **自前コンテキスト配列** | Skia 下部ツール右の新アイコンから開く音声長期会話 | Runner が正本ログから今回渡すメッセージ配列を選ぶ。アプリは論理会話IDと現在の送信IDだけを保持する。 |
 
-## 自前コンテキスト配列の流れ
+v1 の「自前コンテキスト配列」は、Codex App Server の **新規 ephemeral thread を応答ターンごとに開始**し、選んだメモリーと直近メッセージを `thread/inject_items`、今回の確定発話を `turn/start` で渡す。既存 thread の `thread/resume`、`thread/fork`、`thread/compact/start` をこの方式の履歴置換には使わない。Responses API の直接呼び出しにも切り替えない。`thread/inject_items` は追記であり、既存 thread の古い先頭を自由に置換できないためである。[公式 App Server 文書](https://learn.chatgpt.com/docs/app-server)、[隔離検証](APP-SERVER-CONTEXT-VERIFICATION.md)。
 
-1. アプリ／Runner が音声会話の発話と完了応答を時系列の配列として管理する。Runner に全件の正本ログを残し、次回に使う直近の配列はそこから選ぶ。
-2. 例えば直近最大 **10件** を残し、超えた完了済みメッセージを古い順に配列から外す。10件は説明用の仮値で、件数・数え方・実際の上限は実装前に決める。正本ログからは削除しない。
-3. 外したメッセージのうち、`MEMORY.md` の要約済み末尾より後のものだけをメモリー一時ファイルに保存する。別エージェントがそのファイルと既存の `MEMORY.md` を読んで要約し、`MEMORY.md` を更新する。初版はターン間に直列実行し、会話と並列に走る圧縮は後続段階とする。
-4. 次回は「指示 + 更新済み `MEMORY.md` + 直近の配列 + 今回の発話」を渡す。要約済み範囲と直近配列、今回の発話を重複させない。実際にこの入力だけをモデルへ渡せる API 方式は技術検証後に確定する。
+ローカルの `codex-cli 0.156.0` では ephemeral thread の開始・注入、模擬提供先への入力、模擬応答での turn 完了まで確認した。実モデルでの成立は未確認。実装はこの方式に固定し、対象 Runner で ephemeral／注入／権限制約が使えなければ音声モードを利用不可として止める。managed thread や Responses API へ黙って代替しない。
 
-## 画面と初期範囲
+## 入口と識別子
 
-Skia ボード下部の既存ツール群の右側に音声会話アイコンを追加する。そこから開く画面は既存の音声入力コンポーネントを表示し、必要な状態・エラーだけを最小限に示す。チャット画面、会話本文リスト、テキスト入力欄、作業ディレクトリ選択は表示せず、音声で会話を続ける。応答は既存 TTS で再生する。
+- 新規の物理 endpoint は作らず、既存の認証付き `/runner-ws` の `agent` channel を使う。新しい `voice.open` は Runner にある唯一の音声論理会話を取得し、なければ UUID を発行して `active.json` に同期保存する。**v1 は一 Runner に一つの音声論理会話で固定**し、会話の新規作成・切替・削除 UI は作らない。同じ Runner token の端末は同じ会話を開く。`voice.open` の返値は `logicalConversationId`、固定の `contextMode: "self_context_array"`、直近の送信状態。
+- ターン受付は既存と同じ `agent / turn.start`。音声側の payload は `{ backendId: "codex", logicalConversationId, clientOperationId, input: { blocks: [{ type: "text", text }] } }` とし、本文は非空の text block 一つだけとする。外枠の `operationId` と payload の `clientOperationId` は同じ UUID でなければ拒否する。`backendId` は provider であり方式ではない。`sessionRef`、クライアント指定 `cwd`、画像、`model`／`effort`／`policyProfileId` 等の自由指定は受け付けず、モデルと effort は Runner の現行 Codex 既定値を使う。論理IDがある場合だけ Runner の入口で保存済み方式を照合して音声専用サービスへ一度振り分ける。論理IDがない既存の `turn.start` は今の Agent Service にそのまま渡す。現行 `normalizeAgentStartRequest` には論理IDがないので、この分岐は正規化より前に置き、Agent Service／Codex Backend 内へ方式判定を広げない。
+- 送信IDはアプリが確定発話ごとに発行する UUID。受理確認を得るまで保持し、通信再送では同じIDと同じ本文を使う。Runner はIDと本文の組を照合し、同一なら現在状態または保存済み結果を返し、本文が異なれば競合エラーにする。別IDのターンは同一論理会話内で同時実行せず `busy` を返す。
+- `turn.start` は永続化後に既存と同じ外枠 `{ channel: "agent", op: "turn.accepted", requestId, operationId, streamId, payload }` を返す。音声では外枠の `operationId` と payload の `clientOperationId` を送信IDにし、`streamId`／`payload.runId` も送信IDとする。payload に `logicalConversationId` と `status: "accepted"` を付ける。完了時は `op: "voice.turn.completed"` と `payload: { logicalConversationId, clientOperationId, text }`、失敗時は `op: "voice.turn.failed"` と `payload: { logicalConversationId, clientOperationId, status, code }` を送る。切断後は `voice.status` に論理IDと送信IDを渡し、`requestId` を引き継いだ `voice.status.result` にその送信IDの `status` と完了済みなら `text` を返す。`voice.open` の応答は `voice.open.result`。新 op は `agent.hello` の対応操作にも列挙する。画面は差分テキストを描画しないので音声側の delta 配信は v1 に不要。`voice.open`／`voice.status` は保存済み状態を返すだけで新しい生成を始めない。通常チャットの event 契約は変更しない。
 
-## 現状と境界
+実装箇所の目安: [`server-runtime.mjs`](../private_runner/src/server-runtime.mjs) の認証済み Runner WS 入口で上記の一回の分岐を置き、音声専用の受付・保存・App Server 処理を別ファイルにまとめる。[`agent-transport.mjs`](../private_runner/src/agent/agent-transport.mjs) は対応 op の広告だけ追加し、[`codex-turn-execution.mjs`](../private_runner/src/codex-turn-execution.mjs) の通常チャット処理は変更しない。既存の `createCodexRpcClient` による認証・App Server 接続を再利用する。
 
-- Skia ボードのツールは [`SkiaMiniBoardScreen.tsx`](../expo/src/features/app/screens/SkiaMiniBoardScreen.tsx) の下部に並ぶ。既存カードのセッション起動は `useSkiaMiniChatSessions` と AppRoot のチャット動線につながる。
-- 現行チャットの Agent client は [`client.ts`](../expo/src/features/agent/client.ts) で provider-neutral Agent Service を優先し、条件により Codex raw relay にフォールバックする。通常チャットを raw RPC だけの構成として扱わない。
-- 音声認識の接続と送信サイクルは [`useStreamingStt.ts`](../expo/src/features/stt/useStreamingStt.ts)、入力中の表示は [`StreamingSttFooter.tsx`](../expo/src/features/app/components/StreamingSttFooter.tsx) に分かれており、現在は `ChatScreen` が組み立てる。新画面はこれらを再利用し、STT 通信、録音状態、波形／使用量表示を複製しない。本文を表示しない音声会話では、応答を既存 TTS で必ず再生する。TTS 制御も既存動線につなぎ、複製しない。
-- Agent Service の新規セッション要求には `cwd` が必要で、Runner は canonical cwd と workspace admission を扱う（[`agent-protocol.mjs`](../private_runner/src/agent/agent-protocol.mjs)、[`agent-service.mjs`](../private_runner/src/agent/agent-service.mjs)）。画面で作業ディレクトリを選ばせないことは、内部 `cwd` を省くことを意味しない。
+## 保存と文脈選択
 
-ターン受付の論理契約を両方式で共通にする。音声会話の初回入口で Runner が論理会話 ID を発行し、「自前コンテキスト配列」との対応を永続化して返す。以後の送信・再起動後の再開はその ID から同じ方式を選ぶ。既存チャットは「既存のセッションIDで管理」のまま扱う。`backendId: "codex"` はモデル提供元の識別であり、方式の識別には使わない。現行 `turn.start` に論理会話 ID はないため、追加する受付契約と実際の transport（Agent Service／Codex raw relay）の接続は技術検証後に決める。選択後のターン処理と保存は方式ごとのファイルに閉じ、UI、route、既存 Agent Backend に方式判定の `if` を散らさない。共通化は現在共有する責務に限る。
+保存先は `private_runner/logs/voice_context/v1/`。`active.json` に唯一の論理会話IDと方式を保存し、そのIDのサブディレクトリに次を置く。worktree の `private_runner/logs` は main 側を指す共有 symlink なので、[worktree 手順](GIT-WORKTREE.md)どおり同じ main を共有する Runner は一つだけ稼働させる。複数 Runner 同時更新は v1 対象外。
 
-## 会話データと保存
+| ファイル | 責務 |
+| --- | --- |
+| `events.jsonl` | 正本。送信ID、受理した確定発話、状態遷移、完了応答、対応する native thread／turn ID を時系列で追記する。STT 途中結果、TTS 音声、tool／reasoning item は保存しない。 |
+| `memory-pending.json` | 要約待ちの完了ペアだけを正本から作る一時ファイル。範囲の開始・終端ペア番号を含み、正本ではない。 |
+| `MEMORY.md` | Runner が確定した要約。先頭の機械可読ヘッダーに「要約済み末尾ペア番号」を持ち、本文とヘッダーを一つの原子的置換で更新する。 |
 
-音声会話には native Codex thread ID とは別の論理会話 ID を付ける。文脈再構成で native thread が変わっても、利用者には同じ音声会話として表示する。具体的な native session との対応付けは API 方式の検証後に定める。
+`events.jsonl` は一行一 event とし、全行に `seq`（連番）、`at`（時刻）、`clientOperationId`、`type` を置く。最小形は `accepted` に `text`、`dispatching`、`native_started` に `threadId`／`turnId`、`completed` に `pairSeq`／`text`、`preflight_failed`／`failed`／`interrupted` に `code`。`pairSeq` は完了した user／assistant ペアにだけ 1 から連番で付く。`MEMORY.md` の初期値は `<!-- voice-context:v1 summarizedThroughPair=0 -->` と空本文で、cursor は event の `seq` ではなく `pairSeq` を指す。`memory-pending.json` は `{ "fromPairSeq": 1, "throughPairSeq": 3, "pairs": [...] }` の形とし、範囲と中身を正本から再検証する。`active.json` は `{ "logicalConversationId": "<UUID>", "contextMode": "self_context_array" }`。これら以外の索引ファイルを正本にしない。
 
-Runner が論理会話ごとに、受付済みの確定発話と生成完了した応答を順序付きで記録する正本ログ、要約への受け渡しに使うメモリー一時ファイル、`MEMORY.md`、必要最小限の会話メタデータを保存する。直近の配列は正本ログから選ぶ。メモリー一時ファイルは配列から外した範囲を別エージェントへ渡すためのもので、正本ではない。`MEMORY.md` は再生成可能な要約とし、要約済み末尾位置をそのファイル内に記録する。要約成功後だけ一時ファイルを片付け、失敗時は正本ログと既存 `MEMORY.md` を維持する。音声認識の途中結果は正本へ入れない。tool／reasoning item まで正本に必要かは技術スパイクで判定し、必要なら保存形式を決める。現段階で item の完全再生を保証しない。
+発話は `turn.start` 受付時に `accepted` event を追記・同期してから確認応答する。完了応答は対応 native thread／turn の `item/completed` で最終本文を集め、成功した `turn/completed` と空でない本文を確認した後に同じ送信IDの `completed` event として追記・同期し、それからアプリへ通知する。生成途中の delta は正本にも TTS にも使わず、応答本文を途中で切って完了扱いにしない。追記は一会話内で直列化し、再起動時は正本を読み直す。書きかけの末尾行だけは受理済みと見なさず、原本を保全して復旧する。破損した確定行、`MEMORY.md` の不正なヘッダー、ディスク満杯は黙って飛ばさず受付を停止する。
 
-保存先候補は `private_runner/logs` 配下の音声会話専用サブディレクトリとする。ここは Git の追跡対象外で、worktree の `private_runner/logs` は main 側へ向く共有 symlink である（[`GIT-WORKTREE.md`](GIT-WORKTREE.md)）。worktree ごとに別の会話正本を作らず、既存ログや token と混在しない。共有ログの同時更新を避けるため、同手順書どおり同じ main を共有する Runner は一つだけ稼働させる。複数 Runner の同時稼働対応は初版の対象外。最終パス、容量上限、バックアップ／削除方針は実装前に決める。内部 `cwd` は Runner が用意する専用ディレクトリを候補とし、当該パスの権限と workspace 登録条件を検証する。ユーザーの作業リポジトリを音声会話の保存場所や既定 `cwd` として暗黙に使わない。
+文脈に入れる単位は **完了した user／assistant のペア**。直近最大 **5ペア＝10履歴メッセージ** を v1 の上限とする（従来の「10件」という説明例をここで具体化）。「固定の音声会話指示 + `MEMORY.md` 本文 + 選択ペア + 今回の発話」の UTF-8 合計には **32 KiB** の単一安全上限を置く。件数または総量を超えると、`MEMORY.md` の cursor の次から古い完了ペアを順に直近配列外へ移す。最低ペア数は設けない。固定指示と今回発話だけで総量を超える場合は受理前に拒否し、要約後も総量を満たせない場合は native turn を開始せず失敗にする。応答や要約を上限に合わせて黙って切らない。これは token 上限の保証ではないため、実モデルの context-length エラーも失敗として扱う。
 
-## ターン処理と圧縮
+直近配列外になった未要約の連続ペアだけを `memory-pending.json` に原子的に書く。別の要約エージェントはこのファイルの内容と旧 `MEMORY.md` を受け取り、事実・好み・未解決事項を統合した **本文だけ**を返す。要約エージェントに保存ファイルを書かせず、Runner が対象範囲とサイズを検証して `MEMORY.md` を原子的に更新する唯一の書き手になる。要約入力が長すぎる場合も範囲を黙って欠落させず失敗にする。成功後だけ一時ファイルを片付ける。失敗・再起動時は正本と cursor を基準に同じ範囲を再生成できる。要約は v1 では次の応答ターン前に直列実行し、会話と並列には走らせない。
 
-1. 画面は既存 STT hook で音声を確定し、論理会話 ID、送信 ID、確定テキストを共通のターン受付契約へ渡す。入口が保存済みの方式へ振り分ける。Runner は同一会話のターンを直列化し、確定発話を受付時に送信 ID と処理状態付きで一度だけ永続化する。同じ ID の再送は既存の受付・結果を照会し、発話を重複記録しない。
-2. Runner は正本ログと `MEMORY.md` の要約済み末尾位置から直近配列を選ぶ。上限を超える場合は、その位置の次から新たに直近配列外となった完了メッセージだけをメモリー一時ファイルへ書き、別エージェントに既存 `MEMORY.md` とともに渡す。初版は要約が確定してから応答ターンへ進む。
-3. 要約結果の対象範囲を検証し、要約済み末尾位置とともに `MEMORY.md` を原子的に更新する。成功後に一時ファイルを片付ける。失敗時は既存メモリと正本ログを維持し、範囲の欠落や二重投入を避ける。要約に失敗し、残りの履歴を安全に投入できない場合は黙って履歴を切り捨てず、ターンを失敗として扱う。その後、「指示 + `MEMORY.md` + 直近配列 + 今回の発話」を選んだ API 方式へ渡す。
-4. 応答は生成完了時に発話と同じ送信 ID に結び付けて永続化し、既存 TTS で必ず音声再生する。TTS の成否は応答ログと別の状態で扱い、再生失敗でも完了応答を消さない。中断・通信断で生成途中の応答は完了扱いにしない。受付後・応答完了前に Runner が再起動した場合、保存済みの native turn の結果を照合し、完了を確認できた場合だけ応答を一度記録する。結果不明なら自動再生成せず、状態不明として再送を止める。再開可能条件は技術スパイクで確定する。`useStreamingStt` に `replyLoading` と `ttsPlaybackActive` を渡し、返信・再生の終了に合わせて既存 hook のサイクルで録音を再開する。画面は音声入力状態と必要なエラーだけを示す。
+毎回、空の ephemeral thread に要約本文があれば「以前の会話の要約」と明示した assistant message、続いて残したペアを user／assistant message として順に注入する。今回の発話は注入せず `turn/start.input` に一度だけ置く。要約済みペア、直近ペア、今回の発話は重複しない。要約エージェントも応答エージェントとは別の ephemeral thread で実行する。tool／reasoning の完全再生は v1 で保証しない。
 
-要約エージェントはメモリー一時ファイルと現在の `MEMORY.md` を入力とし、継続に必要な事実、未解決事項、利用者の希望を簡潔に統合する。音声会話の応答エージェントとは役割を分ける。将来の並列圧縮では、圧縮開始時のログ末尾を固定し、その後に到着した発話は直近配列として残す。結果の適用時に対象範囲を照合する。この並列化と競合制御は初版に含めない。
+## ターンの失敗・再送
 
-## API 方式の技術検証
+1. Runner は同一会話の操作を直列化し、送信IDで既存の `accepted`／terminal event を検索する。同IDの再送は生成せず保存済み状態を返す。
+2. 発話受理後、必要なら要約を確定する。要約に失敗した場合は `preflight_failed` を記録し、今回の native thread は作らない。その発話は未完了として次回文脈から除く。次の発話は新しい送信IDで受け付け、要約を再試行する。
+3. native 要求の前に `dispatching` を同期して記録する。新規 ephemeral `thread/start` → `thread/inject_items` → `turn/start` の順に実行し、返った native ID を正本に記録する。成功通知と本文の保存後だけ `completed` とする。明示的な中断・失敗は `interrupted`／`failed` として記録する。
+4. アプリの WS だけが切れた場合、Runner はターンを続けて結果を保存する。再接続後の `voice.status` で `accepted`／`running`／`completed`／失敗状態を返し、同じ送信IDでは再生成しない。Runner 再起動時に `accepted` の後に `dispatching` がなければ、native 要求前と確定できるため `preflight_failed`（`code: "runner_restarted_before_dispatch"`）を追記する。`dispatching` 以降で terminal event がなければ、送信されたか不明で ephemeral native thread を照合・復元できないため `unknown` として扱い、自動再実行しない。後者の判定は既存 Agent Service の `operation_status_unknown` と同じ保守的な考え方だが、音声専用の保存状態で表す。新しい送信IDの発話は許可するが、未完了発話・未確認応答は直近ペアへ入れない。画面は `unknown` を「前の返答を確認できません」と示す。同IDは常に保存済みの失敗状態または `unknown` を返す。
 
-| 方式 | 文脈の扱い | 判定 |
-| --- | --- | --- |
-| Codex App Server managed thread の継続 | `thread/resume` と `turn/start` は既存 thread の履歴を引き継ぐ。`thread/inject_items` はモデル可視履歴への **追記** であり、古い履歴を自由に置換する手段ではない。 | 「既存のセッションIDで管理」に使用。「自前コンテキスト配列」にそのまま使えるとは判断しない。 |
-| App Server で新しい thread に再構成した文脈を渡す案 | 論理会話を維持しつつ native thread を切り替える候補。入力項目、tool、承認、stream、認証、履歴表示の継続性を実測する必要がある。 | 検証待ち。成立する前提で実装を固定しない。 |
-| Responses API への毎ターンの stateless replay | `conversation` と `previous_response_id` に依存せず、各要求へ選択した input／必要な出力項目を渡す方式。公式文書は手動の会話状態管理を説明している。 | 文脈を選ぶ候補。ただし現行 Codex App Server の tool／承認／認証等と同等に使えるかは別途検証する。 |
+正本ログには送信IDごとの event を一度だけ追記し、端末の TTS 成否は応答確定と分ける。TTS 失敗・画面離脱でも `completed` 応答は消さない。端末が結果を受け取る前に落ちた場合は `voice.status` で完了本文を取り直せるが、再起動後に自動読み上げはしない。
 
-公開仕様と現行コードの照合結果は [App Server 文脈制御の技術検証](APP-SERVER-CONTEXT-VERIFICATION.md) を参照。末尾削除系の `thread/rollback`／`thread/revert` も、古い先頭だけを選んで除く手段としては確認できていない。
+## 音声画面
 
-技術スパイクでは、(1) App Server の新規 thread に `MEMORY.md` と直近ターンを渡したとき古い履歴が次のモデル入力に残らないか、(2) 意味的な会話継続に tool／reasoning item の保存・再投入が必要か、必要なら取得・再投入できるか、(3) Runner の既存認証、承認、streaming、中断、TTS への接続、(4) internal `cwd` と workspace admission、(5) 初回 ID 発行と再起動後の方式・会話復元、(6) 受付済みだが結果不明の送信 ID を native turn と照合できるかを確認する。条件を満たす方式が決まるまで本実装の API 境界と item 保存形式を確定しない。
+[`SkiaMiniBoardScreen.tsx`](../expo/src/features/app/screens/SkiaMiniBoardScreen.tsx) の既存ツール群の右に音声アイコンを置き、新しい画面へ遷移する。既存のカード起動・左ドロワーは変えない。画面にはマイク操作と既存の [`StreamingSttFooter.tsx`](../expo/src/features/app/components/StreamingSttFooter.tsx)、最小限の処理中／エラー表示、必要時の再生ボタンだけを置く。会話本文リスト・テキスト入力・作業ディレクトリ選択は表示しない。
 
-公式資料: [Codex App Server](https://learn.chatgpt.com/docs/app-server)、[Conversation state](https://developers.openai.com/api/docs/guides/conversation-state)。
+新画面も既存の [`useStreamingStt.ts`](../expo/src/features/stt/useStreamingStt.ts) を使い、確定発話だけを送る。`sendTranscript` の `onAccepted` は Runner が `accepted` を永続化した返答を受けた時だけ呼ぶ。`replyLoading` は受理から応答確定または失敗まで true。完了本文は [`AppRoot.tsx`](../expo/src/features/app/AppRoot.tsx) が既に持つ `synthesizeSpeechStream(text, { messageId: clientOperationId })` へ渡す。実際の合成入口は [`useSynthesizeSpeechStreamController.ts`](../expo/src/features/app/hooks/useSynthesizeSpeechStreamController.ts) であり、新しい TTS 経路を作らない。`panelId`／通常チャットの `sessionId` は渡さず、論理会話IDを native session ID と偽装しない。TTS 呼出し直前から開始待ちを含めて、既存の `isTtsPlaybackActive = ttsPlaying || ttsLoading || ttsQueueProcessing` と合わせた状態を hook の `ttsPlaybackActive` に渡し、再生終了まで録音を止める。再生終了後に hook の既存サイクルで録音を再開する。TTS が開始できない／失敗した場合も応答を保持し、音声の再生だけを再試行できる。画面離脱時は録音・再生を止め、Runner の生成は継続して正本へ保存する。既存チャットの自動読み上げ設定とは独立して、この画面で完了した応答は常に読み上げる。既存チャットの TTS 波形・状態への誤投影がなく音声画面で再生終了を検出できることを統合テストする。
 
-## 実装順と受入条件
+## 権限とリリース条件
 
-1. 上記の技術スパイクで方式と内部 `cwd`／保存先を確定する。完全な自前文脈選択が成立しない場合は、代替方式と既存機能との差を明示して設計を更新する。
-2. Runner に音声専用の論理会話、正本ログ、メモリー一時ファイル、`MEMORY.md` 更新、直列ターン処理を実装する。既存チャットの動線は変更しない。
-3. Skia 下部ツール右に入口を追加し、会話本文リストのない音声入力画面を既存 STT hook／表示部品と接続する。
-4. 文脈上限付近、要約失敗、通信断・再送、TTS 失敗、アプリ／Runner 再起動を確認する。受付済み・応答未完了の再送では、重複生成せず完了／中断／状態不明を区別できることを確認する。受入基準は、長期会話が同じ論理 ID で続き、過去の要点を参照しつつ不要な古い履歴が次のモデル入力に残らず、発話・完了応答の記録が欠落・重複せず、応答を音声で聞けて既存チャットと音声入力に回帰がないこと。
+クライアントからファイルパスや `cwd` を受け取らない。Runner は各 native turn 用に OS 一時領域へ空の専用 `cwd`（所有者のみアクセス）を作り、`realpath` で確定して App Server に渡し、終了時に片付ける。音声経路は Agent Service の新規セッション受付と workspace admission を通らないため、この内部 `cwd` を対象 Runner の App Server が受け入れるか統合試験で確認する。ログは専用ディレクトリを 0700、ファイルを 0600 とし、会話本文・token を通常の診断ログへ出さない。App Server の `thread/start` は `ephemeral: true`、`approvalPolicy: "never"`、`sandbox: "read-only"` とし、既存の [`codex-turn-execution.mjs`](../private_runner/src/codex-turn-execution.mjs) の calendar 経路と同様に `config.web_search: "disabled"`、apps 無効、`dynamicTools` 非指定、作成後の `mcpServerStatus/list(threadId)` が0件であることを要求する。`turn/start.sandboxPolicy` は `{ type: "readOnly", networkAccess: false }` とする（いずれも `codex-cli 0.156.0` 生成スキーマ上の値）。これは **書き込みと通信を制限するが、組み込み command／ファイル読取の非実行や資格情報の非読取は保証しない**。固定指示は会話応答を求め、tool／承認イベントが出たら Runner は中断・失敗とするが、検出前に動いた tool は取り消せない。v1 は既存 Codex の信頼境界で利用する設計であり、厳格なツール非実行・読取隔離を要件にするなら `permissionProfile` 等を別途検証し、この設計の実装を止めて改訂する。実ユーザーの作業リポジトリを暗黙の `cwd` にしない。
 
-初版の受入後に、別エージェントの圧縮を会話と並列に進める設計と競合テストを追加する。
+実装順は (1) 保存・cursor・選択・再送の純粋な Runner ロジック、(2) 入口の一回の dispatch と App Server 実行、(3) 音声画面と STT／TTS 接続、(4) 障害・回帰テスト。受入テストは、5ペア／32 KiB 境界と要約失敗、要約済み範囲の非重複、同ID再送・異本文競合、受理直後／dispatch後／完了直後の再起動、WS 切断、TTS 失敗、音声画面に本文リストがないこと、既存チャットの動線不変を含める。隔離した実 App Server と localhost 模擬モデル提供先で、次の上流 `input` の**会話由来 item** に `MEMORY.md` と選択ペア・今回発話だけが順に入り、古い識別子がないことを検査する。system／developer 指示など別の入力源まで消えるとは主張しない。
+
+実モデルでの認証、ephemeral thread、sandbox、stream 完了、TTS、要約品質は未検証。これらのテストは認証・課金に触れるため、ユーザー承認後に実施する。失敗した場合は代替方式へ無断で切り替えず、本書と実装を再評価する。v1 は利用者向けツール操作・tool state 継続を提供しないが、Codex 組み込み read-only tool の動作は許容する。利用者が音声会話でファイル操作・コマンド実行を必要とする、または tool 非実行保証を必要とする場合は、範囲と安全境界を改訂する。別エージェントの要約を会話と並列にする機能、複数論理会話、tool／reasoning 完全再生は v1 後に分ける。
