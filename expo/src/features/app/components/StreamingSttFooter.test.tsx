@@ -7,6 +7,8 @@ import { VisualThemeProvider } from "../theme/VisualThemeContext";
 const mockSharedValues: { value: unknown }[] = [];
 const mockRRects: { x: number; y: number; width: number; height: number }[] = [];
 const mockGradientProps: { colors: string[]; mode: string; start: { value: unknown }; end: { value: unknown } }[] = [];
+const mockPathProps: { color?: string; opacity?: number; strokeWidth?: number | { value: unknown } }[] = [];
+const mockBlurProps: { blur: number | { value: unknown } }[] = [];
 let mockPathRenders = 0;
 let mockFrameCallback: ((frame: { timeSincePreviousFrame: number | null }) => void) | null = null;
 
@@ -25,12 +27,13 @@ jest.mock("@shopify/react-native-skia", () => {
   return {
     Canvas: ({ children, ...props }: { children?: React.ReactNode }) => ReactModule.createElement(View, props, children),
     Group: Stub,
-    Path: ({ children }: { children?: React.ReactNode }) => {
+    Path: ({ children, ...props }: { children?: React.ReactNode; color?: string; opacity?: number; strokeWidth?: number | { value: unknown } }) => {
       mockPathRenders += 1;
+      mockPathProps.push(props);
       return ReactModule.createElement(View, null, children);
     },
     SweepGradient: (props: typeof mockGradientProps[number]) => { mockGradientProps.push(props); return null; },
-    BlurMask: () => null,
+    BlurMask: (props: typeof mockBlurProps[number]) => { mockBlurProps.push(props); return null; },
     vec: (x: number, y: number) => ({ x, y }),
     Skia: {
       Path: { Make: () => ({ addRRect: (rect: { rect: typeof mockRRects[number] }) => mockRRects.push(rect.rect) }) },
@@ -59,6 +62,8 @@ describe("StreamingSttFooter", () => {
     mockSharedValues.length = 0;
     mockRRects.length = 0;
     mockGradientProps.length = 0;
+    mockPathProps.length = 0;
+    mockBlurProps.length = 0;
     mockPathRenders = 0;
     mockFrameCallback = null;
   });
@@ -102,7 +107,7 @@ describe("StreamingSttFooter", () => {
     const renderCount = mockPathRenders;
     await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
     const idleAngle = Number(mockSharedValues[6].value);
-    expect(idleAngle).toBe(1);
+    expect(idleAngle).toBeCloseTo(3.6);
     await act(async () => {
       ref.current?.pushSample(0.5);
       mockFrameCallback?.({ timeSincePreviousFrame: 50 });
@@ -112,7 +117,7 @@ describe("StreamingSttFooter", () => {
     expect(mockGradientProps.every(({ mode, start, end }) => mode === "repeat" && start === mockSharedValues[6] && end === mockSharedValues[7])).toBe(true);
     expect(mockSharedValues[2].value).toBeGreaterThan(5);
     expect(Number(mockSharedValues[6].value) - idleAngle).toBeGreaterThan(idleAngle);
-    expect(Number(mockSharedValues[6].value)).toBe(10);
+    expect(Number(mockSharedValues[6].value)).toBeCloseTo(15.6);
     expect(Number(mockSharedValues[7].value) - Number(mockSharedValues[6].value)).toBe(360);
     const glowReach = 2 + Number(mockSharedValues[2].value) / 2 + Number(mockSharedValues[3].value) * 3;
     expect(glowReach).toBeLessThan(48);
@@ -120,21 +125,24 @@ describe("StreamingSttFooter", () => {
     await screen.unmount();
   });
 
-  it("uses darker rainbow colors against the standard theme's white canvas", async () => {
+  it("keeps the vivid rainbow and adds a soft dark halo only on the white theme", async () => {
     const standard = await render(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()} />);
-    expect(mockSharedValues[4].value).toBe(0.5);
-    expect(mockGradientProps[0].colors).toContain("#927000");
-    expect(mockGradientProps[0].colors).toContain("#006bbb");
+    expect(mockGradientProps[0].colors).toEqual(["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"]);
+    expect(mockPathProps[0]).toMatchObject({ color: "#101827", opacity: 0.35, strokeWidth: 26 });
+    expect(mockBlurProps[0]).toMatchObject({ blur: 9 });
     await standard.unmount();
 
     mockGradientProps.length = 0;
+    mockPathProps.length = 0;
+    mockBlurProps.length = 0;
     const cyberpunk = await render(
       <VisualThemeProvider themeId="cyberpunk" onSelectTheme={jest.fn()}>
         <StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()} />
       </VisualThemeProvider>
     );
-    expect(mockGradientProps[0].colors).toContain("#f9ee56");
-    expect(mockGradientProps[0].colors).toContain("#4cc9ff");
+    expect(mockGradientProps[0].colors).toEqual(["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"]);
+    expect(mockPathProps).toHaveLength(2);
+    expect(mockBlurProps).toHaveLength(1);
     await cyberpunk.unmount();
   });
 });

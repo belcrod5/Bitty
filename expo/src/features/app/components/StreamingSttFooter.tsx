@@ -10,7 +10,6 @@ import type { StreamingSttPhase } from "../../stt/useStreamingStt";
 
 const GLOW_SPACE = 48;
 const RAINBOW = ["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"];
-const RAINBOW_ON_LIGHT = ["#e3245b", "#c65a00", "#927000", "#07865d", "#006bbb", "#643dbb", "#e3245b"];
 
 export type StreamingSttFooterHandle = {
   pushSample: (sample: number) => void;
@@ -31,8 +30,6 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
 }>(function StreamingSttFooter({ transcript, phase, onStop }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
-  const colors = themeId === "standard" ? RAINBOW_ON_LIGHT : RAINBOW;
-  const restingOpacity = themeId === "standard" ? 0.5 : 0.25;
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
   const lastUsageUpdateRef = useRef(0);
   const pendingUsageRef = useRef<StreamingSttUsage | null>(null);
@@ -44,14 +41,14 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const center = useSharedValue(vec(0, 0));
   const glowWidth = useSharedValue(4);
   const glowBlur = useSharedValue(3);
-  const glowOpacity = useSharedValue(restingOpacity);
+  const glowOpacity = useSharedValue(0.25);
   const audioLevel = useSharedValue(0);
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
 
   useFrameCallback((frame) => {
     const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
-    const start = (gradientStart.value + elapsed * (0.02 + audioLevel.value * 0.16)) % 360;
+    const start = (gradientStart.value + elapsed * (0.072 + audioLevel.value * 0.168)) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;
   });
@@ -65,7 +62,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       audioLevel.value = withTiming(level, { duration: 90 });
       glowWidth.value = withTiming(4 + level * 24, { duration: 90 });
       glowBlur.value = withTiming(3 + level * 7, { duration: 90 });
-      glowOpacity.value = withTiming(restingOpacity + level * (1 - restingOpacity), { duration: 90 });
+      glowOpacity.value = withTiming(0.25 + level * 0.75, { duration: 90 });
     },
     updateUsage(next) {
       const elapsed = Date.now() - lastUsageUpdateRef.current;
@@ -83,7 +80,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         pendingUsageRef.current = null;
       }, 1000 - elapsed);
     },
-  }), [audioLevel, glowBlur, glowOpacity, glowWidth, restingOpacity]);
+  }), [audioLevel, glowBlur, glowOpacity, glowWidth]);
 
   React.useEffect(() => () => {
     if (usageTimerRef.current) clearTimeout(usageTimerRef.current);
@@ -108,14 +105,19 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         testID="streaming-stt-glow"
         style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE, top: -GLOW_SPACE, bottom: -GLOW_SPACE }}
       >
+        {themeId === "standard" ? (
+          <Path path={border} color="#101827" opacity={0.35} style="stroke" strokeWidth={26}>
+            <BlurMask blur={9} style="normal" />
+          </Path>
+        ) : null}
         <Group opacity={glowOpacity}>
           <Path path={border} style="stroke" strokeWidth={glowWidth}>
-            <SweepGradient c={center} colors={colors} mode="repeat" start={gradientStart} end={gradientEnd} />
+            <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
             <BlurMask blur={glowBlur} style="normal" />
           </Path>
         </Group>
         <Path path={border} style="stroke" strokeWidth={2}>
-          <SweepGradient c={center} colors={colors} mode="repeat" start={gradientStart} end={gradientEnd} />
+          <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
         </Path>
       </Canvas>
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12", zIndex: 1 }]}>
