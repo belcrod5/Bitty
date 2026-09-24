@@ -9,18 +9,12 @@ import { SettingsScreen } from "./SettingsScreen";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
 jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));
+jest.mock("../components/GoogleCloudSettings", () => ({ GoogleCloudSettings: () => null }));
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 const mockSetStringAsync = jest.fn(async (_text: string) => true);
 jest.mock("../clipboard", () => ({
   setStringAsync: (text: string) => mockSetStringAsync(text),
-}));
-jest.mock("expo-av", () => ({
-  Audio: {
-    RecordingOptionsPresets: {
-      HIGH_QUALITY: { android: {}, ios: {}, web: {} },
-    },
-  },
 }));
 
 const mockOpenSkiaBoardScreen = jest.fn();
@@ -33,8 +27,6 @@ const mockSelectTtsProvider = jest.fn();
 const mockSelectCodexApprovalPolicy = jest.fn();
 const mockSelectModel = jest.fn();
 const mockSelectThinkOption = jest.fn();
-const mockSelectSttProvider = jest.fn();
-const mockApplyRecordingQualityPreset = jest.fn();
 const mockLoadVoices = jest.fn();
 const mockSelectVoiceId = jest.fn();
 const mockSaveRunnerToken = jest.fn(async (_token: string) => undefined);
@@ -62,15 +54,12 @@ const mockSettings = {
   thinkOptions: ["low", "medium", "high"],
   faceIdRequiredForApproval: true,
   ttsProvider: "aivisspeech",
-  sttProvider: "runner",
   voicesLoading: false,
   filteredVoices: [{ voiceId: "voice-a", name: "Voice A" }],
   ttsSpeedInput: "1.2",
   ttsSpeed: 1.2,
   voiceFilter: "",
   selectedVoiceId: "",
-  recordingQualityPreset: "high",
-  autoTranscribeOnStop: true,
   autoReplyAfterStt: false,
   autoBargeInEnabled: false,
   autoSpeakerPriorityEnabled: true,
@@ -85,8 +74,6 @@ const mockSettings = {
   openThinkSelect: jest.fn(),
   toggleFaceIdRequiredForApproval: jest.fn(),
   selectTtsProvider: mockSelectTtsProvider,
-  selectSttProvider: mockSelectSttProvider,
-  applyRecordingQualityPreset: mockApplyRecordingQualityPreset,
   loadVoices: mockLoadVoices,
   changeTtsSpeedInput: jest.fn(),
   commitTtsSpeedInput: jest.fn(),
@@ -94,7 +81,6 @@ const mockSettings = {
   increaseTtsSpeed: jest.fn(),
   changeVoiceFilter: jest.fn(),
   selectVoiceId: mockSelectVoiceId,
-  toggleAutoTranscribeOnStop: jest.fn(),
   toggleAutoReplyAfterStt: mockToggleAutoReplyAfterStt,
   toggleAutoBargeInEnabled: jest.fn(),
   toggleAutoSpeakerPriorityEnabled: jest.fn(),
@@ -238,14 +224,6 @@ test("uses dropdowns for selectable settings", async () => {
   expect(mockLoadVoices).toHaveBeenCalledTimes(1);
   await fireEvent.press(screen.getByText("Voice A"));
   expect(mockSelectVoiceId).toHaveBeenCalledWith("voice-a");
-
-  await fireEvent.press(screen.getByLabelText("文字起こしサービス"));
-  await fireEvent.press(screen.getByText("ios_native (SFSpeechRecognizer)"));
-  expect(mockSelectSttProvider).toHaveBeenCalledWith("ios_native");
-
-  await fireEvent.press(screen.getByLabelText("録音品質"));
-  await fireEvent.press(screen.getByText("中"));
-  expect(mockApplyRecordingQualityPreset).toHaveBeenCalledWith("medium");
 
   await fireEvent.press(screen.getByLabelText("承認ポリシー"));
   await fireEvent.press(screen.getByText("確認しない"));

@@ -17,6 +17,7 @@ function bearerToken(req) {
 function routeFor(pathname, runnerWsPath) {
   if (pathname === runnerWsPath) return "runner-ws";
   if (pathname === "/stream-tts") return "stream-tts";
+  if (pathname === "/stream-stt") return "stream-stt";
   return "unsupported-ws";
 }
 
@@ -34,6 +35,7 @@ export function installRunnerWebSocketUpgradeHandler({
   runnerWsPath,
   runnerWsServer,
   streamTtsWsServer,
+  streamSttWsServer,
   appendDebug,
   logRequests = false,
 }) {
@@ -98,7 +100,11 @@ export function installRunnerWebSocketUpgradeHandler({
     }
 
     void appendDebug("upgrade_accepted", { remoteAddress, endpoint, route });
-    const wsServer = route === "runner-ws" ? runnerWsServer : streamTtsWsServer;
+    const wsServer = route === "runner-ws"
+      ? runnerWsServer
+      : route === "stream-stt"
+        ? streamSttWsServer
+        : streamTtsWsServer;
     wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit("connection", ws, req));
   });
 }

@@ -14,6 +14,7 @@
 		514201552437B4B40078DB4F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 514201532437B4B40078DB4F /* Main.storyboard */; };
 		514201582437B4B40078DB4F /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 514201572437B4B40078DB4F /* main.m */; };
 		B17A0D101000000000000001 /* BittyAudioModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = B17A0D101000000000000002 /* BittyAudioModule.mm */; };
+		B17A0D101000000000000003 /* BittyMicrophoneModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = B17A0D101000000000000004 /* BittyMicrophoneModule.mm */; };
 		BDFD954E78C383952DD39102 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAAC03484AA38A909CCE108B /* ExpoModulesProvider.swift */; };
 /* End PBXBuildFile section */
 
@@ -30,6 +31,7 @@
 		7FF112EDB3FCA8AF1E901409 /* Pods-bitty-macOS.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-bitty-macOS.debug.xcconfig"; path = "Target Support Files/Pods-bitty-macOS/Pods-bitty-macOS.debug.xcconfig"; sourceTree = "<group>"; };
 		8B33778D31332FC949F76036 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B17A0D101000000000000002 /* BittyAudioModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BittyAudioModule.mm; sourceTree = "<group>"; };
+		B17A0D101000000000000004 /* BittyMicrophoneModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BittyMicrophoneModule.mm; sourceTree = "<group>"; };
 		DA00576C78ACA223FE41F719 /* Pods-bitty-macOS.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-bitty-macOS.release.xcconfig"; path = "Target Support Files/Pods-bitty-macOS/Pods-bitty-macOS.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		FAAC03484AA38A909CCE108B /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-bitty-macOS/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
@@ -70,6 +72,7 @@
 				5142014B2437B4B30078DB4F /* AppDelegate.h */,
 				5142014C2437B4B30078DB4F /* AppDelegate.mm */,
 				B17A0D101000000000000002 /* BittyAudioModule.mm */,
+				B17A0D101000000000000004 /* BittyMicrophoneModule.mm */,
 				514201512437B4B40078DB4F /* Assets.xcassets */,
 				514201532437B4B40078DB4F /* Main.storyboard */,
 				514201562437B4B40078DB4F /* Info.plist */,
@@ -325,6 +328,7 @@
 				514201582437B4B40078DB4F /* main.m in Sources */,
 				5142014D2437B4B30078DB4F /* AppDelegate.mm in Sources */,
 				B17A0D101000000000000001 /* BittyAudioModule.mm in Sources */,
+				B17A0D101000000000000003 /* BittyMicrophoneModule.mm in Sources */,
 				BDFD954E78C383952DD39102 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

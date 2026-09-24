@@ -57,11 +57,6 @@ type UseChatDerivedStateParams = {
   transcript: string;
   replyLoading: boolean;
   llmSessionRestoreLoading: boolean;
-  sttProvider: string;
-  directNativeSttEnabled: boolean;
-  autoRecordingEnabled: boolean;
-  manualRecording: boolean;
-  directNativeSttInterimText: string;
   composerInputFocused: boolean;
   llmBackend: string;
   modelOptions: readonly { label: string; modelId: string; backendId: string }[];
@@ -86,20 +81,6 @@ type UseChatDerivedStateParams = {
   streamLlmProgress: unknown[];
   replyDebug: string;
   chatThinkingLogExpanded: boolean;
-  autoWaveform: number[];
-  autoWaveformSpeechMask: number[];
-  autoWaveformDataPipelineEnabled: boolean;
-  autoWaveformDebugOverlayEnabled: boolean;
-  autoSpectrumBarsCount: number;
-  autoSpectrumEmptyBars: number[];
-  autoMeteringDb: number | null;
-  autoWaveDebugNowMs: number;
-  autoWaveStatusLastAt: number;
-  autoShadowStatusLastAt: number;
-  autoShadowStatusLastMetering: number | null;
-  autoWaveformLastSampleAt: number;
-  autoWaveformUiAt: number;
-  streamAudioQueueSize: number;
 };
 
 export function useChatDerivedState({
@@ -108,11 +89,6 @@ export function useChatDerivedState({
   transcript,
   replyLoading,
   llmSessionRestoreLoading,
-  sttProvider,
-  directNativeSttEnabled,
-  autoRecordingEnabled,
-  manualRecording,
-  directNativeSttInterimText,
   composerInputFocused,
   llmBackend,
   modelOptions,
@@ -137,45 +113,21 @@ export function useChatDerivedState({
   streamLlmProgress,
   replyDebug,
   chatThinkingLogExpanded,
-  autoWaveform,
-  autoWaveformSpeechMask,
-  autoWaveformDataPipelineEnabled,
-  autoWaveformDebugOverlayEnabled,
-  autoSpectrumBarsCount,
-  autoSpectrumEmptyBars,
-  autoMeteringDb,
-  autoWaveDebugNowMs,
-  autoWaveStatusLastAt,
-  autoShadowStatusLastAt,
-  autoShadowStatusLastMetering,
-  autoWaveformLastSampleAt,
-  autoWaveformUiAt,
-  streamAudioQueueSize,
 }: UseChatDerivedStateParams) {
   const canSend = useMemo(
     () => !!transcript.trim() && !replyLoading && !llmSessionRestoreLoading && !!codexWsUrl.trim(),
     [codexWsUrl, transcript, replyLoading, llmSessionRestoreLoading]
   );
   const hasComposerText = useMemo(() => !!transcript.trim(), [transcript]);
-  const isDirectNativeSttProvider = sttProvider === "ios_native_direct";
   const composerInputNewlineCount = useMemo(() => {
     const text = String(transcript || "");
     if (!text) return 0;
     const matches = text.match(/\r\n|\r|\n/g);
     return matches ? matches.length : 0;
   }, [transcript]);
-  const composerWaveformVisible = (manualRecording || autoRecordingEnabled) && !isDirectNativeSttProvider;
-  const composerDirectSttVisible = isDirectNativeSttProvider && directNativeSttEnabled;
-  const composerTextInputVisible = !composerWaveformVisible && !composerDirectSttVisible;
   const showComposerFullscreenToggle = (
-    composerTextInputVisible &&
     (Platform.OS === "macos" || composerInputFocused)
   );
-  const directNativeSttPreviewText = useMemo(() => {
-    const text = String(directNativeSttInterimText || "").trim();
-    if (text) return text;
-    return String(transcript || "").trim();
-  }, [directNativeSttInterimText, transcript]);
   const selectedModelLabel = useMemo(
     () => modelOptions.find((item) => item.backendId === llmBackend && item.modelId === modelRef)?.label || modelRef,
     [llmBackend, modelOptions, modelRef]
@@ -344,80 +296,11 @@ export function useChatDerivedState({
     if (isLlmActiveStatus(llmUiStatus)) return true;
     return chatThinkingLogExpanded && chatThinkingLogLines.length > 0;
   }, [replyLoading, llmUiStatus, chatThinkingLogExpanded, chatThinkingLogLines.length]);
-  const autoSpectrumBars = useMemo(() => {
-    if (!autoWaveformDataPipelineEnabled) return autoSpectrumEmptyBars;
-    const len = autoWaveform.length;
-    if (len === 0) return autoSpectrumEmptyBars;
-    return Array.from({ length: autoSpectrumBarsCount }, (_, index) => {
-      const from = Math.floor((index / autoSpectrumBarsCount) * len);
-      const to = Math.max(from + 1, Math.floor(((index + 1) / autoSpectrumBarsCount) * len));
-      let peak = 0;
-      for (let i = from; i < to; i += 1) {
-        peak = Math.max(peak, autoWaveform[i] || 0);
-      }
-      const frequencyWeight = 0.5 + 0.5 * Math.sin((index / autoSpectrumBarsCount) * Math.PI);
-      return Math.min(1, Math.max(0.02, peak * (0.7 + 0.3 * frequencyWeight)));
-    });
-  }, [autoWaveform, autoSpectrumBarsCount, autoSpectrumEmptyBars, autoWaveformDataPipelineEnabled]);
-  const autoSpectrumSpeechMask = useMemo(() => {
-    if (!autoWaveformDataPipelineEnabled) return autoSpectrumEmptyBars;
-    const len = autoWaveformSpeechMask.length;
-    if (len === 0) return autoSpectrumEmptyBars;
-    return Array.from({ length: autoSpectrumBarsCount }, (_, index) => {
-      const from = Math.floor((index / autoSpectrumBarsCount) * len);
-      const to = Math.max(from + 1, Math.floor(((index + 1) / autoSpectrumBarsCount) * len));
-      for (let i = from; i < to; i += 1) {
-        if (Number(autoWaveformSpeechMask[i] || 0) > 0.5) return 1;
-      }
-      return 0;
-    });
-  }, [autoWaveformSpeechMask, autoSpectrumBarsCount, autoSpectrumEmptyBars, autoWaveformDataPipelineEnabled]);
-  const autoSpeechDetected = useMemo(
-    () => autoSpectrumSpeechMask.some((value) => Number(value || 0) > 0.5),
-    [autoSpectrumSpeechMask]
-  );
-  const autoWaveformDebugText = useMemo(() => {
-    if (!autoWaveformDebugOverlayEnabled) return "";
-    const now = autoWaveDebugNowMs > 0 ? autoWaveDebugNowMs : Date.now();
-    const meterText = autoMeteringDb !== null ? `${autoMeteringDb.toFixed(1)}dB` : "-";
-    const callbackAgeMs = autoWaveStatusLastAt > 0 ? Math.max(0, now - autoWaveStatusLastAt) : null;
-    const shadowAgeMs = autoShadowStatusLastAt > 0 ? Math.max(0, now - autoShadowStatusLastAt) : null;
-    const shadowMeterText = typeof autoShadowStatusLastMetering === "number"
-      ? `${autoShadowStatusLastMetering.toFixed(1)}dB`
-      : "-";
-    const sampleAgeMs = autoWaveformLastSampleAt > 0 ? Math.max(0, now - autoWaveformLastSampleAt) : null;
-    const uiAgeMs = autoWaveformUiAt > 0 ? Math.max(0, now - autoWaveformUiAt) : null;
-    return (
-      `meter ${meterText} / sampleAge ${sampleAgeMs !== null ? `${sampleAgeMs}ms` : "-"}` +
-      ` / uiAge ${uiAgeMs !== null ? `${uiAgeMs}ms` : "-"}` +
-      ` / cbAge ${callbackAgeMs !== null ? `${callbackAgeMs}ms` : "-"}` +
-      ` / shAge ${shadowAgeMs !== null ? `${shadowAgeMs}ms` : "-"}` +
-      ` / shM ${shadowMeterText}` +
-      ` / tts ${ttsPlaying ? "on" : "off"} / q ${streamAudioQueueSize}`
-    );
-  }, [
-    autoMeteringDb,
-    autoShadowStatusLastAt,
-    autoShadowStatusLastMetering,
-    autoWaveDebugNowMs,
-    autoWaveStatusLastAt,
-    autoWaveformDebugOverlayEnabled,
-    autoWaveformLastSampleAt,
-    autoWaveformUiAt,
-    streamAudioQueueSize,
-    ttsPlaying,
-  ]);
-
   return {
     canSend,
     hasComposerText,
-    isDirectNativeSttProvider,
     composerInputNewlineCount,
-    composerWaveformVisible,
-    composerDirectSttVisible,
-    composerTextInputVisible,
     showComposerFullscreenToggle,
-    directNativeSttPreviewText,
     selectedModelLabel,
     chatFooterDirectoryLabel,
     selectedLlmSessionLabel,
@@ -439,9 +322,5 @@ export function useChatDerivedState({
     chatThinkingCurrentMessage,
     chatThinkingLogLines,
     showChatThinkingPanel,
-    autoSpectrumBars,
-    autoSpectrumSpeechMask,
-    autoSpeechDetected,
-    autoWaveformDebugText,
   };
 }

@@ -7,7 +7,12 @@ import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
 import type { ConversationMessage } from "../types/appTypes";
 
-const mockStartAutoRecordingMode = jest.fn();
+const mockStartStreamingStt = jest.fn();
+const mockStopStreamingStt = jest.fn();
+const mockPushStreamingSample = jest.fn();
+let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = "idle";
+let mockRunnerStatusRenderCount = 0;
+const mockStreamingSttOptions: { current: Record<string, any> | null } = { current: null };
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
 const mockCodexScheduleProps: { current: Record<string, any> | null } = { current: null };
@@ -77,12 +82,47 @@ jest.mock("@expo/vector-icons", () => {
   };
 });
 
+jest.mock("react-native-reanimated", () => {
+  const ReactModule = jest.requireActual<typeof React>("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
+  return {
+    __esModule: true,
+    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props) },
+    FadeIn: { duration: (duration: number) => ({ type: "fade-in", duration }) },
+    FadeOut: { duration: (duration: number) => ({ type: "fade-out", duration }) },
+  };
+});
+
 jest.mock("react-native-keyboard-controller", () => {
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return { KeyboardAvoidingView: View };
 });
 
 jest.mock("react-native-webview", () => ({ WebView: () => null }));
+jest.mock("../components/StreamingSttFooter", () => {
+  const ReactModule = jest.requireActual<typeof React>("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
+  return {
+    StreamingSttFooter: ReactModule.forwardRef(({ transcript, phase, onStop }: { transcript: string; phase: string; onStop: () => void }, ref) => {
+      ReactModule.useImperativeHandle(ref, () => ({ pushSample: mockPushStreamingSample, updateUsage: jest.fn() }));
+      return ReactModule.createElement(View, { testID: "streaming-stt-footer", transcript, phase, onStop } as any);
+    }),
+  };
+});
+jest.mock("../../stt/useStreamingStt", () => ({
+  useStreamingStt: (options: Record<string, any>) => {
+    mockStreamingSttOptions.current = options;
+    return {
+      active: mockStreamingSttPhase !== "idle",
+      phase: mockStreamingSttPhase,
+      start: mockStartStreamingStt,
+      stop: mockStopStreamingStt,
+      abort: jest.fn(async () => {}),
+      isArmed: () => false,
+      isCapturing: () => false,
+    };
+  },
+}));
 jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
 jest.mock("../../faceTracking/iosFaceTrackingClient", () => ({
   isIosFaceTrackingAvailable: () => false,
@@ -124,6 +164,7 @@ jest.mock("../components/ChatSessionSubagentList", () => ({
 }));
 jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({
   RunnerWsConnectionStatus: (props: Record<string, any>) => {
+    mockRunnerStatusRenderCount += 1;
     mockRunnerWsConnectionStatusProps.current = props;
     return null;
   },
@@ -284,12 +325,6 @@ jest.mock("../contexts/ChatComposerContext", () => ({
       sessionId: string; text: string; updatedAt: number;
     }>>([]);
     return ({
-    composerWaveformVisible: false,
-    autoWaveformAnimationEnabled: false,
-    waveformDotGif: 0,
-    autoSpeechDetected: false,
-    composerDirectSttVisible: false,
-    directNativeSttPreviewText: "",
     composerMessageHistory: [],
     composerDrafts,
     composerDraftsLoaded: true,
@@ -300,19 +335,14 @@ jest.mock("../contexts/ChatComposerContext", () => ({
     chatComposerInputRef: { current: null },
     showComposerFullscreenToggle: false,
     setComposerInputFocused: jest.fn(),
-    isDirectNativeSttProvider: false,
-    directNativeSttEnabled: false,
-    autoRecordingEnabled: false,
-    manualRecording: false,
     faceTrackingEnabled: false,
     faceTrackingLooking: true,
+    voiceInputAllowed: true,
+    onVoiceSpeechBegin: jest.fn(),
+    voiceInputDuringTtsAllowed: false,
+    registerVoiceInputSession: () => jest.fn(),
     canStopLlmTurn: false,
-    stopDirectNativeStt: jest.fn(),
-    stopAutoRecordingMode: jest.fn(),
-    stopRecording: jest.fn(),
     stopLlmTurn: jest.fn(),
-    startDirectNativeStt: jest.fn(),
-    startAutoRecordingMode: mockStartAutoRecordingMode,
     setFaceTrackingEnabledWithRef: jest.fn(),
     faceTrackingRunning: false,
     setSlashCommandSelectOpen: mockSetSlashCommandSelectOpen,
@@ -414,8 +444,10 @@ jest.mock("../contexts/ConversationContext", () => ({
   }),
 }));
 
-describe("ChatScreen auto recording panel target", () => {
+describe("ChatScreen voice input", () => {
   beforeEach(() => {
+    mockStreamingSttPhase = "idle";
+    mockRunnerStatusRenderCount = 0;
     jest.clearAllMocks();
     mockSendReplyTranscriptForPanel.mockResolvedValue(undefined);
     mockCodexScheduleProps.current = null;
@@ -434,12 +466,69 @@ describe("ChatScreen auto recording panel target", () => {
     if (platformOSDescriptor) Object.defineProperty(Platform, "OS", platformOSDescriptor);
   });
 
+  it("replaces the whole composer with the recording panel at the same position", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "既存の入力");
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
+
+    mockStreamingSttPhase = "recording";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("visible");
+
+    expect(screen.queryByTestId("chat-composer-input")).toBeNull();
+    expect(screen.queryByLabelText("スラッシュコマンドを開く")).toBeNull();
+    expect(screen.queryByTestId("chat-composer-action")).toBeNull();
+    expect(screen.getByTestId("streaming-stt-footer").props).toMatchObject({
+      transcript: "既存の入力",
+      phase: "recording",
+    });
+    expect(screen.getByTestId("streaming-stt-transition").props).toMatchObject({
+      entering: { type: "fade-in", duration: 220 },
+      exiting: { type: "fade-out", duration: 220 },
+    });
+    await act(async () => {
+      screen.getByTestId("streaming-stt-footer").props.onStop();
+    });
+    expect(mockStopStreamingStt).toHaveBeenCalledTimes(1);
+
+    mockStreamingSttPhase = "idle";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("visible");
+    expect(screen.getByTestId("chat-composer-input")).toBeTruthy();
+    expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
+    });
+    await screen.unmount();
+  });
+
+  it("forwards RMS samples without rendering ChatScreen or its connection status", async () => {
+    mockStreamingSttPhase = "recording";
+    const onRender = jest.fn();
+    const screen = await render(
+      <React.Profiler id="chat-screen" onRender={onRender}>
+        <ChatScreen mode="mini_board_popup" panelId="panel-a" />
+      </React.Profiler>
+    );
+    const commits = onRender.mock.calls.length;
+    const statusRenders = mockRunnerStatusRenderCount;
+
+    await act(async () => {
+      mockStreamingSttOptions.current?.onSample(0.6);
+    });
+
+    expect(mockPushStreamingSample).toHaveBeenCalledWith(0.6);
+    expect(onRender).toHaveBeenCalledTimes(commits);
+    expect(mockRunnerStatusRenderCount).toBe(statusRenders);
+    await screen.unmount();
+  });
+
   it("passes the current panel ID from a panel runtime view", async () => {
     const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
 
     await fireEvent.press(screen.getByText("mic"));
 
-    expect(mockStartAutoRecordingMode).toHaveBeenCalledWith("panel-a");
+    expect(mockStartStreamingStt).toHaveBeenCalledTimes(1);
     await fireEvent.press(screen.getByLabelText("チャットタイトルメニューを開く"));
     expect(mockCodexScheduleProps.current?.currentThreadId).toBe("session-1");
     await screen.unmount();
@@ -508,7 +597,25 @@ describe("ChatScreen auto recording panel target", () => {
 
     await fireEvent.press(screen.getByText("mic"));
 
-    expect(mockStartAutoRecordingMode).toHaveBeenCalledWith(undefined);
+    expect(mockStartStreamingStt).toHaveBeenCalledTimes(1);
+    await screen.unmount();
+  });
+
+  it("shows only send with an existing draft", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "existing draft");
+
+    expect(screen.getByTestId("chat-composer-action")).toHaveTextContent("caret-forward");
+    expect(mockStreamingSttOptions.current?.transcript).toBe("existing draft");
+    expect(screen.queryByTestId("chat-composer-mic")).toBeNull();
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("existing draft");
+    await fireEvent.press(screen.getByTestId("chat-composer-action"));
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith(
+      "panel-a",
+      "existing draft",
+      undefined
+    );
     await screen.unmount();
   });
 

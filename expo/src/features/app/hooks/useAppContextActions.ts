@@ -49,11 +49,6 @@ type UseAppContextActionsArgs = {
   setSelectedSessionTitleOverride: (nextTitleRaw: unknown) => void;
   setSelectedSessionMarkerColor: (nextMarkerColorRaw: unknown) => void;
   removeRegisteredDirectory: (directoryId: string) => void;
-  startDirectNativeStt: () => Promise<void>;
-  stopDirectNativeStt: () => Promise<void>;
-  startAutoRecordingMode: (panelId?: string) => Promise<void>;
-  stopAutoRecordingMode: () => Promise<void>;
-  stopRecording: () => Promise<void>;
   cancelCodexTurnRequest: () => Promise<void>;
   stopWaveformPlayback: () => Promise<void>;
   refreshCodexCliStatusForWidget: (
@@ -104,11 +99,6 @@ export function useAppContextActions({
   setSelectedSessionTitleOverride,
   setSelectedSessionMarkerColor,
   removeRegisteredDirectory,
-  startDirectNativeStt,
-  stopDirectNativeStt,
-  startAutoRecordingMode,
-  stopAutoRecordingMode,
-  stopRecording,
   cancelCodexTurnRequest,
   stopWaveformPlayback,
   refreshCodexCliStatusForWidget,
@@ -253,24 +243,9 @@ export function useAppContextActions({
     if (!selectedRegisteredDirectory) return;
     removeRegisteredDirectory(selectedRegisteredDirectory.id);
   }, [selectedRegisteredDirectory, removeRegisteredDirectory]);
-  const stopDirectNativeSttFromComposerContext = useCallback(() => {
-    void stopDirectNativeStt();
-  }, [stopDirectNativeStt]);
-  const stopAutoRecordingModeFromComposerContext = useCallback(() => {
-    void stopAutoRecordingMode();
-  }, [stopAutoRecordingMode]);
-  const stopRecordingFromComposerContext = useCallback(() => {
-    void stopRecording();
-  }, [stopRecording]);
   const stopLlmTurnFromComposerContext = useCallback(() => {
     void cancelCodexTurnRequest();
   }, [cancelCodexTurnRequest]);
-  const startDirectNativeSttFromComposerContext = useCallback(() => {
-    void startDirectNativeStt();
-  }, [startDirectNativeStt]);
-  const startAutoRecordingModeFromComposerContext = useCallback((panelId?: string) => {
-    void startAutoRecordingMode(panelId);
-  }, [startAutoRecordingMode]);
   const stopWaveformPlaybackFromVisualContext = useCallback(() => {
     void stopWaveformPlayback();
   }, [stopWaveformPlayback]);
@@ -328,12 +303,7 @@ export function useAppContextActions({
     renameSelectedSessionTitleFromContext,
     selectSessionMarkerColorFromContext,
     removeSelectedDirectoryFromContext,
-    stopDirectNativeSttFromComposerContext,
-    stopAutoRecordingModeFromComposerContext,
-    stopRecordingFromComposerContext,
     stopLlmTurnFromComposerContext,
-    startDirectNativeSttFromComposerContext,
-    startAutoRecordingModeFromComposerContext,
     stopWaveformPlaybackFromVisualContext,
     refreshCodexCliStatusFromContext,
     loadCodexAuthProfilesFromContext,

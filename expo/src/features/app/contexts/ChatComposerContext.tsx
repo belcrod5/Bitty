@@ -1,15 +1,9 @@
 import { createContext, useContext, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
-import type { ImageSourcePropType, TextInput } from "react-native";
+import type { TextInput } from "react-native";
 import type { SlashCommandOption } from "../components/SlashCommandSelectMenu";
 import type { ComposerDraft } from "../hooks/useComposerPersistence";
 
 export type ChatComposerContextValue = {
-  composerWaveformVisible: boolean;
-  autoWaveformAnimationEnabled: boolean;
-  waveformDotGif: ImageSourcePropType;
-  autoSpeechDetected: boolean;
-  composerDirectSttVisible: boolean;
-  directNativeSttPreviewText: string;
   composerMessageHistory: readonly string[];
   composerDrafts: readonly ComposerDraft[];
   composerDraftsLoaded: boolean;
@@ -17,20 +11,19 @@ export type ChatComposerContextValue = {
   chatComposerInputRef: MutableRefObject<TextInput | null>;
   showComposerFullscreenToggle: boolean;
   setComposerInputFocused: (focused: boolean) => void;
-  isDirectNativeSttProvider: boolean;
-  directNativeSttEnabled: boolean;
-  autoRecordingEnabled: boolean;
-  manualRecording: boolean;
   faceTrackingEnabled: boolean;
   faceTrackingLooking: boolean;
+  voiceInputAllowed: boolean;
+  onVoiceSpeechBegin: () => void;
+  voiceInputDuringTtsAllowed: boolean;
+  registerVoiceInputSession: (controller: {
+    isArmed: () => boolean;
+    isCapturing: () => boolean;
+    abort: () => Promise<void>;
+  }) => () => void;
   hasComposerText: boolean;
   canStopLlmTurn: boolean;
-  stopDirectNativeStt: () => void;
-  stopAutoRecordingMode: () => void;
-  stopRecording: () => void;
   stopLlmTurn: () => void;
-  startDirectNativeStt: () => void;
-  startAutoRecordingMode: (panelId?: string) => void;
   setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
   faceTrackingRunning: boolean;
   setSlashCommandSelectOpen: Dispatch<SetStateAction<boolean>>;

@@ -7,9 +7,9 @@ type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 type UseTtsPlaybackStateControllerOptions = {
   nearUnlimitedTimeoutMs: number;
   autoBargeInTtsGapGraceMs: number;
-  autoLastTtsStoppedAtRef: MutableRefObject<number>;
-  autoLastTtsStopRequestedAtRef: MutableRefObject<number>;
-  autoPlaybackBargeGraceUntilRef: MutableRefObject<number>;
+  lastTtsStoppedAtRef: MutableRefObject<number>;
+  lastTtsStopRequestedAtRef: MutableRefObject<number>;
+  playbackBargeGraceUntilRef: MutableRefObject<number>;
   replyLoadingRef: MutableRefObject<boolean>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
@@ -39,9 +39,9 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
   const {
     nearUnlimitedTimeoutMs,
     autoBargeInTtsGapGraceMs,
-    autoLastTtsStoppedAtRef,
-    autoLastTtsStopRequestedAtRef,
-    autoPlaybackBargeGraceUntilRef,
+    lastTtsStoppedAtRef,
+    lastTtsStopRequestedAtRef,
+    playbackBargeGraceUntilRef,
     replyLoadingRef,
     streamSocketRef,
     streamTtsControlRef,
@@ -83,10 +83,10 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
       });
     }
     if (prev && !next) {
-      autoLastTtsStoppedAtRef.current = now;
+      lastTtsStoppedAtRef.current = now;
       logAuto("tts_stop_effective", {
         reason,
-        sinceTtsStopRequestedMs: elapsedSinceMs(autoLastTtsStopRequestedAtRef.current),
+        sinceTtsStopRequestedMs: elapsedSinceMs(lastTtsStopRequestedAtRef.current),
         streamSocketAlive: streamSocketRef.current !== null,
         streamTtsControlAlive: streamTtsControlRef.current !== null,
         streamQueueSize: streamAudioQueueRef.current.length,
@@ -94,14 +94,14 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
       });
     }
     if (next) {
-      autoPlaybackBargeGraceUntilRef.current = now + autoBargeInTtsGapGraceMs;
+      playbackBargeGraceUntilRef.current = now + autoBargeInTtsGapGraceMs;
     } else if (
       replyLoadingRef.current ||
       streamTtsControlRef.current !== null ||
       streamSocketRef.current !== null
     ) {
-      autoPlaybackBargeGraceUntilRef.current = Math.max(
-        autoPlaybackBargeGraceUntilRef.current,
+      playbackBargeGraceUntilRef.current = Math.max(
+        playbackBargeGraceUntilRef.current,
         now + autoBargeInTtsGapGraceMs
       );
     }
@@ -109,9 +109,9 @@ export function useTtsPlaybackStateController(options: UseTtsPlaybackStateContro
     setTtsPlaying(next);
   }, [
     autoBargeInTtsGapGraceMs,
-    autoLastTtsStoppedAtRef,
-    autoLastTtsStopRequestedAtRef,
-    autoPlaybackBargeGraceUntilRef,
+    lastTtsStoppedAtRef,
+    lastTtsStopRequestedAtRef,
+    playbackBargeGraceUntilRef,
     elapsedSinceMs,
     logAuto,
     replyLoadingRef,

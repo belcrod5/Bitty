@@ -13,14 +13,6 @@ import {
   saveSecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
 
-jest.mock("expo-av", () => ({
-  Audio: {
-    RecordingOptionsPresets: {
-      HIGH_QUALITY: { android: {}, ios: {}, web: {} },
-    },
-  },
-}));
-
 jest.mock("../clipboard", () => ({
   getStringAsync: jest.fn(),
   setStringAsync: jest.fn(),
@@ -53,7 +45,6 @@ function createArgs() {
     modelOptions: [{ modelId: "default-model", backendId: "codex" }],
     defaultModelRef: "default-model",
     defaultReasoningEffort: "medium",
-    defaultRecordingQualityPreset: "high",
     defaultSelectedVoiceIds: { elevenlabs: "", google: "", aivisspeech: "" },
     runnerUrl: "http://default-runner",
     runnerToken: "",
@@ -73,15 +64,11 @@ function createArgs() {
     reasoningEffort: "medium",
     codexApprovalPolicy: "on-request",
     ttsProvider: "elevenlabs",
-    sttProvider: "runner",
-    recordingQualityPreset: "high",
-    recordingTuning: {},
     faceTrackingEnabled: false,
     ttsSpeed: 1,
     selectedVoiceIdByProvider: { elevenlabs: "", google: "", aivisspeech: "" },
     autoBargeInEnabled: false,
     autoSpeakerPriorityEnabled: false,
-    autoTranscribeOnStop: false,
     autoReplyAfterStt: false,
     autoSpeakAfterReply: false,
     faceIdRequiredForApproval: false,
@@ -108,13 +95,9 @@ function createArgs() {
     setCodexApprovalPolicy: setter,
     setSelectedVoiceIdByProvider: setter,
     setTtsProvider: setter,
-    setSttProvider: setter,
-    setRecordingQualityPreset: setter,
-    setRecordingTuning: setter,
     setFaceTrackingEnabledWithRef: setter,
     setTtsSpeedWithSync: setter,
     setLlmToolLogCompact: setter,
-    setAutoTranscribeOnStop: setter,
     setAutoBargeInEnabled: setter,
     setAutoSpeakerPriorityEnabled: setter,
     setAutoReplyAfterStt: setter,

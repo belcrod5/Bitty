@@ -13,10 +13,11 @@
     "newArchEnabled": true,
     "plugins": [
       [
-        "expo-speech-recognition",
+        "expo-build-properties",
         {
-          "microphonePermission": "録音して文字起こしを行うためにマイクを使用します。",
-          "speechRecognitionPermission": "音声を文字に変換するために音声認識を使用します。"
+          "ios": {
+            "deploymentTarget": "16.4"
+          }
         }
       ],
       [
@@ -82,7 +83,6 @@
         "NSCameraUsageDescription": "Cloudflare TunnelのPairing QR読み取りと顔向き判定のためにカメラを使用します。",
         "NSMicrophoneUsageDescription": "録音して文字起こしを行うためにマイクを使用します。",
         "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
-        "NSSpeechRecognitionUsageDescription": "音声を文字に変換するために音声認識を使用します。",
         "NSLocationWhenInUseUsageDescription": "位置に応じてCodexを実行するために現在地を使用します。",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "アプリを閉じている間も設定した場所への出入りを検知するために位置情報を使用します。",
         "NSCalendarsUsageDescription": "Codexとの会話で予定を読み取り、確認後に予定を作成・更新・削除するためにカレンダーへアクセスします。",

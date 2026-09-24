@@ -1,14 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Switch, Text, TextInput, TouchableOpacity, View } from "react-native";
-import { FORCED_STT_LANGUAGE, STT_PROVIDERS, sttProviderLabel } from "../../stt/sttConfig";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import {
-  RECORDING_QUALITY_PRESETS,
   TTS_PROVIDERS,
-  recordingQualityPresetHint,
-  recordingQualityPresetLabel,
 } from "../utils/audioConfig";
 import { SettingsSelect } from "./SettingsSelect";
 
@@ -19,9 +15,7 @@ const TTS_PROVIDER_LABELS = {
 } as const;
 
 const SETTING_ICONS = [
-  "document-text-outline",
   "paper-plane-outline",
-  "mic-outline",
   "volume-mute-outline",
   "volume-high-outline",
 ] as const;
@@ -31,23 +25,18 @@ export function SpeechSettings() {
   const { theme } = useVisualTheme();
   const {
     ttsProvider,
-    sttProvider,
     voicesLoading,
     filteredVoices,
     ttsSpeedInput,
     ttsSpeed,
     voiceFilter,
     selectedVoiceId,
-    recordingQualityPreset,
-    autoTranscribeOnStop,
     autoReplyAfterStt,
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
     toolAutoApprovalRuleCount,
     selectTtsProvider,
-    selectSttProvider,
-    applyRecordingQualityPreset,
     loadVoices,
     changeTtsSpeedInput,
     commitTtsSpeedInput,
@@ -55,7 +44,6 @@ export function SpeechSettings() {
     increaseTtsSpeed,
     changeVoiceFilter,
     selectVoiceId,
-    toggleAutoTranscribeOnStop,
     toggleAutoReplyAfterStt,
     toggleAutoBargeInEnabled,
     toggleAutoSpeakerPriorityEnabled,
@@ -66,7 +54,6 @@ export function SpeechSettings() {
   } = useAppSettings();
 
   const behaviorSettings = [
-    { label: "録音停止後に文字起こし", value: autoTranscribeOnStop, onChange: toggleAutoTranscribeOnStop },
     { label: "文字起こし後に送信", value: autoReplyAfterStt, onChange: toggleAutoReplyAfterStt },
     { label: "再生中の割り込み発話", value: autoBargeInEnabled, onChange: toggleAutoBargeInEnabled },
     { label: "再生中は録音を停止", value: autoSpeakerPriorityEnabled, onChange: toggleAutoSpeakerPriorityEnabled },
@@ -80,15 +67,6 @@ export function SpeechSettings() {
     value: voice.voiceId,
     label: voice.name || "名称なし",
     description: voice.voiceId,
-  }));
-  const sttOptions = STT_PROVIDERS.map((provider) => ({
-    value: provider,
-    label: sttProviderLabel(provider),
-  }));
-  const recordingOptions = RECORDING_QUALITY_PRESETS.map((preset) => ({
-    value: preset,
-    label: recordingQualityPresetLabel(preset),
-    description: recordingQualityPresetHint(preset),
   }));
 
   return (
@@ -155,22 +133,6 @@ export function SpeechSettings() {
             onSearchChange={changeVoiceFilter}
             searchPlaceholder="声の名前で検索"
             onOpen={loadVoices}
-          />
-          <SettingsSelect
-            icon="text-outline"
-            label="文字起こしサービス"
-            description={`言語: ${FORCED_STT_LANGUAGE}`}
-            options={sttOptions}
-            selectedValue={sttProvider}
-            onSelect={selectSttProvider}
-          />
-          <SettingsSelect
-            icon="options-outline"
-            label="録音品質"
-            options={recordingOptions}
-            selectedValue={recordingQualityPreset}
-            onSelect={applyRecordingQualityPreset}
-            showDivider={false}
           />
         </View>
       </View>

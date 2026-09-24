@@ -4,6 +4,7 @@ import { setStringAsync } from "../clipboard";
 import { ConnectionSettings } from "../components/ConnectionSettings";
 import { SpeechSettings } from "../components/SpeechSettings";
 import { CodexAccountSettings } from "../components/CodexAccountSettings";
+import { GoogleCloudSettings } from "../components/GoogleCloudSettings";
 import { useAppShell } from "../contexts/AppShellContext";
 import { BUILD_STAMP } from "../buildStamp";
 import { useAppStyles } from "../styles";
@@ -56,6 +57,7 @@ export function SettingsScreen() {
       </View>
       <ConnectionSettings />
       <SpeechSettings />
+      <GoogleCloudSettings />
       <CodexAccountSettings />
       <View style={styles.settingsSection}>
         <View style={styles.settingsSectionHeader}>

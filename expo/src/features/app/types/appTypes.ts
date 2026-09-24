@@ -1,4 +1,3 @@
-import type { SttProvider } from "../../stt/sttConfig";
 import type { CodexCommandExecutionInfo } from "../../codex/client/types";
 import type { LlmUiStatus } from "../hooks/useLlmRequestStatus";
 import type { LlmSessionSource } from "../hooks/useLlmSessionExplorer";
@@ -12,7 +11,8 @@ export type HistoryEntry = {
 
 export type SttMessageMeta = {
   source: "recording_uri" | "native_direct";
-  sttProvider?: SttProvider;
+  // Historical messages may contain provider names removed from the active voice-input path.
+  sttProvider?: string;
   durationMs?: number;
   speechMs?: number;
   silenceTrimmedMs?: number;
@@ -206,7 +206,6 @@ export type LlmRuntimeLimitsSnapshot = {
   llmTimeoutMs: number | null;
   toolMaxRounds: number | null;
   approvalTimeoutMs: number | null;
-  sttTimeoutMs: number | null;
   fetchedAt: string;
 };
 
