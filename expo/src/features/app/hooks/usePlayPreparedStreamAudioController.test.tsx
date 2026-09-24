@@ -1,6 +1,9 @@
 import { renderHook, waitFor } from "@testing-library/react-native";
+import { NativeModules } from "react-native";
 
 import { Audio } from "../audio";
+import { VISUAL_THEMES } from "../theme/visualThemes";
+import type { VisualThemeTtsEffect } from "../theme/visualThemes";
 import type { StreamAudioQueueItem } from "../types/appTypes";
 import { usePlayPreparedStreamAudioController } from "./usePlayPreparedStreamAudioController";
 
@@ -36,6 +39,8 @@ function sound() {
 function createOptions() {
   return {
     fixedMediaVolume: 1,
+    ttsEffect: null,
+    ttsProcessingAbortControllersRef: ref(new Set<AbortController>()),
     ttsStopInFlightRef: ref<Promise<void> | null>(null),
     ttsPlaybackRunIdRef: ref(0),
     ttsPlaybackProgressUiAtRef: ref(0),
@@ -57,6 +62,7 @@ const createAsync = Audio.Sound.createAsync as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  (NativeModules as Record<string, unknown>).BittyTtsEffects = undefined;
 });
 
 test("loads one next chunk during current playback and reuses it", async () => {
@@ -208,4 +214,35 @@ test("can load a later chunk after a preload error", async () => {
 
   expect(createAsync).toHaveBeenCalledTimes(2);
   expect(nextSound.playAsync).toHaveBeenCalledTimes(1);
+});
+
+test("restarts a pending chunk with the newly selected theme", async () => {
+  const item = queueItem(0);
+  const plainSound = sound();
+  createAsync.mockResolvedValue({ sound: plainSound });
+  let cancelProcessing: () => void = () => {};
+  const process = jest.fn(() => new Promise<string>((_resolve, reject) => {
+    cancelProcessing = () => reject(new Error("cancelled"));
+  }));
+  const cancel = jest.fn(async () => cancelProcessing());
+  (NativeModules as Record<string, unknown>).BittyTtsEffects = {
+    process, cancel, remove: jest.fn(async () => {}),
+  };
+  const options = createOptions();
+  const { result, rerender } = await renderHook(
+    ({ effect }: { effect: VisualThemeTtsEffect | null }) =>
+      usePlayPreparedStreamAudioController({ ...options, ttsEffect: effect }),
+    { initialProps: { effect: VISUAL_THEMES.cyberpunk.ttsEffect as VisualThemeTtsEffect | null } }
+  );
+
+  const playback = result.current.playPreparedStreamAudioAndWait(item);
+  await waitFor(() => expect(process).toHaveBeenCalledTimes(1));
+  rerender({ effect: null });
+
+  await expect(playback).resolves.toBe(true);
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(createAsync).toHaveBeenCalledWith(
+    { uri: item.uri }, { shouldPlay: false, volume: 1 }
+  );
+  expect(plainSound.playAsync).toHaveBeenCalledTimes(1);
 });

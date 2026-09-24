@@ -29,6 +29,12 @@ export type VisualThemeSound = {
   volume: number;
 };
 
+export type VisualThemeTtsEffect = {
+  distortion: { preset: "speechWaves" | "speechAlienChatter" | "speechRadioTower"; wetDryMix: number };
+  delay: { time: number; feedback: number; wetDryMix: number };
+  reverb: { preset: "smallRoom" | "mediumRoom" | "plate"; wetDryMix: number };
+};
+
 export type VisualTheme = {
   id: VisualThemeId;
   label: string;
@@ -42,6 +48,7 @@ export type VisualTheme = {
     popupClose: VisualThemePopupMotion;
   };
   sounds: Partial<Record<VisualThemeSoundEvent, VisualThemeSound>>;
+  ttsEffect: VisualThemeTtsEffect | null;
   colors: {
     canvas: string;
     surface: string;
@@ -216,6 +223,7 @@ const standardTheme: VisualTheme = {
     popupClose: { durationMs: 220 },
   },
   sounds: {},
+  ttsEffect: null,
   colors: {
     canvas: "#ffffff",
     surface: "#ffffff",
@@ -402,6 +410,11 @@ const cyberpunkTheme: VisualTheme = {
       asset: require("../../../../assets/themes/cyberpunk/sfx/popup-close.wav"),
       volume: 0.24,
     },
+  },
+  ttsEffect: {
+    distortion: { preset: "speechWaves", wetDryMix: 18 },
+    delay: { time: 0.11, feedback: 18, wetDryMix: 11 },
+    reverb: { preset: "smallRoom", wetDryMix: 8 },
   },
   colors: {
     canvas: "#05080d",

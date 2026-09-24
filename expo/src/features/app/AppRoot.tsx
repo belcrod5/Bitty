@@ -906,6 +906,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const ttsSoundRef = useRef<Audio.Sound | null>(null);
   const ttsPlaybackWantedRef = useRef(false);
   const ttsPlaybackRunIdRef = useRef(0);
+  const ttsProcessingAbortControllersRef = useRef(new Set<AbortController>());
   const ttsPlaybackTransitionInFlightRef = useRef(false);
   const ttsPlaybackWatchdogTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ttsPlaybackWatchdogInFlightRef = useRef(false);
@@ -2678,6 +2679,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     preloadStreamAudio,
   } = usePlayPreparedStreamAudioController({
     fixedMediaVolume: FIXED_MEDIA_VOLUME,
+    ttsEffect: visualTheme.ttsEffect,
+    ttsProcessingAbortControllersRef,
     ttsStopInFlightRef,
     ttsPlaybackRunIdRef,
     ttsPlaybackProgressUiAtRef,
@@ -2696,6 +2699,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   clearPreloadedStreamAudioRef.current = clearPreloadedStreamAudio;
   const playTtsAudio = usePlayTtsAudioController({
     fixedMediaVolume: FIXED_MEDIA_VOLUME,
+    ttsEffect: visualTheme.ttsEffect,
+    ttsProcessingAbortControllersRef,
     ttsStopInFlightRef,
     ttsPlaybackRunIdRef,
     ttsPlaybackProgressUiAtRef,
@@ -3380,6 +3385,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     stopWaveformPlayback: stopWaveformPlaybackFromController,
   } = useStopTtsPlaybackController({
     ttsStopInFlightRef,
+    ttsProcessingAbortControllersRef,
     ttsPlaybackTransitionInFlightRef,
     lastTtsStopRequestedAtRef,
     lastTtsStoppedAtRef,
