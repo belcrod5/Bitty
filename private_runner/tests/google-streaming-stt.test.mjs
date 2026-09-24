@@ -226,6 +226,14 @@ test("chunks PCM in order, reserves rounded seconds, waits for final, and emits 
   assert.equal(timing.interimCount, 1);
   assert.equal(timing.finalCount, 1);
   assert.ok(timing.maxReserveWaitMs >= 0);
+  assert.ok(timing.lastGrpcAudioWriteMs >= timing.firstGrpcAudioWriteMs);
+  assert.ok(timing.lastSpeechEndMs >= timing.firstSpeechEndMs);
+  assert.ok(timing.lastFinalMs >= timing.firstFinalMs);
+  assert.equal(f.logs[0].payload.localEndRequest.reason, "user_stop");
+  assert.equal(f.logs[0].payload.localEndRequest.closeGoogleInput, true);
+  assert.ok(f.logs[0].payload.localEndRequest.atMs >= f.logs[0].payload.stopRequestedMs);
+  assert.ok(f.logs[0].payload.googleEndObservedMs >= f.logs[0].payload.localEndRequest.atMs);
+  assert.equal(f.logs[0].payload.errorState, null);
   assert.doesNotMatch(JSON.stringify(timing), /確定|暫定/);
 });
 
@@ -284,6 +292,10 @@ test("infers no-speech and speech timeout reasons only after normal Google compl
   await tick();
   assert.equal(speech.ws.sent.find((message) => message.type === "done").reason, "speech_end_timeout");
   assert.equal(speech.ws.sent.find((message) => message.type === "done").hasSpeech, false);
+  assert.equal(speech.logs[0].payload.localEndRequest, null);
+  assert.equal(speech.logs[0].payload.stopRequestedMs, null);
+  assert.ok(speech.logs[0].payload.googleEndObservedMs >= speech.logs[0].payload.timing.firstSpeechBeginMs);
+  assert.equal(speech.logs[0].payload.errorState, null);
 });
 
 test("a write-after-end race after final speech waits for normal Google completion", async () => {
@@ -305,6 +317,9 @@ test("a write-after-end race after final speech waits for normal Google completi
   assert.deepEqual(f.logs[0].payload.failureDetail, {
     source: "google_stream", grpcCode: null, nodeCode: "ERR_STREAM_WRITE_AFTER_END",
   });
+  assert.equal(f.logs[0].payload.localEndRequest.reason, "closed_write_race");
+  assert.equal(f.logs[0].payload.localEndRequest.closeGoogleInput, false);
+  assert.ok(f.logs[0].payload.localEndRequest.atMs >= 0);
   assert.doesNotMatch(JSON.stringify(f.logs), /secret write failure|確定/);
 });
 
@@ -340,12 +355,72 @@ test("a queued audio write cannot turn a completed Google stream into an error",
   await start(f);
   f.ws.emit("message", Buffer.alloc(2), true);
   await tick();
+  f.ws.emit("message", Buffer.from(JSON.stringify({ type: "stop" })), false);
   f.stream.emit("end");
   releaseReserve({ reserved: true, ...snapshot(1) });
   await tick();
   assert.equal(f.stream.writes.length, 1);
   assert.equal(f.ws.sent.some((message) => message.type === "error"), false);
   assert.equal(f.ws.sent.find((message) => message.type === "done").reason, "no_speech_timeout");
+  assert.ok(f.logs[0].payload.stopRequestedMs >= 0);
+  assert.equal(f.logs[0].payload.localEndRequest, null);
+  assert.ok(f.logs[0].payload.googleEndObservedMs >= f.logs[0].payload.stopRequestedMs);
+});
+
+test("gRPC CANCELLED after final remains an error with lifecycle diagnostics and no private data", async () => {
+  const f = fixture();
+  await start(f);
+  f.stream.blockAudio = true;
+  f.ws.emit("message", Buffer.from("secret audio"), true);
+  await tick();
+  f.stream.emit("data", { speechEventType: 3, results: [{
+    isFinal: true, alternatives: [{ transcript: "private transcript" }],
+  }] });
+  const error = Object.assign(new Error("private provider error"), {
+    code: 1,
+    metadata: { authorization: "private credentials" },
+  });
+  f.stream.emit("error", error);
+  f.stream.emit("drain");
+  await tick();
+
+  assert.equal(f.ws.sent.find((message) => message.type === "done"), undefined);
+  assert.equal(f.ws.sent.find((message) => message.type === "error").code, "google_stream_failed");
+  const diagnostic = f.logs[0].payload;
+  assert.equal(diagnostic.outcome, "error");
+  assert.deepEqual(diagnostic.failureDetail, {
+    source: "google_stream", grpcCode: 1, nodeCode: null,
+  });
+  assert.deepEqual(diagnostic.errorState, { phase: "ready", inputEnded: false, pendingBytes: 12 });
+  assert.equal(diagnostic.localEndRequest, null);
+  assert.equal(diagnostic.googleEndObservedMs, null);
+  assert.ok(diagnostic.timing.lastGrpcAudioWriteMs >= 0);
+  assert.ok(diagnostic.timing.lastSpeechEndMs >= diagnostic.timing.lastGrpcAudioWriteMs);
+  assert.ok(diagnostic.timing.lastFinalMs >= diagnostic.timing.lastSpeechEndMs);
+  assert.doesNotMatch(JSON.stringify(f.logs), /private transcript|private provider error|private credentials|secret audio|authorization/);
+});
+
+test("gRPC CANCELLED after explicit stop records the local end before the provider error", async () => {
+  const f = fixture();
+  await start(f);
+  f.stream.emit("data", { speechEventType: 3, results: [{
+    isFinal: true, alternatives: [{ transcript: "確定" }],
+  }] });
+  f.ws.emit("message", Buffer.from(JSON.stringify({ type: "stop" })), false);
+  await tick();
+  assert.equal(f.stream.ended, true);
+  f.stream.emit("error", Object.assign(new Error("private provider error"), { code: 1 }));
+
+  assert.equal(f.ws.sent.find((message) => message.type === "done"), undefined);
+  assert.equal(f.ws.sent.find((message) => message.type === "error").code, "google_stream_failed");
+  const diagnostic = f.logs[0].payload;
+  assert.ok(diagnostic.stopRequestedMs >= 0);
+  assert.equal(diagnostic.localEndRequest.reason, "user_stop");
+  assert.ok(diagnostic.localEndRequest.atMs >= diagnostic.stopRequestedMs);
+  assert.equal(diagnostic.localEndRequest.closeGoogleInput, true);
+  assert.deepEqual(diagnostic.errorState, { phase: "finalizing", inputEnded: true, pendingBytes: 0 });
+  assert.equal(diagnostic.googleEndObservedMs, null);
+  assert.doesNotMatch(JSON.stringify(f.logs), /確定|private provider error/);
 });
 
 test("provider errors after final speech remain errors with safe numeric diagnostics", async () => {
@@ -449,10 +524,13 @@ test("rejects protocol drift and emits only one safe terminal", async () => {
   assert.deepEqual(f.logs[0].payload.timing, {
     firstAudioReceivedMs: null,
     firstGrpcAudioWriteMs: null,
+    lastGrpcAudioWriteMs: null,
     firstSpeechBeginMs: null,
     firstSpeechEndMs: null,
+    lastSpeechEndMs: null,
     firstInterimMs: null,
     firstFinalMs: null,
+    lastFinalMs: null,
     interimCount: 0,
     finalCount: 0,
     maxReserveWaitMs: 0,

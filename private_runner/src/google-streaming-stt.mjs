@@ -132,6 +132,10 @@ export function createGoogleStreamingSttHandler({
     let inputEnded = false;
     let googleStreamEnded = false;
     let failureDetail = null;
+    let localEndRequest = null;
+    let stopRequestedMs = null;
+    let googleEndObservedMs = null;
+    let errorState = null;
     let work = Promise.resolve();
     let maxDurationTimer = null;
     let finalizationTimer = null;
@@ -142,10 +146,13 @@ export function createGoogleStreamingSttHandler({
     const timing = {
       firstAudioReceivedMs: null,
       firstGrpcAudioWriteMs: null,
+      lastGrpcAudioWriteMs: null,
       firstSpeechBeginMs: null,
       firstSpeechEndMs: null,
+      lastSpeechEndMs: null,
       firstInterimMs: null,
       firstFinalMs: null,
+      lastFinalMs: null,
       interimCount: 0,
       finalCount: 0,
       maxReserveWaitMs: 0,
@@ -175,6 +182,10 @@ export function createGoogleStreamingSttHandler({
         outcome,
         reason,
         failureDetail,
+        localEndRequest,
+        stopRequestedMs,
+        googleEndObservedMs,
+        errorState,
         addedSeconds: reservedSeconds,
         reservedSeconds,
         usedSeconds: Number.isSafeInteger(usage?.usedSeconds) ? usage.usedSeconds : null,
@@ -185,6 +196,7 @@ export function createGoogleStreamingSttHandler({
     const finishError = (code, message, retryable, detail = failureDetail) => {
       if (terminal) return;
       failureDetail = detail;
+      errorState = { phase, inputEnded, pendingBytes };
       terminal = true;
       clearTimeout(maxDurationTimer);
       clearTimeout(finalizationTimer);
@@ -224,6 +236,7 @@ export function createGoogleStreamingSttHandler({
 
     const endInput = (reason = "", closeGoogleInput = true) => {
       if (inputEnded || terminal) return;
+      localEndRequest = { reason: reason || "closed_write_race", atMs: elapsedMs(), closeGoogleInput };
       inputEnded = true;
       phase = "finalizing";
       endReason = reason || endReason;
@@ -249,12 +262,16 @@ export function createGoogleStreamingSttHandler({
         timing.firstSpeechBeginMs ??= elapsedMs();
         send({ type: "speech_activity_begin" });
       } else if (response?.speechEventType === 3 || response?.speechEventType === "SPEECH_ACTIVITY_END") {
-        timing.firstSpeechEndMs ??= elapsedMs();
+        const atMs = elapsedMs();
+        timing.firstSpeechEndMs ??= atMs;
+        timing.lastSpeechEndMs = atMs;
         send({ type: "speech_activity_end" });
       }
       const normalized = normalizeStreamingResults(response?.results);
       if (normalized.finalAppend) {
-        timing.firstFinalMs ??= elapsedMs();
+        const atMs = elapsedMs();
+        timing.firstFinalMs ??= atMs;
+        timing.lastFinalMs = atMs;
         timing.finalCount += 1;
         if (normalized.finalAppend.trim()) finalHadText = true;
         send({ type: "transcript", text: normalized.finalAppend, isFinal: true, stability: 1 });
@@ -314,6 +331,7 @@ export function createGoogleStreamingSttHandler({
         });
         googleStream.once("end", () => {
           googleStreamEnded = true;
+          googleEndObservedMs = elapsedMs();
           inputEnded = true;
           phase = "finalizing";
           void finishDone();
@@ -396,7 +414,9 @@ export function createGoogleStreamingSttHandler({
         const reservedBytesRemaining = reservedSeconds * BYTES_PER_SECOND - sentBytes;
         const durationBytesRemaining = MAX_AUDIO_BYTES - sentBytes;
         const size = Math.min(GOOGLE_CHUNK_BYTES, buffer.length - offset, reservedBytesRemaining, durationBytesRemaining);
-        timing.firstGrpcAudioWriteMs ??= elapsedMs();
+        const atMs = elapsedMs();
+        timing.firstGrpcAudioWriteMs ??= atMs;
+        timing.lastGrpcAudioWriteMs = atMs;
         await writeGrpc(googleStream, { audio: buffer.subarray(offset, offset + size) });
         sentBytes += size;
         offset += size;
@@ -444,6 +464,7 @@ export function createGoogleStreamingSttHandler({
         return;
       }
       if (phase === "ready" && validStop(payload)) {
+        stopRequestedMs ??= elapsedMs();
         work = work.then(() => endInput("user_stop"));
         return;
       }
