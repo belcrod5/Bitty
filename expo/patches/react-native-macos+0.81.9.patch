@@ -1988,3 +1988,18 @@ index 47c96c8..9b37539 100644
  #endif // macOS]
  
    traits.dataDetectorTypes = convertRawProp(
+diff --git a/node_modules/react-native-macos/React/Base/macOS/RCTPlatformDisplayLink.m b/node_modules/react-native-macos/React/Base/macOS/RCTPlatformDisplayLink.m
+--- a/node_modules/react-native-macos/React/Base/macOS/RCTPlatformDisplayLink.m
++++ b/node_modules/react-native-macos/React/Base/macOS/RCTPlatformDisplayLink.m
+@@ -135,10 +135,6 @@
+ - (NSTimeInterval)timestamp
+ {
+-  CVTimeStamp now;
+-  now.version = 0;
+-  memset(&now, 0 , sizeof(now));
+-  CVDisplayLinkGetCurrentTime(_displayLink, &now);
+-  return (NSTimeInterval)now.hostTime / (NSTimeInterval)CVGetHostClockFrequency();
++  return (NSTimeInterval)CVGetCurrentHostTime() / (NSTimeInterval)CVGetHostClockFrequency();
+ }
+ 
+ - (NSTimeInterval)duration

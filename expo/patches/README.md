@@ -3,7 +3,11 @@
 `react-native-macos+0.81.9.patch` keeps Fabric scroll interactions bracketed for
 React Native, smooths phase-less mouse-wheel ticks, and doubles only their
 vertical distance. Precise trackpad and horizontal scrolling remain native. It
-also maps a macOS secondary click to Pressability's existing `onLongPress`
+also reads display-link timestamps from the host clock: Worklets pauses the
+macOS CVDisplayLink before reading its timestamp, and querying the stopped link
+returns an error and zero time. The host clock uses the same time base and
+advances even while the link is paused. The patch also maps a macOS
+secondary click to Pressability's existing `onLongPress`
 contract immediately without emitting primary-button press feedback or changing
 primary-button and mobile timing. JS press dispatch stays upstream: mouse
 clicks (including clicks on text and icon descendants) are handled once by the
