@@ -52,6 +52,15 @@ test("declares the native color scheme for each visual theme", () => {
   expect(VISUAL_THEMES.cyberpunk.colorScheme).toBe("dark");
 });
 
+test("defines TTS processing with the theme", () => {
+  expect(VISUAL_THEMES.standard.ttsEffect).toBeNull();
+  expect(VISUAL_THEMES.cyberpunk.ttsEffect).toEqual({
+    distortion: { preset: "speechWaves", wetDryMix: 0 },
+    delay: { time: 0.06, feedback: 14, wetDryMix: 8 },
+    reverb: { preset: "smallRoom", wetDryMix: 3 },
+  });
+});
+
 test("keeps standard transitions silent and defines cyberpunk transition sounds", () => {
   expect(VISUAL_THEMES.standard.motion).toEqual({
     popupTransition: "soft",

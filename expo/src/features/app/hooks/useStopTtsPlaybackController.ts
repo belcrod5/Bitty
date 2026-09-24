@@ -10,6 +10,7 @@ type AudioModeSwitchOptions = {
 
 type UseStopTtsPlaybackControllerOptions = {
   ttsStopInFlightRef: MutableRefObject<Promise<void> | null>;
+  ttsProcessingAbortControllersRef: MutableRefObject<Set<AbortController>>;
   ttsPlaybackTransitionInFlightRef: MutableRefObject<boolean>;
   lastTtsStopRequestedAtRef: MutableRefObject<number>;
   lastTtsStoppedAtRef: MutableRefObject<number>;
@@ -46,6 +47,7 @@ type UseStopTtsPlaybackControllerOptions = {
 export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControllerOptions) {
   const {
     ttsStopInFlightRef,
+    ttsProcessingAbortControllersRef,
     ttsPlaybackTransitionInFlightRef,
     lastTtsStopRequestedAtRef,
     lastTtsStoppedAtRef,
@@ -112,6 +114,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         streamTtsControlAlive: streamTtsControlRef.current !== null,
       });
       ttsPlaybackRunIdRef.current += 1;
+      for (const controller of ttsProcessingAbortControllersRef.current) controller.abort();
       ttsSynthesisRequestIdRef.current += 1;
       setTtsLoading(false);
       setTtsUiStatus("idle");
@@ -205,6 +208,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     ttsPlayingRef,
     ttsSoundRef,
     ttsStopInFlightRef,
+    ttsProcessingAbortControllersRef,
     ttsSynthesisRequestIdRef,
     ttsUiStatus,
   ]);

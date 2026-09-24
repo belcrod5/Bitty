@@ -1,10 +1,14 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "../audio";
+import { createTtsSoundAsync } from "../ttsAudio";
+import type { VisualThemeTtsEffect } from "../theme/visualThemes";
 import type { AudioContainer, TtsDebugStats } from "../types/appTypes";
 import { detectAudioContainer, resolveAudioFileExtension } from "../utils/waveform";
 
 type UsePlayTtsAudioControllerOptions = {
   fixedMediaVolume: number;
+  ttsEffect: VisualThemeTtsEffect | null;
+  ttsProcessingAbortControllersRef: MutableRefObject<Set<AbortController>>;
   ttsStopInFlightRef: MutableRefObject<Promise<void> | null>;
   ttsPlaybackRunIdRef: MutableRefObject<number>;
   ttsPlaybackProgressUiAtRef: MutableRefObject<number>;
@@ -27,6 +31,8 @@ type UsePlayTtsAudioControllerOptions = {
 export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOptions) {
   const {
     fixedMediaVolume,
+    ttsEffect,
+    ttsProcessingAbortControllersRef,
     ttsStopInFlightRef,
     ttsPlaybackRunIdRef,
     ttsPlaybackProgressUiAtRef,
@@ -68,6 +74,7 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
     setTtsUiStatus("playing");
     ttsPlaybackProgressUiAtRef.current = 0;
     ttsPlaybackTransitionInFlightRef.current = true;
+    let createdSound: Audio.Sound | null = null;
     try {
       const normalizedAudioUrl = String(audioUrl || "").trim();
       const normalizedMimeType = String(mimeType || "").trim().toLowerCase();
@@ -106,16 +113,36 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
         setTtsSoundWithRef((current) => (current === activeTtsSound ? null : current));
       }
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: normalizedAudioUrl },
-        { shouldPlay: true, volume: fixedMediaVolume }
-      );
+      const processing = new AbortController();
+      ttsProcessingAbortControllersRef.current.add(processing);
+      let sound: Audio.Sound;
+      try {
+        sound = await createTtsSoundAsync(
+          normalizedAudioUrl,
+          { shouldPlay: false, volume: fixedMediaVolume },
+          ttsEffect,
+          processing.signal
+        );
+      } finally {
+        ttsProcessingAbortControllersRef.current.delete(processing);
+      }
+      if (runId !== ttsPlaybackRunIdRef.current) {
+        await sound.unloadAsync().catch(() => {});
+        return;
+      }
+      createdSound = sound;
       attachTtsSoundStatusHandler(sound, runId);
 
       setTtsUri(normalizedAudioUrl);
       setTtsSoundWithRef(sound);
       ttsPlaybackLastPlayingAtRef.current = Date.now();
+      await sound.playAsync();
     } catch (e) {
+      if (createdSound) {
+        await createdSound.unloadAsync().catch(() => {});
+        setTtsSoundWithRef((current) => (current === createdSound ? null : current));
+      }
+      if (runId !== ttsPlaybackRunIdRef.current) return;
       markTtsPlaybackStopped();
       throw e;
     } finally {
@@ -124,6 +151,7 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
   }, [
     attachTtsSoundStatusHandler,
     fixedMediaVolume,
+    ttsEffect,
     markTtsPlaybackStopped,
     prepareTtsPlaybackSession,
     setTtsDebugStats,
@@ -135,6 +163,7 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
     ttsPlaybackLastPlayingAtRef,
     ttsPlaybackProgressUiAtRef,
     ttsPlaybackRunIdRef,
+    ttsProcessingAbortControllersRef,
     ttsPlaybackTransitionInFlightRef,
     ttsSoundRef,
     ttsStopInFlightRef,
