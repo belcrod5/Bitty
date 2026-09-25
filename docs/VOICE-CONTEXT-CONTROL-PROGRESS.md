@@ -3,7 +3,7 @@
 ## 状態
 
 - 最終更新: 2026-09-25
-- 状態: 実装・自動検証・最終独立レビュー済み。ユーザーから動作に問題なさそうとの報告を受け、実装 PR を作成し CI 確認中。main には未マージ。
+- 状態: 実装・自動検証・最終独立レビュー・PR CI 成功。ユーザーから動作に問題なさそうとの報告あり。main には未マージ。
 - Branch: `feat/voice-context-control-v1`
 - Worktree: `/Volumes/SSD-500GB-SanDisk/work/bitty-worktree/feat/voice-context-control-v1`
 - Base: `origin/docs/voice-context-control` at `76d736dc8d2db3c13557ef99c5726718871475e2`（設計の [PR #141](https://github.com/belcrod5/Bitty/pull/141)）
@@ -28,7 +28,7 @@
 | 音声画面・STT／TTS 接続 | 実装エージェント B | 追加実装・関連テスト済み | 共通フッターの任意 prop、3指標、古い応答破棄、既存チャット不変をテスト |
 | 結合と回帰確認 | 親の調整、担当エージェントが修正 | 全自動テスト成功・独立レビュー済み | Runner／Expo の関連テスト、型チェック、diff check。localhost 模擬モデルによる上流 input 検証 |
 | 独立レビュー | 実装とは別のエージェント | APPROVE（最終修正を再確認） | 仕様、セキュリティ、非同期競合、既存チャット回帰、不要な複雑さを確認 |
-| PR・CI・ユーザー確認 | 親エージェント | PR #142 作成・CI確認中 | 差分、CI、未検証リスクを報告。main へのマージは明示承認後 |
+| PR・CI・ユーザー確認 | 親エージェント | PR #142 作成・CI成功、マージ承認待ち | 差分、CI、未検証リスクを報告。main へのマージは明示承認後 |
 
 ## 検証記録
 
@@ -189,4 +189,5 @@
 - 修正担当の hook 18件、音声画面10件、隣接画面50件、iOS／macOS 型チェックは成功。親が統合後の Expo 全テスト・型チェックを再実行中。独立再レビューは継続中。
 - 独立再レビューが、旧チャット音声の再生中は合成対象IDと現在の再生IDが異なる競合を指摘。既存 TTS 停止制御で、音声返答が最新合成対象なら、再生IDも音声の時だけ全停止し、旧チャット音声が再生中なら音声合成ストリームと待ち行列だけを中止する。より新しいチャット合成に切り替わっていれば何もしない。遅延 WebSocket 通知も破棄する。
 - 実際の合成・停止 hook を組み合わせた回帰テストで、最初の音声チャンク前の閉鎖、旧チャット音声の保持、遅延チャンクの破棄、後続チャット合成の保持を確認。親が最終 Expo 全164スイート・1289件と iOS／macOS 型チェックを再実行して成功。Runner 全869件（成功866、スキップ3、失敗0）と隔離 App Server 模擬統合2件は Runner の最終変更後に成功。最終独立再レビューは APPROVE、重点35件と型チェック・差分チェックも成功。実機での音声TTS重なり順序と実モデルの全ツール・承認経路は未検証。
-- 29ファイルの変更を `36c6628` にコミットし、`origin/feat/voice-context-control-v1` へ push。[実装 PR #142](https://github.com/belcrod5/Bitty/pull/142) を設計 PR #141 の branch を base に作成。CI とマージ判断は継続中。
+- 29ファイルの変更を `36c6628` にコミットし、`origin/feat/voice-context-control-v1` へ push。[実装 PR #142](https://github.com/belcrod5/Bitty/pull/142) を設計 PR #141 の branch を base に作成。
+- PR #142 の GitHub Actions `checks` は [成功](https://github.com/belcrod5/Bitty/actions/runs/36125777310)。CI は Expo 型チェックとシェル検査などを行い、Runner／Expo の全テストは上記のローカル実行結果に基づく。main へのマージはユーザーの承認待ち。
