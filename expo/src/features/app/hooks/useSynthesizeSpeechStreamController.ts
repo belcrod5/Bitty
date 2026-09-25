@@ -457,7 +457,7 @@ export function useSynthesizeSpeechStreamController(
     };
 
     ws.onopen = () => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (streamSocketRef.current !== ws || streamTtsSuppressedRef.current || ws.readyState !== WebSocket.OPEN) return;
       try {
         const startFrame = useRunnerWsEnvelope
           ? encodeRunnerWsTtsStart(startPayload)
@@ -479,6 +479,7 @@ export function useSynthesizeSpeechStreamController(
     };
 
     ws.onmessage = (event) => {
+      if (streamSocketRef.current !== ws || streamTtsSuppressedRef.current) return;
       const raw = String(event?.data || "");
       if (!raw) return;
       recordNetworkUsage("stream-tts", 0, utf8ByteLength(raw));
@@ -506,7 +507,7 @@ export function useSynthesizeSpeechStreamController(
     };
 
     ws.onerror = (event: unknown) => {
-      if (done) return;
+      if (done || streamSocketRef.current !== ws || streamTtsSuppressedRef.current) return;
       done = true;
       setTtsLoading(false);
       setTtsUiStatus("error");
@@ -520,10 +521,9 @@ export function useSynthesizeSpeechStreamController(
     };
 
     ws.onclose = (event: unknown) => {
-      if (streamSocketRef.current === ws) {
-        streamSocketRef.current = null;
-      }
-      if (done) return;
+      if (streamSocketRef.current !== ws) return;
+      streamSocketRef.current = null;
+      if (done || streamTtsSuppressedRef.current) return;
       done = true;
       setTtsLoading(false);
       setTtsUiStatus("error");

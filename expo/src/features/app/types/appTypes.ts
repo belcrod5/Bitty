@@ -262,6 +262,11 @@ export type GitChangedFilesDirectoryState = {
 };
 
 export type AppScreen = "skia_board" | "settings" | "cloudflare_tunnel_monitor";
+export type VoiceContextStats = {
+  estimatedContextUsagePercent: number | null;
+  unsummarizedMessageCount: number;
+  memoryCharacterCount: number;
+};
 export type SlashCommandName = "/status" | "/compact";
 
 export type UiSfxKey =

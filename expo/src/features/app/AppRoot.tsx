@@ -1307,7 +1307,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const markTtsChunkPlaybackFinishedDelegateRef = useRef<() => void>(() => {});
   const markTtsPlaybackStoppedDelegateRef = useRef<() => void>(() => {});
   const stopTtsPlayback = useCallback(async (
-    options?: { interruptStream?: boolean; reason?: string }
+    options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }
   ) => {
     await stopTtsPlaybackDelegateRef.current(options);
   }, []);
@@ -1318,11 +1318,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     textOverride?: string,
     streamOptions?: TtsPlaybackTarget
   ) => {
-    ttsPlaybackProjectionTargetRef.current = {
-      panelId: streamOptions?.panelId,
-      sessionId: streamOptions?.sessionId,
-      messageId: streamOptions?.messageId,
-    };
     await synthesizeSpeechStreamDelegateRef.current(textOverride, streamOptions);
   }, []);
   const {
@@ -3400,6 +3395,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     streamTtsControlRef,
     streamAudioWaveformBarsRef,
     ttsPlaybackMessageIdRef,
+    ttsPlaybackProjectionTargetRef,
     ttsSoundRef,
     ttsLoading,
     ttsUiStatus,
@@ -6170,6 +6166,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         activeScreen={activeScreen}
         onStartNewSessionInDirectory={appDrawerProps.onStartNewSessionInDirectory}
         openSessionHistoryPopup={openSessionHistoryPopup}
+        voicePlayback={{
+          synthesizeSpeechStream,
+          stopTtsPlayback,
+          isTtsPlaybackActive,
+          ttsUiStatus,
+          onApprovalRequest: handleApprovalRequest,
+          onApprovalResolved: clearResolvedApproval,
+        }}
       />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>
       <AppOverlays

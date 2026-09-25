@@ -1,6 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "../audio";
-import type { StreamTtsControlState } from "../types/appTypes";
+import type { StreamTtsControlState, TtsPlaybackTarget } from "../types/appTypes";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 type AudioModeSwitchOptions = {
@@ -25,6 +25,7 @@ type UseStopTtsPlaybackControllerOptions = {
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   streamAudioWaveformBarsRef: MutableRefObject<number[][]>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
+  ttsPlaybackProjectionTargetRef: MutableRefObject<TtsPlaybackTarget>;
   ttsSoundRef: MutableRefObject<Audio.Sound | null>;
   ttsLoading: boolean;
   ttsUiStatus: TtsUiStatus;
@@ -62,6 +63,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     streamTtsControlRef,
     streamAudioWaveformBarsRef,
     ttsPlaybackMessageIdRef,
+    ttsPlaybackProjectionTargetRef,
     ttsSoundRef,
     ttsLoading,
     ttsUiStatus,
@@ -80,8 +82,31 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
   } = options;
 
   const stopTtsPlayback = useCallback(async (
-    stopOptions?: { interruptStream?: boolean; reason?: string }
+    stopOptions?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }
   ) => {
+    const expectedMessageId = stopOptions?.expectedMessageId;
+    if (expectedMessageId) {
+      if (ttsPlaybackProjectionTargetRef.current.messageId !== expectedMessageId) return;
+      if (ttsPlaybackMessageIdRef.current !== expectedMessageId) {
+        // The previous message still owns the sound; this stream owns the queue.
+        streamTtsSuppressedRef.current = true;
+        const ws = streamSocketRef.current;
+        streamSocketRef.current = null;
+        ws?.close();
+        streamTtsControlRef.current?.cleanup();
+        streamTtsControlRef.current = null;
+        clearStreamAudioQueue();
+        streamAudioWaveformBarsRef.current = [];
+        setStreamWaveformPreview([]);
+        setTtsLoading(false);
+        setTtsUiStatus(ttsPlayingRef.current ? "playing" : "idle");
+        setTtsPlaybackWanted(
+          ttsPlayingRef.current || streamAudioQueueProcessingRef.current,
+          "voice_stream_cancelled"
+        );
+        return;
+      }
+    }
     if (ttsStopInFlightRef.current) {
       await ttsStopInFlightRef.current;
       return;
@@ -199,6 +224,8 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
     streamAudioQueueProcessingRef,
     streamAudioQueueRef,
     streamAudioWaveformBarsRef,
+    ttsPlaybackMessageIdRef,
+    ttsPlaybackProjectionTargetRef,
     streamSocketRef,
     streamTtsControlRef,
     streamTtsSuppressedRef,
