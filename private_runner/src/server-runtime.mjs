@@ -41,6 +41,8 @@ import {
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
+import { createVoiceContextService } from "./voice-context-service.mjs";
+import { createVoiceApprovalBridge } from "./voice-approval-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
 import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
 import { createScheduledCodexTurnStarter } from "./codex-scheduled-turn.mjs";
@@ -6608,6 +6610,11 @@ function createCodexRpcClient({
   }
 }
 
+const voiceContextService = createVoiceContextService({
+  rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
+  createClient: (options) => createCodexRpcClient(options),
+});
+
 const codexAuthRuntime = createCodexAuthRuntime({
   authService: codexAuthService,
   createClient: (options) => createCodexRpcClient(options),
@@ -9038,6 +9045,12 @@ runnerWsServer.on("connection", (ws, req) => {
     : (protocolList ? String(protocolList).split(",").map((item) => item.trim()).filter(Boolean) : []);
   const llmRelaysByKey = new Map();
   const attachedTtsJobIds = new Set();
+  const voiceApprovals = createVoiceApprovalBridge({
+    send: ({ requestId, operationId, method, params, threadId, turnId }) => sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: "voice.approval.request", operationId, streamId: operationId,
+      payload: { requestId, method, params, threadId, turnId },
+    }),
+  });
   runnerWsActiveClients.add(ws);
   runnerWsEnvelopeClients.add(ws);
   codexWsRelayClientMode.set(ws, "runner-ws-envelope");
@@ -9050,6 +9063,54 @@ runnerWsServer.on("connection", (ws, req) => {
     ws,
     sendEnvelope: sendRunnerWsEnvelope,
   });
+
+  function sendVoiceError(message, error) {
+    sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: "error", requestId: message.requestId || "",
+      operationId: message.operationId || "", streamId: message.streamId || "",
+      payload: { code: error?.code || "turn_failed", backendId: "codex", retryable: false,
+        message: String(error?.message || "Voice operation failed") },
+    });
+  }
+
+  function handleVoiceMessage(message) {
+    if (message.channel !== "agent") return false;
+    if (message.op === "voice.approval.decision") {
+      const requestId = String(message.payload?.requestId || "");
+      const decision = String(message.payload?.decision || "");
+      if (!voiceApprovals.decide(message.operationId, requestId, decision)) {
+        sendVoiceError(message, { code: "turn_rejected", message: "Invalid voice approval decision" });
+        return true;
+      }
+      sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: "voice.approval.decision.result", requestId: message.requestId || "",
+        operationId: message.operationId, payload: { requestId },
+      });
+      return true;
+    }
+    if (message.op === "voice.open" || message.op === "voice.status") {
+      const operation = message.op === "voice.open"
+        ? voiceContextService.open()
+        : voiceContextService.status(message.payload?.logicalConversationId, message.payload?.clientOperationId);
+      void operation.then((payload) => sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload,
+      })).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
+    if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
+    const operationId = message.operationId;
+    const onApproval = (request) => voiceApprovals.request(operationId, request);
+    void voiceContextService.start(message, (result) => sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: result.status === "completed" ? "voice.turn.completed" : "voice.turn.failed",
+      operationId: result.clientOperationId, streamId: result.clientOperationId,
+      payload: result,
+    }), onApproval).then((payload) => sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: "turn.accepted", requestId: message.requestId || "",
+      operationId: payload.clientOperationId, streamId: payload.clientOperationId,
+      payload: { ...payload, runId: payload.clientOperationId },
+    })).catch((error) => sendVoiceError(message, error));
+    return true;
+  }
 
   function attachedRunnerWsLlmRelays() {
     const relays = [];
@@ -9326,7 +9387,7 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
-    if (agentConnection.handleMessage(message)) return;
+    if (handleVoiceMessage(message) || agentConnection.handleMessage(message)) return;
 
     if (message.channel === "control" && message.op === "ping") {
       const pingPayload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
@@ -9740,6 +9801,7 @@ runnerWsServer.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
+    voiceApprovals.close();
     agentConnection.detach();
     detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);

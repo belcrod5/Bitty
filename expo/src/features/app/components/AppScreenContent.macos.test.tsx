@@ -25,16 +25,23 @@ jest.mock("../screens/SettingsScreen", () => ({
 jest.mock("../screens/CloudflareTunnelMonitorScreen", () => ({
   CloudflareTunnelMonitorScreen: () => null,
 }));
-
 beforeEach(() => {
   mockBoardMountCount = 0;
 });
+
+const voicePlayback = {
+  synthesizeSpeechStream: jest.fn(async () => undefined),
+  stopTtsPlayback: jest.fn(async () => undefined),
+  isTtsPlaybackActive: false,
+  ttsUiStatus: "idle" as const,
+};
 
 test("keeps the native Skia surface mounted while visiting Settings", async () => {
   const openSessionHistoryPopup = jest.fn();
   const screen = await render(
     <AppScreenContent
       activeScreen="skia_board"
+      voicePlayback={voicePlayback}
       onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
@@ -44,6 +51,7 @@ test("keeps the native Skia surface mounted while visiting Settings", async () =
   await screen.rerender(
     <AppScreenContent
       activeScreen="settings"
+      voicePlayback={voicePlayback}
       onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />
@@ -53,6 +61,7 @@ test("keeps the native Skia surface mounted while visiting Settings", async () =
   await screen.rerender(
     <AppScreenContent
       activeScreen="skia_board"
+      voicePlayback={voicePlayback}
       onStartNewSessionInDirectory={jest.fn()}
       openSessionHistoryPopup={openSessionHistoryPopup}
     />

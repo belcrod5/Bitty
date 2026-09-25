@@ -257,7 +257,17 @@ jest.mock("react-native-gesture-handler", () => {
 });
 
 jest.mock("../contexts/AppShellContext", () => ({
-  useAppShell: () => ({ openDrawer: jest.fn() }),
+  useAppShell: () => ({ activeScreen: "skia_board", openDrawer: jest.fn() }),
+}));
+jest.mock("./VoiceConversationScreen", () => ({
+  VoiceConversationScreen: ({ onClose }: { onClose: () => void }) => {
+    const ReactModule = require("react");
+    const { TouchableOpacity } = require("react-native");
+    return ReactModule.createElement(TouchableOpacity, {
+      testID: "voice-conversation-screen",
+      onPress: onClose,
+    });
+  },
 }));
 jest.mock("../contexts/ChatScreenContext", () => ({
   useChatScreen: () => ({
@@ -408,6 +418,25 @@ beforeEach(() => {
   mockMarkViewportInteraction.mockClear();
   mockSessions = [mockDefaultSession];
   mockSections = [];
+});
+
+test("overlays voice input while keeping the board mounted", async () => {
+  const screen = await render(<SkiaMiniBoardScreen
+    onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={jest.fn()}
+    voicePlayback={{
+      synthesizeSpeechStream: jest.fn(async () => undefined),
+      stopTtsPlayback: jest.fn(async () => undefined),
+      isTtsPlaybackActive: false,
+      ttsUiStatus: "idle",
+    }}
+  />);
+  await fireEvent.press(screen.getByTestId("skia-board-voice-conversation"));
+  expect(screen.getByTestId("skia-board-status-pill")).toBeTruthy();
+  expect(screen.getByTestId("voice-conversation-screen")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("voice-conversation-screen"));
+  expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
+  expect(screen.getByTestId("skia-board-status-pill")).toBeTruthy();
 });
 
 test("persists viewport reset through the local viewport owner", async () => {

@@ -73,6 +73,36 @@ export function useStreamingStt(options: Options) {
     else setPhase("idle");
   }, [clearReplyCycleWait]);
 
+  const updateReplyCycle = useCallback(() => {
+    if (!awaitingReplyCycleRef.current) return;
+    const { replyLoading, ttsPlaybackActive, voiceInputDuringTtsAllowed } = latestRef.current;
+    if (replyLoading) {
+      sawReplyLoadingRef.current = true;
+      clearTimer(replyCycleTimeoutRef);
+      clearTimer(ttsStartTimerRef);
+      return;
+    }
+    if (!sawReplyLoadingRef.current) return;
+    if (ttsPlaybackActive) {
+      sawTtsPlaybackRef.current = true;
+      clearTimer(ttsStartTimerRef);
+      if (!voiceInputDuringTtsAllowed) return;
+      settleReplyCycle();
+      return;
+    }
+    if (sawTtsPlaybackRef.current) {
+      settleReplyCycle();
+      return;
+    }
+    if (ttsStartTimerRef.current) return;
+    ttsStartTimerRef.current = setTimeout(() => {
+      ttsStartTimerRef.current = null;
+      if (!awaitingReplyCycleRef.current || latestRef.current.replyLoading
+        || latestRef.current.ttsPlaybackActive) return;
+      settleReplyCycle();
+    }, TTS_START_GRACE_MS);
+  }, [settleReplyCycle]);
+
   const abortSession = useCallback(() => {
     const session = sessionRef.current;
     sessionRef.current = null;
@@ -206,7 +236,14 @@ export function useStreamingStt(options: Options) {
           try {
             await latestRef.current.sendTranscript(finalText, () => {
               transcriptStateRef.current = startStreamingTranscript("");
+              clearTimer(replyCycleTimeoutRef);
             });
+            if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
+              // A successful sendTranscript has been accepted even if a fast terminal
+              // update never rendered replyLoading=true.
+              sawReplyLoadingRef.current = true;
+              updateReplyCycle();
+            }
           } catch {
             if (version === sessionVersionRef.current) {
               finishFailure("文字起こし結果を送信できませんでした。");
@@ -246,19 +283,14 @@ export function useStreamingStt(options: Options) {
   const stop = useCallback(() => {
     if (phase === "idle" || !listeningRef.current) return;
     listeningRef.current = false;
+    terminalRef.current = true;
+    sessionVersionRef.current += 1;
     clearReplyCycleWait();
     clearTimer(retryTimerRef);
-    if (phase === "connecting" || terminalRef.current) {
-      sessionVersionRef.current += 1;
-      terminalRef.current = true;
-      void abortSession();
-      setTranscript(finalStreamingTranscript(transcriptStateRef.current));
-      setPhase("idle");
-      return;
-    }
-    setPhase("finalizing");
-    void sessionRef.current?.stop().catch(() => fail("音声の停止に失敗しました。"));
-  }, [abortSession, clearReplyCycleWait, fail, phase, setTranscript]);
+    void abortSession();
+    setTranscript(displayStreamingTranscript(transcriptStateRef.current));
+    setPhase("idle");
+  }, [abortSession, clearReplyCycleWait, phase, setTranscript]);
 
   const abort = useCallback(async () => {
     listeningRef.current = false;
@@ -283,32 +315,8 @@ export function useStreamingStt(options: Options) {
     void abortSession();
   }, [abortSession, clearReplyCycleWait]);
 
-  useEffect(() => {
-    if (!awaitingReplyCycleRef.current) return;
-    if (options.replyLoading) {
-      sawReplyLoadingRef.current = true;
-      clearTimer(replyCycleTimeoutRef);
-      return;
-    }
-    if (!sawReplyLoadingRef.current) return;
-    if (options.ttsPlaybackActive) {
-      sawTtsPlaybackRef.current = true;
-      clearTimer(ttsStartTimerRef);
-      if (!options.voiceInputDuringTtsAllowed) return;
-      settleReplyCycle();
-      return;
-    }
-    if (sawTtsPlaybackRef.current) {
-      settleReplyCycle();
-      return;
-    }
-    if (ttsStartTimerRef.current) return;
-    ttsStartTimerRef.current = setTimeout(() => {
-      ttsStartTimerRef.current = null;
-      if (!awaitingReplyCycleRef.current || latestRef.current.ttsPlaybackActive) return;
-      settleReplyCycle();
-    }, TTS_START_GRACE_MS);
-  }, [options.replyLoading, options.ttsPlaybackActive, options.voiceInputDuringTtsAllowed, settleReplyCycle]);
+  useEffect(() => updateReplyCycle(), [options.replyLoading, options.ttsPlaybackActive,
+    options.voiceInputDuringTtsAllowed, updateReplyCycle]);
 
   return {
     active: phase !== "idle",

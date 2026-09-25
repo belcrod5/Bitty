@@ -81,6 +81,7 @@ import {
 } from "../hooks/useSkiaBoardViewportPersistence";
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
+import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -580,16 +581,22 @@ type SkiaMiniBoardScreenProps = {
     directory?: string;
     origin?: SessionPopupOrigin;
   }) => void;
+  voicePlayback?: VoiceConversationPlayback;
 };
 
 export function SkiaMiniBoardScreen({
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
+  voicePlayback,
 }: SkiaMiniBoardScreenProps) {
   const { theme, themeId } = useVisualTheme();
   const screenStyles = screenStylesByTheme[themeId];
   const { width: windowWidth } = useWindowDimensions();
-  const { openDrawer } = useAppShell();
+  const { activeScreen, openDrawer } = useAppShell();
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  useEffect(() => {
+    if (activeScreen !== "skia_board") setVoiceOpen(false);
+  }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
   const { registeredDirectories } = useConversation();
   const {
@@ -1885,6 +1892,17 @@ export function SkiaMiniBoardScreen({
               color={tool === "section" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
             />
           </TouchableOpacity>
+          {voicePlayback ? (
+            <TouchableOpacity
+              testID="skia-board-voice-conversation"
+              style={screenStyles.toolButton}
+              onPress={() => setVoiceOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="音声会話"
+            >
+              <Ionicons name="mic-outline" size={23} color={theme.colors.iconSecondary} />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </SafeAreaView>
 
@@ -1893,6 +1911,9 @@ export function SkiaMiniBoardScreen({
           <Text style={screenStyles.statusText}>{syncStatusText}</Text>
         </View>
       </SafeAreaView>
+      {voiceOpen && voicePlayback ? (
+        <VoiceConversationScreen {...voicePlayback} onClose={() => setVoiceOpen(false)} />
+      ) : null}
       <AppModal visible={boardMenuOpen} transparent animationType="fade" onRequestClose={() => setBoardMenuOpen(false)}>
         {boardMenu}
       </AppModal>

@@ -3,6 +3,7 @@ import { SafeAreaView, StyleSheet, View } from "react-native";
 import { CloudflareTunnelMonitorScreen } from "../screens/CloudflareTunnelMonitorScreen";
 import { SettingsScreen } from "../screens/SettingsScreen";
 import { SkiaMiniBoardScreen } from "../screens/SkiaMiniBoardScreen";
+import type { VoiceConversationPlayback } from "../screens/VoiceConversationScreen";
 import type { AppScreen } from "../types/appTypes";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
@@ -12,12 +13,14 @@ type AppScreenContentProps = {
   onStartNewSessionInDirectory:
     ComponentProps<typeof SkiaMiniBoardScreen>["onStartNewSessionInDirectory"];
   openSessionHistoryPopup: ComponentProps<typeof SkiaMiniBoardScreen>["openSessionHistoryPopup"];
+  voicePlayback: VoiceConversationPlayback;
 };
 
 export function AppScreenContent({
   activeScreen,
   onStartNewSessionInDirectory,
   openSessionHistoryPopup,
+  voicePlayback,
 }: AppScreenContentProps) {
   const { themeId } = useVisualTheme();
   const styles = stylesByTheme[themeId];
@@ -33,6 +36,7 @@ export function AppScreenContent({
         <SkiaMiniBoardScreen
           onStartNewSessionInDirectory={onStartNewSessionInDirectory}
           openSessionHistoryPopup={openSessionHistoryPopup}
+          voicePlayback={voicePlayback}
         />
       </View>
       {!boardVisible ? (

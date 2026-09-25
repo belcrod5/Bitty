@@ -1,8 +1,10 @@
-import { renderHook } from "@testing-library/react-native";
+import { act, renderHook } from "@testing-library/react-native";
 
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsMessage, RunnerWsMessageFilter } from "../../runnerWs/types";
-import type { StreamTtsControlState, TtsDebugStats } from "../types/appTypes";
+import { Audio } from "../audio";
+import type { StreamTtsControlState, TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
+import { useStopTtsPlaybackController } from "./useStopTtsPlaybackController";
 import { useSynthesizeSpeechStreamController } from "./useSynthesizeSpeechStreamController";
 
 const mockCreateWebSocketWithOptionalAuth = jest.fn();
@@ -233,6 +235,102 @@ test("busy playback via non-empty queue also defers the target switch", async ()
 
   expect(options.resetStreamSegmentsForNewStream).toHaveBeenCalledWith("old-message");
   expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
+});
+
+test("closing a voice stream before its first chunk preserves the chat sound already playing", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const projectionTargetRef = ref<TtsPlaybackTarget>({});
+  const chatSound = {
+    setOnPlaybackStatusUpdate: jest.fn(),
+    stopAsync: jest.fn(async () => undefined),
+    unloadAsync: jest.fn(async () => undefined),
+  };
+  options.ttsPlayingRef.current = true;
+  options.ttsPlaybackMessageIdRef.current = "chat-message";
+  options.setTtsPlaybackProjectionTarget.mockImplementation((target: TtsPlaybackTarget) => {
+    projectionTargetRef.current = target;
+  });
+  options.clearStreamAudioQueue.mockImplementation(() => {
+    options.streamAudioQueueRef.current = [];
+  });
+  const stopOptions: Parameters<typeof useStopTtsPlaybackController>[0] = {
+    ttsStopInFlightRef: ref(null),
+    ttsProcessingAbortControllersRef: ref(new Set<AbortController>()),
+    ttsPlaybackTransitionInFlightRef: ref(false),
+    lastTtsStopRequestedAtRef: ref(0),
+    lastTtsStoppedAtRef: ref(0),
+    ttsPlaybackRunIdRef: ref(0),
+    ttsSynthesisRequestIdRef: ref(0),
+    ttsPlayingRef: options.ttsPlayingRef,
+    replyLoadingRef: ref(false),
+    streamSocketRef: options.streamSocketRef,
+    streamAudioQueueRef: options.streamAudioQueueRef,
+    streamAudioQueueProcessingRef: ref(true),
+    streamTtsSuppressedRef: options.streamTtsSuppressedRef,
+    streamTtsControlRef: options.streamTtsControlRef,
+    streamAudioWaveformBarsRef: options.streamAudioWaveformBarsRef,
+    ttsPlaybackMessageIdRef: options.ttsPlaybackMessageIdRef,
+    ttsPlaybackProjectionTargetRef: projectionTargetRef,
+    ttsSoundRef: ref(chatSound as unknown as Audio.Sound),
+    ttsLoading: true,
+    ttsUiStatus: "playing",
+    setTtsPlaybackWanted: options.setTtsPlaybackWanted,
+    setTtsLoading: options.setTtsLoading,
+    setTtsUiStatus: options.setTtsUiStatus,
+    setTtsQueueProcessing: jest.fn(),
+    logAuto: jest.fn(),
+    elapsedSinceMs: jest.fn(() => null),
+    clearStreamAudioQueue: options.clearStreamAudioQueue,
+    setStreamWaveformPreview: options.setStreamWaveformPreview,
+    markTtsPlaybackStopped: jest.fn(),
+    setAudioModeForPlayback: jest.fn(async () => undefined),
+    clearTtsPlaybackWatchdogTimer: jest.fn(),
+    setTtsSoundWithRef: jest.fn(),
+  };
+  const { result } = await renderHook(() => ({
+    synthesize: useSynthesizeSpeechStreamController(options),
+    stop: useStopTtsPlaybackController(stopOptions).stopTtsPlayback,
+  }));
+
+  await act(async () => { await result.current.synthesize("voice reply", { messageId: "voice-operation" }); });
+  await flushPromises();
+  expect(options.ttsPlaybackMessageIdRef.current).toBe("chat-message");
+  expect(options.setTtsPlaybackMessageIdWithRef).not.toHaveBeenCalled();
+  const operationId = String(manager.sent[0].operationId);
+
+  await act(async () => {
+    await result.current.stop({ interruptStream: true, expectedMessageId: "voice-operation" });
+  });
+
+  expect(manager.sent).toContainEqual(expect.objectContaining({ channel: "tts", op: "detach", operationId }));
+  expect(options.streamTtsControlRef.current).toBeNull();
+  expect(options.streamTtsSuppressedRef.current).toBe(true);
+  expect(options.clearStreamAudioQueue).toHaveBeenCalledTimes(2);
+  expect(chatSound.stopAsync).not.toHaveBeenCalled();
+  expect(chatSound.unloadAsync).not.toHaveBeenCalled();
+  expect(stopOptions.markTtsPlaybackStopped).not.toHaveBeenCalled();
+  expect(options.ttsPlaybackMessageIdRef.current).toBe("chat-message");
+  expect(options.setTtsPlaybackWanted).toHaveBeenLastCalledWith(true, "voice_stream_cancelled");
+
+  manager.emit({
+    channel: "tts", op: "event", operationId,
+    payload: { type: "audio_chunk", seq: 0, text: "late", audioUrl: "http://example.com/late.mp3", mimeType: "audio/mpeg" },
+  });
+  expect(options.enqueueStreamAudio).not.toHaveBeenCalled();
+
+  await act(async () => { await result.current.synthesize("another voice reply", { messageId: "voice-operation-2" }); });
+  await act(async () => { await result.current.synthesize("chat reply", { messageId: "chat-message-2" }); });
+  await flushPromises();
+  const chatControl = options.streamTtsControlRef.current;
+  expect(chatControl).not.toBeNull();
+  const sentBeforeClosingVoice = manager.sent.length;
+  await act(async () => {
+    await result.current.stop({ interruptStream: true, expectedMessageId: "voice-operation-2" });
+  });
+  expect(options.streamTtsControlRef.current).toBe(chatControl);
+  expect(manager.sent).toHaveLength(sentBeforeClosingVoice);
+  expect(chatSound.stopAsync).not.toHaveBeenCalled();
 });
 
 test("segment_queued and audio_chunk events tag upsertStreamSegment with the target messageId", async () => {

@@ -66,6 +66,7 @@ async function emit(session: MockSession, message: Record<string, unknown>) {
 async function openReady(result: { current: ReturnType<typeof useStreamingStt> }) {
   await act(async () => { result.current.start(); await Promise.resolve(); });
   expect(result.current.phase).toBe("connecting");
+  expect(result.current.active).toBe(true);
   const session = mockSessions.at(-1)!;
   await emit(session, { type: "ready" });
   expect(result.current.phase).toBe("recording");
@@ -122,18 +123,39 @@ test("waits for native abort before restarting after stop while connecting", asy
   expect(result.current.phase).toBe("recording");
 });
 
-test("stop finalizes once and preserves the last transcript", async () => {
+test("stop aborts once, keeps visible speech as a draft, and ignores late results", async () => {
+  const options = { ...createOptions(), transcript: "earlier" };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "partial", isFinal: false });
+  const transcriptCalls = options.setTranscript.mock.calls.length;
+  await act(async () => { result.current.stop(); result.current.stop(); });
+  expect(session.abort).toHaveBeenCalledTimes(1);
+  expect(session.stop).not.toHaveBeenCalled();
+  expect(options.setTranscript).toHaveBeenLastCalledWith("earlier partial");
+  expect(options.setTranscript).toHaveBeenCalledTimes(transcriptCalls + 1);
+  expect(result.current.phase).toBe("idle");
+  expect(result.current.isArmed()).toBe(false);
+  await finishSpeech(session, "late final");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(options.setTranscript).toHaveBeenCalledTimes(transcriptCalls + 1);
+  expect(options.onError).not.toHaveBeenCalled();
+});
+
+test("stop during done teardown prevents the pending send", async () => {
+  let resolveAbort = () => {};
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));
   const session = await openReady(result);
-  await act(async () => { result.current.stop(); result.current.stop(); });
-  expect(result.current.phase).toBe("finalizing");
-  expect(session.stop).toHaveBeenCalledTimes(1);
-  await finishSpeech(session, "final after stop");
-  expect(options.sendTranscript).toHaveBeenCalledWith("final after stop", expect.any(Function));
+  session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+  await emit(session, { type: "transcript", text: "recognized", isFinal: true });
+  await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: true, usage });
+  await act(async () => { result.current.stop(); });
   expect(result.current.phase).toBe("idle");
-  expect(result.current.isArmed()).toBe(false);
-  expect(options.onError).not.toHaveBeenCalled();
+  expect(options.setTranscript).toHaveBeenLastCalledWith("recognized");
+  await act(async () => { resolveAbort(); await Promise.resolve(); });
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(session.abort).toHaveBeenCalledTimes(1);
 });
 
 test("abort during terminal teardown does not send a stale final or rearm", async () => {
@@ -205,6 +227,32 @@ test("resets transcript across auto-reply and no-speech retries", async () => {
   await finishSpeech(mockSessions.at(-1)!, "B");
   expect(options.sendTranscript).toHaveBeenLastCalledWith("B", expect.any(Function));
   expect(options.setTranscript).not.toHaveBeenCalledWith("A B");
+});
+
+test("rearms after an accepted turn finishes before replyLoading can render", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "fast terminal turn");
+  expect(options.sendTranscript).toHaveBeenCalledWith("fast terminal turn", expect.any(Function));
+  expect(result.current.phase).toBe("connecting");
+  expect(mockSessions).toHaveLength(1);
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(2);
+  expect(options.onError).not.toHaveBeenCalled();
+});
+
+test("a later chat loading state cancels the early-completion grace wait", async () => {
+  let options = createOptions();
+  const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+  await finishSpeech(await openReady(hook.result), "chat turn");
+  options = { ...options, replyLoading: true };
+  await hook.rerender(options);
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(1);
+  options = { ...options, replyLoading: false };
+  await hook.rerender(options);
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(2);
 });
 
 test("rechecks face eligibility before each automatic retry", async () => {
@@ -294,6 +342,7 @@ test("late send rejection after Stop leaves a new voice session intact", async (
 
 test("reply timeout and rejected send settle without reopening", async () => {
   const options = createOptions();
+  options.sendTranscript.mockImplementationOnce(() => new Promise<void>(() => undefined));
   const { result } = await renderHook(() => useStreamingStt(options));
   await finishSpeech(await openReady(result), "hello");
   await advanceTimers(REPLY_CYCLE_START_TIMEOUT_MS);
@@ -308,12 +357,11 @@ test("reply timeout and rejected send settle without reopening", async () => {
   expect(second.result.current.active).toBe(false);
 });
 
-async function expectNoRearmAfterFinal(reason: "speech_end_timeout" | "limit_reached") {
+test("limit reached keeps final text but does not rearm", async () => {
   let options = createOptions();
   const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
   const session = await openReady(hook.result);
-  if (reason === "speech_end_timeout") await act(async () => { hook.result.current.stop(); });
-  await finishSpeech(session, "final", reason);
+  await finishSpeech(session, "final", "limit_reached");
   options = { ...options, replyLoading: true };
   await hook.rerender(options);
   options = { ...options, replyLoading: false };
@@ -322,12 +370,4 @@ async function expectNoRearmAfterFinal(reason: "speech_end_timeout" | "limit_rea
   expect(options.sendTranscript).toHaveBeenCalledWith("final", expect.any(Function));
   expect(hook.result.current.active).toBe(false);
   expect(session.abort).toHaveBeenCalledTimes(1);
-}
-
-test("user stop keeps final text but does not rearm", async () => {
-  await expectNoRearmAfterFinal("speech_end_timeout");
-});
-
-test("limit reached keeps final text but does not rearm", async () => {
-  await expectNoRearmAfterFinal("limit_reached");
 });

@@ -237,7 +237,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
           protocolVersion: AGENT_PROTOCOL_VERSION,
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
           operations: [
-            "turn.start", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
+            "turn.start", "voice.open", "voice.status", "voice.approval.decision", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
             "session.compact", "sessions.list", "history.read", "history.search", "conversation.read",
             "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],

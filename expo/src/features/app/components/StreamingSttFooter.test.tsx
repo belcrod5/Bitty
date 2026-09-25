@@ -68,6 +68,20 @@ describe("StreamingSttFooter", () => {
     mockFrameCallback = null;
   });
 
+  it("shows voice context values beside STT usage only when the optional prop is supplied", async () => {
+    const onStop = jest.fn();
+    const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={onStop} />);
+    expect(screen.queryByTestId("streaming-stt-voice-context-stats")).toBeNull();
+    await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
+      voiceContextStats={{ estimatedContextUsagePercent: 42, unsummarizedMessageCount: 6, memoryCharacterCount: 123 }} />);
+    expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
+      .toBe("文脈推定 42% · 未要約 6件 · メモリー 123字");
+    await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
+      voiceContextStats={null} />);
+    expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
+      .toBe("文脈推定 --% · 未要約 --件 · メモリー --字");
+  });
+
   it("draws outside its panel, grows to three transcript lines, and stops recording", async () => {
     const onStop = jest.fn();
     const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {});
@@ -122,6 +136,43 @@ describe("StreamingSttFooter", () => {
     const glowReach = 2 + Number(mockSharedValues[2].value) / 2 + Number(mockSharedValues[3].value) * 3;
     expect(glowReach).toBeLessThan(48);
     expect(mockSharedValues[4].value).toBe(1);
+    await screen.unmount();
+  });
+
+  it("uses distinct colors and pulsing speeds for responding and speaking", async () => {
+    const ref = React.createRef<StreamingSttFooterHandle>();
+    const screen = await render(<StreamingSttFooter ref={ref} transcript="r" voiceStatus="responding" phase="recording" onStop={jest.fn()} />);
+    expect(screen.queryByTestId("streaming-stt-reply-loading")).toBeNull();
+    expect(mockGradientProps.at(-1)?.colors).toEqual(["#46f6ff", "#537dff", "#ab67ff", "#5fffc8", "#46f6ff"]);
+    expect(screen.getByTestId("streaming-stt-transcript").props.accessibilityLabel).toBe("Responding");
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style)).toMatchObject({ fontWeight: "300", fontSize: 14 });
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    expect(Number(mockSharedValues[6].value)).toBeCloseTo(14);
+    const respondingWidth = Number(mockSharedValues[2].value);
+    await act(async () => { ref.current?.pushSample(0.5); });
+    expect(Number(mockSharedValues[2].value)).toBe(respondingWidth);
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    expect(Number(mockSharedValues[2].value)).not.toBe(respondingWidth);
+
+    await screen.rerender(<StreamingSttFooter ref={ref} transcript="s" voiceStatus="speaking" phase="recording" onStop={jest.fn()} />);
+    expect(mockGradientProps.at(-1)?.colors).toEqual(["#ff79cf", "#ffb263", "#ffe779", "#ff79cf"]);
+    expect(screen.getByTestId("streaming-stt-transcript").props.accessibilityLabel).toBe("Speaking");
+    const speakingAngle = Number(mockSharedValues[6].value);
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    expect(Number(mockSharedValues[6].value) - speakingAngle).toBeCloseTo(6);
+
+    await screen.rerender(<StreamingSttFooter ref={ref} transcript="speaking..." voiceStatus="speaking" phase="recording" onStop={jest.fn()} reduceMotion />);
+    const staticAngle = Number(mockSharedValues[6].value);
+    const staticWidth = Number(mockSharedValues[2].value);
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    expect(mockSharedValues[6].value).toBe(staticAngle);
+    expect(mockSharedValues[2].value).toBe(staticWidth);
+    expect(screen.getByTestId("streaming-stt-transcript").props.children).toBe("speaking...");
+
+    await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()} />);
+    expect(mockGradientProps.at(-1)?.colors).toEqual(["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"]);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).fontSize).toBe(16);
+    expect(Number(mockSharedValues[2].value)).toBe(4);
     await screen.unmount();
   });
 

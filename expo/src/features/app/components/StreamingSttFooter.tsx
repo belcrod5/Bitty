@@ -7,9 +7,12 @@ import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import type { StreamingSttUsage } from "../../stt/streamingSttClient";
 import type { StreamingSttPhase } from "../../stt/useStreamingStt";
+import type { VoiceContextStats } from "../types/appTypes";
 
 const GLOW_SPACE = 48;
 const RAINBOW = ["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"];
+const RESPONDING_COLORS = ["#46f6ff", "#537dff", "#ab67ff", "#5fffc8", "#46f6ff"];
+const SPEAKING_COLORS = ["#ff79cf", "#ffb263", "#ffe779", "#ff79cf"];
 
 export type StreamingSttFooterHandle = {
   pushSample: (sample: number) => void;
@@ -27,7 +30,10 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   transcript: string;
   phase: StreamingSttPhase;
   onStop: () => void;
-}>(function StreamingSttFooter({ transcript, phase, onStop }, ref) {
+  voiceStatus?: "responding" | "speaking";
+  reduceMotion?: boolean;
+  voiceContextStats?: VoiceContextStats | null;
+}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -45,16 +51,40 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const audioLevel = useSharedValue(0);
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
+  const glowColors = voiceStatus === "responding" ? RESPONDING_COLORS
+    : voiceStatus === "speaking" ? SPEAKING_COLORS : RAINBOW;
 
   useFrameCallback((frame) => {
+    if (voiceStatus && reduceMotion) return;
     const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
-    const start = (gradientStart.value + elapsed * (0.072 + audioLevel.value * 0.168)) % 360;
+    const speed = voiceStatus === "responding" ? 0.28
+      : voiceStatus === "speaking" ? 0.12 : 0.072 + audioLevel.value * 0.168;
+    const start = (gradientStart.value + elapsed * speed) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;
+    if (voiceStatus) {
+      const pulse = (Math.sin(start * Math.PI / 90) + 1) / 2;
+      glowWidth.value = (voiceStatus === "responding" ? 8 : 6) + pulse * 9;
+      glowBlur.value = 5 + pulse * 4;
+      glowOpacity.value = 0.55 + pulse * 0.3;
+    }
   });
+
+  React.useEffect(() => {
+    if (!voiceStatus) return;
+    glowWidth.value = 10;
+    glowBlur.value = 6;
+    glowOpacity.value = 0.7;
+    return () => {
+      glowWidth.value = 4;
+      glowBlur.value = 3;
+      glowOpacity.value = 0.25;
+    };
+  }, [glowBlur, glowOpacity, glowWidth, voiceStatus]);
 
   useImperativeHandle(ref, () => ({
     pushSample(sample) {
+      if (voiceStatus) return;
       const now = Date.now();
       if (now - lastGlowUpdateRef.current < 1000 / 30) return;
       lastGlowUpdateRef.current = now;
@@ -80,7 +110,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         pendingUsageRef.current = null;
       }, 1000 - elapsed);
     },
-  }), [audioLevel, glowBlur, glowOpacity, glowWidth]);
+  }), [audioLevel, glowBlur, glowOpacity, glowWidth, voiceStatus]);
 
   React.useEffect(() => () => {
     if (usageTimerRef.current) clearTimeout(usageTimerRef.current);
@@ -112,12 +142,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         ) : null}
         <Group opacity={glowOpacity}>
           <Path path={border} style="stroke" strokeWidth={glowWidth}>
-            <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
+            <SweepGradient c={center} colors={glowColors} mode="repeat" start={gradientStart} end={gradientEnd} />
             <BlurMask blur={glowBlur} style="normal" />
           </Path>
         </Group>
         <Path path={border} style="stroke" strokeWidth={2}>
-          <SweepGradient c={center} colors={RAINBOW} mode="repeat" start={gradientStart} end={gradientEnd} />
+          <SweepGradient c={center} colors={glowColors} mode="repeat" start={gradientStart} end={gradientEnd} />
         </Path>
       </Canvas>
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12", zIndex: 1 }]}>
@@ -131,18 +161,35 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           >
             <Text
               testID="streaming-stt-transcript"
+              accessibilityLabel={voiceStatus === "responding" ? "Responding" : voiceStatus === "speaking" ? "Speaking" : undefined}
               onLayout={(event) => {
                 const height = Math.min(66, Math.max(22, event.nativeEvent.layout.height));
                 setTranscriptHeight((current) => current === height ? current : height);
               }}
-              style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22 }}
+              style={[{ color: "#f4f7ff", fontSize: 16, lineHeight: 22 }, voiceStatus ? {
+                color: voiceStatus === "responding" ? "#83f8ff" : "#ffafd9",
+                fontSize: 14,
+                letterSpacing: 2,
+                fontWeight: "300",
+              } : undefined]}
             >
-              {transcript || (phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
+              {voiceStatus ? transcript : transcript || (phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
             </Text>
           </ScrollView>
-          <Text style={{ color: "#8e9bad", fontSize: 11, marginTop: 2 }}>
-            {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
-          </Text>
+          {voiceContextStats !== undefined ? (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 }}>
+              <Text style={{ color: "#8e9bad", fontSize: 11 }}>
+                {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
+              </Text>
+              <Text testID="streaming-stt-voice-context-stats" style={{ color: "#8e9bad", fontSize: 11, marginLeft: 8 }}>
+                {`文脈推定 ${voiceContextStats?.estimatedContextUsagePercent ?? "--"}% · 未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
+              </Text>
+            </View>
+          ) : (
+            <Text style={{ color: "#8e9bad", fontSize: 11, marginTop: 2 }}>
+              {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
+            </Text>
+          )}
         </View>
         <TouchableOpacity
           testID="streaming-stt-stop"
