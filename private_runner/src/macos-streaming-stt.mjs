@@ -12,7 +12,7 @@ const HELPER = fileURLToPath(new URL("../.native-build/BittyMacStt.app/Contents/
 const MAX_AUDIO_BYTES = BYTES_PER_SECOND * MAX_DURATION_SECONDS;
 const VAD_THRESHOLD = 0.005;
 const VAD_START_MS = 120;
-const VAD_END_MS = 1_000;
+const VAD_END_MS = 1_250;
 let buildPromise;
 
 async function launchHelper() {

@@ -44,7 +44,7 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
   ws.emit("message", voiced, true);
   await tick();
   child.emitMessage({ type: "transcript", text: "こんにちは", isFinal: false });
-  ws.emit("message", pcm(0, 1_000), true);
+  ws.emit("message", pcm(0, 1_250), true);
   await tick();
   assert.equal(child.ended, true);
   child.emitMessage({ type: "transcript", text: "こんにちは。", isFinal: true });
@@ -60,8 +60,8 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
   assert.equal(child.writes.length, 2);
   assert.equal(logs[0][0], "[stream-stt] macos_input_ended");
   assert.equal(logs[0][1].trigger, "pcm_silence");
-  assert.equal(logs[0][1].silentMs, 1_000);
-  assert.equal(logs[0][1].vadEndMs, 1_000);
+  assert.equal(logs[0][1].silentMs, 1_250);
+  assert.equal(logs[0][1].vadEndMs, 1_250);
   assert.deepEqual(logs.map(([event]) => event), [
     "[stream-stt] macos_input_ended",
     "[stream-stt] macos_final_transcript",
@@ -115,7 +115,7 @@ test("silence-ended macOS stream commits only the latest nonempty partial when n
   child.emitMessage({ type: "ready" });
   child.emitMessage({ type: "transcript", text: "古い", isFinal: false });
   child.emitMessage({ type: "transcript", text: "新しい途中結果", isFinal: false });
-  ws.emit("message", pcm(0, 1_000), true);
+  ws.emit("message", pcm(0, 1_250), true);
   await tick();
   assert.equal(child.ended, true);
   child.emitMessage({ type: "transcript", text: " \t", isFinal: true });
@@ -164,20 +164,20 @@ test("quiet ongoing speech and short pauses do not end the macOS stream", async 
   ws.emit("message", pcm(400, 200), true);
   await tick();
   child.emitMessage({ type: "transcript", text: "小さい声", isFinal: false });
-  ws.emit("message", pcm(100, 999), true);
+  ws.emit("message", pcm(100, 1_249), true);
   await tick();
   assert.equal(child.ended, undefined);
   ws.emit("message", pcm(400, 200), true);
   await tick();
-  ws.emit("message", pcm(100, 999), true);
+  ws.emit("message", pcm(100, 1_249), true);
   await tick();
   assert.equal(child.ended, undefined);
   ws.emit("message", pcm(100, 1), true);
   await tick();
   assert.equal(child.ended, true);
   assert.equal(logs[0][1].trigger, "pcm_silence");
-  assert.equal(logs[0][1].silentMs, 1_000);
-  assert.equal(logs[0][1].vadEndMs, 1_000);
+  assert.equal(logs[0][1].silentMs, 1_250);
+  assert.equal(logs[0][1].vadEndMs, 1_250);
   assert.equal(logs[0][1].maxSilentRms, 0.0031);
   assert.equal(logs[0][1].vadThreshold, 0.005);
   assert.equal(JSON.stringify(logs).includes("小さい声"), false);
