@@ -90,33 +90,36 @@ struct BittyMacStt {
         }
         output.send(["type": "ready"])
 
-        var pending = Data()
-        while true {
-            let chunk = FileHandle.standardInput.readData(ofLength: 15_360)
-            if chunk.isEmpty { break }
-            pending.append(chunk)
-            let evenCount = pending.count - pending.count % 2
-            if evenCount == 0 { continue }
-            let data = pending.prefix(evenCount)
-            pending.removeFirst(evenCount)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(data.count / 2)),
-                  let samples = buffer.int16ChannelData else {
+        let input = Task.detached {
+            var pending = Data()
+            while true {
+                let chunk = FileHandle.standardInput.readData(ofLength: 15_360)
+                if chunk.isEmpty { break }
+                pending.append(chunk)
+                let evenCount = pending.count - pending.count % 2
+                if evenCount == 0 { continue }
+                let data = pending.prefix(evenCount)
+                pending.removeFirst(evenCount)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(data.count / 2)),
+                      let samples = buffer.int16ChannelData else {
+                    output.send(["type": "error", "code": "macos_invalid_audio"])
+                    task.cancel()
+                    return
+                }
+                buffer.frameLength = AVAudioFrameCount(data.count / 2)
+                data.withUnsafeBytes { bytes in
+                    if let base = bytes.baseAddress { memcpy(samples[0], base, data.count) }
+                }
+                request.append(buffer)
+            }
+            if !pending.isEmpty {
                 output.send(["type": "error", "code": "macos_invalid_audio"])
                 task.cancel()
                 return
             }
-            buffer.frameLength = AVAudioFrameCount(data.count / 2)
-            data.withUnsafeBytes { bytes in
-                if let base = bytes.baseAddress { memcpy(samples[0], base, data.count) }
-            }
-            request.append(buffer)
+            request.endAudio()
         }
-        if !pending.isEmpty {
-            output.send(["type": "error", "code": "macos_invalid_audio"])
-            task.cancel()
-            return
-        }
-        request.endAudio()
+        await input.value
         await completion.wait()
     }
 }
