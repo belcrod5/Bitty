@@ -73,6 +73,21 @@ export function useStreamingStt(options: Options) {
     else setPhase("idle");
   }, [clearReplyCycleWait]);
 
+  const awaitReplyCycle = useCallback(() => {
+    listeningRef.current = true;
+    awaitingReplyCycleRef.current = true;
+    sawReplyLoadingRef.current = latestRef.current.replyLoading;
+    sawTtsPlaybackRef.current = latestRef.current.ttsPlaybackActive;
+    setPhase("connecting");
+    clearTimer(replyCycleTimeoutRef);
+    replyCycleTimeoutRef.current = setTimeout(() => {
+      if (!awaitingReplyCycleRef.current || sawReplyLoadingRef.current) return;
+      listeningRef.current = false;
+      clearReplyCycleWait();
+      setPhase("idle");
+    }, REPLY_CYCLE_START_TIMEOUT_MS);
+  }, [clearReplyCycleWait]);
+
   const updateReplyCycle = useCallback(() => {
     if (!awaitingReplyCycleRef.current) return;
     const { replyLoading, ttsPlaybackActive, voiceInputDuringTtsAllowed } = latestRef.current;
@@ -222,19 +237,12 @@ export function useStreamingStt(options: Options) {
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
           if (listeningRef.current) {
-            awaitingReplyCycleRef.current = true;
-            sawReplyLoadingRef.current = latestRef.current.replyLoading;
-            sawTtsPlaybackRef.current = latestRef.current.ttsPlaybackActive;
-            setPhase("connecting");
-            replyCycleTimeoutRef.current = setTimeout(() => {
-              if (!awaitingReplyCycleRef.current || sawReplyLoadingRef.current) return;
-              listeningRef.current = false;
-              clearReplyCycleWait();
-              setPhase("idle");
-            }, REPLY_CYCLE_START_TIMEOUT_MS);
+            awaitReplyCycle();
           }
           try {
             await latestRef.current.sendTranscript(finalText, () => {
+              if (version !== sessionVersionRef.current) return;
+              latestRef.current.setTranscript("");
               transcriptStateRef.current = startStreamingTranscript("");
               clearTimer(replyCycleTimeoutRef);
             });
@@ -292,6 +300,29 @@ export function useStreamingStt(options: Options) {
     setPhase("idle");
   }, [abortSession, clearReplyCycleWait, phase, setTranscript]);
 
+  const sendManualTranscript = useCallback(async (text: string, onAccepted: () => boolean) => {
+    if (!text.trim()) return;
+    const version = sessionVersionRef.current;
+    try {
+      await latestRef.current.sendTranscript(text, () => {
+        if (version !== sessionVersionRef.current || !onAccepted()) return;
+        transcriptStateRef.current = startStreamingTranscript("");
+        awaitReplyCycle();
+      });
+      if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
+        sawReplyLoadingRef.current = true;
+        updateReplyCycle();
+      }
+    } catch (error) {
+      if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
+        listeningRef.current = false;
+        clearReplyCycleWait();
+        setPhase("idle");
+      }
+      throw error;
+    }
+  }, [awaitReplyCycle, clearReplyCycleWait, updateReplyCycle]);
+
   const abort = useCallback(async () => {
     listeningRef.current = false;
     terminalRef.current = true;
@@ -323,6 +354,7 @@ export function useStreamingStt(options: Options) {
     phase,
     start,
     stop,
+    sendManualTranscript,
     abort,
     isArmed,
     isCapturing,

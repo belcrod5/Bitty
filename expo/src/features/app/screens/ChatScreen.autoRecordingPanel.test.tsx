@@ -103,9 +103,9 @@ jest.mock("../components/StreamingSttFooter", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
-    StreamingSttFooter: ReactModule.forwardRef(({ transcript, phase, onStop }: { transcript: string; phase: string; onStop: () => void }, ref) => {
+    StreamingSttFooter: ReactModule.forwardRef((props: Record<string, any>, ref) => {
       ReactModule.useImperativeHandle(ref, () => ({ pushSample: mockPushStreamingSample, updateUsage: jest.fn() }));
-      return ReactModule.createElement(View, { testID: "streaming-stt-footer", transcript, phase, onStop } as any);
+      return ReactModule.createElement(View, { testID: "streaming-stt-footer", ...props } as any);
     }),
   };
 });
@@ -500,6 +500,26 @@ describe("ChatScreen voice input", () => {
       expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("hidden");
     });
     await screen.unmount();
+  });
+
+  it("keeps the recording footer editable after focus stops STT and submits the edited text", async () => {
+    mockStreamingSttPhase = "recording";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await act(async () => { screen.getByTestId("streaming-stt-footer").props.onFocus(); });
+    expect(mockStopStreamingStt).toHaveBeenCalledTimes(1);
+    mockStreamingSttPhase = "idle";
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    expect(screen.getByTestId("streaming-stt-footer")).toBeTruthy();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    expect(StyleSheet.flatten(screen.getByTestId("chat-keyboard-avoiding").props.style).overflow).toBe("visible");
+    await act(async () => { screen.getByTestId("streaming-stt-footer").props.onChangeText("edited transcript"); });
+    mockSendReplyTranscriptForPanel.mockImplementationOnce(async (_panel, _text, options) => { options?.onAccepted?.(); });
+    await act(async () => {
+      await screen.getByTestId("streaming-stt-footer").props.onSubmit("edited transcript", () => true);
+    });
+    expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith("panel-a", "edited transcript", expect.any(Object));
+    expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
+    expect(mockStartStreamingStt).not.toHaveBeenCalled();
   });
 
   it("forwards RMS samples without rendering ChatScreen or its connection status", async () => {

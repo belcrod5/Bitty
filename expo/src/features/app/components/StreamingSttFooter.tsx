@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { BlurMask, Canvas, Group, Path, Skia, SweepGradient, vec } from "@shopify/react-native-skia";
 import React, { forwardRef, memo, useImperativeHandle, useRef, useState } from "react";
-import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { Platform, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useFrameCallback, useSharedValue, withTiming } from "react-native-reanimated";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -33,15 +33,22 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   voiceStatus?: "responding" | "speaking";
   reduceMotion?: boolean;
   voiceContextStats?: VoiceContextStats | null;
-}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats }, ref) {
+  statusText?: string;
+  onChangeText?: (text: string) => void;
+  onFocus?: () => void;
+  onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
+}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText, onChangeText, onFocus, onSubmit }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
   const lastUsageUpdateRef = useRef(0);
   const pendingUsageRef = useRef<StreamingSttUsage | null>(null);
   const usageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const transcriptScrollRef = useRef<ScrollView>(null);
   const [transcriptHeight, setTranscriptHeight] = useState(22);
+  const inputRef = useRef<TextInput>(null);
+  const latestTranscriptRef = useRef(transcript);
+  latestTranscriptRef.current = transcript;
+  const submittingRef = useRef(false);
   const lastGlowUpdateRef = useRef(0);
   const border = useSharedValue(Skia.Path.Make());
   const center = useSharedValue(vec(0, 0));
@@ -116,6 +123,23 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
     if (usageTimerRef.current) clearTimeout(usageTimerRef.current);
   }, []);
 
+  const submit = (text: string) => {
+    if (!onSubmit || submittingRef.current) return;
+    if (text !== latestTranscriptRef.current) {
+      latestTranscriptRef.current = text;
+      onChangeText?.(text);
+    }
+    if (!text.trim()) return;
+    submittingRef.current = true;
+    void onSubmit(text, () => {
+      if (latestTranscriptRef.current !== text) return false;
+      latestTranscriptRef.current = "";
+      onChangeText?.("");
+      inputRef.current?.blur();
+      return true;
+    }).catch(() => undefined).finally(() => { submittingRef.current = false; });
+  };
+
   return (
     <View
       testID="streaming-stt-footer"
@@ -152,13 +176,32 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       </Canvas>
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12", zIndex: 1 }]}>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <ScrollView
-            ref={transcriptScrollRef}
-            testID="streaming-stt-transcript-scroll"
-            style={{ height: transcriptHeight, maxHeight: 66, flexGrow: 0 }}
-            showsVerticalScrollIndicator={false}
-            onContentSizeChange={() => transcriptScrollRef.current?.scrollToEnd({ animated: false })}
-          >
+          {onChangeText && !voiceStatus ? (
+            <TextInput
+              ref={inputRef}
+              testID="streaming-stt-transcript"
+              value={transcript}
+              onChangeText={(text) => {
+                latestTranscriptRef.current = text;
+                onChangeText(text);
+              }}
+              onFocus={onFocus}
+              onSubmitEditing={(event) => submit(event.nativeEvent.text ?? latestTranscriptRef.current)}
+              submitBehavior="submit"
+              returnKeyType="send"
+              {...(Platform.OS === "macos" ? { submitKeyEvents: [{ key: "Enter" }] } : {})}
+              multiline
+              scrollEnabled
+              placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
+              placeholderTextColor="#8e9bad"
+              accessibilityLabel="文字起こしを編集"
+              onContentSizeChange={(event) => {
+                const height = Math.min(66, Math.max(22, event.nativeEvent.contentSize.height));
+                setTranscriptHeight((current) => current === height ? current : height);
+              }}
+              style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, height: transcriptHeight, padding: 0 }}
+            />
+          ) : (
             <Text
               testID="streaming-stt-transcript"
               accessibilityLabel={voiceStatus === "responding" ? "Responding" : voiceStatus === "speaking" ? "Speaking" : undefined}
@@ -166,16 +209,19 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
                 const height = Math.min(66, Math.max(22, event.nativeEvent.layout.height));
                 setTranscriptHeight((current) => current === height ? current : height);
               }}
-              style={[{ color: "#f4f7ff", fontSize: 16, lineHeight: 22 }, voiceStatus ? {
+              style={[{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, maxHeight: 66 }, voiceStatus ? {
                 color: voiceStatus === "responding" ? "#83f8ff" : "#ffafd9",
                 fontSize: 14,
                 letterSpacing: 2,
                 fontWeight: "300",
               } : undefined]}
             >
-              {voiceStatus ? transcript : transcript || (phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
+              {statusText || transcript || (phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
             </Text>
-          </ScrollView>
+          )}
+          {statusText && transcript ? (
+            <Text style={{ color: "#ff9a9a", fontSize: 11, marginTop: 2 }}>{statusText}</Text>
+          ) : null}
           {voiceContextStats !== undefined ? (
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 }}>
               <Text style={{ color: "#8e9bad", fontSize: 11 }}>

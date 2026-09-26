@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SafeAreaView, View } from "react-native";
+import { Platform, SafeAreaView, View } from "react-native";
 import Reanimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
+import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 
@@ -32,6 +33,7 @@ export function VoiceConversationScreen({
   const { runnerUrl, runnerToken } = useChatScreen();
   const reduceMotion = useReduceMotionEnabled();
   const [transcript, setTranscript] = useState("");
+  const [editingTranscript, setEditingTranscript] = useState(false);
   const [initialStartPending, setInitialStartPending] = useState(true);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
@@ -63,10 +65,7 @@ export function VoiceConversationScreen({
     transcript,
     autoReplyAfterStt: true,
     setTranscript,
-    sendTranscript: async (text, onAccepted) => voice.sendTranscript(text, () => {
-      setTranscript("");
-      onAccepted();
-    }),
+    sendTranscript: voice.sendTranscript,
     onUsage: (usage) => footerRef.current?.updateUsage(usage),
     onSample: (sample) => footerRef.current?.pushSample(sample),
     onError: voice.setError,
@@ -102,7 +101,7 @@ export function VoiceConversationScreen({
     }
   }, [stopTtsPlayback, streamingStt.abort]);
 
-  const voiceStatus = voice.error || transcript || (voice.reply && ttsUiStatus === "error")
+  const voiceStatus = editingTranscript || voice.error || transcript || (voice.reply && ttsUiStatus === "error")
     ? undefined : replyLoading ? "responding" : playbackActive ? "speaking" : undefined;
   const statusLabel = voiceStatus === "responding" ? "responding..." : "speaking...";
 
@@ -120,34 +119,60 @@ export function VoiceConversationScreen({
   const animatedStatus = reduceMotion === true
     ? statusLabel
     : statusLabel.slice(0, frame % statusLabel.length + 1);
-  const footerText = voice.error || transcript
-    || (voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
+  const statusText = voice.error || (transcript || editingTranscript ? undefined
+    : voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
       : voiceStatus ? animatedStatus
           : initialStartPending || !streamingStt.active ? "録音を準備しています…" : "");
 
   return (
-    <Reanimated.View
-      testID="voice-conversation-transition"
-      entering={voicePanelFadeIn}
-      exiting={voicePanelFadeOut}
-      style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+    <KeyboardAvoidingView
+      testID="voice-conversation-keyboard-avoiding"
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      automaticOffset={Platform.OS === "ios"}
+      pointerEvents="box-none"
+      style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
-      <SafeAreaView testID="voice-conversation-screen">
-        <View testID="voice-conversation-content" style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
-          <StreamingSttFooter
-            ref={footerRef}
-            transcript={footerText}
-            voiceStatus={voiceStatus}
-            reduceMotion={reduceMotion !== false}
-            phase={streamingStt.active ? streamingStt.phase : "connecting"}
-            onStop={() => {
-              streamingStt.stop();
-              onClose();
-            }}
-            voiceContextStats={voice.contextStats}
-          />
-        </View>
-      </SafeAreaView>
-    </Reanimated.View>
+      <Reanimated.View
+        testID="voice-conversation-transition"
+        entering={voicePanelFadeIn}
+        exiting={voicePanelFadeOut}
+        style={{ width: "100%" }}
+      >
+        <SafeAreaView testID="voice-conversation-screen">
+          <View testID="voice-conversation-content" style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+            <StreamingSttFooter
+              ref={footerRef}
+              transcript={transcript}
+              statusText={statusText}
+              voiceStatus={voiceStatus}
+              reduceMotion={reduceMotion !== false}
+              phase={streamingStt.phase}
+              onChangeText={setTranscript}
+              onFocus={() => {
+                setInitialStartPending(false);
+                setEditingTranscript(true);
+                streamingStt.stop();
+              }}
+              onSubmit={async (text, onAccepted) => {
+                try {
+                  await streamingStt.sendManualTranscript(text, () => {
+                    if (!onAccepted()) return false;
+                    setEditingTranscript(false);
+                    return true;
+                  });
+                } catch (error) {
+                  voice.setError(error instanceof Error ? error.message : String(error));
+                }
+              }}
+              onStop={() => {
+                streamingStt.stop();
+                onClose();
+              }}
+              voiceContextStats={voice.contextStats}
+            />
+          </View>
+        </SafeAreaView>
+      </Reanimated.View>
+    </KeyboardAvoidingView>
   );
 }

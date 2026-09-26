@@ -1180,11 +1180,10 @@ export function ChatScreen({
     let accepted = false;
     await sendReplyTranscriptByPanel(text, () => {
       accepted = true;
-      setTranscriptForView("");
       onAccepted();
     });
     if (!accepted) throw new Error("streaming_stt_transcript_not_accepted");
-  }, [sendReplyTranscriptByPanel, setTranscriptForView]);
+  }, [sendReplyTranscriptByPanel]);
   const reportStreamingSttError = useCallback((message: string) => {
     showChatBottomToast("assistant", message);
   }, [showChatBottomToast]);
@@ -1204,6 +1203,7 @@ export function ChatScreen({
     ttsPlaybackActive: isTtsPlaybackActive,
     voiceInputDuringTtsAllowed,
   });
+  const [editingSttTranscript, setEditingSttTranscript] = useState(false);
   const [voiceGlowVisible, setVoiceGlowVisible] = useState(streamingStt.active);
   useEffect(() => {
     if (streamingStt.active) {
@@ -2107,7 +2107,7 @@ export function ChatScreen({
       ) : null}
       <KeyboardAvoidingView
         testID="chat-keyboard-avoiding"
-        style={[styles.chatKeyboardAvoiding, (streamingStt.active || voiceGlowVisible) && { overflow: "visible" }]}
+        style={[styles.chatKeyboardAvoiding, (streamingStt.active || voiceGlowVisible || editingSttTranscript) && { overflow: "visible" }]}
         behavior={Platform.OS === "ios" ? "position" : "height"}
         contentContainerStyle={Platform.OS === "ios" ? styles.chatKeyboardAvoidingContent : undefined}
         automaticOffset={Platform.OS === "ios"}
@@ -2410,13 +2410,26 @@ export function ChatScreen({
               onCopySessionHistoryReference={copySessionHistoryReference}
             />
           </View>
-          {streamingStt.active ? (
+          {streamingStt.active || editingSttTranscript ? (
             <Reanimated.View testID="streaming-stt-transition" entering={voicePanelFadeIn} exiting={voicePanelFadeOut}>
               <StreamingSttFooter
                 ref={streamingSttFooterRef}
                 transcript={transcriptForView}
                 phase={streamingStt.phase}
-                onStop={streamingStt.stop}
+                onStop={() => {
+                  streamingStt.stop();
+                  setEditingSttTranscript(false);
+                }}
+                onFocus={() => {
+                  setEditingSttTranscript(true);
+                  streamingStt.stop();
+                }}
+                onChangeText={setTranscriptForView}
+                onSubmit={async (text, onAccepted) => {
+                  await sendReplyTranscriptByPanel(text, () => {
+                    if (onAccepted()) setEditingSttTranscript(false);
+                  });
+                }}
               />
             </Reanimated.View>
           ) : (
