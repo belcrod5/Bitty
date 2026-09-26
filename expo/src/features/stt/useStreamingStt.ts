@@ -226,7 +226,7 @@ export function useStreamingStt(options: Options) {
     terminalRef.current = true;
     if (sessionRef.current !== session) return;
     const version = ++sessionVersionRef.current;
-    latestRef.current.onUsage(message.usage);
+    if (message.usage) latestRef.current.onUsage(message.usage);
     void abortSession().then(async () => {
       if (version !== sessionVersionRef.current) return;
       const finalText = finalStreamingTranscript(transcriptStateRef.current);

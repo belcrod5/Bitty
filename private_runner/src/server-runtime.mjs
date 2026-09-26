@@ -65,10 +65,9 @@ import {
 import { createGoogleCloudService } from "./google-cloud-service.mjs";
 import { createGoogleCloudUsageLedger } from "./google-cloud-usage.mjs";
 import { createGoogleCloudHttpHandler } from "./google-cloud-http.mjs";
-import {
-  createGoogleStreamingSttHandler,
-  STREAM_STT_MAX_PAYLOAD_BYTES,
-} from "./google-streaming-stt.mjs";
+import { MAX_FRAME_BYTES } from "./streaming-stt-protocol.mjs";
+import { createStreamingSttHandler } from "./streaming-stt-handler.mjs";
+import { createSttSettingsService, createSttSettingsHttpHandler } from "./stt-settings.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -252,6 +251,7 @@ const googleCloudUsageLedger = createGoogleCloudUsageLedger({
   filePath: path.join(googleCloudService.authDir, "usage.json"),
   getLimitMinutes: async () => (await googleCloudService.getSettings()).monthlyLimitMinutes,
 });
+const sttSettings = createSttSettingsService({ filePath: path.join(WORKSPACE_ROOT, "private_runner/logs/stt-settings.json") });
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const DEFAULT_LLM_FILE_ROOT = path.resolve(WORKSPACE_ROOT, process.env.LLM_FILE_ROOT || "llm_root");
 const DEFAULT_LLM_FILE_ROOT_RELATIVE = toUnixPath(path.relative(WORKSPACE_ROOT, DEFAULT_LLM_FILE_ROOT)) || ".";
@@ -6852,6 +6852,13 @@ const googleCloudHttpHandler = createGoogleCloudHttpHandler({
   googleCloudService,
   usageLedger: googleCloudUsageLedger,
 });
+const sttSettingsHttpHandler = createSttSettingsHttpHandler({
+  service: sttSettings,
+  runnerToken: RUNNER_TOKEN,
+  parseAuthToken,
+  readJsonBody,
+  json,
+});
 
 async function runCodexQueuedTurn(turn) {
   const abortController = new AbortController();
@@ -7648,6 +7655,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (await googleCloudHttpHandler(req, res, pathname)) return;
+  if (await sttSettingsHttpHandler(req, res, pathname)) return;
 
   if (req.method === "GET" && pathname === "/health") {
     if (req.headers.authorization) {
@@ -9019,8 +9027,9 @@ const runnerWsActiveClients = new Set();
 const runnerWsClientInstanceIds = new WeakMap();
 const runnerWsServer = new WebSocketServer({ noServer: true });
 const wsServer = new WebSocketServer({ noServer: true });
-const streamSttWsServer = new WebSocketServer({ noServer: true, maxPayload: STREAM_STT_MAX_PAYLOAD_BYTES });
-const handleGoogleStreamingStt = createGoogleStreamingSttHandler({
+const streamSttWsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+const handleStreamingStt = createStreamingSttHandler({
+  sttSettings,
   googleCloudService,
   usageLedger: googleCloudUsageLedger,
 });
@@ -9031,7 +9040,7 @@ streamSttWsServer.on("connection", (ws, req) => {
     route: "stream-stt",
     endpoint: "/stream-stt",
   });
-  handleGoogleStreamingStt(ws);
+  handleStreamingStt(ws);
 });
 
 runnerWsServer.on("connection", (ws, req) => {

@@ -157,7 +157,7 @@ export function GoogleCloudSettings() {
   return (
     <View style={styles.settingsSection}>
       <View style={styles.settingsSectionHeader}>
-        <Text style={styles.settingsSectionTitle}>音声入力 · Google Cloud STT</Text>
+        <Text style={styles.settingsSectionTitle}>Google Cloud 音声サービス</Text>
       </View>
       <View style={styles.settingsGroup}>
         <View style={[styles.settingsInputRow, styles.settingsRowDivider]}>
@@ -233,7 +233,7 @@ export function GoogleCloudSettings() {
               </TouchableOpacity>
             </View>
             <Text style={styles.settingsRowDescription}>
-              Bitty Private Runnerが送信した音声の安全側の推定値です。60分は無料枠ではなく、概算上限は$0.96です。
+              Google Cloud STTへ送信した音声の安全側の推定値です。60分は無料枠ではなく、概算上限は$0.96です。
             </Text>
           </View>
         </View>
