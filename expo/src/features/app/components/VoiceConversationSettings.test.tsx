@@ -34,6 +34,7 @@ beforeEach(() => {
 
 test("selects a catalog model with a supported effort", async () => {
   const screen = await render(<VoiceConversationSettings />);
+  expect(screen.getByText("音声会話")).toBeTruthy();
   await waitFor(() => expect(screen.getByText("Luna")).toBeTruthy());
   await fireEvent.press(screen.getByLabelText("音声会話のモデル"));
   await fireEvent.press(screen.getByText("Another"));

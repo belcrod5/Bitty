@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createServer } from "node:http";
@@ -48,6 +48,9 @@ for (const withGlobalMcp of [true, false]) test(
   withGlobalMcp ? "isolated Codex App Server sends voice context with inherited MCP" : "isolated Codex App Server sends selected voice context without global MCP",
   { skip: !enabled }, async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "voice-codex-integration-"));
+  execFileSync("git", ["init", "--quiet", "--template=", temp]);
+  const ancestorInstruction = "VOICE_ANCESTOR_AGENTS_SENTINEL_DO_NOT_INCLUDE";
+  await fs.writeFile(path.join(temp, "AGENTS.md"), ancestorInstruction);
   let resolveInput;
   let modelRequestCount = 0;
   const modelRequests = [];
@@ -185,6 +188,7 @@ for (const withGlobalMcp of [true, false]) test(
   assert.equal(first.kind, "upstream", `voice stopped before mock input: ${JSON.stringify(first.value)} ${rpcErrors.join("; ")} ${codexError}`);
   assert.equal(mcpPages.length, 0);
   const upstream = first.value;
+  assert.equal(JSON.stringify(upstream).includes(ancestorInstruction), false);
   assert.equal(upstream.model, "gpt-6-luna");
   const conversationItems = upstream.input.filter((item) =>
     ["MEMORY_SUMMARY", "RECENT_USER_", "RECENT_ASSISTANT_", "CURRENT_USER", "OLD_ONLY_"].some((part) =>
@@ -213,6 +217,7 @@ for (const withGlobalMcp of [true, false]) test(
     && server.resourceTemplates.length === 0)));
   assert.equal(mcpPages.some((page) => page.length > 0), withGlobalMcp);
   const summaryRequest = modelRequests[1];
+  assert.equal(JSON.stringify(summaryRequest).includes(ancestorInstruction), false);
   assert.equal(summaryRequest.model, "gpt-6-luna");
   assert.equal(JSON.stringify(summaryRequest.input).includes("previousMemory"), false);
   assert.equal(JSON.stringify(summaryRequest.input).includes("MEMORY_SUMMARY"), false);

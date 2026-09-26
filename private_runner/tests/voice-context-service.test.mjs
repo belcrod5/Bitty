@@ -329,6 +329,7 @@ test("response files survive turns and restart in a conversation-owned workspace
   assert.equal(firstStart.cwd.startsWith(rootDir + path.sep), false);
   assert.equal(firstStart.cwd.includes("ephemeral-tmp"), false);
   assert.equal((await fs.stat(workspace)).mode & 0o777, 0o700);
+  assert.equal((await fs.stat(path.join(workspace, ".git"))).isDirectory(), true);
   await fs.writeFile(path.join(workspace, "saved.txt"), "persistent conversation file");
   codex.releases.shift()();
   assert.equal((await first).result.status, "completed");
@@ -357,10 +358,46 @@ test("summary uses a disposable read-only directory outside the conversation wor
   assert.equal(summary.sandbox, "read-only");
   assert.match(summary.cwd, /\/ephemeral-tmp\/summary-[A-Za-z0-9]{6}$/);
   assert.equal(await fs.stat(summary.cwd).then(() => true, () => false), true);
+  assert.equal((await fs.stat(path.join(summary.cwd, ".git"))).isDirectory(), true);
   codex.summaryReleases.shift()();
   await waitFor(async () => !(await fs.stat(summary.cwd).then(() => true, () => false)));
   assert.equal(await fs.readFile(path.join(workspace, "saved.txt"), "utf8"), "keep");
 });
+
+test("failed summary Git root validation removes its temporary directory", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const lstat = fs.lstat.bind(fs);
+  const fileStat = await lstat(path.join(rootDir, "active.json"));
+  let checked = false;
+  t.mock.method(fs, "lstat", async (file, ...args) => {
+    if (/\/ephemeral-tmp\/summary-[A-Za-z0-9]{6}\/\.git$/.test(String(file))) {
+      checked = true;
+      return fileStat;
+    }
+    return lstat(file, ...args);
+  });
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  const tempRoot = path.join(path.dirname(rootDir), "ephemeral-tmp");
+  await waitFor(async () => checked && (await fs.readdir(tempRoot)).length === 0);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
+});
+
+for (const kind of ["file", "symlink", "directory"]) {
+  test(`invalid ${kind} Git root blocks voice dispatch`, async (t) => {
+    const { rootDir, service, conversation, codex } = await fixture(t);
+    const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+    const gitDirectory = path.join(workspace, ".git");
+    if (kind === "file") await fs.writeFile(gitDirectory, "invalid");
+    else if (kind === "symlink") await fs.symlink(path.dirname(rootDir), gitDirectory);
+    else await fs.mkdir(gitDirectory);
+    const { result } = await complete(service, conversation, "hello");
+    assert.equal(result.status, "failed");
+    assert.equal(result.code, "voice_store_corrupt");
+    assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
+  });
+}
 
 for (const target of ["root", "conversation"]) {
   test(`symlinked ${target} workspace is rejected without following it`, async (t) => {

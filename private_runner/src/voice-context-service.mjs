@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { codexTurnEventMatches, extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
 
 const CONTEXT_MODE = "self_context_array";
@@ -28,6 +30,28 @@ const SUMMARY_CONFIG = {
 const bytes = (value) => Buffer.byteLength(value, "utf8");
 const invalid = (code, message, voiceReason) => Object.assign(new Error(message), { code, voiceReason });
 const isRecord = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+const git = promisify(execFile);
+
+async function ensureVoiceGitRoot(directory) {
+  const gitDirectory = path.join(directory, ".git");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  let stat;
+  try { stat = await fs.lstat(gitDirectory); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    try { await git("git", ["-C", directory, "init", "--quiet", "--template="], { env }); }
+    catch { throw invalid("voice_store_unavailable", "Voice Git root could not be initialized"); }
+    stat = await fs.lstat(gitDirectory);
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()
+    || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+    throw invalid("voice_store_corrupt", "Voice Git root is invalid");
+  }
+  let root;
+  try { ({ stdout: root } = await git("git", ["-C", directory, "rev-parse", "--show-toplevel"], { env })); }
+  catch { throw invalid("voice_store_corrupt", "Voice Git root is invalid"); }
+  if (path.resolve(root.trim()) !== directory) throw invalid("voice_store_corrupt", "Voice Git root is invalid");
+}
 
 async function atomicWrite(file, content) {
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -372,17 +396,18 @@ export function createVoiceContextService({ rootDir, createClient }) {
     const directory = onApproval
       ? await ownedDirectory(path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId), false)
       : await fs.mkdtemp(path.join(tempRoot, "summary-"));
-    if (!onApproval) await fs.chmod(directory, 0o700);
-    const cwd = await fs.realpath(directory);
-    if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.workspaceConversationId || active.logicalConversationId)) {
-      throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
-    }
     let client;
     let stage = "client_open";
     let removeListener = () => {};
     let removeServerRequestHandler = () => {};
     let resolveIdentity;
     try {
+      if (!onApproval) await fs.chmod(directory, 0o700);
+      const cwd = await fs.realpath(directory);
+      if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.workspaceConversationId || active.logicalConversationId)) {
+        throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
+      }
+      await ensureVoiceGitRoot(cwd);
       client = createClient({ signal });
       await client.openPromise;
       stage = "initialize";
