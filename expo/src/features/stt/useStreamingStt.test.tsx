@@ -142,6 +142,75 @@ test("stop aborts once, keeps visible speech as a draft, and ignores late result
   expect(options.onError).not.toHaveBeenCalled();
 });
 
+test("manual voice send reuses the reply cycle, while later edits do not rearm capture", async () => {
+  let options = createOptions();
+  const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+  const session = await openReady(hook.result);
+  await emit(session, { type: "transcript", text: "heard", isFinal: false });
+  await act(async () => { hook.result.current.stop(); });
+  const callsAfterStop = options.setTranscript.mock.calls.length;
+  await emit(session, { type: "transcript", text: "late speech", isFinal: true });
+  expect(options.setTranscript).toHaveBeenCalledTimes(callsAfterStop);
+
+  await act(async () => { await hook.result.current.sendManualTranscript("edited", () => true); });
+  expect(options.sendTranscript).toHaveBeenCalledWith("edited", expect.any(Function));
+  expect(hook.result.current.phase).toBe("connecting");
+  options = { ...options, replyLoading: true };
+  await hook.rerender(options);
+  options = { ...options, replyLoading: false };
+  await hook.rerender(options);
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(2);
+
+  await act(async () => { hook.result.current.stop(); });
+  const sessionCount = mockSessions.length;
+  await act(async () => { await hook.result.current.sendManualTranscript("older", () => false); });
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(sessionCount);
+  expect(hook.result.current.phase).toBe("idle");
+});
+
+test("manual send resumes after a fast reply and disarms after a failed reply", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await openReady(result);
+  await act(async () => { result.current.stop(); });
+  await act(async () => { await result.current.sendManualTranscript("typed", () => true); });
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(2);
+
+  await act(async () => { result.current.stop(); });
+  options.sendTranscript.mockImplementationOnce(async (_text, onAccepted) => {
+    onAccepted();
+    throw new Error("send failed");
+  });
+  let sendError: unknown;
+  await act(async () => {
+    try { await result.current.sendManualTranscript("retry", () => true); }
+    catch (error) { sendError = error; }
+  });
+  expect(sendError).toEqual(new Error("send failed"));
+  expect(result.current.phase).toBe("idle");
+  await advanceTimers(TTS_START_GRACE_MS);
+  expect(mockSessions).toHaveLength(2);
+});
+
+test("late auto-send acceptance after edit focus cannot clear the draft", async () => {
+  let accept: (() => void) | undefined;
+  const options = createOptions();
+  options.sendTranscript.mockImplementationOnce((_text, onAccepted) => {
+    accept = onAccepted;
+    return new Promise<void>(() => undefined);
+  });
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "heard");
+  await act(async () => { result.current.stop(); });
+  const callsAfterStop = options.setTranscript.mock.calls.length;
+  await act(async () => { accept?.(); });
+  expect(options.setTranscript).toHaveBeenCalledTimes(callsAfterStop);
+  expect(result.current.phase).toBe("idle");
+});
+
 test("stop during done teardown prevents the pending send", async () => {
   let resolveAbort = () => {};
   const options = createOptions();

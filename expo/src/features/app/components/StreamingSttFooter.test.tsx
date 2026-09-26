@@ -1,6 +1,6 @@
 import React from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
-import { ScrollView, StyleSheet } from "react-native";
+import { Platform, StyleSheet } from "react-native";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "./StreamingSttFooter";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
@@ -84,25 +84,20 @@ describe("StreamingSttFooter", () => {
 
   it("draws outside its panel, grows to three transcript lines, and stops recording", async () => {
     const onStop = jest.fn();
-    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {});
-    const screen = await render(<StreamingSttFooter transcript={"一行目\n二行目\n三行目\n四行目"} phase="recording" onStop={onStop} />);
+    const screen = await render(<StreamingSttFooter transcript={"一行目\n二行目\n三行目\n四行目"} phase="recording" onStop={onStop} onChangeText={jest.fn()} />);
     const panel = screen.getByTestId("streaming-stt-footer");
     const glow = screen.getByTestId("streaming-stt-glow");
     const transcript = screen.getByTestId("streaming-stt-transcript");
-    const transcriptScroll = screen.getByTestId("streaming-stt-transcript-scroll");
     expect(StyleSheet.flatten(panel.props.style)).toMatchObject({ overflow: "visible" });
     expect(StyleSheet.flatten(panel.props.style).marginHorizontal).toBeUndefined();
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-panel").props.style)).toMatchObject({ minHeight: 62, paddingHorizontal: 10, paddingVertical: 8, zIndex: 1 });
     expect(StyleSheet.flatten(glow.props.style)).toMatchObject({ left: -48, right: -48, top: -48, bottom: -48 });
-    expect(transcript.props.numberOfLines).toBeUndefined();
-    expect(transcript.props.children).toContain("四行目");
+    expect(transcript.props.value).toContain("四行目");
 
-    await fireEvent(transcript, "layout", { nativeEvent: { layout: { height: 44 } } });
-    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript-scroll").props.style).height).toBe(44);
-    await fireEvent(transcript, "layout", { nativeEvent: { layout: { height: 110 } } });
-    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript-scroll").props.style).height).toBe(66);
-    await fireEvent(transcriptScroll, "contentSizeChange", 200, 110);
-    expect(scrollToEnd).toHaveBeenCalledWith({ animated: false });
+    await fireEvent(transcript, "contentSizeChange", { nativeEvent: { contentSize: { height: 44 } } });
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).height).toBe(44);
+    await fireEvent(transcript, "contentSizeChange", { nativeEvent: { contentSize: { height: 110 } } });
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).height).toBe(66);
 
     await act(async () => {
       fireEvent(panel, "layout", { nativeEvent: { layout: { width: 260, height: 80 } } });
@@ -112,7 +107,83 @@ describe("StreamingSttFooter", () => {
     await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
     expect(onStop).toHaveBeenCalledTimes(1);
     await screen.unmount();
-    scrollToEnd.mockRestore();
+  });
+
+  it("submits the edited value from the Send key and keeps newer edits on acceptance", async () => {
+    let accept: (() => boolean) | undefined;
+    let finish: (() => void) | undefined;
+    const onChangeText = jest.fn();
+    const onFocus = jest.fn();
+    const onSubmit = jest.fn((_text: string, onAccepted: () => boolean) => {
+      accept = onAccepted;
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+    const screen = await render(<StreamingSttFooter transcript="heard" phase="recording" onStop={jest.fn()}
+      onChangeText={onChangeText} onFocus={onFocus} onSubmit={onSubmit} />);
+    const input = screen.getByTestId("streaming-stt-transcript");
+    expect(input.props.submitBehavior).toBe("submit");
+    expect(input.props.returnKeyType).toBe("send");
+    await fireEvent(input, "focus");
+    expect(onFocus).toHaveBeenCalledTimes(1);
+    await fireEvent.changeText(input, "edited");
+    await fireEvent(input, "submitEditing", { nativeEvent: { text: "edited" } });
+    expect(onSubmit).toHaveBeenCalledWith("edited", expect.any(Function));
+    await fireEvent.changeText(input, "newer edit");
+    expect(accept?.()).toBe(false);
+    expect(onChangeText).not.toHaveBeenCalledWith("");
+    await act(async () => { finish?.(); });
+    await fireEvent(input, "submitEditing", { nativeEvent: { text: "newer edit" } });
+    expect(accept?.()).toBe(true);
+    expect(onChangeText).toHaveBeenCalledWith("");
+    await act(async () => { finish?.(); });
+  });
+
+  it("reconciles the keyboard's final text before accepted submission", async () => {
+    const onChangeText = jest.fn();
+    let accepted = false;
+    const onSubmit = jest.fn(async (_text: string, onAccepted: () => boolean) => {
+      accepted = onAccepted();
+    });
+    const screen = await render(<StreamingSttFooter transcript="draft" phase="recording" onStop={jest.fn()}
+      onChangeText={onChangeText} onSubmit={onSubmit} />);
+    const input = screen.getByTestId("streaming-stt-transcript");
+    await fireEvent(input, "submitEditing", { nativeEvent: { text: "draft with IME text" } });
+    expect(onSubmit).toHaveBeenCalledWith("draft with IME text", expect.any(Function));
+    expect(onChangeText.mock.calls).toEqual([["draft with IME text"], [""]]);
+    expect(accepted).toBe(true);
+  });
+
+  it("keeps preparation and error status as editable placeholders", async () => {
+    const props = { transcript: "", phase: "connecting" as const, onStop: jest.fn(), onChangeText: jest.fn() };
+    const screen = await render(<StreamingSttFooter {...props} statusText="録音を準備しています…" />);
+    expect(screen.getByTestId("streaming-stt-transcript").props.placeholder).toBe("録音を準備しています…");
+    await screen.rerender(<StreamingSttFooter {...props} statusText="接続に失敗しました。" />);
+    expect(screen.getByTestId("streaming-stt-transcript").props.placeholder).toBe("接続に失敗しました。");
+    await screen.rerender(<StreamingSttFooter {...props} transcript="送信する文章" statusText="送信に失敗しました。" />);
+    expect(screen.getByTestId("streaming-stt-transcript").props.value).toBe("送信する文章");
+    expect(screen.getByText("送信に失敗しました。")).toBeTruthy();
+  });
+
+  it("submits on plain Enter on Mac", async () => {
+    const platform = Object.getOwnPropertyDescriptor(Platform, "OS");
+    Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+    try {
+      let finish: (() => void) | undefined;
+      const onSubmit = jest.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+      const screen = await render(<StreamingSttFooter transcript="draft" phase="recording" onStop={jest.fn()}
+        onChangeText={jest.fn()} onSubmit={onSubmit} />);
+      const input = screen.getByTestId("streaming-stt-transcript");
+      expect(input.props.submitKeyEvents).toEqual([{ key: "Enter" }]);
+      await fireEvent.changeText(input, "latest draft");
+      await fireEvent(input, "submitEditing", { nativeEvent: {} });
+      await fireEvent(input, "submitEditing", { nativeEvent: {} });
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit).toHaveBeenCalledWith("latest draft", expect.any(Function));
+      await act(async () => { finish?.(); });
+      await screen.unmount();
+    } finally {
+      if (platform) Object.defineProperty(Platform, "OS", platform);
+    }
   });
 
   it("updates the glow from audio samples without React rendering", async () => {

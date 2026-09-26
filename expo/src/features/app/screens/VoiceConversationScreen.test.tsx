@@ -21,11 +21,12 @@ const mockStt = {
   phase: "idle",
   start: jest.fn(),
   stop: jest.fn(),
+  sendManualTranscript: jest.fn(async (_text: string, onAccepted: () => boolean) => { onAccepted(); }),
   abort: mockAbort,
 };
 let mockOnCompleted: ((text: string, operationId: string) => void) | null = null;
 let mockLastSttOptions: { ttsPlaybackActive: boolean } | null = null;
-let mockFooterProps: { voiceContextStats?: unknown; transcript: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void } | null = null;
+let mockFooterProps: { voiceContextStats?: unknown; transcript: string; draftTranscript?: string; statusText?: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void; onFocus?: () => void; onChangeText?: (text: string) => void; onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void> } | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
 let mockReduceMotion: boolean | null = false;
 
@@ -41,16 +42,21 @@ jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { tts
 } }));
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => mockReduceMotion }));
 jest.mock("../components/StreamingSttFooter", () => ({
-  StreamingSttFooter: (props: { voiceContextStats?: unknown; transcript: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void }) => {
+  StreamingSttFooter: (props: { voiceContextStats?: unknown; transcript: string; statusText?: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void; onFocus?: () => void; onChangeText?: (text: string) => void; onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void> }) => {
     const ReactModule = require("react");
     const { Text, TouchableOpacity, View } = require("react-native");
-    mockFooterProps = props;
-    mockFooterRenders.push({ transcript: props.transcript, voiceStatus: props.voiceStatus });
+    mockFooterProps = { ...props, draftTranscript: props.transcript, transcript: props.statusText || props.transcript };
+    mockFooterRenders.push({ transcript: props.statusText || props.transcript, voiceStatus: props.voiceStatus });
     return ReactModule.createElement(View, { testID: "streaming-stt-footer" },
-      ReactModule.createElement(Text, null, props.transcript),
+      ReactModule.createElement(Text, null, props.statusText || props.transcript),
       ReactModule.createElement(TouchableOpacity, { testID: "streaming-stt-stop", onPress: props.onStop }));
   },
 }));
+jest.mock("../keyboardController", () => {
+  const ReactModule = jest.requireActual<typeof import("react")>("react");
+  const { View } = jest.requireActual("react-native") as typeof import("react-native");
+  return { KeyboardAvoidingView: (props: Record<string, unknown>) => ReactModule.createElement(View, props) };
+});
 jest.mock("../contexts/ChatScreenContext", () => ({
   useChatScreen: () => ({ runnerUrl: "http://runner.test", runnerToken: "token" }),
 }));
@@ -108,8 +114,12 @@ test("shows only the shared footer immediately and starts recording once voice.o
     exiting: { type: "fade-out", duration: 220 },
   });
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-transition").props.style)).toMatchObject({
-    position: "absolute", bottom: 0,
+    width: "100%",
   });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-keyboard-avoiding").props.style)).toMatchObject({
+    position: "absolute", top: 0, bottom: 0, justifyContent: "flex-end",
+  });
+  expect(screen.getByTestId("voice-conversation-keyboard-avoiding").props.behavior).toBe("padding");
   expect(screen.getByTestId("voice-conversation-screen").props.style).toBeUndefined();
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-content").props.style)).toMatchObject({
     paddingHorizontal: 20, paddingBottom: 20,
@@ -149,6 +159,21 @@ test("stopping active recording closes the footer immediately", async () => {
   expect(mockStt.stop).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
   expect(mockAbort).toHaveBeenCalled();
+});
+
+test("editing before voice is ready prevents late auto-start and sends only the typed draft", async () => {
+  mockVoice.ready = false;
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockFooterProps?.onFocus?.(); });
+  expect(mockStt.stop).toHaveBeenCalledTimes(1);
+  await act(async () => { mockFooterProps?.onChangeText?.("typed draft"); });
+  expect(mockFooterProps?.draftTranscript).toBe("typed draft");
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockStt.start).not.toHaveBeenCalled();
+  await act(async () => { await mockFooterProps?.onSubmit?.("typed draft", () => true); });
+  expect(mockStt.sendManualTranscript).toHaveBeenCalledWith("typed draft", expect.any(Function));
+  await screen.unmount();
 });
 
 test("shows connection errors inside the shared footer", async () => {
