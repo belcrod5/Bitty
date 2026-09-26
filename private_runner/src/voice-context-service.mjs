@@ -161,6 +161,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
   const root = path.resolve(rootDir);
   const tempRoot = path.join(path.dirname(root), "ephemeral-tmp");
   const workspaceRoot = path.join(path.dirname(root), "workspaces");
+  const summaryWorkspace = path.join(path.dirname(root), "summary-workspace");
   const activeFile = path.join(root, "active.json");
   let loaded = false;
   let active;
@@ -259,14 +260,19 @@ export function createVoiceContextService({ rootDir, createClient }) {
     await fs.mkdir(root, { recursive: true, mode: 0o700 });
     await syncDirectory(parent);
     await fs.chmod(root, 0o700);
-    await ownedDirectory(tempRoot);
-    for (const name of await fs.readdir(tempRoot)) {
-      if (!/^summary-[A-Za-z0-9]{6}$/.test(name)) continue;
-      const candidate = path.join(tempRoot, name);
-      const stat = await fs.lstat(candidate);
-      if (stat.isDirectory() && !stat.isSymbolicLink()
-        && (typeof process.getuid !== "function" || stat.uid === process.getuid())) {
-        await fs.rm(candidate, { recursive: true });
+    if (await fs.lstat(tempRoot).then(() => true, (error) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    })) {
+      await ownedDirectory(tempRoot, false);
+      for (const name of await fs.readdir(tempRoot)) {
+        if (!/^summary-[A-Za-z0-9]{6}$/.test(name)) continue;
+        const candidate = path.join(tempRoot, name);
+        const stat = await fs.lstat(candidate);
+        if (stat.isDirectory() && !stat.isSymbolicLink()
+          && (typeof process.getuid !== "function" || stat.uid === process.getuid())) {
+          await fs.rm(candidate, { recursive: true });
+        }
       }
     }
     let fresh = false;
@@ -345,6 +351,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
       active.workspaceInitialized = true;
       await atomicWrite(activeFile, JSON.stringify(active));
     }
+    await ensureVoiceGitRoot(await fs.realpath(workspace));
+    await ensureVoiceGitRoot(await fs.realpath(await ownedDirectory(summaryWorkspace)));
     for (const state of byId.values()) {
       if (state.status === "accepted") await append(state.clientOperationId, "preflight_failed", { code: "runner_restarted_before_dispatch" });
     }
@@ -395,19 +403,17 @@ export function createVoiceContextService({ rootDir, createClient }) {
     }
     const directory = onApproval
       ? await ownedDirectory(path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId), false)
-      : await fs.mkdtemp(path.join(tempRoot, "summary-"));
+      : await ownedDirectory(summaryWorkspace, false);
     let client;
     let stage = "client_open";
     let removeListener = () => {};
     let removeServerRequestHandler = () => {};
     let resolveIdentity;
     try {
-      if (!onApproval) await fs.chmod(directory, 0o700);
       const cwd = await fs.realpath(directory);
       if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.workspaceConversationId || active.logicalConversationId)) {
         throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
       }
-      await ensureVoiceGitRoot(cwd);
       client = createClient({ signal });
       await client.openPromise;
       stage = "initialize";
@@ -550,7 +556,6 @@ export function createVoiceContextService({ rootDir, createClient }) {
       removeListener();
       removeServerRequestHandler();
       client?.close();
-      if (!onApproval) await fs.rm(directory, { recursive: true, force: true });
     }
   }
 

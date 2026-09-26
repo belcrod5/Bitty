@@ -346,55 +346,87 @@ test("response files survive turns and restart in a conversation-owned workspace
   assert.equal(await fs.readFile(path.join(workspace, "saved.txt"), "utf8"), "persistent conversation file");
 });
 
-test("summary uses a disposable read-only directory outside the conversation workspace", async (t) => {
+test("summary reuses a separate read-only workspace across runs and restart", async (t) => {
   const { rootDir, codex, conversation } = await fixture(t, { holdSummaries: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
   const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+  const summaryWorkspace = path.join(path.dirname(rootDir), "summary-workspace");
   await fs.writeFile(path.join(workspace, "saved.txt"), "keep");
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
   await waitFor(() => codex.summaryReleases.length === 1);
   const summary = codex.calls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").params;
   assert.equal(summary.sandbox, "read-only");
-  assert.match(summary.cwd, /\/ephemeral-tmp\/summary-[A-Za-z0-9]{6}$/);
-  assert.equal(await fs.stat(summary.cwd).then(() => true, () => false), true);
+  assert.equal(summary.cwd, await fs.realpath(summaryWorkspace));
+  assert.notEqual(summary.cwd, await fs.realpath(workspace));
   assert.equal((await fs.stat(path.join(summary.cwd, ".git"))).isDirectory(), true);
   codex.summaryReleases.shift()();
-  await waitFor(async () => !(await fs.stat(summary.cwd).then(() => true, () => false)));
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=1"));
+  await complete(service, conversation, "next pair");
+  await waitFor(() => codex.summaryReleases.length === 1);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").at(-1).params.cwd, summary.cwd);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=2"));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await restarted.open();
+  await complete(restarted, conversation, "after restart");
+  await waitFor(() => codex.summaryReleases.length === 1);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").at(-1).params.cwd, summary.cwd);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=3"));
+  assert.equal((await fs.stat(summary.cwd)).isDirectory(), true);
   assert.equal(await fs.readFile(path.join(workspace, "saved.txt"), "utf8"), "keep");
 });
 
-test("failed summary Git root validation removes its temporary directory", async (t) => {
-  const { rootDir, codex, conversation } = await fixture(t);
-  await seedPairs(rootDir, conversation.logicalConversationId, 11);
-  const lstat = fs.lstat.bind(fs);
-  const fileStat = await lstat(path.join(rootDir, "active.json"));
-  let checked = false;
-  t.mock.method(fs, "lstat", async (file, ...args) => {
-    if (/\/ephemeral-tmp\/summary-[A-Za-z0-9]{6}\/\.git$/.test(String(file))) {
-      checked = true;
-      return fileStat;
-    }
-    return lstat(file, ...args);
-  });
-  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
-  await service.open();
-  const tempRoot = path.join(path.dirname(rootDir), "ephemeral-tmp");
-  await waitFor(async () => checked && (await fs.readdir(tempRoot)).length === 0);
+test("invalid summary Git root fails at load without deleting the workspace", async (t) => {
+  const { rootDir, codex } = await fixture(t);
+  const summaryWorkspace = path.join(path.dirname(rootDir), "summary-workspace");
+  await fs.rm(path.join(summaryWorkspace, ".git"), { recursive: true });
+  await fs.writeFile(path.join(summaryWorkspace, ".git"), "invalid");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await assert.rejects(restarted.open(), { code: "voice_store_corrupt" });
+  assert.equal(await fs.readFile(path.join(summaryWorkspace, ".git"), "utf8"), "invalid");
   assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
 });
 
+test("existing voice files survive one-time Git initialization on restart", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+  await fs.rm(path.join(workspace, ".git"), { recursive: true });
+  await fs.writeFile(path.join(workspace, "keep.txt"), "existing file");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await restarted.open();
+  assert.equal((await fs.stat(path.join(workspace, ".git"))).isDirectory(), true);
+  assert.equal(await fs.readFile(path.join(workspace, "keep.txt"), "utf8"), "existing file");
+  assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
+});
+
+test("voice sends and summaries do not check Git again after load", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdSummaries: true });
+  const lstat = fs.lstat.bind(fs);
+  t.mock.method(fs, "lstat", async (file, ...args) => {
+    if (path.basename(String(file)) === ".git") throw new Error("unexpected per-turn Git check");
+    return lstat(file, ...args);
+  });
+  for (let number = 1; number <= 11; number++) {
+    assert.equal((await complete(service, conversation, `user-${number}`)).result.status, "completed");
+  }
+  await waitFor(() => codex.summaryReleases.length === 1);
+  codex.summaryReleases.shift()();
+});
+
 for (const kind of ["file", "symlink", "directory"]) {
-  test(`invalid ${kind} Git root blocks voice dispatch`, async (t) => {
-    const { rootDir, service, conversation, codex } = await fixture(t);
+  test(`invalid ${kind} Git root blocks voice load`, async (t) => {
+    const { rootDir, conversation, codex } = await fixture(t);
     const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
     const gitDirectory = path.join(workspace, ".git");
+    await fs.rm(gitDirectory, { recursive: true });
     if (kind === "file") await fs.writeFile(gitDirectory, "invalid");
     else if (kind === "symlink") await fs.symlink(path.dirname(rootDir), gitDirectory);
     else await fs.mkdir(gitDirectory);
-    const { result } = await complete(service, conversation, "hello");
-    assert.equal(result.status, "failed");
-    assert.equal(result.code, "voice_store_corrupt");
+    const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+    await assert.rejects(restarted.open(), { code: "voice_store_corrupt" });
     assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
   });
 }
@@ -900,7 +932,9 @@ test("50+ messages stay ordered until durable summary; canceled stale result can
   await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=16"));
   firstSummary();
   await new Promise((resolve) => setTimeout(resolve, 5));
-  await waitFor(async () => !(await fs.stat(staleSummaryCwd).then(() => true, () => false)));
+  assert.equal((await fs.stat(staleSummaryCwd)).isDirectory(), true);
+  assert.ok(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never")
+    .every(({ params }) => params.cwd === staleSummaryCwd));
   assert.match(await fs.readFile(memoryFile, "utf8"), /summarizedThroughPair=16/);
   const next = await complete(service, conversation, "user-27");
   assert.equal(next.result.status, "completed");
@@ -937,10 +971,11 @@ test("a 20-to-50-plus message burst never waits for a held summary or omits back
     .includes("summarizedThroughPair=16"));
 });
 
-test("restart retains backlog and reclaims only summary temporary directories", async (t) => {
+test("restart retains backlog and reclaims only legacy summary temporary directories", async (t) => {
   const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 25);
   const tempRoot = path.join(path.dirname(rootDir), "ephemeral-tmp");
+  await fs.mkdir(tempRoot);
   const orphan = path.join(tempRoot, "summary-abcdef");
   await fs.mkdir(orphan);
   await fs.writeFile(path.join(orphan, "scratch"), "temporary");
