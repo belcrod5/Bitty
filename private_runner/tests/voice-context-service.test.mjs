@@ -37,6 +37,12 @@ function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0
           throw error;
         }
         if (method === "config/read") return { config: { mcp_servers: configuredMcpServers } };
+        if (method === "model/list") return { data: [
+          { model: "gpt-6-luna", displayName: "Luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+          { model: "another-model", displayName: "Another", supportedReasoningEfforts: [
+            { reasoningEffort: "medium" }, { reasoningEffort: "high" },
+          ] },
+        ], nextCursor: null };
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
           return { thread: { id: randomUUID(), ephemeral } };
@@ -145,6 +151,113 @@ test("voice turns persist before acknowledgement and replay without generation",
     { code: "operation_conflict" });
   const reopened = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.equal((await reopened.status(conversation.logicalConversationId, message.operationId)).text, "answer");
+});
+
+test("voice settings use the live catalog, validate effort, and survive restart", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t);
+  const initial = await service.getSettings();
+  assert.deepEqual([initial.model, initial.effort], ["gpt-6-luna", "low"]);
+  assert.deepEqual(initial.models.map((model) => model.modelId), ["gpt-6-luna", "another-model"]);
+  await assert.rejects(service.configure("another-model", "low"), { code: "turn_rejected" });
+  await assert.rejects(service.configure("unknown-model", "high"), { code: "turn_rejected" });
+  await service.configure("another-model", "high");
+  assert.equal((await service.open()).estimatedContextUsagePercent, null);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.deepEqual(((await restarted.getSettings()).model), "another-model");
+  assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
+  const turns = codex.calls.filter(({ method }) => method === "turn/start");
+  assert.equal(turns.at(-1).params.model, "another-model");
+  assert.equal(turns.at(-1).params.effort, "high");
+});
+
+test("clearing memory retains all completed messages for later context", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 3);
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=2 -->\nold summary");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await service.clearMemory()).unsummarizedMessageCount, 6);
+  assert.equal(await fs.readFile(memoryFile, "utf8"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  assert.equal((await complete(service, conversation, "next")).result.status, "completed");
+  const injected = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
+  assert.deepEqual(injected.filter((item) => item.role === "user").map((item) => item.content[0].text),
+    ["user-1", "user-2", "user-3"]);
+  assert.equal(injected.some((item) => item.content[0].text.includes("old summary")), false);
+});
+
+test("clearing messages rotates the operation namespace, preserves memory and workspace, and removes old data", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  const { message } = await complete(createVoiceContextService({ rootDir, createClient: codex.createClient }), conversation, "hello");
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=1 -->\nremember this");
+  const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+  await fs.writeFile(path.join(workspace, "keep.txt"), "keep");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const cleared = await service.clearMessages();
+  assert.notEqual(cleared.logicalConversationId, conversation.logicalConversationId);
+  assert.equal(cleared.unsummarizedMessageCount, 0);
+  assert.equal(cleared.memoryCharacterCount, "remember this".length);
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId)).then(() => true, () => false), false);
+  assert.equal(await fs.readFile(path.join(workspace, "keep.txt"), "utf8"), "keep");
+  await assert.rejects(service.start(message, () => {}, async () => "decline"), { code: "turn_rejected" });
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.open()).logicalConversationId, cleared.logicalConversationId);
+  assert.equal(await fs.readFile(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md"), "utf8"),
+    "<!-- voice-context:v1 summarizedThroughPair=0 -->\nremember this");
+  assert.equal((await complete(restarted, cleared, "next")).result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items[0].content[0].text,
+    "Previous conversation summary:\nremember this");
+});
+
+test("clears and model changes reject an active voice turn", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true });
+  const running = complete(service, conversation, "wait");
+  await waitFor(() => codex.releases.length === 1);
+  await assert.rejects(service.clearMemory(), { code: "session_busy" });
+  await assert.rejects(service.clearMessages(), { code: "session_busy" });
+  await assert.rejects(service.configure("another-model", "high"), { code: "session_busy" });
+  codex.releases.shift()();
+  assert.equal((await running).result.status, "completed");
+});
+
+test("a canceled summary cannot write after message clear", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { holdSummaries: true, ignoreAbort: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(() => codex.summaryReleases.length === 1);
+  const cleared = await service.clearMessages();
+  codex.summaryReleases.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(await fs.readFile(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md"), "utf8"),
+    "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  assert.equal((await service.open()).unsummarizedMessageCount, 0);
+});
+
+test("restart completes a committed message clear before opening the new conversation", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  const nextId = randomUUID();
+  const nextDirectory = path.join(rootDir, nextId);
+  await fs.mkdir(nextDirectory);
+  await fs.writeFile(path.join(nextDirectory, "events.jsonl"), "");
+  await fs.writeFile(path.join(nextDirectory, "MEMORY.md"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  await fs.writeFile(path.join(rootDir, "active.json"), JSON.stringify({
+    logicalConversationId: nextId, contextMode: "self_context_array", workspaceInitialized: true,
+    workspaceConversationId: conversation.logicalConversationId,
+    previousConversationId: conversation.logicalConversationId,
+  }));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.open()).logicalConversationId, nextId);
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId)).then(() => true, () => false), false);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).previousConversationId, undefined);
+  await fs.writeFile(path.join(rootDir, "active.json"), JSON.stringify({
+    logicalConversationId: nextId, contextMode: "self_context_array", workspaceInitialized: true,
+    workspaceConversationId: conversation.logicalConversationId,
+    previousConversationId: conversation.logicalConversationId,
+  }));
+  const interruptedAfterRemoval = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await interruptedAfterRemoval.open()).logicalConversationId, nextId);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).previousConversationId, undefined);
 });
 
 test("response files survive turns and restart in a conversation-owned workspace", async (t) => {

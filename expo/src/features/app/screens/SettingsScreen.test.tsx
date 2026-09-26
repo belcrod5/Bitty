@@ -10,6 +10,7 @@ import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
 jest.mock("../components/CodexAccountSettings", () => ({ CodexAccountSettings: () => null }));
 jest.mock("../components/GoogleCloudSettings", () => ({ GoogleCloudSettings: () => null }));
+jest.mock("../components/VoiceConversationSettings", () => ({ VoiceConversationSettings: () => null }));
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 const mockSetStringAsync = jest.fn(async (_text: string) => true);

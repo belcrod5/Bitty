@@ -78,7 +78,7 @@ async function initializeCodexClient(client, clientName) {
   client.notify("initialized", {});
 }
 
-async function listCodexModelsFromAppServer(createClient, clientName) {
+export async function listCodexModelsFromAppServer(createClient, clientName) {
   const client = createClient({});
   const catalog = [];
   const seenCursors = new Set();

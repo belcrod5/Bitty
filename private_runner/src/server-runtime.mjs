@@ -9097,6 +9097,18 @@ runnerWsServer.on("connection", (ws, req) => {
       })).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
+      let operation;
+      if (message.op === "voice.settings") operation = voiceContextService.getSettings();
+      else if (message.op === "voice.settings.update") {
+        operation = voiceContextService.configure(message.payload?.model, message.payload?.effort);
+      } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
+      else operation = voiceContextService.clearMessages();
+      void operation.then((payload) => sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload,
+      })).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
     const operationId = message.operationId;
     const onApproval = (request) => voiceApprovals.request(operationId, request);
