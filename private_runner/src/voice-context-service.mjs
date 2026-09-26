@@ -338,6 +338,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     return {
       estimatedContextUsagePercent: settings().model === DEFAULT_MODEL
         ? Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)) : null,
+      storedMessageCount: byId.size + pairs.length,
       unsummarizedMessageCount: remaining.length * 2,
       memoryCharacterCount: Array.from(memory).length,
     };
@@ -677,7 +678,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
       return exclusive(async () => {
         await load();
-        return { ...settings(), models };
+        return { ...settings(), ...usage(), models };
       });
     },
     async configure(model, effort) {

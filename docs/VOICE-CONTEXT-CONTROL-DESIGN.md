@@ -26,6 +26,8 @@ v1 の「自前コンテキスト配列」は、Codex App Server の **新規 ep
 
 設定画面は認証済み Runner WS の `voice.settings` で現在の `model`／`effort` と Codex App Server の動的モデル一覧を取得する。`voice.settings.update` はモデルとエフォートを一緒に受け、Runner が最新の一覧と対応エフォートを検証して `active.json` に原子的に保存する。応答・要約の両方にその設定を使う。実行中の音声ターンがある間は更新を拒否する。通常チャットのモデル設定とは独立する。
 
+`voice.settings.result` は `storedMessageCount` と `memoryCharacterCount` を返す。前者は正本に保存された受理済み発話数と完了応答数の和（失敗ターンの発話も含む）で、`unsummarizedMessageCount` とは別である。各クリア結果も両値を返し、設定画面は成功応答で表示を更新する。
+
 `voice.memory.clear` は `MEMORY.md` を空本文・cursor 0 に戻し、正本 `events.jsonl` は残す。そのため、保持メッセージが10ペアを超えればメモリーが後で再生成される。`voice.messages.clear` は要約本文を保ち、空の正本ログとcursor 0を持つ新しい論理会話IDへ切り替える。旧ログは削除し、切断中の端末による旧IDの再送は拒否する。応答用の作業領域内のファイルは保持する。旧ログ削除中にRunnerが停止しても、`active.json` の旧IDマーカーから再開時に削除を完了する。どちらのクリアも実行中ターンを拒否し、進行中の要約を中止する。
 
 モデル一覧に文脈窓の値はないため、`estimatedContextUsagePercent` は初期モデル以外では `null` と表示する。800,000 bytes の入力境界はどのモデルでも token 上限を保証しない。実モデルが文脈超過を返した場合はターン失敗として扱う。

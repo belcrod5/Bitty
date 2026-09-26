@@ -7,11 +7,27 @@ import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParser
 import { SettingsSelect } from "./SettingsSelect";
 
 type VoiceModel = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
-type VoiceSettings = { model: string; effort: ReasoningEffort; models: VoiceModel[] };
+type VoiceSettings = {
+  model: string;
+  effort: ReasoningEffort;
+  models: VoiceModel[];
+  storedMessageCount: number;
+  memoryCharacterCount: number;
+};
 
 const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   low: "低", medium: "中", high: "高", xhigh: "非常に高い", max: "最大", ultra: "Ultra",
 };
+
+function countsOf(result: Record<string, unknown>) {
+  const storedMessageCount = result.storedMessageCount;
+  const memoryCharacterCount = result.memoryCharacterCount;
+  if (typeof storedMessageCount !== "number" || !Number.isSafeInteger(storedMessageCount) || storedMessageCount < 0
+    || typeof memoryCharacterCount !== "number" || !Number.isSafeInteger(memoryCharacterCount) || memoryCharacterCount < 0) {
+    throw new Error("音声会話の保存件数を確認できません。");
+  }
+  return { storedMessageCount, memoryCharacterCount };
+}
 
 export function VoiceConversationSettings() {
   const styles = useAppStyles();
@@ -40,11 +56,12 @@ export function VoiceConversationSettings() {
       const efforts = value.effortOptions.filter(isReasoningEffort);
       return efforts.length ? [{ modelId: value.modelId, label: String(value.label || value.modelId), effortOptions: efforts }] : [];
     });
-    return { model: result.model, effort: result.effort, models };
+    return { model: result.model, effort: result.effort, models, ...countsOf(result) };
   }, [request]);
 
   useEffect(() => {
     let current = true;
+    setSettings(null);
     void manager.connect().then(readSettings).then((loaded) => {
       if (current) {
         setSettings(loaded);
@@ -54,7 +71,7 @@ export function VoiceConversationSettings() {
       if (current) setError(cause instanceof Error ? cause.message : "Runnerに接続できません。");
     });
     return () => { current = false; };
-  }, [generation, manager, readSettings]);
+  }, [connected, generation, manager, readSettings]);
 
   const update = async (model: string, effort: ReasoningEffort) => {
     setBusy(true);
@@ -79,6 +96,12 @@ export function VoiceConversationSettings() {
           setBusy(true);
           setError("");
           void request(kind === "memory" ? "voice.memory.clear" : "voice.messages.clear")
+            .then((result) => {
+              const counts = countsOf(result);
+              if (manager.getSnapshot().connected && manager.getSnapshot().generation === generation) {
+                setSettings((current) => current && { ...current, ...counts });
+              }
+            })
             .catch((cause) => setError(cause instanceof Error ? cause.message : "クリアできません。"))
             .finally(() => setBusy(false));
         } },
@@ -115,20 +138,24 @@ export function VoiceConversationSettings() {
         <View style={[styles.settingsRow, styles.settingsRowDivider]}>
           <View style={styles.settingsRowLabelWrap}>
             <Text style={styles.settingsRowLabel}>要約メモリー</Text>
-            <Text style={styles.settingsRowDescription}>保持メッセージから再生成される場合があります</Text>
+            <Text style={styles.settingsRowDescription}>
+              {`保存中: ${settings?.memoryCharacterCount ?? "--"}文字 · 保持メッセージから再生成される場合があります`}
+            </Text>
           </View>
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="メモリーをクリア"
-            disabled={busy || !connected} onPress={() => clear("memory")}>
+            disabled={busy || !connected || !settings} onPress={() => clear("memory")}>
             <Text style={styles.settingsDangerText}>クリア</Text>
           </TouchableOpacity>
         </View>
         <View style={styles.settingsRow}>
           <View style={styles.settingsRowLabelWrap}>
             <Text style={styles.settingsRowLabel}>保持メッセージ</Text>
-            <Text style={styles.settingsRowDescription}>要約メモリーは残します</Text>
+            <Text style={styles.settingsRowDescription}>
+              {`保存中: ${settings?.storedMessageCount ?? "--"}件 · 要約メモリーは残します`}
+            </Text>
           </View>
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="保持メッセージをクリア"
-            disabled={busy || !connected} onPress={() => clear("messages")}>
+            disabled={busy || !connected || !settings} onPress={() => clear("messages")}>
             <Text style={styles.settingsDangerText}>クリア</Text>
           </TouchableOpacity>
         </View>

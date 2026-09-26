@@ -140,10 +140,12 @@ test("voice turns persist before acknowledgement and replay without generation",
   assert.equal(accepted.status, "accepted");
   assert.equal(typeof accepted.estimatedContextUsagePercent, "number");
   assert.equal(accepted.unsummarizedMessageCount, 0);
+  assert.equal(accepted.storedMessageCount, 1);
   assert.equal(accepted.memoryCharacterCount, 0);
   assert.equal(result.status, "completed");
   assert.equal(result.text, "answer");
   assert.equal(result.unsummarizedMessageCount, 2);
+  assert.equal(result.storedMessageCount, 2);
   assert.equal((await service.open()).unsummarizedMessageCount, 2);
   const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
   const events = (await fs.readFile(eventFile, "utf8")).trim().split("\n").map(JSON.parse);
@@ -175,6 +177,26 @@ test("voice settings use the live catalog, validate effort, and survive restart"
   assert.equal(turns.at(-1).params.effort, "high");
 });
 
+test("settings count every stored user text and completed reply, including failed turns", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { ephemeral: false });
+  await seedPairs(rootDir, conversation.logicalConversationId, 2);
+  await fs.writeFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"),
+    "<!-- voice-context:v1 summarizedThroughPair=1 -->\n記憶🙂");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const initial = await service.getSettings();
+  assert.equal(initial.storedMessageCount, 4);
+  assert.equal(initial.unsummarizedMessageCount, 2);
+  assert.equal(initial.memoryCharacterCount, 3);
+  assert.notEqual((await complete(service, conversation, "failed request")).result.status, "completed");
+  assert.equal((await service.getSettings()).storedMessageCount, 5);
+  const memoryCleared = await service.clearMemory();
+  assert.equal(memoryCleared.storedMessageCount, 5);
+  assert.equal(memoryCleared.memoryCharacterCount, 0);
+  const messagesCleared = await service.clearMessages();
+  assert.equal(messagesCleared.storedMessageCount, 0);
+  assert.equal(messagesCleared.memoryCharacterCount, 0);
+});
+
 test("a slow model catalog read does not hold the voice event queue", async (t) => {
   const { service, conversation, codex } = await fixture(t, { holdModelList: true });
   const reading = service.getSettings();
@@ -186,7 +208,9 @@ test("a slow model catalog read does not hold the voice event queue", async (t) 
   assert.equal((await service.open()).logicalConversationId, conversation.logicalConversationId);
   assert.equal((await turn).result.status, "completed");
   codex.modelReleases.shift()();
-  assert.equal((await reading).model, "gpt-6-luna");
+  const settings = await reading;
+  assert.equal(settings.model, "gpt-6-luna");
+  assert.equal(settings.storedMessageCount, 2);
 });
 
 test("a turn can start during catalog discovery and blocks the pending settings save", async (t) => {
@@ -230,6 +254,7 @@ test("clearing messages rotates the operation namespace, preserves memory and wo
   const cleared = await service.clearMessages();
   assert.notEqual(cleared.logicalConversationId, conversation.logicalConversationId);
   assert.equal(cleared.unsummarizedMessageCount, 0);
+  assert.equal(cleared.storedMessageCount, 0);
   assert.equal(cleared.memoryCharacterCount, "remember this".length);
   assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId)).then(() => true, () => false), false);
   assert.equal(await fs.readFile(path.join(workspace, "keep.txt"), "utf8"), "keep");
