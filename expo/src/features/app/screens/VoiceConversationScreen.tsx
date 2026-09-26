@@ -154,11 +154,15 @@ export function VoiceConversationScreen({
                 streamingStt.stop();
               }}
               onSubmit={async (text, onAccepted) => {
-                await streamingStt.sendManualTranscript(text, () => {
-                  if (!onAccepted()) return false;
-                  setEditingTranscript(false);
-                  return true;
-                });
+                try {
+                  await streamingStt.sendManualTranscript(text, () => {
+                    if (!onAccepted()) return false;
+                    setEditingTranscript(false);
+                    return true;
+                  });
+                } catch (error) {
+                  voice.setError(error instanceof Error ? error.message : String(error));
+                }
               }}
               onStop={() => {
                 streamingStt.stop();

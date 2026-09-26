@@ -176,6 +176,26 @@ test("editing before voice is ready prevents late auto-start and sends only the 
   await screen.unmount();
 });
 
+test("keeps the typed draft and shows a send error before voice.open is ready", async () => {
+  mockVoice.ready = false;
+  mockStt.sendManualTranscript.mockRejectedValueOnce(new Error("音声会話を送信できません。"));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockFooterProps?.onFocus?.(); });
+  await act(async () => { mockFooterProps?.onChangeText?.("typed draft"); });
+  const onAccepted = jest.fn(() => true);
+
+  await act(async () => { await mockFooterProps?.onSubmit?.("typed draft", onAccepted); });
+
+  expect(onAccepted).not.toHaveBeenCalled();
+  expect(mockVoice.setError).toHaveBeenCalledWith("音声会話を送信できません。");
+  expect(mockFooterProps?.draftTranscript).toBe("typed draft");
+  mockVoice.error = "音声会話を送信できません。";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.statusText).toBe("音声会話を送信できません。");
+  expect(mockFooterProps?.draftTranscript).toBe("typed draft");
+  await screen.unmount();
+});
+
 test("shows connection errors inside the shared footer", async () => {
   mockVoice.ready = false;
   mockVoice.error = "音声会話を開始できません。";
