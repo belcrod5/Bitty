@@ -18,7 +18,7 @@ export type StreamingSttServerMessage =
       type: "done";
       reason: "user_stop" | "speech_end_timeout" | "no_speech_timeout" | "limit_reached" | "max_duration";
       hasSpeech: boolean;
-      usage: StreamingSttUsage;
+      usage?: StreamingSttUsage;
     }
   | { type: "error"; code: string; message: string; retryable: boolean };
 
@@ -79,13 +79,13 @@ export function parseStreamingSttMessage(raw: unknown): StreamingSttServerMessag
     if (type === "done") {
       const reason = String(value.reason || "");
       if (!hasOnlyKeys(value, ["type", "reason", "hasSpeech", "usage"])) return null;
-      const usage = parseUsage(value.usage);
+      const usage = value.usage === undefined ? undefined : parseUsage(value.usage);
       if (
         !["user_stop", "speech_end_timeout", "no_speech_timeout", "limit_reached", "max_duration"].includes(reason)
         || typeof value.hasSpeech !== "boolean"
-        || !usage
+        || usage === null
       ) return null;
-      return { type, reason, hasSpeech: value.hasSpeech, usage } as StreamingSttServerMessage;
+      return { type, reason, hasSpeech: value.hasSpeech, ...(usage ? { usage } : {}) } as StreamingSttServerMessage;
     }
     if (type === "error") {
       if (

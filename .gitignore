@@ -53,6 +53,7 @@ out.mp3
 # local private runner state
 private_runner/.env
 private_runner/.codex-home/
+private_runner/.native-build/
 private_runner/auth-cache/
 private_runner/*.log
 private_runner/logs
