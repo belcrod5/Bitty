@@ -62,7 +62,7 @@ export function createMacosStreamingSttHandler({
     let speechBegan = false;
     let finalHadText = false;
     let finalChars = 0;
-    let lastPartialChars = 0;
+    let lastPartialText = "";
     let inputEndedAt = null;
     let loudMs = 0;
     let silentMs = 0;
@@ -104,7 +104,7 @@ export function createMacosStreamingSttHandler({
         reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"),
         hasSpeech: finalHadText,
         finalChars,
-        lastPartialChars,
+        lastPartialChars: lastPartialText.length,
         finalizationMs: inputEndedAt === null ? null : Math.round(performance.now() - inputEndedAt),
         socketOpen: ws.readyState === 1,
       });
@@ -160,19 +160,23 @@ export function createMacosStreamingSttHandler({
       }
       if (message.type === "transcript" && (phase === "ready" || phase === "finalizing")
         && typeof message.text === "string" && typeof message.isFinal === "boolean") {
-        if (message.text.trim()) beginSpeech();
-        if (!message.isFinal && message.text.trim()) lastPartialChars = message.text.length;
+        const nativeHadText = !!message.text.trim();
+        if (nativeHadText) beginSpeech();
+        if (!message.isFinal && nativeHadText) lastPartialText = message.text;
+        const usedPartialFallback = message.isFinal && !nativeHadText && !finalHadText && !!lastPartialText;
+        const transcript = usedPartialFallback ? lastPartialText : message.text;
         if (message.isFinal) {
-          if (message.text.trim()) {
+          if (transcript.trim()) {
             finalHadText = true;
-            finalChars += message.text.length;
+            finalChars += transcript.length;
           }
           log.info?.("[stream-stt] macos_final_transcript", {
-            chars: message.text.length, cumulativeChars: finalChars, lastPartialChars, inputEnded,
+            chars: message.text.length, nativeHadText, cumulativeChars: finalChars, lastPartialChars: lastPartialText.length,
+            usedPartialFallback, inputEnded,
             finalizationMs: inputEndedAt === null ? null : Math.round(performance.now() - inputEndedAt),
           });
         }
-        send({ type: "transcript", text: message.text, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
+        send({ type: "transcript", text: transcript, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
         if (message.isFinal && !inputEnded) {
           send({ type: "speech_activity_end" });
           endInput("speech_end_timeout", "apple_final");
