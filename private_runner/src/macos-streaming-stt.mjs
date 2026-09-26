@@ -62,6 +62,8 @@ export function createMacosStreamingSttHandler({
     let speechBegan = false;
     let finalHadText = false;
     let finalChars = 0;
+    let lastPartialChars = 0;
+    let inputEndedAt = null;
     let loudMs = 0;
     let silentMs = 0;
     let lastRms = null;
@@ -102,6 +104,8 @@ export function createMacosStreamingSttHandler({
         reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"),
         hasSpeech: finalHadText,
         finalChars,
+        lastPartialChars,
+        finalizationMs: inputEndedAt === null ? null : Math.round(performance.now() - inputEndedAt),
         socketOpen: ws.readyState === 1,
       });
       send({ type: "done", reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"), hasSpeech: finalHadText });
@@ -113,6 +117,7 @@ export function createMacosStreamingSttHandler({
     const endInput = (reason, trigger = reason) => {
       if (terminal || inputEnded) return;
       inputEnded = true;
+      inputEndedAt = performance.now();
       endReason = reason;
       phase = "finalizing";
       log.info?.("[stream-stt] macos_input_ended", {
@@ -156,13 +161,15 @@ export function createMacosStreamingSttHandler({
       if (message.type === "transcript" && (phase === "ready" || phase === "finalizing")
         && typeof message.text === "string" && typeof message.isFinal === "boolean") {
         if (message.text.trim()) beginSpeech();
+        if (!message.isFinal && message.text.trim()) lastPartialChars = message.text.length;
         if (message.isFinal) {
           if (message.text.trim()) {
             finalHadText = true;
             finalChars += message.text.length;
           }
           log.info?.("[stream-stt] macos_final_transcript", {
-            chars: message.text.length, cumulativeChars: finalChars, inputEnded,
+            chars: message.text.length, cumulativeChars: finalChars, lastPartialChars, inputEnded,
+            finalizationMs: inputEndedAt === null ? null : Math.round(performance.now() - inputEndedAt),
           });
         }
         send({ type: "transcript", text: message.text, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });

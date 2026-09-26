@@ -42,6 +42,7 @@ export function useStreamingStt(options: Options) {
   const pendingAbortRef = useRef<Promise<void>>(Promise.resolve());
   const sessionVersionRef = useRef(0);
   const transcriptStateRef = useRef<StreamingTranscript>(EMPTY_TRANSCRIPT);
+  const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
   const listeningRef = useRef(false);
   const startSessionRef = useRef<() => void>(() => {});
@@ -160,6 +161,7 @@ export function useStreamingStt(options: Options) {
     terminalRef.current = false;
     setPhase("connecting");
     const version = ++sessionVersionRef.current;
+    lastPartialCharsRef.current = 0;
     latestRef.current.onDiagnostic?.("stt_session_start", { version });
     void pendingAbortRef.current.then(() => {
       if (version !== sessionVersionRef.current || !listeningRef.current) return;
@@ -207,6 +209,13 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "transcript") {
+      if (!message.isFinal && message.text.trim()) {
+        if (lastPartialCharsRef.current === 0) latestRef.current.onDiagnostic?.("stt_partial_transcript_received", {
+          version: sessionVersionRef.current,
+          chars: message.text.length,
+        });
+        lastPartialCharsRef.current = message.text.length;
+      }
       const next = applyStreamingTranscript(
         transcriptStateRef.current,
         message.text,
@@ -217,6 +226,7 @@ export function useStreamingStt(options: Options) {
         version: sessionVersionRef.current,
         chars: message.text.length,
         finalChars: next.finalText.length,
+        lastPartialChars: lastPartialCharsRef.current,
       });
       latestRef.current.setTranscript(displayStreamingTranscript(next));
       return;
@@ -242,6 +252,7 @@ export function useStreamingStt(options: Options) {
       hasSpeech: message.hasSpeech,
       finalChars: transcriptStateRef.current.finalText.length,
       interimChars: transcriptStateRef.current.interimText.length,
+      lastPartialChars: lastPartialCharsRef.current,
     });
     terminalRef.current = true;
     if (sessionRef.current !== session) return;

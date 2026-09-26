@@ -249,6 +249,26 @@ test("diagnostics distinguish interim-only completion from accepted auto-send wi
   expect(JSON.stringify(finalOptions.onDiagnostic.mock.calls)).not.toContain("final secret");
 });
 
+test("diagnostics retain nonempty partial length after an empty Apple final", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "秘密の途中結果", isFinal: false });
+  await emit(session, { type: "transcript", text: "", isFinal: true });
+  await emit(session, { type: "done", reason: "speech_end_timeout", hasSpeech: false, usage });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_partial_transcript_received", expect.objectContaining({
+    chars: "秘密の途中結果".length,
+  }));
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_final_transcript_received", expect.objectContaining({
+    chars: 0, lastPartialChars: "秘密の途中結果".length,
+  }));
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_done_received", expect.objectContaining({
+    hasSpeech: false, lastPartialChars: "秘密の途中結果".length,
+  }));
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("秘密の途中結果");
+});
+
 test("diagnostics record an auto-send rejection", async () => {
   const options = createOptions();
   options.sendTranscript.mockRejectedValueOnce(new Error("private send failure"));

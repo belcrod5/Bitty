@@ -64,8 +64,32 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
     "[stream-stt] macos_done_attempted",
   ]);
   assert.equal(logs[1][1].cumulativeChars, "こんにちは。".length);
+  assert.equal(logs[1][1].lastPartialChars, "こんにちは".length);
+  assert.ok(logs[1][1].finalizationMs >= 0);
   assert.equal(logs[2][1].hasSpeech, true);
+  assert.equal(logs[2][1].lastPartialChars, "こんにちは".length);
+  assert.ok(logs[2][1].finalizationMs >= 0);
   assert.equal(JSON.stringify(logs).includes("こんにちは"), false);
+});
+
+test("empty native final is diagnosed separately from the prior nonempty partial", async () => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  const logs = [];
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: { info: (...entry) => logs.push(entry) } })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  child.emitMessage({ type: "transcript", text: "秘密の途中結果", isFinal: false });
+  child.emitMessage({ type: "transcript", text: "", isFinal: true });
+  child.emit("close", 0);
+  const final = logs.find(([event]) => event === "[stream-stt] macos_final_transcript")[1];
+  const done = logs.find(([event]) => event === "[stream-stt] macos_done_attempted")[1];
+  assert.equal(final.chars, 0);
+  assert.equal(final.lastPartialChars, "秘密の途中結果".length);
+  assert.equal(done.hasSpeech, false);
+  assert.equal(done.lastPartialChars, "秘密の途中結果".length);
+  assert.equal(JSON.stringify(logs).includes("秘密の途中結果"), false);
 });
 
 test("quiet ongoing speech and short pauses do not end the macOS stream", async () => {
