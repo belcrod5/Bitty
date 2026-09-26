@@ -10,9 +10,9 @@ const execFileAsync = promisify(execFile);
 const BUILD_SCRIPT = fileURLToPath(new URL("../scripts/build-macos-stt-helper.sh", import.meta.url));
 const HELPER = fileURLToPath(new URL("../.native-build/BittyMacStt.app/Contents/MacOS/BittyMacStt", import.meta.url));
 const MAX_AUDIO_BYTES = BYTES_PER_SECOND * MAX_DURATION_SECONDS;
-const VAD_THRESHOLD = 0.015;
+const VAD_THRESHOLD = 0.005;
 const VAD_START_MS = 120;
-const VAD_END_MS = 850;
+const VAD_END_MS = 2_000;
 let buildPromise;
 
 async function launchHelper() {
@@ -46,6 +46,7 @@ const NATIVE_ERRORS = {
 
 export function createMacosStreamingSttHandler({
   startHelper = launchHelper,
+  log = console,
   finalizationTimeoutMs = 15_000,
   startupTimeoutMs = 120_000,
   noSpeechTimeoutMs = 55_000,
@@ -62,6 +63,9 @@ export function createMacosStreamingSttHandler({
     let finalHadText = false;
     let loudMs = 0;
     let silentMs = 0;
+    let lastRms = null;
+    let maxSilentRms = 0;
+    const startedAt = performance.now();
     let output = "";
     let work = Promise.resolve();
     let startupTimer;
@@ -98,11 +102,22 @@ export function createMacosStreamingSttHandler({
       if (ws.readyState === 1) ws.close(1000);
       closeChild();
     };
-    const endInput = (reason) => {
+    const endInput = (reason, trigger = reason) => {
       if (terminal || inputEnded) return;
       inputEnded = true;
       endReason = reason;
       phase = "finalizing";
+      log.info?.("[stream-stt] macos_input_ended", {
+        trigger,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        audioMs: Math.round(sentBytes / BYTES_PER_SECOND * 1000),
+        speechBegan,
+        silentMs: Math.round(silentMs),
+        lastRms: lastRms === null ? null : Number(lastRms.toFixed(4)),
+        maxSilentRms: Number(maxSilentRms.toFixed(4)),
+        vadThreshold: VAD_THRESHOLD,
+        vadEndMs: VAD_END_MS,
+      });
       clearTimeout(noSpeechTimer);
       clearTimeout(maxDurationTimer);
       child.stdin.end();
@@ -137,7 +152,7 @@ export function createMacosStreamingSttHandler({
         send({ type: "transcript", text: message.text, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
         if (message.isFinal && !inputEnded) {
           send({ type: "speech_activity_end" });
-          endInput("speech_end_timeout");
+          endInput("speech_end_timeout", "apple_final");
         }
         return;
       }
@@ -204,17 +219,20 @@ export function createMacosStreamingSttHandler({
       await new Promise((resolve, reject) => child.stdin.write(audio, (error) => error ? reject(error) : resolve()));
       sentBytes += audio.length;
       const durationMs = audio.length / BYTES_PER_SECOND * 1000;
-      if (audioLevel(audio) >= VAD_THRESHOLD) {
+      lastRms = audioLevel(audio);
+      if (lastRms >= VAD_THRESHOLD) {
         loudMs += durationMs;
         silentMs = 0;
+        maxSilentRms = 0;
         if (loudMs >= VAD_START_MS) beginSpeech();
       } else {
         loudMs = 0;
         if (speechBegan) {
           silentMs += durationMs;
+          maxSilentRms = Math.max(maxSilentRms, lastRms);
           if (silentMs >= VAD_END_MS) {
             send({ type: "speech_activity_end" });
-            endInput("speech_end_timeout");
+            endInput("speech_end_timeout", "pcm_silence");
           }
         }
       }
