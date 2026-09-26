@@ -41,6 +41,7 @@ function createOptions() {
     onUsage: jest.fn(),
     onSample: jest.fn(),
     onError: jest.fn(),
+    onDiagnostic: jest.fn(),
     canStart: true,
     onSpeechBegin: jest.fn(),
     replyLoading: false,
@@ -225,6 +226,36 @@ test("stop during done teardown prevents the pending send", async () => {
   await act(async () => { resolveAbort(); await Promise.resolve(); });
   expect(options.sendTranscript).not.toHaveBeenCalled();
   expect(session.abort).toHaveBeenCalledTimes(1);
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_done_superseded", expect.any(Object));
+});
+
+test("diagnostics distinguish interim-only completion from accepted auto-send without transcript content", async () => {
+  const interimOptions = createOptions();
+  const interim = await renderHook(() => useStreamingStt(interimOptions));
+  const interimSession = await openReady(interim.result);
+  await emit(interimSession, { type: "transcript", text: "partial secret", isFinal: false });
+  await emit(interimSession, { type: "done", reason: "speech_end_timeout", hasSpeech: true, usage });
+  expect(interimOptions.sendTranscript).not.toHaveBeenCalled();
+  expect(interimOptions.onDiagnostic).toHaveBeenCalledWith("stt_auto_send_skipped", expect.objectContaining({
+    reason: "client_no_final_speech", finalChars: 0, interimChars: 14,
+  }));
+  expect(JSON.stringify(interimOptions.onDiagnostic.mock.calls)).not.toContain("partial secret");
+
+  const finalOptions = createOptions();
+  const final = await renderHook(() => useStreamingStt(finalOptions));
+  await finishSpeech(await openReady(final.result), "final secret");
+  expect(finalOptions.onDiagnostic).toHaveBeenCalledWith("stt_auto_send_dispatch", expect.objectContaining({ chars: 12 }));
+  expect(finalOptions.onDiagnostic).toHaveBeenCalledWith("stt_auto_send_accepted", expect.objectContaining({ current: true }));
+  expect(JSON.stringify(finalOptions.onDiagnostic.mock.calls)).not.toContain("final secret");
+});
+
+test("diagnostics record an auto-send rejection", async () => {
+  const options = createOptions();
+  options.sendTranscript.mockRejectedValueOnce(new Error("private send failure"));
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "speech");
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_auto_send_failed", expect.objectContaining({ current: true }));
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("private send failure");
 });
 
 test("abort during terminal teardown does not send a stale final or rearm", async () => {
@@ -243,6 +274,18 @@ test("abort during terminal teardown does not send a stale final or rearm", asyn
   expect(mockSessions).toHaveLength(1);
 });
 
+test("unmounting an active recording logs the interruption without transcript content", async () => {
+  const options = createOptions();
+  const hook = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(hook.result);
+  await emit(session, { type: "transcript", text: "private words", isFinal: false });
+  await hook.unmount();
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_unmounted", expect.objectContaining({
+    sessionOpen: true, listening: true,
+  }));
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("private words");
+});
+
 test("Runner error is terminal even if a late done arrives", async () => {
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));
@@ -251,6 +294,8 @@ test("Runner error is terminal even if a late done arrives", async () => {
   await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false, usage });
   expect(options.onError).toHaveBeenCalledTimes(1);
   expect(options.onUsage).not.toHaveBeenCalled();
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_runner_error", expect.any(Object));
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("認識できません");
   expect(result.current.active).toBe(false);
 });
 
@@ -262,6 +307,7 @@ test("delivers volume samples and handles transport errors, close, and invalid J
   expect(options.onSample).toHaveBeenCalledWith(0.4);
   await act(async () => { session.callbacks.onError("backpressure_exceeded"); });
   expect(options.onError).toHaveBeenCalledWith("backpressure_exceeded");
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_transport_error", expect.any(Object));
   expect(session.abort).toHaveBeenCalledTimes(1);
   expect(result.current.active).toBe(false);
 
@@ -270,12 +316,14 @@ test("delivers volume samples and handles transport errors, close, and invalid J
   const secondSession = await openReady(second.result);
   await act(async () => { secondSession.callbacks.onClose(); });
   expect(other.onError).toHaveBeenCalledWith(expect.stringContaining("接続が終了"));
+  expect(other.onDiagnostic).toHaveBeenCalledWith("stt_transport_closed_before_done", expect.any(Object));
 
   const thirdOptions = createOptions();
   const third = await renderHook(() => useStreamingStt(thirdOptions));
   const thirdSession = await openReady(third.result);
   await act(async () => { thirdSession.callbacks.onMessage("bad json"); });
   expect(thirdOptions.onError).toHaveBeenCalledWith(expect.stringContaining("不正な音声認識応答"));
+  expect(thirdOptions.onDiagnostic).toHaveBeenCalledWith("stt_invalid_runner_response", expect.any(Object));
   await emit(thirdSession, { type: "done", reason: "no_speech_timeout", hasSpeech: false, usage });
   await advanceTimers(250);
   expect(mockSessions).toHaveLength(3);

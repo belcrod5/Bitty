@@ -61,6 +61,7 @@ export function createMacosStreamingSttHandler({
     let pendingBytes = 0;
     let speechBegan = false;
     let finalHadText = false;
+    let finalChars = 0;
     let loudMs = 0;
     let silentMs = 0;
     let lastRms = null;
@@ -88,6 +89,7 @@ export function createMacosStreamingSttHandler({
     };
     const finishError = (code, message, retryable = false) => {
       if (terminal) return;
+      log.info?.("[stream-stt] macos_failed", { code, phase, inputEnded, endReason, finalHadText });
       send({ type: "error", code, message, retryable });
       terminal = true;
       clearTimers();
@@ -96,6 +98,12 @@ export function createMacosStreamingSttHandler({
     };
     const finishDone = () => {
       if (terminal) return;
+      log.info?.("[stream-stt] macos_done_attempted", {
+        reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"),
+        hasSpeech: finalHadText,
+        finalChars,
+        socketOpen: ws.readyState === 1,
+      });
       send({ type: "done", reason: endReason || (speechBegan ? "speech_end_timeout" : "no_speech_timeout"), hasSpeech: finalHadText });
       terminal = true;
       clearTimers();
@@ -148,7 +156,15 @@ export function createMacosStreamingSttHandler({
       if (message.type === "transcript" && (phase === "ready" || phase === "finalizing")
         && typeof message.text === "string" && typeof message.isFinal === "boolean") {
         if (message.text.trim()) beginSpeech();
-        if (message.isFinal && message.text.trim()) finalHadText = true;
+        if (message.isFinal) {
+          if (message.text.trim()) {
+            finalHadText = true;
+            finalChars += message.text.length;
+          }
+          log.info?.("[stream-stt] macos_final_transcript", {
+            chars: message.text.length, cumulativeChars: finalChars, inputEnded,
+          });
+        }
         send({ type: "transcript", text: message.text, isFinal: message.isFinal, stability: message.isFinal ? 1 : 0 });
         if (message.isFinal && !inputEnded) {
           send({ type: "speech_activity_end" });
@@ -273,6 +289,7 @@ export function createMacosStreamingSttHandler({
     });
     ws.on("close", () => {
       if (terminal) return;
+      log.info?.("[stream-stt] macos_closed_before_done", { phase, inputEnded, endReason, finalHadText, finalChars });
       terminal = true;
       clearTimers();
       closeChild();

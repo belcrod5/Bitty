@@ -1154,14 +1154,23 @@ export function ChatScreen({
   ]);
   const sendReplyTranscriptByPanel = useCallback((transcriptOverride?: string, onAccepted?: () => void) => {
     const text = (transcriptOverride ?? transcriptForView).trim();
-    if (!text || llmSessionRestoreLoadingForView || !hasRunnerWsEndpoint
-      || (replyLoadingForView && !codexCompactRunningForView)) return Promise.resolve();
+    const blockedReason = !text ? "empty_text"
+      : llmSessionRestoreLoadingForView ? "session_restoring"
+      : !hasRunnerWsEndpoint ? "runner_endpoint_missing"
+      : replyLoadingForView && !codexCompactRunningForView ? "reply_loading" : "";
+    if (blockedReason) {
+      if (onAccepted) logSessionDiag("stt_send_blocked", {
+        panelId, reason: blockedReason, chars: text.length,
+      }, { throttleMs: 0 });
+      return Promise.resolve();
+    }
     const options = onAccepted ? { onAccepted } : undefined;
     return usesPanelComposerState ? sendReplyTranscriptForPanel(panelId, text, options) : sendReplyTranscript(transcriptOverride, options);
   }, [
     codexCompactRunningForView,
     hasRunnerWsEndpoint,
     llmSessionRestoreLoadingForView,
+    logSessionDiag,
     panelId,
     replyLoadingForView,
     sendReplyTranscript,
@@ -1182,8 +1191,13 @@ export function ChatScreen({
       accepted = true;
       onAccepted();
     });
-    if (!accepted) throw new Error("streaming_stt_transcript_not_accepted");
-  }, [sendReplyTranscriptByPanel]);
+    if (!accepted) {
+      logSessionDiag("stt_send_returned_without_acceptance", {
+        panelId, chars: text.length,
+      }, { throttleMs: 0 });
+      throw new Error("streaming_stt_transcript_not_accepted");
+    }
+  }, [logSessionDiag, panelId, sendReplyTranscriptByPanel]);
   const reportStreamingSttError = useCallback((message: string) => {
     showChatBottomToast("assistant", message);
   }, [showChatBottomToast]);
@@ -1197,6 +1211,7 @@ export function ChatScreen({
     onUsage: handleStreamingSttUsage,
     onSample: handleStreamingSttSample,
     onError: reportStreamingSttError,
+    onDiagnostic: (event, payload) => logSessionDiag(event, { panelId, ...payload }, { throttleMs: 0 }),
     canStart: voiceInputAllowed,
     onSpeechBegin: onVoiceSpeechBegin,
     replyLoading: replyLoadingForView,

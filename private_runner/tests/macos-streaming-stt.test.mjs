@@ -58,6 +58,14 @@ test("macOS stream sends progressive transcript, detects silence, and completes 
   assert.equal(logs[0][0], "[stream-stt] macos_input_ended");
   assert.equal(logs[0][1].trigger, "pcm_silence");
   assert.equal(logs[0][1].silentMs, 2_000);
+  assert.deepEqual(logs.map(([event]) => event), [
+    "[stream-stt] macos_input_ended",
+    "[stream-stt] macos_final_transcript",
+    "[stream-stt] macos_done_attempted",
+  ]);
+  assert.equal(logs[1][1].cumulativeChars, "こんにちは。".length);
+  assert.equal(logs[2][1].hasSpeech, true);
+  assert.equal(JSON.stringify(logs).includes("こんにちは"), false);
 });
 
 test("quiet ongoing speech and short pauses do not end the macOS stream", async () => {
@@ -103,13 +111,28 @@ test("Apple final and user stop remain distinct terminal triggers", async () => 
     else ws.emit("message", Buffer.from('{"type":"stop"}'), false);
     await tick();
     assert.equal(child.ended, true);
-    assert.equal(logs.length, 1);
-    assert.equal(logs[0][1].trigger, trigger);
+    assert.equal(logs.filter(([event]) => event === "[stream-stt] macos_input_ended").length, 1);
+    assert.equal(logs.find(([event]) => event === "[stream-stt] macos_input_ended")[1].trigger, trigger);
     assert.equal(JSON.stringify(logs).includes("途中"), false);
     assert.equal(JSON.stringify(logs).includes("確定"), false);
     child.emit("close", 0);
     assert.equal(ws.sent.at(-1).reason, trigger === "apple_final" ? "speech_end_timeout" : "user_stop");
   }
+});
+
+test("macOS stream logs a close before done without recording transcript content", async () => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  const logs = [];
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: { info: (...entry) => logs.push(entry) } })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  child.emitMessage({ type: "transcript", text: "記録しない", isFinal: true });
+  ws.close();
+  assert.equal(logs.at(-1)[0], "[stream-stt] macos_closed_before_done");
+  assert.equal(logs.at(-1)[1].finalHadText, true);
+  assert.equal(JSON.stringify(logs).includes("記録しない"), false);
 });
 
 test("macOS speech permission failure is explicit and never falls back", async () => {
