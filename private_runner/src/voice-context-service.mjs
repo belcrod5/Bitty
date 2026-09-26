@@ -673,17 +673,19 @@ export function createVoiceContextService({ rootDir, createClient }) {
 
   return {
     async getSettings() {
+      await exclusive(load);
+      const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
       return exclusive(async () => {
         await load();
-        const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
         return { ...settings(), models };
       });
     },
     async configure(model, effort) {
+      await exclusive(load);
+      const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
       return exclusive(async () => {
         await load();
         if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
-        const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
         if (!models.some((option) => option.modelId === model && option.effortOptions.includes(effort))) {
           throw invalid("turn_rejected", "Voice model or effort is unavailable");
         }

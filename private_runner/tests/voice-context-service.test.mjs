@@ -6,10 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
+  const modelReleases = [];
   let summaryFailuresRemaining = failSummaryCount;
   const createClient = ({ signal } = {}) => {
     let listener = () => {};
@@ -37,12 +38,15 @@ function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0
           throw error;
         }
         if (method === "config/read") return { config: { mcp_servers: configuredMcpServers } };
-        if (method === "model/list") return { data: [
-          { model: "gpt-6-luna", displayName: "Luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
-          { model: "another-model", displayName: "Another", supportedReasoningEfforts: [
-            { reasoningEffort: "medium" }, { reasoningEffort: "high" },
-          ] },
-        ], nextCursor: null };
+        if (method === "model/list") {
+          if (holdModelList) await new Promise((resolve) => modelReleases.push(resolve));
+          return { data: [
+            { model: "gpt-6-luna", displayName: "Luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+            { model: "another-model", displayName: "Another", supportedReasoningEfforts: [
+              { reasoningEffort: "medium" }, { reasoningEffort: "high" },
+            ] },
+          ], nextCursor: null };
+        }
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
           return { thread: { id: randomUUID(), ephemeral } };
@@ -77,7 +81,7 @@ function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0
       },
     };
   };
-  return { createClient, calls, releases, summaryReleases };
+  return { createClient, calls, releases, summaryReleases, modelReleases };
 }
 
 async function waitFor(check) {
@@ -93,6 +97,7 @@ async function fixture(t, options = {}) {
   const rootDir = path.join(temp, "voice-data");
   const codex = fakeCodex(options);
   t.after(async () => {
+    for (const release of codex.modelReleases.splice(0)) release();
     for (const finish of codex.releases.splice(0)) finish();
     for (const finish of codex.summaryReleases.splice(0)) finish();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -168,6 +173,35 @@ test("voice settings use the live catalog, validate effort, and survive restart"
   const turns = codex.calls.filter(({ method }) => method === "turn/start");
   assert.equal(turns.at(-1).params.model, "another-model");
   assert.equal(turns.at(-1).params.effort, "high");
+});
+
+test("a slow model catalog read does not hold the voice event queue", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdModelList: true });
+  const reading = service.getSettings();
+  await waitFor(() => codex.modelReleases.length === 1);
+  const id = randomUUID();
+  const turn = complete(service, conversation, "while settings load", id);
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  await waitFor(async () => (await service.status(conversation.logicalConversationId, id)).status === "completed");
+  assert.equal((await service.open()).logicalConversationId, conversation.logicalConversationId);
+  assert.equal((await turn).result.status, "completed");
+  codex.modelReleases.shift()();
+  assert.equal((await reading).model, "gpt-6-luna");
+});
+
+test("a turn can start during catalog discovery and blocks the pending settings save", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdModelList: true, holdTurns: true });
+  const configuring = service.configure("another-model", "high");
+  await waitFor(() => codex.modelReleases.length === 1);
+  const id = randomUUID();
+  const turn = complete(service, conversation, "while model list waits", id);
+  await waitFor(() => codex.releases.length === 1);
+  assert.equal((await service.status(conversation.logicalConversationId, id)).status, "running");
+  codex.modelReleases.shift()();
+  await assert.rejects(configuring, { code: "session_busy" });
+  codex.releases.shift()();
+  assert.equal((await turn).result.status, "completed");
+  assert.notEqual((await service.open()).estimatedContextUsagePercent, null);
 });
 
 test("clearing memory retains all completed messages for later context", async (t) => {
