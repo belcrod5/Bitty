@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { codexTurnEventMatches, extractCodexAgentMessageText } from "./codex-turn-execution.mjs";
+import { promisify } from "node:util";
+import { codexTurnEventMatches, extractCodexAgentMessageText, listCodexModelsFromAppServer } from "./codex-turn-execution.mjs";
 
 const CONTEXT_MODE = "self_context_array";
-const MODEL = "gpt-6-luna";
-const EFFORT = "low";
+const DEFAULT_MODEL = "gpt-6-luna";
+const DEFAULT_EFFORT = "low";
 const MODEL_CONTEXT_TOKENS = 1_050_000;
 // UTF-8 bytes bound text tokens conservatively; leave room for App Server instructions and output.
 const MAX_VISIBLE_BYTES = 800_000;
@@ -28,6 +30,28 @@ const SUMMARY_CONFIG = {
 const bytes = (value) => Buffer.byteLength(value, "utf8");
 const invalid = (code, message, voiceReason) => Object.assign(new Error(message), { code, voiceReason });
 const isRecord = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+const git = promisify(execFile);
+
+async function ensureVoiceGitRoot(directory) {
+  const gitDirectory = path.join(directory, ".git");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  let stat;
+  try { stat = await fs.lstat(gitDirectory); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    try { await git("git", ["-C", directory, "init", "--quiet", "--template="], { env }); }
+    catch { throw invalid("voice_store_unavailable", "Voice Git root could not be initialized"); }
+    stat = await fs.lstat(gitDirectory);
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()
+    || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+    throw invalid("voice_store_corrupt", "Voice Git root is invalid");
+  }
+  let root;
+  try { ({ stdout: root } = await git("git", ["-C", directory, "rev-parse", "--show-toplevel"], { env })); }
+  catch { throw invalid("voice_store_corrupt", "Voice Git root is invalid"); }
+  if (path.resolve(root.trim()) !== directory) throw invalid("voice_store_corrupt", "Voice Git root is invalid");
+}
 
 async function atomicWrite(file, content) {
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -137,6 +161,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
   const root = path.resolve(rootDir);
   const tempRoot = path.join(path.dirname(root), "ephemeral-tmp");
   const workspaceRoot = path.join(path.dirname(root), "workspaces");
+  const summaryWorkspace = path.join(path.dirname(root), "summary-workspace");
   const activeFile = path.join(root, "active.json");
   let loaded = false;
   let active;
@@ -151,6 +176,26 @@ export function createVoiceContextService({ rootDir, createClient }) {
   let summaryRetryTimer = null;
   let summaryFailures = 0;
   let serial = Promise.resolve();
+
+  function settings() {
+    return { model: active.model || DEFAULT_MODEL, effort: active.effort || DEFAULT_EFFORT };
+  }
+
+  async function clearPreviousConversation() {
+    if (!active.previousConversationId) return;
+    const previous = path.join(root, active.previousConversationId);
+    const exists = await fs.lstat(previous).then(() => true, (error) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    });
+    if (exists) {
+      await ownedDirectory(previous, false);
+      await fs.rm(previous, { recursive: true });
+    }
+    const { previousConversationId, ...current } = active;
+    await atomicWrite(activeFile, JSON.stringify(current));
+    active = current;
+  }
 
   async function ownedDirectory(directory, create = true) {
     let stat;
@@ -196,6 +241,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
   async function load() {
     if (loaded) {
       if (storeFailure) throw storeFailure;
+      await clearPreviousConversation();
       return;
     }
     let rootExisted = true;
@@ -214,14 +260,19 @@ export function createVoiceContextService({ rootDir, createClient }) {
     await fs.mkdir(root, { recursive: true, mode: 0o700 });
     await syncDirectory(parent);
     await fs.chmod(root, 0o700);
-    await ownedDirectory(tempRoot);
-    for (const name of await fs.readdir(tempRoot)) {
-      if (!/^summary-[A-Za-z0-9]{6}$/.test(name)) continue;
-      const candidate = path.join(tempRoot, name);
-      const stat = await fs.lstat(candidate);
-      if (stat.isDirectory() && !stat.isSymbolicLink()
-        && (typeof process.getuid !== "function" || stat.uid === process.getuid())) {
-        await fs.rm(candidate, { recursive: true });
+    if (await fs.lstat(tempRoot).then(() => true, (error) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    })) {
+      await ownedDirectory(tempRoot, false);
+      for (const name of await fs.readdir(tempRoot)) {
+        if (!/^summary-[A-Za-z0-9]{6}$/.test(name)) continue;
+        const candidate = path.join(tempRoot, name);
+        const stat = await fs.lstat(candidate);
+        if (stat.isDirectory() && !stat.isSymbolicLink()
+          && (typeof process.getuid !== "function" || stat.uid === process.getuid())) {
+          await fs.rm(candidate, { recursive: true });
+        }
       }
     }
     let fresh = false;
@@ -235,11 +286,16 @@ export function createVoiceContextService({ rootDir, createClient }) {
       active = { logicalConversationId: randomUUID(), contextMode: CONTEXT_MODE };
     }
     if (!UUID.test(active?.logicalConversationId) || active?.contextMode !== CONTEXT_MODE
-      || (active.workspaceInitialized !== undefined && active.workspaceInitialized !== true)) {
+      || (active.workspaceInitialized !== undefined && active.workspaceInitialized !== true)
+      || (active.workspaceConversationId !== undefined && !UUID.test(active.workspaceConversationId))
+      || (active.previousConversationId !== undefined && (!UUID.test(active.previousConversationId)
+        || active.previousConversationId === active.logicalConversationId))
+      || (active.model !== undefined && (typeof active.model !== "string" || !active.model))
+      || (active.effort !== undefined && (typeof active.effort !== "string" || !active.effort))) {
       throw invalid("voice_store_corrupt", "Voice active conversation is invalid");
     }
     await ownedDirectory(workspaceRoot, !active.workspaceInitialized);
-    const workspace = await ownedDirectory(path.join(workspaceRoot, active.logicalConversationId), !active.workspaceInitialized);
+    const workspace = await ownedDirectory(path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId), !active.workspaceInitialized);
     if (!active.workspaceInitialized) {
       await syncDirectory(workspace);
       await syncDirectory(workspaceRoot);
@@ -295,10 +351,13 @@ export function createVoiceContextService({ rootDir, createClient }) {
       active.workspaceInitialized = true;
       await atomicWrite(activeFile, JSON.stringify(active));
     }
+    await ensureVoiceGitRoot(await fs.realpath(workspace));
+    await ensureVoiceGitRoot(await fs.realpath(await ownedDirectory(summaryWorkspace)));
     for (const state of byId.values()) {
       if (state.status === "accepted") await append(state.clientOperationId, "preflight_failed", { code: "runner_restarted_before_dispatch" });
     }
     loaded = true;
+    await clearPreviousConversation();
     queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
   }
 
@@ -309,7 +368,9 @@ export function createVoiceContextService({ rootDir, createClient }) {
     // Text bytes are an upper bound on text tokens, excluding App Server's own hidden input.
     const estimatedTokens = visibleBytes(remaining, memory, latestInput);
     return {
-      estimatedContextUsagePercent: Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)),
+      estimatedContextUsagePercent: settings().model === DEFAULT_MODEL
+        ? Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)) : null,
+      storedMessageCount: byId.size + pairs.length,
       unsummarizedMessageCount: remaining.length * 2,
       memoryCharacterCount: Array.from(memory).length,
     };
@@ -332,6 +393,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
 
   async function modelTurn({ input, items, instructions, onStarted, onApproval, signal }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice summary was cancelled");
+    const { model, effort } = settings();
     if (onApproval) {
       const parentStat = await fs.lstat(path.dirname(root));
       if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
@@ -340,19 +402,18 @@ export function createVoiceContextService({ rootDir, createClient }) {
       await ownedDirectory(workspaceRoot, false);
     }
     const directory = onApproval
-      ? await ownedDirectory(path.join(workspaceRoot, active.logicalConversationId), false)
-      : await fs.mkdtemp(path.join(tempRoot, "summary-"));
-    if (!onApproval) await fs.chmod(directory, 0o700);
-    const cwd = await fs.realpath(directory);
-    if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.logicalConversationId)) {
-      throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
-    }
+      ? await ownedDirectory(path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId), false)
+      : await ownedDirectory(summaryWorkspace, false);
     let client;
     let stage = "client_open";
     let removeListener = () => {};
     let removeServerRequestHandler = () => {};
     let resolveIdentity;
     try {
+      const cwd = await fs.realpath(directory);
+      if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.workspaceConversationId || active.logicalConversationId)) {
+        throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
+      }
       client = createClient({ signal });
       await client.openPromise;
       stage = "initialize";
@@ -377,7 +438,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         approvalPolicy: onApproval ? "on-request" : "never",
         sandbox: onApproval ? "workspace-write" : "read-only",
         experimentalRawEvents: false, persistExtendedHistory: false,
-        model: MODEL, ...(onApproval ? {} : { config: summaryConfig }), developerInstructions: instructions,
+        model, ...(onApproval ? {} : { config: summaryConfig }), developerInstructions: instructions,
       }, 30000);
       const threadId = started?.thread?.id;
       if (typeof threadId !== "string" || !threadId || started.thread.ephemeral !== true) {
@@ -456,7 +517,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       const completion = client.waitForTurnCompletion();
       const turn = await client.request("turn/start", {
         threadId, input: [{ type: "text", text: input }], cwd,
-        model: MODEL, effort: EFFORT, approvalPolicy: onApproval ? "on-request" : "never",
+        model, effort, approvalPolicy: onApproval ? "on-request" : "never",
         ...(!onApproval ? { sandboxPolicy: { type: "readOnly", networkAccess: false } } : {}),
       }, 30000);
       const turnId = turn?.turn?.id;
@@ -495,7 +556,6 @@ export function createVoiceContextService({ rootDir, createClient }) {
       removeListener();
       removeServerRequestHandler();
       client?.close();
-      if (!onApproval) await fs.rm(directory, { recursive: true, force: true });
     }
   }
 
@@ -581,6 +641,18 @@ export function createVoiceContextService({ rootDir, createClient }) {
       });
   }
 
+  function cancelSummary() {
+    if (summaryTask) {
+      summaryTask.controller.abort();
+      summaryTask = null;
+    }
+    if (summaryRetryTimer) {
+      clearTimeout(summaryRetryTimer);
+      summaryRetryTimer = null;
+    }
+    summaryFailures = 0;
+  }
+
   async function runTurn(clientOperationId, input, notify, onApproval) {
     let stage = "preflight";
     try {
@@ -631,6 +703,83 @@ export function createVoiceContextService({ rootDir, createClient }) {
   }
 
   return {
+    async getSettings() {
+      await exclusive(load);
+      const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
+      return exclusive(async () => {
+        await load();
+        return { ...settings(), ...usage(), models };
+      });
+    },
+    async configure(model, effort) {
+      await exclusive(load);
+      const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
+      return exclusive(async () => {
+        await load();
+        if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
+        if (!models.some((option) => option.modelId === model && option.effortOptions.includes(effort))) {
+          throw invalid("turn_rejected", "Voice model or effort is unavailable");
+        }
+        cancelSummary();
+        try { await atomicWrite(activeFile, JSON.stringify({ ...active, model, effort })); }
+        catch {
+          storeFailure = invalid("voice_store_unavailable", "Voice settings could not be synced");
+          throw storeFailure;
+        }
+        active = { ...active, model, effort };
+        queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
+        return { ...settings(), models };
+      });
+    },
+    async clearMemory() {
+      return exclusive(async () => {
+        await load();
+        if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
+        cancelSummary();
+        const directory = path.join(root, active.logicalConversationId);
+        try { await atomicWrite(path.join(directory, "MEMORY.md"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n"); }
+        catch {
+          storeFailure = invalid("voice_store_unavailable", "Voice memory could not be synced");
+          throw storeFailure;
+        }
+        memory = "";
+        summarizedThroughPair = 0;
+        await fs.rm(path.join(directory, "memory-pending.json"), { force: true });
+        queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
+        return { logicalConversationId: active.logicalConversationId, ...usage() };
+      });
+    },
+    async clearMessages() {
+      return exclusive(async () => {
+        await load();
+        if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
+        cancelSummary();
+        const previousConversationId = active.logicalConversationId;
+        const logicalConversationId = randomUUID();
+        const directory = path.join(root, logicalConversationId);
+        await fs.mkdir(directory, { mode: 0o700 });
+        await atomicWrite(path.join(directory, "events.jsonl"), "");
+        await atomicWrite(path.join(directory, "MEMORY.md"), `<!-- voice-context:v1 summarizedThroughPair=0 -->\n${memory}`);
+        await syncDirectory(root);
+        const next = {
+          ...active, logicalConversationId,
+          workspaceConversationId: active.workspaceConversationId || previousConversationId,
+          previousConversationId,
+        };
+        try { await atomicWrite(activeFile, JSON.stringify(next)); }
+        catch {
+          storeFailure = invalid("voice_store_unavailable", "Voice conversation switch could not be synced");
+          throw storeFailure;
+        }
+        active = next;
+        events = [];
+        byId = new Map();
+        pairs = [];
+        summarizedThroughPair = 0;
+        await clearPreviousConversation();
+        return { logicalConversationId, ...usage() };
+      });
+    },
     async open() {
       return exclusive(async () => {
         await load();
@@ -673,15 +822,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         }
         if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
         if (typeof onApproval !== "function") throw invalid("turn_rejected", "Voice approval channel is unavailable");
-        if (summaryTask) {
-          summaryTask.controller.abort();
-          summaryTask = null;
-        }
-        if (summaryRetryTimer) {
-          clearTimeout(summaryRetryTimer);
-          summaryRetryTimer = null;
-        }
-        summaryFailures = 0;
+        cancelSummary();
         await append(id, "accepted", { text });
         inFlightId = id;
         queueMicrotask(() => void runTurn(id, text, notify, onApproval));

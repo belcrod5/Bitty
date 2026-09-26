@@ -94,6 +94,24 @@ test("sends one final text block and reads aloud only after a completed turn", a
   });
 });
 
+test("drops the prior reply when message clear rotates the conversation ID", async () => {
+  const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op !== "voice.open") throw new Error(`unexpected ${op}`);
+    return { op: "voice.open.result", payload: {
+      logicalConversationId: mockSnapshot.generation === 1 ? conversationId : nextConversationId,
+      contextMode: "self_context_array", ...initialStats,
+      ...(mockSnapshot.generation === 1 ? { clientOperationId: operationId, status: "completed", text: "old reply" } : {}),
+    } };
+  });
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.reply?.text).toBe("old reply"));
+  mockSnapshot = { connected: true, generation: 2 };
+  await rerender(undefined);
+  await waitFor(() => expect(result.current.reply).toBeNull());
+  expect(result.current.turnStatus).toBe("idle");
+});
+
 test("checks status and resends the same operation only after not_found", async () => {
   let starts = 0;
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
@@ -260,7 +278,7 @@ test("updates voice-only stats on failure and reconnect", async () => {
   await waitFor(() => expect(result.current.contextStats).toEqual(currentStats));
 });
 
-test("refreshes a pending summary, then stops polling after its count falls", async () => {
+test("refreshes a pending summary and keeps checking for a conversation reset", async () => {
   jest.useFakeTimers();
   try {
     let unsummarizedMessageCount = 22;
@@ -279,7 +297,7 @@ test("refreshes a pending summary, then stops polling after its count falls", as
     expect(result.current.contextStats?.unsummarizedMessageCount).toBe(20);
     expect(mockManager.request).toHaveBeenCalledTimes(2);
     await act(async () => { await jest.advanceTimersByTimeAsync(30000); });
-    expect(mockManager.request).toHaveBeenCalledTimes(2);
+    expect(mockManager.request).toHaveBeenCalledTimes(4);
   } finally {
     cleanup();
     jest.useRealTimers();
@@ -443,7 +461,7 @@ test("retries a failed initial open while the socket remains connected", async (
     expect(result.current.contextStats).toEqual(initialStats);
     expect(opens).toBe(2);
     await act(async () => { await jest.advanceTimersByTimeAsync(30000); });
-    expect(opens).toBe(2);
+    expect(opens).toBe(4);
   } finally {
     cleanup();
     jest.useRealTimers();

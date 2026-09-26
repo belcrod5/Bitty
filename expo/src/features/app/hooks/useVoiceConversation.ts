@@ -163,6 +163,10 @@ export function useVoiceConversation(
         setError(message);
         return;
       }
+      if (conversationIdRef.current && conversationIdRef.current !== conversationId) {
+        setReply(null);
+        setTurnStatus("idle");
+      }
       conversationIdRef.current = conversationId;
       const stats = contextStatsOf(openPayload);
       setContextStats((current) => sameContextStats(current, stats) ? current : stats);
@@ -252,10 +256,9 @@ export function useVoiceConversation(
   useEffect(() => {
     if (!connected) return;
     const pending = turnStatus === "sending" || turnStatus === "accepted" || turnStatus === "running";
-    if (!pending && logicalConversationId && (contextStats?.unsummarizedMessageCount ?? 0) <= 20) return;
     const timer = setInterval(() => void sync(), pending ? 5000 : 15000);
     return () => clearInterval(timer);
-  }, [connected, contextStats?.unsummarizedMessageCount, logicalConversationId, sync, turnStatus]);
+  }, [connected, sync, turnStatus]);
 
   useEffect(() => {
     aliveRef.current = true;

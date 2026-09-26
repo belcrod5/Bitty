@@ -5,6 +5,7 @@ import { ConnectionSettings } from "../components/ConnectionSettings";
 import { SpeechSettings } from "../components/SpeechSettings";
 import { CodexAccountSettings } from "../components/CodexAccountSettings";
 import { GoogleCloudSettings } from "../components/GoogleCloudSettings";
+import { VoiceConversationSettings } from "../components/VoiceConversationSettings";
 import { useAppShell } from "../contexts/AppShellContext";
 import { BUILD_STAMP } from "../buildStamp";
 import { useAppStyles } from "../styles";
@@ -57,6 +58,7 @@ export function SettingsScreen() {
       </View>
       <ConnectionSettings />
       <SpeechSettings />
+      <VoiceConversationSettings />
       <GoogleCloudSettings />
       <CodexAccountSettings />
       <View style={styles.settingsSection}>

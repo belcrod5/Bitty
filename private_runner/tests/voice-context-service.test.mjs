@@ -6,10 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
+  const modelReleases = [];
   let summaryFailuresRemaining = failSummaryCount;
   const createClient = ({ signal } = {}) => {
     let listener = () => {};
@@ -37,6 +38,15 @@ function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0
           throw error;
         }
         if (method === "config/read") return { config: { mcp_servers: configuredMcpServers } };
+        if (method === "model/list") {
+          if (holdModelList) await new Promise((resolve) => modelReleases.push(resolve));
+          return { data: [
+            { model: "gpt-6-luna", displayName: "Luna", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+            { model: "another-model", displayName: "Another", supportedReasoningEfforts: [
+              { reasoningEffort: "medium" }, { reasoningEffort: "high" },
+            ] },
+          ], nextCursor: null };
+        }
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
           return { thread: { id: randomUUID(), ephemeral } };
@@ -71,7 +81,7 @@ function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0
       },
     };
   };
-  return { createClient, calls, releases, summaryReleases };
+  return { createClient, calls, releases, summaryReleases, modelReleases };
 }
 
 async function waitFor(check) {
@@ -87,6 +97,7 @@ async function fixture(t, options = {}) {
   const rootDir = path.join(temp, "voice-data");
   const codex = fakeCodex(options);
   t.after(async () => {
+    for (const release of codex.modelReleases.splice(0)) release();
     for (const finish of codex.releases.splice(0)) finish();
     for (const finish of codex.summaryReleases.splice(0)) finish();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -129,10 +140,12 @@ test("voice turns persist before acknowledgement and replay without generation",
   assert.equal(accepted.status, "accepted");
   assert.equal(typeof accepted.estimatedContextUsagePercent, "number");
   assert.equal(accepted.unsummarizedMessageCount, 0);
+  assert.equal(accepted.storedMessageCount, 1);
   assert.equal(accepted.memoryCharacterCount, 0);
   assert.equal(result.status, "completed");
   assert.equal(result.text, "answer");
   assert.equal(result.unsummarizedMessageCount, 2);
+  assert.equal(result.storedMessageCount, 2);
   assert.equal((await service.open()).unsummarizedMessageCount, 2);
   const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
   const events = (await fs.readFile(eventFile, "utf8")).trim().split("\n").map(JSON.parse);
@@ -147,6 +160,165 @@ test("voice turns persist before acknowledgement and replay without generation",
   assert.equal((await reopened.status(conversation.logicalConversationId, message.operationId)).text, "answer");
 });
 
+test("voice settings use the live catalog, validate effort, and survive restart", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t);
+  const initial = await service.getSettings();
+  assert.deepEqual([initial.model, initial.effort], ["gpt-6-luna", "low"]);
+  assert.deepEqual(initial.models.map((model) => model.modelId), ["gpt-6-luna", "another-model"]);
+  await assert.rejects(service.configure("another-model", "low"), { code: "turn_rejected" });
+  await assert.rejects(service.configure("unknown-model", "high"), { code: "turn_rejected" });
+  await service.configure("another-model", "high");
+  assert.equal((await service.open()).estimatedContextUsagePercent, null);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.deepEqual(((await restarted.getSettings()).model), "another-model");
+  assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
+  const turns = codex.calls.filter(({ method }) => method === "turn/start");
+  assert.equal(turns.at(-1).params.model, "another-model");
+  assert.equal(turns.at(-1).params.effort, "high");
+});
+
+test("settings count every stored user text and completed reply, including failed turns", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { ephemeral: false });
+  await seedPairs(rootDir, conversation.logicalConversationId, 2);
+  await fs.writeFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"),
+    "<!-- voice-context:v1 summarizedThroughPair=1 -->\n記憶🙂");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const initial = await service.getSettings();
+  assert.equal(initial.storedMessageCount, 4);
+  assert.equal(initial.unsummarizedMessageCount, 2);
+  assert.equal(initial.memoryCharacterCount, 3);
+  assert.notEqual((await complete(service, conversation, "failed request")).result.status, "completed");
+  assert.equal((await service.getSettings()).storedMessageCount, 5);
+  const memoryCleared = await service.clearMemory();
+  assert.equal(memoryCleared.storedMessageCount, 5);
+  assert.equal(memoryCleared.memoryCharacterCount, 0);
+  const messagesCleared = await service.clearMessages();
+  assert.equal(messagesCleared.storedMessageCount, 0);
+  assert.equal(messagesCleared.memoryCharacterCount, 0);
+});
+
+test("a slow model catalog read does not hold the voice event queue", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdModelList: true });
+  const reading = service.getSettings();
+  await waitFor(() => codex.modelReleases.length === 1);
+  const id = randomUUID();
+  const turn = complete(service, conversation, "while settings load", id);
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  await waitFor(async () => (await service.status(conversation.logicalConversationId, id)).status === "completed");
+  assert.equal((await service.open()).logicalConversationId, conversation.logicalConversationId);
+  assert.equal((await turn).result.status, "completed");
+  codex.modelReleases.shift()();
+  const settings = await reading;
+  assert.equal(settings.model, "gpt-6-luna");
+  assert.equal(settings.storedMessageCount, 2);
+});
+
+test("a turn can start during catalog discovery and blocks the pending settings save", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdModelList: true, holdTurns: true });
+  const configuring = service.configure("another-model", "high");
+  await waitFor(() => codex.modelReleases.length === 1);
+  const id = randomUUID();
+  const turn = complete(service, conversation, "while model list waits", id);
+  await waitFor(() => codex.releases.length === 1);
+  assert.equal((await service.status(conversation.logicalConversationId, id)).status, "running");
+  codex.modelReleases.shift()();
+  await assert.rejects(configuring, { code: "session_busy" });
+  codex.releases.shift()();
+  assert.equal((await turn).result.status, "completed");
+  assert.notEqual((await service.open()).estimatedContextUsagePercent, null);
+});
+
+test("clearing memory retains all completed messages for later context", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 3);
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=2 -->\nold summary");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await service.clearMemory()).unsummarizedMessageCount, 6);
+  assert.equal(await fs.readFile(memoryFile, "utf8"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  assert.equal((await complete(service, conversation, "next")).result.status, "completed");
+  const injected = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
+  assert.deepEqual(injected.filter((item) => item.role === "user").map((item) => item.content[0].text),
+    ["user-1", "user-2", "user-3"]);
+  assert.equal(injected.some((item) => item.content[0].text.includes("old summary")), false);
+});
+
+test("clearing messages rotates the operation namespace, preserves memory and workspace, and removes old data", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  const { message } = await complete(createVoiceContextService({ rootDir, createClient: codex.createClient }), conversation, "hello");
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=1 -->\nremember this");
+  const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+  await fs.writeFile(path.join(workspace, "keep.txt"), "keep");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const cleared = await service.clearMessages();
+  assert.notEqual(cleared.logicalConversationId, conversation.logicalConversationId);
+  assert.equal(cleared.unsummarizedMessageCount, 0);
+  assert.equal(cleared.storedMessageCount, 0);
+  assert.equal(cleared.memoryCharacterCount, "remember this".length);
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId)).then(() => true, () => false), false);
+  assert.equal(await fs.readFile(path.join(workspace, "keep.txt"), "utf8"), "keep");
+  await assert.rejects(service.start(message, () => {}, async () => "decline"), { code: "turn_rejected" });
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.open()).logicalConversationId, cleared.logicalConversationId);
+  assert.equal(await fs.readFile(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md"), "utf8"),
+    "<!-- voice-context:v1 summarizedThroughPair=0 -->\nremember this");
+  assert.equal((await complete(restarted, cleared, "next")).result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items[0].content[0].text,
+    "Previous conversation summary:\nremember this");
+});
+
+test("clears and model changes reject an active voice turn", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true });
+  const running = complete(service, conversation, "wait");
+  await waitFor(() => codex.releases.length === 1);
+  await assert.rejects(service.clearMemory(), { code: "session_busy" });
+  await assert.rejects(service.clearMessages(), { code: "session_busy" });
+  await assert.rejects(service.configure("another-model", "high"), { code: "session_busy" });
+  codex.releases.shift()();
+  assert.equal((await running).result.status, "completed");
+});
+
+test("a canceled summary cannot write after message clear", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { holdSummaries: true, ignoreAbort: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(() => codex.summaryReleases.length === 1);
+  const cleared = await service.clearMessages();
+  codex.summaryReleases.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(await fs.readFile(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md"), "utf8"),
+    "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  assert.equal((await service.open()).unsummarizedMessageCount, 0);
+});
+
+test("restart completes a committed message clear before opening the new conversation", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  const nextId = randomUUID();
+  const nextDirectory = path.join(rootDir, nextId);
+  await fs.mkdir(nextDirectory);
+  await fs.writeFile(path.join(nextDirectory, "events.jsonl"), "");
+  await fs.writeFile(path.join(nextDirectory, "MEMORY.md"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  await fs.writeFile(path.join(rootDir, "active.json"), JSON.stringify({
+    logicalConversationId: nextId, contextMode: "self_context_array", workspaceInitialized: true,
+    workspaceConversationId: conversation.logicalConversationId,
+    previousConversationId: conversation.logicalConversationId,
+  }));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.open()).logicalConversationId, nextId);
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId)).then(() => true, () => false), false);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).previousConversationId, undefined);
+  await fs.writeFile(path.join(rootDir, "active.json"), JSON.stringify({
+    logicalConversationId: nextId, contextMode: "self_context_array", workspaceInitialized: true,
+    workspaceConversationId: conversation.logicalConversationId,
+    previousConversationId: conversation.logicalConversationId,
+  }));
+  const interruptedAfterRemoval = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await interruptedAfterRemoval.open()).logicalConversationId, nextId);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).previousConversationId, undefined);
+});
+
 test("response files survive turns and restart in a conversation-owned workspace", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t, { holdTurns: true });
   const first = complete(service, conversation, "create a file");
@@ -157,6 +329,7 @@ test("response files survive turns and restart in a conversation-owned workspace
   assert.equal(firstStart.cwd.startsWith(rootDir + path.sep), false);
   assert.equal(firstStart.cwd.includes("ephemeral-tmp"), false);
   assert.equal((await fs.stat(workspace)).mode & 0o777, 0o700);
+  assert.equal((await fs.stat(path.join(workspace, ".git"))).isDirectory(), true);
   await fs.writeFile(path.join(workspace, "saved.txt"), "persistent conversation file");
   codex.releases.shift()();
   assert.equal((await first).result.status, "completed");
@@ -173,22 +346,90 @@ test("response files survive turns and restart in a conversation-owned workspace
   assert.equal(await fs.readFile(path.join(workspace, "saved.txt"), "utf8"), "persistent conversation file");
 });
 
-test("summary uses a disposable read-only directory outside the conversation workspace", async (t) => {
+test("summary reuses a separate read-only workspace across runs and restart", async (t) => {
   const { rootDir, codex, conversation } = await fixture(t, { holdSummaries: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
   const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+  const summaryWorkspace = path.join(path.dirname(rootDir), "summary-workspace");
   await fs.writeFile(path.join(workspace, "saved.txt"), "keep");
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
   await waitFor(() => codex.summaryReleases.length === 1);
   const summary = codex.calls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").params;
   assert.equal(summary.sandbox, "read-only");
-  assert.match(summary.cwd, /\/ephemeral-tmp\/summary-[A-Za-z0-9]{6}$/);
-  assert.equal(await fs.stat(summary.cwd).then(() => true, () => false), true);
+  assert.equal(summary.cwd, await fs.realpath(summaryWorkspace));
+  assert.notEqual(summary.cwd, await fs.realpath(workspace));
+  assert.equal((await fs.stat(path.join(summary.cwd, ".git"))).isDirectory(), true);
   codex.summaryReleases.shift()();
-  await waitFor(async () => !(await fs.stat(summary.cwd).then(() => true, () => false)));
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=1"));
+  await complete(service, conversation, "next pair");
+  await waitFor(() => codex.summaryReleases.length === 1);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").at(-1).params.cwd, summary.cwd);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=2"));
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await restarted.open();
+  await complete(restarted, conversation, "after restart");
+  await waitFor(() => codex.summaryReleases.length === 1);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").at(-1).params.cwd, summary.cwd);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=3"));
+  assert.equal((await fs.stat(summary.cwd)).isDirectory(), true);
   assert.equal(await fs.readFile(path.join(workspace, "saved.txt"), "utf8"), "keep");
 });
+
+test("invalid summary Git root fails at load without deleting the workspace", async (t) => {
+  const { rootDir, codex } = await fixture(t);
+  const summaryWorkspace = path.join(path.dirname(rootDir), "summary-workspace");
+  await fs.rm(path.join(summaryWorkspace, ".git"), { recursive: true });
+  await fs.writeFile(path.join(summaryWorkspace, ".git"), "invalid");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await assert.rejects(restarted.open(), { code: "voice_store_corrupt" });
+  assert.equal(await fs.readFile(path.join(summaryWorkspace, ".git"), "utf8"), "invalid");
+  assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
+});
+
+test("existing voice files survive one-time Git initialization on restart", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t);
+  const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+  await fs.rm(path.join(workspace, ".git"), { recursive: true });
+  await fs.writeFile(path.join(workspace, "keep.txt"), "existing file");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await restarted.open();
+  assert.equal((await fs.stat(path.join(workspace, ".git"))).isDirectory(), true);
+  assert.equal(await fs.readFile(path.join(workspace, "keep.txt"), "utf8"), "existing file");
+  assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
+});
+
+test("voice sends and summaries do not check Git again after load", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdSummaries: true });
+  const lstat = fs.lstat.bind(fs);
+  t.mock.method(fs, "lstat", async (file, ...args) => {
+    if (path.basename(String(file)) === ".git") throw new Error("unexpected per-turn Git check");
+    return lstat(file, ...args);
+  });
+  for (let number = 1; number <= 11; number++) {
+    assert.equal((await complete(service, conversation, `user-${number}`)).result.status, "completed");
+  }
+  await waitFor(() => codex.summaryReleases.length === 1);
+  codex.summaryReleases.shift()();
+});
+
+for (const kind of ["file", "symlink", "directory"]) {
+  test(`invalid ${kind} Git root blocks voice load`, async (t) => {
+    const { rootDir, conversation, codex } = await fixture(t);
+    const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
+    const gitDirectory = path.join(workspace, ".git");
+    await fs.rm(gitDirectory, { recursive: true });
+    if (kind === "file") await fs.writeFile(gitDirectory, "invalid");
+    else if (kind === "symlink") await fs.symlink(path.dirname(rootDir), gitDirectory);
+    else await fs.mkdir(gitDirectory);
+    const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+    await assert.rejects(restarted.open(), { code: "voice_store_corrupt" });
+    assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
+  });
+}
 
 for (const target of ["root", "conversation"]) {
   test(`symlinked ${target} workspace is rejected without following it`, async (t) => {
@@ -691,7 +932,9 @@ test("50+ messages stay ordered until durable summary; canceled stale result can
   await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=16"));
   firstSummary();
   await new Promise((resolve) => setTimeout(resolve, 5));
-  await waitFor(async () => !(await fs.stat(staleSummaryCwd).then(() => true, () => false)));
+  assert.equal((await fs.stat(staleSummaryCwd)).isDirectory(), true);
+  assert.ok(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never")
+    .every(({ params }) => params.cwd === staleSummaryCwd));
   assert.match(await fs.readFile(memoryFile, "utf8"), /summarizedThroughPair=16/);
   const next = await complete(service, conversation, "user-27");
   assert.equal(next.result.status, "completed");
@@ -728,10 +971,11 @@ test("a 20-to-50-plus message burst never waits for a held summary or omits back
     .includes("summarizedThroughPair=16"));
 });
 
-test("restart retains backlog and reclaims only summary temporary directories", async (t) => {
+test("restart retains backlog and reclaims only legacy summary temporary directories", async (t) => {
   const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 25);
   const tempRoot = path.join(path.dirname(rootDir), "ephemeral-tmp");
+  await fs.mkdir(tempRoot);
   const orphan = path.join(tempRoot, "summary-abcdef");
   await fs.mkdir(orphan);
   await fs.writeFile(path.join(orphan, "scratch"), "temporary");
