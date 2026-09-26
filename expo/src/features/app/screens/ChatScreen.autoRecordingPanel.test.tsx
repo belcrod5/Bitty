@@ -522,6 +522,27 @@ describe("ChatScreen voice input", () => {
     expect(mockStartStreamingStt).not.toHaveBeenCalled();
   });
 
+  it("logs the STT send gate and forwards transcript-free lifecycle diagnostics", async () => {
+    mockRunnerUrl = "";
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await act(async () => {
+      mockStreamingSttOptions.current?.onDiagnostic("stt_done_received", { finalChars: 8 });
+      await expect(mockStreamingSttOptions.current?.sendTranscript("private words", jest.fn()))
+        .rejects.toThrow("streaming_stt_transcript_not_accepted");
+    });
+    expect(mockLogSessionDiag).toHaveBeenCalledWith("stt_done_received", {
+      panelId: "panel-a", finalChars: 8,
+    }, { throttleMs: 0 });
+    expect(mockLogSessionDiag).toHaveBeenCalledWith("stt_send_blocked", {
+      panelId: "panel-a", reason: "runner_endpoint_missing", chars: 13,
+    }, { throttleMs: 0 });
+    expect(mockLogSessionDiag).toHaveBeenCalledWith("stt_send_returned_without_acceptance", {
+      panelId: "panel-a", chars: 13,
+    }, { throttleMs: 0 });
+    expect(JSON.stringify(mockLogSessionDiag.mock.calls)).not.toContain("private words");
+    await screen.unmount();
+  });
+
   it("forwards RMS samples without rendering ChatScreen or its connection status", async () => {
     mockStreamingSttPhase = "recording";
     const onRender = jest.fn();

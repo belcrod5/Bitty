@@ -1,13 +1,12 @@
 import { once } from "node:events";
 import { performance } from "node:perf_hooks";
 import { v2 as speech } from "@google-cloud/speech";
+import {
+  SAMPLE_RATE, BYTES_PER_SECOND, MAX_FRAME_BYTES, MAX_PENDING_BYTES, MAX_DURATION_SECONDS,
+  validStart, validStop, validAudioFrame,
+} from "./streaming-stt-protocol.mjs";
 
-const SAMPLE_RATE = 16_000;
-const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-const MAX_FRAME_BYTES = 64 * 1024;
-const MAX_PENDING_BYTES = 256 * 1024;
 const GOOGLE_CHUNK_BYTES = 15_360;
-const MAX_DURATION_SECONDS = 4 * 60 + 50;
 const MAX_AUDIO_BYTES = BYTES_PER_SECOND * MAX_DURATION_SECONDS;
 export const STREAM_STT_MAX_PAYLOAD_BYTES = MAX_FRAME_BYTES;
 
@@ -90,18 +89,6 @@ function safeFailureDetail(error, source) {
     grpcCode: Number.isInteger(error?.code) && error.code >= 0 && error.code <= 16 ? error.code : null,
     nodeCode: error?.code === "ERR_STREAM_WRITE_AFTER_END" ? error.code : null,
   };
-}
-
-function validStart(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
-  const keys = Object.keys(payload).sort();
-  return keys.length === 2 && keys[0] === "sampleRate" && keys[1] === "type"
-    && payload.type === "start" && payload.sampleRate === SAMPLE_RATE;
-}
-
-function validStop(payload) {
-  return payload && typeof payload === "object" && !Array.isArray(payload)
-    && Object.keys(payload).length === 1 && payload.type === "stop";
 }
 
 async function writeGrpc(stream, request) {
@@ -432,7 +419,7 @@ export function createGoogleStreamingSttHandler({
           return;
         }
         const buffer = Buffer.from(raw);
-        if (buffer.length < 1 || buffer.length > MAX_FRAME_BYTES || buffer.length % 2 !== 0) {
+        if (!validAudioFrame(buffer)) {
           finishError("invalid_audio_frame", "PCM audio frames must be even-sized and no larger than 65536 bytes", false);
           return;
         }

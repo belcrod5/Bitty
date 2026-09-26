@@ -7,6 +7,7 @@ const mockAbort = jest.fn(async () => undefined);
 const mockStopTtsPlayback = jest.fn(async () => undefined);
 const mockSynthesizeSpeechStream = jest.fn(async (): Promise<void> => undefined);
 const mockOnClose = jest.fn();
+const mockLogSessionDiag = jest.fn();
 const mockVoice = {
   ready: true,
   turnStatus: "completed",
@@ -25,7 +26,7 @@ const mockStt = {
   abort: mockAbort,
 };
 let mockOnCompleted: ((text: string, operationId: string) => void) | null = null;
-let mockLastSttOptions: { ttsPlaybackActive: boolean } | null = null;
+let mockLastSttOptions: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
 let mockFooterProps: { voiceContextStats?: unknown; transcript: string; draftTranscript?: string; statusText?: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void; onFocus?: () => void; onChangeText?: (text: string) => void; onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void> } | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
 let mockReduceMotion: boolean | null = false;
@@ -36,7 +37,7 @@ jest.mock("../hooks/useVoiceConversation", () => ({
     return mockVoice;
   },
 }));
-jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean }) => {
+jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void }) => {
   mockLastSttOptions = options;
   return mockStt;
 } }));
@@ -59,6 +60,9 @@ jest.mock("../keyboardController", () => {
 });
 jest.mock("../contexts/ChatScreenContext", () => ({
   useChatScreen: () => ({ runnerUrl: "http://runner.test", runnerToken: "token" }),
+}));
+jest.mock("../contexts/ConversationContext", () => ({
+  useConversation: () => ({ logSessionDiag: mockLogSessionDiag }),
 }));
 jest.mock("react-native-reanimated", () => {
   const ReactModule = jest.requireActual<typeof import("react")>("react");
@@ -97,6 +101,16 @@ beforeEach(() => {
   mockVoice.turnStatus = "completed";
   mockVoice.error = "";
   mockReduceMotion = false;
+});
+
+test("routes privacy-safe STT diagnostics from the voice conversation to the shared log", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  mockLastSttOptions?.onDiagnostic("stt_final_transcript_received", { version: 1, chars: 0, lastPartialChars: 7 });
+  expect(mockLogSessionDiag).toHaveBeenCalledWith("stt_final_transcript_received", {
+    source: "voice_conversation", version: 1, chars: 0, lastPartialChars: 7,
+  }, { throttleMs: 0 });
+  expect(JSON.stringify(mockLogSessionDiag.mock.calls)).not.toContain("runner.test");
+  await screen.unmount();
 });
 
 test("shows only the shared footer immediately and starts recording once voice.open is ready", async () => {

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>ja</string>
+  <key>CFBundleExecutable</key><string>BittyMacStt</string>
+  <key>CFBundleIdentifier</key><string>com.bitty.private-runner.stt</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Bitty Private Runner Speech</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSBackgroundOnly</key><true/>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Bitty Private Runnerで音声をこのMac上で文字起こしするために使用します。</string>
+</dict>
+</plist>

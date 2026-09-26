@@ -20,7 +20,7 @@ export type StreamingSttFooterHandle = {
 };
 
 function usageLabel(usage: StreamingSttUsage | null) {
-  if (!usage) return "--:-- / --m";
+  if (!usage) return "音声入力";
   const minutes = Math.floor(usage.usedSeconds / 60);
   const seconds = Math.floor(usage.usedSeconds % 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")} / ${Math.ceil(usage.limitSeconds / 60)}m`;
@@ -60,6 +60,15 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const gradientEnd = useSharedValue(360);
   const glowColors = voiceStatus === "responding" ? RESPONDING_COLORS
     : voiceStatus === "speaking" ? SPEAKING_COLORS : RAINBOW;
+
+  React.useEffect(() => {
+    if (phase !== "connecting") return;
+    if (usageTimerRef.current) clearTimeout(usageTimerRef.current);
+    usageTimerRef.current = null;
+    pendingUsageRef.current = null;
+    lastUsageUpdateRef.current = 0;
+    setUsage(null);
+  }, [phase]);
 
   useFrameCallback((frame) => {
     if (voiceStatus && reduceMotion) return;

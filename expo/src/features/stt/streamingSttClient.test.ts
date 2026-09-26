@@ -19,6 +19,10 @@ test("accepts protocol messages and rejects malformed usage", () => {
     });
   expect(parseStreamingSttMessage('{"type":"usage","usedSeconds":"oops"}')).toBeNull();
   expect(parseStreamingSttMessage("not json")).toBeNull();
+  expect(parseStreamingSttMessage('{"type":"done","reason":"speech_end_timeout","hasSpeech":true}'))
+    .toEqual({ type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  expect(parseStreamingSttMessage('{"type":"done","reason":"speech_end_timeout","hasSpeech":true,"usage":null}'))
+    .toBeNull();
 });
 
 test("computes normalized RMS from the PCM sent to the runner", () => {

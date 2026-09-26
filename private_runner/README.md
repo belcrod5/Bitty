@@ -157,6 +157,13 @@ private_runner/run-local.sh start --mode full --cloudflare-tunnel
 
 Google Cloud TTSも同じRunner専用ADCと保存済みプロジェクトを使います。専用ADCが未接続の場合、STT/TTSはホスト標準ADCへfallbackしません。`GOOGLE_CLOUD_PROJECT_ID`は保存済み設定がない初回だけの移行値です。
 
+## macOS標準の文字起こし
+設定画面の「文字起こし方式」でGoogle CloudまたはmacOS標準を選べます。選択はRunnerに保存され、チャットとSkiaボードの次の録音から共通で反映されます。Google Cloud TTSの設定には影響しません。
+
+macOS標準はRunner MacのSpeechフレームワークを使用します。初回録音時にRunner Macで「Bitty Private Runner Speech」の音声認識を許可してください。日本語のオンデバイス認識に対応していないMacでは明示的にエラーになり、Google Cloudへ自動切替しません。Runner側にXcodeのコマンドラインツールが必要で、helperは初回使用時にローカルでビルドされます。
+
+どちらも`/stream-stt`に16 kHz PCMを逐次送信し、途中の文字起こしと終了通知を受け取ります。macOS標準ではRunner側で音量に基づいて無音を検出するため、騒音や小声での終了判定はGoogle Cloudの音声活動検出と異なる場合があります。macOS標準にGoogle Cloudの利用量・月間上限は適用されません。
+
 ## YouTube ツール認証
 `youtube_search` / `youtube_channel_latest` / `youtube_favorites` は、公開データ取得用途では `YOUTUBE_API_KEY` 利用を推奨します。
 アプリ表示用の `/youtube-videos`（`videos.list`）も同じ認証方針です。

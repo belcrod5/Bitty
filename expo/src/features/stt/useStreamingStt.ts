@@ -22,6 +22,7 @@ type Options = {
   onUsage: (usage: StreamingSttUsage) => void;
   onSample: (rms: number) => void;
   onError: (message: string) => void;
+  onDiagnostic?: (event: string, payload: Record<string, unknown>) => void;
   canStart: boolean;
   onSpeechBegin: () => void;
   replyLoading: boolean;
@@ -41,6 +42,7 @@ export function useStreamingStt(options: Options) {
   const pendingAbortRef = useRef<Promise<void>>(Promise.resolve());
   const sessionVersionRef = useRef(0);
   const transcriptStateRef = useRef<StreamingTranscript>(EMPTY_TRANSCRIPT);
+  const lastPartialCharsRef = useRef(0);
   const terminalRef = useRef(false);
   const listeningRef = useRef(false);
   const startSessionRef = useRef<() => void>(() => {});
@@ -159,6 +161,8 @@ export function useStreamingStt(options: Options) {
     terminalRef.current = false;
     setPhase("connecting");
     const version = ++sessionVersionRef.current;
+    lastPartialCharsRef.current = 0;
+    latestRef.current.onDiagnostic?.("stt_session_start", { version });
     void pendingAbortRef.current.then(() => {
       if (version !== sessionVersionRef.current || !listeningRef.current) return;
       let session: StreamingSttSession;
@@ -171,10 +175,14 @@ export function useStreamingStt(options: Options) {
             if (sessionRef.current === session) latestRef.current.onSample(rms);
           },
           onError: (message) => {
-            if (sessionRef.current === session) fail(message);
+            if (sessionRef.current === session) {
+              latestRef.current.onDiagnostic?.("stt_transport_error", { version });
+              fail(message);
+            }
           },
           onClose: () => {
             if (sessionRef.current === session && !terminalRef.current) {
+              latestRef.current.onDiagnostic?.("stt_transport_closed_before_done", { version });
               fail("Private Runnerとの音声接続が終了しました。");
             }
           },
@@ -192,6 +200,7 @@ export function useStreamingStt(options: Options) {
     const message = parseStreamingSttMessage(raw);
     if (terminalRef.current) return;
     if (!message) {
+      latestRef.current.onDiagnostic?.("stt_invalid_runner_response", { version: sessionVersionRef.current });
       fail("Private Runnerから不正な音声認識応答を受信しました。");
       return;
     }
@@ -200,12 +209,25 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "transcript") {
+      if (!message.isFinal && message.text.trim()) {
+        if (lastPartialCharsRef.current === 0) latestRef.current.onDiagnostic?.("stt_partial_transcript_received", {
+          version: sessionVersionRef.current,
+          chars: message.text.length,
+        });
+        lastPartialCharsRef.current = message.text.length;
+      }
       const next = applyStreamingTranscript(
         transcriptStateRef.current,
         message.text,
         message.isFinal
       );
       transcriptStateRef.current = next;
+      if (message.isFinal) latestRef.current.onDiagnostic?.("stt_final_transcript_received", {
+        version: sessionVersionRef.current,
+        chars: message.text.length,
+        finalChars: next.finalText.length,
+        lastPartialChars: lastPartialCharsRef.current,
+      });
       latestRef.current.setTranscript(displayStreamingTranscript(next));
       return;
     }
@@ -218,17 +240,29 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "error") {
+      latestRef.current.onDiagnostic?.("stt_runner_error", { version: sessionVersionRef.current });
       fail(message.message || "音声認識に失敗しました。");
       return;
     }
     if (message.type !== "done") return;
 
+    latestRef.current.onDiagnostic?.("stt_done_received", {
+      version: sessionVersionRef.current,
+      reason: message.reason,
+      hasSpeech: message.hasSpeech,
+      finalChars: transcriptStateRef.current.finalText.length,
+      interimChars: transcriptStateRef.current.interimText.length,
+      lastPartialChars: lastPartialCharsRef.current,
+    });
     terminalRef.current = true;
     if (sessionRef.current !== session) return;
     const version = ++sessionVersionRef.current;
-    latestRef.current.onUsage(message.usage);
+    if (message.usage) latestRef.current.onUsage(message.usage);
     void abortSession().then(async () => {
-      if (version !== sessionVersionRef.current) return;
+      if (version !== sessionVersionRef.current) {
+        latestRef.current.onDiagnostic?.("stt_done_superseded", { version });
+        return;
+      }
       const finalText = finalStreamingTranscript(transcriptStateRef.current);
       const hasFinalSpeech = transcriptStateRef.current.finalText.trim().length > 0;
       if (message.reason === "limit_reached") listeningRef.current = false;
@@ -236,11 +270,20 @@ export function useStreamingStt(options: Options) {
       if (message.hasSpeech && hasFinalSpeech) {
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
+          latestRef.current.onDiagnostic?.("stt_auto_send_dispatch", {
+            version,
+            chars: finalText.length,
+            listening: listeningRef.current,
+          });
           if (listeningRef.current) {
             awaitReplyCycle();
           }
           try {
             await latestRef.current.sendTranscript(finalText, () => {
+              latestRef.current.onDiagnostic?.("stt_auto_send_accepted", {
+                version,
+                current: version === sessionVersionRef.current,
+              });
               if (version !== sessionVersionRef.current) return;
               latestRef.current.setTranscript("");
               transcriptStateRef.current = startStreamingTranscript("");
@@ -253,15 +296,30 @@ export function useStreamingStt(options: Options) {
               updateReplyCycle();
             }
           } catch {
+            latestRef.current.onDiagnostic?.("stt_auto_send_failed", {
+              version,
+              current: version === sessionVersionRef.current,
+            });
             if (version === sessionVersionRef.current) {
               finishFailure("文字起こし結果を送信できませんでした。");
             }
           }
         } else {
+          latestRef.current.onDiagnostic?.("stt_auto_send_skipped", {
+            version,
+            reason: latestRef.current.autoReplyAfterStt ? "empty_text" : "auto_reply_disabled",
+          });
           listeningRef.current = false;
         }
         return;
       }
+      latestRef.current.onDiagnostic?.("stt_auto_send_skipped", {
+        version,
+        reason: !message.hasSpeech ? "runner_no_final_speech" : "client_no_final_speech",
+        listening: listeningRef.current,
+        finalChars: transcriptStateRef.current.finalText.length,
+        interimChars: transcriptStateRef.current.interimText.length,
+      });
       if (!listeningRef.current || message.reason === "limit_reached") {
         listeningRef.current = false;
         setPhase("idle");
@@ -290,6 +348,7 @@ export function useStreamingStt(options: Options) {
 
   const stop = useCallback(() => {
     if (phase === "idle" || !listeningRef.current) return;
+    latestRef.current.onDiagnostic?.("stt_stopped", { version: sessionVersionRef.current, phase });
     listeningRef.current = false;
     terminalRef.current = true;
     sessionVersionRef.current += 1;
@@ -324,6 +383,10 @@ export function useStreamingStt(options: Options) {
   }, [awaitReplyCycle, clearReplyCycleWait, updateReplyCycle]);
 
   const abort = useCallback(async () => {
+    latestRef.current.onDiagnostic?.("stt_aborted", {
+      version: sessionVersionRef.current,
+      sessionOpen: sessionRef.current !== null,
+    });
     listeningRef.current = false;
     terminalRef.current = true;
     sessionVersionRef.current += 1;
@@ -338,6 +401,11 @@ export function useStreamingStt(options: Options) {
   const isCapturing = useCallback(() => sessionRef.current !== null, []);
 
   useEffect(() => () => {
+    if (listeningRef.current || sessionRef.current) latestRef.current.onDiagnostic?.("stt_unmounted", {
+      version: sessionVersionRef.current,
+      sessionOpen: sessionRef.current !== null,
+      listening: listeningRef.current,
+    });
     listeningRef.current = false;
     terminalRef.current = true;
     sessionVersionRef.current += 1;

@@ -4,6 +4,7 @@ import Reanimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { useChatScreen } from "../contexts/ChatScreenContext";
+import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
@@ -31,6 +32,7 @@ export function VoiceConversationScreen({
   onClose,
 }: VoiceConversationPlayback & { onClose: () => void }) {
   const { runnerUrl, runnerToken } = useChatScreen();
+  const { logSessionDiag } = useConversation();
   const reduceMotion = useReduceMotionEnabled();
   const [transcript, setTranscript] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
@@ -69,6 +71,10 @@ export function VoiceConversationScreen({
     onUsage: (usage) => footerRef.current?.updateUsage(usage),
     onSample: (sample) => footerRef.current?.pushSample(sample),
     onError: voice.setError,
+    onDiagnostic: (event, payload) => logSessionDiag(event, {
+      source: "voice_conversation",
+      ...payload,
+    }, { throttleMs: 0 }),
     canStart,
     onSpeechBegin: () => undefined,
     replyLoading,

@@ -68,6 +68,19 @@ describe("StreamingSttFooter", () => {
     mockFrameCallback = null;
   });
 
+  it("clears old Google usage when a new recording session starts", async () => {
+    const ref = React.createRef<StreamingSttFooterHandle>();
+    const onStop = jest.fn();
+    const screen = await render(<StreamingSttFooter ref={ref} transcript="" phase="recording" onStop={onStop} />);
+    await act(async () => {
+      ref.current?.updateUsage({ usedSeconds: 12, limitSeconds: 3600, remainingSeconds: 3588,
+        monthUtc: "2026-09", resetAt: "2026-10-01T00:00:00.000Z" });
+    });
+    expect(screen.getByText("00:12 / 60m")).toBeTruthy();
+    await screen.rerender(<StreamingSttFooter ref={ref} transcript="" phase="connecting" onStop={onStop} />);
+    expect(screen.getByText("音声入力")).toBeTruthy();
+  });
+
   it("shows voice context values beside STT usage only when the optional prop is supplied", async () => {
     const onStop = jest.fn();
     const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={onStop} />);
