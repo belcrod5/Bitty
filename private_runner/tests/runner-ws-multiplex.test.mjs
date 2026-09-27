@@ -12,6 +12,9 @@ process.env.RUNNER_MOCK = "1";
 process.env.RUNNER_TOKEN = process.env.RUNNER_TOKEN || "test-token";
 process.env.RUNNER_LOG_REQUESTS = "0";
 process.env.ACP_SESSION_STORE_PATH = path.join(tempDir, "agent_sessions.json");
+process.env.ELEVENLABS_API_KEY = "test-key";
+process.env.TTS_MEDIA_DIR = tempDir;
+process.env.LLM_JOB_EVENT_MAX = "100";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 
@@ -185,6 +188,173 @@ test("runner-ws TTS operation map resolves repeated starts to the original job",
   assert.equal(__TESTING__.resolveRunnerWsTtsOperationJob(operationId)?.jobId, job.jobId);
 
   await job.runPromise;
+});
+
+test("voice acceptance creates one attachable TTS job and keeps its error separate", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalStart = service.start;
+  const originalStatus = service.status;
+  const operationId = "11111111-2222-4333-8444-555555555555";
+  const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  let accepts = 0;
+  let notify;
+  let hooks;
+  service.start = async (message, onResult, _onApproval, callbacks) => {
+    assert.equal(Object.hasOwn(message.payload, "tts"), false);
+    if (accepts++ === 0) {
+      notify = onResult;
+      hooks = callbacks;
+      callbacks.onAccepted();
+    }
+    return { clientOperationId: operationId, status: "accepted" };
+  };
+  service.status = async () => ({ clientOperationId: operationId, status: "running" });
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => {
+    service.start = originalStart;
+    service.status = originalStatus;
+    ws.close();
+  });
+  const start = { channel: "agent", op: "turn.start", requestId: "voice-start-1", operationId,
+    payload: { backendId: "codex", logicalConversationId: conversationId, clientOperationId: operationId,
+      input: { blocks: [{ type: "text", text: "hello" }] },
+      tts: { ttsProvider: "unsupported", speedScale: 1 } } };
+  ws.emit("message", JSON.stringify(start), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "turn.accepted"));
+  const accepted = ws.sent.find((message) => message.op === "turn.accepted");
+  assert.match(accepted.payload.jobId, /^llmjob_/);
+  ws.emit("message", JSON.stringify({ ...start, requestId: "voice-start-2" }), false);
+  await waitFor(() => ws.sent.filter((message) => message.op === "turn.accepted").length === 2);
+  assert.equal(ws.sent.filter((message) => message.op === "turn.accepted")[1].payload.jobId, accepted.payload.jobId);
+  ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.status", requestId: "voice-status",
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId } }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "voice.status.result"));
+  assert.equal(ws.sent.find((message) => message.op === "voice.status.result").payload.jobId, accepted.payload.jobId);
+  ws.emit("message", JSON.stringify({ channel: "tts", op: "attach", streamId: accepted.payload.jobId,
+    operationId, payload: { jobId: accepted.payload.jobId, sinceSeq: 0 } }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "attached"));
+  assert.equal(ws.sent.find((message) => message.op === "job_snapshot").payload.status, "failed");
+  assert.ok(ws.sent.some((message) => message.channel === "tts" && message.op === "error"));
+  notify({ clientOperationId: operationId, status: "completed", text: "Answer." });
+  hooks.onCompleted("Answer.");
+  assert.equal(ws.sent.find((message) => message.op === "voice.turn.completed").payload.text, "Answer.");
+});
+
+test("voice interrupt routes to the voice turn instead of the generic agent turn", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalInterrupt = service.interrupt;
+  const operationId = "33333333-4444-4555-8666-777777777777";
+  const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  service.interrupt = async (receivedConversationId, receivedOperationId) => {
+    assert.equal(receivedConversationId, conversationId);
+    assert.equal(receivedOperationId, operationId);
+    return { clientOperationId: operationId, status: "interrupted", code: "voice_cancelled" };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => { service.interrupt = originalInterrupt; ws.close(); });
+  ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.turn.interrupt",
+    requestId: "stop-voice", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId },
+  }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "voice.turn.interrupt.result"));
+  const result = ws.sent.find((message) => message.op === "voice.turn.interrupt.result");
+  assert.equal(result.requestId, "stop-voice");
+  assert.equal(result.payload.status, "interrupted");
+});
+
+test("voice TTS sends audio before turn completion and stays cancelled while generation continues", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalStart = service.start;
+  const originalFetch = globalThis.fetch;
+  const operationId = "22222222-3333-4444-8555-666666666666";
+  let hooks;
+  let notify;
+  let releaseSecondAudio;
+  let syntheses = 0;
+  service.start = async (_message, onResult, _onApproval, callbacks) => {
+    hooks = callbacks;
+    notify = onResult;
+    callbacks.onAccepted();
+    return { clientOperationId: operationId, status: "accepted" };
+  };
+  globalThis.fetch = (url, init) => {
+    if (String(url).startsWith("http://127.0.0.1:")) return originalFetch(url, init);
+    syntheses += 1;
+    if (syntheses === 2) {
+      return new Promise((resolve) => {
+        releaseSecondAudio = () => resolve({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer });
+      });
+    }
+    return Promise.resolve({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer });
+  };
+  const ws = createRunnerWsConnectionForTest();
+  const server = __TESTING__.server;
+  t.after(async () => {
+    service.start = originalStart;
+    globalThis.fetch = originalFetch;
+    ws.close();
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
+  });
+  ws.emit("message", JSON.stringify({
+    channel: "agent", op: "turn.start", requestId: "voice-stream-start", operationId,
+    payload: { backendId: "codex", logicalConversationId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+      clientOperationId: operationId, input: { blocks: [{ type: "text", text: "hello" }] },
+      tts: { ttsProvider: "elevenlabs", speedScale: 1 } },
+  }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "turn.accepted"));
+  const jobId = ws.sent.find((message) => message.op === "turn.accepted").payload.jobId;
+  ws.emit("message", JSON.stringify({ channel: "tts", op: "attach", streamId: jobId,
+    operationId, payload: { jobId, sinceSeq: 0 } }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "attached"));
+
+  hooks.onText("First.");
+  await waitFor(() => ws.sent.some((message) => message.channel === "tts" && message.op === "audio_chunk"));
+  assert.equal(ws.sent.some((message) => message.op === "voice.turn.completed"), false);
+  hooks.onText("Second.");
+  await waitFor(() => releaseSecondAudio);
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const response = await originalFetch(`http://127.0.0.1:${server.address().port}/jobs/${jobId}/cancel`, {
+    method: "POST", headers: { authorization: `Bearer ${__TESTING__.RUNNER_TOKEN}` },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).job.status, "cancelled");
+  releaseSecondAudio();
+  hooks.onText("Third.");
+  hooks.onTextError(new Error("late generation error"));
+  notify({ clientOperationId: operationId, status: "completed", text: "First. Second. Third." });
+  hooks.onCompleted("First. Second. Third.");
+  await new Promise((resolve) => setImmediate(resolve));
+  const job = __TESTING__.resolveRunnerWsTtsOperationJob(operationId);
+  assert.equal(job.status, "cancelled");
+  assert.deepEqual(job.events.filter((event) => event.type === "audio_chunk").map((event) => event.seq), [0]);
+  assert.equal(job.events.some((event) => event.type === "done" || event.type === "error"), false);
+  assert.equal(job.events.filter((event) => event.type === "segment_queued").length, 2);
+  assert.equal(ws.sent.find((message) => message.op === "voice.turn.completed").payload.text,
+    "First. Second. Third.");
+});
+
+test("attach snapshot reports the final audio seq when old audio history was pruned", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer });
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const job = __TESTING__.startLlmStreamJob({
+    mode: "text", text: "a.".repeat(102), ttsProvider: "elevenlabs",
+  }, { publicBaseUrl: "http://127.0.0.1" });
+  await job.runPromise;
+  assert.equal(job.status, "completed");
+  assert.equal(job.lastAudioChunkSeq, 101);
+  assert.equal(job.events.some((event) => event.type === "audio_chunk" && event.seq === 0), false);
+
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => ws.close());
+  ws.emit("message", JSON.stringify({ channel: "tts", op: "attach", streamId: job.jobId,
+    operationId: "pruned-history", payload: { jobId: job.jobId, sinceSeq: 0 } }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "attached"));
+  const snapshot = ws.sent.find((message) => message.op === "job_snapshot");
+  assert.equal(snapshot.payload.lastAudioChunkSeq, 101);
+  assert.equal(ws.sent.some((message) => message.op === "audio_chunk" && message.payload.seq === 0), false);
+  assert.equal(ws.sent.some((message) => message.op === "audio_chunk" && message.payload.seq > 0), true);
 });
 
 test("runner-ws LLM identity index keeps exact pre-turn pairs recoverable after detach", () => {

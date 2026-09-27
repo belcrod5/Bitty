@@ -42,6 +42,7 @@ import {
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createVoiceContextService } from "./voice-context-service.mjs";
+import { createStreamTtsSegments } from "./stream-tts-segments.mjs";
 import { createVoiceApprovalBridge } from "./voice-approval-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
 import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
@@ -1746,21 +1747,6 @@ const codexRawSessionOwnership = createCodexRawSessionOwnership({
   sendRpc: sendCodexRelayRpcToClient,
 });
 
-function splitPseudoTextDeltas(text) {
-  const source = String(text || "");
-  const chunks = [];
-  let buf = "";
-  for (const ch of source) {
-    buf += ch;
-    if (isTtsBoundaryChar(ch) || buf.length >= 18) {
-      chunks.push(buf);
-      buf = "";
-    }
-  }
-  if (buf) chunks.push(buf);
-  return chunks;
-}
-
 function buildOpenAICodexResponseRequest(prompt, opts = {}) {
   const modelInfo = opts.modelInfo || OPENAI_CODEX_MODEL_INFO;
   const reasoningEffort = String(opts.reasoningEffort || OPENAI_CODEX_DEFAULT_REASONING_EFFORT || "").trim();
@@ -2004,12 +1990,7 @@ async function runCodexStreamLeased(prompt, opts = {}) {
       onMode("pseudo_delta");
       modeSent = true;
     }
-    const pseudoChunks = splitPseudoTextDeltas(completedReply);
-    for (const chunk of pseudoChunks) {
-      streamedReply += chunk;
-      onText(chunk, "pseudo");
-      await sleep(12);
-    }
+    onText(completedReply, "pseudo");
   }
 
   const reply = String(streamedReply || completedReply || "").trim();
@@ -2541,6 +2522,7 @@ function llmJobSummary(job) {
     modelRef: String(job.modelRef || ""),
     clientRequestId: String(job.clientRequestId || ""),
     lastEventSeq: Number.isFinite(Number(job.lastEventSeq)) ? Number(job.lastEventSeq) : 0,
+    lastAudioChunkSeq: Number.isInteger(job.lastAudioChunkSeq) ? job.lastAudioChunkSeq : -1,
     reply: String(job.reply || ""),
     toolCalls: Number.isFinite(Number(job.toolCalls)) ? Number(job.toolCalls) : 0,
     rootRelativePath: String(job.rootRelativePath || ""),
@@ -2690,6 +2672,7 @@ function createLlmJob(payload = {}, meta = {}) {
     selectedSkillPath: "",
     contextUsage: null,
     lastEventSeq: 0,
+    lastAudioChunkSeq: -1,
     nextEventSeq: 1,
     events: [],
     subscribers: new Set(),
@@ -2804,6 +2787,7 @@ function llmJobPruneEvents(job) {
 
 function llmJobEmit(job, payload) {
   if (!job || !payload || typeof payload !== "object") return false;
+  if (payload.type === "audio_chunk" && Number.isInteger(payload.seq)) job.lastAudioChunkSeq = payload.seq;
   const event = {
     ...payload,
     eventSeq: job.nextEventSeq,
@@ -3007,6 +2991,41 @@ function sanitizeTtsInputText(raw) {
 
 function sanitizeStreamTtsText(raw) {
   return sanitizeTtsInputText(raw).replace(/[。、.,\r\n]/g, "").trim();
+}
+
+function createRunnerStreamTtsSegments({ emit, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
+  modelId, outputFormat, languageCode, audioEncoding, applyLanguageTextNormalization }) {
+  const normalizedSpeed = normalizeSpeedScaleForTtsEstimate(speedScale);
+  return createStreamTtsSegments({
+    emit, signal, speedScale: normalizedSpeed,
+    takeNextSegment: takeNextStreamTtsSegment,
+    sanitizeText: sanitizeStreamTtsText,
+    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS,
+    targetChars: resolveStreamTtsSegmentTargetChars(speedScale),
+    maxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
+    estimateDurationMs: estimateStreamTtsSegmentDurationMs,
+    synthesizeSegment: async (text, seq) => {
+      try {
+        const tts = await runTtsByProvider(ttsProvider, text, {
+          voiceId: voiceId || undefined,
+          modelId: modelId || undefined,
+          outputFormat: outputFormat || undefined,
+          languageCode: languageCode || undefined,
+          audioEncoding: audioEncoding || undefined,
+          applyLanguageTextNormalization,
+          speedScale,
+        });
+        const media = await registerTtsMedia(tts.audioBuffer, tts.mimeType, publicBaseUrl);
+        return {
+          audioUrl: media.audioUrl, audioBytes: media.audioBytes, mimeType: tts.mimeType,
+          provider: tts.provider, voiceId: tts.voiceId, speedScale: tts.speedScale,
+        };
+      } catch (error) {
+        if (isApiError(error)) throw error;
+        throw new Error(`stream-tts segment failed: seq=${seq} provider=${ttsProvider} message=${errorMessage(error)}`);
+      }
+    },
+  });
 }
 
 function normalizeStreamTtsMode(raw) {
@@ -6380,14 +6399,7 @@ async function runReplyUsecase(req, opts = {}) {
   });
   if (stream && onMode) onMode("file_tools_pseudo");
   const reply = fileResult.reply;
-  if (stream && onText) {
-    const chunks = splitPseudoTextDeltas(reply);
-    for (const chunk of chunks) {
-      if (signal?.aborted) break;
-      onText(chunk, "pseudo");
-      await sleep(12);
-    }
-  }
+  if (stream && onText && reply && !signal?.aborted) onText(reply, "pseudo");
   return {
     mode: "file-tools",
     reply,
@@ -7201,117 +7213,17 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
   }
 
   let reply = "";
-  let pendingSegmentBuffer = "";
-  let chunkSeq = 0;
-  const streamSegmentTargetChars = resolveStreamTtsSegmentTargetChars(speedScale);
-  const normalizedStreamSpeedScale = normalizeSpeedScaleForTtsEstimate(speedScale);
-  let ttsChain = Promise.resolve();
-  let ttsChainFailure = null;
   let usecaseResult = null;
-
-  function enqueueSegment(rawSegment) {
-    const segment = String(rawSegment || "");
-    const ttsText = sanitizeStreamTtsText(segment);
-    if (!ttsText) return;
-    const currentSeq = chunkSeq;
-    chunkSeq += 1;
-    const estimatedDurationMs = estimateStreamTtsSegmentDurationMs(ttsText, normalizedStreamSpeedScale);
-    const chunkChars = ttsText.length;
-    const rawChars = segment.length;
-    emitEvent({
-      type: "segment_queued",
-      seq: currentSeq,
-      text: ttsText,
-      rawText: segment,
-      chunkChars,
-      rawChars,
-      estimatedDurationMs,
-      segmentTargetChars: streamSegmentTargetChars,
-      segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
-      speedScale: normalizedStreamSpeedScale,
-    });
-    ttsChain = ttsChain.then(async () => {
-      if (ttsChainFailure || signal?.aborted) return;
-      emitEvent({
-        type: "segment_tts_started",
-        seq: currentSeq,
-        text: ttsText,
-        rawText: segment,
-        chunkChars,
-        rawChars,
-        estimatedDurationMs,
-        segmentTargetChars: streamSegmentTargetChars,
-        segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
-        speedScale: normalizedStreamSpeedScale,
-      });
-      try {
-        const tts = await runTtsByProvider(ttsProvider, ttsText, {
-          voiceId: voiceId || undefined,
-          modelId: modelId || undefined,
-          outputFormat: outputFormat || undefined,
-          languageCode: languageCode || undefined,
-          audioEncoding: audioEncoding || undefined,
-          applyLanguageTextNormalization,
-          speedScale,
-        });
-        const media = await registerTtsMedia(tts.audioBuffer, tts.mimeType, publicBaseUrl);
-        emitEvent({
-          type: "audio_chunk",
-          seq: currentSeq,
-          text: ttsText,
-          rawText: segment,
-          audioUrl: media.audioUrl,
-          audioBytes: media.audioBytes,
-          mimeType: tts.mimeType,
-          provider: tts.provider,
-          voiceId: tts.voiceId,
-          speedScale: tts.speedScale,
-          chunkChars,
-          rawChars,
-          estimatedDurationMs,
-          segmentTargetChars: streamSegmentTargetChars,
-          segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
-        });
-        emitEvent({
-          type: "segment_tts_done",
-          seq: currentSeq,
-          text: ttsText,
-          rawText: segment,
-          chunkChars,
-          rawChars,
-          estimatedDurationMs,
-          segmentTargetChars: streamSegmentTargetChars,
-          segmentMaxEstMs: STREAM_TTS_SEGMENT_MAX_EST_MS,
-          speedScale: normalizedStreamSpeedScale,
-        });
-      } catch (err) {
-        if (isApiError(err)) {
-          ttsChainFailure = err;
-          return;
-        }
-        const rawMessage = err instanceof Error ? err.message : String(err);
-        ttsChainFailure = new Error(
-          `stream-tts segment failed: seq=${currentSeq} provider=${ttsProvider} message=${rawMessage}`
-        );
-      }
-    });
-  }
-
-  function flushReadySegments(force = false) {
-    for (;;) {
-      const next = takeNextStreamTtsSegment(pendingSegmentBuffer, STREAM_TTS_SEGMENT_MAX_CHARS, force);
-      if (!next) break;
-      pendingSegmentBuffer = next.rest;
-      enqueueSegment(next.segment);
-    }
-  }
+  const segments = createRunnerStreamTtsSegments({
+    emit: emitEvent, signal, publicBaseUrl, ttsProvider, voiceId, speedScale,
+    modelId, outputFormat, languageCode, audioEncoding, applyLanguageTextNormalization,
+  });
 
   const handleTextDelta = (delta, source = "unknown") => {
     if (!delta) return;
     reply += delta;
-    pendingSegmentBuffer += delta;
+    segments.append(delta);
     emitEvent({ type: "text_delta", delta, source });
-    flushReadySegments(false);
   };
 
   emitEvent({
@@ -7381,9 +7293,10 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
       });
     } else {
       reply = directText;
-      pendingSegmentBuffer = directText;
+      segments.append(directText);
     }
   } catch (err) {
+    segments.cancel();
     if (isApiError(err)) {
       emitEvent({
         type: "error",
@@ -7402,12 +7315,9 @@ async function handleStreamTtsSession(startPayload, opts = {}) {
 
   if (!reply.trim() && usecaseResult?.reply) {
     reply = String(usecaseResult.reply);
+    segments.append(reply);
   }
-  flushReadySegments(true);
-  await ttsChain;
-  if (ttsChainFailure) {
-    throw ttsChainFailure;
-  }
+  await segments.finish();
 
   if (signal?.aborted) return;
   emitEvent({
@@ -9101,9 +9011,27 @@ runnerWsServer.on("connection", (ws, req) => {
       const operation = message.op === "voice.open"
         ? voiceContextService.open()
         : voiceContextService.status(message.payload?.logicalConversationId, message.payload?.clientOperationId);
-      void operation.then((payload) => sendRunnerWsEnvelope(ws, {
-        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload,
-      })).catch((error) => sendVoiceError(message, error));
+      void operation.then((payload) => {
+        const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
+        sendRunnerWsEnvelope(ws, {
+          channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
+          payload: { ...payload, ...(job ? { jobId: job.jobId } : {}) },
+        });
+      }).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
+    if (message.op === "voice.turn.interrupt") {
+      void voiceContextService.interrupt(message.payload?.logicalConversationId, message.payload?.clientOperationId)
+        .then((payload) => {
+          const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
+          if (job && job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
+            llmJobCancel(job, "voice turn interrupted");
+          }
+          sendRunnerWsEnvelope(ws, {
+            channel: "agent", op: "voice.turn.interrupt.result", requestId: message.requestId || "",
+            operationId: payload.clientOperationId, payload,
+          });
+        }).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
@@ -9121,15 +9049,79 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
     const operationId = message.operationId;
     const onApproval = (request) => voiceApprovals.request(operationId, request);
-    void voiceContextService.start(message, (result) => sendRunnerWsEnvelope(ws, {
-      channel: "agent", op: result.status === "completed" ? "voice.turn.completed" : "voice.turn.failed",
-      operationId: result.clientOperationId, streamId: result.clientOperationId,
-      payload: result,
-    }), onApproval).then((payload) => sendRunnerWsEnvelope(ws, {
-      channel: "agent", op: "turn.accepted", requestId: message.requestId || "",
-      operationId: payload.clientOperationId, streamId: payload.clientOperationId,
-      payload: { ...payload, runId: payload.clientOperationId },
-    })).catch((error) => sendVoiceError(message, error));
+    const { tts: voiceTts, ...voicePayload } = message.payload || {};
+    const voiceMessage = { ...message, payload: voicePayload };
+    let voiceJob = null;
+    let voiceSegments = null;
+    const failVoiceTts = (error) => {
+      if (!voiceJob || voiceJob.abortController.signal.aborted ||
+        voiceJob.status === "cancelled" || voiceJob.status === "failed" || voiceJob.status === "completed") return;
+      voiceSegments?.cancel();
+      const detail = errorMessage(error);
+      voiceJob.error = { error: "stream_tts_failed", message: detail, detail };
+      llmJobSetStatus(voiceJob, "failed");
+      llmJobEmit(voiceJob, { type: "error", error: "stream_tts_failed", message: detail, detail });
+    };
+    const hooks = {
+      onAccepted: () => {
+        if (voiceTts === undefined) return;
+        try {
+          voiceJob = createLlmJob({}, { mode: "voice", endpoint: "voice.turn", clientRequestId: operationId });
+          voiceJob.startedAt = jobNowIso();
+          llmJobSetStatus(voiceJob, "running");
+          rememberRunnerWsTtsOperationJob(operationId, voiceJob);
+          llmJobEmit(voiceJob, { type: "job_started", jobId: voiceJob.jobId, mode: "voice", endpoint: "voice.turn" });
+          if (!voiceTts || typeof voiceTts !== "object" || !String(voiceTts.ttsProvider || "").trim()) {
+            throw new Error("Voice TTS provider and speedScale are required");
+          }
+          const ttsProvider = resolveTtsProvider(voiceTts.ttsProvider);
+          const speedScale = parseOptionalSpeedScale(voiceTts.speedScale);
+          if (speedScale === undefined) throw new Error("Voice TTS provider and speedScale are required");
+          if (!isSupportedTtsProvider(ttsProvider)) throw new Error(`Unsupported ttsProvider: ${ttsProvider}`);
+          const validation = validateTtsProviderRequirements(ttsProvider, "/stream-tts");
+          if (validation) throw new Error(validation.payload.message || validation.payload.error);
+          voiceSegments = createRunnerStreamTtsSegments({
+            emit: (event) => llmJobEmit(voiceJob, event),
+            signal: voiceJob.abortController.signal, publicBaseUrl,
+            ttsProvider, voiceId: String(voiceTts?.voiceId || "").trim(), speedScale,
+          });
+          llmJobEmit(voiceJob, { type: "started", provider: ttsProvider, route: "voice.turn", mode: "voice" });
+        } catch (error) {
+          if (voiceJob) failVoiceTts(error);
+        }
+      },
+      onText: (delta) => voiceSegments?.append(delta),
+      onTextError: failVoiceTts,
+      onCompleted: (text) => {
+        if (!voiceJob || voiceJob.abortController.signal.aborted ||
+          voiceJob.status === "cancelled" || voiceJob.status === "failed" ||
+          voiceJob.status === "completed" || !voiceSegments) return;
+        voiceJob.reply = text;
+        voiceJob.runPromise = voiceSegments.finish().then(() => {
+          if (voiceJob.abortController.signal.aborted ||
+            voiceJob.status === "cancelled" || voiceJob.status === "failed") return;
+          llmJobSetStatus(voiceJob, "completed");
+          llmJobEmit(voiceJob, { type: "done", reply: text });
+          pruneLlmJobStorage();
+        }).catch(failVoiceTts);
+      },
+      onFailed: (error) => failVoiceTts(error),
+    };
+    void voiceContextService.start(voiceMessage, (result) => {
+      const job = voiceJob || resolveRunnerWsTtsOperationJob(operationId);
+      sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: result.status === "completed" ? "voice.turn.completed" : "voice.turn.failed",
+        operationId: result.clientOperationId, streamId: result.clientOperationId,
+        payload: { ...result, ...(job ? { jobId: job.jobId } : {}) },
+      });
+    }, onApproval, hooks).then((payload) => {
+      const job = voiceJob || resolveRunnerWsTtsOperationJob(operationId);
+      sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: "turn.accepted", requestId: message.requestId || "",
+        operationId: payload.clientOperationId, streamId: payload.clientOperationId,
+        payload: { ...payload, runId: payload.clientOperationId, ...(job ? { jobId: job.jobId } : {}) },
+      });
+    }).catch((error) => sendVoiceError(message, error));
     return true;
   }
 
@@ -11987,6 +11979,7 @@ export const __TESTING__ = {
   calendarSchedulePreflight: calendarScheduleRuntime.preflight,
   pickBestRelayForThread,
   runnerWsServer,
+  voiceContextService,
   listLlmDirectories,
   resolveToolRoot,
   resolveCanonicalDirectoryIdentity,
@@ -12010,6 +12003,7 @@ export const __TESTING__ = {
   parseHttpBearerToken,
   normalizeReplyExecutionRequest,
   runReplyUsecase,
+  runCodexStream,
   runCodexWithFileTools,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,

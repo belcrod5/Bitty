@@ -15,6 +15,8 @@ jest.mock("../../ws/webSocketAuth", () => ({
 
 class FakeRunnerWebSocketManager {
   sent: RunnerWsMessage[] = [];
+  generation = 1;
+  snapshotHandlers = new Set<() => void>();
   subscriptions: Array<{
     filter: RunnerWsMessageFilter;
     handler: (message: RunnerWsMessage) => void;
@@ -22,6 +24,18 @@ class FakeRunnerWebSocketManager {
   }> = [];
 
   connect = jest.fn(async () => {});
+
+  getSnapshot() { return { connected: true, generation: this.generation }; }
+
+  subscribeSnapshot(handler: () => void) {
+    this.snapshotHandlers.add(handler);
+    return () => { this.snapshotHandlers.delete(handler); };
+  }
+
+  reconnect() {
+    this.generation += 1;
+    for (const handler of this.snapshotHandlers) handler();
+  }
 
   send(message: RunnerWsMessage) {
     this.sent.push(message);
@@ -96,6 +110,7 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
       baseUrl: () => "http://127.0.0.1:8788",
       ttsStreamWsUrl: () => "ws://127.0.0.1:8788/stream-tts",
       clearStreamAudioQueue: jest.fn(),
+      stopTtsPlayback: jest.fn(async () => undefined),
       upsertStreamSegment: jest.fn(),
       enqueueStreamAudio: jest.fn(),
       patchConversationMessageById: jest.fn(),
@@ -122,6 +137,138 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
 
 beforeEach(() => {
   mockCreateWebSocketWithOptionalAuth.mockReset();
+});
+
+test("voice job attaches, replays once, and resumes from eventSeq", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+  expect(manager.sent[0]).toMatchObject({
+    channel: "tts", op: "attach", operationId: "voice-operation", streamId: "voice-job",
+    payload: { jobId: "voice-job", sinceSeq: 0 },
+  });
+  expect(options.setTtsLoading).toHaveBeenCalledWith(true);
+  manager.emit({ channel: "tts", op: "job_snapshot", streamId: "voice-job",
+    payload: { type: "job_snapshot", jobId: "voice-job", lastAudioChunkSeq: 0 } });
+  const chunk: RunnerWsMessage = { channel: "tts", op: "audio_chunk", streamId: "voice-job", seq: 4,
+    payload: { type: "audio_chunk", eventSeq: 4, seq: 0, text: "Hello", audioUrl: "https://example.com/0", audioBytes: 12, mimeType: "audio/mpeg" } };
+  manager.emit(chunk);
+  manager.emit(chunk);
+  expect(options.enqueueStreamAudio).toHaveBeenCalledTimes(1);
+  expect(options.setTtsDebugStats).toHaveBeenCalledTimes(1);
+  manager.emit({ channel: "tts", op: "attached", streamId: "voice-job",
+    payload: { type: "attached", jobId: "voice-job", sinceSeq: 0 } });
+  manager.reconnect();
+  expect(manager.sent.at(-1)).toMatchObject({
+    channel: "tts", op: "attach", streamId: "voice-job", seq: 4,
+    payload: { sinceSeq: 4 },
+  });
+  manager.emit(chunk);
+  expect(options.enqueueStreamAudio).toHaveBeenCalledTimes(1);
+});
+
+test("voice replay stops when a retained audio segment is missing", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+  manager.emit({ channel: "tts", op: "job_snapshot", streamId: "voice-job",
+    payload: { type: "job_snapshot", jobId: "voice-job", lastAudioChunkSeq: 2 } });
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "voice-job", seq: 8,
+    payload: { type: "audio_chunk", eventSeq: 8, seq: 2, text: "Later", audioUrl: "https://example.com/2" } });
+  expect(options.enqueueStreamAudio).not.toHaveBeenCalled();
+  expect(options.setTtsUiStatus).toHaveBeenCalledWith("error");
+  expect(options.stopTtsPlayback).toHaveBeenCalledWith({
+    interruptStream: true, expectedMessageId: "voice-operation",
+  });
+});
+
+test("terminal voice snapshot settles playback when its terminal event was pruned", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+  manager.emit({ channel: "tts", op: "job_snapshot", streamId: "voice-job",
+    payload: { type: "job_snapshot", jobId: "voice-job", status: "completed", lastAudioChunkSeq: -1 } });
+  manager.emit({ channel: "tts", op: "attached", streamId: "voice-job",
+    payload: { type: "attached", jobId: "voice-job", sinceSeq: 0 } });
+  expect(options.setTtsLoading).toHaveBeenLastCalledWith(false);
+  expect(options.streamTtsControlRef.current).toBeNull();
+  expect(options.setTtsUiStatus).toHaveBeenLastCalledWith("idle");
+});
+
+test("returns to idle when stream completion follows the final audio chunk", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "voice-job", seq: 1,
+    payload: { type: "audio_chunk", eventSeq: 1, seq: 0, text: "Hello", audioUrl: "https://example.com/0", mimeType: "audio/mpeg" } });
+  expect(options.enqueueStreamAudio).toHaveBeenCalledTimes(1);
+  options.setTtsUiStatus.mockClear();
+
+  manager.emit({ channel: "tts", op: "done", streamId: "voice-job", seq: 2,
+    payload: { type: "done", eventSeq: 2 } });
+
+  expect(options.setTtsUiStatus).toHaveBeenLastCalledWith("idle");
+});
+
+test("keeps playing status across later queued and synthesizing segments", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  let status: "idle" | "queued" | "synthesizing" | "playing" | "error" = "idle";
+  options.setTtsUiStatus.mockImplementation((next: typeof status | ((current: typeof status) => typeof status)) => {
+    status = typeof next === "function" ? next(status) : next;
+  });
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+  expect(status).toBe("queued");
+
+  manager.emit({ channel: "tts", op: "segment_tts_started", operationId: "voice-operation", streamId: "voice-job",
+    payload: { type: "segment_tts_started", seq: 0, text: "first" } });
+  expect(status).toBe("synthesizing");
+
+  status = "playing";
+  manager.emit({ channel: "tts", op: "segment_queued", operationId: "voice-operation", streamId: "voice-job",
+    payload: { type: "segment_queued", seq: 1, text: "next" } });
+  manager.emit({ channel: "tts", op: "segment_tts_started", operationId: "voice-operation", streamId: "voice-job",
+    payload: { type: "segment_tts_started", seq: 1, text: "next" } });
+  expect(status).toBe("playing");
+});
+
+test("direct WebSocket releases its active ref at done before the close event", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options, streamSocketRef } = createOptions(manager);
+  const directOptions = { ...options, runnerWebSocketManager: undefined, runnerToken: "token" };
+  const ws = {
+    close: jest.fn(),
+    send: jest.fn(),
+    onmessage: null as null | ((event: { data: string }) => void),
+    onclose: null as null | ((event: unknown) => void),
+  };
+  mockCreateWebSocketWithOptionalAuth.mockReturnValue(ws);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(directOptions));
+  await result.current("hello", { messageId: "message-1" });
+  expect(streamSocketRef.current).toBe(ws);
+
+  options.ttsPlayingRef.current = true;
+  ws.onmessage?.({ data: JSON.stringify({ type: "audio_chunk", jobId: "job-1", seq: 0,
+    text: "Hello", audioUrl: "https://example.com/0", mimeType: "audio/mpeg" }) });
+  ws.onmessage?.({ data: JSON.stringify({ type: "done" }) });
+
+  expect(ws.close).toHaveBeenCalledTimes(1);
+  expect(streamSocketRef.current).toBeNull();
+  options.setTtsUiStatus.mockClear();
+  ws.onclose?.({ code: 1000 });
+  expect(options.setTtsUiStatus).not.toHaveBeenCalledWith("error");
 });
 
 test("uses RunnerWebSocketManager for stream TTS control traffic when manager is available", async () => {

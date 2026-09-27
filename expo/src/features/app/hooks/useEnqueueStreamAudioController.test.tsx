@@ -19,7 +19,6 @@ function createOptions(processing: boolean, queue: StreamAudioQueueItem[] = []) 
     streamSocketRef: ref<WebSocket | null>(null),
     streamTtsControlRef: ref(null),
     setTtsPlaybackWanted: jest.fn(),
-    setTtsUiStatus: jest.fn(),
     setStreamAudioQueueSize: jest.fn(),
     preloadStreamAudio: jest.fn(),
     processStreamAudioQueue: jest.fn(async () => {}),

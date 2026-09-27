@@ -1647,7 +1647,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const isTtsPlaybackActive = (
     ttsPlaying ||
     ttsLoading ||
-    ttsQueueProcessing
+    ttsQueueProcessing ||
+    (ttsUiStatus !== "idle" && ttsUiStatus !== "error")
   );
   const {
     conversationInlineAnchorMessageId,
@@ -2736,6 +2737,9 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
     streamCurrentChunkEstimatedDurationMsRef,
+    streamSocketRef,
+    streamTtsControlRef,
+    ttsPlayingRef,
     ttsPlaybackMessageIdRef,
     setTtsQueueProcessing,
     syncTtsPlaybackWantedFromPipeline,
@@ -2760,7 +2764,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     streamSocketRef,
     streamTtsControlRef,
     setTtsPlaybackWanted,
-    setTtsUiStatus,
     setStreamAudioQueueSize,
     preloadStreamAudio,
     processStreamAudioQueue,
@@ -2785,6 +2788,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     baseUrl,
     ttsStreamWsUrl,
     clearStreamAudioQueue,
+    stopTtsPlayback,
     upsertStreamSegment,
     enqueueStreamAudio,
     patchConversationMessageById: (messageId, patch) => {
@@ -6170,7 +6174,11 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           synthesizeSpeechStream,
           stopTtsPlayback,
           isTtsPlaybackActive,
+          isTtsPlaying: ttsPlaying,
           ttsUiStatus,
+          ttsProvider,
+          selectedVoiceId,
+          ttsSpeed,
           onApprovalRequest: handleApprovalRequest,
           onApprovalResolved: clearResolvedApproval,
         }}

@@ -1,7 +1,8 @@
-import { useCallback, useRef, type MutableRefObject } from "react";
+import { useCallback, useRef, type MutableRefObject, type SetStateAction } from "react";
 import { isRunnerWsUrl } from "../../runnerWs/llmAdapter";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import {
+  encodeRunnerWsTtsAttach,
   encodeRunnerWsTtsStart,
   normalizeRunnerWsIncomingTtsEvent,
 } from "../../runnerWs/ttsAdapter";
@@ -43,6 +44,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   baseUrl: () => string;
   ttsStreamWsUrl: () => string;
   clearStreamAudioQueue: () => void;
+  stopTtsPlayback: (options: { interruptStream: boolean; expectedMessageId: string }) => Promise<void>;
   upsertStreamSegment: (
     messageId: string,
     seq: number,
@@ -62,7 +64,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   setError: (value: string) => void;
   setReplyDebug: (value: string | ((prev: string) => string)) => void;
   setTtsLoading: (value: boolean) => void;
-  setTtsUiStatus: (value: TtsUiStatus) => void;
+  setTtsUiStatus: (value: SetStateAction<TtsUiStatus>) => void;
   setTtsPlaybackWanted: (next: boolean, reason: string, payload?: Record<string, unknown>) => void;
   patchTtsDebugStats: (patch: Partial<TtsDebugStats>) => void;
   setStreamWaveformPreview: (value: number[]) => void;
@@ -97,6 +99,7 @@ export function useSynthesizeSpeechStreamController(
     baseUrl,
     ttsStreamWsUrl,
     clearStreamAudioQueue,
+    stopTtsPlayback,
     upsertStreamSegment,
     enqueueStreamAudio,
     patchConversationMessageById,
@@ -118,13 +121,14 @@ export function useSynthesizeSpeechStreamController(
   } = options;
 
   return useCallback(async (textOverride?: string, streamOptions?: TtsPlaybackTarget) => {
+    const voiceJobId = String(streamOptions?.jobId || "").trim();
     const sourceText = (textOverride ?? reply).trim();
     const text = sanitizeTextForTts(sourceText);
     const targetRunnerUrl = baseUrl();
     const wsUrl = ttsStreamWsUrl();
     const useRunnerWsManager = Boolean(runnerWebSocketManager);
     const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
-    if (!targetRunnerUrl || (!useRunnerWsManager && !runnerToken.trim()) || !text) return;
+    if (!targetRunnerUrl || (!useRunnerWsManager && !runnerToken.trim()) || (!text && !voiceJobId)) return;
     const targetMessageId = String(streamOptions?.messageId || "").trim();
     const shouldProjectDebugToActiveSession = false;
     const reportErrorToActiveSession = (raw: unknown, scope?: string) => {
@@ -144,7 +148,7 @@ export function useSynthesizeSpeechStreamController(
     setTtsLoading(true);
     setTtsUiStatus("queued");
     setTtsPlaybackWanted(true, "stream_tts_connecting", {
-      mode: "text",
+      mode: voiceJobId ? "voice" : "text",
     });
     patchTtsDebugStats({
       streamChunkCount: 0,
@@ -165,7 +169,7 @@ export function useSynthesizeSpeechStreamController(
     setStreamWaveformPreview([]);
     clearStreamLlmProgress();
     resetStreamSegmentsForNewStream(keepMessageId);
-    setStreamMode("direct_text");
+    setStreamMode(voiceJobId ? "voice" : "direct_text");
     if (!isPlaybackBusy) {
       setTtsPlaybackMessageIdWithRef(targetMessageId);
     }
@@ -184,8 +188,12 @@ export function useSynthesizeSpeechStreamController(
 
     let done = false;
     let closeActiveStream = () => {};
-    // 再接続等でaudio_chunkが同一seqで再配信された場合の二重計上を防ぐ(このstream内のみ)。
-    const countedAudioChunkSeqs = new Set<number>();
+    const seenAudioChunks = new Set<string>();
+    let knownJobId = voiceJobId;
+    let lastEventSeq = 0;
+    let nextAudioChunkSeq = 0;
+    let snapshotLastAudioChunkSeq = -1;
+    let snapshotStatus = "";
 
     const startPayload = {
       type: "start",
@@ -202,8 +210,27 @@ export function useSynthesizeSpeechStreamController(
         : {}
     );
 
-    const handleStreamMessage = (data: Record<string, unknown>) => {
+    const handleStreamMessage = (data: Record<string, unknown>, messageJobId = "") => {
       const type = String(data?.type || "");
+      if (messageJobId) knownJobId = messageJobId;
+      if (type === "job_snapshot") {
+        knownJobId = String(data.jobId || knownJobId);
+        if (voiceJobId) {
+          snapshotLastAudioChunkSeq = Number(data.lastAudioChunkSeq ?? -1);
+          snapshotStatus = String(data.status || "");
+        }
+        return;
+      }
+      if (type === "attached") {
+        if (voiceJobId && nextAudioChunkSeq - 1 < snapshotLastAudioChunkSeq) {
+          handleStreamMessage({ type: "error", error: "audio_history_missing", message: "Voice audio history is incomplete" });
+        } else if (!done && (snapshotStatus === "failed" || snapshotStatus === "cancelled")) {
+          handleStreamMessage({ type: "error", error: "stream_tts_failed", message: "Voice synthesis failed" });
+        } else if (!done && snapshotStatus === "completed") {
+          handleStreamMessage({ type: "done" });
+        }
+        return;
+      }
       if (type === "started") return;
 
       if (type === "stream_mode") {
@@ -220,7 +247,7 @@ export function useSynthesizeSpeechStreamController(
           segmentTargetChars: segment.segmentTargetChars,
           estimatedDurationMs: segment.estimatedDurationMs,
         });
-        setTtsUiStatus("queued");
+        setTtsUiStatus((current) => current === "playing" ? current : "queued");
         return;
       }
 
@@ -228,7 +255,7 @@ export function useSynthesizeSpeechStreamController(
         const seq = Number(data?.seq);
         if (!Number.isInteger(seq)) return;
         upsertStreamSegment(targetMessageId, seq, String(data?.text || ""), "synthesizing");
-        setTtsUiStatus("synthesizing");
+        setTtsUiStatus((current) => current === "playing" ? current : "synthesizing");
         return;
       }
 
@@ -243,6 +270,19 @@ export function useSynthesizeSpeechStreamController(
         const segment = parseStreamSegmentEnvelope(data);
         const seq = segment.seq;
         if (seq === null) return;
+        const chunkJobId = messageJobId || knownJobId;
+        if (!chunkJobId) {
+          handleStreamMessage({ type: "error", error: "job_id_missing", message: "Voice audio job ID is missing" });
+          return;
+        }
+        const chunkKey = `${chunkJobId}:${seq}`;
+        if (seenAudioChunks.has(chunkKey)) return;
+        if (voiceJobId && seq !== nextAudioChunkSeq) {
+          handleStreamMessage({ type: "error", error: "audio_history_missing", message: "Voice audio history is incomplete" });
+          return;
+        }
+        seenAudioChunks.add(chunkKey);
+        nextAudioChunkSeq = Math.max(nextAudioChunkSeq, seq + 1);
         upsertStreamSegment(targetMessageId, seq, segment.text, "ready", {
           chunkChars: segment.chunkChars,
           segmentTargetChars: segment.segmentTargetChars,
@@ -258,6 +298,10 @@ export function useSynthesizeSpeechStreamController(
           streamLastWaveformBars: 0,
         }));
         if (!segment.audioUrl) {
+          if (voiceJobId) {
+            handleStreamMessage({ type: "error", error: "missing_audio_url", message: "Voice audio URL is missing" });
+            return;
+          }
           setTtsUiStatus("error");
           if (shouldProjectDebugToActiveSession) {
             setReplyDebug((prev) => (
@@ -272,10 +316,8 @@ export function useSynthesizeSpeechStreamController(
         if (streamTtsSuppressedRef.current) return;
         if (
           /^https?:/i.test(segment.audioUrl) &&
-          segment.audioBytes > 0 &&
-          !countedAudioChunkSeqs.has(seq)
+          segment.audioBytes > 0
         ) {
-          countedAudioChunkSeqs.add(seq);
           // 音声本体は expo-av がネイティブ側でダウンロードするため fetch 計測に乗らない。
           // サーバー報告の audioBytes を tts-media 受信量の推定値として計上する。
           recordHttpNetworkUsage(segment.audioUrl, 0, segment.audioBytes);
@@ -299,10 +341,18 @@ export function useSynthesizeSpeechStreamController(
         }
         reportErrorToActiveSession(errorMessage, "stream-tts:text");
         closeActiveStream();
+        if (voiceJobId) {
+          void stopTtsPlayback({ interruptStream: true, expectedMessageId: targetMessageId })
+            .catch(() => undefined);
+        }
         return;
       }
 
       if (type === "done") {
+        if (voiceJobId && nextAudioChunkSeq - 1 < snapshotLastAudioChunkSeq) {
+          handleStreamMessage({ type: "error", error: "audio_history_missing", message: "Voice audio history is incomplete" });
+          return;
+        }
         done = true;
         setTtsLoading(false);
         const mergedWaveform = mergeWaveformBars(
@@ -328,10 +378,26 @@ export function useSynthesizeSpeechStreamController(
     if (useRunnerWsManager && runnerWebSocketManager) {
       streamTtsOperationSeqRef.current += 1;
       const idSuffix = `${Date.now().toString(36)}-${streamTtsOperationSeqRef.current.toString(36)}`;
-      const operationId = `stream-tts-${idSuffix}`;
-      const requestId = `${operationId}-start`;
+      const operationId = voiceJobId ? targetMessageId : `stream-tts-${idSuffix}`;
+      const requestId = `${operationId}-${voiceJobId ? "attach" : "start"}`;
       let unsubscribe = () => {};
       let cancelled = false;
+      let attachedGeneration = -1;
+      const attachVoiceJob = () => {
+        if (!voiceJobId || cancelled || done) return;
+        const snapshot = runnerWebSocketManager.getSnapshot();
+        if (!snapshot.connected || attachedGeneration === snapshot.generation) return;
+        attachedGeneration = snapshot.generation;
+        try {
+          runnerWebSocketManager.send({
+            channel: "tts", op: "attach", requestId,
+            operationId, streamId: voiceJobId, seq: lastEventSeq,
+            payload: { operationId, jobId: voiceJobId, sinceSeq: lastEventSeq },
+          });
+        } catch {
+          attachedGeneration = -1;
+        }
+      };
       const cleanup = () => {
         cancelled = true;
         const active = streamTtsControlRef.current;
@@ -358,6 +424,7 @@ export function useSynthesizeSpeechStreamController(
       streamTtsControlRef.current = {
         operationId,
         requestId,
+        ...(voiceJobId ? { streamId: voiceJobId } : {}),
         cleanup,
       };
       closeActiveStream = cleanup;
@@ -400,7 +467,8 @@ export function useSynthesizeSpeechStreamController(
           });
           return;
         }
-        handleStreamMessage(normalized.event);
+        if (typeof normalized.seq === "number" && normalized.seq > lastEventSeq) lastEventSeq = normalized.seq;
+        handleStreamMessage(normalized.event, normalized.streamId);
       };
 
       const unsubscribeTts = runnerWebSocketManager.subscribe({ channel: "tts" }, handleManagerMessage);
@@ -412,14 +480,18 @@ export function useSynthesizeSpeechStreamController(
         unsubscribeControlError();
         unsubscribeTts();
       };
+      if (voiceJobId) {
+        const unsubscribeSnapshot = runnerWebSocketManager.subscribeSnapshot(attachVoiceJob);
+        const unsubscribeMessages = unsubscribe;
+        unsubscribe = () => { unsubscribeSnapshot(); unsubscribeMessages(); };
+      }
       runnerWebSocketManager.connect()
         .then(() => {
           if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
           try {
-            runnerWebSocketManager.send(JSON.parse(encodeRunnerWsTtsStart(startPayload, {
-              requestId,
-              operationId,
-              sessionId: streamOptions?.sessionId,
+            if (voiceJobId) attachVoiceJob();
+            else runnerWebSocketManager.send(JSON.parse(encodeRunnerWsTtsStart(startPayload, {
+              requestId, operationId, sessionId: streamOptions?.sessionId,
             })) as RunnerWsMessage);
           } catch (err) {
             done = true;
@@ -453,15 +525,18 @@ export function useSynthesizeSpeechStreamController(
     const ws = createWebSocketWithOptionalAuth(wsUrl, runnerToken);
     streamSocketRef.current = ws;
     closeActiveStream = () => {
+      if (streamSocketRef.current === ws) streamSocketRef.current = null;
       ws.close();
     };
 
     ws.onopen = () => {
       if (streamSocketRef.current !== ws || streamTtsSuppressedRef.current || ws.readyState !== WebSocket.OPEN) return;
       try {
-        const startFrame = useRunnerWsEnvelope
-          ? encodeRunnerWsTtsStart(startPayload)
-          : JSON.stringify(startPayload);
+        const startFrame = voiceJobId
+          ? (useRunnerWsEnvelope
+            ? encodeRunnerWsTtsAttach(voiceJobId, 0)
+            : JSON.stringify({ type: "attach", jobId: voiceJobId, sinceSeq: 0 }))
+          : useRunnerWsEnvelope ? encodeRunnerWsTtsStart(startPayload) : JSON.stringify(startPayload);
         ws.send(startFrame);
         recordNetworkUsage("stream-tts", utf8ByteLength(startFrame), 0);
       } catch (err) {
@@ -503,7 +578,7 @@ export function useSynthesizeSpeechStreamController(
           return;
         }
       }
-      handleStreamMessage(data);
+      handleStreamMessage(data, String(data.jobId || ""));
     };
 
     ws.onerror = (event: unknown) => {
@@ -566,6 +641,7 @@ export function useSynthesizeSpeechStreamController(
     streamTtsControlRef,
     streamTtsSuppressedRef,
     syncTtsPlaybackWantedFromPipeline,
+    stopTtsPlayback,
     ttsPlaybackMessageIdRef,
     ttsPlayingRef,
     ttsProvider,

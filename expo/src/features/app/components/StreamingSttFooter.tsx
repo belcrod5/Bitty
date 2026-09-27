@@ -44,7 +44,6 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const lastUsageUpdateRef = useRef(0);
   const pendingUsageRef = useRef<StreamingSttUsage | null>(null);
   const usageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [transcriptHeight, setTranscriptHeight] = useState(22);
   const inputRef = useRef<TextInput>(null);
   const latestTranscriptRef = useRef(transcript);
   latestTranscriptRef.current = transcript;
@@ -204,20 +203,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
               placeholderTextColor="#8e9bad"
               accessibilityLabel="文字起こしを編集"
-              onContentSizeChange={(event) => {
-                const height = Math.min(66, Math.max(22, event.nativeEvent.contentSize.height));
-                setTranscriptHeight((current) => current === height ? current : height);
-              }}
-              style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, height: transcriptHeight, padding: 0 }}
+              style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: 66, padding: 0 }}
             />
           ) : (
             <Text
               testID="streaming-stt-transcript"
               accessibilityLabel={voiceStatus === "responding" ? "Responding" : voiceStatus === "speaking" ? "Speaking" : undefined}
-              onLayout={(event) => {
-                const height = Math.min(66, Math.max(22, event.nativeEvent.layout.height));
-                setTranscriptHeight((current) => current === height ? current : height);
-              }}
               style={[{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, maxHeight: 66 }, voiceStatus ? {
                 color: voiceStatus === "responding" ? "#83f8ff" : "#ffafd9",
                 fontSize: 14,

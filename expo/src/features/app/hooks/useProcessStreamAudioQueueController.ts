@@ -1,8 +1,9 @@
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback, type MutableRefObject, type SetStateAction } from "react";
 import type {
   StreamAudioQueueItem,
   StreamSegment,
   StreamSegmentStatus,
+  StreamTtsControlState,
 } from "../types/appTypes";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
@@ -12,6 +13,9 @@ type UseProcessStreamAudioQueueControllerOptions = {
   streamAudioQueueRef: MutableRefObject<StreamAudioQueueItem[]>;
   streamCurrentChunkStartedAtRef: MutableRefObject<number>;
   streamCurrentChunkEstimatedDurationMsRef: MutableRefObject<number | null>;
+  streamSocketRef: MutableRefObject<WebSocket | null>;
+  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
+  ttsPlayingRef: MutableRefObject<boolean>;
   ttsPlaybackMessageIdRef: MutableRefObject<string>;
   setTtsQueueProcessing: (next: boolean) => void;
   syncTtsPlaybackWantedFromPipeline: (reason: string, payload?: Record<string, unknown>) => void;
@@ -25,7 +29,7 @@ type UseProcessStreamAudioQueueControllerOptions = {
     status: StreamSegmentStatus,
     updates?: Partial<StreamSegment>
   ) => void;
-  setTtsUiStatus: (value: TtsUiStatus) => void;
+  setTtsUiStatus: (value: SetStateAction<TtsUiStatus>) => void;
   playPreparedStreamAudioAndWait: (item: StreamAudioQueueItem) => Promise<boolean>;
   setReplyDebug: (value: string | ((prev: string) => string)) => void;
   shouldProjectTtsDebugToActiveSession: () => boolean;
@@ -42,6 +46,9 @@ export function useProcessStreamAudioQueueController(
     streamAudioQueueRef,
     streamCurrentChunkStartedAtRef,
     streamCurrentChunkEstimatedDurationMsRef,
+    streamSocketRef,
+    streamTtsControlRef,
+    ttsPlayingRef,
     ttsPlaybackMessageIdRef,
     setTtsQueueProcessing,
     syncTtsPlaybackWantedFromPipeline,
@@ -63,6 +70,7 @@ export function useProcessStreamAudioQueueController(
     streamAudioQueueProcessingRef.current = true;
     setTtsQueueProcessing(true);
     syncTtsPlaybackWantedFromPipeline("stream_queue_process_start");
+    let completed = false;
     try {
       await prepareTtsPlaybackSession();
       while (streamAudioQueueRef.current.length > 0) {
@@ -100,10 +108,8 @@ export function useProcessStreamAudioQueueController(
             ? Number(next.actualDurationMs)
             : null,
         });
-        if (streamAudioQueueRef.current.length > 0) {
-          setTtsUiStatus("queued");
-        }
       }
+      completed = true;
     } catch (e) {
       console.error("[stream-audio] playback error", e);
       if (shouldProjectTtsDebugToActiveSession()) {
@@ -118,6 +124,15 @@ export function useProcessStreamAudioQueueController(
       setTtsQueueProcessing(false);
       setStreamAudioQueueSize(streamAudioQueueRef.current.length);
       syncTtsPlaybackWantedFromPipeline("stream_queue_process_finally");
+      if (
+        completed &&
+        !ttsPlayingRef.current &&
+        streamAudioQueueRef.current.length === 0 &&
+        streamSocketRef.current === null &&
+        streamTtsControlRef.current === null
+      ) {
+        setTtsUiStatus((current) => current === "playing" ? "idle" : current);
+      }
     }
   }, [
     clearStreamAudioQueue,
@@ -135,7 +150,10 @@ export function useProcessStreamAudioQueueController(
     streamAudioQueueRef,
     streamCurrentChunkEstimatedDurationMsRef,
     streamCurrentChunkStartedAtRef,
+    streamSocketRef,
+    streamTtsControlRef,
     syncTtsPlaybackWantedFromPipeline,
+    ttsPlayingRef,
     ttsPlaybackMessageIdRef,
     upsertStreamSegment,
   ]);
