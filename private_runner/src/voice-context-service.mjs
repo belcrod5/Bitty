@@ -12,6 +12,7 @@ const MODEL_CONTEXT_TOKENS = 1_050_000;
 // UTF-8 bytes bound text tokens conservatively; leave room for App Server instructions and output.
 const MAX_VISIBLE_BYTES = 800_000;
 const RECENT_PAIRS = 10;
+const MAX_EVENTS = 100;
 const MEMORY_HEADER = /^<!-- voice-context:v1 summarizedThroughPair=(0|[1-9]\d*) -->\n/;
 const TOOL_ITEM_TYPES = new Set([
   "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch", "imageView",
@@ -74,7 +75,7 @@ async function syncDirectory(directory) {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
-function readEvents(buffer) {
+function readEvents(buffer, prunedThroughPairSeq = 0) {
   const completeEnd = buffer.lastIndexOf(10) + 1;
   let rows;
   try { rows = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, completeEnd)).split("\n").slice(0, -1); }
@@ -116,9 +117,13 @@ function readEvents(buffer) {
       states.set(event.clientOperationId, event.type);
     }
     if (event.type === "completed") {
-      if (event.pairSeq !== ++pairSeq || typeof event.text !== "string" || !event.text.trim()) {
+      if (!Number.isSafeInteger(event.pairSeq) || event.pairSeq <= pairSeq
+        || (!pairSeq && event.pairSeq > prunedThroughPairSeq + 1)
+        || (pairSeq && event.pairSeq !== pairSeq + 1)
+        || typeof event.text !== "string" || !event.text.trim()) {
         throw invalid("voice_store_corrupt", "Voice event log has an invalid completed pair");
       }
+      pairSeq = event.pairSeq;
     }
     events.push(event);
   }
@@ -148,6 +153,29 @@ function snapshots(events) {
     }
   }
   return { byId, pairs };
+}
+
+function boundedEvents(events) {
+  const counts = new Map();
+  for (const event of events) counts.set(event.clientOperationId, (counts.get(event.clientOperationId) || 0) + 1);
+  const removed = new Set();
+  let remaining = events.length;
+  for (const event of events) {
+    if (remaining <= MAX_EVENTS) break;
+    if (removed.has(event.clientOperationId)) continue;
+    removed.add(event.clientOperationId);
+    remaining -= counts.get(event.clientOperationId);
+  }
+  const kept = [];
+  let prunedThroughPairSeq = 0;
+  for (const event of events) {
+    if (removed.has(event.clientOperationId)) {
+      if (event.type === "completed") prunedThroughPairSeq = Math.max(prunedThroughPairSeq, event.pairSeq);
+    } else {
+      kept.push({ ...event, seq: kept.length + 1 });
+    }
+  }
+  return { events: kept, prunedThroughPairSeq };
 }
 
 function visibleBytes(pairs, memory, input, instructions) {
@@ -230,16 +258,29 @@ export function createVoiceContextService({ rootDir, createClient }) {
     if (storeFailure) throw storeFailure;
     const event = { seq: events.length + 1, at: new Date().toISOString(), clientOperationId, type, ...extra };
     try {
-      const handle = await fs.open(path.join(root, active.logicalConversationId, "events.jsonl"), "a", 0o600);
-      try {
-        await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8");
-        await handle.sync();
-      } finally { await handle.close(); }
+      const file = path.join(root, active.logicalConversationId, "events.jsonl");
+      if (events.length + 1 > MAX_EVENTS) {
+        const bounded = boundedEvents([...events, event]);
+        const prunedThroughPairSeq = Math.max(active.prunedThroughPairSeq || 0, bounded.prunedThroughPairSeq);
+        if (prunedThroughPairSeq !== (active.prunedThroughPairSeq || 0)) {
+          const next = { ...active, prunedThroughPairSeq };
+          await atomicWrite(activeFile, JSON.stringify(next));
+          active = next;
+        }
+        await atomicWrite(file, `${bounded.events.map((item) => JSON.stringify(item)).join("\n")}\n`);
+        events = bounded.events;
+      } else {
+        const handle = await fs.open(file, "a", 0o600);
+        try {
+          await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8");
+          await handle.sync();
+        } finally { await handle.close(); }
+        events.push(event);
+      }
     } catch (error) {
       storeFailure = invalid("voice_store_unavailable", "Voice event log could not be synced");
       throw storeFailure;
     }
-    events.push(event);
     ({ byId, pairs } = snapshots(events));
   }
 
@@ -297,6 +338,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
         || active.previousConversationId === active.logicalConversationId))
       || (active.model !== undefined && (typeof active.model !== "string" || !active.model))
       || (active.effort !== undefined && (typeof active.effort !== "string" || !active.effort))
+      || (active.prunedThroughPairSeq !== undefined && (!Number.isSafeInteger(active.prunedThroughPairSeq)
+        || active.prunedThroughPairSeq < 0 || active.prunedThroughPairSeq === Number.MAX_SAFE_INTEGER))
       || (active.systemInstruction !== undefined && (typeof active.systemInstruction !== "string"
         || !active.systemInstruction.trim() || bytes(active.systemInstruction) > 16_000))) {
       throw invalid("voice_store_corrupt", "Voice active conversation is invalid");
@@ -334,7 +377,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       if (error.code === "ENOENT") throw invalid("voice_store_corrupt", "Voice event log is missing");
       throw error;
     }
-    const parsed = readEvents(buffer);
+    const parsed = readEvents(buffer, active.prunedThroughPairSeq || 0);
     if (parsed.completeEnd < buffer.length) {
       await atomicWrite(path.join(directory, `events-trailing-${randomUUID()}.jsonl`), buffer);
       const handle = await fs.open(eventFile, "r+");
@@ -350,10 +393,22 @@ export function createVoiceContextService({ rootDir, createClient }) {
       throw error;
     }
     const header = raw.match(MEMORY_HEADER);
-    if (!header || Number(header[1]) > pairs.length) throw invalid("voice_store_corrupt", "Voice memory header is invalid");
+    if (!header || Number(header[1]) > Math.max(active.prunedThroughPairSeq || 0, pairs.at(-1)?.pairSeq || 0)) {
+      throw invalid("voice_store_corrupt", "Voice memory header is invalid");
+    }
     summarizedThroughPair = Number(header[1]);
     memory = raw.slice(header[0].length);
     await fs.chmod(memoryFile, 0o600);
+    if (events.length > MAX_EVENTS) {
+      const bounded = boundedEvents(events);
+      const next = { ...active,
+        prunedThroughPairSeq: Math.max(active.prunedThroughPairSeq || 0, bounded.prunedThroughPairSeq) };
+      await atomicWrite(activeFile, JSON.stringify(next));
+      await atomicWrite(eventFile, `${bounded.events.map((item) => JSON.stringify(item)).join("\n")}\n`);
+      active = next;
+      events = bounded.events;
+      ({ byId, pairs } = snapshots(events));
+    }
     if (!active.workspaceInitialized) {
       active.workspaceInitialized = true;
       await atomicWrite(activeFile, JSON.stringify(active));
@@ -670,7 +725,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     void modelTurn({ input: summaryInput, items: [], instructions: SUMMARY_INSTRUCTIONS, signal: controller.signal })
       .then(({ text }) => exclusive(async () => {
         if (summaryTask !== task || controller.signal.aborted
-          || summarizedThroughPair !== pending.fromPairSeq - 1) return;
+          || summarizedThroughPair >= pending.fromPairSeq) return;
         let savedText;
         try { savedText = await fs.readFile(file, "utf8"); }
         catch { throw invalid("voice_store_unavailable", "Voice summary storage is unavailable"); }
@@ -758,7 +813,10 @@ export function createVoiceContextService({ rootDir, createClient }) {
       stage = "completion_store";
       await exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
-        await append(clientOperationId, "completed", { pairSeq: pairs.length + 1, text: result.text });
+        await append(clientOperationId, "completed", {
+          pairSeq: Math.max(active.prunedThroughPairSeq || 0, pairs.at(-1)?.pairSeq || 0) + 1,
+          text: result.text,
+        });
       });
       inFlightId = "";
       try { notify(stateOf(clientOperationId)); } catch {}
@@ -854,7 +912,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         const next = {
           ...active, logicalConversationId,
           workspaceConversationId: active.workspaceConversationId || previousConversationId,
-          previousConversationId,
+          previousConversationId, prunedThroughPairSeq: 0,
         };
         try { await atomicWrite(activeFile, JSON.stringify(next)); }
         catch {

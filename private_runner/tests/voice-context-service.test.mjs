@@ -157,6 +157,124 @@ async function seedPairs(rootDir, logicalConversationId, count) {
     `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, { mode: 0o600 });
 }
 
+async function storedEvents(rootDir, logicalConversationId) {
+  const text = await fs.readFile(path.join(rootDir, logicalConversationId, "events.jsonl"), "utf8");
+  return text.trim() ? text.trim().split("\n").map(JSON.parse) : [];
+}
+
+test("legacy logs above 100 lines migrate by whole turns and survive reload", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 30);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await service.open()).unsummarizedMessageCount, 50);
+  const migrated = await storedEvents(rootDir, conversation.logicalConversationId);
+  assert.equal(migrated.length, 100);
+  assert.deepEqual(migrated.map(({ seq }) => seq), Array.from({ length: 100 }, (_, index) => index + 1));
+  assert.equal(migrated[0].text, "user-6");
+  assert.equal(migrated.at(-1).pairSeq, 30);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).prunedThroughPairSeq, 5);
+  await waitFor(() => codex.summaryReleases.length === 1);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
+    .includes("summarizedThroughPair=20"));
+  const reloaded = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await reloaded.open()).unsummarizedMessageCount, 20);
+  assert.equal((await complete(reloaded, conversation, "user-31")).result.status, "completed");
+  const after = await storedEvents(rootDir, conversation.logicalConversationId);
+  assert.equal(after.length, 100);
+  assert.equal(after[0].text, "user-7");
+  assert.equal(after.at(-1).pairSeq, 31);
+  assert.equal((await reloaded.history()).messages.length, 50);
+  await waitFor(() => codex.summaryReleases.length === 1);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
+    .includes("summarizedThroughPair=21"));
+});
+
+test("an in-flight turn remains intact at the 100-line boundary", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t, { holdTurns: true, holdSummaries: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 25);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  const id = randomUUID();
+  const message = { operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "pending" }] },
+  } };
+  let resolve;
+  const terminal = new Promise((done) => { resolve = done; });
+  assert.equal((await service.start(message, resolve, async () => "decline")).status, "accepted");
+  await waitFor(() => codex.releases.length === 1);
+  const running = await storedEvents(rootDir, conversation.logicalConversationId);
+  assert.ok(running.length <= 100);
+  assert.deepEqual(running.filter((event) => event.clientOperationId === id).map(({ type }) => type),
+    ["accepted", "dispatching", "native_started"]);
+  codex.releases.shift()();
+  assert.equal((await terminal).status, "completed");
+  const done = await storedEvents(rootDir, conversation.logicalConversationId);
+  assert.equal(done.length, 100);
+  assert.deepEqual(done.filter((event) => event.clientOperationId === id).map(({ type }) => type),
+    ["accepted", "dispatching", "native_started", "completed"]);
+  assert.equal(done.at(-1).pairSeq, 26);
+  await waitFor(() => codex.summaryReleases.length === 1);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
+    .includes("summarizedThroughPair=16"));
+  assert.equal((await createVoiceContextService({ rootDir, createClient: codex.createClient }).status(conversation.logicalConversationId, id)).status,
+    "completed");
+});
+
+test("clearing memory after migration replans a summary from retained pairs", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true, reply: "new summary" });
+  await seedPairs(rootDir, conversation.logicalConversationId, 30);
+  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
+  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=20 -->\nold summary");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await service.open()).unsummarizedMessageCount, 20);
+  assert.equal((await service.clearMemory()).unsummarizedMessageCount, 50);
+  await waitFor(() => codex.summaryReleases.length === 1);
+  const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
+  assert.equal(pending.fromPairSeq, 6);
+  assert.equal(pending.throughPairSeq, 20);
+  codex.summaryReleases.shift()();
+  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=20"));
+  assert.equal((await service.open()).unsummarizedMessageCount, 20);
+});
+
+test("the completed-pair cursor survives after every completed turn ages out", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 25);
+  const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
+  const events = await storedEvents(rootDir, conversation.logicalConversationId);
+  const at = new Date().toISOString();
+  for (let index = 0; index < 60; index++) {
+    const clientOperationId = randomUUID();
+    events.push({ seq: events.length + 1, at, clientOperationId, type: "accepted", text: `failed-${index}` });
+    events.push({ seq: events.length + 1, at, clientOperationId, type: "preflight_failed", code: "test" });
+  }
+  await fs.writeFile(eventFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await service.open()).unsummarizedMessageCount, 0);
+  assert.ok((await storedEvents(rootDir, conversation.logicalConversationId)).length <= 100);
+  assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).prunedThroughPairSeq, 25);
+  assert.equal((await complete(service, conversation, "new pair")).result.status, "completed");
+  assert.equal((await storedEvents(rootDir, conversation.logicalConversationId)).at(-1).pairSeq, 26);
+  assert.equal((await createVoiceContextService({ rootDir, createClient: codex.createClient }).open()).unsummarizedMessageCount, 2);
+});
+
+test("a failed summary does not prevent the 100-line window from advancing", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t, { failSummary: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 30);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(() => codex.calls.some(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never"));
+  assert.equal((await complete(service, conversation, "after failure")).result.status, "completed");
+  const events = await storedEvents(rootDir, conversation.logicalConversationId);
+  assert.equal(events.length, 100);
+  assert.equal(events.at(-1).pairSeq, 31);
+  assert.equal((await service.open()).unsummarizedMessageCount, 50);
+});
+
 test("voice turns persist before acknowledgement and replay without generation", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t);
   const { accepted, result, message } = await complete(service, conversation, "hello");
@@ -1143,7 +1261,7 @@ test("existing empty v1 root without active also stays fail closed", async (t) =
   assert.deepEqual(await fs.readdir(rootDir), []);
 });
 
-test("50+ messages stay ordered until durable summary; canceled stale result cannot commit", async (t) => {
+test("the bounded message window stays ordered; canceled stale summary cannot commit", async (t) => {
   const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true, ignoreAbort: true, reply: "要約😀" });
   await seedPairs(rootDir, conversation.logicalConversationId, 25);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
@@ -1153,11 +1271,11 @@ test("50+ messages stay ordered until durable summary; canceled stale result can
   const staleSummaryCwd = codex.calls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").params.cwd;
   const completed = await complete(service, conversation, "user-26");
   assert.equal(completed.result.status, "completed");
-  assert.equal(completed.result.unsummarizedMessageCount, 52);
+  assert.equal(completed.result.unsummarizedMessageCount, 50);
   const injection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(injection.length, 50);
+  assert.equal(injection.length, 48);
   assert.deepEqual(injection.map((item) => item.content[0].text),
-    Array.from({ length: 25 }, (_, index) => [`user-${index + 1}`, `assistant-${index + 1}`]).flat());
+    Array.from({ length: 24 }, (_, index) => [`user-${index + 2}`, `assistant-${index + 2}`]).flat());
   await waitFor(() => codex.summaryReleases.length === 1);
   const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
   assert.match(await fs.readFile(memoryFile, "utf8"), /summarizedThroughPair=0/);
@@ -1180,22 +1298,22 @@ test("50+ messages stay ordered until durable summary; canceled stale result can
     Array.from({ length: 10 }, (_, index) => [`user-${index + 17}`, index === 9 ? "要約😀" : `assistant-${index + 17}`]).flat());
   const events = (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"), "utf8"))
     .trim().split("\n").map(JSON.parse);
-  assert.equal(events.filter((event) => event.type === "completed").length, 27);
+  assert.equal(events.filter((event) => event.type === "completed").length, 25);
   await waitFor(() => codex.summaryReleases.length === 1);
   codex.summaryReleases.shift()();
   await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=17"));
 });
 
-test("a 20-to-50-plus message burst never waits for a held summary or omits backlog", async (t) => {
+test("a burst does not wait for a held summary and keeps the newest complete turns", async (t) => {
   const { rootDir, conversation, service, codex } = await fixture(t, { holdSummaries: true });
   for (let number = 1; number <= 26; number++) {
     assert.equal((await complete(service, conversation, `burst-${number}`)).result.status, "completed");
   }
-  assert.equal((await service.open()).unsummarizedMessageCount, 52);
+  assert.equal((await service.open()).unsummarizedMessageCount, 50);
   const injected = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(injected.length, 50);
+  assert.equal(injected.length, 48);
   assert.deepEqual(injected.filter((item) => item.role === "user").map((item) => item.content[0].text),
-    Array.from({ length: 25 }, (_, index) => `burst-${index + 1}`));
+    Array.from({ length: 24 }, (_, index) => `burst-${index + 2}`));
   assert.match(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"),
     /summarizedThroughPair=0/);
   await waitFor(() => codex.summaryReleases.length > 0);
@@ -1233,8 +1351,8 @@ test("restart retains backlog and reclaims only legacy summary temporary directo
   const result = await complete(service, conversation, "after-restart");
   assert.equal(result.result.status, "completed");
   const items = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(items.length, 50);
-  assert.equal(items[0].content[0].text, "user-1");
+  assert.equal(items.length, 48);
+  assert.equal(items[0].content[0].text, "user-2");
   assert.equal(items.at(-1).content[0].text, "assistant-25");
   await waitFor(() => codex.summaryReleases.length >= 2);
   for (const finish of codex.summaryReleases.splice(0)) finish();

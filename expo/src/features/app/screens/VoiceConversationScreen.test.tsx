@@ -235,16 +235,29 @@ test("the footer reveals stored messages and closes the history panel", async ()
   await screen.unmount();
 });
 
-test("macOS and Android keep the dark backdrop without loading native blur", async () => {
-  for (const os of ["macos", "android"]) {
-    Object.defineProperty(Platform, "OS", { configurable: true, value: os });
-    const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
-    await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
-    expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
-    expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
-      .toBe("rgba(0, 0, 0, 0.68)");
-    await screen.unmount();
-  }
+test("macOS renders the native within-window blur behind the dark overlay", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const blur = screen.getByTestId("voice-conversation-board-blur");
+  expect(blur.type).toBe("BittyVoiceBlur");
+  expect(blur.props.pointerEvents).toBe("none");
+  expect(StyleSheet.flatten(blur.props.style).opacity).toBeUndefined();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
+    .toBe("rgba(0, 0, 0, 0.4)");
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
+  expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
+  await screen.unmount();
+});
+
+test("Android keeps the dark fallback without loading native blur", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
+    .toBe("rgba(0, 0, 0, 0.68)");
+  await screen.unmount();
 });
 
 test("history omits timestamps that are missing or invalid", async () => {

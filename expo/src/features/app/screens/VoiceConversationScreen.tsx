@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
-import { Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS,
-  useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
+import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
@@ -57,10 +57,6 @@ export function VoiceConversationScreen({
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
   const [historyExpanded, setHistoryExpanded] = useState(false);
-  const backdropOpacity = useSharedValue(0);
-  const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
-  const BlurView = useMemo(() => Platform.OS === "ios"
-    ? require("expo-blur").BlurView as typeof import("expo-blur").BlurView : null, []);
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
@@ -93,9 +89,6 @@ export function VoiceConversationScreen({
   useEffect(() => {
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
-  useEffect(() => {
-    backdropOpacity.value = withTiming(historyExpanded ? 1 : 0, { duration: reduceMotion ? 0 : 240 });
-  }, [backdropOpacity, historyExpanded, reduceMotion]);
   const footerSwipe = useMemo(() => Gesture.Pan()
     .enabled(!editingTranscript)
     .activeOffsetY([-24, 24])
@@ -183,14 +176,7 @@ export function VoiceConversationScreen({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
-      {historyExpanded && BlurView ? (
-        <BlurView testID="voice-conversation-board-blur" pointerEvents="none"
-          intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
-      ) : null}
-      <Reanimated.View testID="voice-conversation-backdrop"
-        pointerEvents={historyExpanded ? "auto" : "none"}
-        style={[StyleSheet.absoluteFill,
-          { backgroundColor: BlurView ? "rgba(0, 0, 0, 0.4)" : "rgba(0, 0, 0, 0.68)" }, backdropStyle]} />
+      <VoiceHistoryBackdrop expanded={historyExpanded} reduceMotion={reduceMotion === true} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
