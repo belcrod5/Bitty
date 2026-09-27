@@ -14,6 +14,9 @@ const mockVoice = {
   reply: { text: "表示しない返答本文", operationId: "operation-1" },
   error: "",
   contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
+  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string }[],
+  historyError: "",
+  refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
   interrupt: jest.fn(),
@@ -105,7 +108,24 @@ beforeEach(() => {
   mockVoice.ready = true;
   mockVoice.turnStatus = "completed";
   mockVoice.error = "";
+  mockVoice.history = [];
+  mockVoice.historyError = "";
   mockReduceMotion = false;
+});
+
+test("the footer reveals stored messages and closes the history panel", async () => {
+  mockVoice.history = [
+    { role: "user", text: "最初の質問", clientOperationId: "one" },
+    { role: "assistant", text: "最初の返答", clientOperationId: "one" },
+  ];
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("voice-history-open"));
+  expect(screen.getByText("最初の質問")).toBeTruthy();
+  expect(screen.getByText("最初の返答")).toBeTruthy();
+  expect(mockVoice.refreshHistory).toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("voice-history-handle"));
+  expect(screen.queryByText("最初の質問")).toBeNull();
+  await screen.unmount();
 });
 
 test("routes privacy-safe STT diagnostics from the voice conversation to the shared log", async () => {

@@ -3,6 +3,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { VoiceConversationSettings } from "./VoiceConversationSettings";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
+jest.mock("./SpeechRecognitionSettings", () => ({ SpeechRecognitionSettings: () => null }));
 
 const mockManager = {
   connect: jest.fn(async () => undefined),
@@ -19,7 +20,7 @@ beforeEach(() => {
   mockManager.request.mockImplementation(async ({ op, payload }: { op: string; payload?: Record<string, string> }) => ({
     op: `${op}.result`,
     payload: op === "voice.settings" ? {
-      model: "gpt-6-luna", effort: "low", models: [
+      model: "gpt-6-luna", effort: "low", systemInstruction: "default voice instructions", models: [
         { modelId: "gpt-6-luna", label: "Luna", effortOptions: ["low"] },
         { modelId: "another-model", label: "Another", effortOptions: ["medium", "high"] },
       ],
@@ -49,6 +50,18 @@ test("selects a catalog model with a supported effort", async () => {
   }));
 });
 
+test("edits and saves the complete voice system instruction", async () => {
+  const screen = await render(<VoiceConversationSettings />);
+  await waitFor(() => expect(screen.getByTestId("voice-system-instruction").props.value).toBe("default voice instructions"));
+  await fireEvent.changeText(screen.getByTestId("voice-system-instruction"), "Speak briefly and ask first.");
+  await fireEvent.press(screen.getByLabelText("システム指示を保存"));
+  await waitFor(() => expect(mockManager.request).toHaveBeenCalledWith({
+    channel: "agent", op: "voice.settings.update", payload: {
+      model: "gpt-6-luna", effort: "low", systemInstruction: "Speak briefly and ask first.",
+    },
+  }));
+});
+
 test("confirms each clear action and calls its separate Runner operation", async () => {
   const alert = jest.spyOn(Alert, "alert").mockImplementation((_title, _message, buttons) => {
     buttons?.find((button) => button.text === "クリア")?.onPress?.();
@@ -75,7 +88,7 @@ test("keeps the last confirmed counts when clear fails", async () => {
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.messages.clear") throw new Error("connection lost");
     return { op: `${op}.result`, payload: {
-      model: "gpt-6-luna", effort: "low", models: [], storedMessageCount: 7, memoryCharacterCount: 42,
+      model: "gpt-6-luna", effort: "low", systemInstruction: "default voice instructions", models: [], storedMessageCount: 7, memoryCharacterCount: 42,
     } };
   });
   const screen = await render(<VoiceConversationSettings />);
@@ -97,7 +110,7 @@ test("waits for settings before enabling clears or showing saved counts", async 
   await waitFor(() => expect(mockManager.request).toHaveBeenCalledWith({ channel: "agent", op: "voice.settings" }));
   await act(async () => {
     resolveSettings({ op: "voice.settings.result", payload: {
-      model: "gpt-6-luna", effort: "low", models: [], storedMessageCount: 7, memoryCharacterCount: 42,
+      model: "gpt-6-luna", effort: "low", systemInstruction: "default voice instructions", models: [], storedMessageCount: 7, memoryCharacterCount: 42,
     } });
   });
   await waitFor(() => expect(screen.getByText("保存中: 7件 · 要約メモリーは残します")).toBeTruthy());
@@ -111,7 +124,7 @@ test("message clear updates its count while preserving the memory count", async 
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => ({
     op: `${op}.result`, payload: op === "voice.messages.clear"
       ? { storedMessageCount: 0, memoryCharacterCount: 42 }
-      : { model: "gpt-6-luna", effort: "low", models: [], storedMessageCount: 7, memoryCharacterCount: 42 },
+      : { model: "gpt-6-luna", effort: "low", systemInstruction: "default voice instructions", models: [], storedMessageCount: 7, memoryCharacterCount: 42 },
   }));
   const screen = await render(<VoiceConversationSettings />);
   await waitFor(() => expect(screen.getByText("保存中: 7件 · 要約メモリーは残します")).toBeTruthy());

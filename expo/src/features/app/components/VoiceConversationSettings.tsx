@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
 import { SettingsSelect } from "./SettingsSelect";
+import { SpeechRecognitionSettings } from "./SpeechRecognitionSettings";
 
 type VoiceModel = { modelId: string; label: string; effortOptions: ReasoningEffort[] };
 type VoiceSettings = {
   model: string;
   effort: ReasoningEffort;
+  systemInstruction: string;
   models: VoiceModel[];
   storedMessageCount: number;
   memoryCharacterCount: number;
@@ -31,11 +34,13 @@ function countsOf(result: Record<string, unknown>) {
 
 export function VoiceConversationSettings() {
   const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [instructionDraft, setInstructionDraft] = useState("");
 
   const request = useCallback(async (op: string, payload?: Record<string, unknown>) => {
     const response = await manager.request({ channel: "agent", op, ...(payload ? { payload } : {}) });
@@ -49,6 +54,7 @@ export function VoiceConversationSettings() {
   const readSettings = useCallback(async (): Promise<VoiceSettings> => {
     const result = await request("voice.settings");
     if (typeof result.model !== "string" || !isReasoningEffort(result.effort)
+      || typeof result.systemInstruction !== "string"
       || !Array.isArray(result.models)) throw new Error("音声会話の設定を読み込めません。");
     const models = result.models.flatMap((value) => {
       if (!value || typeof value !== "object" || typeof value.modelId !== "string"
@@ -56,7 +62,8 @@ export function VoiceConversationSettings() {
       const efforts = value.effortOptions.filter(isReasoningEffort);
       return efforts.length ? [{ modelId: value.modelId, label: String(value.label || value.modelId), effortOptions: efforts }] : [];
     });
-    return { model: result.model, effort: result.effort, models, ...countsOf(result) };
+    return { model: result.model, effort: result.effort, systemInstruction: result.systemInstruction,
+      models, ...countsOf(result) };
   }, [request]);
 
   useEffect(() => {
@@ -65,6 +72,7 @@ export function VoiceConversationSettings() {
     void manager.connect().then(readSettings).then((loaded) => {
       if (current) {
         setSettings(loaded);
+        setInstructionDraft(loaded.systemInstruction);
         setError("");
       }
     }).catch((cause) => {
@@ -73,12 +81,15 @@ export function VoiceConversationSettings() {
     return () => { current = false; };
   }, [connected, generation, manager, readSettings]);
 
-  const update = async (model: string, effort: ReasoningEffort) => {
+  const update = async (model: string, effort: ReasoningEffort, systemInstruction?: string) => {
     setBusy(true);
     setError("");
     try {
-      const result = await request("voice.settings.update", { model, effort });
-      setSettings((current) => current && { ...current, model: String(result.model), effort: result.effort as ReasoningEffort });
+      const result = await request("voice.settings.update", { model, effort,
+        ...(systemInstruction !== undefined ? { systemInstruction } : {}) });
+      setSettings((current) => current && { ...current, model: String(result.model),
+        effort: result.effort as ReasoningEffort,
+        systemInstruction: typeof result.systemInstruction === "string" ? result.systemInstruction : current.systemInstruction });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "設定を保存できません。");
     } finally { setBusy(false); }
@@ -135,6 +146,28 @@ export function VoiceConversationSettings() {
           selectedValue={settings?.effort || ""}
           onSelect={(effort) => { if (settings && !busy) void update(settings.model, effort as ReasoningEffort); }}
         />
+        <View style={[styles.settingsRow, styles.settingsRowDivider, { flexDirection: "column", alignItems: "stretch" }]}>
+          <Text style={styles.settingsRowLabel}>音声会話のシステム指示</Text>
+          <Text style={styles.settingsRowDescription}>音声会話の返答に適用されます。</Text>
+          <TextInput
+            testID="voice-system-instruction"
+            accessibilityLabel="音声会話のシステム指示"
+            value={instructionDraft}
+            onChangeText={setInstructionDraft}
+            multiline
+            editable={!!settings && !busy}
+            style={{ minHeight: 76, padding: 10, borderRadius: 8,
+              color: theme.colors.groupedTextPrimary, backgroundColor: theme.colors.surfaceRaised,
+              textAlignVertical: "top" }}
+          />
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="システム指示を保存"
+            disabled={!settings || busy || !connected || instructionDraft === settings.systemInstruction}
+            onPress={() => { if (settings) void update(settings.model, settings.effort, instructionDraft); }}
+            style={{ alignSelf: "flex-end" }}>
+            <Text style={styles.settingsActionText}>保存</Text>
+          </TouchableOpacity>
+        </View>
+        <SpeechRecognitionSettings />
         <View style={[styles.settingsRow, styles.settingsRowDivider]}>
           <View style={styles.settingsRowLabelWrap}>
             <Text style={styles.settingsRowLabel}>要約メモリー</Text>

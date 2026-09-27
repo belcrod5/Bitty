@@ -148,8 +148,8 @@ function snapshots(events) {
   return { byId, pairs };
 }
 
-function visibleBytes(pairs, memory, input) {
-  return bytes(VOICE_INSTRUCTIONS) + bytes(memory ? MEMORY_PREFIX + memory : "") + bytes(input)
+function visibleBytes(pairs, memory, input, instructions) {
+  return bytes(instructions) + bytes(memory ? MEMORY_PREFIX + memory : "") + bytes(input)
     + pairs.reduce((size, pair) => size + bytes(pair.user) + bytes(pair.assistant), 0);
 }
 
@@ -180,7 +180,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
   let serial = Promise.resolve();
 
   function settings() {
-    return { model: active.model || DEFAULT_MODEL, effort: active.effort || DEFAULT_EFFORT };
+    return { model: active.model || DEFAULT_MODEL, effort: active.effort || DEFAULT_EFFORT,
+      systemInstruction: active.systemInstruction ?? VOICE_INSTRUCTIONS };
   }
 
   async function clearPreviousConversation() {
@@ -293,7 +294,9 @@ export function createVoiceContextService({ rootDir, createClient }) {
       || (active.previousConversationId !== undefined && (!UUID.test(active.previousConversationId)
         || active.previousConversationId === active.logicalConversationId))
       || (active.model !== undefined && (typeof active.model !== "string" || !active.model))
-      || (active.effort !== undefined && (typeof active.effort !== "string" || !active.effort))) {
+      || (active.effort !== undefined && (typeof active.effort !== "string" || !active.effort))
+      || (active.systemInstruction !== undefined && (typeof active.systemInstruction !== "string"
+        || !active.systemInstruction.trim() || bytes(active.systemInstruction) > 16_000))) {
       throw invalid("voice_store_corrupt", "Voice active conversation is invalid");
     }
     await ownedDirectory(workspaceRoot, !active.workspaceInitialized);
@@ -368,7 +371,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     const latestInput = inFlightId && ["accepted", "running"].includes(byId.get(inFlightId)?.status)
       ? byId.get(inFlightId)?.userText || "" : "";
     // Text bytes are an upper bound on text tokens, excluding App Server's own hidden input.
-    const estimatedTokens = visibleBytes(remaining, memory, latestInput);
+    const estimatedTokens = visibleBytes(remaining, memory, latestInput, settings().systemInstruction);
     return {
       estimatedContextUsagePercent: settings().model === DEFAULT_MODEL
         ? Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)) : null,
@@ -677,7 +680,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
           throw invalid("voice_store_corrupt", "Voice summary range changed");
         }
         const nextMemory = memory ? `${memory}\n\n${text}` : text;
-        if (visibleBytes([], nextMemory, "") > MAX_VISIBLE_BYTES) {
+        if (visibleBytes([], nextMemory, "", settings().systemInstruction) > MAX_VISIBLE_BYTES) {
           throw invalid("voice_context_too_large", "Voice summary is too large");
         }
         try {
@@ -732,7 +735,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       const { selected, committedMemory } = await exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
         const selected = pairs.filter((pair) => pair.pairSeq > summarizedThroughPair);
-        if (visibleBytes(selected, memory, input) > MAX_VISIBLE_BYTES) {
+        if (visibleBytes(selected, memory, input, settings().systemInstruction) > MAX_VISIBLE_BYTES) {
           throw invalid("voice_context_too_large", "Voice context exceeds safe model input budget");
         }
         const committedMemory = memory;
@@ -746,7 +749,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         items.push(message("assistant", pair.assistant));
       }
       stage = "model_turn";
-      const result = await modelTurn({ input, items, instructions: VOICE_INSTRUCTIONS, onApproval,
+      const result = await modelTurn({ input, items, instructions: settings().systemInstruction, onApproval,
         signal,
         onText: hooks.onText, onTextError: hooks.onTextError,
         onStarted: ({ threadId, turnId }) => exclusive(() => append(clientOperationId, "native_started", { threadId, turnId })) });
@@ -794,22 +797,24 @@ export function createVoiceContextService({ rootDir, createClient }) {
         return { ...settings(), ...usage(), models };
       });
     },
-    async configure(model, effort) {
+    async configure(model, effort, systemInstruction) {
       await exclusive(load);
       const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
       return exclusive(async () => {
         await load();
         if (inFlightId) throw invalid("session_busy", "Voice conversation is busy");
-        if (!models.some((option) => option.modelId === model && option.effortOptions.includes(effort))) {
-          throw invalid("turn_rejected", "Voice model or effort is unavailable");
+        const nextInstruction = systemInstruction === undefined ? settings().systemInstruction : systemInstruction;
+        if (!models.some((option) => option.modelId === model && option.effortOptions.includes(effort))
+          || typeof nextInstruction !== "string" || !nextInstruction.trim() || bytes(nextInstruction) > 16_000) {
+          throw invalid("turn_rejected", "Voice settings are invalid");
         }
         cancelSummary();
-        try { await atomicWrite(activeFile, JSON.stringify({ ...active, model, effort })); }
+        try { await atomicWrite(activeFile, JSON.stringify({ ...active, model, effort, systemInstruction: nextInstruction })); }
         catch {
           storeFailure = invalid("voice_store_unavailable", "Voice settings could not be synced");
           throw storeFailure;
         }
-        active = { ...active, model, effort };
+        active = { ...active, model, effort, systemInstruction: nextInstruction };
         queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { ...settings(), models };
       });
@@ -863,6 +868,19 @@ export function createVoiceContextService({ rootDir, createClient }) {
         return { logicalConversationId, ...usage() };
       });
     },
+    async history() {
+      return exclusive(async () => {
+        await load();
+        const messages = [];
+        for (const state of byId.values()) {
+          messages.push({ role: "user", text: state.userText, clientOperationId: state.clientOperationId });
+          if (state.status === "completed") {
+            messages.push({ role: "assistant", text: state.text, clientOperationId: state.clientOperationId });
+          }
+        }
+        return { logicalConversationId: active.logicalConversationId, messages };
+      });
+    },
     async open() {
       const { task } = await exclusive(() => ({ task: inFlightController?.signal.aborted ? inFlightTask : null }));
       if (task) await task;
@@ -907,7 +925,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
           || typeof text !== "string" || !text.trim()) {
           throw invalid("turn_rejected", "Invalid voice turn request");
         }
-        if (bytes(VOICE_INSTRUCTIONS) + bytes(text) > MAX_VISIBLE_BYTES) {
+        if (bytes(settings().systemInstruction) + bytes(text) > MAX_VISIBLE_BYTES) {
           throw invalid("turn_rejected", "Voice utterance exceeds safe model input budget");
         }
         const previous = byId.get(id);

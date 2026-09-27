@@ -375,6 +375,33 @@ test("voice settings use the live catalog, validate effort, and survive restart"
   assert.equal(turns.at(-1).params.effort, "high");
 });
 
+test("voice system instructions save in the active store and drive later turns", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t);
+  const initial = (await service.getSettings()).systemInstruction;
+  assert.match(initial, /何かを実行するときは、必ずユーザに確認してから実行してください/);
+  await assert.rejects(service.configure("gpt-6-luna", "low", " "), { code: "turn_rejected" });
+  await service.configure("gpt-6-luna", "low", "Answer like a radio host.");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.getSettings()).systemInstruction, "Answer like a radio host.");
+  assert.equal((await complete(restarted, conversation, "hello")).result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "thread/start").at(-1).params.developerInstructions,
+    "Answer like a radio host.");
+  await restarted.clearMessages();
+  assert.equal((await restarted.getSettings()).systemInstruction, "Answer like a radio host.");
+});
+
+test("voice history reads stored user and assistant messages in turn order", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t);
+  await complete(service, conversation, "first");
+  await complete(service, conversation, "second");
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.deepEqual((await restarted.history()).messages.map(({ role, text }) => [role, text]), [
+    ["user", "first"], ["assistant", "answer"], ["user", "second"], ["assistant", "answer"],
+  ]);
+  await restarted.clearMessages();
+  assert.deepEqual((await restarted.history()).messages, []);
+});
+
 test("settings count every stored user text and completed reply, including failed turns", async (t) => {
   const { rootDir, codex, conversation } = await fixture(t, { ephemeral: false });
   await seedPairs(rootDir, conversation.logicalConversationId, 2);
