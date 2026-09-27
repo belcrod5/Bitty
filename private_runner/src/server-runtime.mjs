@@ -1747,21 +1747,6 @@ const codexRawSessionOwnership = createCodexRawSessionOwnership({
   sendRpc: sendCodexRelayRpcToClient,
 });
 
-function splitPseudoTextDeltas(text) {
-  const source = String(text || "");
-  const chunks = [];
-  let buf = "";
-  for (const ch of source) {
-    buf += ch;
-    if (isTtsBoundaryChar(ch) || buf.length >= 18) {
-      chunks.push(buf);
-      buf = "";
-    }
-  }
-  if (buf) chunks.push(buf);
-  return chunks;
-}
-
 function buildOpenAICodexResponseRequest(prompt, opts = {}) {
   const modelInfo = opts.modelInfo || OPENAI_CODEX_MODEL_INFO;
   const reasoningEffort = String(opts.reasoningEffort || OPENAI_CODEX_DEFAULT_REASONING_EFFORT || "").trim();
@@ -2005,12 +1990,7 @@ async function runCodexStreamLeased(prompt, opts = {}) {
       onMode("pseudo_delta");
       modeSent = true;
     }
-    const pseudoChunks = splitPseudoTextDeltas(completedReply);
-    for (const chunk of pseudoChunks) {
-      streamedReply += chunk;
-      onText(chunk, "pseudo");
-      await sleep(12);
-    }
+    onText(completedReply, "pseudo");
   }
 
   const reply = String(streamedReply || completedReply || "").trim();
@@ -6419,14 +6399,7 @@ async function runReplyUsecase(req, opts = {}) {
   });
   if (stream && onMode) onMode("file_tools_pseudo");
   const reply = fileResult.reply;
-  if (stream && onText) {
-    const chunks = splitPseudoTextDeltas(reply);
-    for (const chunk of chunks) {
-      if (signal?.aborted) break;
-      onText(chunk, "pseudo");
-      await sleep(12);
-    }
-  }
+  if (stream && onText && reply && !signal?.aborted) onText(reply, "pseudo");
   return {
     mode: "file-tools",
     reply,
@@ -12030,6 +12003,7 @@ export const __TESTING__ = {
   parseHttpBearerToken,
   normalizeReplyExecutionRequest,
   runReplyUsecase,
+  runCodexStream,
   runCodexWithFileTools,
   executeLlmFileToolCall,
   appendAppConversationToCliRollout,
