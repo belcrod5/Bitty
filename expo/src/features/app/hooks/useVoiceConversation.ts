@@ -15,6 +15,8 @@ type PendingTurn = {
   reject?: (error: Error) => void;
   readAloud: boolean;
   accepted: boolean;
+  jobId?: string;
+  tts?: { ttsProvider: string; voiceId?: string; speedScale: number };
 };
 
 function payloadOf(message: RunnerWsMessage): Record<string, unknown> {
@@ -54,6 +56,8 @@ export function useVoiceConversation(
   onCompleted: (text: string, operationId: string) => void,
   onApprovalRequest?: (request: ApprovalRequest) => Promise<ApprovalAction>,
   onApprovalResolved?: (request: ApprovalRequest) => void,
+  onJob?: (jobId: string, operationId: string) => void,
+  tts?: { ttsProvider: string; voiceId?: string; speedScale: number },
 ) {
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
@@ -66,6 +70,8 @@ export function useVoiceConversation(
   const turnRevisionRef = useRef(0);
   const conversationIdRef = useRef("");
   const onCompletedRef = useRef(onCompleted);
+  const onJobRef = useRef(onJob);
+  const ttsRef = useRef(tts);
   const onApprovalRequestRef = useRef(onApprovalRequest);
   const onApprovalResolvedRef = useRef(onApprovalResolved);
   const approvalsRef = useRef(new Map<string, { request: ApprovalRequest; operationId: string }>());
@@ -73,6 +79,8 @@ export function useVoiceConversation(
   const syncingRef = useRef(false);
   const validatedGenerationRef = useRef(0);
   onCompletedRef.current = onCompleted;
+  onJobRef.current = onJob;
+  ttsRef.current = tts;
   onApprovalRequestRef.current = onApprovalRequest;
   onApprovalResolvedRef.current = onApprovalResolved;
 
@@ -81,6 +89,11 @@ export function useVoiceConversation(
     const status = String(payload.status || "");
     const pending = pendingRef.current;
     if (!pending || pending.id !== id || !aliveRef.current) return;
+    const jobId = String(payload.jobId || "");
+    if (pending.readAloud && jobId && !pending.jobId) {
+      pending.jobId = jobId;
+      onJobRef.current?.(jobId, id);
+    }
     const stats = contextStatsOf(payload);
     if (stats) setContextStats((current) => sameContextStats(current, stats) ? current : stats);
     if (acceptedPersisted || status === "accepted" || status === "running" || status === "completed") {
@@ -100,7 +113,7 @@ export function useVoiceConversation(
       setReply({ text: payload.text, operationId: id });
       setTurnStatus("completed");
       setError("");
-      if (pending.readAloud) onCompletedRef.current(payload.text, id);
+      if (pending.readAloud && !pending.jobId) onCompletedRef.current(payload.text, id);
       return;
     }
     const message = failureMessage(payload);
@@ -122,6 +135,7 @@ export function useVoiceConversation(
           logicalConversationId: conversationIdRef.current,
           clientOperationId: pending.id,
           input: { blocks: [{ type: "text", text: pending.text }] },
+          ...(pending.tts ? { tts: pending.tts } : {}),
         },
       }, { timeoutMs: 30_000 });
       if (response.op === "turn.accepted") {
@@ -328,6 +342,7 @@ export function useVoiceConversation(
       const pending: PendingTurn = {
         id: randomUUID(), text: trimmed, onAccepted, resolve, reject,
         readAloud: true, accepted: false,
+        tts: ttsRef.current,
       };
       turnRevisionRef.current += 1;
       pendingRef.current = pending;

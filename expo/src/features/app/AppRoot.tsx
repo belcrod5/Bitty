@@ -2785,6 +2785,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     baseUrl,
     ttsStreamWsUrl,
     clearStreamAudioQueue,
+    stopTtsPlayback,
     upsertStreamSegment,
     enqueueStreamAudio,
     patchConversationMessageById: (messageId, patch) => {
@@ -6170,7 +6171,11 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           synthesizeSpeechStream,
           stopTtsPlayback,
           isTtsPlaybackActive,
+          isTtsPlaying: ttsPlaying,
           ttsUiStatus,
+          ttsProvider,
+          selectedVoiceId,
+          ttsSpeed,
           onApprovalRequest: handleApprovalRequest,
           onApprovalResolved: clearResolvedApproval,
         }}

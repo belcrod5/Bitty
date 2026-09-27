@@ -14,10 +14,14 @@ const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
 
 export type VoiceConversationPlayback = {
-  synthesizeSpeechStream: (text: string, target: { messageId: string }) => Promise<void>;
+  synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string }) => Promise<void>;
   stopTtsPlayback: (options?: { interruptStream?: boolean; reason?: string; expectedMessageId?: string }) => Promise<void>;
   isTtsPlaybackActive: boolean;
+  isTtsPlaying?: boolean;
   ttsUiStatus: "idle" | "queued" | "synthesizing" | "playing" | "error";
+  ttsProvider?: string;
+  selectedVoiceId?: string;
+  ttsSpeed?: number;
   onApprovalRequest?: (request: ApprovalRequest) => Promise<ApprovalAction>;
   onApprovalResolved?: (request: ApprovalRequest) => void;
 };
@@ -26,7 +30,11 @@ export function VoiceConversationScreen({
   synthesizeSpeechStream,
   stopTtsPlayback,
   isTtsPlaybackActive,
+  isTtsPlaying,
   ttsUiStatus,
+  ttsProvider,
+  selectedVoiceId,
+  ttsSpeed,
   onApprovalRequest,
   onApprovalResolved,
   onClose,
@@ -44,20 +52,26 @@ export function VoiceConversationScreen({
   const mountedRef = useRef(true);
   const voicePlaybackMessageIdRef = useRef("");
 
-  const playReply = useCallback(async (text: string, operationId: string) => {
+  const playReply = useCallback(async (text: string, operationId: string, jobId?: string) => {
     if (!mountedRef.current) return;
     setSynthesisStarting(true);
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
     try {
-      await synthesizeSpeechStream(text, { messageId: operationId });
+      await synthesizeSpeechStream(text, { messageId: operationId, ...(jobId ? { jobId } : {}) });
     } catch {
       if (mountedRef.current) setSynthesisStarting(false);
     } finally {
       if (mountedRef.current) setSynthesisRequestSettled(true);
     }
   }, [synthesizeSpeechStream]);
-  const voice = useVoiceConversation(playReply, onApprovalRequest, onApprovalResolved);
+  const voice = useVoiceConversation(
+    playReply, onApprovalRequest, onApprovalResolved,
+    (jobId, operationId) => { void playReply("", operationId, jobId); },
+    ttsProvider && typeof ttsSpeed === "number"
+      ? { ttsProvider, voiceId: selectedVoiceId?.trim() || undefined, speedScale: ttsSpeed }
+      : undefined,
+  );
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
   const canStart = voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
@@ -108,7 +122,7 @@ export function VoiceConversationScreen({
   }, [stopTtsPlayback, streamingStt.abort]);
 
   const voiceStatus = editingTranscript || voice.error || transcript || (voice.reply && ttsUiStatus === "error")
-    ? undefined : replyLoading ? "responding" : playbackActive ? "speaking" : undefined;
+    ? undefined : isTtsPlaying || ttsUiStatus === "playing" ? "speaking" : replyLoading ? "responding" : playbackActive ? "speaking" : undefined;
   const statusLabel = voiceStatus === "responding" ? "responding..." : "speaking...";
 
   useEffect(() => {

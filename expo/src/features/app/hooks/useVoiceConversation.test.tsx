@@ -94,6 +94,33 @@ test("sends one final text block and reads aloud only after a completed turn", a
   });
 });
 
+test("attaches the accepted voice job once and skips full-text synthesis on completion", async () => {
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return { channel: "agent", op: "voice.open.result",
+      payload: { logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats } };
+    if (op === "turn.start") return { channel: "agent", op: "turn.accepted",
+      payload: { clientOperationId: operationId, status: "accepted", jobId: "voice-job", ...initialStats } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const onCompleted = jest.fn();
+  const onJob = jest.fn();
+  const settings = { ttsProvider: "google", voiceId: "voice-1", speedScale: 1.2 };
+  const { result } = await renderHook(() => useVoiceConversation(onCompleted, undefined, undefined, onJob, settings));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("hello", jest.fn()); await Promise.resolve(); });
+  expect(mockManager.request).toHaveBeenCalledWith(expect.objectContaining({
+    op: "turn.start", payload: expect.objectContaining({ tts: settings }),
+  }), { timeoutMs: 30_000 });
+  expect(onJob).toHaveBeenCalledTimes(1);
+  expect(onJob).toHaveBeenCalledWith("voice-job", operationId);
+  await act(async () => handlers.get("voice.turn.completed")?.({ channel: "agent", op: "voice.turn.completed",
+    payload: { clientOperationId: operationId, status: "completed", text: "Hello.", jobId: "voice-job", ...initialStats } }));
+  await sent;
+  expect(onJob).toHaveBeenCalledTimes(1);
+  expect(onCompleted).not.toHaveBeenCalled();
+});
+
 test("drops the prior reply when message clear rotates the conversation ID", async () => {
   const nextConversationId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {

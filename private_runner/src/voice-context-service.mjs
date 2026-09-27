@@ -391,7 +391,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     };
   }
 
-  async function modelTurn({ input, items, instructions, onStarted, onApproval, signal }) {
+  async function modelTurn({ input, items, instructions, onStarted, onApproval, onText, onTextError, signal }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice summary was cancelled");
     const { model, effort } = settings();
     if (onApproval) {
@@ -473,6 +473,19 @@ export function createVoiceContextService({ rootDir, createClient }) {
       let toolSeen = false;
       let approvalFailure = false;
       let interruptionSent = false;
+      const observedTextByItem = new Map();
+      let streamedItemCount = 0;
+      let textStreamingStopped = false;
+      let textDelivered = false;
+      function deliverText(text) {
+        if (!text || !onText || textStreamingStopped) return;
+        try { onText(text); textDelivered = true; }
+        catch (error) { textStreamingStopped = true; try { onTextError?.(error); } catch {} }
+      }
+      function stopTextStreaming(message) {
+        textStreamingStopped = true;
+        if (textDelivered) { try { onTextError?.(new Error(message)); } catch {} }
+      }
       const identityReady = new Promise((resolve) => { resolveIdentity = resolve; });
       function interruptForTool() {
         if (onApproval || !toolSeen || interruptionSent || !identity) return;
@@ -488,9 +501,41 @@ export function createVoiceContextService({ rootDir, createClient }) {
           if (/approval|tool|commandExecution|fileChange|webSearch|imageView/i.test(method)) toolSeen = true;
         }
         interruptForTool();
+        if (onText && method === "item/agentMessage/delta" && typeof params?.delta === "string") {
+          const itemId = String(params?.itemId || "");
+          if (!itemId) stopTextStreaming("Voice text delta has no itemId");
+          else if (!textStreamingStopped) {
+            if (!observedTextByItem.has(itemId)) {
+              if (streamedItemCount > 0) deliverText("\n");
+              streamedItemCount += 1;
+              observedTextByItem.set(itemId, "");
+            }
+            observedTextByItem.set(itemId, observedTextByItem.get(itemId) + params.delta);
+            deliverText(params.delta);
+          }
+        }
         if (method === "item/completed" && itemType === "agentMessage") {
           const text = extractCodexAgentMessageText(params.item);
-          if (text) output.push(text);
+          if (text) {
+            output.push(text);
+            if (onText && !textStreamingStopped) {
+              const itemId = String(params?.item?.id || "");
+              if (!itemId && observedTextByItem.size > 0) {
+                stopTextStreaming("Voice completed item has no itemId");
+                return;
+              }
+              const observed = observedTextByItem.get(itemId);
+              if (observed === undefined) {
+                if (streamedItemCount > 0) deliverText("\n");
+                streamedItemCount += 1;
+                deliverText(text);
+              } else {
+                const aligned = observed.trimStart();
+                if (text.startsWith(aligned)) deliverText(text.slice(aligned.length));
+                else if (aligned.trimEnd() !== text) stopTextStreaming("Voice text delta differs from completed item");
+              }
+            }
+          }
         }
         if (method === "turn/completed" || method === "turn/interrupted") terminal = { method, params };
       }
@@ -547,6 +592,9 @@ export function createVoiceContextService({ rootDir, createClient }) {
       }
       const text = output.join("\n").trim();
       if (!text) throw invalid("turn_failed", "Voice turn completed without an answer");
+      if (onText && textStreamingStopped && !textDelivered) {
+        try { onText(text); } catch (error) { try { onTextError?.(error); } catch {} }
+      }
       return { text, threadId, turnId };
     } catch (error) {
       if (error && typeof error === "object") error.voiceStage = stage;
@@ -653,7 +701,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     summaryFailures = 0;
   }
 
-  async function runTurn(clientOperationId, input, notify, onApproval) {
+  async function runTurn(clientOperationId, input, notify, onApproval, hooks = {}) {
     let stage = "preflight";
     try {
       const { selected, committedMemory } = await exclusive(async () => {
@@ -673,12 +721,15 @@ export function createVoiceContextService({ rootDir, createClient }) {
       }
       stage = "model_turn";
       const result = await modelTurn({ input, items, instructions: VOICE_INSTRUCTIONS, onApproval,
+        onText: hooks.onText, onTextError: hooks.onTextError,
         onStarted: ({ threadId, turnId }) => exclusive(() => append(clientOperationId, "native_started", { threadId, turnId })) });
       stage = "completion_store";
       await exclusive(() => append(clientOperationId, "completed", { pairSeq: pairs.length + 1, text: result.text }));
       inFlightId = "";
       try { notify(stateOf(clientOperationId)); } catch {}
+      try { hooks.onCompleted?.(result.text); } catch {}
     } catch (error) {
+      try { hooks.onFailed?.(error); } catch {}
       const current = byId.get(clientOperationId);
       const type = current?.status === "accepted" ? "preflight_failed" : error?.code === "turn_interrupted" ? "interrupted" : "failed";
       const code = String(error?.code || "turn_failed");
@@ -797,7 +848,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         return stateOf(clientOperationId);
       });
     },
-    async start(message, notify, onApproval) {
+    async start(message, notify, onApproval, hooks = {}) {
       return exclusive(async () => {
         await load();
         const payload = message?.payload;
@@ -825,7 +876,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
         cancelSummary();
         await append(id, "accepted", { text });
         inFlightId = id;
-        queueMicrotask(() => void runTurn(id, text, notify, onApproval));
+        try { hooks.onAccepted?.(); } catch {}
+        queueMicrotask(() => void runTurn(id, text, notify, onApproval, hooks));
         return stateOf(id);
       });
     },

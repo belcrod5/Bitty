@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -68,7 +68,13 @@ function fakeCodex({ reply = "answer", failSummary = false, failSummaryCount = 0
               } });
               calls.push({ method: "approval/result", params: result });
             }
-            listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text: reply } });
+            if (agentEvents && !isSummary) {
+              for (const event of agentEvents) listener(event.method, {
+                threadId: params.threadId, turnId, ...event.params,
+              });
+            } else {
+              listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text: reply } });
+            }
             listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
             resolveCompletion();
           };
@@ -158,6 +164,74 @@ test("voice turns persist before acknowledgement and replay without generation",
     { code: "operation_conflict" });
   const reopened = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.equal((await reopened.status(conversation.logicalConversationId, message.operationId)).text, "answer");
+});
+
+test("accepted hook precedes generation and item deltas reconcile with completed text", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { agentEvents: [
+    { method: "item/agentMessage/delta", params: { threadId: "another-thread", itemId: "wrong", delta: "ignore" } },
+    { method: "item/agentMessage/delta", params: { itemId: "first", delta: "  Hello" } },
+    { method: "item/completed", params: { item: { id: "first", type: "agentMessage", text: "Hello!" } } },
+    { method: "item/agentMessage/delta", params: { itemId: "second", delta: "World" } },
+    { method: "item/completed", params: { item: { id: "second", type: "agentMessage", text: "World." } } },
+  ] });
+  const id = randomUUID();
+  const message = { operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "hello" }] },
+  } };
+  const deltas = [];
+  const failures = [];
+  let resolve;
+  const terminal = new Promise((done) => { resolve = done; });
+  await service.start(message, resolve, async () => "decline", {
+    onAccepted: () => assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false),
+    onText: (delta) => deltas.push(delta),
+    onTextError: (error) => failures.push(error),
+  });
+  const result = await terminal;
+  assert.equal(result.text, "Hello!\nWorld.");
+  assert.equal(deltas.join("").trimStart(), result.text);
+  assert.deepEqual(failures, []);
+  await service.start(message, () => {}, async () => "decline", { onAccepted: () => assert.fail("duplicate hook") });
+});
+
+test("missing item ID falls back to completed text before speech", async (t) => {
+  const { service, conversation } = await fixture(t, { agentEvents: [
+    { method: "item/agentMessage/delta", params: { delta: "partial" } },
+    { method: "item/completed", params: { item: { id: "first", type: "agentMessage", text: "Final." } } },
+  ] });
+  const id = randomUUID();
+  const message = { operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "hello" }] },
+  } };
+  const deltas = [];
+  let resolve;
+  const terminal = new Promise((done) => { resolve = done; });
+  await service.start(message, resolve, async () => "decline", { onText: (delta) => deltas.push(delta) });
+  assert.equal((await terminal).text, "Final.");
+  assert.deepEqual(deltas, ["Final."]);
+});
+
+test("delta mismatch stops speech while the completed reply remains canonical", async (t) => {
+  const { service, conversation } = await fixture(t, { agentEvents: [
+    { method: "item/agentMessage/delta", params: { itemId: "first", delta: "Wrong。" } },
+    { method: "item/completed", params: { item: { id: "first", type: "agentMessage", text: "Right。" } } },
+  ] });
+  const id = randomUUID();
+  const deltas = [];
+  const errors = [];
+  let resolve;
+  const terminal = new Promise((done) => { resolve = done; });
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "hello" }] },
+  } }, resolve, async () => "decline", {
+    onText: (delta) => deltas.push(delta), onTextError: (error) => errors.push(error),
+  });
+  assert.equal((await terminal).text, "Right。");
+  assert.deepEqual(deltas, ["Wrong。"]);
+  assert.match(errors[0].message, /differs/);
 });
 
 test("voice settings use the live catalog, validate effort, and survive restart", async (t) => {

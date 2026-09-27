@@ -26,14 +26,17 @@ const mockStt = {
   abort: mockAbort,
 };
 let mockOnCompleted: ((text: string, operationId: string) => void) | null = null;
+let mockOnJob: ((jobId: string, operationId: string) => void) | null = null;
 let mockLastSttOptions: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
 let mockFooterProps: { voiceContextStats?: unknown; transcript: string; draftTranscript?: string; statusText?: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void; onFocus?: () => void; onChangeText?: (text: string) => void; onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void> } | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
 let mockReduceMotion: boolean | null = false;
 
 jest.mock("../hooks/useVoiceConversation", () => ({
-  useVoiceConversation: (onCompleted: (text: string, operationId: string) => void) => {
+  useVoiceConversation: (onCompleted: (text: string, operationId: string) => void, _onApproval: unknown,
+    _onResolved: unknown, onJob: (jobId: string, operationId: string) => void) => {
     mockOnCompleted = onCompleted;
+    mockOnJob = onJob;
     return mockVoice;
   },
 }));
@@ -96,6 +99,7 @@ beforeEach(() => {
   mockFooterProps = null;
   mockFooterRenders.length = 0;
   mockOnCompleted = null;
+  mockOnJob = null;
   mockStt.active = false;
   mockVoice.ready = true;
   mockVoice.turnStatus = "completed";
@@ -336,6 +340,25 @@ test("plays completed replies automatically and keeps STT paused while TTS is qu
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockLastSttOptions?.ttsPlaybackActive).toBe(false);
   await screen.unmount();
+});
+
+test("attaches voice playback before completion and shows speaking during generation", async () => {
+  let finishSynthesis!: () => void;
+  mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {
+    finishSynthesis = resolve;
+  }));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockOnJob?.("voice-job", "operation-1"); });
+  expect(mockSynthesizeSpeechStream).toHaveBeenCalledWith("", { messageId: "operation-1", jobId: "voice-job" });
+  expect(mockLastSttOptions?.ttsPlaybackActive).toBe(true);
+  mockVoice.turnStatus = "running";
+  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive isTtsPlaying ttsUiStatus="queued" onClose={mockOnClose} />);
+  expect(mockFooterRenders.at(-1)?.voiceStatus).toBe("speaking");
+  await act(async () => { finishSynthesis(); });
+  await screen.unmount();
+  expect(mockStopTtsPlayback).toHaveBeenCalledWith(expect.objectContaining({
+    expectedMessageId: "operation-1",
+  }));
 });
 
 test("closing over active chat playback does not stop TTS without a voice reply", async () => {

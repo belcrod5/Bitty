@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { createStreamTtsSegments } from "../src/stream-tts-segments.mjs";
 
+const mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "stream-tts-media-"));
+test.after(() => fs.rm(mediaDir, { recursive: true, force: true }));
 process.env.RUNNER_SKIP_SERVER_START = "1";
 process.env.RUNNER_TOKEN = "test-runner-token";
 process.env.TTS_FETCH_TIMEOUT_MS = "1000";
 process.env.STREAM_TTS_MAX_CHARS = "1000";
+process.env.ELEVENLABS_API_KEY = "test-key";
+process.env.TTS_MEDIA_DIR = mediaDir;
 
 const {
   takeNextStreamTtsSegment,
@@ -29,6 +37,71 @@ function collectSegments(text, maxChars = STREAM_TTS_SEGMENT_MAX_CHARS) {
   }
   return segments;
 }
+
+test("shared segment queue speaks genuine deltas once and flushes the tail", async () => {
+  const events = [];
+  const spoken = [];
+  const segments = createStreamTtsSegments({
+    emit: (event) => events.push(event),
+    synthesizeSegment: async (text) => { spoken.push(text); return { audioUrl: `audio:${text}`, speedScale: 1 }; },
+    speedScale: 1, takeNextSegment: takeNextStreamTtsSegment, sanitizeText: sanitizeStreamTtsText,
+    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS, targetChars: 12, maxEstMs: 1200,
+    estimateDurationMs: () => 100,
+  });
+  segments.append("こんに");
+  segments.append("ちは。残り😀");
+  assert.deepEqual(events.map((event) => event.type), ["segment_queued"]);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(events.some((event) => event.type === "audio_chunk" && event.seq === 0),
+    "first audio is available before generation finishes");
+  await segments.finish();
+  await segments.finish();
+  assert.deepEqual(spoken, ["こんにちは", "残り😀"]);
+  assert.deepEqual(events.map((event) => `${event.type}:${event.seq}`), [
+    "segment_queued:0",
+    "segment_tts_started:0", "audio_chunk:0", "segment_tts_done:0",
+    "segment_queued:1",
+    "segment_tts_started:1", "audio_chunk:1", "segment_tts_done:1",
+  ]);
+});
+
+test("cancelling shared segments discards queued work and suppresses late audio", async () => {
+  const events = [];
+  let resolveAudio;
+  const segments = createStreamTtsSegments({
+    emit: (event) => events.push(event),
+    synthesizeSegment: () => new Promise((resolve) => { resolveAudio = resolve; }),
+    speedScale: 1, takeNextSegment: takeNextStreamTtsSegment, sanitizeText: sanitizeStreamTtsText,
+    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS, targetChars: 12, maxEstMs: 1200,
+    estimateDurationMs: () => 100,
+  });
+  segments.append("一。二。未完成");
+  await Promise.resolve();
+  segments.cancel();
+  resolveAudio({ audioUrl: "late", speedScale: 1 });
+  await segments.finish();
+  assert.equal(events.filter((event) => event.type === "audio_chunk").length, 0);
+  assert.equal(events.filter((event) => event.type === "segment_tts_started").length, 1);
+});
+
+test("aborted shared segments ignore later deltas and do not flush their tail", async () => {
+  const controller = new AbortController();
+  const events = [];
+  const segments = createStreamTtsSegments({
+    emit: (event) => events.push(event),
+    synthesizeSegment: async () => ({ audioUrl: "unused", speedScale: 1 }),
+    signal: controller.signal,
+    speedScale: 1, takeNextSegment: takeNextStreamTtsSegment, sanitizeText: sanitizeStreamTtsText,
+    maxChars: STREAM_TTS_SEGMENT_MAX_CHARS, targetChars: 12, maxEstMs: 1200,
+    estimateDurationMs: () => 100,
+  });
+  segments.append("Unfinished");
+  controller.abort();
+  segments.append(". Later.");
+  await segments.finish();
+  assert.deepEqual(events, []);
+});
 
 test("splits at punctuation boundaries as before for normal text", () => {
   const segments = collectSegments("こんにちは。今日は良い天気ですね、散歩に行きましょう。");
@@ -173,6 +246,42 @@ test("stream-tts text mode rejects text above the sanity limit with text_too_lon
   assert.equal(errors[0].error, "text_too_long");
   assert.equal(errors[0].max, STREAM_TTS_MAX_CHARS);
   assert.ok(!job.events.some((e) => e.type === "segment_queued"));
+});
+
+test("text mode uses the shared queue and records the last emitted audio seq", async () => {
+  const originalFetch = globalThis.fetch;
+  const spoken = [];
+  globalThis.fetch = async (_url, init) => {
+    spoken.push(JSON.parse(init.body).text);
+    return { ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer };
+  };
+  try {
+    const job = startLlmStreamJob({ mode: "text", text: "One. Two!", ttsProvider: "elevenlabs" }, {
+      publicBaseUrl: "http://127.0.0.1:8788",
+    });
+    await job.runPromise;
+    assert.equal(job.status, "completed");
+    assert.deepEqual(spoken, ["One", "Two!"]);
+    assert.deepEqual(job.events.filter((event) => event.type === "audio_chunk").map((event) => event.seq), [0, 1]);
+    assert.equal(job.lastAudioChunkSeq, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("text mode preserves segment and provider context for synthesis errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("provider offline"); };
+  try {
+    const job = startLlmStreamJob({ mode: "text", text: "One.", ttsProvider: "elevenlabs" }, {
+      publicBaseUrl: "http://127.0.0.1:8788",
+    });
+    await job.runPromise;
+    assert.equal(job.status, "failed");
+    assert.match(job.error.message, /stream-tts segment failed: seq=0 provider=elevenlabs message=.*provider offline/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("fetchTtsWithTimeout passes through successful responses", async () => {
