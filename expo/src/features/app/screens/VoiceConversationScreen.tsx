@@ -190,7 +190,7 @@ export function VoiceConversationScreen({
       <Reanimated.View testID="voice-conversation-backdrop"
         pointerEvents={historyExpanded ? "auto" : "none"}
         style={[StyleSheet.absoluteFill,
-          { backgroundColor: BlurView ? "rgba(0, 0, 0, 0.5)" : "rgba(0, 0, 0, 0.68)" }, backdropStyle]} />
+          { backgroundColor: BlurView ? "rgba(0, 0, 0, 0.4)" : "rgba(0, 0, 0, 0.68)" }, backdropStyle]} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
