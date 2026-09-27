@@ -167,6 +167,7 @@ test("reopening after an intentional voice interruption is ready for recording",
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
   expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.logicalConversationId).toBe(conversationId);
   expect(result.current.error).toBe("");
 });
 
@@ -231,6 +232,7 @@ test("drops the prior reply when message clear rotates the conversation ID", asy
   mockSnapshot = { connected: true, generation: 2 };
   await rerender(undefined);
   await waitFor(() => expect(result.current.reply).toBeNull());
+  await waitFor(() => expect(result.current.logicalConversationId).toBe(nextConversationId));
   expect(result.current.turnStatus).toBe("idle");
 });
 

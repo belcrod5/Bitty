@@ -413,6 +413,7 @@ export function useVoiceConversation(
 
   return {
     ready: Boolean(logicalConversationId) && connected,
+    logicalConversationId,
     turnStatus,
     reply,
     contextStats,

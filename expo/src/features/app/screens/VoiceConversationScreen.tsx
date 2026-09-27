@@ -55,6 +55,7 @@ export function VoiceConversationScreen({
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtTopRef = useRef(true);
+  const historyAtBottomRef = useRef(true);
   const mountedRef = useRef(true);
   const voicePlaybackMessageIdRef = useRef("");
 
@@ -79,8 +80,12 @@ export function VoiceConversationScreen({
       : undefined,
   );
   useEffect(() => {
-    if (historyExpanded) void voice.refreshHistory();
-  }, [historyExpanded, voice.refreshHistory, voice.turnStatus]);
+    if (historyExpanded && voice.ready) void voice.refreshHistory();
+  }, [historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
+  useEffect(() => {
+    historyAtTopRef.current = true;
+    historyAtBottomRef.current = true;
+  }, [historyExpanded, voice.logicalConversationId]);
   const historyPan = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_event, gesture) => !editingTranscript && Math.abs(gesture.dy) > 20
       && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
@@ -196,14 +201,24 @@ export function VoiceConversationScreen({
                   <Text style={{ color: theme.colors.textPrimary, textAlign: "center", fontSize: 14 }}>音声会話の履歴  ⌄</Text>
                 </TouchableOpacity>
                 <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flexShrink: 1 }}
-                  onScroll={(event) => { historyAtTopRef.current = event.nativeEvent.contentOffset.y <= 1; }}
+                  onScroll={(event) => {
+                    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+                    historyAtTopRef.current = contentOffset.y <= 1;
+                    historyAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
+                  }}
                   scrollEventThrottle={16}
-                  onContentSizeChange={() => historyScrollRef.current?.scrollToEnd({ animated: false })}
+                  onContentSizeChange={() => {
+                    if (historyAtBottomRef.current) historyScrollRef.current?.scrollToEnd({ animated: false });
+                  }}
                   contentContainerStyle={{ padding: 16, gap: 12 }}>
-                  {voice.historyError ? <Text style={{ color: theme.colors.negativeText }}>{voice.historyError}</Text> : null}
-                  {!voice.history.length && !voice.historyError
-                    ? <Text style={{ color: theme.colors.textMuted, textAlign: "center" }}>履歴はまだありません</Text> : null}
-                  {voice.history.map((message, index) => (
+                  {!voice.ready
+                    ? <Text style={{ color: theme.colors.textMuted, textAlign: "center" }}>履歴を読み込み中…</Text>
+                    : voice.historyError
+                      ? <Text style={{ color: theme.colors.negativeText }}>{voice.historyError}</Text>
+                      : !voice.history.length
+                        ? <Text style={{ color: theme.colors.textMuted, textAlign: "center" }}>履歴はまだありません</Text>
+                        : null}
+                  {(voice.ready ? voice.history : []).map((message, index) => (
                     <View key={`${message.clientOperationId}-${message.role}-${index}`}
                       style={{ alignSelf: message.role === "user" ? "flex-end" : "flex-start",
                         maxWidth: "90%", padding: 12, borderRadius: 12,

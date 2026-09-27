@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { ScrollView, StyleSheet } from "react-native";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
 
 const mockAbort = jest.fn(async () => undefined);
@@ -10,6 +10,7 @@ const mockOnClose = jest.fn();
 const mockLogSessionDiag = jest.fn();
 const mockVoice = {
   ready: true,
+  logicalConversationId: "conversation-one",
   turnStatus: "completed",
   reply: { text: "表示しない返答本文", operationId: "operation-1" },
   error: "",
@@ -106,6 +107,7 @@ beforeEach(() => {
   mockOnJob = null;
   mockStt.active = false;
   mockVoice.ready = true;
+  mockVoice.logicalConversationId = "conversation-one";
   mockVoice.turnStatus = "completed";
   mockVoice.error = "";
   mockVoice.history = [];
@@ -125,6 +127,49 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(mockVoice.refreshHistory).toHaveBeenCalled();
   await fireEvent.press(screen.getByTestId("voice-history-handle"));
   expect(screen.queryByText("最初の質問")).toBeNull();
+  await screen.unmount();
+});
+
+test("an open history panel reloads when voice.open becomes ready or changes conversation", async () => {
+  mockVoice.ready = false;
+  mockVoice.turnStatus = "idle";
+  mockVoice.history = [{ role: "user", text: "前の接続先の発話", clientOperationId: "old" }];
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("voice-history-open"));
+  expect(mockVoice.refreshHistory).not.toHaveBeenCalled();
+  expect(screen.getByText("履歴を読み込み中…")).toBeTruthy();
+  expect(screen.queryByText("前の接続先の発話")).toBeNull();
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(1);
+  mockVoice.logicalConversationId = "conversation-two";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(2);
+  await screen.unmount();
+});
+
+test("new history content keeps the position while older messages are being read", async () => {
+  const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => undefined);
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await fireEvent.press(screen.getByTestId("voice-history-open"));
+  const history = screen.getByTestId("voice-history-messages");
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 80 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  mockVoice.logicalConversationId = "conversation-two";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 500 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(3);
+  scrollToEnd.mockRestore();
   await screen.unmount();
 });
 

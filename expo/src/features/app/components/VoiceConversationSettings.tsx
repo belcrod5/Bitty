@@ -125,7 +125,7 @@ export function VoiceConversationSettings() {
 
   return (
     <View style={styles.settingsSection}>
-      <View style={styles.settingsSectionHeader}><Text style={styles.settingsSectionTitle}>音声会話</Text></View>
+      <View style={styles.settingsSectionHeader}><Text style={styles.settingsSectionTitle}>音声入力・音声会話</Text></View>
       <View style={styles.settingsGroup}>
         <SettingsSelect
           icon="chatbubble-ellipses-outline" label="音声会話のモデル"
