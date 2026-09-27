@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanResponder, Platform, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { BlurView } from "expo-blur";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS,
   useAnimatedProps, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
@@ -18,7 +17,6 @@ const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
 const historyFadeIn = FadeInDown.duration(240);
 const historyFadeOut = FadeOutDown.duration(200);
-const AnimatedBlurView = Reanimated.createAnimatedComponent(BlurView);
 
 export type VoiceConversationPlayback = {
   synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string }) => Promise<void>;
@@ -60,6 +58,8 @@ export function VoiceConversationScreen({
   const blurIntensity = useSharedValue(0);
   const blurProps = useAnimatedProps(() => ({ intensity: blurIntensity.value }));
   const blurStyle = useAnimatedStyle(() => ({ opacity: blurIntensity.value / 70 }));
+  const AnimatedBlurView = useMemo(() => Platform.OS === "macos" ? null
+    : Reanimated.createAnimatedComponent(require("expo-blur").BlurView as typeof import("expo-blur").BlurView), []);
   const { height: windowHeight } = useWindowDimensions();
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
@@ -193,13 +193,20 @@ export function VoiceConversationScreen({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
-      <AnimatedBlurView
-        testID="voice-conversation-board-blur"
-        pointerEvents="none"
-        tint={theme.colorScheme}
-        animatedProps={blurProps}
-        style={[StyleSheet.absoluteFill, blurStyle]}
-      />
+      {AnimatedBlurView ? (
+        <AnimatedBlurView
+          testID="voice-conversation-board-blur"
+          pointerEvents={historyExpanded ? "auto" : "none"}
+          tint={theme.colorScheme}
+          experimentalBlurMethod={Platform.OS === "android" ? "dimezisBlurView" : undefined}
+          animatedProps={blurProps}
+          style={[StyleSheet.absoluteFill, blurStyle]}
+        />
+      ) : (
+        <Reanimated.View testID="voice-conversation-board-blur"
+          pointerEvents={historyExpanded ? "auto" : "none"}
+          style={[StyleSheet.absoluteFill, blurStyle, { backgroundColor: theme.colors.backdrop }]} />
+      )}
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
