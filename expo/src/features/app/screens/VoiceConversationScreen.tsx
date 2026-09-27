@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PanResponder, Platform, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS,
-  useAnimatedProps, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+  useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { useChatScreen } from "../contexts/ChatScreenContext";
@@ -55,15 +55,10 @@ export function VoiceConversationScreen({
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
   const [historyExpanded, setHistoryExpanded] = useState(false);
-  const blurIntensity = useSharedValue(0);
-  const blurProps = useAnimatedProps(() => ({ intensity: blurIntensity.value }));
-  const blurStyle = useAnimatedStyle(() => ({ opacity: blurIntensity.value / 70 }));
-  const AnimatedBlurView = useMemo(() => Platform.OS === "macos" ? null
-    : Reanimated.createAnimatedComponent(require("expo-blur").BlurView as typeof import("expo-blur").BlurView), []);
-  const { height: windowHeight } = useWindowDimensions();
+  const backdropOpacity = useSharedValue(0);
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
-  const historyAtTopRef = useRef(true);
   const historyAtBottomRef = useRef(true);
   const mountedRef = useRef(true);
   const voicePlaybackMessageIdRef = useRef("");
@@ -92,27 +87,18 @@ export function VoiceConversationScreen({
     if (historyExpanded && voice.ready) void voice.refreshHistory();
   }, [historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
   useEffect(() => {
-    historyAtTopRef.current = true;
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
   useEffect(() => {
-    blurIntensity.value = withTiming(historyExpanded ? 70 : 0, { duration: reduceMotion ? 0 : 240 });
-  }, [blurIntensity, historyExpanded, reduceMotion]);
+    backdropOpacity.value = withTiming(historyExpanded ? 1 : 0, { duration: reduceMotion ? 0 : 240 });
+  }, [backdropOpacity, historyExpanded, reduceMotion]);
   const footerSwipe = useMemo(() => Gesture.Pan()
     .enabled(!editingTranscript)
     .activeOffsetY([-24, 24])
     .failOffsetX([-32, 32])
     .onEnd(({ translationY }) => {
       if (translationY < -50) runOnJS(setHistoryExpanded)(true);
-      if (translationY > 50) runOnJS(setHistoryExpanded)(false);
     }), [editingTranscript]);
-  const historyPanelPan = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponderCapture: (_event, gesture) => historyAtTopRef.current
-      && gesture.dy > 20 && gesture.dy > Math.abs(gesture.dx) * 1.2,
-    onPanResponderRelease: (_event, gesture) => {
-      if (gesture.dy > 50) setHistoryExpanded(false);
-    },
-  }), []);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
   const canStart = voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
@@ -193,51 +179,49 @@ export function VoiceConversationScreen({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
-      {AnimatedBlurView ? (
-        <AnimatedBlurView
-          testID="voice-conversation-board-blur"
-          pointerEvents={historyExpanded ? "auto" : "none"}
-          tint={theme.colorScheme}
-          experimentalBlurMethod={Platform.OS === "android" ? "dimezisBlurView" : undefined}
-          animatedProps={blurProps}
-          style={[StyleSheet.absoluteFill, blurStyle]}
-        />
-      ) : (
-        <Reanimated.View testID="voice-conversation-board-blur"
-          pointerEvents={historyExpanded ? "auto" : "none"}
-          style={[StyleSheet.absoluteFill, blurStyle, { backgroundColor: theme.colors.backdrop }]} />
-      )}
+      <Reanimated.View testID="voice-conversation-backdrop"
+        pointerEvents={historyExpanded ? "auto" : "none"}
+        style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0, 0, 0, 0.5)" }, backdropStyle]} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
         exiting={voicePanelFadeOut}
-        style={{ width: "100%" }}
+        pointerEvents="box-none"
+        style={{ flex: 1, width: "100%" }}
       >
-        <SafeAreaView testID="voice-conversation-screen">
-          <View testID="voice-conversation-content" style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+        <SafeAreaView testID="voice-conversation-screen" pointerEvents="box-none" style={{ flex: 1 }}>
+          <View testID="voice-conversation-content" pointerEvents="box-none"
+            style={{ flex: 1, justifyContent: "flex-end" }}>
             {historyExpanded ? (
-              <Reanimated.View testID="voice-conversation-history" {...historyPanelPan.panHandlers}
+              <Reanimated.View testID="voice-conversation-history"
                 entering={reduceMotion ? undefined : historyFadeIn}
                 exiting={reduceMotion ? undefined : historyFadeOut}
-                style={{ maxHeight: windowHeight * 0.62,
-                  marginBottom: 12, backgroundColor: "transparent" }}>
-                <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flexShrink: 1 }}
+                style={{ flex: 1, width: "100%" }}>
+                <View style={{ paddingHorizontal: 20, paddingTop: 12, alignItems: "flex-end" }}>
+                  <Pressable testID="voice-history-close" accessibilityRole="button"
+                    accessibilityLabel="履歴を閉じる" hitSlop={8}
+                    onPress={() => setHistoryExpanded(false)}
+                    style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8,
+                      backgroundColor: "rgba(0, 0, 0, 0.4)" }}>
+                    <Text style={{ color: "#ffffff", fontSize: 15 }}>閉じる</Text>
+                  </Pressable>
+                </View>
+                <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flex: 1 }}
                   onScroll={(event) => {
                     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-                    historyAtTopRef.current = contentOffset.y <= 1;
                     historyAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
                   }}
                   scrollEventThrottle={16}
                   onContentSizeChange={() => {
                     if (historyAtBottomRef.current) historyScrollRef.current?.scrollToEnd({ animated: false });
                   }}
-                  contentContainerStyle={{ padding: 16, gap: 12 }}>
+                  contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 12, gap: 12 }}>
                   {!voice.ready
-                    ? <Text style={{ color: theme.colors.textMuted, textAlign: "center" }}>履歴を読み込み中…</Text>
+                    ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴を読み込み中…</Text>
                     : voice.historyError
-                      ? <Text style={{ color: theme.colors.negativeText }}>{voice.historyError}</Text>
+                      ? <Text style={{ color: "#fecaca" }}>{voice.historyError}</Text>
                       : !voice.history.length
-                        ? <Text style={{ color: theme.colors.textMuted, textAlign: "center" }}>履歴はまだありません</Text>
+                        ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴はまだありません</Text>
                         : null}
                   {(voice.ready ? voice.history : []).map((message, index) => (
                     <View key={`${message.clientOperationId}-${message.role}-${index}`}
@@ -253,44 +237,46 @@ export function VoiceConversationScreen({
                 </ScrollView>
               </Reanimated.View>
             ) : null}
-            <GestureDetector gesture={footerSwipe}>
-              <View testID="voice-history-swipe-area">
-                <StreamingSttFooter
-                  ref={footerRef}
-                  transcript={transcript}
-                  statusText={statusText}
-                  voiceStatus={voiceStatus}
-                  reduceMotion={reduceMotion !== false}
-                  phase={streamingStt.phase}
-                  onChangeText={setTranscript}
-                  onFocus={() => {
-                    setInitialStartPending(false);
-                    setEditingTranscript(true);
-                    streamingStt.stop();
-                  }}
-                  onBlur={() => setEditingTranscript(false)}
-                  onSubmit={async (text, onAccepted) => {
-                    try {
-                      await streamingStt.sendManualTranscript(text, () => {
-                        if (!onAccepted()) return false;
-                        setEditingTranscript(false);
-                        return true;
-                      });
-                    } catch (error) {
-                      voice.setError(error instanceof Error ? error.message : String(error));
-                    }
-                  }}
-                  onStop={() => {
-                    voice.interrupt();
-                    streamingStt.stop();
-                    onClose();
-                  }}
-                  voiceContextStats={voice.contextStats}
-                  historyExpanded={historyExpanded}
-                  onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
-                />
-              </View>
-            </GestureDetector>
+            <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+              <GestureDetector gesture={footerSwipe}>
+                <View testID="voice-history-swipe-area">
+                  <StreamingSttFooter
+                    ref={footerRef}
+                    transcript={transcript}
+                    statusText={statusText}
+                    voiceStatus={voiceStatus}
+                    reduceMotion={reduceMotion !== false}
+                    phase={streamingStt.phase}
+                    onChangeText={setTranscript}
+                    onFocus={() => {
+                      setInitialStartPending(false);
+                      setEditingTranscript(true);
+                      streamingStt.stop();
+                    }}
+                    onBlur={() => setEditingTranscript(false)}
+                    onSubmit={async (text, onAccepted) => {
+                      try {
+                        await streamingStt.sendManualTranscript(text, () => {
+                          if (!onAccepted()) return false;
+                          setEditingTranscript(false);
+                          return true;
+                        });
+                      } catch (error) {
+                        voice.setError(error instanceof Error ? error.message : String(error));
+                      }
+                    }}
+                    onStop={() => {
+                      voice.interrupt();
+                      streamingStt.stop();
+                      onClose();
+                    }}
+                    voiceContextStats={voice.contextStats}
+                    historyExpanded={historyExpanded}
+                    onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
+                  />
+                </View>
+              </GestureDetector>
+            </View>
           </View>
         </SafeAreaView>
       </Reanimated.View>
