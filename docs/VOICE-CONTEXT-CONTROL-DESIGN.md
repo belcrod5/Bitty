@@ -2,6 +2,8 @@
 
 状態: v1 の実装契約（2026-09-25 更新）。音声応答は通常チャットと同じ Codex の MCP／apps 設定を継承し、コマンド・ファイル変更の承認要求を既存の UI に渡す。応答ごとに新規 ephemeral thread を作るため、**tool／reasoning item と承認状態のターン間継続は保証しない**。実モデルによるツール実行、承認、TTS の統合動作は未検証で、リリース前の確認が必要。
 
+生成途中の文字を使う TTS への変更は [Skia 音声会話の逐次 TTS 設計](VOICE-STREAMING-TTS-DESIGN.md) に記録し、実装は PR #147 に含まれる。本書の「delta を TTS に使わない」という記述は v1 の実装時点の仕様を示す。
+
 ## 2つの方式と v1 の選択
 
 | 名称 | 対象 | 文脈の所有者 |
@@ -73,7 +75,7 @@ Skia 側のフッター本体は左右20pt・下20ptの余白を確保し、チ�
 
 返答生成中は `RESPONDING`、読み上げ中は `SPEAKING` を、文字列を一文字ずつ増減して表示する。Text の transform は使わない。生成中はシアン系の速い光、読み上げ中は暖色系の遅い光とし、光の幅・ぼかし・透明度をそれぞれ脈動させる。スピナーは表示しない。「動きを減らす」設定では文字を全文静止表示し、状態演出の光を静止させる。これらは音声操作だけが共通フッターの任意 prop で指定し、通常チャットのフッターは変えない。
 
-音声操作も既存の [`useStreamingStt.ts`](../expo/src/features/stt/useStreamingStt.ts) を使い、STT が自然に完了した確定発話だけを送る。共通フッターの停止は両画面で STT セッションを即時中断し、停止後の確定待ち・自動送信はしない。チャット画面では表示済みの文字を入力欄の下書きに残す。`sendTranscript` の `onAccepted` は Runner が `accepted` を永続化した返答を受けた時だけ呼ぶ。`replyLoading` は受理から応答確定または失敗まで true。月間 STT 使用時間の右に、推定文脈使用率・未要約メッセージ件数・`MEMORY.md` 本文文字数を共通 [`StreamingSttFooter.tsx`](../expo/src/features/app/components/StreamingSttFooter.tsx) 内で表示する。音声操作だけが Runner 値を任意 prop で渡し、フッターには算定処理や新たな録音中限定表示条件を置かない。`ChatScreen` は prop を渡さず既存表示のままにする。完了本文は [`AppRoot.tsx`](../expo/src/features/app/AppRoot.tsx) が既に持つ `synthesizeSpeechStream(text, { messageId: clientOperationId })` へ渡す。実際の合成入口は [`useSynthesizeSpeechStreamController.ts`](../expo/src/features/app/hooks/useSynthesizeSpeechStreamController.ts) であり、新しい TTS 経路を作らない。`panelId`／通常チャットの `sessionId` は渡さず、論理会話IDを native session ID と偽装しない。TTS 呼出し直前から開始待ちを含めて、既存の `isTtsPlaybackActive = ttsPlaying || ttsLoading || ttsQueueProcessing` と合わせた状態を hook の `ttsPlaybackActive` に渡し、再生終了まで録音を止める。再生終了後に hook の既存サイクルで録音を再開する。TTS 失敗時も応答本文は Runner の正本に残すが、音声画面に再生ボタンは置かない。音声操作を閉じた時は録音・再生を止め、Runner の生成は継続して正本へ保存する。既存チャットの自動読み上げ設定とは独立して、この音声操作で完了した応答は常に読み上げる。既存チャットの TTS 波形・状態への誤投影がなく音声操作で再生終了を検出できることを統合テストする。
+音声操作も既存の [`useStreamingStt.ts`](../expo/src/features/stt/useStreamingStt.ts) を使い、STT が自然に完了した確定発話だけを送る。共通フッターの停止は両画面で STT セッションを即時中断し、停止後の確定待ち・自動送信はしない。チャット画面では表示済みの文字を入力欄の下書きに残す。`sendTranscript` の `onAccepted` は Runner が `accepted` を永続化した返答を受けた時だけ呼ぶ。`replyLoading` は受理から応答確定または失敗まで true。月間 STT 使用時間の右に、推定文脈使用率・未要約メッセージ件数・`MEMORY.md` 本文文字数を共通 [`StreamingSttFooter.tsx`](../expo/src/features/app/components/StreamingSttFooter.tsx) 内で表示する。音声操作だけが Runner 値を任意 prop で渡し、フッターには算定処理や新たな録音中限定表示条件を置かない。`ChatScreen` は prop を渡さず既存表示のままにする。完了本文は [`AppRoot.tsx`](../expo/src/features/app/AppRoot.tsx) が既に持つ `synthesizeSpeechStream(text, { messageId: clientOperationId })` へ渡す。実際の合成入口は [`useSynthesizeSpeechStreamController.ts`](../expo/src/features/app/hooks/useSynthesizeSpeechStreamController.ts) であり、新しい TTS 経路を作らない。`panelId`／通常チャットの `sessionId` は渡さず、論理会話IDを native session ID と偽装しない。TTS 呼出し直前から開始待ちを含めて、既存の `isTtsPlaybackActive = ttsPlaying || ttsLoading || ttsQueueProcessing` と合わせた状態を hook の `ttsPlaybackActive` に渡し、再生終了まで録音を止める。再生終了後に hook の既存サイクルで録音を再開する。TTS 失敗時も応答本文は Runner の正本に残すが、音声画面に再生ボタンは置かない。フッターの停止を明示的に押した時は録音・再生を止め、`voice.turn.interrupt` で Runner の生成と TTS を中断する。未完了の返答は正本へ保存せず、遅れて届く完了通知は無視する。WS 切断だけでは Runner の生成と保存を止めない。画面の単純なアンマウントでは録音・再生を止めるが、Runner の生成と保存は継続する。既存チャットの自動読み上げ設定とは独立して、この音声操作で完了した応答は常に読み上げる。既存チャットの TTS 波形・状態への誤投影がなく音声操作で再生終了を検出できることを統合テストする。
 
 ## 権限とリリース条件
 
