@@ -95,6 +95,24 @@ describe("StreamingSttFooter", () => {
       .toBe("文脈推定 --% · 未要約 --件 · メモリー --字");
   });
 
+  it("offers a screen-reader history action on the existing transcript element", async () => {
+    const onHistoryToggle = jest.fn();
+    const onBlur = jest.fn();
+    const props = { transcript: "", phase: "recording" as const, onStop: jest.fn(),
+      onChangeText: jest.fn(), onHistoryToggle, onBlur };
+    const screen = await render(<StreamingSttFooter {...props} />);
+    const input = screen.getByTestId("streaming-stt-transcript");
+    expect(input.props.accessibilityActions).toEqual([{ name: "toggleHistory", label: "履歴を開く" }]);
+    await fireEvent(input, "accessibilityAction", { nativeEvent: { actionName: "toggleHistory" } });
+    await fireEvent(input, "blur");
+    expect(onBlur).toHaveBeenCalledTimes(1);
+    await screen.rerender(<StreamingSttFooter {...props} historyExpanded voiceStatus="responding" />);
+    const status = screen.getByTestId("streaming-stt-transcript");
+    expect(status.props.accessibilityActions).toEqual([{ name: "toggleHistory", label: "履歴を閉じる" }]);
+    await fireEvent(status, "accessibilityAction", { nativeEvent: { actionName: "toggleHistory" } });
+    expect(onHistoryToggle).toHaveBeenCalledTimes(2);
+  });
+
   it("draws outside its panel, grows to three transcript lines, and stops recording", async () => {
     const onStop = jest.fn();
     const screen = await render(<StreamingSttFooter transcript={"一行目\n二行目\n三行目\n四行目"} phase="recording" onStop={onStop} onChangeText={jest.fn()} />);

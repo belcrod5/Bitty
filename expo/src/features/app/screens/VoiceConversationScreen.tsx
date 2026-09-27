@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PanResponder, Platform, SafeAreaView, ScrollView, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
-import Reanimated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { PanResponder, Platform, SafeAreaView, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { BlurView } from "expo-blur";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS,
+  useAnimatedProps, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { useChatScreen } from "../contexts/ChatScreenContext";
@@ -13,6 +16,9 @@ import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
+const historyFadeIn = FadeInDown.duration(240);
+const historyFadeOut = FadeOutDown.duration(200);
+const AnimatedBlurView = Reanimated.createAnimatedComponent(BlurView);
 
 export type VoiceConversationPlayback = {
   synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string }) => Promise<void>;
@@ -51,6 +57,9 @@ export function VoiceConversationScreen({
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  const blurIntensity = useSharedValue(0);
+  const blurProps = useAnimatedProps(() => ({ intensity: blurIntensity.value }));
+  const blurStyle = useAnimatedStyle(() => ({ opacity: blurIntensity.value / 70 }));
   const { height: windowHeight } = useWindowDimensions();
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
@@ -86,14 +95,17 @@ export function VoiceConversationScreen({
     historyAtTopRef.current = true;
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
-  const historyPan = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_event, gesture) => !editingTranscript && Math.abs(gesture.dy) > 20
-      && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2,
-    onPanResponderRelease: (_event, gesture) => {
-      if (gesture.dy < -50) setHistoryExpanded(true);
-      if (gesture.dy > 50) setHistoryExpanded(false);
-    },
-  }), [editingTranscript]);
+  useEffect(() => {
+    blurIntensity.value = withTiming(historyExpanded ? 70 : 0, { duration: reduceMotion ? 0 : 240 });
+  }, [blurIntensity, historyExpanded, reduceMotion]);
+  const footerSwipe = useMemo(() => Gesture.Pan()
+    .enabled(!editingTranscript)
+    .activeOffsetY([-24, 24])
+    .failOffsetX([-32, 32])
+    .onEnd(({ translationY }) => {
+      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
+      if (translationY > 50) runOnJS(setHistoryExpanded)(false);
+    }), [editingTranscript]);
   const historyPanelPan = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponderCapture: (_event, gesture) => historyAtTopRef.current
       && gesture.dy > 20 && gesture.dy > Math.abs(gesture.dx) * 1.2,
@@ -181,6 +193,13 @@ export function VoiceConversationScreen({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
+      <AnimatedBlurView
+        testID="voice-conversation-board-blur"
+        pointerEvents="none"
+        tint={theme.colorScheme}
+        animatedProps={blurProps}
+        style={[StyleSheet.absoluteFill, blurStyle]}
+      />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
@@ -190,16 +209,11 @@ export function VoiceConversationScreen({
         <SafeAreaView testID="voice-conversation-screen">
           <View testID="voice-conversation-content" style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
             {historyExpanded ? (
-              <View testID="voice-conversation-history" {...historyPanelPan.panHandlers}
+              <Reanimated.View testID="voice-conversation-history" {...historyPanelPan.panHandlers}
+                entering={reduceMotion ? undefined : historyFadeIn}
+                exiting={reduceMotion ? undefined : historyFadeOut}
                 style={{ maxHeight: windowHeight * 0.62,
-                  marginBottom: 12, borderRadius: 16, backgroundColor: theme.colors.surface,
-                  overflow: "hidden" }}>
-                <TouchableOpacity testID="voice-history-handle" accessibilityRole="button"
-                  accessibilityLabel="音声会話の履歴を閉じる" onPress={() => setHistoryExpanded(false)}
-                  style={{ paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1,
-                    borderBottomColor: theme.colors.border }}>
-                  <Text style={{ color: theme.colors.textPrimary, textAlign: "center", fontSize: 14 }}>音声会話の履歴  ⌄</Text>
-                </TouchableOpacity>
+                  marginBottom: 12, backgroundColor: "transparent" }}>
                 <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flexShrink: 1 }}
                   onScroll={(event) => {
                     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -230,47 +244,46 @@ export function VoiceConversationScreen({
                     </View>
                   ))}
                 </ScrollView>
-              </View>
+              </Reanimated.View>
             ) : null}
-            <View testID="voice-history-swipe-area" {...historyPan.panHandlers}>
-              <TouchableOpacity testID="voice-history-open" accessibilityRole="button"
-                accessibilityLabel={historyExpanded ? "音声会話の履歴を閉じる" : "音声会話の履歴を開く"}
-                onPress={() => setHistoryExpanded((expanded) => !expanded)}
-                style={{ alignItems: "center", paddingBottom: 8 }}>
-                <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>{historyExpanded ? "⌄ 履歴を閉じる" : "⌃ 上にスワイプして履歴"}</Text>
-              </TouchableOpacity>
-              <StreamingSttFooter
-              ref={footerRef}
-              transcript={transcript}
-              statusText={statusText}
-              voiceStatus={voiceStatus}
-              reduceMotion={reduceMotion !== false}
-              phase={streamingStt.phase}
-              onChangeText={setTranscript}
-              onFocus={() => {
-                setInitialStartPending(false);
-                setEditingTranscript(true);
-                streamingStt.stop();
-              }}
-              onSubmit={async (text, onAccepted) => {
-                try {
-                  await streamingStt.sendManualTranscript(text, () => {
-                    if (!onAccepted()) return false;
-                    setEditingTranscript(false);
-                    return true;
-                  });
-                } catch (error) {
-                  voice.setError(error instanceof Error ? error.message : String(error));
-                }
-              }}
-              onStop={() => {
-                voice.interrupt();
-                streamingStt.stop();
-                onClose();
-              }}
-              voiceContextStats={voice.contextStats}
-            />
-            </View>
+            <GestureDetector gesture={footerSwipe}>
+              <View testID="voice-history-swipe-area">
+                <StreamingSttFooter
+                  ref={footerRef}
+                  transcript={transcript}
+                  statusText={statusText}
+                  voiceStatus={voiceStatus}
+                  reduceMotion={reduceMotion !== false}
+                  phase={streamingStt.phase}
+                  onChangeText={setTranscript}
+                  onFocus={() => {
+                    setInitialStartPending(false);
+                    setEditingTranscript(true);
+                    streamingStt.stop();
+                  }}
+                  onBlur={() => setEditingTranscript(false)}
+                  onSubmit={async (text, onAccepted) => {
+                    try {
+                      await streamingStt.sendManualTranscript(text, () => {
+                        if (!onAccepted()) return false;
+                        setEditingTranscript(false);
+                        return true;
+                      });
+                    } catch (error) {
+                      voice.setError(error instanceof Error ? error.message : String(error));
+                    }
+                  }}
+                  onStop={() => {
+                    voice.interrupt();
+                    streamingStt.stop();
+                    onClose();
+                  }}
+                  voiceContextStats={voice.contextStats}
+                  historyExpanded={historyExpanded}
+                  onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
+                />
+              </View>
+            </GestureDetector>
           </View>
         </SafeAreaView>
       </Reanimated.View>

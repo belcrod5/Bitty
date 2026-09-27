@@ -36,8 +36,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   statusText?: string;
   onChangeText?: (text: string) => void;
   onFocus?: () => void;
+  onBlur?: () => void;
   onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
-}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText, onChangeText, onFocus, onSubmit }, ref) {
+  historyExpanded?: boolean;
+  onHistoryToggle?: () => void;
+}>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
+  onChangeText, onFocus, onBlur, onSubmit, historyExpanded, onHistoryToggle }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -147,6 +151,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       return true;
     }).catch(() => undefined).finally(() => { submittingRef.current = false; });
   };
+  const historyAccessibility = onHistoryToggle ? {
+    accessibilityActions: [{ name: "toggleHistory", label: historyExpanded ? "履歴を閉じる" : "履歴を開く" }],
+    onAccessibilityAction: (event: { nativeEvent: { actionName: string } }) => {
+      if (event.nativeEvent.actionName === "toggleHistory") onHistoryToggle();
+    },
+  } : {};
 
   return (
     <View
@@ -194,6 +204,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
                 onChangeText(text);
               }}
               onFocus={onFocus}
+              onBlur={onBlur}
               onSubmitEditing={(event) => submit(event.nativeEvent.text ?? latestTranscriptRef.current)}
               submitBehavior="submit"
               returnKeyType="send"
@@ -203,12 +214,14 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
               placeholderTextColor="#8e9bad"
               accessibilityLabel="文字起こしを編集"
+              {...historyAccessibility}
               style={{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, minHeight: 22, maxHeight: 66, padding: 0 }}
             />
           ) : (
             <Text
               testID="streaming-stt-transcript"
               accessibilityLabel={voiceStatus === "responding" ? "Responding" : voiceStatus === "speaking" ? "Speaking" : undefined}
+              {...historyAccessibility}
               style={[{ color: "#f4f7ff", fontSize: 16, lineHeight: 22, maxHeight: 66 }, voiceStatus ? {
                 color: voiceStatus === "responding" ? "#83f8ff" : "#ffafd9",
                 fontSize: 14,
