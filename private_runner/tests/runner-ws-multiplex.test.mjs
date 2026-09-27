@@ -240,6 +240,28 @@ test("voice acceptance creates one attachable TTS job and keeps its error separa
   assert.equal(ws.sent.find((message) => message.op === "voice.turn.completed").payload.text, "Answer.");
 });
 
+test("voice interrupt routes to the voice turn instead of the generic agent turn", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalInterrupt = service.interrupt;
+  const operationId = "33333333-4444-4555-8666-777777777777";
+  const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  service.interrupt = async (receivedConversationId, receivedOperationId) => {
+    assert.equal(receivedConversationId, conversationId);
+    assert.equal(receivedOperationId, operationId);
+    return { clientOperationId: operationId, status: "interrupted", code: "voice_cancelled" };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => { service.interrupt = originalInterrupt; ws.close(); });
+  ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.turn.interrupt",
+    requestId: "stop-voice", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId },
+  }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "voice.turn.interrupt.result"));
+  const result = ws.sent.find((message) => message.op === "voice.turn.interrupt.result");
+  assert.equal(result.requestId, "stop-voice");
+  assert.equal(result.payload.status, "interrupted");
+});
+
 test("voice TTS sends audio before turn completion and stays cancelled while generation continues", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalStart = service.start;

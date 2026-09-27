@@ -9047,6 +9047,20 @@ runnerWsServer.on("connection", (ws, req) => {
       }).catch((error) => sendVoiceError(message, error));
       return true;
     }
+    if (message.op === "voice.turn.interrupt") {
+      void voiceContextService.interrupt(message.payload?.logicalConversationId, message.payload?.clientOperationId)
+        .then((payload) => {
+          const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
+          if (job && job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
+            llmJobCancel(job, "voice turn interrupted");
+          }
+          sendRunnerWsEnvelope(ws, {
+            channel: "agent", op: "voice.turn.interrupt.result", requestId: message.requestId || "",
+            operationId: payload.clientOperationId, payload,
+          });
+        }).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
       let operation;
       if (message.op === "voice.settings") operation = voiceContextService.getSettings();

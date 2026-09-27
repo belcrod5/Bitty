@@ -94,6 +94,62 @@ test("sends one final text block and reads aloud only after a completed turn", a
   });
 });
 
+test("stopping a voice turn interrupts the matching operation and ignores its late result", async () => {
+  const request = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.turn.interrupt"
+    ? Promise.resolve({ op: "voice.turn.interrupt.result", payload: { status: "interrupted", code: "voice_cancelled" } })
+    : request?.(message));
+  const onCompleted = jest.fn();
+  const { result } = await renderHook(() => useVoiceConversation(onCompleted));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("long story", jest.fn()); await Promise.resolve(); });
+  expect(result.current.turnStatus).toBe("accepted");
+  await act(async () => result.current.interrupt());
+  await sent;
+  expect(mockManager.request).toHaveBeenCalledWith({
+    channel: "agent", op: "voice.turn.interrupt", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId },
+  }, { timeoutMs: 30_000 });
+  await act(async () => handlers.get("voice.turn.completed")?.({
+    channel: "agent", op: "voice.turn.completed",
+    payload: { clientOperationId: operationId, status: "completed", text: "late reply" },
+  }));
+  expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.reply).toBeNull();
+  expect(onCompleted).not.toHaveBeenCalled();
+});
+
+test("reopening after an intentional voice interruption is ready for recording", async () => {
+  mockManager.request.mockResolvedValue({ op: "voice.open.result", payload: {
+    logicalConversationId: conversationId, contextMode: "self_context_array",
+    clientOperationId: operationId, status: "interrupted", code: "voice_cancelled", ...initialStats,
+  } });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.error).toBe("");
+});
+
+test("retries voice interruption once after a connection failure", async () => {
+  const request = mockManager.request.getMockImplementation();
+  let attempts = 0;
+  mockManager.request.mockImplementation((message: { op: string }) => {
+    if (message.op !== "voice.turn.interrupt") return request?.(message);
+    attempts += 1;
+    return attempts === 1 ? Promise.reject(new Error("runner_ws_disconnected"))
+      : Promise.resolve({ op: "voice.turn.interrupt.result" });
+  });
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("long story", jest.fn()); await Promise.resolve(); });
+  await act(async () => result.current.interrupt());
+  await sent;
+  await waitFor(() => expect(attempts).toBe(2));
+  expect(mockManager.connect).toHaveBeenCalledTimes(2);
+});
+
 test("attaches the accepted voice job once and skips full-text synthesis on completion", async () => {
   mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
     if (op === "voice.open") return { channel: "agent", op: "voice.open.result",

@@ -16,6 +16,7 @@ const mockVoice = {
   contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
+  interrupt: jest.fn(),
 };
 const mockStt = {
   active: false,
@@ -175,6 +176,7 @@ test("stopping active recording closes the footer immediately", async () => {
   await fireEvent.press(screen.getByTestId("streaming-stt-stop"));
 
   expect(mockStt.stop).toHaveBeenCalledTimes(1);
+  expect(mockVoice.interrupt).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
   expect(mockAbort).toHaveBeenCalled();
 });

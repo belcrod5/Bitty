@@ -108,6 +108,13 @@ export function useVoiceConversation(
       return;
     }
     pendingRef.current = null;
+    if (status === "interrupted" && payload.code === "voice_cancelled"
+      || status === "preflight_failed" && payload.code === "voice_cancelled") {
+      pending.resolve?.();
+      setTurnStatus("idle");
+      setError("");
+      return;
+    }
     if (status === "completed" && typeof payload.text === "string" && payload.text.trim()) {
       pending.resolve?.();
       setReply({ text: payload.text, operationId: id });
@@ -199,6 +206,9 @@ export function useVoiceConversation(
           && typeof openPayload.clientOperationId === "string") {
           setReply({ text: openPayload.text, operationId: openPayload.clientOperationId });
           setTurnStatus("completed");
+        } else if ((openPayload.status === "interrupted" || openPayload.status === "preflight_failed")
+          && openPayload.code === "voice_cancelled") {
+          setTurnStatus("idle");
         } else if (openPayload.status === "unknown" || openPayload.status === "failed"
           || openPayload.status === "preflight_failed" || openPayload.status === "interrupted") {
           setTurnStatus("failed");
@@ -350,6 +360,24 @@ export function useVoiceConversation(
     });
   }, [manager, startTurn]);
 
+  const interrupt = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending || !conversationIdRef.current) return;
+    pendingRef.current = null;
+    turnRevisionRef.current += 1;
+    pending.resolve?.();
+    setTurnStatus("idle");
+    setError("");
+    const request = {
+      channel: "agent", op: "voice.turn.interrupt", operationId: pending.id,
+      payload: { logicalConversationId: conversationIdRef.current, clientOperationId: pending.id },
+    } as const;
+    void manager.request(request, { timeoutMs: 30_000 }).catch(async () => {
+      await manager.connect();
+      await manager.request(request, { timeoutMs: 30_000 });
+    }).catch(() => undefined);
+  }, [manager]);
+
   return {
     ready: Boolean(logicalConversationId) && connected,
     turnStatus,
@@ -358,5 +386,6 @@ export function useVoiceConversation(
     error,
     setError,
     sendTranscript,
+    interrupt,
   };
 }

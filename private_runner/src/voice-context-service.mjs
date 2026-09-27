@@ -171,6 +171,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
   let memory = "";
   let summarizedThroughPair = 0;
   let inFlightId = "";
+  let inFlightController = null;
+  let inFlightTask = null;
   let storeFailure = null;
   let summaryTask = null;
   let summaryRetryTimer = null;
@@ -392,7 +394,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
   }
 
   async function modelTurn({ input, items, instructions, onStarted, onApproval, onText, onTextError, signal }) {
-    if (signal?.aborted) throw invalid("turn_interrupted", "Voice summary was cancelled");
+    if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const { model, effort } = settings();
     if (onApproval) {
       const parentStat = await fs.lstat(path.dirname(root));
@@ -408,13 +410,32 @@ export function createVoiceContextService({ rootDir, createClient }) {
     let stage = "client_open";
     let removeListener = () => {};
     let removeServerRequestHandler = () => {};
+    let removeAbortListener = () => {};
     let resolveIdentity;
+    let identity = null;
+    let turnStartRequested = false;
+    let cancellationSent = false;
+    function interruptForCancellation() {
+      if (!signal?.aborted || !onApproval) return;
+      if (!identity) {
+        if (!turnStartRequested) client?.close();
+        return;
+      }
+      if (cancellationSent) return;
+      cancellationSent = true;
+      void client.request("turn/interrupt", identity, 2000).catch(() => {}).finally(() => client.close());
+    }
     try {
       const cwd = await fs.realpath(directory);
       if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.workspaceConversationId || active.logicalConversationId)) {
         throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
       }
-      client = createClient({ signal });
+      client = createClient({ signal: onApproval ? undefined : signal });
+      if (onApproval && signal) {
+        signal.addEventListener("abort", interruptForCancellation, { once: true });
+        removeAbortListener = () => signal.removeEventListener("abort", interruptForCancellation);
+        interruptForCancellation();
+      }
       await client.openPromise;
       stage = "initialize";
       await client.request("initialize", {
@@ -467,7 +488,6 @@ export function createVoiceContextService({ rootDir, createClient }) {
       stage = "inject_items";
       if (items.length) await client.request("thread/inject_items", { threadId, items }, 30000);
       const pendingNotifications = [];
-      let identity = null;
       let output = [];
       let terminal = null;
       let toolSeen = false;
@@ -478,7 +498,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       let textStreamingStopped = false;
       let textDelivered = false;
       function deliverText(text) {
-        if (!text || !onText || textStreamingStopped) return;
+        if (!text || !onText || textStreamingStopped || signal?.aborted) return;
         try { onText(text); textDelivered = true; }
         catch (error) { textStreamingStopped = true; try { onTextError?.(error); } catch {} }
       }
@@ -559,7 +579,9 @@ export function createVoiceContextService({ rootDir, createClient }) {
         }
       });
       stage = "turn_start";
+      if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
       const completion = client.waitForTurnCompletion();
+      turnStartRequested = true;
       const turn = await client.request("turn/start", {
         threadId, input: [{ type: "text", text: input }], cwd,
         model, effort, approvalPolicy: onApproval ? "on-request" : "never",
@@ -568,6 +590,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       const turnId = turn?.turn?.id;
       if (typeof turnId !== "string" || !turnId) throw invalid("capability_unsupported", "Codex turn ID is unavailable", "turn_id_unavailable");
       identity = { threadId, turnId };
+      interruptForCancellation();
       resolveIdentity();
       completion.expect(identity);
       for (const [method, params] of pendingNotifications) observe(method, params);
@@ -581,6 +604,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
           timer = setTimeout(() => reject(invalid("timeout", "Voice turn timed out")), 10 * 60 * 1000);
         })]);
       } finally { clearTimeout(timer); }
+      if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
       if (approvalFailure) throw invalid("turn_interrupted", "Voice approval channel closed");
       if (!onApproval && toolSeen) throw invalid("capability_unsupported", "Voice summary attempted a tool or approval", "tool_or_approval");
       const status = String(terminal?.params?.turn?.status || terminal?.params?.status || "").toLowerCase();
@@ -603,6 +627,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       resolveIdentity?.();
       removeListener();
       removeServerRequestHandler();
+      removeAbortListener();
       client?.close();
     }
   }
@@ -701,10 +726,11 @@ export function createVoiceContextService({ rootDir, createClient }) {
     summaryFailures = 0;
   }
 
-  async function runTurn(clientOperationId, input, notify, onApproval, hooks = {}) {
+  async function runTurn(clientOperationId, input, notify, onApproval, hooks = {}, signal) {
     let stage = "preflight";
     try {
       const { selected, committedMemory } = await exclusive(async () => {
+        if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
         const selected = pairs.filter((pair) => pair.pairSeq > summarizedThroughPair);
         if (visibleBytes(selected, memory, input) > MAX_VISIBLE_BYTES) {
           throw invalid("voice_context_too_large", "Voice context exceeds safe model input budget");
@@ -721,18 +747,22 @@ export function createVoiceContextService({ rootDir, createClient }) {
       }
       stage = "model_turn";
       const result = await modelTurn({ input, items, instructions: VOICE_INSTRUCTIONS, onApproval,
+        signal,
         onText: hooks.onText, onTextError: hooks.onTextError,
         onStarted: ({ threadId, turnId }) => exclusive(() => append(clientOperationId, "native_started", { threadId, turnId })) });
       stage = "completion_store";
-      await exclusive(() => append(clientOperationId, "completed", { pairSeq: pairs.length + 1, text: result.text }));
+      await exclusive(async () => {
+        if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
+        await append(clientOperationId, "completed", { pairSeq: pairs.length + 1, text: result.text });
+      });
       inFlightId = "";
       try { notify(stateOf(clientOperationId)); } catch {}
       try { hooks.onCompleted?.(result.text); } catch {}
     } catch (error) {
-      try { hooks.onFailed?.(error); } catch {}
+      if (!signal.aborted) { try { hooks.onFailed?.(error); } catch {} }
       const current = byId.get(clientOperationId);
-      const type = current?.status === "accepted" ? "preflight_failed" : error?.code === "turn_interrupted" ? "interrupted" : "failed";
-      const code = String(error?.code || "turn_failed");
+      const type = current?.status === "accepted" ? "preflight_failed" : signal.aborted || error?.code === "turn_interrupted" ? "interrupted" : "failed";
+      const code = signal.aborted ? "voice_cancelled" : String(error?.code || "turn_failed");
       if (["ENOSPC", "EDQUOT", "EIO"].includes(code)) {
         storeFailure = invalid("voice_store_unavailable", "Voice storage is unavailable");
       }
@@ -749,6 +779,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
       }
     } finally {
       inFlightId = "";
+      inFlightController = null;
+      inFlightTask = null;
       void exclusive(startSummary).catch(() => {});
     }
   }
@@ -832,6 +864,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
       });
     },
     async open() {
+      const { task } = await exclusive(() => ({ task: inFlightController?.signal.aborted ? inFlightTask : null }));
+      if (task) await task;
       return exclusive(async () => {
         await load();
         const last = [...byId.keys()].at(-1);
@@ -845,6 +879,16 @@ export function createVoiceContextService({ rootDir, createClient }) {
         if (logicalConversationId !== active.logicalConversationId || !UUID.test(clientOperationId)) {
           throw invalid("turn_rejected", "Voice conversation or operation ID is invalid");
         }
+        return stateOf(clientOperationId);
+      });
+    },
+    async interrupt(logicalConversationId, clientOperationId) {
+      return exclusive(async () => {
+        await load();
+        if (logicalConversationId !== active.logicalConversationId || !UUID.test(clientOperationId)) {
+          throw invalid("turn_rejected", "Voice conversation or operation ID is invalid");
+        }
+        if (inFlightId === clientOperationId) inFlightController.abort();
         return stateOf(clientOperationId);
       });
     },
@@ -876,8 +920,12 @@ export function createVoiceContextService({ rootDir, createClient }) {
         cancelSummary();
         await append(id, "accepted", { text });
         inFlightId = id;
+        inFlightController = new AbortController();
+        const signal = inFlightController.signal;
         try { hooks.onAccepted?.(); } catch {}
-        queueMicrotask(() => void runTurn(id, text, notify, onApproval, hooks));
+        inFlightTask = new Promise((resolve) => queueMicrotask(() => {
+          void runTurn(id, text, notify, onApproval, hooks, signal).finally(resolve);
+        }));
         return stateOf(id);
       });
     },

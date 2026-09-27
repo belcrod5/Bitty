@@ -185,6 +185,7 @@ export function VoiceConversationScreen({
                 }
               }}
               onStop={() => {
+                voice.interrupt();
                 streamingStt.stop();
                 onClose();
               }}

@@ -6,11 +6,13 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSummaryCount = 0, holdTurns = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
   const modelReleases = [];
+  const threadReleases = [];
+  const interruptReleases = [];
   let summaryFailuresRemaining = failSummaryCount;
   const createClient = ({ signal } = {}) => {
     let listener = () => {};
@@ -21,13 +23,13 @@ function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSum
     return {
       openPromise: Promise.resolve(),
       notify() {},
-      close() {},
+      close() { resolveCompletion(); },
       addNotificationListener(next) { listener = next; return () => { listener = () => {}; }; },
       addServerRequestHandler(handler) { serverHandler = handler; return () => { serverHandler = () => undefined; }; },
       waitForTurnCompletion() {
         return { expect() {}, promise: new Promise((resolve) => { resolveCompletion = resolve; }) };
       },
-      async request(method, params) {
+      async request(method, params, timeout) {
         if (signal?.aborted && !ignoreAbort) throw new Error("mock aborted");
         calls.push({ method, params });
         if (method === failMethod) {
@@ -49,7 +51,20 @@ function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSum
         }
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
+          if (holdThreadStart) await new Promise((resolve) => threadReleases.push(resolve));
           return { thread: { id: randomUUID(), ephemeral } };
+        }
+        if (method === "turn/interrupt" && holdInterruptRpc) {
+          return new Promise((_, reject) => setTimeout(() => reject(new Error("mock interrupt timeout")), timeout));
+        }
+        if (method === "turn/interrupt" && finishOnInterrupt) {
+          const finish = () => {
+            listener("turn/interrupted", { ...params, turn: { status: "interrupted" } });
+            resolveCompletion();
+          };
+          if (holdInterrupt) interruptReleases.push(finish);
+          else queueMicrotask(finish);
+          return {};
         }
         if (method === "mcpServerStatus/list") return mcpPage ?? { data: [], nextCursor: null };
         if (method === "turn/start") {
@@ -87,7 +102,7 @@ function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSum
       },
     };
   };
-  return { createClient, calls, releases, summaryReleases, modelReleases };
+  return { createClient, calls, releases, threadReleases, interruptReleases, summaryReleases, modelReleases };
 }
 
 async function waitFor(check) {
@@ -104,6 +119,8 @@ async function fixture(t, options = {}) {
   const codex = fakeCodex(options);
   t.after(async () => {
     for (const release of codex.modelReleases.splice(0)) release();
+    for (const release of codex.threadReleases.splice(0)) release();
+    for (const finish of codex.interruptReleases.splice(0)) finish();
     for (const finish of codex.releases.splice(0)) finish();
     for (const finish of codex.summaryReleases.splice(0)) finish();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -164,6 +181,113 @@ test("voice turns persist before acknowledgement and replay without generation",
     { code: "operation_conflict" });
   const reopened = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.equal((await reopened.status(conversation.logicalConversationId, message.operationId)).text, "answer");
+});
+
+test("interrupts an active voice turn upstream and never stores its late reply", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true, finishOnInterrupt: true });
+  const id = randomUUID();
+  let terminal;
+  const finished = new Promise((resolve) => { terminal = resolve; });
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "long story" }] },
+  } }, terminal, async () => "decline");
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  const accepted = await service.interrupt(conversation.logicalConversationId, id);
+  assert.equal(accepted.clientOperationId, id);
+  const cancelled = await service.open();
+  assert.equal(cancelled.status, "interrupted");
+  assert.equal(cancelled.code, "voice_cancelled");
+  assert.equal((await finished).status, "interrupted");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/interrupt").length, 1);
+  codex.releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await service.status(conversation.logicalConversationId, id)).status, "interrupted");
+  assert.equal((await service.open()).unsummarizedMessageCount, 0);
+  const nextId = randomUUID();
+  const next = await service.start({ operationId: nextId, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: nextId, input: { blocks: [{ type: "text", text: "new request" }] },
+  } }, () => {}, async () => "decline");
+  assert.equal(next.status, "accepted");
+  await waitFor(() => codex.releases.length === 1);
+  codex.releases.shift()();
+  await waitFor(async () => (await service.status(conversation.logicalConversationId, nextId)).status === "completed");
+});
+
+test("opening immediately after interrupt waits for the old turn to settle", async (t) => {
+  const { service, conversation, codex } = await fixture(t, {
+    holdTurns: true, finishOnInterrupt: true, holdInterrupt: true,
+  });
+  const id = randomUUID();
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "long story" }] },
+  } }, () => {}, async () => "decline");
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  const cancelling = service.interrupt(conversation.logicalConversationId, id);
+  await waitFor(() => codex.interruptReleases.length === 1);
+  let reopenedResult;
+  const reopened = service.open().then((value) => { reopenedResult = value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reopenedResult, undefined);
+  codex.interruptReleases.shift()();
+  await cancelling;
+  await reopened;
+  assert.equal(reopenedResult.status, "interrupted");
+  assert.equal(reopenedResult.code, "voice_cancelled");
+});
+
+test("interrupt acknowledgement closes an unresponsive native turn without waiting for its terminal event", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true });
+  const id = randomUUID();
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "long story" }] },
+  } }, () => {}, async () => "decline");
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  const accepted = await service.interrupt(conversation.logicalConversationId, id);
+  assert.equal(accepted.clientOperationId, id);
+  const reopened = await service.open();
+  assert.equal(reopened.status, "interrupted");
+  assert.equal(reopened.code, "voice_cancelled");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/interrupt").length, 1);
+});
+
+test("a held native interrupt RPC times out locally and still releases voice.open", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdTurns: true, holdInterruptRpc: true });
+  const id = randomUUID();
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "long story" }] },
+  } }, () => {}, async () => "decline");
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/start"));
+  await service.interrupt(conversation.logicalConversationId, id);
+  await waitFor(() => codex.calls.some(({ method }) => method === "turn/interrupt"));
+  const reopened = await service.open();
+  assert.equal(reopened.status, "interrupted");
+  assert.equal(reopened.code, "voice_cancelled");
+});
+
+test("interrupts before native turn start without dispatching generation", async (t) => {
+  const { service, conversation, codex } = await fixture(t, { holdThreadStart: true });
+  const id = randomUUID();
+  let terminal;
+  const finished = new Promise((resolve) => { terminal = resolve; });
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "long story" }] },
+  } }, terminal, async () => "decline");
+  await waitFor(() => codex.threadReleases.length === 1);
+  const cancelling = service.interrupt(conversation.logicalConversationId, id);
+  await waitFor(() => codex.threadReleases.length === 1);
+  codex.threadReleases.shift()();
+  await cancelling;
+  const cancelled = await service.open();
+  assert.equal(cancelled.status, "interrupted");
+  assert.equal(cancelled.code, "voice_cancelled");
+  assert.equal((await finished).status, "interrupted");
+  assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
 });
 
 test("accepted hook precedes generation and item deltas reconcile with completed text", async (t) => {
