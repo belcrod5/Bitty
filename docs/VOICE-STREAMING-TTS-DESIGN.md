@@ -1,32 +1,32 @@
 # Skia 音声会話の逐次 TTS 設計
 
-状態: 実装前の設計案（2026-09-27）。この文書は、[音声長期会話 v1 設計](VOICE-CONTEXT-CONTROL-DESIGN.md)の「生成途中の delta を TTS に使わない」という部分を変更する提案である。実装・実機検証はまだ行っていない。
+状態: 実装 PR #147 がレビュー中（2026-09-27）。この文書は、[音声長期会話 v1 設計](VOICE-CONTEXT-CONTROL-DESIGN.md)の「生成途中の delta を TTS に使わない」という部分を変更する設計である。ユーザーは長文応答の読み上げ中に停止して再度開く操作を実機で確認し、問題ないと報告した。その他の実機動作や低遅延化の実測は未確認。
 
-## 目的と現状
+## 目的と変更前の経路
 
 Skia ボードの `StreamingSttFooter` から送った音声会話では、返答の最初の句読点が生成された時点から読み上げを始める。会話の正本は引き続き、成功した turn の完成本文だけを保存する。TTS の成否は会話の成否に影響させない。
 
-現在の経路は次の通り。
+変更前の経路は次の通り。
 
 1. [`voice-context-service.mjs`](../private_runner/src/voice-context-service.mjs) の `modelTurn` は App Server の `item/completed` から完成本文を集める。`item/agentMessage/delta` は読み上げに使っていない。
 2. Runner は `voice.turn.completed` で完成本文を送り、[`useVoiceConversation.ts`](../expo/src/features/app/hooks/useVoiceConversation.ts) が完了時コールバックを呼ぶ。
 3. [`VoiceConversationScreen.tsx`](../expo/src/features/app/screens/VoiceConversationScreen.tsx) が全文を `synthesizeSpeechStream(text, { messageId: operationId })` に渡す。既存 TTS ジョブは `mode: "text"` として全文を句読点で分割するため、分割自体はできるが開始が遅い。
 
-通常チャットの自動読み上げも [`useCodexReplyRequest.ts`](../expo/src/features/app/hooks/useCodexReplyRequest.ts) では返答確定後に `synthesizeSpeechStream` を呼ぶ。現行アプリの通常チャットは App Server の本物の差分を表示し、TTS 要求は `mode: "text"` に固定されている。旧互換の `/stream-tts` の `reply` モードは現行アプリから呼ばれず、file-tools 経路では完成文を疑似 delta にしている。「通常チャットはモデル生成中から発声している」とは扱わない。
+通常チャットの自動読み上げも [`useCodexReplyRequest.ts`](../expo/src/features/app/hooks/useCodexReplyRequest.ts) では返答確定後に `synthesizeSpeechStream` を呼ぶ。変更前のアプリの通常チャットは App Server の本物の差分を表示し、TTS 要求は `mode: "text"` に固定されている。旧互換の `/stream-tts` の `reply` モードは変更前のアプリから呼ばれず、file-tools 経路では完成文を疑似 delta にしている。「通常チャットはモデル生成中から発声している」とは扱わない。
 
 ## 句読点処理の棚卸し
 
-| 処理 | 現在の用途 | この変更での扱い |
+| 処理 | 変更前の用途 | この変更での扱い |
 | --- | --- | --- |
 | `takeNextStreamTtsSegment`、`findStreamTtsSplitIndex`、`isTtsBoundaryChar` (`server-runtime.mjs`) | TTS に渡す文を `。 、 ！ ？ ! ? . , 改行` と長さ上限で分ける。長文の強制分割では空白等を優先し、サロゲートペアを避ける | **唯一の TTS 分割規則として再利用**する。音声会話用の正規表現・閾値を増やさない |
 | `sanitizeStreamTtsText` (`server-runtime.mjs`) | 分割後、音声プロバイダーへ渡す文字を整形する | 既存処理を再利用し、句読点の読み上げ方を今回変えない |
-| `splitPseudoTextDeltas` (`server-runtime.mjs`) | 旧 `reply` file-tools の完成文と、旧 Responses stream の差分なし時を18文字程度の疑似 delta にする | **削除対象**。新しい TTS 分割器へ統合・転用しない。旧 API の互換性を確認して疑似配信を除去する |
+| `splitPseudoTextDeltas` (`server-runtime.mjs`) | 旧 `reply` file-tools の完成文と、旧 Responses stream の差分なし時を18文字程度の疑似 delta にする | **PR #147 で削除**。新しい TTS 分割器へ統合・転用しない |
 | `splitMockStreamChunks` (`server-runtime.mjs`) | `RUNNER_MOCK` 時だけ完成文を16文字ずつ疑似配信する | mock 専用として区別する。旧 `reply` 経路を廃止するなら利用箇所ごと削除し、TTS 規則には混ぜない |
 | `sanitizeTextForTts` (Expo) | 全文 TTS 要求前の表示テキスト整形 | 再生入口の前処理であり、句読点分割器にしない |
 
 既存 TTS 分割テストは [`stream-tts-segmentation.test.mjs`](../private_runner/tests/stream-tts-segmentation.test.mjs) にある。分割関数を別モジュールへ移す場合、このテストの参照先を移し、既存の句読点・上限・絵文字ケースを維持する。
 
-疑似 delta は完成文の到着を早めず、現行アプリにも届かない。実装時は `splitPseudoTextDeltas` と両呼び出し箇所を削除し、旧 `reply` API を残す場合も完成文を一度だけ通知して既存の TTS 分割へ渡す。これは旧 API のイベント時刻・`stream_mode` を変え得るため、外部利用の有無と互換性を確認してから削除する。`mode: "text"` と現行アプリの再生経路は維持する。削除のためだけに共通の疑似分割ユーティリティを作らない。
+疑似 delta は完成文の到着を早めず、アプリにも届かない。PR #147 では `splitPseudoTextDeltas` と両呼び出し箇所を削除し、旧 `reply` と Responses の差分なし時の完成文を一度だけ通知して既存の TTS 分割へ渡す。旧 `stream_mode` の値は維持したが、イベント時刻は変わり得るため、外部利用と互換性の確認は残る。`mode: "text"` とアプリの再生経路は維持する。削除のためだけに共通の疑似分割ユーティリティを作らない。
 
 ## 所有権と API
 
@@ -48,7 +48,7 @@ stream.cancel();       // 生成失敗・中断時に未着手の区間を破棄
 2. Runner の `turn.start` 音声分岐は、受理した `clientOperationId` に対して一つだけ TTS ジョブを関連付ける。現行 `voiceContextService.start` は `accepted` 永続化後すぐ `queueMicrotask(runTurn)` するため、Runner の `.then` でジョブを作るだけでは順序保証にならない。初回受理時に `accepted` の append 後、`runTurn` を予約する前の TTS 非依存の受理コールバックでジョブを用意する。この一箇所だけのフックは再送時には呼ばない。Runner 側で受理前にジョブを仮作成すると、拒否・重複再送時の破棄と競合調整が増えるため採らない。TTS 設定エラーは作れたジョブだけを失敗にし、容量不足などジョブを作れない場合は `jobId` なしで会話を進め、正常完了時だけ現行の全文 TTS へフォールバックする。準備失敗を受理済み会話へ伝播させない。同IDの再送でジョブを増やさない。既存 `llmJobEmit` と `tts:attach` のイベント履歴・再接続経路を使う。`turn.accepted` と `voice.status.result` は、存在するジョブの `jobId` を返せるようにする。ジョブ ID は会話の正本ログには保存しない。
 3. モデルが成功したら完成本文を正本に保存し、`voice.turn.completed` を従来どおり送る。TTS 側は残りの文字を flush して合成を続ける。会話完了通知は TTS 合成の終了を待たない。TTS が失敗しても保存済み完成本文を失敗へ戻さず、TTS ジョブだけを `error` にする。
 4. 差分と完成本文は `itemId` 単位で照合する。各 `agentMessage` の生 delta を当該 item の観測文字列に積み、完成本文と比較する時だけ先頭空白を除く。完成本文がその接頭辞なら未配信の末尾だけを `append` し、観測文字列の末尾空白を除くと完成本文と等しい場合は補完しない。先頭・末尾以外で食い違えば、発声済み部分を訂正できないので TTS ジョブだけを失敗にする。delta がない item は完成本文を一度だけ渡す。`itemId` のない delta は帰属を推測せず、その turn の以後の逐次 TTS を止める。まだ何も `append` していなければ正常完了時に完成全文を一回だけ渡し、既に渡していれば重複を避けて TTS ジョブだけを失敗にする。item 間の `\n` は次の本文を流す時に一度だけ挿入する。正本との最終照合は完成 item 本文を `join("\n").trim()` して行い、生 delta の空白差で誤失敗させない。Expo の二つの App Server 表示観測器にも item 単位の補完があるが、UI の状態管理を Runner へ持ち込む共通層は作らない。必要なのは音声会話内の最小限の item 観測だけで、句読点分割は既存処理を使う。
-5. 生成が失敗・中断した場合は未合成の末尾を flush しない。既に端末へ渡した区間は再生停止対象とし、会話の `voice.turn.failed` を既存どおり送る。音声通知 listener が TTS コールバックの例外を握り潰す実装なので、TTS 側で例外を捕捉してジョブを失敗状態へ閉じ、会話の成否へ伝播させない。端末が画面を閉じる場合は購読解除と再生停止だけを行い、Runner の生成・合成・正本保存を止めない。生成失敗・中断時の `cancel()` は未着手区間を破棄し、進行中のプロバイダー呼び出しが戻っても後続の音声イベントを出さない。プロバイダー呼び出しそのものの中断は保証しない。
+5. 生成が失敗・中断した場合は未合成の末尾を flush しない。既に端末へ渡した区間は再生停止対象とし、会話の `voice.turn.failed` を既存どおり送る。音声通知 listener が TTS コールバックの例外を握り潰す実装なので、TTS 側で例外を捕捉してジョブを失敗状態へ閉じ、会話の成否へ伝播させない。フッターの停止を明示的に押した場合は `voice.turn.interrupt` で Runner の生成と TTS ジョブを中断し、未完了の返答を正本へ保存せず、遅れて届く完了通知も端末側で無視する。WS 切断だけでは Runner の生成・合成・正本保存を止めない。画面の単純なアンマウントでは購読解除と再生停止を行うが、Runner の生成・合成・正本保存は継続する。生成失敗・中断時の `cancel()` は未着手区間を破棄し、進行中のプロバイダー呼び出しが戻っても後続の音声イベントを出さない。プロバイダー呼び出しそのものの中断は保証しない。
 
 音声・速度の選択を失わないため、`AppRoot` が現在使う `ttsProvider`、`selectedVoiceId`、`ttsSpeed` を音声 `turn.start` の任意の TTS 指定として渡す。Runner の入口で既存 TTS と同じ検証を行い、その指定を除いた会話 payload を `voiceContextService.start` へ渡す。会話サービスの厳格な入力検証と正本には TTS 指定を混ぜない。TTS の設定不備や合成失敗は TTS ジョブのエラーとし、正常に受理された会話 turn を失敗にしない。同IDの再送では初回ジョブの指定を維持し、異なる指定で二つ目を生成しない。端末の新設定項目や Runner の既定値への暗黙の置換は設けない。
 
@@ -59,7 +59,7 @@ TTS ジョブの `operationId` は音声 turn の `clientOperationId` と対応�
 - [`useSynthesizeSpeechStreamController.ts`](../expo/src/features/app/hooks/useSynthesizeSpeechStreamController.ts): 既存の `mode: "text"` の開始に加え、音声 turn に紐づくジョブへ `tts:attach` する入口を持つ。両入口は現在の `handleStreamMessage`、`enqueueStreamAudio`、再生キューを共有する。`normalizeRunnerWsIncomingTtsEvent` は `streamId` を `event` の外に返すので、両入口から共通 handler へジョブ ID を明示的に渡し、`{jobId, seq}` の重複除外を `audio_chunk` 副作用より前に置く。現行 Runner WS の各イベント envelope には `streamId` があり、旧 WebSocket も `audio_chunk` 前に `job_snapshot` で ID を送る。識別子のないチャンクは推測して再生せずエラーにする。再接続には別の `eventSeq` を使い、二本目のプレーヤーは作らない。
 - [`useVoiceConversation.ts`](../expo/src/features/app/hooks/useVoiceConversation.ts): 受付・状態再照会で得たジョブ ID を現在の turn にだけ通知する。完了時にジョブへ再接続したり全文を再合成したりしない。ジョブが一度も得られなかった正常完了に限り、現行の全文 TTS をフォールバックとして使う。古い turn の通知は操作 ID で破棄する。
 - [`VoiceConversationScreen.tsx`](../expo/src/features/app/screens/VoiceConversationScreen.tsx) と [`AppRoot.tsx`](../expo/src/features/app/AppRoot.tsx): 現在の TTS 選択を音声ターンへ渡し、既存再生制御へのジョブ接続と画面終了時の `expectedMessageId` 付き停止を配線する。ジョブへ接続した時点から `ttsLoading` を立て、最初のチャンクが遅くても `useStreamingStt` が録音へ戻らないようにする。音声再生中は生成が続いていても表示を `SPEAKING` とする。
-- [`StreamingSttFooter.tsx`](../expo/src/features/app/components/StreamingSttFooter.tsx) と通常チャットの UI・送信経路は変更しない。
+- [`StreamingSttFooter.tsx`](../expo/src/features/app/components/StreamingSttFooter.tsx): 逐次 TTS のための送信ロジックは加えない。PR #147 には別途、入力欄の伸長に関する UI 修正が含まれる。
 
 `voice.status` は正本の返答状態を返す。TTS ジョブは揮発性の付随情報として扱い、ジョブの消失を `unknown` な会話 turn と混同しない。音声の自動再開範囲は「同じ Runner プロセスにジョブが残っている時」までとする。
 
@@ -71,4 +71,4 @@ TTS ジョブの `operationId` は音声 turn の `clientOperationId` と対応�
 - Expo のテスト: 最初の `audio_chunk` で完了通知前に再生開始、同一 `{jobId, seq}` の再送で表示・統計・再生を二重更新しない、ID 欠落時は再生しない、完了時に全文再合成しない、画面終了時に他のチャットの TTS を止めない、TTS 待ち・再生中に STT が再開しないこと。既存 `text` は Expo で `sanitizeTextForTts` を通す一方、音声 turn は生 delta なので、URL・Markdown 内の句読点による早期区切りは未検証の品質リスクである。境界を跨ぐ差分で検証し、既存の整形で安全に扱えなければ発声時点や正規化の設計を見直す。未検証の段階で第三の整形器を増やさない。
 - 手動確認: Skia で短い句点付き返答を発話し、モデルの返答が終わる前に最初の区間が再生されること。句読点のない返答、長文、承認待ち、途中の通信断でも録音と読み上げの状態が破綻しないこと。
 
-この文書は設計の保存が目的で、実装の成功や低遅延化の実測を主張しない。
+この文書は設計の保存が目的で、PR #147 のマージや低遅延化の実測を主張しない。
