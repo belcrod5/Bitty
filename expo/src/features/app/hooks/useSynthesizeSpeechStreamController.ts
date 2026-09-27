@@ -525,6 +525,7 @@ export function useSynthesizeSpeechStreamController(
     const ws = createWebSocketWithOptionalAuth(wsUrl, runnerToken);
     streamSocketRef.current = ws;
     closeActiveStream = () => {
+      if (streamSocketRef.current === ws) streamSocketRef.current = null;
       ws.close();
     };
 

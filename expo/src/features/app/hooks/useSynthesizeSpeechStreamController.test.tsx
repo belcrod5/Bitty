@@ -199,6 +199,52 @@ test("terminal voice snapshot settles playback when its terminal event was prune
     payload: { type: "attached", jobId: "voice-job", sinceSeq: 0 } });
   expect(options.setTtsLoading).toHaveBeenLastCalledWith(false);
   expect(options.streamTtsControlRef.current).toBeNull();
+  expect(options.setTtsUiStatus).toHaveBeenLastCalledWith("idle");
+});
+
+test("returns to idle when stream completion follows the final audio chunk", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "voice-job", seq: 1,
+    payload: { type: "audio_chunk", eventSeq: 1, seq: 0, text: "Hello", audioUrl: "https://example.com/0", mimeType: "audio/mpeg" } });
+  expect(options.enqueueStreamAudio).toHaveBeenCalledTimes(1);
+  options.setTtsUiStatus.mockClear();
+
+  manager.emit({ channel: "tts", op: "done", streamId: "voice-job", seq: 2,
+    payload: { type: "done", eventSeq: 2 } });
+
+  expect(options.setTtsUiStatus).toHaveBeenLastCalledWith("idle");
+});
+
+test("direct WebSocket releases its active ref at done before the close event", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options, streamSocketRef } = createOptions(manager);
+  const directOptions = { ...options, runnerWebSocketManager: undefined, runnerToken: "token" };
+  const ws = {
+    close: jest.fn(),
+    send: jest.fn(),
+    onmessage: null as null | ((event: { data: string }) => void),
+    onclose: null as null | ((event: unknown) => void),
+  };
+  mockCreateWebSocketWithOptionalAuth.mockReturnValue(ws);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(directOptions));
+  await result.current("hello", { messageId: "message-1" });
+  expect(streamSocketRef.current).toBe(ws);
+
+  options.ttsPlayingRef.current = true;
+  ws.onmessage?.({ data: JSON.stringify({ type: "audio_chunk", jobId: "job-1", seq: 0,
+    text: "Hello", audioUrl: "https://example.com/0", mimeType: "audio/mpeg" }) });
+  ws.onmessage?.({ data: JSON.stringify({ type: "done" }) });
+
+  expect(ws.close).toHaveBeenCalledTimes(1);
+  expect(streamSocketRef.current).toBeNull();
+  options.setTtsUiStatus.mockClear();
+  ws.onclose?.({ code: 1000 });
+  expect(options.setTtsUiStatus).not.toHaveBeenCalledWith("error");
 });
 
 test("uses RunnerWebSocketManager for stream TTS control traffic when manager is available", async () => {
