@@ -1,4 +1,4 @@
-import { useCallback, useRef, type MutableRefObject } from "react";
+import { useCallback, useRef, type MutableRefObject, type SetStateAction } from "react";
 import { isRunnerWsUrl } from "../../runnerWs/llmAdapter";
 import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import {
@@ -64,7 +64,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   setError: (value: string) => void;
   setReplyDebug: (value: string | ((prev: string) => string)) => void;
   setTtsLoading: (value: boolean) => void;
-  setTtsUiStatus: (value: TtsUiStatus) => void;
+  setTtsUiStatus: (value: SetStateAction<TtsUiStatus>) => void;
   setTtsPlaybackWanted: (next: boolean, reason: string, payload?: Record<string, unknown>) => void;
   patchTtsDebugStats: (patch: Partial<TtsDebugStats>) => void;
   setStreamWaveformPreview: (value: number[]) => void;
@@ -247,7 +247,7 @@ export function useSynthesizeSpeechStreamController(
           segmentTargetChars: segment.segmentTargetChars,
           estimatedDurationMs: segment.estimatedDurationMs,
         });
-        setTtsUiStatus("queued");
+        setTtsUiStatus((current) => current === "playing" ? current : "queued");
         return;
       }
 
@@ -255,7 +255,7 @@ export function useSynthesizeSpeechStreamController(
         const seq = Number(data?.seq);
         if (!Number.isInteger(seq)) return;
         upsertStreamSegment(targetMessageId, seq, String(data?.text || ""), "synthesizing");
-        setTtsUiStatus("synthesizing");
+        setTtsUiStatus((current) => current === "playing" ? current : "synthesizing");
         return;
       }
 

@@ -108,9 +108,6 @@ export function useProcessStreamAudioQueueController(
             ? Number(next.actualDurationMs)
             : null,
         });
-        if (streamAudioQueueRef.current.length > 0) {
-          setTtsUiStatus("queued");
-        }
       }
       completed = true;
     } catch (e) {

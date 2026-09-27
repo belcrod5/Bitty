@@ -1647,7 +1647,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const isTtsPlaybackActive = (
     ttsPlaying ||
     ttsLoading ||
-    ttsQueueProcessing
+    ttsQueueProcessing ||
+    (ttsUiStatus !== "idle" && ttsUiStatus !== "error")
   );
   const {
     conversationInlineAnchorMessageId,
@@ -2763,7 +2764,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     streamSocketRef,
     streamTtsControlRef,
     setTtsPlaybackWanted,
-    setTtsUiStatus,
     setStreamAudioQueueSize,
     preloadStreamAudio,
     processStreamAudioQueue,

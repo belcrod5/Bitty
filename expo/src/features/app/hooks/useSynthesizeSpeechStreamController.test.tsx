@@ -220,6 +220,30 @@ test("returns to idle when stream completion follows the final audio chunk", asy
   expect(options.setTtsUiStatus).toHaveBeenLastCalledWith("idle");
 });
 
+test("keeps playing status across later queued and synthesizing segments", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  let status: "idle" | "queued" | "synthesizing" | "playing" | "error" = "idle";
+  options.setTtsUiStatus.mockImplementation((next: typeof status | ((current: typeof status) => typeof status)) => {
+    status = typeof next === "function" ? next(status) : next;
+  });
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("", { messageId: "voice-operation", jobId: "voice-job" });
+  await flushPromises();
+  expect(status).toBe("queued");
+
+  manager.emit({ channel: "tts", op: "segment_tts_started", operationId: "voice-operation", streamId: "voice-job",
+    payload: { type: "segment_tts_started", seq: 0, text: "first" } });
+  expect(status).toBe("synthesizing");
+
+  status = "playing";
+  manager.emit({ channel: "tts", op: "segment_queued", operationId: "voice-operation", streamId: "voice-job",
+    payload: { type: "segment_queued", seq: 1, text: "next" } });
+  manager.emit({ channel: "tts", op: "segment_tts_started", operationId: "voice-operation", streamId: "voice-job",
+    payload: { type: "segment_tts_started", seq: 1, text: "next" } });
+  expect(status).toBe("playing");
+});
+
 test("direct WebSocket releases its active ref at done before the close event", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { options, streamSocketRef } = createOptions(manager);

@@ -107,10 +107,9 @@ describe("StreamingSttFooter", () => {
     expect(StyleSheet.flatten(glow.props.style)).toMatchObject({ left: -48, right: -48, top: -48, bottom: -48 });
     expect(transcript.props.value).toContain("四行目");
 
-    await fireEvent(transcript, "contentSizeChange", { nativeEvent: { contentSize: { height: 44 } } });
-    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).height).toBe(44);
-    await fireEvent(transcript, "contentSizeChange", { nativeEvent: { contentSize: { height: 110 } } });
-    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).height).toBe(66);
+    expect(transcript.props.scrollEnabled).toBe(true);
+    expect(StyleSheet.flatten(transcript.props.style)).toMatchObject({ minHeight: 22, maxHeight: 66 });
+    expect(StyleSheet.flatten(transcript.props.style).height).toBeUndefined();
 
     await act(async () => {
       fireEvent(panel, "layout", { nativeEvent: { layout: { width: 260, height: 80 } } });
@@ -257,6 +256,20 @@ describe("StreamingSttFooter", () => {
     expect(mockGradientProps.at(-1)?.colors).toEqual(["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"]);
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).fontSize).toBe(16);
     expect(Number(mockSharedValues[2].value)).toBe(4);
+    await screen.unmount();
+  });
+
+  it("keeps the glow phase when a speaking response receives another audio chunk", async () => {
+    const screen = await render(<StreamingSttFooter transcript="" statusText="speaking" voiceStatus="speaking" phase="recording" onStop={jest.fn()} />);
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    const angle = Number(mockSharedValues[6].value);
+    const width = Number(mockSharedValues[2].value);
+
+    await screen.rerender(<StreamingSttFooter transcript="" statusText="speaking." voiceStatus="speaking" phase="recording" onStop={jest.fn()} />);
+    expect(mockSharedValues[6].value).toBe(angle);
+    expect(mockSharedValues[2].value).toBe(width);
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    expect(Number(mockSharedValues[6].value)).toBeGreaterThan(angle);
     await screen.unmount();
   });
 

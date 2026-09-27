@@ -321,6 +321,30 @@ test("starts each new voice phase at its first character even before effects res
   jest.useRealTimers();
 });
 
+test("keeps the speaking animation across streamed chunk gaps", async () => {
+  jest.useFakeTimers();
+  mockVoice.turnStatus = "running";
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive isTtsPlaying ttsUiStatus="playing" onClose={mockOnClose} />);
+  await act(async () => { jest.advanceTimersByTime(180 * 5); });
+  expect(mockFooterProps?.statusText).toBe("speaki");
+
+  await screen.rerender(<VoiceConversationScreen {...playback} ttsUiStatus="playing" onClose={mockOnClose} />);
+  expect(mockFooterProps?.voiceStatus).toBe("speaking");
+  expect(mockFooterProps?.statusText).toBe("speaki");
+  await act(async () => { jest.advanceTimersByTime(180); });
+  expect(mockFooterProps?.statusText).toBe("speakin");
+
+  mockVoice.turnStatus = "completed";
+  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive ttsUiStatus="playing" onClose={mockOnClose} />);
+  expect(mockFooterProps?.statusText).toBe("speakin");
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockFooterProps?.voiceStatus).toBeUndefined();
+
+  await screen.unmount();
+  jest.useRealTimers();
+});
+
 test("plays completed replies automatically and keeps STT paused while TTS is queued", async () => {
   let finishSynthesis!: () => void;
   mockSynthesizeSpeechStream.mockImplementationOnce(() => new Promise<void>((resolve) => {

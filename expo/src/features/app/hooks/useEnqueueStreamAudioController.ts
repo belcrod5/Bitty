@@ -16,7 +16,6 @@ type UseEnqueueStreamAudioControllerOptions = {
   streamSocketRef: MutableRefObject<WebSocket | null>;
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   setTtsPlaybackWanted: (next: boolean, reason: string, payload?: Record<string, unknown>) => void;
-  setTtsUiStatus: (value: "idle" | "queued" | "synthesizing" | "playing" | "error") => void;
   setStreamAudioQueueSize: (value: number) => void;
   preloadStreamAudio: (item: StreamAudioQueueItem) => void;
   processStreamAudioQueue: () => Promise<void>;
@@ -58,7 +57,6 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     streamSocketRef,
     streamTtsControlRef,
     setTtsPlaybackWanted,
-    setTtsUiStatus,
     setStreamAudioQueueSize,
     preloadStreamAudio,
     processStreamAudioQueue,
@@ -96,7 +94,6 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
           streamSocketAlive: streamSocketRef.current !== null,
           streamTtsControlAlive: streamTtsControlRef.current !== null,
         });
-        setTtsUiStatus("queued");
         setStreamAudioQueueSize(streamAudioQueueRef.current.length);
         if (
           streamAudioQueueProcessingRef.current &&
@@ -121,7 +118,6 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     shouldProjectTtsDebugToActiveSession,
     setStreamAudioQueueSize,
     setTtsPlaybackWanted,
-    setTtsUiStatus,
     streamAudioEnqueueChainRef,
     streamAudioQueueGenerationRef,
     streamAudioQueueProcessingRef,

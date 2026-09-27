@@ -121,4 +121,6 @@ test("keeps the session active when the final audio chunk finishes before stream
   await result.current();
 
   expect(options.setTtsUiStatus).not.toHaveBeenCalledWith("idle");
+  expect(options.setTtsUiStatus).toHaveBeenCalledTimes(1);
+  expect(options.setTtsUiStatus).toHaveBeenCalledWith("playing");
 });
