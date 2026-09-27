@@ -7,7 +7,7 @@ import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import { normalizeAppServerApprovalRequest, toCodexApprovalDecision } from "../../codex/client/helpers";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
-export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string };
+export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string };
 type PendingTurn = {
   id: string;
   text?: string;

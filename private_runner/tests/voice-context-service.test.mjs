@@ -394,10 +394,18 @@ test("voice history reads stored user and assistant messages in turn order", asy
   const { rootDir, codex, service, conversation } = await fixture(t);
   await complete(service, conversation, "first");
   await complete(service, conversation, "second");
+  const liveMessages = (await service.history()).messages;
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
-  assert.deepEqual((await restarted.history()).messages.map(({ role, text }) => [role, text]), [
+  const messages = (await restarted.history()).messages;
+  assert.deepEqual(messages, liveMessages);
+  assert.deepEqual(messages.map(({ role, text }) => [role, text]), [
     ["user", "first"], ["assistant", "answer"], ["user", "second"], ["assistant", "answer"],
   ]);
+  const events = (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"), "utf8"))
+    .trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(messages.map(({ role, at }) => [role, at]), events
+    .filter(({ type }) => type === "accepted" || type === "completed")
+    .map(({ type, at }) => [type === "accepted" ? "user" : "assistant", at]));
   await restarted.clearMessages();
   assert.deepEqual((await restarted.history()).messages, []);
 });

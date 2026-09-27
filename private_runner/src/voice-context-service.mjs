@@ -130,7 +130,8 @@ function snapshots(events) {
   const pairs = [];
   for (const event of events) {
     if (event.type === "accepted") {
-      byId.set(event.clientOperationId, { clientOperationId: event.clientOperationId, userText: event.text, status: "accepted" });
+      byId.set(event.clientOperationId, { clientOperationId: event.clientOperationId,
+        userText: event.text, userAt: event.at, status: "accepted" });
       continue;
     }
     const state = byId.get(event.clientOperationId);
@@ -142,6 +143,7 @@ function snapshots(events) {
     if (event.type === "completed") {
       state.status = "completed";
       state.text = event.text;
+      state.assistantAt = event.at;
       pairs.push({ pairSeq: event.pairSeq, user: state.userText, assistant: event.text });
     }
   }
@@ -873,9 +875,11 @@ export function createVoiceContextService({ rootDir, createClient }) {
         await load();
         const messages = [];
         for (const state of byId.values()) {
-          messages.push({ role: "user", text: state.userText, clientOperationId: state.clientOperationId });
+          messages.push({ role: "user", text: state.userText, at: state.userAt,
+            clientOperationId: state.clientOperationId });
           if (state.status === "completed") {
-            messages.push({ role: "assistant", text: state.text, clientOperationId: state.clientOperationId });
+            messages.push({ role: "assistant", text: state.text, at: state.assistantAt,
+              clientOperationId: state.clientOperationId });
           }
         }
         return { logicalConversationId: active.logicalConversationId, messages };

@@ -12,6 +12,7 @@ import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import { useVisualTheme } from "../theme/VisualThemeContext";
+import { formatMessageTimestampLabel } from "../utils/formatting";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 
 const voicePanelFadeIn = FadeIn.duration(220);
@@ -58,6 +59,8 @@ export function VoiceConversationScreen({
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const backdropOpacity = useSharedValue(0);
   const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
+  const BlurView = useMemo(() => Platform.OS === "ios"
+    ? require("expo-blur").BlurView as typeof import("expo-blur").BlurView : null, []);
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
@@ -180,9 +183,14 @@ export function VoiceConversationScreen({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
+      {historyExpanded && BlurView ? (
+        <BlurView testID="voice-conversation-board-blur" pointerEvents="none"
+          intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
+      ) : null}
       <Reanimated.View testID="voice-conversation-backdrop"
         pointerEvents={historyExpanded ? "auto" : "none"}
-        style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0, 0, 0, 0.68)" }, backdropStyle]} />
+        style={[StyleSheet.absoluteFill,
+          { backgroundColor: BlurView ? "rgba(0, 0, 0, 0.5)" : "rgba(0, 0, 0, 0.68)" }, backdropStyle]} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
@@ -224,17 +232,23 @@ export function VoiceConversationScreen({
                       : !voice.history.length
                         ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴はまだありません</Text>
                         : null}
-                  {(voice.ready ? voice.history : []).map((message, index) => (
-                    <View key={`${message.clientOperationId}-${message.role}-${index}`}
-                      style={{ alignSelf: message.role === "user" ? "flex-end" : "flex-start",
-                        maxWidth: "90%", padding: 12, borderRadius: 12,
-                        backgroundColor: message.role === "user" ? theme.colors.surfaceRaised : theme.colors.surfaceMuted }}>
-                      <Text style={{ color: theme.colors.textMuted, fontSize: 11, marginBottom: 4 }}>
-                        {message.role === "user" ? "あなた" : "AI"}
-                      </Text>
-                      <Text style={{ color: theme.colors.textPrimary, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
-                    </View>
-                  ))}
+                  {(voice.ready ? voice.history : []).map((message, index) => {
+                    const user = message.role === "user";
+                    const textColor = user ? theme.colors.textOnAccent : theme.colors.textPrimary;
+                    const time = formatMessageTimestampLabel(message.at);
+                    return (
+                      <View key={`${message.clientOperationId}-${message.role}-${index}`}
+                        style={{ alignSelf: user ? "flex-end" : "flex-start",
+                          maxWidth: "90%", padding: 12, borderRadius: 12,
+                          backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                          <Text style={{ color: textColor, fontSize: 11 }}>{user ? "あなた" : "AI"}</Text>
+                          {time ? <Text style={{ color: textColor, fontSize: 11 }}>{time}</Text> : null}
+                        </View>
+                        <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
+                      </View>
+                    );
+                  })}
                 </ScrollView>
               </Reanimated.View>
             ) : null}
