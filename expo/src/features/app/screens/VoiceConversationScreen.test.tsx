@@ -55,6 +55,11 @@ let mockFooterProps: MockFooterProps | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
 let mockReduceMotion: boolean | null = false;
 
+jest.mock("@expo/vector-icons", () => {
+  const ReactModule = require("react");
+  const { Text } = require("react-native");
+  return { Ionicons: ({ name }: { name: string }) => ReactModule.createElement(Text, null, name) };
+});
 jest.mock("../hooks/useVoiceConversation", () => ({
   useVoiceConversation: (onCompleted: (text: string, operationId: string) => void, _onApproval: unknown,
     _onResolved: unknown, onJob: (jobId: string, operationId: string) => void) => {
@@ -167,7 +172,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.getByTestId("voice-conversation-keyboard-avoiding").children[0]).toBe(backdrop);
   expect(StyleSheet.flatten(backdrop.props.style)).toMatchObject({
     position: "absolute", top: 0, bottom: 0, left: 0, right: 0,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    backgroundColor: "rgba(0, 0, 0, 0.68)",
   });
   expect(backdrop.props.pointerEvents).toBe("none");
   expect(mockWithTiming).toHaveBeenCalledWith(0, { duration: 240 });
@@ -189,6 +194,11 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.getByTestId("voice-history-close").props).toMatchObject({
     accessibilityRole: "button", accessibilityLabel: "履歴を閉じる",
   });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-history-close").props.style)).toMatchObject({
+    width: 44, height: 44,
+  });
+  expect(screen.getByText("close")).toBeTruthy();
+  expect(screen.queryByText("閉じる")).toBeNull();
   expect(screen.queryByTestId("voice-history-handle")).toBeNull();
   expect(screen.getByText("最初の質問")).toBeTruthy();
   expect(screen.getByText("最初の返答")).toBeTruthy();

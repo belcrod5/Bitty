@@ -1768,31 +1768,6 @@ export function SkiaMiniBoardScreen({
 
   return (
     <View style={screenStyles.screen}>
-      <SafeAreaView
-        pointerEvents="box-none"
-        style={screenStyles.headerSafeArea}
-        testID="skia-board-header-safe-area"
-      >
-        <View pointerEvents="box-none" style={screenStyles.header} testID="skia-board-header">
-          <TouchableOpacity
-            style={screenStyles.headerButton}
-            onPress={openDrawer}
-            accessibilityRole="button"
-            accessibilityLabel="ナビゲーションを開く"
-          >
-            <Text style={screenStyles.headerButtonText}>☰</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={screenStyles.headerButton}
-            onPress={() => setBoardMenuOpen(true)}
-            accessibilityRole="button"
-            accessibilityLabel="ボードメニューを開く"
-          >
-            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.iconSecondary} />
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-
       <GestureDetector gesture={gestures}>
         <View
           style={screenStyles.canvasHost}
@@ -1863,6 +1838,31 @@ export function SkiaMiniBoardScreen({
           </Canvas>
         </View>
       </GestureDetector>
+
+      <SafeAreaView
+        pointerEvents="box-none"
+        style={screenStyles.headerSafeArea}
+        testID="skia-board-header-safe-area"
+      >
+        <View pointerEvents="box-none" style={screenStyles.header} testID="skia-board-header">
+          <TouchableOpacity
+            style={screenStyles.headerButton}
+            onPress={openDrawer}
+            accessibilityRole="button"
+            accessibilityLabel="ナビゲーションを開く"
+          >
+            <Text style={screenStyles.headerButtonText}>☰</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={screenStyles.headerButton}
+            onPress={() => setBoardMenuOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="ボードメニューを開く"
+          >
+            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.iconSecondary} />
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
 
       <SafeAreaView pointerEvents="box-none" style={screenStyles.toolsSafeArea}>
         <View style={screenStyles.tools}>
@@ -1978,7 +1978,6 @@ function createScreenStyles(theme: VisualTheme) {
       top: 0,
       left: 0,
       right: 0,
-      zIndex: 1,
     },
     header: {
       minHeight: 54,

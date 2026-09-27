@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import { Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS,
@@ -181,7 +182,7 @@ export function VoiceConversationScreen({
     >
       <Reanimated.View testID="voice-conversation-backdrop"
         pointerEvents={historyExpanded ? "auto" : "none"}
-        style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0, 0, 0, 0.5)" }, backdropStyle]} />
+        style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0, 0, 0, 0.68)" }, backdropStyle]} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
@@ -201,9 +202,9 @@ export function VoiceConversationScreen({
                   <Pressable testID="voice-history-close" accessibilityRole="button"
                     accessibilityLabel="履歴を閉じる" hitSlop={8}
                     onPress={() => setHistoryExpanded(false)}
-                    style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8,
-                      backgroundColor: "rgba(0, 0, 0, 0.4)" }}>
-                    <Text style={{ color: "#ffffff", fontSize: 15 }}>閉じる</Text>
+                    style={{ width: 44, height: 44, borderRadius: 22,
+                      alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0, 0, 0, 0.4)" }}>
+                    <Ionicons name="close" size={24} color="#ffffff" />
                   </Pressable>
                 </View>
                 <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flex: 1 }}
