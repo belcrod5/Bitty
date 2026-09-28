@@ -6,6 +6,7 @@ import { AppState, Platform } from "react-native";
 
 import { mutatePersistedSettings, readPersistedSettingsField } from "../app/utils/persistedSettingsFile";
 import { loadSecureRunnerCredentials } from "../app/utils/secureRunnerCredentials";
+import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
 import {
   LOCATION_SCHEDULE_TASK_NAME,
   appendPendingLocationState,
@@ -34,15 +35,23 @@ export function shouldRegisterBackgroundNotificationTask(
   return rules.some((rule) => rule.enabled);
 }
 
-function rulesInCurrentTimeZone(rules: readonly LocationScheduleRule[]) {
+function legacyRulesInCurrentTimeZone(rules: readonly LocationScheduleRule[], locationDeviceId: string) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   return rules.map((rule) => {
-    const current = { ...rule, timeZone };
+    const current = { ...rule, timeZone, locationDeviceId };
     return {
       ...current,
       regionRevision: locationScheduleRevision(current),
     };
   });
+}
+
+function rulesWithRevisions(rules: readonly LocationScheduleRule[]) {
+  return rules.map((rule) => ({ ...rule, regionRevision: locationScheduleRevision(rule) }));
+}
+
+function ownedRules(rules: readonly LocationScheduleRule[], deviceId: string) {
+  return rules.filter((rule) => rule.locationDeviceId === deviceId);
 }
 
 class RunnerRequestError extends Error {
@@ -68,13 +77,13 @@ async function runnerEndpoint() {
   };
 }
 
-async function runnerRequest(path: string, method: "PUT" | "POST", body: Record<string, unknown>) {
+async function runnerRequest(path: string, method: "GET" | "PUT" | "POST", body?: Record<string, unknown>) {
   const endpoint = await runnerEndpoint();
   if (!endpoint) throw new Error("Runner connection is not configured");
   const response = await fetch(`${endpoint.runnerUrl}${path}`, {
     method,
     headers: endpoint.headers,
-    body: JSON.stringify(body),
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -122,14 +131,16 @@ async function persistLocationState(event: PendingLocationState) {
 export async function flushPendingLocationStates() {
   let pending: PendingLocationState[] = [];
   await mutatePersistedSettings((current) => {
-    const rules = rulesInCurrentTimeZone(parseLocationScheduleRules(current[RULES_FIELD]));
+    const rules = parseLocationScheduleRules(current[RULES_FIELD]);
     pending = pendingLocationStatesForRules(current[PENDING_FIELD], rules);
     return { ...current, [PENDING_FIELD]: pending };
   });
   const sent = new Set<string>();
+  if (!pending.length) return;
+  const locationDeviceId = await getOrCreatePushDeviceId();
   for (const event of pending) {
     try {
-      await runnerRequest("/location-schedules/state", "POST", event);
+      await runnerRequest("/location-schedules/state", "POST", { ...event, locationDeviceId });
       sent.add(event.eventId);
     } catch (error) {
       if (error instanceof RunnerRequestError && (error.status === 400 || error.status === 404)) {
@@ -151,10 +162,20 @@ export async function flushPendingLocationStates() {
   }));
 }
 
-export async function syncLocationSchedules(rules: readonly LocationScheduleRule[]) {
+async function fetchRunnerLocationSchedules() {
+  const result = await runnerRequest("/location-schedules", "GET") as {
+    snapshot: { scheduleRevision: number; rules: LocationScheduleRule[] };
+  };
+  return result.snapshot;
+}
+
+export async function syncLocationSchedules(rules: readonly LocationScheduleRule[], expectedRevision: number) {
   const phoneTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  await runnerRequest("/location-schedules", "PUT", { phoneTimeZone, rules: rulesInCurrentTimeZone(rules) });
-  await flushPendingLocationStates();
+  const result = await runnerRequest("/location-schedules", "PUT", {
+    phoneTimeZone, rules: rulesWithRevisions(rules), expectedRevision,
+  }) as { snapshot: { scheduleRevision: number } };
+  await flushPendingLocationStates().catch(() => {});
+  return result.snapshot.scheduleRevision;
 }
 
 async function reconcileLocationRefreshTask(enabled: boolean, rules: readonly LocationScheduleRule[] = []) {
@@ -219,46 +240,43 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
   await flushPendingLocationStates();
 }
 
-export async function saveAndActivateLocationSchedules(rules: readonly LocationScheduleRule[]) {
-  const normalized = rulesInCurrentTimeZone(rules);
-  const previousRules = await readPersistedSettingsField(RULES_FIELD);
-  const previousPending = await readPersistedSettingsField(PENDING_FIELD);
+export async function saveAndActivateLocationSchedules(rules: readonly LocationScheduleRule[], expectedRevision?: number) {
+  const deviceId = await getOrCreatePushDeviceId();
+  const normalized = rulesWithRevisions(rules);
+  const revision = expectedRevision ?? (await fetchRunnerLocationSchedules()).scheduleRevision;
+  await syncLocationSchedules(normalized, revision);
+  const localRules = ownedRules(normalized, deviceId);
   await mutatePersistedSettings((current) => ({
     ...current,
-    [RULES_FIELD]: normalized,
-    [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], normalized),
+    [RULES_FIELD]: localRules,
+    [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], localRules),
   }));
-  try {
-    await syncLocationSchedules(normalized);
-  } catch (error) {
-    await mutatePersistedSettings((current) => ({
-      ...current,
-      [RULES_FIELD]: previousRules,
-      [PENDING_FIELD]: previousPending,
-    }));
-    throw error;
-  }
-  await reconcileLocationSchedules(normalized);
+  await reconcileLocationSchedules(localRules);
 }
 
 export async function loadLocationSchedules() {
-  return rulesInCurrentTimeZone(parseLocationScheduleRules(await readPersistedSettingsField(RULES_FIELD)));
+  return parseLocationScheduleRules(await readPersistedSettingsField(RULES_FIELD));
+}
+
+export async function loadRunnerLocationSchedules() {
+  const snapshot = await fetchRunnerLocationSchedules();
+  const rules = parseLocationScheduleRules(snapshot.rules);
+  const localRules = ownedRules(rules, await getOrCreatePushDeviceId());
+  await mutatePersistedSettings((current) => ({
+    ...current,
+    [RULES_FIELD]: localRules,
+    [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], localRules),
+  }));
+  return { rules, revision: snapshot.scheduleRevision };
 }
 
 export async function recoverLocationScheduleState(origin: string) {
   await flushPendingLocationStates().catch(() => {});
-  const allRules = await loadLocationSchedules();
-  if (origin === "foreground") {
-    try {
-      await syncLocationSchedules(allRules);
-      await mutatePersistedSettings((current) => ({
-        ...current,
-        [RULES_FIELD]: allRules,
-        [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], allRules),
-      }));
-    } catch {
-      // 次のforeground復帰で再試行する
-    }
+  const allRules = origin === "foreground" || origin === "silent_push"
+    ? await loadRunnerLocationSchedules().then(() => loadLocationSchedules()).catch(() => loadLocationSchedules())
+    : await loadLocationSchedules();
+  if (origin === "foreground" || origin === "silent_push") {
+    await reconcileLocationSchedules(allRules).catch(() => {});
   }
   const rules = allRules.filter((rule) => rule.enabled);
   if (!rules.length) return;
@@ -307,13 +325,35 @@ function subscribeAppStateRecovery() {
 
 export async function bootstrapLocationSchedules() {
   subscribeAppStateRecovery();
-  const rules = await loadLocationSchedules();
+  const localRules = await loadLocationSchedules();
+  let rules: LocationScheduleRule[] = [];
+  try {
+    const deviceId = await getOrCreatePushDeviceId();
+    const snapshot = await fetchRunnerLocationSchedules();
+    if (snapshot.scheduleRevision === 0 && localRules.length > 0) {
+      rules = legacyRulesInCurrentTimeZone(localRules, deviceId);
+      await syncLocationSchedules(rules, 0);
+    } else {
+      const serverRules = parseLocationScheduleRules(snapshot.rules);
+      const localIds = new Set(localRules.map((rule) => rule.id));
+      const unowned = serverRules.filter((rule) => !rule.locationDeviceId && localIds.has(rule.id));
+      if (unowned.length) {
+        const claimed = serverRules.map((rule) => unowned.includes(rule) ? { ...rule, locationDeviceId: deviceId } : rule);
+        await syncLocationSchedules(claimed, snapshot.scheduleRevision);
+        rules = ownedRules(claimed, deviceId);
+      } else {
+        rules = ownedRules(serverRules, deviceId);
+      }
+    }
+  } catch (error) {
+    console.warn("[location-schedule] failed to load Runner schedules", error);
+    rules = localRules;
+  }
   await mutatePersistedSettings((current) => ({
     ...current,
     [RULES_FIELD]: rules,
     [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], rules),
   }));
-  await syncLocationSchedules(rules).catch(() => {});
   if (!rules.some((rule) => rule.enabled)) {
     await reconcileLocationSchedules(rules);
     return;

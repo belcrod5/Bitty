@@ -17,6 +17,7 @@ type Args = {
   registeredDirectories: RegisteredDirectoryEntry[];
   setSelectedDirectory: Dispatch<SetStateAction<string>>;
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
+  mutateClientState: (operation: Record<string, unknown>) => void;
   setExpandedDirectoryIds: Dispatch<SetStateAction<string[]>>;
   prepareDirectorySessionTargetChange: (params: {
     nextRegisteredDirectories: RegisteredDirectoryEntry[];
@@ -38,6 +39,7 @@ export function useDirectoryIdentityReconciliation({
   registeredDirectories,
   setSelectedDirectory,
   setRegisteredDirectories,
+  mutateClientState,
   setExpandedDirectoryIds,
   prepareDirectorySessionTargetChange,
   setGitChangedFilesByDirectory,
@@ -171,6 +173,12 @@ export function useDirectoryIdentityReconciliation({
         nextRegisteredDirectories: reconciled.directories,
         transitions,
       });
+      for (const directory of reconciled.directories) {
+        if (!registeredDirectories.some((current) => current.id === directory.id && current.path === directory.path)) {
+          mutateClientState({ type: "directory.upsert", directory });
+        }
+      }
+      for (const id of reconciled.removedIds) mutateClientState({ type: "directory.remove", id });
       setRegisteredDirectories(reconciled.directories);
       setExpandedDirectoryIds((current) => Array.from(new Set(current.map(
         (id) => reconciled.retainedIdByRemovedId.get(id) || id
@@ -213,6 +221,7 @@ export function useDirectoryIdentityReconciliation({
     gitChangedFilesByDirectoryRef,
     gitChangedFilesRefreshInFlightRef,
     llmSessionDirectoryRef,
+    mutateClientState,
     registeredDirectories,
     runnerToken,
     selectedDirectory,

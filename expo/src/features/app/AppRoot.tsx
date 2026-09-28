@@ -57,7 +57,9 @@ import { useYouTubePlayerDisplay } from "./hooks/useYouTubePlayerDisplay";
 import { useTtsVoiceCatalog } from "./hooks/useTtsVoiceCatalog";
 import { useChatDerivedState } from "./hooks/useChatDerivedState";
 import { useChatBottomToast } from "./hooks/useChatBottomToast";
-import { useComposerDraftSync, useComposerPersistence } from "./hooks/useComposerPersistence";
+import { useComposerDraftSync } from "./hooks/useComposerPersistence";
+import { useRunnerClientState } from "./hooks/useRunnerClientState";
+import { runnerSessionKey, runnerSessionValue } from "./utils/runnerClientState";
 import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteRequestController";
@@ -541,34 +543,6 @@ function parseRegisteredDirectories(raw: unknown): RegisteredDirectoryEntry[] {
   return out;
 }
 
-function parseSessionTitleOverrides(raw: unknown) {
-  if (!raw || typeof raw !== "object") return {} as Record<string, string>;
-  const entries = Object.entries(raw as Record<string, unknown>);
-  const out: Record<string, string> = {};
-  for (const [sessionIdRaw, titleRaw] of entries) {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
-    if (!sessionId) continue;
-    const title = String(titleRaw || "").replace(/\s+/g, " ").trim();
-    if (!title) continue;
-    out[sessionId] = title;
-  }
-  return out;
-}
-
-function parseSessionMarkerColors(raw: unknown) {
-  if (!raw || typeof raw !== "object") return {} as Record<string, RegisteredDirectoryEntry["markerColor"]>;
-  const entries = Object.entries(raw as Record<string, unknown>);
-  const out: Record<string, RegisteredDirectoryEntry["markerColor"]> = {};
-  for (const [sessionIdRaw, markerColorRaw] of entries) {
-    const sessionId = parseOptionalSessionId(sessionIdRaw);
-    if (!sessionId) continue;
-    const markerColor = parseDirectoryMarkerColor(markerColorRaw);
-    if (markerColor === "none") continue;
-    out[sessionId] = markerColor;
-  }
-  return out;
-}
-
 function deriveSessionTitleFromConversationMessages(messages: ConversationMessage[]) {
   const firstUser = messages.find((item) => item.role === "user" && String(item.content || "").trim());
   const title = formatLlmSessionDisplayTitle(firstUser?.content);
@@ -672,9 +646,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [waitingApprovalResumeLoading, setWaitingApprovalResumeLoading] = useState(false);
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
-  const { messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
-    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft } = useComposerPersistence();
-  useComposerDraftSync({ sessionId: selectedLlmSessionId, text: transcript, drafts: composerDrafts, loaded: composerDraftsLoaded, setText: setTranscript, setDraft: setComposerDraft });
+  const { mutate: mutateRunnerClientState,
+    messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
+    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft } = useRunnerClientState({
+      settingsLoaded, runnerUrl, runnerToken, backendId: llmBackend,
+      parseRegisteredDirectories,
+      setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
+    });
+  useComposerDraftSync({ backendId: llmBackend, sessionId: selectedLlmSessionId, text: transcript, drafts: composerDrafts, loaded: composerDraftsLoaded, setText: setTranscript, setDraft: setComposerDraft });
   const [composerInputFocused, setComposerInputFocused] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("返答は1文で");
   const [reply, setReply] = useState("");
@@ -1877,12 +1856,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const selectedSessionMarkerColor = useMemo(() => {
     const selectedSessionId = parseOptionalSessionId(selectedLlmSessionId || llmConversationSessionIdRef.current);
     if (!selectedSessionId) return "none" as RegisteredDirectoryEntry["markerColor"];
-    return parseDirectoryMarkerColor(sessionMarkerColorsById[selectedSessionId]);
-  }, [selectedLlmSessionId, sessionMarkerColorsById]);
+    return parseDirectoryMarkerColor(runnerSessionValue(sessionMarkerColorsById, llmBackend, selectedSessionId));
+  }, [selectedLlmSessionId, sessionMarkerColorsById, llmBackend]);
   const selectedSessionHeaderTitle = useMemo(() => {
     const selectedSessionId = parseOptionalSessionId(selectedLlmSessionId || llmConversationSessionIdRef.current);
     if (!selectedSessionId) return "（ユーザーメッセージなし）";
-    const overrideTitle = formatLlmSessionDisplayTitle(sessionTitleOverridesById[selectedSessionId]);
+    const overrideTitle = formatLlmSessionDisplayTitle(runnerSessionValue(sessionTitleOverridesById, llmBackend, selectedSessionId));
     if (overrideTitle) return overrideTitle;
 
     const selectedDirectoryId = String(selectedRegisteredDirectory?.id || "").trim();
@@ -1905,6 +1884,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     directorySessionsById,
     selectedRegisteredDirectory,
     selectedLlmSessionId,
+    llmBackend,
     conversationMessages,
   ]);
   const {
@@ -1947,6 +1927,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       };
       matchedId = next.id;
       setRegisteredDirectories((prev) => [...prev, next]);
+      mutateRunnerClientState({ type: "directory.upsert", directory: next });
     }
     if (matchedId) {
       setExpandedDirectoryIds((prev) => (prev.includes(matchedId) ? prev : [...prev, matchedId]));
@@ -1957,6 +1938,10 @@ function AppContent({ onReady }: { onReady?: () => void }) {
 
   function renameRegisteredDirectory(directoryId: string, nextDisplayNameRaw: unknown) {
     const nextDisplayName = String(nextDisplayNameRaw || "").trim();
+    const directory = registeredDirectories.find((item) => item.id === directoryId);
+    if (directory) mutateRunnerClientState({ type: "directory.upsert", directory: {
+      ...directory, displayName: nextDisplayName || deriveDirectoryDisplayName(directory.path),
+    } });
     setRegisteredDirectories((prev) => prev.map((item) => {
       if (item.id !== directoryId) return item;
       return {
@@ -1972,21 +1957,23 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setSessionTitleOverrideForSession(sessionId, nextTitleRaw);
   }
 
-  function setSessionTitleOverrideForSession(sessionIdRaw: unknown, nextTitleRaw: unknown) {
+  function setSessionTitleOverrideForSession(sessionIdRaw: unknown, nextTitleRaw: unknown, backendIdRaw: unknown = llmBackend) {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
+    const key = runnerSessionKey(backendIdRaw, sessionId);
     const nextTitle = String(nextTitleRaw || "").replace(/\s+/g, " ").trim();
+    mutateRunnerClientState({ type: "session.set", backendId: backendIdRaw, sessionId, title: nextTitle });
     setSessionTitleOverridesById((prev) => {
       if (!nextTitle) {
-        if (!prev[sessionId]) return prev;
+        if (!prev[key]) return prev;
         const next = { ...prev };
-        delete next[sessionId];
+        delete next[key];
         return next;
       }
-      if (prev[sessionId] === nextTitle) return prev;
+      if (prev[key] === nextTitle) return prev;
       return {
         ...prev,
-        [sessionId]: nextTitle,
+        [key]: nextTitle,
       };
     });
   }
@@ -1997,21 +1984,23 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setSessionMarkerColorForSession(sessionId, nextMarkerColorRaw);
   }
 
-  function setSessionMarkerColorForSession(sessionIdRaw: unknown, nextMarkerColorRaw: unknown) {
+  function setSessionMarkerColorForSession(sessionIdRaw: unknown, nextMarkerColorRaw: unknown, backendIdRaw: unknown = llmBackend) {
     const sessionId = parseOptionalSessionId(sessionIdRaw);
     if (!sessionId) return;
+    const key = runnerSessionKey(backendIdRaw, sessionId);
     const nextMarkerColor = parseDirectoryMarkerColor(nextMarkerColorRaw);
+    mutateRunnerClientState({ type: "session.set", backendId: backendIdRaw, sessionId, markerColor: nextMarkerColor });
     setSessionMarkerColorsById((prev) => {
       if (nextMarkerColor === "none") {
-        if (!prev[sessionId]) return prev;
+        if (!prev[key]) return prev;
         const next = { ...prev };
-        delete next[sessionId];
+        delete next[key];
         return next;
       }
-      if (prev[sessionId] === nextMarkerColor) return prev;
+      if (prev[key] === nextMarkerColor) return prev;
       return {
         ...prev,
-        [sessionId]: nextMarkerColor,
+        [key]: nextMarkerColor,
       };
     });
   }
@@ -2071,6 +2060,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       transitions: [{ kind: "remove", directoryId, fromPath: target.path }],
     });
     setRegisteredDirectories(nextRegisteredDirectories);
+    mutateRunnerClientState({ type: "directory.remove", id: directoryId });
     setExpandedDirectoryIds((prev) => prev.filter((id) => id !== directoryId));
     if (normalizedLlmDirectoryForRequest() === target.path) {
       clearSelectedLlmSession();
@@ -3685,9 +3675,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     llmBackend,
     setLlmBackend,
     llmDirectory,
-    registeredDirectories,
-    sessionTitleOverridesById,
-    sessionMarkerColorsById,
     expandedDirectoryIds,
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,
@@ -3711,9 +3698,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setCloudflareRunnerUrl,
     setLocalRunnerUrl,
     setLlmDirectory,
-    setRegisteredDirectories,
-    setSessionTitleOverridesById,
-    setSessionMarkerColorsById,
     setExpandedDirectoryIds,
     setSelectedLlmSessionId,
     setSelectedLlmSessionMaterialized,
@@ -3734,8 +3718,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setFaceIdRequiredForApproval,
     setVisualThemeId,
     parseRegisteredDirectories,
-    parseSessionTitleOverrides,
-    parseSessionMarkerColors,
     parseExpandedDirectoryIds,
   });
 
@@ -4765,15 +4747,16 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     if (!directory) return;
     renameRegisteredDirectory(directory.id, nextDisplayName);
   }, [registeredDirectories]);
-  const renameSessionTitleForSessionFromContext = useCallback((sessionId: string, nextTitle: string) => {
-    setSessionTitleOverrideForSession(sessionId, nextTitle);
-  }, []);
+  const renameSessionTitleForSessionFromContext = useCallback((sessionId: string, nextTitle: string, backendId?: string) => {
+    setSessionTitleOverrideForSession(sessionId, nextTitle, backendId);
+  }, [llmBackend, mutateRunnerClientState]);
   const selectSessionMarkerColorForSessionFromContext = useCallback((
     sessionId: string,
-    nextMarkerColor: RegisteredDirectoryEntry["markerColor"]
+    nextMarkerColor: RegisteredDirectoryEntry["markerColor"],
+    backendId?: string
   ) => {
-    setSessionMarkerColorForSession(sessionId, nextMarkerColor);
-  }, []);
+    setSessionMarkerColorForSession(sessionId, nextMarkerColor, backendId);
+  }, [llmBackend, mutateRunnerClientState]);
   const removeDirectoryForPathFromContext = useCallback((directoryPathRaw: string) => {
     const directoryPath = parseLlmDirectory(directoryPathRaw);
     const directory = registeredDirectories.find((item) => parseLlmDirectory(item.path) === directoryPath);
@@ -4892,6 +4875,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     registeredDirectories,
     setSelectedDirectory: setLlmDirectory,
     setRegisteredDirectories,
+    mutateClientState: mutateRunnerClientState,
     setExpandedDirectoryIds,
     prepareDirectorySessionTargetChange,
     setGitChangedFilesByDirectory,
@@ -5082,7 +5066,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         if (candidateSessionIds.length <= 0) continue;
         let overrideTitle = "";
         for (const candidateSessionId of candidateSessionIds) {
-          const value = formatLlmSessionDisplayTitle(sessionTitleOverridesById[candidateSessionId]);
+          const value = formatLlmSessionDisplayTitle(runnerSessionValue(sessionTitleOverridesById, entry.snapshot.backendId, candidateSessionId));
           if (!value) continue;
           overrideTitle = value;
           break;
@@ -5091,7 +5075,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         const expectedTitle = overrideTitle || fallbackTitle;
         let expectedMarkerColor: RegisteredDirectoryEntry["markerColor"] = "none";
         for (const candidateSessionId of candidateSessionIds) {
-          const value = parseDirectoryMarkerColor(sessionMarkerColorsById[candidateSessionId]);
+          const value = parseDirectoryMarkerColor(runnerSessionValue(sessionMarkerColorsById, entry.snapshot.backendId, candidateSessionId));
           if (value === "none") continue;
           expectedMarkerColor = value;
           break;
@@ -5616,14 +5600,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       }, { throttleMs: 0 });
       let selectedSessionTitle = titleHint;
       const overrideTitle = formatLlmSessionDisplayTitle(
-        sessionTitleOverridesById[markerSessionId] ||
-        sessionTitleOverridesById[sessionId] ||
+        runnerSessionValue(sessionTitleOverridesById, backendId, markerSessionId) ||
+        runnerSessionValue(sessionTitleOverridesById, backendId, sessionId) ||
         ""
       );
       selectedSessionTitle = overrideTitle || selectedSessionTitle;
       if (!selectedSessionTitle) selectedSessionTitle = deriveSessionTitleFromConversationMessages(conversation);
       const selectedSessionMarkerColor = parseDirectoryMarkerColor(
-        sessionMarkerColorsById[markerSessionId] || sessionMarkerColorsById[sessionId]
+        runnerSessionValue(sessionMarkerColorsById, backendId, markerSessionId) || runnerSessionValue(sessionMarkerColorsById, backendId, sessionId)
       );
       const restoredResponding = Boolean(restored.hasRunningTurn);
       const restoredThreadStatusType = deriveRestoredSessionThreadStatusType(restored);

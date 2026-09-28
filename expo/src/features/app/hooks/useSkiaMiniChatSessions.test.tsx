@@ -288,8 +288,8 @@ describe("useSkiaMiniChatSessions", () => {
     mockConversation(
       Array.from({ length: 8 }, (_, index) => session(index + 1)),
       {
-        sessionTitleOverridesById: { "session-8": "Pinned title" },
-        sessionMarkerColorsById: { "session-8": "green" },
+        sessionTitleOverridesById: { [JSON.stringify(["codex", "session-8"])]: "Pinned title" },
+        sessionMarkerColorsById: { [JSON.stringify(["codex", "session-8"])]: "green" },
         ensureRegisteredDirectorySessions,
       }
     );

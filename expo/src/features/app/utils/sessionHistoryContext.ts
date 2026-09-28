@@ -5,6 +5,7 @@ import type {
 import { formatLlmSessionDisplayTitle, parseOptionalSessionId } from "./llmSession";
 import { clampContextUsedPct } from "./sessionRestore";
 import { normalizeModelRef, parseLlmDirectory } from "./settingsParsers";
+import { runnerSessionValue } from "./runnerClientState";
 
 export type SessionHistoryContext = {
   backendId: string;
@@ -95,7 +96,7 @@ export function resolveSessionHistoryContext({
         deriveDirectoryDisplayName(directoryPath)
       ).trim(),
       sessionTitle: formatLlmSessionDisplayTitle(
-        sessionTitleOverridesById[sessionId] ||
+        runnerSessionValue(sessionTitleOverridesById, match.backendId, sessionId) ||
         match.firstUserMessage ||
         ""
       ),

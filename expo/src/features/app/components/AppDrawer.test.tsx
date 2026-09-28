@@ -120,7 +120,7 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     directoryUnreadCountByPath: {},
     directorySessionSync: IDLE_DIRECTORY_SESSION_SYNC,
     sessionTitleOverridesById: {
-      "loaded-restore": "Restore title override",
+      [JSON.stringify(["codex", "loaded-restore"])]: "Restore title override",
     },
     sessionMarkerColorsById: {},
     llmSessionRestoreLoading: false,
@@ -473,7 +473,7 @@ test("waits for Enter before searching registered directories and opens the resu
     } as Response);
   const drawer = await renderDrawer({
     registeredDirectories,
-    sessionTitleOverridesById: { "found-session": customSessionTitle },
+    sessionTitleOverridesById: { [JSON.stringify(["codex", "found-session"])]: customSessionTitle },
     onSelectSessionHistoryEntry,
   });
   const searchInput = drawer.getByPlaceholderText("ディレクトリを検索");

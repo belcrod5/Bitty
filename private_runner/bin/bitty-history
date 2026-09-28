@@ -92,6 +92,11 @@ async function runnerRequest(pathname, searchParams) {
   return payload;
 }
 
+async function sessionTitles() {
+  const payload = await runnerRequest("/client-state", []);
+  return payload?.snapshot?.sessions || {};
+}
+
 async function search(args) {
   let cwdValues = options(args, "--cwd");
   const explicitCwds = cwdValues.length > 0;
@@ -139,6 +144,9 @@ async function search(args) {
   if (order) params.push(["order", order]);
   if (since) params.push(["since", since]);
   const payload = await runnerRequest("/agent/session-history/search", params);
+  const titles = Array.isArray(payload?.results) && payload.results.length > 0
+    ? await sessionTitles().catch(() => ({}))
+    : {};
   const results = (Array.isArray(payload?.results) ? payload.results : []).map((result) => {
     const backend = String(result?.sessionRef?.backendId || "");
     const session = String(result?.sessionRef?.nativeSessionId || "");
@@ -146,6 +154,7 @@ async function search(args) {
     return {
       backendId: backend,
       sessionId: session,
+      ...(titles[JSON.stringify([backend, session])]?.title ? { sessionTitle: titles[JSON.stringify([backend, session])].title } : {}),
       messageId: String(result?.messageId || ""),
       role: String(result?.role || ""),
       snippet: String(result?.snippet || ""),
@@ -178,9 +187,11 @@ async function read(args) {
   ];
   if (cursor) params.push(["cursor", cursor]);
   const payload = await runnerRequest("/agent/session-conversation", params);
+  const titles = await sessionTitles().catch(() => ({}));
   return {
     backendId,
     sessionId,
+    ...(titles[JSON.stringify([backendId, sessionId])]?.title ? { sessionTitle: titles[JSON.stringify([backendId, sessionId])].title } : {}),
     items: Array.isArray(payload?.items) ? payload.items : [],
     totalChars: Number(payload?.totalChars || 0),
     focused: payload?.focused === true,

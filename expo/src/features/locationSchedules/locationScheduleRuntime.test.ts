@@ -9,6 +9,8 @@ const mockHasStartedGeofencingAsync = jest.fn();
 const mockStopGeofencingAsync = jest.fn();
 const mockStartGeofencingAsync = jest.fn();
 let mockSettings: Record<string, unknown> = {};
+let mockRunnerRules: LocationScheduleRule[] = [];
+let mockRunnerRevision = 0;
 let mockTimeZone = "Asia/Tokyo";
 
 jest.mock("../app/utils/persistedSettingsFile", () => ({
@@ -20,6 +22,10 @@ jest.mock("../app/utils/persistedSettingsFile", () => ({
 
 jest.mock("../app/utils/secureRunnerCredentials", () => ({
   loadSecureRunnerCredentials: () => mockLoadSecureRunnerCredentials(),
+}));
+
+jest.mock("../app/utils/pushNotifications", () => ({
+  getOrCreatePushDeviceId: async () => "device-1",
 }));
 
 jest.mock("expo-background-task", () => ({
@@ -89,6 +95,7 @@ function rule(overrides: Partial<LocationScheduleRule> = {}): LocationScheduleRu
     modelRef: "gpt-5.6-sol",
     reasoningEffort: "high",
     prompt: "run checks",
+    locationDeviceId: "device-1",
     ...overrides,
   };
 }
@@ -100,6 +107,8 @@ function okResponse() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSettings = {};
+  mockRunnerRules = [];
+  mockRunnerRevision = 0;
   mockTimeZone = "Asia/Tokyo";
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
     mockSettings = mutate(mockSettings);
@@ -108,7 +117,22 @@ beforeEach(() => {
     field === "runnerUrl" ? "http://runner.test" : mockSettings[field]
   ));
   mockLoadSecureRunnerCredentials.mockResolvedValue({ runnerToken: "token" });
-  mockFetch.mockResolvedValue(okResponse());
+  mockFetch.mockImplementation(async (url, options) => {
+    if (String(url).endsWith("/location-schedules")) {
+      if (options?.method === "PUT") {
+        const body = JSON.parse(String(options.body));
+        if (body.expectedRevision !== mockRunnerRevision) {
+          return { ok: false, status: 409, json: async () => ({ message: "conflict" }) };
+        }
+        mockRunnerRules = body.rules;
+        mockRunnerRevision += 1;
+      }
+      return { ok: true, status: 200, json: async () => ({ snapshot: {
+        scheduleRevision: mockRunnerRevision, rules: mockRunnerRules,
+      } }) };
+    }
+    return okResponse();
+  });
   global.fetch = mockFetch as typeof fetch;
   mockGetForegroundPermissionsAsync.mockResolvedValue({ status: "granted" });
   mockGetBackgroundPermissionsAsync.mockResolvedValue({ status: "granted" });
@@ -150,12 +174,20 @@ test("restores local schedules when Runner synchronization fails", async () => {
   expect(mockSettings.locationSchedulePendingStates).toEqual([{ eventId: "pending" }]);
 });
 
+test("a stale editor cannot overwrite a newer Runner schedule", async () => {
+  mockRunnerRules = [rule({ prompt: "newer" })];
+  mockRunnerRevision = 2;
+  await expect(saveAndActivateLocationSchedules([rule({ prompt: "stale" })], 1)).rejects.toThrow("conflict");
+  expect(mockRunnerRules[0].prompt).toBe("newer");
+  expect(mockSettings.locationSchedules).toBeUndefined();
+});
+
 test("saving reports current state with the accepted rule revision", async () => {
   const currentRule = rule({ startTime: "08:00", prompt: "edited" });
 
   await saveAndActivateLocationSchedules([currentRule]);
 
-  const scheduleIndex = mockFetch.mock.calls.findIndex(([url]) => String(url).endsWith("/location-schedules"));
+  const scheduleIndex = mockFetch.mock.calls.findIndex(([url, options]) => String(url).endsWith("/location-schedules") && options?.method === "PUT");
   const stateIndex = mockFetch.mock.calls.findIndex(([url]) => String(url).endsWith("/location-schedules/state"));
   const schedule = JSON.parse(String(mockFetch.mock.calls[scheduleIndex]?.[1]?.body));
   const state = JSON.parse(String(mockFetch.mock.calls[stateIndex]?.[1]?.body));
@@ -175,7 +207,7 @@ test("an enter from the previous geofence generation is ignored before current-s
   }));
 
   const saving = saveAndActivateLocationSchedules([edited]);
-  for (let index = 0; index < 20 && mockGetCurrentPositionAsync.mock.calls.length === 0; index += 1) {
+  for (let index = 0; index < 1000 && mockGetCurrentPositionAsync.mock.calls.length === 0; index += 1) {
     await Promise.resolve();
   }
   expect(mockGetCurrentPositionAsync).toHaveBeenCalledTimes(1);
@@ -202,19 +234,20 @@ test("an enter from the previous geofence generation is ignored before current-s
 test.each([
   { rules: [] as LocationScheduleRule[], backgroundStatus: "granted" },
   { rules: [rule()], backgroundStatus: "denied" },
-])("bootstrap synchronizes the complete rule set before permission-dependent setup", async ({ rules, backgroundStatus }) => {
+])("bootstrap only migrates unsynced local rules before permission-dependent setup", async ({ rules, backgroundStatus }) => {
   mockSettings = { locationSchedules: rules };
   mockGetBackgroundPermissionsAsync.mockResolvedValue({ status: backgroundStatus });
 
   await bootstrapLocationSchedules();
 
-  const request = mockFetch.mock.calls.find(([url]) => String(url).endsWith("/location-schedules"));
-  expect(request).toBeDefined();
-  expect(JSON.parse(String(request?.[1]?.body)).rules).toHaveLength(rules.length);
+  const writes = mockFetch.mock.calls.filter(([url, options]) => String(url).endsWith("/location-schedules") && options?.method === "PUT");
+  expect(writes).toHaveLength(rules.length ? 1 : 0);
+  if (rules.length) expect(JSON.parse(String(writes[0]?.[1]?.body)).rules).toHaveLength(rules.length);
 });
 
 test("silent push reports a fresh state even when inside/outside did not change", async () => {
   const currentRule = rule();
+  mockRunnerRules = [currentRule];
   mockSettings = {
     locationSchedules: [currentRule],
     locationScheduleLastStates: {
@@ -233,12 +266,38 @@ test("silent push reports a fresh state even when inside/outside did not change"
   expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules/state"))).toBe(true);
 });
 
-test("foreground recovery synchronizes and persists a changed phone timezone", async () => {
+test("another device's rules are visible but never geofenced or reported by this device", async () => {
+  mockRunnerRules = [rule({ locationDeviceId: "device-2" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+  await recoverLocationScheduleState("silent_push");
+
+  expect(mockSettings.locationSchedules).toEqual([]);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+  expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules/state"))).toBe(false);
+});
+
+test("editing another device's rule preserves its schedule timezone and owner", async () => {
+  const foreign = rule({ locationDeviceId: "device-2", timeZone: "America/New_York", prompt: "edited remotely" });
+  mockRunnerRevision = 1;
+
+  await saveAndActivateLocationSchedules([foreign], 1);
+
+  expect(mockRunnerRules[0]).toMatchObject({
+    locationDeviceId: "device-2", timeZone: "America/New_York", prompt: "edited remotely",
+  });
+  expect(mockSettings.locationSchedules).toEqual([]);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+});
+
+test("foreground recovery reads Runner without overwriting it from stale local rules", async () => {
   mockSettings = { locationSchedules: [rule()] };
   mockTimeZone = "America/New_York";
 
   await recoverLocationScheduleState("foreground");
 
   expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules"))).toBe(true);
-  expect((mockSettings.locationSchedules as LocationScheduleRule[])[0].timeZone).toBe("America/New_York");
+  expect(mockFetch.mock.calls.some(([url, options]) => String(url).endsWith("/location-schedules") && options?.method === "PUT")).toBe(false);
+  expect(mockSettings.locationSchedules).toEqual([]);
 });

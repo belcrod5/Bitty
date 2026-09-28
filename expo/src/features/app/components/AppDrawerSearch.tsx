@@ -19,6 +19,7 @@ import { useVisualTheme } from "../theme/VisualThemeContext";
 import type { DirectorySessionTreeState, RegisteredDirectoryEntry } from "../types/directorySessions";
 import { getCachedDirectorySessions } from "../utils/sessionHistoryContext";
 import { resolveLlmSessionDisplayTitle } from "../utils/llmSession";
+import { runnerSessionValue } from "../utils/runnerClientState";
 import {
   listDrawerConversationSearchDirectories,
   searchDrawerConversations,
@@ -462,7 +463,7 @@ export function AppDrawerSearch({
                     cachedSessionsByRef.get(
                       `${result.sessionRef.backendId}:${result.sessionRef.nativeSessionId}`
                     ) || {},
-                    sessionTitleOverridesById[result.sessionRef.nativeSessionId]
+                    runnerSessionValue(sessionTitleOverridesById, result.sessionRef.backendId, result.sessionRef.nativeSessionId)
                   );
                   const directoryName = registeredDirectoryNamesByPath.get(result.canonicalCwd) || "登録ディレクトリ";
                   const roleLabel = result.role === "user" ? "ユーザー" : "アシスタント";

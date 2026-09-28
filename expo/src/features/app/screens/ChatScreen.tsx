@@ -570,7 +570,7 @@ export function ChatScreen({
   const miniBoardPrevSessionIdRef = useRef("");
   const usesPanelComposerState = isMiniBoardPopupMode && !!panelId;
   useComposerDraftSync({
-    sessionId: selectedSessionIdForView, text: panelTranscript, enabled: usesPanelComposerState,
+    backendId: backendIdForView, sessionId: selectedSessionIdForView, text: panelTranscript, enabled: usesPanelComposerState,
     drafts: composerDrafts, loaded: composerDraftsLoaded,
     setText: setPanelTranscript, setDraft: setComposerDraft,
   });
@@ -1605,18 +1605,18 @@ export function ChatScreen({
   }, [actionDirectoryPathForView, isPanelSnapshotView, renameDirectoryForPath, renameSelectedDirectory]);
   const renameSessionTitleForView = useCallback((nextTitle: string) => {
     if (isPanelSnapshotView) {
-      renameSessionTitleForSession(actionSessionIdForView, nextTitle);
+      renameSessionTitleForSession(actionSessionIdForView, nextTitle, backendIdForView);
       return;
     }
     renameSelectedSessionTitle(nextTitle);
-  }, [actionSessionIdForView, isPanelSnapshotView, renameSelectedSessionTitle, renameSessionTitleForSession]);
+  }, [actionSessionIdForView, backendIdForView, isPanelSnapshotView, renameSelectedSessionTitle, renameSessionTitleForSession]);
   const selectSessionMarkerColorForView = useCallback((nextMarkerColor: DirectoryMarkerColor) => {
     if (isPanelSnapshotView) {
-      selectSessionMarkerColorForSession(actionSessionIdForView, nextMarkerColor);
+      selectSessionMarkerColorForSession(actionSessionIdForView, nextMarkerColor, backendIdForView);
       return;
     }
     selectSelectedSessionMarkerColor(nextMarkerColor);
-  }, [actionSessionIdForView, isPanelSnapshotView, selectSelectedSessionMarkerColor, selectSessionMarkerColorForSession]);
+  }, [actionSessionIdForView, backendIdForView, isPanelSnapshotView, selectSelectedSessionMarkerColor, selectSessionMarkerColorForSession]);
   const removeDirectoryForView = useCallback(() => {
     if (isPanelSnapshotView) {
       removeDirectoryForPath(actionDirectoryPathForView);

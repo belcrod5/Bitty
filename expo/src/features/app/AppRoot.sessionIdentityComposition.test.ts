@@ -34,7 +34,7 @@ test("bounds custom title overrides before every panel snapshot update", () => {
   );
 
   expect(overrideProjection).toContain(
-    "formatLlmSessionDisplayTitle(sessionTitleOverridesById[candidateSessionId])"
+    "formatLlmSessionDisplayTitle(runnerSessionValue(sessionTitleOverridesById, entry.snapshot.backendId, candidateSessionId))"
   );
   expect(overrideProjection).toContain("selectedSessionTitle: expectedTitle");
   expect(hydration).toContain("const overrideTitle = formatLlmSessionDisplayTitle(");

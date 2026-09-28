@@ -47,20 +47,39 @@ test("schedule and state APIs require auth, validate, persist, and return a snap
       modelRef: "gpt-5.6-sol",
       reasoningEffort: "high",
       prompt: "run checks",
+      locationDeviceId: "device-1",
     };
     const replaced = await fetch(`${baseUrl}/location-schedules`, {
       method: "PUT",
       headers: headers(),
-      body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [rule] }),
+      body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [rule], expectedRevision: 0 }),
     });
     assert.equal(replaced.status, 200);
+    assert.equal((await replaced.json()).snapshot.scheduleRevision, 1);
+
+    const oldClient = await fetch(`${baseUrl}/location-schedules`, {
+      method: "PUT", headers: headers(),
+      body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [] }),
+    });
+    assert.equal(oldClient.status, 400);
+    const staleClient = await fetch(`${baseUrl}/location-schedules`, {
+      method: "PUT", headers: headers(),
+      body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [], expectedRevision: 0 }),
+    });
+    assert.equal(staleClient.status, 409);
 
     const state = await fetch(`${baseUrl}/location-schedules/state`, {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify({ ruleId: "office", regionRevision: "revision-office", state: "inside", eventId: "event-1", observedAt: "2026-07-19T00:00:00Z" }),
+      body: JSON.stringify({ ruleId: "office", locationDeviceId: "device-1", regionRevision: "revision-office", state: "inside", eventId: "event-1", observedAt: "2026-07-19T00:00:00Z" }),
     });
     assert.equal(state.status, 200);
+
+    const wrongDevice = await fetch(`${baseUrl}/location-schedules/state`, {
+      method: "POST", headers: headers(),
+      body: JSON.stringify({ ruleId: "office", locationDeviceId: "device-2", regionRevision: "revision-office", state: "outside", eventId: "wrong-device", observedAt: "2026-07-19T00:00:00Z" }),
+    });
+    assert.equal(wrongDevice.status, 400);
 
     const staleState = await fetch(`${baseUrl}/location-schedules/state`, {
       method: "POST",
@@ -76,10 +95,20 @@ test("schedule and state APIs require auth, validate, persist, and return a snap
     assert.equal(snapshot.states.office.state, "inside");
     assert.ok((await fs.readFile(process.env.LOCATION_SCHEDULE_STORE_PATH, "utf8")).includes("event-1"));
 
+    const crossTimeZoneEdit = await fetch(`${baseUrl}/location-schedules`, {
+      method: "PUT", headers: headers(),
+      body: JSON.stringify({ phoneTimeZone: "America/New_York", rules: [{
+        ...snapshot.rules[0], regionRevision: "rule-remote-edit",
+      }], expectedRevision: 1 }),
+    });
+    const crossTimeZonePayload = await crossTimeZoneEdit.json();
+    assert.equal(crossTimeZoneEdit.status, 200, crossTimeZonePayload.message);
+    assert.equal(crossTimeZonePayload.snapshot.rules[0].timeZone, "Asia/Tokyo");
+
     const invalid = await fetch(`${baseUrl}/location-schedules`, {
       method: "PUT",
       headers: headers(),
-      body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [{ ...rule, endTime: "08:00" }] }),
+      body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [{ ...rule, endTime: "08:00" }], expectedRevision: 2 }),
     });
     assert.equal(invalid.status, 400);
   });

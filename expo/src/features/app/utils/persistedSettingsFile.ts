@@ -70,16 +70,20 @@ export const SKIA_BOARD_RUNNER_CACHE_FIELD = "skiaBoardRunnerCache";
 // ボード配置とは独立した端末固有の表示位置・倍率。
 export const SKIA_BOARD_VIEWPORT_FIELD = "skiaBoardViewport";
 
-// 送信履歴は設定stateではなく、送信acceptance境界が直接所有する端末ローカルデータ。
+// 旧バージョンの端末保存フィールド。Runnerへの一度限りの移行に使用する。
 export const COMPOSER_MESSAGE_HISTORY_FIELD = "composerMessageHistory";
 
-// 未送信入力はセッション単位で端末だけに保持する。
+// 旧バージョンの未送信入力。移行成功後は端末から削除する。
 export const COMPOSER_DRAFTS_FIELD = "composerDrafts";
 
 // React側の設定stateから再構築されず、所有者(バックグラウンド位置タスク・Skiaボード)が
 // mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
 export const PRESERVED_SETTINGS_FIELDS = [
   ...LOCATION_BACKGROUND_FIELDS,
+  // Retain old shared fields until the Runner confirms a successful migration.
+  "registeredDirectories",
+  "sessionTitleOverridesById",
+  "sessionMarkerColorsById",
   SKIA_BOARD_CARD_TEXT_SCALE_FIELD,
   SKIA_BOARD_RUNNER_CACHE_FIELD,
   SKIA_BOARD_VIEWPORT_FIELD,

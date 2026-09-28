@@ -11,6 +11,7 @@ import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { findDirectoryForSessionTree, getCachedDirectorySessions } from "../utils/sessionHistoryContext";
 import { resolveLlmSessionDisplayTitle } from "../utils/llmSession";
+import { runnerSessionValue } from "../utils/runnerClientState";
 
 type ChatSessionSubagentListProps = {
   selectedSessionId: string;
@@ -33,7 +34,7 @@ function sessionTitle(
   session: LlmSessionHistoryEntry,
   sessionTitleOverridesById: Record<string, string>
 ) {
-  return resolveLlmSessionDisplayTitle(session, sessionTitleOverridesById[session.sessionId]);
+  return resolveLlmSessionDisplayTitle(session, runnerSessionValue(sessionTitleOverridesById, session.backendId, session.sessionId));
 }
 
 export function ChatSessionSubagentList({

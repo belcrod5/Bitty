@@ -74,12 +74,10 @@ describe("getOrCreatePushDeviceId", () => {
     expect(second).toBe(first);
   });
 
-  it("still returns a freshly minted id when persisting it fails", async () => {
+  it("does not return an ephemeral owner id when persisting it fails", async () => {
     mockSecureStoreWriteError = new Error("keychain write failed");
 
-    const deviceId = await getOrCreatePushDeviceId();
-
-    expect(deviceId).toMatch(/^push_/);
+    await expect(getOrCreatePushDeviceId()).rejects.toThrow("push device id could not be persisted");
   });
 
   it("throws instead of minting a duplicate id when the secure store is unreadable", async () => {

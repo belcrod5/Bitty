@@ -22,6 +22,12 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
   const server = http.createServer((request, response) => {
     requests.push({ url: request.url, authorization: request.headers.authorization });
     response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/client-state") {
+      response.end(JSON.stringify({ snapshot: { sessions: {
+        [JSON.stringify(["claude", "session-1"])]: { title: "Shared title" },
+      } } }));
+      return;
+    }
     response.end(JSON.stringify({
       results: [{
         sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
@@ -57,6 +63,7 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
   assert.equal(payload.results[0].readCommand,
     "bitty-history read claude session-1 opaque-cursor");
   assert.equal(payload.results[0].sessionCreatedAt, "2026-08-22T00:00:00.000Z");
+  assert.equal(payload.results[0].sessionTitle, "Shared title");
   assert.equal(requests[0].authorization, "Bearer test-token");
   const requested = new URL(requests[0].url, "http://runner.test");
   assert.equal(requested.pathname, "/agent/session-history/search");
@@ -173,13 +180,14 @@ test("conversation history CLI reads the latest page without a cursor and preser
     env: environment,
   });
 
-  const latestRead = new URL(requestedUrls[0], "http://runner.test");
+  const conversationUrls = requestedUrls.filter((url) => url.startsWith("/agent/session-conversation"));
+  const latestRead = new URL(conversationUrls[0], "http://runner.test");
   assert.equal(latestRead.pathname, "/agent/session-conversation");
   assert.equal(latestRead.searchParams.get("backendId"), "codex");
   assert.equal(latestRead.searchParams.get("sessionId"), "session-1");
   assert.equal(latestRead.searchParams.has("cursor"), false);
   assert.equal(latestRead.searchParams.get("limit"), "5");
-  const focusedRead = new URL(requestedUrls[1], "http://runner.test");
+  const focusedRead = new URL(conversationUrls[1], "http://runner.test");
   assert.equal(focusedRead.searchParams.get("backendId"), "claude");
   assert.equal(focusedRead.searchParams.get("sessionId"), "session-2");
   assert.equal(focusedRead.searchParams.get("cursor"), "focused-cursor");
