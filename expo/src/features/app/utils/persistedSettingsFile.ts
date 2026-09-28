@@ -53,9 +53,33 @@ export async function mutatePersistedSettings(
   await operation;
 }
 
+// Freeze the endpoints that belonged to the device data before runnerUrl can be
+// rewritten by automatic local/Cloudflare route selection or settings autosave.
+export const LEGACY_RUNNER_URLS_FIELD = "legacyRunnerUrls";
+
+export function configuredRunnerUrls(settings: Record<string, unknown>): string[] {
+  const urls = [settings.runnerUrl, settings.localRunnerUrl, settings.cloudflareRunnerUrl]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim().replace(/\/+$/, ""))
+    .filter((value) => /^https?:\/\//.test(value));
+  return [...new Set(urls)];
+}
+
+export function legacyRunnerUrls(settings: Record<string, unknown> | undefined): string[] {
+  const urls = settings?.[LEGACY_RUNNER_URLS_FIELD];
+  return Array.isArray(urls) ? urls.filter((value): value is string => typeof value === "string") : [];
+}
+
+export async function freezeLegacyRunnerUrls() {
+  await mutatePersistedSettings((current) => Object.prototype.hasOwnProperty.call(current, LEGACY_RUNNER_URLS_FIELD)
+    ? current
+    : { ...current, [LEGACY_RUNNER_URLS_FIELD]: configuredRunnerUrls(current) });
+}
+
 export const LOCATION_BACKGROUND_FIELDS = [
   "locationSchedules",
   "locationScheduleMigrationComplete",
+  "locationScheduleRunnerUrls",
   "locationSchedulePendingStates",
   "locationScheduleLastStates",
 ] as const;
@@ -81,6 +105,7 @@ export const COMPOSER_DRAFTS_FIELD = "composerDrafts";
 // mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
 export const PRESERVED_SETTINGS_FIELDS = [
   ...LOCATION_BACKGROUND_FIELDS,
+  LEGACY_RUNNER_URLS_FIELD,
   // Retain old shared fields until the Runner confirms a successful migration.
   "registeredDirectories",
   "sessionTitleOverridesById",

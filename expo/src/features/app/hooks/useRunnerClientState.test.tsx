@@ -4,6 +4,7 @@ import { useRunnerClientState } from "./useRunnerClientState";
 import { mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
 
 jest.mock("../utils/persistedSettingsFile", () => ({
+  legacyRunnerUrls: (settings: Record<string, unknown>) => settings.legacyRunnerUrls || [],
   readPersistedSettings: jest.fn(),
   mutatePersistedSettings: jest.fn(),
 }));
@@ -21,14 +22,15 @@ let server: {
   sessions: Record<string, { title: string; markerColor: string }>;
   composerHistory: string[];
   drafts: Record<string, { text: string; updatedAt: number }>;
+  migrationConflicts: { field: string; key: string; value: string }[];
 };
 let operations: Record<string, unknown>[];
 
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
-  local = {};
-  server = { revision: 0, directories: [], sessions: {}, composerHistory: [], drafts: {} };
+  local = { legacyRunnerUrls: ["http://runner.test"] };
+  server = { revision: 0, directories: [], sessions: {}, composerHistory: [], drafts: {}, migrationConflicts: [] };
   operations = [];
   mockRead.mockImplementation(async () => local);
   mockMutate.mockImplementation(async (mutate) => { local = mutate(local); });
@@ -52,7 +54,13 @@ beforeEach(() => {
           if (!server.sessions[key]) {
             server.sessions[key] = value as { title: string; markerColor: string };
             migrationApplied = true;
-          } else if (JSON.stringify(server.sessions[key]) !== JSON.stringify(value)) migrationComplete = false;
+          } else if (server.sessions[key].title !== (value as { title: string }).title) {
+            const conflict = { field: "sessions.title", key, value: (value as { title: string }).title };
+            if (!server.migrationConflicts.some((item) => JSON.stringify(item) === JSON.stringify(conflict))) {
+              server.migrationConflicts.push(conflict);
+              migrationApplied = true;
+            }
+          }
         }
         for (const text of operation.composerHistory) {
           if (!server.composerHistory.includes(text)) {
@@ -107,6 +115,7 @@ async function renderState() {
 
 test("migrates old device data once, then removes local authoritative fields", async () => {
   local = {
+    legacyRunnerUrls: ["http://runner.test"],
     registeredDirectories: [directory],
     sessionTitleOverridesById: { "session-1": "Renamed" },
     composerMessageHistory: ["accepted"],
@@ -123,7 +132,7 @@ test("migrates old device data once, then removes local authoritative fields", a
 });
 
 test("preserves legacy session metadata without guessing a backend", async () => {
-  local = { llmBackend: "claude", sessionTitleOverridesById: { "session-1": "Claude title" } };
+  local = { legacyRunnerUrls: ["http://runner.test"], llmBackend: "claude", sessionTitleOverridesById: { "session-1": "Claude title" } };
   const { result } = await renderState();
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
   expect(server.sessions[legacySessionKey].title).toBe("Claude title");
@@ -131,7 +140,7 @@ test("preserves legacy session metadata without guessing a backend", async () =>
 });
 
 test("a second device contributes legacy data without replacing provider-specific Runner data", async () => {
-  local = { sessionTitleOverridesById: { "session-1": "Old phone" } };
+  local = { legacyRunnerUrls: ["http://runner.test"], sessionTitleOverridesById: { "session-1": "Old phone" } };
   server = { ...server, revision: 3, sessions: { [sessionKey]: { title: "Other device", markerColor: "none" } } };
   const { result, setSessionTitleOverridesById } = await renderState();
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
@@ -140,6 +149,42 @@ test("a second device contributes legacy data without replacing provider-specifi
     [sessionKey]: "Other device", [legacySessionKey]: "Old phone",
   });
   expect(local.sessionTitleOverridesById).toBeUndefined();
+});
+
+test("conflicting old title is archived on Runner and removed from the device", async () => {
+  local = { legacyRunnerUrls: ["http://runner.test"], sessionTitleOverridesById: { "session-1": "Old phone" } };
+  server.sessions[legacySessionKey] = { title: "Current Runner", markerColor: "none" };
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  expect(server.sessions[legacySessionKey].title).toBe("Current Runner");
+  expect(server.migrationConflicts).toEqual([{ field: "sessions.title", key: legacySessionKey, value: "Old phone" }]);
+  expect(local.sessionTitleOverridesById).toBeUndefined();
+});
+
+test("an offline migration cannot carry legacy titles to a different Runner after autosave", async () => {
+  local = { runnerUrl: "http://old-runner.test", legacyRunnerUrls: ["http://old-runner.test"],
+    sessionTitleOverridesById: { "session-1": "Keep on old Runner" } };
+  const fetchImpl = global.fetch;
+  global.fetch = jest.fn(async (url, init) => {
+    if (String(url).startsWith("http://old-runner.test/")) throw new Error("offline");
+    return fetchImpl(url, init);
+  }) as typeof fetch;
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://old-runner.test", runnerToken: "token", backendId: "codex",
+    parseRegisteredDirectories,
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), {
+    initialProps: props,
+  });
+  await waitFor(() => expect(warn).toHaveBeenCalled());
+  local.runnerUrl = "http://new-runner.test";
+  await rerender({ ...props, runnerUrl: "http://new-runner.test" });
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  expect(operations).toEqual([]);
+  expect(local.sessionTitleOverridesById).toEqual({ "session-1": "Keep on old Runner" });
+  expect(server.sessions).toEqual({});
 });
 
 test("history and drafts use item operations instead of replacing other devices' state", async () => {

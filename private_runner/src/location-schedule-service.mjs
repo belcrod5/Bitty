@@ -191,6 +191,7 @@ export function createLocationScheduleService({
     scheduleRevision: 0,
     phoneTimeZone: "UTC",
     rules: [],
+    migrationConflicts: [],
     states: {},
     occurrences: {},
     updatedAt: "",
@@ -203,6 +204,9 @@ export function createLocationScheduleService({
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("store must be an object");
       if (parsed.version !== 1) throw new Error(`unsupported store version: ${parsed.version}`);
       if (!Array.isArray(parsed.rules)) throw new Error("store.rules must be an array");
+      if (parsed.migrationConflicts !== undefined && !Array.isArray(parsed.migrationConflicts)) {
+        throw new Error("store.migrationConflicts must be an array");
+      }
       if (!parsed.states || typeof parsed.states !== "object" || Array.isArray(parsed.states)) {
         throw new Error("store.states must be an object");
       }
@@ -287,6 +291,7 @@ export function createLocationScheduleService({
           : (parsed.updatedAt ? 1 : 0),
         phoneTimeZone,
         rules,
+        migrationConflicts: parsed.migrationConflicts || [],
         states: parsed.states,
         occurrences: parsed.occurrences,
         updatedAt: String(parsed.updatedAt || ""),
@@ -541,6 +546,7 @@ export function createLocationScheduleService({
       if (payload.expectedRevision !== data.scheduleRevision) throw new LocationScheduleRevisionError();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
+      const conflicts = parseLocationScheduleRules(payload?.migrationConflicts || [], phoneTimeZone, parseCodexOptions);
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
       refreshRules = [...previous.values(), ...rules].filter((rule) => rule.locationDeviceId);
       for (const rule of rules) {
@@ -559,6 +565,11 @@ export function createLocationScheduleService({
       }
       data.phoneTimeZone = phoneTimeZone;
       data.rules = rules;
+      for (const conflict of conflicts) {
+        if (!data.migrationConflicts.some((stored) => JSON.stringify(stored) === JSON.stringify(conflict))) {
+          data.migrationConflicts.push(conflict);
+        }
+      }
       data.scheduleRevision += 1;
       const liveIds = new Set(rules.map((rule) => rule.id));
       for (const id of Object.keys(data.states)) if (!liveIds.has(id)) delete data.states[id];

@@ -17,6 +17,7 @@ export type RunnerClientState = {
   sessions: Record<string, { title: string; markerColor: RegisteredDirectoryEntry["markerColor"] }>;
   composerHistory: string[];
   drafts: Record<string, { text: string; updatedAt: number }>;
+  migrationConflicts?: { field: string; key: string; value: unknown }[];
 };
 
 export async function requestRunnerClientState(options: {

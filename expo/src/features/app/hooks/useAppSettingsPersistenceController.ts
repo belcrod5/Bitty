@@ -18,6 +18,7 @@ import {
   type SecureRunnerCredentials,
 } from "../utils/secureRunnerCredentials";
 import {
+  freezeLegacyRunnerUrls,
   mutatePersistedSettings,
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
@@ -457,6 +458,14 @@ export function useAppSettingsPersistenceController({
       if (settingsResult.status === "fulfilled") {
         writablePersistenceRef.current.settings = true;
         if (settingsResult.value) {
+          if (!Object.prototype.hasOwnProperty.call(settingsResult.value, "legacyRunnerUrls")) {
+            try {
+              await freezeLegacyRunnerUrls();
+            } catch (error) {
+              // Without a frozen provenance, legacy shared data must not be migrated.
+              console.warn("[settings] failed to freeze legacy Runner provenance", error);
+            }
+          }
           applyPersistedSettings(settingsResult.value);
         }
       } else {

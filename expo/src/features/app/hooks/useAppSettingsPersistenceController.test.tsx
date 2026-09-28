@@ -20,6 +20,7 @@ jest.mock("../clipboard", () => ({
 
 jest.mock("../utils/persistedSettingsFile", () => ({
   PRESERVED_SETTINGS_FIELDS: ["skiaBoardCardTextScale"],
+  freezeLegacyRunnerUrls: jest.fn(),
   mutatePersistedSettings: jest.fn(),
   readPersistedSettings: jest.fn(),
   readPersistedSettingsField: jest.fn(),

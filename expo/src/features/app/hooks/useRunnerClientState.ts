@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
-import { mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
+import { legacyRunnerUrls, mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
 import { requestRunnerClientState, runnerSessionKey, type RunnerClientState } from "../utils/runnerClientState";
 import { parseComposerDrafts, parseComposerMessageHistory, type ComposerDraft } from "./useComposerPersistence";
 
@@ -76,7 +76,7 @@ export function useRunnerClientState({
         || Object.keys(legacy.sessionTitleOverridesById || {}).length > 0
         || Object.keys(legacy.sessionMarkerColorsById || {}).length > 0
       );
-      if (legacy && hasLegacyData && (!legacy.runnerUrl || String(legacy.runnerUrl).replace(/\/+$/, "") === url.replace(/\/+$/, ""))) {
+      if (legacy && hasLegacyData && legacyRunnerUrls(legacy).includes(url.trim().replace(/\/+$/, ""))) {
         const sessions: Record<string, { title?: string; markerColor?: string }> = {};
         const titles = legacy.sessionTitleOverridesById as Record<string, string> || {};
         const colors = legacy.sessionMarkerColorsById as Record<string, string> || {};

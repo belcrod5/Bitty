@@ -21,6 +21,7 @@ export function createClientStateStore(storePath) {
     sessions: {},
     composerHistory: [],
     drafts: {},
+    migrationConflicts: [],
   };
 
   async function load() {
@@ -29,8 +30,10 @@ export function createClientStateStore(storePath) {
       const parsed = JSON.parse(await fs.readFile(storePath, "utf8"));
       if (parsed?.version !== 1 || !Number.isSafeInteger(parsed.revision)
         || !Array.isArray(parsed.directories) || !parsed.sessions || !parsed.drafts
-        || !Array.isArray(parsed.composerHistory)) throw new Error("invalid client state store");
+        || !Array.isArray(parsed.composerHistory)
+        || (parsed.migrationConflicts !== undefined && !Array.isArray(parsed.migrationConflicts))) throw new Error("invalid client state store");
       state = parsed;
+      state.migrationConflicts ??= [];
     } catch (error) {
       if (error?.code !== "ENOENT") throw new ClientStateStoreUnavailableError(error);
     }
@@ -73,16 +76,22 @@ export function createClientStateStore(storePath) {
           || typeof operation.sessions !== "object" || operation.sessions === null
           || typeof operation.drafts !== "object" || operation.drafts === null) throw new Error("invalid migration");
         let changed = false;
-        let complete = true;
+        const preserve = (field, key, value) => {
+          const conflict = { field, key, value };
+          if (!state.migrationConflicts.some((item) => JSON.stringify(item) === JSON.stringify(conflict))) {
+            state.migrationConflicts.push(conflict);
+            changed = true;
+          }
+        };
         for (const raw of operation.directories) {
           const next = directory(raw);
           const existing = state.directories.find((item) => item.path === next.path || item.id === next.id);
           if (existing) {
-            if (JSON.stringify(existing) !== JSON.stringify(next)) complete = false;
+            if (JSON.stringify(existing) !== JSON.stringify(next)) preserve("directories", next.path, next);
           } else if (state.directories.length < 100) {
             state.directories.push(next);
             changed = true;
-          } else complete = false;
+          } else preserve("directories", next.path, next);
         }
         for (const [key, value] of Object.entries(operation.sessions)) {
           const pair = JSON.parse(key);
@@ -97,11 +106,11 @@ export function createClientStateStore(storePath) {
           const next = { ...existing };
           if (title) {
             if (!existing.title) next.title = title;
-            else if (existing.title !== title) complete = false;
+            else if (existing.title !== title) preserve("sessions.title", storedKey, title);
           }
           if (markerColor !== "none") {
             if (existing.markerColor === "none") next.markerColor = markerColor;
-            else if (existing.markerColor !== markerColor) complete = false;
+            else if (existing.markerColor !== markerColor) preserve("sessions.markerColor", storedKey, markerColor);
           }
           if (JSON.stringify(next) !== JSON.stringify(existing)) {
             state.sessions[storedKey] = next;
@@ -119,7 +128,7 @@ export function createClientStateStore(storePath) {
           if (state.composerHistory.length < 40) {
             state.composerHistory.push(text);
             changed = true;
-          } else complete = false;
+          } else preserve("composerHistory", "", text);
         }
         for (const [key, value] of Object.entries(operation.drafts)) {
           const pair = JSON.parse(key);
@@ -128,13 +137,13 @@ export function createClientStateStore(storePath) {
           if (!text.trim()) continue;
           const storedKey = sessionKey(requiredString(pair[0], "backendId", 100), requiredString(pair[1], "sessionId", 200));
           if (state.drafts[storedKey]) {
-            if (state.drafts[storedKey].text !== text) complete = false;
+            if (state.drafts[storedKey].text !== text) preserve("drafts", storedKey, text);
           } else if (Object.keys(state.drafts).length < 10) {
             state.drafts[storedKey] = { text, updatedAt: Date.now() };
             changed = true;
-          } else complete = false;
+          } else preserve("drafts", storedKey, text);
         }
-        return { changed, complete };
+        return { changed, complete: true };
       }
       case "directory.upsert": {
         const next = directory(operation.directory);

@@ -1,5 +1,7 @@
 const mockMutatePersistedSettings = jest.fn();
 const mockReadPersistedSettingsField = jest.fn();
+const mockReadPersistedSettings = jest.fn();
+const mockFreezeLegacyRunnerUrls = jest.fn();
 const mockLoadSecureRunnerCredentials = jest.fn();
 const mockFetch = jest.fn();
 const mockGetForegroundPermissionsAsync = jest.fn();
@@ -10,13 +12,21 @@ const mockStopGeofencingAsync = jest.fn();
 const mockStartGeofencingAsync = jest.fn();
 let mockSettings: Record<string, unknown> = {};
 let mockRunnerRules: LocationScheduleRule[] = [];
+let mockRunnerConflicts: LocationScheduleRule[] = [];
 let mockRunnerRevision = 0;
 let mockTimeZone = "Asia/Tokyo";
+let mockRunnerUrl = "http://runner.test";
+let mockOriginalRunnerUrls = ["http://runner.test"];
 
 jest.mock("../app/utils/persistedSettingsFile", () => ({
+  configuredRunnerUrls: (settings: Record<string, unknown>) => [settings.runnerUrl, settings.localRunnerUrl, settings.cloudflareRunnerUrl]
+    .filter((value): value is string => typeof value === "string"),
+  freezeLegacyRunnerUrls: () => mockFreezeLegacyRunnerUrls(),
+  legacyRunnerUrls: (settings: Record<string, unknown>) => Array.isArray(settings.legacyRunnerUrls) ? settings.legacyRunnerUrls : [],
   mutatePersistedSettings: (mutate: (current: Record<string, unknown>) => Record<string, unknown>) => (
     mockMutatePersistedSettings(mutate)
   ),
+  readPersistedSettings: () => mockReadPersistedSettings(),
   readPersistedSettingsField: (field: string) => mockReadPersistedSettingsField(field),
 }));
 
@@ -109,13 +119,22 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSettings = {};
   mockRunnerRules = [];
+  mockRunnerConflicts = [];
   mockRunnerRevision = 0;
   mockTimeZone = "Asia/Tokyo";
+  mockRunnerUrl = "http://runner.test";
+  mockOriginalRunnerUrls = ["http://runner.test"];
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
-    mockSettings = mutate(mockSettings);
+    mockSettings = mutate({ runnerUrl: mockRunnerUrl, ...mockSettings });
+  });
+  mockReadPersistedSettings.mockImplementation(async () => ({ runnerUrl: mockRunnerUrl, ...mockSettings }));
+  mockFreezeLegacyRunnerUrls.mockImplementation(async () => {
+    if (!Object.prototype.hasOwnProperty.call(mockSettings, "legacyRunnerUrls")) {
+      mockSettings.legacyRunnerUrls = [...mockOriginalRunnerUrls];
+    }
   });
   mockReadPersistedSettingsField.mockImplementation(async (field) => (
-    field === "runnerUrl" ? "http://runner.test" : mockSettings[field]
+    field === "runnerUrl" ? mockRunnerUrl : mockSettings[field]
   ));
   mockLoadSecureRunnerCredentials.mockResolvedValue({ runnerToken: "token" });
   mockFetch.mockImplementation(async (url, options) => {
@@ -126,10 +145,15 @@ beforeEach(() => {
           return { ok: false, status: 409, json: async () => ({ message: "conflict" }) };
         }
         mockRunnerRules = body.rules;
+        for (const conflict of body.migrationConflicts || []) {
+          if (!mockRunnerConflicts.some((stored) => JSON.stringify(stored) === JSON.stringify(conflict))) {
+            mockRunnerConflicts.push(conflict);
+          }
+        }
         mockRunnerRevision += 1;
       }
       return { ok: true, status: 200, json: async () => ({ snapshot: {
-        scheduleRevision: mockRunnerRevision, rules: mockRunnerRules,
+        scheduleRevision: mockRunnerRevision, rules: mockRunnerRules, migrationConflicts: mockRunnerConflicts,
       } }) };
     }
     return okResponse();
@@ -313,6 +337,64 @@ test("migrates a second device's missing legacy rule without replacing Runner ru
   expect(mockRunnerRules.map((item) => item.id)).toEqual(["runner-existing", "legacy-local"]);
   expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ id: "legacy-local", locationDeviceId: "device-1" })]);
   expect(mockSettings.locationScheduleMigrationComplete).toBe(true);
+});
+
+test("preserves a differing old device rule on Runner while its current rule wins", async () => {
+  mockSettings = { locationSchedules: [rule({ prompt: "old device" })] };
+  mockRunnerRules = [rule({ prompt: "current" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockRunnerRules[0].prompt).toBe("current");
+  expect(mockRunnerConflicts[0].prompt).toBe("old device");
+  expect(mockSettings.locationScheduleMigrationComplete).toBe(true);
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ prompt: "current" })]);
+});
+
+test("an offline legacy rule stays on its frozen Runner after the selected URL changes", async () => {
+  const legacy = rule({ id: "old-runner-only" });
+  mockSettings = { locationSchedules: [legacy] };
+  mockOriginalRunnerUrls = ["http://old-runner.test"];
+  mockRunnerUrl = "http://old-runner.test";
+  mockFetch.mockRejectedValueOnce(new Error("offline"));
+  await bootstrapLocationSchedules();
+  expect(mockSettings.legacyRunnerUrls).toEqual(["http://old-runner.test"]);
+
+  mockRunnerUrl = "http://new-runner.test";
+  await bootstrapLocationSchedules();
+  expect(mockFetch.mock.calls.filter(([url, options]) => String(url).startsWith("http://new-runner.test/") && options?.method === "PUT")).toHaveLength(0);
+  expect(mockSettings.locationSchedules).toEqual([legacy]);
+  expect(mockSettings.locationScheduleMigrationComplete).toBeUndefined();
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+});
+
+test("a configured Cloudflare route can migrate rules owned by the same Runner", async () => {
+  mockSettings = { locationSchedules: [rule()], localRunnerUrl: "http://old.local", cloudflareRunnerUrl: "https://old.example.com" };
+  mockOriginalRunnerUrls = ["http://old.local", "https://old.example.com"];
+  mockRunnerUrl = "https://old.example.com";
+
+  await bootstrapLocationSchedules();
+
+  expect(mockFetch.mock.calls.filter(([url, options]) => String(url).startsWith("https://old.example.com/") && options?.method === "PUT")).toHaveLength(1);
+  expect(mockSettings.locationScheduleMigrationComplete).toBe(true);
+});
+
+test("pending location events remain local when switched to another Runner", async () => {
+  const pending = { ruleId: "office", regionRevision: locationScheduleRevision(rule()),
+    state: "inside", eventId: "pending-old", observedAt: "2026-07-19T00:00:00Z" };
+  mockSettings = {
+    locationSchedules: [rule()], locationScheduleMigrationComplete: true,
+    locationScheduleRunnerUrls: ["http://old-runner.test"],
+    locationSchedulePendingStates: [pending],
+  };
+  mockRunnerUrl = "http://new-runner.test";
+
+  await bootstrapLocationSchedules();
+
+  expect(mockSettings.locationSchedulePendingStates).toEqual([pending]);
+  expect(mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"))).toHaveLength(0);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
 });
 
 test("preserves a legacy rule when its id collides with a different owner's rule", async () => {

@@ -111,5 +111,18 @@ test("schedule and state APIs require auth, validate, persist, and return a snap
       body: JSON.stringify({ phoneTimeZone: "Asia/Tokyo", rules: [{ ...rule, endTime: "08:00" }], expectedRevision: 2 }),
     });
     assert.equal(invalid.status, 400);
+
+    const archived = await fetch(`${baseUrl}/location-schedules`, {
+      method: "PUT", headers: headers(),
+      body: JSON.stringify({
+        phoneTimeZone: "Asia/Tokyo", rules: crossTimeZonePayload.snapshot.rules,
+        migrationConflicts: [{ ...rule, prompt: "old device prompt" }], expectedRevision: 2,
+      }),
+    });
+    assert.equal(archived.status, 200);
+    const archivedSnapshot = (await archived.json()).snapshot;
+    assert.equal(archivedSnapshot.rules[0].prompt, "run checks");
+    assert.equal(archivedSnapshot.migrationConflicts[0].prompt, "old device prompt");
+    assert.equal((await (await fetch(`${baseUrl}/location-schedules`, { headers: headers() })).json()).snapshot.migrationConflicts[0].prompt, "old device prompt");
   });
 });
