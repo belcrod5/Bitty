@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,20 @@ process.env.RUNNER_TOKEN = "test-runner-token";
 
 const { __TESTING__ } = await import("../src/server-runtime.mjs");
 const { server, RUNNER_TOKEN, codexAuthService, codexAuthRuntime } = __TESTING__;
+
+function authRelay() {
+  const upstreamWs = new EventEmitter();
+  upstreamWs.readyState = 3;
+  upstreamWs.close = () => {};
+  const relay = __TESTING__.createCodexRelayContext({ upstreamWs, endpoint: "/test", remote: "test" });
+  relay.threadId = `thread-${relay.relayId}`;
+  const rpcId = __TESTING__.codexRpcIdKey(17);
+  relay.authLeasesByRpcId.set(rpcId, codexAuthService.acquireLease());
+  relay.requestMethodByRpcId.set(rpcId, "turn/start");
+  relay.requestMetaByRpcId.set(rpcId, {});
+  const receive = (payload) => __TESTING__.handleCodexRelayUpstreamMessage(relay, JSON.stringify(payload), false);
+  return { relay, upstreamWs, rpcId, receive };
+}
 
 const profile = (authId) => ({
   version: 1,
@@ -269,9 +284,174 @@ test("isolated rate-limit refresh does not hold the live identity gate", async (
   }
 });
 
+test("completed turn drains its auth lease when notifications precede turn/start result", async () => {
+  const { relay, rpcId, receive } = authRelay();
+  const turn = { threadId: relay.threadId, turn: { id: "turn-early" } };
+  try {
+    receive({ method: "turn/started", params: turn });
+    assert.equal(relay.currentTurnId, "turn-early");
+    receive({ method: "turn/completed", params: { ...turn, status: "completed" } });
+    assert.equal(relay.turnCompleted, true);
+    assert.equal(codexAuthService.gateSnapshot().leases, 0);
+    assert.equal(relay.requestMethodByRpcId.get(rpcId), "turn/start");
+    receive({ id: 17, result: { turn: { id: "turn-early" } } });
+    assert.equal(relay.turnCompleted, true);
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+    await codexAuthService.closeAndDrain({ timeoutMs: 20 });
+  } finally {
+    codexAuthService.openGate();
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("a completed turn reserves its RPC id until the late result arrives", () => {
+  const { relay, rpcId, receive } = authRelay();
+  const turn = { threadId: relay.threadId, turn: { id: "turn-reserved" } };
+  const sent = [];
+  const clientWs = { readyState: 1, send: (data) => sent.push(JSON.parse(String(data))) };
+  try {
+    receive({ method: "turn/started", params: turn });
+    receive({ method: "turn/completed", params: { ...turn, status: "completed" } });
+    assert.equal(relay.authLeasesByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMethodByRpcId.get(rpcId), "turn/start");
+    __TESTING__.forwardCodexRelayClientData(relay, JSON.stringify({
+      id: 17, method: "turn/start", params: { threadId: relay.threadId },
+    }), false, { clientForwardQueued: true, clientWs });
+    assert.equal(sent[0]?.error?.code, -32600);
+    assert.equal(relay.authLeasesByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.turnId, "turn-reserved");
+    receive({ id: 17, result: { turn: { id: "turn-reserved" } } });
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+  } finally {
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("a reverse upstream request cannot release a completed turn's reserved RPC id", () => {
+  const { relay, rpcId, receive } = authRelay();
+  const turn = { threadId: relay.threadId, turn: { id: "turn-reverse" } };
+  const sent = [];
+  const clientWs = { readyState: 1, send: (data) => sent.push(JSON.parse(String(data))) };
+  try {
+    receive({ method: "turn/started", params: turn });
+    receive({ method: "turn/completed", params: { ...turn, status: "completed" } });
+    receive({ id: 17, method: "test/reverse", params: {} });
+    assert.equal(relay.requestMethodByRpcId.get(rpcId), "turn/start");
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.turnId, "turn-reverse");
+    __TESTING__.forwardCodexRelayClientData(relay, JSON.stringify({
+      id: 17, method: "turn/start", params: { threadId: relay.threadId },
+    }), false, { clientForwardQueued: true, clientWs });
+    assert.equal(sent[0]?.error?.code, -32600);
+    receive({ id: 17, result: { turn: { id: "turn-reverse" } } });
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMetaByRpcId.has(rpcId), false);
+  } finally {
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("gate closing drains a running turn after its terminal notification", async () => {
+  const { relay, rpcId, receive } = authRelay();
+  const turn = { threadId: relay.threadId, turn: { id: "turn-running" } };
+  try {
+    receive({ id: 17, result: { turn: { id: "turn-running" } } });
+    receive({ method: "turn/started", params: turn });
+    const draining = codexAuthService.closeAndDrain({ timeoutMs: 100 });
+    assert.deepEqual(codexAuthService.gateSnapshot(), { state: "closing", leases: 1 });
+    receive({ method: "turn/completed", params: { ...turn, status: "completed" } });
+    await draining;
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+    assert.deepEqual(codexAuthService.gateSnapshot(), { state: "closing", leases: 0 });
+  } finally {
+    codexAuthService.openGate();
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("a late result from a completed turn leaves the next turn's lease intact", () => {
+  const { relay, receive } = authRelay();
+  const first = { threadId: relay.threadId, turn: { id: "turn-first" } };
+  const second = { threadId: relay.threadId, turn: { id: "turn-second" } };
+  try {
+    receive({ method: "turn/started", params: first });
+    receive({ method: "turn/completed", params: { ...first, status: "completed" } });
+    const secondRpcId = __TESTING__.codexRpcIdKey(18);
+    relay.authLeasesByRpcId.set(secondRpcId, codexAuthService.acquireLease());
+    relay.requestMethodByRpcId.set(secondRpcId, "turn/start");
+    relay.requestMetaByRpcId.set(secondRpcId, {});
+    receive({ method: "turn/started", params: second });
+    receive({ id: 17, result: { turn: { id: "turn-first" } } });
+    assert.equal(relay.currentTurnId, "turn-second");
+    assert.equal(relay.authLeasesByRpcId.has(secondRpcId), true);
+    receive({ method: "turn/completed", params: { ...second, status: "completed" } });
+    assert.equal(codexAuthService.gateSnapshot().leases, 0);
+  } finally {
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("a late error from a completed turn leaves the next raw turn lease intact", () => {
+  const { relay, rpcId, receive } = authRelay();
+  const first = { threadId: relay.threadId, turn: { id: "turn-first" } };
+  const second = { threadId: relay.threadId, turn: { id: "turn-second" } };
+  try {
+    receive({ method: "turn/started", params: first });
+    receive({ method: "turn/completed", params: { ...first, status: "completed" } });
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
+    const secondRpcId = __TESTING__.codexRpcIdKey(18);
+    relay.authLeasesByRpcId.set(secondRpcId, codexAuthService.acquireLease());
+    relay.requestMethodByRpcId.set(secondRpcId, "turn/start");
+    relay.requestMetaByRpcId.set(secondRpcId, {});
+    receive({ method: "turn/started", params: second });
+    const secondAgentLease = {
+      sessionRef: { backendId: "codex", nativeSessionId: relay.threadId },
+      generation: 2,
+      kind: "turn",
+    };
+    relay.agentLease = secondAgentLease;
+    receive({ id: 17, error: { code: -32603, message: "late first turn error" } });
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+    assert.equal(relay.agentLease, secondAgentLease);
+    assert.equal(relay.authLeasesByRpcId.has(secondRpcId), true);
+    assert.equal(relay.currentTurnId, "turn-second");
+  } finally {
+    relay.agentLease = null;
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("a mismatched turn/start result cannot release another turn's lease", () => {
+  const { relay, receive } = authRelay();
+  const expected = { threadId: relay.threadId, turn: { id: "turn-expected" } };
+  try {
+    receive({ method: "turn/started", params: expected });
+    receive({ id: 17, result: { turn: { id: "turn-other" } } });
+    receive({ method: "turn/completed", params: { threadId: relay.threadId, turn: { id: "turn-other" }, status: "completed" } });
+    assert.equal(codexAuthService.gateSnapshot().leases, 1);
+    receive({ method: "turn/completed", params: { ...expected, status: "completed" } });
+    assert.equal(codexAuthService.gateSnapshot().leases, 0);
+  } finally {
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
+test("closed upstream releases in-flight auth leases while subscribers retain the relay", async () => {
+  const { relay, upstreamWs } = authRelay();
+  relay.clients.add({ readyState: 3, close() {} });
+  __TESTING__.attachCodexRelayUpstreamHandlers(relay);
+  try {
+    upstreamWs.emit("close", 1006, Buffer.from("lost"));
+    assert.equal(codexAuthService.gateSnapshot().leases, 0);
+    await codexAuthService.closeAndDrain({ timeoutMs: 20 });
+  } finally {
+    codexAuthService.openGate();
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
 test("dropped relay RPC releases its auth lease and request metadata", async () => {
   const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
-  assert.match(source, /if \(relay\.upstreamWs\.readyState !== WebSocket\.OPEN\) \{[\s\S]*?releaseCodexRelayRpcLease\(relay, codexRpcIdKey\(meta\?\.id\)\);[\s\S]*?return;/);
+  assert.match(source, /if \(relay\.upstreamWs\.readyState !== WebSocket\.OPEN\) \{[\s\S]*?releaseCodexRelayRpcLease\(relay, clientRequestRpcKey\);[\s\S]*?return;/);
   assert.match(source, /if \(admission\) \{[\s\S]*?forwarded === false[\s\S]*?releaseCodexRelayRpcLease/);
   assert.match(source, /relay\.upstreamWs\.send\(data,[\s\S]*?catch \(error\) \{[\s\S]*?releaseCodexRelayRpcLease/);
 });

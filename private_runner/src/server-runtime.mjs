@@ -11053,7 +11053,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       });
     }
   }
-  const responseRpcId = meta?.id ?? null;
+  const responseRpcId = !meta?.method && (meta?.hasResult || meta?.hasError) ? meta.id : null;
   const responseRpcKey = codexRpcIdKey(responseRpcId);
   const responseLease = responseRpcKey && relay.authLeasesByRpcId instanceof Map
     ? relay.authLeasesByRpcId.get(responseRpcKey)
@@ -11070,6 +11070,9 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     responseRpcKey &&
     relay.requestMetaByRpcId instanceof Map
   ) ? (relay.requestMetaByRpcId.get(responseRpcKey) || {}) : {};
+  if (responseRpcMethod === "turn/start" && (meta?.hasResult || meta?.hasError)) {
+    responseMeta.responseReceived = true;
+  }
   if (
     responseRequestId &&
     responseRpcKey &&
@@ -11187,23 +11190,43 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       })();
     }
   }
-  if (responseRpcMethod === "turn/start" && meta?.hasError) codexRawSessionOwnership.settle(relay, "released", "turn");
+  if (responseRpcMethod === "turn/start" && meta?.hasError && !responseMeta.terminal) {
+    codexRawSessionOwnership.settle(relay, "released", "turn");
+  }
   if (
     responseRpcMethod === "turn/start" &&
     meta?.hasResult &&
     !meta?.hasError
   ) {
     const startedTurnId = getCodexTurnEventIdentity(rpcPayload?.result).turnId;
-    if (startedTurnId) {
-      relay.currentTurnId = startedTurnId;
-      relay.turnStarted = true;
-      relay.turnCompleted = false;
+    if (startedTurnId && (!responseMeta.turnId || responseMeta.turnId === startedTurnId)) {
+      responseMeta.turnId = startedTurnId;
+      if (!responseMeta.terminal && relay.currentTurnId !== startedTurnId) {
+        relay.currentTurnId = startedTurnId;
+        relay.turnStarted = true;
+        relay.turnCompleted = false;
+      }
     }
   }
+  if (
+    responseRpcMethod === "turn/start" &&
+    responseMeta.terminal &&
+    (meta?.hasResult || meta?.hasError)
+  ) releaseCodexRelayRpcLease(relay, responseRpcKey);
   const calendarDynamicItem = isCalendarDynamicItem(rpcPayload);
   if (meta && (meta.method || meta.id !== null)) {
     if (meta.threadId && shouldBindRelayThreadFromUpstreamMethod(meta.method)) {
       bindCodexRelayThreadMapping(relay, meta.threadId);
+    }
+    if (meta.method === "turn/started" && meta.threadId === relay.threadId) {
+      const startedTurnId = getCodexTurnStartedId(rpcPayload);
+      const pendingTurnStarts = [...relay.authLeasesByRpcId.keys()].filter(
+        (rpcId) => relay.requestMethodByRpcId.get(rpcId) === "turn/start" && !relay.requestMetaByRpcId.get(rpcId)?.turnId
+      );
+      if (startedTurnId && pendingTurnStarts.length === 1) {
+        relay.requestMetaByRpcId.get(pendingTurnStarts[0]).turnId = startedTurnId;
+        relay.currentTurnId = startedTurnId;
+      }
     }
     if (meta.method && meta.method.endsWith("/requestApproval")) {
       const approvalRpcId = Number(meta.id);
@@ -11234,12 +11257,12 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       if (isTerminalTurnStatus(meta.threadStatus) || !meta.threadStatus) {
         relay.turnCompleted = true;
         codexRawSessionOwnership.settle(relay, "released", "turn");
-        releaseCodexRelayTurnLease(relay);
+        releaseCodexRelayTurnLease(relay, relay.currentTurnId);
       }
     } else if (meta.method === "turn/interrupted" && ownsCurrentTurn) {
       relay.turnCompleted = true;
       codexRawSessionOwnership.settle(relay, "released", "turn");
-      releaseCodexRelayTurnLease(relay);
+      releaseCodexRelayTurnLease(relay, relay.currentTurnId);
     } else if (meta.method === "turn/started" && ownsCurrentTurn) {
       relay.turnStarted = true;
       relay.turnCompleted = false;
@@ -11342,11 +11365,17 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   }
 }
 
-function releaseCodexRelayTurnLease(relay) {
+function releaseCodexRelayTurnLease(relay, turnId) {
   if (!relay?.authLeasesByRpcId) return;
   for (const rpcId of relay.authLeasesByRpcId.keys()) {
-    if (relay.requestMethodByRpcId.get(rpcId) === "turn/start") {
-      releaseCodexRelayRpcLease(relay, rpcId);
+    if (relay.requestMethodByRpcId.get(rpcId) === "turn/start" && relay.requestMetaByRpcId.get(rpcId)?.turnId === turnId) {
+      relay.requestMetaByRpcId.get(rpcId).terminal = true;
+      if (relay.requestMetaByRpcId.get(rpcId)?.responseReceived) {
+        releaseCodexRelayRpcLease(relay, rpcId);
+      } else {
+        relay.authLeasesByRpcId.get(rpcId)();
+        relay.authLeasesByRpcId.delete(rpcId);
+      }
     }
   }
 }
@@ -11398,6 +11427,7 @@ function attachCodexRelayUpstreamHandlers(relay, params = {}) {
       ? reasonBuf.toString("utf8")
       : String(reasonBuf || "");
     relay.upstreamOpen = false;
+    for (const rpcId of relay.authLeasesByRpcId.keys()) releaseCodexRelayRpcLease(relay, rpcId);
     if (relay.agentLease) codexRawSessionOwnership.settle(relay, "recovering");
     relay.updatedAtMs = codexRelayNowMs();
     if (RUNNER_LOG_REQUESTS) {
@@ -11542,9 +11572,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
-  if (meta?.method && meta.method !== "initialize" && meta.id !== null && params.authLeaseAcquired !== true) {
-    const rpcIdKey = codexRpcIdKey(meta.id);
-    if (relay.authLeasesByRpcId instanceof Map && relay.authLeasesByRpcId.has(rpcIdKey)) {
+  const clientRequestRpcKey = meta?.method && meta.id !== null ? codexRpcIdKey(meta.id) : null;
+  if (clientRequestRpcKey && meta.method !== "initialize" && params.authLeaseAcquired !== true) {
+    if (relay.authLeasesByRpcId?.has(clientRequestRpcKey) || relay.requestMethodByRpcId?.has(clientRequestRpcKey)) {
       if (requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32600, message: "Codex RPC id already in flight" } }));
       return;
     }
@@ -11553,7 +11583,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       if (meta.id !== null && requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32001, message: "Codex auth gate unavailable" } }));
       return;
     }
-    if (relay.authLeasesByRpcId instanceof Map) relay.authLeasesByRpcId.set(rpcIdKey, lease);
+    if (relay.authLeasesByRpcId instanceof Map) relay.authLeasesByRpcId.set(clientRequestRpcKey, lease);
     else lease();
     params = { ...params, authLeaseAcquired: true };
   }
@@ -11572,7 +11602,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   );
   if (admission) {
     return admission.then((forwarded) => {
-      if (forwarded === false) releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+      if (forwarded === false) releaseCodexRelayRpcLease(relay, clientRequestRpcKey);
       return forwarded;
     });
   }
@@ -11674,15 +11704,14 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       relay.runnerWsLlmOperationId = requestOperationId;
       relay.runnerWsLlmSessionId = requestSessionId;
     }
-    const rpcIdKey = codexRpcIdKey(meta?.id);
-    if (requestId && rpcIdKey && relay.requestIdByRpcId instanceof Map) {
-      relay.requestIdByRpcId.set(rpcIdKey, requestId);
+    if (requestId && clientRequestRpcKey && relay.requestIdByRpcId instanceof Map) {
+      relay.requestIdByRpcId.set(clientRequestRpcKey, requestId);
     }
-    if (meta.method && rpcIdKey && relay.requestMethodByRpcId instanceof Map) {
-      relay.requestMethodByRpcId.set(rpcIdKey, String(meta.method || "").trim());
+    if (clientRequestRpcKey && relay.requestMethodByRpcId instanceof Map) {
+      relay.requestMethodByRpcId.set(clientRequestRpcKey, String(meta.method || "").trim());
     }
-    if (rpcIdKey && relay.requestMetaByRpcId instanceof Map) {
-      relay.requestMetaByRpcId.set(rpcIdKey, {
+    if (clientRequestRpcKey && relay.requestMetaByRpcId instanceof Map) {
+      relay.requestMetaByRpcId.set(clientRequestRpcKey, {
         operationId: requestOperationId,
         sessionId: requestSessionId,
         threadId: requestThreadId,
@@ -11748,7 +11777,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (relay.upstreamWs.readyState !== WebSocket.OPEN) {
     if (answeredApproval) relay.pendingApprovalRequestIds.add(Number(meta.id));
     logForwardState("dropped_upstream_not_open");
-    releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+    releaseCodexRelayRpcLease(relay, clientRequestRpcKey);
     return;
   }
   logForwardState("sent_to_upstream");
@@ -11761,7 +11790,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   try {
     relay.upstreamWs.send(data, { binary: isBinary });
   } catch (error) {
-    releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+    releaseCodexRelayRpcLease(relay, clientRequestRpcKey);
     throw error;
   }
   if (answeredApproval && relay.pendingApprovalRequestIds.size === 0) {
@@ -11970,6 +11999,7 @@ export const __TESTING__ = {
   shouldReplayCodexRelayEvent,
   isCodexRelayThreadMismatch,
   handleCodexRelayUpstreamMessage,
+  attachCodexRelayUpstreamHandlers,
   cleanupOrScheduleDetachedRelay,
   cleanupCodexRelay,
   cleanupNoClientRelaysForThread,
