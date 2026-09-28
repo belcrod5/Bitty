@@ -12,11 +12,14 @@ RCT_EXPORT_MODULE(BittyVoiceBlur)
 
 - (NSView *)view
 {
-  NSVisualEffectView *view = [NSVisualEffectView new];
-  view.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-  view.material = NSVisualEffectMaterialFullScreenUI;
-  view.state = NSVisualEffectStateActive;
-  return view;
+  NSView *container = [super view];
+  NSVisualEffectView *effect = [[NSVisualEffectView alloc] initWithFrame:container.bounds];
+  effect.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  effect.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+  effect.material = NSVisualEffectMaterialFullScreenUI;
+  effect.state = NSVisualEffectStateActive;
+  [container addSubview:effect];
+  return container;
 }
 
 @end
