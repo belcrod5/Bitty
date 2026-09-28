@@ -44,3 +44,15 @@ test("bounds custom title overrides before every panel snapshot update", () => {
   expect(Array.from(selectedSessionTitle)).toHaveLength(200);
   expect(selectedSessionTitle.endsWith("🙂…")).toBe(true);
 });
+
+test("carries a provisional session color into Runner state when the session ID resolves", () => {
+  const source = readFileSync(`${__dirname}/AppRoot.tsx`, "utf8");
+  const carry = source.slice(
+    source.indexOf("function carrySessionMarkerColorToSyncedSession"),
+    source.indexOf("function normalizedLlmDirectoryForRequest")
+  );
+
+  expect(carry).toContain("runnerSessionValue(sessionMarkerColorsById, llmBackend, nextSessionId)");
+  expect(carry).toContain("runnerSessionValue(sessionMarkerColorsById, llmBackend, previousSessionId)");
+  expect(carry).toContain("setSessionMarkerColorForSession(nextSessionId, previousMarkerColor, llmBackend)");
+});

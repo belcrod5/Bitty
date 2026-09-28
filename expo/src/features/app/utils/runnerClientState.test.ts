@@ -10,10 +10,8 @@ test("custom session metadata is isolated by backend", () => {
   expect(runnerSessionValue(values, "codex", "other")).toBeUndefined();
 });
 
-test("legacy unscoped title is shared without assigning it to one backend", () => {
+test("unscoped old titles are not reused by another backend", () => {
   const values = { [runnerSessionKey("legacy", "same")]: "Old title" };
-  expect(runnerSessionValue(values, "codex", "same")).toBe("Old title");
-  expect(runnerSessionValue(values, "claude", "same")).toBe("Old title");
-  values[runnerSessionKey("codex", "same")] = "";
-  expect(runnerSessionValue(values, "codex", "same")).toBe("");
+  expect(runnerSessionValue(values, "codex", "same")).toBeUndefined();
+  expect(runnerSessionValue(values, "claude", "same")).toBeUndefined();
 });

@@ -5,7 +5,7 @@ import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
 import { AppState, Platform } from "react-native";
 
-import { configuredRunnerUrls, freezeLegacyRunnerUrls, legacyRunnerUrls, mutatePersistedSettings, readPersistedSettings, readPersistedSettingsField } from "../app/utils/persistedSettingsFile";
+import { configuredRunnerUrls, mutatePersistedSettings, readPersistedSettings, readPersistedSettingsField } from "../app/utils/persistedSettingsFile";
 import { loadSecureRunnerCredentials } from "../app/utils/secureRunnerCredentials";
 import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
 import {
@@ -24,7 +24,6 @@ import {
 } from "./locationScheduleRules";
 
 const RULES_FIELD = "locationSchedules";
-const MIGRATED_FIELD = "locationScheduleMigrationComplete";
 const RUNNER_URLS_FIELD = "locationScheduleRunnerUrls";
 const RUNNER_TOKEN_ID_FIELD = "locationScheduleRunnerTokenId";
 const PENDING_FIELD = "locationSchedulePendingStates";
@@ -55,9 +54,7 @@ function rulesNeededOnDevice(rules: readonly LocationScheduleRule[], deviceId: s
 
 function localRunnerUrls(settings: Record<string, unknown>) {
   const cached = settings[RUNNER_URLS_FIELD];
-  return Array.isArray(cached)
-    ? cached.filter((value): value is string => typeof value === "string")
-    : legacyRunnerUrls(settings);
+  return Array.isArray(cached) ? cached.filter((value): value is string => typeof value === "string") : [];
 }
 
 type LocalScheduleCache = {
@@ -66,7 +63,6 @@ type LocalScheduleCache = {
   rules: unknown;
   pending: unknown;
   lastStates: unknown;
-  migrated: unknown;
 };
 
 function archivedLocationCaches(settings: Record<string, unknown>): Record<string, LocalScheduleCache> {
@@ -81,9 +77,9 @@ function archivedLocationCaches(settings: Record<string, unknown>): Record<strin
 
 function locationCacheForRunner(settings: Record<string, unknown>, url: string, tokenId: string): LocalScheduleCache | null {
   const activeTokenId = typeof settings[RUNNER_TOKEN_ID_FIELD] === "string" ? settings[RUNNER_TOKEN_ID_FIELD] as string : undefined;
-  if (localRunnerUrls(settings).includes(url) && (!activeTokenId || activeTokenId === tokenId)) return {
+  if (localRunnerUrls(settings).includes(url) && activeTokenId === tokenId) return {
     urls: localRunnerUrls(settings), tokenId: activeTokenId, rules: settings[RULES_FIELD], pending: settings[PENDING_FIELD],
-    lastStates: settings[LAST_STATES_FIELD], migrated: settings[MIGRATED_FIELD],
+    lastStates: settings[LAST_STATES_FIELD],
   };
   return Object.values(archivedLocationCaches(settings)).find((cache) => cache.urls.includes(url) && cache.tokenId === tokenId) ?? null;
 }
@@ -91,12 +87,12 @@ function locationCacheForRunner(settings: Record<string, unknown>, url: string, 
 function activateLocationCache(current: Record<string, unknown>, url: string, tokenId: string, rules: LocationScheduleRule[]) {
   const oldUrls = localRunnerUrls(current);
   const oldTokenId = typeof current[RUNNER_TOKEN_ID_FIELD] === "string" ? current[RUNNER_TOKEN_ID_FIELD] as string : undefined;
-  const sameRunner = oldUrls.includes(url) && (!oldTokenId || oldTokenId === tokenId);
+  const sameRunner = oldUrls.includes(url) && oldTokenId === tokenId;
   const archived = { ...archivedLocationCaches(current) };
-  if (!sameRunner && oldUrls.length && (current[RULES_FIELD] || current[PENDING_FIELD])) {
-    archived[JSON.stringify([oldUrls[0], oldTokenId || ""])] = {
+  if (!sameRunner && oldUrls.length && oldTokenId && (current[RULES_FIELD] || current[PENDING_FIELD])) {
+    archived[JSON.stringify([oldUrls[0], oldTokenId])] = {
       urls: oldUrls, tokenId: oldTokenId, rules: current[RULES_FIELD], pending: current[PENDING_FIELD],
-      lastStates: current[LAST_STATES_FIELD], migrated: current[MIGRATED_FIELD],
+      lastStates: current[LAST_STATES_FIELD],
     };
   }
   const archivedKey = Object.keys(archived).find((key) => archived[key].urls.includes(url) && archived[key].tokenId === tokenId);
@@ -112,49 +108,10 @@ function activateLocationCache(current: Record<string, unknown>, url: string, to
     [ARCHIVED_FIELD]: archived,
     [RUNNER_URLS_FIELD]: urls,
     [RUNNER_TOKEN_ID_FIELD]: tokenId,
-    [MIGRATED_FIELD]: true,
     [RULES_FIELD]: rules,
     [PENDING_FIELD]: pendingLocationStatesForRules(previous?.pending, rules),
     [LAST_STATES_FIELD]: previous?.lastStates ?? {},
   };
-}
-
-function sameRuleDefinition(left: LocationScheduleRule, right: LocationScheduleRule) {
-  return locationScheduleRevision({ ...left, locationDeviceId: null })
-    === locationScheduleRevision({ ...right, locationDeviceId: null });
-}
-
-function addUnmigratedRules(serverRules: LocationScheduleRule[], localRules: LocationScheduleRule[], deviceId: string) {
-  const merged = [...serverRules];
-  const conflicts: LocationScheduleRule[] = [];
-  let changed = false;
-  for (const local of localRules) {
-    if (local.locationDeviceId && local.locationDeviceId !== deviceId) continue;
-    const existing = merged.find((rule) => rule.id === local.id);
-    if (existing?.locationDeviceId === deviceId) {
-      if (!sameRuleDefinition(existing, local)) conflicts.push(local);
-      continue;
-    }
-    if (existing && !existing.locationDeviceId && sameRuleDefinition(existing, local)) {
-      Object.assign(existing, { locationDeviceId: deviceId });
-      changed = true;
-      continue;
-    }
-    const id = existing ? `legacy_${locationScheduleRevision({ ...local, locationDeviceId: deviceId }).slice(5)}` : local.id;
-    const migrated = merged.find((rule) => rule.id === id);
-    if (migrated) {
-      if (migrated.locationDeviceId !== deviceId) throw new Error("location schedule migration ID conflict");
-      if (!sameRuleDefinition(migrated, local)) conflicts.push(local);
-      continue;
-    }
-    if (merged.length >= 100) {
-      conflicts.push(local);
-      continue;
-    }
-    merged.push({ ...local, id, locationDeviceId: deviceId });
-    changed = true;
-  }
-  return changed || conflicts.length ? { rules: merged, conflicts } : null;
 }
 
 class RunnerRequestError extends Error {
@@ -184,14 +141,6 @@ async function runnerEndpoint() {
 }
 
 type RunnerEndpoint = NonNullable<Awaited<ReturnType<typeof runnerEndpoint>>>;
-
-async function identifyLegacyLocationCache(endpoint: RunnerEndpoint) {
-  const stored = await readPersistedSettings() ?? {};
-  if (stored[RUNNER_TOKEN_ID_FIELD] || !localRunnerUrls(stored).includes(endpoint.runnerUrl)) return;
-  await mutatePersistedSettings((current) => current[RUNNER_TOKEN_ID_FIELD]
-    || !localRunnerUrls(current).includes(endpoint.runnerUrl)
-    ? current : { ...current, [RUNNER_TOKEN_ID_FIELD]: endpoint.tokenId });
-}
 
 async function runnerRequest(path: string, method: "GET" | "PUT" | "POST", body?: Record<string, unknown>, selectedEndpoint?: RunnerEndpoint) {
   const endpoint = selectedEndpoint ?? await runnerEndpoint();
@@ -251,10 +200,10 @@ export async function flushPendingLocationStates() {
   if (!endpoint) return;
   await mutatePersistedSettings((current) => {
     if (!localRunnerUrls(current).includes(endpoint.runnerUrl)
-      || current[RUNNER_TOKEN_ID_FIELD] && current[RUNNER_TOKEN_ID_FIELD] !== endpoint.tokenId) return current;
+      || current[RUNNER_TOKEN_ID_FIELD] !== endpoint.tokenId) return current;
     const rules = ownedRules(parseLocationScheduleRules(current[RULES_FIELD]), locationDeviceId);
     pending = pendingLocationStatesForRules(current[PENDING_FIELD], rules);
-    return { ...current, [RUNNER_TOKEN_ID_FIELD]: current[RUNNER_TOKEN_ID_FIELD] || endpoint.tokenId, [PENDING_FIELD]: pending };
+    return { ...current, [PENDING_FIELD]: pending };
   });
   const sent = new Set<string>();
   if (!pending.length) return;
@@ -289,11 +238,10 @@ async function fetchRunnerLocationSchedules(endpoint?: RunnerEndpoint) {
   return result.snapshot;
 }
 
-export async function syncLocationSchedules(rules: readonly LocationScheduleRule[], expectedRevision: number, endpoint?: RunnerEndpoint, migrationConflicts: readonly LocationScheduleRule[] = []) {
+export async function syncLocationSchedules(rules: readonly LocationScheduleRule[], expectedRevision: number, endpoint?: RunnerEndpoint) {
   const phoneTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const result = await runnerRequest("/location-schedules", "PUT", {
     phoneTimeZone, rules: rulesWithRevisions(rules), expectedRevision,
-    ...(migrationConflicts.length ? { migrationConflicts: rulesWithRevisions(migrationConflicts) } : {}),
   }, endpoint) as { snapshot: { scheduleRevision: number } };
   return result.snapshot.scheduleRevision;
 }
@@ -363,11 +311,8 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
 
 export async function saveAndActivateLocationSchedules(rules: readonly LocationScheduleRule[], expectedRevision?: number) {
   const deviceId = await getOrCreatePushDeviceId();
-  const original = await readPersistedSettings();
-  if (original && !Object.prototype.hasOwnProperty.call(original, "legacyRunnerUrls")) await freezeLegacyRunnerUrls();
   const endpoint = await runnerEndpoint();
   if (!endpoint) throw new Error("Runner connection is not configured");
-  await identifyLegacyLocationCache(endpoint);
   const normalized = rulesWithRevisions(rules);
   const revision = expectedRevision ?? (await fetchRunnerLocationSchedules(endpoint)).scheduleRevision;
   await syncLocationSchedules(normalized, revision, endpoint);
@@ -385,29 +330,16 @@ export async function loadLocationSchedules() {
   const stored = await readPersistedSettings() ?? {};
   const endpoint = await runnerEndpoint();
   return endpoint && localRunnerUrls(stored).includes(endpoint.runnerUrl)
-    && (!stored[RUNNER_TOKEN_ID_FIELD] || stored[RUNNER_TOKEN_ID_FIELD] === endpoint.tokenId)
+    && stored[RUNNER_TOKEN_ID_FIELD] === endpoint.tokenId
     ? parseLocationScheduleRules(stored[RULES_FIELD])
     : [];
 }
 
 export async function loadRunnerLocationSchedules() {
   const deviceId = await getOrCreatePushDeviceId();
-  const original = await readPersistedSettings();
-  if (original && !Object.prototype.hasOwnProperty.call(original, "legacyRunnerUrls")) await freezeLegacyRunnerUrls();
   const endpoint = await runnerEndpoint();
   if (!endpoint) throw new Error("Runner connection is not configured");
-  await identifyLegacyLocationCache(endpoint);
-  const stored = await readPersistedSettings() ?? {};
-  let snapshot = await fetchRunnerLocationSchedules(endpoint);
-  const cache = locationCacheForRunner(stored, endpoint.runnerUrl, endpoint.tokenId);
-  const legacy = parseLocationScheduleRules(cache?.rules);
-  if (cache && cache.migrated !== true) {
-    const merged = addUnmigratedRules(parseLocationScheduleRules(snapshot.rules), legacy, deviceId);
-    if (merged) {
-      await syncLocationSchedules(merged.rules, snapshot.scheduleRevision, endpoint, merged.conflicts);
-      snapshot = await fetchRunnerLocationSchedules(endpoint);
-    }
-  }
+  const snapshot = await fetchRunnerLocationSchedules(endpoint);
   const rules = parseLocationScheduleRules(snapshot.rules);
   const localRules = rulesNeededOnDevice(rules, deviceId);
   await mutatePersistedSettings((current) => {

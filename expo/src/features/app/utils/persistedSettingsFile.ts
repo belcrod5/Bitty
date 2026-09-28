@@ -53,10 +53,6 @@ export async function mutatePersistedSettings(
   await operation;
 }
 
-// Freeze the endpoints that belonged to the device data before runnerUrl can be
-// rewritten by automatic local/Cloudflare route selection or settings autosave.
-export const LEGACY_RUNNER_URLS_FIELD = "legacyRunnerUrls";
-
 export function configuredRunnerUrls(settings: Record<string, unknown>): string[] {
   const urls = [settings.runnerUrl, settings.localRunnerUrl, settings.cloudflareRunnerUrl]
     .filter((value): value is string => typeof value === "string")
@@ -65,20 +61,8 @@ export function configuredRunnerUrls(settings: Record<string, unknown>): string[
   return [...new Set(urls)];
 }
 
-export function legacyRunnerUrls(settings: Record<string, unknown> | undefined): string[] {
-  const urls = settings?.[LEGACY_RUNNER_URLS_FIELD];
-  return Array.isArray(urls) ? urls.filter((value): value is string => typeof value === "string") : [];
-}
-
-export async function freezeLegacyRunnerUrls() {
-  await mutatePersistedSettings((current) => Object.prototype.hasOwnProperty.call(current, LEGACY_RUNNER_URLS_FIELD)
-    ? current
-    : { ...current, [LEGACY_RUNNER_URLS_FIELD]: configuredRunnerUrls(current) });
-}
-
 export const LOCATION_BACKGROUND_FIELDS = [
   "locationSchedules",
-  "locationScheduleMigrationComplete",
   "locationScheduleRunnerUrls",
   "locationScheduleRunnerTokenId",
   "locationSchedulePendingStates",
@@ -97,26 +81,13 @@ export const SKIA_BOARD_RUNNER_CACHE_FIELD = "skiaBoardRunnerCache";
 // ボード配置とは独立した端末固有の表示位置・倍率。
 export const SKIA_BOARD_VIEWPORT_FIELD = "skiaBoardViewport";
 
-// 旧バージョンの端末保存フィールド。Runnerへの一度限りの移行に使用する。
-export const COMPOSER_MESSAGE_HISTORY_FIELD = "composerMessageHistory";
-
-// 旧バージョンの未送信入力。移行成功後は端末から削除する。
-export const COMPOSER_DRAFTS_FIELD = "composerDrafts";
-
 // React側の設定stateから再構築されず、所有者(バックグラウンド位置タスク・Skiaボード)が
 // mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
 export const PRESERVED_SETTINGS_FIELDS = [
   ...LOCATION_BACKGROUND_FIELDS,
-  LEGACY_RUNNER_URLS_FIELD,
-  // Retain old shared fields until the Runner confirms a successful migration.
-  "registeredDirectories",
-  "sessionTitleOverridesById",
-  "sessionMarkerColorsById",
   SKIA_BOARD_CARD_TEXT_SCALE_FIELD,
   SKIA_BOARD_RUNNER_CACHE_FIELD,
   SKIA_BOARD_VIEWPORT_FIELD,
-  COMPOSER_MESSAGE_HISTORY_FIELD,
-  COMPOSER_DRAFTS_FIELD,
 ] as const;
 
 // Reads a single field from the persisted settings JSON without going through React

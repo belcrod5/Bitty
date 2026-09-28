@@ -651,7 +651,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft,
     scopeId: runnerClientStateScopeId } = useRunnerClientState({
       settingsLoaded, runnerUrl, localRunnerUrl, cloudflareRunnerUrl, runnerToken, backendId: llmBackend,
-      parseRegisteredDirectories,
       setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
     });
   useComposerDraftSync({ backendId: llmBackend, sessionId: selectedLlmSessionId, scopeId: runnerClientStateScopeId,
@@ -1825,16 +1824,15 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     const previousSessionId = parseOptionalSessionId(previousSessionIdRaw);
     const nextSessionId = parseOptionalSessionId(nextSessionIdRaw);
     if (!previousSessionId || !nextSessionId || previousSessionId === nextSessionId) return;
-    setSessionMarkerColorsById((prev) => {
-      const existingNextMarkerColor = parseDirectoryMarkerColor(prev[nextSessionId]);
-      if (existingNextMarkerColor !== "none") return prev;
-      const previousMarkerColor = parseDirectoryMarkerColor(prev[previousSessionId]);
-      if (previousMarkerColor === "none") return prev;
-      return {
-        ...prev,
-        [nextSessionId]: previousMarkerColor,
-      };
-    });
+    const existingNextMarkerColor = parseDirectoryMarkerColor(
+      runnerSessionValue(sessionMarkerColorsById, llmBackend, nextSessionId)
+    );
+    if (existingNextMarkerColor !== "none") return;
+    const previousMarkerColor = parseDirectoryMarkerColor(
+      runnerSessionValue(sessionMarkerColorsById, llmBackend, previousSessionId)
+    );
+    if (previousMarkerColor === "none") return;
+    setSessionMarkerColorForSession(nextSessionId, previousMarkerColor, llmBackend);
   }
 
   function normalizedLlmDirectoryForRequest() {

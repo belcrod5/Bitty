@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
-import { legacyRunnerUrls, mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
 import { requestRunnerClientState, runnerSessionKey, type RunnerClientState } from "../utils/runnerClientState";
-import { parseComposerDrafts, parseComposerMessageHistory, type ComposerDraft } from "./useComposerPersistence";
+import type { ComposerDraft } from "./useComposerPersistence";
 
 type Options = {
   settingsLoaded: boolean;
@@ -12,13 +11,11 @@ type Options = {
   cloudflareRunnerUrl: string;
   runnerToken: string;
   backendId: string;
-  parseRegisteredDirectories: (value: unknown) => RegisteredDirectoryEntry[];
   setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
   setSessionTitleOverridesById: Dispatch<SetStateAction<Record<string, string>>>;
   setSessionMarkerColorsById: Dispatch<SetStateAction<Record<string, RegisteredDirectoryEntry["markerColor"]>>>;
 };
 
-const LEGACY_FIELDS = ["registeredDirectories", "sessionTitleOverridesById", "sessionMarkerColorsById", "composerMessageHistory", "composerDrafts"];
 type Connection = { runnerUrl: string; runnerToken: string; backendId: string; id: string };
 const pendingKey = (connection: Connection, key: string) => `${connection.id}\u0000${key}`;
 function selectedConnection(runnerUrl: string, runnerToken: string, backendId: string, localRunnerUrl: string, cloudflareRunnerUrl: string): Connection {
@@ -31,7 +28,6 @@ function selectedConnection(runnerUrl: string, runnerToken: string, backendId: s
 
 export function useRunnerClientState({
   settingsLoaded, runnerUrl, localRunnerUrl, cloudflareRunnerUrl, runnerToken, backendId,
-  parseRegisteredDirectories,
   setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
 }: Options) {
   const [messages, setMessages] = useState<string[]>([]);
@@ -79,34 +75,6 @@ export function useRunnerClientState({
     const { runnerUrl: url, runnerToken: token } = active;
     if (!url || !token) return;
     let snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token });
-    let migrated = false;
-    {
-      const legacy = await readPersistedSettings();
-      const hasLegacyData = legacy && (
-        parseComposerMessageHistory(legacy.composerMessageHistory).length > 0
-        || parseComposerDrafts(legacy.composerDrafts).length > 0
-        || (Array.isArray(legacy.registeredDirectories) && legacy.registeredDirectories.length > 0)
-        || Object.keys(legacy.sessionTitleOverridesById || {}).length > 0
-        || Object.keys(legacy.sessionMarkerColorsById || {}).length > 0
-      );
-      if (legacy && hasLegacyData && legacyRunnerUrls(legacy).includes(url.trim().replace(/\/+$/, ""))) {
-        const sessions: Record<string, { title?: string; markerColor?: string }> = {};
-        const titles = legacy.sessionTitleOverridesById as Record<string, string> || {};
-        const colors = legacy.sessionMarkerColorsById as Record<string, string> || {};
-        for (const sessionId of new Set([...Object.keys(titles), ...Object.keys(colors)])) {
-          sessions[runnerSessionKey("legacy", sessionId)] = { title: titles[sessionId], markerColor: colors[sessionId] };
-        }
-        const drafts: Record<string, { text: string }> = {};
-        for (const draft of parseComposerDrafts(legacy.composerDrafts)) {
-          drafts[runnerSessionKey("legacy", draft.sessionId)] = { text: draft.text };
-        }
-        snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation: {
-          type: "migrate", directories: parseRegisteredDirectories(legacy.registeredDirectories), sessions,
-          composerHistory: parseComposerMessageHistory(legacy.composerMessageHistory), drafts,
-        } });
-        migrated = snapshot.migrationComplete === true;
-      }
-    }
     applySnapshot(snapshot, connection);
     for (const [key, pending] of Object.entries(pendingDrafts.current)) {
       if (pending.connection.id !== connection.id) continue;
@@ -117,15 +85,7 @@ export function useRunnerClientState({
       } });
       applySnapshot(snapshot, connection);
     }
-    if (migrated) {
-      // Remove old device-authoritative fields only after a successful Runner read/write.
-      await mutatePersistedSettings((current) => {
-        const next = { ...current };
-        for (const field of LEGACY_FIELDS) delete next[field];
-        return next;
-      });
-    }
-  }, [applySnapshot, parseRegisteredDirectories]);
+  }, [applySnapshot]);
 
   const enqueue = useCallback((operation?: Record<string, unknown>, selectedConnection = connectionRef.current) => {
     const connection = { ...selectedConnection };
@@ -216,13 +176,8 @@ export function useRunnerClientState({
     if (draftTimers.current[scopedKey]) clearTimeout(draftTimers.current[scopedKey]);
     delete draftTimers.current[scopedKey];
     pendingDrafts.current[scopedKey] = { text: "", connection };
-    setDrafts((current) => current.filter((draft) => draft.sessionId !== sessionId
-      || (draft.backendId !== backendId && draft.backendId !== "legacy")));
+    setDrafts((current) => current.filter((draft) => draft.sessionId !== sessionId || draft.backendId !== backendId));
     sendDraft(backendId, sessionId, "", connection);
-    if (snapshotRef.current?.drafts[runnerSessionKey("legacy", sessionId)]) {
-      pendingDrafts.current[pendingKey(connection, runnerSessionKey("legacy", sessionId))] = { text: "", connection };
-      sendDraft("legacy", sessionId, "", connection);
-    }
   }, [sendDraft]);
 
   useEffect(() => {

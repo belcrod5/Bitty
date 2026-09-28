@@ -21,7 +21,6 @@ export function createClientStateStore(storePath) {
     sessions: {},
     composerHistory: [],
     drafts: {},
-    migrationConflicts: [],
   };
 
   async function load() {
@@ -30,10 +29,9 @@ export function createClientStateStore(storePath) {
       const parsed = JSON.parse(await fs.readFile(storePath, "utf8"));
       if (parsed?.version !== 1 || !Number.isSafeInteger(parsed.revision)
         || !Array.isArray(parsed.directories) || !parsed.sessions || !parsed.drafts
-        || !Array.isArray(parsed.composerHistory)
-        || (parsed.migrationConflicts !== undefined && !Array.isArray(parsed.migrationConflicts))) throw new Error("invalid client state store");
+        || !Array.isArray(parsed.composerHistory)) throw new Error("invalid client state store");
+      delete parsed.migrationConflicts;
       state = parsed;
-      state.migrationConflicts ??= [];
     } catch (error) {
       if (error?.code !== "ENOENT") throw new ClientStateStoreUnavailableError(error);
     }
@@ -71,80 +69,6 @@ export function createClientStateStore(storePath) {
 
   function apply(operation) {
     switch (operation?.type) {
-      case "migrate": {
-        if (!Array.isArray(operation.directories) || !Array.isArray(operation.composerHistory)
-          || typeof operation.sessions !== "object" || operation.sessions === null
-          || typeof operation.drafts !== "object" || operation.drafts === null) throw new Error("invalid migration");
-        let changed = false;
-        const preserve = (field, key, value) => {
-          const conflict = { field, key, value };
-          if (!state.migrationConflicts.some((item) => JSON.stringify(item) === JSON.stringify(conflict))) {
-            state.migrationConflicts.push(conflict);
-            changed = true;
-          }
-        };
-        for (const raw of operation.directories) {
-          const next = directory(raw);
-          const existing = state.directories.find((item) => item.path === next.path || item.id === next.id);
-          if (existing) {
-            if (JSON.stringify(existing) !== JSON.stringify(next)) preserve("directories", next.path, next);
-          } else if (state.directories.length < 100) {
-            state.directories.push(next);
-            changed = true;
-          } else preserve("directories", next.path, next);
-        }
-        for (const [key, value] of Object.entries(operation.sessions)) {
-          const pair = JSON.parse(key);
-          if (!Array.isArray(pair) || pair.length !== 2) throw new Error("invalid session key");
-          const backendId = requiredString(pair[0], "backendId", 100);
-          const sessionId = requiredString(pair[1], "sessionId", 200);
-          const title = String(value?.title || "").replace(/\s+/gu, " ").trim().slice(0, 200);
-          const markerColor = COLORS.has(value?.markerColor) ? value.markerColor : "none";
-          if (!title && markerColor === "none") continue;
-          const storedKey = sessionKey(backendId, sessionId);
-          const existing = state.sessions[storedKey] || { title: "", markerColor: "none" };
-          const next = { ...existing };
-          if (title) {
-            if (!existing.title) next.title = title;
-            else if (existing.title !== title) preserve("sessions.title", storedKey, title);
-          }
-          if (markerColor !== "none") {
-            if (existing.markerColor === "none") next.markerColor = markerColor;
-            else if (existing.markerColor !== markerColor) preserve("sessions.markerColor", storedKey, markerColor);
-          }
-          if (JSON.stringify(next) !== JSON.stringify(existing)) {
-            state.sessions[storedKey] = next;
-            changed = true;
-          }
-        }
-        const existingHistoryCount = new Map();
-        for (const text of state.composerHistory) existingHistoryCount.set(text, (existingHistoryCount.get(text) || 0) + 1);
-        for (const text of operation.composerHistory.filter((item) => typeof item === "string" && item.trim())) {
-          const existingCount = existingHistoryCount.get(text) || 0;
-          if (existingCount > 0) {
-            existingHistoryCount.set(text, existingCount - 1);
-            continue;
-          }
-          if (state.composerHistory.length < 40) {
-            state.composerHistory.push(text);
-            changed = true;
-          } else preserve("composerHistory", "", text);
-        }
-        for (const [key, value] of Object.entries(operation.drafts)) {
-          const pair = JSON.parse(key);
-          if (!Array.isArray(pair) || pair.length !== 2) throw new Error("invalid draft key");
-          const text = String(value?.text || "");
-          if (!text.trim()) continue;
-          const storedKey = sessionKey(requiredString(pair[0], "backendId", 100), requiredString(pair[1], "sessionId", 200));
-          if (state.drafts[storedKey]) {
-            if (state.drafts[storedKey].text !== text) preserve("drafts", storedKey, text);
-          } else if (Object.keys(state.drafts).length < 10) {
-            state.drafts[storedKey] = { text, updatedAt: Date.now() };
-            changed = true;
-          } else preserve("drafts", storedKey, text);
-        }
-        return { changed, complete: true };
-      }
       case "directory.upsert": {
         const next = directory(operation.directory);
         const index = state.directories.findIndex((item) => item.path === next.path || item.id === next.id);
@@ -193,18 +117,13 @@ export function createClientStateStore(storePath) {
     return serialize(async () => {
       const before = snapshot();
       try {
-        const outcome = apply(operation);
-        const changed = typeof outcome === "boolean" ? outcome : outcome.changed;
-        const migration = operation?.type === "migrate"
-          ? { migrationApplied: changed, migrationComplete: outcome.complete }
-          : {};
-        if (!changed) return { ...snapshot(), ...migration };
+        apply(operation);
         state.revision += 1;
         await fs.mkdir(path.dirname(storePath), { recursive: true });
         const temporaryPath = `${storePath}.${randomUUID()}.tmp`;
         await fs.writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
         await fs.rename(temporaryPath, storePath);
-        return { ...snapshot(), ...migration };
+        return snapshot();
       } catch (error) {
         state = before;
         throw error;

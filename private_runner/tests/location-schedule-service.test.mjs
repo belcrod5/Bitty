@@ -93,21 +93,6 @@ test("validates rules with the normal model parser and enabled-region limit", ()
   assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "minimal" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
 });
 
-test("preserves conflicting legacy rules on Runner without replacing active rules", async () => {
-  await withService(async ({ create, storePath }) => {
-    const service = create();
-    const active = rule({ locationDeviceId: "device-1", prompt: "current" });
-    const old = rule({ locationDeviceId: "device-1", prompt: "old device" });
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [active] });
-    const snapshot = await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [active], migrationConflicts: [old] });
-    assert.equal(snapshot.rules[0].prompt, "current");
-    assert.equal(snapshot.migrationConflicts[0].prompt, "old device");
-    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [active], migrationConflicts: [old] });
-    assert.equal((await create().snapshot()).migrationConflicts.length, 1);
-    assert.equal(JSON.parse(await fs.readFile(storePath, "utf8")).migrationConflicts[0].prompt, "old device");
-  });
-});
-
 test("schedule edits and removals wake the owning device to reconcile its geofence", async () => {
   await withService(async ({ create }) => {
     const refreshRequests = [];

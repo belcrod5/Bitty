@@ -32,10 +32,6 @@ jest.mock("expo-file-system/legacy", () => ({
 }));
 
 import {
-  COMPOSER_DRAFTS_FIELD,
-  COMPOSER_MESSAGE_HISTORY_FIELD,
-  freezeLegacyRunnerUrls,
-  legacyRunnerUrls,
   mutatePersistedSettings,
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
@@ -47,8 +43,11 @@ import {
 // 端末に配置データが残り続けるため、実定数から外れていることを固定する。
 test("preserved settings fields no longer carry the legacy skia board state", () => {
   expect(PRESERVED_SETTINGS_FIELDS).not.toContain("skiaBoardState");
-  expect(PRESERVED_SETTINGS_FIELDS).toContain(COMPOSER_MESSAGE_HISTORY_FIELD);
-  expect(PRESERVED_SETTINGS_FIELDS).toContain(COMPOSER_DRAFTS_FIELD);
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("composerMessageHistory");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("composerDrafts");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("registeredDirectories");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("sessionTitleOverridesById");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("sessionMarkerColorsById");
   expect(PRESERVED_SETTINGS_FIELDS).toContain(SKIA_BOARD_VIEWPORT_FIELD);
 });
 
@@ -129,27 +128,4 @@ test("read barrier waits for an in-process settings mutation to finish", async (
   releaseMove();
   await mutation;
   expect(await read).toEqual({ runnerUrl: "http://new-runner" });
-});
-
-test("freezes both configured routes before autosave can change the active Runner", async () => {
-  await mutatePersistedSettings(() => ({
-    runnerUrl: "http://old.local/",
-    localRunnerUrl: "http://old.local",
-    cloudflareRunnerUrl: "https://old.example.com/",
-    sessionTitleOverridesById: { session: "Old title" },
-  }));
-  await freezeLegacyRunnerUrls();
-  await mutatePersistedSettings((current) => ({ ...current, runnerUrl: "https://new.example.com" }));
-  await freezeLegacyRunnerUrls();
-
-  const saved = await readPersistedSettings();
-  expect(legacyRunnerUrls(saved)).toEqual(["http://old.local", "https://old.example.com"]);
-  expect(saved?.sessionTitleOverridesById).toEqual({ session: "Old title" });
-});
-
-test("an absent saved Runner URL remains unbound instead of adopting a later Runner", async () => {
-  await mutatePersistedSettings(() => ({ composerDrafts: [{ sessionId: "one", text: "keep" }] }));
-  await freezeLegacyRunnerUrls();
-  await mutatePersistedSettings((current) => ({ ...current, runnerUrl: "https://new.example.com" }));
-  expect(legacyRunnerUrls(await readPersistedSettings())).toEqual([]);
 });

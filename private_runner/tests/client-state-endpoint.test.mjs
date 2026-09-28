@@ -26,42 +26,11 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     const directory = { id: "dir-1", path: "/work", displayName: "Work", markerColor: "green" };
     const codexKey = JSON.stringify(["codex", "same-session"]);
     const claudeKey = JSON.stringify(["claude", "same-session"]);
-    const migrated = await post({
-      type: "migrate", directories: [directory],
-      sessions: { [codexKey]: { title: "Original", markerColor: "red" } },
-      composerHistory: ["first"], drafts: { [codexKey]: { text: "unsent" } },
-    });
-    assert.equal(migrated.status, 200);
-    assert.equal((await migrated.json()).snapshot.migrationApplied, true);
-    const ignoredMigration = await post({
-      type: "migrate", directories: [], sessions: {}, composerHistory: [], drafts: {},
-    });
-    assert.equal((await ignoredMigration.json()).snapshot.migrationApplied, false);
-    const secondDeviceKey = JSON.stringify(["legacy", "other-session"]);
-    const secondDevice = await post({
-      type: "migrate", directories: [],
-      sessions: { [secondDeviceKey]: { title: "Second device" } },
-      composerHistory: ["from second device"], drafts: { [secondDeviceKey]: { text: "other draft" } },
-    });
-    const secondDeviceSnapshot = (await secondDevice.json()).snapshot;
-    assert.equal(secondDeviceSnapshot.migrationComplete, true);
-    assert.equal(secondDeviceSnapshot.sessions[secondDeviceKey].title, "Second device");
-    const conflict = await post({
-      type: "migrate", directories: [],
-      sessions: { [secondDeviceKey]: { title: "Conflicting local title" } },
-      composerHistory: [], drafts: {},
-    });
-    const conflictSnapshot = (await conflict.json()).snapshot;
-    assert.equal(conflictSnapshot.migrationComplete, true);
-    assert.equal(conflictSnapshot.sessions[secondDeviceKey].title, "Second device");
-    assert.deepEqual(conflictSnapshot.migrationConflicts, [{
-      field: "sessions.title", key: secondDeviceKey, value: "Conflicting local title",
-    }]);
-    const repeatedConflict = await post({
-      type: "migrate", directories: [], sessions: { [secondDeviceKey]: { title: "Conflicting local title" } },
-      composerHistory: [], drafts: {},
-    });
-    assert.equal((await repeatedConflict.json()).snapshot.migrationApplied, false);
+    assert.equal((await post({ type: "migrate", directories: [directory] })).status, 400);
+    assert.equal((await post({ type: "directory.upsert", directory })).status, 200);
+    assert.equal((await post({ type: "session.set", backendId: "codex", sessionId: "same-session", title: "Original", markerColor: "red" })).status, 200);
+    assert.equal((await post({ type: "composer.append", text: "first" })).status, 200);
+    assert.equal((await post({ type: "draft.set", backendId: "codex", sessionId: "same-session", text: "unsent" })).status, 200);
     const responses = await Promise.all([
       post({ type: "session.set", backendId: "codex", sessionId: "same-session", title: "Renamed" }),
       post({ type: "session.set", backendId: "claude", sessionId: "same-session", markerColor: "yellow" }),
@@ -73,13 +42,13 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     assert.deepEqual(snapshot.directories, [directory]);
     assert.equal(snapshot.sessions[codexKey].title, "Renamed");
     assert.equal(snapshot.sessions[claudeKey].markerColor, "yellow");
-    assert.deepEqual(snapshot.composerHistory, ["second", "first", "from second device"]);
+    assert.deepEqual(snapshot.composerHistory, ["second", "first"]);
     assert.equal(snapshot.drafts[codexKey].text, "unsent");
     assert.equal(snapshot.drafts[claudeKey].text, "other unsent");
     assert.equal(JSON.parse(await fs.readFile(process.env.CLIENT_STATE_STORE_PATH, "utf8")).revision, snapshot.revision);
     const restarted = await createClientStateStore(process.env.CLIENT_STATE_STORE_PATH).snapshot();
     assert.equal(restarted.sessions[codexKey].title, "Renamed");
-    assert.deepEqual(restarted.migrationConflicts, conflictSnapshot.migrationConflicts);
+    assert.equal(restarted.revision, snapshot.revision);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
