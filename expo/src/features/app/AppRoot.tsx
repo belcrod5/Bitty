@@ -648,12 +648,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [transcript, setTranscript] = useState("");
   const { mutate: mutateRunnerClientState,
     messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
-    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft } = useRunnerClientState({
-      settingsLoaded, runnerUrl, runnerToken, backendId: llmBackend,
+    drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft,
+    scopeId: runnerClientStateScopeId } = useRunnerClientState({
+      settingsLoaded, runnerUrl, localRunnerUrl, cloudflareRunnerUrl, runnerToken, backendId: llmBackend,
       parseRegisteredDirectories,
       setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
     });
-  useComposerDraftSync({ backendId: llmBackend, sessionId: selectedLlmSessionId, text: transcript, drafts: composerDrafts, loaded: composerDraftsLoaded, setText: setTranscript, setDraft: setComposerDraft });
+  useComposerDraftSync({ backendId: llmBackend, sessionId: selectedLlmSessionId, scopeId: runnerClientStateScopeId,
+    text: transcript, drafts: composerDrafts, loaded: composerDraftsLoaded, setText: setTranscript, setDraft: setComposerDraft });
   const [composerInputFocused, setComposerInputFocused] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("返答は1文で");
   const [reply, setReply] = useState("");

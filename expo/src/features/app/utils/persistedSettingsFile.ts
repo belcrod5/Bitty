@@ -80,8 +80,10 @@ export const LOCATION_BACKGROUND_FIELDS = [
   "locationSchedules",
   "locationScheduleMigrationComplete",
   "locationScheduleRunnerUrls",
+  "locationScheduleRunnerTokenId",
   "locationSchedulePendingStates",
   "locationScheduleLastStates",
+  "locationScheduleArchivedByRunner",
 ] as const;
 
 // Skiaボードの文字倍率(端末ローカル設定。ランナー共有ボードには含めない)。

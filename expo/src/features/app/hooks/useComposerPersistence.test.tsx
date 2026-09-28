@@ -111,3 +111,38 @@ test("restores an unscoped legacy draft until a backend-specific draft exists", 
   await rerender({});
   await waitFor(() => expect(result.current).toBe("Claude draft"));
 });
+
+test("a different Runner clears the old composer text before loading its draft", async () => {
+  let scopeId = "old";
+  let loaded = true;
+  let drafts: ComposerDraft[] = [{ backendId: "codex", sessionId: "same", text: "old text", updatedAt: 1 }];
+  const setDraft = jest.fn();
+  const { result, rerender } = await renderHook(() => {
+    const [text, setText] = useState("");
+    useComposerDraftSync({ scopeId, backendId: "codex", sessionId: "same", text, drafts, loaded, setDraft, setText });
+    return text;
+  });
+  await waitFor(() => expect(result.current).toBe("old text"));
+  scopeId = "new";
+  loaded = false;
+  drafts = [];
+  await rerender({});
+  await waitFor(() => expect(result.current).toBe(""));
+  expect(setDraft).not.toHaveBeenCalled();
+  loaded = true;
+  drafts = [{ backendId: "codex", sessionId: "same", text: "new text", updatedAt: 2 }];
+  await rerender({});
+  await waitFor(() => expect(result.current).toBe("new text"));
+});
+
+test("a Runner switch also clears unbound composer text", async () => {
+  let scopeId = "old";
+  const { result, rerender } = await renderHook(() => {
+    const [text, setText] = useState("unsent without a session");
+    useComposerDraftSync({ scopeId, sessionId: "", text, drafts: [], loaded: true, setDraft: jest.fn(), setText });
+    return text;
+  });
+  scopeId = "new";
+  await rerender({});
+  await waitFor(() => expect(result.current).toBe(""));
+});

@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react-native";
-import { AppState } from "react-native";
+import { Alert, AppState } from "react-native";
 import { useRunnerClientState } from "./useRunnerClientState";
 import { mutatePersistedSettings, readPersistedSettings } from "../utils/persistedSettingsFile";
 
@@ -103,6 +103,8 @@ async function renderState() {
   const hook = await renderHook(() => useRunnerClientState({
     settingsLoaded: true,
     runnerUrl: "http://runner.test",
+    localRunnerUrl: "",
+    cloudflareRunnerUrl: "",
     runnerToken: "token",
     backendId: "codex",
     parseRegisteredDirectories,
@@ -171,7 +173,8 @@ test("an offline migration cannot carry legacy titles to a different Runner afte
   }) as typeof fetch;
   const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
   const props = {
-    settingsLoaded: true, runnerUrl: "http://old-runner.test", runnerToken: "token", backendId: "codex",
+    settingsLoaded: true, runnerUrl: "http://old-runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex",
     parseRegisteredDirectories,
     setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
   };
@@ -208,7 +211,8 @@ test("queued mutations and debounced drafts stay with the Runner selected when t
     return fetchImpl(url, init);
   }) as typeof fetch;
   const props = {
-    settingsLoaded: true, runnerUrl: "http://old-runner.test", runnerToken: "token", backendId: "codex",
+    settingsLoaded: true, runnerUrl: "http://old-runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex",
     parseRegisteredDirectories,
     setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
   };
@@ -235,7 +239,8 @@ test("editing the same draft after switching Runner still flushes the old Runner
     return fetchImpl(url, init);
   }) as typeof fetch;
   const props = {
-    settingsLoaded: true, runnerUrl: "http://old-runner.test", runnerToken: "token", backendId: "codex",
+    settingsLoaded: true, runnerUrl: "http://old-runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex",
     parseRegisteredDirectories,
     setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
   };
@@ -254,4 +259,101 @@ test("editing the same draft after switching Runner still flushes the old Runner
     ["http://old-runner.test/client-state", "old text"],
     ["http://new-runner.test/client-state", "new text"],
   ]);
+});
+
+test("switching to an unreachable different Runner clears visible shared state and drafts", async () => {
+  server.directories = [directory];
+  server.sessions[sessionKey] = { title: "Old title", markerColor: "green" };
+  server.drafts[sessionKey] = { text: "Old draft", updatedAt: 1 };
+  const oldFetch = global.fetch;
+  global.fetch = jest.fn((url, init) => String(url).startsWith("http://new-runner.test/")
+    ? Promise.reject(new Error("offline")) : oldFetch(url, init)) as typeof fetch;
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex", parseRegisteredDirectories,
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), { initialProps: props });
+  await waitFor(() => expect(result.current.drafts[0]?.text).toBe("Old draft"));
+
+  await rerender({ ...props, runnerUrl: "http://new-runner.test" });
+  await waitFor(() => expect(warn).toHaveBeenCalled());
+  expect(result.current.draftsLoaded).toBe(false);
+  expect(result.current.drafts).toEqual([]);
+  expect(result.current.messages).toEqual([]);
+  expect(props.setRegisteredDirectories).toHaveBeenLastCalledWith([]);
+  expect(props.setSessionTitleOverridesById).toHaveBeenLastCalledWith({});
+});
+
+test("changing the token on the same URL also clears the previous Runner's draft", async () => {
+  server.drafts[sessionKey] = { text: "Old account draft", updatedAt: 1 };
+  const oldFetch = global.fetch;
+  global.fetch = jest.fn((url, init) => init?.headers
+    && (init.headers as Record<string, string>).authorization === "Bearer new-token"
+    ? Promise.reject(new Error("unauthorized")) : oldFetch(url, init)) as typeof fetch;
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://runner.test", localRunnerUrl: "", cloudflareRunnerUrl: "",
+    runnerToken: "token", backendId: "codex", parseRegisteredDirectories,
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), { initialProps: props });
+  await waitFor(() => expect(result.current.drafts[0]?.text).toBe("Old account draft"));
+  await rerender({ ...props, runnerToken: "new-token" });
+  await waitFor(() => expect(warn).toHaveBeenCalled());
+  expect(result.current.drafts).toEqual([]);
+  expect(result.current.draftsLoaded).toBe(false);
+});
+
+test("a debounced draft follows the healthy route of the same Runner", async () => {
+  const requests: { url: string; operation: Record<string, unknown> | null }[] = [];
+  const oldFetch = global.fetch;
+  global.fetch = jest.fn(async (url, init) => {
+    requests.push({ url: String(url), operation: init?.body ? JSON.parse(String(init.body)).operation : null });
+    if (String(url).startsWith("http://local.test/") && init?.body) throw new Error("local route unavailable");
+    return oldFetch(url, init);
+  }) as typeof fetch;
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://local.test", localRunnerUrl: "http://local.test",
+    cloudflareRunnerUrl: "https://cloudflare.test", runnerToken: "token", backendId: "codex",
+    parseRegisteredDirectories, setRegisteredDirectories: jest.fn(),
+    setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), { initialProps: props });
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  await act(async () => result.current.setDraft("session-1", "unfinished"));
+  await rerender({ ...props, runnerUrl: "https://cloudflare.test" });
+  expect(result.current.drafts[0]?.text).toBe("unfinished");
+  await act(async () => { jest.advanceTimersByTime(300); });
+  await waitFor(() => expect(server.drafts[sessionKey]?.text).toBe("unfinished"));
+  expect(requests.filter((item) => item.operation?.type === "draft.set").map((item) => item.url))
+    .toEqual(["https://cloudflare.test/client-state"]);
+});
+
+test("a failed draft write is retried when the same Runner changes route", async () => {
+  const oldFetch = global.fetch;
+  const requests: string[] = [];
+  global.fetch = jest.fn(async (url, init) => {
+    if (init?.body && JSON.parse(String(init.body)).operation?.type === "draft.set") {
+      requests.push(String(url));
+      if (String(url).startsWith("http://local.test/")) throw new Error("local route unavailable");
+    }
+    return oldFetch(url, init);
+  }) as typeof fetch;
+  jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://local.test", localRunnerUrl: "http://local.test",
+    cloudflareRunnerUrl: "https://cloudflare.test", runnerToken: "token", backendId: "codex",
+    parseRegisteredDirectories, setRegisteredDirectories: jest.fn(),
+    setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), { initialProps: props });
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  await act(async () => result.current.setDraft("session-1", "offline text"));
+  await act(async () => { jest.advanceTimersByTime(300); });
+  await waitFor(() => expect(requests).toEqual(["http://local.test/client-state"]));
+  await rerender({ ...props, runnerUrl: "https://cloudflare.test" });
+  await waitFor(() => expect(server.drafts[sessionKey]?.text).toBe("offline text"));
+  expect(requests).toEqual(["http://local.test/client-state", "https://cloudflare.test/client-state"]);
 });

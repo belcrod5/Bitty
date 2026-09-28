@@ -17,6 +17,11 @@ let mockRunnerRevision = 0;
 let mockTimeZone = "Asia/Tokyo";
 let mockRunnerUrl = "http://runner.test";
 let mockOriginalRunnerUrls = ["http://runner.test"];
+let mockRunnerToken = "token";
+const archivedCaches = () => mockSettings.locationScheduleArchivedByRunner as Record<string, {
+  urls: string[]; tokenId?: unknown; rules?: unknown; pending?: unknown; migrated?: unknown;
+}>;
+const archivedCacheFor = (url: string) => Object.values(archivedCaches()).find((cache) => cache.urls.includes(url));
 
 jest.mock("../app/utils/persistedSettingsFile", () => ({
   configuredRunnerUrls: (settings: Record<string, unknown>) => [settings.runnerUrl, settings.localRunnerUrl, settings.cloudflareRunnerUrl]
@@ -42,6 +47,11 @@ jest.mock("expo-background-task", () => ({
   BackgroundTaskResult: { Success: "success", Failed: "failed" },
   registerTaskAsync: jest.fn(),
   unregisterTaskAsync: jest.fn(),
+}));
+
+jest.mock("expo-crypto", () => ({
+  CryptoDigestAlgorithm: { SHA256: "sha256" }, CryptoEncoding: { HEX: "hex" },
+  digestStringAsync: async (_algorithm: string, token: string) => `digest:${token}`,
 }));
 
 jest.mock("expo-location", () => ({
@@ -74,6 +84,8 @@ jest.mock("react-native", () => ({
 
 import {
   bootstrapLocationSchedules,
+  flushPendingLocationStates,
+  loadLocationSchedules,
   loadRunnerLocationSchedules,
   recoverLocationScheduleState,
   saveAndActivateLocationSchedules,
@@ -123,6 +135,7 @@ beforeEach(() => {
   mockRunnerRevision = 0;
   mockTimeZone = "Asia/Tokyo";
   mockRunnerUrl = "http://runner.test";
+  mockRunnerToken = "token";
   mockOriginalRunnerUrls = ["http://runner.test"];
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
     mockSettings = mutate({ runnerUrl: mockRunnerUrl, ...mockSettings });
@@ -136,7 +149,7 @@ beforeEach(() => {
   mockReadPersistedSettingsField.mockImplementation(async (field) => (
     field === "runnerUrl" ? mockRunnerUrl : mockSettings[field]
   ));
-  mockLoadSecureRunnerCredentials.mockResolvedValue({ runnerToken: "token" });
+  mockLoadSecureRunnerCredentials.mockImplementation(async () => ({ runnerToken: mockRunnerToken }));
   mockFetch.mockImplementation(async (url, options) => {
     if (String(url).endsWith("/location-schedules")) {
       if (options?.method === "PUT") {
@@ -360,13 +373,22 @@ test("an offline legacy rule stays on its frozen Runner after the selected URL c
   mockFetch.mockRejectedValueOnce(new Error("offline"));
   await bootstrapLocationSchedules();
   expect(mockSettings.legacyRunnerUrls).toEqual(["http://old-runner.test"]);
+  expect(mockSettings.locationScheduleRunnerTokenId).toBe("digest:token");
 
   mockRunnerUrl = "http://new-runner.test";
+  mockSettings.runnerUrl = mockRunnerUrl;
   await bootstrapLocationSchedules();
   expect(mockFetch.mock.calls.filter(([url, options]) => String(url).startsWith("http://new-runner.test/") && options?.method === "PUT")).toHaveLength(0);
-  expect(mockSettings.locationSchedules).toEqual([legacy]);
-  expect(mockSettings.locationScheduleMigrationComplete).toBeUndefined();
+  expect(mockSettings.locationSchedules).toEqual([]);
+  expect(archivedCacheFor("http://old-runner.test")?.rules).toEqual([legacy]);
+  expect(archivedCacheFor("http://old-runner.test")?.migrated).toBeUndefined();
   expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+
+  mockRunnerUrl = "http://old-runner.test";
+  mockSettings.runnerUrl = mockRunnerUrl;
+  await loadRunnerLocationSchedules();
+  expect(mockRunnerRules).toEqual([expect.objectContaining({ id: "old-runner-only" })]);
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ id: "old-runner-only" })]);
 });
 
 test("a configured Cloudflare route can migrate rules owned by the same Runner", async () => {
@@ -380,21 +402,85 @@ test("a configured Cloudflare route can migrate rules owned by the same Runner",
   expect(mockSettings.locationScheduleMigrationComplete).toBe(true);
 });
 
-test("pending location events remain local when switched to another Runner", async () => {
+test("pending location events remain isolated when switched to another Runner", async () => {
   const pending = { ruleId: "office", regionRevision: locationScheduleRevision(rule()),
     state: "inside", eventId: "pending-old", observedAt: "2026-07-19T00:00:00Z" };
   mockSettings = {
     locationSchedules: [rule()], locationScheduleMigrationComplete: true,
     locationScheduleRunnerUrls: ["http://old-runner.test"],
+    locationScheduleRunnerTokenId: "digest:token",
     locationSchedulePendingStates: [pending],
   };
   mockRunnerUrl = "http://new-runner.test";
 
   await bootstrapLocationSchedules();
 
-  expect(mockSettings.locationSchedulePendingStates).toEqual([pending]);
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(archivedCacheFor("http://old-runner.test")?.pending).toEqual([pending]);
   expect(mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"))).toHaveLength(0);
   expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+
+  await saveAndActivateLocationSchedules([rule({ id: "new-runner-rule" })]);
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ id: "new-runner-rule" })]);
+  expect(archivedCacheFor("http://old-runner.test")?.pending).toEqual([pending]);
+
+  mockRunnerUrl = "http://old-runner.test";
+  mockSettings.runnerUrl = mockRunnerUrl;
+  mockRunnerRules = [rule()];
+  await loadRunnerLocationSchedules();
+  expect(mockFetch.mock.calls.some(([url, options]) => String(url).startsWith("http://old-runner.test/")
+    && String(url).endsWith("/location-schedules/state") && options?.method === "POST")).toBe(false);
+  expect(mockSettings.locationSchedulePendingStates).toEqual([pending]);
+  await flushPendingLocationStates();
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(mockFetch.mock.calls.some(([url]) => String(url).startsWith("http://old-runner.test/")
+    && String(url).endsWith("/location-schedules/state"))).toBe(true);
+});
+
+test("an old Runner's pending event does not block a direct save on a new Runner", async () => {
+  const pending = { ruleId: "office", regionRevision: locationScheduleRevision(rule()),
+    state: "inside", eventId: "pending-old", observedAt: "2026-07-19T00:00:00Z" };
+  mockSettings = {
+    locationSchedules: [rule()], locationScheduleMigrationComplete: true,
+    locationScheduleRunnerUrls: ["http://old-runner.test"], locationSchedulePendingStates: [pending],
+  };
+  mockRunnerUrl = "http://new-runner.test";
+  await saveAndActivateLocationSchedules([rule({ id: "new-rule" })]);
+  expect(mockRunnerRules).toEqual([expect.objectContaining({ id: "new-rule" })]);
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(archivedCacheFor("http://old-runner.test")?.pending).toEqual([pending]);
+  expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules/state")
+    && String(url).startsWith("http://new-runner.test/"))).toBe(true);
+});
+
+test("a token change at the same URL cannot flush the previous Runner's location events", async () => {
+  mockRunnerRules = [rule()];
+  await loadRunnerLocationSchedules();
+  const oldTokenId = mockSettings.locationScheduleRunnerTokenId;
+  const pending = { ruleId: "office", regionRevision: locationScheduleRevision(rule()),
+    state: "inside", eventId: "old-token-event", observedAt: "2026-07-19T00:00:00Z" };
+  mockSettings.locationSchedulePendingStates = [pending];
+
+  mockRunnerToken = "new-token";
+  mockRunnerRules = [];
+  mockFetch.mockClear();
+  expect(await loadLocationSchedules()).toEqual([]);
+  await flushPendingLocationStates();
+  expect(mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"))).toHaveLength(0);
+
+  await saveAndActivateLocationSchedules([rule({ id: "new-token-rule" })]);
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(archivedCacheFor("http://runner.test")?.pending).toEqual([pending]);
+  expect(archivedCacheFor("http://runner.test")?.tokenId).toBe(oldTokenId);
+  expect(mockSettings.locationScheduleRunnerTokenId).not.toBe(oldTokenId);
+
+  mockRunnerToken = "token";
+  mockRunnerRules = [rule()];
+  await loadRunnerLocationSchedules();
+  expect(mockSettings.locationSchedulePendingStates).toEqual([pending]);
+  await flushPendingLocationStates();
+  expect(mockFetch.mock.calls.filter(([url, options]) => String(url).endsWith("/location-schedules/state")
+    && JSON.parse(String(options?.body)).eventId === "old-token-event")).toHaveLength(1);
 });
 
 test("preserves a legacy rule when its id collides with a different owner's rule", async () => {

@@ -41,6 +41,7 @@ export function parseComposerDrafts(value: unknown): ComposerDraft[] {
 
 export function useComposerDraftSync(options: {
   backendId?: string;
+  scopeId?: string;
   sessionId: string;
   text: string;
   drafts: readonly ComposerDraft[];
@@ -49,7 +50,8 @@ export function useComposerDraftSync(options: {
   setText: (text: string) => void;
   setDraft: (sessionId: string, text: string, backendId?: string) => void;
 }) {
-  const { backendId, sessionId: sessionIdRaw, text, drafts, loaded, enabled = true, setText, setDraft } = options;
+  const { backendId, scopeId, sessionId: sessionIdRaw, text, drafts, loaded, enabled = true, setText, setDraft } = options;
+  const previousScopeRef = useRef(scopeId);
   const bindingRef = useRef<{
     sessionId: string;
     observedText: string;
@@ -57,13 +59,19 @@ export function useComposerDraftSync(options: {
   } | null>(null);
 
   useEffect(() => {
+    if (previousScopeRef.current !== scopeId) {
+      previousScopeRef.current = scopeId;
+      bindingRef.current = null;
+      if (text) setText("");
+      return;
+    }
     const sessionId = String(sessionIdRaw || "").trim();
     if (!enabled || !sessionId) {
       bindingRef.current = null;
       return;
     }
 
-    const identity = `${backendId || "codex"}\u0000${sessionId}`;
+    const identity = `${scopeId || ""}\u0000${backendId || "codex"}\u0000${sessionId}`;
     let binding = bindingRef.current;
     if (!binding || binding.sessionId !== identity) {
       binding = { sessionId: identity, observedText: text, pendingDraftText: null };
@@ -90,5 +98,5 @@ export function useComposerDraftSync(options: {
     if (persistedText === text) return;
     binding.observedText = persistedText;
     setText(persistedText);
-  }, [backendId, drafts, enabled, loaded, sessionIdRaw, setDraft, setText, text]);
+  }, [backendId, scopeId, drafts, enabled, loaded, sessionIdRaw, setDraft, setText, text]);
 }
