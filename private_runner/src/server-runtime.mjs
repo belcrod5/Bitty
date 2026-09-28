@@ -11572,9 +11572,9 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
-  if (meta?.method && meta.method !== "initialize" && meta.id !== null && params.authLeaseAcquired !== true) {
-    const rpcIdKey = codexRpcIdKey(meta.id);
-    if (relay.authLeasesByRpcId?.has(rpcIdKey) || relay.requestMethodByRpcId?.has(rpcIdKey)) {
+  const clientRequestRpcKey = meta?.method && meta.id !== null ? codexRpcIdKey(meta.id) : null;
+  if (clientRequestRpcKey && meta.method !== "initialize" && params.authLeaseAcquired !== true) {
+    if (relay.authLeasesByRpcId?.has(clientRequestRpcKey) || relay.requestMethodByRpcId?.has(clientRequestRpcKey)) {
       if (requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32600, message: "Codex RPC id already in flight" } }));
       return;
     }
@@ -11583,7 +11583,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       if (meta.id !== null && requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32001, message: "Codex auth gate unavailable" } }));
       return;
     }
-    if (relay.authLeasesByRpcId instanceof Map) relay.authLeasesByRpcId.set(rpcIdKey, lease);
+    if (relay.authLeasesByRpcId instanceof Map) relay.authLeasesByRpcId.set(clientRequestRpcKey, lease);
     else lease();
     params = { ...params, authLeaseAcquired: true };
   }
@@ -11602,7 +11602,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   );
   if (admission) {
     return admission.then((forwarded) => {
-      if (forwarded === false) releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+      if (forwarded === false) releaseCodexRelayRpcLease(relay, clientRequestRpcKey);
       return forwarded;
     });
   }
@@ -11704,15 +11704,14 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       relay.runnerWsLlmOperationId = requestOperationId;
       relay.runnerWsLlmSessionId = requestSessionId;
     }
-    const rpcIdKey = codexRpcIdKey(meta?.id);
-    if (requestId && rpcIdKey && relay.requestIdByRpcId instanceof Map) {
-      relay.requestIdByRpcId.set(rpcIdKey, requestId);
+    if (requestId && clientRequestRpcKey && relay.requestIdByRpcId instanceof Map) {
+      relay.requestIdByRpcId.set(clientRequestRpcKey, requestId);
     }
-    if (meta.method && rpcIdKey && relay.requestMethodByRpcId instanceof Map) {
-      relay.requestMethodByRpcId.set(rpcIdKey, String(meta.method || "").trim());
+    if (clientRequestRpcKey && relay.requestMethodByRpcId instanceof Map) {
+      relay.requestMethodByRpcId.set(clientRequestRpcKey, String(meta.method || "").trim());
     }
-    if (rpcIdKey && relay.requestMetaByRpcId instanceof Map) {
-      relay.requestMetaByRpcId.set(rpcIdKey, {
+    if (clientRequestRpcKey && relay.requestMetaByRpcId instanceof Map) {
+      relay.requestMetaByRpcId.set(clientRequestRpcKey, {
         operationId: requestOperationId,
         sessionId: requestSessionId,
         threadId: requestThreadId,
@@ -11778,7 +11777,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   if (relay.upstreamWs.readyState !== WebSocket.OPEN) {
     if (answeredApproval) relay.pendingApprovalRequestIds.add(Number(meta.id));
     logForwardState("dropped_upstream_not_open");
-    releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+    releaseCodexRelayRpcLease(relay, clientRequestRpcKey);
     return;
   }
   logForwardState("sent_to_upstream");
@@ -11791,7 +11790,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   try {
     relay.upstreamWs.send(data, { binary: isBinary });
   } catch (error) {
-    releaseCodexRelayRpcLease(relay, codexRpcIdKey(meta?.id));
+    releaseCodexRelayRpcLease(relay, clientRequestRpcKey);
     throw error;
   }
   if (answeredApproval && relay.pendingApprovalRequestIds.size === 0) {

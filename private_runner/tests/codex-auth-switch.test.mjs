@@ -451,7 +451,7 @@ test("closed upstream releases in-flight auth leases while subscribers retain th
 
 test("dropped relay RPC releases its auth lease and request metadata", async () => {
   const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
-  assert.match(source, /if \(relay\.upstreamWs\.readyState !== WebSocket\.OPEN\) \{[\s\S]*?releaseCodexRelayRpcLease\(relay, codexRpcIdKey\(meta\?\.id\)\);[\s\S]*?return;/);
+  assert.match(source, /if \(relay\.upstreamWs\.readyState !== WebSocket\.OPEN\) \{[\s\S]*?releaseCodexRelayRpcLease\(relay, clientRequestRpcKey\);[\s\S]*?return;/);
   assert.match(source, /if \(admission\) \{[\s\S]*?forwarded === false[\s\S]*?releaseCodexRelayRpcLease/);
   assert.match(source, /relay\.upstreamWs\.send\(data,[\s\S]*?catch \(error\) \{[\s\S]*?releaseCodexRelayRpcLease/);
 });

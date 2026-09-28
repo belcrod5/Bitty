@@ -1452,7 +1452,7 @@ test("relay keeps numeric and string RPC ids distinct in response routing", () =
   assert.equal(replies.some((message) => message.payload.id === "request-alpha"), true);
 });
 
-test("reverse upstream request with a reserved id uses the current identity without a response ack", () => {
+test("reverse request replies preserve a completed turn's same-id reservation and current identity", () => {
   const relay = createRelayForRunnerWsTest();
   const client = createRunnerWsConnectionForTest();
   const rpcId = __TESTING__.codexRpcIdKey(17);
@@ -1466,11 +1466,14 @@ test("reverse upstream request with a reserved id uses the current identity with
   relay.requestMetaByRpcId.set(rpcId, { operationId: "old-op", sessionId: "old-session", turnId: "turn-old" });
   __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
   const receive = (payload) => __TESTING__.handleCodexRelayUpstreamMessage(relay, JSON.stringify(payload), false);
+  const originalSend = relay.upstreamWs.send;
   try {
     receive({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-old" }, status: "completed" } });
     assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
     relay.runnerWsLlmOperationId = "current-op";
     relay.runnerWsLlmSessionId = "current-session";
+    relay.currentTurnId = "turn-current";
+    relay.turnCompleted = false;
 
     const beforeReverse = client.sent.length;
     receive({ id: 17, method: "test/reverse", params: {} });
@@ -1486,6 +1489,31 @@ test("reverse upstream request with a reserved id uses the current identity with
     assert.equal(relay.requestIdByRpcId.get(rpcId), "old-request");
     assert.equal(relay.requestMethodByRpcId.get(rpcId), "turn/start");
 
+    const reply = JSON.stringify({ id: 17, result: { accepted: true } });
+    const replyParams = {
+      clientForwardQueued: true,
+      clientWs: client,
+      requestId: "reply-request",
+      operationId: "current-op",
+      sessionId: "current-session",
+    };
+    relay.upstreamWs.readyState = 3;
+    __TESTING__.forwardCodexRelayClientData(relay, reply, false, replyParams);
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
+    assert.equal(relay.requestIdByRpcId.get(rpcId), "old-request");
+
+    relay.upstreamWs.readyState = 1;
+    relay.upstreamWs.send = () => { throw new Error("upstream send failed"); };
+    assert.throws(() => __TESTING__.forwardCodexRelayClientData(relay, reply, false, replyParams), /upstream send failed/);
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
+    assert.equal(relay.requestIdByRpcId.get(rpcId), "old-request");
+
+    relay.upstreamWs.send = originalSend;
+    __TESTING__.forwardCodexRelayClientData(relay, reply, false, replyParams);
+    assert.equal(relay.upstreamSent.at(-1), reply);
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
+    assert.equal(relay.requestIdByRpcId.get(rpcId), "old-request");
+
     receive({ id: 17, result: { turn: { id: "turn-old" } } });
     assert.equal(relay.requestIdByRpcId.has(rpcId), false);
     assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
@@ -1496,7 +1524,10 @@ test("reverse upstream request with a reserved id uses the current identity with
     const result = client.sent.find((message) => message.channel === "llm" && message.payload?.result?.turn?.id === "turn-old");
     assert.equal(result?.operationId, "old-op");
     assert.equal(result?.sessionId, "old-session");
+    assert.equal(relay.currentTurnId, "turn-current");
+    assert.equal(relay.turnCompleted, false);
   } finally {
+    relay.upstreamWs.send = originalSend;
     __TESTING__.cleanupCodexRelay(relay, "test_done");
     client.close();
   }
