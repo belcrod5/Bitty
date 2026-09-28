@@ -1452,6 +1452,56 @@ test("relay keeps numeric and string RPC ids distinct in response routing", () =
   assert.equal(replies.some((message) => message.payload.id === "request-alpha"), true);
 });
 
+test("reverse upstream request with a reserved id uses the current identity without a response ack", () => {
+  const relay = createRelayForRunnerWsTest();
+  const client = createRunnerWsConnectionForTest();
+  const rpcId = __TESTING__.codexRpcIdKey(17);
+  relay.threadId = "thread-1";
+  relay.currentTurnId = "turn-old";
+  relay.runnerWsLlmOperationId = "old-op";
+  relay.runnerWsLlmSessionId = "old-session";
+  relay.authLeasesByRpcId = new Map([[rpcId, () => {}]]);
+  relay.requestIdByRpcId.set(rpcId, "old-request");
+  relay.requestMethodByRpcId.set(rpcId, "turn/start");
+  relay.requestMetaByRpcId.set(rpcId, { operationId: "old-op", sessionId: "old-session", turnId: "turn-old" });
+  __TESTING__.attachClientToCodexRelay(relay, client, { envelopeMode: true });
+  const receive = (payload) => __TESTING__.handleCodexRelayUpstreamMessage(relay, JSON.stringify(payload), false);
+  try {
+    receive({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-old" }, status: "completed" } });
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
+    relay.runnerWsLlmOperationId = "current-op";
+    relay.runnerWsLlmSessionId = "current-session";
+
+    const beforeReverse = client.sent.length;
+    receive({ id: 17, method: "test/reverse", params: {} });
+    const reverseMessages = client.sent.slice(beforeReverse);
+    const reverseRpc = reverseMessages.find((message) => message.channel === "llm" && message.payload?.method === "test/reverse");
+    assert.equal(reverseRpc?.operationId, "current-op");
+    assert.equal(reverseRpc?.sessionId, "current-session");
+    assert.equal(reverseMessages.some((message) => message.op === "llm_rpc_upstream_response"), false);
+    assert.deepEqual(
+      [relay.eventLog.at(-1)?.responseRpcMethod, relay.eventLog.at(-1)?.operationId, relay.eventLog.at(-1)?.sessionId],
+      ["", "current-op", "current-session"]
+    );
+    assert.equal(relay.requestIdByRpcId.get(rpcId), "old-request");
+    assert.equal(relay.requestMethodByRpcId.get(rpcId), "turn/start");
+
+    receive({ id: 17, result: { turn: { id: "turn-old" } } });
+    assert.equal(relay.requestIdByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMetaByRpcId.has(rpcId), false);
+    const ack = client.sent.find((message) => message.op === "llm_rpc_upstream_response");
+    assert.equal(ack?.requestId, "old-request");
+    assert.equal(ack?.operationId, "old-op");
+    const result = client.sent.find((message) => message.channel === "llm" && message.payload?.result?.turn?.id === "turn-old");
+    assert.equal(result?.operationId, "old-op");
+    assert.equal(result?.sessionId, "old-session");
+  } finally {
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+    client.close();
+  }
+});
+
 test("calendar requests stay with their owner and are excluded from replayable events", () => {
   const relay = createRelayForRunnerWsTest();
   const owner = createEnvelopeClientForRunnerWsTest();

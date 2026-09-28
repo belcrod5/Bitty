@@ -11053,7 +11053,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       });
     }
   }
-  const responseRpcId = meta?.id ?? null;
+  const responseRpcId = !meta?.method && (meta?.hasResult || meta?.hasError) ? meta.id : null;
   const responseRpcKey = codexRpcIdKey(responseRpcId);
   const responseLease = responseRpcKey && relay.authLeasesByRpcId instanceof Map
     ? relay.authLeasesByRpcId.get(responseRpcKey)
