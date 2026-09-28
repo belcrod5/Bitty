@@ -304,6 +304,29 @@ test("completed turn drains its auth lease when notifications precede turn/start
   }
 });
 
+test("a completed turn reserves its RPC id until the late result arrives", () => {
+  const { relay, rpcId, receive } = authRelay();
+  const turn = { threadId: relay.threadId, turn: { id: "turn-reserved" } };
+  const sent = [];
+  const clientWs = { readyState: 1, send: (data) => sent.push(JSON.parse(String(data))) };
+  try {
+    receive({ method: "turn/started", params: turn });
+    receive({ method: "turn/completed", params: { ...turn, status: "completed" } });
+    assert.equal(relay.authLeasesByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMethodByRpcId.get(rpcId), "turn/start");
+    __TESTING__.forwardCodexRelayClientData(relay, JSON.stringify({
+      id: 17, method: "turn/start", params: { threadId: relay.threadId },
+    }), false, { clientForwardQueued: true, clientWs });
+    assert.equal(sent[0]?.error?.code, -32600);
+    assert.equal(relay.authLeasesByRpcId.has(rpcId), false);
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.turnId, "turn-reserved");
+    receive({ id: 17, result: { turn: { id: "turn-reserved" } } });
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+  } finally {
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
 test("gate closing drains a running turn after its terminal notification", async () => {
   const { relay, rpcId, receive } = authRelay();
   const turn = { threadId: relay.threadId, turn: { id: "turn-running" } };

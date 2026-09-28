@@ -11571,7 +11571,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
   const rpcPayload = parseCodexRpcObject(data, isBinary);
   if (meta?.method && meta.method !== "initialize" && meta.id !== null && params.authLeaseAcquired !== true) {
     const rpcIdKey = codexRpcIdKey(meta.id);
-    if (relay.authLeasesByRpcId instanceof Map && relay.authLeasesByRpcId.has(rpcIdKey)) {
+    if (relay.authLeasesByRpcId?.has(rpcIdKey) || relay.requestMethodByRpcId?.has(rpcIdKey)) {
       if (requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32600, message: "Codex RPC id already in flight" } }));
       return;
     }
