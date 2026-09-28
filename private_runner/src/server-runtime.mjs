@@ -11208,7 +11208,8 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   }
   if (
     responseRpcMethod === "turn/start" &&
-    responseMeta.terminal
+    responseMeta.terminal &&
+    (meta?.hasResult || meta?.hasError)
   ) releaseCodexRelayRpcLease(relay, responseRpcKey);
   const calendarDynamicItem = isCalendarDynamicItem(rpcPayload);
   if (meta && (meta.method || meta.id !== null)) {
