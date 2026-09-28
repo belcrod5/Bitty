@@ -20,6 +20,7 @@ type UseSlashCommandControllerArgs = {
   onCommandAccepted: (
     commandText: string,
     sessionId: string | undefined,
+    backendId: string | undefined,
     inputDisposition: ComposerInputDisposition
   ) => void;
   runSlashStatusCommand: (commandText: string, options?: RunSlashCommandOptions) => Promise<void>;
@@ -54,7 +55,7 @@ export function useSlashCommandController({
     }
     if (options?.clearInput && inputDisposition === "clear") setTranscript("");
     const sessionId = options?.sessionSnapshot?.sessionId;
-    onCommandAccepted(commandText, sessionId, inputDisposition);
+    onCommandAccepted(commandText, sessionId, options?.sessionSnapshot?.backendId, inputDisposition);
     if (inputDisposition === "clear") options?.onAccepted?.();
     await runCommand(commandText, options);
     return true;

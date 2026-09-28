@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { createClaudeBackend } from "../claude-backend.mjs";
+import { ClientStateStoreUnavailableError } from "../client-state-store.mjs";
 import { createCodexBackend } from "../codex-turn-execution.mjs";
 import { createAgentService } from "./agent-service.mjs";
 import { createAgentHttpHandler, createAgentWsConnection } from "./agent-transport.mjs";
@@ -47,6 +48,7 @@ export function createPrivateRunnerAgentRuntime({
   resolveSessionDirectory,
   listSessions,
   listSessionsForDirectories,
+  getSessionTitles,
   listMessages,
   resolveCanonicalCwd,
   parseAuthToken,
@@ -189,6 +191,16 @@ export function createPrivateRunnerAgentRuntime({
       complete: stores.completeOperation,
     },
     sessionStore,
+    getSessionTitles: async (sessionRefs) => {
+      if (!getSessionTitles) return [];
+      try {
+        return await getSessionTitles(sessionRefs);
+      } catch (error) {
+        if (!(error instanceof ClientStateStoreUnavailableError)) throw error;
+        log.warn(`[agent] client state titles unavailable: ${error.message}`);
+        return [];
+      }
+    },
     workspaceAdmission,
     resolveCanonicalCwd,
     log,

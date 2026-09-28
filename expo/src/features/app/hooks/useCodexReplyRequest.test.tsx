@@ -816,6 +816,26 @@ describe("useCodexReplyRequest send gate liveness", () => {
 });
 
 describe("useCodexReplyRequest send acceptance contract", () => {
+  test("reports the accepted panel backend instead of the selected global backend", async () => {
+    const { options } = createOptions();
+    Object.assign(options, { llmBackend: "codex", transcript: "hello" });
+    mockStartCodexAppServerTurn.mockImplementation((() => ({
+      promise: new Promise(() => {}),
+      interrupt: jest.fn(),
+    })) as any);
+    const { result } = await renderHook(() => useCodexReplyRequest(options as never));
+
+    await act(async () => {
+      void result.current.sendReplyRequest(undefined, {
+        panelId: "panel-1",
+        sessionSnapshot: { backendId: "claude", sessionId: "session-1", threadId: "thread-1" },
+      });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+
+    expect(options.onMessageAccepted).toHaveBeenCalledWith("hello", "session-1", "claude");
+  });
+
   test("dispatches accepted sends directly to the provider-neutral turn facade", async () => {
     const { options } = createOptions();
     const onAccepted = jest.fn();
@@ -908,7 +928,7 @@ describe("useCodexReplyRequest send acceptance contract", () => {
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
     });
     expect(mockStartCodexAppServerTurn).toHaveBeenCalledTimes(1);
-    expect(options.onMessageAccepted).toHaveBeenCalledWith("first message", "thread-1");
+    expect(options.onMessageAccepted).toHaveBeenCalledWith("first message", "thread-1", "codex");
 
     await act(async () => {
       turns[0].options.onTurnAccepted?.({

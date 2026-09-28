@@ -22,6 +22,13 @@ export class LocationScheduleStoreUnavailableError extends Error {
   }
 }
 
+export class LocationScheduleRevisionError extends Error {
+  constructor() {
+    super("location schedules changed; reload before saving");
+    this.name = "LocationScheduleRevisionError";
+  }
+}
+
 function localDateTime(now, timeZone) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -95,7 +102,6 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     const endMinute = parseMinute(endTime, `rules[${index}].endTime`);
     if (endMinute <= startMinute) throw new Error(`rules[${index}] cannot cross midnight`);
     const ruleTimeZone = validateTimeZone(raw?.timeZone || timeZone);
-    if (ruleTimeZone !== timeZone) throw new Error(`rules[${index}].timeZone must match phoneTimeZone`);
     const latitude = Number(raw?.latitude);
     const longitude = Number(raw?.longitude);
     const radiusMeters = Number(raw?.radiusMeters);
@@ -107,6 +113,8 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
     const prompt = String(raw?.prompt || "").trim();
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`rules[${index}].prompt is invalid`);
     const calendarAccess = raw?.calendarAccess === "read" ? "read" : "none";
+    const locationDeviceId = String(raw?.locationDeviceId || "").trim() || null;
+    if (locationDeviceId && locationDeviceId.length > 200) throw new Error(`rules[${index}].locationDeviceId is invalid`);
     const calendarDeviceId = calendarAccess === "read" ? String(raw?.calendarDeviceId || "").trim() : "";
     if (calendarAccess === "read" && !calendarDeviceId) throw new Error(`rules[${index}].calendarDeviceId is required`);
     const regionRevision = String(raw?.regionRevision || "").trim();
@@ -132,7 +140,7 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
       enabled,
       startTime,
       endTime,
-      timeZone,
+      timeZone: ruleTimeZone,
       latitude,
       longitude,
       radiusMeters,
@@ -142,6 +150,7 @@ export function parseLocationScheduleRules(rawRules, phoneTimeZone, parseCodexOp
       model: codexOptions.modelInfo.model,
       reasoningEffort: effort,
       prompt,
+      locationDeviceId,
       calendarAccess,
       calendarDeviceId: calendarAccess === "read" ? calendarDeviceId : null,
     };
@@ -179,6 +188,7 @@ export function createLocationScheduleService({
   const stateRefreshRequests = new Map();
   let data = {
     version: 1,
+    scheduleRevision: 0,
     phoneTimeZone: "UTC",
     rules: [],
     states: {},
@@ -272,6 +282,9 @@ export function createLocationScheduleService({
       }
       data = {
         ...data,
+        scheduleRevision: Number.isSafeInteger(parsed.scheduleRevision)
+          ? parsed.scheduleRevision
+          : (parsed.updatedAt ? 1 : 0),
         phoneTimeZone,
         rules,
         states: parsed.states,
@@ -520,10 +533,16 @@ export function createLocationScheduleService({
   }
 
   async function replaceSchedules(payload) {
+    let refreshRules = [];
     const result = await serialize(async () => {
+      if (!Number.isSafeInteger(payload?.expectedRevision) || payload.expectedRevision < 0) {
+        throw new Error("expectedRevision is required");
+      }
+      if (payload.expectedRevision !== data.scheduleRevision) throw new LocationScheduleRevisionError();
       const phoneTimeZone = validateTimeZone(payload?.phoneTimeZone);
       const rules = parseLocationScheduleRules(payload?.rules, phoneTimeZone, parseCodexOptions);
       const previous = new Map(data.rules.map((rule) => [rule.id, rule]));
+      refreshRules = [...previous.values(), ...rules].filter((rule) => rule.locationDeviceId);
       for (const rule of rules) {
         const old = previous.get(rule.id);
         if (!old) continue;
@@ -540,6 +559,7 @@ export function createLocationScheduleService({
       }
       data.phoneTimeZone = phoneTimeZone;
       data.rules = rules;
+      data.scheduleRevision += 1;
       const liveIds = new Set(rules.map((rule) => rule.id));
       for (const id of Object.keys(data.states)) if (!liveIds.has(id)) delete data.states[id];
       for (const rule of rules) {
@@ -551,6 +571,11 @@ export function createLocationScheduleService({
       await persist();
       return snapshot();
     });
+    if (refreshRules.length && typeof requestStateRefresh === "function") {
+      void Promise.resolve().then(() => requestStateRefresh({ rules: refreshRules })).catch((error) => {
+        console.warn(`[location-schedule] update push failed: ${error instanceof Error ? error.message : error}`);
+      });
+    }
     await evaluate();
     armTimer();
     return result;
@@ -562,6 +587,9 @@ export function createLocationScheduleService({
       const state = String(payload?.state || "").trim().toLowerCase();
       const rule = data.rules.find((item) => item.id === ruleId);
       if (!rule) throw new Error(`unknown ruleId: ${ruleId}`);
+      if (rule.locationDeviceId && payload?.locationDeviceId !== rule.locationDeviceId) {
+        throw new Error(`wrong location device for ruleId: ${ruleId}`);
+      }
       const regionRevision = String(payload?.regionRevision || "").trim();
       if (regionRevision !== rule.regionRevision) throw new Error(`stale regionRevision for ruleId: ${ruleId}`);
       if (state !== "inside" && state !== "outside") throw new Error("state must be inside or outside");

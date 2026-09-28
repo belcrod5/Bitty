@@ -92,6 +92,16 @@ async function runnerRequest(pathname, searchParams) {
   return payload;
 }
 
+async function sessionTitles() {
+  const payload = await runnerRequest("/client-state", []);
+  return payload?.snapshot?.sessions || {};
+}
+
+function sessionTitle(titles, backendId, sessionId) {
+  return (titles[JSON.stringify([backendId, sessionId])]
+    || titles[JSON.stringify(["legacy", sessionId])])?.title || "";
+}
+
 async function search(args) {
   let cwdValues = options(args, "--cwd");
   const explicitCwds = cwdValues.length > 0;
@@ -139,6 +149,9 @@ async function search(args) {
   if (order) params.push(["order", order]);
   if (since) params.push(["since", since]);
   const payload = await runnerRequest("/agent/session-history/search", params);
+  const titles = Array.isArray(payload?.results) && payload.results.length > 0
+    ? await sessionTitles().catch(() => ({}))
+    : {};
   const results = (Array.isArray(payload?.results) ? payload.results : []).map((result) => {
     const backend = String(result?.sessionRef?.backendId || "");
     const session = String(result?.sessionRef?.nativeSessionId || "");
@@ -146,6 +159,7 @@ async function search(args) {
     return {
       backendId: backend,
       sessionId: session,
+      ...(sessionTitle(titles, backend, session) ? { sessionTitle: sessionTitle(titles, backend, session) } : {}),
       messageId: String(result?.messageId || ""),
       role: String(result?.role || ""),
       snippet: String(result?.snippet || ""),
@@ -178,9 +192,11 @@ async function read(args) {
   ];
   if (cursor) params.push(["cursor", cursor]);
   const payload = await runnerRequest("/agent/session-conversation", params);
+  const titles = await sessionTitles().catch(() => ({}));
   return {
     backendId,
     sessionId,
+    ...(sessionTitle(titles, backendId, sessionId) ? { sessionTitle: sessionTitle(titles, backendId, sessionId) } : {}),
     items: Array.isArray(payload?.items) ? payload.items : [],
     totalChars: Number(payload?.totalChars || 0),
     focused: payload?.focused === true,

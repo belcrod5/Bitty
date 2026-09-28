@@ -10,6 +10,7 @@ import { createLlmFileBrowseTools } from "./llm-file-browse-tools.mjs";
 import { createLlmFileExecutionTools } from "./llm-file-execution-tools.mjs";
 import { createLlmFilePatchTools } from "./llm-file-patch-tools.mjs";
 import { createLlmAcpSessionStore } from "./llm-acp-session-store.mjs";
+import { ClientStateStoreUnavailableError, createClientStateStore } from "./client-state-store.mjs";
 import { createLlmCliRolloutWriter } from "./llm-cli-rollout-writer.mjs";
 import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
@@ -57,6 +58,7 @@ import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
 import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
 import {
   createLocationScheduleService,
+  LocationScheduleRevisionError,
   LocationScheduleStoreUnavailableError,
 } from "./location-schedule-service.mjs";
 import {
@@ -524,6 +526,11 @@ const LOCATION_SCHEDULE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.LOCATION_SCHEDULE_STORE_PATH || "private_runner/logs/location_schedules.json"
 );
+const CLIENT_STATE_STORE_PATH = path.resolve(
+  WORKSPACE_ROOT,
+  process.env.CLIENT_STATE_STORE_PATH || "private_runner/logs/client_state.json"
+);
+const clientStateStore = createClientStateStore(CLIENT_STATE_STORE_PATH);
 const SKIA_BOARD_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.SKIA_BOARD_STORE_PATH || "private_runner/logs/skia_board_state.json"
@@ -1526,13 +1533,16 @@ const locationScheduleService = createLocationScheduleService({
   calendarSchedulePreflight: calendarScheduleRuntime.preflight,
   // 最終位置状態が古いままwindowが始まった場合に、サイレントpushで端末へ現在地の再報告を求める
   requestStateRefresh: PUSH_ENABLED && apnsClient
-    ? async () => {
+    ? async ({ rules }) => {
       const devices = await pushDeviceStore.listDevices();
+      const ownerIds = new Set(rules.map((rule) => rule.locationDeviceId).filter(Boolean));
+      if (!ownerIds.size) return;
       const payload = {
         aps: { "content-available": 1 },
         bitty: { type: "location_state_refresh" },
       };
       for (const device of devices) {
+        if (!ownerIds.has(device.deviceId)) continue;
         try {
           const result = await apnsClient.sendToDevice(device.apnsToken, payload, {
             env: device.env,
@@ -1729,6 +1739,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   listCodexModels: RUNNER_MOCK ? async () => [{ modelId: "gpt-5.6-sol", label: "Mock Codex", effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"] }] : undefined,
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
   listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
+  getSessionTitles: clientStateStore.getSessionTitles,
   listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
@@ -8054,6 +8065,22 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if ((req.method === "GET" || req.method === "POST") && pathname === "/client-state") {
+    if (!RUNNER_TOKEN) return json(res, 500, { error: "runner_token_missing" });
+    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
+    try {
+      const snapshot = req.method === "GET"
+        ? await clientStateStore.snapshot()
+        : await clientStateStore.mutate((await readJsonBody(req, 3 * 1024 * 1024)).operation);
+      return json(res, 200, { ok: true, snapshot });
+    } catch (error) {
+      return json(res, error instanceof ClientStateStoreUnavailableError ? 503 : 400, {
+        error: "client_state_unavailable",
+        message: errorMessage(error),
+      });
+    }
+  }
+
   if (req.method === "GET" && pathname === "/location-schedules") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
@@ -8080,6 +8107,9 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       if (error instanceof LocationScheduleStoreUnavailableError) {
         return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
+      }
+      if (error instanceof LocationScheduleRevisionError) {
+        return json(res, 409, { error: "location_schedule_conflict", message: errorMessage(error) });
       }
       return json(res, 400, { error: "invalid_location_schedules", message: errorMessage(error) });
     }

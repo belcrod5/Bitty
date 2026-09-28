@@ -1,5 +1,6 @@
 const mockMutatePersistedSettings = jest.fn();
 const mockReadPersistedSettingsField = jest.fn();
+const mockReadPersistedSettings = jest.fn();
 const mockLoadSecureRunnerCredentials = jest.fn();
 const mockFetch = jest.fn();
 const mockGetForegroundPermissionsAsync = jest.fn();
@@ -9,12 +10,23 @@ const mockHasStartedGeofencingAsync = jest.fn();
 const mockStopGeofencingAsync = jest.fn();
 const mockStartGeofencingAsync = jest.fn();
 let mockSettings: Record<string, unknown> = {};
+let mockRunnerRules: LocationScheduleRule[] = [];
+let mockRunnerRevision = 0;
 let mockTimeZone = "Asia/Tokyo";
+let mockRunnerUrl = "http://runner.test";
+let mockRunnerToken = "token";
+const archivedCaches = () => mockSettings.locationScheduleArchivedByRunner as Record<string, {
+  urls: string[]; tokenId?: unknown; rules?: unknown; pending?: unknown;
+}>;
+const archivedCacheFor = (url: string) => Object.values(archivedCaches()).find((cache) => cache.urls.includes(url));
 
 jest.mock("../app/utils/persistedSettingsFile", () => ({
+  configuredRunnerUrls: (settings: Record<string, unknown>) => [settings.runnerUrl, settings.localRunnerUrl, settings.cloudflareRunnerUrl]
+    .filter((value): value is string => typeof value === "string"),
   mutatePersistedSettings: (mutate: (current: Record<string, unknown>) => Record<string, unknown>) => (
     mockMutatePersistedSettings(mutate)
   ),
+  readPersistedSettings: () => mockReadPersistedSettings(),
   readPersistedSettingsField: (field: string) => mockReadPersistedSettingsField(field),
 }));
 
@@ -22,10 +34,19 @@ jest.mock("../app/utils/secureRunnerCredentials", () => ({
   loadSecureRunnerCredentials: () => mockLoadSecureRunnerCredentials(),
 }));
 
+jest.mock("../app/utils/pushNotifications", () => ({
+  getOrCreatePushDeviceId: async () => "device-1",
+}));
+
 jest.mock("expo-background-task", () => ({
   BackgroundTaskResult: { Success: "success", Failed: "failed" },
   registerTaskAsync: jest.fn(),
   unregisterTaskAsync: jest.fn(),
+}));
+
+jest.mock("expo-crypto", () => ({
+  CryptoDigestAlgorithm: { SHA256: "sha256" }, CryptoEncoding: { HEX: "hex" },
+  digestStringAsync: async (_algorithm: string, token: string) => `digest:${token}`,
 }));
 
 jest.mock("expo-location", () => ({
@@ -58,6 +79,9 @@ jest.mock("react-native", () => ({
 
 import {
   bootstrapLocationSchedules,
+  flushPendingLocationStates,
+  loadLocationSchedules,
+  loadRunnerLocationSchedules,
   recoverLocationScheduleState,
   saveAndActivateLocationSchedules,
   shouldRegisterBackgroundNotificationTask,
@@ -89,6 +113,7 @@ function rule(overrides: Partial<LocationScheduleRule> = {}): LocationScheduleRu
     modelRef: "gpt-5.6-sol",
     reasoningEffort: "high",
     prompt: "run checks",
+    locationDeviceId: "device-1",
     ...overrides,
   };
 }
@@ -100,15 +125,35 @@ function okResponse() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSettings = {};
+  mockRunnerRules = [];
+  mockRunnerRevision = 0;
   mockTimeZone = "Asia/Tokyo";
+  mockRunnerUrl = "http://runner.test";
+  mockRunnerToken = "token";
   mockMutatePersistedSettings.mockImplementation(async (mutate) => {
-    mockSettings = mutate(mockSettings);
+    mockSettings = mutate({ runnerUrl: mockRunnerUrl, ...mockSettings });
   });
+  mockReadPersistedSettings.mockImplementation(async () => ({ runnerUrl: mockRunnerUrl, ...mockSettings }));
   mockReadPersistedSettingsField.mockImplementation(async (field) => (
-    field === "runnerUrl" ? "http://runner.test" : mockSettings[field]
+    field === "runnerUrl" ? mockRunnerUrl : mockSettings[field]
   ));
-  mockLoadSecureRunnerCredentials.mockResolvedValue({ runnerToken: "token" });
-  mockFetch.mockResolvedValue(okResponse());
+  mockLoadSecureRunnerCredentials.mockImplementation(async () => ({ runnerToken: mockRunnerToken }));
+  mockFetch.mockImplementation(async (url, options) => {
+    if (String(url).endsWith("/location-schedules")) {
+      if (options?.method === "PUT") {
+        const body = JSON.parse(String(options.body));
+        if (body.expectedRevision !== mockRunnerRevision) {
+          return { ok: false, status: 409, json: async () => ({ message: "conflict" }) };
+        }
+        mockRunnerRules = body.rules;
+        mockRunnerRevision += 1;
+      }
+      return { ok: true, status: 200, json: async () => ({ snapshot: {
+        scheduleRevision: mockRunnerRevision, rules: mockRunnerRules,
+      } }) };
+    }
+    return okResponse();
+  });
   global.fetch = mockFetch as typeof fetch;
   mockGetForegroundPermissionsAsync.mockResolvedValue({ status: "granted" });
   mockGetBackgroundPermissionsAsync.mockResolvedValue({ status: "granted" });
@@ -150,12 +195,20 @@ test("restores local schedules when Runner synchronization fails", async () => {
   expect(mockSettings.locationSchedulePendingStates).toEqual([{ eventId: "pending" }]);
 });
 
+test("a stale editor cannot overwrite a newer Runner schedule", async () => {
+  mockRunnerRules = [rule({ prompt: "newer" })];
+  mockRunnerRevision = 2;
+  await expect(saveAndActivateLocationSchedules([rule({ prompt: "stale" })], 1)).rejects.toThrow("conflict");
+  expect(mockRunnerRules[0].prompt).toBe("newer");
+  expect(mockSettings.locationSchedules).toBeUndefined();
+});
+
 test("saving reports current state with the accepted rule revision", async () => {
   const currentRule = rule({ startTime: "08:00", prompt: "edited" });
 
   await saveAndActivateLocationSchedules([currentRule]);
 
-  const scheduleIndex = mockFetch.mock.calls.findIndex(([url]) => String(url).endsWith("/location-schedules"));
+  const scheduleIndex = mockFetch.mock.calls.findIndex(([url, options]) => String(url).endsWith("/location-schedules") && options?.method === "PUT");
   const stateIndex = mockFetch.mock.calls.findIndex(([url]) => String(url).endsWith("/location-schedules/state"));
   const schedule = JSON.parse(String(mockFetch.mock.calls[scheduleIndex]?.[1]?.body));
   const state = JSON.parse(String(mockFetch.mock.calls[stateIndex]?.[1]?.body));
@@ -175,7 +228,7 @@ test("an enter from the previous geofence generation is ignored before current-s
   }));
 
   const saving = saveAndActivateLocationSchedules([edited]);
-  for (let index = 0; index < 20 && mockGetCurrentPositionAsync.mock.calls.length === 0; index += 1) {
+  for (let index = 0; index < 1000 && mockGetCurrentPositionAsync.mock.calls.length === 0; index += 1) {
     await Promise.resolve();
   }
   expect(mockGetCurrentPositionAsync).toHaveBeenCalledTimes(1);
@@ -199,22 +252,9 @@ test("an enter from the previous geofence generation is ignored before current-s
   expect(JSON.parse(String(stateRequests[0][1]?.body)).regionRevision).toBe(locationScheduleRevision(edited));
 });
 
-test.each([
-  { rules: [] as LocationScheduleRule[], backgroundStatus: "granted" },
-  { rules: [rule()], backgroundStatus: "denied" },
-])("bootstrap synchronizes the complete rule set before permission-dependent setup", async ({ rules, backgroundStatus }) => {
-  mockSettings = { locationSchedules: rules };
-  mockGetBackgroundPermissionsAsync.mockResolvedValue({ status: backgroundStatus });
-
-  await bootstrapLocationSchedules();
-
-  const request = mockFetch.mock.calls.find(([url]) => String(url).endsWith("/location-schedules"));
-  expect(request).toBeDefined();
-  expect(JSON.parse(String(request?.[1]?.body)).rules).toHaveLength(rules.length);
-});
-
 test("silent push reports a fresh state even when inside/outside did not change", async () => {
   const currentRule = rule();
+  mockRunnerRules = [currentRule];
   mockSettings = {
     locationSchedules: [currentRule],
     locationScheduleLastStates: {
@@ -233,12 +273,138 @@ test("silent push reports a fresh state even when inside/outside did not change"
   expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules/state"))).toBe(true);
 });
 
-test("foreground recovery synchronizes and persists a changed phone timezone", async () => {
+test("another device's rules are visible but never geofenced or reported by this device", async () => {
+  mockRunnerRules = [rule({ locationDeviceId: "device-2" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+  await recoverLocationScheduleState("silent_push");
+
+  expect(mockSettings.locationSchedules).toEqual([]);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+  expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules/state"))).toBe(false);
+});
+
+test("editing another device's rule preserves its schedule timezone and owner", async () => {
+  const foreign = rule({ locationDeviceId: "device-2", timeZone: "America/New_York", prompt: "edited remotely" });
+  mockRunnerRevision = 1;
+
+  await saveAndActivateLocationSchedules([foreign], 1);
+
+  expect(mockRunnerRules[0]).toMatchObject({
+    locationDeviceId: "device-2", timeZone: "America/New_York", prompt: "edited remotely",
+  });
+  expect(mockSettings.locationSchedules).toEqual([]);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+});
+
+test("foreground recovery reads Runner without uploading old local rules", async () => {
   mockSettings = { locationSchedules: [rule()] };
   mockTimeZone = "America/New_York";
 
   await recoverLocationScheduleState("foreground");
 
   expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules"))).toBe(true);
-  expect((mockSettings.locationSchedules as LocationScheduleRule[])[0].timeZone).toBe("America/New_York");
+  expect(mockFetch.mock.calls.some(([url, options]) => String(url).endsWith("/location-schedules") && options?.method === "PUT")).toBe(false);
+  expect(mockSettings.locationSchedules).toEqual([]);
+});
+
+test("bootstrap discards unbound local schedules and leaves Runner rules unchanged", async () => {
+  mockSettings = { locationSchedules: [rule({ id: "old-local" })] };
+  mockRunnerRules = [rule({ id: "runner-rule", locationDeviceId: "device-2" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockRunnerRules.map((item) => item.id)).toEqual(["runner-rule"]);
+  expect(mockSettings.locationSchedules).toEqual([]);
+  expect(mockFetch.mock.calls.filter(([url, options]) => String(url).endsWith("/location-schedules")
+    && options?.method === "PUT")).toHaveLength(0);
+});
+
+test("offline startup does not activate an unbound old location cache", async () => {
+  mockSettings = { locationSchedules: [rule()], locationScheduleRunnerUrls: ["http://runner.test"] };
+  mockFetch.mockRejectedValue(new Error("offline"));
+  jest.spyOn(console, "warn").mockImplementation(() => {});
+
+  await bootstrapLocationSchedules();
+
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+  expect(await loadLocationSchedules()).toEqual([]);
+});
+
+test("pending location events remain isolated when switched to another Runner", async () => {
+  const pending = { ruleId: "office", regionRevision: locationScheduleRevision(rule()),
+    state: "inside", eventId: "pending-old", observedAt: "2026-07-19T00:00:00Z" };
+  mockSettings = {
+    locationSchedules: [rule()],
+    locationScheduleRunnerUrls: ["http://old-runner.test"],
+    locationScheduleRunnerTokenId: "digest:token",
+    locationSchedulePendingStates: [pending],
+  };
+  mockRunnerUrl = "http://new-runner.test";
+
+  await bootstrapLocationSchedules();
+
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(archivedCacheFor("http://old-runner.test")?.pending).toEqual([pending]);
+  expect(mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"))).toHaveLength(0);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+
+  await saveAndActivateLocationSchedules([rule({ id: "new-runner-rule" })]);
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ id: "new-runner-rule" })]);
+  expect(archivedCacheFor("http://old-runner.test")?.pending).toEqual([pending]);
+
+  mockRunnerUrl = "http://old-runner.test";
+  mockSettings.runnerUrl = mockRunnerUrl;
+  mockRunnerRules = [rule()];
+  await loadRunnerLocationSchedules();
+  expect(mockFetch.mock.calls.some(([url, options]) => String(url).startsWith("http://old-runner.test/")
+    && String(url).endsWith("/location-schedules/state") && options?.method === "POST")).toBe(false);
+  expect(mockSettings.locationSchedulePendingStates).toEqual([pending]);
+  await flushPendingLocationStates();
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(mockFetch.mock.calls.some(([url]) => String(url).startsWith("http://old-runner.test/")
+    && String(url).endsWith("/location-schedules/state"))).toBe(true);
+});
+
+test("a token change at the same URL cannot flush the previous Runner's location events", async () => {
+  mockRunnerRules = [rule()];
+  await loadRunnerLocationSchedules();
+  const oldTokenId = mockSettings.locationScheduleRunnerTokenId;
+  const pending = { ruleId: "office", regionRevision: locationScheduleRevision(rule()),
+    state: "inside", eventId: "old-token-event", observedAt: "2026-07-19T00:00:00Z" };
+  mockSettings.locationSchedulePendingStates = [pending];
+
+  mockRunnerToken = "new-token";
+  mockRunnerRules = [];
+  mockFetch.mockClear();
+  expect(await loadLocationSchedules()).toEqual([]);
+  await flushPendingLocationStates();
+  expect(mockFetch.mock.calls.filter(([url]) => String(url).endsWith("/location-schedules/state"))).toHaveLength(0);
+
+  await saveAndActivateLocationSchedules([rule({ id: "new-token-rule" })]);
+  expect(mockSettings.locationSchedulePendingStates).toEqual([]);
+  expect(archivedCacheFor("http://runner.test")?.pending).toEqual([pending]);
+  expect(archivedCacheFor("http://runner.test")?.tokenId).toBe(oldTokenId);
+  expect(mockSettings.locationScheduleRunnerTokenId).not.toBe(oldTokenId);
+
+  mockRunnerToken = "token";
+  mockRunnerRules = [rule()];
+  await loadRunnerLocationSchedules();
+  expect(mockSettings.locationSchedulePendingStates).toEqual([pending]);
+  await flushPendingLocationStates();
+  expect(mockFetch.mock.calls.filter(([url, options]) => String(url).endsWith("/location-schedules/state")
+    && JSON.parse(String(options?.body)).eventId === "old-token-event")).toHaveLength(1);
+});
+
+test("retains another location owner's calendar rule for this device's push verification", async () => {
+  mockRunnerRules = [rule({ locationDeviceId: "device-2", calendarAccess: "read", calendarDeviceId: "device-1" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ calendarDeviceId: "device-1" })]);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+  expect(Notifications.registerTaskAsync).toHaveBeenCalledWith("bitty-background-notification");
 });

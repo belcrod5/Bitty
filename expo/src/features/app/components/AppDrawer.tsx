@@ -20,6 +20,7 @@ import { useAppStyles } from "../styles";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isLlmSessionUnread, resolveLlmSessionDisplayTitle } from "../utils/llmSession";
+import { runnerSessionValue } from "../utils/runnerClientState";
 import { formatModelRefForDisplay } from "../utils/settingsParsers";
 import { AppModal } from "./AppModal";
 import {
@@ -240,9 +241,9 @@ export const AppDrawer = memo(function AppDrawer({
     const selected = highlightedSessionId === session.sessionId;
     const sessionPrimaryTitle = resolveLlmSessionDisplayTitle(
       session,
-      sessionTitleOverridesById[session.sessionId]
+      runnerSessionValue(sessionTitleOverridesById, session.backendId, session.sessionId)
     );
-    const sessionMarkerColor = parseDirectoryMarkerColor(sessionMarkerColorsById[session.sessionId]);
+    const sessionMarkerColor = parseDirectoryMarkerColor(runnerSessionValue(sessionMarkerColorsById, session.backendId, session.sessionId));
     const sessionMarkerColorHex = DIRECTORY_MARKER_COLORS[sessionMarkerColor];
     const restoringThisSession = (
       llmSessionRestoreLoading &&

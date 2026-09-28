@@ -43,8 +43,9 @@ export async function getOrCreatePushDeviceId(): Promise<string> {
   try {
     await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, deviceId, options);
   } catch {
-    // Registration still works with the in-memory id for this session; the next
-    // call mints again, which the runner handles as a re-registration.
+    // Location rules also use this id as their owner. An ephemeral id would make
+    // the rule unowned after the next launch, so fail closed until storage recovers.
+    throw new Error("push device id could not be persisted");
   }
   return deviceId;
 }

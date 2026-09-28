@@ -24,12 +24,12 @@ test("preserves compact input before and after its async work completes", async 
   const commandCompletion = result.current.runSlashCommand("/compact", {
     clearInput: true,
     onAccepted,
-    sessionSnapshot: { sessionId: "session-1" },
+    sessionSnapshot: { backendId: "claude", sessionId: "session-1" },
   });
 
   expect(transcript).toBe("/compact");
   expect(setTranscript).not.toHaveBeenCalled();
-  expect(onCommandAccepted).toHaveBeenCalledWith("/compact", "session-1", "preserve");
+  expect(onCommandAccepted).toHaveBeenCalledWith("/compact", "session-1", "claude", "preserve");
   expect(onAccepted).not.toHaveBeenCalled();
   expect(runSlashCompactCommand).toHaveBeenCalledTimes(1);
 
@@ -64,7 +64,7 @@ test("clears other accepted commands before async work completes without clearin
   const commandCompletion = result.current.runSlashCommand("/status", { clearInput: true, onAccepted });
 
   expect(transcript).toBe("");
-  expect(onCommandAccepted).toHaveBeenCalledWith("/status", undefined, "clear");
+  expect(onCommandAccepted).toHaveBeenCalledWith("/status", undefined, undefined, "clear");
   expect(onAccepted).toHaveBeenCalledTimes(1);
 
   transcript = "next message";

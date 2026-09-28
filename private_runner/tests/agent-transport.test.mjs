@@ -67,7 +67,7 @@ test("agent session lists carry the authenticated owner on both transports", asy
   const service = {
     async listSessions(options, context) {
       received.push({ options, context });
-      return { sessions: [] };
+      return { sessions: [{ sessionRef: { backendId: "codex", nativeSessionId: "thread-1" }, title: "テスト①" }] };
     },
   };
   const handler = createAgentHttpHandler({
@@ -83,6 +83,7 @@ test("agent session lists carry the authenticated owner on both transports", asy
   await handler({ method: "GET", token: "test-token" }, res, reqUrl, reqUrl.pathname);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(received[0].context, { subjectId: "runner-token" });
+  assert.equal(res.payload.sessions[0].title, "テスト①");
 
   const sent = [];
   const connection = createAgentWsConnection({
@@ -101,6 +102,7 @@ test("agent session lists carry the authenticated owner on both transports", asy
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(received[1].context, { subjectId: "subject" });
   assert.equal(sent.at(-1).op, "sessions.list.result");
+  assert.equal(sent.at(-1).payload.sessions[0].title, "テスト①");
 });
 
 test("agent HTTP and WebSocket forward bounded conversation search and read requests", async () => {

@@ -85,8 +85,8 @@ export type ConversationContextValue = {
   selectSelectedSessionMarkerColor: (nextMarkerColor: DirectoryMarkerColor) => void;
   removeSelectedDirectory: () => void;
   renameDirectoryForPath: (directoryPath: string, nextDisplayName: string) => void;
-  renameSessionTitleForSession: (sessionId: string, nextTitle: string) => void;
-  selectSessionMarkerColorForSession: (sessionId: string, nextMarkerColor: DirectoryMarkerColor) => void;
+  renameSessionTitleForSession: (sessionId: string, nextTitle: string, backendId?: string) => void;
+  selectSessionMarkerColorForSession: (sessionId: string, nextMarkerColor: DirectoryMarkerColor, backendId?: string) => void;
   removeDirectoryForPath: (directoryPath: string) => void;
   markSessionUnread: (params: {
     backendId: string;

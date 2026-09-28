@@ -22,7 +22,7 @@ import {
   parseLocationScheduleRules,
   type LocationScheduleRule,
 } from "./locationScheduleRules";
-import { loadLocationSchedules, saveAndActivateLocationSchedules } from "./locationScheduleRuntime";
+import { loadRunnerLocationSchedules, saveAndActivateLocationSchedules } from "./locationScheduleRuntime";
 import { LocationMapPicker, type LocationMapPickerTarget } from "./LocationMapPicker";
 import { OptionSelectField } from "../app/components/OptionSelectField";
 import { getOrCreatePushDeviceId } from "../app/utils/pushNotifications";
@@ -30,7 +30,7 @@ import { requestCalendarPermission } from "../calendar/calendarService";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
 
-function newRule(props: LocationScheduleSettingsProps): LocationScheduleRule {
+function newRule(props: LocationScheduleSettingsProps, locationDeviceId: string): LocationScheduleRule {
   return {
     id: `rule_${Date.now()}_${Math.floor(Math.random() * 100_000)}`,
     enabled: false,
@@ -44,6 +44,7 @@ function newRule(props: LocationScheduleSettingsProps): LocationScheduleRule {
     modelRef: props.currentModelRef || props.modelOptions[0]?.value || "",
     reasoningEffort: props.currentReasoningEffort || props.thinkOptions[0] || "high",
     prompt: "",
+    locationDeviceId,
     calendarAccess: "none",
     calendarDeviceId: null,
   };
@@ -54,6 +55,8 @@ export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
   const styles = stylesByTheme[themeId];
   const [visible, setVisible] = useState(false);
   const [rules, setRules] = useState<LocationScheduleRule[]>([]);
+  const [revision, setRevision] = useState<number | null>(null);
+  const [locationDeviceId, setLocationDeviceId] = useState("");
   const [busy, setBusy] = useState(false);
   const [mapPickerRuleId, setMapPickerRuleId] = useState<string | null>(null);
 
@@ -75,7 +78,12 @@ export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
     setBusy(true);
     setVisible(true);
     try {
-      setRules(await loadLocationSchedules());
+      const snapshot = await loadRunnerLocationSchedules();
+      setLocationDeviceId(await getOrCreatePushDeviceId());
+      setRules(snapshot.rules);
+      setRevision(snapshot.revision);
+    } catch (error) {
+      Alert.alert("位置・時間実行を取得できません", error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -126,7 +134,11 @@ export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
     }
     setBusy(true);
     try {
-      await saveAndActivateLocationSchedules(parsed);
+      if (revision === null) throw new Error("Runner の位置スケジュールを再取得してください");
+      await saveAndActivateLocationSchedules(parsed.map((rule) => ({
+        ...rule,
+        locationDeviceId: rule.locationDeviceId || locationDeviceId,
+      })), revision);
       setRules(parsed);
       setVisible(false);
     } catch (error) {
@@ -158,7 +170,7 @@ export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
             {rules.map((rule, index) => (
               <View key={rule.id} style={styles.card}>
                 <View style={styles.cardHeader}>
-                  <Text style={styles.cardTitle}>ルール {index + 1}</Text>
+                  <Text style={styles.cardTitle}>ルール {index + 1}{rule.locationDeviceId && rule.locationDeviceId !== locationDeviceId ? "（別端末で位置を監視）" : ""}</Text>
                   <Switch value={rule.enabled} onValueChange={(enabled) => update(rule.id, { enabled })} />
                 </View>
                 <Text style={styles.label}>時間（開始を含み、終了を含まない）</Text>
@@ -229,7 +241,7 @@ export function LocationScheduleSettings(props: LocationScheduleSettingsProps) {
                 </TouchableOpacity>
               </View>
             ))}
-            <TouchableOpacity style={styles.addButton} onPress={() => setRules((current) => [...current, newRule(props)])}>
+            <TouchableOpacity style={styles.addButton} onPress={() => setRules((current) => [...current, newRule(props, locationDeviceId)])}>
               <Text style={styles.addButtonText}>ルールを追加</Text>
             </TouchableOpacity>
           </KeyboardAwareScrollView>

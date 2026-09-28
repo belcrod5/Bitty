@@ -36,9 +36,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   localRunnerUrl: string;
   llmBackend: LlmBackend;
   llmDirectory: string;
-  registeredDirectories: RegisteredDirectoryEntry[];
-  sessionTitleOverridesById: Record<string, string>;
-  sessionMarkerColorsById: Record<string, RegisteredDirectoryEntry["markerColor"]>;
   expandedDirectoryIds: string[];
   selectedLlmSessionId: string;
   selectedLlmSessionMaterialized: boolean;
@@ -63,9 +60,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   setLocalRunnerUrl: Dispatch<SetStateAction<string>>;
   setLlmBackend: Dispatch<SetStateAction<LlmBackend>>;
   setLlmDirectory: Dispatch<SetStateAction<string>>;
-  setRegisteredDirectories: Dispatch<SetStateAction<RegisteredDirectoryEntry[]>>;
-  setSessionTitleOverridesById: Dispatch<SetStateAction<Record<string, string>>>;
-  setSessionMarkerColorsById: Dispatch<SetStateAction<Record<string, RegisteredDirectoryEntry["markerColor"]>>>;
   setExpandedDirectoryIds: Dispatch<SetStateAction<string[]>>;
   setSelectedLlmSessionId: Dispatch<SetStateAction<string>>;
   setSelectedLlmSessionMaterialized: Dispatch<SetStateAction<boolean>>;
@@ -86,8 +80,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   setFaceIdRequiredForApproval: Dispatch<SetStateAction<boolean>>;
   setVisualThemeId: (themeId: VisualThemeId) => void;
   parseRegisteredDirectories: (raw: unknown) => RegisteredDirectoryEntry[];
-  parseSessionTitleOverrides: (raw: unknown) => Record<string, string>;
-  parseSessionMarkerColors: (raw: unknown) => Record<string, RegisteredDirectoryEntry["markerColor"]>;
   parseExpandedDirectoryIds: (raw: unknown, directories: RegisteredDirectoryEntry[]) => string[];
 };
 
@@ -103,9 +95,6 @@ export function useAppSettingsPersistenceController({
   localRunnerUrl,
   llmBackend,
   llmDirectory,
-  registeredDirectories,
-  sessionTitleOverridesById,
-  sessionMarkerColorsById,
   expandedDirectoryIds,
   selectedLlmSessionId,
   selectedLlmSessionMaterialized,
@@ -130,9 +119,6 @@ export function useAppSettingsPersistenceController({
   setLocalRunnerUrl,
   setLlmBackend,
   setLlmDirectory,
-  setRegisteredDirectories,
-  setSessionTitleOverridesById,
-  setSessionMarkerColorsById,
   setExpandedDirectoryIds,
   setSelectedLlmSessionId,
   setSelectedLlmSessionMaterialized,
@@ -153,8 +139,6 @@ export function useAppSettingsPersistenceController({
   setFaceIdRequiredForApproval,
   setVisualThemeId,
   parseRegisteredDirectories,
-  parseSessionTitleOverrides,
-  parseSessionMarkerColors,
   parseExpandedDirectoryIds,
 }: UseAppSettingsPersistenceControllerArgs) {
   const settingsLoadStartedRef = useRef(false);
@@ -186,9 +170,6 @@ export function useAppSettingsPersistenceController({
       localRunnerUrl,
       llmBackend,
       llmDirectory,
-      registeredDirectories,
-      sessionTitleOverridesById,
-      sessionMarkerColorsById,
       directoryUiState: {
         expandedDirectoryIds,
       },
@@ -225,9 +206,6 @@ export function useAppSettingsPersistenceController({
     localRunnerUrl,
     modelRef,
     reasoningEffort,
-    registeredDirectories,
-    sessionTitleOverridesById,
-    sessionMarkerColorsById,
     runnerUrl,
     selectedLlmSessionId,
     selectedLlmSessionMaterialized,
@@ -292,9 +270,6 @@ export function useAppSettingsPersistenceController({
     setLlmBackend(savedBackend && savedBackend !== "codex_app_server" ? savedBackend : "codex");
     setLlmDirectory(parseLlmDirectory(parsed.llmDirectory));
     const parsedRegisteredDirectories = parseRegisteredDirectories(parsed.registeredDirectories);
-    setRegisteredDirectories(parsedRegisteredDirectories);
-    setSessionTitleOverridesById(parseSessionTitleOverrides(parsed.sessionTitleOverridesById));
-    setSessionMarkerColorsById(parseSessionMarkerColors(parsed.sessionMarkerColorsById));
     const directoryUiStateRaw = parsed.directoryUiState;
     const directoryUiState = directoryUiStateRaw &&
       typeof directoryUiStateRaw === "object" &&
@@ -358,8 +333,6 @@ export function useAppSettingsPersistenceController({
     modelOptions,
     parseExpandedDirectoryIds,
     parseRegisteredDirectories,
-    parseSessionMarkerColors,
-    parseSessionTitleOverrides,
     rememberKnownCodexThreadId,
     selectedLlmSessionIdRef,
     setAutoBargeInEnabled,
@@ -379,14 +352,11 @@ export function useAppSettingsPersistenceController({
     setLocalRunnerUrl,
     setModelRef,
     setReasoningEffort,
-    setRegisteredDirectories,
     setRunnerToken,
     setRunnerUrl,
     setSelectedLlmSessionId,
     setSelectedLlmSessionMaterialized,
     setSelectedVoiceIdByProvider,
-    setSessionMarkerColorsById,
-    setSessionTitleOverridesById,
     setTtsProvider,
     setTtsSpeedWithSync,
   ]);
@@ -442,6 +412,11 @@ export function useAppSettingsPersistenceController({
                 // Skiaボード配置の正本はランナーにあるため、旧バックアップに
                 // 含まれていても取り込まない。
                 "skiaBoardState",
+                "registeredDirectories",
+                "sessionTitleOverridesById",
+                "sessionMarkerColorsById",
+                "composerMessageHistory",
+                "composerDrafts",
               ]) {
                 delete importedSettings[field];
               }

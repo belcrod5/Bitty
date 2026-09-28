@@ -20,6 +20,7 @@ import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { useSkiaBoard } from "../contexts/SkiaBoardContext";
 import type { LlmSessionHistoryEntry, LlmSessionSource } from "./useLlmSessionExplorer";
 import { formatLlmSessionDisplayTitle, isLlmSessionUnread } from "../utils/llmSession";
+import { runnerSessionValue } from "../utils/runnerClientState";
 import type { SessionActivity } from "../utils/statusIcons";
 
 // パネルIDはセッションごとに固定(インデックス割当だと並び替えで担当が入れ替わり、
@@ -298,7 +299,7 @@ export function useSkiaMiniChatSessions() {
         candidate,
         panelId: skiaMiniChatPanelId(card.sessionId),
         title: formatLlmSessionDisplayTitle(
-          sessionTitleOverridesById[candidate.sessionId]
+          runnerSessionValue(sessionTitleOverridesById, candidate.backendId, candidate.sessionId)
           || candidate.agentDisplayName
           || candidate.firstUserMessage
           || candidate.sessionId
@@ -438,7 +439,7 @@ export function useSkiaMiniChatSessions() {
           (entry) => entry.threadStatusType === "active"
         ).length,
         subagentTotalCount: childState?.entries.length || 0,
-        markerColor: sessionMarkerColorsById[candidate.sessionId] || "none",
+        markerColor: runnerSessionValue(sessionMarkerColorsById, candidate.backendId, candidate.sessionId) || "none",
         col: card.col,
         row: card.row,
       };

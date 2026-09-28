@@ -32,8 +32,6 @@ jest.mock("expo-file-system/legacy", () => ({
 }));
 
 import {
-  COMPOSER_DRAFTS_FIELD,
-  COMPOSER_MESSAGE_HISTORY_FIELD,
   mutatePersistedSettings,
   PRESERVED_SETTINGS_FIELDS,
   readPersistedSettings,
@@ -45,8 +43,11 @@ import {
 // 端末に配置データが残り続けるため、実定数から外れていることを固定する。
 test("preserved settings fields no longer carry the legacy skia board state", () => {
   expect(PRESERVED_SETTINGS_FIELDS).not.toContain("skiaBoardState");
-  expect(PRESERVED_SETTINGS_FIELDS).toContain(COMPOSER_MESSAGE_HISTORY_FIELD);
-  expect(PRESERVED_SETTINGS_FIELDS).toContain(COMPOSER_DRAFTS_FIELD);
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("composerMessageHistory");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("composerDrafts");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("registeredDirectories");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("sessionTitleOverridesById");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("sessionMarkerColorsById");
   expect(PRESERVED_SETTINGS_FIELDS).toContain(SKIA_BOARD_VIEWPORT_FIELD);
 });
 

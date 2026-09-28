@@ -118,7 +118,7 @@ test("registers one task callback and splits calendar and location markers", asy
 });
 
 test("gets a request, runs a read-only tool, then posts its result", async () => {
-  const currentRule = rule();
+  const currentRule = rule({ locationDeviceId: "device-2" });
   mockReadPersistedSettings.mockResolvedValue(settings(currentRule));
   mockFetch
     .mockResolvedValueOnce({ ok: true, json: async () => ({ requests: [request(currentRule)] }) })

@@ -44,6 +44,8 @@ let mockPanelBackendId = "codex";
 let mockPanelSessionMaterialized: boolean | undefined = true;
 let mockSelectedLlmSessionMaterialized = true;
 let mockRunnerUrl = "http://runner.test";
+let mockRunnerClientStateScopeId = "runner-a";
+let mockComposerDraftsLoaded = true;
 let mockPanelConversationMessages: ConversationMessage[] = [];
 const platformOSDescriptor = Object.getOwnPropertyDescriptor(Platform, "OS");
 const mockUseWorkspaceFileMutations = jest.fn((_params: unknown) => ({
@@ -327,7 +329,8 @@ jest.mock("../contexts/ChatComposerContext", () => ({
     return ({
     composerMessageHistory: [],
     composerDrafts,
-    composerDraftsLoaded: true,
+    composerDraftsLoaded: mockComposerDraftsLoaded,
+    runnerClientStateScopeId: mockRunnerClientStateScopeId,
     setComposerDraft: (sessionId: string, text: string) => setComposerDrafts((current) => [
       ...(text ? [{ sessionId, text, updatedAt: Date.now() }] : []),
       ...current.filter((draft) => draft.sessionId !== sessionId),
@@ -459,6 +462,8 @@ describe("ChatScreen voice input", () => {
     mockPanelSessionMaterialized = true;
     mockSelectedLlmSessionMaterialized = true;
     mockRunnerUrl = "http://runner.test";
+    mockRunnerClientStateScopeId = "runner-a";
+    mockComposerDraftsLoaded = true;
     mockPanelConversationMessages = [{ id: "message-1", role: "assistant", content: "hello" }];
   });
 
@@ -657,6 +662,18 @@ describe("ChatScreen voice input", () => {
       "existing draft",
       undefined
     );
+    await screen.unmount();
+  });
+
+  it("clears a popup draft when the Runner changes before its new drafts load", async () => {
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await fireEvent.changeText(screen.getByTestId("chat-composer-input"), "old Runner draft");
+    expect(screen.getByTestId("chat-composer-input").props.value).toBe("old Runner draft");
+
+    mockRunnerClientStateScopeId = "runner-b";
+    mockComposerDraftsLoaded = false;
+    await screen.rerender(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await waitFor(() => expect(screen.getByTestId("chat-composer-input").props.value).toBe(""));
     await screen.unmount();
   });
 

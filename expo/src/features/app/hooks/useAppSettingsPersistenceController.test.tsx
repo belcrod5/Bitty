@@ -361,6 +361,15 @@ test("clipboard export does not include the skia board state", async () => {
   expect(exported.appDefaultSettings).not.toHaveProperty("skiaBoardState");
 });
 
+test("device settings export excludes Runner-owned session and directory metadata", async () => {
+  const hook = await renderPersistenceController();
+  await act(async () => { await hook.result.current.exportSettingsJson(); });
+  const exported = JSON.parse(mockSetStringAsync.mock.calls[0][0]).appDefaultSettings;
+  for (const field of ["registeredDirectories", "sessionTitleOverridesById", "sessionMarkerColorsById", "composerMessageHistory", "composerDrafts"]) {
+    expect(exported).not.toHaveProperty(field);
+  }
+});
+
 test("clipboard import ignores the skia board state in old backups", async () => {
   // 旧形式のバックアップにボード配置が入っていても取り込まない(正本はランナー)。
   mockGetStringAsync.mockResolvedValue(JSON.stringify({

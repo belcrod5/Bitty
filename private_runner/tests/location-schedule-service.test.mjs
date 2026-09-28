@@ -49,7 +49,8 @@ async function withService(fn) {
   let current = new Date("2026-07-18T23:59:00.000Z"); // 08:59 JST
   const executions = [];
   const storePath = path.join(temp, "store.json");
-  const create = (overrides = {}) => createLocationScheduleService({
+  const create = (overrides = {}) => {
+    const service = createLocationScheduleService({
     storePath,
     parseCodexOptions,
     executeTurn: async (request) => {
@@ -61,7 +62,15 @@ async function withService(fn) {
     scheduleTimer: () => ({ unref() {} }),
     clearTimer: () => {},
     ...overrides,
-  });
+    });
+    return {
+      ...service,
+      replaceSchedules: async (payload) => service.replaceSchedules({
+        ...payload,
+        expectedRevision: payload.expectedRevision ?? (await service.snapshot()).scheduleRevision,
+      }),
+    };
+  };
   try {
     await fn({ create, executions, storePath, setNow: (value) => { current = new Date(value); } });
   } finally {
@@ -82,6 +91,19 @@ test("validates rules with the normal model parser and enabled-region limit", ()
   assert.throws(() => parseLocationScheduleRules([rule({ modelRef: "" })], "Asia/Tokyo", parseCodexOptions), /modelRef is required/);
   assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
   assert.throws(() => parseLocationScheduleRules([rule({ reasoningEffort: "minimal" })], "Asia/Tokyo", parseCodexOptions), /reasoningEffort is invalid/);
+});
+
+test("schedule edits and removals wake the owning device to reconcile its geofence", async () => {
+  await withService(async ({ create }) => {
+    const refreshRequests = [];
+    const service = create({ requestStateRefresh: async (request) => refreshRequests.push(request) });
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [rule({ locationDeviceId: "device-1" })] });
+    await waitFor(() => refreshRequests.length === 1);
+    assert.equal(refreshRequests[0].rules[0].locationDeviceId, "device-1");
+    await service.replaceSchedules({ phoneTimeZone: "Asia/Tokyo", rules: [] });
+    await waitFor(() => refreshRequests.length === 2);
+    assert.equal(refreshRequests[1].rules[0].locationDeviceId, "device-1");
+  });
 });
 
 test("does not let the normal Codex parser default missing scheduled model or effort", () => {
