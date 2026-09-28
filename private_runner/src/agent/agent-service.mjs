@@ -119,6 +119,7 @@ export function createAgentService({
   backends,
   operationStore,
   sessionStore,
+  getSessionTitles = async () => [],
   workspaceAdmission,
   resolveCanonicalCwd,
   replayLimit = DEFAULT_REPLAY_LIMIT,
@@ -442,6 +443,14 @@ export function createAgentService({
       ...(lastReadAt ? { lastReadAt } : {}),
       ...(activeRun ? { isActive: true } : {}),
     };
+  }
+
+  async function withClientTitles(sessions) {
+    if (sessions.length === 0) return sessions;
+    const titles = await getSessionTitles(sessions.map((session) => session.sessionRef));
+    return sessions.map((session, index) => (
+      titles[index] ? { ...session, title: titles[index] } : session
+    ));
   }
 
   async function finish(run, outcome, error = null) {
@@ -1409,10 +1418,10 @@ export function createAgentService({
         // 項目別cursorは合成層のカット専用の内部値。all-scopeと同様wireへは出さない。
         return {
           ...singlePage,
-          sessions: sessions.map((session) => {
+          sessions: await withClientTitles(sessions.map((session) => {
             const { cursor: _itemCursor, ...rest } = session;
             return rest;
-          }),
+          })),
         };
       }
       // all-backends scope: session.list対応の全Backendを集約する。
@@ -1498,7 +1507,7 @@ export function createAgentService({
         return rest;
       });
       return {
-        sessions,
+        sessions: await withClientTitles(sessions),
         ...(Object.keys(nextCursors).length > 0
           ? { cursor: encodeCompositeSessionListCursor(nextCursors) }
           : {}),

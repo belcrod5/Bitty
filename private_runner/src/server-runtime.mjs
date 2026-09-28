@@ -1739,6 +1739,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   listCodexModels: RUNNER_MOCK ? async () => [{ modelId: "gpt-5.6-sol", label: "Mock Codex", effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"] }] : undefined,
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
   listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
+  getSessionTitles: clientStateStore.getSessionTitles,
   listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,

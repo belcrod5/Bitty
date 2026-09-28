@@ -131,5 +131,11 @@ export function createClientStateStore(storePath) {
     });
   }
 
-  return { snapshot: () => serialize(snapshot), mutate };
+  function getSessionTitles(sessionRefs) {
+    return serialize(() => sessionRefs.map((ref) => (
+      state.sessions[sessionKey(ref.backendId, ref.nativeSessionId)]?.title || ""
+    )));
+  }
+
+  return { snapshot: () => serialize(snapshot), mutate, getSessionTitles };
 }

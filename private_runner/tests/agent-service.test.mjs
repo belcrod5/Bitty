@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { createAgentService as createBaseAgentService } from "../src/agent/agent-service.mjs";
+import { createClientStateStore } from "../src/client-state-store.mjs";
 import { operationStore, sessionStore, startRequest, status } from "./agent-service-fixtures.mjs";
 
 function createAgentService(options) {
@@ -1088,6 +1092,61 @@ function keysetBackend(backendId, pagesByCursor) {
     item,
   };
 }
+
+test("session listings use shared title overrides after paging and keep provider identities separate", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agent-session-titles-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const clientState = createClientStateStore(path.join(directory, "client_state.json"));
+  await clientState.mutate({ type: "session.set", backendId: "codex", sessionId: "same", title: "テスト①" });
+  await clientState.mutate({ type: "session.set", backendId: "claude", sessionId: "same", markerColor: "red" });
+
+  const codex = keysetBackend("codex", {});
+  const claude = keysetBackend("claude", {});
+  const c1 = { ...codex.item("same", "2026-08-22T04:00:00.000Z"), title: "こんにちは" };
+  const c2 = { ...codex.item("later", "2026-08-22T02:00:00.000Z"), title: "Later native" };
+  const l1 = { ...claude.item("same", "2026-08-22T03:00:00.000Z"), title: "Claude native" };
+  codex.backend.listSessions = async ({ cursor }) => ({
+    "": { sessions: [c1, c2] },
+    "codex@same": { sessions: [c2] },
+  })[String(cursor || "")];
+  claude.backend.listSessions = async () => ({ sessions: [l1] });
+
+  const lookedUp = [];
+  const service = createAgentService({
+    backends: [codex.backend, claude.backend],
+    operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    getSessionTitles: async (refs) => {
+      lookedUp.push(refs);
+      return clientState.getSessionTitles(refs);
+    },
+  });
+
+  const first = await service.listSessions({ cwd: "/workspace", limit: 1 });
+  assert.deepEqual(first.sessions.map(({ sessionRef, title }) => [sessionRef.backendId, sessionRef.nativeSessionId, title]), [
+    ["codex", "same", "テスト①"],
+  ]);
+  const second = await service.listSessions({ cwd: "/workspace", limit: 1, cursor: first.cursor });
+  assert.deepEqual(second.sessions.map(({ sessionRef, title }) => [sessionRef.backendId, sessionRef.nativeSessionId, title]), [
+    ["claude", "same", "Claude native"],
+  ]);
+  const third = await service.listSessions({ cwd: "/workspace", limit: 1, cursor: second.cursor });
+  assert.deepEqual(third.sessions.map(({ sessionRef, title }) => [sessionRef.backendId, sessionRef.nativeSessionId, title]), [
+    ["codex", "later", "Later native"],
+  ]);
+  assert.equal(third.cursor, undefined);
+  assert.deepEqual(lookedUp.map((refs) => refs.map((ref) => ref.nativeSessionId)), [["same"], ["same"], ["later"]]);
+
+  const scoped = await service.listSessions({ backendId: "codex", cwd: "/workspace" });
+  assert.deepEqual(scoped.sessions.map((session) => session.title), ["テスト①", "Later native"]);
+  await clientState.mutate({ type: "session.set", backendId: "claude", sessionId: "same", title: "Claude shared" });
+  const claudeScoped = await service.listSessions({ backendId: "claude", cwd: "/workspace" });
+  assert.equal(claudeScoped.sessions[0].title, "Claude shared");
+  await clientState.mutate({ type: "session.set", backendId: "codex", sessionId: "same", title: "" });
+  const cleared = await service.listSessions({ backendId: "codex", cwd: "/workspace" });
+  assert.equal(cleared.sessions[0].title, "こんにちは");
+});
 
 test("all-backends first page is the global top-limit; deferred items arrive on later pages", async () => {
   const codex = keysetBackend("codex", {});

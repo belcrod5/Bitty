@@ -3,6 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import test from "node:test";
 
 import { createPrivateRunnerAgentRuntime } from "../src/agent/agent-runtime.mjs";
+import { ClientStateStoreUnavailableError } from "../src/client-state-store.mjs";
 import { createTurnCompletionNotifier } from "../src/turn-completion-notification.mjs";
 
 function completionClient() {
@@ -48,9 +49,11 @@ function completionClient() {
   };
 }
 
-test("Codex Agent history preserves message timestamps", async (t) => {
+test("Codex Agent history preserves timestamps and unavailable client titles fall back", async (t) => {
   const canonicalWorkspace = await realpath(".");
   const aliasWorkspace = `${canonicalWorkspace}/.`;
+  let titleLookupError = null;
+  const warnings = [];
   const runtime = createPrivateRunnerAgentRuntime({
     claudeBinary: "claude",
     runnerToken: "test-token",
@@ -85,10 +88,15 @@ test("Codex Agent history preserves message timestamps", async (t) => {
       sessions: [{
         sessionId: "thread-1",
         directory: canonicalWorkspace,
+        firstUserMessage: "Native title",
         updatedAt: "2026-08-24T02:00:00.000Z",
         lastReadAt: "2026-08-24T03:00:00.000Z",
       }],
     }),
+    getSessionTitles: async () => {
+      if (titleLookupError) throw titleLookupError;
+      return ["Shared title"];
+    },
     listSessionsForDirectories: async (directories) => directories.map((directory) => ({
       directory,
       sessions: [{
@@ -114,11 +122,22 @@ test("Codex Agent history preserves message timestamps", async (t) => {
     normalizeSessionListLimit: (value) => value,
     normalizeSessionMessagesLimit: (value) => value,
     readJsonBody: async () => ({}),
+    log: { warn: (message) => warnings.push(String(message)) },
   });
   t.after(() => runtime.close());
 
   const listed = await runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace });
   assert.equal(listed.sessions[0].lastReadAt, "2026-08-24T03:00:00.000Z");
+  assert.equal(listed.sessions[0].title, "Shared title");
+  titleLookupError = new ClientStateStoreUnavailableError(new Error("invalid client state store"));
+  const fallback = await runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace });
+  assert.equal(fallback.sessions[0].title, "Native title");
+  assert.match(warnings[0], /client state titles unavailable:.*invalid client state store/);
+  titleLookupError = new Error("programmer error");
+  await assert.rejects(
+    runtime.service.listSessions({ backendId: "codex", cwd: canonicalWorkspace }),
+    /programmer error/,
+  );
 
   const snapshot = await runtime.service.listSessionSnapshot({
     backendId: "codex",
