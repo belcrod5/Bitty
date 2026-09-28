@@ -9,5 +9,5 @@ test("auth admission keeps constructor cleanup and relay identity rules at the s
   assert.match(source, /catch \(error\) \{\s*authLease\?\.\(\);\s*throw error;/);
   assert.match(source, /meta\.id !== null && params\.authLeaseAcquired !== true/);
   assert.match(source, /Codex RPC id already in flight/);
-  assert.match(source, /releaseCodexRelayTurnLease\(relay\)/);
+  assert.match(source, /releaseCodexRelayTurnLease\(relay, relay\.currentTurnId\)/);
 });
