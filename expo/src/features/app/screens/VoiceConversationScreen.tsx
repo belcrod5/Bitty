@@ -1,17 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, SafeAreaView, View } from "react-native";
-import Reanimated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import { Platform, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
+import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
+import { useVisualTheme } from "../theme/VisualThemeContext";
+import { formatMessageTimestampLabel } from "../utils/formatting";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
+const historyFadeIn = FadeInDown.duration(240);
+const historyFadeOut = FadeOutDown.duration(200);
 
 export type VoiceConversationPlayback = {
   synthesizeSpeechStream: (text: string, target: { messageId: string; jobId?: string }) => Promise<void>;
@@ -42,13 +49,17 @@ export function VoiceConversationScreen({
   const { runnerUrl, runnerToken } = useChatScreen();
   const { logSessionDiag } = useConversation();
   const reduceMotion = useReduceMotionEnabled();
+  const { theme } = useVisualTheme();
   const [transcript, setTranscript] = useState("");
   const [editingTranscript, setEditingTranscript] = useState(false);
   const [initialStartPending, setInitialStartPending] = useState(true);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const footerRef = useRef<StreamingSttFooterHandle>(null);
+  const historyScrollRef = useRef<ScrollView>(null);
+  const historyAtBottomRef = useRef(true);
   const mountedRef = useRef(true);
   const voicePlaybackMessageIdRef = useRef("");
 
@@ -72,6 +83,19 @@ export function VoiceConversationScreen({
       ? { ttsProvider, voiceId: selectedVoiceId?.trim() || undefined, speedScale: ttsSpeed }
       : undefined,
   );
+  useEffect(() => {
+    if (historyExpanded && voice.ready) void voice.refreshHistory();
+  }, [historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
+  useEffect(() => {
+    historyAtBottomRef.current = true;
+  }, [historyExpanded, voice.logicalConversationId]);
+  const footerSwipe = useMemo(() => Gesture.Pan()
+    .enabled(!editingTranscript)
+    .activeOffsetY([-24, 24])
+    .failOffsetX([-32, 32])
+    .onEnd(({ translationY }) => {
+      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
+    }), [editingTranscript]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
   const canStart = voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
@@ -152,45 +176,108 @@ export function VoiceConversationScreen({
       pointerEvents="box-none"
       style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, justifyContent: "flex-end" }}
     >
+      <VoiceHistoryBackdrop expanded={historyExpanded} reduceMotion={reduceMotion === true} />
       <Reanimated.View
         testID="voice-conversation-transition"
         entering={voicePanelFadeIn}
         exiting={voicePanelFadeOut}
-        style={{ width: "100%" }}
+        pointerEvents="box-none"
+        style={{ flex: 1, width: "100%" }}
       >
-        <SafeAreaView testID="voice-conversation-screen">
-          <View testID="voice-conversation-content" style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
-            <StreamingSttFooter
-              ref={footerRef}
-              transcript={transcript}
-              statusText={statusText}
-              voiceStatus={voiceStatus}
-              reduceMotion={reduceMotion !== false}
-              phase={streamingStt.phase}
-              onChangeText={setTranscript}
-              onFocus={() => {
-                setInitialStartPending(false);
-                setEditingTranscript(true);
-                streamingStt.stop();
-              }}
-              onSubmit={async (text, onAccepted) => {
-                try {
-                  await streamingStt.sendManualTranscript(text, () => {
-                    if (!onAccepted()) return false;
-                    setEditingTranscript(false);
-                    return true;
-                  });
-                } catch (error) {
-                  voice.setError(error instanceof Error ? error.message : String(error));
-                }
-              }}
-              onStop={() => {
-                voice.interrupt();
-                streamingStt.stop();
-                onClose();
-              }}
-              voiceContextStats={voice.contextStats}
-            />
+        <SafeAreaView testID="voice-conversation-screen" pointerEvents="box-none" style={{ flex: 1 }}>
+          <View testID="voice-conversation-content" pointerEvents="box-none"
+            style={{ flex: 1, justifyContent: "flex-end" }}>
+            {historyExpanded ? (
+              <Reanimated.View testID="voice-conversation-history"
+                entering={reduceMotion ? undefined : historyFadeIn}
+                exiting={reduceMotion ? undefined : historyFadeOut}
+                style={{ flex: 1, width: "100%" }}>
+                <View style={{ paddingHorizontal: 20, paddingTop: 12, alignItems: "flex-end" }}>
+                  <Pressable testID="voice-history-close" accessibilityRole="button"
+                    accessibilityLabel="履歴を閉じる" hitSlop={8}
+                    onPress={() => setHistoryExpanded(false)}
+                    style={{ width: 44, height: 44, borderRadius: 22,
+                      alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0, 0, 0, 0.4)" }}>
+                    <Ionicons name="close" size={24} color="#ffffff" />
+                  </Pressable>
+                </View>
+                <ScrollView ref={historyScrollRef} testID="voice-history-messages" style={{ flex: 1 }}
+                  onScroll={(event) => {
+                    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+                    historyAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
+                  }}
+                  scrollEventThrottle={16}
+                  onContentSizeChange={() => {
+                    if (historyAtBottomRef.current) historyScrollRef.current?.scrollToEnd({ animated: false });
+                  }}
+                  contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 12, gap: 12 }}>
+                  {!voice.ready
+                    ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴を読み込み中…</Text>
+                    : voice.historyError
+                      ? <Text style={{ color: "#fecaca" }}>{voice.historyError}</Text>
+                      : !voice.history.length
+                        ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴はまだありません</Text>
+                        : null}
+                  {(voice.ready ? voice.history : []).map((message, index) => {
+                    const user = message.role === "user";
+                    const textColor = user ? theme.colors.textOnAccent : theme.colors.textPrimary;
+                    const time = formatMessageTimestampLabel(message.at);
+                    return (
+                      <View key={`${message.clientOperationId}-${message.role}-${index}`}
+                        style={{ alignSelf: user ? "flex-end" : "flex-start",
+                          maxWidth: "90%", padding: 12, borderRadius: 12,
+                          backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                          <Text style={{ color: textColor, fontSize: 11 }}>{user ? "あなた" : "AI"}</Text>
+                          {time ? <Text style={{ color: textColor, fontSize: 11 }}>{time}</Text> : null}
+                        </View>
+                        <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </Reanimated.View>
+            ) : null}
+            <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+              <GestureDetector gesture={footerSwipe}>
+                <View testID="voice-history-swipe-area">
+                  <StreamingSttFooter
+                    ref={footerRef}
+                    transcript={transcript}
+                    statusText={statusText}
+                    voiceStatus={voiceStatus}
+                    reduceMotion={reduceMotion !== false}
+                    phase={streamingStt.phase}
+                    onChangeText={setTranscript}
+                    onFocus={() => {
+                      setInitialStartPending(false);
+                      setEditingTranscript(true);
+                      streamingStt.stop();
+                    }}
+                    onBlur={() => setEditingTranscript(false)}
+                    onSubmit={async (text, onAccepted) => {
+                      try {
+                        await streamingStt.sendManualTranscript(text, () => {
+                          if (!onAccepted()) return false;
+                          setEditingTranscript(false);
+                          return true;
+                        });
+                      } catch (error) {
+                        voice.setError(error instanceof Error ? error.message : String(error));
+                      }
+                    }}
+                    onStop={() => {
+                      voice.interrupt();
+                      streamingStt.stop();
+                      onClose();
+                    }}
+                    voiceContextStats={voice.contextStats}
+                    historyExpanded={historyExpanded}
+                    onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
+                  />
+                </View>
+              </GestureDetector>
+            </View>
           </View>
         </SafeAreaView>
       </Reanimated.View>

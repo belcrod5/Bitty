@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { Platform, ScrollView, StyleSheet } from "react-native";
+import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
 
+const mockWithTiming = jest.fn((value: number, _config?: unknown) => value);
+const mockBackdropOpacity = { value: 0 };
 const mockAbort = jest.fn(async () => undefined);
 const mockStopTtsPlayback = jest.fn(async () => undefined);
 const mockSynthesizeSpeechStream = jest.fn(async (): Promise<void> => undefined);
@@ -10,10 +13,14 @@ const mockOnClose = jest.fn();
 const mockLogSessionDiag = jest.fn();
 const mockVoice = {
   ready: true,
+  logicalConversationId: "conversation-one",
   turnStatus: "completed",
   reply: { text: "表示しない返答本文", operationId: "operation-1" },
   error: "",
   contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
+  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string }[],
+  historyError: "",
+  refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
   sendTranscript: jest.fn(async () => undefined),
   interrupt: jest.fn(),
@@ -29,10 +36,37 @@ const mockStt = {
 let mockOnCompleted: ((text: string, operationId: string) => void) | null = null;
 let mockOnJob: ((jobId: string, operationId: string) => void) | null = null;
 let mockLastSttOptions: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void } | null = null;
-let mockFooterProps: { voiceContextStats?: unknown; transcript: string; draftTranscript?: string; statusText?: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void; onFocus?: () => void; onChangeText?: (text: string) => void; onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void> } | null = null;
+type MockFooterProps = {
+  voiceContextStats?: unknown;
+  transcript: string;
+  draftTranscript?: string;
+  statusText?: string;
+  voiceStatus?: "responding" | "speaking";
+  reduceMotion?: boolean;
+  phase: string;
+  onStop: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  onChangeText?: (text: string) => void;
+  onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
+  historyExpanded?: boolean;
+  onHistoryToggle?: () => void;
+};
+let mockFooterProps: MockFooterProps | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
 let mockReduceMotion: boolean | null = false;
+const initialPlatform = Platform.OS;
 
+jest.mock("expo-blur", () => {
+  const ReactModule = require("react");
+  const { View } = require("react-native");
+  return { BlurView: (props: Record<string, unknown>) => ReactModule.createElement(View, props) };
+});
+jest.mock("@expo/vector-icons", () => {
+  const ReactModule = require("react");
+  const { Text } = require("react-native");
+  return { Ionicons: ({ name }: { name: string }) => ReactModule.createElement(Text, null, name) };
+});
 jest.mock("../hooks/useVoiceConversation", () => ({
   useVoiceConversation: (onCompleted: (text: string, operationId: string) => void, _onApproval: unknown,
     _onResolved: unknown, onJob: (jobId: string, operationId: string) => void) => {
@@ -47,7 +81,7 @@ jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { tts
 } }));
 jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => mockReduceMotion }));
 jest.mock("../components/StreamingSttFooter", () => ({
-  StreamingSttFooter: (props: { voiceContextStats?: unknown; transcript: string; statusText?: string; voiceStatus?: "responding" | "speaking"; reduceMotion?: boolean; phase: string; onStop: () => void; onFocus?: () => void; onChangeText?: (text: string) => void; onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void> }) => {
+  StreamingSttFooter: (props: MockFooterProps) => {
     const ReactModule = require("react");
     const { Text, TouchableOpacity, View } = require("react-native");
     mockFooterProps = { ...props, draftTranscript: props.transcript, transcript: props.statusText || props.transcript };
@@ -62,6 +96,22 @@ jest.mock("../keyboardController", () => {
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return { KeyboardAvoidingView: (props: Record<string, unknown>) => ReactModule.createElement(View, props) };
 });
+jest.mock("react-native-gesture-handler", () => ({
+  Gesture: { Pan: () => {
+    const gesture: Record<string, any> = {};
+    gesture.enabled = (value: boolean) => { gesture.isEnabled = value; return gesture; };
+    gesture.activeOffsetY = (range: number[]) => { gesture.verticalRange = range; return gesture; };
+    gesture.failOffsetX = (range: number[]) => { gesture.horizontalRange = range; return gesture; };
+    gesture.onEnd = (callback: (event: { translationY: number }) => void) => { gesture.end = callback; return gesture; };
+    return gesture;
+  } },
+  GestureDetector: ({ gesture, children }: { gesture: Record<string, any>; children: React.ReactElement }) => {
+    const ReactModule = require("react");
+    return ReactModule.cloneElement(children, { onMockGestureEnd: gesture.end,
+      gestureEnabled: gesture.isEnabled, gestureVerticalRange: gesture.verticalRange,
+      gestureHorizontalRange: gesture.horizontalRange });
+  },
+}));
 jest.mock("../contexts/ChatScreenContext", () => ({
   useChatScreen: () => ({ runnerUrl: "http://runner.test", runnerToken: "token" }),
 }));
@@ -73,9 +123,16 @@ jest.mock("react-native-reanimated", () => {
   const { View } = jest.requireActual("react-native") as typeof import("react-native");
   return {
     __esModule: true,
-    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props) },
+    default: { View: (props: Record<string, unknown>) => ReactModule.createElement(View, props),
+      createAnimatedComponent: (Component: unknown) => Component },
     FadeIn: { duration: (duration: number) => ({ type: "fade-in", duration }) },
+    FadeInDown: { duration: (duration: number) => ({ type: "fade-in-down", duration }) },
     FadeOut: { duration: (duration: number) => ({ type: "fade-out", duration }) },
+    FadeOutDown: { duration: (duration: number) => ({ type: "fade-out-down", duration }) },
+    runOnJS: (callback: unknown) => callback,
+    useSharedValue: () => mockBackdropOpacity,
+    useAnimatedStyle: (callback: () => unknown) => callback(),
+    withTiming: (value: number, config: unknown) => mockWithTiming(value, config),
   };
 });
 
@@ -103,9 +160,208 @@ beforeEach(() => {
   mockOnJob = null;
   mockStt.active = false;
   mockVoice.ready = true;
+  mockVoice.logicalConversationId = "conversation-one";
   mockVoice.turnStatus = "completed";
   mockVoice.error = "";
+  mockVoice.history = [];
+  mockVoice.historyError = "";
+  mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
+});
+afterEach(() => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
+  jest.restoreAllMocks();
+});
+
+test("the footer reveals stored messages and closes the history panel", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
+  mockVoice.history = [
+    { role: "user", text: "最初の質問", clientOperationId: "one", at: "2026-09-27T12:34:00" },
+    { role: "assistant", text: "最初の返答", clientOperationId: "one", at: "2026-09-27T12:35:00" },
+  ];
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  const backdrop = screen.getByTestId("voice-conversation-backdrop");
+  expect(screen.getByTestId("voice-conversation-keyboard-avoiding").children[0]).toBe(backdrop);
+  expect(StyleSheet.flatten(backdrop.props.style)).toMatchObject({
+    position: "absolute", top: 0, bottom: 0, left: 0, right: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.4)",
+  });
+  expect(backdrop.props.pointerEvents).toBe("none");
+  expect(mockWithTiming).toHaveBeenCalledWith(0, { duration: 240 });
+  expect(screen.queryByTestId("voice-history-open")).toBeNull();
+  expect(screen.getByTestId("voice-history-swipe-area").props).toMatchObject({
+    gestureVerticalRange: [-24, 24], gestureHorizontalRange: [-32, 32],
+  });
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(mockWithTiming).toHaveBeenCalledWith(1, { duration: 240 });
+  expect(mockBackdropOpacity.value).toBe(1);
+  expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("auto");
+  const blur = screen.getByTestId("voice-conversation-board-blur");
+  expect(screen.getByTestId("voice-conversation-keyboard-avoiding").children[0]).toBe(blur);
+  expect(blur.props).toMatchObject({ pointerEvents: "none", intensity: 80, tint: "dark" });
+  expect(StyleSheet.flatten(blur.props.style)).toMatchObject({
+    position: "absolute", top: 0, bottom: 0, left: 0, right: 0,
+  });
+  expect(StyleSheet.flatten(blur.props.style).opacity).toBeUndefined();
+  expect(screen.getByTestId("voice-conversation-history").props).toMatchObject({
+    entering: { type: "fade-in-down", duration: 240 },
+    exiting: { type: "fade-out-down", duration: 200 },
+  });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-history").props.style)).toMatchObject({ flex: 1, width: "100%" });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-history-messages").props.style)).toMatchObject({ flex: 1 });
+  expect(screen.getByTestId("voice-history-messages").props.contentContainerStyle).toMatchObject({ paddingHorizontal: 20 });
+  expect(screen.getByTestId("voice-history-close").props).toMatchObject({
+    accessibilityRole: "button", accessibilityLabel: "履歴を閉じる",
+  });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-history-close").props.style)).toMatchObject({
+    width: 44, height: 44,
+  });
+  expect(screen.getByText("close")).toBeTruthy();
+  expect(screen.queryByText("閉じる")).toBeNull();
+  expect(screen.queryByTestId("voice-history-handle")).toBeNull();
+  expect(screen.getByText("最初の質問")).toBeTruthy();
+  expect(screen.getByText("最初の返答")).toBeTruthy();
+  expect(screen.getByText("09/27 12:34")).toBeTruthy();
+  expect(screen.getByText("09/27 12:35")).toBeTruthy();
+  const colors = VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors;
+  expect(StyleSheet.flatten(screen.getByText("最初の質問").parent?.props.style).backgroundColor).toBe(colors.accent);
+  expect(StyleSheet.flatten(screen.getByText("最初の返答").parent?.props.style).backgroundColor).toBe(colors.surfaceMuted);
+  expect(screen.getByText("最初の質問").props.style.color).toBe(colors.textOnAccent);
+  expect(mockVoice.refreshHistory).toHaveBeenCalled();
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
+  expect(screen.getByText("最初の質問")).toBeTruthy();
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
+  expect(mockWithTiming).toHaveBeenLastCalledWith(0, { duration: 240 });
+  expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("none");
+  expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
+  expect(screen.queryByText("最初の質問")).toBeNull();
+  await screen.unmount();
+});
+
+test("macOS renders the native within-window blur behind the dark overlay", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+  const nativeViewSpy = jest.spyOn(require("react-native"), "requireNativeComponent");
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const blur = screen.getByTestId("voice-conversation-board-blur");
+  expect(blur.type).toBe("BittyVoiceBlur");
+  expect(blur.props.pointerEvents).toBe("none");
+  expect(StyleSheet.flatten(blur.props.style).opacity).toBeUndefined();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
+    .toBe("rgba(0, 0, 0, 0.4)");
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
+  expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
+  await screen.unmount();
+  const remounted = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { remounted.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(nativeViewSpy.mock.calls.filter(([name]) => name === "BittyVoiceBlur")).toHaveLength(1);
+  await remounted.unmount();
+});
+
+test("Android keeps the dark fallback without loading native blur", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-backdrop").props.style).backgroundColor)
+    .toBe("rgba(0, 0, 0, 0.68)");
+  await screen.unmount();
+});
+
+test("history omits timestamps that are missing or invalid", async () => {
+  mockVoice.history = [
+    { role: "user", text: "時刻なし", clientOperationId: "one" },
+    { role: "assistant", text: "不正な時刻", clientOperationId: "one", at: "not-a-date" },
+  ];
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("時刻なし")).toBeTruthy();
+  expect(screen.getByText("不正な時刻")).toBeTruthy();
+  expect(screen.queryAllByText(/\d{2}\/\d{2} \d{2}:\d{2}/)).toHaveLength(0);
+  await screen.unmount();
+});
+
+test("reduced motion skips history movement and backdrop transition", async () => {
+  mockReduceMotion = true;
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(mockWithTiming).toHaveBeenLastCalledWith(1, { duration: 0 });
+  expect(screen.getByTestId("voice-conversation-history").props.entering).toBeUndefined();
+  expect(screen.getByTestId("voice-conversation-history").props.exiting).toBeUndefined();
+  await screen.unmount();
+});
+
+test("the existing footer exposes history control and leaves editing gestures alone", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-history-swipe-area").props.gestureEnabled).toBe(true);
+  await act(async () => { mockFooterProps?.onHistoryToggle?.(); });
+  expect(screen.getByTestId("voice-conversation-history")).toBeTruthy();
+  expect(mockFooterProps?.historyExpanded).toBe(true);
+  await act(async () => { mockFooterProps?.onFocus?.(); });
+  expect(screen.getByTestId("voice-history-swipe-area").props.gestureEnabled).toBe(false);
+  await act(async () => { mockFooterProps?.onBlur?.(); });
+  expect(screen.getByTestId("voice-history-swipe-area").props.gestureEnabled).toBe(true);
+  await screen.unmount();
+});
+
+test("an open history panel reloads when voice.open becomes ready or changes conversation", async () => {
+  mockVoice.ready = false;
+  mockVoice.turnStatus = "idle";
+  mockVoice.history = [{ role: "user", text: "前の接続先の発話", clientOperationId: "old" }];
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(mockVoice.refreshHistory).not.toHaveBeenCalled();
+  expect(screen.getByText("履歴を読み込み中…")).toBeTruthy();
+  expect(screen.queryByText("前の接続先の発話")).toBeNull();
+  mockVoice.ready = true;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(1);
+  mockVoice.logicalConversationId = "conversation-two";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(mockVoice.refreshHistory).toHaveBeenCalledTimes(2);
+  await screen.unmount();
+});
+
+test("new history content keeps the position while older messages are being read", async () => {
+  const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => undefined);
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const history = screen.getByTestId("voice-history-messages");
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 80 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(1);
+  mockVoice.logicalConversationId = "conversation-two";
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(2);
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 500 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  await act(async () => { history.props.onContentSizeChange(); });
+  expect(scrollToEnd).toHaveBeenCalledTimes(3);
+  scrollToEnd.mockRestore();
+  await screen.unmount();
+});
+
+test("history scrolling and downward swipes do not dismiss the panel", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  const history = screen.getByTestId("voice-history-messages");
+  const panel = screen.getByTestId("voice-conversation-history");
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 80 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  await act(async () => { history.props.onScroll({ nativeEvent: {
+    contentOffset: { y: 0 }, contentSize: { height: 800 }, layoutMeasurement: { height: 300 },
+  } }); });
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: 80 }); });
+  expect(screen.getByTestId("voice-conversation-history")).toBe(panel);
+  expect(panel.props.onMockPanelRelease).toBeUndefined();
+  await screen.unmount();
 });
 
 test("routes privacy-safe STT diagnostics from the voice conversation to the shared log", async () => {
@@ -133,16 +389,19 @@ test("shows only the shared footer immediately and starts recording once voice.o
     exiting: { type: "fade-out", duration: 220 },
   });
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-transition").props.style)).toMatchObject({
-    width: "100%",
+    flex: 1, width: "100%",
   });
+  expect(screen.getByTestId("voice-conversation-transition").props.pointerEvents).toBe("box-none");
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-keyboard-avoiding").props.style)).toMatchObject({
     position: "absolute", top: 0, bottom: 0, justifyContent: "flex-end",
   });
   expect(screen.getByTestId("voice-conversation-keyboard-avoiding").props.behavior).toBe("padding");
-  expect(screen.getByTestId("voice-conversation-screen").props.style).toBeUndefined();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-screen").props.style)).toMatchObject({ flex: 1 });
+  expect(screen.getByTestId("voice-conversation-screen").props.pointerEvents).toBe("box-none");
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-content").props.style)).toMatchObject({
-    paddingHorizontal: 20, paddingBottom: 20,
+    flex: 1, justifyContent: "flex-end",
   });
+  expect(screen.getByTestId("voice-conversation-content").props.pointerEvents).toBe("box-none");
   expect(mockStt.start).not.toHaveBeenCalled();
 
   mockVoice.ready = true;

@@ -9,6 +9,18 @@ export type SttMetaChipInput = {
   sttRoundtripMs?: number;
 };
 
+export function formatMessageTimestampLabel(atRaw: unknown) {
+  const raw = typeof atRaw === "string" ? atRaw.trim() : "";
+  if (!raw) return "";
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) return "";
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hour = String(parsed.getHours()).padStart(2, "0");
+  const minute = String(parsed.getMinutes()).padStart(2, "0");
+  return `${month}/${day} ${hour}:${minute}`;
+}
+
 export function parseContextUsageUsedPct(raw: unknown): number | null {
   const payload = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
   const value = Number(payload?.usedPct);

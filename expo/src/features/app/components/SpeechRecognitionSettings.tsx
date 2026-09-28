@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, Text, View } from "react-native";
+import { Alert, Text } from "react-native";
 import { getSttProvider, saveSttProvider, type SttProvider } from "../../stt/sttSettingsClient";
 import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useAppStyles } from "../styles";
@@ -52,23 +52,17 @@ export function SpeechRecognitionSettings() {
   };
 
   return (
-    <View style={styles.settingsSection}>
-      <View style={styles.settingsSectionHeader}>
-        <Text style={styles.settingsSectionTitle}>音声入力 · 文字起こし</Text>
-      </View>
-      <View style={styles.settingsGroup}>
-        <SettingsSelect
-          icon="mic-outline"
-          label="文字起こし方式"
-          options={PROVIDERS}
-          selectedValue={provider}
-          onSelect={(next) => void selectProvider(next)}
-          loading={loading}
-          description="チャットとSkiaボードの次の録音から反映されます。"
-          showDivider={false}
-        />
-        {error ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
-      </View>
-    </View>
+    <>
+      <SettingsSelect
+        icon="mic-outline"
+        label="文字起こし方式"
+        options={PROVIDERS}
+        selectedValue={provider}
+        onSelect={(next) => void selectProvider(next)}
+        loading={loading}
+        description="チャットとSkiaボードの次の録音から反映されます。"
+      />
+      {error ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
+    </>
   );
 }

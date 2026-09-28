@@ -83,6 +83,7 @@ import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatus";
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { findChatMessageMatches } from "../utils/chatFind";
+import { formatMessageTimestampLabel } from "../utils/formatting";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
@@ -138,18 +139,6 @@ const DIRECTORY_MARKER_OPTIONS: { value: DirectoryMarkerColor; label: string; co
   { value: "black", label: "黒", color: DIRECTORY_MARKER_COLORS.black },
   { value: "none", label: "なし", color: "transparent" },
 ];
-
-function formatMessageTimestampLabel(atRaw: unknown) {
-  const raw = String(atRaw || "").trim();
-  if (!raw) return "";
-  const parsed = new Date(raw);
-  if (!Number.isFinite(parsed.getTime())) return "";
-  const month = String(parsed.getMonth() + 1).padStart(2, "0");
-  const day = String(parsed.getDate()).padStart(2, "0");
-  const hour = String(parsed.getHours()).padStart(2, "0");
-  const minute = String(parsed.getMinutes()).padStart(2, "0");
-  return `${month}/${day} ${hour}:${minute}`;
-}
 
 function getMessageTimeValue(atRaw: unknown) {
   const time = new Date(String(atRaw || "")).getTime();

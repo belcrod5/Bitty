@@ -9007,10 +9007,11 @@ runnerWsServer.on("connection", (ws, req) => {
       });
       return true;
     }
-    if (message.op === "voice.open" || message.op === "voice.status") {
+    if (message.op === "voice.open" || message.op === "voice.status" || message.op === "voice.history") {
       const operation = message.op === "voice.open"
         ? voiceContextService.open()
-        : voiceContextService.status(message.payload?.logicalConversationId, message.payload?.clientOperationId);
+        : message.op === "voice.history" ? voiceContextService.history()
+          : voiceContextService.status(message.payload?.logicalConversationId, message.payload?.clientOperationId);
       void operation.then((payload) => {
         const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
         sendRunnerWsEnvelope(ws, {
@@ -9038,7 +9039,7 @@ runnerWsServer.on("connection", (ws, req) => {
       let operation;
       if (message.op === "voice.settings") operation = voiceContextService.getSettings();
       else if (message.op === "voice.settings.update") {
-        operation = voiceContextService.configure(message.payload?.model, message.payload?.effort);
+        operation = voiceContextService.configure(message.payload?.model, message.payload?.effort, message.payload?.systemInstruction);
       } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
       else operation = voiceContextService.clearMessages();
       void operation.then((payload) => sendRunnerWsEnvelope(ws, {

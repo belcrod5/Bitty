@@ -49,6 +49,46 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
+test("loads persisted voice history through Runner", async () => {
+  const request = mockManager.request.getMockImplementation();
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? Promise.resolve({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [{ role: "user", text: "以前の発話", clientOperationId: operationId, at: "2026-09-27T03:04:05.000Z" },
+        { role: "assistant", text: "以前の返答", clientOperationId: operationId }] } })
+    : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  await act(async () => { await result.current.refreshHistory(); });
+  expect(result.current.history.map(({ text }) => text)).toEqual(["以前の発話", "以前の返答"]);
+  expect(result.current.history.map(({ at }) => at)).toEqual(["2026-09-27T03:04:05.000Z", undefined]);
+});
+
+test("an older history response cannot replace a newer one", async () => {
+  const request = mockManager.request.getMockImplementation();
+  const pending: ((response: unknown) => void)[] = [];
+  mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.history"
+    ? new Promise((resolve) => pending.push(resolve)) : request?.(message));
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let first!: Promise<void>;
+  let second!: Promise<void>;
+  await act(async () => {
+    first = result.current.refreshHistory();
+    second = result.current.refreshHistory();
+  });
+  await act(async () => {
+    pending[1]({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [{ role: "user", text: "new", clientOperationId: operationId }] } });
+    await second;
+  });
+  await act(async () => {
+    pending[0]({ op: "voice.history.result", payload: { logicalConversationId: conversationId,
+      messages: [{ role: "user", text: "old", clientOperationId: operationId }] } });
+    await first;
+  });
+  expect(result.current.history[0].text).toBe("new");
+});
+
 test("sends one final text block and reads aloud only after a completed turn", async () => {
   const onCompleted = jest.fn();
   const onAccepted = jest.fn();
@@ -128,6 +168,7 @@ test("reopening after an intentional voice interruption is ready for recording",
   const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
   await waitFor(() => expect(result.current.ready).toBe(true));
   expect(result.current.turnStatus).toBe("idle");
+  expect(result.current.logicalConversationId).toBe(conversationId);
   expect(result.current.error).toBe("");
 });
 
@@ -192,6 +233,7 @@ test("drops the prior reply when message clear rotates the conversation ID", asy
   mockSnapshot = { connected: true, generation: 2 };
   await rerender(undefined);
   await waitFor(() => expect(result.current.reply).toBeNull());
+  await waitFor(() => expect(result.current.logicalConversationId).toBe(nextConversationId));
   expect(result.current.turnStatus).toBe("idle");
 });
 

@@ -433,7 +433,11 @@ test("overlays voice input while keeping the board mounted", async () => {
   />);
   await fireEvent.press(screen.getByTestId("skia-board-voice-conversation"));
   expect(screen.getByTestId("skia-board-status-pill")).toBeTruthy();
-  expect(screen.getByTestId("voice-conversation-screen")).toBeTruthy();
+  const voice = screen.getByTestId("voice-conversation-screen");
+  const header = screen.getByTestId("skia-board-header-safe-area");
+  const siblings = header.parent?.children ?? [];
+  expect(siblings.indexOf(header)).toBeLessThan(siblings.indexOf(voice));
+  expect(StyleSheet.flatten(header.props.style).zIndex).toBeUndefined();
   await fireEvent.press(screen.getByTestId("voice-conversation-screen"));
   expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
   expect(screen.getByTestId("skia-board-status-pill")).toBeTruthy();

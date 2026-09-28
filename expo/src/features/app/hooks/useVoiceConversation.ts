@@ -7,6 +7,7 @@ import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import { normalizeAppServerApprovalRequest, toCodexApprovalDecision } from "../../codex/client/helpers";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
+export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string };
 type PendingTurn = {
   id: string;
   text?: string;
@@ -66,6 +67,9 @@ export function useVoiceConversation(
   const [reply, setReply] = useState<{ text: string; operationId: string } | null>(null);
   const [error, setError] = useState("");
   const [contextStats, setContextStats] = useState<VoiceContextStats | null>(null);
+  const [history, setHistory] = useState<VoiceHistoryMessage[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const historyRequestRef = useRef(0);
   const pendingRef = useRef<PendingTurn | null>(null);
   const turnRevisionRef = useRef(0);
   const conversationIdRef = useRef("");
@@ -185,7 +189,10 @@ export function useVoiceConversation(
         return;
       }
       if (conversationIdRef.current && conversationIdRef.current !== conversationId) {
+        historyRequestRef.current += 1;
         setReply(null);
+        setHistory([]);
+        setHistoryError("");
         setTurnStatus("idle");
       }
       conversationIdRef.current = conversationId;
@@ -378,11 +385,41 @@ export function useVoiceConversation(
     }).catch(() => undefined);
   }, [manager]);
 
+  const refreshHistory = useCallback(async () => {
+    const conversationId = conversationIdRef.current;
+    const startedGeneration = manager.getSnapshot().generation;
+    if (!conversationId || !manager.getSnapshot().connected) return;
+    const requestNumber = ++historyRequestRef.current;
+    try {
+      const response = await manager.request({ channel: "agent", op: "voice.history" });
+      const payload = payloadOf(response);
+      if (response.op !== "voice.history.result" || payload.logicalConversationId !== conversationId
+        || !Array.isArray(payload.messages) || !payload.messages.every((message) =>
+          message && typeof message === "object" && (message.role === "user" || message.role === "assistant")
+          && typeof message.text === "string" && typeof message.clientOperationId === "string")) {
+        throw new Error("音声会話の履歴を読み込めません。");
+      }
+      if (!aliveRef.current || historyRequestRef.current !== requestNumber || conversationIdRef.current !== conversationId
+        || manager.getSnapshot().generation !== startedGeneration) return;
+      setHistory(payload.messages as VoiceHistoryMessage[]);
+      setHistoryError("");
+    } catch (cause) {
+      if (aliveRef.current && historyRequestRef.current === requestNumber && conversationIdRef.current === conversationId
+        && manager.getSnapshot().generation === startedGeneration) {
+        setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
+      }
+    }
+  }, [manager]);
+
   return {
     ready: Boolean(logicalConversationId) && connected,
+    logicalConversationId,
     turnStatus,
     reply,
     contextStats,
+    history,
+    historyError,
+    refreshHistory,
     error,
     setError,
     sendTranscript,
