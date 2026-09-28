@@ -2,13 +2,17 @@ import { useEffect, useMemo } from "react";
 import { Platform, requireNativeComponent, StyleSheet, type ViewProps } from "react-native";
 import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 
+let macBlurView: ReturnType<typeof requireNativeComponent<ViewProps>> | null = null;
+
 export function VoiceHistoryBackdrop({ expanded, reduceMotion }: { expanded: boolean; reduceMotion: boolean }) {
   const opacity = useSharedValue(0);
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
   const IosBlurView = useMemo(() => Platform.OS === "ios"
     ? require("expo-blur").BlurView as typeof import("expo-blur").BlurView : null, []);
-  const MacBlurView = useMemo(() => Platform.OS === "macos"
-    ? requireNativeComponent<ViewProps>("BittyVoiceBlur") : null, []);
+  if (Platform.OS === "macos" && !macBlurView) {
+    macBlurView = requireNativeComponent<ViewProps>("BittyVoiceBlur");
+  }
+  const MacBlurView = Platform.OS === "macos" ? macBlurView : null;
 
   useEffect(() => {
     opacity.value = withTiming(expanded ? 1 : 0, { duration: reduceMotion ? 0 : 240 });

@@ -168,7 +168,10 @@ beforeEach(() => {
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
 });
-afterEach(() => { Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform }); });
+afterEach(() => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
+  jest.restoreAllMocks();
+});
 
 test("the footer reveals stored messages and closes the history panel", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
@@ -237,6 +240,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
 
 test("macOS renders the native within-window blur behind the dark overlay", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+  const nativeViewSpy = jest.spyOn(require("react-native"), "requireNativeComponent");
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   const blur = screen.getByTestId("voice-conversation-board-blur");
@@ -248,6 +252,10 @@ test("macOS renders the native within-window blur behind the dark overlay", asyn
   await act(async () => { fireEvent.press(screen.getByTestId("voice-history-close")); });
   expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
   await screen.unmount();
+  const remounted = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { remounted.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(nativeViewSpy.mock.calls.filter(([name]) => name === "BittyVoiceBlur")).toHaveLength(1);
+  await remounted.unmount();
 });
 
 test("Android keeps the dark fallback without loading native blur", async () => {
