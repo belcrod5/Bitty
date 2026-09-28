@@ -246,7 +246,7 @@ export function ChatScreen({
   } = useChatDiagnostics();
   const {
     composerMessageHistory,
-    composerDrafts, composerDraftsLoaded, setComposerDraft,
+    composerDrafts, composerDraftsLoaded, setComposerDraft, runnerClientStateScopeId,
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,
@@ -570,7 +570,8 @@ export function ChatScreen({
   const miniBoardPrevSessionIdRef = useRef("");
   const usesPanelComposerState = isMiniBoardPopupMode && !!panelId;
   useComposerDraftSync({
-    backendId: backendIdForView, sessionId: selectedSessionIdForView, text: panelTranscript, enabled: usesPanelComposerState,
+    backendId: backendIdForView, sessionId: selectedSessionIdForView, scopeId: runnerClientStateScopeId,
+    text: panelTranscript, enabled: usesPanelComposerState,
     drafts: composerDrafts, loaded: composerDraftsLoaded,
     setText: setPanelTranscript, setDraft: setComposerDraft,
   });

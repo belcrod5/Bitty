@@ -7,7 +7,8 @@ export type ChatComposerContextValue = {
   composerMessageHistory: readonly string[];
   composerDrafts: readonly ComposerDraft[];
   composerDraftsLoaded: boolean;
-  setComposerDraft: (sessionId: string, text: string) => void;
+  runnerClientStateScopeId: string;
+  setComposerDraft: (sessionId: string, text: string, backendId?: string) => void;
   chatComposerInputRef: MutableRefObject<TextInput | null>;
   showComposerFullscreenToggle: boolean;
   setComposerInputFocused: (focused: boolean) => void;

@@ -81,6 +81,22 @@ test("history and drafts use item operations instead of replacing other devices'
   expect(operations.map((operation) => operation.type)).toEqual(["composer.append", "draft.set"]);
 });
 
+test("clears only the accepted backend's draft when session IDs match", async () => {
+  const codexKey = JSON.stringify(["codex", "shared"]);
+  const claudeKey = JSON.stringify(["claude", "shared"]);
+  server.drafts[codexKey] = { text: "keep Codex", updatedAt: 1 };
+  server.drafts[claudeKey] = { text: "sent Claude", updatedAt: 2 };
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+
+  await act(async () => result.current.clearDraft("shared", "claude"));
+  await waitFor(() => expect(server.drafts[claudeKey]).toBeUndefined());
+  expect(server.drafts[codexKey]?.text).toBe("keep Codex");
+  expect(result.current.drafts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ backendId: "codex", sessionId: "shared", text: "keep Codex" }),
+  ]));
+});
+
 test("queued mutations and debounced drafts stay with the Runner selected when they were made", async () => {
   const requests: { url: string; operation: Record<string, unknown> | null }[] = [];
   const fetchImpl = global.fetch;

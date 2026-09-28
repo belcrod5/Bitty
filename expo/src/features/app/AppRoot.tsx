@@ -4218,13 +4218,14 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const recordAcceptedComposerMessage = useCallback((
     message: string,
     sessionIdRaw?: string,
+    backendId?: string,
     inputDisposition: ComposerInputDisposition = "clear"
   ) => {
     recordComposerMessageHistory(message);
     if (inputDisposition === "clear") {
-      clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current);
+      clearComposerDraft(sessionIdRaw || selectedLlmSessionIdRef.current, backendId || llmBackend);
     }
-  }, [clearComposerDraft, recordComposerMessageHistory]);
+  }, [clearComposerDraft, llmBackend, recordComposerMessageHistory]);
   const { runSlashCommand } = useSlashCommandController({
     setTranscript,
     onCommandAccepted: recordAcceptedComposerMessage,
@@ -5878,7 +5879,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   }, [stopTtsPlayback, ttsLoading, ttsQueueProcessing, voiceInputDuringTtsAllowed]);
   const chatComposerContextValue = useChatComposerContextValue({
     composerMessageHistory,
-    composerDrafts, composerDraftsLoaded, setComposerDraft,
+    composerDrafts, composerDraftsLoaded, setComposerDraft, runnerClientStateScopeId,
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,
