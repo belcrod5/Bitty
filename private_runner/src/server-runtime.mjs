@@ -11190,7 +11190,9 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
       })();
     }
   }
-  if (responseRpcMethod === "turn/start" && meta?.hasError) codexRawSessionOwnership.settle(relay, "released", "turn");
+  if (responseRpcMethod === "turn/start" && meta?.hasError && !responseMeta.terminal) {
+    codexRawSessionOwnership.settle(relay, "released", "turn");
+  }
   if (
     responseRpcMethod === "turn/start" &&
     meta?.hasResult &&

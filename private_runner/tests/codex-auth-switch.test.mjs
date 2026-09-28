@@ -390,6 +390,36 @@ test("a late result from a completed turn leaves the next turn's lease intact", 
   }
 });
 
+test("a late error from a completed turn leaves the next raw turn lease intact", () => {
+  const { relay, rpcId, receive } = authRelay();
+  const first = { threadId: relay.threadId, turn: { id: "turn-first" } };
+  const second = { threadId: relay.threadId, turn: { id: "turn-second" } };
+  try {
+    receive({ method: "turn/started", params: first });
+    receive({ method: "turn/completed", params: { ...first, status: "completed" } });
+    assert.equal(relay.requestMetaByRpcId.get(rpcId)?.terminal, true);
+    const secondRpcId = __TESTING__.codexRpcIdKey(18);
+    relay.authLeasesByRpcId.set(secondRpcId, codexAuthService.acquireLease());
+    relay.requestMethodByRpcId.set(secondRpcId, "turn/start");
+    relay.requestMetaByRpcId.set(secondRpcId, {});
+    receive({ method: "turn/started", params: second });
+    const secondAgentLease = {
+      sessionRef: { backendId: "codex", nativeSessionId: relay.threadId },
+      generation: 2,
+      kind: "turn",
+    };
+    relay.agentLease = secondAgentLease;
+    receive({ id: 17, error: { code: -32603, message: "late first turn error" } });
+    assert.equal(relay.requestMethodByRpcId.has(rpcId), false);
+    assert.equal(relay.agentLease, secondAgentLease);
+    assert.equal(relay.authLeasesByRpcId.has(secondRpcId), true);
+    assert.equal(relay.currentTurnId, "turn-second");
+  } finally {
+    relay.agentLease = null;
+    __TESTING__.cleanupCodexRelay(relay, "test_done");
+  }
+});
+
 test("a mismatched turn/start result cannot release another turn's lease", () => {
   const { relay, receive } = authRelay();
   const expected = { threadId: relay.threadId, turn: { id: "turn-expected" } };
