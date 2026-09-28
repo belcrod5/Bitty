@@ -11,6 +11,7 @@ jest.mock("../utils/persistedSettingsFile", () => ({
 const mockRead = jest.mocked(readPersistedSettings);
 const mockMutate = jest.mocked(mutatePersistedSettings);
 const sessionKey = JSON.stringify(["codex", "session-1"]);
+const legacySessionKey = JSON.stringify(["legacy", "session-1"]);
 const directory = { id: "dir-1", path: "/work", displayName: "Work", markerColor: "green" as const };
 const parseRegisteredDirectories = (value: unknown) => Array.isArray(value) ? value : [];
 let local: Record<string, unknown>;
@@ -35,17 +36,37 @@ beforeEach(() => {
   global.fetch = jest.fn(async (_url, init) => {
     const operation = init?.body ? JSON.parse(String(init.body)).operation : null;
     let migrationApplied: boolean | undefined;
+    let migrationComplete: boolean | undefined;
     if (operation) {
       operations.push(operation);
       if (operation.type === "migrate") {
-        migrationApplied = server.revision === 0;
+        migrationApplied = false;
+        migrationComplete = true;
+        for (const directory of operation.directories) {
+          if (!server.directories.some((item) => item.path === directory.path)) {
+            server.directories.push(directory);
+            migrationApplied = true;
+          }
+        }
+        for (const [key, value] of Object.entries(operation.sessions)) {
+          if (!server.sessions[key]) {
+            server.sessions[key] = value as { title: string; markerColor: string };
+            migrationApplied = true;
+          } else if (JSON.stringify(server.sessions[key]) !== JSON.stringify(value)) migrationComplete = false;
+        }
+        for (const text of operation.composerHistory) {
+          if (!server.composerHistory.includes(text)) {
+            server.composerHistory.push(text);
+            migrationApplied = true;
+          }
+        }
+        for (const [key, value] of Object.entries(operation.drafts)) {
+          if (!server.drafts[key]) {
+            server.drafts[key] = { text: (value as { text: string }).text, updatedAt: 1 };
+            migrationApplied = true;
+          } else if (server.drafts[key].text !== (value as { text: string }).text) migrationComplete = false;
+        }
         if (migrationApplied) {
-          server.directories = operation.directories;
-          server.sessions = operation.sessions;
-          server.composerHistory = operation.composerHistory;
-          server.drafts = Object.fromEntries(Object.entries(operation.drafts).map(([key, value]) => [key, {
-            text: (value as { text: string }).text, updatedAt: 1,
-          }]));
           server.revision++;
         }
       } else if (operation.type === "composer.append") {
@@ -58,7 +79,7 @@ beforeEach(() => {
         server.revision++;
       }
     }
-    return { ok: true, status: 200, json: async () => ({ snapshot: { ...server, migrationApplied } }) } as Response;
+    return { ok: true, status: 200, json: async () => ({ snapshot: { ...server, migrationApplied, migrationComplete } }) } as Response;
   }) as typeof fetch;
 });
 
@@ -94,29 +115,31 @@ test("migrates old device data once, then removes local authoritative fields", a
   const { result, setSessionTitleOverridesById } = await renderState();
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
   expect(operations.map((operation) => operation.type)).toEqual(["migrate"]);
-  expect(server.sessions[sessionKey].title).toBe("Renamed");
-  expect(setSessionTitleOverridesById).toHaveBeenCalledWith({ [sessionKey]: "Renamed" });
-  expect(result.current.drafts[0]).toMatchObject({ backendId: "codex", sessionId: "session-1", text: "unsent" });
+  expect(server.sessions[legacySessionKey].title).toBe("Renamed");
+  expect(setSessionTitleOverridesById).toHaveBeenCalledWith({ [legacySessionKey]: "Renamed" });
+  expect(result.current.drafts[0]).toMatchObject({ backendId: "legacy", sessionId: "session-1", text: "unsent" });
   expect(local.registeredDirectories).toBeUndefined();
   expect(local.composerDrafts).toBeUndefined();
 });
 
-test("migrates legacy session metadata using the saved backend", async () => {
+test("preserves legacy session metadata without guessing a backend", async () => {
   local = { llmBackend: "claude", sessionTitleOverridesById: { "session-1": "Claude title" } };
   const { result } = await renderState();
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
-  expect(server.sessions[JSON.stringify(["claude", "session-1"])].title).toBe("Claude title");
+  expect(server.sessions[legacySessionKey].title).toBe("Claude title");
   expect(server.sessions[sessionKey]).toBeUndefined();
 });
 
-test("existing Runner data wins without deleting different local legacy data", async () => {
+test("a second device contributes legacy data without replacing provider-specific Runner data", async () => {
   local = { sessionTitleOverridesById: { "session-1": "Old phone" } };
   server = { ...server, revision: 3, sessions: { [sessionKey]: { title: "Other device", markerColor: "none" } } };
   const { result, setSessionTitleOverridesById } = await renderState();
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
-  expect(operations).toEqual([]);
-  expect(setSessionTitleOverridesById).toHaveBeenCalledWith({ [sessionKey]: "Other device" });
-  expect(local.sessionTitleOverridesById).toEqual({ "session-1": "Old phone" });
+  expect(operations.map((operation) => operation.type)).toEqual(["migrate"]);
+  expect(setSessionTitleOverridesById).toHaveBeenCalledWith({
+    [sessionKey]: "Other device", [legacySessionKey]: "Old phone",
+  });
+  expect(local.sessionTitleOverridesById).toBeUndefined();
 });
 
 test("history and drafts use item operations instead of replacing other devices' state", async () => {
@@ -130,4 +153,60 @@ test("history and drafts use item operations instead of replacing other devices'
   await act(async () => Promise.resolve());
   expect(server.drafts[sessionKey].text).toBe("working");
   expect(operations.map((operation) => operation.type)).toEqual(["composer.append", "draft.set"]);
+});
+
+test("queued mutations and debounced drafts stay with the Runner selected when they were made", async () => {
+  const requests: { url: string; operation: Record<string, unknown> | null }[] = [];
+  const fetchImpl = global.fetch;
+  global.fetch = jest.fn(async (url, init) => {
+    requests.push({ url: String(url), operation: init?.body ? JSON.parse(String(init.body)).operation : null });
+    return fetchImpl(url, init);
+  }) as typeof fetch;
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://old-runner.test", runnerToken: "token", backendId: "codex",
+    parseRegisteredDirectories,
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), {
+    initialProps: props,
+  });
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  await act(async () => {
+    result.current.mutate({ type: "session.set", backendId: "codex", sessionId: "one", title: "Old Runner" });
+    result.current.setDraft("one", "unfinished", "codex");
+    await rerender({ ...props, runnerUrl: "http://new-runner.test" });
+  });
+  await act(async () => { jest.advanceTimersByTime(300); });
+  await waitFor(() => expect(requests.filter((item) => item.operation?.type === "draft.set")).toHaveLength(1));
+  expect(requests.filter((item) => item.operation?.type === "session.set" || item.operation?.type === "draft.set")
+    .every((item) => item.url.startsWith("http://old-runner.test/"))).toBe(true);
+});
+
+test("editing the same draft after switching Runner still flushes the old Runner's pending text", async () => {
+  const requests: { url: string; operation: Record<string, unknown> | null }[] = [];
+  const fetchImpl = global.fetch;
+  global.fetch = jest.fn(async (url, init) => {
+    requests.push({ url: String(url), operation: init?.body ? JSON.parse(String(init.body)).operation : null });
+    return fetchImpl(url, init);
+  }) as typeof fetch;
+  const props = {
+    settingsLoaded: true, runnerUrl: "http://old-runner.test", runnerToken: "token", backendId: "codex",
+    parseRegisteredDirectories,
+    setRegisteredDirectories: jest.fn(), setSessionTitleOverridesById: jest.fn(), setSessionMarkerColorsById: jest.fn(),
+  };
+  const { result, rerender } = await renderHook((options: typeof props) => useRunnerClientState(options), {
+    initialProps: props,
+  });
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  await act(async () => result.current.setDraft("session-1", "old text"));
+  await rerender({ ...props, runnerUrl: "http://new-runner.test" });
+  await act(async () => result.current.setDraft("session-1", "new text"));
+  await act(async () => { jest.advanceTimersByTime(300); });
+  await waitFor(() => expect(requests.filter((item) => item.operation?.type === "draft.set")).toHaveLength(2));
+  expect(requests.filter((item) => item.operation?.type === "draft.set").map((item) => [
+    item.url, item.operation?.text,
+  ])).toEqual([
+    ["http://old-runner.test/client-state", "old text"],
+    ["http://new-runner.test/client-state", "new text"],
+  ]);
 });

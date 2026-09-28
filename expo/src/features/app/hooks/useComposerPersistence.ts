@@ -80,7 +80,9 @@ export function useComposerDraftSync(options: {
 
     if (!loaded) return;
     const persistedText = drafts.find((draft) => draft.sessionId === sessionId
-      && (!backendId || (draft.backendId || "codex") === backendId))?.text || "";
+      && (!backendId || (draft.backendId || "codex") === backendId))?.text
+      ?? drafts.find((draft) => draft.sessionId === sessionId && draft.backendId === "legacy")?.text
+      ?? "";
     if (binding.pendingDraftText !== null) {
       if (persistedText === binding.pendingDraftText) binding.pendingDraftText = null;
       return;

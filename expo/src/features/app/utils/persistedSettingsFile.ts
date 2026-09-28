@@ -55,6 +55,7 @@ export async function mutatePersistedSettings(
 
 export const LOCATION_BACKGROUND_FIELDS = [
   "locationSchedules",
+  "locationScheduleMigrationComplete",
   "locationSchedulePendingStates",
   "locationScheduleLastStates",
 ] as const;

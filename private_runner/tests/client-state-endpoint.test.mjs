@@ -37,6 +37,23 @@ test("client state is authenticated, durable, provider-aware, and merges field o
       type: "migrate", directories: [], sessions: {}, composerHistory: [], drafts: {},
     });
     assert.equal((await ignoredMigration.json()).snapshot.migrationApplied, false);
+    const secondDeviceKey = JSON.stringify(["legacy", "other-session"]);
+    const secondDevice = await post({
+      type: "migrate", directories: [],
+      sessions: { [secondDeviceKey]: { title: "Second device" } },
+      composerHistory: ["from second device"], drafts: { [secondDeviceKey]: { text: "other draft" } },
+    });
+    const secondDeviceSnapshot = (await secondDevice.json()).snapshot;
+    assert.equal(secondDeviceSnapshot.migrationComplete, true);
+    assert.equal(secondDeviceSnapshot.sessions[secondDeviceKey].title, "Second device");
+    const conflict = await post({
+      type: "migrate", directories: [],
+      sessions: { [secondDeviceKey]: { title: "Conflicting local title" } },
+      composerHistory: [], drafts: {},
+    });
+    const conflictSnapshot = (await conflict.json()).snapshot;
+    assert.equal(conflictSnapshot.migrationComplete, false);
+    assert.equal(conflictSnapshot.sessions[secondDeviceKey].title, "Second device");
     const responses = await Promise.all([
       post({ type: "session.set", backendId: "codex", sessionId: "same-session", title: "Renamed" }),
       post({ type: "session.set", backendId: "claude", sessionId: "same-session", markerColor: "yellow" }),
@@ -48,7 +65,7 @@ test("client state is authenticated, durable, provider-aware, and merges field o
     assert.deepEqual(snapshot.directories, [directory]);
     assert.equal(snapshot.sessions[codexKey].title, "Renamed");
     assert.equal(snapshot.sessions[claudeKey].markerColor, "yellow");
-    assert.deepEqual(snapshot.composerHistory, ["second", "first"]);
+    assert.deepEqual(snapshot.composerHistory, ["second", "first", "from second device"]);
     assert.equal(snapshot.drafts[codexKey].text, "unsent");
     assert.equal(snapshot.drafts[claudeKey].text, "other unsent");
     assert.equal(JSON.parse(await fs.readFile(process.env.CLIENT_STATE_STORE_PATH, "utf8")).revision, snapshot.revision);

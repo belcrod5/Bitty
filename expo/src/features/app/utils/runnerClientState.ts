@@ -6,12 +6,13 @@ export const runnerSessionKey = (backendId: unknown, sessionId: unknown) => JSON
 ]);
 
 export function runnerSessionValue<T>(values: Record<string, T>, backendId: unknown, sessionId: unknown): T | undefined {
-  return values[runnerSessionKey(backendId, sessionId)];
+  return values[runnerSessionKey(backendId, sessionId)] ?? values[runnerSessionKey("legacy", sessionId)];
 }
 
 export type RunnerClientState = {
   revision: number;
   migrationApplied?: boolean;
+  migrationComplete?: boolean;
   directories: RegisteredDirectoryEntry[];
   sessions: Record<string, { title: string; markerColor: RegisteredDirectoryEntry["markerColor"] }>;
   composerHistory: string[];

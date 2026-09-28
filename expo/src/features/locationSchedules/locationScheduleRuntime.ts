@@ -23,6 +23,7 @@ import {
 } from "./locationScheduleRules";
 
 const RULES_FIELD = "locationSchedules";
+const MIGRATED_FIELD = "locationScheduleMigrationComplete";
 const PENDING_FIELD = "locationSchedulePendingStates";
 const LAST_STATES_FIELD = "locationScheduleLastStates";
 const LOCATION_REFRESH_TASK_NAME = "bitty-location-schedule-refresh";
@@ -35,23 +36,47 @@ export function shouldRegisterBackgroundNotificationTask(
   return rules.some((rule) => rule.enabled);
 }
 
-function legacyRulesInCurrentTimeZone(rules: readonly LocationScheduleRule[], locationDeviceId: string) {
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  return rules.map((rule) => {
-    const current = { ...rule, timeZone, locationDeviceId };
-    return {
-      ...current,
-      regionRevision: locationScheduleRevision(current),
-    };
-  });
-}
-
 function rulesWithRevisions(rules: readonly LocationScheduleRule[]) {
   return rules.map((rule) => ({ ...rule, regionRevision: locationScheduleRevision(rule) }));
 }
 
 function ownedRules(rules: readonly LocationScheduleRule[], deviceId: string) {
   return rules.filter((rule) => rule.locationDeviceId === deviceId);
+}
+
+function rulesNeededOnDevice(rules: readonly LocationScheduleRule[], deviceId: string) {
+  return rules.filter((rule) => rule.locationDeviceId === deviceId
+    || (rule.calendarAccess === "read" && rule.calendarDeviceId === deviceId));
+}
+
+function sameRuleDefinition(left: LocationScheduleRule, right: LocationScheduleRule) {
+  const { locationDeviceId: _leftOwner, ...leftDefinition } = left;
+  const { locationDeviceId: _rightOwner, ...rightDefinition } = right;
+  return JSON.stringify(leftDefinition) === JSON.stringify(rightDefinition);
+}
+
+function addUnmigratedRules(serverRules: LocationScheduleRule[], localRules: LocationScheduleRule[], deviceId: string) {
+  const merged = [...serverRules];
+  let changed = false;
+  for (const local of localRules) {
+    if (local.locationDeviceId && local.locationDeviceId !== deviceId) continue;
+    const existing = merged.find((rule) => rule.id === local.id);
+    if (existing?.locationDeviceId === deviceId) continue;
+    if (existing && !existing.locationDeviceId && sameRuleDefinition(existing, local)) {
+      Object.assign(existing, { locationDeviceId: deviceId });
+      changed = true;
+      continue;
+    }
+    const id = existing ? `legacy_${locationScheduleRevision({ ...local, locationDeviceId: deviceId }).slice(5)}` : local.id;
+    const migrated = merged.find((rule) => rule.id === id);
+    if (migrated) {
+      if (migrated.locationDeviceId !== deviceId) throw new Error("location schedule migration ID conflict");
+      continue;
+    }
+    merged.push({ ...local, id, locationDeviceId: deviceId });
+    changed = true;
+  }
+  return changed ? merged : null;
 }
 
 class RunnerRequestError extends Error {
@@ -130,14 +155,14 @@ async function persistLocationState(event: PendingLocationState) {
 
 export async function flushPendingLocationStates() {
   let pending: PendingLocationState[] = [];
+  const locationDeviceId = await getOrCreatePushDeviceId();
   await mutatePersistedSettings((current) => {
-    const rules = parseLocationScheduleRules(current[RULES_FIELD]);
+    const rules = ownedRules(parseLocationScheduleRules(current[RULES_FIELD]), locationDeviceId);
     pending = pendingLocationStatesForRules(current[PENDING_FIELD], rules);
     return { ...current, [PENDING_FIELD]: pending };
   });
   const sent = new Set<string>();
   if (!pending.length) return;
-  const locationDeviceId = await getOrCreatePushDeviceId();
   for (const event of pending) {
     try {
       await runnerRequest("/location-schedules/state", "POST", { ...event, locationDeviceId });
@@ -208,7 +233,8 @@ async function reconcileLocationRefreshTask(enabled: boolean, rules: readonly Lo
 }
 
 export async function reconcileLocationSchedules(rules: readonly LocationScheduleRule[]) {
-  const regions = enabledLocationRegions(rules);
+  const locationRules = ownedRules(rules, await getOrCreatePushDeviceId());
+  const regions = enabledLocationRegions(locationRules);
   if (!regions.length) {
     const running = await Location.hasStartedGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME).catch(() => false);
     if (running) await Location.stopGeofencingAsync(LOCATION_SCHEDULE_TASK_NAME);
@@ -227,7 +253,7 @@ export async function reconcileLocationSchedules(rules: readonly LocationSchedul
   await reconcileLocationRefreshTask(true, rules);
 
   const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-  for (const rule of rules.filter((item) => item.enabled)) {
+  for (const rule of locationRules.filter((item) => item.enabled)) {
     const state = isCoordinateInsideRule(current.coords, rule) ? "inside" : "outside";
     await persistLocationState({
       ruleId: rule.id,
@@ -245,7 +271,7 @@ export async function saveAndActivateLocationSchedules(rules: readonly LocationS
   const normalized = rulesWithRevisions(rules);
   const revision = expectedRevision ?? (await fetchRunnerLocationSchedules()).scheduleRevision;
   await syncLocationSchedules(normalized, revision);
-  const localRules = ownedRules(normalized, deviceId);
+  const localRules = rulesNeededOnDevice(normalized, deviceId);
   await mutatePersistedSettings((current) => ({
     ...current,
     [RULES_FIELD]: localRules,
@@ -259,11 +285,22 @@ export async function loadLocationSchedules() {
 }
 
 export async function loadRunnerLocationSchedules() {
-  const snapshot = await fetchRunnerLocationSchedules();
+  const deviceId = await getOrCreatePushDeviceId();
+  let snapshot = await fetchRunnerLocationSchedules();
+  const wasMigrated = await readPersistedSettingsField(MIGRATED_FIELD) === true;
+  if (!wasMigrated) {
+    const legacy = await loadLocationSchedules();
+    const merged = addUnmigratedRules(parseLocationScheduleRules(snapshot.rules), legacy, deviceId);
+    if (merged) {
+      await syncLocationSchedules(merged, snapshot.scheduleRevision);
+      snapshot = await fetchRunnerLocationSchedules();
+    }
+  }
   const rules = parseLocationScheduleRules(snapshot.rules);
-  const localRules = ownedRules(rules, await getOrCreatePushDeviceId());
+  const localRules = rulesNeededOnDevice(rules, deviceId);
   await mutatePersistedSettings((current) => ({
     ...current,
+    [MIGRATED_FIELD]: true,
     [RULES_FIELD]: localRules,
     [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], localRules),
   }));
@@ -278,7 +315,7 @@ export async function recoverLocationScheduleState(origin: string) {
   if (origin === "foreground" || origin === "silent_push") {
     await reconcileLocationSchedules(allRules).catch(() => {});
   }
-  const rules = allRules.filter((rule) => rule.enabled);
+  const rules = ownedRules(allRules, await getOrCreatePushDeviceId()).filter((rule) => rule.enabled);
   if (!rules.length) return;
   const foreground = await Location.getForegroundPermissionsAsync();
   if (foreground.status !== "granted") return;
@@ -326,35 +363,19 @@ function subscribeAppStateRecovery() {
 export async function bootstrapLocationSchedules() {
   subscribeAppStateRecovery();
   const localRules = await loadLocationSchedules();
-  let rules: LocationScheduleRule[] = [];
+  let rules = localRules;
   try {
-    const deviceId = await getOrCreatePushDeviceId();
-    const snapshot = await fetchRunnerLocationSchedules();
-    if (snapshot.scheduleRevision === 0 && localRules.length > 0) {
-      rules = legacyRulesInCurrentTimeZone(localRules, deviceId);
-      await syncLocationSchedules(rules, 0);
-    } else {
-      const serverRules = parseLocationScheduleRules(snapshot.rules);
-      const localIds = new Set(localRules.map((rule) => rule.id));
-      const unowned = serverRules.filter((rule) => !rule.locationDeviceId && localIds.has(rule.id));
-      if (unowned.length) {
-        const claimed = serverRules.map((rule) => unowned.includes(rule) ? { ...rule, locationDeviceId: deviceId } : rule);
-        await syncLocationSchedules(claimed, snapshot.scheduleRevision);
-        rules = ownedRules(claimed, deviceId);
-      } else {
-        rules = ownedRules(serverRules, deviceId);
-      }
-    }
+    await loadRunnerLocationSchedules();
+    rules = await loadLocationSchedules();
   } catch (error) {
     console.warn("[location-schedule] failed to load Runner schedules", error);
-    rules = localRules;
   }
   await mutatePersistedSettings((current) => ({
     ...current,
     [RULES_FIELD]: rules,
     [PENDING_FIELD]: pendingLocationStatesForRules(current[PENDING_FIELD], rules),
   }));
-  if (!rules.some((rule) => rule.enabled)) {
+  if (!ownedRules(rules, await getOrCreatePushDeviceId()).some((rule) => rule.enabled)) {
     await reconcileLocationSchedules(rules);
     return;
   }
@@ -385,7 +406,8 @@ if (!TaskManager.isTaskDefined(LOCATION_SCHEDULE_TASK_NAME)) {
     });
     if (!region) return;
     const rules = await loadLocationSchedules();
-    const rule = rules.find((item) => item.enabled && item.id === region.ruleId);
+    const deviceId = await getOrCreatePushDeviceId();
+    const rule = rules.find((item) => item.enabled && item.locationDeviceId === deviceId && item.id === region.ruleId);
     if (!rule || regionIdentifierForRule(rule) !== payload?.region?.identifier) {
       void logLocationScheduleEvent("location_geofence_event_ignored", {
         identifier: String(payload?.region?.identifier || ""),

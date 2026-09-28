@@ -1965,10 +1965,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     mutateRunnerClientState({ type: "session.set", backendId: backendIdRaw, sessionId, title: nextTitle });
     setSessionTitleOverridesById((prev) => {
       if (!nextTitle) {
-        if (!prev[key]) return prev;
-        const next = { ...prev };
-        delete next[key];
-        return next;
+        return { ...prev, [key]: "" };
       }
       if (prev[key] === nextTitle) return prev;
       return {
@@ -1992,10 +1989,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     mutateRunnerClientState({ type: "session.set", backendId: backendIdRaw, sessionId, markerColor: nextMarkerColor });
     setSessionMarkerColorsById((prev) => {
       if (nextMarkerColor === "none") {
-        if (!prev[key]) return prev;
-        const next = { ...prev };
-        delete next[key];
-        return next;
+        return { ...prev, [key]: "none" };
       }
       if (prev[key] === nextMarkerColor) return prev;
       return {

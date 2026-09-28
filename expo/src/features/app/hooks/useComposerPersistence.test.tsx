@@ -97,3 +97,17 @@ test("clears every composer bound to a draft after an accepted send removes it",
   await rerender({});
   await waitFor(() => expect(result.current).toBe(""));
 });
+
+test("restores an unscoped legacy draft until a backend-specific draft exists", async () => {
+  let drafts: ComposerDraft[] = [{ backendId: "legacy", sessionId: "shared", text: "old draft", updatedAt: 1 }];
+  const { result, rerender } = await renderHook(() => {
+    const [text, setText] = useState("");
+    useComposerDraftSync({ backendId: "claude", sessionId: "shared", text, drafts,
+      loaded: true, setDraft: jest.fn(), setText });
+    return text;
+  });
+  await waitFor(() => expect(result.current).toBe("old draft"));
+  drafts = [{ backendId: "claude", sessionId: "shared", text: "Claude draft", updatedAt: 2 }, ...drafts];
+  await rerender({});
+  await waitFor(() => expect(result.current).toBe("Claude draft"));
+});

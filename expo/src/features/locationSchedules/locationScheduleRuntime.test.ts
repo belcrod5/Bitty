@@ -64,6 +64,7 @@ jest.mock("react-native", () => ({
 
 import {
   bootstrapLocationSchedules,
+  loadRunnerLocationSchedules,
   recoverLocationScheduleState,
   saveAndActivateLocationSchedules,
   shouldRegisterBackgroundNotificationTask,
@@ -292,7 +293,7 @@ test("editing another device's rule preserves its schedule timezone and owner", 
 });
 
 test("foreground recovery reads Runner without overwriting it from stale local rules", async () => {
-  mockSettings = { locationSchedules: [rule()] };
+  mockSettings = { locationSchedules: [rule()], locationScheduleMigrationComplete: true };
   mockTimeZone = "America/New_York";
 
   await recoverLocationScheduleState("foreground");
@@ -300,4 +301,84 @@ test("foreground recovery reads Runner without overwriting it from stale local r
   expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/location-schedules"))).toBe(true);
   expect(mockFetch.mock.calls.some(([url, options]) => String(url).endsWith("/location-schedules") && options?.method === "PUT")).toBe(false);
   expect(mockSettings.locationSchedules).toEqual([]);
+});
+
+test("migrates a second device's missing legacy rule without replacing Runner rules", async () => {
+  mockSettings = { locationSchedules: [rule({ id: "legacy-local" })] };
+  mockRunnerRules = [rule({ id: "runner-existing", locationDeviceId: "device-2" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockRunnerRules.map((item) => item.id)).toEqual(["runner-existing", "legacy-local"]);
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ id: "legacy-local", locationDeviceId: "device-1" })]);
+  expect(mockSettings.locationScheduleMigrationComplete).toBe(true);
+});
+
+test("preserves a legacy rule when its id collides with a different owner's rule", async () => {
+  mockSettings = { locationSchedules: [rule({ prompt: "local schedule" })] };
+  mockRunnerRules = [rule({ locationDeviceId: "device-2", prompt: "different schedule" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockRunnerRules).toHaveLength(2);
+  expect(mockRunnerRules[0]).toMatchObject({ id: "office", locationDeviceId: "device-2" });
+  expect(mockRunnerRules[1].id).toMatch(/^legacy_/);
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({
+    id: mockRunnerRules[1].id, prompt: "local schedule", locationDeviceId: "device-1",
+  })]);
+});
+
+test("same-named rules from different devices both survive migration", async () => {
+  mockSettings = { locationSchedules: [rule()] };
+  mockRunnerRules = [rule({ locationDeviceId: "device-2" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockRunnerRules).toHaveLength(2);
+  expect(mockRunnerRules.map((item) => item.locationDeviceId)).toEqual(["device-2", "device-1"]);
+  expect(mockRunnerRules[1].id).toMatch(/^legacy_/);
+});
+
+test("a locally cached calendar-only rule is not claimed by the wrong location device", async () => {
+  mockSettings = { locationSchedules: [rule({ locationDeviceId: "device-2", calendarAccess: "read", calendarDeviceId: "device-1" })] };
+  mockRunnerRules = [];
+
+  await bootstrapLocationSchedules();
+
+  expect(mockRunnerRules).toEqual([]);
+  expect(mockSettings.locationSchedules).toEqual([]);
+});
+
+test("retrying a partially completed migration does not duplicate a colliding rule", async () => {
+  mockSettings = { locationSchedules: [rule({ prompt: "local schedule" })] };
+  mockRunnerRules = [rule({ locationDeviceId: "device-2" })];
+  mockRunnerRevision = 1;
+  const respond = mockFetch.getMockImplementation()!;
+  let reads = 0;
+  mockFetch.mockImplementation(async (url, options) => {
+    if (String(url).endsWith("/location-schedules") && options?.method === "GET" && ++reads === 2) {
+      throw new Error("connection dropped after migration write");
+    }
+    return respond(url, options);
+  });
+
+  await expect(loadRunnerLocationSchedules()).rejects.toThrow("connection dropped");
+  expect(mockRunnerRules).toHaveLength(2);
+  await loadRunnerLocationSchedules();
+  expect(mockRunnerRules).toHaveLength(2);
+  expect(mockSettings.locationScheduleMigrationComplete).toBe(true);
+});
+
+test("retains another location owner's calendar rule for this device's push verification", async () => {
+  mockRunnerRules = [rule({ locationDeviceId: "device-2", calendarAccess: "read", calendarDeviceId: "device-1" })];
+  mockRunnerRevision = 1;
+
+  await bootstrapLocationSchedules();
+
+  expect(mockSettings.locationSchedules).toEqual([expect.objectContaining({ calendarDeviceId: "device-1" })]);
+  expect(mockStartGeofencingAsync).not.toHaveBeenCalled();
+  expect(Notifications.registerTaskAsync).toHaveBeenCalledWith("bitty-background-notification");
 });

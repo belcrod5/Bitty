@@ -17,6 +17,8 @@ type Options = {
 };
 
 const LEGACY_FIELDS = ["registeredDirectories", "sessionTitleOverridesById", "sessionMarkerColorsById", "composerMessageHistory", "composerDrafts"];
+type Connection = { runnerUrl: string; runnerToken: string; backendId: string };
+const connectionId = ({ runnerUrl, runnerToken }: Connection) => JSON.stringify([runnerUrl, runnerToken]);
 
 export function useRunnerClientState({
   settingsLoaded, runnerUrl, runnerToken, backendId,
@@ -28,39 +30,44 @@ export function useRunnerClientState({
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const snapshotRef = useRef<RunnerClientState | null>(null);
+  const snapshotConnectionRef = useRef("");
   const connectionRef = useRef({ runnerUrl, runnerToken, backendId });
   connectionRef.current = { runnerUrl, runnerToken, backendId };
   const draftTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const pendingDrafts = useRef<Record<string, string>>({});
+  const queuedDrafts = useRef(new Set<string>());
+  const pendingDrafts = useRef<Record<string, { text: string; connection: Connection }>>({});
 
-  const applySnapshot = useCallback((snapshot: RunnerClientState) => {
+  const applySnapshot = useCallback((snapshot: RunnerClientState, connection: Connection) => {
+    const id = connectionId(connection);
+    if (id !== connectionId(connectionRef.current)) return;
+    if (snapshotConnectionRef.current === id && snapshotRef.current?.revision === snapshot.revision) return;
+    snapshotConnectionRef.current = id;
     snapshotRef.current = snapshot;
-    setRegisteredDirectories(snapshot.directories);
+    setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
     setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
-      .filter(([, value]) => value.title)
       .map(([key, value]) => [key, value.title])));
     setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
-      .filter(([, value]) => value.markerColor !== "none")
       .map(([key, value]) => [key, value.markerColor])));
     setMessages(snapshot.composerHistory);
-    for (const [key, text] of Object.entries(pendingDrafts.current)) {
-      if ((snapshot.drafts[key]?.text || "") === text) delete pendingDrafts.current[key];
+    for (const [key, pending] of Object.entries(pendingDrafts.current)) {
+      if (connectionId(pending.connection) === id && (snapshot.drafts[key]?.text || "") === pending.text) delete pendingDrafts.current[key];
     }
     setDrafts(Object.entries({ ...snapshot.drafts, ...Object.fromEntries(Object.entries(pendingDrafts.current)
-      .filter(([, text]) => text.trim())
-      .map(([key, text]) => [key, { text, updatedAt: Date.now() }])) }).map(([key, value]) => {
+      .filter(([, pending]) => connectionId(pending.connection) === id && pending.text.trim())
+      .map(([key, pending]) => [key, { text: pending.text, updatedAt: Date.now() }])) }).map(([key, value]) => {
       const [backendId, sessionId] = JSON.parse(key) as [string, string];
       return { backendId, sessionId, text: value.text, updatedAt: value.updatedAt };
-    }).filter((draft) => pendingDrafts.current[runnerSessionKey(draft.backendId, draft.sessionId)] !== ""));
+    }).filter((draft) => pendingDrafts.current[runnerSessionKey(draft.backendId, draft.sessionId)]?.text !== ""
+      || connectionId(pendingDrafts.current[runnerSessionKey(draft.backendId, draft.sessionId)]?.connection || connection) !== id));
     setDraftsLoaded(true);
   }, [setRegisteredDirectories, setSessionMarkerColorsById, setSessionTitleOverridesById]);
 
-  const refresh = useCallback(async () => {
-    const { runnerUrl: url, runnerToken: token } = connectionRef.current;
+  const refresh = useCallback(async (connection: Connection) => {
+    const { runnerUrl: url, runnerToken: token } = connection;
     if (!url || !token) return;
     let snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token });
     let migrated = false;
-    if (snapshot.revision === 0) {
+    {
       const legacy = await readPersistedSettings();
       const hasLegacyData = legacy && (
         parseComposerMessageHistory(legacy.composerMessageHistory).length > 0
@@ -69,33 +76,33 @@ export function useRunnerClientState({
         || Object.keys(legacy.sessionTitleOverridesById || {}).length > 0
         || Object.keys(legacy.sessionMarkerColorsById || {}).length > 0
       );
-      if (legacy && hasLegacyData) {
-        const legacyBackendId = legacy.llmBackend === "claude" ? "claude" : "codex";
+      if (legacy && hasLegacyData && (!legacy.runnerUrl || String(legacy.runnerUrl).replace(/\/+$/, "") === url.replace(/\/+$/, ""))) {
         const sessions: Record<string, { title?: string; markerColor?: string }> = {};
         const titles = legacy.sessionTitleOverridesById as Record<string, string> || {};
         const colors = legacy.sessionMarkerColorsById as Record<string, string> || {};
         for (const sessionId of new Set([...Object.keys(titles), ...Object.keys(colors)])) {
-          sessions[runnerSessionKey(legacyBackendId, sessionId)] = { title: titles[sessionId], markerColor: colors[sessionId] };
+          sessions[runnerSessionKey("legacy", sessionId)] = { title: titles[sessionId], markerColor: colors[sessionId] };
         }
         const drafts: Record<string, { text: string }> = {};
         for (const draft of parseComposerDrafts(legacy.composerDrafts)) {
-          drafts[runnerSessionKey(legacyBackendId, draft.sessionId)] = { text: draft.text };
+          drafts[runnerSessionKey("legacy", draft.sessionId)] = { text: draft.text };
         }
         snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation: {
           type: "migrate", directories: parseRegisteredDirectories(legacy.registeredDirectories), sessions,
           composerHistory: parseComposerMessageHistory(legacy.composerMessageHistory), drafts,
         } });
-        migrated = snapshot.migrationApplied === true;
+        migrated = snapshot.migrationComplete === true;
       }
     }
-    applySnapshot(snapshot);
-    for (const [key, text] of Object.entries(pendingDrafts.current)) {
-      if (draftTimers.current[key]) continue;
+    applySnapshot(snapshot, connection);
+    for (const [key, pending] of Object.entries(pendingDrafts.current)) {
+      if (connectionId(pending.connection) !== connectionId(connection)) continue;
+      if (draftTimers.current[key] || queuedDrafts.current.has(`${connectionId(connection)}\u0000${key}`)) continue;
       const [draftBackendId, sessionId] = JSON.parse(key) as [string, string];
       snapshot = await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation: {
-        type: "draft.set", backendId: draftBackendId, sessionId, text,
+        type: "draft.set", backendId: draftBackendId, sessionId, text: pending.text,
       } });
-      applySnapshot(snapshot);
+      applySnapshot(snapshot, connection);
     }
     if (migrated) {
       // Remove old device-authoritative fields only after a successful Runner read/write.
@@ -107,13 +114,14 @@ export function useRunnerClientState({
     }
   }, [applySnapshot, parseRegisteredDirectories]);
 
-  const enqueue = useCallback((operation?: Record<string, unknown>) => {
+  const enqueue = useCallback((operation?: Record<string, unknown>, selectedConnection = connectionRef.current) => {
+    const connection = { ...selectedConnection };
     const next = queue.current.then(async () => {
-      if (!snapshotRef.current || !operation) await refresh();
+      if (!snapshotRef.current || snapshotConnectionRef.current !== connectionId(connection) || !operation) await refresh(connection);
       if (!operation) return;
-      const { runnerUrl: url, runnerToken: token } = connectionRef.current;
+      const { runnerUrl: url, runnerToken: token } = connection;
       if (!url || !token) throw new Error("Runner connection is not configured");
-      applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation }));
+      applySnapshot(await requestRunnerClientState({ runnerUrl: url, runnerToken: token, operation }), connection);
     });
     queue.current = next.catch(() => {});
     return next;
@@ -135,8 +143,17 @@ export function useRunnerClientState({
     };
   }, [enqueue, runnerToken, runnerUrl, settingsLoaded]);
 
-  const mutate = useCallback((operation: Record<string, unknown>) => {
-    void enqueue(operation).catch((error) => Alert.alert("Runner に保存できません", error instanceof Error ? error.message : String(error)));
+  const mutate = useCallback((operation: Record<string, unknown>, connection?: Connection) => {
+    void enqueue(operation, connection).catch((error) => Alert.alert("Runner に保存できません", error instanceof Error ? error.message : String(error)));
+  }, [enqueue]);
+
+  const sendDraft = useCallback((backendId: string, sessionId: string, text: string, connection: Connection) => {
+    const key = runnerSessionKey(backendId, sessionId);
+    const queuedKey = `${connectionId(connection)}\u0000${key}`;
+    queuedDrafts.current.add(queuedKey);
+    void enqueue({ type: "draft.set", backendId, sessionId, text }, connection)
+      .catch((error) => Alert.alert("Runner に保存できません", error instanceof Error ? error.message : String(error)))
+      .finally(() => queuedDrafts.current.delete(queuedKey));
   }, [enqueue]);
 
   const recordMessage = useCallback((text: string) => {
@@ -150,7 +167,14 @@ export function useRunnerClientState({
     if (!sessionId) return;
     const nextText = String(text ?? "");
     const key = runnerSessionKey(backendId, sessionId);
-    pendingDrafts.current[key] = nextText;
+    const connection = { ...connectionRef.current };
+    const previous = pendingDrafts.current[key];
+    if (previous && connectionId(previous.connection) !== connectionId(connection)) {
+      if (draftTimers.current[key]) clearTimeout(draftTimers.current[key]);
+      delete draftTimers.current[key];
+      sendDraft(backendId, sessionId, previous.text, previous.connection);
+    }
+    pendingDrafts.current[key] = { text: nextText, connection };
     setDrafts((current) => [
       ...(nextText.trim() ? [{ backendId, sessionId, text: nextText, updatedAt: Date.now() }] : []),
       ...current.filter((draft) => draft.backendId !== backendId || draft.sessionId !== sessionId),
@@ -158,18 +182,28 @@ export function useRunnerClientState({
     if (draftTimers.current[key]) clearTimeout(draftTimers.current[key]);
     draftTimers.current[key] = setTimeout(() => {
       delete draftTimers.current[key];
-      mutate({ type: "draft.set", backendId, sessionId, text: nextText });
+      sendDraft(backendId, sessionId, nextText, connection);
     }, 300);
-  }, [mutate]);
+  }, [sendDraft]);
 
   const clearDraft = useCallback((sessionId: string, backendId = connectionRef.current.backendId) => {
+    const connection = { ...connectionRef.current };
     const key = runnerSessionKey(backendId, sessionId);
     if (draftTimers.current[key]) clearTimeout(draftTimers.current[key]);
     delete draftTimers.current[key];
-    pendingDrafts.current[key] = "";
-    setDrafts((current) => current.filter((draft) => draft.backendId !== backendId || draft.sessionId !== sessionId));
-    mutate({ type: "draft.set", backendId, sessionId, text: "" });
-  }, [mutate]);
+    const previous = pendingDrafts.current[key];
+    if (previous && connectionId(previous.connection) !== connectionId(connection)) {
+      sendDraft(backendId, sessionId, previous.text, previous.connection);
+    }
+    pendingDrafts.current[key] = { text: "", connection };
+    setDrafts((current) => current.filter((draft) => draft.sessionId !== sessionId
+      || (draft.backendId !== backendId && draft.backendId !== "legacy")));
+    sendDraft(backendId, sessionId, "", connection);
+    if (snapshotRef.current?.drafts[runnerSessionKey("legacy", sessionId)]) {
+      pendingDrafts.current[runnerSessionKey("legacy", sessionId)] = { text: "", connection };
+      sendDraft("legacy", sessionId, "", connection);
+    }
+  }, [sendDraft]);
 
   useEffect(() => {
     const flush = () => {
@@ -177,7 +211,8 @@ export function useRunnerClientState({
         clearTimeout(draftTimers.current[key]);
         delete draftTimers.current[key];
         const [draftBackendId, sessionId] = JSON.parse(key) as [string, string];
-        mutate({ type: "draft.set", backendId: draftBackendId, sessionId, text: pendingDrafts.current[key] });
+        const pending = pendingDrafts.current[key];
+        if (pending) sendDraft(draftBackendId, sessionId, pending.text, pending.connection);
       }
     };
     const subscription = AppState.addEventListener("change", (state) => {
@@ -187,7 +222,7 @@ export function useRunnerClientState({
       subscription.remove();
       flush();
     };
-  }, [mutate]);
+  }, [sendDraft]);
 
   return { mutate, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft };
 }
