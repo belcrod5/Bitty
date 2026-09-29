@@ -240,6 +240,34 @@ test("voice acceptance creates one attachable TTS job and keeps its error separa
   assert.equal(ws.sent.find((message) => message.op === "voice.turn.completed").payload.text, "Answer.");
 });
 
+test("voice text deltas use the authenticated envelope with conversation and operation identity", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalStart = service.start;
+  const operationId = "44444444-5555-4666-8777-888888888888";
+  const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  let hooks;
+  service.start = async (_message, _onResult, _onApproval, callbacks) => {
+    hooks = callbacks;
+    return { logicalConversationId: conversationId, clientOperationId: operationId, status: "accepted" };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => { service.start = originalStart; ws.close(); });
+  ws.emit("message", JSON.stringify({
+    channel: "agent", op: "turn.start", requestId: "voice-delta-start", operationId,
+    payload: { backendId: "codex", logicalConversationId: conversationId,
+      clientOperationId: operationId, input: { blocks: [{ type: "text", text: "hello" }] } },
+  }), false);
+  await waitFor(() => ws.sent.some((message) => message.op === "turn.accepted"));
+
+  hooks.onText("Live reply");
+
+  const delta = ws.sent.find((message) => message.op === "voice.turn.delta");
+  assert.deepEqual(delta, {
+    channel: "agent", op: "voice.turn.delta", operationId, streamId: operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId, delta: "Live reply" },
+  });
+});
+
 test("voice interrupt routes to the voice turn instead of the generic agent turn", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalInterrupt = service.interrupt;

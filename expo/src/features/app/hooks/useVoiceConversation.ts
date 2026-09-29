@@ -108,6 +108,12 @@ export function useVoiceConversation(
       }
     }
     if (status === "accepted" || status === "running") {
+      const partialText = typeof payload.partialText === "string" ? payload.partialText : "";
+      if (partialText) setReply((current) => {
+        if (current?.operationId !== id) return { text: partialText, operationId: id };
+        if (current.text.startsWith(partialText)) return current;
+        return { text: partialText, operationId: id };
+      });
       setTurnStatus(status);
       return;
     }
@@ -293,6 +299,18 @@ export function useVoiceConversation(
 
   useEffect(() => {
     aliveRef.current = true;
+    const delta = manager.subscribe({ channel: "agent", op: "voice.turn.delta" }, (message) => {
+      const pending = pendingRef.current;
+      const payload = payloadOf(message);
+      const operationId = String(payload.clientOperationId || message.operationId || "");
+      const conversationId = String(payload.logicalConversationId || "");
+      const text = typeof payload.delta === "string" ? payload.delta : "";
+      if (!pending || pending.id !== operationId || conversationId !== conversationIdRef.current || !text) return;
+      setReply((current) => ({
+        operationId,
+        text: current?.operationId === operationId ? current.text + text : text,
+      }));
+    });
     const complete = manager.subscribe({ channel: "agent", op: "voice.turn.completed" }, (message) => {
       applyStatus({ ...payloadOf(message), status: "completed" }, true);
     });
@@ -341,6 +359,7 @@ export function useVoiceConversation(
           operationId, payload: { requestId, decision: "cancel" } }).catch(() => undefined);
       }
       approvalsRef.current.clear();
+      delta();
       complete();
       failed();
       approval();

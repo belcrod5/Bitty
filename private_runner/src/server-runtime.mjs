@@ -9121,7 +9121,18 @@ runnerWsServer.on("connection", (ws, req) => {
           if (voiceJob) failVoiceTts(error);
         }
       },
-      onText: (delta) => voiceSegments?.append(delta),
+      onText: (delta) => {
+        sendRunnerWsEnvelope(ws, {
+          channel: "agent", op: "voice.turn.delta",
+          operationId, streamId: operationId,
+          payload: {
+            logicalConversationId: voicePayload.logicalConversationId,
+            clientOperationId: operationId,
+            delta,
+          },
+        });
+        voiceSegments?.append(delta);
+      },
       onTextError: failVoiceTts,
       onCompleted: (text) => {
         if (!voiceJob || voiceJob.abortController.signal.aborted ||

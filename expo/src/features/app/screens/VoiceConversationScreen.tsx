@@ -6,6 +6,7 @@ import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "r
 import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
+import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
@@ -145,6 +146,18 @@ export function VoiceConversationScreen({
     }
   }, [stopTtsPlayback, streamingStt.abort]);
 
+  const cancelSpeaking = useCallback(() => {
+    const messageId = voicePlaybackMessageIdRef.current;
+    if (!messageId) return;
+    setSynthesisStarting(false);
+    setSynthesisRequestSettled(true);
+    void stopTtsPlayback({
+      interruptStream: true,
+      reason: "voice_speaking_tapped",
+      expectedMessageId: messageId,
+    });
+  }, [stopTtsPlayback]);
+
   const voiceStatus = editingTranscript || voice.error || transcript || (voice.reply && ttsUiStatus === "error")
     ? undefined : isTtsPlaying || ttsUiStatus === "playing" ? "speaking" : replyLoading ? "responding" : playbackActive ? "speaking" : undefined;
   const statusLabel = voiceStatus === "responding" ? "responding..." : "speaking...";
@@ -167,6 +180,13 @@ export function VoiceConversationScreen({
     : voice.reply && ttsUiStatus === "error" ? "音声再生に失敗しました。"
       : voiceStatus ? animatedStatus
           : initialStartPending || !streamingStt.active ? "録音を準備しています…" : "");
+  const historyMessages = useMemo(() => {
+    if (!voice.ready) return [];
+    const reply = voice.reply;
+    if (!reply?.text || voice.history.some((message) =>
+      message.role === "assistant" && message.clientOperationId === reply.operationId)) return voice.history;
+    return [...voice.history, { role: "assistant" as const, text: reply.text, clientOperationId: reply.operationId }];
+  }, [voice.history, voice.ready, voice.reply]);
 
   return (
     <KeyboardAvoidingView
@@ -210,15 +230,15 @@ export function VoiceConversationScreen({
                   onContentSizeChange={() => {
                     if (historyAtBottomRef.current) historyScrollRef.current?.scrollToEnd({ animated: false });
                   }}
-                  contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 12, gap: 12 }}>
+                  contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 64, gap: 12 }}>
                   {!voice.ready
                     ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴を読み込み中…</Text>
                     : voice.historyError
                       ? <Text style={{ color: "#fecaca" }}>{voice.historyError}</Text>
-                      : !voice.history.length
+                      : !historyMessages.length
                         ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴はまだありません</Text>
                         : null}
-                  {(voice.ready ? voice.history : []).map((message, index) => {
+                  {historyMessages.map((message, index) => {
                     const user = message.role === "user";
                     const textColor = user ? theme.colors.textOnAccent : theme.colors.textPrimary;
                     const time = formatMessageTimestampLabel(message.at);
@@ -236,6 +256,12 @@ export function VoiceConversationScreen({
                     );
                   })}
                 </ScrollView>
+                {voice.ready ? (
+                  <View testID="voice-history-account-menu"
+                    style={{ position: "absolute", right: 20, bottom: 12, zIndex: 1 }}>
+                    <CodexStatusSummaryMenu />
+                  </View>
+                ) : null}
               </Reanimated.View>
             ) : null}
             <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
@@ -266,6 +292,7 @@ export function VoiceConversationScreen({
                         voice.setError(error instanceof Error ? error.message : String(error));
                       }
                     }}
+                    onCancelSpeaking={cancelSpeaking}
                     onStop={() => {
                       voice.interrupt();
                       streamingStt.stop();

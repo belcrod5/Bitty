@@ -134,6 +134,36 @@ test("sends one final text block and reads aloud only after a completed turn", a
   });
 });
 
+test("streams only the matching voice reply and reconciles it with the completed text", async () => {
+  const { result } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("こんにちは", jest.fn()); await Promise.resolve(); });
+
+  await act(async () => handlers.get("voice.turn.delta")?.({
+    channel: "agent", op: "voice.turn.delta", operationId,
+    payload: { logicalConversationId: "another-conversation", clientOperationId: operationId, delta: "wrong" },
+  }));
+  expect(result.current.reply).toBeNull();
+
+  await act(async () => handlers.get("voice.turn.delta")?.({
+    channel: "agent", op: "voice.turn.delta", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId, delta: "ストリーム" },
+  }));
+  await act(async () => handlers.get("voice.turn.delta")?.({
+    channel: "agent", op: "voice.turn.delta", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId, delta: "表示" },
+  }));
+  expect(result.current.reply).toEqual({ text: "ストリーム表示", operationId });
+
+  await act(async () => handlers.get("voice.turn.completed")?.({
+    channel: "agent", op: "voice.turn.completed", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId, text: "確定した返答", ...initialStats },
+  }));
+  await sent;
+  expect(result.current.reply).toEqual({ text: "確定した返答", operationId });
+});
+
 test("stopping a voice turn interrupts the matching operation and ignores its late result", async () => {
   const request = mockManager.request.getMockImplementation();
   mockManager.request.mockImplementation((message: { op: string }) => message.op === "voice.turn.interrupt"
@@ -301,6 +331,46 @@ test("recovers a completed turn after reconnect without regenerating it", async 
     estimatedContextUsagePercent: 25, unsummarizedMessageCount: 4, memoryCharacterCount: 120,
   });
   expect(mockManager.request.mock.calls.filter(([message]) => message.op === "turn.start")).toHaveLength(1);
+});
+
+test("recovers accumulated streaming text from voice status after reconnect", async () => {
+  mockManager.request.mockImplementation(async ({ op }: { op: string }) => {
+    if (op === "voice.open") return {
+      channel: "agent", op: "voice.open.result",
+      payload: mockSnapshot.generation === 1
+        ? { logicalConversationId: conversationId, contextMode: "self_context_array", ...initialStats }
+        : { logicalConversationId: conversationId, contextMode: "self_context_array",
+          clientOperationId: operationId, status: "running", partialText: "接続前再接続後", ...initialStats },
+    };
+    if (op === "turn.start") return { channel: "agent", op: "turn.accepted",
+      payload: { logicalConversationId: conversationId, clientOperationId: operationId,
+        status: "accepted", ...initialStats } };
+    if (op === "voice.status") return { channel: "agent", op: "voice.status.result",
+      payload: { logicalConversationId: conversationId, clientOperationId: operationId,
+        status: "running", partialText: "接続前再接続後", ...initialStats } };
+    throw new Error(`unexpected ${op}`);
+  });
+  const { result, rerender } = await renderHook(() => useVoiceConversation(jest.fn()));
+  await waitFor(() => expect(result.current.ready).toBe(true));
+  let sent!: Promise<void>;
+  await act(async () => { sent = result.current.sendTranscript("質問", jest.fn()); await Promise.resolve(); });
+  await act(async () => handlers.get("voice.turn.delta")?.({
+    channel: "agent", op: "voice.turn.delta", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId, delta: "接続前" },
+  }));
+
+  mockSnapshot = { connected: true, generation: 2 };
+  await rerender(undefined);
+
+  await waitFor(() => expect(result.current.reply?.text).toBe("接続前再接続後"));
+  expect(result.current.turnStatus).toBe("running");
+  await act(async () => handlers.get("voice.turn.completed")?.({
+    channel: "agent", op: "voice.turn.completed", operationId,
+    payload: { logicalConversationId: conversationId, clientOperationId: operationId,
+      text: "確定本文", ...initialStats },
+  }));
+  await sent;
+  expect(result.current.reply?.text).toBe("確定本文");
 });
 
 test("restores the latest completed reply without automatic playback", async () => {

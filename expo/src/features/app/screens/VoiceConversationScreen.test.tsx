@@ -49,6 +49,7 @@ type MockFooterProps = {
   onBlur?: () => void;
   onChangeText?: (text: string) => void;
   onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
+  onCancelSpeaking?: () => void;
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
 };
@@ -89,6 +90,13 @@ jest.mock("../components/StreamingSttFooter", () => ({
     return ReactModule.createElement(View, { testID: "streaming-stt-footer" },
       ReactModule.createElement(Text, null, props.statusText || props.transcript),
       ReactModule.createElement(TouchableOpacity, { testID: "streaming-stt-stop", onPress: props.onStop }));
+  },
+}));
+jest.mock("../components/CodexStatusSummaryMenu", () => ({
+  CodexStatusSummaryMenu: () => {
+    const ReactModule = require("react");
+    const { View } = require("react-native");
+    return ReactModule.createElement(View, { testID: "codex-status-summary-menu" });
   },
 }));
 jest.mock("../keyboardController", () => {
@@ -162,6 +170,7 @@ beforeEach(() => {
   mockVoice.ready = true;
   mockVoice.logicalConversationId = "conversation-one";
   mockVoice.turnStatus = "completed";
+  mockVoice.reply = { text: "表示しない返答本文", operationId: "operation-1" };
   mockVoice.error = "";
   mockVoice.history = [];
   mockVoice.historyError = "";
@@ -209,7 +218,9 @@ test("the footer reveals stored messages and closes the history panel", async ()
   });
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-history").props.style)).toMatchObject({ flex: 1, width: "100%" });
   expect(StyleSheet.flatten(screen.getByTestId("voice-history-messages").props.style)).toMatchObject({ flex: 1 });
-  expect(screen.getByTestId("voice-history-messages").props.contentContainerStyle).toMatchObject({ paddingHorizontal: 20 });
+  expect(screen.getByTestId("voice-history-messages").props.contentContainerStyle).toMatchObject({
+    paddingHorizontal: 20, paddingBottom: 64,
+  });
   expect(screen.getByTestId("voice-history-close").props).toMatchObject({
     accessibilityRole: "button", accessibilityLabel: "履歴を閉じる",
   });
@@ -221,6 +232,12 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.queryByTestId("voice-history-handle")).toBeNull();
   expect(screen.getByText("最初の質問")).toBeTruthy();
   expect(screen.getByText("最初の返答")).toBeTruthy();
+  const accountMenu = screen.getByTestId("voice-history-account-menu");
+  expect(accountMenu.parent).toBe(screen.getByTestId("voice-conversation-history"));
+  expect(StyleSheet.flatten(accountMenu.props.style)).toMatchObject({
+    position: "absolute", right: 20, bottom: 12, zIndex: 1,
+  });
+  expect(screen.getByTestId("codex-status-summary-menu")).toBeTruthy();
   expect(screen.getByText("09/27 12:34")).toBeTruthy();
   expect(screen.getByText("09/27 12:35")).toBeTruthy();
   const colors = VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors;
@@ -235,6 +252,23 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("none");
   expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
   expect(screen.queryByText("最初の質問")).toBeNull();
+  await screen.unmount();
+});
+
+test("shows the in-flight assistant reply in history and replaces it with the stored message", async () => {
+  mockVoice.history = [{ role: "user", text: "質問", clientOperationId: "live-operation" }];
+  mockVoice.reply = { text: "生成途中", operationId: "live-operation" };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(screen.getByText("生成途中")).toBeTruthy();
+
+  mockVoice.reply = { text: "確定した返答", operationId: "live-operation" };
+  mockVoice.history = [
+    { role: "user", text: "質問", clientOperationId: "live-operation" },
+    { role: "assistant", text: "確定した返答", clientOperationId: "live-operation" },
+  ];
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getAllByText("確定した返答")).toHaveLength(1);
   await screen.unmount();
 });
 
@@ -644,6 +678,29 @@ test("attaches voice playback before completion and shows speaking during genera
   expect(mockStopTtsPlayback).toHaveBeenCalledWith(expect.objectContaining({
     expectedMessageId: "operation-1",
   }));
+});
+
+test("tapping while speaking cancels playback without closing or interrupting the voice turn", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { mockOnJob?.("voice-job", "voice-operation-1"); });
+  await screen.rerender(<VoiceConversationScreen {...playback} isTtsPlaybackActive isTtsPlaying
+    ttsUiStatus="playing" onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-history-swipe-area").props.gestureEnabled).toBe(true);
+  await act(async () => {
+    screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 });
+  });
+  expect(screen.getByTestId("voice-conversation-history")).toBeTruthy();
+
+  await act(async () => { mockFooterProps?.onCancelSpeaking?.(); });
+
+  expect(mockStopTtsPlayback).toHaveBeenCalledWith({
+    interruptStream: true,
+    reason: "voice_speaking_tapped",
+    expectedMessageId: "voice-operation-1",
+  });
+  expect(mockVoice.interrupt).not.toHaveBeenCalled();
+  expect(mockOnClose).not.toHaveBeenCalled();
+  await screen.unmount();
 });
 
 test("closing over active chat playback does not stop TTS without a voice reply", async () => {
