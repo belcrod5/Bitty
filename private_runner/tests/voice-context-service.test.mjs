@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", agentEvents, earlyAgentEvents = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -93,7 +93,20 @@ function fakeCodex({ reply = "answer", agentEvents, earlyAgentEvents = [], failS
                 threadId: params.threadId, turnId, ...event.params,
               });
             } else {
-              listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text: reply } });
+              const text = isSummary ? summaryReply ?? (() => {
+                const pending = JSON.parse(params.input[0].text);
+                const names = new Set([...pending.existingMemory.index.matchAll(/\]\(topics\/([^)]+)\)/g)]
+                  .map((match) => match[1]));
+                const topics = [];
+                if (pending.pairs.length) {
+                  names.add("general.md");
+                  topics.push({ name: "general.md",
+                    content: `- [確定] ${pending.pairs.at(-1).user} [pairSeq: ${pending.throughPairSeq}]\n` });
+                }
+                const index = `# Topics\n\n${[...names].sort().map((name) => `- [${name}](topics/${name})`).join("\n")}\n`;
+                return JSON.stringify({ index, topics });
+              })() : reply;
+              listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text } });
             }
             listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
             resolveCompletion();
@@ -160,6 +173,8 @@ async function seedPairs(rootDir, logicalConversationId, count) {
   }
   await fs.writeFile(path.join(rootDir, logicalConversationId, "events.jsonl"),
     `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, { mode: 0o600 });
+  // Emulate a pre-migration store: the new workspace memory did not exist yet.
+  await fs.rm(path.join(path.dirname(rootDir), "workspaces", logicalConversationId, "voice-memory"), { recursive: true });
 }
 
 async function storedEvents(rootDir, logicalConversationId) {
@@ -167,11 +182,112 @@ async function storedEvents(rootDir, logicalConversationId) {
   return text.trim() ? text.trim().split("\n").map(JSON.parse) : [];
 }
 
+async function memoryState(rootDir, logicalConversationId) {
+  const workspace = path.join(path.dirname(rootDir), "workspaces", logicalConversationId, "voice-memory");
+  const pointer = await fs.readFile(path.join(workspace, "index.md"), "utf8");
+  const generation = pointer.match(/generation=([0-9a-f-]{36})/)[1];
+  return JSON.parse(await fs.readFile(path.join(workspace, "generations", generation, "state.json"), "utf8"));
+}
+
+test("response reads workspace memory without conversation injection", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
+  const result = await complete(service, conversation, "newest correction");
+  assert.equal(result.result.status, "completed");
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
+  const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId, "voice-memory");
+  assert.match(await fs.readFile(path.join(workspace, "index.md"), "utf8"), /Recent pairs/);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "recent.json"), "utf8")).at(-1),
+    { pairSeq: 12, user: "newest correction", assistant: "answer" });
+  await service.clearMessages();
+});
+
+test("removes obsolete MEMORY.md only after current voice memory opens safely", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  const directory = path.join(rootDir, conversation.logicalConversationId);
+  const obsolete = path.join(directory, "MEMORY.md");
+  const pointerFile = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId,
+    "voice-memory", "index.md");
+  const pointer = await fs.readFile(pointerFile, "utf8");
+  await fs.writeFile(obsolete, "not a valid legacy header");
+  await fs.writeFile(pointerFile, "invalid pointer");
+  await assert.rejects(createVoiceContextService({ rootDir, createClient: codex.createClient }).open(),
+    { code: "voice_store_corrupt" });
+  assert.equal(await fs.readFile(obsolete, "utf8"), "not a valid legacy header");
+  await fs.writeFile(pointerFile, pointer);
+  await createVoiceContextService({ rootDir, createClient: codex.createClient }).open();
+  assert.equal(await fs.stat(obsolete).then(() => true, () => false), false);
+});
+
+test("failed topic update retains forty raw pairs and rejects the next turn", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 40);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(() => codex.summaryReleases.length > 0);
+  const id = randomUUID();
+  await assert.rejects(service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId, clientOperationId: id,
+    input: { blocks: [{ type: "text", text: "blocked" }] },
+  } }, () => {}, async () => "decline"), { code: "voice_memory_full" });
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 0);
+  const raw = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId,
+    "voice-memory", "raw", conversation.logicalConversationId);
+  assert.equal((await fs.readdir(raw)).filter((name) => name.endsWith(".jsonl")).length, 4);
+  await service.clearMessages();
+});
+
+test("clearMessages keeps namespaced topic evidence and restarts pair numbering safely", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
+  const switched = await service.clearMessages();
+  assert.equal(switched.storedMessageCount, 0);
+  const state = await memoryState(rootDir, conversation.logicalConversationId);
+  assert.equal(state.conversationId, switched.logicalConversationId);
+  assert.equal(state.sourceCursors[conversation.logicalConversationId], 1);
+  const result = await complete(service, switched, "fresh pair");
+  assert.equal(result.result.status, "completed");
+  const fresh = await storedEvents(rootDir, switched.logicalConversationId);
+  assert.equal(fresh.at(-1).pairSeq, 1);
+  assert.equal((await createVoiceContextService({ rootDir, createClient: codex.createClient }).open()).logicalConversationId,
+    switched.logicalConversationId);
+});
+
+test("completed event survives a raw write failure and retry never regenerates", async (t) => {
+  const { rootDir, conversation, codex, service } = await fixture(t);
+  const id = randomUUID();
+  const originalRename = fs.rename;
+  t.mock.method(fs, "rename", (from, to) => String(to).includes("/voice-memory/raw/") && String(to).endsWith(".jsonl")
+    ? Promise.reject(Object.assign(new Error("raw write failed"), { code: "EIO" })) : originalRename(from, to));
+  const message = { operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId, clientOperationId: id,
+    input: { blocks: [{ type: "text", text: "durable answer" }] },
+  } };
+  assert.equal((await service.start(message, () => {}, async () => "decline")).status, "accepted");
+  await waitFor(async () => (await storedEvents(rootDir, conversation.logicalConversationId)).some((event) => event.type === "completed"));
+  await assert.rejects(service.open(), { code: "voice_store_unavailable" });
+  t.mock.restoreAll();
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  assert.equal((await restarted.status(conversation.logicalConversationId, id)).status, "completed");
+  assert.equal((await restarted.start(message, () => {})).status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, 1);
+  const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId, "voice-memory");
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, "recent.json"), "utf8")), [
+    { pairSeq: 1, user: "durable answer", assistant: "answer" },
+  ]);
+});
+
 test("legacy logs above 100 lines migrate by whole turns and survive reload", async (t) => {
   const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 30);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
-  assert.equal((await service.open()).unsummarizedMessageCount, 50);
+  assert.equal((await service.open()).unsummarizedMessageCount, 60);
   const migrated = await storedEvents(rootDir, conversation.logicalConversationId);
   assert.equal(migrated.length, 100);
   assert.deepEqual(migrated.map(({ seq }) => seq), Array.from({ length: 100 }, (_, index) => index + 1));
@@ -180,8 +296,7 @@ test("legacy logs above 100 lines migrate by whole turns and survive reload", as
   assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).prunedThroughPairSeq, 5);
   await waitFor(() => codex.summaryReleases.length === 1);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=20"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 20);
   const reloaded = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.equal((await reloaded.open()).unsummarizedMessageCount, 20);
   assert.equal((await complete(reloaded, conversation, "user-31")).result.status, "completed");
@@ -192,8 +307,7 @@ test("legacy logs above 100 lines migrate by whole turns and survive reload", as
   assert.equal((await reloaded.history()).messages.length, 50);
   await waitFor(() => codex.summaryReleases.length === 1);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=21"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 21);
 });
 
 test("an in-flight turn remains intact at the 100-line boundary", async (t) => {
@@ -223,31 +337,28 @@ test("an in-flight turn remains intact at the 100-line boundary", async (t) => {
   assert.equal(done.at(-1).pairSeq, 26);
   await waitFor(() => codex.summaryReleases.length === 1);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=16"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 16);
   assert.equal((await createVoiceContextService({ rootDir, createClient: codex.createClient }).status(conversation.logicalConversationId, id)).status,
     "completed");
 });
 
-test("clearing memory after migration replans a summary from retained pairs", async (t) => {
+test("clearing memory replans a summary from retained pairs", async (t) => {
   const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true, reply: "new summary" });
   await seedPairs(rootDir, conversation.logicalConversationId, 30);
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=20 -->\nold summary");
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
-  assert.equal((await service.open()).unsummarizedMessageCount, 20);
-  assert.equal((await service.clearMemory()).unsummarizedMessageCount, 50);
+  assert.equal((await service.open()).unsummarizedMessageCount, 60);
+  assert.equal((await service.clearMemory()).unsummarizedMessageCount, 60);
   await waitFor(() => codex.summaryReleases.length === 1);
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
-  assert.equal(pending.fromPairSeq, 6);
+  assert.equal(pending.fromPairSeq, 1);
   assert.equal(pending.throughPairSeq, 20);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=20"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 20);
   assert.equal((await service.open()).unsummarizedMessageCount, 20);
 });
 
 test("the completed-pair cursor survives after every completed turn ages out", async (t) => {
-  const { rootDir, conversation, codex } = await fixture(t);
+  const { rootDir, conversation, codex } = await fixture(t, { failSummary: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 25);
   const eventFile = path.join(rootDir, conversation.logicalConversationId, "events.jsonl");
   const events = await storedEvents(rootDir, conversation.logicalConversationId);
@@ -259,12 +370,12 @@ test("the completed-pair cursor survives after every completed turn ages out", a
   }
   await fs.writeFile(eventFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
-  assert.equal((await service.open()).unsummarizedMessageCount, 0);
+  assert.ok((await service.open()).unsummarizedMessageCount >= 20);
   assert.ok((await storedEvents(rootDir, conversation.logicalConversationId)).length <= 100);
   assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "active.json"), "utf8")).prunedThroughPairSeq, 25);
   assert.equal((await complete(service, conversation, "new pair")).result.status, "completed");
   assert.equal((await storedEvents(rootDir, conversation.logicalConversationId)).at(-1).pairSeq, 26);
-  assert.equal((await createVoiceContextService({ rootDir, createClient: codex.createClient }).open()).unsummarizedMessageCount, 2);
+  assert.ok((await createVoiceContextService({ rootDir, createClient: codex.createClient }).open()).unsummarizedMessageCount >= 2);
 });
 
 test("a failed summary does not prevent the 100-line window from advancing", async (t) => {
@@ -277,7 +388,7 @@ test("a failed summary does not prevent the 100-line window from advancing", asy
   const events = await storedEvents(rootDir, conversation.logicalConversationId);
   assert.equal(events.length, 100);
   assert.equal(events.at(-1).pairSeq, 31);
-  assert.equal((await service.open()).unsummarizedMessageCount, 50);
+  assert.equal((await service.open()).unsummarizedMessageCount, 62);
 });
 
 test("voice turns persist before acknowledgement and replay without generation", async (t) => {
@@ -582,13 +693,11 @@ test("voice history reads stored user and assistant messages in turn order", asy
 test("settings count every stored user text and completed reply, including failed turns", async (t) => {
   const { rootDir, codex, conversation } = await fixture(t, { ephemeral: false });
   await seedPairs(rootDir, conversation.logicalConversationId, 2);
-  await fs.writeFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"),
-    "<!-- voice-context:v1 summarizedThroughPair=1 -->\n記憶🙂");
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const initial = await service.getSettings();
   assert.equal(initial.storedMessageCount, 4);
-  assert.equal(initial.unsummarizedMessageCount, 2);
-  assert.equal(initial.memoryCharacterCount, 3);
+  assert.equal(initial.unsummarizedMessageCount, 4);
+  assert.equal(initial.memoryCharacterCount, 0);
   assert.notEqual((await complete(service, conversation, "failed request")).result.status, "completed");
   assert.equal((await service.getSettings()).storedMessageCount, 5);
   const memoryCleared = await service.clearMemory();
@@ -630,44 +739,46 @@ test("a turn can start during catalog discovery and blocks the pending settings 
   assert.notEqual((await service.open()).estimatedContextUsagePercent, null);
 });
 
-test("clearing memory retains all completed messages for later context", async (t) => {
+test("clearing memory retains completed raw pairs without injecting them", async (t) => {
   const { rootDir, codex, conversation } = await fixture(t);
   await seedPairs(rootDir, conversation.logicalConversationId, 3);
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=2 -->\nold summary");
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.equal((await service.clearMemory()).unsummarizedMessageCount, 6);
-  assert.equal(await fs.readFile(memoryFile, "utf8"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
   assert.equal((await complete(service, conversation, "next")).result.status, "completed");
-  const injected = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.deepEqual(injected.filter((item) => item.role === "user").map((item) => item.content[0].text),
-    ["user-1", "user-2", "user-3"]);
-  assert.equal(injected.some((item) => item.content[0].text.includes("old summary")), false);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
+  const raw = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId,
+    "voice-memory", "raw", conversation.logicalConversationId, "00000001-00000010.jsonl");
+  assert.deepEqual((await fs.readFile(raw, "utf8")).trim().split("\n").map(JSON.parse).map(({ pairSeq }) => pairSeq), [1, 2, 3, 4]);
 });
 
 test("clearing messages rotates the operation namespace, preserves memory and workspace, and removes old data", async (t) => {
   const { rootDir, codex, conversation } = await fixture(t);
-  const { message } = await complete(createVoiceContextService({ rootDir, createClient: codex.createClient }), conversation, "hello");
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  await fs.writeFile(memoryFile, "<!-- voice-context:v1 summarizedThroughPair=1 -->\nremember this");
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  let message;
+  for (let number = 1; number <= 11; number++) {
+    ({ message } = await complete(service, conversation, `user-${number}`));
+  }
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
+  const memoryCharacters = (await service.open()).memoryCharacterCount;
+  assert.ok(memoryCharacters > 0);
   const workspace = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId);
   await fs.writeFile(path.join(workspace, "keep.txt"), "keep");
-  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const cleared = await service.clearMessages();
   assert.notEqual(cleared.logicalConversationId, conversation.logicalConversationId);
   assert.equal(cleared.unsummarizedMessageCount, 0);
   assert.equal(cleared.storedMessageCount, 0);
-  assert.equal(cleared.memoryCharacterCount, "remember this".length);
+  assert.ok(cleared.memoryCharacterCount >= memoryCharacters);
+  const namespacedMemoryCharacters = cleared.memoryCharacterCount;
   assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId)).then(() => true, () => false), false);
   assert.equal(await fs.readFile(path.join(workspace, "keep.txt"), "utf8"), "keep");
   await assert.rejects(service.start(message, () => {}, async () => "decline"), { code: "turn_rejected" });
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
   assert.equal((await restarted.open()).logicalConversationId, cleared.logicalConversationId);
-  assert.equal(await fs.readFile(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md"), "utf8"),
-    "<!-- voice-context:v1 summarizedThroughPair=0 -->\nremember this");
+  assert.equal(await fs.stat(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
   assert.equal((await complete(restarted, cleared, "next")).result.status, "completed");
-  assert.equal(codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items[0].content[0].text,
-    "Previous conversation summary:\nremember this");
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
+  assert.equal((await restarted.open()).memoryCharacterCount, namespacedMemoryCharacters);
 });
 
 test("clears and model changes reject an active voice turn", async (t) => {
@@ -690,8 +801,7 @@ test("a canceled summary cannot write after message clear", async (t) => {
   const cleared = await service.clearMessages();
   codex.summaryReleases.shift()();
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(await fs.readFile(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md"), "utf8"),
-    "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
+  assert.equal(await fs.stat(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
   assert.equal((await service.open()).unsummarizedMessageCount, 0);
 });
 
@@ -701,7 +811,6 @@ test("restart completes a committed message clear before opening the new convers
   const nextDirectory = path.join(rootDir, nextId);
   await fs.mkdir(nextDirectory);
   await fs.writeFile(path.join(nextDirectory, "events.jsonl"), "");
-  await fs.writeFile(path.join(nextDirectory, "MEMORY.md"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n");
   await fs.writeFile(path.join(rootDir, "active.json"), JSON.stringify({
     logicalConversationId: nextId, contextMode: "self_context_array", workspaceInitialized: true,
     workspaceConversationId: conversation.logicalConversationId,
@@ -763,20 +872,19 @@ test("summary reuses a separate read-only workspace across runs and restart", as
   assert.notEqual(summary.cwd, await fs.realpath(workspace));
   assert.equal((await fs.stat(path.join(summary.cwd, ".git"))).isDirectory(), true);
   codex.summaryReleases.shift()();
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=1"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
   await complete(service, conversation, "next pair");
   await waitFor(() => codex.summaryReleases.length === 1);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").at(-1).params.cwd, summary.cwd);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=2"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 2);
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await restarted.open();
   await complete(restarted, conversation, "after restart");
   await waitFor(() => codex.summaryReleases.length === 1);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").at(-1).params.cwd, summary.cwd);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=3"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 3);
   assert.equal((await fs.stat(summary.cwd)).isDirectory(), true);
   assert.equal(await fs.readFile(path.join(workspace, "saved.txt"), "utf8"), "keep");
 });
@@ -805,7 +913,7 @@ test("existing voice files survive one-time Git initialization on restart", asyn
 });
 
 test("voice sends and summaries do not check Git again after load", async (t) => {
-  const { service, conversation, codex } = await fixture(t, { holdSummaries: true });
+  const { rootDir, service, conversation, codex } = await fixture(t, { holdSummaries: true });
   const lstat = fs.lstat.bind(fs);
   t.mock.method(fs, "lstat", async (file, ...args) => {
     if (path.basename(String(file)) === ".git") throw new Error("unexpected per-turn Git check");
@@ -816,6 +924,7 @@ test("voice sends and summaries do not check Git again after load", async (t) =>
   }
   await waitFor(() => codex.summaryReleases.length === 1);
   codex.summaryReleases.shift()();
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
 });
 
 for (const kind of ["file", "symlink", "directory"]) {
@@ -926,21 +1035,18 @@ test("lost approval channel interrupts the voice turn", async (t) => {
   assert.equal(codex.calls.some(({ method }) => method === "turn/interrupt"), true);
 });
 
-test("response uses all unsummarized pairs while overflow summary is pending", async (t) => {
+test("response leaves pending pairs on disk without injecting them", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t, { holdSummaries: true });
   for (let number = 1; number <= 12; number++) {
     assert.equal((await complete(service, conversation, `user-${number}`)).result.status, "completed");
   }
   await waitFor(() => codex.summaryReleases.length > 0);
-  const memory = await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8");
-  assert.match(memory, /summarizedThroughPair=0/);
-  const requests = codex.calls.filter(({ method }) => method === "thread/inject_items");
-  const last = requests.at(-1).params.items;
-  assert.equal(last.length, 22);
-  assert.deepEqual(last.filter((item) => item.role === "user").map((item) => item.content[0].text),
-    Array.from({ length: 11 }, (_, index) => `user-${index + 1}`));
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 2]);
+  assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1, 2]);
+  assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   const threadStarts = codex.calls.filter(({ method }) => method === "thread/start");
   assert.ok(threadStarts.every(({ params }) => params.ephemeral === true && params.model === "gpt-6-luna"));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "workspace-write" && params.approvalPolicy === "on-request" && !Object.hasOwn(params, "config")));
@@ -959,8 +1065,7 @@ test("response uses all unsummarized pairs while overflow summary is pending", a
     return value.throughPairSeq === 2 && codex.summaryReleases.length > 0;
   });
   for (const finish of codex.summaryReleases.splice(0)) finish();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=2"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 2);
 });
 
 test("summary disables configured MCP and accepts only disabled inventory", async (t) => {
@@ -973,8 +1078,7 @@ test("summary disables configured MCP and accepts only disabled inventory", asyn
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=1"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
   const calls = codex.calls;
   const configRead = calls.findIndex(({ method }) => method === "config/read");
   const threadStart = calls.findIndex(({ method }) => method === "thread/start");
@@ -983,49 +1087,41 @@ test("summary disables configured MCP and accepts only disabled inventory", asyn
   assert.deepEqual(calls[threadStart].params.config.features, { apps: false, plugins: false });
 });
 
-test("repeated summaries append new pairs without changing existing memory bytes", async (t) => {
-  const { rootDir, conversation, codex } = await fixture(t, { reply: "NEW_SUMMARY" });
+test("repeated topic updates include existing topics and update only changed topics", async (t) => {
+  const { rootDir, conversation, codex } = await fixture(t);
   await seedPairs(rootDir, conversation.logicalConversationId, 12);
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  const historical = "Old fact: 写真は好き。\nKeep this exact trailing space:  \n";
-  await fs.writeFile(memoryFile, `<!-- voice-context:v1 summarizedThroughPair=1 -->\n${historical}`);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=2"));
-  const firstBody = (await fs.readFile(memoryFile, "utf8")).split("\n").slice(1).join("\n");
-  assert.equal(firstBody, `${historical}\n\nNEW_SUMMARY`);
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 2);
   const firstSummary = codex.calls.find(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never");
-  assert.deepEqual(JSON.parse(firstSummary.params.input[0].text), {
-    fromPairSeq: 2, throughPairSeq: 2, pairs: [{ pairSeq: 2, user: "user-2", assistant: "assistant-2" }],
-  });
-  assert.equal(firstSummary.params.input[0].text.includes("Old fact"), false);
+  const firstInput = JSON.parse(firstSummary.params.input[0].text);
+  assert.deepEqual([firstInput.fromPairSeq, firstInput.throughPairSeq], [1, 2]);
+  assert.deepEqual(firstInput.pairs.map(({ pairSeq }) => pairSeq), [1, 2]);
+  assert.deepEqual(firstInput.existingMemory.topics, {});
 
   assert.equal((await complete(service, conversation, "next")).result.status, "completed");
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=3"));
-  const secondBody = (await fs.readFile(memoryFile, "utf8")).split("\n").slice(1).join("\n");
-  assert.equal(secondBody, `${firstBody}\n\nNEW_SUMMARY`);
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 3);
+  const workspaceMemory = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId, "voice-memory");
+  const pointer = await fs.readFile(path.join(workspaceMemory, "index.md"), "utf8");
+  const generation = pointer.match(/generation=([0-9a-f-]{36})/)[1];
+  assert.match(await fs.readFile(path.join(workspaceMemory, "generations", generation, "topics", "general.md"), "utf8"), /user-3/);
   const summaries = codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never");
   assert.equal(summaries.length, 2);
-  assert.deepEqual(JSON.parse(summaries[1].params.input[0].text), {
-    fromPairSeq: 3, throughPairSeq: 3, pairs: [{ pairSeq: 3, user: "user-3", assistant: "assistant-3" }],
-  });
-  assert.equal(summaries[1].params.input[0].text.includes("Old fact"), false);
-  assert.equal((await service.open()).memoryCharacterCount, Array.from(secondBody).length);
+  const secondInput = JSON.parse(summaries[1].params.input[0].text);
+  assert.deepEqual([secondInput.fromPairSeq, secondInput.throughPairSeq], [3, 3]);
+  assert.match(secondInput.existingMemory.topics["general.md"], /user-2/);
 });
 
-test("oversize appended summary leaves cursor and old memory intact", async (t) => {
+test("oversize curator output leaves cursor and raw memory intact", async (t) => {
   const warnings = t.mock.method(console, "warn");
-  const { rootDir, conversation, codex } = await fixture(t, { reply: "S".repeat(800000) });
+  const { rootDir, conversation, codex } = await fixture(t, { summaryReply: "S".repeat(800000) });
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  const before = "<!-- voice-context:v1 summarizedThroughPair=0 -->\nHistorical fact stays exactly.\n";
-  await fs.writeFile(memoryFile, before);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
   await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"));
-  assert.equal(await fs.readFile(memoryFile, "utf8"), before);
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 0);
   assert.equal((await service.open()).unsummarizedMessageCount, 22);
-  assert.equal(warnings.mock.calls[0].arguments[1].code, "voice_context_too_large");
+  assert.equal(warnings.mock.calls[0].arguments[1].code, "app_server_error");
 });
 
 test("summary rejects a connected MCP server before turn/start", async (t) => {
@@ -1037,11 +1133,13 @@ test("summary rejects a connected MCP server before turn/start", async (t) => {
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
-  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"));
-  assert.equal(warnings.mock.calls[0].arguments[1].stage, "mcp_list");
-  assert.equal(warnings.mock.calls[0].arguments[1].code, "capability_unsupported");
+  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"
+    && args[1].stage === "mcp_list"));
+  const warning = warnings.mock.calls.find(({ arguments: args }) => args[0] === "[voice-context] summary failed"
+    && args[1].stage === "mcp_list").arguments[1];
+  assert.equal(warning.code, "capability_unsupported");
   assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
-  assert.match(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"), /summarizedThroughPair=0/);
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 0);
 });
 
 test("summary rejects an advertised tool even when MCP status says disabled", async (t) => {
@@ -1062,8 +1160,8 @@ test("summary requires readable MCP configuration before starting a thread", asy
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
-  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"));
-  assert.equal(warnings.mock.calls[0].arguments[1].stage, "config_read");
+  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"
+    && args[1].stage === "config_read"));
   assert.equal(codex.calls.some(({ method }) => method === "thread/start"), false);
 });
 
@@ -1078,8 +1176,7 @@ test("summary failure leaves backlog visible and does not block responses", asyn
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 1]);
   assert.equal((await service.status(conversation.logicalConversationId, next.message.operationId)).status, "completed");
-  const injections = codex.calls.filter(({ method }) => method === "thread/inject_items");
-  assert.equal(injections.at(-1).params.items[0].content[0].text, "user-1");
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
 });
 
 test("failed summary retries while idle, records safe metadata, and commits only after success", async (t) => {
@@ -1088,15 +1185,16 @@ test("failed summary retries while idle, records safe metadata, and commits only
   await seedPairs(rootDir, conversation.logicalConversationId, 11);
   const resumed = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await resumed.open();
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"));
-  assert.match(await fs.readFile(memoryFile, "utf8"), /summarizedThroughPair=0/);
-  const failure = warnings.mock.calls.find(({ arguments: args }) => args[0] === "[voice-context] summary failed").arguments[1];
+  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"
+    && args[1].stage === "turn_start"));
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 0);
+  const failure = warnings.mock.calls.find(({ arguments: args }) => args[0] === "[voice-context] summary failed"
+    && args[1].stage === "turn_start").arguments[1];
   assert.deepEqual(failure, {
     stage: "turn_start", code: "app_server_error", attempt: 1, fromPairSeq: 1, throughPairSeq: 1,
   });
   assert.equal(JSON.stringify(warnings.mock.calls).includes("private"), false);
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=1"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
   assert.equal((await resumed.open()).unsummarizedMessageCount, 20);
   assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never").length, 2);
 });
@@ -1109,8 +1207,7 @@ test("new utterance cancels summary retry timer and replans once", async (t) => 
   await resumed.open();
   await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"));
   assert.equal((await complete(resumed, conversation, "new utterance")).result.status, "completed");
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=2"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 2);
   await new Promise((resolve) => setTimeout(resolve, 1100));
   assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never").length, 2);
 });
@@ -1127,7 +1224,9 @@ for (const stage of ["pending_read", "memory_write"]) test(`summary ${stage} per
       ? Promise.reject(failure) : readFile(file, ...args));
   } else {
     const rename = fs.rename.bind(fs);
-    t.mock.method(fs, "rename", (from, to) => String(to) === path.join(directory, "MEMORY.md")
+    const pointer = path.join(path.dirname(rootDir), "workspaces", conversation.logicalConversationId, "voice-memory", "index.md");
+    let writes = 0;
+    t.mock.method(fs, "rename", (from, to) => String(to) === pointer && ++writes === 2
       ? Promise.reject(failure) : rename(from, to));
   }
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
@@ -1139,9 +1238,34 @@ for (const stage of ["pending_read", "memory_write"]) test(`summary ${stage} per
   });
   assert.equal(JSON.stringify(warnings.mock.calls).includes("private"), false);
   await assert.rejects(service.open(), { code: "voice_store_unavailable" });
-  assert.match(await fs.readFile(path.join(directory, "MEMORY.md"), "utf8"), /summarizedThroughPair=0/);
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 0);
   await new Promise((resolve) => setTimeout(resolve, 1100));
   assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never").length, 1);
+});
+
+test("pending removal failure is reported after publication and cleaned on restart", async (t) => {
+  const warnings = t.mock.method(console, "warn");
+  const { rootDir, conversation, codex } = await fixture(t);
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const pendingFile = path.join(rootDir, conversation.logicalConversationId, "memory-pending.json");
+  const remove = fs.rm.bind(fs);
+  const failure = Object.assign(new Error("private pending path"), { code: "EACCES" });
+  t.mock.method(fs, "rm", (file, ...args) => String(file) === pendingFile
+    ? Promise.reject(failure) : remove(file, ...args));
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 1);
+  await waitFor(() => warnings.mock.calls.some(({ arguments: args }) => args[0] === "[voice-context] summary failed"
+    && args[1].stage === "commit" && args[1].code === "voice_store_unavailable"));
+  assert.equal(await fs.stat(pendingFile).then(() => true, () => false), true);
+  await assert.rejects(service.open(), { code: "voice_store_unavailable" });
+  t.mock.restoreAll();
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await restarted.open();
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 1);
+  assert.equal(await fs.stat(pendingFile).then(() => true, () => false), false);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "turn/start"
+    && params.approvalPolicy === "never").length, 1);
 });
 
 test("restart classifies accepted before dispatch and dispatching as unknown", async (t) => {
@@ -1214,17 +1338,18 @@ test("unfinished trailing event line is preserved and excluded on restart", asyn
   assert.equal((await complete(restarted, conversation, "after recovery")).result.status, "completed");
 });
 
-test("large unsummarized context fails explicitly without truncating a completed pair", async (t) => {
+test("large stored reply stays in raw history without inflating the next model input", async (t) => {
   const { rootDir, service, conversation, codex } = await fixture(t, { reply: "R".repeat(800000) });
   assert.equal((await complete(service, conversation, "first")).result.status, "completed");
   const before = codex.calls.filter(({ method }) => method === "turn/start").length;
   const second = await complete(service, conversation, "second");
-  assert.equal(second.result.status, "preflight_failed");
-  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, before);
+  assert.equal(second.result.status, "completed");
+  assert.equal(codex.calls.filter(({ method }) => method === "turn/start").length, before + 1);
   const events = (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"), "utf8"))
     .trim().split("\n").map(JSON.parse);
   assert.equal(events.find((event) => event.type === "completed").text.length, 800000);
-  assert.equal(events.at(-1).code, "voice_context_too_large");
+  assert.equal(events.at(-1).pairSeq, 2);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
 });
 
 test("tool events do not interrupt a spoken reply", async (t) => {
@@ -1273,7 +1398,7 @@ test("failed events identify the guarded voice stage without recording private d
   }
 });
 
-for (const missing of ["directory", "events.jsonl", "MEMORY.md"]) {
+for (const missing of ["directory", "events.jsonl"]) {
   test(`existing active conversation rejects missing ${missing} without regenerating`, async (t) => {
     const { rootDir, service, conversation, codex } = await fixture(t);
     const completed = await complete(service, conversation, "preserved operation");
@@ -1312,7 +1437,7 @@ test("existing empty v1 root without active also stays fail closed", async (t) =
   assert.deepEqual(await fs.readdir(rootDir), []);
 });
 
-test("the bounded message window stays ordered; canceled stale summary cannot commit", async (t) => {
+test("a canceled stale curator cannot commit over the current topic generation", async (t) => {
   const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true, ignoreAbort: true, reply: "要約😀" });
   await seedPairs(rootDir, conversation.logicalConversationId, 25);
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
@@ -1322,37 +1447,24 @@ test("the bounded message window stays ordered; canceled stale summary cannot co
   const staleSummaryCwd = codex.calls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never").params.cwd;
   const completed = await complete(service, conversation, "user-26");
   assert.equal(completed.result.status, "completed");
-  assert.equal(completed.result.unsummarizedMessageCount, 50);
-  const injection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(injection.length, 48);
-  assert.deepEqual(injection.map((item) => item.content[0].text),
-    Array.from({ length: 24 }, (_, index) => [`user-${index + 2}`, `assistant-${index + 2}`]).flat());
+  assert.equal(completed.result.unsummarizedMessageCount, 52);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
   await waitFor(() => codex.summaryReleases.length === 1);
-  const memoryFile = path.join(rootDir, conversation.logicalConversationId, "MEMORY.md");
-  assert.match(await fs.readFile(memoryFile, "utf8"), /summarizedThroughPair=0/);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=16"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 16);
   firstSummary();
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal((await fs.stat(staleSummaryCwd)).isDirectory(), true);
   assert.ok(codex.calls.filter(({ method, params }) => method === "thread/start" && params.approvalPolicy === "never")
     .every(({ params }) => params.cwd === staleSummaryCwd));
-  assert.match(await fs.readFile(memoryFile, "utf8"), /summarizedThroughPair=16/);
+  assert.equal((await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq, 16);
   const next = await complete(service, conversation, "user-27");
   assert.equal(next.result.status, "completed");
-  assert.equal(next.result.memoryCharacterCount, Array.from("要約😀").length);
   assert.equal(next.result.unsummarizedMessageCount, 22);
-  assert.equal((await service.status(conversation.logicalConversationId, next.message.operationId)).memoryCharacterCount, 3);
-  const after = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(after[0].content[0].text, "Previous conversation summary:\n要約😀");
-  assert.deepEqual(after.slice(1).map((item) => item.content[0].text),
-    Array.from({ length: 10 }, (_, index) => [`user-${index + 17}`, index === 9 ? "要約😀" : `assistant-${index + 17}`]).flat());
-  const events = (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "events.jsonl"), "utf8"))
-    .trim().split("\n").map(JSON.parse);
-  assert.equal(events.filter((event) => event.type === "completed").length, 25);
+  assert.equal((await service.status(conversation.logicalConversationId, next.message.operationId)).status, "completed");
   await waitFor(() => codex.summaryReleases.length === 1);
   codex.summaryReleases.shift()();
-  await waitFor(async () => (await fs.readFile(memoryFile, "utf8")).includes("summarizedThroughPair=17"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 17);
 });
 
 test("a burst does not wait for a held summary and keeps the newest complete turns", async (t) => {
@@ -1360,21 +1472,16 @@ test("a burst does not wait for a held summary and keeps the newest complete tur
   for (let number = 1; number <= 26; number++) {
     assert.equal((await complete(service, conversation, `burst-${number}`)).result.status, "completed");
   }
-  assert.equal((await service.open()).unsummarizedMessageCount, 50);
-  const injected = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(injected.length, 48);
-  assert.deepEqual(injected.filter((item) => item.role === "user").map((item) => item.content[0].text),
-    Array.from({ length: 24 }, (_, index) => `burst-${index + 2}`));
-  assert.match(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"),
-    /summarizedThroughPair=0/);
+  assert.equal((await service.open()).unsummarizedMessageCount, 52);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
+  assert.equal(await fs.stat(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
   await waitFor(() => codex.summaryReleases.length > 0);
   for (const finish of codex.summaryReleases.splice(0)) finish();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=16"));
+  await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 16);
 });
 
 test("restart retains backlog and reclaims only legacy summary temporary directories", async (t) => {
-  const { rootDir, conversation, codex } = await fixture(t, { holdSummaries: true });
+  const { rootDir, conversation, codex } = await fixture(t, { failSummary: true });
   await seedPairs(rootDir, conversation.logicalConversationId, 25);
   const tempRoot = path.join(path.dirname(rootDir), "ephemeral-tmp");
   await fs.mkdir(tempRoot);
@@ -1398,17 +1505,10 @@ test("restart retains backlog and reclaims only legacy summary temporary directo
   assert.equal(await fs.readFile(path.join(protectedDirectory, "keep"), "utf8"), "protected");
   assert.equal((await fs.lstat(path.join(tempRoot, "summary-zzzzzz"))).isSymbolicLink(), true);
   assert.equal(await fs.readFile(path.join(legacyTurn, "keep"), "utf8"), "possibly user data");
-  await waitFor(() => codex.summaryReleases.length > 0);
   const result = await complete(service, conversation, "after-restart");
   assert.equal(result.result.status, "completed");
-  const items = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
-  assert.equal(items.length, 48);
-  assert.equal(items[0].content[0].text, "user-2");
-  assert.equal(items.at(-1).content[0].text, "assistant-25");
-  await waitFor(() => codex.summaryReleases.length >= 2);
-  for (const finish of codex.summaryReleases.splice(0)) finish();
-  await waitFor(async () => (await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "MEMORY.md"), "utf8"))
-    .includes("summarizedThroughPair=16"));
+  assert.equal(result.result.unsummarizedMessageCount, 52);
+  assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
 });
 
 test("Unicode byte guard rejects near model input limit without pruning", async (t) => {

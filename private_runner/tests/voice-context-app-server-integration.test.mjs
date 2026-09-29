@@ -54,6 +54,10 @@ for (const withGlobalMcp of [true, false]) test(
   let resolveInput;
   let modelRequestCount = 0;
   const modelRequests = [];
+  const summaryText = JSON.stringify({
+    index: "# Topics\n\n- [Earlier conversation](topics/earlier.md)\n",
+    topics: [{ name: "earlier.md", content: "- [確定] MOCK_SUMMARY [pairSeq: 1]\n" }],
+  });
   const modelInput = new Promise((resolve) => { resolveInput = resolve; });
   const mock = createServer(async (request, response) => {
     const chunks = [];
@@ -63,13 +67,14 @@ for (const withGlobalMcp of [true, false]) test(
       const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       modelRequests.push(input);
       resolveInput(input);
-      if (modelRequestCount === 3) {
+      if (modelRequestCount <= 2) {
+        const text = modelRequestCount === 1 ? "CURRENT_ASSISTANT" : summaryText;
         const item = {
-          id: "msg_mock_summary", type: "message", role: "assistant", status: "completed",
-          content: [{ type: "output_text", text: "MOCK_SUMMARY" }],
+          id: `msg_mock_${modelRequestCount}`, type: "message", role: "assistant", status: "completed",
+          content: [{ type: "output_text", text }],
         };
         const result = {
-          id: "resp_mock_summary", object: "response", created_at: Math.floor(Date.now() / 1000),
+          id: `resp_mock_${modelRequestCount}`, object: "response", created_at: Math.floor(Date.now() / 1000),
           model: "gpt-6-luna", status: "completed", output: [item],
           usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
         };
@@ -135,10 +140,12 @@ for (const withGlobalMcp of [true, false]) test(
   const rootDir = path.join(temp, "voice-data");
   const rpcErrors = [];
   const mcpPages = [];
+  const voiceCalls = [];
   const createClient = () => {
     const client = createCodexAppServerClient({ upstreamUrl: `ws://127.0.0.1:${appPort}` });
     const request = client.request;
     client.request = async (method, params, timeout) => {
+      voiceCalls.push({ method, params });
       try {
         const result = await request(method, params, timeout);
         if (method === "mcpServerStatus/list" && params.threadId) mcpPages.push(result.data);
@@ -158,10 +165,12 @@ for (const withGlobalMcp of [true, false]) test(
   probe.close();
   const initial = createVoiceContextService({ rootDir, createClient });
   const { logicalConversationId } = await initial.open();
+  // Recreate a pre-voice-memory store so its retained pairs are migrated on load.
+  await fs.rm(path.join(temp, "workspaces", logicalConversationId, "voice-memory"), { recursive: true });
   const directory = path.join(rootDir, logicalConversationId);
   const events = [];
   const at = new Date().toISOString();
-  for (let pairSeq = 1; pairSeq <= 11; pairSeq++) {
+  for (let pairSeq = 1; pairSeq <= 10; pairSeq++) {
     const clientOperationId = randomUUID();
     const user = pairSeq === 1 ? "OLD_ONLY_USER" : `RECENT_USER_${pairSeq}`;
     const assistant = pairSeq === 1 ? "OLD_ONLY_ASSISTANT" : `RECENT_ASSISTANT_${pairSeq}`;
@@ -171,7 +180,6 @@ for (const withGlobalMcp of [true, false]) test(
     events.push({ seq: events.length + 1, at, clientOperationId, type: "completed", pairSeq, text: assistant });
   }
   await fs.writeFile(path.join(directory, "events.jsonl"), `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, { mode: 0o600 });
-  await fs.writeFile(path.join(directory, "MEMORY.md"), "<!-- voice-context:v1 summarizedThroughPair=1 -->\nMEMORY_SUMMARY", { mode: 0o600 });
 
   const service = createVoiceContextService({ rootDir, createClient });
   const clientOperationId = randomUUID();
@@ -190,24 +198,25 @@ for (const withGlobalMcp of [true, false]) test(
   const upstream = first.value;
   assert.equal(JSON.stringify(upstream).includes(ancestorInstruction), false);
   assert.equal(upstream.model, "gpt-6-luna");
-  const conversationItems = upstream.input.filter((item) =>
-    ["MEMORY_SUMMARY", "RECENT_USER_", "RECENT_ASSISTANT_", "CURRENT_USER", "OLD_ONLY_"].some((part) =>
-      JSON.stringify(item).includes(part)));
-  assert.deepEqual(conversationItems.map((item) => [item.role, item.content?.[0]?.text]), [
-    ["assistant", "Previous conversation summary:\nMEMORY_SUMMARY"],
-    ...Array.from({ length: 10 }, (_, index) => index + 2).flatMap((number) => [
-      ["user", `RECENT_USER_${number}`], ["assistant", `RECENT_ASSISTANT_${number}`],
-    ]),
-    ["user", "CURRENT_USER"],
-  ]);
+  assert.equal(voiceCalls.some(({ method }) => method === "thread/inject_items"), false);
+  const conversationItems = upstream.input.filter((item) => ["CURRENT_USER", "RECENT_USER_", "OLD_ONLY_"].some((part) =>
+    JSON.stringify(item).includes(part)));
+  assert.deepEqual(conversationItems.map((item) => [item.role, item.content?.[0]?.text]), [["user", "CURRENT_USER"]]);
   assert.equal(JSON.stringify(upstream.input).includes("OLD_ONLY_"), false);
-  assert.equal((await within(terminal, 20000, "voice turn did not settle")).status, "failed");
+  const responseThread = voiceCalls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
+  assert.ok(responseThread);
+  const memoryRoot = path.join(responseThread.params.cwd, "voice-memory");
+  const pointer = await fs.readFile(path.join(memoryRoot, "index.md"), "utf8");
+  assert.match(pointer, /voice-memory:v1 generation=/);
+  const generation = pointer.match(/generation=([0-9a-f-]{36})/)[1];
+  assert.equal(await fs.readFile(path.join(memoryRoot, "generations", generation, "index.md"), "utf8"), "# Topics\n");
+  assert.deepEqual((await fs.readFile(path.join(memoryRoot, "recent.json"), "utf8").then(JSON.parse))
+    .map(({ pairSeq }) => pairSeq), Array.from({ length: 10 }, (_, index) => index + 1));
+  assert.match((await fs.readdir(path.join(memoryRoot, "raw", logicalConversationId))).join(" "), /00000001-00000010\.jsonl/);
+  assert.match(await fs.readFile(path.join(memoryRoot, "raw", logicalConversationId, "00000001-00000010.jsonl"), "utf8"), /OLD_ONLY_USER/);
+  assert.equal((await within(terminal, 20000, "voice turn did not settle")).status, "completed");
 
-  // The earlier fixture intentionally has exactly ten unsummarized pairs. Reopen with
-  // cursor zero to exercise the separate summary thread through the real App Server.
-  await fs.writeFile(path.join(directory, "MEMORY.md"), "<!-- voice-context:v1 summarizedThroughPair=0 -->\n", { mode: 0o600 });
-  const summaryService = createVoiceContextService({ rootDir, createClient });
-  await summaryService.open();
+  // Completing pair 11 starts a separate summary thread for the oldest pair.
   await within((async () => {
     while (modelRequests.length < 2) await delay(25);
   })(), 20000, `summary never reached the mock model: ${rpcErrors.join("; ")} ${codexError}`);
@@ -219,16 +228,22 @@ for (const withGlobalMcp of [true, false]) test(
   const summaryRequest = modelRequests[1];
   assert.equal(JSON.stringify(summaryRequest).includes(ancestorInstruction), false);
   assert.equal(summaryRequest.model, "gpt-6-luna");
-  assert.equal(JSON.stringify(summaryRequest.input).includes("previousMemory"), false);
-  assert.equal(JSON.stringify(summaryRequest.input).includes("MEMORY_SUMMARY"), false);
+  assert.equal(JSON.stringify(summaryRequest.input).includes("existingMemory"), true);
   assert.equal(JSON.stringify(summaryRequest.input).includes("OLD_ONLY_USER"), true);
   assert.equal(JSON.stringify(summaryRequest.input).includes("RECENT_USER_2"), false);
   const pending = JSON.parse(await fs.readFile(path.join(directory, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 1]);
-  assert.match(await fs.readFile(path.join(directory, "MEMORY.md"), "utf8"), /summarizedThroughPair=0/);
+  assert.equal(Object.hasOwn(pending, "categorizeLegacy"), false);
+  assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1]);
+  assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   await within((async () => {
-    while (!(await fs.readFile(path.join(directory, "MEMORY.md"), "utf8")).includes("summarizedThroughPair=1")) await delay(25);
+    while (!(await fs.readFile(path.join(memoryRoot, "index.md"), "utf8")).includes("previous=")) await delay(25);
   })(), 20000, `summary retry did not commit: ${rpcErrors.join("; ")} ${codexError}`);
-  assert.match(await fs.readFile(path.join(directory, "MEMORY.md"), "utf8"), /MOCK_SUMMARY/);
-  assert.equal((await summaryService.open()).unsummarizedMessageCount, 20);
+  const committedPointer = await fs.readFile(path.join(memoryRoot, "index.md"), "utf8");
+  const committedGeneration = committedPointer.match(/generation=([0-9a-f-]{36})/)[1];
+  assert.match(await fs.readFile(path.join(memoryRoot, "generations", committedGeneration, "topics", "earlier.md"), "utf8"), /MOCK_SUMMARY/);
+  await within((async () => {
+    while (await fs.stat(path.join(directory, "memory-pending.json")).then(() => true, () => false)) await delay(25);
+  })(), 20000, "committed summary kept its pending file");
+  assert.equal((await service.open()).unsummarizedMessageCount, 20);
 });
