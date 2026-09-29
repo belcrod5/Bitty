@@ -198,11 +198,18 @@ for (const withGlobalMcp of [true, false]) test(
   const upstream = first.value;
   assert.equal(JSON.stringify(upstream).includes(ancestorInstruction), false);
   assert.equal(upstream.model, "gpt-6-luna");
-  assert.equal(voiceCalls.some(({ method }) => method === "thread/inject_items"), false);
-  const conversationItems = upstream.input.filter((item) => ["CURRENT_USER", "RECENT_USER_", "OLD_ONLY_"].some((part) =>
+  const injection = voiceCalls.find(({ method }) => method === "thread/inject_items");
+  assert.deepEqual(injection.params.items.map(({ role, content }) => [role, content[0].text]),
+    Array.from({ length: 10 }, (_, index) => [
+      ["user", index === 0 ? "OLD_ONLY_USER" : `RECENT_USER_${index + 1}`],
+      ["assistant", index === 0 ? "OLD_ONLY_ASSISTANT" : `RECENT_ASSISTANT_${index + 1}`],
+    ]).flat());
+  const conversationItems = upstream.input.filter((item) => ["CURRENT_USER", "RECENT_USER_", "RECENT_ASSISTANT_", "OLD_ONLY_"].some((part) =>
     JSON.stringify(item).includes(part)));
-  assert.deepEqual(conversationItems.map((item) => [item.role, item.content?.[0]?.text]), [["user", "CURRENT_USER"]]);
-  assert.equal(JSON.stringify(upstream.input).includes("OLD_ONLY_"), false);
+  assert.deepEqual(conversationItems.map((item) => [item.role, item.content?.[0]?.text]), [
+    ...injection.params.items.map(({ role, content }) => [role, content[0].text]),
+    ["user", "CURRENT_USER"],
+  ]);
   const responseThread = voiceCalls.find(({ method, params }) => method === "thread/start" && params.approvalPolicy === "on-request");
   assert.ok(responseThread);
   const memoryRoot = path.join(responseThread.params.cwd, "voice-memory");

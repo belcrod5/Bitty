@@ -11,9 +11,9 @@
 | **既存のセッションIDで管理** | 左ドロワー、Skia の既存セッションカードから開くチャット | 現行の Agent Service／Codex native session。UI・API・保存・継続動線を変えない。 |
 | **自前コンテキスト配列** | Skia 下部ツール右の新アイコンから開く音声長期会話 | Runner が応答用 cwd に有限の原文と項目別メモリーを保存する。アプリは論理会話IDと現在の送信IDだけを保持する。 |
 
-「自前コンテキスト配列」は、Codex App Server の **新規 ephemeral thread を応答ターンごとに開始**し、今回の確定発話だけを `turn/start` で渡す。過去会話は `thread/inject_items` で注入せず、応答用 cwd の `voice-memory/index.md`、項目別 topic、`recent.json`、有限 raw segment を必要時にモデルが読む。既存 thread の `thread/resume`、`thread/fork`、`thread/compact/start` は使わず、Responses API の直接呼び出しにも切り替えない。[公式 App Server 文書](https://learn.chatgpt.com/docs/app-server)、[隔離検証](APP-SERVER-CONTEXT-VERIFICATION.md)。
+「自前コンテキスト配列」は、Codex App Server の **新規 ephemeral thread を応答ターンごとに開始**し、最新10完了ペアを `thread/inject_items` で順序通り注入してから、今回の確定発話だけを `turn/start` で渡す。項目別 topic は応答用 cwd の `voice-memory/` に保存し、必要時にモデルが読む。既存 thread の `thread/resume`、`thread/fork`、`thread/compact/start` は使わず、Responses API の直接呼び出しにも切り替えない。[公式 App Server 文書](https://learn.chatgpt.com/docs/app-server)、[隔離検証](APP-SERVER-CONTEXT-VERIFICATION.md)。
 
-ローカルの隔離 App Server と模擬モデルでは、ephemeral thread の開始、会話由来 item が今回発話だけであること、cwd のメモリーファイル、topic 更新まで確認した。対象 Runner で ephemeral／権限制約が使えなければ音声モードを利用不可として止め、managed thread や Responses API へ黙って代替しない。
+ローカルの隔離 App Server と模擬モデルでは、ephemeral thread の開始、最新10完了ペアと今回発話の順序、cwd のメモリーファイル、topic 更新まで確認した。対象 Runner で ephemeral／権限制約が使えなければ音声モードを利用不可として止め、managed thread や Responses API へ黙って代替しない。
 
 ## 入口と識別子
 
@@ -47,19 +47,19 @@
 | `workspaces/<ID>/voice-memory/index.md` | 有効なtopic世代、`recent.json`、有限rawへの入口。 |
 | `voice-memory/generations/<世代>/` | `index.md`、`topics/*.md`、cursor・digestを持つstate。現行と直前の最大2世代だけ保持する。 |
 | `voice-memory/raw/<会話ID>/*.jsonl` | 10ペア単位の原文segment。通常30ペア、更新失敗中は最大40ペアまで保持する。 |
-| `voice-memory/recent.json` | 最新10ペア。topicより新しい訂正を後勝ちで読むための未処理tail。 |
+| `voice-memory/recent.json` | 応答注入と同じ最新10完了ペアを、必要時の参照用に保存する。 |
 
 `events.jsonl` は一行一 event とし、全行に `seq`（連番）、`at`（時刻）、`clientOperationId`、`type` を置く。`pairSeq` は完了した user／assistant ペアにだけ1から連番で付く。`memory-pending.json` は処理範囲、対象ペア、既存topicを持ち、確定時に同じ範囲のrawと再照合する。`active.json` は論理会話ID、方式、workspace初期化状態を持ち、モデル設定やクリア復旧用IDを必要時だけ加える。旧 `MEMORY.md` は読み込まず、現行 `voice-memory` を安全に開いた後に削除する。
 
 発話は `turn.start` 受付時に `accepted` event を追記・同期してから確認応答する。完了応答は対応 native thread／turn の `item/completed` で最終本文を集め、成功した `turn/completed` と空でない本文を確認した後に同じ送信IDの `completed` event として追記・同期し、それからアプリへ通知する。生成途中の delta は正本にも TTS にも使わず、応答本文を途中で切って完了扱いにしない。追記は一会話内で直列化し、再起動時は正本を読み直す。書きかけの末尾行だけは受理済みと見なさず、原本を保全して復旧する。破損した確定行やディスク満杯は黙って飛ばさず受付を停止する。
 
-応答への会話由来入力は今回の確定発話だけであり、過去ペアやtopicを毎回注入しない。完了ペアは `completed` event を同期した後、rawへ同期し、その成功後だけ100イベント運用ログを剪定できる。固定指示と今回発話の UTF-8 合計が **800,000 bytes** を超えたら `voice_context_too_large` で拒否する。この境界は実モデルのtoken上限を保証しない。
+応答への会話由来入力は最新10完了ペア（最大20メッセージ）と今回の確定発話とし、topicは毎回注入しない。完了ペアは `completed` event を同期した後、rawへ同期し、その成功後だけ100イベント運用ログを剪定できる。固定指示、最新10ペア、今回発話の UTF-8 合計が **800,000 bytes** を超えたら `voice_context_too_large` で拒否する。この境界は実モデルのtoken上限を保証しない。
 
 未処理ペアが10件を超えたら、古い超過分と既存topicを `memory-pending.json` に原子的に書き、別の ephemeral thread で非同期更新する。未処理tailは渡さず、今回の処理範囲だけをcuratorの根拠にする。通常の一時的な会話はtopicを増やさずcursorだけ進めてよい。curatorは変更topicだけをJSONで返し、Runnerがファイル名、サイズ、出典、indexとの一致を検証する。候補世代の全ファイルを同期後に有効pointerを原子的に切り替え、その後だけ処理済みで直近30ペアより古いraw segmentを削除する。失敗時はcursorとrawを維持して再試行し、40ペアに達したら原文を捨てず新規受付を `voice_memory_full` で止める。
 
-Runner の3指標は、初期モデルについて今回発話と指示の UTF-8 bytes を token 数の保守的な代用値として算出する割合（他モデルは `null`）、未処理ペア数×2、現行topic本文の Unicode コードポイント数である。推定使用率はモデルが必要時に読むファイルや App Server 側の隠れた入力を含まない。
+Runner の3指標は、初期モデルについて最新10完了ペア、今回発話、指示の UTF-8 bytes を token 数の保守的な代用値として算出する割合（他モデルは `null`）、未処理ペア数×2、現行topic本文の Unicode コードポイント数である。推定使用率はモデルが必要時に読むファイルや App Server 側の隠れた入力を含まない。
 
-毎回、空の ephemeral thread の `turn/start.input` に今回発話を一度だけ置く。会話履歴の `thread/inject_items` は呼ばない。メモリーの場所と必要時に読む方針は、設定画面のsystem instructionでユーザーが管理する。curatorも応答とは別の ephemeral thread で実行する。
+毎回、空の ephemeral thread に最新10完了ペアを `thread/inject_items` で置き、`turn/start.input` に今回発話を一度だけ置く。system instructionも毎回適用する。項目別メモリーの場所と必要時に読む方針は、設定画面のsystem instructionでユーザーが管理する。curatorも応答とは別の ephemeral thread で実行する。
 
 ## ターンの失敗・再送
 
@@ -88,6 +88,6 @@ Skia 側のフッター本体は左右20pt・下20ptの余白を確保し、チ�
 
 非同期curatorは会話応答とは別の ephemeral thread で、`approvalPolicy: "never"`、`sandbox: "read-only"` とする。専用設定では apps／plugins／web searchを無効化し、既存MCPも全件無効にする。未知の形式、有効なMCP、ツール・承認イベントがあれば結果を保存しない。`turn/start.sandboxPolicy` は `{ type: "readOnly", networkAccess: false }` とする。
 
-受入テストは、30/40ペアの保持境界、更新の遅延・失敗・中止、pointer切替前後の停止と再開、raw欠落のfail-closed、同ID再送、クリア後の出典名前空間、応答workspaceの再起動保持を含める。隔離App Serverと模擬モデルで、応答上流の会話由来itemが今回発話だけであること、cwdにpointer/topic/recent/rawがあること、curatorが別threadでtopic世代を更新することを検査する。
+受入テストは、30/40ペアの保持境界、更新の遅延・失敗・中止、pointer切替前後の停止と再開、raw欠落のfail-closed、同ID再送、クリア後の出典名前空間、応答workspaceの再起動保持を含める。隔離App Serverと模擬モデルで、応答上流に最新10完了ペアと今回発話が順序通り届くこと、cwdにpointer/topic/recent/rawがあること、curatorが別threadでtopic世代を更新することを検査する。
 
 隔離App Serverと模擬モデルによる統合は検証済み。実モデルでの自動topic品質、実機TTS、system instructionによる必要時読出しは本番確認が必要である。複数論理会話、tool／reasoning itemと承認状態のターン間継続は対象外とする。
