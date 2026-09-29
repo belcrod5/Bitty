@@ -230,11 +230,12 @@ for (const withGlobalMcp of [true, false]) test(
   assert.equal(summaryRequest.model, "gpt-6-luna");
   assert.equal(JSON.stringify(summaryRequest.input).includes("existingMemory"), true);
   assert.equal(JSON.stringify(summaryRequest.input).includes("OLD_ONLY_USER"), true);
-  assert.equal(JSON.stringify(summaryRequest.input).includes("RECENT_USER_2"), true);
+  assert.equal(JSON.stringify(summaryRequest.input).includes("RECENT_USER_2"), false);
   const pending = JSON.parse(await fs.readFile(path.join(directory, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 1]);
   assert.equal(Object.hasOwn(pending, "categorizeLegacy"), false);
-  assert.equal(pending.contextPairs.length, 11);
+  assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1]);
+  assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   await within((async () => {
     while (!(await fs.readFile(path.join(memoryRoot, "index.md"), "utf8")).includes("previous=")) await delay(25);
   })(), 20000, `summary retry did not commit: ${rpcErrors.join("; ")} ${codexError}`);

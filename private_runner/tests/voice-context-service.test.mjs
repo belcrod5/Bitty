@@ -1045,7 +1045,8 @@ test("response leaves pending pairs on disk without injecting them", async (t) =
   assert.equal(codex.calls.some(({ method }) => method === "thread/inject_items"), false);
   const pending = JSON.parse(await fs.readFile(path.join(rootDir, conversation.logicalConversationId, "memory-pending.json"), "utf8"));
   assert.deepEqual([pending.fromPairSeq, pending.throughPairSeq], [1, 2]);
-  assert.deepEqual(pending.contextPairs.map(({ pairSeq }) => pairSeq), Array.from({ length: 12 }, (_, index) => index + 1));
+  assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1, 2]);
+  assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   const threadStarts = codex.calls.filter(({ method }) => method === "thread/start");
   assert.ok(threadStarts.every(({ params }) => params.ephemeral === true && params.model === "gpt-6-luna"));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "workspace-write" && params.approvalPolicy === "on-request" && !Object.hasOwn(params, "config")));

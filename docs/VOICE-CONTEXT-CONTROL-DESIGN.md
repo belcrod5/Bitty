@@ -43,19 +43,19 @@
 | ファイル | 責務 |
 | --- | --- |
 | `events.jsonl` | 正本。送信ID、受理した確定発話、状態遷移、完了応答、対応する native thread／turn ID を時系列で追記する。STT 途中結果、TTS 音声、tool／reasoning item は保存しない。 |
-| `memory-pending.json` | 項目更新待ちの処理対象ペア、文脈用tail、既存topicを持つ一時ファイル。正本ではない。 |
+| `memory-pending.json` | 項目更新待ちの処理対象ペアと既存topicを持つ一時ファイル。正本ではない。 |
 | `workspaces/<ID>/voice-memory/index.md` | 有効なtopic世代、`recent.json`、有限rawへの入口。 |
 | `voice-memory/generations/<世代>/` | `index.md`、`topics/*.md`、cursor・digestを持つstate。現行と直前の最大2世代だけ保持する。 |
 | `voice-memory/raw/<会話ID>/*.jsonl` | 10ペア単位の原文segment。通常30ペア、更新失敗中は最大40ペアまで保持する。 |
 | `voice-memory/recent.json` | 最新10ペア。topicより新しい訂正を後勝ちで読むための未処理tail。 |
 
-`events.jsonl` は一行一 event とし、全行に `seq`（連番）、`at`（時刻）、`clientOperationId`、`type` を置く。`pairSeq` は完了した user／assistant ペアにだけ1から連番で付く。`memory-pending.json` は処理範囲、対象ペア、切り出し前の `contextPairs`、既存topicを持ち、確定時にrawと再照合する。`active.json` は論理会話ID、方式、workspace初期化状態を持ち、モデル設定やクリア復旧用IDを必要時だけ加える。旧 `MEMORY.md` は読み込まず、現行 `voice-memory` を安全に開いた後に削除する。
+`events.jsonl` は一行一 event とし、全行に `seq`（連番）、`at`（時刻）、`clientOperationId`、`type` を置く。`pairSeq` は完了した user／assistant ペアにだけ1から連番で付く。`memory-pending.json` は処理範囲、対象ペア、既存topicを持ち、確定時に同じ範囲のrawと再照合する。`active.json` は論理会話ID、方式、workspace初期化状態を持ち、モデル設定やクリア復旧用IDを必要時だけ加える。旧 `MEMORY.md` は読み込まず、現行 `voice-memory` を安全に開いた後に削除する。
 
 発話は `turn.start` 受付時に `accepted` event を追記・同期してから確認応答する。完了応答は対応 native thread／turn の `item/completed` で最終本文を集め、成功した `turn/completed` と空でない本文を確認した後に同じ送信IDの `completed` event として追記・同期し、それからアプリへ通知する。生成途中の delta は正本にも TTS にも使わず、応答本文を途中で切って完了扱いにしない。追記は一会話内で直列化し、再起動時は正本を読み直す。書きかけの末尾行だけは受理済みと見なさず、原本を保全して復旧する。破損した確定行やディスク満杯は黙って飛ばさず受付を停止する。
 
 応答への会話由来入力は今回の確定発話だけであり、過去ペアやtopicを毎回注入しない。完了ペアは `completed` event を同期した後、rawへ同期し、その成功後だけ100イベント運用ログを剪定できる。固定指示と今回発話の UTF-8 合計が **800,000 bytes** を超えたら `voice_context_too_large` で拒否する。この境界は実モデルのtoken上限を保証しない。
 
-未処理ペアが10件を超えたら、古い超過分と切り出し前の全tail、既存topicを `memory-pending.json` に原子的に書き、別の ephemeral thread で非同期更新する。通常の一時的な会話はtopicを増やさずcursorだけ進めてよい。curatorは変更topicだけをJSONで返し、Runnerがファイル名、サイズ、出典、indexとの一致を検証する。候補世代の全ファイルを同期後に有効pointerを原子的に切り替え、その後だけ処理済みで直近30ペアより古いraw segmentを削除する。失敗時はcursorとrawを維持して再試行し、40ペアに達したら原文を捨てず新規受付を `voice_memory_full` で止める。
+未処理ペアが10件を超えたら、古い超過分と既存topicを `memory-pending.json` に原子的に書き、別の ephemeral thread で非同期更新する。未処理tailは渡さず、今回の処理範囲だけをcuratorの根拠にする。通常の一時的な会話はtopicを増やさずcursorだけ進めてよい。curatorは変更topicだけをJSONで返し、Runnerがファイル名、サイズ、出典、indexとの一致を検証する。候補世代の全ファイルを同期後に有効pointerを原子的に切り替え、その後だけ処理済みで直近30ペアより古いraw segmentを削除する。失敗時はcursorとrawを維持して再試行し、40ペアに達したら原文を捨てず新規受付を `voice_memory_full` で止める。
 
 Runner の3指標は、初期モデルについて今回発話と指示の UTF-8 bytes を token 数の保守的な代用値として算出する割合（他モデルは `null`）、未処理ペア数×2、現行topic本文の Unicode コードポイント数である。推定使用率はモデルが必要時に読むファイルや App Server 側の隠れた入力を含まない。
 
