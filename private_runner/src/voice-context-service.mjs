@@ -201,6 +201,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
   let memory = "";
   let summarizedThroughPair = 0;
   let inFlightId = "";
+  let inFlightPartialText = "";
   let inFlightController = null;
   let inFlightTask = null;
   let storeFailure = null;
@@ -449,6 +450,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
       status,
       ...usage(),
       ...(state.text ? { text: state.text } : {}),
+      ...(inFlightId === id && (status === "accepted" || status === "running") && inFlightPartialText
+        ? { partialText: inFlightPartialText } : {}),
       ...(state.code ? { code: state.code } : {}),
     };
   }
@@ -808,7 +811,10 @@ export function createVoiceContextService({ rootDir, createClient }) {
       stage = "model_turn";
       const result = await modelTurn({ input, items, instructions: settings().systemInstruction, onApproval,
         signal,
-        onText: hooks.onText, onTextError: hooks.onTextError,
+        onText: (delta) => {
+          if (inFlightId === clientOperationId) inFlightPartialText += delta;
+          hooks.onText?.(delta);
+        }, onTextError: hooks.onTextError,
         onStarted: ({ threadId, turnId }) => exclusive(() => append(clientOperationId, "native_started", { threadId, turnId })) });
       stage = "completion_store";
       await exclusive(async () => {
@@ -818,6 +824,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
           text: result.text,
         });
       });
+      inFlightPartialText = "";
       inFlightId = "";
       try { notify(stateOf(clientOperationId)); } catch {}
       try { hooks.onCompleted?.(result.text); } catch {}
@@ -836,11 +843,14 @@ export function createVoiceContextService({ rootDir, createClient }) {
         const reason = ["ephemeral_unavailable", "invalid_mcp_page", "turn_id_unavailable", "tool_or_approval"].includes(error?.voiceReason)
           ? error.voiceReason : "unexpected_error";
         await exclusive(() => append(clientOperationId, type, { code, stage: failureStage, reason }));
+        inFlightPartialText = "";
+        inFlightId = "";
         try { notify(stateOf(clientOperationId)); } catch {}
       } catch {
         // A failed sync leaves the operation unresolved; a restart reports unknown.
       }
     } finally {
+      inFlightPartialText = "";
       inFlightId = "";
       inFlightController = null;
       inFlightTask = null;
@@ -968,7 +978,10 @@ export function createVoiceContextService({ rootDir, createClient }) {
         if (logicalConversationId !== active.logicalConversationId || !UUID.test(clientOperationId)) {
           throw invalid("turn_rejected", "Voice conversation or operation ID is invalid");
         }
-        if (inFlightId === clientOperationId) inFlightController.abort();
+        if (inFlightId === clientOperationId) {
+          inFlightPartialText = "";
+          inFlightController.abort();
+        }
         return stateOf(clientOperationId);
       });
     },
@@ -1000,6 +1013,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         cancelSummary();
         await append(id, "accepted", { text });
         inFlightId = id;
+        inFlightPartialText = "";
         inFlightController = new AbortController();
         const signal = inFlightController.signal;
         try { hooks.onAccepted?.(); } catch {}

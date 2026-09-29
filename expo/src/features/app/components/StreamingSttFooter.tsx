@@ -38,10 +38,11 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   onFocus?: () => void;
   onBlur?: () => void;
   onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
+  onCancelSpeaking?: () => void;
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
-  onChangeText, onFocus, onBlur, onSubmit, historyExpanded, onHistoryToggle }, ref) {
+  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -193,6 +194,15 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         </Path>
       </Canvas>
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12", zIndex: 1 }]}>
+        {voiceStatus === "speaking" && onCancelSpeaking ? (
+          <TouchableOpacity
+            testID="streaming-stt-speaking-cancel"
+            accessibilityRole="button"
+            accessibilityLabel="読み上げを停止"
+            onPress={onCancelSpeaking}
+            style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, zIndex: 2 }}
+          />
+        ) : null}
         <View style={{ flex: 1, minWidth: 0 }}>
           {onChangeText && !voiceStatus ? (
             <TextInput

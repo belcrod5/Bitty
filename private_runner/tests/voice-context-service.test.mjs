@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", agentEvents, earlyAgentEvents = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -74,6 +74,11 @@ function fakeCodex({ reply = "answer", agentEvents, failSummary = false, failSum
             throw new Error("private summary text and credential");
           }
           const turnId = randomUUID();
+          if (!isSummary) {
+            for (const event of earlyAgentEvents) listener(event.method, {
+              threadId: params.threadId, turnId, ...event.params,
+            });
+          }
           const finish = async () => {
             if (userItem) listener("item/completed", { threadId: params.threadId, turnId, item: { type: "userMessage" } });
             if (toolItem) listener("item/started", { threadId: params.threadId, turnId, item: { type: "commandExecution" } });
@@ -423,18 +428,64 @@ test("accepted hook precedes generation and item deltas reconcile with completed
   } };
   const deltas = [];
   const failures = [];
+  let resolvePartialStatus;
+  const partialStatus = new Promise((done) => { resolvePartialStatus = done; });
   let resolve;
   const terminal = new Promise((done) => { resolve = done; });
   await service.start(message, resolve, async () => "decline", {
     onAccepted: () => assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false),
-    onText: (delta) => deltas.push(delta),
+    onText: (delta) => {
+      deltas.push(delta);
+      if (deltas.length === 1) {
+        void service.status(conversation.logicalConversationId, id).then(resolvePartialStatus);
+      }
+    },
     onTextError: (error) => failures.push(error),
   });
   const result = await terminal;
+  const running = await partialStatus;
+  assert.equal(running.status, "running");
+  assert.equal(running.partialText.trimStart(), result.text);
   assert.equal(result.text, "Hello!\nWorld.");
   assert.equal(deltas.join("").trimStart(), result.text);
   assert.deepEqual(failures, []);
   await service.start(message, () => {}, async () => "decline", { onAccepted: () => assert.fail("duplicate hook") });
+});
+
+test("in-flight text survives native-started state rebuild", async (t) => {
+  const { rootDir, service, conversation, codex } = await fixture(t, {
+    holdTurns: true,
+    earlyAgentEvents: [
+      { method: "item/agentMessage/delta", params: { itemId: "first", delta: "Prefix " } },
+    ],
+    agentEvents: [
+      { method: "item/agentMessage/delta", params: { itemId: "first", delta: "suffix" } },
+      { method: "item/completed", params: { item: { id: "first", type: "agentMessage", text: "Prefix suffix" } } },
+    ],
+  });
+  const id = randomUUID();
+  let resolveTerminal;
+  let resolveRunning;
+  const terminal = new Promise((resolve) => { resolveTerminal = resolve; });
+  const running = new Promise((resolve) => { resolveRunning = resolve; });
+  await service.start({ operationId: id, payload: {
+    backendId: "codex", logicalConversationId: conversation.logicalConversationId,
+    clientOperationId: id, input: { blocks: [{ type: "text", text: "hello" }] },
+  } }, resolveTerminal, async () => "decline", {
+    onText: (delta) => {
+      if (delta === "suffix") void service.status(conversation.logicalConversationId, id).then(resolveRunning);
+    },
+  });
+  await waitFor(() => codex.releases.length === 1);
+  await waitFor(async () => (await storedEvents(rootDir, conversation.logicalConversationId))
+    .some((event) => event.clientOperationId === id && event.type === "native_started"));
+  codex.releases.shift()();
+
+  assert.equal((await running).partialText, "Prefix suffix");
+  const result = await terminal;
+  assert.equal(result.text, "Prefix suffix");
+  assert.equal(Object.hasOwn(result, "partialText"), false);
+  assert.equal(Object.hasOwn(await service.status(conversation.logicalConversationId, id), "partialText"), false);
 });
 
 test("missing item ID falls back to completed text before speech", async (t) => {

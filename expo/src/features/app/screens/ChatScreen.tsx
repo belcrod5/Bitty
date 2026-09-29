@@ -36,7 +36,6 @@ import { usePanelRuntimeStore } from "../contexts/PanelRuntimeStoreContext";
 import { usePanelRuntimeController } from "../contexts/PanelRuntimeControllerContext";
 import { useYouTubePlayer } from "../contexts/YouTubePlayerContext";
 import {
-  useChatDiagnostics,
   useDirectoryGitChangedFiles,
 } from "../contexts/ChatDiagnosticsContext";
 import { useChatComposer } from "../contexts/ChatComposerContext";
@@ -231,19 +230,6 @@ export function ChatScreen({
     chatBottomToast,
     chatBottomToastAnimRef,
   } = useChatVisual();
-  const {
-    codexCliStatusText,
-    codexCliStatusFetchedAtMs,
-    codexCliStatusLoading,
-    codexAuthProfileId,
-    codexAuthProfiles,
-    codexAuthProfilesLoading,
-    codexAuthSwitching,
-    codexAuthSwitchError,
-    refreshCodexCliStatus: onRefreshCodexCliStatus,
-    loadCodexAuthProfiles: onLoadCodexAuthProfiles,
-    switchCodexAuthProfile: onSwitchCodexAuthProfile,
-  } = useChatDiagnostics();
   const {
     composerMessageHistory,
     composerDrafts, composerDraftsLoaded, setComposerDraft, runnerClientStateScopeId,
@@ -2588,20 +2574,7 @@ export function ChatScreen({
               </TouchableOpacity>
             </View> : null}
           </View>
-          <CodexStatusSummaryMenu
-            dismissed={approvalDialogPending}
-            statusText={codexCliStatusText}
-            statusFetchedAtMs={codexCliStatusFetchedAtMs}
-            statusLoading={codexCliStatusLoading}
-            authProfileId={codexAuthProfileId}
-            authProfiles={codexAuthProfiles}
-            authProfilesLoading={codexAuthProfilesLoading}
-            authSwitching={codexAuthSwitching}
-            authSwitchError={codexAuthSwitchError}
-            onRefreshStatus={onRefreshCodexCliStatus}
-            onLoadAuthProfiles={onLoadCodexAuthProfiles}
-            onSwitchAuthProfile={onSwitchCodexAuthProfile}
-          />
+          <CodexStatusSummaryMenu dismissed={approvalDialogPending} />
         </View>
         <ComposerFullscreenEditor
           visible={popupComposerFullscreenOpen && !approvalDialogPending}

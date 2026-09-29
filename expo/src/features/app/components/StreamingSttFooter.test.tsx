@@ -277,6 +277,19 @@ describe("StreamingSttFooter", () => {
     await screen.unmount();
   });
 
+  it("uses a speaking tap to stop only the playback", async () => {
+    const onCancelSpeaking = jest.fn();
+    const onStop = jest.fn();
+    const screen = await render(<StreamingSttFooter transcript="" voiceStatus="speaking"
+      phase="recording" onStop={onStop} onCancelSpeaking={onCancelSpeaking} />);
+
+    await fireEvent.press(screen.getByLabelText("読み上げを停止"));
+
+    expect(onCancelSpeaking).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
   it("keeps the glow phase when a speaking response receives another audio chunk", async () => {
     const screen = await render(<StreamingSttFooter transcript="" statusText="speaking" voiceStatus="speaking" phase="recording" onStop={jest.fn()} />);
     await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });

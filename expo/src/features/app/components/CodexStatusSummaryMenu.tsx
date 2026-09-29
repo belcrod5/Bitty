@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dimensions, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { useAppStyles } from "../styles";
-import type { CodexAuthProfileEntry } from "../types/appTypes";
 import { AppModal } from "./AppModal";
 import { formatCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
+import { useChatDiagnostics } from "../contexts/ChatDiagnosticsContext";
 
 type AnchorRect = {
   x: number;
@@ -14,17 +14,6 @@ type AnchorRect = {
 
 type CodexStatusSummaryMenuProps = {
   dismissed?: boolean;
-  statusText: string;
-  statusFetchedAtMs: number;
-  statusLoading?: boolean;
-  authProfileId?: string;
-  authProfiles?: readonly CodexAuthProfileEntry[];
-  authProfilesLoading?: boolean;
-  authSwitching?: boolean;
-  authSwitchError?: string;
-  onRefreshStatus?: () => void;
-  onLoadAuthProfiles?: () => void;
-  onSwitchAuthProfile?: (authId: string) => Promise<boolean> | boolean;
 };
 
 const STATUS_PREVIEW_WIDTH = 320;
@@ -48,19 +37,21 @@ function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
 
 export function CodexStatusSummaryMenu({
   dismissed = false,
-  statusText,
-  statusFetchedAtMs,
-  statusLoading = false,
-  authProfileId = "",
-  authProfiles = [],
-  authProfilesLoading = false,
-  authSwitching = false,
-  authSwitchError = "",
-  onRefreshStatus,
-  onLoadAuthProfiles,
-  onSwitchAuthProfile,
 }: CodexStatusSummaryMenuProps) {
   const styles = useAppStyles();
+  const {
+    codexCliStatusText: statusText,
+    codexCliStatusFetchedAtMs: statusFetchedAtMs,
+    codexCliStatusLoading: statusLoading,
+    codexAuthProfileId: authProfileId,
+    codexAuthProfiles: authProfiles,
+    codexAuthProfilesLoading: authProfilesLoading,
+    codexAuthSwitching: authSwitching,
+    codexAuthSwitchError: authSwitchError,
+    refreshCodexCliStatus: onRefreshStatus,
+    loadCodexAuthProfiles: onLoadAuthProfiles,
+    switchCodexAuthProfile: onSwitchAuthProfile,
+  } = useChatDiagnostics();
   const triggerRef = useRef<View | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [authSelectOpen, setAuthSelectOpen] = useState(false);
