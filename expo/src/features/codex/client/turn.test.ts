@@ -266,7 +266,7 @@ test("manager mode ignores stale usage and external turns on a resumed thread", 
   await expect(second.promise).resolves.toMatchObject({ outputTokens: 80 });
 });
 
-test("manager mode derives a resumed turn baseline from its first measured response", async () => {
+test("manager mode keeps early item and usage order before turn/start responds", async () => {
   const threadId = "thread-unknown-output-baseline";
   const manager = new FakeRunnerWebSocketManager();
   const session = createTurn(manager, "ws://127.0.0.1:8788/runner-ws", threadId);
@@ -278,8 +278,6 @@ test("manager mode derives a resumed turn baseline from its first measured respo
   await flushPromises();
   respondToLastRequest(manager, { thread: { id: threadId } }, threadId);
   await flushPromises();
-  respondToLastRequest(manager, { turn: { id: "turn-unknown" } }, threadId);
-  await flushPromises();
   const outbound = lastSent(manager);
   emitTurnNotification(manager, outbound, "item/started", {
     threadId, turnId: "turn-unknown", item: { id: "item-unknown", type: "agentMessage" },
@@ -288,6 +286,8 @@ test("manager mode derives a resumed turn baseline from its first measured respo
     threadId, turnId: "turn-unknown",
     tokenUsage: { total: { outputTokens: 380 }, last: { outputTokens: 200 } },
   });
+  respondToLastRequest(manager, { turn: { id: "turn-unknown" } }, threadId);
+  await flushPromises();
   emitTurnNotification(manager, outbound, "turn/completed", {
     threadId, turn: { id: "turn-unknown", status: "completed" },
   });

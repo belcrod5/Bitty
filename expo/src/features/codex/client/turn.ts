@@ -152,7 +152,7 @@ function startCodexAppServerRawTurn(
   let priorThreadOutputTokens = requestedThreadId
     ? knownThreadOutputTokens.get(requestedThreadId)
     : undefined;
-  const pendingTokenUsageUpdates: unknown[] = [];
+  const pendingTokenEvents: Array<{ method: string; params: unknown }> = [];
   let lastErrorMessage = "";
   let finalized = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -689,6 +689,13 @@ function startCodexAppServerRawTurn(
     if (context) latestContextUsage = context;
   }
 
+  function observeTokenEvent(method: string, paramsRaw: unknown) {
+    const params = paramsRaw as Record<string, unknown>;
+    if (method.startsWith("item/") && params.threadId === activeThreadId
+      && params.turnId === activeTurnId) hasCurrentTurnItem = true;
+    if (method === "thread/tokenUsage/updated") applyTokenUsageUpdate(params);
+  }
+
   function handleNotification(methodRaw: unknown, paramsRaw: unknown) {
     const method = String(methodRaw || "");
     const params = paramsRaw || {};
@@ -698,15 +705,10 @@ function startCodexAppServerRawTurn(
       readyState: getTransportReadyState(),
     });
     emitEvent(method, params);
-    if (method.startsWith("item/") && (params as any).threadId === activeThreadId
-      && (params as any).turnId === activeTurnId) hasCurrentTurnItem = true;
-    if (method === "thread/tokenUsage/updated") {
-      if (!activeTurnId) {
-        pendingTokenUsageUpdates.push(params);
-        return;
-      }
-      applyTokenUsageUpdate(params);
-      return;
+    if (method.startsWith("item/") || method === "thread/tokenUsage/updated") {
+      if (!activeTurnId) pendingTokenEvents.push({ method, params });
+      else observeTokenEvent(method, params);
+      if (method === "thread/tokenUsage/updated") return;
     }
     if (method === "serverRequest/resolved") {
       const resolvedApproval = takeResolvedApprovalRequest(pendingApprovalRequests, params);
@@ -1175,8 +1177,8 @@ function startCodexAppServerRawTurn(
         "turn/start", turnStartParams, PRE_TURN_RPC_TIMEOUT_MS
       );
       activeTurnId = String(turnStarted?.turn?.id || "").trim();
-      for (const update of pendingTokenUsageUpdates.splice(0)) {
-        applyTokenUsageUpdate(update);
+      for (const event of pendingTokenEvents.splice(0)) {
+        observeTokenEvent(event.method, event.params);
       }
 
       if (interruptRequested) {
