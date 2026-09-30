@@ -42,7 +42,7 @@ import {
   getCodexTurnEventIdentity,
 } from "./codex-turn-execution.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
-import { createVoiceContextService } from "./voice-context-service.mjs";
+import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createStreamTtsSegments } from "./stream-tts-segments.mjs";
 import { createVoiceApprovalBridge } from "./voice-approval-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
@@ -6633,7 +6633,7 @@ function createCodexRpcClient({
   }
 }
 
-const voiceContextService = createVoiceContextService({
+const voiceContextService = createVoiceOrchestratorService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
 });
@@ -8995,9 +8995,9 @@ runnerWsServer.on("connection", (ws, req) => {
   const llmRelaysByKey = new Map();
   const attachedTtsJobIds = new Set();
   const voiceApprovals = createVoiceApprovalBridge({
-    send: ({ requestId, operationId, method, params, threadId, turnId }) => sendRunnerWsEnvelope(ws, {
+    send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId }) => sendRunnerWsEnvelope(ws, {
       channel: "agent", op: "voice.approval.request", operationId, streamId: operationId,
-      payload: { requestId, method, params, threadId, turnId },
+      payload: { requestId, method, params, threadId, turnId, orchestratorId },
     }),
   });
   runnerWsActiveClients.add(ws);
@@ -9037,22 +9037,38 @@ runnerWsServer.on("connection", (ws, req) => {
       });
       return true;
     }
+    const orchestratorId = message.payload?.orchestratorId || "main";
+    if (["voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create",
+      "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
+      const operation = message.op === "voice.orchestrators.list" ? voiceContextService.list()
+        : message.op === "voice.orchestrators.select" ? voiceContextService.select(orchestratorId)
+          : message.op === "voice.orchestrators.create"
+            ? voiceContextService.create(message.payload?.name, message.payload?.icon,
+              message.payload?.model, message.payload?.effort, message.payload?.systemInstruction)
+            : message.op === "voice.orchestrators.update"
+              ? voiceContextService.update(orchestratorId, message.payload)
+              : voiceContextService.remove(orchestratorId);
+      void operation.then((payload) => sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload,
+      })).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
     if (message.op === "voice.open" || message.op === "voice.status" || message.op === "voice.history") {
       const operation = message.op === "voice.open"
-        ? voiceContextService.open()
-        : message.op === "voice.history" ? voiceContextService.history()
-          : voiceContextService.status(message.payload?.logicalConversationId, message.payload?.clientOperationId);
+        ? voiceContextService.open(orchestratorId)
+        : message.op === "voice.history" ? voiceContextService.history(orchestratorId)
+          : voiceContextService.status(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId);
       void operation.then((payload) => {
         const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
         sendRunnerWsEnvelope(ws, {
           channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
-          payload: { ...payload, ...(job ? { jobId: job.jobId } : {}) },
+          payload: { ...payload, orchestratorId, ...(job ? { jobId: job.jobId } : {}) },
         });
       }).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (message.op === "voice.turn.interrupt") {
-      void voiceContextService.interrupt(message.payload?.logicalConversationId, message.payload?.clientOperationId)
+      void voiceContextService.interrupt(orchestratorId, message.payload?.logicalConversationId, message.payload?.clientOperationId)
         .then((payload) => {
           const job = resolveRunnerWsTtsOperationJob(payload.clientOperationId);
           if (job && job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
@@ -9060,28 +9076,30 @@ runnerWsServer.on("connection", (ws, req) => {
           }
           sendRunnerWsEnvelope(ws, {
             channel: "agent", op: "voice.turn.interrupt.result", requestId: message.requestId || "",
-            operationId: payload.clientOperationId, payload,
+            operationId: payload.clientOperationId, payload: { ...payload, orchestratorId },
           });
         }).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (["voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear"].includes(message.op)) {
       let operation;
-      if (message.op === "voice.settings") operation = voiceContextService.getSettings();
+      if (message.op === "voice.settings") operation = voiceContextService.getSettings(orchestratorId);
       else if (message.op === "voice.settings.update") {
-        operation = voiceContextService.configure(message.payload?.model, message.payload?.effort, message.payload?.systemInstruction);
+        operation = voiceContextService.configure(orchestratorId, message.payload?.model,
+          message.payload?.effort, message.payload?.systemInstruction);
       } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
-      else operation = voiceContextService.clearMessages();
+      else operation = voiceContextService.clearMessages(orchestratorId);
       void operation.then((payload) => sendRunnerWsEnvelope(ws, {
-        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload,
+        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
+        payload: { ...payload, orchestratorId },
       })).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
     const operationId = message.operationId;
-    const onApproval = (request) => voiceApprovals.request(operationId, request);
     const { tts: voiceTts, ...voicePayload } = message.payload || {};
-    const voiceMessage = { ...message, payload: voicePayload };
+    const onApproval = (request) => voiceApprovals.request(operationId, request, voicePayload.orchestratorId || "main");
+    const voiceMessage = { ...message, payload: { ...voicePayload, orchestratorId: voicePayload.orchestratorId || "main" } };
     let voiceJob = null;
     let voiceSegments = null;
     const failVoiceTts = (error) => {
@@ -9127,6 +9145,7 @@ runnerWsServer.on("connection", (ws, req) => {
           operationId, streamId: operationId,
           payload: {
             logicalConversationId: voicePayload.logicalConversationId,
+            orchestratorId: voicePayload.orchestratorId || "main",
             clientOperationId: operationId,
             delta,
           },
@@ -9161,7 +9180,8 @@ runnerWsServer.on("connection", (ws, req) => {
       sendRunnerWsEnvelope(ws, {
         channel: "agent", op: "turn.accepted", requestId: message.requestId || "",
         operationId: payload.clientOperationId, streamId: payload.clientOperationId,
-        payload: { ...payload, runId: payload.clientOperationId, ...(job ? { jobId: job.jobId } : {}) },
+        payload: { ...payload, orchestratorId: voicePayload.orchestratorId || "main",
+          runId: payload.clientOperationId, ...(job ? { jobId: job.jobId } : {}) },
       });
     }).catch((error) => sendVoiceError(message, error));
     return true;

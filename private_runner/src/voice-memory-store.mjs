@@ -37,6 +37,12 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
   let rawPairs = [];
   let sourceCursors = {};
   let rawRange = { firstPairSeq: 0, lastPairSeq: 0 };
+  let writes = Promise.resolve();
+  const serialize = (work) => {
+    const result = writes.then(work);
+    writes = result.catch(() => {});
+    return result;
+  };
 
   if (!UUID.test(conversationId) || (previousConversationId && !UUID.test(previousConversationId))) {
     throw new Error("Voice conversation ID is invalid");
@@ -342,14 +348,16 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
   }
 
   return {
+    get conversationId() { return currentConversationId; },
     get cursor() { return state.processedThroughPairSeq; },
     get rawPairs() { return [...rawPairs]; },
     get lastPairSeq() { return Math.max(state.processedThroughPairSeq, rawPairs.at(-1)?.pairSeq || 0); },
     get memoryCharacterCount() { return Array.from([...topics.values()].join("\n")).length; },
     get atCapacity() { return rawPairs.length >= MAX_RAW_PAIRS; },
+    get remainingCapacity() { return Math.max(0, MAX_RAW_PAIRS - rawPairs.length); },
     get summaryContext() { return { index, topics: Object.fromEntries(topics) }; },
-    appendPair,
-    async publish(text, throughPairSeq) {
+    appendPair: (pair) => serialize(() => appendPair(pair)),
+    publish: (text, throughPairSeq) => serialize(async () => {
       if (typeof text !== "string" || Buffer.byteLength(text) > 256_000) throw new Error("Voice memory update is too large");
       let patch;
       try { patch = JSON.parse(text); } catch { throw new Error("Voice memory update is not JSON"); }
@@ -375,11 +383,11 @@ export async function openVoiceMemoryStore({ workspace, conversationId, previous
       }
       await commit(patch.index, nextTopics, throughPairSeq, currentConversationId, true, sourceCursors);
       await pruneRaw();
-    },
-    async clear() {
+    }),
+    clear: () => serialize(async () => {
       const cursor = (rawPairs[0]?.pairSeq || Math.max(state.processedThroughPairSeq, rawPairs.at(-1)?.pairSeq || 0) + 1) - 1;
       await commit("# Topics\n", new Map(), cursor, currentConversationId, false, {});
-    },
-    resetConversation,
+    }),
+    resetConversation: (id) => serialize(() => resetConversation(id)),
   };
 }

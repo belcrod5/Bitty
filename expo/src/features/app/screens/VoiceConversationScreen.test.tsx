@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { useState, type ReactElement } from "react";
+import { act, fireEvent, render as testingRender, waitFor } from "@testing-library/react-native";
 import { Platform, ScrollView, StyleSheet } from "react-native";
 import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
@@ -10,6 +10,18 @@ const mockAbort = jest.fn(async () => undefined);
 const mockStopTtsPlayback = jest.fn(async () => undefined);
 const mockSynthesizeSpeechStream = jest.fn(async (): Promise<void> => undefined);
 const mockOnClose = jest.fn();
+const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestratorId?: string } }) => {
+  if (message.op === "voice.orchestrators.list") return { op: "voice.orchestrators.list.result",
+    payload: { orchestrators: [{ id: "main", name: "メイン", icon: "" },
+      { id: "other", name: "調査", icon: "" }], selectedId: "main" } };
+  if (message.op === "voice.orchestrators.select") return { op: "voice.orchestrators.select.result",
+    payload: { orchestrators: [{ id: "main", name: "メイン", icon: "" },
+      { id: "other", name: "調査", icon: "" }], selectedId: message.payload?.orchestratorId } };
+  throw new Error(`unexpected ${message.op}`);
+});
+const mockManager = { connect: jest.fn(async () => undefined), request: mockRequest };
+let mockManagerVisible = false;
+const mockHookOrchestratorIds: string[] = [];
 const mockLogSessionDiag = jest.fn();
 const mockVoice = {
   ready: true,
@@ -71,12 +83,22 @@ jest.mock("@expo/vector-icons", () => {
   return { Ionicons: ({ name }: { name: string }) => ReactModule.createElement(Text, null, name) };
 });
 jest.mock("../hooks/useVoiceConversation", () => ({
-  useVoiceConversation: (onCompleted: (text: string, operationId: string) => void, _onApproval: unknown,
-    _onResolved: unknown, onJob: (jobId: string, operationId: string) => void) => {
+  useVoiceConversation: (onCompleted: (text: string, operationId: string) => void,
+    onJob: (jobId: string, operationId: string) => void,
+    _tts: unknown, orchestratorId: string) => {
     mockOnCompleted = onCompleted;
     mockOnJob = onJob;
+    mockHookOrchestratorIds.push(orchestratorId);
     return mockVoice;
   },
+}));
+jest.mock("../hooks/useVoiceApprovals", () => ({ useVoiceApprovals: jest.fn() }));
+jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
+  useRunnerWebSocketManager: () => mockManager,
+  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1 }),
+}));
+jest.mock("../components/VoiceOrchestratorManager", () => ({
+  VoiceOrchestratorManager: ({ visible }: { visible: boolean }) => { mockManagerVisible = visible; return null; },
 }));
 jest.mock("../../stt/useStreamingStt", () => ({ useStreamingStt: (options: { ttsPlaybackActive: boolean; onDiagnostic: (event: string, payload: Record<string, unknown>) => void }) => {
   mockLastSttOptions = options;
@@ -153,6 +175,12 @@ const playback = {
   ttsUiStatus: "idle" as const,
 };
 
+async function render(element: ReactElement) {
+  const screen = await testingRender(element);
+  await waitFor(() => screen.getByTestId("voice-conversation-screen"));
+  return screen;
+}
+
 function ClosableVoiceScreen() {
   const [open, setOpen] = useState(true);
   return open ? <VoiceConversationScreen {...playback} onClose={() => {
@@ -178,6 +206,8 @@ beforeEach(() => {
   mockVoice.historyError = "";
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
+  mockManagerVisible = false;
+  mockHookOrchestratorIds.length = 0;
 });
 afterEach(() => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
@@ -731,4 +761,67 @@ test("closing after a voice reply requests a stop scoped to that reply", async (
     reason: "voice_screen_closed",
     expectedMessageId: "voice-operation-1",
   });
+});
+
+test("switching keeps history open and stops the old recording before selecting the new orchestrator", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-orchestrator-floating")).toBeTruthy();
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-orchestrator-floating")); });
+  expect(screen.getByTestId("voice-orchestrator-strip")).toBeTruthy();
+  const oldReply = mockOnCompleted;
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-orchestrator-other")); });
+  expect(mockAbort).toHaveBeenCalled();
+  expect(mockRequest).toHaveBeenCalledWith({ channel: "agent", op: "voice.orchestrators.select",
+    payload: { orchestratorId: "other" } });
+  expect(mockHookOrchestratorIds).toContain("other");
+  expect(screen.getByTestId("voice-orchestrator-strip")).toBeTruthy();
+  await act(async () => { oldReply?.("late old reply", "old-operation"); });
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("long press on empty strip space and right click open management after stopping STT", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-orchestrator-floating")); });
+  await act(async () => { fireEvent(screen.getByTestId("voice-orchestrator-strip"), "longPress"); });
+  expect(mockAbort).toHaveBeenCalled();
+  expect(mockManagerVisible).toBe(true);
+  await screen.unmount();
+  mockManagerVisible = false;
+  const iconLongPress = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { fireEvent.press(iconLongPress.getByTestId("voice-orchestrator-floating")); });
+  await act(async () => { fireEvent(iconLongPress.getByTestId("voice-orchestrator-other"), "longPress"); });
+  expect(mockManagerVisible).toBe(true);
+  expect(mockRequest.mock.calls.filter(([message]) => message.op === "voice.orchestrators.select")).toHaveLength(0);
+  await iconLongPress.unmount();
+  const rightClick = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { fireEvent.press(rightClick.getByTestId("voice-orchestrator-floating")); });
+  await act(async () => {
+    fireEvent(rightClick.getByTestId("voice-orchestrator-strip"), "pointerDown", { nativeEvent: { button: 2 } });
+  });
+  expect(mockManagerVisible).toBe(true);
+  await rightClick.unmount();
+});
+
+test("a reply arriving while audio is being stopped cannot start speech in the next orchestrator", async () => {
+  let finishAbort: (() => void) | undefined;
+  mockAbort.mockImplementationOnce(() => new Promise<undefined>((resolve) => { finishAbort = () => resolve(undefined); }));
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-orchestrator-floating")); });
+  const oldReply = mockOnCompleted;
+  await act(async () => { fireEvent.press(screen.getByTestId("voice-orchestrator-other")); });
+  await act(async () => { oldReply?.("late reply", "old-operation"); });
+  expect(mockSynthesizeSpeechStream).not.toHaveBeenCalled();
+  await act(async () => { finishAbort?.(); });
+  await waitFor(() => expect(mockHookOrchestratorIds).toContain("other"));
+  await screen.unmount();
+});
+
+test("a failed orchestrator list leaves a close control", async () => {
+  mockRequest.mockRejectedValueOnce(new Error("Runner unavailable"));
+  const screen = await testingRender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await waitFor(() => screen.getByText("Runner unavailable"));
+  await fireEvent.press(screen.getByLabelText("音声会話を閉じる"));
+  expect(mockOnClose).toHaveBeenCalledTimes(1);
+  await screen.unmount();
 });
