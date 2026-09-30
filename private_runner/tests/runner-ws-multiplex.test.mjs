@@ -298,7 +298,8 @@ test("voice text deltas use the authenticated envelope with conversation and ope
   const delta = ws.sent.find((message) => message.op === "voice.turn.delta");
   assert.deepEqual(delta, {
     channel: "agent", op: "voice.turn.delta", operationId, streamId: operationId,
-    payload: { logicalConversationId: conversationId, clientOperationId: operationId, delta: "Live reply" },
+    payload: { logicalConversationId: conversationId, orchestratorId: "main",
+      clientOperationId: operationId, delta: "Live reply" },
   });
 });
 
@@ -307,7 +308,8 @@ test("voice interrupt routes to the voice turn instead of the generic agent turn
   const originalInterrupt = service.interrupt;
   const operationId = "33333333-4444-4555-8666-777777777777";
   const conversationId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-  service.interrupt = async (receivedConversationId, receivedOperationId) => {
+  service.interrupt = async (receivedOrchestratorId, receivedConversationId, receivedOperationId) => {
+    assert.equal(receivedOrchestratorId, "main");
     assert.equal(receivedConversationId, conversationId);
     assert.equal(receivedOperationId, operationId);
     return { clientOperationId: operationId, status: "interrupted", code: "voice_cancelled" };

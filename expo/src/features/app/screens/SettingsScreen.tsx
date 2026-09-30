@@ -5,7 +5,7 @@ import { ConnectionSettings } from "../components/ConnectionSettings";
 import { SpeechSettings } from "../components/SpeechSettings";
 import { CodexAccountSettings } from "../components/CodexAccountSettings";
 import { GoogleCloudSettings } from "../components/GoogleCloudSettings";
-import { VoiceConversationSettings } from "../components/VoiceConversationSettings";
+import { SpeechRecognitionSettings } from "../components/SpeechRecognitionSettings";
 import { useAppShell } from "../contexts/AppShellContext";
 import { BUILD_STAMP } from "../buildStamp";
 import { useAppStyles } from "../styles";
@@ -58,7 +58,10 @@ export function SettingsScreen() {
       </View>
       <ConnectionSettings />
       <SpeechSettings />
-      <VoiceConversationSettings />
+      <View style={styles.settingsSection}>
+        <View style={styles.settingsSectionHeader}><Text style={styles.settingsSectionTitle}>音声入力</Text></View>
+        <View style={styles.settingsGroup}><SpeechRecognitionSettings /></View>
+      </View>
       <GoogleCloudSettings />
       <CodexAccountSettings />
       <View style={styles.settingsSection}>

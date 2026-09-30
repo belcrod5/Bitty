@@ -17,6 +17,7 @@
 		B17A0D101000000000000003 /* BittyMicrophoneModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = B17A0D101000000000000004 /* BittyMicrophoneModule.mm */; };
 		B17A0D101000000000000005 /* BittyTtsEffectsModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = B17A0D101000000000000006 /* BittyTtsEffectsModule.mm */; };
 		B17A0D101000000000000007 /* BittyVoiceBlurManager.mm in Sources */ = {isa = PBXBuildFile; fileRef = B17A0D101000000000000008 /* BittyVoiceBlurManager.mm */; };
+		B17A0D101000000000000009 /* BittyIconPicker.mm in Sources */ = {isa = PBXBuildFile; fileRef = B17A0D10100000000000000A /* BittyIconPicker.mm */; };
 		BDFD954E78C383952DD39102 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAAC03484AA38A909CCE108B /* ExpoModulesProvider.swift */; };
 /* End PBXBuildFile section */
 
@@ -36,6 +37,7 @@
 		B17A0D101000000000000004 /* BittyMicrophoneModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BittyMicrophoneModule.mm; sourceTree = "<group>"; };
 		B17A0D101000000000000006 /* BittyTtsEffectsModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = BittyTtsEffectsModule.mm; path = "../../modules/bitty-tts-effects/ios/BittyTtsEffectsModule.mm"; sourceTree = "<group>"; };
 		B17A0D101000000000000008 /* BittyVoiceBlurManager.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BittyVoiceBlurManager.mm; sourceTree = "<group>"; };
+		B17A0D10100000000000000A /* BittyIconPicker.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BittyIconPicker.mm; sourceTree = "<group>"; };
 		DA00576C78ACA223FE41F719 /* Pods-bitty-macOS.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-bitty-macOS.release.xcconfig"; path = "Target Support Files/Pods-bitty-macOS/Pods-bitty-macOS.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		FAAC03484AA38A909CCE108B /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-bitty-macOS/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
@@ -79,6 +81,7 @@
 				B17A0D101000000000000004 /* BittyMicrophoneModule.mm */,
 				B17A0D101000000000000006 /* BittyTtsEffectsModule.mm */,
 				B17A0D101000000000000008 /* BittyVoiceBlurManager.mm */,
+				B17A0D10100000000000000A /* BittyIconPicker.mm */,
 				514201512437B4B40078DB4F /* Assets.xcassets */,
 				514201532437B4B40078DB4F /* Main.storyboard */,
 				514201562437B4B40078DB4F /* Info.plist */,
@@ -337,6 +340,7 @@
 				B17A0D101000000000000003 /* BittyMicrophoneModule.mm in Sources */,
 				B17A0D101000000000000005 /* BittyTtsEffectsModule.mm in Sources */,
 				B17A0D101000000000000007 /* BittyVoiceBlurManager.mm in Sources */,
+				B17A0D101000000000000009 /* BittyIconPicker.mm in Sources */,
 				BDFD954E78C383952DD39102 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

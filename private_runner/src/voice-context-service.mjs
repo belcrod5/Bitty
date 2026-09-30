@@ -75,7 +75,7 @@ async function syncDirectory(directory) {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
-function readEvents(buffer, prunedThroughPairSeq = 0) {
+function readEvents(buffer, prunedThroughPairSeq = 0, allowPairGaps = false) {
   const completeEnd = buffer.lastIndexOf(10) + 1;
   let rows;
   try { rows = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, completeEnd)).split("\n").slice(0, -1); }
@@ -118,8 +118,8 @@ function readEvents(buffer, prunedThroughPairSeq = 0) {
     }
     if (event.type === "completed") {
       if (!Number.isSafeInteger(event.pairSeq) || event.pairSeq <= pairSeq
-        || (!pairSeq && event.pairSeq > prunedThroughPairSeq + 1)
-        || (pairSeq && event.pairSeq !== pairSeq + 1)
+        || (!pairSeq && (allowPairGaps ? event.pairSeq <= prunedThroughPairSeq : event.pairSeq > prunedThroughPairSeq + 1))
+        || (pairSeq && !allowPairGaps && event.pairSeq !== pairSeq + 1)
         || typeof event.text !== "string" || !event.text.trim()
         || (event.outputTokens !== undefined && (!Number.isSafeInteger(event.outputTokens) || event.outputTokens < 0))) {
         throw invalid("voice_store_corrupt", "Voice event log has an invalid completed pair");
@@ -157,6 +157,12 @@ function snapshots(events) {
   return { byId, pairs };
 }
 
+export function readVoiceEventState(buffer, prunedThroughPairSeq = 0) {
+  const events = readEvents(buffer, prunedThroughPairSeq, true).events;
+  return { pairs: snapshots(events).pairs,
+    operationIds: events.filter((event) => event.type === "accepted").map((event) => event.clientOperationId) };
+}
+
 function boundedEvents(events, durableThroughPairSeq) {
   const counts = new Map();
   const terminal = new Map();
@@ -188,10 +194,13 @@ function boundedEvents(events, durableThroughPairSeq) {
 const visibleBytes = (pairs, input, instructions) => bytes(instructions) + bytes(input)
   + pairs.reduce((size, pair) => size + bytes(pair.user) + bytes(pair.assistant), 0);
 
-export function createVoiceContextService({ rootDir, createClient }) {
+export function createVoiceContextService({ rootDir, createClient, sharedWorkspaceDirectory,
+  sharedMemoryStore, memoryEventPairs, memoryConversationId, pairExclusive }) {
+  const sharedMemory = Boolean(sharedMemoryStore || memoryEventPairs);
   const root = path.resolve(rootDir);
   const tempRoot = path.join(path.dirname(root), "ephemeral-tmp");
-  const workspaceRoot = path.join(path.dirname(root), "workspaces");
+  const workspaceRoot = sharedWorkspaceDirectory
+    ? path.dirname(sharedWorkspaceDirectory) : path.join(path.dirname(root), "workspaces");
   const summaryWorkspace = path.join(path.dirname(root), "summary-workspace");
   const activeFile = path.join(root, "active.json");
   let loaded = false;
@@ -354,8 +363,10 @@ export function createVoiceContextService({ rootDir, createClient }) {
         || !active.systemInstruction.trim() || bytes(active.systemInstruction) > 16_000))) {
       throw invalid("voice_store_corrupt", "Voice active conversation is invalid");
     }
-    await ownedDirectory(workspaceRoot, !active.workspaceInitialized);
-    const workspace = await ownedDirectory(path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId), !active.workspaceInitialized);
+    if (sharedWorkspaceDirectory) active.workspaceConversationId = path.basename(sharedWorkspaceDirectory);
+    await ownedDirectory(workspaceRoot, !active.workspaceInitialized && !sharedWorkspaceDirectory);
+    const workspace = await ownedDirectory(path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId),
+      !active.workspaceInitialized && !sharedWorkspaceDirectory);
     if (!active.workspaceInitialized) {
       await syncDirectory(workspace);
       await syncDirectory(workspaceRoot);
@@ -385,7 +396,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       if (error.code === "ENOENT") throw invalid("voice_store_corrupt", "Voice event log is missing");
       throw error;
     }
-    const parsed = readEvents(buffer, active.prunedThroughPairSeq || 0);
+    const parsed = readEvents(buffer, active.prunedThroughPairSeq || 0, sharedMemory);
     if (parsed.completeEnd < buffer.length) {
       await atomicWrite(path.join(directory, `events-trailing-${randomUUID()}.jsonl`), buffer);
       const handle = await fs.open(eventFile, "r+");
@@ -395,8 +406,10 @@ export function createVoiceContextService({ rootDir, createClient }) {
     await fs.chmod(eventFile, 0o600);
     ({ byId, pairs } = snapshots(events));
     try {
-      memoryStore = await openVoiceMemoryStore({ workspace, conversationId: active.logicalConversationId,
-        previousConversationId: active.previousConversationId, eventPairs: pairs,
+      memoryStore = sharedMemoryStore || await openVoiceMemoryStore({ workspace,
+        conversationId: memoryConversationId || active.logicalConversationId,
+        previousConversationId: memoryConversationId ? undefined : active.previousConversationId,
+        eventPairs: memoryEventPairs ? await memoryEventPairs(pairs) : pairs,
         atomicWrite, syncDirectory, ownedDirectory });
     } catch (error) {
       throw invalid("voice_store_corrupt", `Voice memory store is invalid: ${error.message}`);
@@ -442,7 +455,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     }
     loaded = true;
     await clearPreviousConversation();
-    queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
+    if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
   }
 
   function usage() {
@@ -450,7 +463,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     const latestInput = inFlightId && ["accepted", "running"].includes(byId.get(inFlightId)?.status)
       ? byId.get(inFlightId)?.userText || "" : "";
     // Text bytes are an upper bound on text tokens, excluding App Server's own hidden input.
-    const estimatedTokens = visibleBytes(memoryStore.rawPairs.slice(-RECENT_PAIRS), latestInput, responseInstructions());
+    const estimatedTokens = visibleBytes(pairs.slice(-RECENT_PAIRS), latestInput, responseInstructions());
     return {
       estimatedContextUsagePercent: settings().model === DEFAULT_MODEL
         ? Math.min(100, Math.ceil(estimatedTokens * 100 / MODEL_CONTEXT_TOKENS)) : null,
@@ -822,7 +835,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
     try {
       const selected = await exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
-        const selected = memoryStore.rawPairs.slice(-RECENT_PAIRS);
+        const selected = pairs.slice(-RECENT_PAIRS);
         if (visibleBytes(selected, input, responseInstructions()) > MAX_VISIBLE_BYTES) {
           throw invalid("voice_context_too_large", "Voice context exceeds safe model input budget");
         }
@@ -843,14 +856,14 @@ export function createVoiceContextService({ rootDir, createClient }) {
         }, onTextError: hooks.onTextError,
         onStarted: ({ threadId, turnId }) => exclusive(() => append(clientOperationId, "native_started", { threadId, turnId })) });
       stage = "completion_store";
-      await exclusive(async () => {
+      await (pairExclusive || ((work) => work()))(() => exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
         await append(clientOperationId, "completed", {
           pairSeq: Math.max(active.prunedThroughPairSeq || 0, pairs.at(-1)?.pairSeq || 0, memoryStore.lastPairSeq) + 1,
           text: result.text,
           ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
         });
-      });
+      }));
       inFlightPartialText = "";
       inFlightId = "";
       try { notify(stateOf(clientOperationId)); } catch {}
@@ -881,11 +894,19 @@ export function createVoiceContextService({ rootDir, createClient }) {
       inFlightId = "";
       inFlightController = null;
       inFlightTask = null;
-      void exclusive(startSummary).catch(() => {});
+      try { hooks.onSettled?.(); } catch {}
+      if (!sharedMemoryStore) void exclusive(startSummary).catch(() => {});
     }
   }
 
   return {
+    async isBusy() { return exclusive(async () => { await load(); return Boolean(inFlightId); }); },
+    async getMemoryStore() { await exclusive(load); return memoryStore; },
+    async getWorkspaceDirectory() {
+      await exclusive(load);
+      return path.join(workspaceRoot, active.workspaceConversationId || active.logicalConversationId);
+    },
+    async scheduleSummary() { return exclusive(async () => { await load(); await startSummary(); }); },
     async getSettings() {
       await exclusive(load);
       const models = await listCodexModelsFromAppServer(createClient, "bitty-voice");
@@ -912,7 +933,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
           throw storeFailure;
         }
         active = { ...active, model, effort, systemInstruction: nextInstruction };
-        queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
+        if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { ...settings(), models };
       });
     },
@@ -930,7 +951,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
           throw storeFailure;
         }
         await fs.rm(path.join(directory, "memory-pending.json"), { force: true });
-        queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
+        if (!sharedMemoryStore) queueMicrotask(() => void exclusive(startSummary).catch(() => {}));
         return { logicalConversationId: active.logicalConversationId, ...usage() };
       });
     },
@@ -956,10 +977,12 @@ export function createVoiceContextService({ rootDir, createClient }) {
           throw storeFailure;
         }
         active = next;
-        try { await memoryStore.resetConversation(logicalConversationId); }
-        catch {
-          storeFailure = invalid("voice_store_unavailable", "Voice memory conversation switch could not be synced");
-          throw storeFailure;
+        if (!sharedMemory) {
+          try { await memoryStore.resetConversation(logicalConversationId); }
+          catch {
+            storeFailure = invalid("voice_store_unavailable", "Voice memory conversation switch could not be synced");
+            throw storeFailure;
+          }
         }
         events = [];
         byId = new Map();

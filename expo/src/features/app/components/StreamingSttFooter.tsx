@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { BlurMask, Canvas, Group, Path, Skia, SweepGradient, vec } from "@shopify/react-native-skia";
-import React, { forwardRef, memo, useImperativeHandle, useRef, useState } from "react";
+import React, { forwardRef, memo, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { Platform, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useFrameCallback, useSharedValue, withTiming } from "react-native-reanimated";
 import { useAppStyles } from "../styles";
@@ -41,8 +41,9 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   onCancelSpeaking?: () => void;
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
+  leadingAccessory?: ReactNode;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
-  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle }, ref) {
+  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle, leadingAccessory }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -193,7 +194,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           <SweepGradient c={center} colors={glowColors} mode="repeat" start={gradientStart} end={gradientEnd} />
         </Path>
       </Canvas>
-      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12", zIndex: 1 }]}>
+      <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12",
+        zIndex: 1, ...(leadingAccessory ? { paddingLeft: 48 } : {}) }]}>
         {voiceStatus === "speaking" && onCancelSpeaking ? (
           <TouchableOpacity
             testID="streaming-stt-speaking-cancel"
@@ -272,6 +274,11 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           <Ionicons name="stop" size={18} color="#ffffff" />
         </TouchableOpacity>
       </View>
+      {leadingAccessory ? (
+        <View style={{ position: "absolute", left: 0, top: 0, width: 44, height: 44, zIndex: 3, overflow: "visible" }}>
+          {leadingAccessory}
+        </View>
+      ) : null}
     </View>
   );
 }));
