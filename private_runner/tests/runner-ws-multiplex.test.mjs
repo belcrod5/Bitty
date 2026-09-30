@@ -190,6 +190,40 @@ test("runner-ws TTS operation map resolves repeated starts to the original job",
   await job.runPromise;
 });
 
+test("repeated TTS start identifies its job before replaying missed events", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer,
+  });
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const operationId = `tts-resume-${Date.now()}`;
+  const payload = { mode: "text", text: "hello", ttsProvider: "elevenlabs" };
+  const job = __TESTING__.startLlmStreamJob(payload, {
+    endpoint: "/runner-ws", remoteAddress: "test", publicBaseUrl: "http://127.0.0.1",
+  });
+  __TESTING__.rememberRunnerWsTtsOperationJob(operationId, job);
+  await job.runPromise;
+  assert.equal(job.status, "completed");
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => ws.close());
+  ws.sent.length = 0;
+
+  ws.emit("message", JSON.stringify({
+    channel: "tts", op: "start", operationId, requestId: "resume-1", seq: 0, payload,
+  }), false);
+
+  assert.deepEqual(ws.sent.slice(0, 2).map((message) => message.op), ["job_started", "job_snapshot"]);
+  assert.equal(ws.sent[0].streamId, job.jobId);
+  assert.equal(ws.sent.some((message) => message.op === "audio_chunk"), true);
+
+  ws.sent.length = 0;
+  ws.emit("message", JSON.stringify({
+    channel: "tts", op: "start", operationId, requestId: "resume-2",
+    seq: job.lastEventSeq, payload,
+  }), false);
+  assert.deepEqual(ws.sent.map((message) => message.op), ["job_started", "job_snapshot"]);
+});
+
 test("voice acceptance creates one attachable TTS job and keeps its error separate", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalStart = service.start;

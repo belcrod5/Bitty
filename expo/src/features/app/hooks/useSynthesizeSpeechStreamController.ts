@@ -380,24 +380,12 @@ export function useSynthesizeSpeechStreamController(
       const idSuffix = `${Date.now().toString(36)}-${streamTtsOperationSeqRef.current.toString(36)}`;
       const operationId = voiceJobId ? targetMessageId : `stream-tts-${idSuffix}`;
       const requestId = `${operationId}-${voiceJobId ? "attach" : "start"}`;
+      const startMessage = JSON.parse(encodeRunnerWsTtsStart(startPayload, {
+        requestId, operationId, sessionId: streamOptions?.sessionId,
+      })) as RunnerWsMessage;
       let unsubscribe = () => {};
       let cancelled = false;
       let attachedGeneration = -1;
-      const attachVoiceJob = () => {
-        if (!voiceJobId || cancelled || done) return;
-        const snapshot = runnerWebSocketManager.getSnapshot();
-        if (!snapshot.connected || attachedGeneration === snapshot.generation) return;
-        attachedGeneration = snapshot.generation;
-        try {
-          runnerWebSocketManager.send({
-            channel: "tts", op: "attach", requestId,
-            operationId, streamId: voiceJobId, seq: lastEventSeq,
-            payload: { operationId, jobId: voiceJobId, sinceSeq: lastEventSeq },
-          });
-        } catch {
-          attachedGeneration = -1;
-        }
-      };
       const cleanup = () => {
         cancelled = true;
         const active = streamTtsControlRef.current;
@@ -419,6 +407,54 @@ export function useSynthesizeSpeechStreamController(
         unsubscribe();
         if (active?.operationId === operationId) {
           streamTtsControlRef.current = null;
+        }
+      };
+      const failConnection = (err: unknown, phase: "send" | "connect") => {
+        if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
+        done = true;
+        cleanup();
+        setTtsLoading(false);
+        setTtsUiStatus("error");
+        syncTtsPlaybackWantedFromPipeline(
+          phase === "send" ? "stream_tts_text_ws_send_failed" : "stream_tts_text_ws_error"
+        );
+        const message = err instanceof Error ? err.message : String(err);
+        reportErrorToActiveSession(`stream-tts WebSocket ${phase} failed: ${message}`, "stream-tts:text");
+        if (shouldProjectDebugToActiveSession) {
+          setReplyDebug(`route=stream-tts error=${phase === "send" ? "ws_send_failed" : "websocket"} detail=${message} url=${wsUrl}`);
+        }
+      };
+      const resumeJob = () => {
+        if (cancelled || done) return;
+        const snapshot = runnerWebSocketManager.getSnapshot();
+        if (snapshot.connectionState === "stopped") {
+          failConnection(new Error(snapshot.lastError || "runner_ws_stopped"), "connect");
+          return;
+        }
+        if (!snapshot.connected || attachedGeneration === snapshot.generation) return;
+        attachedGeneration = snapshot.generation;
+        try {
+          const jobId = voiceJobId || knownJobId;
+          if (jobId) {
+            runnerWebSocketManager.send({
+              channel: "tts", op: "attach", requestId,
+              operationId, streamId: jobId, seq: lastEventSeq,
+              payload: { operationId, jobId, sinceSeq: lastEventSeq },
+            });
+          } else {
+            runnerWebSocketManager.send({ ...startMessage, seq: lastEventSeq });
+          }
+        } catch (err) {
+          attachedGeneration = -1;
+          const latest = runnerWebSocketManager.getSnapshot();
+          if (
+            latest.connectionState === "connecting" ||
+            latest.connectionState === "handshaking" ||
+            latest.connectionState === "reconnecting" ||
+            latest.connectionState === "background" ||
+            latest.appState === "inactive"
+          ) return;
+          failConnection(err, "send");
         }
       };
       streamTtsControlRef.current = {
@@ -480,44 +516,21 @@ export function useSynthesizeSpeechStreamController(
         unsubscribeControlError();
         unsubscribeTts();
       };
-      if (voiceJobId) {
-        const unsubscribeSnapshot = runnerWebSocketManager.subscribeSnapshot(attachVoiceJob);
-        const unsubscribeMessages = unsubscribe;
-        unsubscribe = () => { unsubscribeSnapshot(); unsubscribeMessages(); };
-      }
+      const unsubscribeSnapshot = runnerWebSocketManager.subscribeSnapshot(resumeJob);
+      const unsubscribeMessages = unsubscribe;
+      unsubscribe = () => { unsubscribeSnapshot(); unsubscribeMessages(); };
       runnerWebSocketManager.connect()
-        .then(() => {
-          if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
-          try {
-            if (voiceJobId) attachVoiceJob();
-            else runnerWebSocketManager.send(JSON.parse(encodeRunnerWsTtsStart(startPayload, {
-              requestId, operationId, sessionId: streamOptions?.sessionId,
-            })) as RunnerWsMessage);
-          } catch (err) {
-            done = true;
-            cleanup();
-            setTtsLoading(false);
-            setTtsUiStatus("error");
-            syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_send_failed");
-            const message = err instanceof Error ? err.message : String(err);
-            reportErrorToActiveSession(`stream-tts WebSocket send failed: ${message}`, "stream-tts:text");
-            if (shouldProjectDebugToActiveSession) {
-              setReplyDebug(`route=stream-tts error=ws_send_failed url=${wsUrl}`);
-            }
-          }
-        })
+        .then(resumeJob)
         .catch((err) => {
           if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
-          done = true;
-          cleanup();
-          setTtsLoading(false);
-          setTtsUiStatus("error");
-          syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_error");
-          const message = err instanceof Error ? err.message : String(err);
-          reportErrorToActiveSession(`stream-tts WebSocket error: ${message}`, "stream-tts:text");
-          if (shouldProjectDebugToActiveSession) {
-            setReplyDebug(`route=stream-tts error=websocket detail=${message} url=${wsUrl}`);
-          }
+          const snapshot = runnerWebSocketManager.getSnapshot();
+          if (snapshot.connected) return resumeJob();
+          if (
+            snapshot.connectionState === "connecting" ||
+            snapshot.connectionState === "handshaking" ||
+            snapshot.connectionState === "reconnecting"
+          ) return;
+          failConnection(err, "connect");
         });
       return;
     }
