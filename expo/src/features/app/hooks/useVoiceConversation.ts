@@ -3,8 +3,6 @@ import { randomUUID } from "expo-crypto";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import type { RunnerWsMessage } from "../../runnerWs/types";
 import type { VoiceContextStats } from "../types/appTypes";
-import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
-import { normalizeAppServerApprovalRequest, toCodexApprovalDecision } from "../../codex/client/helpers";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
 export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number };
@@ -55,10 +53,9 @@ function sameContextStats(a: VoiceContextStats | null, b: VoiceContextStats | nu
 
 export function useVoiceConversation(
   onCompleted: (text: string, operationId: string) => void,
-  onApprovalRequest?: (request: ApprovalRequest) => Promise<ApprovalAction>,
-  onApprovalResolved?: (request: ApprovalRequest) => void,
   onJob?: (jobId: string, operationId: string) => void,
   tts?: { ttsProvider: string; voiceId?: string; speedScale: number },
+  orchestratorId = "main",
 ) {
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
@@ -76,19 +73,15 @@ export function useVoiceConversation(
   const onCompletedRef = useRef(onCompleted);
   const onJobRef = useRef(onJob);
   const ttsRef = useRef(tts);
-  const onApprovalRequestRef = useRef(onApprovalRequest);
-  const onApprovalResolvedRef = useRef(onApprovalResolved);
-  const approvalsRef = useRef(new Map<string, { request: ApprovalRequest; operationId: string }>());
   const aliveRef = useRef(true);
   const syncingRef = useRef(false);
   const validatedGenerationRef = useRef(0);
   onCompletedRef.current = onCompleted;
   onJobRef.current = onJob;
   ttsRef.current = tts;
-  onApprovalRequestRef.current = onApprovalRequest;
-  onApprovalResolvedRef.current = onApprovalResolved;
 
   const applyStatus = useCallback((payload: Record<string, unknown>, acceptedPersisted = false) => {
+    if (payload.orchestratorId && payload.orchestratorId !== orchestratorId) return;
     const id = String(payload.clientOperationId || "");
     const status = String(payload.status || "");
     const pending = pendingRef.current;
@@ -139,7 +132,7 @@ export function useVoiceConversation(
     else pending.reject?.(new Error(message));
     setTurnStatus("failed");
     setError(message);
-  }, []);
+  }, [orchestratorId]);
 
   const startTurn = useCallback(async (pending: PendingTurn) => {
     if (!pending.text || !conversationIdRef.current || !aliveRef.current) return;
@@ -150,6 +143,7 @@ export function useVoiceConversation(
         operationId: pending.id,
         payload: {
           backendId: "codex",
+          orchestratorId,
           logicalConversationId: conversationIdRef.current,
           clientOperationId: pending.id,
           input: { blocks: [{ type: "text", text: pending.text }] },
@@ -168,7 +162,7 @@ export function useVoiceConversation(
       // The request may have reached Runner. Resolve it by operation ID before resending.
       if (aliveRef.current && pendingRef.current === pending) setTurnStatus("sending");
     }
-  }, [applyStatus, manager]);
+  }, [applyStatus, manager, orchestratorId]);
 
   const sync = useCallback(async () => {
     if (syncingRef.current || !manager.getSnapshot().connected) return;
@@ -178,7 +172,8 @@ export function useVoiceConversation(
     const pendingAtStart = pendingRef.current;
     const turnRevisionAtStart = turnRevisionRef.current;
     try {
-      const opened = await manager.request({ channel: "agent", op: "voice.open" });
+      const opened = await manager.request({ channel: "agent", op: "voice.open",
+        payload: { orchestratorId } });
       if (!aliveRef.current || manager.getSnapshot().generation !== startedGeneration
         || turnRevisionRef.current !== turnRevisionAtStart || pendingRef.current !== pendingAtStart) return;
       const openPayload = payloadOf(opened);
@@ -236,7 +231,7 @@ export function useVoiceConversation(
         statusResponse = await manager.request({
           channel: "agent",
           op: "voice.status",
-          payload: { logicalConversationId: conversationId, clientOperationId: pending.id },
+          payload: { orchestratorId, logicalConversationId: conversationId, clientOperationId: pending.id },
         });
       } catch (cause) {
         if (aliveRef.current && manager.getSnapshot().generation === startedGeneration
@@ -279,7 +274,7 @@ export function useVoiceConversation(
       if (aliveRef.current && manager.getSnapshot().connected
         && manager.getSnapshot().generation !== startedGeneration) void sync();
     }
-  }, [applyStatus, manager, startTurn]);
+  }, [applyStatus, manager, orchestratorId, startTurn]);
 
   useEffect(() => {
     if (connected) void sync();
@@ -288,8 +283,6 @@ export function useVoiceConversation(
   useEffect(() => {
     if (connected) return;
     setLogicalConversationId("");
-    for (const { request } of approvalsRef.current.values()) onApprovalResolvedRef.current?.(request);
-    approvalsRef.current.clear();
   }, [connected]);
 
   useEffect(() => {
@@ -307,7 +300,8 @@ export function useVoiceConversation(
       const operationId = String(payload.clientOperationId || message.operationId || "");
       const conversationId = String(payload.logicalConversationId || "");
       const text = typeof payload.delta === "string" ? payload.delta : "";
-      if (!pending || pending.id !== operationId || conversationId !== conversationIdRef.current || !text) return;
+      if (!pending || pending.id !== operationId || conversationId !== conversationIdRef.current
+        || (payload.orchestratorId && payload.orchestratorId !== orchestratorId) || !text) return;
       setReply((current) => ({
         operationId,
         text: current?.operationId === operationId ? current.text + text : text,
@@ -319,54 +313,15 @@ export function useVoiceConversation(
     const failed = manager.subscribe({ channel: "agent", op: "voice.turn.failed" }, (message) => {
       applyStatus(payloadOf(message), true);
     });
-    const approval = manager.subscribe({ channel: "agent", op: "voice.approval.request" }, (message) => {
-      const pending = pendingRef.current;
-      const payload = payloadOf(message);
-      const requestId = String(payload.requestId || "");
-      const method = String(payload.method || "");
-      if (!pending || message.operationId !== pending.id || !requestId
-        || (method !== "item/commandExecution/requestApproval" && method !== "item/fileChange/requestApproval")
-        || approvalsRef.current.has(requestId)) return;
-      const request = {
-        ...normalizeAppServerApprovalRequest(payload.params, {
-          rpcId: 0, method, threadId: String(payload.threadId || ""), turnId: String(payload.turnId || ""),
-        }),
-        requestId,
-        sessionInfo: { sessionId: String(payload.threadId || ""), sessionTitle: "音声会話" },
-      };
-      approvalsRef.current.set(requestId, { request, operationId: pending.id });
-      const decision = onApprovalRequestRef.current?.(request) ?? Promise.resolve<ApprovalAction>("decline");
-      void Promise.resolve(decision)
-        .then((action) => {
-          if (!aliveRef.current || approvalsRef.current.get(requestId)?.request !== request) return;
-          return manager.request({
-            channel: "agent", op: "voice.approval.decision", operationId: pending.id,
-            payload: { requestId, decision: toCodexApprovalDecision(action) },
-          }, { timeoutMs: 30_000 });
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (approvalsRef.current.get(requestId)?.request !== request) return;
-          approvalsRef.current.delete(requestId);
-          onApprovalResolvedRef.current?.(request);
-        });
-    });
     void manager.connect().catch(() => undefined);
     return () => {
       aliveRef.current = false;
       pendingRef.current?.reject?.(new Error("音声画面を閉じました。"));
-      for (const [requestId, { request, operationId }] of approvalsRef.current) {
-        onApprovalResolvedRef.current?.(request);
-        void manager.request({ channel: "agent", op: "voice.approval.decision",
-          operationId, payload: { requestId, decision: "cancel" } }).catch(() => undefined);
-      }
-      approvalsRef.current.clear();
       delta();
       complete();
       failed();
-      approval();
     };
-  }, [applyStatus, manager]);
+  }, [applyStatus, manager, orchestratorId]);
 
   const sendTranscript = useCallback((text: string, onAccepted: () => void) => {
     const trimmed = text.trim();
@@ -398,13 +353,13 @@ export function useVoiceConversation(
     setError("");
     const request = {
       channel: "agent", op: "voice.turn.interrupt", operationId: pending.id,
-      payload: { logicalConversationId: conversationIdRef.current, clientOperationId: pending.id },
+      payload: { orchestratorId, logicalConversationId: conversationIdRef.current, clientOperationId: pending.id },
     } as const;
     void manager.request(request, { timeoutMs: 30_000 }).catch(async () => {
       await manager.connect();
       await manager.request(request, { timeoutMs: 30_000 });
     }).catch(() => undefined);
-  }, [manager]);
+  }, [manager, orchestratorId]);
 
   const refreshHistory = useCallback(async () => {
     const conversationId = conversationIdRef.current;
@@ -412,9 +367,11 @@ export function useVoiceConversation(
     if (!conversationId || !manager.getSnapshot().connected) return;
     const requestNumber = ++historyRequestRef.current;
     try {
-      const response = await manager.request({ channel: "agent", op: "voice.history" });
+      const response = await manager.request({ channel: "agent", op: "voice.history",
+        payload: { orchestratorId } });
       const payload = payloadOf(response);
       if (response.op !== "voice.history.result" || payload.logicalConversationId !== conversationId
+        || (payload.orchestratorId && payload.orchestratorId !== orchestratorId)
         || !Array.isArray(payload.messages) || !payload.messages.every((message) =>
           message && typeof message === "object" && (message.role === "user" || message.role === "assistant")
           && typeof message.text === "string" && typeof message.clientOperationId === "string")) {
@@ -430,7 +387,7 @@ export function useVoiceConversation(
         setHistoryError(cause instanceof Error ? cause.message : "音声会話の履歴を読み込めません。");
       }
     }
-  }, [manager]);
+  }, [manager, orchestratorId]);
 
   return {
     ready: Boolean(logicalConversationId) && connected,

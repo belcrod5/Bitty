@@ -7,11 +7,15 @@ import { useStreamingStt } from "../../stt/useStreamingStt";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "../components/StreamingSttFooter";
 import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
+import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
+import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
+import { useVoiceApprovals } from "../hooks/useVoiceApprovals";
+import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
@@ -35,7 +39,74 @@ export type VoiceConversationPlayback = {
   onApprovalResolved?: (request: ApprovalRequest) => void;
 };
 
-export function VoiceConversationScreen({
+export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void }) {
+  const manager = useRunnerWebSocketManager();
+  const { connected, generation } = useRunnerWebSocketSnapshot();
+  const [list, setList] = useState<{ orchestrators: VoiceOrchestrator[]; selectedId: string } | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  useVoiceApprovals(props.onApprovalRequest, props.onApprovalResolved, list?.orchestrators || []);
+
+  useEffect(() => {
+    let current = true;
+    void manager.connect().then(() => manager.request({ channel: "agent", op: "voice.orchestrators.list" }))
+      .then((response) => {
+        if (!current) return;
+        const value = response.payload as { orchestrators?: VoiceOrchestrator[]; selectedId?: string } | undefined;
+        if (response.op !== "voice.orchestrators.list.result" || !Array.isArray(value?.orchestrators)
+          || typeof value.selectedId !== "string" || !value.orchestrators.some((item) => item.id === value.selectedId)) {
+          throw new Error("オーケストレータを読み込めません。");
+        }
+        setList({ orchestrators: value.orchestrators, selectedId: value.selectedId });
+        setSelectedId(value.selectedId);
+        setLoadError("");
+      }).catch((cause) => { if (current) setLoadError(cause instanceof Error ? cause.message : "接続できません。"); });
+    return () => { current = false; };
+  }, [connected, generation, manager]);
+
+  const select = useCallback(async (id: string) => {
+    const response = await manager.request({ channel: "agent", op: "voice.orchestrators.select",
+      payload: { orchestratorId: id } });
+    if (response.op !== "voice.orchestrators.select.result") throw new Error("切り替えられません。");
+    const value = response.payload as { orchestrators: VoiceOrchestrator[]; selectedId: string };
+    setList(value);
+    setSelectedId(value.selectedId);
+  }, [manager]);
+
+  const listChanged = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }) => {
+    setList(value);
+    setSelectedId(value.selectedId);
+  }, []);
+  const conversationChanged = useCallback((id: string) => {
+    if (id === selectedId || !list?.orchestrators.some((item) => item.id === selectedId)) {
+      setRevision((current) => current + 1);
+    }
+  }, [list, selectedId]);
+  const selected = list?.orchestrators.find((item) => item.id === selectedId);
+
+  return <>
+    {selected && list ? <VoiceConversationSession key={`${selected.id}-${revision}`} {...props}
+      orchestrator={selected} orchestrators={list.orchestrators} onSelect={select}
+      onManage={() => setManagerOpen(true)} paused={managerOpen}
+      historyExpanded={historyExpanded} setHistoryExpanded={setHistoryExpanded} /> : (
+      <View style={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ color: "#ffffff" }}>{loadError || "音声会話を読み込み中…"}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="音声会話を閉じる"
+          onPress={props.onClose} style={{ marginTop: 20, padding: 12 }}>
+          <Text style={{ color: "#ffffff" }}>閉じる</Text>
+        </Pressable>
+      </View>
+    )}
+    {list ? <VoiceOrchestratorManager visible={managerOpen} list={list}
+      onListChanged={listChanged} onConversationChanged={conversationChanged}
+      onClose={() => setManagerOpen(false)} /> : null}
+  </>;
+}
+
+function VoiceConversationSession({
   synthesizeSpeechStream,
   stopTtsPlayback,
   isTtsPlaybackActive,
@@ -44,10 +115,17 @@ export function VoiceConversationScreen({
   ttsProvider,
   selectedVoiceId,
   ttsSpeed,
-  onApprovalRequest,
-  onApprovalResolved,
   onClose,
-}: VoiceConversationPlayback & { onClose: () => void }) {
+  orchestrator,
+  orchestrators,
+  onSelect,
+  onManage,
+  paused,
+  historyExpanded,
+  setHistoryExpanded,
+}: VoiceConversationPlayback & { onClose: () => void; orchestrator: VoiceOrchestrator;
+  orchestrators: VoiceOrchestrator[]; onSelect: (id: string) => Promise<void>; onManage: () => void;
+  paused: boolean; historyExpanded: boolean; setHistoryExpanded: (value: boolean | ((current: boolean) => boolean)) => void }) {
   const { runnerUrl, runnerToken } = useChatScreen();
   const { logSessionDiag } = useConversation();
   const reduceMotion = useReduceMotionEnabled();
@@ -57,16 +135,18 @@ export function VoiceConversationScreen({
   const [initialStartPending, setInitialStartPending] = useState(true);
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
   const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
-  const [historyExpanded, setHistoryExpanded] = useState(false);
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
   const historyAtBottomRef = useRef(true);
   const mountedRef = useRef(true);
+  const transitioningRef = useRef(false);
+  const wasPausedRef = useRef(paused);
   const voicePlaybackMessageIdRef = useRef("");
 
   const playReply = useCallback(async (text: string, operationId: string, jobId?: string) => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || paused || transitioningRef.current) return;
     setSynthesisStarting(true);
     setSynthesisRequestSettled(false);
     voicePlaybackMessageIdRef.current = operationId;
@@ -77,13 +157,14 @@ export function VoiceConversationScreen({
     } finally {
       if (mountedRef.current) setSynthesisRequestSettled(true);
     }
-  }, [synthesizeSpeechStream]);
+  }, [paused, synthesizeSpeechStream]);
   const voice = useVoiceConversation(
-    playReply, onApprovalRequest, onApprovalResolved,
+    playReply,
     (jobId, operationId) => { void playReply("", operationId, jobId); },
     ttsProvider && typeof ttsSpeed === "number"
       ? { ttsProvider, voiceId: selectedVoiceId?.trim() || undefined, speedScale: ttsSpeed }
       : undefined,
+    orchestrator.id,
   );
   useEffect(() => {
     if (historyExpanded && voice.ready) void voice.refreshHistory();
@@ -100,7 +181,7 @@ export function VoiceConversationScreen({
     }), [editingTranscript]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
-  const canStart = voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
+  const canStart = !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
   const streamingStt = useStreamingStt({
     runnerUrl,
     runnerToken,
@@ -121,6 +202,51 @@ export function VoiceConversationScreen({
     ttsPlaybackActive: playbackActive,
     voiceInputDuringTtsAllowed: false,
   });
+
+  const quietAudio = useCallback(async () => {
+    await streamingStt.abort();
+    setTranscript("");
+    setEditingTranscript(false);
+    const messageId = voicePlaybackMessageIdRef.current;
+    if (messageId) {
+      voicePlaybackMessageIdRef.current = "";
+      await stopTtsPlayback({ interruptStream: true, reason: "voice_orchestrator_changed",
+        expectedMessageId: messageId });
+    }
+  }, [stopTtsPlayback, streamingStt.abort]);
+
+  const switchTo = useCallback(async (id: string) => {
+    if (id === orchestrator.id || transitioningRef.current) return;
+    transitioningRef.current = true;
+    setTransitioning(true);
+    try { await quietAudio(); await onSelect(id); }
+    catch (cause) {
+      transitioningRef.current = false;
+      setTransitioning(false);
+      voice.setError(cause instanceof Error ? cause.message : "切り替えられません。");
+    }
+  }, [onSelect, orchestrator.id, quietAudio, voice.setError]);
+
+  const openManager = useCallback(async () => {
+    if (transitioningRef.current) return;
+    transitioningRef.current = true;
+    setTransitioning(true);
+    try { await quietAudio(); onManage(); }
+    catch (cause) {
+      transitioningRef.current = false;
+      setTransitioning(false);
+      voice.setError(cause instanceof Error ? cause.message : "管理画面を開けません。");
+    }
+  }, [onManage, quietAudio, voice.setError]);
+
+  useEffect(() => {
+    if (wasPausedRef.current && !paused) {
+      transitioningRef.current = false;
+      setTransitioning(false);
+      setInitialStartPending(true);
+    }
+    wasPausedRef.current = paused;
+  }, [paused]);
 
   useEffect(() => {
     if (!initialStartPending || !canStart) return;
@@ -214,7 +340,23 @@ export function VoiceConversationScreen({
                 entering={reduceMotion ? undefined : historyFadeIn}
                 exiting={reduceMotion ? undefined : historyFadeOut}
                 style={{ flex: 1, width: "100%" }}>
-                <View style={{ paddingHorizontal: 20, paddingTop: 12, alignItems: "flex-end" }}>
+                <View style={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8,
+                  flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  <Pressable testID="voice-orchestrator-strip" style={{ flex: 1 }}
+                    onLongPress={() => void openManager()}
+                    onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={{ alignItems: "center", paddingRight: 12 }}>
+                      {orchestrators.map((item) => (
+                        <Pressable key={item.id} testID={`voice-orchestrator-${item.id}`}
+                          accessibilityRole="button" accessibilityLabel={`${item.name}に切り替え`}
+                          style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}
+                          onPress={() => void switchTo(item.id)} onLongPress={() => void openManager()}>
+                          <VoiceOrchestratorIcon orchestrator={item} size={34} active={item.id === orchestrator.id} />
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </Pressable>
                   <Pressable testID="voice-history-close" accessibilityRole="button"
                     accessibilityLabel="履歴を閉じる" hitSlop={8}
                     onPress={() => setHistoryExpanded(false)}
@@ -311,6 +453,17 @@ export function VoiceConversationScreen({
                     voiceContextStats={voice.contextStats}
                     historyExpanded={historyExpanded}
                     onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
+                    leadingAccessory={!historyExpanded ? (
+                      <Pressable testID="voice-orchestrator-floating" accessibilityRole="button"
+                        accessibilityLabel={`${orchestrator.name}・履歴を開く`}
+                        onPress={() => setHistoryExpanded(true)} onLongPress={() => void openManager()}
+                        onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}
+                        style={{ width: 44, height: 44 }}>
+                        <View style={{ position: "absolute", top: -8, left: -8 }}>
+                          <VoiceOrchestratorIcon orchestrator={orchestrator} size={30} active />
+                        </View>
+                      </Pressable>
+                    ) : undefined}
                   />
                 </View>
               </GestureDetector>
