@@ -9776,7 +9776,6 @@ runnerWsServer.on("connection", (ws, req) => {
           });
           rememberRunnerWsTtsOperationJob(operationId, job);
         }
-        attachRunnerWsTtsJob(job, 0);
         sendRunnerWsEnvelope(ws, {
           channel: "tts",
           op: "job_started",
@@ -9790,6 +9789,7 @@ runnerWsServer.on("connection", (ws, req) => {
             status: job.status,
           },
         });
+        attachRunnerWsTtsJob(job, Number(message.seq) || 0);
       } catch (err) {
         if (isApiError(err)) {
           sendRunnerWsEnvelope(ws, {

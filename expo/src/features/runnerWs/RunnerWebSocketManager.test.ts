@@ -194,6 +194,47 @@ test("send throws until control ready", async () => {
   expect(JSON.parse(socket.sent[0])).toMatchObject({ channel: "control", op: "ping" });
 });
 
+test("a transport send throw closes the current socket and schedules one reconnect", async () => {
+  const socket = nextSocket();
+  const replacement = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, socket);
+  socket.send = () => {
+    expect(manager.getSnapshot().connectionState).toBe("ready");
+    throw new Error("native send failed");
+  };
+
+  expect(() => manager.send({ channel: "tts", op: "start" })).toThrow("native send failed");
+  expect(manager.getSnapshot()).toMatchObject({
+    connectionState: "reconnecting", reconnectCount: 1, closeCount: 1, sendErrorCount: 1,
+  });
+  expect(socket.closeCalls).toBe(1);
+
+  socket.closeWithReason("late_close");
+  expect(manager.getSnapshot()).toMatchObject({ reconnectCount: 1, closeCount: 1 });
+
+  manager.retryConnect();
+  const connected = manager.connect();
+  replacement.open();
+  replacement.message({ channel: "control", op: "ready" });
+  await connected;
+  expect(manager.getSnapshot()).toMatchObject({ connectionState: "ready", generation: 2 });
+});
+
+test("payload admission errors do not reconnect a healthy socket", async () => {
+  const socket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, socket);
+  socket.bufferedAmount = 32 * 1024 * 1024 + 1;
+
+  expect(() => manager.send({ channel: "tts", op: "start" }))
+    .toThrow("runner_ws_buffered_amount_exceeded");
+  expect(manager.getSnapshot()).toMatchObject({
+    connectionState: "ready", reconnectCount: 0, closeCount: 0, sendErrorCount: 1,
+  });
+  expect(socket.closeCalls).toBe(0);
+});
+
 test("subscribers receive only messages matching explicit filter fields", async () => {
   const socket = nextSocket();
   const manager = createManager();
