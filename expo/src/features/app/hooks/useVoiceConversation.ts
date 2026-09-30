@@ -7,7 +7,7 @@ import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import { normalizeAppServerApprovalRequest, toCodexApprovalDecision } from "../../codex/client/helpers";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
-export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string };
+export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number };
 type PendingTurn = {
   id: string;
   text?: string;
@@ -64,7 +64,7 @@ export function useVoiceConversation(
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [logicalConversationId, setLogicalConversationId] = useState("");
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
-  const [reply, setReply] = useState<{ text: string; operationId: string } | null>(null);
+  const [reply, setReply] = useState<{ text: string; operationId: string; outputTokens?: number } | null>(null);
   const [error, setError] = useState("");
   const [contextStats, setContextStats] = useState<VoiceContextStats | null>(null);
   const [history, setHistory] = useState<VoiceHistoryMessage[]>([]);
@@ -127,7 +127,8 @@ export function useVoiceConversation(
     }
     if (status === "completed" && typeof payload.text === "string" && payload.text.trim()) {
       pending.resolve?.();
-      setReply({ text: payload.text, operationId: id });
+      setReply({ text: payload.text, operationId: id,
+        outputTokens: typeof payload.outputTokens === "number" ? payload.outputTokens : undefined });
       setTurnStatus("completed");
       setError("");
       if (pending.readAloud && !pending.jobId) onCompletedRef.current(payload.text, id);
@@ -217,7 +218,8 @@ export function useVoiceConversation(
         setLogicalConversationId(conversationId);
         if (openPayload.status === "completed" && typeof openPayload.text === "string"
           && typeof openPayload.clientOperationId === "string") {
-          setReply({ text: openPayload.text, operationId: openPayload.clientOperationId });
+          setReply({ text: openPayload.text, operationId: openPayload.clientOperationId,
+            outputTokens: typeof openPayload.outputTokens === "number" ? openPayload.outputTokens : undefined });
           setTurnStatus("completed");
         } else if ((openPayload.status === "interrupted" || openPayload.status === "preflight_failed")
           && openPayload.code === "voice_cancelled") {

@@ -158,6 +158,20 @@ test("manager mode resolves JSON-RPC responses delivered through subscription", 
       },
     },
   });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "other-turn",
+    tokenUsage: { total: { totalTokens: 999 }, last: { outputTokens: 999 }, modelContextWindow: 272000 },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "turn-1",
+    tokenUsage: { total: { totalTokens: 999 },
+      last: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, modelContextWindow: 272000 },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "turn-1",
+    tokenUsage: { total: { totalTokens: 1013 },
+      last: { inputTokens: 150, outputTokens: 14, totalTokens: 164 }, modelContextWindow: 272000 },
+  });
   manager.emit({
     channel: "llm",
     op: "rpc",
@@ -180,6 +194,8 @@ test("manager mode resolves JSON-RPC responses delivered through subscription", 
     threadId: "thread-1",
     turnId: "turn-1",
     reply: "hello back",
+    outputTokens: 24,
+    contextUsage: expect.objectContaining({ totalTokens: 164, contextWindowTokens: 272000 }),
   });
 });
 

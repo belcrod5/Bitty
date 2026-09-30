@@ -422,6 +422,8 @@ export function createCodexBackend({
       commandByToolCallId: new Map(),
       bufferedNotifications: [],
       turnStartRequested: false,
+      outputTokens: 0,
+      tokenUsageUpdated: false,
     };
     activeRuns.set(runId, state);
     const emitItemStarted = (itemId, itemType = "assistant") => {
@@ -445,6 +447,20 @@ export function createCodexBackend({
         return;
       }
       if (!codexTurnEventMatches(params, { threadId: state.threadId, turnId: state.turnId })) return;
+      if (method === "thread/tokenUsage/updated") {
+        state.tokenUsageUpdated = true;
+        const tokenUsage = params?.tokenUsage;
+        const lastOutput = tokenUsage?.last?.outputTokens;
+        if (Number.isSafeInteger(lastOutput) && lastOutput > 0
+          && Number.isSafeInteger(state.outputTokens + lastOutput)) state.outputTokens += lastOutput;
+        emit("usage.updated", {
+          ...(tokenUsage?.last && typeof tokenUsage.last === "object" ? {
+            usage: { ...tokenUsage.last, contextWindowTokens: tokenUsage.modelContextWindow },
+          } : {}),
+          ...(state.outputTokens > 0 ? { outputTokens: state.outputTokens } : {}),
+        });
+        return;
+      }
       if (method === "turn/completed" || method === "turn/interrupted") {
         state.terminalNotification = { method, params };
         return;
@@ -591,7 +607,14 @@ export function createCodexBackend({
       // context length表示の更新源。raw経路のturn/completed usage抽出と同じ情報を
       // neutralイベントとしても届ける。
       const turnUsage = codexTurnCompletedUsage(terminal?.params);
-      if (turnUsage) emit("usage.updated", { usage: turnUsage });
+      if (turnUsage) {
+        const fallbackOutput = Number(turnUsage.outputTokens ?? turnUsage.output_tokens);
+        emit("usage.updated", { usage: turnUsage,
+          ...(state.outputTokens > 0 ? { outputTokens: state.outputTokens }
+            : !state.tokenUsageUpdated && Number.isSafeInteger(fallbackOutput) && fallbackOutput > 0
+              ? { outputTokens: fallbackOutput } : {}),
+        });
+      }
       if (terminal?.method === "turn/interrupted" || INTERRUPTED_TURN_STATUSES.has(status)) {
         return { outcome: "interrupted" };
       }

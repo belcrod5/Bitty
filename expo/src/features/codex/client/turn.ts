@@ -10,6 +10,7 @@ import {
   isThreadNotLoadedError,
   deriveCodexSessionStateFromSnapshot,
   normalizeAppServerApprovalRequest,
+  normalizeContextUsageSnapshot,
   normalizeCodexWsInputs,
   parseCodexApprovalPolicy,
   parseJsonRpcMessage,
@@ -141,6 +142,9 @@ function startCodexAppServerRawTurn(
   let deltaBuffer = "";
   let completedAgentMessage = "";
   let latestContextUsage: CodexContextUsage | null = null;
+  let outputTokens = 0;
+  let sawTokenUsageUpdate = false;
+  const pendingTokenUsageUpdates: unknown[] = [];
   let lastErrorMessage = "";
   let finalized = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -646,6 +650,21 @@ function startCodexAppServerRawTurn(
     }, () => !interruptRequested);
   }
 
+  function applyTokenUsageUpdate(paramsRaw: unknown) {
+    const update = paramsRaw as Record<string, any>;
+    if (update.threadId !== activeThreadId || update.turnId !== activeTurnId) return;
+    sawTokenUsageUpdate = true;
+    const tokenUsage = update.tokenUsage;
+    const lastOutput = tokenUsage?.last?.outputTokens;
+    if (Number.isSafeInteger(lastOutput) && lastOutput > 0
+      && Number.isSafeInteger(outputTokens + lastOutput)) outputTokens += lastOutput;
+    const context = normalizeContextUsageSnapshot({
+      ...tokenUsage?.last,
+      contextWindowTokens: tokenUsage?.modelContextWindow,
+    }, options.model);
+    if (context) latestContextUsage = context;
+  }
+
   function handleNotification(methodRaw: unknown, paramsRaw: unknown) {
     const method = String(methodRaw || "");
     const params = paramsRaw || {};
@@ -655,6 +674,14 @@ function startCodexAppServerRawTurn(
       readyState: getTransportReadyState(),
     });
     emitEvent(method, params);
+    if (method === "thread/tokenUsage/updated") {
+      if (!activeTurnId) {
+        pendingTokenUsageUpdates.push(params);
+        return;
+      }
+      applyTokenUsageUpdate(params);
+      return;
+    }
     if (method === "serverRequest/resolved") {
       const resolvedApproval = takeResolvedApprovalRequest(pendingApprovalRequests, params);
       if (resolvedApproval) {
@@ -1119,6 +1146,9 @@ function startCodexAppServerRawTurn(
         "turn/start", turnStartParams, PRE_TURN_RPC_TIMEOUT_MS
       );
       activeTurnId = String(turnStarted?.turn?.id || "").trim();
+      for (const update of pendingTokenUsageUpdates.splice(0)) {
+        applyTokenUsageUpdate(update);
+      }
 
       if (interruptRequested) {
         sendTurnInterruptIfPossible();
@@ -1219,7 +1249,10 @@ function startCodexAppServerRawTurn(
         entry.active = false;
       }
       pendingApprovalRequests.clear();
-      latestContextUsage = extractContextUsageFromTurnCompletedParams(message.params, options.model);
+      const completedUsage = extractContextUsageFromTurnCompletedParams(message.params, options.model);
+      latestContextUsage = latestContextUsage || completedUsage;
+      if (!sawTokenUsageUpdate && completedUsage && Number.isSafeInteger(completedUsage.outputTokens)
+        && completedUsage.outputTokens > 0) outputTokens = completedUsage.outputTokens;
       const threadId = String((message.params as any)?.threadId || activeThreadId || "").trim();
       const turnId = String((message.params as any)?.turn?.id || activeTurnId || "").trim();
       const turnStatus = String((message.params as any)?.turn?.status || "").trim().toLowerCase();
@@ -1241,6 +1274,7 @@ function startCodexAppServerRawTurn(
         turnId,
         reply,
         contextUsage: latestContextUsage,
+        ...(outputTokens > 0 ? { outputTokens } : {}),
       });
     };
 

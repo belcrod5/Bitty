@@ -29,6 +29,8 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   at?: string;
+  // Output of this assistant message's turn; input/total include prior context.
+  outputTokens?: number;
   kind?: "internal_context" | "unclassified_context" | "sidechain";
   inheritedFromParent?: boolean;
   youtubeVideoIds?: string[];

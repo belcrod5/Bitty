@@ -541,6 +541,40 @@ test("Codex Backend emits turn usage with its context window for the context len
   });
 });
 
+test("Codex Backend emits cumulative output from native token usage updates", async () => {
+  const client = fakeClient([
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { totalTokens: 999 },
+      last: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, modelContextWindow: 272000,
+    } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { totalTokens: 1013 },
+      last: { inputTokens: 150, outputTokens: 14, totalTokens: 164 }, modelContextWindow: 272000,
+    } } },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  client.close = () => {};
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const events = [];
+  await backend.startTurn({
+    runId: "run-native-usage", cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request", signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  const updates = events.filter((event) => event.type === "usage.updated").map((event) => event.payload);
+  assert.deepEqual(updates, [
+    { usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, contextWindowTokens: 272000 }, outputTokens: 10 },
+    { usage: { inputTokens: 150, outputTokens: 14, totalTokens: 164, contextWindowTokens: 272000 }, outputTokens: 24 },
+  ]);
+});
+
 test("Codex Backend compacts through the existing App Server methods", async () => {
   const client = fakeClient([]);
   client.close = () => {};

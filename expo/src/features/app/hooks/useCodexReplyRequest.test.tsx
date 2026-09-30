@@ -270,6 +270,32 @@ beforeEach(() => {
 });
 
 describe("useCodexReplyRequest onAgentMessageCompleted", () => {
+  test("keeps measured output usage on the completed assistant message", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done",
+        contextUsage: { inputTokens: 2000, outputTokens: 14, totalTokens: 2014 }, outputTokens: 24 });
+      await sendPromise;
+    });
+    const messages = harness.store["panel-1"];
+    expect(messages.find((message) => message.role === "user")).not.toHaveProperty("outputTokens");
+    expect(messages.find((message) => message.role === "assistant" && message.content === "done"))
+      .toMatchObject({ outputTokens: 24 });
+  });
+
+  test("does not mistake context percentage for measured output usage", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done",
+        contextUsage: { usedPct: 42, outputTokens: 24 } });
+      await sendPromise;
+    });
+    expect(harness.store["panel-1"].find((message) => message.role === "assistant" && message.content === "done"))
+      .not.toHaveProperty("outputTokens");
+  });
+
   test("keeps the request Backend on the foreground completion", async () => {
     const harness = createHarness();
     const onLlmMessageCompleted = jest.fn();

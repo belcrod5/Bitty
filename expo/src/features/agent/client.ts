@@ -176,6 +176,7 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
   let turnId = "";
   let reply = "";
   let usage: CodexContextUsage | null = null;
+  let outputTokens: number | undefined;
   let lastSequence = 0;
   let closed = false;
   let resuming = false;
@@ -311,6 +312,8 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
       }
     } else if (event.type === "usage.updated") {
       usage = contextUsage(payload) || usage;
+      if (typeof payload.outputTokens === "number" && Number.isSafeInteger(payload.outputTokens)
+        && payload.outputTokens > 0) outputTokens = payload.outputTokens;
     } else if (event.type === "action.requested") {
       await handleAction(payload);
     } else if (event.type === "action.resolved") {
@@ -417,7 +420,7 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
       const response = await options.manager.request({ channel: "agent", op: "turn.interrupt", streamId: runId, payload: { runId } });
       if (response.op === "error") throw new Error(String(object(response.payload).message || "Agent interrupt failed"));
     },
-    snapshot: () => ({ subscriptionId, runId, threadId, turnId, reply, usage, lastSequence, closed }),
+    snapshot: () => ({ subscriptionId, runId, threadId, turnId, reply, usage, outputTokens, lastSequence, closed }),
   };
 }
 
@@ -530,6 +533,7 @@ export function startAgentTurnWithRawFallback(
         turnId: snapshot?.turnId || "",
         reply: snapshot?.reply || "",
         contextUsage: snapshot?.usage || null,
+        ...(snapshot?.outputTokens ? { outputTokens: snapshot.outputTokens } : {}),
       });
     };
     pump = createAgentRunEventPump({

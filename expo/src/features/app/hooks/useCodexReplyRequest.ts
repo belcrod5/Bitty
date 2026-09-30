@@ -998,6 +998,7 @@ export function useCodexReplyRequest<
           llmStatus?: string;
           llmElapsedMs?: number;
           youtubeVideoIds?: string[];
+          outputTokens?: number;
         };
         // Messages already settled as "completed" (per-item settle while the
         // turn keeps running) must not be downgraded when the turn later errors.
@@ -1008,6 +1009,8 @@ export function useCodexReplyRequest<
           ...message,
           llmStatus: settledStatus,
           llmStatusDetail: settledStatusDetail,
+          outputTokens: messageId === lastLiveMessageId && typeof extra.outputTokens === "number"
+            ? extra.outputTokens : liveMessage.outputTokens,
           llmElapsedMs: messageId === lastLiveMessageId && Number.isFinite(Number(extra.llmElapsedMs))
             ? Number(extra.llmElapsedMs)
             : liveMessage.llmElapsedMs,
@@ -1442,11 +1445,18 @@ export function useCodexReplyRequest<
         },
       });
       const elapsedMs = Math.max(0, Date.now() - replyRequestStartedAt);
+      const outputTokens = result.outputTokens;
+      const completedAgentMessageCount = agentMessageOrder.filter((itemId) => (
+        String(agentMessageContentById.get(itemId) || "").trim()
+      )).length;
+      const measuredOutput = typeof outputTokens === "number" && Number.isSafeInteger(outputTokens) && outputTokens > 0
+        && completedAgentMessageCount <= 1 ? { outputTokens } : {};
       const settledLiveMessages = settlePanelLiveAgentMessages({
         youtubeVideoIds: youtubeIds,
         llmStatus: "completed",
         llmStatusDetail: "reply received",
         llmElapsedMs: elapsedMs,
+        ...measuredOutput,
       }, {
         contextUsedPct,
         isResponding: false,
@@ -1460,6 +1470,7 @@ export function useCodexReplyRequest<
           llmStatus: "completed",
           llmStatusDetail: "reply received",
           llmElapsedMs: elapsedMs,
+          ...measuredOutput,
         }, {
           contextUsedPct,
           isResponding: false,

@@ -14,6 +14,7 @@ import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
+import { formatMessageTokens } from "../utils/messageTokens";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 
 const voicePanelFadeIn = FadeIn.duration(220);
@@ -185,7 +186,8 @@ export function VoiceConversationScreen({
     const reply = voice.reply;
     if (!reply?.text || voice.history.some((message) =>
       message.role === "assistant" && message.clientOperationId === reply.operationId)) return voice.history;
-    return [...voice.history, { role: "assistant" as const, text: reply.text, clientOperationId: reply.operationId }];
+    return [...voice.history, { role: "assistant" as const, text: reply.text, clientOperationId: reply.operationId,
+      outputTokens: reply.outputTokens }];
   }, [voice.history, voice.ready, voice.reply]);
 
   return (
@@ -249,7 +251,10 @@ export function VoiceConversationScreen({
                           backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
                         <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
                           <Text style={{ color: textColor, fontSize: 11 }}>{user ? "あなた" : "AI"}</Text>
-                          {time ? <Text style={{ color: textColor, fontSize: 11 }}>{time}</Text> : null}
+                          <Text style={{ color: textColor, fontSize: 11 }}>
+                            {time ? `${time}  ` : ""}{formatMessageTokens(message.text,
+                              user ? undefined : message.outputTokens)}
+                          </Text>
                         </View>
                         <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
                       </View>

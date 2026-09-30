@@ -120,7 +120,8 @@ function readEvents(buffer, prunedThroughPairSeq = 0) {
       if (!Number.isSafeInteger(event.pairSeq) || event.pairSeq <= pairSeq
         || (!pairSeq && event.pairSeq > prunedThroughPairSeq + 1)
         || (pairSeq && event.pairSeq !== pairSeq + 1)
-        || typeof event.text !== "string" || !event.text.trim()) {
+        || typeof event.text !== "string" || !event.text.trim()
+        || (event.outputTokens !== undefined && (!Number.isSafeInteger(event.outputTokens) || event.outputTokens < 0))) {
         throw invalid("voice_store_corrupt", "Voice event log has an invalid completed pair");
       }
       pairSeq = event.pairSeq;
@@ -149,6 +150,7 @@ function snapshots(events) {
       state.status = "completed";
       state.text = event.text;
       state.assistantAt = event.at;
+      state.outputTokens = event.outputTokens;
       pairs.push({ pairSeq: event.pairSeq, user: state.userText, assistant: event.text });
     }
   }
@@ -469,6 +471,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       status,
       ...usage(),
       ...(state.text ? { text: state.text } : {}),
+      ...(state.outputTokens !== undefined ? { outputTokens: state.outputTokens } : {}),
       ...(inFlightId === id && (status === "accepted" || status === "running") && inFlightPartialText
         ? { partialText: inFlightPartialText } : {}),
       ...(state.code ? { code: state.code } : {}),
@@ -579,6 +582,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       let streamedItemCount = 0;
       let textStreamingStopped = false;
       let textDelivered = false;
+      let measuredOutputTokens = 0;
       function deliverText(text) {
         if (!text || !onText || textStreamingStopped || signal?.aborted) return;
         try { onText(text); textDelivered = true; }
@@ -597,6 +601,12 @@ export function createVoiceContextService({ rootDir, createClient }) {
       function observe(method, params) {
         if (!identity) { pendingNotifications.push([method, params]); return; }
         if (!codexTurnEventMatches(params, identity)) return;
+        if (method === "thread/tokenUsage/updated") {
+          const lastOutput = params?.tokenUsage?.last?.outputTokens;
+          if (Number.isSafeInteger(lastOutput) && lastOutput > 0
+            && Number.isSafeInteger(measuredOutputTokens + lastOutput)) measuredOutputTokens += lastOutput;
+          return;
+        }
         const itemType = String(params?.item?.type || "");
         if (!onApproval) {
           if ((method === "item/started" || method === "item/completed") && TOOL_ITEM_TYPES.has(itemType)) toolSeen = true;
@@ -701,7 +711,14 @@ export function createVoiceContextService({ rootDir, createClient }) {
       if (onText && textStreamingStopped && !textDelivered) {
         try { onText(text); } catch (error) { try { onTextError?.(error); } catch {} }
       }
-      return { text, threadId, turnId };
+      const completedTurn = terminal.params?.turn;
+      const tokenUsage = completedTurn?.usage || completedTurn?.tokenUsage || completedTurn?.contextUsage
+        || terminal.params?.usage || terminal.params?.tokenUsage || terminal.params?.contextUsage;
+      const fallbackOutput = tokenUsage?.outputTokens ?? tokenUsage?.output_tokens;
+      const outputTokens = measuredOutputTokens || fallbackOutput;
+      return { text, threadId, turnId,
+        ...(output.length === 1 && Number.isSafeInteger(outputTokens) && outputTokens > 0
+          ? { outputTokens } : {}) };
     } catch (error) {
       if (error && typeof error === "object") error.voiceStage = stage;
       throw error;
@@ -833,6 +850,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
         await append(clientOperationId, "completed", {
           pairSeq: Math.max(active.prunedThroughPairSeq || 0, pairs.at(-1)?.pairSeq || 0, memoryStore.lastPairSeq) + 1,
           text: result.text,
+          ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
         });
       });
       inFlightPartialText = "";
@@ -961,7 +979,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
             clientOperationId: state.clientOperationId });
           if (state.status === "completed") {
             messages.push({ role: "assistant", text: state.text, at: state.assistantAt,
-              clientOperationId: state.clientOperationId });
+              clientOperationId: state.clientOperationId,
+              ...(state.outputTokens !== undefined ? { outputTokens: state.outputTokens } : {}) });
           }
         }
         return { logicalConversationId: active.logicalConversationId, messages };

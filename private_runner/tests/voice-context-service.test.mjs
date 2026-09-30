@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, tokenUsageUpdates = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -108,7 +108,12 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
               })() : reply;
               listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text } });
             }
-            listener("turn/completed", { threadId: params.threadId, turnId, turn: { status: "completed" } });
+            for (const lastOutput of tokenUsageUpdates) {
+              listener("thread/tokenUsage/updated", { threadId: params.threadId, turnId,
+                tokenUsage: { total: { totalTokens: 2024 }, last: { outputTokens: lastOutput }, modelContextWindow: 100000 } });
+            }
+            listener("turn/completed", { threadId: params.threadId, turnId,
+              turn: { status: "completed", ...(completionUsage ? { usage: completionUsage } : {}) } });
             resolveCompletion();
           };
           if (isSummary && holdSummaries) summaryReleases.push(finish);
@@ -718,6 +723,18 @@ test("voice history reads stored user and assistant messages in turn order", asy
     .map(({ type, at }) => [type === "accepted" ? "user" : "assistant", at]));
   await restarted.clearMessages();
   assert.deepEqual((await restarted.history()).messages, []);
+});
+
+test("voice completion keeps measured output tokens in live status and restored history", async (t) => {
+  const { rootDir, codex, service, conversation } = await fixture(t, {
+    tokenUsageUpdates: [10, 14],
+  });
+  const { result } = await complete(service, conversation, "first");
+  assert.equal(result.outputTokens, 24);
+  const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const messages = (await restarted.history()).messages;
+  assert.equal(messages[0].outputTokens, undefined);
+  assert.equal(messages[1].outputTokens, 24);
 });
 
 test("settings count every stored user text and completed reply, including failed turns", async (t) => {

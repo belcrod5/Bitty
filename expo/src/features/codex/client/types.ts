@@ -85,6 +85,7 @@ export type CodexAppServerTurnResult = {
   turnId: string;
   reply: string;
   contextUsage: CodexContextUsage | null;
+  outputTokens?: number;
 };
 
 export type CodexAppServerTurnSession = {
