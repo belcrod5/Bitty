@@ -3,6 +3,7 @@ import type { AudioContainer, TtsDebugStats } from "../types/appTypes";
 import { trimForInline } from "../utils/statusText";
 import { detectAudioContainer } from "../utils/waveform";
 import { sanitizeTextForTts } from "../utils/statusText";
+import { recordHttpNetworkUsage } from "../../ws/networkUsageMetrics";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 
@@ -119,6 +120,10 @@ export function useSynthesizeSpeechController(options: UseSynthesizeSpeechContro
         detectedAudioContainer,
         audioBytes,
       });
+      if (/^https?:/i.test(audioUrl) && audioBytes > 0) {
+        // expo-av のネイティブダウンロードは fetch 計測に乗らないため、サーバー報告値で概算する。
+        recordHttpNetworkUsage(audioUrl, 0, audioBytes);
+      }
       console.log("[tts] success", { audioBytes, audioUrl });
     } catch (e) {
       if (ttsSynthesisRequestIdRef.current !== requestId) return;
