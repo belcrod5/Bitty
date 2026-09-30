@@ -29,7 +29,7 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   at?: string;
-  // Output of this assistant message's turn; input/total include prior context.
+  // Measured output usage for the completed assistant turn.
   outputTokens?: number;
   kind?: "internal_context" | "unclassified_context" | "sidechain";
   inheritedFromParent?: boolean;

@@ -83,7 +83,7 @@ import { deriveSessionExecutionStatusType } from "../utils/sessionExecutionStatu
 import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { findChatMessageMatches } from "../utils/chatFind";
 import { formatMessageTimestampLabel } from "../utils/formatting";
-import { formatMessageTokens } from "../utils/messageTokens";
+import { formatOutputTokens } from "../utils/messageTokens";
 import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
@@ -1898,7 +1898,7 @@ export function ChatScreen({
             ) : null}
             {message.content ? (
               <Text style={styles.chatMessageTimestampText}>
-                {formatMessageTokens(message.content, message.role === "assistant" ? message.outputTokens : undefined)}
+                {formatOutputTokens(message.role === "assistant" ? message.outputTokens : undefined)}
               </Text>
             ) : null}
           </View>

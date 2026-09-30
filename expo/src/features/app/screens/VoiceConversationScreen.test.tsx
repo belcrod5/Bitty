@@ -241,9 +241,9 @@ test("the footer reveals stored messages and closes the history panel", async ()
     position: "absolute", right: 20, bottom: 12, zIndex: 1,
   });
   expect(screen.getByTestId("codex-status-summary-menu")).toBeTruthy();
-  expect(screen.getByText("24 tok")).toBeTruthy();
-  expect(screen.getByText("09/27 12:34  ~5 tok")).toBeTruthy();
-  expect(screen.getByText("09/27 12:35  ~5 tok")).toBeTruthy();
+  expect(screen.getByText("total 24 tok")).toBeTruthy();
+  expect(screen.getByText("09/27 12:34  -- tok")).toBeTruthy();
+  expect(screen.getByText("09/27 12:35  -- tok")).toBeTruthy();
   const colors = VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors;
   expect(StyleSheet.flatten(screen.getByText("最初の質問").parent?.props.style).backgroundColor).toBe(colors.accent);
   expect(StyleSheet.flatten(screen.getByText("最初の返答").parent?.props.style).backgroundColor).toBe(colors.surfaceMuted);
