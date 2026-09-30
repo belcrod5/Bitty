@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 
-import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
+import { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { RunnerWsMessage, RunnerWsMessageFilter } from "../../runnerWs/types";
 import { Audio } from "../audio";
 import type { StreamTtsControlState, TtsDebugStats, TtsPlaybackTarget } from "../types/appTypes";
@@ -11,11 +11,17 @@ const mockCreateWebSocketWithOptionalAuth = jest.fn();
 
 jest.mock("../../ws/webSocketAuth", () => ({
   createWebSocketWithOptionalAuth: (...args: unknown[]) => mockCreateWebSocketWithOptionalAuth(...args),
+  isWebSocketForCloudflareRunner: jest.requireActual("../../ws/webSocketAuth")
+    .isWebSocketForCloudflareRunner,
 }));
 
 class FakeRunnerWebSocketManager {
   sent: RunnerWsMessage[] = [];
   generation = 1;
+  connected = true;
+  connectionState: "idle" | "connecting" | "ready" | "reconnecting" | "stopped" = "ready";
+  appState: "active" | "inactive" = "active";
+  lastError = "";
   snapshotHandlers = new Set<() => void>();
   subscriptions: Array<{
     filter: RunnerWsMessageFilter;
@@ -25,7 +31,13 @@ class FakeRunnerWebSocketManager {
 
   connect = jest.fn(async () => {});
 
-  getSnapshot() { return { connected: true, generation: this.generation }; }
+  getSnapshot() { return {
+    connected: this.connected,
+    connectionState: this.connectionState,
+    appState: this.appState,
+    generation: this.generation,
+    lastError: this.lastError,
+  }; }
 
   subscribeSnapshot(handler: () => void) {
     this.snapshotHandlers.add(handler);
@@ -34,6 +46,8 @@ class FakeRunnerWebSocketManager {
 
   reconnect() {
     this.generation += 1;
+    this.connected = true;
+    this.connectionState = "ready";
     for (const handler of this.snapshotHandlers) handler();
   }
 
@@ -324,6 +338,207 @@ test("uses RunnerWebSocketManager for stream TTS control traffic when manager is
   expect(manager.subscriptions.every((subscription) => subscription.unsubscribed)).toBe(true);
   expect(streamTtsControlRef.current).toBeNull();
   expect(streamSocketRef.current).toBeNull();
+});
+
+test("text TTS resumes missed audio after the shared runner socket reconnects", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-1" });
+  await flushPromises();
+  const start = manager.sent[0];
+  manager.emit({ channel: "tts", op: "job_started", operationId: start.operationId,
+    streamId: "tts-job-1", payload: { type: "job_started", jobId: "tts-job-1" } });
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "tts-job-1", seq: 4,
+    payload: { type: "audio_chunk", eventSeq: 4, seq: 0, text: "first",
+      audioUrl: "https://example.com/0", mimeType: "audio/mpeg" } });
+
+  manager.reconnect();
+  expect(manager.sent.at(-1)).toMatchObject({
+    channel: "tts", op: "attach", operationId: start.operationId,
+    streamId: "tts-job-1", seq: 4,
+  });
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "tts-job-1", seq: 4,
+    payload: { type: "audio_chunk", eventSeq: 4, seq: 0, text: "first",
+      audioUrl: "https://example.com/0", mimeType: "audio/mpeg" } });
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "tts-job-1", seq: 5,
+    payload: { type: "audio_chunk", eventSeq: 5, seq: 1, text: "second",
+      audioUrl: "https://example.com/1", mimeType: "audio/mpeg" } });
+  expect(options.enqueueStreamAudio).toHaveBeenCalledTimes(2);
+});
+
+test("text TTS can resume when the first socket closes before job_started", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { sessionId: "session-1", messageId: "message-1" });
+  await flushPromises();
+  const start = manager.sent[0];
+  manager.reconnect();
+
+  expect(manager.sent.at(-1)).toMatchObject({
+    channel: "tts", op: "start", operationId: start.operationId,
+    seq: 0,
+  });
+  manager.emit({ channel: "tts", op: "job_started", operationId: start.operationId,
+    streamId: "tts-job-1", payload: { type: "job_started", jobId: "tts-job-1" } });
+  manager.emit({ channel: "tts", op: "audio_chunk", streamId: "tts-job-1", seq: 1,
+    payload: { type: "audio_chunk", eventSeq: 1, seq: 0, text: "hello",
+      audioUrl: "https://example.com/0", mimeType: "audio/mpeg" } });
+  expect(options.enqueueStreamAudio).toHaveBeenCalledTimes(1);
+});
+
+test("text TTS starts after a socket that closed before ready reconnects", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  manager.connected = false;
+  manager.connectionState = "connecting";
+  manager.connect.mockImplementation(async () => {
+    manager.connectionState = "reconnecting";
+    throw new Error("runner_ws_closed_before_ready");
+  });
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { messageId: "message-1" });
+  await flushPromises();
+  expect(manager.sent).toHaveLength(0);
+  expect(options.streamTtsControlRef.current).not.toBeNull();
+  expect(options.setTtsUiStatus).not.toHaveBeenCalledWith("error");
+
+  manager.reconnect();
+  expect(manager.sent).toHaveLength(1);
+  expect(manager.sent[0]).toMatchObject({ channel: "tts", op: "start", seq: 0 });
+});
+
+test("text TTS resends the same start when ready closes before connect settles", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  manager.connected = false;
+  manager.connectionState = "connecting";
+  manager.connect.mockImplementation(async () => {
+    manager.connected = true;
+    manager.connectionState = "ready";
+    for (const handler of manager.snapshotHandlers) handler();
+    manager.connected = false;
+    manager.connectionState = "reconnecting";
+    throw new Error("runner_ws_closed_before_ready");
+  });
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { messageId: "message-1" });
+  await flushPromises();
+  expect(manager.sent).toHaveLength(1);
+  manager.reconnect();
+  expect(manager.sent).toHaveLength(2);
+  expect(manager.sent[1]).toMatchObject({
+    channel: "tts", op: "start", operationId: manager.sent[0].operationId, seq: 0,
+  });
+  expect(options.streamTtsControlRef.current).not.toBeNull();
+});
+
+test("text TTS retries when the real manager's ready socket throws on send", async () => {
+  const manager = new RunnerWebSocketManager({
+    url: "ws://127.0.0.1:8788/runner-ws", token: "token", appState: "active",
+  });
+  const createSocket = (failSend: boolean) => {
+    const socket = {
+      readyState: 0,
+      bufferedAmount: 0,
+      sent: [] as RunnerWsMessage[],
+      onopen: null as null | ((event: Event) => void),
+      onmessage: null as null | ((event: MessageEvent) => void),
+      onclose: null as null | ((event: CloseEvent) => void),
+      send: jest.fn((raw: string) => {
+        if (failSend) {
+          expect(manager.getSnapshot().connectionState).toBe("ready");
+          throw new Error("native send failed");
+        }
+        socket.sent.push(JSON.parse(raw) as RunnerWsMessage);
+      }),
+      close: jest.fn(() => {
+        socket.readyState = 3;
+        socket.onclose?.({ reason: "late_close" } as CloseEvent);
+      }),
+    };
+    return socket;
+  };
+  const first = createSocket(true);
+  const second = createSocket(false);
+  mockCreateWebSocketWithOptionalAuth
+    .mockReturnValueOnce(first as unknown as WebSocket)
+    .mockReturnValueOnce(second as unknown as WebSocket);
+  const { options } = createOptions(new FakeRunnerWebSocketManager());
+  options.runnerWebSocketManager = manager;
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("hello", { messageId: "message-1" });
+
+  first.readyState = 1;
+  first.onopen?.({} as Event);
+  first.onmessage?.({ data: JSON.stringify({ channel: "control", op: "ready" }) } as MessageEvent);
+  await flushPromises();
+  expect(manager.getSnapshot().connectionState).toBe("reconnecting");
+  expect(options.streamTtsControlRef.current).not.toBeNull();
+
+  manager.retryConnect();
+  second.readyState = 1;
+  second.onopen?.({} as Event);
+  second.onmessage?.({ data: JSON.stringify({ channel: "control", op: "ready" }) } as MessageEvent);
+  expect(second.sent).toHaveLength(1);
+  expect(second.sent[0]).toMatchObject({ channel: "tts", op: "start", seq: 0 });
+  options.streamTtsControlRef.current?.cleanup();
+  manager.disconnect();
+});
+
+test("text TTS reports a permanent connection configuration error", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  manager.connected = false;
+  manager.connectionState = "idle";
+  manager.lastError = "runner_token_required";
+  manager.connect.mockRejectedValue(new Error("runner_token_required"));
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { messageId: "message-1" });
+  await flushPromises();
+  expect(manager.sent).not.toContainEqual(expect.objectContaining({ op: "start" }));
+  expect(options.streamTtsControlRef.current).toBeNull();
+  expect(options.setTtsUiStatus).toHaveBeenCalledWith("error");
+});
+
+test("text TTS reports a non-retryable start send error", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  manager.send = () => { throw new Error("runner_ws_message_too_large"); };
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { messageId: "message-1" });
+  await flushPromises();
+  expect(options.streamTtsControlRef.current).toBeNull();
+  expect(options.setTtsUiStatus).toHaveBeenCalledWith("error");
+});
+
+test("text TTS stops waiting when reconnect attempts become terminal", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  manager.connected = false;
+  manager.connectionState = "connecting";
+  manager.connect.mockImplementation(async () => {
+    manager.connectionState = "reconnecting";
+    throw new Error("runner_ws_closed_before_ready");
+  });
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+
+  await result.current("hello", { messageId: "message-1" });
+  await flushPromises();
+  expect(options.streamTtsControlRef.current).not.toBeNull();
+  manager.connectionState = "stopped";
+  manager.lastError = "runner_ws_auth_failed";
+  for (const handler of manager.snapshotHandlers) handler();
+
+  expect(options.streamTtsControlRef.current).toBeNull();
+  expect(options.setTtsUiStatus).toHaveBeenCalledWith("error");
 });
 
 test("idle playback: clears segments for all messages and switches the playback target immediately", async () => {

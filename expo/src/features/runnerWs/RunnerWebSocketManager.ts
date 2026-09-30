@@ -514,17 +514,21 @@ export class RunnerWebSocketManager {
       this.emitSnapshot();
       throw makeError("runner_ws_message_too_large");
     }
+    const socket = this.ws;
     try {
-      this.ws.send(payload);
-      this.sentCount += 1;
-      recordNetworkUsage("runner-ws", utf8ByteLength(payload), 0);
-      this.refreshSnapshot();
+      socket.send(payload);
     } catch (error) {
       this.sendErrorCount += 1;
-      this.lastError = error instanceof Error ? error.message : "runner_ws_send_failed";
-      this.emitSnapshot();
+      if (this.ws === socket) {
+        this.forceReconnect("send_failed", error instanceof Error ? error.message : undefined);
+      } else {
+        this.emitSnapshot();
+      }
       throw error;
     }
+    this.sentCount += 1;
+    recordNetworkUsage("runner-ws", utf8ByteLength(payload), 0);
+    this.refreshSnapshot();
   }
 
   request<TResponse extends RunnerWsMessage = RunnerWsMessage>(
@@ -922,13 +926,13 @@ export class RunnerWebSocketManager {
     }
   }
 
-  private forceReconnect(reason: string) {
+  private forceReconnect(reason: string, detail?: string) {
     // The socket is half-open, so onclose is not expected to fire on its own;
     // clear this.ws first so the (possibly synchronous) close() callback is a no-op,
     // then drive the same close handling path as a real disconnect.
     const socket = this.ws;
     this.ws = null;
-    this.lastError = `runner_ws_${reason}`;
+    this.lastError = detail || `runner_ws_${reason}`;
     if (socket) {
       try {
         socket.close();
