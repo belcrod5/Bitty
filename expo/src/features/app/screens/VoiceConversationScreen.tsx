@@ -346,7 +346,7 @@ function VoiceConversationSession({
                     onLongPress={() => void openManager()}
                     onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={{ alignItems: "center", gap: 10, paddingRight: 12 }}>
+                      contentContainerStyle={{ alignItems: "center", paddingRight: 12 }}>
                       {orchestrators.map((item) => (
                         <Pressable key={item.id} testID={`voice-orchestrator-${item.id}`}
                           accessibilityRole="button" accessibilityLabel={`${item.name}に切り替え`}
