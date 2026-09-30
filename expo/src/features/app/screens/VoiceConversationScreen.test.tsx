@@ -1,5 +1,5 @@
-import { useState, type ReactElement } from "react";
-import { act, fireEvent, render as testingRender, waitFor } from "@testing-library/react-native";
+import { useState, type ReactElement, type ReactNode } from "react";
+import { act, fireEvent, render as testingRender, waitFor, within } from "@testing-library/react-native";
 import { Platform, ScrollView, StyleSheet } from "react-native";
 import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
@@ -66,6 +66,7 @@ type MockFooterProps = {
   onCancelSpeaking?: () => void;
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
+  leadingAccessory?: ReactNode;
 };
 let mockFooterProps: MockFooterProps | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
@@ -113,7 +114,8 @@ jest.mock("../components/StreamingSttFooter", () => ({
     mockFooterRenders.push({ transcript: props.statusText || props.transcript, voiceStatus: props.voiceStatus });
     return ReactModule.createElement(View, { testID: "streaming-stt-footer" },
       ReactModule.createElement(Text, null, props.statusText || props.transcript),
-      ReactModule.createElement(TouchableOpacity, { testID: "streaming-stt-stop", onPress: props.onStop }));
+      ReactModule.createElement(TouchableOpacity, { testID: "streaming-stt-stop", onPress: props.onStop }),
+      props.leadingAccessory);
   },
 }));
 jest.mock("../components/CodexStatusSummaryMenu", () => ({
@@ -234,6 +236,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.getByTestId("voice-history-swipe-area").props).toMatchObject({
     gestureVerticalRange: [-24, 24], gestureHorizontalRange: [-32, 32],
   });
+  expect(within(screen.getByTestId("voice-history-swipe-area")).getByTestId("voice-orchestrator-floating")).toBeTruthy();
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
   expect(mockWithTiming).toHaveBeenCalledWith(1, { duration: 240 });
   expect(mockBackdropOpacity.value).toBe(1);

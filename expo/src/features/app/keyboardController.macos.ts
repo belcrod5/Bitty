@@ -3,6 +3,7 @@ import {
   KeyboardAvoidingView as NativeKeyboardAvoidingView,
   type KeyboardAvoidingViewProps as NativeKeyboardAvoidingViewProps,
 } from "react-native";
+export { ScrollView as KeyboardAwareScrollView } from "react-native";
 
 type KeyboardAvoidingViewProps = Omit<NativeKeyboardAvoidingViewProps, "behavior"> & {
   automaticOffset?: boolean;

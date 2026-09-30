@@ -335,21 +335,13 @@ function VoiceConversationSession({
         <SafeAreaView testID="voice-conversation-screen" pointerEvents="box-none" style={{ flex: 1 }}>
           <View testID="voice-conversation-content" pointerEvents="box-none"
             style={{ flex: 1, justifyContent: "flex-end" }}>
-            {!historyExpanded ? (
-              <Pressable testID="voice-orchestrator-floating" accessibilityRole="button"
-                accessibilityLabel={`${orchestrator.name}・履歴を開く`}
-                onPress={() => setHistoryExpanded(true)} onLongPress={() => void openManager()}
-                onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}
-                style={{ position: "absolute", top: 8, left: 20, zIndex: 3 }}>
-                <VoiceOrchestratorIcon orchestrator={orchestrator} size={30} active />
-              </Pressable>
-            ) : null}
             {historyExpanded ? (
               <Reanimated.View testID="voice-conversation-history"
                 entering={reduceMotion ? undefined : historyFadeIn}
                 exiting={reduceMotion ? undefined : historyFadeOut}
                 style={{ flex: 1, width: "100%" }}>
-                <View style={{ paddingHorizontal: 20, paddingTop: 12, flexDirection: "row", alignItems: "center" }}>
+                <View style={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8,
+                  flexDirection: "row", alignItems: "center", gap: 12 }}>
                   <Pressable testID="voice-orchestrator-strip" style={{ flex: 1 }}
                     onLongPress={() => void openManager()}
                     onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}>
@@ -358,8 +350,9 @@ function VoiceConversationSession({
                       {orchestrators.map((item) => (
                         <Pressable key={item.id} testID={`voice-orchestrator-${item.id}`}
                           accessibilityRole="button" accessibilityLabel={`${item.name}に切り替え`}
+                          style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}
                           onPress={() => void switchTo(item.id)} onLongPress={() => void openManager()}>
-                          <VoiceOrchestratorIcon orchestrator={item} active={item.id === orchestrator.id} />
+                          <VoiceOrchestratorIcon orchestrator={item} size={34} active={item.id === orchestrator.id} />
                         </Pressable>
                       ))}
                     </ScrollView>
@@ -460,6 +453,17 @@ function VoiceConversationSession({
                     voiceContextStats={voice.contextStats}
                     historyExpanded={historyExpanded}
                     onHistoryToggle={() => setHistoryExpanded((expanded) => !expanded)}
+                    leadingAccessory={!historyExpanded ? (
+                      <Pressable testID="voice-orchestrator-floating" accessibilityRole="button"
+                        accessibilityLabel={`${orchestrator.name}・履歴を開く`}
+                        onPress={() => setHistoryExpanded(true)} onLongPress={() => void openManager()}
+                        onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}
+                        style={{ width: 44, height: 44 }}>
+                        <View style={{ position: "absolute", top: -8, left: -8 }}>
+                          <VoiceOrchestratorIcon orchestrator={orchestrator} size={30} active />
+                        </View>
+                      </Pressable>
+                    ) : undefined}
                   />
                 </View>
               </GestureDetector>

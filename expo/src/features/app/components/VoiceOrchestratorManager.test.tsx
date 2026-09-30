@@ -42,6 +42,9 @@ jest.mock("../utils/voiceOrchestratorIconPicker", () => ({
   supportsVoiceOrchestratorIconPicking: true,
   pickVoiceOrchestratorIcon: () => mockPickIcon(),
 }));
+jest.mock("../keyboardController", () => ({
+  KeyboardAwareScrollView: require("react-native").ScrollView,
+}));
 jest.mock("./SettingsSelect", () => ({
   SettingsSelect: ({ label, onSelect, options }: { label: string; onSelect: (value: string) => void;
     options: { value: string }[] }) => {

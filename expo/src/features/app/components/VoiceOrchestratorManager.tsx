@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Modal, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
+import { KeyboardAwareScrollView } from "../keyboardController";
 import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
@@ -144,8 +145,8 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
-      <View style={[styles.settingsScreen, { flex: 1 }]}>
-        <ScrollView contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
+      <SafeAreaView style={styles.settingsScreen}>
+        <KeyboardAwareScrollView contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
             style={styles.settingsBackButton} onPress={() => detailId === null ? onClose() : setDetailId(null)}>
             <Text style={styles.settingsBackButtonText}>‹ {detailId === null ? "音声会話" : "オーケストレータ"}</Text>
@@ -236,8 +237,8 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
             </View>
           ) : null}
           {error ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
-        </ScrollView>
-      </View>
+        </KeyboardAwareScrollView>
+      </SafeAreaView>
     </Modal>
   );
 }
