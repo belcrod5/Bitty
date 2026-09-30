@@ -374,7 +374,7 @@ test("recovers accumulated streaming text from voice status after reconnect", as
 });
 
 test("restores the latest completed reply without automatic playback", async () => {
-  mockManager.request.mockResolvedValue({
+  mockManager.request.mockImplementation(async () => ({
     channel: "agent", op: "voice.open.result",
     payload: {
       logicalConversationId: conversationId,
@@ -382,11 +382,17 @@ test("restores the latest completed reply without automatic playback", async () 
       clientOperationId: operationId,
       status: "completed",
       text: "保存済みの返答",
+      outputTokens: mockSnapshot.generation === 1 ? 24 : 25,
     },
-  });
+  }));
   const onCompleted = jest.fn();
-  const { result } = await renderHook(() => useVoiceConversation(onCompleted));
+  const { result, rerender } = await renderHook(() => useVoiceConversation(onCompleted));
   await waitFor(() => expect(result.current.reply?.text).toBe("保存済みの返答"));
+  expect(result.current.reply?.outputTokens).toBe(24);
+  mockSnapshot = { connected: true, generation: 2 };
+  await rerender(undefined);
+  await waitFor(() => expect(result.current.reply?.outputTokens).toBe(25));
+  expect(mockManager.request.mock.calls.filter(([message]) => message.op === "voice.open")).toHaveLength(2);
   expect(onCompleted).not.toHaveBeenCalled();
 });
 

@@ -15,7 +15,9 @@ const mockVoice = {
   ready: true,
   logicalConversationId: "conversation-one",
   turnStatus: "completed",
-  reply: { text: "表示しない返答本文", operationId: "operation-1" },
+  reply: { text: "表示しない返答本文", operationId: "operation-1" } as {
+    text: string; operationId: string; outputTokens?: number;
+  },
   error: "",
   contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
   history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string }[],
@@ -184,6 +186,7 @@ afterEach(() => {
 
 test("the footer reveals stored messages and closes the history panel", async () => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: "ios" });
+  mockVoice.reply = { text: "表示しない返答本文", operationId: "operation-1", outputTokens: 24 };
   mockVoice.history = [
     { role: "user", text: "最初の質問", clientOperationId: "one", at: "2026-09-27T12:34:00" },
     { role: "assistant", text: "最初の返答", clientOperationId: "one", at: "2026-09-27T12:35:00" },
@@ -238,8 +241,10 @@ test("the footer reveals stored messages and closes the history panel", async ()
     position: "absolute", right: 20, bottom: 12, zIndex: 1,
   });
   expect(screen.getByTestId("codex-status-summary-menu")).toBeTruthy();
+  expect(screen.getByText("total 24 tok")).toBeTruthy();
   expect(screen.getByText("09/27 12:34")).toBeTruthy();
   expect(screen.getByText("09/27 12:35")).toBeTruthy();
+  expect(screen.queryByText(/-- tok/)).toBeNull();
   const colors = VISUAL_THEMES[DEFAULT_VISUAL_THEME_ID].colors;
   expect(StyleSheet.flatten(screen.getByText("最初の質問").parent?.props.style).backgroundColor).toBe(colors.accent);
   expect(StyleSheet.flatten(screen.getByText("最初の返答").parent?.props.style).backgroundColor).toBe(colors.surfaceMuted);

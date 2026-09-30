@@ -379,6 +379,9 @@ export function createCodexBackend({
     ? listModels
     : () => listCodexModelsFromAppServer(createClient, clientName);
   const activeRuns = new Map();
+  // Remember the last observed cumulative total to ignore stale usage snapshots
+  // when a later turn starts on the same thread.
+  const knownThreadOutputTokens = new Map();
   // app-serverがturn実行中のclient接続へbroadcastするthread/status/changedから、
   // 「native activeなthread」を追跡する。runner自身が起動したturn以外(spawnされた
   // subagent thread等)のactive/idleはここでしか観測できず、session一覧の
@@ -422,7 +425,15 @@ export function createCodexBackend({
       commandByToolCallId: new Map(),
       bufferedNotifications: [],
       turnStartRequested: false,
+      outputTokens: 0,
+      outputTokenBaseline: undefined,
+      hasMeasuredOutputTokens: false,
+      hasCurrentTurnItem: false,
     };
+    const resumesExistingThread = Boolean(state.threadId);
+    const priorThreadOutputTokens = state.threadId
+      ? knownThreadOutputTokens.get(state.threadId)
+      : undefined;
     activeRuns.set(runId, state);
     const emitItemStarted = (itemId, itemType = "assistant") => {
       if (!itemId || state.itemIds.has(itemId)) return;
@@ -445,6 +456,42 @@ export function createCodexBackend({
         return;
       }
       if (!codexTurnEventMatches(params, { threadId: state.threadId, turnId: state.turnId })) return;
+      if (method.startsWith("item/")) state.hasCurrentTurnItem = true;
+      if (method === "thread/tokenUsage/updated") {
+        const tokenUsage = params?.tokenUsage;
+        const totalOutput = tokenUsage?.total?.outputTokens;
+        let measuredOutput;
+        if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
+          if (state.outputTokenBaseline === undefined && state.hasCurrentTurnItem &&
+            (priorThreadOutputTokens === undefined || totalOutput > priorThreadOutputTokens)) {
+            const lastOutput = tokenUsage?.last?.outputTokens;
+            if (Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
+              state.outputTokenBaseline = totalOutput - lastOutput;
+            }
+          }
+          if (totalOutput > (knownThreadOutputTokens.get(state.threadId) ?? -1)) {
+            knownThreadOutputTokens.set(state.threadId, totalOutput);
+          }
+          if (state.outputTokenBaseline !== undefined && totalOutput >= state.outputTokenBaseline) {
+            const nextOutputTokens = totalOutput - state.outputTokenBaseline;
+            if (!state.hasMeasuredOutputTokens || nextOutputTokens !== state.outputTokens) {
+              state.outputTokens = nextOutputTokens;
+              state.hasMeasuredOutputTokens = true;
+              measuredOutput = nextOutputTokens;
+            }
+          } else {
+            state.outputTokenBaseline = undefined;
+            state.hasMeasuredOutputTokens = false;
+          }
+        }
+        emit("usage.updated", {
+          ...(tokenUsage?.last && typeof tokenUsage.last === "object" ? {
+            usage: { ...tokenUsage.last, contextWindowTokens: tokenUsage.modelContextWindow },
+          } : {}),
+          ...(measuredOutput !== undefined ? { outputTokens: measuredOutput } : {}),
+        });
+        return;
+      }
       if (method === "turn/completed" || method === "turn/interrupted") {
         state.terminalNotification = { method, params };
         return;
@@ -569,6 +616,7 @@ export function createCodexBackend({
         },
       });
       state.threadId = started.threadId;
+      if (!resumesExistingThread) state.outputTokenBaseline = 0;
       state.turnId = started.turnId;
       cleanupStartedTurn = started.cleanup;
       completion?.expect?.({ threadId: state.threadId, turnId: state.turnId });
@@ -591,7 +639,9 @@ export function createCodexBackend({
       // context length表示の更新源。raw経路のturn/completed usage抽出と同じ情報を
       // neutralイベントとしても届ける。
       const turnUsage = codexTurnCompletedUsage(terminal?.params);
-      if (turnUsage) emit("usage.updated", { usage: turnUsage });
+      if (turnUsage) {
+        emit("usage.updated", { usage: turnUsage });
+      }
       if (terminal?.method === "turn/interrupted" || INTERRUPTED_TURN_STATUSES.has(status)) {
         return { outcome: "interrupted" };
       }

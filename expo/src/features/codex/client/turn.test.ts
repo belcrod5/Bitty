@@ -158,6 +158,27 @@ test("manager mode resolves JSON-RPC responses delivered through subscription", 
       },
     },
   });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "other-turn",
+    tokenUsage: { total: { outputTokens: 999 }, last: { outputTokens: 999 } },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "turn-1",
+    tokenUsage: { total: { outputTokens: 100 }, last: { outputTokens: 100 } },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "turn-1",
+    tokenUsage: { total: { outputTokens: 100 }, last: { outputTokens: 100 } },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "turn-1",
+    tokenUsage: { total: { outputTokens: 150 }, last: { outputTokens: 50 } },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId: "thread-1", turnId: "turn-1",
+    tokenUsage: { total: { outputTokens: 180 },
+      last: { inputTokens: 150, outputTokens: 30, totalTokens: 180 }, modelContextWindow: 272000 },
+  });
   manager.emit({
     channel: "llm",
     op: "rpc",
@@ -180,7 +201,98 @@ test("manager mode resolves JSON-RPC responses delivered through subscription", 
     threadId: "thread-1",
     turnId: "turn-1",
     reply: "hello back",
+    outputTokens: 180,
+    contextUsage: expect.objectContaining({ totalTokens: 180, contextWindowTokens: 272000 }),
   });
+});
+
+test("manager mode ignores stale usage and external turns on a resumed thread", async () => {
+  const threadId = "thread-turn-output-baseline";
+  const firstManager = new FakeRunnerWebSocketManager();
+  const first = createTurn(firstManager);
+  firstManager.becomeReady();
+  await flushPromises();
+  respondToLastRequest(firstManager, {});
+  await flushPromises();
+  respondToLastRequest(firstManager, { thread: { id: threadId } }, threadId);
+  await flushPromises();
+  respondToLastRequest(firstManager, { thread: { id: threadId, status: "idle" } }, threadId);
+  await flushPromises();
+  respondToLastRequest(firstManager, { turn: { id: "turn-first" } }, threadId);
+  await flushPromises();
+  const firstOutbound = lastSent(firstManager);
+  emitTurnNotification(firstManager, firstOutbound, "thread/tokenUsage/updated", {
+    threadId, turnId: "turn-first",
+    tokenUsage: { total: { outputTokens: 180 }, last: { outputTokens: 30 } },
+  });
+  emitTurnNotification(firstManager, firstOutbound, "turn/completed", {
+    threadId, turn: { id: "turn-first", status: "completed" },
+  });
+  await expect(first.promise).resolves.toMatchObject({ outputTokens: 180 });
+
+  const secondManager = new FakeRunnerWebSocketManager();
+  const second = createTurn(secondManager, "ws://127.0.0.1:8788/runner-ws", threadId);
+  secondManager.becomeReady();
+  await flushPromises();
+  respondToLastRequest(secondManager, {});
+  await flushPromises();
+  respondToLastRequest(secondManager, { thread: { id: threadId, status: "idle" } }, threadId);
+  await flushPromises();
+  respondToLastRequest(secondManager, { thread: { id: threadId } }, threadId);
+  await flushPromises();
+  respondToLastRequest(secondManager, { turn: { id: "turn-second" } }, threadId);
+  await flushPromises();
+  const secondOutbound = lastSent(secondManager);
+  emitTurnNotification(secondManager, secondOutbound, "item/started", {
+    threadId, turnId: "other-turn", item: { id: "other-item", type: "agentMessage" },
+  });
+  emitTurnNotification(secondManager, secondOutbound, "thread/tokenUsage/updated", {
+    threadId, turnId: "turn-second",
+    tokenUsage: { total: { outputTokens: 380 }, last: { outputTokens: 200 } },
+  });
+  emitTurnNotification(secondManager, secondOutbound, "item/started", {
+    threadId, turnId: "turn-second", item: { id: "item-second", type: "agentMessage" },
+  });
+  for (const [total, last] of [[430, 50], [460, 30]]) {
+    emitTurnNotification(secondManager, secondOutbound, "thread/tokenUsage/updated", {
+      threadId, turnId: "turn-second",
+      tokenUsage: { total: { outputTokens: total }, last: { outputTokens: last } },
+    });
+  }
+  emitTurnNotification(secondManager, secondOutbound, "turn/completed", {
+    threadId, turn: { id: "turn-second", status: "completed" },
+  });
+
+  await expect(second.promise).resolves.toMatchObject({ outputTokens: 80 });
+});
+
+test("manager mode keeps early item and usage order before turn/start responds", async () => {
+  const threadId = "thread-unknown-output-baseline";
+  const manager = new FakeRunnerWebSocketManager();
+  const session = createTurn(manager, "ws://127.0.0.1:8788/runner-ws", threadId);
+  manager.becomeReady();
+  await flushPromises();
+  respondToLastRequest(manager, {});
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: threadId, status: "idle" } }, threadId);
+  await flushPromises();
+  respondToLastRequest(manager, { thread: { id: threadId } }, threadId);
+  await flushPromises();
+  const outbound = lastSent(manager);
+  emitTurnNotification(manager, outbound, "item/started", {
+    threadId, turnId: "turn-unknown", item: { id: "item-unknown", type: "agentMessage" },
+  });
+  emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
+    threadId, turnId: "turn-unknown",
+    tokenUsage: { total: { outputTokens: 380 }, last: { outputTokens: 200 } },
+  });
+  respondToLastRequest(manager, { turn: { id: "turn-unknown" } }, threadId);
+  await flushPromises();
+  emitTurnNotification(manager, outbound, "turn/completed", {
+    threadId, turn: { id: "turn-unknown", status: "completed" },
+  });
+
+  await expect(session.promise).resolves.toMatchObject({ outputTokens: 200 });
 });
 
 test("manager mode delivers idless turn notifications with runner-ws metadata to callbacks and result", async () => {

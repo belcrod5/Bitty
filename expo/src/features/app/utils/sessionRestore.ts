@@ -22,6 +22,7 @@ type BuildConversationMessageLike = (
   content: string,
   opts?: {
     at?: string;
+    outputTokens?: number;
     commandExecution?: CodexCommandExecutionInfo;
   }
 ) => ConversationMessage;
@@ -142,7 +143,13 @@ function toRestoredSessionMessages(restored: RunnerSessionMessagesResult): LlmSe
       const content = String(item.content || "").trim();
       const at = String(item.at || "").trim();
       if (!role || (!content && !item.commandExecution)) return null;
-      return { role, content, at, ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}) };
+      return {
+        role,
+        content,
+        at,
+        ...(item.outputTokens !== undefined ? { outputTokens: item.outputTokens } : {}),
+        ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}),
+      };
     })
     .filter((item): item is LlmSessionMessage => !!item);
 }
@@ -170,6 +177,7 @@ export function buildRestoredSessionState({
     return [{
       ...buildConversationMessage(role, content, {
         at: String(item.at || "").trim(),
+        ...(item.outputTokens !== undefined ? { outputTokens: item.outputTokens } : {}),
         ...(item.commandExecution ? { commandExecution: item.commandExecution } : {}),
       }),
       id,

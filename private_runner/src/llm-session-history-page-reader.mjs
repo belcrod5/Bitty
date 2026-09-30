@@ -11,6 +11,61 @@ const MESSAGE_PAIR_LOOKAROUND_RECORDS = 32;
 // extend beyond the message-pair window — but never past this safety cap.
 const DELTA_OUTCOME_LOOKBEHIND_MAX_RECORDS = 2048;
 
+function parseOutputUsageRecord(parsed, start, lineEnd) {
+  if (String(parsed?.type || "") !== "event_msg" || String(parsed?.payload?.type || "") !== "token_count") {
+    return null;
+  }
+  const info = parsed?.payload?.info;
+  if (!info || typeof info !== "object") return null;
+  const totalOutput = info?.total_token_usage?.output_tokens;
+  const lastOutput = info?.last_token_usage?.output_tokens;
+  const normalizedTotal = Number.isSafeInteger(totalOutput) && totalOutput >= 0 ? totalOutput : undefined;
+  const normalizedLast = Number.isSafeInteger(lastOutput) && lastOutput >= 0 ? lastOutput : undefined;
+  if (normalizedTotal === undefined && normalizedLast === undefined) return null;
+  return { start, lineEnd, totalOutput: normalizedTotal, lastOutput: normalizedLast };
+}
+
+function attachTurnOutputTokens(rows, usageRecords, fileSize) {
+  const ascending = [...rows].sort((left, right) => left.start - right.start);
+  const users = ascending.filter((item) => item.row.role === "user");
+  for (let index = 0; index < users.length; index += 1) {
+    const start = users[index].start;
+    const end = users[index + 1]?.start ?? fileSize;
+    const assistant = ascending
+      .filter((item) => item.start > start && item.start < end)
+      .filter((item) => item.row.role === "assistant" && !item.row.kind && !item.row.commandExecution)
+      .at(-1);
+    if (!assistant) continue;
+    const turnUsage = usageRecords
+      .filter((item) => item.start > start && item.start < end)
+      .sort((left, right) => left.start - right.start);
+    let outputTokens = 0;
+    let previousTotal;
+    let measured = false;
+    let usageEnd = 0;
+    for (const usage of turnUsage) {
+      let delta;
+      if (usage.totalOutput !== undefined) {
+        if (previousTotal !== undefined && usage.totalOutput >= previousTotal) {
+          delta = usage.totalOutput - previousTotal;
+        } else {
+          delta = usage.lastOutput;
+        }
+        previousTotal = usage.totalOutput;
+      } else {
+        delta = usage.lastOutput;
+      }
+      if (!Number.isSafeInteger(delta) || delta < 0 || !Number.isSafeInteger(outputTokens + delta)) continue;
+      outputTokens += delta;
+      measured = true;
+      usageEnd = Math.max(usageEnd, usage.lineEnd);
+    }
+    if (!measured) continue;
+    assistant.row.outputTokens = outputTokens;
+    assistant.latestRecordEnd = Math.max(assistant.latestRecordEnd || 0, usageEnd);
+  }
+}
+
 export function createLlmSessionHistoryPageReader(deps) {
   const {
     makeApiError,
@@ -371,6 +426,7 @@ export function createLlmSessionHistoryPageReader(deps) {
       const header = await readSessionHeaderContext(filePath, stat);
       const outcomesByCallId = new Map();
       const candidates = [];
+      const outputUsageRecords = [];
       let parsedLineCount = 0;
       let oversizedLineCount = 0;
       let oversizedMessageCount = 0;
@@ -385,6 +441,8 @@ export function createLlmSessionHistoryPageReader(deps) {
       // seen yet: the lookbehind keeps scanning until each call is found (or the
       // safety cap is hit), so the repaired row can be re-sent to the client.
       const pendingOutcomeCallIds = new Set();
+      let pendingUsageBoundary = false;
+      let usageLookbehindLineCount = 0;
       const trackDeltaOutcome = (callId, start) => {
         if (deltaMode && callId && start >= sinceOffset) pendingOutcomeCallIds.add(callId);
       };
@@ -394,10 +452,12 @@ export function createLlmSessionHistoryPageReader(deps) {
         ? (
           lookbehindLineCount >= MESSAGE_PAIR_LOOKAROUND_RECORDS
           && (pendingOutcomeCallIds.size === 0 || lookbehindLineCount >= DELTA_OUTCOME_LOOKBEHIND_MAX_RECORDS)
+          && (!pendingUsageBoundary || lookbehindLineCount >= DELTA_OUTCOME_LOOKBEHIND_MAX_RECORDS)
         )
-        : hasConfirmedPage());
+        : hasConfirmedPage() && (!pendingUsageBoundary || usageLookbehindLineCount >= DELTA_OUTCOME_LOOKBEHIND_MAX_RECORDS));
       const scan = await scanLinesBackward(handle, endOffset, (line, start) => {
         scannedLineCount += 1;
+        if (pendingUsageBoundary) usageLookbehindLineCount += 1;
         const lineEnd = nextNewerLineStart;
         nextNewerLineStart = start;
         if (deltaMode && start < sinceOffset) lookbehindLineCount += 1;
@@ -427,6 +487,14 @@ export function createLlmSessionHistoryPageReader(deps) {
           return shouldStopScan();
         }
         parsedLineCount += 1;
+        const outputUsage = parseOutputUsageRecord(parsed, start, lineEnd);
+        if (outputUsage) {
+          outputUsageRecords.push(outputUsage);
+          if ((!deltaMode || start >= sinceOffset) && !pendingUsageBoundary) {
+            pendingUsageBoundary = true;
+            usageLookbehindLineCount = 0;
+          }
+        }
         trackDeltaOutcome(recordCommandOutcome(parsed, outcomesByCallId, lineEnd), start);
         let row = parseCommandCall(parsed, outcomesByCallId);
         let kind = row ? "command" : "message";
@@ -453,6 +521,7 @@ export function createLlmSessionHistoryPageReader(deps) {
           ? Math.max(0, Number(outcomesByCallId.get(String(row.itemId || ""))?.end || 0))
           : 0;
         if (kind === "command") pendingOutcomeCallIds.delete(String(row.itemId || ""));
+        if (row.role === "user") pendingUsageBoundary = false;
         candidates.push({
           row,
           start,
@@ -466,6 +535,7 @@ export function createLlmSessionHistoryPageReader(deps) {
         return shouldStopScan();
       });
       const availableRows = resolveMessageCandidates(candidates, scannedLineCount, scan.reachedStart);
+      attachTurnOutputTokens(availableRows, outputUsageRecords, fileSize);
       for (const item of availableRows) {
         if (
           header.isSubagent

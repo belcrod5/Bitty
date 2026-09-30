@@ -157,7 +157,7 @@ describe("fetchRunnerSessionMessages", () => {
     mockReadAgentHistory.mockResolvedValue({
       sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
       canonicalCwd: "/native/workspace",
-      items: [{ id: "item-1", role: "assistant", content: [{ type: "text", text: "saved" }] }],
+      items: [{ id: "item-1", role: "assistant", content: [{ type: "text", text: "saved" }], outputTokens: 8 }],
     });
     const { result } = await renderExplorerHook({
       runnerWebSocketManager: {} as never,
@@ -175,6 +175,7 @@ describe("fetchRunnerSessionMessages", () => {
       backendId: "codex",
       cwd: "/native/workspace",
       modelRef: "",
+      messages: [{ outputTokens: 8 }],
     });
   });
 

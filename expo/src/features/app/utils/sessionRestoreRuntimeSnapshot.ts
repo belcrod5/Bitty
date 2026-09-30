@@ -90,6 +90,7 @@ export function buildRestoredPanelConversation(params: {
       at: at || undefined,
       ...(message.kind ? { kind: message.kind } : {}),
       inheritedFromParent: message.inheritedFromParent === true || undefined,
+      outputTokens: message.outputTokens,
       commandExecution: message.commandExecution || undefined,
     } satisfies ConversationMessage;
   });

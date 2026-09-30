@@ -10,6 +10,7 @@ import {
   isThreadNotLoadedError,
   deriveCodexSessionStateFromSnapshot,
   normalizeAppServerApprovalRequest,
+  normalizeContextUsageSnapshot,
   normalizeCodexWsInputs,
   parseCodexApprovalPolicy,
   parseJsonRpcMessage,
@@ -67,6 +68,9 @@ import { startCodexAppServerTurnRelayObserver as startCodexAppServerRawTurnRelay
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
 const PRE_TURN_RPC_TIMEOUT_MS = 15000;
 const MANAGER_RECONNECT_WAIT_TIMEOUT_MS = 120_000;
+// Remember the last observed cumulative total to ignore stale usage snapshots
+// when a later turn starts on the same thread.
+const knownThreadOutputTokens = new Map<string, number>();
 
 type RunnerRelayReconnectTrigger =
   | "ws_close"
@@ -141,6 +145,14 @@ function startCodexAppServerRawTurn(
   let deltaBuffer = "";
   let completedAgentMessage = "";
   let latestContextUsage: CodexContextUsage | null = null;
+  let outputTokens = 0;
+  let hasMeasuredOutputTokens = false;
+  let hasCurrentTurnItem = false;
+  let turnOutputTokenBaseline: number | undefined;
+  let priorThreadOutputTokens = requestedThreadId
+    ? knownThreadOutputTokens.get(requestedThreadId)
+    : undefined;
+  const pendingTokenEvents: Array<{ method: string; params: unknown }> = [];
   let lastErrorMessage = "";
   let finalized = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -646,6 +658,44 @@ function startCodexAppServerRawTurn(
     }, () => !interruptRequested);
   }
 
+  function applyTokenUsageUpdate(paramsRaw: unknown) {
+    const update = paramsRaw as Record<string, any>;
+    if (update.threadId !== activeThreadId || update.turnId !== activeTurnId) return;
+    const tokenUsage = update.tokenUsage;
+    const totalOutput = tokenUsage?.total?.outputTokens;
+    if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
+      if (turnOutputTokenBaseline === undefined && hasCurrentTurnItem &&
+        (priorThreadOutputTokens === undefined || totalOutput > priorThreadOutputTokens)) {
+        const lastOutput = tokenUsage?.last?.outputTokens;
+        if (Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
+          turnOutputTokenBaseline = totalOutput - lastOutput;
+        }
+      }
+      if (totalOutput > (knownThreadOutputTokens.get(activeThreadId) ?? -1)) {
+        knownThreadOutputTokens.set(activeThreadId, totalOutput);
+      }
+      if (turnOutputTokenBaseline !== undefined && totalOutput >= turnOutputTokenBaseline) {
+        outputTokens = totalOutput - turnOutputTokenBaseline;
+        hasMeasuredOutputTokens = true;
+      } else {
+        turnOutputTokenBaseline = undefined;
+        hasMeasuredOutputTokens = false;
+      }
+    }
+    const context = normalizeContextUsageSnapshot({
+      ...tokenUsage?.last,
+      contextWindowTokens: tokenUsage?.modelContextWindow,
+    }, options.model);
+    if (context) latestContextUsage = context;
+  }
+
+  function observeTokenEvent(method: string, paramsRaw: unknown) {
+    const params = paramsRaw as Record<string, unknown>;
+    if (method.startsWith("item/") && params.threadId === activeThreadId
+      && params.turnId === activeTurnId) hasCurrentTurnItem = true;
+    if (method === "thread/tokenUsage/updated") applyTokenUsageUpdate(params);
+  }
+
   function handleNotification(methodRaw: unknown, paramsRaw: unknown) {
     const method = String(methodRaw || "");
     const params = paramsRaw || {};
@@ -655,6 +705,11 @@ function startCodexAppServerRawTurn(
       readyState: getTransportReadyState(),
     });
     emitEvent(method, params);
+    if (method.startsWith("item/") || method === "thread/tokenUsage/updated") {
+      if (!activeTurnId) pendingTokenEvents.push({ method, params });
+      else observeTokenEvent(method, params);
+      if (method === "thread/tokenUsage/updated") return;
+    }
     if (method === "serverRequest/resolved") {
       const resolvedApproval = takeResolvedApprovalRequest(pendingApprovalRequests, params);
       if (resolvedApproval) {
@@ -1031,6 +1086,8 @@ function startCodexAppServerRawTurn(
             excludeTurns: true,
           }, PRE_TURN_RPC_TIMEOUT_MS);
           activeThreadId = String(resumed?.thread?.id || activeThreadId || "").trim();
+          priorThreadOutputTokens = knownThreadOutputTokens.get(activeThreadId);
+          turnOutputTokenBaseline = undefined;
           emitLog({
             stage: "thread_resume_before_turn",
             method: "thread/resume",
@@ -1078,6 +1135,7 @@ function startCodexAppServerRawTurn(
           throw new Error("thread/start failed");
         }
         activeThreadId = String(started?.thread?.id || "").trim();
+        turnOutputTokenBaseline = 0;
         notifyThreadIdResolved(activeThreadId);
         if (activeThreadId) {
           try {
@@ -1119,6 +1177,9 @@ function startCodexAppServerRawTurn(
         "turn/start", turnStartParams, PRE_TURN_RPC_TIMEOUT_MS
       );
       activeTurnId = String(turnStarted?.turn?.id || "").trim();
+      for (const event of pendingTokenEvents.splice(0)) {
+        observeTokenEvent(event.method, event.params);
+      }
 
       if (interruptRequested) {
         sendTurnInterruptIfPossible();
@@ -1219,7 +1280,8 @@ function startCodexAppServerRawTurn(
         entry.active = false;
       }
       pendingApprovalRequests.clear();
-      latestContextUsage = extractContextUsageFromTurnCompletedParams(message.params, options.model);
+      const completedUsage = extractContextUsageFromTurnCompletedParams(message.params, options.model);
+      latestContextUsage = latestContextUsage || completedUsage;
       const threadId = String((message.params as any)?.threadId || activeThreadId || "").trim();
       const turnId = String((message.params as any)?.turn?.id || activeTurnId || "").trim();
       const turnStatus = String((message.params as any)?.turn?.status || "").trim().toLowerCase();
@@ -1241,6 +1303,7 @@ function startCodexAppServerRawTurn(
         turnId,
         reply,
         contextUsage: latestContextUsage,
+        ...(hasMeasuredOutputTokens ? { outputTokens } : {}),
       });
     };
 

@@ -29,6 +29,8 @@ export type ConversationMessage = {
   role: "user" | "assistant";
   content: string;
   at?: string;
+  // Measured output usage for the completed assistant turn.
+  outputTokens?: number;
   kind?: "internal_context" | "unclassified_context" | "sidechain";
   inheritedFromParent?: boolean;
   youtubeVideoIds?: string[];
@@ -184,6 +186,7 @@ export type LlmSessionMessage = {
   role: LlmSessionMessageRole;
   content: string;
   at: string;
+  outputTokens?: number;
   commandExecution?: CodexCommandExecutionInfo;
 };
 

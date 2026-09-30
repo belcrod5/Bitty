@@ -120,11 +120,11 @@ export function MarkdownText(props: MarkdownTextProps) {
     };
 
     const codeBackgroundColor =
-      tone === "user" ? theme.colors.backdrop : theme.colors.surfaceSubtle;
+      tone === "user" ? theme.colors.userCodeSurface : theme.colors.surfaceSubtle;
     const codeBlockBackgroundColor =
-      tone === "user" ? theme.colors.backdrop : theme.colors.surfaceRaised;
+      tone === "user" ? theme.colors.userCodeBlockSurface : theme.colors.surfaceRaised;
     const codeBlockBorderColor =
-      tone === "user" ? theme.colors.borderStrong : theme.colors.border;
+      tone === "user" ? theme.colors.userCodeBorder : theme.colors.border;
 
     return {
       paragraph: {
@@ -161,11 +161,9 @@ export function MarkdownText(props: MarkdownTextProps) {
         fontWeight: "800",
       },
       strong: {
-        color: baseColor,
         fontWeight: "bold",
       },
       em: {
-        color: baseColor,
         fontStyle: "italic",
       },
       link: {
@@ -181,25 +179,53 @@ export function MarkdownText(props: MarkdownTextProps) {
       },
       codeBlock: {
         ...sharedBlockStyle,
+        color: baseColor,
         fontFamily: MONOSPACE_FONT,
         backgroundColor: codeBlockBackgroundColor,
         borderColor: codeBlockBorderColor,
         borderRadius: 8,
-    borderWidth: theme.borders.thin,
+        borderWidth: theme.borders.thin,
         padding: 8,
       },
       blockquote: {
         ...sharedBlockStyle,
+        color: baseColor,
         borderColor: theme.colors.borderStrong,
-    borderWidth: theme.borders.focus,
+        borderWidth: theme.borders.focus,
+        backgroundColor: codeBackgroundColor,
         gapWidth: 8,
       },
       list: {
         ...sharedBlockStyle,
+        bulletColor: baseColor,
         markerColor: baseColor,
         gapWidth: 6,
         marginLeft: 0,
       },
+      table: {
+        ...sharedBlockStyle,
+        color: baseColor,
+        headerBackgroundColor: codeBlockBackgroundColor,
+        headerTextColor: baseColor,
+        rowEvenBackgroundColor: codeBackgroundColor,
+        rowOddBackgroundColor: codeBlockBackgroundColor,
+        borderColor: codeBlockBorderColor,
+      },
+      taskList: {
+        checkedColor: theme.colors.accentStrong,
+        borderColor: baseColor,
+        checkmarkColor: theme.colors.textOnAccent,
+        checkedTextColor: baseColor,
+      },
+      math: {
+        color: baseColor,
+        backgroundColor: codeBlockBackgroundColor,
+      },
+      inlineMath: { color: baseColor },
+      thematicBreak: { color: theme.colors.borderStrong },
+      strikethrough: { color: baseColor },
+      underline: { color: baseColor },
+      spoiler: { color: theme.colors.textMuted },
     };
   }, [flattenedTextStyle, theme, tone]);
 

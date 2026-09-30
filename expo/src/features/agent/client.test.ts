@@ -311,6 +311,30 @@ test("a direct neutral turn maps tool lifecycle to one raw-compatible command it
   expect(onEvent).toHaveBeenNthCalledWith(3, "turn/completed", {});
 });
 
+test("neutral turn keeps cumulative output separate from latest context usage", async () => {
+  const turn = await createLiveTurn({ onApprovalRequest: async () => "decline" });
+  turn.emit("usage.updated", {
+    usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, contextWindowTokens: 272000 },
+    outputTokens: 10,
+  });
+  turn.emit("usage.updated", {
+    usage: { inputTokens: 150, outputTokens: 14, totalTokens: 164, contextWindowTokens: 272000 },
+    outputTokens: 24,
+  });
+  turn.emit("turn.completed");
+  await expect(turn.session.promise).resolves.toMatchObject({
+    outputTokens: 24,
+    contextUsage: expect.objectContaining({ totalTokens: 164, contextWindowTokens: 272000 }),
+  });
+});
+
+test("neutral turn preserves a measured zero output", async () => {
+  const turn = await createLiveTurn({ onApprovalRequest: async () => "decline" });
+  turn.emit("usage.updated", { outputTokens: 0 });
+  turn.emit("turn.completed");
+  await expect(turn.session.promise).resolves.toMatchObject({ outputTokens: 0 });
+});
+
 test.each([
   { action: "approve_for_session" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow_for_session" },
   { action: "approve_for_session" as const, decisions: ["allow", "deny"], expected: "allow" },

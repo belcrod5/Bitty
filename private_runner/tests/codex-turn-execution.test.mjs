@@ -541,6 +541,122 @@ test("Codex Backend emits turn usage with its context window for the context len
   });
 });
 
+test("Codex Backend derives turn output from cumulative usage without double-counting repeats", async () => {
+  const client = fakeClient([
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 100 }, last: { inputTokens: 100, outputTokens: 100, totalTokens: 200 },
+      modelContextWindow: 272000,
+    } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 100 }, last: { inputTokens: 100, outputTokens: 100, totalTokens: 200 },
+      modelContextWindow: 272000,
+    } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 150 }, last: { inputTokens: 150, outputTokens: 50, totalTokens: 200 },
+      modelContextWindow: 272000,
+    } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 180 }, last: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+      modelContextWindow: 272000,
+    } } },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  client.close = () => {};
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const events = [];
+  await backend.startTurn({
+    runId: "run-native-usage", cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request", signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+  const updates = events.filter((event) => event.type === "usage.updated" && event.payload.outputTokens)
+    .map((event) => event.payload);
+  assert.deepEqual(updates, [
+    { usage: { inputTokens: 100, outputTokens: 100, totalTokens: 200, contextWindowTokens: 272000 }, outputTokens: 100 },
+    { usage: { inputTokens: 150, outputTokens: 50, totalTokens: 200, contextWindowTokens: 272000 }, outputTokens: 150 },
+    { usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150, contextWindowTokens: 272000 }, outputTokens: 180 },
+  ]);
+});
+
+test("Codex Backend ignores stale usage and external turns on a resumed thread", async () => {
+  const firstClient = fakeClient([
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 180 }, last: { outputTokens: 30 },
+    } } },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  const secondClient = fakeClient([
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 380 }, last: { outputTokens: 200 },
+    } } },
+    { method: "item/started", params: { item: { id: "item-second", type: "agentMessage" } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 430 }, last: { outputTokens: 50 },
+    } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 460 }, last: { outputTokens: 30 },
+    } } },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  const clients = [firstClient, secondClient];
+  const backend = createCodexBackend({
+    createClient: () => clients.shift(),
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const start = (runId, sessionRef, events) => backend.startTurn({
+    runId, sessionRef, cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request", signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+
+  await start("run-first-usage", undefined, []);
+  const secondEvents = [];
+  await start("run-second-usage", { nativeSessionId: "thread-new" }, secondEvents);
+
+  assert.deepEqual(secondEvents
+    .filter((event) => event.type === "usage.updated" && event.payload.outputTokens !== undefined)
+    .map((event) => event.payload.outputTokens), [50, 80]);
+});
+
+test("Codex Backend derives a resumed turn baseline from its first measured response", async () => {
+  const client = fakeClient([
+    { method: "item/started", params: { item: { id: "item-unknown", type: "agentMessage" } } },
+    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
+      total: { outputTokens: 380 }, last: { outputTokens: 200 },
+    } } },
+    { method: "turn/completed", params: { turn: { status: "completed" } } },
+  ]);
+  const backend = createCodexBackend({
+    createClient: () => client,
+    resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }),
+    readHistory: async () => ({ items: [] }),
+  });
+  const events = [];
+  await backend.startTurn({
+    runId: "run-unknown-baseline", sessionRef: { nativeSessionId: "thread-existing" }, cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "run checks" }] },
+    policyProfileId: "codex-on-request", signal: new AbortController().signal,
+    resolveSession: async () => {},
+    emit: (type, payload) => events.push({ type, payload }),
+  });
+
+  assert.deepEqual(events
+    .filter((event) => event.type === "usage.updated" && event.payload.outputTokens !== undefined)
+    .map((event) => event.payload.outputTokens), [200]);
+});
+
 test("Codex Backend compacts through the existing App Server methods", async () => {
   const client = fakeClient([]);
   client.close = () => {};

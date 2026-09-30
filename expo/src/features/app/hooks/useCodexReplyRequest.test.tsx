@@ -22,6 +22,7 @@ type StoredMessage = {
   content: string;
   llmStatus?: string;
   llmStatusDetail?: string;
+  outputTokens?: number;
   youtubeVideoIds?: string[];
 };
 
@@ -270,6 +271,43 @@ beforeEach(() => {
 });
 
 describe("useCodexReplyRequest onAgentMessageCompleted", () => {
+  test("keeps measured output usage on the completed assistant message", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done",
+        contextUsage: { inputTokens: 2000, outputTokens: 14, totalTokens: 2014 }, outputTokens: 24 });
+      await sendPromise;
+    });
+    const messages = harness.store["panel-1"];
+    expect(messages.find((message) => message.role === "user")).not.toHaveProperty("outputTokens");
+    expect(messages.find((message) => message.role === "assistant" && message.content === "done"))
+      .toMatchObject({ outputTokens: 24 });
+  });
+
+  test("keeps a measured zero distinct from missing usage", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", outputTokens: 0 });
+      await sendPromise;
+    });
+    expect(harness.store["panel-1"].find((message) => message.role === "assistant" && message.content === "done"))
+      .toMatchObject({ outputTokens: 0 });
+  });
+
+  test("does not mistake context percentage for measured output usage", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done",
+        contextUsage: { usedPct: 42, outputTokens: 24 } });
+      await sendPromise;
+    });
+    expect(harness.store["panel-1"].find((message) => message.role === "assistant" && message.content === "done"))
+      .not.toHaveProperty("outputTokens");
+  });
+
   test("keeps the request Backend on the foreground completion", async () => {
     const harness = createHarness();
     const onLlmMessageCompleted = jest.fn();
@@ -535,6 +573,27 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     expect(secondMessage?.llmStatus).toBe("completed");
     const lastWrite = harness.writeCalls[harness.writeCalls.length - 1];
     expect(lastWrite.options).toMatchObject({ isResponding: false });
+  });
+
+  test("puts measured turn usage only on the last assistant message", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+
+    await act(async () => {
+      harness.getTurnOptions().onAgentMessageCompleted("first", { itemId: "item-1" });
+      harness.getTurnOptions().onAgentMessageCompleted("last", { itemId: "item-2" });
+      harness.resolveTurn({
+        threadId: "thread-1",
+        turnId: "turn-1",
+        reply: "first\n\nlast",
+        contextUsage: null,
+        outputTokens: 24,
+      });
+      await sendPromise;
+    });
+
+    expect(harness.assistantMessageByItemId("panel-1", "item-1")?.outputTokens).toBeUndefined();
+    expect(harness.assistantMessageByItemId("panel-1", "item-2")).toMatchObject({ outputTokens: 24 });
   });
 });
 

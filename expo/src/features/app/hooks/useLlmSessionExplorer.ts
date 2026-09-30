@@ -92,6 +92,7 @@ export type RunnerSessionMessage = {
   // sinceCursor差分応答のみ: ペア確定で行IDが変わったとき、置換すべき旧行のitemId。
   replacesItemId?: string;
   inheritedFromParent?: boolean;
+  outputTokens?: number;
   commandExecution?: CodexCommandExecutionInfo;
 };
 
@@ -556,6 +557,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
               ? { kind: itemType }
               : {}),
             itemId: String(item.id || "") || undefined,
+            outputTokens: typeof item.outputTokens === "number" && Number.isSafeInteger(item.outputTokens)
+              && item.outputTokens >= 0 ? item.outputTokens : undefined,
             ...(tool ? {
               commandExecution: {
                 command: String(tool.inputSummary || tool.name || "tool"),
@@ -678,6 +681,8 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
           itemId: String(item.itemId || "").trim() || undefined,
           replacesItemId: String(item.replacesItemId || "").trim() || undefined,
           inheritedFromParent: item.inheritedFromParent === true || undefined,
+          outputTokens: typeof item.outputTokens === "number" && Number.isSafeInteger(item.outputTokens)
+            && item.outputTokens >= 0 ? item.outputTokens : undefined,
           commandExecution,
         }];
       });

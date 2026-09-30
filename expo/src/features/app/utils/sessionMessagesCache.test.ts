@@ -103,7 +103,7 @@ describe("trimSessionRows", () => {
 
 describe("session cache file serialization", () => {
   const cache = {
-    rows: [row("a", "first"), row("b", "コマンド実行", {
+    rows: [row("a", "first", { outputTokens: 8 }), row("b", "コマンド実行", {
       commandExecution: { command: "ls -la", status: "completed" as const, exitCode: 0 },
     })],
     latestCursor: "cursor-1",
@@ -119,6 +119,7 @@ describe("session cache file serialization", () => {
     expect(parsed?.olderCursor).toBe("older-1");
     expect(parsed?.trimmed).toBe(false);
     expect(parsed?.rows).toHaveLength(2);
+    expect(parsed?.rows[0]?.outputTokens).toBe(8);
     expect(parsed?.rows[1]?.commandExecution).toEqual({ command: "ls -la", status: "completed", exitCode: 0 });
   });
 
@@ -137,7 +138,7 @@ describe("session cache file serialization", () => {
   it("rejects a version mismatch", () => {
     const text = serializeSessionCacheFile("session-1", cache, 1_000);
     const lines = text.split("\n");
-    lines[0] = JSON.stringify({ ...JSON.parse(lines[0]), v: SESSION_MESSAGES_CACHE_VERSION + 1 });
+    lines[0] = JSON.stringify({ ...JSON.parse(lines[0]), v: 2 });
     expect(parseSessionCacheFile(lines.join("\n"), "session-1")).toBeNull();
   });
 
@@ -167,6 +168,7 @@ describe("session cache index", () => {
   });
 
   it("rejects a version mismatch or corrupt payload", () => {
+    expect(parseSessionCacheIndex(JSON.stringify({ version: 2, sessions: {} }))).toBeNull();
     expect(parseSessionCacheIndex(JSON.stringify({ version: 999, sessions: {} }))).toBeNull();
     expect(parseSessionCacheIndex("not json")).toBeNull();
     expect(parseSessionCacheIndex(JSON.stringify([]))).toBeNull();
