@@ -1446,11 +1446,8 @@ export function useCodexReplyRequest<
       });
       const elapsedMs = Math.max(0, Date.now() - replyRequestStartedAt);
       const outputTokens = result.outputTokens;
-      const completedAgentMessageCount = agentMessageOrder.filter((itemId) => (
-        String(agentMessageContentById.get(itemId) || "").trim()
-      )).length;
       const measuredOutput = typeof outputTokens === "number" && Number.isSafeInteger(outputTokens) && outputTokens > 0
-        && completedAgentMessageCount <= 1 ? { outputTokens } : {};
+        ? { outputTokens } : {};
       const settledLiveMessages = settlePanelLiveAgentMessages({
         youtubeVideoIds: youtubeIds,
         llmStatus: "completed",

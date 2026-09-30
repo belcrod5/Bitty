@@ -22,6 +22,7 @@ type StoredMessage = {
   content: string;
   llmStatus?: string;
   llmStatusDetail?: string;
+  outputTokens?: number;
   youtubeVideoIds?: string[];
 };
 
@@ -561,6 +562,27 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
     expect(secondMessage?.llmStatus).toBe("completed");
     const lastWrite = harness.writeCalls[harness.writeCalls.length - 1];
     expect(lastWrite.options).toMatchObject({ isResponding: false });
+  });
+
+  test("puts measured turn usage only on the last assistant message", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+
+    await act(async () => {
+      harness.getTurnOptions().onAgentMessageCompleted("first", { itemId: "item-1" });
+      harness.getTurnOptions().onAgentMessageCompleted("last", { itemId: "item-2" });
+      harness.resolveTurn({
+        threadId: "thread-1",
+        turnId: "turn-1",
+        reply: "first\n\nlast",
+        contextUsage: null,
+        outputTokens: 24,
+      });
+      await sendPromise;
+    });
+
+    expect(harness.assistantMessageByItemId("panel-1", "item-1")?.outputTokens).toBeUndefined();
+    expect(harness.assistantMessageByItemId("panel-1", "item-2")).toMatchObject({ outputTokens: 24 });
   });
 });
 
