@@ -379,8 +379,8 @@ export function createCodexBackend({
     ? listModels
     : () => listCodexModelsFromAppServer(createClient, clientName);
   const activeRuns = new Map();
-  // Codex reports a thread-cumulative total. Snapshot it before each turn so a
-  // repeated `last` response cannot be counted twice.
+  // Remember the last observed cumulative total to ignore stale usage snapshots
+  // when a later turn starts on the same thread.
   const knownThreadOutputTokens = new Map();
   // app-serverがturn実行中のclient接続へbroadcastするthread/status/changedから、
   // 「native activeなthread」を追跡する。runner自身が起動したturn以外(spawnされた
@@ -428,11 +428,12 @@ export function createCodexBackend({
       outputTokens: 0,
       outputTokenBaseline: undefined,
       hasMeasuredOutputTokens: false,
+      hasCurrentTurnItem: false,
     };
     const resumesExistingThread = Boolean(state.threadId);
-    if (resumesExistingThread) {
-      state.outputTokenBaseline = knownThreadOutputTokens.get(state.threadId);
-    }
+    const priorThreadOutputTokens = state.threadId
+      ? knownThreadOutputTokens.get(state.threadId)
+      : undefined;
     activeRuns.set(runId, state);
     const emitItemStarted = (itemId, itemType = "assistant") => {
       if (!itemId || state.itemIds.has(itemId)) return;
@@ -455,18 +456,22 @@ export function createCodexBackend({
         return;
       }
       if (!codexTurnEventMatches(params, { threadId: state.threadId, turnId: state.turnId })) return;
+      if (method.startsWith("item/")) state.hasCurrentTurnItem = true;
       if (method === "thread/tokenUsage/updated") {
         const tokenUsage = params?.tokenUsage;
         const totalOutput = tokenUsage?.total?.outputTokens;
         let measuredOutput;
         if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
-          if (state.outputTokenBaseline === undefined) {
+          if (state.outputTokenBaseline === undefined && state.hasCurrentTurnItem &&
+            (priorThreadOutputTokens === undefined || totalOutput > priorThreadOutputTokens)) {
             const lastOutput = tokenUsage?.last?.outputTokens;
             if (Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
               state.outputTokenBaseline = totalOutput - lastOutput;
             }
           }
-          knownThreadOutputTokens.set(state.threadId, totalOutput);
+          if (totalOutput > (knownThreadOutputTokens.get(state.threadId) ?? -1)) {
+            knownThreadOutputTokens.set(state.threadId, totalOutput);
+          }
           if (state.outputTokenBaseline !== undefined && totalOutput >= state.outputTokenBaseline) {
             const nextOutputTokens = totalOutput - state.outputTokenBaseline;
             if (!state.hasMeasuredOutputTokens || nextOutputTokens !== state.outputTokens) {

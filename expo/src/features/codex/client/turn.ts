@@ -68,8 +68,8 @@ import { startCodexAppServerTurnRelayObserver as startCodexAppServerRawTurnRelay
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
 const PRE_TURN_RPC_TIMEOUT_MS = 15000;
 const MANAGER_RECONNECT_WAIT_TIMEOUT_MS = 120_000;
-// Codex reports a thread-cumulative total. Snapshot it before each turn so a
-// repeated `last` response cannot be counted twice.
+// Remember the last observed cumulative total to ignore stale usage snapshots
+// when a later turn starts on the same thread.
 const knownThreadOutputTokens = new Map<string, number>();
 
 type RunnerRelayReconnectTrigger =
@@ -147,7 +147,9 @@ function startCodexAppServerRawTurn(
   let latestContextUsage: CodexContextUsage | null = null;
   let outputTokens = 0;
   let hasMeasuredOutputTokens = false;
-  let turnOutputTokenBaseline = requestedThreadId
+  let hasCurrentTurnItem = false;
+  let turnOutputTokenBaseline: number | undefined;
+  let priorThreadOutputTokens = requestedThreadId
     ? knownThreadOutputTokens.get(requestedThreadId)
     : undefined;
   const pendingTokenUsageUpdates: unknown[] = [];
@@ -662,13 +664,16 @@ function startCodexAppServerRawTurn(
     const tokenUsage = update.tokenUsage;
     const totalOutput = tokenUsage?.total?.outputTokens;
     if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
-      if (turnOutputTokenBaseline === undefined) {
+      if (turnOutputTokenBaseline === undefined && hasCurrentTurnItem &&
+        (priorThreadOutputTokens === undefined || totalOutput > priorThreadOutputTokens)) {
         const lastOutput = tokenUsage?.last?.outputTokens;
         if (Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
           turnOutputTokenBaseline = totalOutput - lastOutput;
         }
       }
-      knownThreadOutputTokens.set(activeThreadId, totalOutput);
+      if (totalOutput > (knownThreadOutputTokens.get(activeThreadId) ?? -1)) {
+        knownThreadOutputTokens.set(activeThreadId, totalOutput);
+      }
       if (turnOutputTokenBaseline !== undefined && totalOutput >= turnOutputTokenBaseline) {
         outputTokens = totalOutput - turnOutputTokenBaseline;
         hasMeasuredOutputTokens = true;
@@ -693,6 +698,8 @@ function startCodexAppServerRawTurn(
       readyState: getTransportReadyState(),
     });
     emitEvent(method, params);
+    if (method.startsWith("item/") && (params as any).threadId === activeThreadId
+      && (params as any).turnId === activeTurnId) hasCurrentTurnItem = true;
     if (method === "thread/tokenUsage/updated") {
       if (!activeTurnId) {
         pendingTokenUsageUpdates.push(params);
@@ -1077,7 +1084,8 @@ function startCodexAppServerRawTurn(
             excludeTurns: true,
           }, PRE_TURN_RPC_TIMEOUT_MS);
           activeThreadId = String(resumed?.thread?.id || activeThreadId || "").trim();
-          turnOutputTokenBaseline = knownThreadOutputTokens.get(activeThreadId);
+          priorThreadOutputTokens = knownThreadOutputTokens.get(activeThreadId);
+          turnOutputTokenBaseline = undefined;
           emitLog({
             stage: "thread_resume_before_turn",
             method: "thread/resume",

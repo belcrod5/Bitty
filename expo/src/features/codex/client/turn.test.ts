@@ -206,7 +206,7 @@ test("manager mode resolves JSON-RPC responses delivered through subscription", 
   });
 });
 
-test("manager mode subtracts the previous turn total from a resumed thread", async () => {
+test("manager mode ignores stale usage and external turns on a resumed thread", async () => {
   const threadId = "thread-turn-output-baseline";
   const firstManager = new FakeRunnerWebSocketManager();
   const first = createTurn(firstManager);
@@ -243,7 +243,17 @@ test("manager mode subtracts the previous turn total from a resumed thread", asy
   respondToLastRequest(secondManager, { turn: { id: "turn-second" } }, threadId);
   await flushPromises();
   const secondOutbound = lastSent(secondManager);
-  for (const [total, last] of [[180, 30], [380, 200], [430, 50], [460, 30]]) {
+  emitTurnNotification(secondManager, secondOutbound, "item/started", {
+    threadId, turnId: "other-turn", item: { id: "other-item", type: "agentMessage" },
+  });
+  emitTurnNotification(secondManager, secondOutbound, "thread/tokenUsage/updated", {
+    threadId, turnId: "turn-second",
+    tokenUsage: { total: { outputTokens: 380 }, last: { outputTokens: 200 } },
+  });
+  emitTurnNotification(secondManager, secondOutbound, "item/started", {
+    threadId, turnId: "turn-second", item: { id: "item-second", type: "agentMessage" },
+  });
+  for (const [total, last] of [[430, 50], [460, 30]]) {
     emitTurnNotification(secondManager, secondOutbound, "thread/tokenUsage/updated", {
       threadId, turnId: "turn-second",
       tokenUsage: { total: { outputTokens: total }, last: { outputTokens: last } },
@@ -253,7 +263,7 @@ test("manager mode subtracts the previous turn total from a resumed thread", asy
     threadId, turn: { id: "turn-second", status: "completed" },
   });
 
-  await expect(second.promise).resolves.toMatchObject({ outputTokens: 280 });
+  await expect(second.promise).resolves.toMatchObject({ outputTokens: 80 });
 });
 
 test("manager mode derives a resumed turn baseline from its first measured response", async () => {
@@ -271,6 +281,9 @@ test("manager mode derives a resumed turn baseline from its first measured respo
   respondToLastRequest(manager, { turn: { id: "turn-unknown" } }, threadId);
   await flushPromises();
   const outbound = lastSent(manager);
+  emitTurnNotification(manager, outbound, "item/started", {
+    threadId, turnId: "turn-unknown", item: { id: "item-unknown", type: "agentMessage" },
+  });
   emitTurnNotification(manager, outbound, "thread/tokenUsage/updated", {
     threadId, turnId: "turn-unknown",
     tokenUsage: { total: { outputTokens: 380 }, last: { outputTokens: 200 } },

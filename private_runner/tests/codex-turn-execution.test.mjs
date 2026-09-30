@@ -585,7 +585,7 @@ test("Codex Backend derives turn output from cumulative usage without double-cou
   ]);
 });
 
-test("Codex Backend subtracts the previous turn total and ignores a stale last response", async () => {
+test("Codex Backend ignores stale usage and external turns on a resumed thread", async () => {
   const firstClient = fakeClient([
     { method: "thread/tokenUsage/updated", params: { tokenUsage: {
       total: { outputTokens: 180 }, last: { outputTokens: 30 },
@@ -594,11 +594,9 @@ test("Codex Backend subtracts the previous turn total and ignores a stale last r
   ]);
   const secondClient = fakeClient([
     { method: "thread/tokenUsage/updated", params: { tokenUsage: {
-      total: { outputTokens: 180 }, last: { outputTokens: 30 },
-    } } },
-    { method: "thread/tokenUsage/updated", params: { tokenUsage: {
       total: { outputTokens: 380 }, last: { outputTokens: 200 },
     } } },
+    { method: "item/started", params: { item: { id: "item-second", type: "agentMessage" } } },
     { method: "thread/tokenUsage/updated", params: { tokenUsage: {
       total: { outputTokens: 430 }, last: { outputTokens: 50 },
     } } },
@@ -628,11 +626,12 @@ test("Codex Backend subtracts the previous turn total and ignores a stale last r
 
   assert.deepEqual(secondEvents
     .filter((event) => event.type === "usage.updated" && event.payload.outputTokens !== undefined)
-    .map((event) => event.payload.outputTokens), [0, 200, 250, 280]);
+    .map((event) => event.payload.outputTokens), [50, 80]);
 });
 
 test("Codex Backend derives a resumed turn baseline from its first measured response", async () => {
   const client = fakeClient([
+    { method: "item/started", params: { item: { id: "item-unknown", type: "agentMessage" } } },
     { method: "thread/tokenUsage/updated", params: { tokenUsage: {
       total: { outputTokens: 380 }, last: { outputTokens: 200 },
     } } },
