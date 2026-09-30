@@ -244,6 +244,10 @@ export function VoiceConversationScreen({
                     const user = message.role === "user";
                     const textColor = user ? theme.colors.textOnAccent : theme.colors.textPrimary;
                     const time = formatMessageTimestampLabel(message.at);
+                    const tokenLabel = !user && Number.isSafeInteger(message.outputTokens)
+                      && Number(message.outputTokens) >= 0
+                      ? formatOutputTokens(message.outputTokens)
+                      : "";
                     return (
                       <View key={`${message.clientOperationId}-${message.role}-${index}`}
                         style={{ alignSelf: user ? "flex-end" : "flex-start",
@@ -251,9 +255,11 @@ export function VoiceConversationScreen({
                           backgroundColor: user ? theme.colors.accent : theme.colors.surfaceMuted }}>
                         <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
                           <Text style={{ color: textColor, fontSize: 11 }}>{user ? "あなた" : "AI"}</Text>
-                          <Text style={{ color: textColor, fontSize: 11 }}>
-                            {time ? `${time}  ` : ""}{formatOutputTokens(user ? undefined : message.outputTokens)}
-                          </Text>
+                          {time || tokenLabel ? (
+                            <Text style={{ color: textColor, fontSize: 11 }}>
+                              {[time, tokenLabel].filter(Boolean).join("  ")}
+                            </Text>
+                          ) : null}
                         </View>
                         <Text style={{ color: textColor, fontSize: 15, lineHeight: 21 }}>{message.text}</Text>
                       </View>

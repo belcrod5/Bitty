@@ -7,7 +7,7 @@ import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 
 // キャッシュフォーマットのバージョン。行スキーマやヘッダを変えるときはインクリメントする。
 // 不一致のキャッシュは読み込まず破棄する(旧フォーマットのマイグレーションはしない)。
-export const SESSION_MESSAGES_CACHE_VERSION = 1;
+export const SESSION_MESSAGES_CACHE_VERSION = 3;
 export const SESSION_MESSAGES_CACHE_DIR_NAME = "session-messages-cache";
 export const SESSION_MESSAGES_CACHE_INDEX_FILE_NAME = "index.json";
 // 容量とmoreAfter連鎖の上限。⑤(通信量計測)の結果に合わせてここだけ調整する。
@@ -182,6 +182,8 @@ function parseCachedRow(raw: unknown): RunnerSessionMessage | null {
       : {}),
     itemId: String(item.itemId || "").trim() || undefined,
     inheritedFromParent: item.inheritedFromParent === true || undefined,
+    outputTokens: typeof item.outputTokens === "number" && Number.isSafeInteger(item.outputTokens)
+      && item.outputTokens >= 0 ? item.outputTokens : undefined,
     commandExecution,
   };
 }

@@ -460,6 +460,12 @@ export function createCodexBackend({
         const totalOutput = tokenUsage?.total?.outputTokens;
         let measuredOutput;
         if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
+          if (state.outputTokenBaseline === undefined) {
+            const lastOutput = tokenUsage?.last?.outputTokens;
+            if (Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
+              state.outputTokenBaseline = totalOutput - lastOutput;
+            }
+          }
           knownThreadOutputTokens.set(state.threadId, totalOutput);
           if (state.outputTokenBaseline !== undefined && totalOutput >= state.outputTokenBaseline) {
             const nextOutputTokens = totalOutput - state.outputTokenBaseline;

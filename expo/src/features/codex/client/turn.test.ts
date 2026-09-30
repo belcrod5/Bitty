@@ -256,7 +256,7 @@ test("manager mode subtracts the previous turn total from a resumed thread", asy
   await expect(second.promise).resolves.toMatchObject({ outputTokens: 280 });
 });
 
-test("manager mode omits turn output when a resumed thread baseline is unknown", async () => {
+test("manager mode derives a resumed turn baseline from its first measured response", async () => {
   const threadId = "thread-unknown-output-baseline";
   const manager = new FakeRunnerWebSocketManager();
   const session = createTurn(manager, "ws://127.0.0.1:8788/runner-ws", threadId);
@@ -279,7 +279,7 @@ test("manager mode omits turn output when a resumed thread baseline is unknown",
     threadId, turn: { id: "turn-unknown", status: "completed" },
   });
 
-  await expect(session.promise).resolves.not.toHaveProperty("outputTokens");
+  await expect(session.promise).resolves.toMatchObject({ outputTokens: 200 });
 });
 
 test("manager mode delivers idless turn notifications with runner-ws metadata to callbacks and result", async () => {

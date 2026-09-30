@@ -186,6 +186,7 @@ export type LlmSessionMessage = {
   role: LlmSessionMessageRole;
   content: string;
   at: string;
+  outputTokens?: number;
   commandExecution?: CodexCommandExecutionInfo;
 };
 

@@ -175,6 +175,106 @@ function messageSequence(count, start = 1) {
   });
 }
 
+function tokenRecord(index, totalOutput, lastOutput) {
+  return {
+    timestamp: `2026-07-01T00:01:${String(index).padStart(2, "0")}.000Z`,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: { output_tokens: totalOutput },
+        last_token_usage: { output_tokens: lastOutput },
+      },
+    },
+  };
+}
+
+test("restores measured turn output only on each final assistant message", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-output-usage-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-usage" } },
+    messageRecord(2, "user"),
+    { timestamp: "2026-07-01T00:00:02.000Z", type: "event_msg", payload: { type: "user_message", message: "message-2" } },
+    messageRecord(3, "assistant"),
+    tokenRecord(3, 100, 100),
+    messageRecord(5, "assistant"),
+    tokenRecord(5, 180, 80),
+    messageRecord(6, "user"),
+    { timestamp: "2026-07-01T00:00:06.000Z", type: "event_msg", payload: { type: "user_message", message: "message-6" } },
+    messageRecord(7, "assistant"),
+    tokenRecord(7, 380, 200),
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const result = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-usage",
+    limit: 20,
+  });
+
+  assert.deepEqual(result.messages.map(({ content, outputTokens }) => ({ content, outputTokens })), [
+    { content: "message-2", outputTokens: undefined },
+    { content: "message-3", outputTokens: undefined },
+    { content: "message-5", outputTokens: 180 },
+    { content: "message-6", outputTokens: undefined },
+    { content: "message-7", outputTokens: 200 },
+  ]);
+});
+
+test("returns the completed assistant again when a token record arrives in a history delta", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-output-delta-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-usage-delta" } },
+    messageRecord(2, "user"),
+    { timestamp: "2026-07-01T00:00:02.000Z", type: "event_msg", payload: { type: "user_message", message: "message-2" } },
+    messageRecord(3, "assistant"),
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+  const readers = createReaders();
+  const initial = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-usage-delta",
+    limit: 20,
+  });
+  await fs.appendFile(filePath, `${JSON.stringify(tokenRecord(4, 24, 24))}\n`);
+
+  const delta = await readers.readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-usage-delta",
+    limit: 20,
+    sinceCursor: initial.latestCursor,
+  });
+
+  assert.deepEqual(delta.messages.map(({ content, outputTokens }) => ({ content, outputTokens })), [
+    { content: "message-3", outputTokens: 24 },
+  ]);
+});
+
+test("finds turn usage when the user message is older than the visible page", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-long-turn-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const filePath = path.join(tempDir, "rollout.jsonl");
+  const records = [
+    { timestamp: "2026-07-01T00:00:00.000Z", type: "session_meta", payload: { id: "thread-long-turn" } },
+    messageRecord(1, "user"),
+    { timestamp: "2026-07-01T00:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: "message-1" } },
+    ...Array.from({ length: 25 }, (_, index) => messageRecord(index + 2, "assistant")),
+    tokenRecord(30, 75, 75),
+  ];
+  await fs.writeFile(filePath, `${records.map(JSON.stringify).join("\n")}\n`);
+
+  const result = await createReaders().readSessionMessagesFromRolloutFile(filePath, {
+    sessionId: "thread-long-turn",
+    limit: 20,
+  });
+
+  assert.equal(result.messages.length, 20);
+  assert.equal(result.messages.at(-1)?.content, "message-26");
+  assert.equal(result.messages.at(-1)?.outputTokens, 75);
+  assert.equal(result.messages.slice(0, -1).every((message) => message.outputTokens === undefined), true);
+});
+
 test("reads twenty visible rows at a time with an opaque backward cursor", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-history-page-"));
   t.after(() => fs.rm(tempDir, { recursive: true, force: true }));

@@ -114,6 +114,7 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
         role: "assistant",
         content: "hello",
         at: "2026-08-24T01:02:03.456Z",
+        outputTokens: 8,
       }],
     }),
     resolveCanonicalCwd: async (cwd) => cwd === aliasWorkspace ? canonicalWorkspace : cwd,
@@ -157,6 +158,7 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
     role: "assistant",
     content: [{ type: "text", text: "hello" }],
     createdAt: "2026-08-24T01:02:03.456Z",
+    outputTokens: 8,
   }]);
   assert.equal(history.modelId, "gpt-5.6-sol");
   assert.equal(history.reasoningEffort, "medium");

@@ -154,6 +154,8 @@ export function createPrivateRunnerAgentRuntime({
           content: historyContent(message),
           ...(message.at ? { createdAt: String(message.at) } : {}),
           ...(message.kind ? { itemType: String(message.kind) } : {}),
+          ...(Number.isSafeInteger(message.outputTokens) && message.outputTokens >= 0
+            ? { outputTokens: message.outputTokens } : {}),
         })),
         olderCursor: page.olderCursor,
         newerCursor: page.latestCursor,

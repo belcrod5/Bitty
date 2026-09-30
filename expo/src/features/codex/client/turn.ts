@@ -662,6 +662,12 @@ function startCodexAppServerRawTurn(
     const tokenUsage = update.tokenUsage;
     const totalOutput = tokenUsage?.total?.outputTokens;
     if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
+      if (turnOutputTokenBaseline === undefined) {
+        const lastOutput = tokenUsage?.last?.outputTokens;
+        if (Number.isSafeInteger(lastOutput) && lastOutput >= 0 && totalOutput >= lastOutput) {
+          turnOutputTokenBaseline = totalOutput - lastOutput;
+        }
+      }
       knownThreadOutputTokens.set(activeThreadId, totalOutput);
       if (turnOutputTokenBaseline !== undefined && totalOutput >= turnOutputTokenBaseline) {
         outputTokens = totalOutput - turnOutputTokenBaseline;

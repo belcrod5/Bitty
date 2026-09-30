@@ -631,7 +631,7 @@ test("Codex Backend subtracts the previous turn total and ignores a stale last r
     .map((event) => event.payload.outputTokens), [0, 200, 250, 280]);
 });
 
-test("Codex Backend omits turn output when a resumed thread baseline is unknown", async () => {
+test("Codex Backend derives a resumed turn baseline from its first measured response", async () => {
   const client = fakeClient([
     { method: "thread/tokenUsage/updated", params: { tokenUsage: {
       total: { outputTokens: 380 }, last: { outputTokens: 200 },
@@ -653,7 +653,9 @@ test("Codex Backend omits turn output when a resumed thread baseline is unknown"
     emit: (type, payload) => events.push({ type, payload }),
   });
 
-  assert.equal(events.some((event) => event.type === "usage.updated" && event.payload.outputTokens !== undefined), false);
+  assert.deepEqual(events
+    .filter((event) => event.type === "usage.updated" && event.payload.outputTokens !== undefined)
+    .map((event) => event.payload.outputTokens), [200]);
 });
 
 test("Codex Backend compacts through the existing App Server methods", async () => {

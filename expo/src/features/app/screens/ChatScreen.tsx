@@ -1712,6 +1712,9 @@ export function ChatScreen({
     index: number;
   }) => {
     const isUser = message.role === "user";
+    const hasMeasuredOutputTokens = !isUser
+      && Number.isSafeInteger(message.outputTokens)
+      && Number(message.outputTokens) >= 0;
     const inheritedFromParent = message.inheritedFromParent === true;
     const showSubagentBoundary = (
       !inheritedFromParent
@@ -1896,9 +1899,9 @@ export function ChatScreen({
                 <Ionicons name="copy-outline" size={13} color={theme.colors.borderStrong} />
               </TouchableOpacity>
             ) : null}
-            {message.content ? (
+            {message.content && hasMeasuredOutputTokens ? (
               <Text style={styles.chatMessageTimestampText}>
-                {formatOutputTokens(message.role === "assistant" ? message.outputTokens : undefined)}
+                {formatOutputTokens(message.outputTokens)}
               </Text>
             ) : null}
           </View>
