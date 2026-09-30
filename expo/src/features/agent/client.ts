@@ -313,7 +313,7 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
     } else if (event.type === "usage.updated") {
       usage = contextUsage(payload) || usage;
       if (typeof payload.outputTokens === "number" && Number.isSafeInteger(payload.outputTokens)
-        && payload.outputTokens > 0) outputTokens = payload.outputTokens;
+        && payload.outputTokens >= 0) outputTokens = payload.outputTokens;
     } else if (event.type === "action.requested") {
       await handleAction(payload);
     } else if (event.type === "action.resolved") {
@@ -533,7 +533,7 @@ export function startAgentTurnWithRawFallback(
         turnId: snapshot?.turnId || "",
         reply: snapshot?.reply || "",
         contextUsage: snapshot?.usage || null,
-        ...(snapshot?.outputTokens ? { outputTokens: snapshot.outputTokens } : {}),
+        ...(snapshot?.outputTokens !== undefined ? { outputTokens: snapshot.outputTokens } : {}),
       });
     };
     pump = createAgentRunEventPump({

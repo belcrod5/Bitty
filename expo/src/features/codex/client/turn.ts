@@ -68,6 +68,9 @@ import { startCodexAppServerTurnRelayObserver as startCodexAppServerRawTurnRelay
 export const CODEX_APP_SERVER_TURN_INTERRUPTED_ERROR_CODE = "codex_app_server_turn_interrupted";
 const PRE_TURN_RPC_TIMEOUT_MS = 15000;
 const MANAGER_RECONNECT_WAIT_TIMEOUT_MS = 120_000;
+// Codex reports a thread-cumulative total. Snapshot it before each turn so a
+// repeated `last` response cannot be counted twice.
+const knownThreadOutputTokens = new Map<string, number>();
 
 type RunnerRelayReconnectTrigger =
   | "ws_close"
@@ -143,7 +146,10 @@ function startCodexAppServerRawTurn(
   let completedAgentMessage = "";
   let latestContextUsage: CodexContextUsage | null = null;
   let outputTokens = 0;
-  let sawTokenUsageUpdate = false;
+  let hasMeasuredOutputTokens = false;
+  let turnOutputTokenBaseline = requestedThreadId
+    ? knownThreadOutputTokens.get(requestedThreadId)
+    : undefined;
   const pendingTokenUsageUpdates: unknown[] = [];
   let lastErrorMessage = "";
   let finalized = false;
@@ -653,11 +659,18 @@ function startCodexAppServerRawTurn(
   function applyTokenUsageUpdate(paramsRaw: unknown) {
     const update = paramsRaw as Record<string, any>;
     if (update.threadId !== activeThreadId || update.turnId !== activeTurnId) return;
-    sawTokenUsageUpdate = true;
     const tokenUsage = update.tokenUsage;
-    const lastOutput = tokenUsage?.last?.outputTokens;
-    if (Number.isSafeInteger(lastOutput) && lastOutput > 0
-      && Number.isSafeInteger(outputTokens + lastOutput)) outputTokens += lastOutput;
+    const totalOutput = tokenUsage?.total?.outputTokens;
+    if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
+      knownThreadOutputTokens.set(activeThreadId, totalOutput);
+      if (turnOutputTokenBaseline !== undefined && totalOutput >= turnOutputTokenBaseline) {
+        outputTokens = totalOutput - turnOutputTokenBaseline;
+        hasMeasuredOutputTokens = true;
+      } else {
+        turnOutputTokenBaseline = undefined;
+        hasMeasuredOutputTokens = false;
+      }
+    }
     const context = normalizeContextUsageSnapshot({
       ...tokenUsage?.last,
       contextWindowTokens: tokenUsage?.modelContextWindow,
@@ -1058,6 +1071,7 @@ function startCodexAppServerRawTurn(
             excludeTurns: true,
           }, PRE_TURN_RPC_TIMEOUT_MS);
           activeThreadId = String(resumed?.thread?.id || activeThreadId || "").trim();
+          turnOutputTokenBaseline = knownThreadOutputTokens.get(activeThreadId);
           emitLog({
             stage: "thread_resume_before_turn",
             method: "thread/resume",
@@ -1105,6 +1119,7 @@ function startCodexAppServerRawTurn(
           throw new Error("thread/start failed");
         }
         activeThreadId = String(started?.thread?.id || "").trim();
+        turnOutputTokenBaseline = 0;
         notifyThreadIdResolved(activeThreadId);
         if (activeThreadId) {
           try {
@@ -1251,8 +1266,6 @@ function startCodexAppServerRawTurn(
       pendingApprovalRequests.clear();
       const completedUsage = extractContextUsageFromTurnCompletedParams(message.params, options.model);
       latestContextUsage = latestContextUsage || completedUsage;
-      if (!sawTokenUsageUpdate && completedUsage && Number.isSafeInteger(completedUsage.outputTokens)
-        && completedUsage.outputTokens > 0) outputTokens = completedUsage.outputTokens;
       const threadId = String((message.params as any)?.threadId || activeThreadId || "").trim();
       const turnId = String((message.params as any)?.turn?.id || activeTurnId || "").trim();
       const turnStatus = String((message.params as any)?.turn?.status || "").trim().toLowerCase();
@@ -1274,7 +1287,7 @@ function startCodexAppServerRawTurn(
         turnId,
         reply,
         contextUsage: latestContextUsage,
-        ...(outputTokens > 0 ? { outputTokens } : {}),
+        ...(hasMeasuredOutputTokens ? { outputTokens } : {}),
       });
     };
 

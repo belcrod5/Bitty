@@ -285,6 +285,17 @@ describe("useCodexReplyRequest onAgentMessageCompleted", () => {
       .toMatchObject({ outputTokens: 24 });
   });
 
+  test("keeps a measured zero distinct from missing usage", async () => {
+    const harness = createHarness();
+    const { sendPromise } = await startRequest(harness);
+    await act(async () => {
+      harness.resolveTurn({ threadId: "thread-1", turnId: "turn-1", reply: "done", outputTokens: 0 });
+      await sendPromise;
+    });
+    expect(harness.store["panel-1"].find((message) => message.role === "assistant" && message.content === "done"))
+      .toMatchObject({ outputTokens: 0 });
+  });
+
   test("does not mistake context percentage for measured output usage", async () => {
     const harness = createHarness();
     const { sendPromise } = await startRequest(harness);

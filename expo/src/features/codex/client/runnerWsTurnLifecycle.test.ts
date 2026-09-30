@@ -463,7 +463,7 @@ test("manager mode resumes streaming after reconnect, ignores duplicate replay s
   });
   emitTurnNotificationWithSeq(manager, turnStartOutbound, 2, "thread/tokenUsage/updated", {
     threadId: "thread-1", turnId: "turn-1",
-    tokenUsage: { last: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, modelContextWindow: 272000 },
+    tokenUsage: { total: { outputTokens: 100 }, last: { outputTokens: 100 }, modelContextWindow: 272000 },
   });
 
   manager.dropConnection();
@@ -479,7 +479,7 @@ test("manager mode resumes streaming after reconnect, ignores duplicate replay s
   });
   emitTurnNotificationWithSeq(manager, turnStartOutbound, 2, "thread/tokenUsage/updated", {
     threadId: "thread-1", turnId: "turn-1",
-    tokenUsage: { last: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, modelContextWindow: 272000 },
+    tokenUsage: { total: { outputTokens: 100 }, last: { outputTokens: 100 }, modelContextWindow: 272000 },
   });
   emitTurnNotificationWithSeq(manager, turnStartOutbound, 3, "item/agentMessage/delta", {
     threadId: "thread-1",
@@ -488,7 +488,7 @@ test("manager mode resumes streaming after reconnect, ignores duplicate replay s
   });
   emitTurnNotificationWithSeq(manager, turnStartOutbound, 4, "thread/tokenUsage/updated", {
     threadId: "thread-1", turnId: "turn-1",
-    tokenUsage: { last: { inputTokens: 150, outputTokens: 14, totalTokens: 164 }, modelContextWindow: 272000 },
+    tokenUsage: { total: { outputTokens: 150 }, last: { outputTokens: 50 }, modelContextWindow: 272000 },
   });
 
   manager.emit({
@@ -508,12 +508,12 @@ test("manager mode resumes streaming after reconnect, ignores duplicate replay s
     threadId: "thread-1",
     turnId: "turn-1",
     reply: "hello back",
-    outputTokens: 24,
+    outputTokens: 150,
   });
   expect(onDelta).toHaveBeenCalledTimes(2);
 });
 
-test("manager mode keeps legacy turn-completed usage when no token update is available", async () => {
+test("manager mode does not infer output usage from turn completion", async () => {
   const manager = new FakeRunnerWebSocketManager();
   const { session, turnStartOutbound } = await startLiveTurn(manager);
   emitTurnNotificationWithSeq(manager, turnStartOutbound, 1, "turn/completed", {
@@ -521,8 +521,9 @@ test("manager mode keeps legacy turn-completed usage when no token update is ava
     turn: { id: "turn-1", status: "completed",
       usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, contextWindowTokens: 272000 } },
   });
-  await expect(session.promise).resolves.toMatchObject({ outputTokens: 20,
-    contextUsage: expect.objectContaining({ totalTokens: 120 }) });
+  const result = await session.promise;
+  expect(result).not.toHaveProperty("outputTokens");
+  expect(result.contextUsage).toEqual(expect.objectContaining({ totalTokens: 120 }));
 });
 
 test("manager mode fails the turn on relay:resume_miss after reconnect", async () => {

@@ -1446,7 +1446,7 @@ export function useCodexReplyRequest<
       });
       const elapsedMs = Math.max(0, Date.now() - replyRequestStartedAt);
       const outputTokens = result.outputTokens;
-      const measuredOutput = typeof outputTokens === "number" && Number.isSafeInteger(outputTokens) && outputTokens > 0
+      const measuredOutput = typeof outputTokens === "number" && Number.isSafeInteger(outputTokens) && outputTokens >= 0
         ? { outputTokens } : {};
       const settledLiveMessages = settlePanelLiveAgentMessages({
         youtubeVideoIds: youtubeIds,

@@ -379,6 +379,9 @@ export function createCodexBackend({
     ? listModels
     : () => listCodexModelsFromAppServer(createClient, clientName);
   const activeRuns = new Map();
+  // Codex reports a thread-cumulative total. Snapshot it before each turn so a
+  // repeated `last` response cannot be counted twice.
+  const knownThreadOutputTokens = new Map();
   // app-serverがturn実行中のclient接続へbroadcastするthread/status/changedから、
   // 「native activeなthread」を追跡する。runner自身が起動したturn以外(spawnされた
   // subagent thread等)のactive/idleはここでしか観測できず、session一覧の
@@ -423,8 +426,13 @@ export function createCodexBackend({
       bufferedNotifications: [],
       turnStartRequested: false,
       outputTokens: 0,
-      tokenUsageUpdated: false,
+      outputTokenBaseline: undefined,
+      hasMeasuredOutputTokens: false,
     };
+    const resumesExistingThread = Boolean(state.threadId);
+    if (resumesExistingThread) {
+      state.outputTokenBaseline = knownThreadOutputTokens.get(state.threadId);
+    }
     activeRuns.set(runId, state);
     const emitItemStarted = (itemId, itemType = "assistant") => {
       if (!itemId || state.itemIds.has(itemId)) return;
@@ -448,16 +456,28 @@ export function createCodexBackend({
       }
       if (!codexTurnEventMatches(params, { threadId: state.threadId, turnId: state.turnId })) return;
       if (method === "thread/tokenUsage/updated") {
-        state.tokenUsageUpdated = true;
         const tokenUsage = params?.tokenUsage;
-        const lastOutput = tokenUsage?.last?.outputTokens;
-        if (Number.isSafeInteger(lastOutput) && lastOutput > 0
-          && Number.isSafeInteger(state.outputTokens + lastOutput)) state.outputTokens += lastOutput;
+        const totalOutput = tokenUsage?.total?.outputTokens;
+        let measuredOutput;
+        if (Number.isSafeInteger(totalOutput) && totalOutput >= 0) {
+          knownThreadOutputTokens.set(state.threadId, totalOutput);
+          if (state.outputTokenBaseline !== undefined && totalOutput >= state.outputTokenBaseline) {
+            const nextOutputTokens = totalOutput - state.outputTokenBaseline;
+            if (!state.hasMeasuredOutputTokens || nextOutputTokens !== state.outputTokens) {
+              state.outputTokens = nextOutputTokens;
+              state.hasMeasuredOutputTokens = true;
+              measuredOutput = nextOutputTokens;
+            }
+          } else {
+            state.outputTokenBaseline = undefined;
+            state.hasMeasuredOutputTokens = false;
+          }
+        }
         emit("usage.updated", {
           ...(tokenUsage?.last && typeof tokenUsage.last === "object" ? {
             usage: { ...tokenUsage.last, contextWindowTokens: tokenUsage.modelContextWindow },
           } : {}),
-          ...(state.outputTokens > 0 ? { outputTokens: state.outputTokens } : {}),
+          ...(measuredOutput !== undefined ? { outputTokens: measuredOutput } : {}),
         });
         return;
       }
@@ -585,6 +605,7 @@ export function createCodexBackend({
         },
       });
       state.threadId = started.threadId;
+      if (!resumesExistingThread) state.outputTokenBaseline = 0;
       state.turnId = started.turnId;
       cleanupStartedTurn = started.cleanup;
       completion?.expect?.({ threadId: state.threadId, turnId: state.turnId });
@@ -608,12 +629,7 @@ export function createCodexBackend({
       // neutralイベントとしても届ける。
       const turnUsage = codexTurnCompletedUsage(terminal?.params);
       if (turnUsage) {
-        const fallbackOutput = Number(turnUsage.outputTokens ?? turnUsage.output_tokens);
-        emit("usage.updated", { usage: turnUsage,
-          ...(state.outputTokens > 0 ? { outputTokens: state.outputTokens }
-            : !state.tokenUsageUpdated && Number.isSafeInteger(fallbackOutput) && fallbackOutput > 0
-              ? { outputTokens: fallbackOutput } : {}),
-        });
+        emit("usage.updated", { usage: turnUsage });
       }
       if (terminal?.method === "turn/interrupted" || INTERRUPTED_TURN_STATUSES.has(status)) {
         return { outcome: "interrupted" };

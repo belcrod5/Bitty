@@ -583,6 +583,7 @@ export function createVoiceContextService({ rootDir, createClient }) {
       let textStreamingStopped = false;
       let textDelivered = false;
       let measuredOutputTokens = 0;
+      let hasMeasuredOutputTokens = false;
       function deliverText(text) {
         if (!text || !onText || textStreamingStopped || signal?.aborted) return;
         try { onText(text); textDelivered = true; }
@@ -602,9 +603,12 @@ export function createVoiceContextService({ rootDir, createClient }) {
         if (!identity) { pendingNotifications.push([method, params]); return; }
         if (!codexTurnEventMatches(params, identity)) return;
         if (method === "thread/tokenUsage/updated") {
-          const lastOutput = params?.tokenUsage?.last?.outputTokens;
-          if (Number.isSafeInteger(lastOutput) && lastOutput > 0
-            && Number.isSafeInteger(measuredOutputTokens + lastOutput)) measuredOutputTokens += lastOutput;
+          // Every voice response uses a fresh ephemeral thread, so its total is
+          // already the current turn total.
+          const totalOutput = params?.tokenUsage?.total?.outputTokens;
+          if (!Number.isSafeInteger(totalOutput) || totalOutput < 0) return;
+          hasMeasuredOutputTokens = true;
+          measuredOutputTokens = totalOutput;
           return;
         }
         const itemType = String(params?.item?.type || "");
@@ -711,14 +715,8 @@ export function createVoiceContextService({ rootDir, createClient }) {
       if (onText && textStreamingStopped && !textDelivered) {
         try { onText(text); } catch (error) { try { onTextError?.(error); } catch {} }
       }
-      const completedTurn = terminal.params?.turn;
-      const tokenUsage = completedTurn?.usage || completedTurn?.tokenUsage || completedTurn?.contextUsage
-        || terminal.params?.usage || terminal.params?.tokenUsage || terminal.params?.contextUsage;
-      const fallbackOutput = tokenUsage?.outputTokens ?? tokenUsage?.output_tokens;
-      const outputTokens = measuredOutputTokens || fallbackOutput;
       return { text, threadId, turnId,
-        ...(output.length === 1 && Number.isSafeInteger(outputTokens) && outputTokens > 0
-          ? { outputTokens } : {}) };
+        ...(hasMeasuredOutputTokens ? { outputTokens: measuredOutputTokens } : {}) };
     } catch (error) {
       if (error && typeof error === "object") error.voiceStage = stage;
       throw error;

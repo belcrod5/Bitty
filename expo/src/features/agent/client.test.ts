@@ -328,6 +328,13 @@ test("neutral turn keeps cumulative output separate from latest context usage", 
   });
 });
 
+test("neutral turn preserves a measured zero output", async () => {
+  const turn = await createLiveTurn({ onApprovalRequest: async () => "decline" });
+  turn.emit("usage.updated", { outputTokens: 0 });
+  turn.emit("turn.completed");
+  await expect(turn.session.promise).resolves.toMatchObject({ outputTokens: 0 });
+});
+
 test.each([
   { action: "approve_for_session" as const, decisions: ["allow", "allow_for_session", "deny"], expected: "allow_for_session" },
   { action: "approve_for_session" as const, decisions: ["allow", "deny"], expected: "allow" },

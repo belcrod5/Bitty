@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, tokenUsageUpdates = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -14,6 +14,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
   const threadReleases = [];
   const interruptReleases = [];
   let summaryFailuresRemaining = failSummaryCount;
+  let responseTurnIndex = 0;
   const createClient = ({ signal } = {}) => {
     let listener = () => {};
     let serverHandler = () => undefined;
@@ -69,6 +70,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
         if (method === "mcpServerStatus/list") return mcpPage ?? { data: [], nextCursor: null };
         if (method === "turn/start") {
           const isSummary = isSummaryThread;
+          const responseOutputTokens = isSummary ? [] : (responseOutputTokensByTurn[responseTurnIndex++] || []);
           if (isSummary && (failSummary || summaryFailuresRemaining > 0)) {
             summaryFailuresRemaining--;
             throw new Error("private summary text and credential");
@@ -80,6 +82,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
             });
           }
           const finish = async () => {
+            let turnOutputTokens = 0;
             if (userItem) listener("item/completed", { threadId: params.threadId, turnId, item: { type: "userMessage" } });
             if (toolItem) listener("item/started", { threadId: params.threadId, turnId, item: { type: "commandExecution" } });
             if (approvalMethod && !isSummary) {
@@ -108,9 +111,10 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
               })() : reply;
               listener("item/completed", { threadId: params.threadId, turnId, item: { type: "agentMessage", text } });
             }
-            for (const lastOutput of tokenUsageUpdates) {
+            for (const outputTokens of responseOutputTokens) {
+              turnOutputTokens += outputTokens;
               listener("thread/tokenUsage/updated", { threadId: params.threadId, turnId,
-                tokenUsage: { total: { totalTokens: 2024 }, last: { outputTokens: lastOutput }, modelContextWindow: 100000 } });
+                tokenUsage: { total: { outputTokens: turnOutputTokens }, last: { outputTokens } } });
             }
             listener("turn/completed", { threadId: params.threadId, turnId,
               turn: { status: "completed", ...(completionUsage ? { usage: completionUsage } : {}) } });
@@ -727,14 +731,18 @@ test("voice history reads stored user and assistant messages in turn order", asy
 
 test("voice completion keeps measured output tokens in live status and restored history", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t, {
-    tokenUsageUpdates: [10, 14],
+    responseOutputTokensByTurn: [[100, 50, 30], [200, 50, 30]],
   });
-  const { result } = await complete(service, conversation, "first");
-  assert.equal(result.outputTokens, 24);
+  const first = await complete(service, conversation, "first");
+  const second = await complete(service, conversation, "second");
+  assert.equal(first.result.outputTokens, 180);
+  assert.equal(second.result.outputTokens, 280);
   const restarted = createVoiceContextService({ rootDir, createClient: codex.createClient });
   const messages = (await restarted.history()).messages;
   assert.equal(messages[0].outputTokens, undefined);
-  assert.equal(messages[1].outputTokens, 24);
+  assert.equal(messages[1].outputTokens, 180);
+  assert.equal(messages[2].outputTokens, undefined);
+  assert.equal(messages[3].outputTokens, 280);
 });
 
 test("settings count every stored user text and completed reply, including failed turns", async (t) => {
