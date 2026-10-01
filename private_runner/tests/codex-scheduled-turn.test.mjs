@@ -117,3 +117,39 @@ test("raw targets remain unsupported instead of being migrated", async () => {
     clientOperationId: "schedule:3",
   }), (error) => error.code === "session_busy");
 });
+
+
+test("scheduled turns report terminal failures only after starting and retain execution IDs", async () => {
+  for (const afterStart of [false, true]) {
+    const completion = deferred();
+    const failures = [];
+    let emit;
+    let unsubscribed = false;
+    const starter = createScheduledCodexTurnStarter({
+      agentService: {
+        startTurn: async () => ({ runId: "run-1", completion: completion.promise }),
+        subscribe(_id, options) {
+          emit = options.onEvent;
+          emit({ type: "session.resolved", payload: { sessionRef: { nativeSessionId: "thread-1" } } });
+          if (afterStart) emit({ type: "turn.started", payload: { nativeTurnId: "turn-1" } });
+          else emit({ type: "turn.failed", payload: { error: { code: "backend_unavailable", message: "offline" } } });
+          return { activeActions: [], unsubscribe() { unsubscribed = true; } };
+        },
+      },
+      subjectId: "owner", dynamicToolResponse: () => ({}),
+    });
+    const pending = starter({ inputText: "check", cwd: "/work", onFailed: (...args) => failures.push(args) });
+    if (afterStart) {
+      await pending;
+      emit({ type: "turn.failed", payload: { error: { code: "backend_unavailable", message: "offline" } } });
+      assert.equal(failures[0][0].code, "backend_unavailable");
+      assert.deepEqual(failures[0][1], { threadId: "thread-1", turnId: "turn-1" });
+    } else {
+      await assert.rejects(pending, (error) => error.code === "backend_unavailable");
+      assert.equal(failures.length, 0);
+    }
+    completion.resolve({ outcome: "failed" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(unsubscribed, true);
+  }
+});

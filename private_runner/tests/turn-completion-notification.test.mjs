@@ -398,3 +398,38 @@ test("derives and caps notification titles from the working directory", () => {
   assert.equal(derivePushDirectoryTitle("/"), "/");
   assert.equal(derivePushDirectoryTitle(`/work/${"x".repeat(200)}`), `${"x".repeat(57)}...`);
 });
+
+
+test("schedule failure pushes do not require a session, unread state or LLM summarization", async () => {
+  const harness = createHarness({
+    devices: [{ deviceId: "a", apnsToken: "a", env: "sandbox" }, { deviceId: "b", apnsToken: "b", env: "production" }],
+    pushSummarizer: { summarize() { throw new Error("must not summarize failures"); } },
+    getPushUnreadSnapshot() { throw new Error("must not require a session"); },
+  });
+  const failure = { schedule: { id: "schedule-1", name: "Parking check", action: { kind: "llm", cwd: "/work", threadId: null } },
+    occurrenceAt: "2026-10-02T00:00:00.000Z", result: null, errorCode: "capability_unsupported", errorMessage: "model value is not supported" };
+  await harness.notifier.notifyScheduleFailed(failure);
+  await harness.notifier.notifyScheduleFailed(failure);
+  assert.equal(harness.sends.length, 2);
+  const payload = harness.sends[0].payload;
+  assert.equal(payload.aps.category, "SCHEDULE_FAILED");
+  assert.match(payload.aps.alert.body, /Parking check.*model value is not supported/);
+  assert.equal(payload.scheduleId, "schedule-1");
+  assert.equal(payload.sessionId, undefined);
+  assert.equal(payload.aps.badge, undefined);
+  assert.equal(harness.broadcasts.length, 0);
+  await harness.notifier.notifyScheduleFailed({ ...failure, occurrenceAt: "2026-10-03T00:00:00.000Z", result: { threadId: "started-thread" } });
+  assert.equal(harness.sends.length, 4);
+  assert.equal(harness.sends[2].payload.sessionId, "started-thread");
+  assert.equal(harness.sends[2].payload.backendId, "codex");
+});
+
+test("failure push delivery isolates APNs errors and removes expired tokens", async () => {
+  const harness = createHarness({ devices: [{ deviceId: "expired", apnsToken: "expired" }, { deviceId: "throwing", apnsToken: "throwing" }],
+    apnsClient: { async sendToDevice(token) { if (token === "expired") return { ok: false, status: 410 }; throw new Error("offline"); } },
+  });
+  await harness.notifier.notifyScheduleFailed({ schedule: { id: "schedule-1", name: "check", action: { kind: "script", cwd: "/work" } },
+    occurrenceAt: "2026-10-02T00:00:00.000Z", errorCode: "script_failed", errorMessage: "failed" });
+  assert.deepEqual(harness.removals, ["expired"]);
+  assert.equal(harness.warnings.length, 1);
+});

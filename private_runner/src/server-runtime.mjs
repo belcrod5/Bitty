@@ -3641,12 +3641,19 @@ async function startWorkspaceShellScript(rawPath, opts = {}) {
       job.status = "finished";
       job.finishedAtMs = Date.now();
       job.durationMs = Math.max(0, job.finishedAtMs - job.startedAtMs);
-      job.exitCode = Number.isFinite(Number(exitCode)) ? Number(exitCode) : -1;
+      job.exitCode = Number.isInteger(exitCode) ? exitCode : -1;
       job.signal = String(signal || "");
       if (job.timeoutTimer) clearTimeout(job.timeoutTimer);
       if (job.killForceTimer) clearTimeout(job.killForceTimer);
       job.timeoutTimer = null;
       job.killForceTimer = null;
+      if (formatScriptJobStatus(job) !== "completed") {
+        const error = Object.assign(new Error(`Script ${formatScriptJobStatus(job)} (exit ${job.exitCode}${job.signal ? `, ${job.signal}` : ""})`), {
+          code: `script_${formatScriptJobStatus(job)}`,
+        });
+        try { opts.onFailed?.(error); }
+        catch (observerError) { console.warn(`[script] failure observer failed: ${errorMessage(observerError)}`); }
+      }
       trimStoredScriptJobs();
     };
 
@@ -3682,6 +3689,8 @@ async function startWorkspaceShellScript(rawPath, opts = {}) {
     job.durationMs = Math.max(0, job.finishedAtMs - job.startedAtMs);
     job.exitCode = -1;
     job.stderr = appendScriptJobOutput(job.stderr, errorMessage(err), maxOutputBytes);
+    try { opts.onFailed?.(Object.assign(new Error("Script failed to start"), { code: "script_start_failed" })); }
+    catch (observerError) { console.warn(`[script] failure observer failed: ${errorMessage(observerError)}`); }
   }
 
   return toScriptJobSnapshot(job);
@@ -6847,6 +6856,15 @@ const codexScheduleService = createCodexScheduleService({
   definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
   runtimePath: CODEX_SCHEDULE_RUNTIME_PATH,
   parseCodexOptions: resolveCodexRequestOptions,
+  validateLlmOptions: async (action) => {
+    const options = resolveCodexRequestOptions(action.modelRef, action.reasoningEffort);
+    await agentService.validateExecutionOptions({
+      backendId: "codex",
+      model: options.modelInfo.model,
+      effort: options.reasoningEffort,
+    });
+  },
+  onExecutionFailed: turnCompletionNotifier.notifyScheduleFailed,
   validateCwd: async (cwd) => {
     const resolved = path.resolve(String(cwd || "").trim());
     const stat = await fs.stat(resolved);
@@ -12106,6 +12124,8 @@ export const __TESTING__ = {
   WORKSPACE_ROOT,
   resolvePathWithinToolRoot,
   resolveWorkspaceShellScriptTarget,
+  startWorkspaceShellScript,
+  listWorkspaceShellScriptJobs,
   resolveClientFilePath,
   getClientMediaMimeType,
   buildInlineContentDisposition,

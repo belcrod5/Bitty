@@ -261,7 +261,7 @@ async function normalizeDefinitions(raw, {
   for (const schedule of schedules) {
     if (ids.has(schedule.id)) throw new Error(`duplicate schedule id: ${schedule.id}`);
     ids.add(schedule.id);
-    if (validateAction) await validateAction(schedule.action);
+    if (validateAction) await validateAction(schedule);
   }
   return schedules;
 }
@@ -400,6 +400,8 @@ export function createCodexScheduleService({
   runtimePath,
   parseCodexOptions,
   validateCwd,
+  validateLlmOptions,
+  onExecutionFailed,
   validateShellScript,
   startScheduledCodexTurn,
   startShellScript,
@@ -421,10 +423,18 @@ export function createCodexScheduleService({
   let activeStarts = 0;
   const idleWaiters = new Set();
 
-  async function validateActionTarget(action) {
+  async function validateActionTarget(schedule) {
+    const action = schedule.action;
     // Deleted targets remain editable and fail only when dispatched.
     if (action.kind === "voice") return;
     await validateCwd(action.cwd);
+    if (action.kind === "llm" && validateLlmOptions) {
+      const previous = definitionsStore.schedules.find((item) => item.id === schedule.id);
+      // Existing unsupported models can still be disabled without changing their action.
+      if (schedule.enabled || !previous || JSON.stringify(previous.action) !== JSON.stringify(action)) {
+        await validateLlmOptions(action);
+      }
+    }
     if (action.kind === "script") {
       await validateShellScript(action.scriptPath, {
         allowExternal: true,
@@ -671,16 +681,20 @@ export function createCodexScheduleService({
   }
 
   async function finishDispatch(claim, result, failure) {
-    await serialize(async () => {
+    return await serialize(async () => {
       const runtime = runtimeStore.runtimes[claim.definition.id];
       const dispatch = runtime?.lastDispatch;
       if (!dispatch || dispatch.occurrenceAt !== claim.occurrenceAt ||
-        dispatch.definitionHash !== claim.definitionHash || dispatch.status !== "claimed") return;
+        dispatch.definitionHash !== claim.definitionHash ||
+        (dispatch.status !== "claimed" && !(failure && dispatch.status === "fired"))) return;
       if (failure) {
         dispatch.status = "failed";
         dispatch.errorCode = String(failure.code || "schedule_dispatch_failed").slice(0, 200);
         dispatch.errorMessage = errorMessage(failure).slice(0, MAX_ERROR_CHARS);
-        dispatch.result = null;
+        // A native failure can race with recording the successful start.
+        if (!dispatch.result && result?.threadId && result?.turnId && claim.definition.action.kind === "llm") {
+          dispatch.result = { kind: "llm", threadId: result.threadId, turnId: result.turnId };
+        }
       } else {
         if (claim.definition.action.kind === "voice") {
           const { orchestratorId, logicalConversationId, clientOperationId } = result || {};
@@ -723,6 +737,7 @@ export function createCodexScheduleService({
       }
       dispatch.updatedAt = iso(now());
       await persistRuntime();
+      return clone(dispatch);
     });
   }
 
@@ -730,6 +745,35 @@ export function createCodexScheduleService({
     let claim = null;
     let result = null;
     let failure = null;
+    let failureReported = false;
+    const reportFailure = async (error) => {
+      if (!claim || failureReported) return;
+      failureReported = true;
+      try {
+        await finishDispatch(claim, result, error);
+      } finally {
+        const warnNotificationError = (notificationError) => {
+          console.warn(`[schedule] failure notification failed: ${errorMessage(notificationError)}`);
+        };
+        try {
+          Promise.resolve(onExecutionFailed?.({
+            schedule: claim.definition,
+            occurrenceAt: claim.occurrenceAt,
+            result,
+            errorCode: String(error?.code || "schedule_dispatch_failed").slice(0, 200),
+            errorMessage: errorMessage(error).slice(0, MAX_ERROR_CHARS),
+          })).catch(warnNotificationError);
+        } catch (notificationError) {
+          warnNotificationError(notificationError);
+        }
+      }
+    };
+    const onFailed = (error, failedResult) => {
+      if (failedResult) result = failedResult;
+      void reportFailure(error).catch((failureError) => {
+        console.warn(`[schedule] recording execution failure failed: ${errorMessage(failureError)}`);
+      });
+    };
     try {
       claim = await claimSchedule(id);
       if (!claim) return;
@@ -753,7 +797,7 @@ export function createCodexScheduleService({
             if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
           }, (request) => onVoiceApproval(clientOperationId, action.orchestratorId, request), {
             onStarted: () => { started = true; resolve(); },
-            onFailed: reject,
+            onFailed: (error) => { if (started) onFailed(error); else reject(error); },
             onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },
           }).catch(reject);
         });
@@ -765,6 +809,7 @@ export function createCodexScheduleService({
           allowedRoot: action.cwd,
         });
         result = await startShellScript(action.scriptPath, {
+          onFailed,
           allowExternal: true,
           allowedRoot: action.cwd,
         });
@@ -789,12 +834,20 @@ export function createCodexScheduleService({
           effort: action.reasoningEffort,
           threadId: action.threadId || "",
           clientOperationId: `codex_schedule:${claim.definition.id}:${claim.occurrenceAt}`,
+          onFailed,
         });
       }
     } catch (error) {
       failure = error instanceof Error ? error : new Error(errorMessage(error));
     }
-    if (claim) await finishDispatch(claim, result, failure);
+    if (!claim) return;
+    if (failure) await reportFailure(failure);
+    else {
+      const dispatch = await finishDispatch(claim, result, null);
+      if (dispatch?.status === "failed") {
+        await reportFailure(Object.assign(new Error(dispatch.errorMessage), { code: dispatch.errorCode }));
+      }
+    }
   }
 
   function pump() {
@@ -942,7 +995,7 @@ export function createCodexScheduleService({
       if (definitionsStore.schedules.length >= CODEX_SCHEDULE_MAX_COUNT) {
         throw new Error("schedules must contain at most 100 entries");
       }
-      await validateActionTarget(schedule.action);
+      await validateActionTarget(schedule);
       const snapshot = await commitNormalizedDefinitions(
         [...definitionsStore.schedules, schedule],
         now(),
@@ -1007,7 +1060,7 @@ export function createCodexScheduleService({
       if (body.baseRevision !== definitionsStore.revision) {
         throw new CodexScheduleRevisionConflictError(definitionsStore.revision);
       }
-      await validateActionTarget(schedule.action);
+      await validateActionTarget(schedule);
       const schedules = [...definitionsStore.schedules];
       schedules[index] = schedule;
       const snapshot = await commitNormalizedDefinitions(schedules, now());

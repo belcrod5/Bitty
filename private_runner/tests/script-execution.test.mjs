@@ -85,3 +85,27 @@ test("rejects a symlink inside the selected directory that targets an outside sc
     );
   });
 });
+
+
+test("script lifecycle reports nonzero and signal exits once without exposing script output", async () => {
+  await withTempDir(async (root) => {
+    for (const [name, script, expected] of [["success", "exit 0", 0], ["failure", "echo private-data >&2; exit 7", 7], ["signal", "kill -TERM $$", -1]]) {
+      const scriptPath = path.join(root, `${name}.sh`);
+      await writeFile(scriptPath, `${script}\n`);
+      const failures = [];
+      const job = await __TESTING__.startWorkspaceShellScript(scriptPath, { allowExternal: true, allowedRoot: root, onFailed: (error) => failures.push(error) });
+      let ended;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        ended = __TESTING__.listWorkspaceShellScriptJobs().find((item) => item.jobId === job.jobId);
+        if (ended.status !== "running") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(ended.exitCode, expected);
+      assert.equal(failures.length, expected === 0 ? 0 : 1);
+      if (failures.length) {
+        assert.equal(failures[0].code, "script_failed");
+        assert.doesNotMatch(failures[0].message, /private-data/);
+      }
+    }
+  });
+});

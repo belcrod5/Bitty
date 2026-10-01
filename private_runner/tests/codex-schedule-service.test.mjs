@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { createAgentService } from "../src/agent/agent-service.mjs";
+import { operationStore, sessionStore } from "./agent-service-fixtures.mjs";
+
 import { createCodexScheduleHttpHandler } from "../src/codex-schedule-http.mjs";
 import {
   CODEX_SCHEDULE_DEFINITIONS_MAX_BYTES,
@@ -74,6 +77,8 @@ async function makeHarness(options = {}) {
     startShellScript: options.startShellScript || (async () => ({ jobId: "script-job-1" })),
     voiceContextService: options.voiceContextService,
     onVoiceApproval: options.onVoiceApproval,
+    validateLlmOptions: options.validateLlmOptions,
+    onExecutionFailed: options.onExecutionFailed,
     now: currentClock.now,
     scheduleTimer: options.scheduleTimer || ((callback, delay) => {
       const timer = { callback, delay, cleared: false, unref() {} };
@@ -91,9 +96,10 @@ async function readJson(filePath) {
 }
 
 async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
     if (await predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("condition was not reached");
 }
@@ -672,7 +678,9 @@ test("script actions validate and start the selected .sh inside their cwd withou
   const snapshot = await harness.service.snapshot();
   assert.equal(codexStarts, 0);
   assert.equal(starts.length, 1);
-  assert.deepEqual(starts[0], [scriptPath, { allowExternal: true, allowedRoot: harness.directory }]);
+  assert.equal(typeof starts[0][1].onFailed, "function");
+  const { onFailed, ...scriptOptions } = starts[0][1];
+  assert.deepEqual([starts[0][0], scriptOptions], [scriptPath, { allowExternal: true, allowedRoot: harness.directory }]);
   assert.equal(validations.length, 2);
   assert.deepEqual(snapshot.schedules[0].lastDispatch.result, {
     kind: "script", jobId: "script-job-42",
@@ -968,4 +976,162 @@ test("saved voice references do not block unrelated LLM edits or stopping a dele
   const snapshot = await harness.service.snapshot();
   assert.equal(snapshot.schedules[0].name, "Updated LLM");
   assert.equal(snapshot.schedules[1].enabled, false);
+});
+
+
+test("schedule saves use the live Agent model/effort validator without changing stores on rejection", async (t) => {
+  let catalog = [{ modelId: "gpt-5.6", effortOptions: ["high"] }];
+  const agent = createAgentService({
+    backends: [{
+      backendId: "codex",
+      getStatus: async () => ({ available: true, readiness: { ready: true },
+        capabilities: { model: { select: true, effort: true, catalog } } }),
+    }],
+    operationStore: operationStore(), sessionStore: sessionStore(),
+    workspaceAdmission: { assertAllowed: async () => {} },
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const harness = await makeHarness({ validateLlmOptions: async (action) => {
+    const options = parseCodexOptions(action.modelRef, action.reasoningEffort);
+    await agent.validateExecutionOptions({ backendId: "codex", model: options.modelInfo.model, effort: options.reasoningEffort });
+  } });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const { id, ...input } = definition();
+  await harness.service.createSchedule({ baseRevision: 0, schedule: input }, id);
+  const before = await harness.service.snapshot();
+  const stored = await fs.readFile(harness.definitionsPath, "utf8");
+  for (const patch of [{ modelRef: "openai-codex/not-listed" }, { reasoningEffort: "ultra" }]) {
+    for (const save of [
+      () => harness.service.createSchedule({ baseRevision: 1, schedule: { ...input, ...patch } }, ID_B),
+      () => harness.service.patchSchedule(id, { baseRevision: 1, patch }),
+      () => harness.service.replaceSchedules({ baseRevision: 1, schedules: [definition(patch)] }),
+    ]) {
+      await assert.rejects(save(), (error) => error.code === "capability_unsupported");
+      assert.deepEqual(await harness.service.snapshot(), before);
+      assert.equal(await fs.readFile(harness.definitionsPath, "utf8"), stored);
+    }
+  }
+  // A catalog change does not corrupt saved definitions; old schedules can be stopped.
+  catalog = [{ modelId: "replacement", effortOptions: ["low"] }];
+  assert.deepEqual(await harness.service.snapshot(), before);
+  await harness.service.patchSchedule(id, { baseRevision: 1, patch: { enabled: false } });
+  await assert.rejects(harness.service.patchSchedule(id, { baseRevision: 2, patch: { enabled: true } }),
+    (error) => error.code === "capability_unsupported");
+  await harness.service.replaceSchedules({ baseRevision: 2, schedules: [definition({ enabled: false })] });
+});
+
+test("dispatch rejection and missing start IDs report one failure per occurrence", async (t) => {
+  for (const starter of [
+    async () => { throw Object.assign(new Error("model value is not supported"), { code: "capability_unsupported" }); },
+    async () => ({}),
+  ]) {
+    const failures = [];
+    const harness = await makeHarness({ startScheduledCodexTurn: starter, onExecutionFailed: (failure) => failures.push(failure) });
+    t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+    await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
+    harness.currentClock.set("2026-08-14T00:00:00.000Z");
+    await harness.service.evaluate();
+    await harness.service.evaluate();
+    assert.equal(failures.length, 1);
+    const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+    assert.equal(dispatch.status, "failed");
+    assert.equal(failures[0].errorCode, dispatch.errorCode);
+    assert.equal(failures[0].occurrenceAt, dispatch.occurrenceAt);
+  }
+});
+
+test("LLM, script and voice failures after start update dispatch and notify exactly once", async (t) => {
+  for (const kind of ["llm", "script", "voice"]) {
+    const failures = [];
+    let onFailed;
+    const harness = await makeHarness({
+      startScheduledCodexTurn: async (options) => { onFailed = options.onFailed; return { threadId: "thread-1", turnId: "turn-1" }; },
+      startShellScript: async (_path, options) => { onFailed = options.onFailed; return { jobId: "job-1" }; },
+      voiceContextService: {
+        open: async () => ({ logicalConversationId: ID_B }),
+        start: async (_request, _state, _approval, hooks) => { onFailed = hooks.onFailed; hooks.onStarted(); },
+      },
+      onExecutionFailed: (failure) => failures.push(failure),
+    });
+    t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+    const llm = { kind: "llm", cwd: process.cwd(), modelRef: "openai-codex/gpt-5.6", reasoningEffort: "high", prompt: "check", threadId: null };
+    const action = kind === "llm" ? llm : kind === "script"
+      ? { kind, cwd: process.cwd(), scriptPath: `${process.cwd()}/check.sh` }
+      : { kind, orchestratorId: "main", prompt: "check" };
+    const { cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
+    await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
+    harness.currentClock.set("2026-08-14T00:00:00.000Z");
+    await harness.service.evaluate();
+    const startedDispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+    assert.equal(startedDispatch.status, "fired");
+    assert.equal(failures.length, 0);
+    const error = Object.assign(new Error("backend disconnected"), { code: "backend_unavailable" });
+    onFailed(error);
+    onFailed(error);
+    await waitFor(() => failures.length === 1);
+    const failed = (await harness.service.snapshot()).schedules[0].lastDispatch;
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.result, startedDispatch.result);
+    assert.equal(failed.errorCode, error.code);
+    assert.equal(failures[0].schedule.action.kind, kind);
+  }
+});
+
+test("late failure still notifies after a newer occurrence and notification errors do not block scheduling", async (t) => {
+  const callbacks = [];
+  const failures = [];
+  const harness = await makeHarness({
+    startScheduledCodexTurn: async (options) => { callbacks.push(options.onFailed); return { threadId: "thread-1", turnId: `turn-${callbacks.length}` }; },
+    onExecutionFailed: (failure) => { failures.push(failure); throw new Error("APNs unavailable"); },
+  });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate();
+  harness.currentClock.set("2026-08-15T00:00:00.000Z");
+  await harness.service.evaluate();
+  callbacks[0](new Error("late failure"));
+  await waitFor(() => failures.length === 1);
+  assert.equal(failures[0].occurrenceAt, "2026-08-14T00:00:00.000Z");
+  const latest = (await harness.service.snapshot()).schedules[0].lastDispatch;
+  assert.equal(latest.status, "fired");
+  assert.equal(latest.occurrenceAt, "2026-08-15T00:00:00.000Z");
+  callbacks[1](new Error("latest failure"));
+  await waitFor(() => failures.length === 2);
+  assert.equal((await harness.service.snapshot()).schedules[0].lastDispatch.status, "failed");
+});
+
+
+test("a failure racing with start persistence retains IDs and cannot be overwritten by success", async (t) => {
+  const failures = [];
+  const harness = await makeHarness({
+    startScheduledCodexTurn: async ({ onFailed }) => {
+      const ids = { threadId: "thread-race", turnId: "turn-race" };
+      onFailed(Object.assign(new Error("early native failure"), { code: "turn_failed" }), ids);
+      return ids;
+    },
+    onExecutionFailed: (failure) => failures.push(failure),
+  });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate();
+  await waitFor(() => failures.length === 1);
+  const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+  assert.equal(dispatch.status, "failed");
+  assert.deepEqual(dispatch.result, { kind: "llm", threadId: "thread-race", turnId: "turn-race" });
+});
+
+test("slow failure notification delivery does not hold dispatch concurrency slots", async (t) => {
+  let release;
+  const pendingNotification = new Promise((resolve) => { release = resolve; });
+  const harness = await makeHarness({
+    startScheduledCodexTurn: async () => { throw new Error("offline"); },
+    onExecutionFailed: () => pendingNotification,
+  });
+  t.after(() => { release(); return fs.rm(harness.directory, { recursive: true, force: true }); });
+  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition()] });
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate();
+  assert.equal((await harness.service.snapshot()).schedules[0].lastDispatch.status, "failed");
 });

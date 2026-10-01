@@ -18,7 +18,7 @@ import { notificationFailureReason } from "../utils/sessionUnreadState";
 import type { PushNotificationRegistrarProps } from "./PushNotificationRegistrar.contract";
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => resolveForegroundNotificationBehavior(),
+  handleNotification: async (notification) => resolveForegroundNotificationBehavior(notification.request.content.categoryIdentifier),
 });
 
 // Registers this device's native APNs push token with the runner once the runner

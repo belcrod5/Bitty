@@ -34,6 +34,11 @@ jest.mock("expo-crypto", () => ({
 }));
 
 describe("resolveForegroundNotificationBehavior", () => {
+  it("shows scheduled failures while the app is open", () => {
+    expect(resolveForegroundNotificationBehavior("SCHEDULE_FAILED")).toEqual({
+      shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: true,
+    });
+  });
   it("suppresses foreground presentation but applies the server absolute badge", () => {
     expect(resolveForegroundNotificationBehavior()).toEqual({
       shouldShowBanner: false,

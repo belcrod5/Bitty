@@ -653,45 +653,50 @@ export function createAgentService({
     }
   }
 
-  async function startTurn(rawRequest, context = {}) {
-    const subjectId = String(context.subjectId || "").trim();
-    if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
-    const request = normalizeAgentStartRequest(rawRequest);
-    const backend = registry.get(request.backendId);
-    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable", { backendId: request.backendId });
+  async function validateExecutionOptions(options) {
+    const backend = registry.get(options.backendId);
+    if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable", { backendId: options.backendId });
     const status = await backend.getStatus();
     if (!status?.available || !status?.readiness?.ready) {
       throw agentError("backend_unavailable", status?.readiness?.reason || "Agent Backend is not ready", {
-        backendId: request.backendId,
+        backendId: options.backendId,
       });
     }
-    if (request.policyProfileId) {
+    if (options.policyProfileId) {
       const profiles = status?.capabilities?.action?.policyProfiles || [];
-      if (!profiles.some((profile) => profile?.id === request.policyProfileId)) {
-        throw agentError("capability_unsupported", "policy profile is not supported", { backendId: request.backendId });
+      if (!profiles.some((profile) => profile?.id === options.policyProfileId)) {
+        throw agentError("capability_unsupported", "policy profile is not supported", { backendId: options.backendId });
       }
     }
-    if (request.model && status?.capabilities?.model?.select !== true) {
-      throw agentError("capability_unsupported", "model selection is not supported", { backendId: request.backendId });
+    if (options.model && status?.capabilities?.model?.select !== true) {
+      throw agentError("capability_unsupported", "model selection is not supported", { backendId: options.backendId });
     }
-    if (request.effort && status?.capabilities?.model?.effort !== true) {
-      throw agentError("capability_unsupported", "effort selection is not supported", { backendId: request.backendId });
+    if (options.effort && status?.capabilities?.model?.effort !== true) {
+      throw agentError("capability_unsupported", "effort selection is not supported", { backendId: options.backendId });
     }
     const modelCapability = status?.capabilities?.model;
     const modelCatalog = modelCapability?.catalog;
-    const selectedModel = request.model && Array.isArray(modelCatalog)
-      ? modelCatalog.find((model) => model?.modelId === request.model)
+    const selectedModel = options.model && Array.isArray(modelCatalog)
+      ? modelCatalog.find((model) => model?.modelId === options.model)
       : undefined;
-    if (request.model && Array.isArray(modelCatalog) && !selectedModel) {
-      throw agentError("capability_unsupported", "model value is not supported", { backendId: request.backendId });
+    if (options.model && Array.isArray(modelCatalog) && !selectedModel) {
+      throw agentError("capability_unsupported", "model value is not supported", { backendId: options.backendId });
     }
     const modelEffortOptions = selectedModel?.effortOptions;
     const hasModelEffortOptions = Array.isArray(modelEffortOptions);
     const effortOptions = hasModelEffortOptions ? modelEffortOptions : modelCapability?.effortOptions;
-    if (request.effort && Array.isArray(effortOptions) &&
-      (hasModelEffortOptions || effortOptions.length > 0) && !effortOptions.includes(request.effort)) {
-      throw agentError("capability_unsupported", "effort value is not supported", { backendId: request.backendId });
+    if (options.effort && Array.isArray(effortOptions) &&
+      (hasModelEffortOptions || effortOptions.length > 0) && !effortOptions.includes(options.effort)) {
+      throw agentError("capability_unsupported", "effort value is not supported", { backendId: options.backendId });
     }
+    return { backend, status };
+  }
+
+  async function startTurn(rawRequest, context = {}) {
+    const subjectId = String(context.subjectId || "").trim();
+    if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
+    const request = normalizeAgentStartRequest(rawRequest);
+    const { backend, status } = await validateExecutionOptions(request);
     const canonicalCwd = request.sessionRef
       ? await resolveNativeSessionCwd(request.sessionRef, backend)
       : await resolveCanonicalCwd(request.cwd);
@@ -1074,6 +1079,7 @@ export function createAgentService({
   const service = {
     protocolVersion: AGENT_PROTOCOL_VERSION,
     startTurn,
+    validateExecutionOptions,
     interrupt,
     claimAction,
     respondToAction,
