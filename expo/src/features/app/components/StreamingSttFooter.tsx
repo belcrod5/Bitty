@@ -163,15 +163,18 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   return (
     <View
       testID="streaming-stt-footer"
-      style={{ position: "relative", overflow: "visible" }}
+      style={{ position: "relative", overflow: "visible", paddingTop: leadingAccessory ? 8 : 0,
+        paddingLeft: leadingAccessory ? 8 : 0 }}
       onLayout={(event) => {
         const { width, height } = event.nativeEvent.layout;
+        const top = leadingAccessory ? 8 : 0;
+        const left = leadingAccessory ? 8 : 0;
         const path = Skia.Path.Make();
         path.addRRect(Skia.RRectXY(
-          Skia.XYWHRect(GLOW_SPACE - 2, GLOW_SPACE - 2, width + 4, height + 4), 16, 16
+          Skia.XYWHRect(GLOW_SPACE + left - 2, GLOW_SPACE + top - 2, width - left + 4, height - top + 4), 16, 16
         ));
         border.value = path;
-        center.value = vec(GLOW_SPACE + width / 2, GLOW_SPACE + height / 2);
+        center.value = vec(GLOW_SPACE + left + (width - left) / 2, GLOW_SPACE + top + (height - top) / 2);
       }}
     >
       <Canvas
@@ -285,13 +288,13 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         >
           <Ionicons name="stop" size={18} color="#ffffff" />
         </TouchableOpacity>
-        {leadingAccessory ? (
-          <View testID="streaming-stt-leading-accessory"
-            style={{ position: "absolute", left: 10, top: 8, width: 30, height: 30, zIndex: 3 }}>
-            {leadingAccessory}
-          </View>
-        ) : null}
       </View>
+      {leadingAccessory ? (
+        <View testID="streaming-stt-leading-accessory"
+          style={{ position: "absolute", left: 0, top: 0, width: 44, height: 44, zIndex: 3 }}>
+          {leadingAccessory}
+        </View>
+      ) : null}
     </View>
   );
 }));

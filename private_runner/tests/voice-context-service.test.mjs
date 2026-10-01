@@ -1117,7 +1117,8 @@ test("response injects only ten recent pairs while older pairs await topic updat
   assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
   const threadStarts = codex.calls.filter(({ method }) => method === "thread/start");
   assert.ok(threadStarts.every(({ params }) => params.ephemeral === true && params.model === "gpt-6-luna"));
-  assert.ok(threadStarts.some(({ params }) => params.sandbox === "workspace-write" && params.approvalPolicy === "on-request" && !Object.hasOwn(params, "config")));
+  assert.ok(threadStarts.some(({ params }) => params.sandbox === "workspace-write" && params.approvalPolicy === "on-request"
+    && params.config.agents.enabled === false));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "read-only" && params.approvalPolicy === "never" && Object.hasOwn(params.config, "mcp_servers")));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "read-only"
     && params.config.web_search === "disabled" && params.config.apps._default.enabled === false
@@ -1154,6 +1155,11 @@ test("managed sessions remain in every voice turn beyond the ten-pair window", a
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").every(({ params }) =>
     params.dynamicTools[0].name === "voice_subagent"), true);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request").every(({ params }) =>
+    params.config.agents.enabled === false
+      && params.developerInstructions.includes("For any session or subagent delegation, use voice_subagent tools")
+      && params.developerInstructions.includes("Report a launch only when the tool confirms it")), true);
   await service.clearMessages();
 });
 

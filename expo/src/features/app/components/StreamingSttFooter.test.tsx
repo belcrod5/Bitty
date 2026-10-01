@@ -100,17 +100,24 @@ describe("StreamingSttFooter", () => {
     expect(screen.getByText("1/2")).toBeTruthy();
   });
 
-  it("keeps the orchestrator icon inside the top row without a transcript gutter", async () => {
+  it("floats the orchestrator icon above the panel without a transcript gutter", async () => {
     const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
       onChangeText={jest.fn()} leadingAccessory={<View testID="orchestrator-icon" />}
       voiceContextStats={{ estimatedContextUsagePercent: 2, unsummarizedMessageCount: 0,
         memoryCharacterCount: 0, subagentRunningCount: 0, subagentTotalCount: 0 }} />);
     const panel = screen.getByTestId("streaming-stt-panel");
-    expect(within(panel).getByTestId("orchestrator-icon")).toBeTruthy();
+    expect(screen.getByTestId("orchestrator-icon")).toBeTruthy();
+    expect(within(panel).queryByTestId("orchestrator-icon")).toBeNull();
     expect(StyleSheet.flatten(panel.props.style).paddingLeft).toBeUndefined();
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).paddingLeft).toBeUndefined();
     const badge = StyleSheet.flatten(screen.getByTestId("streaming-stt-leading-accessory").props.style);
-    expect(badge).toMatchObject({ top: 8, left: 10, width: 30, height: 30, zIndex: 3 });
+    expect(badge).toMatchObject({ top: 0, left: 0, width: 44, height: 44, zIndex: 3 });
+    const footer = screen.getByTestId("streaming-stt-footer");
+    expect(StyleSheet.flatten(footer.props.style)).toMatchObject({ paddingTop: 8, paddingLeft: 8 });
+    await act(async () => {
+      fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 88 } } });
+    });
+    expect(mockRRects.at(-1)).toEqual({ x: 54, y: 54, width: 264, height: 84 });
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
       voiceStatus="speaking" onCancelSpeaking={jest.fn()}
       leadingAccessory={<View testID="orchestrator-icon" />} />);

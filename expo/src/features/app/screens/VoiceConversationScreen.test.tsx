@@ -237,7 +237,12 @@ test("the footer reveals stored messages and closes the history panel", async ()
     gestureVerticalRange: [-24, 24], gestureHorizontalRange: [-32, 32],
   });
   expect(within(screen.getByTestId("voice-history-swipe-area")).getByTestId("voice-orchestrator-floating")).toBeTruthy();
+  expect(StyleSheet.flatten(screen.getByTestId("voice-footer-inset").props.style))
+    .toMatchObject({ paddingLeft: 12, paddingRight: 20 });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-orchestrator-floating").props.style))
+    .toMatchObject({ width: 44, height: 44 });
   await act(async () => { screen.getByTestId("voice-history-swipe-area").props.onMockGestureEnd({ translationY: -80 }); });
+  expect(StyleSheet.flatten(screen.getByTestId("voice-footer-inset").props.style).paddingLeft).toBe(20);
   expect(mockWithTiming).toHaveBeenCalledWith(1, { duration: 240 });
   expect(mockBackdropOpacity.value).toBe(1);
   expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("auto");
