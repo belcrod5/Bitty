@@ -1951,8 +1951,7 @@ export function ChatScreen({
         </View>
         <KeyboardAvoidingView
           style={styles.chatKeyboardAvoiding}
-          behavior={Platform.OS === "ios" ? "position" : "height"}
-          contentContainerStyle={Platform.OS === "ios" ? styles.chatKeyboardAvoidingContent : undefined}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
           automaticOffset={Platform.OS === "ios"}
           keyboardVerticalOffset={keyboardVerticalOffset}
         >
@@ -2108,8 +2107,7 @@ export function ChatScreen({
       <KeyboardAvoidingView
         testID="chat-keyboard-avoiding"
         style={[styles.chatKeyboardAvoiding, (streamingStt.active || voiceGlowVisible || editingSttTranscript) && { overflow: "visible" }]}
-        behavior={Platform.OS === "ios" ? "position" : "height"}
-        contentContainerStyle={Platform.OS === "ios" ? styles.chatKeyboardAvoidingContent : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         automaticOffset={Platform.OS === "ios"}
         keyboardVerticalOffset={keyboardVerticalOffset}
       >

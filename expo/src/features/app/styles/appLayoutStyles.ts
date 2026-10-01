@@ -144,10 +144,6 @@ export function createAppLayoutStyles(theme: VisualTheme) {
     minHeight: 0,
     overflow: "hidden",
   },
-  chatKeyboardAvoidingContent: {
-    flex: 1,
-    minHeight: 0,
-  },
   chatKeyboardAvoidingBody: {
     flex: 1,
     minHeight: 0,
