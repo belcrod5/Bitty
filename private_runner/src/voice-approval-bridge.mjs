@@ -5,7 +5,7 @@ export function createVoiceApprovalBridge({ send, timeoutMs = 2 * 60 * 1000 }) {
   let closed = false;
 
   return {
-    request(operationId, { method, params, threadId, turnId }, orchestratorId = "main") {
+    request(operationId, { method, params, threadId, turnId }, orchestratorId = "main", orchestratorName = "") {
       if (closed) return Promise.reject(new Error("Voice approval channel closed"));
       return new Promise((resolve, reject) => {
         const requestId = randomUUID();
@@ -15,7 +15,7 @@ export function createVoiceApprovalBridge({ send, timeoutMs = 2 * 60 * 1000 }) {
         }, timeoutMs);
         pending.set(requestId, { operationId, timer, resolve, reject });
         try {
-          if (send({ requestId, operationId, method, params, threadId, turnId, orchestratorId }) !== true) {
+          if (send({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName }) !== true) {
             throw new Error("Voice approval channel closed");
           }
         } catch (error) {

@@ -72,6 +72,8 @@ async function makeHarness(options = {}) {
       turnId: "turn-1",
     })),
     startShellScript: options.startShellScript || (async () => ({ jobId: "script-job-1" })),
+    voiceContextService: options.voiceContextService,
+    onVoiceApproval: options.onVoiceApproval,
     now: currentClock.now,
     scheduleTimer: options.scheduleTimer || ((callback, delay) => {
       const timer = { callback, delay, cleared: false, unref() {} };
@@ -932,4 +934,38 @@ test("ten thousand virtual fires keep one bounded runtime record", async () => {
   assert.deepEqual(Object.keys(runtime.runtimes), [ID_A]);
   assert.equal(files.get(definitionsPath), definitionsAfterSave);
   assert.ok(Buffer.byteLength(files.get(runtimePath)) <= CODEX_SCHEDULE_RUNTIME_MAX_BYTES);
+});
+
+
+test("voice schedule schema validates IDs and rejects directory/model overrides without changing the store", async (t) => {
+  const harness = await makeHarness();
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const { cwd: _cwd, modelRef: _model, reasoningEffort: _effort, prompt: _prompt, ...base } = definition();
+  const action = { kind: "voice", orchestratorId: "main", prompt: "Check" };
+  for (const patch of [{ orchestratorId: "bad-id" }, { prompt: "" }, { cwd: "/work" }, { modelRef: "override" }]) {
+    await assert.rejects(harness.service.replaceSchedules({ baseRevision: 0,
+      schedules: [{ ...base, action: { ...action, ...patch } }] }));
+  }
+  assert.equal((await harness.service.snapshot()).revision, 0);
+  const saved = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
+  assert.deepEqual(saved.schedules[0].action, action);
+  assert.notEqual(codexScheduleDefinitionHash({ ...base, action }),
+    codexScheduleDefinitionHash({ ...base, action: { ...action, orchestratorId: ID_B } }));
+});
+
+
+test("saved voice references do not block unrelated LLM edits or stopping a deleted target", async (t) => {
+  const harness = await makeHarness();
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const { cwd: _cwd, modelRef: _model, reasoningEffort: _effort, prompt: _prompt, ...base } = definition();
+  const voice = { ...base, id: ID_B, name: "Deleted target",
+    action: { kind: "voice", orchestratorId: ID_B, prompt: "Check" } };
+  const saved = await harness.service.replaceSchedules({ baseRevision: 0, schedules: [definition(), voice] });
+  const definitions = saved.schedules.map(({ nextOccurrenceAt: _next, lastDispatch: _last, ...schedule }) => schedule);
+  await harness.service.replaceSchedules({ baseRevision: 1,
+    schedules: definitions.map((schedule) => schedule.id === ID_A ? { ...schedule, name: "Updated LLM" } : schedule) });
+  await harness.service.patchSchedule(ID_B, { baseRevision: 2, patch: { enabled: false } });
+  const snapshot = await harness.service.snapshot();
+  assert.equal(snapshot.schedules[0].name, "Updated LLM");
+  assert.equal(snapshot.schedules[1].enabled, false);
 });

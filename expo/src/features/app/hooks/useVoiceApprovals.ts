@@ -6,13 +6,12 @@ import { normalizeAppServerApprovalRequest, toCodexApprovalDecision } from "../.
 export function useVoiceApprovals(
   onRequest: ((request: ApprovalRequest) => Promise<ApprovalAction>) | undefined,
   onResolved: ((request: ApprovalRequest) => void) | undefined,
-  orchestrators: { id: string; name: string }[],
 ) {
   const manager = useRunnerWebSocketManager();
   const { connected } = useRunnerWebSocketSnapshot();
-  const callbacks = useRef({ onRequest, onResolved, orchestrators });
+  const callbacks = useRef({ onRequest, onResolved });
   const pending = useRef(new Map<string, { request: ApprovalRequest; operationId: string }>());
-  callbacks.current = { onRequest, onResolved, orchestrators };
+  callbacks.current = { onRequest, onResolved };
 
   useEffect(() => {
     if (connected) return;
@@ -29,13 +28,14 @@ export function useVoiceApprovals(
       const method = String(payload.method || "");
       if (!requestId || !operationId || pending.current.has(requestId)
         || (method !== "item/commandExecution/requestApproval" && method !== "item/fileChange/requestApproval")) return;
-      const title = callbacks.current.orchestrators.find((item) => item.id === payload.orchestratorId)?.name;
+      const title = typeof payload.orchestratorName === "string" && payload.orchestratorName.trim()
+        ? payload.orchestratorName : "音声会話";
       const request = {
         ...normalizeAppServerApprovalRequest(payload.params, {
           rpcId: 0, method, threadId: String(payload.threadId || ""), turnId: String(payload.turnId || ""),
         }),
         requestId,
-        sessionInfo: { sessionId: String(payload.threadId || ""), sessionTitle: title || "音声会話" },
+        sessionInfo: { sessionId: String(payload.threadId || ""), sessionTitle: title },
       };
       pending.current.set(requestId, { request, operationId });
       const decision = callbacks.current.onRequest?.(request) ?? Promise.resolve<ApprovalAction>("decline");
