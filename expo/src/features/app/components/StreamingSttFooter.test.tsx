@@ -88,11 +88,11 @@ describe("StreamingSttFooter", () => {
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
       voiceContextStats={{ estimatedContextUsagePercent: 42, unsummarizedMessageCount: 6, memoryCharacterCount: 123 }} />);
     expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
-      .toBe("文脈推定 42% · 未要約 6件 · メモリー 123字");
+      .toBe("文脈 42% · 未要約 6件 · メモリー 123字");
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
       voiceContextStats={null} />);
     expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
-      .toBe("文脈推定 --% · 未要約 --件 · メモリー --字");
+      .toBe("文脈 --% · 未要約 --件 · メモリー --字");
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
       voiceContextStats={{ estimatedContextUsagePercent: 42, unsummarizedMessageCount: 6,
         memoryCharacterCount: 123, subagentRunningCount: 1, subagentTotalCount: 2 }} />);
@@ -110,6 +110,11 @@ describe("StreamingSttFooter", () => {
     expect(within(panel).queryByTestId("orchestrator-icon")).toBeNull();
     expect(StyleSheet.flatten(panel.props.style).paddingLeft).toBeUndefined();
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).paddingLeft).toBeUndefined();
+    const metadata = screen.getByTestId("streaming-stt-metadata");
+    expect(StyleSheet.flatten(metadata.props.style)).toMatchObject({ marginTop: 14, marginBottom: 2 });
+    expect(StyleSheet.flatten(metadata.props.style).paddingLeft).toBeUndefined();
+    expect(metadata.children[0]).toBe(screen.getByTestId("streaming-stt-voice-context-stats"));
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-voice-context-stats").props.style).marginLeft).toBe(0);
     const badge = StyleSheet.flatten(screen.getByTestId("streaming-stt-leading-accessory").props.style);
     expect(badge).toMatchObject({ top: 0, left: 0, width: 44, height: 44, zIndex: 3 });
     const footer = screen.getByTestId("streaming-stt-footer");

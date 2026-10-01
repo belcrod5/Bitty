@@ -210,10 +210,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         ) : null}
         <View style={{ flex: 1, minWidth: 0 }}>
           {leadingAccessory || voiceContextStats !== undefined || usage || phase === "finalizing" ? (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginBottom: 2 }}>
-              {leadingAccessory ? (
-                <View style={{ width: 30, height: 30, marginRight: 6 }} />
-              ) : null}
+            <View testID="streaming-stt-metadata" style={{ flexDirection: "row", flexWrap: "wrap",
+              alignItems: "center", marginTop: leadingAccessory ? 14 : 0, marginBottom: 2 }}>
               {phase === "finalizing" || usage ? (
                 <Text style={{ color: "#8e9bad", fontSize: 11 }}>
                   {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
@@ -222,7 +220,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               {voiceContextStats !== undefined ? (
                 <Text testID="streaming-stt-voice-context-stats" style={{ color: "#8e9bad", fontSize: 11,
                   marginLeft: phase === "finalizing" || usage ? 8 : 0 }}>
-                  {`文脈推定 ${voiceContextStats?.estimatedContextUsagePercent ?? "--"}% · 未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
+                  {`文脈 ${voiceContextStats?.estimatedContextUsagePercent ?? "--"}% · 未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
                 </Text>
               ) : null}
               {voiceContextStats?.subagentTotalCount !== undefined ? (
