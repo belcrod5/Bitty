@@ -49,6 +49,7 @@ import {
   type IosFaceTrackingSession,
 } from "../faceTracking/iosFaceTrackingClient";
 import { useBufferedClientLogs } from "./hooks/useBufferedClientLogs";
+import { getNetworkUsageSnapshot } from "../ws/networkUsageMetrics";
 import { useUiSfxController } from "./hooks/useUiSfxController";
 import { useThemeSfxController } from "./hooks/useThemeSfxController";
 import { useAssistantEventSfxController } from "./hooks/useAssistantEventSfxController";
@@ -399,6 +400,7 @@ const SESSION_DIAG_LOG_BUFFER_MAX = 240;
 const SESSION_DIAG_LOG_FLUSH_BATCH_SIZE = 40;
 const SESSION_DIAG_LOG_FLUSH_DELAY_MS = 700;
 const SESSION_DIAG_LOG_RETRY_MS = 3000;
+const NETWORK_USAGE_LOG_INTERVAL_MS = 60_000;
 const SESSION_DIAG_EVENT_THROTTLE_DEFAULT_MS = 1200;
 const SESSION_DIAG_DETAIL_EVENTS_ENABLED = (() => {
   const env = (globalThis as { process?: { env?: Record<string, unknown> } }).process?.env || {};
@@ -1097,6 +1099,32 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     retryMs: SESSION_DIAG_LOG_RETRY_MS,
   });
   sessionDiagEnqueueRef.current = sessionDiagClientLogs.enqueue;
+  useEffect(() => {
+    let lastLogged: ReturnType<typeof getNetworkUsageSnapshot> | null = null;
+    const logUsage = () => {
+      const snapshot = getNetworkUsageSnapshot();
+      if (snapshot.totalSentBytes === 0 && snapshot.totalReceivedBytes === 0) return;
+      if (
+        lastLogged?.sinceMs === snapshot.sinceMs &&
+        lastLogged.totalSentBytes === snapshot.totalSentBytes &&
+        lastLogged.totalReceivedBytes === snapshot.totalReceivedBytes
+      ) return;
+      lastLogged = snapshot;
+      logSessionDiag("network_usage_snapshot", {
+        ...snapshot,
+        sampledAtMs: Date.now(),
+        ttsMediaMeasurement: "server_reported_estimate",
+      }, { throttleMs: 0 });
+    };
+    const timer = setInterval(logUsage, NETWORK_USAGE_LOG_INTERVAL_MS);
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") logUsage();
+    });
+    return () => {
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, [logSessionDiag]);
 
   const faceTrackingEnabledRef = useRef(false);
   const faceTrackingLookingRef = useRef(true);
