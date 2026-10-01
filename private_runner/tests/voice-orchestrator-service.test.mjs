@@ -60,7 +60,9 @@ async function fixture(t, options) {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await fs.rm(temp, { recursive: true, force: true });
   });
-  return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir, createClient: codex.createClient }) };
+  return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir,
+    createClient: codex.createClient, getAgentService: options?.getAgentService,
+    subjectId: "voice-owner" }) };
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -217,4 +219,49 @@ test("missing registry with child conversations fails closed", async (t) => {
   await fs.rm(path.join(rootDir, "orchestrators.json"));
   const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
   await assert.rejects(recovered.list(), { code: "voice_store_corrupt" });
+});
+
+test("an orchestrator with an outstanding delegated run cannot be deleted", async (t) => {
+  let state = "running";
+  const agent = { inspectRun: async () => ({ state, actions: [],
+    ...(state === "completed" ? { result: { outcome: "completed" } } : {}) }) };
+  const { rootDir, codex, service } = await fixture(t, { getAgentService: () => agent });
+  await service.open("main");
+  const child = await service.create("委任中");
+  await fs.writeFile(path.join(rootDir, "subagents.json"), JSON.stringify([{
+    orchestratorId: child.id, backendId: "codex", sessionId: "child-session", runId: "run-1",
+    clientOperationId: "operation-1", requestHash: "hash-1", request: "do work",
+    status: "running", result: "", at: new Date().toISOString(),
+  }]));
+  const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    getAgentService: () => agent, subjectId: "voice-owner" });
+  await recovered.clearMessages(child.id);
+  await assert.rejects(recovered.remove(child.id), { code: "session_busy" });
+  state = "unknown";
+  await assert.rejects(recovered.remove(child.id), { code: "session_busy" });
+  state = "completed";
+  await recovered.remove(child.id);
+  assert.equal((await recovered.list()).orchestrators.some((item) => item.id === child.id), false);
+});
+
+test("an interrupted subagent cleanup resumes from the saved registry", async (t) => {
+  const agent = { inspectRun: async () => ({ state: "completed", actions: [],
+    result: { outcome: "completed" } }) };
+  const { rootDir, codex, service } = await fixture(t, { getAgentService: () => agent });
+  await service.open("main");
+  const child = await service.create("完了済み");
+  const recordFile = path.join(rootDir, "subagents.json");
+  const record = { orchestratorId: child.id, backendId: "codex", sessionId: "child-session",
+    runId: "run-1", clientOperationId: "operation-1", requestHash: "hash-1",
+    request: "do work", status: "completed", result: "done", at: new Date().toISOString() };
+  await fs.writeFile(recordFile, JSON.stringify([record]));
+  const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient,
+    getAgentService: () => agent, subjectId: "voice-owner" });
+  await recovered.list();
+  await fs.rm(recordFile);
+  await fs.mkdir(recordFile);
+  await assert.rejects(recovered.remove(child.id));
+  await fs.rmdir(recordFile);
+  assert.equal((await recovered.list()).orchestrators.some((item) => item.id === child.id), false);
+  assert.deepEqual(JSON.parse(await fs.readFile(recordFile, "utf8")), []);
 });

@@ -6636,6 +6636,8 @@ function createCodexRpcClient({
 const voiceContextService = createVoiceOrchestratorService({
   rootDir: path.join(WORKSPACE_ROOT, "private_runner/logs/voice_context/v1"),
   createClient: (options) => createCodexRpcClient(options),
+  getAgentService: () => agentService,
+  subjectId: () => agentOwnerSubjectId,
 });
 
 const codexAuthRuntime = createCodexAuthRuntime({

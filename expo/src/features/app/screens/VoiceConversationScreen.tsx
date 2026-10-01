@@ -416,7 +416,8 @@ function VoiceConversationSession({
                 ) : null}
               </Reanimated.View>
             ) : null}
-            <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+            <View testID="voice-footer-inset"
+              style={{ paddingLeft: historyExpanded ? 20 : 12, paddingRight: 20, paddingBottom: 20 }}>
               <GestureDetector gesture={footerSwipe}>
                 <View testID="voice-history-swipe-area">
                   <StreamingSttFooter
@@ -459,7 +460,7 @@ function VoiceConversationSession({
                         onPress={() => setHistoryExpanded(true)} onLongPress={() => void openManager()}
                         onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}
                         style={{ width: 44, height: 44 }}>
-                        <View style={{ position: "absolute", top: -8, left: -8 }}>
+                        <View style={{ position: "absolute", left: 0, top: 0 }}>
                           <VoiceOrchestratorIcon orchestrator={orchestrator} size={30} active />
                         </View>
                       </Pressable>

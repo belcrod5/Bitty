@@ -33,14 +33,20 @@ function contextStatsOf(payload: Record<string, unknown>): VoiceContextStats | n
   const estimate = payload.estimatedContextUsagePercent;
   const unsummarized = payload.unsummarizedMessageCount;
   const characters = payload.memoryCharacterCount;
+  const running = payload.subagentRunningCount;
+  const total = payload.subagentTotalCount;
   if (estimate !== null && (typeof estimate !== "number" || !Number.isInteger(estimate)
     || estimate < 0 || estimate > 100)) return null;
   if (typeof unsummarized !== "number" || !Number.isSafeInteger(unsummarized) || unsummarized < 0
     || typeof characters !== "number" || !Number.isSafeInteger(characters) || characters < 0) return null;
+  if ((running !== undefined || total !== undefined)
+    && (typeof running !== "number" || !Number.isSafeInteger(running) || running < 0
+      || typeof total !== "number" || !Number.isSafeInteger(total) || total < running)) return null;
   return {
     estimatedContextUsagePercent: estimate,
     unsummarizedMessageCount: unsummarized,
     memoryCharacterCount: characters,
+    ...(typeof running === "number" ? { subagentRunningCount: running, subagentTotalCount: total as number } : {}),
   };
 }
 
@@ -48,7 +54,9 @@ function sameContextStats(a: VoiceContextStats | null, b: VoiceContextStats | nu
   return a === b || (!!a && !!b
     && a.estimatedContextUsagePercent === b.estimatedContextUsagePercent
     && a.unsummarizedMessageCount === b.unsummarizedMessageCount
-    && a.memoryCharacterCount === b.memoryCharacterCount);
+    && a.memoryCharacterCount === b.memoryCharacterCount
+    && a.subagentRunningCount === b.subagentRunningCount
+    && a.subagentTotalCount === b.subagentTotalCount);
 }
 
 export function useVoiceConversation(

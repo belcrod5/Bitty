@@ -63,6 +63,28 @@ test("loads persisted voice history through Runner", async () => {
   expect(result.current.history.map(({ at }) => at)).toEqual(["2026-09-27T03:04:05.000Z", undefined]);
 });
 
+test("uses the selected orchestrator's managed session counts", async () => {
+  mockManager.request.mockImplementation(async ({ op, payload }: { op: string; payload?: { orchestratorId?: string } }) => {
+    if (op !== "voice.open") throw new Error(`unexpected ${op}`);
+    return { op: "voice.open.result", payload: { logicalConversationId: conversationId,
+      contextMode: "self_context_array", ...initialStats,
+      subagentRunningCount: payload?.orchestratorId === "other" ? 1 : 0,
+      subagentTotalCount: payload?.orchestratorId === "other" ? 2 : 0 } };
+  });
+  let selected = "other";
+  const onCompleted = jest.fn();
+  const { result, rerender } = await renderHook(() =>
+    useVoiceConversation(onCompleted, undefined, undefined, selected));
+  await waitFor(() => expect(result.current.contextStats).toMatchObject({
+    subagentRunningCount: 1, subagentTotalCount: 2,
+  }));
+  selected = "main";
+  await rerender(undefined);
+  await waitFor(() => expect(result.current.contextStats).toMatchObject({
+    subagentRunningCount: 0, subagentTotalCount: 0,
+  }));
+});
+
 test("an older history response cannot replace a newer one", async () => {
   const request = mockManager.request.getMockImplementation();
   const pending: ((response: unknown) => void)[] = [];

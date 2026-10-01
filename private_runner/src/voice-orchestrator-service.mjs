@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createVoiceContextService, readVoiceEventState } from "./voice-context-service.mjs";
+import { createVoiceSubagentService } from "./voice-subagents.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_ICON_BYTES = 1024 * 1024;
@@ -27,7 +28,7 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient }) {
+export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -39,6 +40,16 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
   const contexts = new Map();
   const reservations = new Set();
   const operationOwners = new Map();
+  const subagents = getAgentService ? createVoiceSubagentService({ rootDir: root, getAgentService, subjectId }) : null;
+  const managedSessions = (id) => subagents ? {
+    refresh: () => subagents.refresh(id), contextOf: subagents.contextOf,
+    handleTool: (request) => subagents.handleTool(id, request),
+  } : undefined;
+  const withCounts = async (id, value) => {
+    if (!subagents) return value;
+    const { runningCount, totalCount } = await subagents.refresh(id);
+    return { ...value, subagentRunningCount: runningCount, subagentTotalCount: totalCount };
+  };
   let serial = Promise.resolve();
   let pairSerial = Promise.resolve();
   const exclusive = (work) => {
@@ -118,7 +129,10 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
 
   async function load() {
     if (storeFailure) throw storeFailure;
-    if (registry) return;
+    if (registry) {
+      await subagents?.retain(new Set(registry.orchestrators.map((item) => item.id)));
+      return;
+    }
     const old = await safeFile(registryFile).then((buffer) => JSON.parse(buffer.toString("utf8")), (error) => {
       if (error.code === "ENOENT") return null;
       throw error;
@@ -157,7 +171,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
       selectedId: "main", memoryConversationId: recoveredMemoryConversationId };
     main = createVoiceContextService({ rootDir: root, createClient,
       memoryConversationId: registry.memoryConversationId || undefined,
-      memoryEventPairs: allEventPairs, pairExclusive });
+      memoryEventPairs: allEventPairs, pairExclusive, managedSessions: managedSessions("main") });
     try {
       const opened = await main.open();
       memoryStore = await main.getMemoryStore();
@@ -167,6 +181,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
       if (!registry.memoryConversationId || !UUID.test(opened.logicalConversationId)) {
         throw failure("Voice orchestrator registry is invalid", "voice_store_corrupt");
       }
+      await subagents?.retain(new Set(registry.orchestrators.map((item) => item.id)));
     } catch (error) {
       registry = undefined;
       main = undefined;
@@ -178,7 +193,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
     if (!registry.orchestrators.some((item) => item.id === id)) throw failure("Orchestrator was not found", "not_found");
     if (contexts.has(id)) return contexts.get(id);
     const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, id), createClient,
-      sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive });
+      sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
+      managedSessions: managedSessions(id) });
     contexts.set(id, service);
     try { await service.open(); }
     catch (error) { contexts.delete(id); throw error; }
@@ -212,7 +228,8 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
         await load();
         await fs.mkdir(orchestratorRoot, { recursive: true, mode: 0o700 });
         const service = createVoiceContextService({ rootDir: path.join(orchestratorRoot, item.id), createClient,
-          sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive });
+          sharedWorkspaceDirectory: workspaceDirectory, sharedMemoryStore: memoryStore, pairExclusive,
+          managedSessions: managedSessions(item.id) });
         await service.open();
         if (model !== undefined || effort !== undefined || systemInstruction !== undefined) {
           const defaults = await service.getSettings();
@@ -248,11 +265,16 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
         await load();
         const service = await loadedContext(id);
         if (await service.isBusy()) throw failure("Orchestrator is busy", "session_busy");
+        if (subagents && (await subagents.refresh(id)).records.some((record) =>
+          !["completed", "failed", "interrupted"].includes(record.status))) {
+          throw failure("Orchestrator has an outstanding delegated session", "session_busy");
+        }
         const next = { ...registry, selectedId: registry.selectedId === id ? "main" : registry.selectedId,
           orchestrators: registry.orchestrators.filter((item) => item.id !== id) };
         await saveRegistry(next);
         contexts.delete(id);
         await fs.rm(path.join(orchestratorRoot, id), { recursive: true });
+        await subagents?.retain(new Set(next.orchestrators.map((item) => item.id)));
         return publicList();
       });
     },
@@ -278,9 +300,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
       return result;
     }); },
     async history(id) { return (await context(idOf(id))).history(); },
-    async open(id) { return (await context(idOf(id))).open(); },
+    async open(id) { return withCounts(id, await (await context(idOf(id))).open()); },
     async status(id, conversationId, operationId) {
-      return (await context(idOf(id))).status(conversationId, operationId);
+      return withCounts(id, await (await context(idOf(id))).status(conversationId, operationId));
     },
     async interrupt(id, conversationId, operationId) {
       return (await context(idOf(id))).interrupt(conversationId, operationId);
@@ -301,9 +323,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
           catch { throw failure("Voice memory is awaiting a successful update", "voice_memory_full"); }
         }
         const { orchestratorId, ...payload } = message.payload;
-        return service.start({ ...message, payload }, (result) => {
+        return withCounts(id, await service.start({ ...message, payload }, (result) => {
           reservations.delete(reservation);
-          notify({ ...result, orchestratorId: id });
+          void withCounts(id, { ...result, orchestratorId: id }).then(notify).catch(() => notify({ ...result, orchestratorId: id }));
         }, onApproval, { ...hooks, onAccepted: () => {
           operationOwners.set(operationId, id);
           reservations.add(reservation);
@@ -311,7 +333,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient }) {
         }, onSettled: () => {
           reservations.delete(reservation);
           hooks?.onSettled?.();
-        } });
+        } }));
       });
     },
   };
