@@ -91,6 +91,7 @@ import { useLlmCompletionNotifications } from "./hooks/useLlmCompletionNotificat
 import { useAppSettingsPersistenceController } from "./hooks/useAppSettingsPersistenceController";
 import { shouldAllowAutoCaptureDuringTts } from "./utils/autoAudioPolicy";
 import { useRunnerRouteSelection } from "./hooks/useRunnerRouteSelection";
+import { useVoiceApprovals } from "./hooks/useVoiceApprovals";
 import { useApprovalRequestController } from "./hooks/useApprovalRequestController";
 import { useCodexRelayObserverLifecycleController } from "./hooks/useCodexRelayObserverLifecycleController";
 import { useCodexRelayObserverStartController } from "./hooks/useCodexRelayObserverStartController";
@@ -2878,6 +2879,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       return requestSessionId === visibleSessionId;
     },
   });
+  useVoiceApprovals(handleApprovalRequest, clearResolvedApproval, runnerWebSocketManager);
   const getActiveConversationMessagesForCodex = useCallback(() => (
     conversationMessagesRef.current.map((message) => ({
       ...message,
@@ -6186,8 +6188,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
           ttsProvider,
           selectedVoiceId,
           ttsSpeed,
-          onApprovalRequest: handleApprovalRequest,
-          onApprovalResolved: clearResolvedApproval,
         }}
       />
       <SafeAreaView pointerEvents="box-none" style={styles.appOverlaySafeArea}>

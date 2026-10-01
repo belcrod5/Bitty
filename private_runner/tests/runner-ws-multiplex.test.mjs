@@ -1731,3 +1731,32 @@ test("queued turns with retained calendar tools receive fixed errors without ech
   assert.equal(JSON.parse(write.contentItems[0].text).error.code, "foreground_required");
   assert.equal(JSON.stringify([read, write]).includes("private-"), false);
 });
+
+
+test("scheduled voice approvals reach all clients and decisions route back to the shared bridge", async (t) => {
+  const first = createRunnerWsConnectionForTest();
+  const second = createRunnerWsConnectionForTest();
+  t.after(() => { first.close(); second.close(); });
+  const operationId = "77777777-7777-4777-8777-777777777777";
+  const pending = __TESTING__.scheduledVoiceApprovals.request(operationId, {
+    method: "item/commandExecution/requestApproval", params: { command: "echo test" },
+    threadId: "scheduled-thread", turnId: "scheduled-turn",
+  }, "main", "定期調査");
+  const firstRequest = first.sent.find((message) => message.op === "voice.approval.request");
+  const secondRequest = second.sent.find((message) => message.op === "voice.approval.request");
+  assert.equal(firstRequest.payload.requestId, secondRequest.payload.requestId);
+  assert.equal(secondRequest.payload.orchestratorName, "定期調査");
+  first.close();
+  second.emit("message", JSON.stringify({ channel: "agent", op: "voice.approval.decision",
+    requestId: "scheduled-decision", operationId,
+    payload: { requestId: secondRequest.payload.requestId, decision: "accept" },
+  }), false);
+  assert.equal(await pending, "accept");
+  assert.equal(second.sent.some((message) => message.op === "voice.approval.decision.result"), true);
+});
+
+test("scheduled approvals fail closed when no app is connected", async () => {
+  await assert.rejects(__TESTING__.scheduledVoiceApprovals.request("offline-operation", {
+    method: "item/fileChange/requestApproval", params: {}, threadId: "thread", turnId: "turn",
+  }, "main", "定期調査"), /channel closed/);
+});

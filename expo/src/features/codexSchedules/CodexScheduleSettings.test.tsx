@@ -17,6 +17,14 @@ jest.mock("./codexScheduleApi", () => ({
   putCodexSchedules: jest.fn(),
 }));
 
+const mockOrchestrators = [{ id: "main", name: "メイン" },
+  { id: "22222222-2222-4222-8222-222222222222", name: "調査担当" }];
+const mockManager = {
+  connect: jest.fn(async () => {}),
+  request: jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: { orchestrators: mockOrchestrators } })),
+};
+jest.mock("../runnerWs/RunnerWebSocketContext", () => ({ useRunnerWebSocketManager: () => mockManager }));
+
 const mockGet = getCodexSchedules as jest.MockedFunction<typeof getCodexSchedules>;
 const mockPut = putCodexSchedules as jest.MockedFunction<typeof putCodexSchedules>;
 const alertMock = jest.fn();
@@ -53,6 +61,8 @@ const schedule = {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockManager.connect.mockResolvedValue(undefined);
+  mockManager.request.mockResolvedValue({ op: "voice.orchestrators.list.result", payload: { orchestrators: mockOrchestrators } });
   Alert.alert = alertMock;
   warnSpy = jest.spyOn(console, "warn").mockImplementation((...args) => {
     if (!String(args[0] || "").includes("SafeAreaView has been deprecated")) {
@@ -233,4 +243,71 @@ test("editor displays a saved script selection without LLM-only fields", async (
   expect(await view.findByText("/work/tasks/nightly.sh")).toBeTruthy();
   expect(view.queryByLabelText("モデル")).toBeNull();
   expect(view.queryByLabelText("プロンプト")).toBeNull();
+});
+
+
+test("selects named orchestrators and saves their stable ID without directory or model overrides", async () => {
+  mockPut.mockResolvedValue({ revision: 1, schedules: [] });
+  const view = await render(<CodexScheduleSettings {...props} />);
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュール実行")));
+  await view.findByText("スケジュールはありません。");
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュールを追加")));
+  await act(async () => fireEvent.changeText(view.getByLabelText("スケジュール名"), "調査を定期実行"));
+  await act(async () => fireEvent.press(view.getByLabelText("実行種別")));
+  await act(async () => fireEvent.press(view.getByText("オーケストレーター")));
+  await act(async () => fireEvent.press(view.getByLabelText("オーケストレーター")));
+  await act(async () => fireEvent.press(view.getByText("調査担当")));
+  expect(view.queryByLabelText("ディレクトリ")).toBeNull();
+  expect(view.queryByLabelText("モデル")).toBeNull();
+  await act(async () => fireEvent.changeText(view.getByLabelText("プロンプト"), "調べてください"));
+  await act(async () => fireEvent.press(view.getByLabelText("編集を閉じる")));
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュールを保存")));
+  expect(mockPut).toHaveBeenCalledWith(expect.anything(), 0, [expect.objectContaining({
+    action: { kind: "voice", orchestratorId: mockOrchestrators[1].id, prompt: "調べてください" },
+  })]);
+});
+
+test("saved orchestrator targets follow rename and show deletion without switching targets", async () => {
+  const target = { ...schedule, action: { kind: "voice" as const,
+    orchestratorId: mockOrchestrators[1].id, prompt: "調査" } };
+  const editorProps = { schedule: target, directories: props.directories, modelOptions: props.modelOptions,
+    thinkOptions: props.thinkOptions, currentThreadId: props.currentThreadId,
+    runnerUrl: props.runnerUrl, runnerToken: props.runnerToken,
+    onChange: jest.fn(), onClose: jest.fn(), onDelete: jest.fn() };
+  const view = await render(<CodexScheduleEditor {...editorProps}
+    orchestrators={[{ id: mockOrchestrators[1].id, name: "名前変更後" }]} />);
+  expect(await view.findByText("名前変更後")).toBeTruthy();
+  await view.rerender(<CodexScheduleEditor {...editorProps} orchestrators={[mockOrchestrators[0]]} />);
+  expect(await view.findByText("削除済みオーケストレーター")).toBeTruthy();
+  expect(editorProps.onChange).not.toHaveBeenCalled();
+});
+
+
+test("voice connection failure leaves ordinary schedules editable and saveable", async () => {
+  mockManager.connect.mockRejectedValueOnce(new Error("Voice unavailable"));
+  mockGet.mockResolvedValue({ revision: 2, schedules: [{ ...schedule, rrule: "FREQ=DAILY" }] });
+  mockPut.mockResolvedValue({ revision: 3, schedules: [] });
+  const view = await render(<CodexScheduleSettings {...props} />);
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュール実行")));
+  await act(async () => fireEvent.press(await view.findByLabelText("Morningを編集")));
+  await act(async () => fireEvent.changeText(view.getByLabelText("スケジュール名"), "Updated"));
+  await act(async () => fireEvent.press(view.getByLabelText("編集を閉じる")));
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュールを保存")));
+  expect(mockPut).toHaveBeenCalledWith(expect.anything(), 2,
+    [expect.objectContaining({ name: "Updated", action: schedule.action })]);
+});
+
+test("failed voice list preserves existing targets and supports retry by name", async () => {
+  mockManager.request.mockResolvedValueOnce({ op: "error", payload: { orchestrators: [] } });
+  mockGet.mockResolvedValue({ revision: 1, schedules: [{ ...schedule, action: {
+    kind: "voice", orchestratorId: mockOrchestrators[1].id, prompt: "調査" },
+  }] });
+  const view = await render(<CodexScheduleSettings {...props} />);
+  await act(async () => fireEvent.press(view.getByLabelText("スケジュール実行")));
+  await act(async () => fireEvent.press(await view.findByLabelText("Morningを編集")));
+  expect(await view.findByText("オーケストレーターを読み込めません。")).toBeTruthy();
+  expect(view.getByText("登録先の確認待ち")).toBeTruthy();
+  expect(view.queryByText("削除済みオーケストレーター")).toBeNull();
+  await act(async () => fireEvent.press(view.getByLabelText("オーケストレーターを再読込")));
+  expect(await view.findByText("調査担当")).toBeTruthy();
 });

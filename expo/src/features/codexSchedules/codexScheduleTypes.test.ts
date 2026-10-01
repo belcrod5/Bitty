@@ -112,3 +112,24 @@ test("definition-only wire shape removes runtime fields and local dates keep min
   expect(codexScheduleDefinitionOnly(schedule)).toEqual(definition);
   expect(codexScheduleStartLocalFromDate(new Date(2026, 7, 14, 9, 7, 51))).toBe("2026-08-14T09:07:00");
 });
+
+
+test("voice actions and dispatch IDs round-trip and reject malformed or directory-specific fields", () => {
+  const action = { kind: "voice" as const, orchestratorId: "main", prompt: "調査" };
+  expect(parseCodexScheduleDefinition({ ...definition, action }).action).toEqual(action);
+  for (const patch of [{ orchestratorId: "bad-id" }, { prompt: "" }, { cwd: "/work" }, { modelRef: "override" }]) {
+    expect(() => parseCodexScheduleDefinition({ ...definition, action: { ...action, ...patch } })).toThrow();
+  }
+  const result = { kind: "voice", orchestratorId: "main",
+    logicalConversationId: "22222222-2222-4222-8222-222222222222",
+    clientOperationId: "33333333-3333-4333-8333-333333333333" };
+  const snapshot = (value: unknown) => ({ ok: true, revision: 1, schedules: [{ ...definition, action,
+    nextOccurrenceAt: null, lastDispatch: {
+      occurrenceAt: "2026-08-14T00:00:00.000Z", claimedAt: "2026-08-14T00:00:00.000Z",
+      definitionHash: "a".repeat(64), status: "fired", result: value,
+      errorCode: "", errorMessage: "", updatedAt: "2026-08-14T00:00:00.000Z",
+    },
+  }] });
+  expect(parseCodexScheduleSnapshot(snapshot(result)).schedules[0].lastDispatch?.result).toEqual(result);
+  expect(() => parseCodexScheduleSnapshot(snapshot({ ...result, clientOperationId: "invalid" }))).toThrow("voice IDs");
+});

@@ -14,12 +14,10 @@ import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
-import { useVoiceApprovals } from "../hooks/useVoiceApprovals";
 import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
-import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
@@ -35,8 +33,6 @@ export type VoiceConversationPlayback = {
   ttsProvider?: string;
   selectedVoiceId?: string;
   ttsSpeed?: number;
-  onApprovalRequest?: (request: ApprovalRequest) => Promise<ApprovalAction>;
-  onApprovalResolved?: (request: ApprovalRequest) => void;
 };
 
 export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void }) {
@@ -48,7 +44,6 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
   const [managerOpen, setManagerOpen] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [loadError, setLoadError] = useState("");
-  useVoiceApprovals(props.onApprovalRequest, props.onApprovalResolved, list?.orchestrators || []);
 
   useEffect(() => {
     let current = true;

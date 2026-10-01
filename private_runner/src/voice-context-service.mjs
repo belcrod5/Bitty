@@ -873,7 +873,10 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           if (inFlightId === clientOperationId) inFlightPartialText += delta;
           hooks.onText?.(delta);
         }, onTextError: hooks.onTextError,
-        onStarted: ({ threadId, turnId }) => exclusive(() => append(clientOperationId, "native_started", { threadId, turnId })) });
+        onStarted: async ({ threadId, turnId }) => {
+          await exclusive(() => append(clientOperationId, "native_started", { threadId, turnId }));
+          hooks.onStarted?.({ threadId, turnId });
+        } });
       stage = "completion_store";
       await (pairExclusive || ((work) => work()))(() => exclusive(async () => {
         if (signal.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");

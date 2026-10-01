@@ -14,6 +14,10 @@ type CodexScheduleBase = {
 };
 
 export type CodexScheduleAction = {
+  kind: "voice";
+  orchestratorId: string;
+  prompt: string;
+} | {
   kind: "llm";
   cwd: string;
   modelRef: string;
@@ -31,6 +35,11 @@ export type CodexScheduleDefinition = CodexScheduleBase & {
 };
 
 export type CodexScheduleDispatchResult = {
+  kind: "voice";
+  orchestratorId: string;
+  logicalConversationId: string;
+  clientOperationId: string;
+} | {
   kind: "llm";
   threadId: string | null;
   turnId: string | null;
@@ -84,6 +93,10 @@ export function codexScheduleRruleToRepeat(rrule: CodexScheduleRrule): CodexSche
   const match = CODEX_SCHEDULE_REPEAT_OPTIONS.find((option) => RRULE_BY_REPEAT[option.value] === rrule);
   if (!match) throw new Error("Unsupported schedule recurrence");
   return match.value;
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -140,6 +153,15 @@ function parseDispatch(raw: unknown): CodexScheduleDispatch | null {
         turnId: nullableId(rawResult.turnId, "lastDispatch.result.turnId"),
       };
       if (!result.threadId && !result.turnId) throw new Error("lastDispatch.result must contain at least one LLM ID");
+    } else if (rawResult.kind === "voice") {
+      exactKeys(rawResult, ["kind", "orchestratorId", "logicalConversationId", "clientOperationId"], "lastDispatch.result");
+      const orchestratorId = text(rawResult.orchestratorId, "lastDispatch.result.orchestratorId", 36);
+      const logicalConversationId = text(rawResult.logicalConversationId, "lastDispatch.result.logicalConversationId", 36);
+      const clientOperationId = text(rawResult.clientOperationId, "lastDispatch.result.clientOperationId", 36);
+      if ((orchestratorId !== "main" && !isUuid(orchestratorId)) || !isUuid(logicalConversationId) || !isUuid(clientOperationId)) {
+        throw new Error("lastDispatch.result voice IDs are invalid");
+      }
+      result = { kind: "voice", orchestratorId, logicalConversationId, clientOperationId };
     } else if (rawResult.kind === "script") {
       exactKeys(rawResult, ["kind", "jobId"], "lastDispatch.result");
       result = { kind: "script", jobId: text(rawResult.jobId, "lastDispatch.result.jobId", 10_000) };
@@ -171,7 +193,7 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
     ? ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "cwd", "modelRef", "reasoningEffort", "prompt", "threadId"]
     : ["id", "name", "enabled", "startLocal", "timeZone", "rrule", "action"], "schedule");
   const id = text(value.id, "id", 36);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error("id is invalid");
+  if (!isUuid(id)) throw new Error("id is invalid");
   const rrules: CodexScheduleRrule[] = [null, "FREQ=DAILY", "FREQ=WEEKLY", "FREQ=MONTHLY", "FREQ=YEARLY"];
   if (!rrules.includes(value.rrule as CodexScheduleRrule)) throw new Error("rrule is invalid");
   if (typeof value.enabled !== "boolean") throw new Error("enabled is invalid");
@@ -190,7 +212,12 @@ export function parseCodexScheduleDefinition(raw: unknown): CodexScheduleDefinit
     threadId: value.threadId,
   } : object(value.action, "action");
   let action: CodexScheduleAction;
-  if (rawAction.kind === "script") {
+  if (rawAction.kind === "voice") {
+    exactKeys(rawAction, ["kind", "orchestratorId", "prompt"], "action");
+    const orchestratorId = text(rawAction.orchestratorId, "action.orchestratorId", 36);
+    if (orchestratorId !== "main" && !isUuid(orchestratorId)) throw new Error("action.orchestratorId is invalid");
+    action = { kind: "voice", orchestratorId, prompt: text(rawAction.prompt, "action.prompt", 24_000) };
+  } else if (rawAction.kind === "script") {
     exactKeys(rawAction, ["kind", "cwd", "scriptPath"], "action");
     const scriptPath = text(rawAction.scriptPath, "action.scriptPath", 2_048);
     if (!scriptPath.toLowerCase().endsWith(".sh")) throw new Error("action.scriptPath is invalid");

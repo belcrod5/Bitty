@@ -39,3 +39,14 @@ test("send failure and timeout reject without accepting stale decisions", async 
   await assert.rejects(bridge.request("operation", request), /timed out/);
   assert.equal(bridge.decide("operation", sent.requestId, "accept"), false);
 });
+
+
+test("background approval metadata preserves the orchestrator identity and current name", async () => {
+  let sent;
+  const bridge = createVoiceApprovalBridge({ send: (value) => { sent = value; return true; } });
+  const pending = bridge.request("scheduled-operation", request, "main", "定期調査");
+  assert.equal(sent.orchestratorId, "main");
+  assert.equal(sent.orchestratorName, "定期調査");
+  assert.equal(bridge.decide("scheduled-operation", sent.requestId, "accept"), true);
+  assert.equal(await pending, "accept");
+});

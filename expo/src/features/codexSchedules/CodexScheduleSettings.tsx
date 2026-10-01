@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 
+import { useRunnerWebSocketManager } from "../runnerWs/RunnerWebSocketContext";
 import type { CodexScheduleSettingsProps } from "./CodexScheduleSettings.contract";
 import { useVisualTheme } from "../app/theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../app/theme/visualThemes";
@@ -75,6 +76,9 @@ function scheduleSubtitle(schedule: CodexSchedule) {
 
 export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
   const { theme, themeId } = useVisualTheme();
+  const manager = useRunnerWebSocketManager();
+  const [orchestrators, setOrchestrators] = useState<{ id: string; name: string }[] | null>(null);
+  const [orchestratorError, setOrchestratorError] = useState("");
   const styles = stylesByTheme[themeId];
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -87,9 +91,27 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
   const editingSchedule = schedules.find((schedule) => schedule.id === editingId) || null;
   const dirty = useMemo(() => savedShape(schedules) !== savedShape(savedSchedules), [savedSchedules, schedules]);
 
+  const loadOrchestrators = async () => {
+    setOrchestrators(null);
+    setOrchestratorError("");
+    try {
+      await manager.connect();
+      const response = await manager.request({ channel: "agent", op: "voice.orchestrators.list" });
+      const list = response.payload as { orchestrators?: { id: string; name: string }[] } | undefined;
+      if (response.op !== "voice.orchestrators.list.result" || !Array.isArray(list?.orchestrators)
+        || !list.orchestrators.every((item) => typeof item?.id === "string" && typeof item.name === "string")) {
+        throw new Error("オーケストレーターを読み込めません。");
+      }
+      setOrchestrators(list.orchestrators);
+    } catch (error) {
+      setOrchestratorError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     setLoadError("");
+    void loadOrchestrators();
     try {
       const snapshot = await getCodexSchedules(props);
       setRevision(snapshot.revision);
@@ -227,6 +249,10 @@ export function CodexScheduleSettings(props: CodexScheduleSettingsProps) {
           ) : null}
           <CodexScheduleEditor
             schedule={editingSchedule}
+            orchestrators={orchestrators}
+            orchestratorError={orchestratorError}
+            onReloadOrchestrators={() => void loadOrchestrators()}
+            currentCwd={props.currentCwd}
             directories={props.directories}
             modelOptions={props.modelOptions}
             thinkOptions={props.thinkOptions}

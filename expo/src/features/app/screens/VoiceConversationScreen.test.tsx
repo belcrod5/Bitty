@@ -93,7 +93,6 @@ jest.mock("../hooks/useVoiceConversation", () => ({
     return mockVoice;
   },
 }));
-jest.mock("../hooks/useVoiceApprovals", () => ({ useVoiceApprovals: jest.fn() }));
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketManager: () => mockManager,
   useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1 }),

@@ -32,6 +32,10 @@ import {
 
 type Props = {
   schedule: CodexSchedule | null;
+  orchestrators?: readonly { id: string; name: string }[] | null;
+  orchestratorError?: string;
+  onReloadOrchestrators?: () => void;
+  currentCwd?: string;
   directories: readonly { path: string; displayName: string }[];
   modelOptions: readonly { value: string; label: string }[];
   thinkOptions: readonly ReasoningEffort[];
@@ -55,6 +59,10 @@ function combineTime(current: Date, selected: Date) {
 
 export function CodexScheduleEditor({
   schedule,
+  orchestrators = null,
+  orchestratorError = "",
+  onReloadOrchestrators,
+  currentCwd = "",
   directories,
   modelOptions,
   thinkOptions,
@@ -77,13 +85,16 @@ export function CodexScheduleEditor({
   const updateLlmAction = (patch: Partial<Extract<CodexScheduleAction, { kind: "llm" }>>) => {
     if (schedule.action.kind === "llm") update({ action: { ...schedule.action, ...patch } });
   };
+  const cwd = schedule.action.kind === "voice" ? currentCwd || directories[0]?.path || "" : schedule.action.cwd;
   const cwdOptions = [
     ...directories.map((directory) => ({ value: directory.path, label: directory.displayName || directory.path })),
-    ...(!directories.some((directory) => directory.path === schedule.action.cwd) && schedule.action.cwd
-      ? [{ value: schedule.action.cwd, label: `登録解除済み: ${schedule.action.cwd}` }]
+    ...(!directories.some((directory) => directory.path === cwd) && cwd
+      ? [{ value: cwd, label: `登録解除済み: ${cwd}` }]
       : []),
   ];
   const llmAction = schedule.action.kind === "llm" ? schedule.action : null;
+  const voiceAction = schedule.action.kind === "voice" ? schedule.action : null;
+  const promptAction = schedule.action.kind === "script" ? null : schedule.action;
   const scriptAction = schedule.action.kind === "script" ? schedule.action : null;
   const models = [
     ...modelOptions,
@@ -99,6 +110,11 @@ export function CodexScheduleEditor({
       : []),
   ];
 
+  const orchestratorOptions = [
+    ...(orchestrators || []).map((item) => ({ value: item.id, label: item.name })),
+    ...(voiceAction?.orchestratorId && !(orchestrators || []).some((item) => item.id === voiceAction.orchestratorId)
+      ? [{ value: voiceAction.orchestratorId, label: orchestrators === null ? "登録先の確認待ち" : "削除済みオーケストレーター" }] : []),
+  ];
   const finish = onClose;
 
   return (
@@ -168,14 +184,16 @@ export function CodexScheduleEditor({
             <Text style={styles.label}>実行種別</Text>
             <OptionSelectField
               title="実行種別"
-              options={[{ value: "llm", label: "LLM" }, { value: "script", label: "実行ファイル" }]}
+              options={[{ value: "llm", label: "LLM" }, { value: "voice", label: "オーケストレーター" }, { value: "script", label: "実行ファイル" }]}
               selectedValue={schedule.action.kind}
               onSelect={(kind) => update({
-                action: kind === "script"
-                  ? { kind: "script", cwd: schedule.action.cwd, scriptPath: "" }
+                action: kind === "voice"
+                  ? { kind: "voice", orchestratorId: orchestrators?.[0]?.id || "", prompt: promptAction?.prompt || "" }
+                  : kind === "script"
+                  ? { kind: "script", cwd, scriptPath: "" }
                   : {
                     kind: "llm",
-                    cwd: schedule.action.cwd,
+                    cwd,
                     modelRef: modelOptions[0]?.value || "",
                     reasoningEffort: thinkOptions[0] || "medium",
                     prompt: "",
@@ -183,68 +201,89 @@ export function CodexScheduleEditor({
                   },
               })}
             />
-            <Text style={styles.label}>ディレクトリ</Text>
-            <OptionSelectField
-              title="ディレクトリ"
-              options={cwdOptions}
-              selectedValue={schedule.action.cwd}
-              onSelect={(cwd) => update({ action: schedule.action.kind === "script"
-                ? { ...schedule.action, cwd, scriptPath: "" }
-                : { ...schedule.action, cwd } })}
-            />
-            {llmAction ? (
+            {voiceAction ? (
               <>
-                <Text style={styles.label}>実行先</Text>
-                <OptionSelectField
-                  title="実行先"
-                  options={threadOptions}
-                  selectedValue={llmAction.threadId || ""}
-                  onSelect={(threadId) => updateLlmAction({ threadId: threadId || null })}
-                />
-                <Text style={styles.label}>モデル</Text>
-                <OptionSelectField title="モデル" options={models} selectedValue={llmAction.modelRef} onSelect={(modelRef) => updateLlmAction({ modelRef })} />
-                <Text style={styles.label}>思考レベル</Text>
-                <OptionSelectField
-                  title="思考レベル"
-                  options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
-                  selectedValue={llmAction.reasoningEffort}
-                  onSelect={(reasoningEffort) => updateLlmAction({ reasoningEffort: reasoningEffort as ReasoningEffort })}
-                />
+                <Text style={styles.label}>オーケストレーター</Text>
+                {orchestrators === null ? <Text style={styles.count}>
+                  {orchestratorError || "オーケストレーターを読込中…"}
+                </Text> : null}
+                {orchestratorError && onReloadOrchestrators ? (
+                  <TouchableOpacity accessibilityRole="button" accessibilityLabel="オーケストレーターを再読込"
+                    onPress={onReloadOrchestrators} style={styles.secondaryButton}>
+                    <Text style={styles.secondaryText}>再読込</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <OptionSelectField title="オーケストレーター" options={orchestratorOptions}
+                  selectedValue={voiceAction.orchestratorId}
+                  onSelect={(orchestratorId) => update({ action: { ...voiceAction, orchestratorId } })} />
               </>
             ) : (
               <>
-                <Text style={styles.label}>ファイル</Text>
-                <RunnerFilePicker
-                  title="実行ファイル"
-                  accessibilityLabel="実行ファイル"
-                  closeAccessibilityLabel="実行ファイル選択を閉じる"
-                  runnerUrl={runnerUrl}
-                  runnerToken={runnerToken}
-                  rootPath={schedule.action.cwd}
-                  rootDisplayName={schedule.action.cwd}
-                  value={scriptAction?.scriptPath || ""}
-                  placeholder=".sh ファイルを選択"
-                  fileFilter={isShellScript}
-                  fileAccessibilityLabel={(entry) => `${entry.name}を選択`}
-                  onSelect={(scriptPath) => scriptAction && update({ action: { ...scriptAction, scriptPath } })}
+                <Text style={styles.label}>ディレクトリ</Text>
+                <OptionSelectField
+                  title="ディレクトリ"
+                  options={cwdOptions}
+                  selectedValue={cwd}
+                  onSelect={(cwd) => {
+                    if (schedule.action.kind !== "voice") update({ action: schedule.action.kind === "script"
+                      ? { ...schedule.action, cwd, scriptPath: "" } : { ...schedule.action, cwd } });
+                  }}
                 />
+                {llmAction ? (
+                  <>
+                    <Text style={styles.label}>実行先</Text>
+                    <OptionSelectField
+                      title="実行先"
+                      options={threadOptions}
+                      selectedValue={llmAction.threadId || ""}
+                      onSelect={(threadId) => updateLlmAction({ threadId: threadId || null })}
+                    />
+                    <Text style={styles.label}>モデル</Text>
+                    <OptionSelectField title="モデル" options={models} selectedValue={llmAction.modelRef} onSelect={(modelRef) => updateLlmAction({ modelRef })} />
+                    <Text style={styles.label}>思考レベル</Text>
+                    <OptionSelectField
+                      title="思考レベル"
+                      options={thinkOptions.map((effort) => ({ value: effort, label: effort }))}
+                      selectedValue={llmAction.reasoningEffort}
+                      onSelect={(reasoningEffort) => updateLlmAction({ reasoningEffort: reasoningEffort as ReasoningEffort })}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.label}>ファイル</Text>
+                    <RunnerFilePicker
+                      title="実行ファイル"
+                      accessibilityLabel="実行ファイル"
+                      closeAccessibilityLabel="実行ファイル選択を閉じる"
+                      runnerUrl={runnerUrl}
+                      runnerToken={runnerToken}
+                      rootPath={cwd}
+                      rootDisplayName={cwd}
+                      value={scriptAction?.scriptPath || ""}
+                      placeholder=".sh ファイルを選択"
+                      fileFilter={isShellScript}
+                      fileAccessibilityLabel={(entry) => `${entry.name}を選択`}
+                      onSelect={(scriptPath) => scriptAction && update({ action: { ...scriptAction, scriptPath } })}
+                    />
+                  </>
+                )}
               </>
             )}
           </View>
 
-          {llmAction ? (
+          {promptAction ? (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>プロンプト</Text>
               <TextInput
                 accessibilityLabel="プロンプト"
                 style={[styles.input, styles.prompt]}
-                value={llmAction.prompt}
+                value={promptAction.prompt}
                 maxLength={24_000}
                 multiline
                 textAlignVertical="top"
-                onChangeText={(prompt) => updateLlmAction({ prompt })}
+                onChangeText={(prompt) => update({ action: { ...promptAction, prompt } })}
               />
-              <Text style={styles.count}>{llmAction.prompt.length.toLocaleString()} / 24,000</Text>
+              <Text style={styles.count}>{promptAction.prompt.length.toLocaleString()} / 24,000</Text>
             </View>
           ) : null}
 

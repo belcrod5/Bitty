@@ -130,6 +130,8 @@ export function codexScheduleDefinitionHash(definition) {
   };
   if (action.kind === "script") {
     canonical.action = { kind: "script", cwd: action.cwd, scriptPath: action.scriptPath };
+  } else if (action.kind === "voice") {
+    canonical.action = { kind: "voice", orchestratorId: action.orchestratorId, prompt: action.prompt };
   } else {
     canonical.cwd = action.cwd;
     canonical.modelRef = action.modelRef;
@@ -157,6 +159,16 @@ function normalizeAction(value, index, parseCodexOptions, strictStoredFields, le
     value = requireObject(value.action, `${label}.action`);
   }
   const kind = requireString(value.kind, `${label}.action.kind`).trim();
+  if (kind === "voice") {
+    onlyKeys(value, new Set(["kind", "orchestratorId", "prompt"]), `${label}.action`);
+    const orchestratorId = requireString(value.orchestratorId, `${label}.action.orchestratorId`).trim();
+    if (orchestratorId !== "main" && !CODEX_SCHEDULE_UUID_PATTERN.test(orchestratorId)) {
+      throw new Error(`${label}.action.orchestratorId is invalid`);
+    }
+    const prompt = requireString(value.prompt, `${label}.action.prompt`).trim();
+    if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new Error(`${label}.action.prompt is invalid`);
+    return { kind, orchestratorId, prompt };
+  }
   const cwd = requireString(value.cwd, `${label}.action.cwd`).trim();
   if (!cwd || cwd.length > 2048) throw new Error(`${label}.action.cwd is invalid`);
   if (kind === "script") {
@@ -280,6 +292,17 @@ function validateDispatchResult(raw, label) {
     if (!jobId) throw new Error(`${label}.jobId is invalid`);
     return { kind: "script", jobId };
   }
+  if (value.kind === "voice") {
+    onlyKeys(value, new Set(["kind", "orchestratorId", "logicalConversationId", "clientOperationId"]), label);
+    const orchestratorId = requireString(value.orchestratorId, `${label}.orchestratorId`).trim();
+    const logicalConversationId = requireString(value.logicalConversationId, `${label}.logicalConversationId`).trim();
+    const clientOperationId = requireString(value.clientOperationId, `${label}.clientOperationId`).trim();
+    if ((orchestratorId !== "main" && !CODEX_SCHEDULE_UUID_PATTERN.test(orchestratorId)) ||
+      !CODEX_SCHEDULE_UUID_PATTERN.test(logicalConversationId) || !CODEX_SCHEDULE_UUID_PATTERN.test(clientOperationId)) {
+      throw new Error(`${label} voice IDs are invalid`);
+    }
+    return { kind: "voice", orchestratorId, logicalConversationId, clientOperationId };
+  }
   throw new Error(`${label}.kind is invalid`);
 }
 
@@ -380,6 +403,8 @@ export function createCodexScheduleService({
   validateShellScript,
   startScheduledCodexTurn,
   startShellScript,
+  voiceContextService,
+  onVoiceApproval,
   now = () => new Date(),
   scheduleTimer = (callback, delay) => setTimeout(callback, delay),
   clearTimer = (timer) => clearTimeout(timer),
@@ -397,6 +422,8 @@ export function createCodexScheduleService({
   const idleWaiters = new Set();
 
   async function validateActionTarget(action) {
+    // Deleted targets remain editable and fail only when dispatched.
+    if (action.kind === "voice") return;
     await validateCwd(action.cwd);
     if (action.kind === "script") {
       await validateShellScript(action.scriptPath, {
@@ -655,7 +682,19 @@ export function createCodexScheduleService({
         dispatch.errorMessage = errorMessage(failure).slice(0, MAX_ERROR_CHARS);
         dispatch.result = null;
       } else {
-        if (claim.definition.action.kind === "script") {
+        if (claim.definition.action.kind === "voice") {
+          const { orchestratorId, logicalConversationId, clientOperationId } = result || {};
+          if (!orchestratorId || !logicalConversationId || !clientOperationId) {
+            dispatch.status = "failed";
+            dispatch.errorCode = "voice_start_ids_missing";
+            dispatch.errorMessage = "Voice turn start did not return conversation and operation IDs";
+          } else {
+            dispatch.status = "fired";
+            dispatch.result = { kind: "voice", orchestratorId, logicalConversationId, clientOperationId };
+            dispatch.errorCode = "";
+            dispatch.errorMessage = "";
+          }
+        } else if (claim.definition.action.kind === "script") {
           const jobId = String(result?.jobId || "").trim();
           if (!jobId) {
             dispatch.status = "failed";
@@ -694,15 +733,33 @@ export function createCodexScheduleService({
     try {
       claim = await claimSchedule(id);
       if (!claim) return;
-      try {
-        await validateCwd(claim.definition.action.cwd);
-      } catch (error) {
-        const failure = new Error(errorMessage(error));
-        failure.code = "cwd_unavailable";
-        throw failure;
-      }
       const action = claim.definition.action;
-      if (action.kind === "script") {
+      if (action.kind !== "voice") {
+        try { await validateCwd(action.cwd); }
+        catch (error) { throw Object.assign(new Error(errorMessage(error)), { code: "cwd_unavailable" }); }
+      }
+      if (action.kind === "voice") {
+        const opened = await voiceContextService.open(action.orchestratorId);
+        const clientOperationId = randomUUID();
+        await new Promise((resolve, reject) => {
+          let started = false;
+          void voiceContextService.start({ operationId: clientOperationId, payload: {
+            orchestratorId: action.orchestratorId,
+            backendId: "codex",
+            logicalConversationId: opened.logicalConversationId,
+            clientOperationId,
+            input: { blocks: [{ type: "text", text: action.prompt }] },
+          } }, (state) => {
+            if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
+          }, (request) => onVoiceApproval(clientOperationId, action.orchestratorId, request), {
+            onStarted: () => { started = true; resolve(); },
+            onFailed: reject,
+            onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },
+          }).catch(reject);
+        });
+        result = { orchestratorId: action.orchestratorId,
+          logicalConversationId: opened.logicalConversationId, clientOperationId };
+      } else if (action.kind === "script") {
         await validateShellScript(action.scriptPath, {
           allowExternal: true,
           allowedRoot: action.cwd,

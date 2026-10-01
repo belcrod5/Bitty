@@ -6831,6 +6831,18 @@ const startScheduledCodexTurn = createScheduledCodexTurnStarter({
   subjectId: agentOwnerSubjectId,
   dynamicToolResponse: (request) => runnerInitiatedCalendarResponse(request),
 });
+const scheduledVoiceApprovals = createVoiceApprovalBridge({
+  send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName }) => {
+    let sent = false;
+    for (const client of runnerWsActiveClients) {
+      if (sendRunnerWsEnvelope(client, {
+        channel: "agent", op: "voice.approval.request", operationId, streamId: operationId,
+        payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName },
+      })) sent = true;
+    }
+    return sent;
+  },
+});
 const codexScheduleService = createCodexScheduleService({
   definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
   runtimePath: CODEX_SCHEDULE_RUNTIME_PATH,
@@ -6843,6 +6855,12 @@ const codexScheduleService = createCodexScheduleService({
   validateShellScript: resolveWorkspaceShellScriptTarget,
   startScheduledCodexTurn,
   startShellScript: startWorkspaceShellScript,
+  voiceContextService,
+  onVoiceApproval: async (operationId, orchestratorId, request) => {
+    const { orchestrators } = await voiceContextService.list();
+    return scheduledVoiceApprovals.request(operationId, request, orchestratorId,
+      orchestrators.find((item) => item.id === orchestratorId)?.name || "");
+  },
 });
 const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
   service: codexScheduleService,
@@ -8997,9 +9015,9 @@ runnerWsServer.on("connection", (ws, req) => {
   const llmRelaysByKey = new Map();
   const attachedTtsJobIds = new Set();
   const voiceApprovals = createVoiceApprovalBridge({
-    send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId }) => sendRunnerWsEnvelope(ws, {
+    send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName }) => sendRunnerWsEnvelope(ws, {
       channel: "agent", op: "voice.approval.request", operationId, streamId: operationId,
-      payload: { requestId, method, params, threadId, turnId, orchestratorId },
+      payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName },
     }),
   });
   runnerWsActiveClients.add(ws);
@@ -9029,7 +9047,8 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op === "voice.approval.decision") {
       const requestId = String(message.payload?.requestId || "");
       const decision = String(message.payload?.decision || "");
-      if (!voiceApprovals.decide(message.operationId, requestId, decision)) {
+      if (!voiceApprovals.decide(message.operationId, requestId, decision)
+        && !scheduledVoiceApprovals.decide(message.operationId, requestId, decision)) {
         sendVoiceError(message, { code: "turn_rejected", message: "Invalid voice approval decision" });
         return true;
       }
@@ -9100,7 +9119,12 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
     const operationId = message.operationId;
     const { tts: voiceTts, ...voicePayload } = message.payload || {};
-    const onApproval = (request) => voiceApprovals.request(operationId, request, voicePayload.orchestratorId || "main");
+    const onApproval = async (request) => {
+      const orchestratorId = voicePayload.orchestratorId || "main";
+      const { orchestrators } = await voiceContextService.list();
+      return voiceApprovals.request(operationId, request, orchestratorId,
+        orchestrators.find((item) => item.id === orchestratorId)?.name || "");
+    };
     const voiceMessage = { ...message, payload: { ...voicePayload, orchestratorId: voicePayload.orchestratorId || "main" } };
     let voiceJob = null;
     let voiceSegments = null;
@@ -12052,6 +12076,7 @@ export const __TESTING__ = {
   codexWsRelaysById,
   CODEX_WS_RELAY_MAX_ACTIVE,
   startScheduledCodexTurn,
+  scheduledVoiceApprovals,
   attachClientToCodexRelay,
   forwardCodexRelayClientData,
   parseCodexRpcMeta,
