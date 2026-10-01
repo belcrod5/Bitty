@@ -17,6 +17,7 @@ export function createScheduledCodexTurnStarter({
     effort = "",
     threadId = "",
     clientOperationId,
+    onFailed,
   }) {
     const context = { subjectId };
     const run = await agentService.startTurn({
@@ -32,6 +33,7 @@ export function createScheduledCodexTurnStarter({
     const actionConsumerId = {};
     let resolvedThreadId = threadId;
     let started = false;
+    let resolvedTurnId = "";
     let resolveStarted;
     let rejectStarted;
     const startedPromise = new Promise((resolve, reject) => {
@@ -65,16 +67,19 @@ export function createScheduledCodexTurnStarter({
           rejectStarted(error);
           return;
         }
+        resolvedTurnId = turnId;
         started = true;
         resolveStarted({ threadId: resolvedThreadId, turnId });
       } else if (event.type === "action.requested" && event.payload?.kind === "dynamic_tool") {
         void handleDynamicTool(event.payload).catch(async (error) => {
           if (!started) rejectStarted(error);
+          else onFailed?.(error, { threadId: resolvedThreadId, turnId: resolvedTurnId });
           await agentService.interrupt(run.runId, context).catch(() => {});
           console.warn(`[schedule] dynamic tool failed: ${error instanceof Error ? error.message : String(error)}`);
         });
-      } else if (["turn.completed", "turn.interrupted", "turn.failed"].includes(event.type) && !started) {
-        rejectStarted(terminalError(event));
+      } else if (["turn.completed", "turn.interrupted", "turn.failed"].includes(event.type)) {
+        if (!started) rejectStarted(terminalError(event));
+        else if (event.type === "turn.failed") onFailed?.(terminalError(event), { threadId: resolvedThreadId, turnId: resolvedTurnId });
       }
     };
 

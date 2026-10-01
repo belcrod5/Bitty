@@ -51,6 +51,26 @@ export function createTurnCompletionNotifier({
     return true;
   }
 
+  async function sendNotifications(deliveries) {
+    const sentResults = await Promise.all(deliveries.map(async ({ device, payload }) => {
+      try {
+        const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
+        if (result?.status === 410) {
+          await pushDeviceStore.removeDevice(device.deviceId);
+        } else if (!result?.ok) {
+          log.warn(
+            `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
+          );
+        }
+        return Boolean(result?.ok);
+      } catch (error) {
+        log.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(error)}`);
+        return false;
+      }
+    }));
+    return sentResults.filter(Boolean).length;
+  }
+
   async function sendPush({ backendId, sessionId, threadId, turnId, previewText, directory, origin }) {
     if (!pushEnabled || !apnsClient || !pushSummarizer) return;
     let devices;
@@ -111,33 +131,20 @@ export function createTurnCompletionNotifier({
       directory: payloadDirectory,
       turnId: String(turnId || ""),
     };
-    const sentResults = await Promise.all(devices.map(async (device) => {
-      try {
-        const directoryKey = Array.isArray(device.directories) && device.directories.length > 0
-          ? [...device.directories].sort().join("\u0000")
-          : "";
-        const directorySetIndex = directorySetIndexByKey.get(directoryKey);
-        const badge = directorySetIndex === undefined
-          ? undefined
-          : unreadSnapshot.unreadCounts?.[directorySetIndex];
-        const payload = Number.isFinite(Number(badge))
-          ? { ...basePayload, aps: { ...basePayload.aps, badge: Math.max(0, Math.floor(Number(badge))) } }
-          : basePayload;
-        const result = await apnsClient.sendToDevice(device.apnsToken, payload, { env: device.env });
-        if (result?.status === 410) {
-          await pushDeviceStore.removeDevice(device.deviceId);
-        } else if (!result?.ok) {
-          log.warn(
-            `[push] apns send failed status=${result?.status || 0} reason=${result?.reason || ""} device=${maskApnsToken(device.apnsToken)}`
-          );
-        }
-        return Boolean(result?.ok);
-      } catch (error) {
-        log.warn(`[push] apns send error device=${maskApnsToken(device.apnsToken)}: ${errorMessage(error)}`);
-        return false;
-      }
-    }));
-    const sentCount = sentResults.filter(Boolean).length;
+    const deliveries = devices.map((device) => {
+      const directoryKey = Array.isArray(device.directories) && device.directories.length > 0
+        ? [...device.directories].sort().join("\u0000")
+        : "";
+      const directorySetIndex = directorySetIndexByKey.get(directoryKey);
+      const badge = directorySetIndex === undefined
+        ? undefined
+        : unreadSnapshot.unreadCounts?.[directorySetIndex];
+      const payload = Number.isFinite(Number(badge))
+        ? { ...basePayload, aps: { ...basePayload.aps, badge: Math.max(0, Math.floor(Number(badge))) } }
+        : basePayload;
+      return { device, payload };
+    });
+    const sentCount = await sendNotifications(deliveries);
     if (sentCount > 0) {
       log.log?.(`[push] turn completion push sent devices=${sentCount}/${devices.length} session=${id}`);
     }
@@ -185,6 +192,36 @@ export function createTurnCompletionNotifier({
       directory,
       origin,
     });
+  }
+
+  async function notifyScheduleFailed({ schedule, occurrenceAt, result, errorCode, errorMessage: failureMessage }) {
+    if (!pushEnabled || !apnsClient) return;
+    const key = JSON.stringify(["schedule", schedule.id, occurrenceAt]);
+    if (!rememberTurn(pushedAtByTurn, key, Number(now()))) return;
+    const action = schedule.action;
+    const sessionId = action.kind === "llm" ? String(result?.threadId || action.threadId || "") : "";
+    const payload = {
+      aps: {
+        alert: {
+          title: "スケジュール実行失敗",
+          body: compactLlmCompletionPreview(`${schedule.name}: ${failureMessage} (${errorCode})`),
+        },
+        sound: "default",
+        category: "SCHEDULE_FAILED",
+        "thread-id": schedule.id,
+      },
+      scheduleId: schedule.id,
+      occurrenceAt,
+      directory: String(action.cwd || ""),
+      ...(sessionId ? { backendId: "codex", sessionId } : {}),
+    };
+    try {
+      const devices = await pushDeviceStore.listDevices();
+      const sentCount = await sendNotifications(devices.map((device) => ({ device, payload })));
+      if (sentCount > 0) log.log?.(`[push] schedule failure push sent devices=${sentCount}/${devices.length} schedule=${schedule.id}`);
+    } catch (error) {
+      log.warn(`[push] schedule failure notification failed: ${errorMessage(error)}`);
+    }
   }
 
   async function onAgentRunEvent(event) {
@@ -253,5 +290,5 @@ export function createTurnCompletionNotifier({
     }
   }
 
-  return { notifyTurnCompleted, onAgentRunEvent };
+  return { notifyTurnCompleted, notifyScheduleFailed, onAgentRunEvent };
 }

@@ -82,13 +82,14 @@ export async function registerPushDevice({
 }
 
 // iOS notification presentation while the app is in the foreground. Foreground push is
-// intentionally suppressed here because the in-app notification card
-// (LlmCompletionNotifications) already shows completion state while the app is open.
-export function resolveForegroundNotificationBehavior() {
+// completion is shown by the in-app notification card. Scheduled failures use
+// a system alert because they can occur before a conversation exists.
+export function resolveForegroundNotificationBehavior(categoryIdentifier?: string | null) {
+  const failed = categoryIdentifier === "SCHEDULE_FAILED";
   return {
-    shouldShowBanner: false,
-    shouldShowList: false,
-    shouldPlaySound: false,
+    shouldShowBanner: failed,
+    shouldShowList: failed,
+    shouldPlaySound: failed,
     shouldSetBadge: true,
   };
 }
