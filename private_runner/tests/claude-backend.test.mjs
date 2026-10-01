@@ -1168,6 +1168,29 @@ test("Claude session listing enumerates subagent transcripts under the parent se
   // タイトルはtranscript先頭のユーザーメッセージ(全recordがisSidechainでも拾える)
   assert.equal(byId.get(taskAgentId).title, "subagent prompt");
 
+  async function collect(parentSessionRefs) {
+    const sessions = [];
+    let cursor = "";
+    let requests = 0;
+    let bytes = 0;
+    do {
+      const page = await backend.listSessions({ cwd, limit: 1, cursor, ...(parentSessionRefs ? { parentSessionRefs } : {}) });
+      sessions.push(...page.sessions);
+      requests += 1;
+      bytes += Buffer.byteLength(JSON.stringify(page));
+      cursor = page.cursor || "";
+    } while (cursor);
+    return { sessions, requests, bytes };
+  }
+  const original = await collect();
+  const scoped = await collect([{ backendId: "claude", nativeSessionId: parentId }]);
+  assert.deepEqual(scoped.sessions, original.sessions.filter((session) => session.parentSessionRef?.nativeSessionId === parentId));
+  assert.equal(original.requests, 3);
+  assert.equal(scoped.requests, 2);
+  assert.ok(scoped.bytes < original.bytes, `${scoped.bytes} vs ${original.bytes} serialized fixture bytes`);
+  t.diagnostic(`Claude fixture: ${original.requests} pages/${original.bytes} bytes → ${scoped.requests} pages/${scoped.bytes} bytes`);
+  assert.deepEqual((await collect([{ backendId: "claude", nativeSessionId: "missing" }])).sessions, []);
+
   // includeSubagents=false(未読カウント・Skiaボードingest)はメインセッションのみ
   const filtered = await backend.listSessions({ cwd, limit: 10, includeSubagents: false });
   assert.deepEqual(filtered.sessions.map((session) => session.sessionRef.nativeSessionId), [parentId]);

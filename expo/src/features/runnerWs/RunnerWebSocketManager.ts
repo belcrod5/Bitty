@@ -51,6 +51,7 @@ type RunnerWsPendingRequest = {
   resolve: (message: RunnerWsMessage) => void;
   reject: (error: Error) => void;
   cleanup: () => void;
+  onResponseBytes?: (bytes: number) => void;
 };
 
 type RunnerWsSubscriber = {
@@ -533,7 +534,7 @@ export class RunnerWebSocketManager {
 
   request<TResponse extends RunnerWsMessage = RunnerWsMessage>(
     message: RunnerWsMessage,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {}
+    options: { timeoutMs?: number; signal?: AbortSignal; onResponseBytes?: (bytes: number) => void } = {}
   ): Promise<TResponse> {
     if (this.connectionState !== "ready") {
       return Promise.reject(this.connectionUnavailableError());
@@ -585,6 +586,7 @@ export class RunnerWebSocketManager {
         },
         reject: finishReject,
         cleanup,
+        onResponseBytes: options.onResponseBytes,
       });
       this.emitSnapshot();
       try {
@@ -662,9 +664,8 @@ export class RunnerWebSocketManager {
   }
 
   private handleMessage(data: unknown) {
-    if (typeof data === "string") {
-      recordNetworkUsage("runner-ws", 0, utf8ByteLength(data));
-    }
+    const receivedBytes = typeof data === "string" ? utf8ByteLength(data) : null;
+    if (receivedBytes !== null) recordNetworkUsage("runner-ws", 0, receivedBytes);
     const message = parseMessage(data);
     if (!message) return;
     this.receivedCount += 1;
@@ -691,6 +692,9 @@ export class RunnerWebSocketManager {
       const pending = this.pendingRequests.get(message.requestId);
       if (pending) {
         this.pendingRequests.delete(message.requestId);
+        if (receivedBytes !== null) {
+          try { pending.onResponseBytes?.(receivedBytes); } catch { /* diagnostics cannot interrupt a request */ }
+        }
         pending.resolve(message);
         shouldNotifySnapshot = true;
       }

@@ -775,23 +775,36 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
   cursor?: string;
   limit?: number;
   includeSubagents?: boolean;
-}) {
+  parentSessionIds?: string[];
+}, onResponseBytes?: (bytes: number) => void) {
   const backendId = String(options.backendId || "").trim();
+  let statuses: BackendStatus[];
   if (backendId && backendId !== ALL_BACKENDS_SCOPE) {
     const status = await getAgentBackendStatus(manager, backendId);
     if (!status?.readiness?.ready) return null;
+    statuses = [status];
   } else {
     // all-backendsスコープはBackendごとのreadinessをserviceが個別に扱う。
     // agent channel自体が使えない場合のみnull(raw fallback)へ落とす。
-    const statuses = await getAgentBackendStatuses(manager);
+    statuses = await getAgentBackendStatuses(manager);
     if (statuses.length === 0) return null;
   }
+  const { parentSessionIds, ...listOptions } = options;
+  const parentSessionRefs = parentSessionIds?.length
+    ? statuses.flatMap((status) => parentSessionIds.map((nativeSessionId) => ({
+      backendId: String(status.backendId || ""), nativeSessionId,
+    }))).filter((ref) => ref.backendId && ref.nativeSessionId)
+    : [];
+  let responseBytes: number | null = null;
   const response = await manager.request({
     channel: "agent",
     op: "sessions.list",
-    payload: { ...options, backendId },
-  }, { timeoutMs: 30_000 });
+    payload: { ...listOptions, backendId, ...(parentSessionRefs.length ? { parentSessionRefs } : {}) },
+  }, { timeoutMs: 30_000, onResponseBytes: (bytes) => { responseBytes = bytes; } });
   if (response.op === "error") throw new Error(String(object(response.payload).message || "Session list failed"));
+  if (responseBytes !== null) {
+    try { onResponseBytes?.(responseBytes); } catch { /* diagnostics cannot change listing behavior */ }
+  }
   return object(response.payload);
 }
 

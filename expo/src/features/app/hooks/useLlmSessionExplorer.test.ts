@@ -791,6 +791,9 @@ test("paginates one directory subagent sequence, deduplicates it, and groups eve
   );
 
   expect(mockListCodexAppServerThreads).toHaveBeenCalledTimes(2);
+  expect(mockListCodexAppServerThreads.mock.calls[0][0]).toEqual(expect.objectContaining({
+    parentSessionIds: ["parent-a", "parent-b"],
+  }));
   expect(mockListCodexAppServerThreads.mock.calls[1][0]).toEqual(expect.objectContaining({ cursor: "page-2" }));
   expect(grouped["parent-a"]).toHaveLength(50);
   expect(grouped["parent-a"][0]).toEqual(
@@ -799,4 +802,134 @@ test("paginates one directory subagent sequence, deduplicates it, and groups eve
   expect(grouped["parent-b"]).toEqual([
     expect.objectContaining({ sessionId: "child-b", threadStatusType: "idle" }),
   ]);
+});
+
+test("child completion logs only measured list response bytes and marks fallback incomplete", async () => {
+  const onSessionDiagLog = jest.fn();
+  mockListCodexAppServerThreads
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(123);
+      return { data: [], nextCursor: "next", backwardsCursor: "" };
+    })
+    .mockResolvedValueOnce({ data: [], nextCursor: "", backwardsCursor: "" });
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  await result.current.fetchSessionChildrenHistory(["parent"], "/workspace", { includeRunnerSnapshots: false });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    pageCount: 2,
+    sessionsListReceivedBytes: null,
+    sessionsListMeasuredPages: 1,
+    sessionsListObservedBytes: 123,
+    sessionsListByteCoverage: "incomplete",
+  }));
+
+  onSessionDiagLog.mockClear();
+  mockListCodexAppServerThreads
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(123);
+      return { data: [], nextCursor: "next", backwardsCursor: "" };
+    })
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(456);
+      return { data: [], nextCursor: "", backwardsCursor: "" };
+    });
+  await result.current.fetchSessionChildrenHistory(["parent"], "/workspace", { includeRunnerSnapshots: false });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    pageCount: 2,
+    sessionsListReceivedBytes: 579,
+    sessionsListMeasuredPages: 2,
+    sessionsListByteCoverage: "complete",
+  }));
+
+  onSessionDiagLog.mockClear();
+  mockListCodexAppServerThreads.mockResolvedValueOnce({ data: [], nextCursor: "", backwardsCursor: "" });
+  await result.current.fetchSessionChildrenHistory(["parent"], "/workspace", { includeRunnerSnapshots: false });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    pageCount: 1,
+    sessionsListReceivedBytes: null,
+    sessionsListMeasuredPages: 0,
+    sessionsListByteCoverage: "incomplete",
+  }));
+});
+
+test("child list failure logs incomplete measured bytes and preserves rejection", async () => {
+  const onSessionDiagLog = jest.fn();
+  mockListCodexAppServerThreads
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(111);
+      return { data: [], nextCursor: "next", backwardsCursor: "" };
+    })
+    .mockRejectedValueOnce(new Error("page failed"));
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  await expect(result.current.fetchSessionChildrenHistory(["parent"], "/workspace", {
+    includeRunnerSnapshots: false,
+  })).rejects.toThrow("page failed");
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_error", expect.objectContaining({
+    pageCount: 1,
+    sessionsListReceivedBytes: null,
+    sessionsListMeasuredPages: 1,
+    sessionsListObservedBytes: 111,
+    sessionsListByteCoverage: "incomplete",
+  }));
+});
+
+test("hydrates all 122 children from two summary batches without losing fields", async () => {
+  const children = Array.from({ length: 122 }, (_, index) => ({
+    threadId: `child-${index}`, parentThreadId: "parent", sourceKind: "subAgent",
+    cwd: "/workspace", preview: `preview-${index}`, contextUsedPct: null,
+  }));
+  mockListCodexAppServerThreads.mockResolvedValue({ data: children as never, nextCursor: "", backwardsCursor: "" });
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    const { sessionIds } = JSON.parse(String(init?.body));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ sessions: sessionIds.map((sessionId: string) => ({
+      sessionId, contextUsage: { usedPct: 42 }, modelRef: "gpt-6", reasoningEffort: "high",
+      lastReadAt: "2026-10-01T00:00:00.000Z", latestToolLabel: "read_file",
+    })) }) } as Response;
+  });
+  const onSessionDiagLog = jest.fn();
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  const grouped = await result.current.fetchSessionChildrenHistory(["parent"], "/workspace");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).sessionIds.length)).toEqual([100, 22]);
+  expect(grouped.parent).toHaveLength(122);
+  expect(grouped.parent.every((entry, index) => (
+    entry.sessionId === `child-${index}` && entry.contextUsedPct === 42
+    && entry.modelRef === "gpt-6" && entry.reasoningEffort === "high"
+    && entry.lastReadAt === "2026-10-01T00:00:00.000Z"
+  ))).toBe(true);
+  expect(grouped.parent[121]).toMatchObject({
+    sessionId: "child-121", contextUsedPct: 42, modelRef: "gpt-6",
+    reasoningEffort: "high", lastReadAt: "2026-10-01T00:00:00.000Z",
+  });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    directChildCount: 122, runnerSnapshotCount: 122,
+  }));
+  fetchMock.mockRestore();
+});
+
+test("a failed second summary batch is logged and no partial snapshots are used", async () => {
+  const children = Array.from({ length: 101 }, (_, index) => ({
+    threadId: `child-${index}`, parentThreadId: "parent", sourceKind: "subAgent",
+    cwd: "/workspace", contextUsedPct: null,
+  }));
+  mockListCodexAppServerThreads.mockResolvedValue({ data: children as never, nextCursor: "", backwardsCursor: "" });
+  let requests = 0;
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    requests += 1;
+    const { sessionIds } = JSON.parse(String(init?.body));
+    return requests === 1
+      ? { ok: true, status: 200, text: async () => JSON.stringify({ sessions: sessionIds.map((sessionId: string) => ({ sessionId, contextUsage: { usedPct: 42 } })) }) } as Response
+      : { ok: false, status: 500, text: async () => JSON.stringify({ error: "second_batch_failed" }) } as Response;
+  });
+  const onSessionDiagLog = jest.fn();
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  const grouped = await result.current.fetchSessionChildrenHistory(["parent"], "/workspace");
+  expect(grouped.parent).toHaveLength(101);
+  expect(grouped.parent.every((entry) => entry.contextUsedPct === null)).toBe(true);
+  expect(onSessionDiagLog).toHaveBeenCalledWith("runner_session_snapshot_map_failed", expect.objectContaining({
+    message: "second_batch_failed",
+  }));
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    directChildCount: 101, runnerSnapshotCount: 0,
+  }));
+  fetchMock.mockRestore();
 });

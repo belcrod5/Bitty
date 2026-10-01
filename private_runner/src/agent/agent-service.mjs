@@ -1425,6 +1425,10 @@ export function createAgentService({
       if (!requestedCwd) throw agentError("turn_rejected", "cwd is required");
       const cwd = await resolveCanonicalCwd(requestedCwd);
       const requestedBackendId = String(options?.backendId || "").trim();
+      const requestedParents = Array.isArray(options?.parentSessionRefs) && options.parentSessionRefs.length > 0
+        ? options.parentSessionRefs.filter((ref) => String(ref?.backendId || "").trim()
+          && String(ref?.nativeSessionId || "").trim())
+        : null;
       if (requestedBackendId && requestedBackendId !== ALL_BACKENDS_SCOPE) {
         const backend = registry.get(requestedBackendId);
         if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
@@ -1435,7 +1439,10 @@ export function createAgentService({
         if (status?.capabilities?.session?.list !== true) {
           throw agentError("capability_unsupported", "session listing is not supported", { backendId: backend.backendId });
         }
-        const singlePage = await backend.listSessions({ ...options, cwd });
+        const parentSessionRefs = requestedParents?.filter((ref) => ref?.backendId === backend.backendId) || null;
+        const singlePage = parentSessionRefs && parentSessionRefs.length === 0
+          ? { sessions: [] }
+          : await backend.listSessions({ ...options, cwd, ...(parentSessionRefs ? { parentSessionRefs } : {}) });
         const sessions = await Promise.all(
           (Array.isArray(singlePage?.sessions) ? singlePage.sessions : [])
             .map((session) => withStoredSessionState(session, cwd, context)),
@@ -1462,6 +1469,8 @@ export function createAgentService({
           // 出し切ったBackendを再照会すると先頭ページを永遠に再列挙してしまう。
           // 値は空文字も有効(前ページで1件も採用されなかったBackendは先頭位置のまま)。
           if (compositeCursor && !(backend.backendId in compositeCursor)) return null;
+          const parentSessionRefs = requestedParents?.filter((ref) => ref?.backendId === backend.backendId) || null;
+          if (parentSessionRefs && parentSessionRefs.length === 0) return null;
           const status = await backend.getStatus();
           if (status?.capabilities?.session?.list !== true) return null;
           if (!status?.readiness?.ready) {
@@ -1472,6 +1481,7 @@ export function createAgentService({
             cwd,
             backendId: backend.backendId,
             cursor: compositeCursor?.[backend.backendId] || "",
+            ...(parentSessionRefs ? { parentSessionRefs } : {}),
           });
           const sessions = await Promise.all(
             (Array.isArray(page?.sessions) ? page.sessions : [])

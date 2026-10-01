@@ -1090,15 +1090,20 @@ export function createClaudeBackend({
       || compareOrdinalDesc(String(a?.sessionId || ""), String(b?.sessionId || ""));
   }
 
-  async function listSessionsForDirectories({ cwds, includeSubagents }) {
+  async function listSessionsForDirectories({ cwds, includeSubagents, parentSessionRefs }) {
     const canonicalCwds = await Promise.all(
       (Array.isArray(cwds) ? cwds : []).map((cwd) => realpathCwd(path.resolve(String(cwd || "")))),
     );
     const sessionsByCwd = new Map(canonicalCwds.map((cwd) => [cwd, []]));
+    const parentIds = Array.isArray(parentSessionRefs) && parentSessionRefs.length > 0
+      ? new Set(parentSessionRefs.filter((ref) => ref?.backendId === "claude")
+        .map((ref) => String(ref.nativeSessionId || "")))
+      : null;
     for (const entry of await transcriptFileEntries()) {
       // includeSubagents=falseは未読カウント・Skiaボードingest等のメイン一覧用途。
       // codex側(llm-cli-session-index)と同じく、明示false時のみ除外する。
       if (includeSubagents === false && entry.parentSessionId) continue;
+      if (parentIds && !parentIds.has(entry.parentSessionId)) continue;
       const metadata = await transcriptMetadata(entry.file);
       const sessions = metadata ? sessionsByCwd.get(metadata.realCwd) : null;
       if (!sessions) continue;
@@ -1128,14 +1133,14 @@ export function createClaudeBackend({
     };
   }
 
-  async function listSessions({ cwd, limit = 50, cursor = "", includeSubagents }) {
+  async function listSessions({ cwd, limit = 50, cursor = "", includeSubagents, parentSessionRefs }) {
     const canonicalCwd = await realpathCwd(path.resolve(String(cwd || "")));
     const cursorRaw = String(cursor || "").trim();
     const cursorKey = cursorRaw ? cursorDecode(cursorRaw) : null;
     if (cursorRaw && !String(cursorKey?.sessionId || "").trim()) {
       throw agentError("turn_rejected", "session list cursor is invalid", { backendId: "claude" });
     }
-    const [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd], includeSubagents })).groups;
+    const [{ sessions }] = (await listSessionsForDirectories({ cwds: [canonicalCwd], includeSubagents, parentSessionRefs })).groups;
     const pageKey = (session) => ({ updatedAt: session.updatedAt, sessionId: session.sessionRef.nativeSessionId });
     sessions.sort((a, b) => compareListPageKeys(pageKey(a), pageKey(b)));
     const positioned = cursorKey

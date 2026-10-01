@@ -17,6 +17,7 @@ import { parseLlmDirectory } from "../utils/settingsParsers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 import { ALL_BACKENDS_SCOPE, readAgentHistory } from "../../agent/client";
 import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
+import { fetchRunnerSessionSummaries } from "../utils/runnerSessionSummaries";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
@@ -373,26 +374,17 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       return out;
     }
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    const { response, data } = await fetchJsonWithTimeout(`${targetLlmUrl}/session-summaries`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ directory, sessionIds }),
-    }, RUNNER_SESSIONS_HTTP_TIMEOUT_MS);
-    if (!response.ok) {
-      throw new Error(String(data?.message || data?.error || `session summaries fetch failed: HTTP ${response.status}`));
-    }
-    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-    for (const itemRaw of sessions) {
-      const item = itemRaw && typeof itemRaw === "object" ? itemRaw as JsonRecord : {};
-      const sessionId = parseOptionalSessionId(item.sessionId);
-      if (!sessionId) continue;
+    const sessions = await fetchRunnerSessionSummaries(
+      { baseUrl: targetLlmUrl, token },
+      { directory, sessionIds },
+      RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
+    );
+    for (const item of sessions) {
+      const sessionId = item.sessionId;
       out.set(sessionId, buildRunnerSessionSnapshot(item));
     }
     return out;
-  }, [emitSessionDiag, fetchJsonWithTimeout, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
+  }, [emitSessionDiag, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
 
   const fetchRunnerSessionSnapshot = useCallback(async (
     sessionIdRaw: unknown,
@@ -962,30 +954,52 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const seenCursors = new Set<string>();
     let cursor = "";
     let pageCount = 0;
-    while (true) {
-      const listed = await listCodexAppServerThreads({
-        wsUrl: targetCodexWsUrl,
-        wsToken: runnerToken.trim(),
-        cwd: directory,
-        limit,
-        cursor,
-        sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
-        timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
-        runnerWebSocketManager,
-        backendId: ALL_BACKENDS_SCOPE,
-        rawFallbackBackendId,
-      });
-      pageCount += 1;
-      for (const item of listed.data) {
-        const threadId = parseOptionalSessionId(item.threadId);
-        if (!threadId || seenThreadIds.has(threadId)) continue;
-        seenThreadIds.add(threadId);
-        listedThreads.push(item);
+    let sessionsListReceivedBytes = 0;
+    let sessionsListMeasuredPages = 0;
+    try {
+      while (true) {
+        const listed = await listCodexAppServerThreads({
+          wsUrl: targetCodexWsUrl,
+          wsToken: runnerToken.trim(),
+          cwd: directory,
+          limit,
+          cursor,
+          sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
+          timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+          runnerWebSocketManager,
+          backendId: ALL_BACKENDS_SCOPE,
+          rawFallbackBackendId,
+          parentSessionIds,
+          onListResponseBytes: (bytes) => {
+            sessionsListReceivedBytes += bytes;
+            sessionsListMeasuredPages += 1;
+          },
+        });
+        pageCount += 1;
+        for (const item of listed.data) {
+          const threadId = parseOptionalSessionId(item.threadId);
+          if (!threadId || seenThreadIds.has(threadId)) continue;
+          seenThreadIds.add(threadId);
+          listedThreads.push(item);
+        }
+        const nextCursor = String(listed.nextCursor || "").trim();
+        if (!nextCursor || seenCursors.has(nextCursor)) break;
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
       }
-      const nextCursor = String(listed.nextCursor || "").trim();
-      if (!nextCursor || seenCursors.has(nextCursor)) break;
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
+    } catch (error) {
+      emitSessionDiag("session_child_history_fetch_error", {
+        directory,
+        parentSessionIds,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        pageCount,
+        sessionsListReceivedBytes: null,
+        sessionsListMeasuredPages,
+        ...(sessionsListMeasuredPages > 0 ? { sessionsListObservedBytes: sessionsListReceivedBytes } : {}),
+        sessionsListByteCoverage: "incomplete",
+        sessionsListByteScope: "successful_sessions_list_ws_json_envelopes",
+      });
+      throw error;
     }
     const directChildren = listedThreads.filter((item) => (
       parentSessionIdSet.has(parseOptionalSessionId(item.parentThreadId))
@@ -1012,6 +1026,12 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       parentSessionIds,
       elapsedMs: Math.max(0, Date.now() - startedAt),
       pageCount,
+      sessionsListReceivedBytes: sessionsListMeasuredPages === pageCount ? sessionsListReceivedBytes : null,
+      sessionsListMeasuredPages,
+      ...(sessionsListMeasuredPages > 0 && sessionsListMeasuredPages !== pageCount
+        ? { sessionsListObservedBytes: sessionsListReceivedBytes } : {}),
+      sessionsListByteCoverage: sessionsListMeasuredPages === pageCount ? "complete" : "incomplete",
+      sessionsListByteScope: "successful_sessions_list_ws_json_envelopes",
       threadCountRaw: listedThreads.length,
       directChildCount: directChildren.length,
       threadCountDeduped: sessions.length,
