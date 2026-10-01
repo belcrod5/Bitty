@@ -111,7 +111,7 @@ describe("StreamingSttFooter", () => {
     expect(StyleSheet.flatten(panel.props.style).paddingLeft).toBeUndefined();
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).paddingLeft).toBeUndefined();
     const metadata = screen.getByTestId("streaming-stt-metadata");
-    expect(StyleSheet.flatten(metadata.props.style)).toMatchObject({ marginTop: 14, marginBottom: 2 });
+    expect(StyleSheet.flatten(metadata.props.style)).toMatchObject({ marginTop: 28, marginBottom: 2 });
     expect(StyleSheet.flatten(metadata.props.style).paddingLeft).toBeUndefined();
     expect(metadata.children[0]).toBe(screen.getByTestId("streaming-stt-voice-context-stats"));
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-voice-context-stats").props.style).marginLeft).toBe(0);
@@ -119,6 +119,9 @@ describe("StreamingSttFooter", () => {
     expect(badge).toMatchObject({ top: 0, left: 0, width: 44, height: 44, zIndex: 3 });
     const footer = screen.getByTestId("streaming-stt-footer");
     expect(StyleSheet.flatten(footer.props.style)).toMatchObject({ paddingTop: 8, paddingLeft: 8 });
+    const labelTop = StyleSheet.flatten(footer.props.style).paddingTop
+      + StyleSheet.flatten(panel.props.style).paddingVertical + StyleSheet.flatten(metadata.props.style).marginTop;
+    expect(labelTop).toBeGreaterThanOrEqual(badge.top + badge.height);
     await act(async () => {
       fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 88 } } });
     });
