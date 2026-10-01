@@ -17,6 +17,7 @@ import { parseLlmDirectory } from "../utils/settingsParsers";
 import { utf8ByteLength } from "../../ws/networkUsageMetrics";
 import { ALL_BACKENDS_SCOPE, readAgentHistory } from "../../agent/client";
 import { deriveAgentSessionLiveState } from "../../agent/sessionLiveState";
+import { fetchRunnerSessionSummaries } from "../utils/runnerSessionSummaries";
 
 const RUNNER_SESSIONS_HTTP_TIMEOUT_MS = 12_000;
 const RUNNER_SESSION_MESSAGES_HTTP_TIMEOUT_MS = 12_000;
@@ -373,26 +374,17 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       return out;
     }
     const directory = parseLlmDirectory(directoryRaw ?? normalizedLlmDirectoryForRequest());
-    const { response, data } = await fetchJsonWithTimeout(`${targetLlmUrl}/session-summaries`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ directory, sessionIds }),
-    }, RUNNER_SESSIONS_HTTP_TIMEOUT_MS);
-    if (!response.ok) {
-      throw new Error(String(data?.message || data?.error || `session summaries fetch failed: HTTP ${response.status}`));
-    }
-    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-    for (const itemRaw of sessions) {
-      const item = itemRaw && typeof itemRaw === "object" ? itemRaw as JsonRecord : {};
-      const sessionId = parseOptionalSessionId(item.sessionId);
-      if (!sessionId) continue;
+    const sessions = await fetchRunnerSessionSummaries(
+      { baseUrl: targetLlmUrl, token },
+      { directory, sessionIds },
+      RUNNER_SESSIONS_HTTP_TIMEOUT_MS,
+    );
+    for (const item of sessions) {
+      const sessionId = item.sessionId;
       out.set(sessionId, buildRunnerSessionSnapshot(item));
     }
     return out;
-  }, [emitSessionDiag, fetchJsonWithTimeout, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
+  }, [emitSessionDiag, getRunnerHttpAuth, normalizedLlmDirectoryForRequest]);
 
   const fetchRunnerSessionSnapshot = useCallback(async (
     sessionIdRaw: unknown,

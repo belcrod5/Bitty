@@ -10,11 +10,11 @@ import {
 } from "../utils/persistedSettingsFile";
 import {
   fetchSkiaBoard,
-  fetchSkiaBoardSessionSummaries,
   importSkiaBoard,
   postSkiaBoardOps,
   syncSkiaBoardIngestDirectories,
 } from "../utils/skiaBoardRunnerApi";
+import { fetchRunnerSessionSummaries } from "../utils/runnerSessionSummaries";
 import { applySkiaBoardOpsLocally } from "../utils/skiaBoardRunnerOps";
 import type { LlmSessionHistoryEntry } from "./useLlmSessionExplorer";
 import {
@@ -60,11 +60,11 @@ jest.mock("../utils/persistedSettingsFile", () => ({
 // ランナーAPIはインメモリのフェイクランナーで置き換える(op適用は実ロジックを共有)。
 jest.mock("../utils/skiaBoardRunnerApi", () => ({
   fetchSkiaBoard: jest.fn(),
-  fetchSkiaBoardSessionSummaries: jest.fn(),
   importSkiaBoard: jest.fn(),
   postSkiaBoardOps: jest.fn(),
   syncSkiaBoardIngestDirectories: jest.fn(),
 }));
+jest.mock("../utils/runnerSessionSummaries", () => ({ fetchRunnerSessionSummaries: jest.fn() }));
 
 const mockUseConversation = jest.mocked(useConversation);
 const mockUsePanelRuntimeController = jest.mocked(usePanelRuntimeController);
@@ -75,7 +75,7 @@ const mockFetchSkiaBoard = jest.mocked(fetchSkiaBoard);
 const mockImportSkiaBoard = jest.mocked(importSkiaBoard);
 const mockPostSkiaBoardOps = jest.mocked(postSkiaBoardOps);
 const mockSyncSkiaBoardIngestDirectories = jest.mocked(syncSkiaBoardIngestDirectories);
-const mockFetchSkiaBoardSessionSummaries = jest.mocked(fetchSkiaBoardSessionSummaries);
+const mockFetchSkiaBoardSessionSummaries = jest.mocked(fetchRunnerSessionSummaries);
 const workspaceDirectory = {
   id: "workspace",
   path: "/workspace",
@@ -828,8 +828,9 @@ describe("useSkiaMiniChatSessions", () => {
     await flush();
 
     expect(mockFetchSkiaBoardSessionSummaries).toHaveBeenCalledWith(
-      { runnerUrl: "http://runner", runnerToken: "runner-token" },
-      { directory: "/workspace", sessionIds: ["session-99"] }
+      { baseUrl: "http://runner", token: "runner-token" },
+      { directory: "/workspace", sessionIds: ["session-99"] },
+      15_000,
     );
     const summarySession = result.current.sessions.find((item) => item.sessionId === "session-99");
     expect(summarySession).toMatchObject({

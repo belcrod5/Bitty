@@ -871,3 +871,65 @@ test("child list failure logs incomplete measured bytes and preserves rejection"
     sessionsListByteCoverage: "incomplete",
   }));
 });
+
+test("hydrates all 122 children from two summary batches without losing fields", async () => {
+  const children = Array.from({ length: 122 }, (_, index) => ({
+    threadId: `child-${index}`, parentThreadId: "parent", sourceKind: "subAgent",
+    cwd: "/workspace", preview: `preview-${index}`, contextUsedPct: null,
+  }));
+  mockListCodexAppServerThreads.mockResolvedValue({ data: children as never, nextCursor: "", backwardsCursor: "" });
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    const { sessionIds } = JSON.parse(String(init?.body));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ sessions: sessionIds.map((sessionId: string) => ({
+      sessionId, contextUsage: { usedPct: 42 }, modelRef: "gpt-6", reasoningEffort: "high",
+      lastReadAt: "2026-10-01T00:00:00.000Z", latestToolLabel: "read_file",
+    })) }) } as Response;
+  });
+  const onSessionDiagLog = jest.fn();
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  const grouped = await result.current.fetchSessionChildrenHistory(["parent"], "/workspace");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).sessionIds.length)).toEqual([100, 22]);
+  expect(grouped.parent).toHaveLength(122);
+  expect(grouped.parent.every((entry, index) => (
+    entry.sessionId === `child-${index}` && entry.contextUsedPct === 42
+    && entry.modelRef === "gpt-6" && entry.reasoningEffort === "high"
+    && entry.lastReadAt === "2026-10-01T00:00:00.000Z"
+  ))).toBe(true);
+  expect(grouped.parent[121]).toMatchObject({
+    sessionId: "child-121", contextUsedPct: 42, modelRef: "gpt-6",
+    reasoningEffort: "high", lastReadAt: "2026-10-01T00:00:00.000Z",
+  });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    directChildCount: 122, runnerSnapshotCount: 122,
+  }));
+  fetchMock.mockRestore();
+});
+
+test("a failed second summary batch is logged and no partial snapshots are used", async () => {
+  const children = Array.from({ length: 101 }, (_, index) => ({
+    threadId: `child-${index}`, parentThreadId: "parent", sourceKind: "subAgent",
+    cwd: "/workspace", contextUsedPct: null,
+  }));
+  mockListCodexAppServerThreads.mockResolvedValue({ data: children as never, nextCursor: "", backwardsCursor: "" });
+  let requests = 0;
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (_url, init) => {
+    requests += 1;
+    const { sessionIds } = JSON.parse(String(init?.body));
+    return requests === 1
+      ? { ok: true, status: 200, text: async () => JSON.stringify({ sessions: sessionIds.map((sessionId: string) => ({ sessionId, contextUsage: { usedPct: 42 } })) }) } as Response
+      : { ok: false, status: 500, text: async () => JSON.stringify({ error: "second_batch_failed" }) } as Response;
+  });
+  const onSessionDiagLog = jest.fn();
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  const grouped = await result.current.fetchSessionChildrenHistory(["parent"], "/workspace");
+  expect(grouped.parent).toHaveLength(101);
+  expect(grouped.parent.every((entry) => entry.contextUsedPct === null)).toBe(true);
+  expect(onSessionDiagLog).toHaveBeenCalledWith("runner_session_snapshot_map_failed", expect.objectContaining({
+    message: "second_batch_failed",
+  }));
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    directChildCount: 101, runnerSnapshotCount: 0,
+  }));
+  fetchMock.mockRestore();
+});

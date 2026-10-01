@@ -3,7 +3,7 @@ import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { collectRegisteredDirectorySessions } from "../utils/registeredDirectorySessions";
-import { fetchSkiaBoardSessionSummaries } from "../utils/skiaBoardRunnerApi";
+import { fetchRunnerSessionSummaries } from "../utils/runnerSessionSummaries";
 import { parseContextUsageUsedPct } from "../utils/formatting";
 import {
   buildPanelHydrationRequestMark,
@@ -227,9 +227,10 @@ export function useSkiaMiniChatSessions() {
         for (const [directory, sessionIds] of groups) {
           let summaries;
           try {
-            summaries = await fetchSkiaBoardSessionSummaries(
-              { runnerUrl, runnerToken },
-              { directory, sessionIds }
+            summaries = await fetchRunnerSessionSummaries(
+              { baseUrl: runnerUrl, token: runnerToken },
+              { directory, sessionIds },
+              15_000,
             );
           } catch (error) {
             console.warn(
