@@ -962,31 +962,52 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
     const seenCursors = new Set<string>();
     let cursor = "";
     let pageCount = 0;
-    while (true) {
-      const listed = await listCodexAppServerThreads({
-        wsUrl: targetCodexWsUrl,
-        wsToken: runnerToken.trim(),
-        cwd: directory,
-        limit,
-        cursor,
-        sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
-        timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
-        runnerWebSocketManager,
-        backendId: ALL_BACKENDS_SCOPE,
-        rawFallbackBackendId,
-        parentSessionIds,
-      });
-      pageCount += 1;
-      for (const item of listed.data) {
-        const threadId = parseOptionalSessionId(item.threadId);
-        if (!threadId || seenThreadIds.has(threadId)) continue;
-        seenThreadIds.add(threadId);
-        listedThreads.push(item);
+    let sessionsListReceivedBytes = 0;
+    let sessionsListMeasuredPages = 0;
+    try {
+      while (true) {
+        const listed = await listCodexAppServerThreads({
+          wsUrl: targetCodexWsUrl,
+          wsToken: runnerToken.trim(),
+          cwd: directory,
+          limit,
+          cursor,
+          sourceKinds: [...SUBAGENT_THREAD_SOURCE_KINDS],
+          timeoutMs: Math.min(nearUnlimitedTimeoutMs, SESSION_HISTORY_RPC_TIMEOUT_MS),
+          runnerWebSocketManager,
+          backendId: ALL_BACKENDS_SCOPE,
+          rawFallbackBackendId,
+          parentSessionIds,
+          onListResponseBytes: (bytes) => {
+            sessionsListReceivedBytes += bytes;
+            sessionsListMeasuredPages += 1;
+          },
+        });
+        pageCount += 1;
+        for (const item of listed.data) {
+          const threadId = parseOptionalSessionId(item.threadId);
+          if (!threadId || seenThreadIds.has(threadId)) continue;
+          seenThreadIds.add(threadId);
+          listedThreads.push(item);
+        }
+        const nextCursor = String(listed.nextCursor || "").trim();
+        if (!nextCursor || seenCursors.has(nextCursor)) break;
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
       }
-      const nextCursor = String(listed.nextCursor || "").trim();
-      if (!nextCursor || seenCursors.has(nextCursor)) break;
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
+    } catch (error) {
+      emitSessionDiag("session_child_history_fetch_error", {
+        directory,
+        parentSessionIds,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        pageCount,
+        sessionsListReceivedBytes: null,
+        sessionsListMeasuredPages,
+        ...(sessionsListMeasuredPages > 0 ? { sessionsListObservedBytes: sessionsListReceivedBytes } : {}),
+        sessionsListByteCoverage: "incomplete",
+        sessionsListByteScope: "successful_sessions_list_ws_json_envelopes",
+      });
+      throw error;
     }
     const directChildren = listedThreads.filter((item) => (
       parentSessionIdSet.has(parseOptionalSessionId(item.parentThreadId))
@@ -1013,6 +1034,12 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
       parentSessionIds,
       elapsedMs: Math.max(0, Date.now() - startedAt),
       pageCount,
+      sessionsListReceivedBytes: sessionsListMeasuredPages === pageCount ? sessionsListReceivedBytes : null,
+      sessionsListMeasuredPages,
+      ...(sessionsListMeasuredPages > 0 && sessionsListMeasuredPages !== pageCount
+        ? { sessionsListObservedBytes: sessionsListReceivedBytes } : {}),
+      sessionsListByteCoverage: sessionsListMeasuredPages === pageCount ? "complete" : "incomplete",
+      sessionsListByteScope: "successful_sessions_list_ws_json_envelopes",
       threadCountRaw: listedThreads.length,
       directChildCount: directChildren.length,
       threadCountDeduped: sessions.length,

@@ -803,3 +803,71 @@ test("paginates one directory subagent sequence, deduplicates it, and groups eve
     expect.objectContaining({ sessionId: "child-b", threadStatusType: "idle" }),
   ]);
 });
+
+test("child completion logs only measured list response bytes and marks fallback incomplete", async () => {
+  const onSessionDiagLog = jest.fn();
+  mockListCodexAppServerThreads
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(123);
+      return { data: [], nextCursor: "next", backwardsCursor: "" };
+    })
+    .mockResolvedValueOnce({ data: [], nextCursor: "", backwardsCursor: "" });
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  await result.current.fetchSessionChildrenHistory(["parent"], "/workspace", { includeRunnerSnapshots: false });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    pageCount: 2,
+    sessionsListReceivedBytes: null,
+    sessionsListMeasuredPages: 1,
+    sessionsListObservedBytes: 123,
+    sessionsListByteCoverage: "incomplete",
+  }));
+
+  onSessionDiagLog.mockClear();
+  mockListCodexAppServerThreads
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(123);
+      return { data: [], nextCursor: "next", backwardsCursor: "" };
+    })
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(456);
+      return { data: [], nextCursor: "", backwardsCursor: "" };
+    });
+  await result.current.fetchSessionChildrenHistory(["parent"], "/workspace", { includeRunnerSnapshots: false });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    pageCount: 2,
+    sessionsListReceivedBytes: 579,
+    sessionsListMeasuredPages: 2,
+    sessionsListByteCoverage: "complete",
+  }));
+
+  onSessionDiagLog.mockClear();
+  mockListCodexAppServerThreads.mockResolvedValueOnce({ data: [], nextCursor: "", backwardsCursor: "" });
+  await result.current.fetchSessionChildrenHistory(["parent"], "/workspace", { includeRunnerSnapshots: false });
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_done", expect.objectContaining({
+    pageCount: 1,
+    sessionsListReceivedBytes: null,
+    sessionsListMeasuredPages: 0,
+    sessionsListByteCoverage: "incomplete",
+  }));
+});
+
+test("child list failure logs incomplete measured bytes and preserves rejection", async () => {
+  const onSessionDiagLog = jest.fn();
+  mockListCodexAppServerThreads
+    .mockImplementationOnce(async (options) => {
+      options.onListResponseBytes?.(111);
+      return { data: [], nextCursor: "next", backwardsCursor: "" };
+    })
+    .mockRejectedValueOnce(new Error("page failed"));
+  const { result } = await renderExplorerHook({ onSessionDiagLog });
+  await expect(result.current.fetchSessionChildrenHistory(["parent"], "/workspace", {
+    includeRunnerSnapshots: false,
+  })).rejects.toThrow("page failed");
+  expect(onSessionDiagLog).toHaveBeenCalledWith("session_child_history_fetch_error", expect.objectContaining({
+    pageCount: 1,
+    sessionsListReceivedBytes: null,
+    sessionsListMeasuredPages: 1,
+    sessionsListObservedBytes: 111,
+    sessionsListByteCoverage: "incomplete",
+  }));
+});

@@ -22,6 +22,21 @@ beforeEach(() => {
   mockReadAgentHistory.mockReset();
 });
 
+it("forwards list response byte observation only to the neutral listing", async () => {
+  const onListResponseBytes = jest.fn();
+  mockListAgentSessions.mockImplementationOnce(async (_manager, _options, onResponseBytes) => {
+    onResponseBytes?.(234);
+    return { sessions: [] };
+  });
+  const result = await listCodexAppServerThreads({
+    wsUrl: "ws://runner", cwd: "/workspace", runnerWebSocketManager: {} as never,
+    backendId: "all", rawFallbackBackendId: "codex", onListResponseBytes,
+  });
+  expect(result.data).toEqual([]);
+  expect(onListResponseBytes).toHaveBeenCalledWith(234);
+  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.anything(), onListResponseBytes);
+});
+
 it("maps an all-backends listing per entry backend and surfaces partial errors", async () => {
   mockListAgentSessions.mockResolvedValue({
     sessions: [
@@ -53,9 +68,9 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
     rawFallbackBackendId: "codex",
   });
 
-  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backendId: "all" }));
+  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backendId: "all" }), undefined);
   // 既定sourceKinds(メイン系のみ)はサーバー側でsubagentを除外してからページングさせる
-  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeSubagents: false }));
+  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeSubagents: false }), undefined);
   expect(result.data.map((item) => ({ backendId: item.backendId, threadId: item.threadId, modelProvider: item.modelProvider }))).toEqual([
     { backendId: "claude", threadId: "claude-1", modelProvider: "claude" },
     { backendId: "codex", threadId: "codex-1", modelProvider: "codex" },
@@ -67,6 +82,7 @@ it("maps an all-backends listing per entry backend and surfaces partial errors",
 });
 
 it("falls back to the raw codex listing when the all-backends scope fails while the runner WS is ready", async () => {
+  const onListResponseBytes = jest.fn();
   mockListAgentSessions.mockRejectedValue(new Error("agent channel unavailable"));
   mockRunCodexRpcSession.mockImplementation(async (options) => options.run(jest.fn(async () => ({
     data: [],
@@ -80,10 +96,12 @@ it("falls back to the raw codex listing when the all-backends scope fails while 
     runnerWebSocketManager: { getSnapshot: () => ({ connectionState: "ready", generation: 1 }) } as never,
     backendId: "all",
     rawFallbackBackendId: "codex",
+    onListResponseBytes,
   });
 
   expect(mockRunCodexRpcSession).toHaveBeenCalledTimes(1);
   expect(result.data).toEqual([]);
+  expect(onListResponseBytes).not.toHaveBeenCalled();
 });
 
 it("does not degrade the all-backends listing to raw codex while the runner WS is not ready", async () => {
@@ -161,7 +179,7 @@ it("requests subagents from the server when subAgent source kinds are included",
     sourceKinds: ["subAgent", "subAgentReview"],
   });
 
-  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeSubagents: true }));
+  expect(mockListAgentSessions).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ includeSubagents: true }), undefined);
 });
 
 it("maps the server-reported isActive to a threadStatusType per listing entry", async () => {

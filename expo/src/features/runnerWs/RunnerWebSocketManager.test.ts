@@ -521,6 +521,30 @@ test("request provides a requestId, times out, and cleans up", async () => {
   expect(manager.getSnapshot().pendingRequestCount).toBe(0);
 });
 
+test("response byte observer counts only its matching UTF-8 envelope once", async () => {
+  const socket = nextSocket();
+  const manager = createManager();
+  await connectReady(manager, socket);
+  const firstBytes = jest.fn(() => { throw new Error("diagnostic failure"); });
+  const secondBytes = jest.fn();
+  const first = manager.request({ channel: "agent", op: "sessions.list" }, { onResponseBytes: firstBytes });
+  const second = manager.request({ channel: "agent", op: "sessions.list" }, { onResponseBytes: secondBytes });
+  const [firstRequest, secondRequest] = socket.sent.map((raw) => JSON.parse(raw));
+  socket.message({ channel: "agent", op: "event", requestId: "unrelated", payload: { title: "別件" } });
+  const secondResponse = { channel: "agent", op: "sessions.list.result", requestId: secondRequest.requestId, payload: { title: "日本語😀" } };
+  const secondRaw = JSON.stringify(secondResponse);
+  socket.onmessage?.({ data: secondRaw } as MessageEvent);
+  socket.onmessage?.({ data: secondRaw } as MessageEvent);
+  const firstResponse = { channel: "agent", op: "sessions.list.result", requestId: firstRequest.requestId, payload: { title: "子" } };
+  socket.onmessage?.({ data: JSON.stringify(firstResponse) } as MessageEvent);
+  await expect(first).resolves.toEqual(firstResponse);
+  await expect(second).resolves.toEqual(secondResponse);
+  expect(firstBytes).toHaveBeenCalledTimes(1);
+  expect(firstBytes).toHaveBeenCalledWith(new TextEncoder().encode(JSON.stringify(firstResponse)).length);
+  expect(secondBytes).toHaveBeenCalledTimes(1);
+  expect(secondBytes).toHaveBeenCalledWith(new TextEncoder().encode(secondRaw).length);
+});
+
 test("background closes intentionally and active reconnects once", async () => {
   const firstSocket = nextSocket();
   const manager = createManager();

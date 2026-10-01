@@ -776,7 +776,7 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
   limit?: number;
   includeSubagents?: boolean;
   parentSessionIds?: string[];
-}) {
+}, onResponseBytes?: (bytes: number) => void) {
   const backendId = String(options.backendId || "").trim();
   let statuses: BackendStatus[];
   if (backendId && backendId !== ALL_BACKENDS_SCOPE) {
@@ -795,12 +795,16 @@ export async function listAgentSessions(manager: RunnerWebSocketManager, options
       backendId: String(status.backendId || ""), nativeSessionId,
     }))).filter((ref) => ref.backendId && ref.nativeSessionId)
     : [];
+  let responseBytes: number | null = null;
   const response = await manager.request({
     channel: "agent",
     op: "sessions.list",
     payload: { ...listOptions, backendId, ...(parentSessionRefs.length ? { parentSessionRefs } : {}) },
-  }, { timeoutMs: 30_000 });
+  }, { timeoutMs: 30_000, onResponseBytes: (bytes) => { responseBytes = bytes; } });
   if (response.op === "error") throw new Error(String(object(response.payload).message || "Session list failed"));
+  if (responseBytes !== null) {
+    try { onResponseBytes?.(responseBytes); } catch { /* diagnostics cannot change listing behavior */ }
+  }
   return object(response.payload);
 }
 

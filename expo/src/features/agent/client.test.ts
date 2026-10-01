@@ -27,6 +27,28 @@ test("child listing sends backend-qualified parents without changing an ordinary
   expect(request.mock.calls[3][0].payload).not.toHaveProperty("parentSessionRefs");
 });
 
+test("list byte observer receives only a successful sessions.list response", async () => {
+  let fail = true;
+  const request = jest.fn(async (message: { op: string }, options?: { onResponseBytes?: (bytes: number) => void }) => {
+    if (message.op === "agent.hello") return { channel: "agent", op: "agent.ready", payload: {
+      protocolVersion: 2, backends: [{ backendId: "codex", readiness: { ready: true } }],
+    } };
+    options?.onResponseBytes?.(321);
+    return fail ? { op: "error", payload: { message: "list failed" } }
+      : { op: "sessions.list.result", payload: { sessions: [] } };
+  });
+  const manager = { request } as unknown as RunnerWebSocketManager;
+  const onResponseBytes = jest.fn();
+  await expect(listAgentSessions(manager, { backendId: "all", cwd: "/workspace" }, onResponseBytes)).rejects.toThrow("list failed");
+  expect(onResponseBytes).not.toHaveBeenCalled();
+  fail = false;
+  await listAgentSessions(manager, { backendId: "all", cwd: "/workspace" }, onResponseBytes);
+  expect(onResponseBytes).toHaveBeenCalledTimes(1);
+  expect(onResponseBytes).toHaveBeenCalledWith(321);
+  onResponseBytes.mockImplementationOnce(() => { throw new Error("diagnostic failed"); });
+  await expect(listAgentSessions(manager, { backendId: "all", cwd: "/workspace" }, onResponseBytes)).resolves.toEqual({ sessions: [] });
+});
+
 test("a protocol-v1 Runner falls back to the raw Codex transport", async () => {
   const request = jest.fn(async () => ({
     channel: "agent",
