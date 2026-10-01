@@ -716,15 +716,24 @@ export function createAgentService({
         if (!existing && operation.result) {
           return {
             runId: String(operation.runId || operation.result.runId || ""),
+            requestHash,
+            replayed: true,
             result: operation.result,
             events: { async *[Symbol.asyncIterator]() {} },
             completion: Promise.resolve(operation.result),
           };
         }
         if (!existing) throw agentError("operation_status_unknown", "previous operation is no longer replayable");
+        if (existing.terminal) return {
+          runId: existing.runId, requestHash: existing.requestHash, replayed: true,
+          result: existing.result, completion: existing.completion,
+          events: { async *[Symbol.asyncIterator]() {} },
+        };
         const actionConsumerId = {};
         return {
           runId: existing.runId,
+          requestHash: existing.requestHash,
+          replayed: true,
           queued: existing.queuedForCompact === true,
           events: createEventStream(service, existing.runId, subjectId, actionConsumerId),
           actionConsumerId,
@@ -846,6 +855,7 @@ export function createAgentService({
       const actionConsumerId = {};
       return {
         runId: run.runId,
+        requestHash: run.requestHash,
         queued: queuedForCompact,
         events: createEventStream(service, run.runId, subjectId, actionConsumerId),
         actionConsumerId,
@@ -1069,6 +1079,21 @@ export function createAgentService({
     respondToAction,
     subscribe,
     getActiveRun,
+    async inspectRun({ runId, clientOperationId, requestHash }, context = {}) {
+      const subjectId = String(context.subjectId || "").trim();
+      const run = runs.get(String(runId || ""));
+      if (run && run.subjectId === subjectId && run.clientOperationId === clientOperationId
+        && run.requestHash === requestHash) {
+        return { runId: run.runId, sessionRef: run.sessionRef, state: run.state,
+          actions: Array.from(run.activeActions.values(), (action) => action.payload), result: run.result };
+      }
+      const operation = await operationStore.inspect(subjectId, clientOperationId, requestHash);
+      if (operation?.status === "existing" && operation.runId === runId && operation.result) {
+        return { runId, sessionRef: operation.result.sessionRef, state: operation.result.outcome,
+          actions: [], result: operation.result };
+      }
+      return { runId, state: "unknown", actions: [] };
+    },
     getStatuses,
     handoffSession,
     compactSession,

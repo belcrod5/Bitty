@@ -1,6 +1,6 @@
 import React from "react";
-import { act, fireEvent, render } from "@testing-library/react-native";
-import { Platform, StyleSheet } from "react-native";
+import { act, fireEvent, render, within } from "@testing-library/react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "./StreamingSttFooter";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
@@ -78,7 +78,7 @@ describe("StreamingSttFooter", () => {
     });
     expect(screen.getByText("00:12 / 60m")).toBeTruthy();
     await screen.rerender(<StreamingSttFooter ref={ref} transcript="" phase="connecting" onStop={onStop} />);
-    expect(screen.getByText("音声入力")).toBeTruthy();
+    expect(screen.queryByText("音声入力")).toBeNull();
   });
 
   it("shows voice context values beside STT usage only when the optional prop is supplied", async () => {
@@ -93,6 +93,29 @@ describe("StreamingSttFooter", () => {
       voiceContextStats={null} />);
     expect(screen.getByTestId("streaming-stt-voice-context-stats").props.children)
       .toBe("文脈推定 --% · 未要約 --件 · メモリー --字");
+    await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={onStop}
+      voiceContextStats={{ estimatedContextUsagePercent: 42, unsummarizedMessageCount: 6,
+        memoryCharacterCount: 123, subagentRunningCount: 1, subagentTotalCount: 2 }} />);
+    expect(screen.getByTestId("streaming-stt-subagent-count")).toBeTruthy();
+    expect(screen.getByText("1/2")).toBeTruthy();
+  });
+
+  it("keeps the orchestrator icon inside the top row without a transcript gutter", async () => {
+    const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
+      onChangeText={jest.fn()} leadingAccessory={<View testID="orchestrator-icon" />}
+      voiceContextStats={{ estimatedContextUsagePercent: 2, unsummarizedMessageCount: 0,
+        memoryCharacterCount: 0, subagentRunningCount: 0, subagentTotalCount: 0 }} />);
+    const panel = screen.getByTestId("streaming-stt-panel");
+    expect(within(panel).getByTestId("orchestrator-icon")).toBeTruthy();
+    expect(StyleSheet.flatten(panel.props.style).paddingLeft).toBeUndefined();
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).paddingLeft).toBeUndefined();
+    const badge = StyleSheet.flatten(screen.getByTestId("streaming-stt-leading-accessory").props.style);
+    expect(badge).toMatchObject({ top: 8, left: 10, width: 30, height: 30, zIndex: 3 });
+    await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
+      voiceStatus="speaking" onCancelSpeaking={jest.fn()}
+      leadingAccessory={<View testID="orchestrator-icon" />} />);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-speaking-cancel").props.style).zIndex).toBe(2);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-leading-accessory").props.style).zIndex).toBe(3);
   });
 
   it("offers a screen-reader history action on the existing transcript element", async () => {

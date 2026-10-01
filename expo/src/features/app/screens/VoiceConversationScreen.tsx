@@ -458,10 +458,8 @@ function VoiceConversationSession({
                         accessibilityLabel={`${orchestrator.name}・履歴を開く`}
                         onPress={() => setHistoryExpanded(true)} onLongPress={() => void openManager()}
                         onPointerDown={(event) => { if (event.nativeEvent.button === 2) void openManager(); }}
-                        style={{ width: 44, height: 44 }}>
-                        <View style={{ position: "absolute", top: -8, left: -8 }}>
-                          <VoiceOrchestratorIcon orchestrator={orchestrator} size={30} active />
-                        </View>
+                        style={{ width: 30, height: 30 }}>
+                        <VoiceOrchestratorIcon orchestrator={orchestrator} size={30} active />
                       </Pressable>
                     ) : undefined}
                   />

@@ -20,7 +20,7 @@ export type StreamingSttFooterHandle = {
 };
 
 function usageLabel(usage: StreamingSttUsage | null) {
-  if (!usage) return "音声入力";
+  if (!usage) return "";
   const minutes = Math.floor(usage.usedSeconds / 60);
   const seconds = Math.floor(usage.usedSeconds % 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")} / ${Math.ceil(usage.limitSeconds / 60)}m`;
@@ -195,7 +195,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         </Path>
       </Canvas>
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12",
-        zIndex: 1, ...(leadingAccessory ? { paddingLeft: 48 } : {}) }]}>
+        zIndex: 1 }]}>
         {voiceStatus === "speaking" && onCancelSpeaking ? (
           <TouchableOpacity
             testID="streaming-stt-speaking-cancel"
@@ -206,6 +206,32 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           />
         ) : null}
         <View style={{ flex: 1, minWidth: 0 }}>
+          {leadingAccessory || voiceContextStats !== undefined || usage || phase === "finalizing" ? (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginBottom: 2 }}>
+              {leadingAccessory ? (
+                <View style={{ width: 30, height: 30, marginRight: 6 }} />
+              ) : null}
+              {phase === "finalizing" || usage ? (
+                <Text style={{ color: "#8e9bad", fontSize: 11 }}>
+                  {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
+                </Text>
+              ) : null}
+              {voiceContextStats !== undefined ? (
+                <Text testID="streaming-stt-voice-context-stats" style={{ color: "#8e9bad", fontSize: 11,
+                  marginLeft: phase === "finalizing" || usage ? 8 : 0 }}>
+                  {`文脈推定 ${voiceContextStats?.estimatedContextUsagePercent ?? "--"}% · 未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
+                </Text>
+              ) : null}
+              {voiceContextStats?.subagentTotalCount !== undefined ? (
+                <View testID="streaming-stt-subagent-count" style={{ flexDirection: "row", alignItems: "center", marginLeft: 8 }}>
+                  <Ionicons name="people-outline" size={11} color="#8e9bad" />
+                  <Text style={{ color: "#8e9bad", fontSize: 11, marginLeft: 3 }}>
+                    {`${voiceContextStats.subagentRunningCount}/${voiceContextStats.subagentTotalCount}`}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
           {onChangeText && !voiceStatus ? (
             <TextInput
               ref={inputRef}
@@ -247,20 +273,6 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           {statusText && transcript ? (
             <Text style={{ color: "#ff9a9a", fontSize: 11, marginTop: 2 }}>{statusText}</Text>
           ) : null}
-          {voiceContextStats !== undefined ? (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 }}>
-              <Text style={{ color: "#8e9bad", fontSize: 11 }}>
-                {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
-              </Text>
-              <Text testID="streaming-stt-voice-context-stats" style={{ color: "#8e9bad", fontSize: 11, marginLeft: 8 }}>
-                {`文脈推定 ${voiceContextStats?.estimatedContextUsagePercent ?? "--"}% · 未要約 ${voiceContextStats?.unsummarizedMessageCount ?? "--"}件 · メモリー ${voiceContextStats?.memoryCharacterCount ?? "--"}字`}
-              </Text>
-            </View>
-          ) : (
-            <Text style={{ color: "#8e9bad", fontSize: 11, marginTop: 2 }}>
-              {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
-            </Text>
-          )}
         </View>
         <TouchableOpacity
           testID="streaming-stt-stop"
@@ -273,12 +285,13 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         >
           <Ionicons name="stop" size={18} color="#ffffff" />
         </TouchableOpacity>
+        {leadingAccessory ? (
+          <View testID="streaming-stt-leading-accessory"
+            style={{ position: "absolute", left: 10, top: 8, width: 30, height: 30, zIndex: 3 }}>
+            {leadingAccessory}
+          </View>
+        ) : null}
       </View>
-      {leadingAccessory ? (
-        <View style={{ position: "absolute", left: 0, top: 0, width: 44, height: 44, zIndex: 3, overflow: "visible" }}>
-          {leadingAccessory}
-        </View>
-      ) : null}
     </View>
   );
 }));

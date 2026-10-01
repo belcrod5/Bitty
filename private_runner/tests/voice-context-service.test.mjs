@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -41,6 +41,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
           throw error;
         }
         if (method === "config/read") return { config: { mcp_servers: configuredMcpServers } };
+        if (method === "modelProvider/capabilities/read") return { namespaceTools: true };
         if (method === "model/list") {
           if (holdModelList) await new Promise((resolve) => modelReleases.push(resolve));
           return { data: [
@@ -90,6 +91,13 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
                 threadId: params.threadId, turnId, command: "echo", args: ["hello"], reason: "test",
               } });
               calls.push({ method: "approval/result", params: result });
+            }
+            if (toolCall && !isSummary) {
+              const toolParams = { namespace: "voice_subagent", tool: "status", callId: "tool-1",
+                arguments: {}, threadId: params.threadId, turnId };
+              calls.push({ method: "tool/wrong", params: await serverHandler({ method: "item/tool/call",
+                params: { ...toolParams, threadId: "another-thread" } }) });
+              calls.push({ method: "tool/result", params: await serverHandler({ method: "item/tool/call", params: toolParams }) });
             }
             if (agentEvents && !isSummary) {
               for (const event of agentEvents) listener(event.method, {
@@ -153,7 +161,8 @@ async function fixture(t, options = {}) {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await fs.rm(temp, { recursive: true, force: true });
   });
-  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient,
+    managedSessions: options.managedSessions });
   const conversation = await service.open();
   return { rootDir, codex, service, conversation };
 }
@@ -1125,6 +1134,45 @@ test("response injects only ten recent pairs while older pairs await topic updat
   });
   for (const finish of codex.summaryReleases.splice(0)) finish();
   await waitFor(async () => (await memoryState(rootDir, conversation.logicalConversationId)).processedThroughPairSeq === 2);
+});
+
+test("managed sessions remain in every voice turn beyond the ten-pair window", async (t) => {
+  const managedSessions = {
+    refresh: async () => ({ records: [{ backendId: "codex", sessionId: "child-1", runId: "run-1",
+      request: "review the change", status: "awaiting_action" }] }),
+    contextOf: (snapshot) => `Managed sessions: ${JSON.stringify(snapshot.records)}`,
+    handleTool: async () => undefined,
+  };
+  const { codex, service, conversation } = await fixture(t, { managedSessions, holdSummaries: true });
+  for (let number = 1; number <= 12; number++) {
+    assert.equal((await complete(service, conversation, `user-${number}`)).result.status, "completed");
+  }
+  const injection = codex.calls.filter(({ method }) => method === "thread/inject_items").at(-1).params.items;
+  assert.equal(injection.length, 21);
+  assert.match(injection.at(-1).content[0].text, /child-1/);
+  assert.equal(injection.some(({ content }) => content[0].text === "user-1"), false);
+  assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
+    && params.approvalPolicy === "on-request").every(({ params }) =>
+    params.dynamicTools[0].name === "voice_subagent"), true);
+  await service.clearMessages();
+});
+
+test("voice App Server routes only the active turn's managed tool call", async (t) => {
+  const toolCalls = [];
+  const managedSessions = {
+    refresh: async () => ({ records: [] }), contextOf: () => "",
+    handleTool: async (request) => {
+      toolCalls.push(request);
+      return { success: true, contentItems: [{ type: "inputText", text: '{"ok":true}' }] };
+    },
+  };
+  const { codex, service, conversation } = await fixture(t, { managedSessions, toolCall: true });
+  assert.equal((await complete(service, conversation, "check child")).result.status, "completed");
+  assert.equal(codex.calls.find(({ method }) => method === "tool/wrong").params, undefined);
+  assert.deepEqual(codex.calls.find(({ method }) => method === "tool/result").params,
+    { success: true, contentItems: [{ type: "inputText", text: '{"ok":true}' }] });
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0].params.namespace, "voice_subagent");
 });
 
 test("summary disables configured MCP and accepts only disabled inventory", async (t) => {

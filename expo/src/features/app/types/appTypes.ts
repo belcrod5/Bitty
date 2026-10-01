@@ -270,6 +270,8 @@ export type VoiceContextStats = {
   estimatedContextUsagePercent: number | null;
   unsummarizedMessageCount: number;
   memoryCharacterCount: number;
+  subagentRunningCount?: number;
+  subagentTotalCount?: number;
 };
 export type SlashCommandName = "/status" | "/compact";
 
