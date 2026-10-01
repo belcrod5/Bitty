@@ -102,7 +102,7 @@ describe("StreamingSttFooter", () => {
 
   it("floats the orchestrator icon above the panel without a transcript gutter", async () => {
     const screen = await render(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
-      onChangeText={jest.fn()} leadingAccessory={<View testID="orchestrator-icon" />}
+      onChangeText={jest.fn()} leadingAccessory={<View testID="orchestrator-icon" style={{ width: 30, height: 30 }} />}
       voiceContextStats={{ estimatedContextUsagePercent: 2, unsummarizedMessageCount: 0,
         memoryCharacterCount: 0, subagentRunningCount: 0, subagentTotalCount: 0 }} />);
     const panel = screen.getByTestId("streaming-stt-panel");
@@ -111,7 +111,7 @@ describe("StreamingSttFooter", () => {
     expect(StyleSheet.flatten(panel.props.style).paddingLeft).toBeUndefined();
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-transcript").props.style).paddingLeft).toBeUndefined();
     const metadata = screen.getByTestId("streaming-stt-metadata");
-    expect(StyleSheet.flatten(metadata.props.style)).toMatchObject({ marginTop: 28, marginBottom: 2 });
+    expect(StyleSheet.flatten(metadata.props.style)).toMatchObject({ marginTop: 19, minHeight: 11, marginBottom: 2 });
     expect(StyleSheet.flatten(metadata.props.style).paddingLeft).toBeUndefined();
     expect(metadata.children[0]).toBe(screen.getByTestId("streaming-stt-voice-context-stats"));
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-voice-context-stats").props.style).marginLeft).toBe(0);
@@ -121,11 +121,18 @@ describe("StreamingSttFooter", () => {
     expect(StyleSheet.flatten(footer.props.style)).toMatchObject({ paddingTop: 8, paddingLeft: 8 });
     const labelTop = StyleSheet.flatten(footer.props.style).paddingTop
       + StyleSheet.flatten(panel.props.style).paddingVertical + StyleSheet.flatten(metadata.props.style).marginTop;
-    expect(labelTop).toBeGreaterThanOrEqual(badge.top + badge.height);
+    expect(labelTop).toBeGreaterThanOrEqual(badge.top
+      + StyleSheet.flatten(screen.getByTestId("orchestrator-icon").props.style).height);
+    expect(labelTop + StyleSheet.flatten(metadata.props.style).minHeight
+      + StyleSheet.flatten(metadata.props.style).marginBottom).toBeGreaterThan(badge.top + badge.height);
     await act(async () => {
       fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 88 } } });
     });
     expect(mockRRects.at(-1)).toEqual({ x: 54, y: 54, width: 264, height: 84 });
+    await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
+      onChangeText={jest.fn()} leadingAccessory={<View testID="orchestrator-icon" style={{ width: 30, height: 30 }} />} />);
+    expect(screen.getByTestId("streaming-stt-metadata").children).toHaveLength(0);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-metadata").props.style).minHeight).toBe(11);
     await screen.rerender(<StreamingSttFooter transcript="" phase="recording" onStop={jest.fn()}
       voiceStatus="speaking" onCancelSpeaking={jest.fn()}
       leadingAccessory={<View testID="orchestrator-icon" />} />);

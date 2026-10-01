@@ -211,7 +211,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         <View style={{ flex: 1, minWidth: 0 }}>
           {leadingAccessory || voiceContextStats !== undefined || usage || phase === "finalizing" ? (
             <View testID="streaming-stt-metadata" style={{ flexDirection: "row", flexWrap: "wrap",
-              alignItems: "center", marginTop: leadingAccessory ? 28 : 0, marginBottom: 2 }}>
+              alignItems: "center", marginTop: leadingAccessory ? 19 : 0,
+              minHeight: leadingAccessory ? 11 : 0, marginBottom: 2 }}>
               {phase === "finalizing" || usage ? (
                 <Text style={{ color: "#8e9bad", fontSize: 11 }}>
                   {phase === "finalizing" ? "FINALIZING" : usageLabel(usage)}
