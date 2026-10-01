@@ -2879,7 +2879,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       return requestSessionId === visibleSessionId;
     },
   });
-  useVoiceApprovals(handleApprovalRequest, clearResolvedApproval);
+  useVoiceApprovals(handleApprovalRequest, clearResolvedApproval, runnerWebSocketManager);
   const getActiveConversationMessagesForCodex = useCallback(() => (
     conversationMessagesRef.current.map((message) => ({
       ...message,

@@ -1,14 +1,18 @@
-import { useEffect, useRef } from "react";
-import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type { ApprovalAction, ApprovalRequest } from "../../codex/approvalFlow";
 import { normalizeAppServerApprovalRequest, toCodexApprovalDecision } from "../../codex/client/helpers";
 
 export function useVoiceApprovals(
   onRequest: ((request: ApprovalRequest) => Promise<ApprovalAction>) | undefined,
   onResolved: ((request: ApprovalRequest) => void) | undefined,
+  manager: RunnerWebSocketManager,
 ) {
-  const manager = useRunnerWebSocketManager();
-  const { connected } = useRunnerWebSocketSnapshot();
+  const connected = useSyncExternalStore(
+    manager.subscribeSnapshot,
+    () => manager.getSnapshot().connected,
+    () => manager.getSnapshot().connected,
+  );
   const callbacks = useRef({ onRequest, onResolved });
   const pending = useRef(new Map<string, { request: ApprovalRequest; operationId: string }>());
   callbacks.current = { onRequest, onResolved };
