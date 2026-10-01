@@ -25,6 +25,7 @@ export async function listCodexAppServerThreads(options: {
   runnerWebSocketManager?: RunnerWebSocketManager;
   backendId?: string;
   rawFallbackBackendId?: string;
+  parentSessionIds?: string[];
 }): Promise<CodexThreadListResult> {
   const limit = Number.isFinite(Number(options.limit))
     ? Math.max(1, Math.min(200, Math.floor(Number(options.limit))))
@@ -45,7 +46,7 @@ export async function listCodexAppServerThreads(options: {
     const includeSubagents = sourceKinds.some((kind) => String(kind).startsWith("subAgent"));
     let neutral = null;
     try {
-      neutral = await listAgentSessions(options.runnerWebSocketManager, { backendId, cwd, cursor, limit, includeSubagents });
+      neutral = await listAgentSessions(options.runnerWebSocketManager, { backendId, cwd, cursor, limit, includeSubagents, ...(options.parentSessionIds ? { parentSessionIds: options.parentSessionIds } : {}) });
     } catch (error) {
       if (!rawFallbackAllowed) throw error;
       // WS未接続(コールド起動等)の一時失敗でall-backendsをraw退行させると、

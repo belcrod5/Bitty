@@ -410,6 +410,61 @@ test("session list excludes subagents before paging when includeSubagents is fal
   assert.equal(calls[0].opts?.includeSubagents, false);
 });
 
+test("parent-scoped pages preserve full children and reduce serialized listing work", async (t) => {
+  const entries = [
+    { sessionId: "main", updatedAt: "2026-08-21T06:00:00.000Z" },
+    { sessionId: "other-child", parentSessionId: "other", updatedAt: "2026-08-21T05:00:00.000Z" },
+    { sessionId: "child-a", parentSessionId: "parent", updatedAt: "2026-08-21T04:00:00.000Z" },
+    { sessionId: "grandchild", parentSessionId: "child-a", updatedAt: "2026-08-21T03:00:00.000Z" },
+    { sessionId: "child-b", parentSessionId: "parent", updatedAt: "2026-08-21T02:00:00.000Z" },
+    { sessionId: "older-main", updatedAt: "2026-08-21T01:00:00.000Z" },
+  ].map((entry) => ({
+    ...entry, source: "cli", cwd: "/workspace", filePath: `/${entry.sessionId}`,
+    isSubagent: Boolean(entry.parentSessionId), lastReadAt: "2026-08-20T00:00:00.000Z",
+  }));
+  const service = createService({
+    listCliSessionsForDirectory: async () => entries,
+    readCliSessionSummaryFromRolloutFile: async (filePath) => ({
+      firstUserMessage: `title ${filePath}`,
+      modelRef: "gpt-6",
+      reasoningEffort: "high",
+      contextUsage: { usedTokens: 42 },
+    }),
+  });
+  async function collect(parentSessionRefs) {
+    const sessions = [];
+    let cursor = "";
+    let requests = 0;
+    let bytes = 0;
+    do {
+      const page = await service.listLlmSessions("/workspace", {
+        source: "cli", limit: 1, cursor, ...(parentSessionRefs ? { parentSessionRefs } : {}),
+      });
+      requests += 1;
+      bytes += Buffer.byteLength(JSON.stringify(page));
+      sessions.push(...page.sessions);
+      cursor = page.cursor || "";
+    } while (cursor);
+    return { sessions, requests, bytes };
+  }
+  const original = await collect();
+  const scoped = await collect([{ backendId: "codex", nativeSessionId: "parent" }]);
+  assert.deepEqual(scoped.sessions, original.sessions.filter((entry) => entry.parentSessionId === "parent"));
+  assert.deepEqual(scoped.sessions.map((entry) => entry.sessionId), ["child-a", "child-b"]);
+  assert.ok(scoped.sessions.every((entry) => entry.firstUserMessage && entry.modelRef && entry.reasoningEffort && entry.contextUsage));
+  assert.equal(original.requests, 6);
+  assert.equal(scoped.requests, 2);
+  assert.ok(scoped.requests < original.requests, `${scoped.requests} vs ${original.requests} pages`);
+  assert.ok(scoped.bytes < original.bytes, `${scoped.bytes} vs ${original.bytes} serialized fixture bytes`);
+  t.diagnostic(`Codex fixture: ${original.requests} pages/${original.bytes} bytes → ${scoped.requests} pages/${scoped.bytes} bytes`);
+  const grandchildren = await collect([{ backendId: "codex", nativeSessionId: "child-a" }]);
+  assert.deepEqual(grandchildren.sessions, original.sessions.filter((entry) => entry.parentSessionId === "child-a"));
+  const multiple = await collect(["parent", "child-a"].map((nativeSessionId) => ({ backendId: "codex", nativeSessionId })));
+  assert.deepEqual(multiple.sessions, original.sessions.filter((entry) => ["parent", "child-a"].includes(entry.parentSessionId)));
+  assert.deepEqual((await collect([{ backendId: "codex", nativeSessionId: "missing" }])).sessions, []);
+  assert.deepEqual((await collect()).sessions, original.sessions);
+});
+
 test("session list pages with a keyset cursor and rejects an invalid cursor", async () => {
   const service = createService({
     listCliSessionsForDirectory: async () => [

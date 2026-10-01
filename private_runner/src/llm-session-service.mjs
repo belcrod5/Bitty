@@ -133,10 +133,18 @@ export function createLlmSessionService(deps = {}) {
         ...(opts?.includeSubagents === false ? { includeSubagents: false } : {}),
       }));
     }
-    sessions.sort(compareSessionHistoryEntries);
-    const positioned = cursorKey
-      ? sessions.filter((item) => compareSessionHistoryEntries(item, cursorKey) > 0)
+    const parentIds = Array.isArray(opts?.parentSessionRefs) && opts.parentSessionRefs.length > 0
+      ? new Set(opts.parentSessionRefs
+        .filter((ref) => ref?.backendId === "codex")
+        .map((ref) => String(ref.nativeSessionId || "")))
+      : null;
+    const matchingSessions = parentIds
+      ? sessions.filter((item) => parentIds.has(String(item.parentSessionId || "")))
       : sessions;
+    matchingSessions.sort(compareSessionHistoryEntries);
+    const positioned = cursorKey
+      ? matchingSessions.filter((item) => compareSessionHistoryEntries(item, cursorKey) > 0)
+      : matchingSessions;
     const limited = positioned.slice(0, limit);
     const nextCursor = positioned.length > limited.length && limited.length > 0
       ? encodeSessionListPageCursor(limited[limited.length - 1])

@@ -974,6 +974,7 @@ export function useLlmSessionExplorer(options: UseLlmSessionExplorerOptions) {
         runnerWebSocketManager,
         backendId: ALL_BACKENDS_SCOPE,
         rawFallbackBackendId,
+        parentSessionIds,
       });
       pageCount += 1;
       for (const item of listed.data) {

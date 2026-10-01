@@ -103,8 +103,8 @@ export function createPrivateRunnerAgentRuntime({
     resolveSessionCwd: resolveCodexSessionCwd,
     dynamicTools,
     developerInstructions: CONVERSATION_HISTORY_TOOL_INSTRUCTIONS,
-    async listSessions({ cwd, limit, cursor, includeSubagents }) {
-      const page = await listSessions(cwd, { source: "all", limit, cursor, includeSubagents });
+    async listSessions({ cwd, limit, cursor, includeSubagents, parentSessionRefs }) {
+      const page = await listSessions(cwd, { source: "all", limit, cursor, includeSubagents, parentSessionRefs });
       return {
         sessions: page.sessions.map((session) => ({
           sessionRef: { backendId: "codex", nativeSessionId: session.sessionId },

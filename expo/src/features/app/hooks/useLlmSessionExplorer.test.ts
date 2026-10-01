@@ -791,6 +791,9 @@ test("paginates one directory subagent sequence, deduplicates it, and groups eve
   );
 
   expect(mockListCodexAppServerThreads).toHaveBeenCalledTimes(2);
+  expect(mockListCodexAppServerThreads.mock.calls[0][0]).toEqual(expect.objectContaining({
+    parentSessionIds: ["parent-a", "parent-b"],
+  }));
   expect(mockListCodexAppServerThreads.mock.calls[1][0]).toEqual(expect.objectContaining({ cursor: "page-2" }));
   expect(grouped["parent-a"]).toHaveLength(50);
   expect(grouped["parent-a"][0]).toEqual(

@@ -1,5 +1,31 @@
-import { startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
+import { listAgentSessions, startAgentSessionObserverWithRawFallback, startAgentTurnWithRawFallback } from "./client";
 import type { RunnerWebSocketManager } from "../runnerWs/RunnerWebSocketManager";
+
+test("child listing sends backend-qualified parents without changing an ordinary listing", async () => {
+  const request = jest.fn(async (message: { op: string; payload?: Record<string, unknown> }) => message.op === "agent.hello"
+    ? { channel: "agent", op: "agent.ready", payload: {
+      protocolVersion: 2,
+      backends: [
+        { backendId: "codex", readiness: { ready: true } },
+        { backendId: "claude", readiness: { ready: true } },
+      ],
+    } }
+    : { channel: "agent", op: "sessions.list.result", payload: { sessions: [] } });
+  const manager = { request } as unknown as RunnerWebSocketManager;
+
+  await listAgentSessions(manager, { backendId: "all", cwd: "/workspace", parentSessionIds: ["parent"] });
+  expect(request).toHaveBeenLastCalledWith(expect.objectContaining({
+    op: "sessions.list",
+    payload: expect.objectContaining({ parentSessionRefs: [
+      { backendId: "codex", nativeSessionId: "parent" },
+      { backendId: "claude", nativeSessionId: "parent" },
+    ] }),
+  }), expect.anything());
+  expect(request.mock.calls[1][0].payload).not.toHaveProperty("parentSessionIds");
+
+  await listAgentSessions(manager, { backendId: "all", cwd: "/workspace" });
+  expect(request.mock.calls[3][0].payload).not.toHaveProperty("parentSessionRefs");
+});
 
 test("a protocol-v1 Runner falls back to the raw Codex transport", async () => {
   const request = jest.fn(async () => ({

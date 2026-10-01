@@ -611,6 +611,71 @@ function listBackend(backendId, { sessions, listError, listSupported = true } = 
   };
 }
 
+test("all-backends child query scopes each backend before paging and retains full rows", async (t) => {
+  const calls = [];
+  const items = [
+    { backendId: "codex", id: "main-c", at: "2026-08-22T08:00:00.000Z" },
+    { backendId: "claude", id: "main-l", at: "2026-08-22T07:00:00.000Z" },
+    { backendId: "codex", id: "child-c", parent: "parent", at: "2026-08-22T06:00:00.000Z" },
+    { backendId: "claude", id: "child-l", parent: "parent", at: "2026-08-22T05:00:00.000Z" },
+    { backendId: "codex", id: "grandchild", parent: "child-c", at: "2026-08-22T04:00:00.000Z" },
+    { backendId: "claude", id: "other", parent: "other-parent", at: "2026-08-22T03:00:00.000Z" },
+  ];
+  const backends = ["codex", "claude"].map((backendId) => ({
+    ...listBackend(backendId, { sessions: [] }),
+    listSessions: async ({ parentSessionRefs, cursor, limit }) => {
+      calls.push({ backendId, parentSessionRefs });
+      const parents = parentSessionRefs && new Set(parentSessionRefs.map((ref) => ref.nativeSessionId));
+      const selected = items.filter((item) => item.backendId === backendId && (!parents || parents.has(item.parent)));
+      const offset = Number(cursor || 0);
+      const page = selected.slice(offset, offset + limit).map((item, index) => ({
+        sessionRef: { backendId, nativeSessionId: item.id },
+        ...(item.parent ? { parentSessionRef: { backendId, nativeSessionId: item.parent } } : {}),
+        updatedAt: item.at, title: `title ${item.id}`, modelId: `${backendId}-model`,
+        lastReadAt: "2026-08-21T00:00:00.000Z", isActive: item.id === "child-c",
+        cursor: String(offset + index + 1),
+      }));
+      return { sessions: page, ...(offset + page.length < selected.length ? { cursor: String(offset + page.length) } : {}) };
+    },
+  }));
+  const service = createAgentService({
+    backends, operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  async function collect(parentSessionRefs) {
+    const sessions = [];
+    let cursor = "";
+    let requests = 0;
+    let bytes = 0;
+    do {
+      const page = await service.listSessions({ cwd: "/workspace", limit: 1, cursor, ...(parentSessionRefs ? { parentSessionRefs } : {}) });
+      sessions.push(...page.sessions);
+      requests += 1;
+      bytes += Buffer.byteLength(JSON.stringify(page));
+      cursor = page.cursor || "";
+    } while (cursor);
+    return { sessions, requests, bytes };
+  }
+  const original = await collect();
+  calls.length = 0;
+  const refs = ["codex", "claude"].map((backendId) => ({ backendId, nativeSessionId: "parent" }));
+  const scoped = await collect(refs);
+  assert.deepEqual(scoped.sessions, original.sessions.filter((item) => item.parentSessionRef?.nativeSessionId === "parent"));
+  assert.deepEqual(scoped.sessions.map((item) => item.sessionRef.nativeSessionId), ["child-c", "child-l"]);
+  assert.ok(calls.every(({ backendId, parentSessionRefs }) => parentSessionRefs.length === 1 && parentSessionRefs[0].backendId === backendId));
+  assert.equal(original.requests, 6);
+  assert.equal(scoped.requests, 2);
+  assert.ok(scoped.requests < original.requests, `${scoped.requests} vs ${original.requests} pages`);
+  assert.ok(scoped.bytes < original.bytes, `${scoped.bytes} vs ${original.bytes} serialized fixture bytes`);
+  t.diagnostic(`mixed fixture: ${original.requests} pages/${original.bytes} bytes → ${scoped.requests} pages/${scoped.bytes} bytes`);
+  const grandchildren = await collect([{ backendId: "codex", nativeSessionId: "child-c" }]);
+  assert.deepEqual(grandchildren.sessions, original.sessions.filter((item) => item.parentSessionRef?.nativeSessionId === "child-c"));
+  const multiple = await collect([...refs, { backendId: "codex", nativeSessionId: "child-c" }]);
+  assert.deepEqual(multiple.sessions, original.sessions.filter((item) => ["parent", "child-c"].includes(item.parentSessionRef?.nativeSessionId)));
+  assert.deepEqual((await collect([{ backendId: "codex", nativeSessionId: "missing" }])).sessions, []);
+  assert.deepEqual((await collect()).sessions, original.sessions);
+});
+
 test("all-backends session list merges every listing backend by updatedAt and keeps partial failures diagnosable", async () => {
   const codexRef = { backendId: "codex", nativeSessionId: "codex-1" };
   const claudeRef = { backendId: "claude", nativeSessionId: "claude-1" };
@@ -661,6 +726,15 @@ test("all-backends session list merges every listing backend by updatedAt and ke
     retryable: false,
     message: "claude transcript scan failed",
   }]);
+  const scopedPartial = await partialService.listSessions({
+    backendId: "all", cwd: "/workspace",
+    parentSessionRefs: [
+      { backendId: "codex", nativeSessionId: "parent" },
+      { backendId: "claude", nativeSessionId: "parent" },
+    ],
+  });
+  assert.deepEqual(scopedPartial.sessions, partial.sessions);
+  assert.deepEqual(scopedPartial.errors, partial.errors);
 
   const allFailedService = createAgentService({
     backends: [listBackend("claude", { listError: failure })],
