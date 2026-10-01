@@ -3647,11 +3647,12 @@ async function startWorkspaceShellScript(rawPath, opts = {}) {
       if (job.killForceTimer) clearTimeout(job.killForceTimer);
       job.timeoutTimer = null;
       job.killForceTimer = null;
-      if (formatScriptJobStatus(job) !== "completed") {
-        const error = Object.assign(new Error(`Script ${formatScriptJobStatus(job)} (exit ${job.exitCode}${job.signal ? `, ${job.signal}` : ""})`), {
-          code: `script_${formatScriptJobStatus(job)}`,
+      const status = formatScriptJobStatus(job);
+      if (status !== "completed") {
+        const error = Object.assign(new Error(`Script ${status} (exit ${job.exitCode}${job.signal ? `, ${job.signal}` : ""})`), {
+          code: `script_${status}`,
         });
-        try { opts.onFailed?.(error); }
+        try { opts.onFailed?.(error, { jobId }); }
         catch (observerError) { console.warn(`[script] failure observer failed: ${errorMessage(observerError)}`); }
       }
       trimStoredScriptJobs();
@@ -3689,7 +3690,7 @@ async function startWorkspaceShellScript(rawPath, opts = {}) {
     job.durationMs = Math.max(0, job.finishedAtMs - job.startedAtMs);
     job.exitCode = -1;
     job.stderr = appendScriptJobOutput(job.stderr, errorMessage(err), maxOutputBytes);
-    try { opts.onFailed?.(Object.assign(new Error("Script failed to start"), { code: "script_start_failed" })); }
+    try { opts.onFailed?.(Object.assign(new Error("Script failed to start"), { code: "script_start_failed" }), { jobId }); }
     catch (observerError) { console.warn(`[script] failure observer failed: ${errorMessage(observerError)}`); }
   }
 

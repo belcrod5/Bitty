@@ -694,6 +694,11 @@ export function createCodexScheduleService({
         // A native failure can race with recording the successful start.
         if (!dispatch.result && result?.threadId && result?.turnId && claim.definition.action.kind === "llm") {
           dispatch.result = { kind: "llm", threadId: result.threadId, turnId: result.turnId };
+        } else if (!dispatch.result && result?.jobId && claim.definition.action.kind === "script") {
+          dispatch.result = { kind: "script", jobId: result.jobId };
+        } else if (!dispatch.result && result?.logicalConversationId && claim.definition.action.kind === "voice") {
+          dispatch.result = { kind: "voice", orchestratorId: result.orchestratorId,
+            logicalConversationId: result.logicalConversationId, clientOperationId: result.clientOperationId };
         }
       } else {
         if (claim.definition.action.kind === "voice") {
@@ -785,6 +790,8 @@ export function createCodexScheduleService({
       if (action.kind === "voice") {
         const opened = await voiceContextService.open(action.orchestratorId);
         const clientOperationId = randomUUID();
+        const voiceResult = { orchestratorId: action.orchestratorId,
+          logicalConversationId: opened.logicalConversationId, clientOperationId };
         await new Promise((resolve, reject) => {
           let started = false;
           void voiceContextService.start({ operationId: clientOperationId, payload: {
@@ -796,13 +803,11 @@ export function createCodexScheduleService({
           } }, (state) => {
             if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
           }, (request) => onVoiceApproval(clientOperationId, action.orchestratorId, request), {
-            onStarted: () => { started = true; resolve(); },
+            onStarted: () => { result = voiceResult; started = true; resolve(); },
             onFailed: (error) => { if (started) onFailed(error); else reject(error); },
             onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },
           }).catch(reject);
         });
-        result = { orchestratorId: action.orchestratorId,
-          logicalConversationId: opened.logicalConversationId, clientOperationId };
       } else if (action.kind === "script") {
         await validateShellScript(action.scriptPath, {
           allowExternal: true,

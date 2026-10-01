@@ -1135,3 +1135,35 @@ test("slow failure notification delivery does not hold dispatch concurrency slot
   await harness.service.evaluate();
   assert.equal((await harness.service.snapshot()).schedules[0].lastDispatch.status, "failed");
 });
+
+
+test("immediate script and voice failures retain their start IDs", async (t) => {
+  const error = Object.assign(new Error("immediate failure"), { code: "turn_failed" });
+  for (const kind of ["script", "voice"]) {
+    const failures = [];
+    const harness = await makeHarness({
+      startShellScript: async (_path, { onFailed }) => {
+        onFailed(error, { jobId: "job-immediate" });
+        return { jobId: "job-immediate" };
+      },
+      voiceContextService: {
+        open: async () => ({ logicalConversationId: ID_B }),
+        start: async (_request, _state, _approval, hooks) => { hooks.onStarted(); hooks.onFailed(error); },
+      },
+      onExecutionFailed: (failure) => failures.push(failure),
+    });
+    t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+    const { cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
+    const action = kind === "script" ? { kind, cwd: process.cwd(), scriptPath: `${process.cwd()}/check.sh` }
+      : { kind, orchestratorId: "main", prompt: "check" };
+    await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base, action }] });
+    harness.currentClock.set("2026-08-14T00:00:00.000Z");
+    await harness.service.evaluate();
+    await waitFor(() => failures.length === 1);
+    const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+    assert.equal(dispatch.status, "failed");
+    assert.equal(dispatch.result.kind, kind);
+    if (kind === "script") assert.equal(dispatch.result.jobId, "job-immediate");
+    else assert.equal(dispatch.result.logicalConversationId, ID_B);
+  }
+});
