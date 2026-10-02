@@ -22,7 +22,7 @@
 
 2026-10-02の実機テスト後、Runnerログに`request_user_input is unavailable in Default mode`を確認した。モデルはツールを呼び出そうとしていたが、Codex内で拒否され、Runnerへの質問要求は発生していなかった。最初の実装では、この有効化の前提を確認できていなかった。
 
-ローカルの`codex features list`で、`default_mode_request_user_input`が存在し、初期値がfalseであることを確認した。通常チャットの`thread/start`と`thread/resume`の`config`に`"features.default_mode_request_user_input": true`を渡す。Planモードへ変更せず、グローバル設定・アプリの設定項目も増やさない。専用のカレンダーschedule用configは既存のままとする。
+ローカルの`codex features list`で、`default_mode_request_user_input`が存在し、初期値がfalseであることを確認した。質問を処理するCodex Backendから開始する通常チャットの`thread/start`と`thread/resume`の`config`に`"features.default_mode_request_user_input": true`を渡す。Planモードへ変更せず、グローバル設定・アプリの設定項目も増やさない。共通の開始関数は質問を既定で無効化し、質問に非対応のRunner起動経路とカレンダーscheduleでは明示的にfalseにする。
 
 このflagはCodex 0.159.2ではunder developmentのため、Codex更新時は動作を再確認する。ツールの有効化はモデルが毎回質問する保証ではない。
 
@@ -176,3 +176,13 @@ node --test private_runner/tests/codex-relay-approval-replay.test.mjs private_ru
 レビューで通常チャットにもthread・turnの照合を追加し、回答検証の重複を削除した。共有フォーム・共有表示制御・共通の回答契約を使い、既存の二つの通信経路を無理に統合する新しい層は作らない。通知・永続化・質問キュー・設定項目・専用タイマーサービスも追加していない。
 
 最終検証（2026-10-02）: Runner関連9ファイル268件、クライアント関連9ファイル160件成功。対象外のthread・turnの質問を表示せず解決する追加テストを含む。`npm run typecheck`・`npm run typecheck:macos`・`git diff --check`も成功。
+
+### サブエージェントによる独立レビュー
+
+PR #163のコードをサブエージェントが独立レビューし、4ファイルのRunnerテスト187件も再実行して成功。上流の質問要求処理・期限管理と、実際の二経路でフォーム・表示制御・回答検証を共有する構造は妥当と評価された。
+
+P2の指摘1件: 共通の`startCodexTurn`で質問を無条件に有効化しており、質問の回答を処理しない位置スケジュール・旧queued turnにも適用されていた。既存handlerはdynamic tool用の応答形を返すため、質問を正しい空回答として処理できない。
+
+有効化を質問対応のBackendからのみ明示するよう修正。共通開始関数の内部引数`enableUserInput`は既定falseとし、同じ`threadConfig`を新規・再開で使う。カレンダーscheduleでも明示falseを残し、後続スプレッドによるconfig上書きを削除した。非対応経路の下流handlerやUIへ質問処理を追加せず、ツールを公開する上流境界で適用範囲を揃えた。
+
+サブエージェントが修正差分も再確認し、P2解消・追加指摘なしと判定。修正に直接関係するCodex開始処理・カレンダーschedule・位置scheduleの3ファイル84件は成功。関連6ファイルの実行は230件成功・既存のvoice履歴境界テスト1件が非同期イベント保存前の読み取りで失敗し、その1件を単独で再実行して成功した。`git diff --check`と`node --check`も成功。クライアント変更はない。

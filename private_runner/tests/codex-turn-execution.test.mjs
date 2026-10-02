@@ -244,7 +244,7 @@ test("an answer after the deadline is rejected even before the timer callback ru
   assert.deepEqual(run.nativeResponse(), { answers: {} });
 });
 
-test("starts an ordinary new thread and forwards configured turn options", async () => {
+test("starts an unattended new thread with questions disabled and forwards turn options", async () => {
   const client = fakeClient();
   const result = await executeCodexTurn({
     client,
@@ -256,6 +256,9 @@ test("starts an ordinary new thread and forwards configured turn options", async
     approvalPolicy: "on-request",
   });
   assert.deepEqual(result, { threadId: "thread-new", turnId: "turn-1", lastAgentMessageText: "" });
+  assert.deepEqual(client.calls.find((call) => call.method === "thread/start")?.params.config, {
+    "features.default_mode_request_user_input": false,
+  });
   assert.equal(client.calls.find((call) => call.method === "initialize")?.params.capabilities.experimentalApi, true);
   assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
   assert.deepEqual(client.calls.find((call) => call.method === "turn/start")?.params, {
@@ -283,6 +286,9 @@ test("starts a turn without requiring or waiting for completion APIs", async () 
   });
 
   assert.equal(result.threadId, "thread-new");
+  assert.deepEqual(client.calls.find((call) => call.method === "thread/start")?.params.config, {
+    "features.default_mode_request_user_input": false,
+  });
   assert.equal(result.turnId, "turn-1");
   assert.equal(typeof result.cleanup, "function");
   assert.equal(client.calls.filter((call) => call.method === "turn/start").length, 1);
@@ -816,7 +822,7 @@ test("resumes a queued turn's existing thread through the same operation", async
     threadId: "thread-existing",
     cwd: "/work/project",
     excludeTurns: true,
-    config: { "features.default_mode_request_user_input": true },
+    config: { "features.default_mode_request_user_input": false },
   });
 });
 
@@ -993,7 +999,7 @@ test("calendar schedules create a closed-down thread with only three dynamic too
   ]);
   assert.equal(start.dynamicTools[0].tools.every((tool) => tool.deferLoading === true), true);
   assert.equal(start.config.web_search, "disabled");
-  assert.equal(start.config["features.default_mode_request_user_input"], undefined);
+  assert.equal(start.config["features.default_mode_request_user_input"], false);
   assert.deepEqual(start.config.apps, { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } });
   assert.match(start.developerInstructions, /untrusted external data/);
   const turn = client.calls.find((call) => call.method === "turn/start")?.params;

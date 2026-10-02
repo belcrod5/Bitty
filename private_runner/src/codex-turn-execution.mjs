@@ -183,6 +183,7 @@ export async function startCodexTurn({
   onTurnStarted,
   calendarSchedule,
   dynamicTools,
+  enableUserInput = false,
   developerInstructions = "",
 }) {
   const normalizedInput = Array.isArray(input?.blocks)
@@ -195,6 +196,13 @@ export async function startCodexTurn({
   const normalizedDeveloperInstructions = String(developerInstructions || "").trim();
   let activeThreadId = String(threadId || "").trim();
   const configuredDynamicTools = calendarSchedule?.dynamicTools || dynamicTools;
+  const threadConfig = {
+    "features.default_mode_request_user_input": enableUserInput && !calendarSchedule,
+    ...(calendarSchedule ? {
+      web_search: "disabled",
+      apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
+    } : {}),
+  };
   if (normalizedInput.length === 0) throw new Error("input is required");
   if (calendarSchedule && (activeThreadId || typeof client.addServerRequestHandler !== "function")) {
     throw new Error("calendar_api_failed");
@@ -222,7 +230,7 @@ export async function startCodexTurn({
         threadId: activeThreadId,
         cwd: directory || undefined,
         excludeTurns: true,
-        config: { "features.default_mode_request_user_input": true },
+        config: threadConfig,
         ...(normalizedDeveloperInstructions ? { developerInstructions: normalizedDeveloperInstructions } : {}),
       }, 30000).catch(() => null);
       activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
@@ -235,15 +243,11 @@ export async function startCodexTurn({
           approvalPolicy,
           experimentalRawEvents: false,
           persistExtendedHistory: false,
-          config: { "features.default_mode_request_user_input": true },
+          config: threadConfig,
           ...(configuredDynamicTools ? {
             dynamicTools: configuredDynamicTools,
           } : {}),
           ...(calendarSchedule ? {
-            config: {
-              web_search: "disabled",
-              apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
-            },
             developerInstructions: CALENDAR_DEVELOPER_INSTRUCTIONS,
           } : normalizedDeveloperInstructions
             ? { developerInstructions: normalizedDeveloperInstructions }
@@ -649,6 +653,7 @@ export function createCodexBackend({
         effort,
         approvalPolicy: policyProfileId === "codex-never" ? "never" : "on-request",
         dynamicTools,
+        enableUserInput: true,
         developerInstructions,
         onBeforeTurnStart: () => { state.turnStartRequested = true; },
         onThreadResolved: sessionRef ? undefined : async ({ threadId }) => {
