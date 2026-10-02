@@ -12,6 +12,7 @@ type UseReplyAudioFlowControllerOptions = {
     textOverride?: string,
     streamOptions?: TtsPlaybackTarget
   ) => Promise<void>;
+  logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
 export function useReplyAudioFlowController(options: UseReplyAudioFlowControllerOptions) {
@@ -23,6 +24,7 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
     ttsLoading,
     stopWaveformPlayback,
     synthesizeSpeechStream,
+    logAuto,
   } = options;
 
   const waitForReplyIdle = useCallback(async (timeoutMs = nearUnlimitedTimeoutMs) => {
@@ -42,10 +44,20 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
     message: ConversationMessage,
     target?: Omit<TtsPlaybackTarget, "messageId">
   ) => {
-    if (message.role !== "assistant") return;
+    logAuto("tts_trace", { stage: "button_press", messageId: message.id });
+    if (message.role !== "assistant") {
+      logAuto("tts_trace", { stage: "button_ignored", reason: "role", messageId: message.id });
+      return;
+    }
     const text = String(message.content || "").trim();
-    if (!text) return;
-    if (replyLoadingRef.current) return;
+    if (!text) {
+      logAuto("tts_trace", { stage: "button_ignored", reason: "empty_text", messageId: message.id });
+      return;
+    }
+    if (replyLoadingRef.current) {
+      logAuto("tts_trace", { stage: "button_ignored", reason: "reply_loading", messageId: message.id });
+      return;
+    }
 
     const isCurrentMessagePlaying = (
       ttsPlaybackMessageId === message.id &&
@@ -53,20 +65,28 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
     );
 
     if (isCurrentMessagePlaying) {
+      logAuto("tts_trace", { stage: "button_stop_current", messageId: message.id });
       await stopWaveformPlayback();
       return;
     }
 
     if (ttsPlayingRef.current || ttsLoading) {
+      logAuto("tts_trace", {
+        stage: "button_stop_previous",
+        messageId: message.id,
+        previousMessageId: ttsPlaybackMessageId,
+      });
       await stopWaveformPlayback();
     }
 
+    logAuto("tts_trace", { stage: "button_synthesize", messageId: message.id });
     await synthesizeSpeechStream(text, {
       ...target,
       messageId: message.id,
     });
   }, [
     replyLoadingRef,
+    logAuto,
     stopWaveformPlayback,
     synthesizeSpeechStream,
     ttsLoading,

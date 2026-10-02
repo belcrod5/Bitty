@@ -1,6 +1,7 @@
 import { useCallback, type MutableRefObject } from "react";
 import { Audio } from "../audio";
 import type { StreamAudioQueueItem, StreamTtsControlState, TtsDebugStats } from "../types/appTypes";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type UseAttachTtsSoundStatusHandlerControllerOptions = {
   ttsPlaybackStatusLogThrottleMs: number;
@@ -73,12 +74,19 @@ export function useAttachTtsSoundStatusHandlerController(
         if (!playbackErrorReported && status.error) {
           playbackErrorReported = true;
           const statusError = String(status.error || "sound_load_failed");
+          logAuto("tts_trace", {
+            stage: "native_status_error",
+            runId,
+            messageId: streamChunk?.playbackMessageId || null,
+            seq: streamChunk?.seq ?? null,
+            error: ttsDiagnosticError(statusError),
+          });
           logAuto("tts_status_error", {
-            message: statusError,
+            message: ttsDiagnosticError(statusError),
             runId,
           });
           logAuto("tts_playback_status_error", {
-            message: statusError,
+            message: ttsDiagnosticError(statusError),
             runId,
           });
           const line = `route=tts audio_error=${trimForInline(statusError, 96)}`;
@@ -103,6 +111,13 @@ export function useAttachTtsSoundStatusHandlerController(
       const isPlaying = Boolean(status.isPlaying);
       if (isPlaying && firstPlayingAt <= 0) {
         firstPlayingAt = now;
+        logAuto("tts_trace", {
+          stage: "native_first_playing",
+          runId,
+          messageId: streamChunk?.playbackMessageId || null,
+          seq: streamChunk?.seq ?? null,
+          positionMillis,
+        });
       }
       if (isPlaying) {
         ttsPlaybackLastPlayingAtRef.current = now;
@@ -126,6 +141,14 @@ export function useAttachTtsSoundStatusHandlerController(
         ) {
           if (now - ttsPlaybackUnexpectedStopLogAtRef.current >= ttsPlaybackStatusLogThrottleMs) {
             ttsPlaybackUnexpectedStopLogAtRef.current = now;
+            logAuto("tts_trace", {
+              stage: "native_unexpected_stop",
+              runId,
+              messageId: streamChunk?.playbackMessageId || null,
+              seq: streamChunk?.seq ?? null,
+              positionMillis,
+              durationMillis,
+            });
             logAuto("tts_playback_unexpected_stop", {
               runId,
               source: "callback_transition",
@@ -161,6 +184,14 @@ export function useAttachTtsSoundStatusHandlerController(
         ttsPlaybackProgressUiAtRef.current = now;
       }
       if (status.didJustFinish) {
+        logAuto("tts_trace", {
+          stage: "native_did_finish",
+          runId,
+          messageId: streamChunk?.playbackMessageId || null,
+          seq: streamChunk?.seq ?? null,
+          positionMillis,
+          durationMillis,
+        });
         const actualDurationMs = (
           durationMillis > 0
             ? durationMillis

@@ -24,6 +24,7 @@ function createOptions(processing: boolean, queue: StreamAudioQueueItem[] = []) 
     processStreamAudioQueue: jest.fn(async () => {}),
     setReplyDebug: jest.fn(),
     shouldProjectTtsDebugToActiveSession: jest.fn(() => false),
+    logAuto: jest.fn(),
   };
   return { options, streamAudioEnqueueChainRef, streamAudioQueueRef };
 }
@@ -53,4 +54,17 @@ test("does not preload beyond the first queued lookahead chunk", async () => {
   await streamAudioEnqueueChainRef.current;
 
   expect(options.preloadStreamAudio).not.toHaveBeenCalled();
+});
+
+test("records why a chunk was dropped after its queue generation changed", async () => {
+  const { options, streamAudioEnqueueChainRef, streamAudioQueueRef } = createOptions(false);
+  const { result } = await renderHook(() => useEnqueueStreamAudioController(options));
+  result.current(2, "https://secret.example/audio?token=abc", "audio/mpeg", "message-1");
+  options.streamAudioQueueGenerationRef.current += 1;
+  await streamAudioEnqueueChainRef.current;
+  expect(streamAudioQueueRef.current).toHaveLength(0);
+  expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+    stage: "enqueue_dropped", reason: "generation", messageId: "message-1", seq: 2,
+  }));
+  expect(JSON.stringify(options.logAuto.mock.calls)).not.toContain("secret.example");
 });

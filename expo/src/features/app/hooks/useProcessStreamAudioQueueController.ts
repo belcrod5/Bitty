@@ -5,6 +5,7 @@ import type {
   StreamSegmentStatus,
   StreamTtsControlState,
 } from "../types/appTypes";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 
@@ -36,6 +37,7 @@ type UseProcessStreamAudioQueueControllerOptions = {
   reportError: (error: unknown, context?: string) => void;
   markTtsPlaybackStopped: () => void;
   clearStreamAudioQueue: (options?: { bumpGeneration?: boolean }) => void;
+  logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
 export function useProcessStreamAudioQueueController(
@@ -63,6 +65,7 @@ export function useProcessStreamAudioQueueController(
     reportError,
     markTtsPlaybackStopped,
     clearStreamAudioQueue,
+    logAuto,
   } = options;
 
   return useCallback(async () => {
@@ -71,13 +74,17 @@ export function useProcessStreamAudioQueueController(
     setTtsQueueProcessing(true);
     syncTtsPlaybackWantedFromPipeline("stream_queue_process_start");
     let completed = false;
+    let stage = "prepare_session";
     try {
+      logAuto("tts_trace", { stage: "queue_prepare_session", queueSize: streamAudioQueueRef.current.length });
       await prepareTtsPlaybackSession();
       while (streamAudioQueueRef.current.length > 0) {
         const next = streamAudioQueueRef.current.shift();
         setStreamAudioQueueSize(streamAudioQueueRef.current.length);
         if (!next) continue;
         const playbackMessageId = String(next.playbackMessageId || "").trim();
+        stage = "play_chunk";
+        logAuto("tts_trace", { stage: "queue_chunk_start", messageId: playbackMessageId, seq: next.seq });
         if (playbackMessageId && playbackMessageId !== ttsPlaybackMessageIdRef.current) {
           setTtsPlaybackMessageIdWithRef(playbackMessageId);
         }
@@ -91,7 +98,10 @@ export function useProcessStreamAudioQueueController(
         );
         try {
           const played = await playPreparedStreamAudioAndWait(next);
-          if (!played) continue;
+          if (!played) {
+            logAuto("tts_trace", { stage: "queue_chunk_skipped", messageId: playbackMessageId, seq: next.seq });
+            continue;
+          }
         } finally {
           streamCurrentChunkStartedAtRef.current = 0;
           streamCurrentChunkEstimatedDurationMsRef.current = null;
@@ -108,9 +118,11 @@ export function useProcessStreamAudioQueueController(
             ? Number(next.actualDurationMs)
             : null,
         });
+        logAuto("tts_trace", { stage: "queue_chunk_complete", messageId: playbackMessageId, seq: next.seq });
       }
       completed = true;
     } catch (e) {
+      logAuto("tts_trace", { stage: "queue_error", phase: stage, error: ttsDiagnosticError(e) });
       console.error("[stream-audio] playback error", e);
       if (shouldProjectTtsDebugToActiveSession()) {
         setReplyDebug(`route=stream-tts audio_error=${e instanceof Error ? e.message : String(e)}`);
@@ -135,6 +147,7 @@ export function useProcessStreamAudioQueueController(
       }
     }
   }, [
+    logAuto,
     clearStreamAudioQueue,
     markTtsPlaybackStopped,
     playPreparedStreamAudioAndWait,

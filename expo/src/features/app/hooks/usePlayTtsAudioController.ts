@@ -4,6 +4,7 @@ import { createTtsSoundAsync } from "../ttsAudio";
 import type { VisualThemeTtsEffect } from "../theme/visualThemes";
 import type { AudioContainer, TtsDebugStats } from "../types/appTypes";
 import { detectAudioContainer, resolveAudioFileExtension } from "../utils/waveform";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type UsePlayTtsAudioControllerOptions = {
   fixedMediaVolume: number;
@@ -26,6 +27,7 @@ type UsePlayTtsAudioControllerOptions = {
   prepareTtsPlaybackSession: () => Promise<void>;
   attachTtsSoundStatusHandler: (sound: Audio.Sound, runId: number) => void;
   markTtsPlaybackStopped: () => void;
+  logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
 export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOptions) {
@@ -48,6 +50,7 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
     prepareTtsPlaybackSession,
     attachTtsSoundStatusHandler,
     markTtsPlaybackStopped,
+    logAuto,
   } = options;
 
   return useCallback(async (
@@ -56,13 +59,20 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
     playOptions?: {
       detectedAudioContainer?: AudioContainer;
       audioBytes?: number | null;
+      messageId?: string;
+      requestId?: number;
     }
   ) => {
     if (ttsStopInFlightRef.current) {
       await ttsStopInFlightRef.current.catch(() => {});
     }
     const runId = ttsPlaybackRunIdRef.current + 1;
+    const messageId = playOptions?.messageId || "";
+    const requestId = playOptions?.requestId ?? null;
+    const startedAt = Date.now();
+    let stage = "prepare_session";
     ttsPlaybackRunIdRef.current = runId;
+    logAuto("tts_trace", { stage: "single_play_start", messageId, requestId, runId });
     setTtsPlaybackWanted(true, "play_tts_audio_start", {
       mode: "single",
       runId,
@@ -86,14 +96,14 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
         detectAudioContainer(new Uint8Array(0), normalizedMimeType)
       );
       const audioBytes = Number(playOptions?.audioBytes);
-      console.log("[tts] play", {
-        audioUrl: normalizedAudioUrl,
-        mimeType: normalizedMimeType || "-",
-        detectedAudioContainer,
-        audioBytes: Number.isFinite(audioBytes) ? audioBytes : null,
-      });
-
       await prepareTtsPlaybackSession();
+      logAuto("tts_trace", {
+        stage: "single_session_ready",
+        messageId,
+        requestId,
+        runId,
+        elapsedMs: Date.now() - startedAt,
+      });
 
       const ext = resolveAudioFileExtension(detectedAudioContainer, normalizedMimeType);
       setTtsDebugStats((prev) => ({
@@ -114,6 +124,8 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
       }
 
       const processing = new AbortController();
+      stage = "load";
+      logAuto("tts_trace", { stage: "native_load_start", mode: "single", messageId, requestId, runId });
       ttsProcessingAbortControllersRef.current.add(processing);
       let sound: Audio.Sound;
       try {
@@ -128,27 +140,59 @@ export function usePlayTtsAudioController(options: UsePlayTtsAudioControllerOpti
       }
       if (runId !== ttsPlaybackRunIdRef.current) {
         await sound.unloadAsync().catch(() => {});
+        logAuto("tts_trace", {
+          stage: "native_cancelled",
+          reason: "run_replaced_after_load",
+          mode: "single",
+          messageId,
+          requestId,
+          runId,
+        });
         return;
       }
       createdSound = sound;
+      logAuto("tts_trace", {
+        stage: "native_load_complete",
+        mode: "single",
+        messageId,
+        requestId,
+        runId,
+        elapsedMs: Date.now() - startedAt,
+      });
       attachTtsSoundStatusHandler(sound, runId);
 
       setTtsUri(normalizedAudioUrl);
       setTtsSoundWithRef(sound);
       ttsPlaybackLastPlayingAtRef.current = Date.now();
+      stage = "play";
+      logAuto("tts_trace", { stage: "native_play_start", mode: "single", messageId, requestId, runId });
       await sound.playAsync();
+      logAuto("tts_trace", { stage: "native_play_returned", mode: "single", messageId, requestId, runId });
     } catch (e) {
+      logAuto("tts_trace", {
+        stage: "native_error",
+        phase: stage,
+        mode: "single",
+        messageId,
+        requestId,
+        runId,
+        error: ttsDiagnosticError(e),
+      });
       if (createdSound) {
         await createdSound.unloadAsync().catch(() => {});
         setTtsSoundWithRef((current) => (current === createdSound ? null : current));
       }
-      if (runId !== ttsPlaybackRunIdRef.current) return;
+      if (runId !== ttsPlaybackRunIdRef.current) {
+        logAuto("tts_trace", { stage: "native_cancelled", mode: "single", messageId, requestId, runId });
+        return;
+      }
       markTtsPlaybackStopped();
       throw e;
     } finally {
       ttsPlaybackTransitionInFlightRef.current = false;
     }
   }, [
+    logAuto,
     attachTtsSoundStatusHandler,
     fixedMediaVolume,
     ttsEffect,

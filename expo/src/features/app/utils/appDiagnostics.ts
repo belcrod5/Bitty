@@ -10,6 +10,27 @@ type SessionDiagLogger = (
   options?: SessionDiagLogOptions
 ) => void;
 
+const TTS_DIAGNOSTIC_ERROR_CODES = new Set([
+  "audio_history_missing", "job_id_missing", "missing_audio_url", "stream_tts_failed",
+  "runner_token_required", "runner_ws_stopped", "runner_ws_auth_failed",
+  "runner_ws_closed_before_ready", "runner_ws_message_too_large",
+  "tts_key_missing", "tts_provider_invalid", "tts_failed",
+]);
+
+export function ttsDiagnosticError(error: unknown) {
+  const record = error && typeof error === "object" ? error as { code?: unknown; name?: unknown } : null;
+  const code = String(record?.code || "");
+  if (TTS_DIAGNOSTIC_ERROR_CODES.has(code)) return code;
+  const message = (error instanceof Error ? error.message : String(error)).trim();
+  if (TTS_DIAGNOSTIC_ERROR_CODES.has(message)) return message;
+  const httpStatus = message.match(/^HTTP\s+([1-5][0-9]{2})$/);
+  if (httpStatus) return `HTTP_${httpStatus[1]}`;
+  const name = String(record?.name || "");
+  return /^(?:Error|TypeError|RangeError|AbortError|TimeoutError|NetworkError)$/.test(name)
+    ? name
+    : "unknown_error";
+}
+
 export function elapsedSinceMsValue(startedAtMs: number) {
   if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) return null;
   return Math.max(0, Date.now() - startedAtMs);

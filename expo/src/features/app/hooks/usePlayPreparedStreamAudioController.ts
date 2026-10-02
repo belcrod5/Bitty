@@ -3,6 +3,7 @@ import { Audio } from "../audio";
 import { createTtsSoundAsync } from "../ttsAudio";
 import type { VisualThemeTtsEffect } from "../theme/visualThemes";
 import type { StreamAudioQueueItem, TtsUiStatus } from "../types/appTypes";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type StreamAudioPreload = {
   item: StreamAudioQueueItem;
@@ -39,6 +40,7 @@ type UsePlayPreparedStreamAudioControllerOptions = {
     timeoutMs?: number
   ) => Promise<void>;
   markTtsPlaybackStopped: () => void;
+  logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
 export function usePlayPreparedStreamAudioController(
@@ -62,6 +64,7 @@ export function usePlayPreparedStreamAudioController(
     attachTtsSoundStatusHandler,
     waitForPlaybackToFinish,
     markTtsPlaybackStopped,
+    logAuto,
   } = options;
   const streamAudioPreloadRef = useRef<StreamAudioPreload | null>(null);
   const ttsEffectRef = useRef(ttsEffect);
@@ -111,7 +114,16 @@ export function usePlayPreparedStreamAudioController(
       await ttsStopInFlightRef.current.catch(() => {});
     }
     const runId = ttsPlaybackRunIdRef.current + 1;
+    const startedAt = Date.now();
+    let stage = "load";
     ttsPlaybackRunIdRef.current = runId;
+    logAuto("tts_trace", {
+      stage: "native_load_start",
+      mode: "stream",
+      messageId: item.playbackMessageId,
+      seq: item.seq,
+      runId,
+    });
     setTtsPlaybackWanted(true, "play_stream_audio_start", {
       mode: "stream",
       seq: item.seq,
@@ -148,6 +160,14 @@ export function usePlayPreparedStreamAudioController(
         if (streamAudioPreloadRef.current !== preload || preload.effect !== ttsEffectRef.current) {
           await sound.unloadAsync().catch(() => {});
           if (runId === ttsPlaybackRunIdRef.current && preload.effect !== ttsEffectRef.current) continue;
+          logAuto("tts_trace", {
+            stage: "native_cancelled",
+            reason: "preload_replaced",
+            mode: "stream",
+            messageId: item.playbackMessageId,
+            seq: item.seq,
+            runId,
+          });
           return false;
         }
         streamAudioPreloadRef.current = null;
@@ -155,34 +175,101 @@ export function usePlayPreparedStreamAudioController(
       }
       if (runId !== ttsPlaybackRunIdRef.current) {
         await sound.unloadAsync().catch(() => {});
+        logAuto("tts_trace", {
+          stage: "native_cancelled",
+          reason: "run_replaced_after_load",
+          mode: "stream",
+          messageId: item.playbackMessageId,
+          seq: item.seq,
+          runId,
+        });
         return false;
       }
       createdSound = sound;
+      logAuto("tts_trace", {
+        stage: "native_load_complete",
+        mode: "stream",
+        messageId: item.playbackMessageId,
+        seq: item.seq,
+        runId,
+        elapsedMs: Date.now() - startedAt,
+      });
       attachTtsSoundStatusHandler(sound, runId, item);
       setTtsUri(item.uri);
       setTtsSoundWithRef(sound);
+      stage = "play";
+      logAuto("tts_trace", {
+        stage: "native_play_start",
+        mode: "stream",
+        messageId: item.playbackMessageId,
+        seq: item.seq,
+        runId,
+      });
       await sound.playAsync();
+      logAuto("tts_trace", {
+        stage: "native_play_returned",
+        mode: "stream",
+        messageId: item.playbackMessageId,
+        seq: item.seq,
+        runId,
+      });
       if (runId !== ttsPlaybackRunIdRef.current) {
+        logAuto("tts_trace", {
+          stage: "native_cancelled",
+          reason: "run_replaced_after_play",
+          mode: "stream",
+          messageId: item.playbackMessageId,
+          seq: item.seq,
+          runId,
+        });
         return false;
       }
       const nextItem = streamAudioQueueRef.current[0];
       if (nextItem) preloadStreamAudio(nextItem);
       ttsPlaybackLastPlayingAtRef.current = Date.now();
       ttsPlaybackTransitionInFlightRef.current = false;
+      stage = "wait";
       await waitForPlaybackToFinish(runId);
+      logAuto("tts_trace", {
+        stage: "native_wait_complete",
+        mode: "stream",
+        messageId: item.playbackMessageId,
+        seq: item.seq,
+        runId,
+        current: runId === ttsPlaybackRunIdRef.current,
+      });
       return runId === ttsPlaybackRunIdRef.current;
     } catch (e) {
+      logAuto("tts_trace", {
+        stage: "native_error",
+        phase: stage,
+        mode: "stream",
+        messageId: item.playbackMessageId,
+        seq: item.seq,
+        runId,
+        error: ttsDiagnosticError(e),
+      });
       if (createdSound) {
         await createdSound.unloadAsync().catch(() => {});
         setTtsSoundWithRef((current) => (current === createdSound ? null : current));
       }
-      if (runId !== ttsPlaybackRunIdRef.current) return false;
+      if (runId !== ttsPlaybackRunIdRef.current) {
+        logAuto("tts_trace", {
+          stage: "native_cancelled",
+          mode: "stream",
+          messageId: item.playbackMessageId,
+          seq: item.seq,
+          runId,
+        });
+        return false;
+      }
       markTtsPlaybackStopped();
       throw e;
     } finally {
       ttsPlaybackTransitionInFlightRef.current = false;
     }
   }, [
+    logAuto,
     attachTtsSoundStatusHandler,
     clearPreloadedStreamAudio,
     markTtsPlaybackStopped,

@@ -35,6 +35,7 @@ function createOptions(queue: StreamAudioQueueItem[]) {
     reportError: jest.fn(),
     markTtsPlaybackStopped: jest.fn(),
     clearStreamAudioQueue: jest.fn(),
+    logAuto: jest.fn(),
   };
   return { options, streamAudioQueueRef, streamTtsControlRef, ttsPlaybackMessageIdRef };
 }
