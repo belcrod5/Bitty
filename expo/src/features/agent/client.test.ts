@@ -213,6 +213,8 @@ function deferred<T>() {
 async function createLiveTurn(options: {
   onApprovalRequest: (request: any) => Promise<any>;
   onApprovalRequestResolved?: (request: any) => void;
+  onUserInputRequest?: import("../codex/client/types").CodexAppServerTurnOptions["onUserInputRequest"];
+  onUserInputRequestResolved?: import("../codex/client/types").CodexAppServerTurnOptions["onUserInputRequestResolved"];
   onEvent?: (method: string, params: unknown) => void;
   onThreadIdResolved?: (threadId: string) => void;
   actionResponse?: { channel: string; op: string; payload?: Record<string, unknown> } | Promise<{
@@ -284,6 +286,8 @@ async function createLiveTurn(options: {
     cwd: "/workspace",
     onApprovalRequest: options.onApprovalRequest,
     onApprovalRequestResolved: options.onApprovalRequestResolved,
+    onUserInputRequest: options.onUserInputRequest,
+    onUserInputRequestResolved: options.onUserInputRequestResolved,
     onEvent: options.onEvent,
     onThreadIdResolved: options.onThreadIdResolved,
   }, jest.fn());
@@ -317,6 +321,93 @@ async function createLiveTurn(options: {
     },
   };
 }
+
+test("question answers use action.respond without entering approval or tool claims", async () => {
+  const onApprovalRequest = jest.fn(async () => "decline");
+  const result = { answers: { q1: { answers: ["B"] } } };
+  const ask = jest.fn(async () => result);
+  const resolved = jest.fn();
+  const turn = await createLiveTurn({ onApprovalRequest, onUserInputRequest: ask, onUserInputRequestResolved: resolved });
+  const startedAtMs = Date.now() - 10_000;
+  turn.emit("action.requested", { requestId: "question-1", kind: "user_input", startedAtMs,
+    input: { params: { threadId: "thread-1", questions: [{ id: "q1", question: "Which?" }] } } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(ask).toHaveBeenCalledWith(expect.objectContaining({ startedAtMs, threadId: "thread-1" }));
+  expect(onApprovalRequest).not.toHaveBeenCalled();
+  expect(turn.request).toHaveBeenCalledWith(expect.objectContaining({ op: "action.respond",
+    payload: expect.objectContaining({ requestId: "question-1", decision: "result", result }) }));
+  expect(turn.request.mock.calls.some(([message]) => message.op === "action.claim")).toBe(false);
+  expect(resolved).toHaveBeenCalledTimes(1);
+  turn.emit("action.resolved", { requestId: "question-1" });
+  turn.emit("turn.completed");
+  await turn.session.promise;
+  expect(resolved).toHaveBeenCalledTimes(1);
+});
+
+test("server expiry closes a question while the event pump continues and ignores a late answer", async () => {
+  const answer = deferred<import("../codex/userInput").UserInputResponse | null>();
+  const resolved = jest.fn();
+  const turn = await createLiveTurn({ onApprovalRequest: jest.fn(), onUserInputRequest: () => answer.promise,
+    onUserInputRequestResolved: resolved });
+  turn.emit("action.requested", { requestId: "question-1", kind: "user_input", startedAtMs: Date.now(),
+    input: { params: { questions: [{ id: "q1" }] } } });
+  turn.emit("content.delta", { delta: "continues" });
+  turn.emit("action.resolved", { requestId: "question-1", outcome: "expired" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(resolved).toHaveBeenCalledTimes(1);
+  answer.resolve({ answers: { q1: { answers: ["A"] } } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
+  turn.emit("turn.completed");
+  await expect(turn.session.promise).resolves.toMatchObject({ reply: "continues" });
+});
+
+test("ignored questions send no response and expired resumed questions do not reopen", async () => {
+  const ask = jest.fn(async () => null);
+  const turn = await createLiveTurn({ onApprovalRequest: jest.fn(), onUserInputRequest: ask,
+    resumeActions: [{ requestId: "expired-question", kind: "user_input", startedAtMs: Date.now() - 61_000,
+      input: { params: { questions: [] } } }] });
+  turn.emit("action.requested", { requestId: "question-other-chat", kind: "user_input", startedAtMs: Date.now(),
+    input: { params: { threadId: "other-thread", questions: [] } } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  turn.reconnect();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(ask).toHaveBeenCalledTimes(1);
+  expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
+  turn.emit("turn.completed");
+  await turn.session.promise;
+});
+
+test("resume keeps the question's original timestamp", async () => {
+  const startedAtMs = Date.now() - 30_000;
+  const ask = jest.fn(async () => null);
+  const turn = await createLiveTurn({ onApprovalRequest: jest.fn(), onUserInputRequest: ask,
+    resumeActions: [{ requestId: "resumed-question", kind: "user_input", startedAtMs,
+      input: { params: { threadId: "thread-1", questions: [] } } }] });
+  turn.reconnect();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(ask).toHaveBeenCalledWith(expect.objectContaining({ startedAtMs }));
+  turn.emit("turn.completed");
+  await turn.session.promise;
+});
+
+test("reconnect closes a question that was resolved while disconnected", async () => {
+  const answer = deferred<import("../codex/userInput").UserInputResponse | null>();
+  const resolved = jest.fn();
+  const turn = await createLiveTurn({ onApprovalRequest: jest.fn(), onUserInputRequest: () => answer.promise,
+    onUserInputRequestResolved: resolved, resumeActions: [] });
+  turn.emit("action.requested", { requestId: "question-1", kind: "user_input", startedAtMs: Date.now(),
+    input: { params: { questions: [] } } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  turn.reconnect();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(resolved).toHaveBeenCalledTimes(1);
+  answer.resolve({ answers: {} });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(turn.request.mock.calls.some(([message]) => message.op === "action.respond")).toBe(false);
+  turn.emit("turn.completed");
+  await turn.session.promise;
+});
 
 test("a direct neutral turn maps tool lifecycle to one raw-compatible command item", async () => {
   const onEvent = jest.fn();

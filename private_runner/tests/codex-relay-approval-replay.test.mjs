@@ -23,6 +23,20 @@ function approvalEvent(rpcId) {
   };
 }
 
+for (const id of [42, "native-question"]) {
+  test(`legacy relay skips an unsupported question in the Runner (${typeof id} id)`, () => {
+    const sent = [];
+    const relay = {
+      closed: false, threadId: "thread-test", clients: new Set(), eventLog: [],
+      upstreamWs: { readyState: 1, send: (data) => sent.push(JSON.parse(data)) },
+    };
+    handleCodexRelayUpstreamMessage(relay, JSON.stringify({ id, method: "item/tool/requestUserInput",
+      params: { threadId: "thread-test", questions: [] } }), false);
+    assert.deepEqual(sent, [{ jsonrpc: "2.0", id, result: { answers: {} } }]);
+    assert.equal(relay.eventLog.length, 0);
+  });
+}
+
 test("replays an unresolved approval", () => {
   const relay = { pendingApprovalRequestIds: new Set([8]) };
   const event = approvalEvent(8);

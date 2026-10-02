@@ -199,7 +199,7 @@ export function createAgentService({
     return Boolean(
       subscriber.actionConsumerId &&
       (subscriber.actionScope === "all" || (
-        subscriber.actionScope === "approval" && kind !== "dynamic_tool"
+        subscriber.actionScope === "approval" && (kind === "approval" || kind === "permission" || kind === "user_input")
       ) || (
         subscriber.actionScope === "dynamic_tool" && kind === "dynamic_tool"
       ))
@@ -908,7 +908,7 @@ export function createAgentService({
     const ownsAction = Boolean(context.actionConsumerId)
       && action.consumerId === context.actionConsumerId;
     const approvalResponder = context.approvalResponder === true
-      && String(action.payload.kind || "") !== "dynamic_tool";
+      && ["approval", "permission"].includes(String(action.payload.kind || ""));
     if ((!ownsAction && !approvalResponder) || action.claimState === "responding") {
       throw agentError("action_expired", "action request is owned by another consumer", { backendId: run.backendId });
     }

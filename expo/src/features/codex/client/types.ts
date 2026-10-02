@@ -70,6 +70,8 @@ export type CodexAppServerTurnOptions = {
   onCalendarRequestCancel?: (requestId: string) => void;
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
   onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;
+  onUserInputRequest?: (request: import("../userInput").UserInputRequest) => Promise<import("../userInput").UserInputResponse | null>;
+  onUserInputRequestResolved?: (request: import("../userInput").UserInputRequest) => void;
   timeoutMs?: number;
   onDelta?: (delta: string, params?: unknown) => void;
   onAgentMessageCompleted?: (text: string, params?: unknown) => void;
@@ -119,6 +121,8 @@ export type CodexAppServerRelayObserverOptions = {
   runnerWebSocketManager?: import("../../runnerWs/RunnerWebSocketManager").RunnerWebSocketManager;
   onApprovalRequest: (request: import("../approvalFlow").ApprovalRequest) => import("../approvalFlow").ApprovalAction | Promise<import("../approvalFlow").ApprovalAction>;
   onApprovalRequestResolved?: (request: import("../approvalFlow").ApprovalRequest) => void;
+  onUserInputRequest?: CodexAppServerTurnOptions["onUserInputRequest"];
+  onUserInputRequestResolved?: CodexAppServerTurnOptions["onUserInputRequestResolved"];
   onEvent?: (method: string, params: unknown) => void;
   onDelta?: (delta: string, params?: unknown) => void;
   onAgentMessageCompleted?: (text: string, params?: unknown) => void;

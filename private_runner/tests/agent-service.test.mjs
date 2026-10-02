@@ -15,6 +15,48 @@ function createAgentService(options) {
   });
 }
 
+test("resumed question actions keep their timestamp and accept results only from the UI consumer", async () => {
+  let complete;
+  const gate = new Promise((resolve) => { complete = resolve; });
+  let nativeEmit;
+  const responses = [];
+  const backend = {
+    backendId: "test", getStatus: async () => status(), resolveSessionCwd: async () => "/workspace",
+    async startTurn({ emit, resolveSession }) {
+      nativeEmit = emit;
+      await resolveSession({ backendId: "test", nativeSessionId: "session-1" });
+      emit("turn.started", {});
+      emit("action.requested", { requestId: "question-1", kind: "user_input", decisions: ["result"],
+        startedAtMs: 1000, input: { method: "item/tool/requestUserInput", params: { questions: [] } } });
+      await gate;
+      return { outcome: "completed" };
+    },
+    async respondToAction(response) {
+      responses.push(response);
+      nativeEmit("action.resolved", { requestId: response.requestId, outcome: "skipped" });
+      complete();
+    },
+  };
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd });
+  const run = await service.startTurn(startRequest(), { subjectId: "user-1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const consumer = {};
+  const events = [];
+  const subscription = service.subscribe(run.runId, { actionConsumerId: consumer, actionScope: "approval",
+    onEvent: (event) => events.push(event) }, { subjectId: "user-1" });
+  assert.equal(subscription.activeActions[0].startedAtMs, 1000);
+  const response = { runId: run.runId, requestId: "question-1", decision: "result", result: { answers: {} } };
+  await assert.rejects(service.respondToAction(response, { subjectId: "user-1", approvalResponder: true }),
+    (error) => error.code === "action_expired");
+  await service.respondToAction(response, { subjectId: "user-1", actionConsumerId: consumer });
+  await run.completion;
+  assert.equal(responses.length, 1);
+  assert.deepEqual(responses[0].result, { answers: {} });
+  assert.equal(events.filter((event) => event.type === "action.resolved").length, 1);
+  subscription.unsubscribe();
+});
+
 
 test("emits one ordered lifecycle and resolves completion to the terminal payload", async () => {
   const activityCalls = [];

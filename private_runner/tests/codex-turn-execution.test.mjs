@@ -59,7 +59,7 @@ function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) 
   };
 }
 
-function startCodexActionRun({ method, decision, dynamicTools = null }) {
+function startCodexActionRun({ method, decision, dynamicTools = null, requestParams }) {
   const client = fakeClient([]);
   let finishTurn;
   const completion = new Promise((resolve) => { finishTurn = resolve; });
@@ -73,9 +73,9 @@ function startCodexActionRun({ method, decision, dynamicTools = null }) {
       nativeResponse = await handler({
         id: "native-request-1",
         method,
-        params: method === "item/tool/call"
+        params: requestParams || (method === "item/tool/call"
           ? { tool: "calendar_list_calendars", arguments: {} }
-          : { reason: "Approve test action" },
+          : { reason: "Approve test action" }),
       });
       for (const listener of client.listeners) {
         listener("turn/completed", { threadId: params.threadId, turnId: "turn-1", turn: { status: "completed" } });
@@ -115,6 +115,13 @@ function startCodexActionRun({ method, decision, dynamicTools = null }) {
     requested,
     turn,
     nativeResponse: () => nativeResponse,
+    client,
+    complete() {
+      for (const listener of client.listeners) {
+        listener("turn/completed", { threadId: "thread-new", turnId: "turn-1", turn: { status: "completed" } });
+      }
+      finishTurn();
+    },
     respond: async (payload = {}) => {
       const request = await requested;
       await backend.respondToAction({
@@ -129,7 +136,115 @@ function startCodexActionRun({ method, decision, dynamicTools = null }) {
   };
 }
 
-test("starts an ordinary new thread and forwards configured turn options", async () => {
+const questionParams = {
+  threadId: "thread-new", turnId: "turn-1", itemId: "question-item", isBlocking: true,
+  questions: [{ id: "q1", header: "Choice", question: "Which?", isOther: true, isSecret: false,
+    options: [{ label: "A", description: "First" }, { label: "B", description: "Second" }] }],
+};
+
+for (const foreignIdentity of [{ threadId: "other-thread" }, { turnId: "other-turn" }]) {
+  test(`questions outside the active ${Object.keys(foreignIdentity)[0]} settle without being announced`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+    const run = startCodexActionRun({ method: "item/tool/requestUserInput",
+      requestParams: { ...questionParams, ...foreignIdentity } });
+    await run.turn;
+    assert.deepEqual(run.nativeResponse(), { answers: {} });
+    t.mock.timers.tick(60_000);
+    assert.equal(run.events.some((event) => event.type.startsWith("action.")), false);
+  });
+}
+
+test("Codex questions use the existing result action and preserve the native request", async () => {
+  const run = startCodexActionRun({ method: "item/tool/requestUserInput", decision: "result", requestParams: questionParams });
+  const result = { answers: { q1: { answers: ["B"] } } };
+  const request = await run.respond({ result });
+  assert.equal(request.kind, "user_input");
+  assert.deepEqual(request.decisions, ["result"]);
+  assert.equal(typeof request.startedAtMs, "number");
+  assert.deepEqual(request.input, { method: "item/tool/requestUserInput", params: questionParams });
+  assert.deepEqual(run.nativeResponse(), result);
+  assert.equal(run.events.filter((event) => event.type === "action.resolved").length, 1);
+  assert.equal(run.events.find((event) => event.type === "action.resolved").payload.outcome, "completed");
+});
+
+test("declining a question returns empty answers without interrupting the turn", async () => {
+  const run = startCodexActionRun({ method: "item/tool/requestUserInput", decision: "result", requestParams: questionParams });
+  await run.respond({ result: { answers: {} } });
+  assert.deepEqual(run.nativeResponse(), { answers: {} });
+  assert.equal(run.events.find((event) => event.type === "action.resolved").payload.outcome, "skipped");
+  assert.equal(run.client.calls.some((call) => call.method === "turn/interrupt"), false);
+});
+
+test("an invalid question answer does not consume the request and a last-second answer clears its timer", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const run = startCodexActionRun({ method: "item/tool/requestUserInput", decision: "result", requestParams: questionParams });
+  await run.requested;
+  await assert.rejects(run.backend.respondToAction({ runId: "run-action", requestId: "action-1", decision: "result",
+    result: { answers: { unknown_question: { answers: ["A"] } } } }), /Invalid Codex question answers/);
+  t.mock.timers.tick(59_999);
+  await run.respond({ result: { answers: { q1: { answers: ["A"] } } } });
+  t.mock.timers.tick(1);
+  assert.deepEqual(run.nativeResponse(), { answers: { q1: { answers: ["A"] } } });
+  assert.deepEqual(run.events.filter((event) => event.type === "action.resolved").map((event) => event.payload.outcome), ["completed"]);
+});
+
+for (const isBlocking of [true, false]) {
+  test(`unanswered ${isBlocking ? "blocking" : "nonblocking"} questions expire at 60 seconds without a client`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+    const run = startCodexActionRun({ method: "item/tool/requestUserInput", requestParams: { ...questionParams, isBlocking } });
+    const request = await run.requested;
+    assert.equal(request.startedAtMs, 1000);
+    t.mock.timers.tick(59_999);
+    assert.equal(run.events.some((event) => event.type === "action.resolved"), false);
+    t.mock.timers.tick(1);
+    await run.turn;
+    assert.deepEqual(run.nativeResponse(), { answers: {} });
+    assert.deepEqual(run.events.filter((event) => event.type === "action.resolved").map((event) => event.payload), [
+      { requestId: "action-1", outcome: "expired" },
+    ]);
+    await assert.rejects(run.backend.respondToAction({ runId: "run-action", requestId: "action-1", decision: "result", result: { answers: {} } }));
+  });
+}
+
+test("native question resolution without a turnId clears its timer and resolves only once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const run = startCodexActionRun({ method: "item/tool/requestUserInput", requestParams: questionParams });
+  await run.requested;
+  for (const listener of run.client.listeners) {
+    listener("serverRequest/resolved", { threadId: "other-thread", requestId: "native-request-1" });
+  }
+  assert.equal(run.events.some((event) => event.type === "action.resolved"), false);
+  for (const listener of run.client.listeners) {
+    listener("serverRequest/resolved", { threadId: "thread-new", requestId: "native-request-1" });
+  }
+  await run.turn;
+  t.mock.timers.tick(60_000);
+  assert.equal(run.events.filter((event) => event.type === "action.resolved").length, 1);
+});
+
+test("turn completion clears a pending question and its deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const run = startCodexActionRun({ method: "item/tool/requestUserInput", requestParams: questionParams });
+  await run.requested;
+  run.complete();
+  await run.turn;
+  t.mock.timers.tick(60_000);
+  assert.equal(run.events.filter((event) => event.type === "action.resolved").length, 1);
+  assert.deepEqual(run.nativeResponse(), { answers: {} });
+});
+
+test("an answer after the deadline is rejected even before the timer callback runs", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const run = startCodexActionRun({ method: "item/tool/requestUserInput", requestParams: questionParams });
+  await run.requested;
+  t.mock.timers.setTime(61_000);
+  await assert.rejects(run.backend.respondToAction({ runId: "run-action", requestId: "action-1", decision: "result",
+    result: { answers: { q1: { answers: ["A"] } } } }), (error) => error.code === "action_expired");
+  await run.turn;
+  assert.deepEqual(run.nativeResponse(), { answers: {} });
+});
+
+test("starts an unattended new thread with questions disabled and forwards turn options", async () => {
   const client = fakeClient();
   const result = await executeCodexTurn({
     client,
@@ -141,6 +256,9 @@ test("starts an ordinary new thread and forwards configured turn options", async
     approvalPolicy: "on-request",
   });
   assert.deepEqual(result, { threadId: "thread-new", turnId: "turn-1", lastAgentMessageText: "" });
+  assert.deepEqual(client.calls.find((call) => call.method === "thread/start")?.params.config, {
+    "features.default_mode_request_user_input": false,
+  });
   assert.equal(client.calls.find((call) => call.method === "initialize")?.params.capabilities.experimentalApi, true);
   assert.equal(client.calls.some((call) => call.method === "thread/resume"), false);
   assert.deepEqual(client.calls.find((call) => call.method === "turn/start")?.params, {
@@ -168,6 +286,9 @@ test("starts a turn without requiring or waiting for completion APIs", async () 
   });
 
   assert.equal(result.threadId, "thread-new");
+  assert.deepEqual(client.calls.find((call) => call.method === "thread/start")?.params.config, {
+    "features.default_mode_request_user_input": false,
+  });
   assert.equal(result.turnId, "turn-1");
   assert.equal(typeof result.cleanup, "function");
   assert.equal(client.calls.filter((call) => call.method === "turn/start").length, 1);
@@ -701,10 +822,11 @@ test("resumes a queued turn's existing thread through the same operation", async
     threadId: "thread-existing",
     cwd: "/work/project",
     excludeTurns: true,
+    config: { "features.default_mode_request_user_input": false },
   });
 });
 
-test("Codex Backend applies the common conversation-history instruction to new and resumed threads", async () => {
+test("Codex Backend enables questions in Default mode and applies history instructions to new and resumed threads", async () => {
   for (const sessionRef of [undefined, { backendId: "codex", nativeSessionId: "thread-existing" }]) {
     const client = fakeClient();
     client.close = () => {};
@@ -724,6 +846,10 @@ test("Codex Backend applies the common conversation-history instruction to new a
       emit: () => {},
     });
     const method = sessionRef ? "thread/resume" : "thread/start";
+    assert.deepEqual(client.calls.find((call) => call.method === method)?.params.config, {
+      "features.default_mode_request_user_input": true,
+    });
+    assert.equal(client.calls.find((call) => call.method === "turn/start")?.params.collaborationMode, undefined);
     assert.equal(
       client.calls.find((call) => call.method === method)?.params.developerInstructions,
       CONVERSATION_HISTORY_TOOL_INSTRUCTIONS,
@@ -873,6 +999,7 @@ test("calendar schedules create a closed-down thread with only three dynamic too
   ]);
   assert.equal(start.dynamicTools[0].tools.every((tool) => tool.deferLoading === true), true);
   assert.equal(start.config.web_search, "disabled");
+  assert.equal(start.config["features.default_mode_request_user_input"], false);
   assert.deepEqual(start.config.apps, { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } });
   assert.match(start.developerInstructions, /untrusted external data/);
   const turn = client.calls.find((call) => call.method === "turn/start")?.params;

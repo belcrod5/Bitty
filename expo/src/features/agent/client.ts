@@ -1,4 +1,5 @@
 import { isApprovalAction, type ApprovalRequest } from "../codex/approvalFlow";
+import type { UserInputRequest } from "../codex/userInput";
 import type {
   CodexAppServerTurnOptions,
   CodexAppServerRelayObserverOptions,
@@ -158,6 +159,8 @@ type AgentRunEventPumpOptions = {
   actionConsumer: "all" | "approval";
   onApprovalRequest: CodexAppServerTurnOptions["onApprovalRequest"];
   onApprovalRequestResolved?: CodexAppServerTurnOptions["onApprovalRequestResolved"];
+  onUserInputRequest?: CodexAppServerTurnOptions["onUserInputRequest"];
+  onUserInputRequestResolved?: CodexAppServerTurnOptions["onUserInputRequestResolved"];
   onCalendarToolCall?: CodexAppServerTurnOptions["onCalendarToolCall"];
   onThreadIdResolved?: (threadId: string) => void;
   onEvent?: (event: AgentEvent, payload: Record<string, unknown>) => void;
@@ -186,6 +189,7 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
   const handledActions = new Set<string>();
   const ignoredActionRequests = new Set<string>();
   const approvalActions = new Map<string, { request: ApprovalRequest; resolvedByServer: boolean }>();
+  const userInputActions = new Map<string, UserInputRequest>();
 
   const fail = (error: unknown) => {
     if (closed) return;
@@ -197,11 +201,49 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
     state.resolvedByServer = true;
     options.onApprovalRequestResolved?.(state.request);
   };
+  const resolveUserInput = (requestId: string) => {
+    const request = userInputActions.get(requestId);
+    if (!request) return;
+    userInputActions.delete(requestId);
+    options.onUserInputRequestResolved?.(request);
+  };
   const handleAction = async (payload: Record<string, unknown>) => {
     const requestId = String(payload.requestId || "").trim();
     if (!requestId || handledActions.has(requestId) || !runId || closed) return;
     handledActions.add(requestId);
     try {
+      if (payload.kind === "user_input") {
+        const params = object(object(payload.input).params);
+        const startedAtMs = Number(payload.startedAtMs);
+        if (!Number.isFinite(startedAtMs) || Date.now() >= startedAtMs + 60_000 ||
+          !Array.isArray(params.questions) || !options.onUserInputRequest) return;
+        const request: UserInputRequest = {
+          requestId,
+          threadId: String(params.threadId || threadId),
+          startedAtMs,
+          questions: params.questions as UserInputRequest["questions"],
+        };
+        userInputActions.set(requestId, request);
+        // Keep the event pump running while the form waits for an answer.
+        void (async () => {
+          try {
+            const result = await options.onUserInputRequest!(request);
+            if (result === null || closed || !userInputActions.has(requestId)) return;
+            const response = await options.manager.request({
+              channel: "agent", op: "action.respond", operationId: subscriptionId, streamId: runId,
+              payload: { runId, subscriptionId, requestId, decision: "result", result },
+            });
+            if (response.op === "error" && object(response.payload).code !== "action_expired") {
+              throw new Error(String(object(response.payload).message || "Question response failed"));
+            }
+          } catch {
+            // Questions are optional; a failed response falls back to the Runner deadline.
+          } finally {
+            resolveUserInput(requestId);
+          }
+        })();
+        return;
+      }
       if (String(payload.kind || "") === "dynamic_tool") {
         if (options.actionConsumer !== "all") return;
         const claim = await options.manager.request({
@@ -318,6 +360,7 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
       await handleAction(payload);
     } else if (event.type === "action.resolved") {
       resolveApproval(String(payload.requestId || ""));
+      resolveUserInput(String(payload.requestId || ""));
     } else if (event.type === "turn.completed" || event.type === "turn.interrupted" || event.type === "turn.failed") {
       options.onTerminal(event.type, payload);
     }
@@ -346,6 +389,9 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
       for (const requestId of approvalActions.keys()) {
         if (!activeActionIds.has(requestId)) resolveApproval(requestId);
       }
+    }
+    for (const requestId of userInputActions.keys()) {
+      if (!activeActionIds.has(requestId)) resolveUserInput(requestId);
     }
     if (resumedRunId) attach(resumedRunId, payload.runChanged === true || replayTruncated, activeActionIds);
     if (replayTruncated) {
@@ -404,6 +450,7 @@ function createAgentRunEventPump(options: AgentRunEventPumpOptions) {
       } catch {}
     }
     approvalActions.clear();
+    for (const requestId of userInputActions.keys()) resolveUserInput(requestId);
     unsubscribe();
     unsubscribeSnapshot();
     void detach().catch(() => {});
@@ -542,6 +589,8 @@ export function startAgentTurnWithRawFallback(
       actionConsumer: "all",
       onApprovalRequest: options.onApprovalRequest,
       onApprovalRequestResolved: options.onApprovalRequestResolved,
+      onUserInputRequest: options.onUserInputRequest,
+      onUserInputRequestResolved: options.onUserInputRequestResolved,
       onCalendarToolCall: options.onCalendarToolCall,
       onThreadIdResolved: options.onThreadIdResolved,
       onEvent: (event, payload) => {
@@ -704,6 +753,8 @@ export function startAgentSessionObserverWithRawFallback(
       actionConsumer: "approval",
       onApprovalRequest: options.onApprovalRequest,
       onApprovalRequestResolved: options.onApprovalRequestResolved,
+      onUserInputRequest: options.onUserInputRequest,
+      onUserInputRequestResolved: options.onUserInputRequestResolved,
       onEvent: (event, payload) => {
         const compatible = agentEventAsCodexEvent(event, payload);
         options.onEvent?.(compatible.method, compatible.params);

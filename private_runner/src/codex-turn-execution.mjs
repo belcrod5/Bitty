@@ -1,5 +1,6 @@
 import { CALENDAR_DYNAMIC_TOOLS_CONTRACT } from "./calendar-tool-service.mjs";
 import { randomUUID } from "node:crypto";
+import { isValidUserInputResponse } from "./codex-user-input.mjs";
 
 const CODEX_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const VALID_EFFORTS = new Set(CODEX_EFFORT_OPTIONS);
@@ -182,6 +183,7 @@ export async function startCodexTurn({
   onTurnStarted,
   calendarSchedule,
   dynamicTools,
+  enableUserInput = false,
   developerInstructions = "",
 }) {
   const normalizedInput = Array.isArray(input?.blocks)
@@ -194,6 +196,13 @@ export async function startCodexTurn({
   const normalizedDeveloperInstructions = String(developerInstructions || "").trim();
   let activeThreadId = String(threadId || "").trim();
   const configuredDynamicTools = calendarSchedule?.dynamicTools || dynamicTools;
+  const threadConfig = {
+    "features.default_mode_request_user_input": enableUserInput && !calendarSchedule,
+    ...(calendarSchedule ? {
+      web_search: "disabled",
+      apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
+    } : {}),
+  };
   if (normalizedInput.length === 0) throw new Error("input is required");
   if (calendarSchedule && (activeThreadId || typeof client.addServerRequestHandler !== "function")) {
     throw new Error("calendar_api_failed");
@@ -221,6 +230,7 @@ export async function startCodexTurn({
         threadId: activeThreadId,
         cwd: directory || undefined,
         excludeTurns: true,
+        config: threadConfig,
         ...(normalizedDeveloperInstructions ? { developerInstructions: normalizedDeveloperInstructions } : {}),
       }, 30000).catch(() => null);
       activeThreadId = String(resumed?.thread?.id || activeThreadId).trim();
@@ -233,14 +243,11 @@ export async function startCodexTurn({
           approvalPolicy,
           experimentalRawEvents: false,
           persistExtendedHistory: false,
+          config: threadConfig,
           ...(configuredDynamicTools ? {
             dynamicTools: configuredDynamicTools,
           } : {}),
           ...(calendarSchedule ? {
-            config: {
-              web_search: "disabled",
-              apps: { _default: { enabled: false, approvals_reviewer: null, destructive_enabled: false, open_world_enabled: false, default_tools_approval_mode: null } },
-            },
             developerInstructions: CALENDAR_DEVELOPER_INSTRUCTIONS,
           } : normalizedDeveloperInstructions
             ? { developerInstructions: normalizedDeveloperInstructions }
@@ -455,6 +462,15 @@ export function createCodexBackend({
         state.bufferedNotifications.push({ method, params });
         return;
       }
+      if (method === "serverRequest/resolved") {
+        if (String(params?.threadId || "") !== state.threadId) return;
+        for (const action of state.actionById.values()) {
+          if (action.kind === "user_input" && String(action.request.id) === String(params?.requestId)) {
+            action.finish({ answers: {} }, "cancelled");
+          }
+        }
+        return;
+      }
       if (!codexTurnEventMatches(params, { threadId: state.threadId, turnId: state.turnId })) return;
       if (method.startsWith("item/")) state.hasCurrentTurnItem = true;
       if (method === "thread/tokenUsage/updated") {
@@ -547,14 +563,20 @@ export function createCodexBackend({
     };
     const announceAction = (requestId, action) => {
       if (action.announced || !state.turnId) return;
+      if (action.kind === "user_input" &&
+        !codexTurnEventMatches(action.request.params, { threadId: state.threadId, turnId: state.turnId })) {
+        action.finish({ answers: {} }, "cancelled");
+        return;
+      }
       action.announced = true;
       emit("action.requested", {
         requestId,
         kind: action.kind || "approval",
         title: action.title,
         decisions: action.decisions,
+        ...(action.startedAtMs !== undefined ? { startedAtMs: action.startedAtMs } : {}),
         ...(action.request ? {
-          input: { method: "item/tool/call", params: action.request.params },
+          input: { method: action.request.method, params: action.request.params },
         } : {}),
       });
     };
@@ -562,6 +584,29 @@ export function createCodexBackend({
     const removeNativeStatusListener = client.addNotificationListener(observeNativeThreadStatus);
     const removeNotificationListener = client.addNotificationListener(applyNotification);
     const removeServerRequestHandler = client.addServerRequestHandler((request) => {
+      if (request?.method === "item/tool/requestUserInput") {
+        const requestId = generateActionId();
+        return new Promise((resolve) => {
+          const action = {
+            kind: "user_input",
+            announced: false,
+            decisions: ["result"],
+            title: "Question",
+            request,
+            startedAtMs: Date.now(),
+            finish(result, outcome) {
+              if (state.actionById.get(requestId) !== action) return;
+              state.actionById.delete(requestId);
+              clearTimeout(action.timer);
+              resolve(result);
+              if (action.announced) emit("action.resolved", { requestId, outcome });
+            },
+          };
+          state.actionById.set(requestId, action);
+          action.timer = setTimeout(() => action.finish({ answers: {} }, "expired"), 60_000);
+          announceAction(requestId, action);
+        });
+      }
       if (String(request?.method || "") === "item/tool/call" && dynamicTools) {
         const requestId = generateActionId();
         return new Promise((resolve) => {
@@ -608,6 +653,7 @@ export function createCodexBackend({
         effort,
         approvalPolicy: policyProfileId === "codex-never" ? "never" : "on-request",
         dynamicTools,
+        enableUserInput: true,
         developerInstructions,
         onBeforeTurnStart: () => { state.turnStartRequested = true; },
         onThreadResolved: sessionRef ? undefined : async ({ threadId }) => {
@@ -658,6 +704,10 @@ export function createCodexBackend({
       throw error;
     } finally {
       for (const action of state.actionById.values()) {
+        if (action.kind === "user_input") {
+          action.finish({ answers: {} }, "cancelled");
+          continue;
+        }
         action.resolve(action.kind === "dynamic_tool"
           ? { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ ok: false, error: { code: "request_cancelled", message: "The tool request was cancelled.", retryable: false } }) }] }
           : { decision: "decline" });
@@ -816,6 +866,20 @@ export function createCodexBackend({
       const state = activeRuns.get(runId);
       const action = state?.actionById.get(requestId);
       if (!action) throw new Error("Codex approval expired");
+      if (action.kind === "user_input") {
+        if (Date.now() >= action.startedAtMs + 60_000) {
+          action.finish({ answers: {} }, "expired");
+          const error = new Error("Codex question expired");
+          error.code = "action_expired";
+          throw error;
+        }
+        if (decision !== "result" || !isValidUserInputResponse(action.request.params, result)) {
+          throw new Error("Invalid Codex question answers");
+        }
+        const answers = result.answers;
+        action.finish({ answers }, Object.keys(answers).length ? "completed" : "skipped");
+        return;
+      }
       state.actionById.delete(requestId);
       action.resolve(action.kind === "dynamic_tool"
         ? result

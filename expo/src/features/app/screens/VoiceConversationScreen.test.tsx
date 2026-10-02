@@ -1,6 +1,7 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import { act, fireEvent, render as testingRender, waitFor, within } from "@testing-library/react-native";
-import { Platform, ScrollView, StyleSheet } from "react-native";
+import { AppState, Platform, ScrollView, StyleSheet } from "react-native";
+import type { RunnerWsMessage } from "../../runnerWs/types";
 import { DEFAULT_VISUAL_THEME_ID, VISUAL_THEMES } from "../theme/visualThemes";
 import { VoiceConversationScreen } from "./VoiceConversationScreen";
 
@@ -17,9 +18,17 @@ const mockRequest = jest.fn(async (message: { op: string; payload?: { orchestrat
   if (message.op === "voice.orchestrators.select") return { op: "voice.orchestrators.select.result",
     payload: { orchestrators: [{ id: "main", name: "メイン", icon: "" },
       { id: "other", name: "調査", icon: "" }], selectedId: message.payload?.orchestratorId } };
+  if (message.op === "voice.userInput.respond") return { op: "voice.userInput.respond.result", payload: {} };
   throw new Error(`unexpected ${message.op}`);
 });
-const mockManager = { connect: jest.fn(async () => undefined), request: mockRequest };
+const mockQuestionHandlers = new Map<string, (message: RunnerWsMessage) => void>();
+const mockManager = { connect: jest.fn(async () => undefined), request: mockRequest,
+  subscribe: ({ op }: { op: string }, listener: (message: RunnerWsMessage) => void) => {
+    mockQuestionHandlers.set(op, listener);
+    return () => { mockQuestionHandlers.delete(op); };
+  },
+  subscribeSnapshot: () => () => undefined, getSnapshot: () => ({ connected: true }),
+};
 let mockManagerVisible = false;
 const mockHookOrchestratorIds: string[] = [];
 const mockLogSessionDiag = jest.fn();
@@ -209,10 +218,33 @@ beforeEach(() => {
   mockReduceMotion = false;
   mockManagerVisible = false;
   mockHookOrchestratorIds.length = 0;
+  mockQuestionHandlers.clear();
 });
 afterEach(() => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
   jest.restoreAllMocks();
+});
+
+test("the orchestrator renders the shared question form and submits its selected answer", async () => {
+  const previousState = AppState.currentState;
+  AppState.currentState = "active";
+  try {
+    const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+    await act(async () => mockQuestionHandlers.get("voice.userInput.request")?.({
+      channel: "agent", op: "voice.userInput.request", operationId: "operation-question",
+      payload: { requestId: "q1", orchestratorId: "main", threadId: "native-thread", startedAtMs: Date.now(),
+        params: { questions: [{ id: "choice", header: "選択", question: "どちらですか？", isOther: false, isSecret: false,
+          options: [{ label: "A", description: "最初" }, { label: "B", description: "次" }] }] } },
+    }));
+    expect(screen.getByText("どちらですか？")).toBeTruthy();
+    await fireEvent.press(screen.getByText("B"));
+    await fireEvent.press(screen.getByText("回答する"));
+    expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
+      op: "voice.userInput.respond", operationId: "operation-question",
+      payload: { requestId: "q1", result: { answers: { choice: { answers: ["B"] } } } },
+    }), { timeoutMs: 30_000 });
+    await screen.unmount();
+  } finally { AppState.currentState = previousState; }
 });
 
 test("the footer reveals stored messages and closes the history panel", async () => {

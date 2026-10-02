@@ -494,7 +494,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     };
   }
 
-  async function modelTurn({ input, items = [], instructions, onStarted, onApproval, onText, onTextError, signal }) {
+  async function modelTurn({ input, items = [], instructions, onStarted, onApproval, onUserInput, onText, onTextError, signal }) {
     if (signal?.aborted) throw invalid("turn_interrupted", "Voice turn was cancelled");
     const { model, effort } = settings();
     if (onApproval) {
@@ -516,8 +516,10 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     let identity = null;
     let turnStartRequested = false;
     let cancellationSent = false;
+    const questionControllers = new Map();
     function interruptForCancellation() {
       if (!signal?.aborted || !onApproval) return;
+      for (const controller of questionControllers.values()) controller.abort();
       if (!identity) {
         if (!turnStartRequested) client?.close();
         return;
@@ -567,7 +569,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         sandbox: onApproval ? "workspace-write" : "read-only",
         experimentalRawEvents: false, persistExtendedHistory: false,
         model, ...(onApproval && managedSessions ? { dynamicTools: voiceSubagentTools } : {}),
-        config: onApproval ? { agents: { enabled: false } } : summaryConfig,
+        config: onApproval ? { agents: { enabled: false }, "features.default_mode_request_user_input": true } : summaryConfig,
         developerInstructions: instructions,
       }, 30000);
       const threadId = started?.thread?.id;
@@ -624,6 +626,10 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         void client.request("turn/interrupt", identity, 30000).catch(() => {});
       }
       function observe(method, params) {
+        if (method === "serverRequest/resolved" && params?.threadId === threadId) {
+          questionControllers.get(params.requestId)?.abort();
+          return;
+        }
         if (!identity) { pendingNotifications.push([method, params]); return; }
         if (!codexTurnEventMatches(params, identity)) return;
         if (method === "thread/tokenUsage/updated") {
@@ -682,6 +688,19 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       removeListener = client.addNotificationListener(observe);
       removeServerRequestHandler = client.addServerRequestHandler(async (request) => {
         const method = String(request?.method || "");
+        if (method === "item/tool/requestUserInput" && onApproval) {
+          const startedAtMs = Date.now();
+          const controller = new AbortController();
+          questionControllers.set(request.id, controller);
+          try {
+            await identityReady;
+            if (!identity || signal?.aborted || controller.signal.aborted
+              || !codexTurnEventMatches(request.params, identity) || !onUserInput) return { answers: {} };
+            return await onUserInput({ method, params: request.params, threadId, turnId: identity.turnId, startedAtMs }, controller.signal);
+          } finally {
+            questionControllers.delete(request.id);
+          }
+        }
         if (!onApproval) {
           toolSeen = true;
           interruptForTool();
@@ -751,6 +770,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       throw error;
     } finally {
       resolveIdentity?.();
+      for (const controller of questionControllers.values()) controller.abort();
       removeListener();
       removeServerRequestHandler();
       removeAbortListener();
@@ -868,6 +888,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
         content: [{ type: "input_text", text: managedContext }] });
       stage = "model_turn";
       const result = await modelTurn({ input, items, instructions: responseInstructions(), onApproval,
+        onUserInput: hooks.onUserInput,
         signal,
         onText: (delta) => {
           if (inFlightId === clientOperationId) inFlightPartialText += delta;
