@@ -151,6 +151,7 @@ function snapshots(events) {
       state.status = "completed";
       state.text = event.text;
       state.assistantAt = event.at;
+      state.pairSeq = event.pairSeq;
       state.outputTokens = event.outputTokens;
       pairs.push({ pairSeq: event.pairSeq, user: state.userText, assistant: event.text });
     }
@@ -285,6 +286,10 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       ({ byId, pairs } = snapshots(events));
       if (type === "completed") {
         await memoryStore.appendPair(pairs.at(-1));
+        const next = { ...active, completedCount: (active.completedCount || 0) + 1,
+          countedThroughPairSeq: event.pairSeq };
+        await atomicWrite(activeFile, JSON.stringify(next));
+        active = next;
       }
       if (events.length > MAX_EVENTS) {
         const bounded = boundedEvents(events, memoryStore.lastPairSeq);
@@ -362,6 +367,11 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       || (active.effort !== undefined && (typeof active.effort !== "string" || !active.effort))
       || (active.prunedThroughPairSeq !== undefined && (!Number.isSafeInteger(active.prunedThroughPairSeq)
         || active.prunedThroughPairSeq < 0 || active.prunedThroughPairSeq === Number.MAX_SAFE_INTEGER))
+      || (active.completedCount !== undefined && (!Number.isSafeInteger(active.completedCount) || active.completedCount < 0))
+      || (active.readCompletedCount !== undefined && (!Number.isSafeInteger(active.readCompletedCount)
+        || active.readCompletedCount < 0 || active.readCompletedCount > active.completedCount))
+      || (active.countedThroughPairSeq !== undefined && (!Number.isSafeInteger(active.countedThroughPairSeq)
+        || active.countedThroughPairSeq < 0))
       || (active.systemInstruction !== undefined && (typeof active.systemInstruction !== "string"
         || !active.systemInstruction.trim() || bytes(active.systemInstruction) > 16_000))) {
       throw invalid("voice_store_corrupt", "Voice active conversation is invalid");
@@ -408,6 +418,21 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     events = parsed.events;
     await fs.chmod(eventFile, 0o600);
     ({ byId, pairs } = snapshots(events));
+    // Existing stores start read. A completion saved before a crash is recovered from
+    // the event log before bounded history can discard it.
+    const completedEvents = events.filter((event) => event.type === "completed");
+    const nextCounts = active.completedCount === undefined
+      ? { completedCount: completedEvents.length, readCompletedCount: completedEvents.length,
+        countedThroughPairSeq: completedEvents.at(-1)?.pairSeq || active.prunedThroughPairSeq || 0 }
+      : { completedCount: active.completedCount + completedEvents.filter((event) =>
+        event.pairSeq > (active.countedThroughPairSeq || 0)).length,
+        readCompletedCount: active.readCompletedCount || 0,
+        countedThroughPairSeq: completedEvents.at(-1)?.pairSeq || active.countedThroughPairSeq || 0 };
+    if (JSON.stringify(nextCounts) !== JSON.stringify({ completedCount: active.completedCount,
+      readCompletedCount: active.readCompletedCount, countedThroughPairSeq: active.countedThroughPairSeq })) {
+      await atomicWrite(activeFile, JSON.stringify({ ...active, ...nextCounts }));
+      active = { ...active, ...nextCounts };
+    }
     try {
       memoryStore = sharedMemoryStore || await openVoiceMemoryStore({ workspace,
         conversationId: memoryConversationId || active.logicalConversationId,
@@ -487,6 +512,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       status,
       ...usage(),
       ...(state.text ? { text: state.text } : {}),
+      ...(state.pairSeq ? { completedOrdinal: (active.completedCount || 0)
+        - events.filter((event) => event.type === "completed" && event.pairSeq > state.pairSeq).length } : {}),
       ...(state.outputTokens !== undefined ? { outputTokens: state.outputTokens } : {}),
       ...(inFlightId === id && (status === "accepted" || status === "running") && inFlightPartialText
         ? { partialText: inFlightPartialText } : {}),
@@ -1013,6 +1040,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
           ...active, logicalConversationId,
           workspaceConversationId: active.workspaceConversationId || previousConversationId,
           previousConversationId, prunedThroughPairSeq: 0,
+          completedCount: 0, readCompletedCount: 0, countedThroughPairSeq: 0,
         };
         try { await atomicWrite(activeFile, JSON.stringify(next)); }
         catch {
@@ -1038,16 +1066,46 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       return exclusive(async () => {
         await load();
         const messages = [];
+        let completedOrdinal = (active.completedCount || 0) - events.filter((event) => event.type === "completed").length;
         for (const state of byId.values()) {
           messages.push({ role: "user", text: state.userText, at: state.userAt,
             clientOperationId: state.clientOperationId });
           if (state.status === "completed") {
+            completedOrdinal += 1;
             messages.push({ role: "assistant", text: state.text, at: state.assistantAt,
-              clientOperationId: state.clientOperationId,
+              clientOperationId: state.clientOperationId, completedOrdinal,
               ...(state.outputTokens !== undefined ? { outputTokens: state.outputTokens } : {}) });
           }
         }
         return { logicalConversationId: active.logicalConversationId, messages };
+      });
+    },
+    async unread() {
+      return exclusive(async () => { await load(); return (active.completedCount || 0) - (active.readCompletedCount || 0); });
+    },
+    async replyUnread(logicalConversationId, completedOrdinal) {
+      return exclusive(async () => {
+        await load();
+        const found = logicalConversationId === active.logicalConversationId
+          && Number.isSafeInteger(completedOrdinal) && completedOrdinal > 0
+          && completedOrdinal <= (active.completedCount || 0);
+        return { found, unread: found && completedOrdinal > (active.readCompletedCount || 0) };
+      });
+    },
+    async markRead(logicalConversationId, completedOrdinal) {
+      return exclusive(async () => {
+        await load();
+        if (logicalConversationId !== active.logicalConversationId || !Number.isSafeInteger(completedOrdinal)
+          || completedOrdinal < 0 || completedOrdinal > (active.completedCount || 0)) {
+          throw invalid("turn_rejected", "Visible voice reply is invalid");
+        }
+        const changed = completedOrdinal > (active.readCompletedCount || 0);
+        if (changed) {
+          const next = { ...active, readCompletedCount: completedOrdinal };
+          await atomicWrite(activeFile, JSON.stringify(next));
+          active = next;
+        }
+        return { unreadCount: active.completedCount - active.readCompletedCount, changed };
       });
     },
     async open() {

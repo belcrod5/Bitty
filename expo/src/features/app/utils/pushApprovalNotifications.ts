@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 // TURN_COMPLETED push payloads (see docs/PUSH-NOTIFICATIONS-DESIGN.md §6). expo-notifications
 // warns against ":"/"-" in category identifiers, hence the SCREAMING_SNAKE_CASE form.
 export const TURN_COMPLETED_CATEGORY = "TURN_COMPLETED";
+export const VOICE_COMPLETED_CATEGORY = "VOICE_COMPLETED";
 export const APPROVAL_REQUEST_CATEGORY = "APPROVAL_REQUEST";
 export const APPROVE_ACTION = "approve";
 export const DENY_ACTION = "deny";
@@ -14,6 +15,9 @@ export type NotificationMetadata = {
   directory: string;
   turnId: string;
   approvalId: string;
+  orchestratorId: string;
+  logicalConversationId: string;
+  completedOrdinal: string;
 };
 
 export function normalizeNotificationMetadata(
@@ -37,6 +41,9 @@ export function normalizeNotificationMetadata(
     directory: value("directory"),
     turnId: value("turnId"),
     approvalId: value("approvalId"),
+    orchestratorId: value("orchestratorId"),
+    logicalConversationId: value("logicalConversationId"),
+    completedOrdinal: value("completedOrdinal"),
   };
 }
 
@@ -62,6 +69,7 @@ export function normalizeNotificationMetadata(
 //                           biometric UI cannot be shown from the background) and responds.
 export async function registerApprovalNotificationCategories(faceIdRequired: boolean): Promise<void> {
   await Notifications.setNotificationCategoryAsync(TURN_COMPLETED_CATEGORY, []);
+  await Notifications.setNotificationCategoryAsync(VOICE_COMPLETED_CATEGORY, []);
   await Notifications.setNotificationCategoryAsync(APPROVAL_REQUEST_CATEGORY, [
     {
       identifier: APPROVE_ACTION,
@@ -119,4 +127,26 @@ export function clearPendingPushSessionTarget(target: PendingPushSessionTarget):
 export function subscribePendingPushSessionTarget(listener: () => void): () => void {
   pendingPushListeners.add(listener);
   return () => pendingPushListeners.delete(listener);
+}
+
+let pendingPushVoiceOrchestratorId = "";
+const pendingPushVoiceListeners = new Set<() => void>();
+
+export function setPendingPushVoiceOrchestratorId(id: string): void {
+  if (!id) return;
+  pendingPushVoiceOrchestratorId = id;
+  for (const listener of pendingPushVoiceListeners) listener();
+}
+
+export function getPendingPushVoiceOrchestratorId(): string {
+  return pendingPushVoiceOrchestratorId;
+}
+
+export function clearPendingPushVoiceOrchestratorId(id: string): void {
+  if (pendingPushVoiceOrchestratorId === id) pendingPushVoiceOrchestratorId = "";
+}
+
+export function subscribePendingPushVoiceOrchestratorId(listener: () => void): () => void {
+  pendingPushVoiceListeners.add(listener);
+  return () => pendingPushVoiceListeners.delete(listener);
 }

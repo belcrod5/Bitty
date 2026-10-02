@@ -92,6 +92,54 @@ async function waitFor(check) {
   throw new Error("condition did not become true");
 }
 
+test("unread ordinals survive restart, cross-orchestrator pair gaps, and message clear", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const child = await service.create("調査");
+  const mainId = (await service.open("main")).logicalConversationId;
+  const childId = (await service.open(child.id)).logicalConversationId;
+  const first = await turn(service, "main", mainId, "main one");
+  assert.equal((await first.finished).completedOrdinal, 1);
+  const other = await turn(service, child.id, childId, "child one");
+  assert.equal((await other.finished).completedOrdinal, 1);
+  const second = await turn(service, "main", mainId, "main two");
+  assert.equal((await second.finished).completedOrdinal, 2);
+  assert.deepEqual((await service.list()).orchestrators.map((item) => item.unreadCount), [2, 1]);
+  const history = await service.history("main");
+  assert.deepEqual(history.messages.filter((item) => item.role === "assistant")
+    .map((item) => item.completedOrdinal), [1, 2]);
+  assert.deepEqual(await service.markRead("main", mainId, 1), { unreadCount: 1, changed: true });
+  assert.equal((await service.replyUnread("main", mainId, 2)).unread, true);
+  assert.deepEqual(await service.replyUnread("main", mainId, 3), { found: false, unread: false });
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.deepEqual((await restarted.list()).orchestrators.map((item) => item.unreadCount), [1, 1]);
+  assert.deepEqual(await restarted.markRead("main", mainId, 1), { unreadCount: 1, changed: false });
+  await restarted.clearMessages("main");
+  assert.equal(await restarted.unreadState("main"), 0);
+  assert.equal((await restarted.replyUnread("main", mainId, 2)).found, false);
+  assert.equal(await restarted.unreadState(child.id), 1);
+});
+
+test("unread count survives bounded history pruning and a lost count checkpoint", async (t) => {
+  const { rootDir, codex, service } = await fixture(t);
+  const conversationId = (await service.open("main")).logicalConversationId;
+  for (let index = 0; index < 30; index += 1) {
+    const result = await turn(service, "main", conversationId, `reply ${index}`);
+    await result.finished;
+  }
+  assert.equal(await service.unreadState("main"), 30);
+  const last = (await service.history("main")).messages.filter((item) => item.role === "assistant").at(-1);
+  assert.equal(last.completedOrdinal, 30);
+  assert.equal((await service.markRead("main", conversationId, 29)).unreadCount, 1);
+  const restarted = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.equal(await restarted.unreadState("main"), 1);
+  const activeFile = path.join(rootDir, "active.json");
+  const active = JSON.parse(await fs.readFile(activeFile, "utf8"));
+  await fs.writeFile(activeFile, JSON.stringify({ ...active, completedCount: 29,
+    readCompletedCount: 29, countedThroughPairSeq: 29 }));
+  const recovered = createVoiceOrchestratorService({ rootDir, createClient: codex.createClient });
+  assert.equal(await recovered.unreadState("main"), 1);
+});
+
 test("main migration keeps data; each orchestrator injects only its own pairs in one workspace", async (t) => {
   const { rootDir, codex, service } = await fixture(t);
   const legacy = createVoiceContextService({ rootDir, createClient: codex.createClient });

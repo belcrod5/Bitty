@@ -27,6 +27,9 @@ export function createTurnCompletionNotifier({
   pushSummarizer,
   pushDeviceStore,
   getPushUnreadSnapshot,
+  getVoiceUnreadCount,
+  getVoiceReplyUnread,
+  getNormalUnreadCount,
   getAgentSessionBinding,
   broadcast,
   log = console,
@@ -119,6 +122,12 @@ export function createTurnCompletionNotifier({
     if (!summary) return;
 
     const payloadDirectory = String(unreadSnapshot.directory || directory || "").trim();
+    let voiceUnreadCount = 0;
+    try { if (getVoiceUnreadCount) voiceUnreadCount = await getVoiceUnreadCount(); }
+    catch (error) {
+      voiceUnreadCount = null;
+      log.warn(`[push] voice unread count failed origin=${origin || "unknown"}: ${errorMessage(error)}`);
+    }
     const basePayload = {
       aps: {
         alert: { title: derivePushDirectoryTitle(payloadDirectory) || "タスク完了", body: summary },
@@ -139,8 +148,8 @@ export function createTurnCompletionNotifier({
       const badge = directorySetIndex === undefined
         ? undefined
         : unreadSnapshot.unreadCounts?.[directorySetIndex];
-      const payload = Number.isFinite(Number(badge))
-        ? { ...basePayload, aps: { ...basePayload.aps, badge: Math.max(0, Math.floor(Number(badge))) } }
+      const payload = voiceUnreadCount !== null && Number.isFinite(Number(badge))
+        ? { ...basePayload, aps: { ...basePayload.aps, badge: Math.max(0, Math.floor(Number(badge))) + voiceUnreadCount } }
         : basePayload;
       return { device, payload };
     });
@@ -148,6 +157,34 @@ export function createTurnCompletionNotifier({
     if (sentCount > 0) {
       log.log?.(`[push] turn completion push sent devices=${sentCount}/${devices.length} session=${id}`);
     }
+  }
+
+  async function notifyVoiceCompleted({ orchestratorId, orchestratorName, logicalConversationId,
+    clientOperationId, completedOrdinal, text }) {
+    if (!pushEnabled || !apnsClient || !pushSummarizer) return;
+    const key = JSON.stringify(["voice", orchestratorId, logicalConversationId, clientOperationId]);
+    if (!rememberTurn(pushedAtByTurn, key, Number(now()))) return;
+    const devices = await pushDeviceStore.listDevices();
+    if (!devices.length || !(await getVoiceReplyUnread(orchestratorId, logicalConversationId, completedOrdinal)).unread) return;
+    const summary = await pushSummarizer.summarize(compactLlmCompletionPreview(text));
+    if (!summary) return;
+    if (!(await getVoiceReplyUnread(orchestratorId, logicalConversationId, completedOrdinal)).unread) return;
+    let voiceUnreadCount = null;
+    try { voiceUnreadCount = await getVoiceUnreadCount(); }
+    catch (error) { log.warn(`[push] voice badge count failed: ${errorMessage(error)}`); }
+    const deliveries = await Promise.all(devices.map(async (device) => {
+      let badge;
+      try {
+        if (voiceUnreadCount !== null) badge = (await getNormalUnreadCount(device.directories || [])) + voiceUnreadCount;
+      } catch (error) { log.warn(`[push] normal badge count failed: ${errorMessage(error)}`); }
+      return { device, payload: {
+        aps: { alert: { title: orchestratorName || "音声会話", body: summary }, sound: "default",
+          category: "VOICE_COMPLETED", "thread-id": `voice:${orchestratorId}`,
+          ...(badge === undefined ? {} : { badge }) },
+        orchestratorId, logicalConversationId, clientOperationId, completedOrdinal,
+      } };
+    }));
+    await sendNotifications(deliveries);
   }
 
   async function notifyTurnCompleted({
@@ -290,5 +327,5 @@ export function createTurnCompletionNotifier({
     }
   }
 
-  return { notifyTurnCompleted, notifyScheduleFailed, onAgentRunEvent };
+  return { notifyTurnCompleted, notifyVoiceCompleted, notifyScheduleFailed, onAgentRunEvent };
 }

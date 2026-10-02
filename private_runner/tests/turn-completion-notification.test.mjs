@@ -35,6 +35,9 @@ function createHarness(overrides = {}) {
       targetUnread: true,
       unreadCounts: directorySets.map(() => 0),
     })),
+    getVoiceUnreadCount: overrides.getVoiceUnreadCount || (async () => 0),
+    getVoiceReplyUnread: overrides.getVoiceReplyUnread || (async () => ({ unread: true })),
+    getNormalUnreadCount: overrides.getNormalUnreadCount || (async () => 0),
     getAgentSessionBinding: overrides.getAgentSessionBinding || (async (sessionRef) => {
       bindingCalls.push(sessionRef);
       return { canonicalCwd: "/work/project-a" };
@@ -48,6 +51,82 @@ function createHarness(overrides = {}) {
   });
   return { notifier, broadcasts, sends, removals, warnings, logs, bindingCalls };
 }
+
+test("voice completion pushes a logical orchestrator target with combined badge", async () => {
+  const harness = createHarness({
+    devices: [{ deviceId: "one", apnsToken: "token", env: "sandbox", directories: ["/work"] }],
+    getVoiceUnreadCount: async (id) => id ? 1 : 2,
+    getNormalUnreadCount: async () => 3,
+  });
+  await harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", orchestratorName: "メイン",
+    logicalConversationId: "logical-1", clientOperationId: "operation-1", completedOrdinal: 2,
+    text: "finished" });
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.aps.category, "VOICE_COMPLETED");
+  assert.equal(harness.sends[0].payload.aps.badge, 5);
+  assert.equal(harness.sends[0].payload.orchestratorId, "main");
+  assert.equal(harness.sends[0].payload.sessionId, undefined);
+  await harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical-1",
+    clientOperationId: "operation-1", completedOrdinal: 2, text: "finished" });
+  assert.equal(harness.sends.length, 1);
+});
+
+test("voice completion suppresses Push when that exact reply was read", async () => {
+  const read = createHarness({ getVoiceReplyUnread: async () => ({ unread: false }) });
+  await read.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical-1",
+    clientOperationId: "operation-1", completedOrdinal: 1, text: "answer" });
+  assert.equal(read.sends.length, 0);
+});
+
+test("voice Push rechecks the exact reply after summary without losing another unread reply", async () => {
+  let release;
+  const summaryGate = new Promise((resolve) => { release = resolve; });
+  let readThrough = 0;
+  const harness = createHarness({
+    pushSummarizer: { async summarize() { await summaryGate; return "summary"; } },
+    getVoiceReplyUnread: async (_id, _conversationId, ordinal) => ({ unread: ordinal > readThrough }),
+    getVoiceUnreadCount: async () => 1,
+    getNormalUnreadCount: async () => 0,
+  });
+  const first = harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical",
+    clientOperationId: "one", completedOrdinal: 1, text: "first" });
+  await new Promise((resolve) => setImmediate(resolve));
+  readThrough = 1;
+  release();
+  await first;
+  assert.equal(harness.sends.length, 0);
+  await harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical",
+    clientOperationId: "two", completedOrdinal: 2, text: "second" });
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.completedOrdinal, 2);
+});
+
+test("voice alert survives one device's normal badge lookup failure", async () => {
+  const harness = createHarness({
+    devices: [
+      { deviceId: "bad", apnsToken: "bad-token", env: "sandbox", directories: ["/bad"] },
+      { deviceId: "good", apnsToken: "good-token", env: "sandbox", directories: ["/good"] },
+    ],
+    getVoiceUnreadCount: async () => 2,
+    getNormalUnreadCount: async (directories) => {
+      if (directories[0] === "/bad") throw new Error("directory unavailable");
+      return 3;
+    },
+  });
+  await harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical",
+    clientOperationId: "one", completedOrdinal: 1, text: "answer" });
+  assert.equal(harness.sends.length, 2);
+  assert.equal(harness.sends.find((item) => item.token === "bad-token").payload.aps.badge, undefined);
+  assert.equal(harness.sends.find((item) => item.token === "good-token").payload.aps.badge, 5);
+});
+
+test("voice alert survives aggregate badge lookup failure", async () => {
+  const harness = createHarness({ getVoiceUnreadCount: async () => { throw new Error("count unavailable"); } });
+  await harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical",
+    clientOperationId: "one", completedOrdinal: 1, text: "answer" });
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.aps.badge, undefined);
+});
 
 function completion(overrides = {}) {
   return {
@@ -193,6 +272,30 @@ test("sets an absolute badge from each device directory subscription", async () 
   assert.equal(harness.sends.length, 2);
   assert.equal(harness.sends[0].payload.aps.badge, 7);
   assert.equal(harness.sends[1].payload.aps.badge, 7);
+});
+
+test("normal completion badge also includes unread voice replies", async () => {
+  const harness = createHarness({
+    devices: [{ deviceId: "one", apnsToken: "token", env: "sandbox", directories: ["/work"] }],
+    getPushUnreadSnapshot: async () => ({ targetUnread: true, unreadCounts: [3] }),
+    getVoiceUnreadCount: async () => 2,
+  });
+  await harness.notifier.notifyTurnCompleted(completion());
+  assert.equal(harness.sends[0].payload.aps.badge, 5);
+  assert.equal(harness.sends[0].payload.aps.category, "TURN_COMPLETED");
+});
+
+test("voice count failure does not lose a normal completion alert or set a wrong badge", async () => {
+  const harness = createHarness({
+    devices: [{ deviceId: "one", apnsToken: "token", env: "sandbox", directories: ["/work"] }],
+    getPushUnreadSnapshot: async () => ({ targetUnread: true, unreadCounts: [3] }),
+    getVoiceUnreadCount: async () => { throw new Error("voice store unavailable"); },
+  });
+  await harness.notifier.notifyTurnCompleted(completion());
+  assert.equal(harness.sends.length, 1);
+  assert.equal(harness.sends[0].payload.aps.category, "TURN_COMPLETED");
+  assert.equal(harness.sends[0].payload.aps.badge, undefined);
+  assert.match(harness.warnings[0], /voice unread count failed/);
 });
 
 test("uses the snapshot-resolved directory when completion metadata has no cwd", async () => {

@@ -5,7 +5,7 @@ import type { RunnerWsMessage } from "../../runnerWs/types";
 import type { VoiceContextStats } from "../types/appTypes";
 
 type TurnStatus = "idle" | "sending" | "accepted" | "running" | "completed" | "failed";
-export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number };
+export type VoiceHistoryMessage = { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; outputTokens?: number; completedOrdinal?: number };
 type PendingTurn = {
   id: string;
   text?: string;

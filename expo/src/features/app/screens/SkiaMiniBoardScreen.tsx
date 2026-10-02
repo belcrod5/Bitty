@@ -82,6 +82,9 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
+import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
+import { clearPendingPushVoiceOrchestratorId, getPendingPushVoiceOrchestratorId,
+  subscribePendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 import {
   SKIA_BOARD_MAX_TEXT_SCALE,
@@ -594,6 +597,42 @@ export function SkiaMiniBoardScreen({
   const { width: windowWidth } = useWindowDimensions();
   const { activeScreen, openDrawer } = useAppShell();
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceTargetId, setVoiceTargetId] = useState("");
+  const [voiceOpenSequence, setVoiceOpenSequence] = useState(0);
+  const [voiceUnreadCount, setVoiceUnreadCount] = useState(0);
+  const voiceUnreadRevisionRef = useRef(0);
+  const hasVoicePlayback = Boolean(voicePlayback);
+  const voiceManager = useRunnerWebSocketManager();
+  const { connected: voiceConnected, generation: voiceGeneration } = useRunnerWebSocketSnapshot();
+  useEffect(() => {
+    if (!hasVoicePlayback || !voiceConnected) return;
+    let current = true;
+    const revision = voiceUnreadRevisionRef.current;
+    void voiceManager.request({ channel: "agent", op: "voice.orchestrators.list" }).then((response) => {
+      if (!current || revision !== voiceUnreadRevisionRef.current
+        || response.op !== "voice.orchestrators.list.result") return;
+      const items = (response.payload as { orchestrators?: Array<{ unreadCount?: number }> })?.orchestrators;
+      if (Array.isArray(items)) setVoiceUnreadCount(items.reduce((sum, item) => sum + (item.unreadCount || 0), 0));
+    }).catch(() => undefined);
+    const unsubscribe = voiceManager.subscribe({ channel: "agent", op: "voice.unread.changed" }, (message) => {
+      voiceUnreadRevisionRef.current += 1;
+      const items = (message.payload as { orchestrators?: Array<{ unreadCount?: number }> })?.orchestrators;
+      if (Array.isArray(items)) setVoiceUnreadCount(items.reduce((sum, item) => sum + (item.unreadCount || 0), 0));
+    });
+    return () => { current = false; unsubscribe(); };
+  }, [hasVoicePlayback, voiceConnected, voiceGeneration, voiceManager]);
+  useEffect(() => {
+    const openPendingVoice = () => {
+      const id = getPendingPushVoiceOrchestratorId();
+      if (!id || activeScreen !== "skia_board" || !hasVoicePlayback) return;
+      setVoiceTargetId(id);
+      setVoiceOpenSequence((current) => current + 1);
+      setVoiceOpen(true);
+      clearPendingPushVoiceOrchestratorId(id);
+    };
+    openPendingVoice();
+    return subscribePendingPushVoiceOrchestratorId(openPendingVoice);
+  }, [activeScreen, hasVoicePlayback]);
   useEffect(() => {
     if (activeScreen !== "skia_board") setVoiceOpen(false);
   }, [activeScreen]);
@@ -1896,11 +1935,19 @@ export function SkiaMiniBoardScreen({
             <TouchableOpacity
               testID="skia-board-voice-conversation"
               style={screenStyles.toolButton}
-              onPress={() => setVoiceOpen(true)}
+              onPress={() => { setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setVoiceOpen(true); }}
               accessibilityRole="button"
               accessibilityLabel="音声会話"
             >
               <Ionicons name="mic-outline" size={23} color={theme.colors.iconSecondary} />
+              {voiceUnreadCount > 0 ? <View testID="skia-board-voice-unread"
+                style={{ position: "absolute", top: 0, right: 0, minWidth: 16, height: 16,
+                  borderRadius: 8, paddingHorizontal: 3, alignItems: "center", justifyContent: "center",
+                  backgroundColor: theme.colors.accent }}>
+                <Text style={{ color: theme.colors.textOnAccent, fontSize: 10, fontWeight: "700" }}>
+                  {voiceUnreadCount > 99 ? "99+" : voiceUnreadCount}
+                </Text>
+              </View> : null}
             </TouchableOpacity>
           ) : null}
         </View>
@@ -1912,7 +1959,8 @@ export function SkiaMiniBoardScreen({
         </View>
       </SafeAreaView>
       {voiceOpen && voicePlayback ? (
-        <VoiceConversationScreen {...voicePlayback} onClose={() => setVoiceOpen(false)} />
+        <VoiceConversationScreen key={voiceOpenSequence} {...voicePlayback} initialOrchestratorId={voiceTargetId}
+          onClose={() => setVoiceOpen(false)} />
       ) : null}
       <AppModal visible={boardMenuOpen} transparent animationType="fade" onRequestClose={() => setBoardMenuOpen(false)}>
         {boardMenu}

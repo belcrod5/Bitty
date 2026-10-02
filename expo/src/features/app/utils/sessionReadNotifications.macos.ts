@@ -16,6 +16,11 @@ export async function dismissReadSessionNotifications(_params: {
   return EMPTY_DISMISS_RESULT;
 }
 
+export async function dismissReadVoiceNotifications(_orchestratorId: string,
+  _logicalConversationId: string, _completedOrdinal: number) {
+  return EMPTY_DISMISS_RESULT;
+}
+
 export async function dismissReadDirectoryNotifications(_directory: unknown) {
   return EMPTY_DISMISS_RESULT;
 }

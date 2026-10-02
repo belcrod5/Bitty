@@ -1470,6 +1470,9 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
   pushSummarizer,
   pushDeviceStore,
   getPushUnreadSnapshot, getAgentSessionBinding,
+  getVoiceUnreadCount: (id) => id ? voiceContextService.unreadState(id) : voiceContextService.unreadCount(),
+  getVoiceReplyUnread: (id, conversationId, ordinal) => voiceContextService.replyUnread(id, conversationId, ordinal),
+  getNormalUnreadCount: async (directories) => (await countUnreadSessions(directories)).unreadCount,
   broadcast: (payload) => {
     // ターン完了はSkiaボードの自動カード追加(ingest)の主トリガでもある。
     // relay/スケジュール/agent runの3経路がここに収束する。失敗はingest側で握る。
@@ -8538,11 +8541,19 @@ const server = http.createServer(async (req, res) => {
     pathname === "/sessions/unread-count"
       ? {
         error: "session_unread_count_failed",
-        run: (body) => countUnreadSessions(body?.directories),
+        run: async (body) => {
+          const sessions = await countUnreadSessions(body?.directories);
+          const voiceUnreadCount = await voiceContextService.unreadCount();
+          return { ...sessions, voiceUnreadCount, unreadCount: sessions.unreadCount + voiceUnreadCount };
+        },
       }
       : pathname === "/sessions/unread-state" ? {
         error: "session_unread_state_failed",
         run: (body) => getSessionUnreadState(body?.sessionId, body?.directory, body?.backendId),
+      } : pathname === "/voice/unread-state" ? {
+        error: "voice_unread_state_failed",
+        run: (body) => voiceContextService.replyUnread(body?.orchestratorId,
+          body?.logicalConversationId, body?.completedOrdinal),
       } : null
   );
   if (sessionStateRequest) {
@@ -9003,6 +9014,16 @@ const server = http.createServer(async (req, res) => {
 
 const runnerWsEnvelopeClients = new WeakSet();
 const runnerWsActiveClients = new Set();
+async function broadcastVoiceUnreadState() {
+  try {
+    const payload = await voiceContextService.list();
+    for (const client of runnerWsActiveClients) {
+      sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.unread.changed", payload });
+    }
+  } catch (error) {
+    console.warn(`[voice] unread broadcast failed: ${errorMessage(error)}`);
+  }
+}
 const runnerWsClientInstanceIds = new WeakMap();
 const runnerWsServer = new WebSocketServer({ noServer: true });
 const wsServer = new WebSocketServer({ noServer: true });
@@ -9101,9 +9122,11 @@ runnerWsServer.on("connection", (ws, req) => {
             : message.op === "voice.orchestrators.update"
               ? voiceContextService.update(orchestratorId, message.payload)
               : voiceContextService.remove(orchestratorId);
-      void operation.then((payload) => sendRunnerWsEnvelope(ws, {
-        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "", payload,
-      })).catch((error) => sendVoiceError(message, error));
+      void operation.then((payload) => {
+        sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
+          requestId: message.requestId || "", payload });
+        if (message.op === "voice.orchestrators.delete") void broadcastVoiceUnreadState();
+      }).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (message.op === "voice.open" || message.op === "voice.status" || message.op === "voice.history") {
@@ -9117,6 +9140,15 @@ runnerWsServer.on("connection", (ws, req) => {
           channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
           payload: { ...payload, orchestratorId, ...(job ? { jobId: job.jobId } : {}) },
         });
+      }).catch((error) => sendVoiceError(message, error));
+      return true;
+    }
+    if (message.op === "voice.read") {
+      void voiceContextService.markRead(orchestratorId, message.payload?.logicalConversationId,
+        message.payload?.completedOrdinal).then(async (payload) => {
+        sendRunnerWsEnvelope(ws, { channel: "agent", op: "voice.read.result",
+          requestId: message.requestId || "", payload: { ...payload, orchestratorId } });
+        if (payload.changed) await broadcastVoiceUnreadState();
       }).catch((error) => sendVoiceError(message, error));
       return true;
     }
@@ -9142,10 +9174,11 @@ runnerWsServer.on("connection", (ws, req) => {
           message.payload?.effort, message.payload?.systemInstruction);
       } else if (message.op === "voice.memory.clear") operation = voiceContextService.clearMemory();
       else operation = voiceContextService.clearMessages(orchestratorId);
-      void operation.then((payload) => sendRunnerWsEnvelope(ws, {
-        channel: "agent", op: `${message.op}.result`, requestId: message.requestId || "",
-        payload: { ...payload, orchestratorId },
-      })).catch((error) => sendVoiceError(message, error));
+      void operation.then((payload) => {
+        sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
+          requestId: message.requestId || "", payload: { ...payload, orchestratorId } });
+        if (message.op === "voice.messages.clear") void broadcastVoiceUnreadState();
+      }).catch((error) => sendVoiceError(message, error));
       return true;
     }
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
@@ -9235,6 +9268,16 @@ runnerWsServer.on("connection", (ws, req) => {
         operationId: result.clientOperationId, streamId: result.clientOperationId,
         payload: { ...result, ...(job ? { jobId: job.jobId } : {}) },
       });
+      if (result.status === "completed") {
+        void broadcastVoiceUnreadState();
+        void voiceContextService.list().then(({ orchestrators }) => {
+          const item = orchestrators.find((entry) => entry.id === result.orchestratorId);
+          return turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
+            orchestratorName: item?.name, logicalConversationId: result.logicalConversationId,
+            clientOperationId: result.clientOperationId, completedOrdinal: result.completedOrdinal,
+            text: result.text });
+        }).catch((error) => console.warn(`[push] voice completion notification failed: ${errorMessage(error)}`));
+      }
     }, onApproval, hooks).then((payload) => {
       const job = voiceJob || resolveRunnerWsTtsOperationJob(operationId);
       sendRunnerWsEnvelope(ws, {

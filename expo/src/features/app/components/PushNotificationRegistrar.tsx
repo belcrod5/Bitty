@@ -6,9 +6,11 @@ import { useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContex
 import { getOrCreatePushDeviceId, registerPushDevice, resolveForegroundNotificationBehavior } from "../utils/pushNotifications";
 import {
   APPROVAL_REQUEST_CATEGORY,
+  VOICE_COMPLETED_CATEGORY,
   normalizeNotificationMetadata,
   registerApprovalNotificationCategories,
   setPendingPushSessionTarget,
+  setPendingPushVoiceOrchestratorId,
 } from "../utils/pushApprovalNotifications";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
 import {
@@ -58,10 +60,16 @@ export function PushNotificationRegistrar({
     const processResponse = (response: Notifications.NotificationResponse): boolean => {
       const request = response.notification.request;
       const responseKey = `${String(request.identifier || "")}:${String(response.actionIdentifier || "")}`;
-      const { backendId, sessionId, directory, approvalId } = normalizeNotificationMetadata(request);
+      const { backendId, sessionId, directory, approvalId, orchestratorId } = normalizeNotificationMetadata(request);
       const categoryIdentifier = String(request.content.categoryIdentifier || "");
 
       if (response.actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER) {
+        if (categoryIdentifier === VOICE_COMPLETED_CATEGORY && orchestratorId) {
+          if (processedResponseKeysRef.current.has(responseKey)) return true;
+          processedResponseKeysRef.current.add(responseKey);
+          setPendingPushVoiceOrchestratorId(orchestratorId);
+          return true;
+        }
         if (!sessionId) return false;
         if (processedResponseKeysRef.current.has(responseKey)) return true;
         processedResponseKeysRef.current.add(responseKey);

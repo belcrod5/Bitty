@@ -6,7 +6,8 @@ import { useAppSettings } from "../contexts/AppSettingsContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { getOrCreatePushDeviceId, registerPushDevice } from "../utils/pushNotifications";
-import { registerApprovalNotificationCategories, setPendingPushSessionTarget } from "../utils/pushApprovalNotifications";
+import { registerApprovalNotificationCategories, setPendingPushSessionTarget,
+  setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 import { handlePushApprovalAction } from "../utils/pushApprovalActions";
 import {
   reconcileReceivedSessionNotification,
@@ -59,6 +60,7 @@ jest.mock("../utils/pushApprovalNotifications", () => {
     ...actual,
     registerApprovalNotificationCategories: jest.fn(async () => {}),
     setPendingPushSessionTarget: jest.fn(),
+    setPendingPushVoiceOrchestratorId: jest.fn(),
   };
 });
 
@@ -78,6 +80,7 @@ const mockGetOrCreatePushDeviceId = getOrCreatePushDeviceId as jest.Mock;
 const mockRegisterPushDevice = registerPushDevice as jest.Mock;
 const mockRegisterApprovalNotificationCategories = registerApprovalNotificationCategories as jest.Mock;
 const mockSetPendingPushSessionTarget = setPendingPushSessionTarget as jest.Mock;
+const mockSetPendingPushVoiceOrchestratorId = setPendingPushVoiceOrchestratorId as jest.Mock;
 const mockHandlePushApprovalAction = handlePushApprovalAction as jest.Mock;
 const mockReconcileReceivedSessionNotification = reconcileReceivedSessionNotification as jest.Mock;
 const mockAddNotificationResponseReceivedListener =
@@ -126,6 +129,20 @@ describe("PushNotificationRegistrar", () => {
     });
     mockGetOrCreatePushDeviceId.mockResolvedValue("device-1");
     mockRegisterPushDevice.mockResolvedValue(true);
+  });
+
+  it("routes a cold-start voice completion tap to its logical orchestrator once", async () => {
+    const response = { actionIdentifier: Notifications.DEFAULT_ACTION_IDENTIFIER,
+      notification: { request: { identifier: "voice-1", content: {
+        categoryIdentifier: "VOICE_COMPLETED", data: { orchestratorId: "other" },
+      } } } };
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(response);
+    await render(<PushNotificationRegistrar />);
+    expect(mockSetPendingPushVoiceOrchestratorId).toHaveBeenCalledWith("other");
+    expect(mockSetPendingPushSessionTarget).not.toHaveBeenCalled();
+    expect(Notifications.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+    capturedResponseListener?.(response);
+    expect(mockSetPendingPushVoiceOrchestratorId).toHaveBeenCalledTimes(1);
   });
 
   it("registers a device with the runner once connected with permission granted", async () => {
