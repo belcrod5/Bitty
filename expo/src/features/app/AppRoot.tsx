@@ -3645,7 +3645,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     appStateChangedAtRef,
     appStateLastNonActiveAtRef,
     streamSocketRef,
-    streamTtsControlRef,
     replyLoadingRef,
     logAuto,
     logSessionDiag,
@@ -4077,11 +4076,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       ws.close();
       streamSocketRef.current = null;
     }
-    const streamTtsControl = streamTtsControlRef.current;
-    if (streamTtsControl) {
-      streamTtsControl.cleanup();
-      streamTtsControlRef.current = null;
-    }
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
     setStreamWaveformPreview([]);
@@ -4092,7 +4086,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     logAuto("stream_tts_resume_recovered", {
       reason,
       hadSocket: Boolean(ws),
-      hadControl: Boolean(streamTtsControl),
       ttsPlaying: ttsPlayingRef.current,
       queuedAudio: streamAudioQueueRef.current.length,
     });

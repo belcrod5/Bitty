@@ -1,13 +1,11 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import type { StreamTtsControlState } from "../types/appTypes";
 
 type Args = {
   appStateRef: MutableRefObject<AppStateStatus>;
   appStateChangedAtRef: MutableRefObject<number>;
   appStateLastNonActiveAtRef: MutableRefObject<number>;
   streamSocketRef: MutableRefObject<WebSocket | null>;
-  streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
   replyLoadingRef: MutableRefObject<boolean>;
   logAuto: (event: string, payload?: Record<string, unknown>) => void;
   logSessionDiag: (event: string, payload?: Record<string, unknown>, options?: {
@@ -26,7 +24,6 @@ export function useAppStateAutoRecoveryController({
   appStateChangedAtRef,
   appStateLastNonActiveAtRef,
   streamSocketRef,
-  streamTtsControlRef,
   replyLoadingRef,
   logAuto,
   logSessionDiag,
@@ -71,12 +68,11 @@ export function useAppStateAutoRecoveryController({
         return;
       }
       const ws = streamSocketRef.current;
-      if (!ws && !streamTtsControlRef.current) return;
-      const readyState = typeof ws?.readyState === "number" ? ws.readyState : -1;
+      if (!ws) return;
+      const readyState = ws.readyState;
       const stale = sinceLastNonActiveMs !== null
         && sinceLastNonActiveMs >= appResumeStreamRecoveryNonActiveMinMs;
-      const closed = Boolean(ws)
-        && (readyState === WebSocket.CLOSING || readyState === WebSocket.CLOSED);
+      const closed = readyState === WebSocket.CLOSING || readyState === WebSocket.CLOSED;
       if (!stale && !closed) return;
       callbacks.logAuto("stream_tts_resume_recover_trigger", {
         sinceLastNonActiveMs,
@@ -93,6 +89,5 @@ export function useAppStateAutoRecoveryController({
     appStateRef,
     replyLoadingRef,
     streamSocketRef,
-    streamTtsControlRef,
   ]);
 }
