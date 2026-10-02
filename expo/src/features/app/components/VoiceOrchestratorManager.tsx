@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Modal, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Pressable, SafeAreaView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useRunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketContext";
 import { KeyboardAwareScrollView } from "../keyboardController";
 import { effortOptionsForModel } from "../modelOptions";
@@ -7,6 +7,7 @@ import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { isReasoningEffort, type ReasoningEffort } from "../utils/settingsParsers";
 import { pickVoiceOrchestratorIcon, supportsVoiceOrchestratorIconPicking } from "../utils/voiceOrchestratorIconPicker";
+import { AppModal } from "./AppModal";
 import { SettingsSelect } from "./SettingsSelect";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 
@@ -144,7 +145,7 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
   const efforts = effortOptionsForModel(currentModel && { supportsReasoningEffort: true, effortOptions: currentModel.effortOptions });
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
+    <AppModal visible={visible} animationType="slide" onRequestClose={() => detailId === null ? onClose() : setDetailId(null)}>
       <SafeAreaView style={styles.settingsScreen}>
         <KeyboardAwareScrollView contentContainerStyle={styles.settingsContent} keyboardShouldPersistTaps="handled">
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="戻る"
@@ -239,6 +240,6 @@ export function VoiceOrchestratorManager({ visible, list, onListChanged, onConve
           {error ? <Text style={styles.settingsErrorText}>{error}</Text> : null}
         </KeyboardAwareScrollView>
       </SafeAreaView>
-    </Modal>
+    </AppModal>
   );
 }
