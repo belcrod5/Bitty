@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -86,6 +86,20 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
             let turnOutputTokens = 0;
             if (userItem) listener("item/completed", { threadId: params.threadId, turnId, item: { type: "userMessage" } });
             if (toolItem) listener("item/started", { threadId: params.threadId, turnId, item: { type: "commandExecution" } });
+            if (userInput && !isSummary) {
+              const native = { id: 42, method: "item/tool/requestUserInput", params: {
+                threadId: params.threadId, turnId, questions: [{ id: "choice", question: "A or B?" }],
+              } };
+              calls.push({ method: "question/wrong", params: await serverHandler({ ...native,
+                params: { ...native.params, threadId: "wrong-thread" } }) });
+              const pending = serverHandler(native);
+              if (resolveUserInput) setTimeout(() => {
+                listener("serverRequest/resolved", { threadId: "wrong-thread", requestId: 42 });
+                calls.push({ method: "question/afterWrongResolution" });
+                listener("serverRequest/resolved", { threadId: params.threadId, requestId: 42 });
+              }, 1);
+              calls.push({ method: "question/result", params: await pending });
+            }
             if (approvalMethod && !isSummary) {
               const result = await serverHandler({ method: approvalMethod, params: {
                 threadId: params.threadId, turnId, command: "echo", args: ["hello"], reason: "test",
@@ -167,14 +181,14 @@ async function fixture(t, options = {}) {
   return { rootDir, codex, service, conversation };
 }
 
-async function complete(service, conversation, text, id = randomUUID(), onApproval = async () => "decline") {
+async function complete(service, conversation, text, id = randomUUID(), onApproval = async () => "decline", hooks = {}) {
   let resolve;
   const terminal = new Promise((done) => { resolve = done; });
   const message = { operationId: id, payload: {
     backendId: "codex", logicalConversationId: conversation.logicalConversationId,
     clientOperationId: id, input: { blocks: [{ type: "text", text }] },
   } };
-  const accepted = await service.start(message, resolve, onApproval);
+  const accepted = await service.start(message, resolve, onApproval, hooks);
   return { accepted, result: await terminal, message };
 }
 
@@ -194,6 +208,61 @@ async function seedPairs(rootDir, logicalConversationId, count) {
   // Emulate a pre-migration store: the new workspace memory did not exist yet.
   await fs.rm(path.join(path.dirname(rootDir), "workspaces", logicalConversationId, "voice-memory"), { recursive: true });
 }
+
+test("orchestrator enables Default questions and delivers the active turn's response without approval", async (t) => {
+  const { codex, service, conversation } = await fixture(t, { userInput: true });
+  const received = [];
+  let approvals = 0;
+  const answer = { answers: { choice: { answers: ["B"] } } };
+  const { result } = await complete(service, conversation, "choose", randomUUID(), async () => {
+    approvals++;
+    return "decline";
+  }, { onUserInput: async (request, signal) => { received.push(request); assert.equal(signal.aborted, false); return answer; } });
+  assert.equal(result.status, "completed");
+  assert.equal(received.length, 1);
+  assert.equal(approvals, 0);
+  assert.deepEqual(codex.calls.find(({ method }) => method === "question/wrong").params, { answers: {} });
+  assert.deepEqual(codex.calls.find(({ method }) => method === "question/result").params, answer);
+  assert.equal(codex.calls.find(({ method }) => method === "thread/start").params.config["features.default_mode_request_user_input"], true);
+  assert.equal(codex.calls.some(({ method }) => method === "turn/interrupt"), false);
+});
+
+test("native question resolution without turnId cancels the pending question only for its thread", async (t) => {
+  const { codex, service, conversation } = await fixture(t, { userInput: true, resolveUserInput: true });
+  const { result } = await complete(service, conversation, "choose", randomUUID(), async () => "decline", {
+    onUserInput: (_request, signal) => new Promise((resolve) => {
+      signal.addEventListener("abort", () => {
+        assert.ok(codex.calls.some(({ method }) => method === "question/afterWrongResolution"));
+        resolve({ answers: {} });
+      }, { once: true });
+    }),
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(codex.calls.find(({ method }) => method === "question/result").params, { answers: {} });
+  assert.equal(codex.calls.some(({ method }) => method === "turn/interrupt"), false);
+});
+
+test("orchestrator without a question consumer skips immediately", async (t) => {
+  const { codex, service, conversation } = await fixture(t, { userInput: true });
+  assert.equal((await complete(service, conversation, "choose")).result.status, "completed");
+  assert.deepEqual(codex.calls.find(({ method }) => method === "question/result").params, { answers: {} });
+});
+
+test("interrupting an orchestrator aborts its outstanding question", async (t) => {
+  const { service, conversation } = await fixture(t, { userInput: true, finishOnInterrupt: true });
+  const operationId = randomUUID();
+  let questionSignal;
+  const completed = complete(service, conversation, "choose", operationId, async () => "decline", {
+    onUserInput: (_request, signal) => {
+      questionSignal = signal;
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve({ answers: {} }), { once: true }));
+    },
+  });
+  await waitFor(() => questionSignal);
+  await service.interrupt(conversation.logicalConversationId, operationId);
+  assert.equal(questionSignal.aborted, true);
+  assert.equal((await completed).result.status, "interrupted");
+});
 
 async function storedEvents(rootDir, logicalConversationId) {
   const text = await fs.readFile(path.join(rootDir, logicalConversationId, "events.jsonl"), "utf8");

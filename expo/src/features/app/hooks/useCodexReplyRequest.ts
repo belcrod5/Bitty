@@ -137,6 +137,8 @@ type UseCodexReplyRequestOptions<
   rememberKnownCodexThreadId?: (value: unknown) => void;
   handleApprovalRequest: (request: ApprovalRequest) => Promise<ApprovalAction> | ApprovalAction;
   onApprovalRequestResolved?: (request: ApprovalRequest) => void;
+  onUserInputRequest?: import("../../codex/client/types").CodexAppServerTurnOptions["onUserInputRequest"];
+  onUserInputRequestResolved?: import("../../codex/client/types").CodexAppServerTurnOptions["onUserInputRequestResolved"];
   setSelectedThreadStatusType: (statusType: string) => void;
   appendLlmDelta: (source: "native", delta: string) => void;
   applyAssistantReply: (raw: string) => string;
@@ -1089,6 +1091,8 @@ export function useCodexReplyRequest<
         onCalendarToolCall: current.onCalendarToolCall,
         onCalendarRequestCancel: current.onCalendarRequestCancel,
         onApprovalRequest: (request) => current.handleApprovalRequest(projectApprovalRequest(request)),
+        onUserInputRequest: current.onUserInputRequest,
+        onUserInputRequestResolved: current.onUserInputRequestResolved,
         onApprovalRequestResolved: (request) => {
           current.onApprovalRequestResolved?.(projectApprovalRequest(request));
         },

@@ -9,6 +9,8 @@ import { VoiceHistoryBackdrop } from "../components/VoiceHistoryBackdrop";
 import { CodexStatusSummaryMenu } from "../components/CodexStatusSummaryMenu";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
 import { VoiceOrchestratorManager } from "../components/VoiceOrchestratorManager";
+import { UserInputModal } from "../components/UserInputModal";
+import { useVoiceUserInput } from "../hooks/useVoiceUserInput";
 import { useChatScreen } from "../contexts/ChatScreenContext";
 import { useConversation } from "../contexts/ConversationContext";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
@@ -44,6 +46,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
   const [managerOpen, setManagerOpen] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const userInput = useVoiceUserInput(manager, managerOpen ? "" : selectedId);
 
   useEffect(() => {
     let current = true;
@@ -83,6 +86,7 @@ export function VoiceConversationScreen(props: VoiceConversationPlayback & { onC
   const selected = list?.orchestrators.find((item) => item.id === selectedId);
 
   return <>
+    <UserInputModal request={userInput.request} onDecide={userInput.decide} />
     {selected && list ? <VoiceConversationSession key={`${selected.id}-${revision}`} {...props}
       orchestrator={selected} orchestrators={list.orchestrators} onSelect={select}
       onManage={() => setManagerOpen(true)} paused={managerOpen}

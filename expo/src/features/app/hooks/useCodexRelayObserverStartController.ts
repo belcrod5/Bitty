@@ -118,6 +118,8 @@ type UseCodexRelayObserverStartControllerArgs = {
   }) => void;
   onApprovalRequest: (request: ApprovalRequest) => ApprovalAction | Promise<ApprovalAction>;
   onApprovalRequestResolved?: (request: ApprovalRequest) => void;
+  onUserInputRequest?: import("../../codex/client/types").CodexAppServerRelayObserverOptions["onUserInputRequest"];
+  onUserInputRequestResolved?: import("../../codex/client/types").CodexAppServerRelayObserverOptions["onUserInputRequestResolved"];
   // 別スレッドのobserver起動で既存observerをclean closeする(=強奪)直前に呼ぶ。
   // 奪われた側のセッションはresume_missを出せずライブ経路を失うため、呼び出し側が
   // 再同期マーカーへの登録などの補償を行う。
@@ -198,6 +200,8 @@ export function useCodexRelayObserverStartController({
   completeRuntimeRequestForRelayCompletion,
   onApprovalRequest,
   onApprovalRequestResolved,
+  onUserInputRequest,
+  onUserInputRequestResolved,
   onObserverPreempted,
   onAssistantTurnCompleted,
   onRuntimeStatus,
@@ -883,6 +887,8 @@ export function useCodexRelayObserverStartController({
           return onApprovalRequest(nextRequest);
         },
         onApprovalRequestResolved,
+        onUserInputRequest,
+        onUserInputRequestResolved,
       });
       if (startedAtMs && startedAtMs > 0) {
         ensureRuntimeRequestForRelay?.({
@@ -934,6 +940,8 @@ export function useCodexRelayObserverStartController({
     normalizedLlmDirectoryForRequest,
     onApprovalRequest,
     onApprovalRequestResolved,
+    onUserInputRequest,
+    onUserInputRequestResolved,
     onObserverPreempted,
     onAssistantTurnCompleted,
     onRuntimeStatus,

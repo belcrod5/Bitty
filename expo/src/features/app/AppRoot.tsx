@@ -65,6 +65,8 @@ import { useLlmRequestStatus } from "./hooks/useLlmRequestStatus";
 import { useCodexReplyRequest } from "./hooks/useCodexReplyRequest";
 import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteRequestController";
 import { CalendarWriteApprovalModal } from "./components/CalendarWriteApprovalModal";
+import { UserInputModal } from "./components/UserInputModal";
+import { useUserInputRequestController } from "./hooks/useUserInputRequestController";
 import { bootstrapLocationSchedules } from "../locationSchedules/locationScheduleRuntime";
 import { createCalendarToolHandler, parseCalendarToolCall } from "../calendar/calendarToolHandler";
 import { recoverCalendarWriteLedger } from "../calendar/calendarWriteLedger";
@@ -827,6 +829,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [chatViewportHeight, setChatViewportHeight] = useState(0);
   const [chatScreenLayout, setChatScreenLayout] = useState({ width: 0, height: 0 });
   const [drawerSessionPopupPanelId, setDrawerSessionPopupPanelId] = useState("");
+  const [panelRuntimeEntriesById, setPanelRuntimeEntriesById] = useState<Record<string, PanelRuntimeEntry>>({});
   const [drawerSessionPopupVisible, setDrawerSessionPopupVisible] = useState(false);
   const [drawerSessionPopupCycleId, setDrawerSessionPopupCycleId] = useState("");
   const [drawerSessionPopupSourceRect, setDrawerSessionPopupSourceRect] = useState<PopupChatSourceRect | null>(null);
@@ -3128,6 +3131,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
       },
     };
   }, [resolveSessionHistoryContext]);
+  const questionPopupSnapshot = drawerSessionPopupVisible
+    ? panelRuntimeEntriesById[drawerSessionPopupPanelId]?.snapshot : null;
+  const visibleQuestionSessionId = questionPopupSnapshot
+    ? (questionPopupSnapshot.backendId === "codex" ? String(questionPopupSnapshot.selectedSessionId || "") : "")
+    : "";
+  const userInputController = useUserInputRequestController(visibleQuestionSessionId);
   const handleRuntimeApprovalRequest = useCallback(async (request: ApprovalRequest) => {
     const enrichedRequest = enrichApprovalRequestWithSessionContext(request);
     rememberRuntimeApprovalRequest(enrichedRequest);
@@ -3237,6 +3246,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     completeRuntimeRequestForRelayCompletion,
     onApprovalRequest: handleRuntimeApprovalRequest,
     onApprovalRequestResolved: handleRuntimeApprovalResolved,
+    onUserInputRequest: userInputController.ask,
+    onUserInputRequestResolved: userInputController.resolved,
     onAssistantTurnCompleted: handleRelayAssistantTurnCompleted,
     onRuntimeStatus: updateConversationRuntimeRequestStatus,
     ensureRuntimeRequestForRelay: ensureConversationRuntimeRequestForRelay,
@@ -4364,6 +4375,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     rememberKnownCodexThreadId,
     handleApprovalRequest: handleRuntimeApprovalRequest,
     onApprovalRequestResolved: handleRuntimeApprovalResolved,
+    onUserInputRequest: userInputController.ask,
+    onUserInputRequestResolved: userInputController.resolved,
     setSelectedThreadStatusType,
     appendLlmDelta,
     applyAssistantReply,
@@ -4884,7 +4897,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     cancelCodexQueuedTurnForMessage,
     logSessionDiag,
   });
-  const [panelRuntimeEntriesById, setPanelRuntimeEntriesById] = useState<Record<string, PanelRuntimeEntry>>({});
   const {
     beginPanelHydration,
     invalidatePanelHydration,
@@ -6203,6 +6215,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
         request={calendarWriteController.request}
         onDecide={calendarWriteController.decide}
       />
+      <UserInputModal request={userInputController.request} onDecide={userInputController.decide} />
       </SafeAreaView>
       </View>
         </AppDrawerLayout>

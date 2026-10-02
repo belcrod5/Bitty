@@ -224,6 +224,40 @@ test("repeated TTS start identifies its job before replaying missed events", asy
   assert.deepEqual(ws.sent.map((message) => message.op), ["job_started", "job_snapshot"]);
 });
 
+test("orchestrator question hooks deliver responses and close pending questions on disconnect", async (t) => {
+  const service = __TESTING__.voiceContextService;
+  const originalStart = service.start;
+  let hooks;
+  const operationId = "11111111-2222-4333-8444-555555555555";
+  service.start = async (_message, _notify, _onApproval, callbacks) => {
+    hooks = callbacks;
+    return { clientOperationId: operationId, status: "accepted" };
+  };
+  const ws = createRunnerWsConnectionForTest();
+  t.after(() => { service.start = originalStart; ws.close(); });
+  ws.emit("message", JSON.stringify({ channel: "agent", op: "turn.start", requestId: "start", operationId,
+    payload: { backendId: "codex", orchestratorId: "other", logicalConversationId: "conversation",
+      clientOperationId: operationId, input: { blocks: [{ type: "text", text: "choose" }] } } }), false);
+  await waitFor(() => hooks);
+  const native = { method: "item/tool/requestUserInput", threadId: "native-thread", turnId: "native-turn",
+    params: { questions: [{ id: "choice", question: "A or B?" }] } };
+  const pending = hooks.onUserInput(native);
+  const question = ws.sent.find((message) => message.op === "voice.userInput.request");
+  assert.equal(question.payload.orchestratorId, "other");
+  assert.equal(question.payload.threadId, "native-thread");
+  assert.equal(typeof question.payload.startedAtMs, "number");
+  const answer = { answers: { choice: { answers: ["B"] } } };
+  ws.emit("message", JSON.stringify({ channel: "agent", op: "voice.userInput.respond", requestId: "answer", operationId,
+    payload: { requestId: question.payload.requestId, result: answer } }), false);
+  assert.deepEqual(await pending, answer);
+  assert.equal(ws.sent.find((message) => message.op === "voice.userInput.respond.result").payload.accepted, true);
+  assert.equal(ws.sent.filter((message) => message.op === "voice.userInput.resolved").length, 1);
+  assert.equal(ws.sent.some((message) => message.op === "voice.approval.request"), false);
+  const disconnected = hooks.onUserInput(native);
+  ws.close();
+  assert.deepEqual(await disconnected, { answers: {} });
+});
+
 test("voice acceptance creates one attachable TTS job and keeps its error separate", async (t) => {
   const service = __TESTING__.voiceContextService;
   const originalStart = service.start;
@@ -854,8 +888,9 @@ test("raw relay preserves three-message order while a queued admission is asynch
   __TESTING__.cleanupCodexRelay(relay, "test_cleanup");
 });
 
-test("runner-ws TTS start requires operationId", () => {
+test("runner-ws TTS start requires operationId", (t) => {
   const ws = createRunnerWsConnectionForTest();
+  t.after(() => ws.close());
   ws.sent.length = 0;
 
   ws.emit("message", JSON.stringify({
@@ -1219,7 +1254,7 @@ test("runner-ws duplicate initialize on a reused relay returns cached result", (
   assert.equal(relay.upstreamSent.length, 2);
 });
 
-test("runner-ws binds thread/start result threadId to the initialized relay", async () => {
+test("runner-ws binds thread/start result threadId to the initialized relay", async (t) => {
   const upstreamSent = [];
   const relay = __TESTING__.createCodexRelayContext({
     endpoint: "/runner-ws",
@@ -1303,6 +1338,7 @@ test("runner-ws binds thread/start result threadId to the initialized relay", as
     assert.equal(selectedRelay.upstreamInitializeResultSeen, true);
 
     const runnerWs = createRunnerWsConnectionForTest();
+    t.after(() => runnerWs.close());
     runnerWs.emit(
       "message",
       JSON.stringify({

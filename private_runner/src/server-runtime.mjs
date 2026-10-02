@@ -44,7 +44,7 @@ import {
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createVoiceOrchestratorService } from "./voice-orchestrator-service.mjs";
 import { createStreamTtsSegments } from "./stream-tts-segments.mjs";
-import { createVoiceApprovalBridge } from "./voice-approval-bridge.mjs";
+import { createVoiceRequestBridge } from "./voice-request-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
 import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
 import { createScheduledCodexTurnStarter } from "./codex-scheduled-turn.mjs";
@@ -6841,7 +6841,7 @@ const startScheduledCodexTurn = createScheduledCodexTurnStarter({
   subjectId: agentOwnerSubjectId,
   dynamicToolResponse: (request) => runnerInitiatedCalendarResponse(request),
 });
-const scheduledVoiceApprovals = createVoiceApprovalBridge({
+const scheduledVoiceApprovals = createVoiceRequestBridge({
   send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName }) => {
     let sent = false;
     for (const client of runnerWsActiveClients) {
@@ -9033,10 +9033,14 @@ runnerWsServer.on("connection", (ws, req) => {
     : (protocolList ? String(protocolList).split(",").map((item) => item.trim()).filter(Boolean) : []);
   const llmRelaysByKey = new Map();
   const attachedTtsJobIds = new Set();
-  const voiceApprovals = createVoiceApprovalBridge({
-    send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName }) => sendRunnerWsEnvelope(ws, {
-      channel: "agent", op: "voice.approval.request", operationId, streamId: operationId,
-      payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName },
+  const voiceRequests = createVoiceRequestBridge({
+    send: ({ requestId, operationId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs }) => sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: method === "item/tool/requestUserInput" ? "voice.userInput.request" : "voice.approval.request",
+      operationId, streamId: operationId,
+      payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs },
+    }),
+    onResolved: ({ requestId, operationId, orchestratorId }) => sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: "voice.userInput.resolved", operationId, payload: { requestId, orchestratorId },
     }),
   });
   runnerWsActiveClients.add(ws);
@@ -9063,10 +9067,19 @@ runnerWsServer.on("connection", (ws, req) => {
 
   function handleVoiceMessage(message) {
     if (message.channel !== "agent") return false;
+    if (message.op === "voice.userInput.respond") {
+      const requestId = String(message.payload?.requestId || "");
+      const accepted = voiceRequests.respond(message.operationId, requestId, message.payload?.result);
+      sendRunnerWsEnvelope(ws, {
+        channel: "agent", op: "voice.userInput.respond.result", requestId: message.requestId || "",
+        operationId: message.operationId, payload: { requestId, accepted },
+      });
+      return true;
+    }
     if (message.op === "voice.approval.decision") {
       const requestId = String(message.payload?.requestId || "");
       const decision = String(message.payload?.decision || "");
-      if (!voiceApprovals.decide(message.operationId, requestId, decision)
+      if (!voiceRequests.decide(message.operationId, requestId, decision)
         && !scheduledVoiceApprovals.decide(message.operationId, requestId, decision)) {
         sendVoiceError(message, { code: "turn_rejected", message: "Invalid voice approval decision" });
         return true;
@@ -9141,7 +9154,7 @@ runnerWsServer.on("connection", (ws, req) => {
     const onApproval = async (request) => {
       const orchestratorId = voicePayload.orchestratorId || "main";
       const { orchestrators } = await voiceContextService.list();
-      return voiceApprovals.request(operationId, request, orchestratorId,
+      return voiceRequests.request(operationId, request, orchestratorId,
         orchestrators.find((item) => item.id === orchestratorId)?.name || "");
     };
     const voiceMessage = { ...message, payload: { ...voicePayload, orchestratorId: voicePayload.orchestratorId || "main" } };
@@ -9157,6 +9170,8 @@ runnerWsServer.on("connection", (ws, req) => {
       llmJobEmit(voiceJob, { type: "error", error: "stream_tts_failed", message: detail, detail });
     };
     const hooks = {
+      onUserInput: (request, signal) => voiceRequests.request(operationId, request,
+        voicePayload.orchestratorId || "main", "", signal),
       onAccepted: () => {
         if (voiceTts === undefined) return;
         try {
@@ -9921,7 +9936,7 @@ runnerWsServer.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    voiceApprovals.close();
+    voiceRequests.close();
     agentConnection.detach();
     detachRunnerWsTtsJobs();
     runnerWsActiveClients.delete(ws);
@@ -11144,6 +11159,14 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     return;
   }
   if (handleCalendarUpstreamToolCall(relay, rpcPayload, data)) return;
+  // The legacy relay has no question UI. Settle in the Runner instead of leaving Codex waiting.
+  if (rpcPayload?.method === "item/tool/requestUserInput" &&
+    (typeof rpcPayload.id === "string" || typeof rpcPayload.id === "number")) {
+    if (relay.upstreamWs?.readyState === WebSocket.OPEN) {
+      relay.upstreamWs.send(JSON.stringify({ jsonrpc: "2.0", id: rpcPayload.id, result: { answers: {} } }));
+    }
+    return;
+  }
   if (!meta && !isBinary) {
     const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data ?? "");
     if (text) {
