@@ -1,5 +1,6 @@
 import { useCallback, type MutableRefObject } from "react";
 import type { StreamAudioQueueItem, StreamTtsControlState } from "../types/appTypes";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type EnqueueMeta = {
   chunkChars?: number | null;
@@ -21,6 +22,7 @@ type UseEnqueueStreamAudioControllerOptions = {
   processStreamAudioQueue: () => Promise<void>;
   setReplyDebug: (value: string | ((prev: string) => string)) => void;
   shouldProjectTtsDebugToActiveSession: () => boolean;
+  logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
 function buildStreamAudioQueueItem(
@@ -62,6 +64,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     processStreamAudioQueue,
     setReplyDebug,
     shouldProjectTtsDebugToActiveSession,
+    logAuto,
   } = options;
 
   return useCallback((
@@ -71,12 +74,21 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
     playbackMessageId: string,
     enqueueOptions?: EnqueueMeta
   ) => {
-    if (!audioUrl) return;
+    if (!audioUrl) {
+      logAuto("tts_trace", { stage: "enqueue_dropped", reason: "empty_audio", messageId: playbackMessageId, seq });
+      return;
+    }
     const generation = streamAudioQueueGenerationRef.current;
     streamAudioEnqueueChainRef.current = streamAudioEnqueueChainRef.current
       .then(async () => {
-        if (generation !== streamAudioQueueGenerationRef.current) return;
-        if (streamTtsSuppressedRef.current) return;
+        if (generation !== streamAudioQueueGenerationRef.current) {
+          logAuto("tts_trace", { stage: "enqueue_dropped", reason: "generation", messageId: playbackMessageId, seq });
+          return;
+        }
+        if (streamTtsSuppressedRef.current) {
+          logAuto("tts_trace", { stage: "enqueue_dropped", reason: "suppressed", messageId: playbackMessageId, seq });
+          return;
+        }
         const prepared = buildStreamAudioQueueItem(
           seq,
           audioUrl,
@@ -85,9 +97,21 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
           enqueueOptions
         );
         if (generation !== streamAudioQueueGenerationRef.current || streamTtsSuppressedRef.current) {
+          logAuto("tts_trace", {
+            stage: "enqueue_dropped",
+            reason: generation !== streamAudioQueueGenerationRef.current ? "generation" : "suppressed",
+            messageId: playbackMessageId,
+            seq,
+          });
           return;
         }
         streamAudioQueueRef.current.push(prepared);
+        logAuto("tts_trace", {
+          stage: "enqueued",
+          messageId: playbackMessageId,
+          seq,
+          queueSize: streamAudioQueueRef.current.length,
+        });
         setTtsPlaybackWanted(true, "stream_chunk_enqueued", {
           seq,
           streamQueueSize: streamAudioQueueRef.current.length,
@@ -104,6 +128,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
         void processStreamAudioQueue();
       })
       .catch((e) => {
+        logAuto("tts_trace", { stage: "enqueue_error", messageId: playbackMessageId, seq, error: ttsDiagnosticError(e) });
         const message = e instanceof Error ? e.message : String(e);
         if (shouldProjectTtsDebugToActiveSession()) {
           setReplyDebug((prev) => (
@@ -112,6 +137,7 @@ export function useEnqueueStreamAudioController(options: UseEnqueueStreamAudioCo
         }
       });
   }, [
+    logAuto,
     processStreamAudioQueue,
     preloadStreamAudio,
     setReplyDebug,

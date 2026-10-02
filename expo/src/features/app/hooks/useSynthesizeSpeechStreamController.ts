@@ -17,6 +17,7 @@ import type { StreamTtsControlState, TtsDebugStats, TtsPlaybackTarget } from "..
 import { parseStreamSegmentEnvelope } from "../utils/streamPayload";
 import { collectStreamWaveformSegments, mergeWaveformBars } from "../utils/waveform";
 import { sanitizeTextForTts } from "../utils/statusText";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 
@@ -75,6 +76,7 @@ type UseSynthesizeSpeechStreamControllerOptions = {
   setTtsPlaybackProjectionTarget: (target: TtsPlaybackTarget) => void;
   setTtsDebugStats: (updater: (prev: TtsDebugStats) => TtsDebugStats) => void;
   syncTtsPlaybackWantedFromPipeline: (reason: string, payload?: Record<string, unknown>) => boolean;
+  logAuto: (event: string, payload?: Record<string, unknown>) => void;
 };
 
 export function useSynthesizeSpeechStreamController(
@@ -118,6 +120,7 @@ export function useSynthesizeSpeechStreamController(
     setTtsPlaybackProjectionTarget,
     setTtsDebugStats,
     syncTtsPlaybackWantedFromPipeline,
+    logAuto,
   } = options;
 
   return useCallback(async (textOverride?: string, streamOptions?: TtsPlaybackTarget) => {
@@ -128,8 +131,21 @@ export function useSynthesizeSpeechStreamController(
     const wsUrl = ttsStreamWsUrl();
     const useRunnerWsManager = Boolean(runnerWebSocketManager);
     const useRunnerWsEnvelope = useRunnerWsManager || isRunnerWsUrl(wsUrl);
-    if (!targetRunnerUrl || (!useRunnerWsManager && !runnerToken.trim()) || (!text && !voiceJobId)) return;
     const targetMessageId = String(streamOptions?.messageId || "").trim();
+    if (!targetRunnerUrl || (!useRunnerWsManager && !runnerToken.trim()) || (!text && !voiceJobId)) {
+      logAuto("tts_trace", {
+        stage: "synthesis_ignored",
+        messageId: targetMessageId,
+        reason: !targetRunnerUrl ? "runner_url" : !useRunnerWsManager && !runnerToken.trim() ? "runner_token" : "empty_text_or_job",
+      });
+      return;
+    }
+    logAuto("tts_trace", {
+      stage: "synthesis_start",
+      messageId: targetMessageId,
+      mode: voiceJobId ? "voice" : "text",
+      transport: useRunnerWsManager ? "manager" : "socket",
+    });
     const shouldProjectDebugToActiveSession = false;
     const reportErrorToActiveSession = (raw: unknown, scope?: string) => {
       if (shouldProjectDebugToActiveSession) reportError(raw, scope);
@@ -219,9 +235,17 @@ export function useSynthesizeSpeechStreamController(
           snapshotLastAudioChunkSeq = Number(data.lastAudioChunkSeq ?? -1);
           snapshotStatus = String(data.status || "");
         }
+        logAuto("tts_trace", {
+          stage: "job_snapshot",
+          messageId: targetMessageId,
+          status: ["queued", "running", "completed", "failed", "cancelled"].includes(String(data.status))
+            ? String(data.status) : "unknown",
+          lastAudioChunkSeq: Number(data.lastAudioChunkSeq ?? -1),
+        });
         return;
       }
       if (type === "attached") {
+        logAuto("tts_trace", { stage: "attached", messageId: targetMessageId, nextAudioChunkSeq });
         if (voiceJobId && nextAudioChunkSeq - 1 < snapshotLastAudioChunkSeq) {
           handleStreamMessage({ type: "error", error: "audio_history_missing", message: "Voice audio history is incomplete" });
         } else if (!done && (snapshotStatus === "failed" || snapshotStatus === "cancelled")) {
@@ -231,7 +255,10 @@ export function useSynthesizeSpeechStreamController(
         }
         return;
       }
-      if (type === "started") return;
+      if (type === "started") {
+        logAuto("tts_trace", { stage: "job_started", messageId: targetMessageId });
+        return;
+      }
 
       if (type === "stream_mode") {
         const mode = String(data?.mode || "");
@@ -269,7 +296,10 @@ export function useSynthesizeSpeechStreamController(
       if (type === "audio_chunk") {
         const segment = parseStreamSegmentEnvelope(data);
         const seq = segment.seq;
-        if (seq === null) return;
+        if (seq === null) {
+          logAuto("tts_trace", { stage: "chunk_ignored", reason: "invalid_seq", messageId: targetMessageId });
+          return;
+        }
         const chunkJobId = messageJobId || knownJobId;
         if (!chunkJobId) {
           handleStreamMessage({ type: "error", error: "job_id_missing", message: "Voice audio job ID is missing" });
@@ -282,6 +312,7 @@ export function useSynthesizeSpeechStreamController(
           return;
         }
         seenAudioChunks.add(chunkKey);
+        logAuto("tts_trace", { stage: "chunk_received", messageId: targetMessageId, seq, audioBytes: segment.audioBytes });
         nextAudioChunkSeq = Math.max(nextAudioChunkSeq, seq + 1);
         upsertStreamSegment(targetMessageId, seq, segment.text, "ready", {
           chunkChars: segment.chunkChars,
@@ -298,6 +329,12 @@ export function useSynthesizeSpeechStreamController(
           streamLastWaveformBars: 0,
         }));
         if (!segment.audioUrl) {
+          logAuto("tts_trace", {
+            stage: "chunk_ignored",
+            reason: "empty_audio",
+            messageId: targetMessageId,
+            seq,
+          });
           if (voiceJobId) {
             handleStreamMessage({ type: "error", error: "missing_audio_url", message: "Voice audio URL is missing" });
             return;
@@ -313,7 +350,10 @@ export function useSynthesizeSpeechStreamController(
           reportErrorToActiveSession("stream-tts audio_chunk missing audioUrl", "stream-tts:text");
           return;
         }
-        if (streamTtsSuppressedRef.current) return;
+        if (streamTtsSuppressedRef.current) {
+          logAuto("tts_trace", { stage: "chunk_ignored", reason: "suppressed", messageId: targetMessageId, seq });
+          return;
+        }
         if (
           /^https?:/i.test(segment.audioUrl) &&
           segment.audioBytes > 0
@@ -331,6 +371,12 @@ export function useSynthesizeSpeechStreamController(
       }
 
       if (type === "error") {
+        logAuto("tts_trace", {
+          stage: "synthesis_error",
+          messageId: targetMessageId,
+          code: ttsDiagnosticError(data?.error || "stream_tts_failed"),
+          error: ttsDiagnosticError(data?.message || data?.error || "stream_tts_failed"),
+        });
         done = true;
         setTtsLoading(false);
         setTtsUiStatus("error");
@@ -354,6 +400,12 @@ export function useSynthesizeSpeechStreamController(
           return;
         }
         done = true;
+        logAuto("tts_trace", {
+          stage: "synthesis_done",
+          messageId: targetMessageId,
+          chunkCount: seenAudioChunks.size,
+          queueSize: streamAudioQueueRef.current.length,
+        });
         setTtsLoading(false);
         const mergedWaveform = mergeWaveformBars(
           collectStreamWaveformSegments(streamAudioWaveformBarsRef.current),
@@ -387,6 +439,7 @@ export function useSynthesizeSpeechStreamController(
       let cancelled = false;
       let attachedGeneration = -1;
       const cleanup = () => {
+        logAuto("tts_trace", { stage: "transport_cleanup", transport: "manager", messageId: targetMessageId, operationId });
         cancelled = true;
         const active = streamTtsControlRef.current;
         const streamId = active?.operationId === operationId ? String(active.streamId || "") : "";
@@ -411,6 +464,14 @@ export function useSynthesizeSpeechStreamController(
       };
       const failConnection = (err: unknown, phase: "send" | "connect") => {
         if (cancelled || done || streamTtsControlRef.current?.operationId !== operationId) return;
+        logAuto("tts_trace", {
+          stage: "transport_error",
+          transport: "manager",
+          phase,
+          messageId: targetMessageId,
+          operationId,
+          error: ttsDiagnosticError(err),
+        });
         done = true;
         cleanup();
         setTtsLoading(false);
@@ -435,6 +496,14 @@ export function useSynthesizeSpeechStreamController(
         attachedGeneration = snapshot.generation;
         try {
           const jobId = voiceJobId || knownJobId;
+          logAuto("tts_trace", {
+            stage: jobId ? "transport_attach" : "transport_start",
+            transport: "manager",
+            messageId: targetMessageId,
+            operationId,
+            generation: snapshot.generation,
+            sinceSeq: lastEventSeq,
+          });
           if (jobId) {
             runnerWebSocketManager.send({
               channel: "tts", op: "attach", requestId,
@@ -453,7 +522,16 @@ export function useSynthesizeSpeechStreamController(
             latest.connectionState === "reconnecting" ||
             latest.connectionState === "background" ||
             latest.appState === "inactive"
-          ) return;
+          ) {
+            logAuto("tts_trace", {
+              stage: "transport_send_deferred",
+              messageId: targetMessageId,
+              operationId,
+              connectionState: latest.connectionState,
+              error: ttsDiagnosticError(err),
+            });
+            return;
+          }
           failConnection(err, "send");
         }
       };
@@ -519,6 +597,7 @@ export function useSynthesizeSpeechStreamController(
       const unsubscribeSnapshot = runnerWebSocketManager.subscribeSnapshot(resumeJob);
       const unsubscribeMessages = unsubscribe;
       unsubscribe = () => { unsubscribeSnapshot(); unsubscribeMessages(); };
+      logAuto("tts_trace", { stage: "transport_connect", transport: "manager", messageId: targetMessageId, operationId });
       runnerWebSocketManager.connect()
         .then(resumeJob)
         .catch((err) => {
@@ -529,12 +608,22 @@ export function useSynthesizeSpeechStreamController(
             snapshot.connectionState === "connecting" ||
             snapshot.connectionState === "handshaking" ||
             snapshot.connectionState === "reconnecting"
-          ) return;
+          ) {
+            logAuto("tts_trace", {
+              stage: "transport_connect_deferred",
+              messageId: targetMessageId,
+              operationId,
+              connectionState: snapshot.connectionState,
+              error: ttsDiagnosticError(err),
+            });
+            return;
+          }
           failConnection(err, "connect");
         });
       return;
     }
 
+    logAuto("tts_trace", { stage: "transport_connect", transport: "socket", messageId: targetMessageId });
     const ws = createWebSocketWithOptionalAuth(wsUrl, runnerToken);
     streamSocketRef.current = ws;
     closeActiveStream = () => {
@@ -544,6 +633,7 @@ export function useSynthesizeSpeechStreamController(
 
     ws.onopen = () => {
       if (streamSocketRef.current !== ws || streamTtsSuppressedRef.current || ws.readyState !== WebSocket.OPEN) return;
+      logAuto("tts_trace", { stage: "transport_open", transport: "socket", messageId: targetMessageId });
       try {
         const startFrame = voiceJobId
           ? (useRunnerWsEnvelope
@@ -551,8 +641,20 @@ export function useSynthesizeSpeechStreamController(
             : JSON.stringify({ type: "attach", jobId: voiceJobId, sinceSeq: 0 }))
           : useRunnerWsEnvelope ? encodeRunnerWsTtsStart(startPayload) : JSON.stringify(startPayload);
         ws.send(startFrame);
+        logAuto("tts_trace", {
+          stage: voiceJobId ? "transport_attach" : "transport_start",
+          transport: "socket",
+          messageId: targetMessageId,
+        });
         recordNetworkUsage("stream-tts", utf8ByteLength(startFrame), 0);
       } catch (err) {
+        logAuto("tts_trace", {
+          stage: "transport_error",
+          transport: "socket",
+          phase: "send",
+          messageId: targetMessageId,
+          error: ttsDiagnosticError(err),
+        });
         done = true;
         setTtsLoading(false);
         setTtsUiStatus("error");
@@ -602,6 +704,13 @@ export function useSynthesizeSpeechStreamController(
       syncTtsPlaybackWantedFromPipeline("stream_tts_text_ws_error");
       const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
       const detail = String(eventRecord.message || eventRecord.type || "websocket_error");
+      logAuto("tts_trace", {
+        stage: "transport_error",
+        transport: "socket",
+        phase: "error",
+        messageId: targetMessageId,
+        error: ttsDiagnosticError(detail),
+      });
       reportErrorToActiveSession(`stream-tts WebSocket error: ${detail}`, "stream-tts:text");
       if (shouldProjectDebugToActiveSession) {
         setReplyDebug(`route=stream-tts error=websocket detail=${detail} url=${wsUrl}`);
@@ -619,6 +728,14 @@ export function useSynthesizeSpeechStreamController(
       const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
       const code = Number(eventRecord.code);
       const reason = String(eventRecord.reason || "").trim();
+      logAuto("tts_trace", {
+        stage: "transport_error",
+        transport: "socket",
+        phase: "close",
+        messageId: targetMessageId,
+        code: Number.isFinite(code) ? code : null,
+        error: ttsDiagnosticError(reason),
+      });
       const closeDetail = `code=${Number.isFinite(code) ? code : "unknown"} reason=${reason || "-"}`;
       reportErrorToActiveSession(`stream-tts WebSocket closed: ${closeDetail}`, "stream-tts:text");
       if (shouldProjectDebugToActiveSession) {
@@ -626,6 +743,7 @@ export function useSynthesizeSpeechStreamController(
       }
     };
   }, [
+    logAuto,
     baseUrl,
     clearStreamAudioQueue,
     enqueueStreamAudio,

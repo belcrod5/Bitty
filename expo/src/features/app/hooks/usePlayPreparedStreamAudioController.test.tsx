@@ -55,6 +55,7 @@ function createOptions() {
     attachTtsSoundStatusHandler: jest.fn(),
     waitForPlaybackToFinish: jest.fn(async () => {}),
     markTtsPlaybackStopped: jest.fn(),
+    logAuto: jest.fn(),
   };
 }
 
@@ -210,6 +211,9 @@ test("can load a later chunk after a preload error", async () => {
   const { result } = await renderHook(() => usePlayPreparedStreamAudioController(options));
 
   await expect(result.current.playPreparedStreamAudioAndWait(failed)).rejects.toThrow("load failed");
+  expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+    stage: "native_error", phase: "load", messageId: "message-1", seq: 0, error: "Error",
+  }));
   await expect(result.current.playPreparedStreamAudioAndWait(next)).resolves.toBe(true);
 
   expect(createAsync).toHaveBeenCalledTimes(2);

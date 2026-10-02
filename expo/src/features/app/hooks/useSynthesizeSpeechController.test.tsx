@@ -31,6 +31,7 @@ test("counts the server-reported TTS audio size after playback loads", async () 
     setReplyDebug: jest.fn(),
     reportError: jest.fn(),
     playTtsAudio,
+    logAuto: jest.fn(),
   }));
 
   try {

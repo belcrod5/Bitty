@@ -143,6 +143,7 @@ function createOptions(manager: FakeRunnerWebSocketManager) {
       setTtsPlaybackProjectionTarget: jest.fn(),
       setTtsDebugStats: jest.fn((updater: (prev: TtsDebugStats) => TtsDebugStats) => updater(ttsDebugStats)),
       syncTtsPlaybackWantedFromPipeline: jest.fn(() => true),
+      logAuto: jest.fn(),
     },
     streamSocketRef,
     streamTtsControlRef,
@@ -505,6 +506,27 @@ test("text TTS reports a permanent connection configuration error", async () => 
   expect(manager.sent).not.toContainEqual(expect.objectContaining({ op: "start" }));
   expect(options.streamTtsControlRef.current).toBeNull();
   expect(options.setTtsUiStatus).toHaveBeenCalledWith("error");
+  expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+    stage: "transport_error", phase: "connect", messageId: "message-1",
+    error: "runner_token_required",
+  }));
+});
+
+test("missing audio is traced without recording the chunk text or URL", async () => {
+  const manager = new FakeRunnerWebSocketManager();
+  const { options } = createOptions(manager);
+  const { result } = await renderHook(() => useSynthesizeSpeechStreamController(options));
+  await result.current("private spoken text", { messageId: "message-1" });
+  await flushPromises();
+  const operationId = String(manager.sent[0].operationId);
+  manager.emit({
+    channel: "tts", op: "audio_chunk", operationId, streamId: "tts-job-1",
+    payload: { type: "audio_chunk", seq: 0, text: "private spoken text", audioBytes: 0 },
+  });
+  expect(options.logAuto).toHaveBeenCalledWith("tts_trace", expect.objectContaining({
+    stage: "chunk_ignored", reason: "empty_audio", messageId: "message-1", seq: 0,
+  }));
+  expect(JSON.stringify(options.logAuto.mock.calls)).not.toContain("private spoken text");
 });
 
 test("text TTS reports a non-retryable start send error", async () => {

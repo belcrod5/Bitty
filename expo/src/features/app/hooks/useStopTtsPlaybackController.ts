@@ -86,8 +86,21 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
   ) => {
     const expectedMessageId = stopOptions?.expectedMessageId;
     if (expectedMessageId) {
-      if (ttsPlaybackProjectionTargetRef.current.messageId !== expectedMessageId) return;
+      if (ttsPlaybackProjectionTargetRef.current.messageId !== expectedMessageId) {
+        logAuto("tts_trace", {
+          stage: "stop_ignored",
+          reason: "projection_mismatch",
+          messageId: expectedMessageId,
+          runId: ttsPlaybackRunIdRef.current,
+        });
+        return;
+      }
       if (ttsPlaybackMessageIdRef.current !== expectedMessageId) {
+        logAuto("tts_trace", {
+          stage: "stop_stream_only",
+          messageId: expectedMessageId,
+          runId: ttsPlaybackRunIdRef.current,
+        });
         // The previous message still owns the sound; this stream owns the queue.
         streamTtsSuppressedRef.current = true;
         const ws = streamSocketRef.current;
@@ -108,6 +121,11 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
       }
     }
     if (ttsStopInFlightRef.current) {
+      logAuto("tts_trace", {
+        stage: "stop_join_inflight",
+        messageId: expectedMessageId || ttsPlaybackMessageIdRef.current,
+        runId: ttsPlaybackRunIdRef.current,
+      });
       await ttsStopInFlightRef.current;
       return;
     }
@@ -115,6 +133,8 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
       const interruptStream = stopOptions?.interruptStream ?? false;
       const reason = String(stopOptions?.reason || "unspecified");
       const stopRequestedAt = Date.now();
+      const runId = ttsPlaybackRunIdRef.current;
+      const messageId = expectedMessageId || ttsPlaybackMessageIdRef.current;
       ttsPlaybackTransitionInFlightRef.current = true;
       lastTtsStopRequestedAtRef.current = stopRequestedAt;
       logAuto("tts_stop_requested", {
@@ -129,6 +149,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         replyLoading: replyLoadingRef.current,
         sinceTtsStoppedMs: elapsedSinceMs(lastTtsStoppedAtRef.current),
       });
+      logAuto("tts_trace", { stage: "stop_requested", reason, messageId, runId, interruptStream });
       setTtsPlaybackWanted(false, "stop_requested", {
         reason,
         interruptStream,
@@ -178,6 +199,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
           hadSound: false,
           elapsedMs: Math.max(0, Date.now() - stopRequestedAt),
         });
+        logAuto("tts_trace", { stage: "stop_complete", messageId, runId, hadSound: false });
         return;
       }
       activeTtsSound.setOnPlaybackStatusUpdate(null);
@@ -195,6 +217,7 @@ export function useStopTtsPlaybackController(options: UseStopTtsPlaybackControll
         hadSound: true,
         elapsedMs: Math.max(0, Date.now() - stopRequestedAt),
       });
+      logAuto("tts_trace", { stage: "stop_complete", messageId, runId, hadSound: true });
     })();
     ttsStopInFlightRef.current = stopTask;
     try {

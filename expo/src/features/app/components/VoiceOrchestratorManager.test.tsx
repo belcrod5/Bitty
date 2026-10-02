@@ -1,5 +1,7 @@
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import type { ReactNode } from "react";
 import { Alert } from "react-native";
+import { AppModal } from "./AppModal";
 import { VoiceOrchestratorManager } from "./VoiceOrchestratorManager";
 
 const icon = "data:image/png;base64,iVBORw0KGgo=";
@@ -45,6 +47,9 @@ jest.mock("../utils/voiceOrchestratorIconPicker", () => ({
 jest.mock("../keyboardController", () => ({
   KeyboardAwareScrollView: require("react-native").ScrollView,
 }));
+jest.mock("./AppModal", () => ({
+  AppModal: jest.fn(({ children }: { children: ReactNode }) => children),
+}));
 jest.mock("./SettingsSelect", () => ({
   SettingsSelect: ({ label, onSelect, options }: { label: string; onSelect: (value: string) => void;
     options: { value: string }[] }) => {
@@ -61,6 +66,21 @@ const onClose = jest.fn();
 const props = { visible: true, list, onListChanged, onConversationChanged, onClose };
 
 beforeEach(() => { jest.clearAllMocks(); });
+
+test("opens through the platform modal and closes detail before the manager", async () => {
+  const screen = await render(<VoiceOrchestratorManager {...props} />);
+  const modalProps = () => jest.mocked(AppModal).mock.lastCall?.[0];
+  expect(modalProps()).toEqual(expect.objectContaining({ visible: true, animationType: "slide",
+    onRequestClose: expect.any(Function) }));
+  await fireEvent.press(screen.getByTestId("orchestrator-row-other"));
+  await waitFor(() => screen.getByTestId("orchestrator-name"));
+  await act(async () => { modalProps()?.onRequestClose?.(); });
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByTestId("orchestrator-row-other")).toBeTruthy();
+  await act(async () => { modalProps()?.onRequestClose?.(); });
+  expect(onClose).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
 
 test("list opens detail; name, uploaded icon, model, effort, and instructions save together", async () => {
   const screen = await render(<VoiceOrchestratorManager {...props} />);

@@ -436,6 +436,7 @@ const AUTO_FACE_TRACKING_ALLOW_CACHE_MS = 250;
 const AUTO_DIAGNOSTICS_ENABLED = false;
 const AUTO_DIAGNOSTIC_CRITICAL_EVENTS = new Set([
   "tts_stop_requested",
+  "tts_trace",
 ]);
 const YOUTUBE_FLOATING_PLAYER_MARGIN = 12;
 const YOUTUBE_PAUSE_CONFIRM_MS = 850;
@@ -1343,6 +1344,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     ttsLoading,
     stopWaveformPlayback,
     synthesizeSpeechStream,
+    logAuto,
   });
   const {
     setConversationMessagesWithLimit,
@@ -2707,6 +2709,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     attachTtsSoundStatusHandler,
     waitForPlaybackToFinish,
     markTtsPlaybackStopped,
+    logAuto,
   });
   clearPreloadedStreamAudioRef.current = clearPreloadedStreamAudio;
   const playTtsAudio = usePlayTtsAudioController({
@@ -2728,6 +2731,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     prepareTtsPlaybackSession,
     attachTtsSoundStatusHandler,
     markTtsPlaybackStopped,
+    logAuto,
   });
   const synthesizeSpeech = useSynthesizeSpeechController({
     reply,
@@ -2747,6 +2751,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setReplyDebug,
     reportError,
     playTtsAudio,
+    logAuto,
   });
   const processStreamAudioQueue = useProcessStreamAudioQueueController({
     streamAudioQueueProcessingRef,
@@ -2770,6 +2775,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     reportError,
     markTtsPlaybackStopped,
     clearStreamAudioQueue,
+    logAuto,
   });
   const enqueueStreamAudio = useEnqueueStreamAudioController({
     streamAudioQueueGenerationRef,
@@ -2785,6 +2791,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     processStreamAudioQueue,
     setReplyDebug,
     shouldProjectTtsDebugToActiveSession,
+    logAuto,
   });
   const synthesizeSpeechStreamFromController = useSynthesizeSpeechStreamController({
     reply,
@@ -2830,6 +2837,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     },
     setTtsDebugStats,
     syncTtsPlaybackWantedFromPipeline,
+    logAuto,
   });
   synthesizeSpeechStreamDelegateRef.current = synthesizeSpeechStreamFromController;
   const resolveSessionHistoryContext = useCallback((sessionId: unknown, backendId?: unknown) => (
@@ -3645,7 +3653,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     appStateChangedAtRef,
     appStateLastNonActiveAtRef,
     streamSocketRef,
-    streamTtsControlRef,
     replyLoadingRef,
     logAuto,
     logSessionDiag,
@@ -4073,14 +4080,17 @@ function AppContent({ onReady }: { onReady?: () => void }) {
 
   function recoverTtsStreamAfterResume(reason: string) {
     const ws = streamSocketRef.current;
+    logAuto("tts_trace", {
+      stage: "resume_stream_cleanup",
+      reason,
+      messageId: ttsPlaybackMessageIdRef.current,
+      runId: ttsPlaybackRunIdRef.current,
+      hadSocket: Boolean(ws),
+      queueSize: streamAudioQueueRef.current.length,
+    });
     if (ws) {
       ws.close();
       streamSocketRef.current = null;
-    }
-    const streamTtsControl = streamTtsControlRef.current;
-    if (streamTtsControl) {
-      streamTtsControl.cleanup();
-      streamTtsControlRef.current = null;
     }
     clearStreamAudioQueue();
     streamAudioWaveformBarsRef.current = [];
@@ -4092,7 +4102,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     logAuto("stream_tts_resume_recovered", {
       reason,
       hadSocket: Boolean(ws),
-      hadControl: Boolean(streamTtsControl),
       ttsPlaying: ttsPlayingRef.current,
       queuedAudio: streamAudioQueueRef.current.length,
     });

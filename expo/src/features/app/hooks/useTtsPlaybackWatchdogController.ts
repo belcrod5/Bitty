@@ -2,6 +2,7 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 import { Audio } from "../audio";
 import type { StreamAudioQueueItem, StreamTtsControlState } from "../types/appTypes";
 import { withPromiseTimeout } from "../utils/asyncTimeout";
+import { ttsDiagnosticError } from "../utils/appDiagnostics";
 
 type TtsUiStatus = "idle" | "queued" | "synthesizing" | "playing" | "error";
 
@@ -179,6 +180,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
             const now = Date.now();
             if (now - ttsPlaybackUnexpectedStopLogAtRef.current >= ttsPlaybackStatusLogThrottleMs) {
               ttsPlaybackUnexpectedStopLogAtRef.current = now;
+              logAuto("tts_trace", { stage: "watchdog_unloaded", runId });
               logAuto("tts_playback_unexpected_stop", {
                 runId,
                 source: "watchdog_unloaded",
@@ -245,6 +247,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
               durationMillis,
               hasPipelineContinuation,
             });
+            logAuto("tts_trace", { stage: "watchdog_finish_assumed", runId, positionMillis, durationMillis });
             if (hasPipelineContinuation) {
               markTtsChunkPlaybackFinishedRef.current();
             } else {
@@ -261,6 +264,15 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
           if (stallForMs < ttsPlaybackStallMs) return;
           if (now - ttsPlaybackRecoverAtRef.current < ttsPlaybackRecoverCooldownMs) return;
           ttsPlaybackRecoverAtRef.current = now;
+          logAuto("tts_trace", {
+            stage: "watchdog_stall",
+            runId,
+            stallForMs,
+            positionMillis,
+            durationMillis,
+            isBuffering,
+            shouldPlay,
+          });
           logAuto("tts_playback_watchdog_recover", {
             runId,
             stallForMs,
@@ -296,11 +308,12 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
               stallForMs,
               resumePosition,
             });
+            logAuto("tts_trace", { stage: "watchdog_recovered", runId, stallForMs, resumePosition });
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            logAuto("tts_trace", { stage: "watchdog_recover_error", runId, stallForMs, error: ttsDiagnosticError(error) });
             logAuto("tts_playback_watchdog_error", {
               runId,
-              message,
+              message: ttsDiagnosticError(error),
               stallForMs,
             });
             if (stallForMs < ttsPlaybackForceStopStallMs) return;
@@ -309,6 +322,7 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
               stallForMs,
               hasPipelineContinuation,
             });
+            logAuto("tts_trace", { stage: "watchdog_force_stop", runId, stallForMs, hasPipelineContinuation });
             if (hasPipelineContinuation) {
               markTtsChunkPlaybackFinishedRef.current();
             } else {
@@ -325,9 +339,10 @@ export function useTtsPlaybackWatchdogController(options: UseTtsPlaybackWatchdog
             return;
           }
           ttsPlaybackWatchdogErrorLogAtRef.current = now;
+          logAuto("tts_trace", { stage: "watchdog_status_error", runId, error: ttsDiagnosticError(error) });
           logAuto("tts_playback_watchdog_error", {
             runId,
-            message: error instanceof Error ? error.message : String(error),
+            message: ttsDiagnosticError(error),
           });
         })
         .finally(() => {
