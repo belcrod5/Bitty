@@ -6651,6 +6651,13 @@ const voiceContextService = createVoiceOrchestratorService({
   createClient: (options) => createCodexRpcClient(options),
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
+  onCompleted: (result, orchestratorName) => {
+    void broadcastVoiceUnreadState();
+    void turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
+      orchestratorName, logicalConversationId: result.logicalConversationId,
+      clientOperationId: result.clientOperationId, completedOrdinal: result.completedOrdinal,
+      text: result.text }).catch((error) => console.warn(`[push] voice completion notification failed: ${errorMessage(error)}`));
+  },
 });
 
 const codexAuthRuntime = createCodexAuthRuntime({
@@ -9268,16 +9275,6 @@ runnerWsServer.on("connection", (ws, req) => {
         operationId: result.clientOperationId, streamId: result.clientOperationId,
         payload: { ...result, ...(job ? { jobId: job.jobId } : {}) },
       });
-      if (result.status === "completed") {
-        void broadcastVoiceUnreadState();
-        void voiceContextService.list().then(({ orchestrators }) => {
-          const item = orchestrators.find((entry) => entry.id === result.orchestratorId);
-          return turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
-            orchestratorName: item?.name, logicalConversationId: result.logicalConversationId,
-            clientOperationId: result.clientOperationId, completedOrdinal: result.completedOrdinal,
-            text: result.text });
-        }).catch((error) => console.warn(`[push] voice completion notification failed: ${errorMessage(error)}`));
-      }
     }, onApproval, hooks).then((payload) => {
       const job = voiceJob || resolveRunnerWsTtsOperationJob(operationId);
       sendRunnerWsEnvelope(ws, {

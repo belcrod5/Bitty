@@ -28,7 +28,7 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId }) {
+export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId, onCompleted }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -335,7 +335,14 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         const { orchestratorId, ...payload } = message.payload;
         return withCounts(id, await service.start({ ...message, payload }, (result) => {
           reservations.delete(reservation);
-          void withCounts(id, { ...result, orchestratorId: id }).then(notify).catch(() => notify({ ...result, orchestratorId: id }));
+          const settled = { ...result, orchestratorId: id };
+          void withCounts(id, settled).catch(() => settled).then(notify)
+            .catch(() => console.warn("[voice] client completion delivery failed"));
+          if (result.status === "completed" && onCompleted) {
+            const name = registry.orchestrators.find((item) => item.id === id)?.name;
+            void Promise.resolve().then(() => onCompleted(settled, name))
+              .catch(() => console.warn("[voice] completion observer failed"));
+          }
         }, onApproval, { ...hooks, onAccepted: () => {
           operationOwners.set(operationId, id);
           reservations.add(reservation);

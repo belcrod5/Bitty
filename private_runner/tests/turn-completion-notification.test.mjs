@@ -66,6 +66,7 @@ test("voice completion pushes a logical orchestrator target with combined badge"
   assert.equal(harness.sends[0].payload.aps.badge, 5);
   assert.equal(harness.sends[0].payload.orchestratorId, "main");
   assert.equal(harness.sends[0].payload.sessionId, undefined);
+  assert.deepEqual(harness.logs, ["[push] voice completion push sent devices=1/1 orchestrator=main"]);
   await harness.notifier.notifyVoiceCompleted({ orchestratorId: "main", logicalConversationId: "logical-1",
     clientOperationId: "operation-1", completedOrdinal: 2, text: "finished" });
   assert.equal(harness.sends.length, 1);

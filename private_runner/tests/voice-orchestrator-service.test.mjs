@@ -71,7 +71,7 @@ async function fixture(t, options) {
   });
   return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir,
     createClient: codex.createClient, getAgentService: options?.getAgentService,
-    subjectId: "voice-owner" }) };
+    subjectId: "voice-owner", onCompleted: options?.onCompleted }) };
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -117,6 +117,33 @@ test("unread ordinals survive restart, cross-orchestrator pair gaps, and message
   assert.equal(await restarted.unreadState("main"), 0);
   assert.equal((await restarted.replyUnread("main", mainId, 2)).found, false);
   assert.equal(await restarted.unreadState(child.id), 1);
+});
+
+test("completed turns notify once even if client delivery fails or the operation is retried", async (t) => {
+  const completions = [];
+  const { service } = await fixture(t, { onCompleted: (result, name) => completions.push({ result, name }) });
+  const opened = await service.open("main");
+  const operationId = randomUUID();
+  const message = { operationId, payload: { orchestratorId: "main", backendId: "codex",
+    logicalConversationId: opened.logicalConversationId, clientOperationId: operationId,
+    input: { blocks: [{ type: "text", text: "one reply" }] } } };
+  let deliveries = 0;
+  await service.start(message, () => { deliveries += 1; throw new Error("client disconnected"); }, async () => "decline");
+  await waitFor(() => completions.length === 1 && deliveries === 1);
+  assert.equal(completions[0].result.status, "completed");
+  assert.equal(completions[0].result.completedOrdinal, 1);
+  assert.equal(completions[0].name, "メイン");
+  assert.equal((await service.start(message, () => { deliveries += 1; }, async () => "decline")).status, "completed");
+  assert.equal(completions.length, 1);
+  assert.equal(deliveries, 1);
+});
+
+test("completion observer failure does not interrupt client delivery or unread state", async (t) => {
+  const { service } = await fixture(t, { onCompleted: async () => { throw new Error("push unavailable"); } });
+  const conversationId = (await service.open("main")).logicalConversationId;
+  const completed = await turn(service, "main", conversationId, "one reply");
+  assert.equal((await completed.finished).status, "completed");
+  assert.equal(await service.unreadState("main"), 1);
 });
 
 test("unread count survives bounded history pruning and a lost count checkpoint", async (t) => {
@@ -347,7 +374,8 @@ async function scheduledFixture(t, voice, orchestratorId, rrule = null, onVoiceA
 }
 
 test("voice schedules use the named orchestrator history and settings after rename, and persist dispatch results", async (t) => {
-  const { service, codex } = await fixture(t);
+  const completions = [];
+  const { service, codex } = await fixture(t, { onCompleted: (result, name) => completions.push({ result, name }) });
   const item = await service.create("調査担当", "", "another-model", "high", "Research instruction");
   const opened = await service.open(item.id);
   const previous = await turn(service, item.id, opened.logicalConversationId, "previous request");
@@ -368,6 +396,12 @@ test("voice schedules use the named orchestrator history and settings after rena
   assert.equal(codex.calls.some((entry) => entry.method === "thread/inject_items"
     && JSON.stringify(entry.params.items).includes("previous request")), true);
   await waitFor(async () => (await service.history(item.id)).messages.some((message) => message.text === "reply:scheduled request"));
+  await waitFor(() => completions.length === 2);
+  assert.equal(completions[1].result.orchestratorId, item.id);
+  assert.equal(completions[1].result.logicalConversationId, opened.logicalConversationId);
+  assert.equal(completions[1].result.text, "reply:scheduled request");
+  assert.equal(completions[1].result.completedOrdinal, 2);
+  assert.equal(completions[1].name, "改名後");
   assert.equal((await service.history("main")).messages.length, 0);
   const reloaded = createCodexScheduleService(options);
   assert.deepEqual((await reloaded.snapshot()).schedules[0].lastDispatch, dispatch);
@@ -412,13 +446,15 @@ test("deleted voice schedule targets fail without falling back to main", async (
 });
 
 test("voice schedules fail when native startup fails instead of marking accepted work fired", async (t) => {
-  const { service } = await fixture(t, { failTurn: true });
+  const completions = [];
+  const { service } = await fixture(t, { failTurn: true, onCompleted: (result) => completions.push(result) });
   const { scheduler } = await scheduledFixture(t, service, "main");
   await scheduler.evaluate();
   const dispatch = (await scheduler.snapshot()).schedules[0].lastDispatch;
   assert.equal(dispatch.status, "failed");
   assert.equal(dispatch.errorCode, "backend_unavailable");
   assert.equal(dispatch.result, null);
+  assert.deepEqual(completions, []);
 });
 
 

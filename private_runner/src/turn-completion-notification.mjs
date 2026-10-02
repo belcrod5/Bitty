@@ -184,7 +184,10 @@ export function createTurnCompletionNotifier({
         orchestratorId, logicalConversationId, clientOperationId, completedOrdinal,
       } };
     }));
-    await sendNotifications(deliveries);
+    const sentCount = await sendNotifications(deliveries);
+    if (sentCount > 0) {
+      log.log?.(`[push] voice completion push sent devices=${sentCount}/${devices.length} orchestrator=${orchestratorId}`);
+    }
   }
 
   async function notifyTurnCompleted({
