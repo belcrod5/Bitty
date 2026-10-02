@@ -2,6 +2,7 @@ import * as Notifications from "expo-notifications";
 import {
   normalizeNotificationMetadata,
   TURN_COMPLETED_CATEGORY,
+  VOICE_COMPLETED_CATEGORY,
 } from "./pushApprovalNotifications";
 import {
   fetchSessionUnreadState,
@@ -56,6 +57,19 @@ export async function dismissReadSessionNotifications({
     const metadata = normalizeNotificationMetadata(notification.request);
     return (metadata.backendId || "codex") === backendId
       && metadata.sessionId === sessionId && metadata.directory === directory;
+  });
+}
+
+export async function dismissReadVoiceNotifications(orchestratorId: string,
+  logicalConversationId: string, completedOrdinal: number) {
+  return dismissPresentedNotifications("voice_read", (notification) => {
+    if (notification.request.content.categoryIdentifier !== VOICE_COMPLETED_CATEGORY) return false;
+    const metadata = normalizeNotificationMetadata(notification.request);
+    return metadata.orchestratorId === orchestratorId
+      && metadata.logicalConversationId === logicalConversationId
+      && Number.isSafeInteger(Number(metadata.completedOrdinal))
+      && Number(metadata.completedOrdinal) > 0
+      && Number(metadata.completedOrdinal) <= completedOrdinal;
   });
 }
 
@@ -152,6 +166,22 @@ export async function reconcileReceivedSessionNotification({
   directories: string[];
 }): Promise<UnreadSessionCountSnapshot | null> {
   const { backendId, sessionId, directory } = normalizeNotificationMetadata(notification.request);
+  if (notification.request.content.categoryIdentifier === VOICE_COMPLETED_CATEGORY) {
+    const { orchestratorId, logicalConversationId, completedOrdinal } = normalizeNotificationMetadata(notification.request);
+    const badgeSync = syncUnreadBadgeCount({ runnerUrl, runnerToken, directories });
+    try {
+      if (orchestratorId && logicalConversationId && Number.isSafeInteger(Number(completedOrdinal))) {
+        const response = await fetch(`${runnerUrl.replace(/\/$/, "")}/voice/unread-state`, {
+          method: "POST", headers: { authorization: `Bearer ${runnerToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ orchestratorId, logicalConversationId, completedOrdinal: Number(completedOrdinal) }),
+        });
+        if (response.ok && (await response.json()).unread === false) {
+          await Notifications.dismissNotificationAsync(notification.request.identifier);
+        }
+      }
+    } catch (error) { console.warn("[push] voice notification reconcile failed", notificationFailureReason(error)); }
+    return badgeSync;
+  }
   if (notification.request.content.categoryIdentifier !== TURN_COMPLETED_CATEGORY) return null;
   const badgeSync = syncUnreadBadgeCount({ runnerUrl, runnerToken, directories });
   const work: Promise<unknown>[] = [badgeSync];

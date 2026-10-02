@@ -2,6 +2,7 @@ import * as Notifications from "expo-notifications";
 import {
   dismissReadDirectoryNotifications,
   dismissReadSessionNotifications,
+  dismissReadVoiceNotifications,
   reconcileReceivedSessionNotification,
   reconcileReadDirectoryNotifications,
   syncUnreadBadgeCount,
@@ -19,6 +20,29 @@ const originalFetch = global.fetch;
 afterEach(() => {
   global.fetch = originalFetch;
   jest.clearAllMocks();
+});
+
+test("combined unread snapshot adds voice replies without changing directory counts", async () => {
+  global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ unreadCount: 5,
+    voiceUnreadCount: 2, directoryCounts: [{ directory: "/repo", unreadCount: 3 }] }) })) as unknown as typeof fetch;
+  await expect(fetchUnreadSessionCounts({ runnerUrl: "https://runner.example.com", runnerToken: "token",
+    directories: ["/repo"] })).resolves.toEqual({ unreadCount: 5, voiceUnreadCount: 2,
+    directoryCounts: [{ directory: "/repo", unreadCount: 3 }] });
+});
+
+test("reading a voice reply dismisses only that orchestrator's older notifications", async () => {
+  (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+    { request: { identifier: "read", content: { categoryIdentifier: "VOICE_COMPLETED",
+      data: { orchestratorId: "main", logicalConversationId: "logical", completedOrdinal: 2 } } } },
+    { request: { identifier: "later", content: { categoryIdentifier: "VOICE_COMPLETED",
+      data: { orchestratorId: "main", logicalConversationId: "logical", completedOrdinal: 4 } } } },
+    { request: { identifier: "other", content: { categoryIdentifier: "VOICE_COMPLETED",
+      data: { orchestratorId: "other", logicalConversationId: "logical", completedOrdinal: 1 } } } },
+  ]);
+  (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+  await dismissReadVoiceNotifications("main", "logical", 2);
+  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledTimes(1);
+  expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith("read");
 });
 
 test("dismisses only delivered TURN_COMPLETED notifications for committed sessions", async () => {

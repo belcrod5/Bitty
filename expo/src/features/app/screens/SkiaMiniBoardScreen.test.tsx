@@ -5,6 +5,7 @@ import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
+import { setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 
 const mockPersistViewport = jest.fn();
 const mockMarkViewportInteraction = jest.fn();
@@ -259,12 +260,28 @@ jest.mock("react-native-gesture-handler", () => {
 jest.mock("../contexts/AppShellContext", () => ({
   useAppShell: () => ({ activeScreen: "skia_board", openDrawer: jest.fn() }),
 }));
+const mockBoardVoiceHandlers = new Map<string, (message: { payload: unknown }) => void>();
+const mockBoardVoiceRequest = jest.fn(async () => ({ op: "voice.orchestrators.list.result", payload: {
+  orchestrators: [{ id: "main", name: "メイン", icon: "", unreadCount: 0 }], selectedId: "main",
+} }));
+const mockBoardVoiceManager = {
+  request: mockBoardVoiceRequest,
+  subscribe: ({ op }: { op: string }, handler: (message: { payload: unknown }) => void) => {
+    mockBoardVoiceHandlers.set(op, handler);
+    return () => { mockBoardVoiceHandlers.delete(op); };
+  },
+};
+jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
+  useRunnerWebSocketManager: () => mockBoardVoiceManager,
+  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1 }),
+}));
 jest.mock("./VoiceConversationScreen", () => ({
-  VoiceConversationScreen: ({ onClose }: { onClose: () => void }) => {
+  VoiceConversationScreen: ({ onClose, initialOrchestratorId }: { onClose: () => void; initialOrchestratorId?: string }) => {
     const ReactModule = require("react");
     const { TouchableOpacity } = require("react-native");
     return ReactModule.createElement(TouchableOpacity, {
       testID: "voice-conversation-screen",
+      accessibilityLabel: initialOrchestratorId,
       onPress: onClose,
     });
   },
@@ -397,6 +414,11 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  mockBoardVoiceHandlers.clear();
+  mockBoardVoiceRequest.mockReset();
+  mockBoardVoiceRequest.mockResolvedValue({ op: "voice.orchestrators.list.result", payload: {
+    orchestrators: [{ id: "main", name: "メイン", icon: "", unreadCount: 0 }], selectedId: "main",
+  } });
   (globalThis as Record<string, unknown>).__skiaBoardParagraphStyles = [];
   (globalThis as Record<string, unknown>).__skiaBoardRRectColors = [];
   (globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs = 0;
@@ -418,6 +440,30 @@ beforeEach(() => {
   mockMarkViewportInteraction.mockClear();
   mockSessions = [mockDefaultSession];
   mockSections = [];
+});
+
+test("mic badge uses latest canonical voice counts and a Push opens its orchestrator", async () => {
+  let resolveOld!: (value: unknown) => void;
+  mockBoardVoiceRequest.mockImplementationOnce(() => new Promise((resolve) => {
+    resolveOld = resolve as (value: unknown) => void;
+  }));
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={jest.fn()} voicePlayback={{
+      synthesizeSpeechStream: jest.fn(async () => undefined),
+      stopTtsPlayback: jest.fn(async () => undefined),
+      isTtsPlaybackActive: false, ttsUiStatus: "idle",
+    }} />);
+  await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "main", unreadCount: 1 }, { id: "other", unreadCount: 2 }],
+  } }));
+  expect(screen.getByTestId("skia-board-voice-unread")).toBeTruthy();
+  expect(screen.getByText("3")).toBeTruthy();
+  await act(async () => resolveOld({ op: "voice.orchestrators.list.result", payload: {
+    orchestrators: [{ id: "main", unreadCount: 1 }], selectedId: "main",
+  } }));
+  expect(screen.getByText("3")).toBeTruthy();
+  await act(async () => setPendingPushVoiceOrchestratorId("other"));
+  expect(screen.getByTestId("voice-conversation-screen").props.accessibilityLabel).toBe("other");
 });
 
 test("overlays voice input while keeping the board mounted", async () => {

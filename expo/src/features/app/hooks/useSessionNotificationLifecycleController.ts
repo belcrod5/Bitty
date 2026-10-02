@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
+import type { RunnerWsMessage, RunnerWsMessageFilter } from "../../runnerWs/types";
 import { parseOptionalSessionId } from "../utils/llmSession";
 import {
   dismissReadDirectoryNotifications,
@@ -26,6 +27,7 @@ type MarkSessionRead = (params: {
 type RunnerWsSnapshotSource = {
   getSnapshot: () => { connectionState: string };
   subscribeSnapshot: (handler: () => void) => () => void;
+  subscribe?: (filter: RunnerWsMessageFilter, handler: (message: RunnerWsMessage) => void) => () => void;
 };
 
 export function useSessionNotificationLifecycleController({
@@ -78,6 +80,12 @@ export function useSessionNotificationLifecycleController({
       return null;
     }
   }, [applyUnreadCountSnapshot, getRunnerHttpAuth, registeredDirectoryPaths]);
+
+  useEffect(() => {
+    return runnerWebSocketManager.subscribe?.({ channel: "agent", op: "voice.unread.changed" }, () => {
+      void syncUnreadState();
+    });
+  }, [runnerWebSocketManager, syncUnreadState]);
 
   useEffect(() => {
     const isConnected = () => runnerWebSocketManager.getSnapshot().connectionState === "ready";

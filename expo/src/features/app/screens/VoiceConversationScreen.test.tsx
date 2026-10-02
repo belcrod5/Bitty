@@ -30,6 +30,7 @@ const mockManager = { connect: jest.fn(async () => undefined), request: mockRequ
   subscribeSnapshot: () => () => undefined, getSnapshot: () => ({ connected: true }),
 };
 let mockManagerVisible = false;
+let mockGeneration = 1;
 const mockHookOrchestratorIds: string[] = [];
 const mockLogSessionDiag = jest.fn();
 const mockVoice = {
@@ -41,7 +42,7 @@ const mockVoice = {
   },
   error: "",
   contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
-  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string }[],
+  history: [] as { role: "user" | "assistant"; text: string; clientOperationId: string; at?: string; completedOrdinal?: number }[],
   historyError: "",
   refreshHistory: jest.fn(async () => undefined),
   setError: jest.fn(),
@@ -104,7 +105,7 @@ jest.mock("../hooks/useVoiceConversation", () => ({
 }));
 jest.mock("../../runnerWs/RunnerWebSocketContext", () => ({
   useRunnerWebSocketManager: () => mockManager,
-  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: 1 }),
+  useRunnerWebSocketSnapshot: () => ({ connected: true, generation: mockGeneration }),
 }));
 jest.mock("../components/VoiceOrchestratorManager", () => ({
   VoiceOrchestratorManager: ({ visible }: { visible: boolean }) => { mockManagerVisible = visible; return null; },
@@ -200,6 +201,7 @@ function ClosableVoiceScreen() {
 }
 
 beforeEach(() => {
+  AppState.currentState = "active";
   jest.clearAllMocks();
   mockLastSttOptions = null;
   mockFooterProps = null;
@@ -217,12 +219,57 @@ beforeEach(() => {
   mockBackdropOpacity.value = 0;
   mockReduceMotion = false;
   mockManagerVisible = false;
+  mockGeneration = 1;
   mockHookOrchestratorIds.length = 0;
   mockQuestionHandlers.clear();
 });
 afterEach(() => {
   Object.defineProperty(Platform, "OS", { configurable: true, value: initialPlatform });
   jest.restoreAllMocks();
+});
+
+test("notification target wins an in-flight list, opens history, and stays selected after reconnect", async () => {
+  let resolveList!: (value: unknown) => void;
+  mockRequest.mockImplementationOnce(() => new Promise((resolve) => {
+    resolveList = resolve as (value: unknown) => void;
+  }));
+  mockVoice.history = [{ role: "assistant", text: "visible reply", clientOperationId: "operation-1",
+    completedOrdinal: 1 }];
+  const screen = await testingRender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" />);
+  await waitFor(() => expect(mockQuestionHandlers.has("voice.unread.changed")).toBe(true));
+  await act(async () => mockQuestionHandlers.get("voice.unread.changed")?.({ channel: "agent",
+    op: "voice.unread.changed", payload: { orchestrators: [
+      { id: "main", name: "メイン", icon: "", unreadCount: 0 },
+      { id: "other", name: "調査", icon: "", unreadCount: 1 },
+    ], selectedId: "main" } }));
+  expect(screen.getByTestId("voice-conversation-history")).toBeTruthy();
+  expect(screen.getByTestId("voice-orchestrator-unread-other")).toBeTruthy();
+  expect(mockHookOrchestratorIds.at(-1)).toBe("other");
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
+    op: "voice.read", payload: expect.objectContaining({ orchestratorId: "other", completedOrdinal: 1 }),
+  })));
+  await act(async () => resolveList({ op: "voice.orchestrators.list.result", payload: {
+    orchestrators: [{ id: "main", name: "メイン", icon: "" }, { id: "other", name: "調査", icon: "" }],
+    selectedId: "main",
+  } }));
+  expect(mockHookOrchestratorIds.at(-1)).toBe("other");
+  await act(async () => fireEvent.press(screen.getByTestId("voice-orchestrator-main")));
+  expect(mockHookOrchestratorIds.at(-1)).toBe("main");
+  mockGeneration = 2;
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" />);
+  expect(mockHookOrchestratorIds.at(-1)).toBe("main");
+});
+
+test("inactive voice history does not mark a reply read", async () => {
+  AppState.currentState = "inactive";
+  mockVoice.history = [{ role: "assistant", text: "unseen reply", clientOperationId: "operation-1",
+    completedOrdinal: 1 }];
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
+    initialOrchestratorId="other" />);
+  expect(screen.getByTestId("voice-conversation-history")).toBeTruthy();
+  expect(mockRequest).not.toHaveBeenCalledWith(expect.objectContaining({ op: "voice.read" }));
 });
 
 test("the orchestrator renders the shared question form and submits its selected answer", async () => {

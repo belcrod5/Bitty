@@ -28,7 +28,7 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId }) {
+export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId, onCompleted }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -86,8 +86,9 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
     }
     registry = next;
   };
-  const publicList = () => ({ orchestrators: registry.orchestrators.map(({ id, name, icon }) => ({ id, name, icon })),
-    selectedId: registry.selectedId });
+  const publicList = async () => ({ orchestrators: await Promise.all(registry.orchestrators.map(async ({ id, name, icon }) =>
+    ({ id, name, icon, unreadCount: await (await loadedContext(id)).unread() }))),
+  selectedId: registry.selectedId });
 
   async function allEventPairs(mainPairs) {
     const all = [...mainPairs];
@@ -213,6 +214,15 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
 
   return {
     async list() { return exclusive(async () => { await load(); return publicList(); }); },
+    async unreadCount() { const { orchestrators } = await this.list();
+      return orchestrators.reduce((sum, item) => sum + item.unreadCount, 0); },
+    async unreadState(id) { return (await context(idOf(id))).unread(); },
+    async replyUnread(id, conversationId, completedOrdinal) {
+      return (await context(idOf(id))).replyUnread(conversationId, completedOrdinal);
+    },
+    async markRead(id, conversationId, completedOrdinal) {
+      return (await context(idOf(id))).markRead(conversationId, completedOrdinal);
+    },
     async select(id) {
       idOf(id);
       return exclusive(async () => {
@@ -238,7 +248,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         }
         await saveRegistry({ ...registry, orchestrators: [...registry.orchestrators, item] });
         contexts.set(item.id, service);
-        return { ...item, ...publicList() };
+        return { ...item, ...await publicList() };
       });
     },
     async update(id, changes) {
@@ -255,7 +265,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         }
         const orchestrators = registry.orchestrators.map((item) => item.id === id ? { id, name, icon } : item);
         await saveRegistry({ ...registry, orchestrators });
-        return { id, name, icon, ...publicList() };
+        return { id, name, icon, ...await publicList() };
       });
     },
     async remove(id) {
@@ -325,7 +335,14 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
         const { orchestratorId, ...payload } = message.payload;
         return withCounts(id, await service.start({ ...message, payload }, (result) => {
           reservations.delete(reservation);
-          void withCounts(id, { ...result, orchestratorId: id }).then(notify).catch(() => notify({ ...result, orchestratorId: id }));
+          const settled = { ...result, orchestratorId: id };
+          void withCounts(id, settled).catch(() => settled).then(notify)
+            .catch(() => console.warn("[voice] client completion delivery failed"));
+          if (result.status === "completed" && onCompleted) {
+            const name = registry.orchestrators.find((item) => item.id === id)?.name;
+            void Promise.resolve().then(() => onCompleted(settled, name))
+              .catch(() => console.warn("[voice] completion observer failed"));
+          }
         }, onApproval, { ...hooks, onAccepted: () => {
           operationOwners.set(operationId, id);
           reservations.add(reservation);

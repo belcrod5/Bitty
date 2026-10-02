@@ -2,6 +2,7 @@ let unreadCountSyncSequence = 0;
 
 export type UnreadSessionCountSnapshot = {
   unreadCount: number;
+  voiceUnreadCount?: number;
   directoryCounts: Array<{ directory: string; unreadCount: number }>;
 };
 
@@ -47,6 +48,10 @@ export async function fetchUnreadSessionCounts({
     throw new Error("Runnerから正しい未読件数が返されませんでした");
   }
   const rawDirectoryCounts = Array.isArray(data?.directoryCounts) ? data.directoryCounts : null;
+  const voiceUnreadCount = data?.voiceUnreadCount === undefined ? 0 : Number(data.voiceUnreadCount);
+  if (!Number.isInteger(voiceUnreadCount) || voiceUnreadCount < 0) {
+    throw new Error("Runnerから正しい音声会話未読件数が返されませんでした");
+  }
   if (!rawDirectoryCounts || rawDirectoryCounts.length > normalizedDirectories.length) {
     throw new Error("Runnerから正しいディレクトリ別未読件数が返されませんでした");
   }
@@ -61,10 +66,11 @@ export async function fetchUnreadSessionCounts({
     seenDirectories.add(directory);
     return { directory, unreadCount: count };
   });
-  if (directoryCounts.reduce((sum, item) => sum + item.unreadCount, 0) !== unreadCount) {
+  if (directoryCounts.reduce((sum, item) => sum + item.unreadCount, voiceUnreadCount) !== unreadCount) {
     throw new Error("Runnerの未読合計とディレクトリ別件数が一致しません");
   }
-  return { unreadCount, directoryCounts };
+  return { unreadCount, directoryCounts,
+    ...(data?.voiceUnreadCount === undefined ? {} : { voiceUnreadCount }) };
 }
 
 export async function syncUnreadSessionCounts(

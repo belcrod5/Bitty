@@ -85,7 +85,7 @@ export async function registerPushDevice({
 // completion is shown by the in-app notification card. Scheduled failures use
 // a system alert because they can occur before a conversation exists.
 export function resolveForegroundNotificationBehavior(categoryIdentifier?: string | null) {
-  const failed = categoryIdentifier === "SCHEDULE_FAILED";
+  const failed = categoryIdentifier === "SCHEDULE_FAILED" || categoryIdentifier === "VOICE_COMPLETED";
   return {
     shouldShowBanner: failed,
     shouldShowList: failed,

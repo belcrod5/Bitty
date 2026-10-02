@@ -83,6 +83,7 @@ import { useRunnerHttpAuthBootstrap } from "./hooks/useRunnerHttpAuthBootstrap";
 import { useSessionStartupRecoveryController } from "./hooks/useSessionStartupRecoveryController";
 import { useReadyDrivenResumeSyncController } from "./hooks/useReadyDrivenResumeSyncController";
 import { usePendingPushSessionNavigationController } from "./hooks/usePendingPushSessionNavigationController";
+import { getPendingPushVoiceOrchestratorId, subscribePendingPushVoiceOrchestratorId } from "./utils/pushApprovalNotifications";
 import { useSessionNotificationLifecycleController } from "./hooks/useSessionNotificationLifecycleController";
 import { useSessionSwitchQueuedSendController } from "./hooks/useSessionSwitchQueuedSendController";
 import { useSessionSwitchQuiesceController } from "./hooks/useSessionSwitchQuiesceController";
@@ -6083,6 +6084,13 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     closeDrawer,
     openSessionHistoryPopup,
   });
+  useEffect(() => {
+    const openVoiceBoard = () => {
+      if (getPendingPushVoiceOrchestratorId()) setActiveScreen("skia_board");
+    };
+    openVoiceBoard();
+    return subscribePendingPushVoiceOrchestratorId(openVoiceBoard);
+  }, [setActiveScreen]);
   const getDeepLinkSessionMessages = useCallback((sessionId: string) => (
     getConversationRuntimeSnapshot(sessionId)?.conversationMessages || []
   ), [getConversationRuntimeSnapshot]);

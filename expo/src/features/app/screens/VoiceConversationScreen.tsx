@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
-import { Platform, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
+import { AppState, Platform, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, runOnJS } from "react-native-reanimated";
 import { useStreamingStt } from "../../stt/useStreamingStt";
@@ -20,6 +20,7 @@ import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../run
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
+import { dismissReadVoiceNotifications } from "../utils/sessionReadNotifications";
 
 const voicePanelFadeIn = FadeIn.duration(220);
 const voicePanelFadeOut = FadeOut.duration(220);
@@ -37,44 +38,69 @@ export type VoiceConversationPlayback = {
   ttsSpeed?: number;
 };
 
-export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void }) {
+export function VoiceConversationScreen(props: VoiceConversationPlayback & { onClose: () => void; initialOrchestratorId?: string }) {
   const manager = useRunnerWebSocketManager();
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [list, setList] = useState<{ orchestrators: VoiceOrchestrator[]; selectedId: string } | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [revision, setRevision] = useState(0);
   const [managerOpen, setManagerOpen] = useState(false);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(Boolean(props.initialOrchestratorId));
+  const consumedInitialTargetRef = useRef("");
+  useEffect(() => { if (props.initialOrchestratorId) setHistoryExpanded(true); }, [props.initialOrchestratorId]);
   const [loadError, setLoadError] = useState("");
+  const listRevisionRef = useRef(0);
   const userInput = useVoiceUserInput(manager, managerOpen ? "" : selectedId);
+
+  const applyList = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }) => {
+    setList(value);
+    if (props.initialOrchestratorId && consumedInitialTargetRef.current !== props.initialOrchestratorId
+      && value.orchestrators.some((item) => item.id === props.initialOrchestratorId)) {
+      consumedInitialTargetRef.current = props.initialOrchestratorId;
+      setSelectedId(props.initialOrchestratorId);
+    } else {
+      setSelectedId((current) => value.orchestrators.some((item) => item.id === current)
+        ? current : value.selectedId);
+    }
+  }, [props.initialOrchestratorId]);
 
   useEffect(() => {
     let current = true;
+    const revision = listRevisionRef.current;
     void manager.connect().then(() => manager.request({ channel: "agent", op: "voice.orchestrators.list" }))
       .then((response) => {
-        if (!current) return;
+        if (!current || revision !== listRevisionRef.current) return;
         const value = response.payload as { orchestrators?: VoiceOrchestrator[]; selectedId?: string } | undefined;
         if (response.op !== "voice.orchestrators.list.result" || !Array.isArray(value?.orchestrators)
           || typeof value.selectedId !== "string" || !value.orchestrators.some((item) => item.id === value.selectedId)) {
           throw new Error("オーケストレータを読み込めません。");
         }
-        setList({ orchestrators: value.orchestrators, selectedId: value.selectedId });
-        setSelectedId(value.selectedId);
+        applyList({ orchestrators: value.orchestrators, selectedId: value.selectedId });
         setLoadError("");
       }).catch((cause) => { if (current) setLoadError(cause instanceof Error ? cause.message : "接続できません。"); });
     return () => { current = false; };
-  }, [connected, generation, manager]);
+  }, [applyList, connected, generation, manager]);
+
+  useEffect(() => manager.subscribe({ channel: "agent", op: "voice.unread.changed" }, (message) => {
+    const value = message.payload as { orchestrators?: VoiceOrchestrator[]; selectedId?: string } | undefined;
+    if (Array.isArray(value?.orchestrators) && typeof value.selectedId === "string") {
+      listRevisionRef.current += 1;
+      applyList({ orchestrators: value.orchestrators, selectedId: value.selectedId });
+    }
+  }), [applyList, manager]);
 
   const select = useCallback(async (id: string) => {
     const response = await manager.request({ channel: "agent", op: "voice.orchestrators.select",
       payload: { orchestratorId: id } });
     if (response.op !== "voice.orchestrators.select.result") throw new Error("切り替えられません。");
     const value = response.payload as { orchestrators: VoiceOrchestrator[]; selectedId: string };
+    listRevisionRef.current += 1;
     setList(value);
     setSelectedId(value.selectedId);
   }, [manager]);
 
   const listChanged = useCallback((value: { orchestrators: VoiceOrchestrator[]; selectedId: string }) => {
+    listRevisionRef.current += 1;
     setList(value);
     setSelectedId(value.selectedId);
   }, []);
@@ -135,6 +161,7 @@ function VoiceConversationSession({
   const [synthesisStarting, setSynthesisStarting] = useState(false);
   const [synthesisRequestSettled, setSynthesisRequestSettled] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
   const [statusAnimation, setStatusAnimation] = useState<{ status?: "responding" | "speaking"; frame: number }>({ frame: 0 });
   const footerRef = useRef<StreamingSttFooterHandle>(null);
   const historyScrollRef = useRef<ScrollView>(null);
@@ -165,9 +192,30 @@ function VoiceConversationSession({
       : undefined,
     orchestrator.id,
   );
+  const manager = useRunnerWebSocketManager();
   useEffect(() => {
-    if (historyExpanded && voice.ready) void voice.refreshHistory();
-  }, [historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
+    const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
+    return () => subscription.remove();
+  }, []);
+  useEffect(() => manager.subscribe({ channel: "agent", op: "voice.unread.changed" }, (message) => {
+    if (historyExpanded && appActive && !paused && (message.payload as { orchestrators?: VoiceOrchestrator[] })
+      ?.orchestrators?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
+  }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
+  useEffect(() => {
+    if (historyExpanded && appActive && voice.ready) void voice.refreshHistory();
+  }, [appActive, historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
+  useEffect(() => {
+    if (!historyExpanded || !appActive || paused || !voice.ready) return;
+    const ordinal = voice.history.reduce((max, message) => Math.max(max, message.completedOrdinal || 0), 0);
+    if (!ordinal) return;
+    void manager.request({ channel: "agent", op: "voice.read", payload: {
+      orchestratorId: orchestrator.id, logicalConversationId: voice.logicalConversationId,
+      completedOrdinal: ordinal,
+    } }).then((response) => {
+      if (response.op === "voice.read.result") void dismissReadVoiceNotifications(
+        orchestrator.id, voice.logicalConversationId, ordinal).catch(() => undefined);
+    }).catch(() => undefined);
+  }, [appActive, historyExpanded, manager, orchestrator.id, paused, voice.history, voice.logicalConversationId, voice.ready]);
   useEffect(() => {
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
