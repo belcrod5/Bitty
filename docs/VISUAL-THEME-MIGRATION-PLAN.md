@@ -308,7 +308,7 @@ appStylesByTheme[themeId]
 1. 設定、ドロワー、アプリシェル
 2. チャット、Markdown、Mermaid、接続/進捗表示
 3. Git差分、ファイル、チェックリスト、メディア、各モーダル
-4. Codexスケジュール、位置スケジュール、Tunnel画面
+4. Codexスケジュール、Tunnel画面
 5. SkiaボードのアプリUI部分
 
 各コンポーネントでは、静的な位置・レイアウトとテーマ値を同じローカルスタイル定義内に保つ。テーマのためだけに薄いラッパーコンポーネントを作らない。
@@ -392,7 +392,7 @@ appStylesByTheme[themeId]
 | T1-B | 設定・ドロワー・シェル | `styles/appCommonStyles.ts`、`styles/menuScreenStyles.ts`、`styles/settingsControlStyles.ts`、`styles/settingsScreenStyles.ts`、`components/AppDrawer*`、`components/AppScreenContent*`、`screens/SettingsScreen*`、`components/SettingsSelect.tsx`、`components/OptionSelectField.tsx`、`components/CodexAccountSettings*`、`components/CodexStatusSummaryMenu*`、`components/ConnectionSettings.tsx`、`components/SpeechSettings.tsx` | T0完了後 |
 | T1-C | Git・ファイル・メディア | `styles/mediaModalStyles.ts`、`components/Git*`、`components/RunnerFile*`、`components/RunnerMediaViewer.tsx`、`components/ChecklistFileViewer*`、`components/WorkspaceTextFileEditor*`、`components/WorkspaceFileRenameDialog.tsx`、`components/ModalTextInputDraft*` | T0完了後 |
 | T2-A | Skiaボード | `screens/SkiaMiniBoardScreen*`、`components/SkiaBoard*`、`contexts/SkiaBoardContext.tsx`、`hooks/useSkiaBoard*`、`hooks/useSkiaMiniChatSessions*`、`utils/skiaBoard*`の色用途を読取監査 | T1統合後 |
-| T2-B | 補助画面・スケジュール・音声 | `styles/audioControlStyles.ts`、`screens/CloudflareTunnelMonitorScreen.tsx`、`screens/RouteDebugPanel.tsx`、`expo/src/features/codexSchedules/**/*.tsx`、`expo/src/features/locationSchedules/**/*.tsx`、`components/YouTubeVideoList.tsx`、`components/TtsWaveformPlayer.tsx`、`components/CalendarWriteApprovalModal*`、`utils/youtube.ts` | T1統合後 |
+| T2-B | 補助画面・スケジュール・音声 | `styles/audioControlStyles.ts`、`screens/CloudflareTunnelMonitorScreen.tsx`、`screens/RouteDebugPanel.tsx`、`expo/src/features/codexSchedules/**/*.tsx`、`components/YouTubeVideoList.tsx`、`components/TtsWaveformPlayer.tsx`、`components/CalendarWriteApprovalModal*`、`utils/youtube.ts` | T1統合後 |
 | T2-C | オーバーレイ・残存UI監査 | `components/AppOverlays.tsx`、`components/AppModal*`、`components/PopupChatOverlay.tsx`、`components/DrawerSessionPopupHost*`、`components/LlmCompletionNotifications*`、`components/BouncingDotsIndicator.tsx`、`components/CircularProgressRing.tsx`、`components/PixelRobotIndicator.tsx`、および未割当UIの固定色を読取監査 | T1統合後 |
 | T3 | 永続化・全体統合（主担当） | 主担当専有ファイル、各担当から申請されたtoken、設定UI、全体回帰 | T2統合後 |
 

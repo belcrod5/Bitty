@@ -181,7 +181,7 @@ node --test private_runner/tests/codex-relay-approval-replay.test.mjs private_ru
 
 PR #163のコードをサブエージェントが独立レビューし、4ファイルのRunnerテスト187件も再実行して成功。上流の質問要求処理・期限管理と、実際の二経路でフォーム・表示制御・回答検証を共有する構造は妥当と評価された。
 
-P2の指摘1件: 共通の`startCodexTurn`で質問を無条件に有効化しており、質問の回答を処理しない位置スケジュール・旧queued turnにも適用されていた。既存handlerはdynamic tool用の応答形を返すため、質問を正しい空回答として処理できない。
+P2の指摘1件: 共通の`startCodexTurn`で質問を無条件に有効化しており、質問の回答を処理しない旧queued turnにも適用されていた。既存handlerはdynamic tool用の応答形を返すため、質問を正しい空回答として処理できない。
 
 有効化を質問対応のBackendからのみ明示するよう修正。共通開始関数の内部引数`enableUserInput`は既定falseとし、同じ`threadConfig`を新規・再開で使う。カレンダーscheduleでも明示falseを残し、後続スプレッドによるconfig上書きを削除した。非対応経路の下流handlerやUIへ質問処理を追加せず、ツールを公開する上流境界で適用範囲を揃えた。
 

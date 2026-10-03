@@ -1,6 +1,6 @@
 import {
   CALENDAR_DYNAMIC_TOOLS_NAMESPACE,
-  calendarScheduleRequestId,
+  calendarToolRequestId,
 } from "./calendar-tool-service.mjs";
 
 export function createCalendarRelayService({
@@ -112,7 +112,7 @@ export function createCalendarRelayService({
     const turnId = String(payload?.params?.turnId || owner.turnId || "");
     const request = {
       id: payload.id,
-      requestId: calendarScheduleRequestId([
+      requestId: calendarToolRequestId([
         String(payload?.params?.threadId || owner.threadId || ""),
         turnId,
         String(payload?.params?.callId || ""),

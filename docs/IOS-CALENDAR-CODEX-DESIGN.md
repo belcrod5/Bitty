@@ -1,20 +1,15 @@
 # CodexからiOSカレンダーを読み書きする実装設計
 
-状態: 第3回レビュー反映済み・実装着手可能（互換性方針更新）
+状態: 通常会話のカレンダー機能を記録。位置・時間ルール連携は廃止済み
 対象: Bitty iOSアプリ、private runner、Codex app-server
 更新日: 2026-07-26
 
 ## 1. 結論
 
-初回実装は次の範囲に絞る。
+対象は次の範囲に絞る。
 
 - アプリを開いている通常会話では、予定の読み取り・作成・更新・削除を行える。
 - 作成・更新・削除は、毎回アプリ内で内容を確認してから実行する。
-- GPS・時間ルールでは、明示的に許可したルールだけが予定を読み取れる。
-- GPS・時間ルールからの読み取りはバックグラウンドで試行するが、iOSの制約上、
-  成功は保証しない。
-- GPS・時間ルールでは、予定の作成・更新・削除ツールをCodexへ渡さない。
-- GPS・時間ルール用のカレンダー端末は、初回実装では1台に固定する。
 
 バックグラウンド書き込み、複数端末の自動選択、カレンダーデータの同期DBは作らない。
 これにより、書き込み承認キュー、複数端末間の競合、重複書き込み復旧を初回実装から
@@ -30,7 +25,6 @@
 - 最大31日間の予定検索。
 - 予定1件の詳細取得。
 - 通常会話からの単発予定の作成・更新・削除。
-- GPS・時間ルールからの予定読み取り。
 - 権限拒否、端末不在、通信断、読み取り専用カレンダーの明示的なエラー。
 
 ### 対応しない
@@ -43,7 +37,6 @@
 - バックグラウンドでの予定作成・更新・削除。
 - 複数iPhoneからのカレンダー選択。
 - Runnerへのカレンダー内容の恒久保存。
-- サイレントPushの配信保証。
 
 繰り返し予定は読み取れる。更新・削除しようとした場合は
 `recurring_event_write_unsupported`で拒否し、iOSカレンダーアプリでの編集を案内する。
@@ -84,26 +77,6 @@ EventKitへ到達させず、読み取りは`device_unavailable`、書き込み�
 turn ownerのExpo接続が切れた場合、Runnerは保留中の読み取りへ
 `device_unavailable`、保留中の書き込みへ`result_unknown`を返してtool callを終端する。
 tool call/resultは再送ログへ入れず、再接続後に再配送もしない。
-
-### 3.2 GPS・時間ルール
-
-```text
-位置状態 → Expo → Runner scheduler
-                         ↓ 条件成立
-                      Codex
-                         ↓ 読み取りtoolのみ
-                      Runner
-                         ↓ 保留 + サイレントPush
-                       Expo
-                         ↓ expo-calendar
-                       Runner → Codex
-```
-
-Runnerを時刻判定の権威とする既存設計は変更しない。バックグラウンド処理は時刻を
-判定せず、Runnerが作成済みの読み取り要求を処理するだけにする。
-
-サイレントPushが届かない、アプリが明示終了されている、Background App Refreshが
-無効、端末がオフラインの場合は`device_unavailable`で安全に失敗する。
 
 ## 4. Codex app-serverとの契約
 
@@ -254,7 +227,7 @@ type CalendarCancelControl = {
 
 ## 5. 公開するカレンダーツール
 
-通常会話では6ツール、GPS・時間ルールでは最初の3ツールだけを登録する。
+通常会話では6ツールを登録する。
 
 ### 5.1 `calendar_list_calendars`
 
@@ -486,9 +459,7 @@ type CalendarDeleteResult = {
 - iOS 17以降: `NSCalendarsFullAccessUsageDescription`。
 - iOS 15、16: `NSCalendarsUsageDescription`。
 - 通常会話では、初めてカレンダーtoolを実行した時だけ権限を要求する。
-- GPS・時間ルールでは、「カレンダーを参照する」を有効にした時だけ権限を要求する。
 - 権限ダイアログは前面表示中にだけ出す。
-- バックグラウンド処理中は権限を要求しない。
 - 拒否時は設定アプリへの案内を表示する。
 - `expo-calendar`でfull accessとwrite-onlyを区別できない版では、
   `calendar_permission_denied`へ統一する。
@@ -496,14 +467,6 @@ type CalendarDeleteResult = {
 通常会話用の設定項目は追加しない。権限未決定ならforeground tool handlerが
 OS権限を要求し、拒否済みなら`calendar_permission_denied`を返す。書き込みは確認完了後と
 EventKit直前にも`AppState === "active"`を確認する。
-
-GPS・時間設定には次を追加する。
-
-- カレンダー端末として登録されているiPhone名または「このiPhone」。
-- 各ルールの「カレンダーを参照する」ON/OFF。
-
-既存ルールはすべて`calendarAccess: "none"`として読み込む。更新後にユーザーが
-明示的にONへ変更したルールだけ`"read"`にする。
 
 ## 8. 書き込み確認と重複防止
 
@@ -570,151 +533,7 @@ modalを閉じた後の承認callbackを無効化する。
 `result_unknown`を即時応答する。abort後にEventKitが完了してもledgerだけを更新し、
 wireへ結果を送らない。
 
-## 9. バックグラウンド読み取り
-
-バックグラウンド対象は読み取り3ツールだけである。Runnerは接続状態にかかわらず
-要求をメモリ上に最大60秒保留し、対象端末へ内容を含まない
-`calendar_request_available`サイレントPushを送る。初回実装では、GPS・時間ルール用に
-別のWebSocket配送経路を追加しない。
-
-Expoの通知Taskは次の順で動く。
-
-1. Pushのmarkerだけを判定する。
-2. SecureStoreから`deviceId`とRunner認証情報を読む。
-3. 認証付きHTTPで自端末の保留要求を最大3件取得する。
-4. 各要求の直前にruleの`calendarAccess: "read"`、対象device ID、期限を確認する。
-5. カレンダー権限が既にある場合だけ読み取る。バックグラウンドでは要求しない。
-6. EventKit完了後とPOST直前に、rule ID/revision/access、device ID、期限を
-   もう一度読み直す。1つでも変わっていれば結果を送らない。
-7. 全体18秒のdeadline内で結果を返し、残りは処理しない。
-
-GETとPOSTは各5秒でAbortControllerにより中断する。EventKit読み取りは1要求8秒の
-logical timeoutを設け、timeout後の結果をPOSTしない。残り時間が5秒未満なら新しい
-要求を開始しない。これによりiOSの終了猶予を使い切らない。
-
-API:
-
-```text
-GET  /calendar/requests?deviceId=<stable-device-id>
-POST /calendar/requests/<requestId>/result
-```
-
-GETの応答:
-
-```ts
-type PendingCalendarReadRequest = {
-  requestId: string;
-  requestHash: string;
-  ruleId: string;
-  ruleRevision: string;
-  tool:
-    | "calendar_list_calendars"
-    | "calendar_search_events"
-    | "calendar_get_event";
-  arguments: unknown;
-  expiresAt: string;
-};
-
-type CalendarRequestsResponse = {
-  requests: PendingCalendarReadRequest[];
-};
-```
-
-POSTのbody:
-
-```ts
-type CalendarResultBody = {
-  deviceId: string;
-  requestHash: string;
-  result: CalendarToolResult<
-    CalendarListResult | CalendarSearchResult | CalendarGetResult
-  >;
-};
-```
-
-結果POSTには`deviceId`、`requestHash`、構造化結果を含める。Runnerは対象端末、
-期限、request hash、未完了状態が一致した場合だけ受理する。
-Expoは`ruleId`と`ruleRevision`が現在保存されている有効ruleと一致し、
-`calendarAccess: "read"`かつ自端末IDである場合だけEventKitへ進む。
-
-通知Taskは有効な位置・時間ルールがある間だけ登録する。calendar markerは現在のruleが
-`calendarAccess: "read"`でなければEventKitへ進まない。登録解除失敗やRunner上の古い
-要求を認可境界にしない。
-
-APNs payloadには予定名、日時、メモ、場所、tool引数を含めない。Pushは
-`content-available: 1`、background push、priority 5で送る。
-
-サイレントPushはヒントでありジョブキューではない。届かなければ失敗で終了し、
-同じCodexターンを自動再実行しない。
-
-`expo/index.ts`はnotification task定義を最初にimportするが、
-`bootstrapLocationSchedules()`をmodule top-levelで呼ばない。通常起動時のApp側effectへ
-移し、`AppState === "active"`のときだけ呼ぶ。headless notification起動でRunner同期、
-位置権限、task再調整が並行実行される副作用をなくす。
-
-## 10. GPS・時間ルールの安全境界
-
-`LocationScheduleRule`へ次を追加する。
-
-```ts
-type CalendarAccess = "none" | "read";
-
-type CalendarRuleFields = {
-  calendarAccess: CalendarAccess;
-  calendarDeviceId: string | null;
-};
-```
-
-`calendarAccess: "read"`のルールは次の条件でCodexを開始する。
-
-- Runnerへ最後に同期されたruleが有効で`calendarAccess: "read"`。
-- `experimentalApi: true`。
-- `dynamicTools`は`calendar` namespace内のlist、search、getだけで、すべて
-  `deferLoading: true`。
-- `approvalPolicy: "never"`。
-- `turn/start.sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" }`。
-- external sandbox workerはhost filesystemをmountせず、空のread-only filesystemと
-  scrub済み環境変数だけをtool processへ渡す。Runner/Codex認証情報を渡さない。
-- calendar付きscheduleは必須の`CALENDAR_CODEX_WS_UPSTREAM_URL`だけへ接続し、既存の
-  共有`CODEX_WS_PROXY_UPSTREAM_URL`へrouteまたはfallbackしない。
-- 認証付き`CALENDAR_CODEX_CAPABILITY_URL`が`calendar-read-v1`、host mountなし、
-  inherited envなし、tool networkなしを返すことを起動前に確認する。
-- `thread/start.config`で`web_search: "disabled"`、appsとagentsを無効化する。
-- `config/read`と`plugin/list`後、有効pluginごとに`plugin/read`して全MCPを無効化する。
-  thread作成後・turn開始前の`mcpServerStatus/list(threadId)`が0件でなければ失敗する。
-- 専用URL未設定、capability不一致、接続失敗ならturnを開始せず`calendar_api_failed`。
-
-予定のタイトル、場所、メモは命令ではなく外部データであることをdynamic toolの説明と
-developer instructionの両方へ明記する。カレンダー内容を読んだことを根拠に、
-コマンド実行、ファイル変更、ネットワーク送信、カレンダー書き込みを指示しない。
-組み込みshellが存在しても、host file・host環境変数・networkへ到達できないことを
-外部sandboxの合格条件にする。
-
-カレンダー参照をONにすると、そのルールは隔離external sandboxで動くことを設定画面に
-表示する。既存ルールの動作を黙って変えない。
-
-RunnerはExpoの`bitty-settings.json`を直接読まない。Runner側のruleが古くても、
-Expoのbackground handlerが現在のrule ID/revision/access/device IDを再確認する。
-Runnerの開始判定は無駄なturnを減らす条件、Expoのlive gateはEventKitの最終認可境界とする。
-
-## 11. 端末の扱い
-
-Expoが既に生成している`bitty.pushDeviceId.v2`をカレンダー端末IDにも使う。
-ルール保存時に、その端末IDを`calendarDeviceId`へ入れる。
-
-初回実装では次に固定する。
-
-- 通常会話は`turn/start`を送ったExpo接続だけが処理する。
-- GPS・時間ルールは保存時の`calendarDeviceId`だけが処理する。
-- 別端末へのフォールバックはしない。
-- `calendarAccess: "read"`を持つ全ルールは、同じ`calendarDeviceId`でなければならない。
-- 別iPhoneへ切り替える場合は、既存ルールのカレンダー参照をすべてOFFにしてから
-  新しい端末でONにする。
-
-既存のRunner Bearer tokenは共有資格情報なので、device IDは端末の取り違え防止で
-あり、強い端末認証ではない。複数端末対応時は端末別secretを別設計する。
-
-## 12. Expo側の実装修正
+## 9. Expo側の実装修正
 
 ### 依存関係とネイティブ設定
 
@@ -756,39 +575,17 @@ tool境界という別責任があるため分ける。それ以外の汎用repo
 | `expo/src/features/app/hooks/useCalendarWriteRequestController.ts` | 書き込み確認の待機、承認、背景遷移時の拒否 |
 | `expo/src/features/app/components/CalendarWriteApprovalModal.tsx` | カレンダー専用の確認画面 |
 | `expo/src/features/app/components/AppOverlays.tsx` | 上記モーダルを既存overlayへ接続 |
-| `expo/src/features/app/AppRoot.tsx` | controllerとturn callbackの接続、通常起動時のlocation bootstrapを追加 |
-| `expo/src/features/locationSchedules/locationScheduleRules.ts` | `calendarAccess`と`calendarDeviceId`、revision計算を追加 |
-| `expo/src/features/locationSchedules/LocationScheduleSettings.tsx` | 明示的な読み取りON/OFFとforeground権限要求を追加 |
-| `expo/src/features/locationSchedules/locationScheduleRuntime.ts` | 通知Task定義を共通routerへ移す |
-| `expo/src/features/app/utils/pushNotifications.ts` | calendar requestの取得・結果送信を追加 |
-| `expo/index.ts` | task定義を先にimportし、module top-levelのlocation bootstrapを削除 |
+| `expo/src/features/app/AppRoot.tsx` | controllerとturn callbackを接続 |
 
-通知Taskは`expo/src/features/app/utils/backgroundNotificationTask.ts`へ1つだけ定義し、
-`location_state_refresh`と`calendar_request_available`をmarkerで分岐する。
-有効な位置・時間ルールがある間だけTask登録を維持する。
-
-## 13. Runner側の実装修正
-
-### 新規ファイル
-
-| ファイル | 責任 |
-| --- | --- |
-| `private_runner/src/calendar-tool-service.mjs` | 読み取りtool schema、保留Map、Push、期限、結果検証 |
-| `private_runner/tests/calendar-tool-service.test.mjs` | 配送・期限・端末不一致・重複結果のテスト |
-
-保留Mapは読み取り要求だけなので永続化しない。Runner再起動後に元のapp-server callへ
-応答できないため、復元可能に見せる永続キューを作らない。
+## 10. Runner側の実装修正
 
 ### 既存ファイル
 
 | ファイル | 修正 |
 | --- | --- |
-| `private_runner/src/codex-turn-execution.mjs` | `dynamicTools`、external sandbox、MCP/plugin preflight、server request handler、型付きIDを扱う |
-| `private_runner/src/location-schedule-service.mjs` | ruleのcalendar項目を検証し、external sandbox条件でCodexを起動 |
-| `private_runner/src/server-runtime.mjs` | 専用upstream/capability必須化、calendar service、HTTP、対象端末Pushを接続 |
-| `private_runner/src/push-device-store.mjs` | device ID指定取得を追加。汎用選択ロジックは追加しない |
+| `private_runner/src/codex-turn-execution.mjs` | 会話用`dynamicTools`の事前確認と型付きIDを扱う |
+| `private_runner/src/server-runtime.mjs` | カレンダーtoolを会話relayへ接続 |
 | `private_runner/tests/codex-turn-execution.test.mjs` | experimental初期化、dynamicTools、server responseを追加 |
-| `private_runner/tests/location-schedule-service.test.mjs` | 既存ruleのnone移行、external sandbox起動を追加 |
 | `private_runner/tests/runner-ws-multiplex.test.mjs` | tool callがturn ownerだけへ届くことを追加 |
 
 `createCodexRpcClient`は、`method`と`id`の両方を持つmessageをnotificationとして
@@ -822,7 +619,7 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 既に1万行を超えている`server-runtime.mjs`へカレンダー業務ロジックを追加しない。
 同ファイルにはrouteとservice接続だけを置く。
 
-## 14. エラー契約
+## 11. エラー契約
 
 固定コード:
 
@@ -849,23 +646,21 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 
 0件と取得失敗を区別する。内部例外、予定内容、認証情報をエラーメッセージへ含めない。
 
-## 15. ログとプライバシー
+## 12. ログとプライバシー
 
 - カレンダー名、予定名、日時、場所、メモ、tool引数、tool結果をログへ出さない。
 - ログへ出せるのはrequest IDの先頭、tool名、件数、状態、所要時間だけ。
 - Runnerのdebug log、relay event log、例外の`head`へカレンダー本文を入れない。
-- APNsにはmarkerだけを入れる。
-- Runnerはバックグラウンド要求を最大60秒だけメモリ保持する。
 - Expoの書き込みledgerには要求と結果を必要最小限だけ保存する。
 - カレンダーの読み取り結果はCodexのスレッド履歴へ入ることを設定画面で説明する。
 - 予定内の文字列はすべて非信頼データとして扱う。
 
-## 16. 実装順
+## 13. 実装順
 
 ### Phase 1: Expo単体
 
 1. `expo-calendar`、用途説明、ネイティブpatchを導入する。
-2. 初回利用時のforeground権限要求とbackground非要求を実装する。
+2. 初回利用時のforeground権限要求を実装する。
 3. list、search、繰り返し発生回を含むgetと日時正規化を実装する。
 4. write ledger、create、update、deleteを実装する。
 5. Expo単体テストとiOS Release buildのログ検査を行う。
@@ -882,24 +677,12 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 
 完了条件: 「今日の予定は？」と、確認付きの作成・更新・削除が前面表示で動く。
 
-### Phase 3: GPS・時間ルール
-
-1. ruleへ明示的な`calendarAccess`と端末IDを追加する。
-2. Runner-started app-server clientをserver request対応にする。
-3. 読み取りtool、external sandbox、保留Map、HTTP、Pushを接続する。
-4. headless起動から通常bootstrapの副作用を除く。
-5. 実機で前面、背景、明示終了、通信断を確認する。
-
-完了条件: 条件成立時に、端末を起動できた場合だけ予定を参照して回答できる。
-
-各Phaseを独立して完了させる。Phase 2が安定するまでPhase 3へ進まない。
-
-## 17. テスト
+## 14. テスト
 
 ### 自動テスト
 
 - 権限未決定、許可、拒否。
-- 初回foreground tool callで権限を要求し、backgroundでは要求しないこと。
+- 初回foreground tool callで権限を要求すること。
 - handlerを持つ新規threadへ常に6ツールを登録し、既存threadへ後付けしないこと。
 - 31日、100件、128 KiBの境界。
 - 先頭1件が128 KiBへ入らない場合に空配列と`truncated: true`になること。
@@ -940,17 +723,8 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 - cancel controlがowner tupleと型付きRPC IDに一致する要求だけをabortすること。
 - `executing`中timeoutは即時`result_unknown`となり、遅いEventKit結果を送信しないこと。
 - compact queued turnの全calendar toolが固定失敗になり、turnが停止しないこと。
-- 既存GPS・時間ruleが`calendarAccess: "none"`になること。
-- calendar ruleが隔離external sandboxかつ読み取り3ツールだけであること。
-- schedule turnのexternal sandboxからhost file、host環境変数、networkへ到達できず、
   web/apps/MCP/plugin MCP/agentsがないこと。専用URL・能力確認失敗時は起動せず、
   共有upstreamへfallbackしないこと。
-- 端末不一致、期限切れ、Runner再起動、壊れた結果の拒否。
-- ruleのcalendar accessが`none`ならGET/EventKitを呼ばないこと。
-- 有効な位置・時間ルールがない時だけ共通Taskを解除すること。
-- headless通知起動でlocation bootstrapが走らないこと。
-- GET/POST/全体deadline超過時に安全に打ち切ること。
-- EventKit完了後またはPOST直前のrule変更/device変更で結果を送らないこと。
 - ログ、APNs、relay event logへカレンダー内容が出ないこと。
 - calendar dynamic toolの`item/started`と`item/completed`もevent logへ入らないこと。
 - 上記2通知がowner以外へlive broadcastされないこと。
@@ -960,8 +734,7 @@ event log除外は`item/tool/call`要求だけでなく、calendar dynamic tool�
 
 - iOS 15または16とiOS 17以降での権限表示、iCloudとGoogleカレンダーの読み取り。
 - 前面での作成・更新・削除、終日予定とDSTをまたぐ予定。
-- Release buildで予定日時がconsoleへ出ず、背景サイレントPushから読み取れること。
-- アプリ終了、Background App Refresh無効、rule変更後の古いPushで安全に失敗すること。
+- Release buildで予定日時がconsoleへ出ないこと。
 
 Expo GoとSimulatorだけを合格条件にしない。
 
@@ -974,28 +747,23 @@ npx expo prebuild --platform ios --clean
 npx expo run:ios --configuration Release
 
 cd ../private_runner
-node --test tests/calendar-tool-service.test.mjs
 node --test tests/codex-turn-execution.test.mjs
-node --test tests/location-schedule-service.test.mjs
 node --test tests/runner-ws-multiplex.test.mjs
 ```
 
-## 18. 完了条件
+## 15. 完了条件
 
 - 新規の通常会話から予定一覧、詳細、繰り返し予定の指定発生回を取得できる。
 - 前面での明示承認後に限り単発予定を作成・更新・削除できる。
-- 初回foreground利用時だけ権限を要求し、backgroundでは権限ダイアログを出さない。
+- 初回foreground利用時だけ権限を要求する。
 - 同じ書き込み要求を二度実行せず、成否不明なら自動再試行しない。
-- 明示的に許可したGPS・時間ルールだけが読み取れ、書き込みtoolは公開されない。
-- GPS・時間ルールは隔離sandboxで動き、背景失敗を成功扱いにせず、tool callを未応答で残さない。
 - カレンダー内容がAPNs、Runnerログ、relay event logへ出ない。
 - ExpoとRunnerの自動テスト、iOS実機テスト、Release build検証が完了している。
 
-## 19. 残るリスク
+## 16. 残るリスク
 
 - dynamic toolsは実験的APIである。バージョンは固定せず、実行時エラーと契約テストで
   変更箇所を特定して追従する。
-- サイレントPushはiOSが実行を保証しない。
 - EventKit更新直前の外部変更を完全には排除できない。
 - EventKit成功直後にアプリが停止すると`result_unknown`になる。
 - EventKitアカウント同期中は外部サービスの最新状態でない可能性がある。

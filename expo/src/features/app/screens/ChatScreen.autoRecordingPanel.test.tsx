@@ -16,7 +16,6 @@ const mockStreamingSttOptions: { current: Record<string, any> | null } = { curre
 const mockLogSessionDiag = jest.fn();
 const mockLoadOlderSessionHistory = jest.fn();
 const mockCodexScheduleProps: { current: Record<string, any> | null } = { current: null };
-const mockLocationScheduleProps: { current: Record<string, any> | null } = { current: null };
 const mockLegendListProps: { current: Record<string, any> | null } = { current: null };
 const mockScrollToEnd = jest.fn();
 const mockScrollToIndex = jest.fn();
@@ -168,12 +167,6 @@ jest.mock("../../runnerWs/RunnerWsConnectionStatus", () => ({
   RunnerWsConnectionStatus: (props: Record<string, any>) => {
     mockRunnerStatusRenderCount += 1;
     mockRunnerWsConnectionStatusProps.current = props;
-    return null;
-  },
-}));
-jest.mock("../../locationSchedules/LocationScheduleSettings", () => ({
-  LocationScheduleSettings: (props: Record<string, any>) => {
-    mockLocationScheduleProps.current = props;
     return null;
   },
 }));
@@ -454,7 +447,6 @@ describe("ChatScreen voice input", () => {
     jest.clearAllMocks();
     mockSendReplyTranscriptForPanel.mockResolvedValue(undefined);
     mockCodexScheduleProps.current = null;
-    mockLocationScheduleProps.current = null;
     mockChatSessionSubagentProps.current = null;
     mockGitDiffPanelProps.current = null;
     mockRunnerWsConnectionStatusProps.current = null;
@@ -1015,10 +1007,6 @@ describe("ChatScreen voice input", () => {
     expect(mockCodexScheduleProps.current).toMatchObject({
       currentModelRef: "gpt-5.6-sol",
       currentThreadId: "",
-      modelOptions: expectedModels,
-    });
-    expect(mockLocationScheduleProps.current).toMatchObject({
-      currentModelRef: "gpt-5.6-sol",
       modelOptions: expectedModels,
     });
     await screen.unmount();

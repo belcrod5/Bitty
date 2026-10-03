@@ -20,7 +20,7 @@ iOS / macOS の bundle と native build は最終統合ツリーで成功し、i
   `SkiaMiniBoardScreen.tsx` に実競合が発生し、section 機能と persistence recovery、
   AppModal、Paragraph text、wheel zoom の双方を残して解消した。
 - `typecheck:macos` を repository command として追加し、`.macos` 優先 production graph の
-  diagnostics を 160 件から 0 件へ解消した。camera、location schedule、pending push、
+  diagnostics を 160 件から 0 件へ解消した。camera、pending push、
   push registrar、workspace picker は base/macOS が同じ source contract を参照する。
 - audio recording は型だけを偽装せず、macOS の capability flag を action owner で確認して
   recorder 生成前に停止する。playback と unsupported recording の境界も明示した。
@@ -263,8 +263,7 @@ emoji、長文、省略、文字倍率、pinch 中のフレーム pacing を手�
   返すため現在の実害は見つからないが、root component tree は変更される。
 - 変更対象の 22 個の `Modal` call site（16 consumer files）は `AppModal` 経由になった。
   iOS base は native `Modal` への pass-through だが、native presentation の実機テストは
-  未実施。location schedule 配下の 3 call site は生の RN `Modal` のままだが、現在の
-  macOS production graph では上位 component が stub 化され到達不能である。
+  未実施。
 - workspace picker の抽出は、iOS の既存ロジックを同じ内容で移動しただけであり、
   macOS 非対応境界を作る変更として妥当。
 
@@ -283,7 +282,7 @@ emoji、長文、省略、文字倍率、pinch 中のフレーム pacing を手�
 - `networkState.macos.ts`: unsupported listener の no-op boundary
 - `workspaceUploadPicker.macos.ts`: unsupported picker を明示
 - `calendarService.macos.ts`: calendar feature の unavailable 契約
-- push、background notification、location の短い macOS stub
+- push の短い macOS stub
 
 `AppScreenContent.tsx` と `AppScreenContent.macos.tsx` には screen switch の小さな重複が
 あるが、macOS 版は Skia Canvas を screen 遷移中も mount したまま保つという実際の
@@ -410,8 +409,6 @@ workspaceFiles.ts(126,27): error TS2339: Property 'size' does not exist on type 
 - `camera.macos.ts`
   - `BarcodeScanningResult` type export がない。
   - `CameraView` が props を受け取らない型になっている。
-- `LocationScheduleSettings.macos.tsx`
-  - 共有 `ChatScreen` が渡す 6 props の contract を持たない。
 - `usePendingPushSessionNavigationController.macos.ts`
   - 共有 `AppRoot` が渡す設定 object の引数 contract を持たない。
 - `workspaceUploadPicker.macos.ts`
@@ -439,8 +436,7 @@ import からこの type を参照する。TypeScript は通常 base `.ts` を�
 `tsc` 成功だけでは macOS variant の型漏れを検出しない。
 
 この 1 件は type-only re-export で揃える価値がある。一方で、
-`locationScheduleRuntime.macos.ts` や `backgroundNotificationTask.macos.ts` は上位 feature
-ごと到達不能にしているため、未使用 API の fake stub を機械的に増やす必要はない。
+未使用 API の fake stub を機械的に増やす必要はない。
 文書の「common と macOS の exports/types を同一にする」は、
 「macOS production が消費する surface を一致させる」に狭める方が実態に合う。
 

@@ -1,6 +1,5 @@
 import "react-native-gesture-handler";
 import { registerRootComponent } from 'expo';
-import "./src/features/app/utils/backgroundNotificationTask";
 
 import App from './App';
 
