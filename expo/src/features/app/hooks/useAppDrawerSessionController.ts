@@ -27,8 +27,6 @@ type UseAppDrawerSessionControllerArgs = {
   formatSessionUpdatedAt: (updatedAt: string) => string;
   closeDrawer: () => void;
   openSettingsScreen: () => void;
-  openCloudflareTunnelMonitorScreen: () => void;
-  openSkiaBoardScreen: () => void;
   openDirectoryExplorer: () => void;
   toggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   loadMoreDirectorySessionTree: (directoryId: string, directoryPath: string) => Promise<void>;
@@ -75,8 +73,6 @@ export function useAppDrawerSessionController({
   formatSessionUpdatedAt,
   closeDrawer,
   openSettingsScreen,
-  openCloudflareTunnelMonitorScreen,
-  openSkiaBoardScreen,
   openDirectoryExplorer,
   toggleDirectoryExpanded,
   loadMoreDirectorySessionTree,
@@ -92,15 +88,6 @@ export function useAppDrawerSessionController({
     closeDrawer();
     openSettingsScreen();
   }, [closeDrawer, openSettingsScreen]);
-  const handleOpenCloudflareTunnelMonitor = useCallback(() => {
-    closeDrawer();
-    openCloudflareTunnelMonitorScreen();
-  }, [closeDrawer, openCloudflareTunnelMonitorScreen]);
-  const handleOpenSkiaBoard = useCallback(() => {
-    closeDrawer();
-    openSkiaBoardScreen();
-  }, [closeDrawer, openSkiaBoardScreen]);
-
   const handleOpenDirectoryExplorer = useCallback(() => {
     closeDrawer();
     openDirectoryExplorer();
@@ -199,8 +186,6 @@ export function useAppDrawerSessionController({
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
     onOpenSettings: handleOpenSettings,
-    onOpenCloudflareTunnelMonitor: handleOpenCloudflareTunnelMonitor,
-    onOpenSkiaBoard: handleOpenSkiaBoard,
     onOpenDirectoryExplorer: handleOpenDirectoryExplorer,
     onToggleDirectoryExpanded: handleToggleDirectoryExpanded,
     onLoadMoreSessions: handleLoadMoreSessions,
@@ -225,8 +210,6 @@ export function useAppDrawerSessionController({
     llmSessionRestoreTargetId,
     formatSessionUpdatedAt,
     handleOpenSettings,
-    handleOpenCloudflareTunnelMonitor,
-    handleOpenSkiaBoard,
     handleOpenDirectoryExplorer,
     handleToggleDirectoryExpanded,
     handleLoadMoreSessions,

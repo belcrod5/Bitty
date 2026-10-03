@@ -54,6 +54,7 @@ export type VisualTheme = {
     surface: string;
     surfaceRaised: string;
     surfaceMuted: string;
+    userMessageSurface: string;
     surfaceSelected: string;
     surfaceGrouped: string;
     surfaceActionSoft: string;
@@ -229,6 +230,7 @@ const standardTheme: VisualTheme = {
     surface: "#ffffff",
     surfaceRaised: "#f8fafc",
     surfaceMuted: "#f1f5f9",
+    userMessageSurface: "#dbe4ee",
     surfaceSelected: "#eff6ff",
     surfaceGrouped: "#f2f2f7",
     surfaceActionSoft: "#f0fdfa",
@@ -421,6 +423,7 @@ const cyberpunkTheme: VisualTheme = {
     surface: "#0a1018",
     surfaceRaised: "#14232e",
     surfaceMuted: "#141f2b",
+    userMessageSurface: "#20616d",
     surfaceSelected: "#192a35",
     surfaceGrouped: "#080d13",
     surfaceActionSoft: "#102b2f",

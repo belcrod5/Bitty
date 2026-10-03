@@ -127,8 +127,6 @@ function renderDrawer(overrides: Partial<AppDrawerProps> = {}) {
     llmSessionRestoreTargetId: "",
     formatSessionUpdatedAt: () => "today",
     onOpenSettings: jest.fn(),
-    onOpenCloudflareTunnelMonitor: jest.fn(),
-    onOpenSkiaBoard: jest.fn(),
     onOpenDirectoryExplorer: jest.fn(),
     onToggleDirectoryExpanded: jest.fn(),
     onLoadMoreSessions: jest.fn(),
@@ -165,13 +163,14 @@ test("starts a new chat in the pressed drawer directory", async () => {
   expect(onStartNewSessionInDirectory).toHaveBeenCalledWith("/work/bitty");
 });
 
-test("opens the board from the left navigation", async () => {
-  const onOpenSkiaBoard = jest.fn();
-  const drawer = await renderDrawer({ onOpenSkiaBoard });
+test("shows Settings without the removed title and navigation links", async () => {
+  const drawer = await renderDrawer();
 
-  await fireEvent.press(drawer.getByText("Board"));
-
-  expect(onOpenSkiaBoard).toHaveBeenCalledTimes(1);
+  expect(drawer.queryByText("メニュー")).toBeNull();
+  expect(drawer.queryByText("Board")).toBeNull();
+  expect(drawer.queryByText("ボードを開く")).toBeNull();
+  expect(drawer.queryByText("Cloudflare Tunnel")).toBeNull();
+  expect(drawer.getByText("設定")).toBeTruthy();
 });
 
 test("opens Settings from the left navigation", async () => {

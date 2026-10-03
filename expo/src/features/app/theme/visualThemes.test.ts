@@ -116,6 +116,11 @@ test("keeps cyberpunk text and controls above their contrast targets", () => {
   expect(contrastRatio(theme.colors.textOnAccent, theme.colors.primaryAction)).toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(theme.colors.floatingControlText, theme.colors.floatingControlSurface))
     .toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio(theme.colors.userMessageSurface, theme.colors.canvas)).toBeGreaterThanOrEqual(2);
+  expect(contrastRatio(theme.colors.userMessageSurface, theme.colors.surfaceRaised)).toBeGreaterThanOrEqual(2);
+  expect(contrastRatio(theme.colors.textPrimary, theme.colors.userMessageSurface)).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio(theme.tones.neutral.foreground, theme.colors.userMessageSurface)).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio(theme.colors.accentStrong, theme.colors.userMessageSurface)).toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(theme.colors.border, theme.colors.surface)).toBeGreaterThanOrEqual(3);
   expect(contrastRatio(theme.colors.activityActive, theme.colors.surface)).toBeGreaterThanOrEqual(3);
   expect(contrastRatio(theme.board.textPrimary, theme.board.cardSurface)).toBeGreaterThanOrEqual(4.5);
@@ -125,6 +130,17 @@ test("keeps cyberpunk text and controls above their contrast targets", () => {
   for (const tone of Object.values(theme.tones)) {
     expect(contrastRatio(tone.foreground, tone.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(tone.border, tone.background)).toBeGreaterThanOrEqual(3);
+  }
+});
+
+test("keeps standard user messages distinct with readable text", () => {
+  const theme = VISUAL_THEMES.standard;
+  const bubble = theme.colors.userMessageSurface;
+
+  expect(contrastRatio(bubble, theme.colors.canvas)).toBeGreaterThanOrEqual(1.2);
+  expect(contrastRatio(bubble, theme.colors.surfaceRaised)).toBeGreaterThanOrEqual(1.2);
+  for (const foreground of [theme.colors.textPrimary, theme.tones.neutral.foreground, theme.colors.accentStrong]) {
+    expect(contrastRatio(foreground, bubble)).toBeGreaterThanOrEqual(4.5);
   }
 });
 
