@@ -1718,9 +1718,17 @@ export function createAgentService({
       const subjectId = String(context.subjectId || "").trim();
       if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
       const cwds = [];
-      for (const requestedCwd of await getRegisteredDirectoryPaths()) {
-        const cwd = await resolveCanonicalCwd(requestedCwd);
-        if (!cwds.includes(cwd)) cwds.push(cwd);
+      const registeredPaths = await getRegisteredDirectoryPaths();
+      for (const requestedCwd of registeredPaths) {
+        try {
+          const cwd = await resolveCanonicalCwd(requestedCwd);
+          if (!cwds.includes(cwd)) cwds.push(cwd);
+        } catch {
+          // A broken legacy path must not hide activity in other registered directories.
+        }
+      }
+      if (registeredPaths.length > 0 && cwds.length === 0) {
+        throw agentError("turn_rejected", "registered directories could not be resolved");
       }
       if (cwds.length === 0) return { count: 0 };
       const allowedCwds = new Set(cwds);

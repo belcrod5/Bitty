@@ -1083,9 +1083,11 @@ test("active count uses registered canonical directories and ignores caller scop
   const claude = listBackend("claude", { sessions: [] });
   claude.listSessionsForDirectories = async () => { throw new Error("catalog failed"); };
   let resolutionFails = false;
+  let allResolutionsFail = false;
   const service = createAgentService({
     backends: [codex, claude], operationStore: operationStore(), sessionStore: sessionStore(),
     resolveCanonicalCwd: async (cwd) => {
+      if (allResolutionsFail) throw new Error("directory identity unavailable");
       if (resolutionFails && cwd === "missing") throw new Error("directory identity unavailable");
       if (cwd === "llm_root/test") return "/workspace/llm_root/test";
       return cwd === "missing" ? "/workspace/missing" : cwd;
@@ -1098,7 +1100,9 @@ test("active count uses registered canonical directories and ignores caller scop
   });
   assert.deepEqual(await service.countActiveSessions({ cwds: ["/forbidden"] }, { subjectId: "user-1" }), { count: 1 });
   resolutionFails = true;
-  await assert.rejects(service.countActiveSessions({}, { subjectId: "user-1" }), /directory identity unavailable/);
+  assert.deepEqual(await service.countActiveSessions({}, { subjectId: "user-1" }), { count: 1 });
+  allResolutionsFail = true;
+  await assert.rejects(service.countActiveSessions({}, { subjectId: "user-1" }), /registered directories could not be resolved/);
   await assert.rejects(service.countActiveSessions({}, {}), /authenticated subject/);
 });
 
