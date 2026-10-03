@@ -19,6 +19,7 @@ jest.mock("../clipboard", () => ({
 
 const mockOpenSkiaBoardScreen = jest.fn();
 const mockOpenDrawer = jest.fn();
+const mockOpenCloudflareTunnelMonitorScreen = jest.fn();
 const mockChangeCloudflareRunnerUrl = jest.fn();
 const mockChangeLocalRunnerUrl = jest.fn();
 const mockToggleAutoReplyAfterStt = jest.fn();
@@ -96,6 +97,7 @@ jest.mock("../contexts/AppShellContext", () => ({
   useAppShell: () => ({
     openSkiaBoardScreen: mockOpenSkiaBoardScreen,
     openDrawer: mockOpenDrawer,
+    openCloudflareTunnelMonitorScreen: mockOpenCloudflareTunnelMonitorScreen,
   }),
 }));
 
@@ -135,6 +137,15 @@ test("renders real settings and wires their actions securely", async () => {
   expect(mockExportSettingsJson).toHaveBeenCalledTimes(1);
   expect(mockOpenSkiaBoardScreen).toHaveBeenCalledTimes(1);
   expect(mockOpenDrawer).toHaveBeenCalledTimes(1);
+});
+
+test("opens the dedicated Cloudflare Tunnel monitor from Settings", async () => {
+  const screen = await render(<SettingsScreen />);
+
+  expect(screen.getByText("Cloudflare Tunnel")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("Cloudflare Tunnelを開く"));
+
+  expect(mockOpenCloudflareTunnelMonitorScreen).toHaveBeenCalledTimes(1);
 });
 
 test("keeps runner token edits as a draft until Save and Connect succeeds", async () => {

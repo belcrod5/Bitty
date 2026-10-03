@@ -17,7 +17,7 @@ import { VISUAL_THEME_OPTIONS } from "../theme/visualThemes";
 export function SettingsScreen() {
   const styles = useAppStyles();
   const { themeId, selectTheme } = useVisualTheme();
-  const { openSkiaBoardScreen, openDrawer } = useAppShell();
+  const { openSkiaBoardScreen, openDrawer, openCloudflareTunnelMonitorScreen } = useAppShell();
   const [buildStampCopied, setBuildStampCopied] = useState(false);
   const buildStampCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -57,6 +57,22 @@ export function SettingsScreen() {
         <Text style={styles.settingsTitle}>設定</Text>
       </View>
       <ConnectionSettings />
+      <View style={styles.settingsSection}>
+        <View style={styles.settingsGroup}>
+          <TouchableOpacity
+            style={styles.settingsRow}
+            onPress={openCloudflareTunnelMonitorScreen}
+            accessibilityRole="button"
+            accessibilityLabel="Cloudflare Tunnelを開く"
+          >
+            <View style={styles.settingsRowLabelWrap}>
+              <Text style={styles.settingsRowLabel}>Cloudflare Tunnel</Text>
+              <Text style={styles.settingsRowDescription}>Tunnel接続ログを開く</Text>
+            </View>
+            <Text style={styles.settingsActionText}>開く ›</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
       <SpeechSettings />
       <View style={styles.settingsSection}>
         <View style={styles.settingsSectionHeader}><Text style={styles.settingsSectionTitle}>音声入力</Text></View>

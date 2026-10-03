@@ -6029,8 +6029,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     formatSessionUpdatedAt,
     closeDrawer,
     openSettingsScreen,
-    openCloudflareTunnelMonitorScreen,
-    openSkiaBoardScreen,
     openDirectoryExplorer,
     toggleDirectoryExpanded,
     loadMoreDirectorySessionTree,

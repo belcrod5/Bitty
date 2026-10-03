@@ -234,7 +234,7 @@ function ConnectionEventCard({
 export function CloudflareTunnelMonitorScreen() {
   const { themeId } = useVisualTheme();
   const screenStyles = screenStylesByTheme[themeId];
-  const { openSkiaBoardScreen, openDrawer } = useAppShell();
+  const { openSettingsScreen } = useAppShell();
   const {
     runnerUrl,
     runnerToken,
@@ -358,12 +358,11 @@ export function CloudflareTunnelMonitorScreen() {
         <View style={screenStyles.menuRow}>
           <TouchableOpacity
             style={screenStyles.menuButton}
-            onPress={() => {
-              openSkiaBoardScreen();
-              openDrawer();
-            }}
+            onPress={openSettingsScreen}
+            accessibilityRole="button"
+            accessibilityLabel="設定に戻る"
           >
-            <Text style={screenStyles.menuButtonText}>← Menu</Text>
+            <Text style={screenStyles.menuButtonText}>← 設定</Text>
           </TouchableOpacity>
         </View>
 

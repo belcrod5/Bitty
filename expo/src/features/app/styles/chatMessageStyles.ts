@@ -23,7 +23,7 @@ export function createChatMessageStyles(theme: VisualTheme) {
   chatBubbleUser: {
     alignSelf: "flex-end",
     maxWidth: "84%",
-    backgroundColor: theme.colors.surfaceMuted,
+    backgroundColor: theme.colors.userMessageSurface,
     borderWidth: 0,
     borderColor: "transparent",
   },
@@ -66,7 +66,7 @@ export function createChatMessageStyles(theme: VisualTheme) {
     letterSpacing: 0.6,
   },
   chatBubbleLabelUser: {
-    color: theme.colors.textMuted,
+    color: theme.colors.textPrimary,
   },
   chatBubbleLabelAssistant: {
     color: theme.colors.textMuted,

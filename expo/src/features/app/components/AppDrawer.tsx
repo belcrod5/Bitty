@@ -62,8 +62,6 @@ export type AppDrawerProps = {
   llmSessionRestoreTargetId: string;
   formatSessionUpdatedAt: (updatedAt: string) => string;
   onOpenSettings: () => void;
-  onOpenCloudflareTunnelMonitor: () => void;
-  onOpenSkiaBoard: () => void;
   onOpenDirectoryExplorer: () => void;
   onToggleDirectoryExpanded: (directoryId: string, directoryPath: string) => void;
   onLoadMoreSessions: (directoryId: string, directoryPath: string) => void;
@@ -125,8 +123,6 @@ export const AppDrawer = memo(function AppDrawer({
   llmSessionRestoreTargetId,
   formatSessionUpdatedAt,
   onOpenSettings,
-  onOpenCloudflareTunnelMonitor,
-  onOpenSkiaBoard,
   onOpenDirectoryExplorer,
   onToggleDirectoryExpanded,
   onLoadMoreSessions,
@@ -372,18 +368,9 @@ export const AppDrawer = memo(function AppDrawer({
           }
         }}
       >
-        <Text style={styles.appDrawerTitle}>メニュー</Text>
         <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSettings}>
           <Text style={styles.menuNavTitle}>設定</Text>
           <Text style={styles.menuNavValue}>接続・モデル・音声を設定</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenCloudflareTunnelMonitor}>
-          <Text style={styles.menuNavTitle}>Cloudflare Tunnel</Text>
-          <Text style={styles.menuNavValue}>Tunnel接続ログを開く</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuNavButton} onPress={onOpenSkiaBoard}>
-          <Text style={styles.menuNavTitle}>Board</Text>
-          <Text style={styles.menuNavValue}>ボードを開く</Text>
         </TouchableOpacity>
 
         <View style={styles.appDrawerSection}>

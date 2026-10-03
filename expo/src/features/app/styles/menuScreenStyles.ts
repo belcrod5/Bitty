@@ -24,12 +24,6 @@ export function createMenuScreenStyles(theme: VisualTheme) {
     paddingBottom: 18,
     gap: 14,
   },
-  appDrawerTitle: {
-    fontSize: theme.typography.sectionTitle.fontSize,
-    fontWeight: "700",
-    color: theme.colors.textPrimary,
-    letterSpacing: 0.2,
-  },
   appDrawerSearchContainer: {
     marginHorizontal: 16,
     marginTop: 12,
