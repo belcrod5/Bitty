@@ -423,7 +423,7 @@ const cyberpunkTheme: VisualTheme = {
     surface: "#0a1018",
     surfaceRaised: "#14232e",
     surfaceMuted: "#141f2b",
-    userMessageSurface: "#206571",
+    userMessageSurface: "#277784",
     surfaceSelected: "#192a35",
     surfaceGrouped: "#080d13",
     surfaceActionSoft: "#102b2f",

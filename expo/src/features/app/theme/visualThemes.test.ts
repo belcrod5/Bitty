@@ -117,6 +117,7 @@ test("keeps cyberpunk text and controls above their contrast targets", () => {
   expect(contrastRatio(theme.colors.floatingControlText, theme.colors.floatingControlSurface))
     .toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(theme.colors.userMessageSurface, theme.colors.canvas)).toBeGreaterThanOrEqual(3);
+  expect(contrastRatio(theme.colors.userMessageSurface, theme.colors.surfaceRaised)).toBeGreaterThanOrEqual(3);
   expect(contrastRatio(theme.colors.textPrimary, theme.colors.userMessageSurface)).toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(theme.colors.border, theme.colors.surface)).toBeGreaterThanOrEqual(3);
   expect(contrastRatio(theme.colors.activityActive, theme.colors.surface)).toBeGreaterThanOrEqual(3);
