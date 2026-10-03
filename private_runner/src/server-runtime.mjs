@@ -13,6 +13,7 @@ import { createLlmAcpSessionStore } from "./llm-acp-session-store.mjs";
 import { ClientStateStoreUnavailableError, createClientStateStore } from "./client-state-store.mjs";
 import { createLlmCliRolloutWriter } from "./llm-cli-rollout-writer.mjs";
 import { createLlmCliSessionIndex } from "./llm-cli-session-index.mjs";
+import { parseLlmSessionRelationship } from "./llm-session-metadata.mjs";
 import { createLlmSessionRolloutReaders } from "./llm-session-rollout-readers.mjs";
 import { createLlmSessionService } from "./llm-session-service.mjs";
 import { createWorkspaceFilesService, isProbablyBinary } from "./workspace-files.mjs";
@@ -1387,6 +1388,7 @@ const {
   ensureCliSessionIndexLoaded,
   findCliSessionIndexEntriesBySessionIds,
   findCliSessionIndexEntryBySessionId,
+  selectCliSessionIndexEntryBySessionId,
   getCliSessionIndexStats,
   listCliSessionsForDirectories,
   listCliSessionsForDirectory,
@@ -1643,12 +1645,25 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   createCodexClient: ({ signal }) => createCodexRpcClient({ signal }), normalizeSessionId: normalizeLlmExecutionSessionId,
   listCodexModels: RUNNER_MOCK ? async () => [{ modelId: "gpt-5.6-sol", label: "Mock Codex", effortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"] }] : undefined,
   findSession: findCliSessionIndexEntryBySessionId, resolveSessionDirectory: resolveCliSessionEntryExecutionCwd,
+  selectCachedSession: selectCliSessionIndexEntryBySessionId,
   listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
   getSessionTitles: clientStateStore.getSessionTitles,
   listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
   runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
+  onActiveSessionsChanged: broadcastActiveSessionsChanged,
+  listRawActiveSessions: () => [...codexWsRelaysById.values()].flatMap((relay) => {
+    const lease = relay.agentLease;
+    return lease && !relay.closed ? [{ sessionRef: lease.sessionRef, canonicalCwd: lease.canonicalCwd,
+      isSubagent: lease.isSubagent }] : [];
+  }).concat([...codexQueuedTurnsById.values()].flatMap((turn) => (
+    ["queued", "waiting_compact", "running"].includes(turn.status) && turn.canonicalCwd
+      ? [{ sessionRef: { backendId: "codex", nativeSessionId: turn.threadId },
+        canonicalCwd: turn.canonicalCwd,
+        isSubagent: turn.isSubagent }]
+      : []
+  ))),
 });
 ({ service: agentService } = agentRuntime);
 const { httpHandler: agentHttpHandler, ownerSubjectId: agentOwnerSubjectId } = agentRuntime;
@@ -1658,6 +1673,18 @@ const codexRawSessionOwnership = createCodexRawSessionOwnership({
   acquireLease: acquireAgentSessionLease,
   settleLease: settleAgentSessionLease,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity,
+  isSubagentSession: async (sessionRef, cwd, relay) => {
+    if (relay.nativeRelationship?.threadId === sessionRef.nativeSessionId) {
+      return relay.nativeRelationship.isSubagent;
+    }
+    if (relay.startedNewThreadId === sessionRef.nativeSessionId) return false;
+    await ensureCliSessionIndexLoaded();
+    const entry = selectCliSessionIndexEntryBySessionId(sessionRef.nativeSessionId, { directory: cwd })
+      || selectCliSessionIndexEntryBySessionId(sessionRef.nativeSessionId)
+      || await findCliSessionIndexEntryBySessionId(sessionRef.nativeSessionId, { directory: cwd });
+    return !entry || entry.isSubagent === true || Boolean(entry.parentSessionId);
+  },
+  onActiveSessionsChanged: broadcastActiveSessionsChanged,
   makeConflictError: (code, message) => makeApiError(409, code, message),
   errorMessage,
   sendRpc: sendCodexRelayRpcToClient,
@@ -6520,8 +6547,10 @@ function broadcastCodexQueueSnapshot(threadIdRaw = "") {
 }
 
 function markCodexQueuedTurn(turn, patch) {
+  const statusChanged = patch.status && patch.status !== turn.status;
   Object.assign(turn, patch, { updatedAtMs: Date.now() });
   broadcastCodexQueueSnapshot(turn.threadId);
+  if (statusChanged) broadcastActiveSessionsChanged();
   return turn;
 }
 
@@ -7016,9 +7045,17 @@ function enqueueCodexTurn(body) {
     }
   }
   const now = Date.now();
+  const sessionEntry = selectCliSessionIndexEntryBySessionId(threadId);
+  const sourceRelay = codexWsRelaysById.get(codexWsRelayIdByThreadId.get(threadId));
+  const nativeRelationship = sourceRelay?.nativeRelationship?.threadId === threadId
+    ? sourceRelay.nativeRelationship : null;
+  const knownNewMain = sourceRelay?.startedNewThreadId === threadId;
   const turn = {
     queuedTurnId: `codexq_${randomUUID()}`,
     threadId,
+    isSubagent: sessionEntry
+      ? sessionEntry.isSubagent === true || Boolean(sessionEntry.parentSessionId)
+      : nativeRelationship?.isSubagent ?? !knownNewMain,
     status: (compactRunning || waitForCompactMs > 0) ? "waiting_compact" : "queued",
     inputText,
     inputPreview: compactCodexInputPreview(inputText),
@@ -7040,6 +7077,18 @@ function enqueueCodexTurn(body) {
   };
   codexQueuedTurnsById.set(turn.queuedTurnId, turn);
   codexQueuedTurnOrder.push(turn.queuedTurnId);
+  void (async () => {
+    if (!sessionEntry && !nativeRelationship && !knownNewMain) await ensureCliSessionIndexLoaded();
+    const entry = sessionEntry || (!nativeRelationship && !knownNewMain
+      ? selectCliSessionIndexEntryBySessionId(threadId) || await findCliSessionIndexEntryBySessionId(threadId)
+      : null);
+    if (entry) turn.isSubagent = entry.isSubagent === true || Boolean(entry.parentSessionId);
+    const cwd = turn.cwd || (await getAgentSessionBinding({ backendId: "codex", nativeSessionId: threadId }))?.canonicalCwd
+      || (entry && resolveCliSessionEntryExecutionCwd(entry)) || sourceRelay?.threadCwd;
+    if (!cwd) return;
+    turn.canonicalCwd = await resolveCanonicalDirectoryIdentity(cwd);
+    broadcastActiveSessionsChanged();
+  })().catch(() => {});
   broadcastCodexQueueSnapshot(threadId);
   drainCodexQueuedTurns(threadId);
   return { queued: true, reason: "queued", turn };
@@ -10876,6 +10925,8 @@ function createCodexRelayContext(params) {
     clients: new Set(),
     threadId: "",
     threadCwd: "",
+    startedNewThreadId: "",
+    nativeRelationship: null,
     turnStatus: "",
     turnStarted: false,
     turnCompleted: false,
@@ -10938,6 +10989,14 @@ function broadcastSkiaBoardUpdated(payload) {
     }
   }
   return sent > 0;
+}
+
+function broadcastActiveSessionsChanged() {
+  if (typeof runnerWsActiveClients === "undefined") return;
+  for (const client of Array.from(runnerWsActiveClients)) {
+    try { sendRunnerWsEnvelope(client, { channel: "control", op: "sessions_active_changed" }); }
+    catch (error) { console.warn(`[agent] active session broadcast failed: ${errorMessage(error)}`); }
+  }
 }
 
 function broadcastRunnerWsTurnCompletedNotification(relay, payload) {
@@ -11186,6 +11245,18 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
     const resolvedThreadId = pickFirstNonEmptyString(metaThreadId, responseMeta.threadId);
     if (resolvedThreadId) {
       bindCodexRelayThreadMapping(relay, resolvedThreadId, { allowSwitch: true });
+      if (responseRpcMethod === "thread/start") relay.startedNewThreadId = resolvedThreadId;
+      else if (relay.startedNewThreadId !== resolvedThreadId) relay.startedNewThreadId = "";
+      const thread = rpcPayload?.result?.thread;
+      const relationship = parseLlmSessionRelationship(thread);
+      const source = thread?.source;
+      const sourceKind = String(typeof source === "string" ? source : thread?.thread_source || "").toLowerCase();
+      const knownMainSource = ["cli", "vscode", "appserver", "exec"].includes(sourceKind)
+        || (source && typeof source === "object" && ["cli", "vscode", "appServer", "exec"].some((key) => Object.hasOwn(source, key)));
+      if (thread && (relationship.isSubagent || knownMainSource || sourceKind.startsWith("subagent"))) {
+        relay.nativeRelationship = { threadId: resolvedThreadId,
+          isSubagent: relationship.isSubagent || sourceKind.startsWith("subagent") };
+      } else if (relay.nativeRelationship?.threadId !== resolvedThreadId) relay.nativeRelationship = null;
       cleanupNoClientRelaysForThread(resolvedThreadId, relay, `upstream_${responseRpcMethod}`);
     }
     // The native result is authoritative. A shared relay may still carry another

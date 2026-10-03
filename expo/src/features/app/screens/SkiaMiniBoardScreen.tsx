@@ -643,9 +643,6 @@ export function SkiaMiniBoardScreen({
   const { registeredDirectories } = useConversation();
   const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const {
-    directorySync,
-    hydratingPanelCount,
-    panelHydrationErrorCount,
     items,
     sections,
     cardTextScale,
@@ -661,20 +658,6 @@ export function SkiaMiniBoardScreen({
     updateBoardCardAppearance,
     tidyBoard,
   } = useSkiaMiniChatSessions();
-  const syncStatusText =
-    directorySync.phase === "loading"
-      ? `同期中 ${directorySync.completedCount}/${directorySync.totalCount}`
-      : directorySync.phase === "refreshing"
-        ? `更新中 ${directorySync.completedCount}/${directorySync.totalCount}`
-        : directorySync.phase === "error"
-          ? `セッション同期失敗 ${directorySync.failedCount}/${directorySync.totalCount}`
-          : hydratingPanelCount > 0
-            ? `チャット読込中 ${hydratingPanelCount}件`
-            : panelHydrationErrorCount > 0
-              ? `${items.length}件を表示・${panelHydrationErrorCount}件の読込失敗`
-              : directorySync.phase === "partial_error"
-                ? `${items.length}件を表示・一部更新失敗`
-                : `${items.length}件を表示`;
   const [selectedCardId, setSelectedCardId] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [editingSectionId, setEditingSectionId] = useState("");
@@ -1907,7 +1890,7 @@ export function SkiaMiniBoardScreen({
         </View>
       </SafeAreaView>
 
-      <SafeAreaView pointerEvents="box-none" style={screenStyles.footerSafeArea} testID="skia-board-footer-safe-area">
+      <SafeAreaView pointerEvents="box-none" style={screenStyles.toolsSafeArea} testID="skia-board-tools-safe-area">
         <View style={screenStyles.tools}>
           <TouchableOpacity
             style={[screenStyles.toolButton, tool === "select" && screenStyles.toolButtonSelected]}
@@ -1955,21 +1938,18 @@ export function SkiaMiniBoardScreen({
             </TouchableOpacity>
           ) : null}
         </View>
-        <View pointerEvents="box-none" style={screenStyles.footerRow} testID="skia-board-footer-row">
-          <View pointerEvents="none" style={screenStyles.statusPill} testID="skia-board-status-pill">
-            <Text style={screenStyles.statusText}>{syncStatusText}</Text>
-          </View>
-          <View style={screenStyles.usagePill} testID="skia-board-usage-pill">
-            <Svg width={13} height={13} viewBox="0 0 11 11" fill="none">
-              <SvgPath d={BOARD_FOOTER_ICON_PATHS.subagent} stroke={theme.tones.neutral.foreground}
-                strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-            </Svg>
-            <Text style={screenStyles.usageCount} testID="skia-board-running-session-count"
-              accessibilityLabel={`実行中のセッション ${runningSessionCount ?? "不明"}件`}>
-              {runningSessionCount ?? "--"}
-            </Text>
-            <View style={screenStyles.usageSummary}><CodexStatusSummaryMenu /></View>
-          </View>
+      </SafeAreaView>
+      <SafeAreaView pointerEvents="box-none" style={screenStyles.usageSafeArea} testID="skia-board-usage-safe-area">
+        <View style={screenStyles.usagePill} testID="skia-board-usage-pill">
+          <Svg width={13} height={13} viewBox="0 0 11 11" fill="none">
+            <SvgPath d={BOARD_FOOTER_ICON_PATHS.subagent} stroke={theme.tones.neutral.foreground}
+              strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+          </Svg>
+          <Text style={screenStyles.usageCount} testID="skia-board-running-session-count"
+            accessibilityLabel={`実行中のセッション ${runningSessionCount ?? "不明"}件`}>
+            {runningSessionCount ?? "--"}
+          </Text>
+          <View style={screenStyles.usageSummary}><CodexStatusSummaryMenu compact /></View>
         </View>
       </SafeAreaView>
       {voiceOpen && voicePlayback ? (
@@ -2066,14 +2046,14 @@ function createScreenStyles(theme: VisualTheme) {
       flex: 1,
       overflow: "hidden",
     },
-    footerSafeArea: {
+    toolsSafeArea: {
       position: "absolute",
       left: 0,
       right: 0,
       bottom: 0,
+      alignItems: "center",
     },
     tools: {
-      alignSelf: "center",
       marginBottom: 12,
       padding: 5,
       borderRadius: 14,
@@ -2096,24 +2076,14 @@ function createScreenStyles(theme: VisualTheme) {
     toolButtonSelected: {
       backgroundColor: theme.colors.accent,
     },
-    statusPill: {
-      paddingHorizontal: 12,
-      paddingVertical: 7,
-      borderRadius: 16,
-      backgroundColor: theme.dark.surface,
-    },
-    footerRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 8,
-      paddingHorizontal: 14,
+    usageSafeArea: {
+      position: "absolute",
+      right: 14,
+      bottom: 0,
       marginBottom: 14,
     },
     usagePill: {
       minHeight: 32,
-      maxWidth: "100%",
-      marginLeft: "auto",
       paddingHorizontal: 10,
       borderRadius: 16,
       flexDirection: "row",
@@ -2127,12 +2097,6 @@ function createScreenStyles(theme: VisualTheme) {
     usageCount: {
       color: theme.tones.neutral.foreground,
       fontSize: theme.typography.caption.fontSize,
-      fontWeight: "700",
-    },
-    statusText: {
-      color: theme.dark.text,
-      fontSize: theme.typography.caption.fontSize,
-      lineHeight: theme.typography.caption.lineHeight,
       fontWeight: "700",
     },
     menuBackdrop: {

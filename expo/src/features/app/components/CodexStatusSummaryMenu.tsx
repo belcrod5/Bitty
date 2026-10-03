@@ -14,6 +14,7 @@ type AnchorRect = {
 
 type CodexStatusSummaryMenuProps = {
   dismissed?: boolean;
+  compact?: boolean;
 };
 
 const STATUS_PREVIEW_WIDTH = 320;
@@ -37,6 +38,7 @@ function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
 
 export function CodexStatusSummaryMenu({
   dismissed = false,
+  compact = false,
 }: CodexStatusSummaryMenuProps) {
   const styles = useAppStyles();
   const {
@@ -59,11 +61,12 @@ export function CodexStatusSummaryMenu({
   const [nowTick, setNowTick] = useState(0);
 
   useEffect(() => {
+    if (compact) return;
     const timer = setInterval(() => {
       setNowTick((prev) => prev + 1);
     }, 30 * 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [compact]);
   useEffect(() => {
     if (!dismissed) return;
     setAuthSelectOpen(false);
@@ -79,7 +82,9 @@ export function CodexStatusSummaryMenu({
   );
   const fiveHourPct = parseLimitPct(statusFullText, "5h");
   const weeklyPct = parseLimitPct(statusFullText, "Weekly");
-  const statusSummaryText = `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
+  const statusSummaryText = compact
+    ? `${fiveHourPct}% | ${weeklyPct}%`
+    : `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
   const currentAuthId = String(authProfileId || "").trim();
   const currentDisplayName = String(authProfileItems.find((item) => item.authId === currentAuthId)?.displayName || "").trim();
   const currentAuthIdText = currentDisplayName || currentAuthId || "(未選択)";
@@ -145,7 +150,7 @@ export function CodexStatusSummaryMenu({
         >
           <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
             {statusSummaryText}
-            {statusLoading ? " 更新中..." : ""}
+            {statusLoading && !compact ? " 更新中..." : ""}
           </Text>
         </TouchableOpacity>
       </View>

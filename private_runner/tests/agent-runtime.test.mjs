@@ -164,6 +164,57 @@ test("Codex Agent history preserves timestamps and unavailable client titles fal
   assert.equal(history.reasoningEffort, "medium");
 });
 
+test("resumed Codex main run warms a cold identity index before active classification", async (t) => {
+  const cwd = await realpath(".");
+  let cachedEntry = null;
+  let resolveClient;
+  const pendingClient = new Promise((resolve) => { resolveClient = resolve; });
+  const runtime = createPrivateRunnerAgentRuntime({
+    claudeBinary: "claude", runnerToken: "test-token", dynamicTools: null,
+    stores: {
+      bindSession: async () => ({ status: "bound" }),
+      getSessionBinding: async () => ({ canonicalCwd: cwd }),
+      getSessionMode: async () => ({ mode: "neutral" }),
+      acquireSessionLease: async () => ({ status: "acquired", lease: { generation: 1 } }),
+      settleSessionLease: async () => ({ status: "released" }),
+      updateSessionLeaseIdentity: async () => ({ status: "updated" }),
+      handoffSessionMode: async () => ({ status: "handed_off" }),
+      setSessionSettings: async () => ({ status: "updated" }),
+      recordSessionActivity: async () => ({ status: "updated" }),
+      getSessionReadState: async () => null,
+      inspectOperation: async () => null,
+      claimOperation: async () => ({ status: "claimed" }),
+      completeOperation: async () => ({ status: "completed" }),
+      listWorkspaces: async () => [],
+      listRegisteredDirectories: async () => [cwd],
+      approveWorkspace: async () => null,
+      revokeWorkspace: async () => false,
+      getModelInfo: async () => null,
+      setModelInfo: async () => {},
+    },
+    createCodexClient: () => ({ ...completionClient(), openPromise: pendingClient }),
+    listCodexModels: async () => [], normalizeSessionId: (value) => String(value || ""),
+    findSession: async () => { cachedEntry = { sessionId: "main-session", cwd, isSubagent: false }; return cachedEntry; },
+    selectCachedSession: () => cachedEntry,
+    resolveSessionDirectory: (entry) => entry.cwd,
+    listSessions: async () => ({ sessions: [] }),
+    listSessionsForDirectories: async (cwds) => cwds.map((directory) => ({ directory, sessions: [] })),
+    listMessages: async () => ({ messages: [] }),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    parseAuthToken: () => "", json: () => {}, normalizeSessionListLimit: (value) => value,
+    normalizeSessionMessagesLimit: (value) => value, readJsonBody: async () => ({}),
+  });
+  t.after(() => { resolveClient(); return runtime.close(); });
+  const run = await runtime.service.startTurn({
+    backendId: "codex", sessionRef: { backendId: "codex", nativeSessionId: "main-session" },
+    cwd, input: { blocks: [{ type: "text", text: "hello" }] }, clientOperationId: "op-cold-cache",
+  }, { subjectId: runtime.ownerSubjectId });
+  assert.equal(cachedEntry.isSubagent, false);
+  assert.deepEqual(await runtime.service.countActiveSessions({ cwds: [cwd] },
+    { subjectId: runtime.ownerSubjectId }), { count: 1 });
+  void run.completion;
+});
+
 test("Agent runtime composes completion notification with the production event fanout", async (t) => {
   const serverRuntime = await readFile(new URL("../src/server-runtime.mjs", import.meta.url), "utf8");
   assert.match(

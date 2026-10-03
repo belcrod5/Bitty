@@ -1326,13 +1326,15 @@ test("runner-ws binds thread/start result threadId to the initialized relay", as
       JSON.stringify({
         jsonrpc: "2.0",
         id: 2,
-        result: { threadId: "thread-from-start" },
+        result: { threadId: "thread-from-start", thread: { id: "thread-from-start", source: "cli" } },
       }),
       false,
       { endpoint: "/runner-ws", remote: "test" }
     );
 
     assert.equal(relay.threadId, "thread-from-start");
+    assert.equal(relay.startedNewThreadId, "thread-from-start");
+    assert.deepEqual(relay.nativeRelationship, { threadId: "thread-from-start", isSubagent: false });
     const selectedRelay = __TESTING__.pickBestRelayForThread("thread-from-start");
     assert.equal(selectedRelay, relay);
     assert.equal(selectedRelay.upstreamInitializeResultSeen, true);
@@ -1383,6 +1385,27 @@ test("runner-ws binds thread/start result threadId to the initialized relay", as
     assert.equal(upstreamSent.length, 4);
     assert.equal(JSON.parse(upstreamSent[3]).method, "test/ping");
     assert.equal(selectedRelay.clients.has(runnerWs), true);
+
+    const sameResumeKey = __TESTING__.codexRpcIdKey(5);
+    relay.requestMethodByRpcId.set(sameResumeKey, "thread/resume");
+    relay.requestMetaByRpcId.set(sameResumeKey, { threadId: "thread-from-start" });
+    __TESTING__.handleCodexRelayUpstreamMessage(relay,
+      JSON.stringify({ jsonrpc: "2.0", id: 5, result: { thread: { id: "thread-from-start" } } }),
+      false, { endpoint: "/runner-ws", remote: "test" });
+    assert.equal(relay.startedNewThreadId, "thread-from-start");
+    assert.equal(relay.nativeRelationship.isSubagent, false);
+
+    // A shared relay can lose its thread binding before a different native identity resolves.
+    relay.threadId = "";
+    const childResumeKey = __TESTING__.codexRpcIdKey(6);
+    relay.requestMethodByRpcId.set(childResumeKey, "thread/resume");
+    relay.requestMetaByRpcId.set(childResumeKey, { threadId: "child-thread" });
+    __TESTING__.handleCodexRelayUpstreamMessage(relay,
+      JSON.stringify({ jsonrpc: "2.0", id: 6, result: { thread: {
+        id: "child-thread", source: { subAgent: { parentThreadId: "thread-from-start" } },
+      } } }), false, { endpoint: "/runner-ws", remote: "test" });
+    assert.equal(relay.startedNewThreadId, "");
+    assert.deepEqual(relay.nativeRelationship, { threadId: "child-thread", isSubagent: true });
   } finally {
     relay.closed = true;
     relay.clients.clear();

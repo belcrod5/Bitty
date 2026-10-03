@@ -1038,31 +1038,26 @@ test("active count includes unassigned main sessions across providers and follow
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const codex = listBackend("codex", { sessions: [] });
-  codex.listSessionsForDirectories = async ({ cwds, includeSubagents }) => {
-    assert.equal(includeSubagents, false);
-    return { groups: cwds.map((cwd) => ({ cwd, sessions: [
-      { sessionRef: codexRef, canonicalCwd: cwd, isActive: true },
-      { sessionRef: { backendId: "codex", nativeSessionId: "child" }, canonicalCwd: cwd,
-        parentSessionRef: codexRef, isActive: true },
-      { sessionRef: { backendId: "codex", nativeSessionId: "idle" }, canonicalCwd: cwd },
-    ] })) };
-  };
+  codex.listSessionsForDirectories = async () => { throw new Error("count must not scan catalogs"); };
+  codex.listActiveSessions = () => [
+    { sessionRef: codexRef, canonicalCwd: "/two" },
+    { sessionRef: codexRef, canonicalCwd: "/two" },
+    { sessionRef: { backendId: "codex", nativeSessionId: "child" }, canonicalCwd: "/two",
+      parentSessionRef: codexRef },
+  ];
   const claude = listBackend("claude", { sessions: [] });
   claude.getStatus = async () => ({ ...status(), backendId: "claude",
     capabilities: { ...status().capabilities, session: { list: true } } });
   claude.resolveSessionCwd = async () => "/one";
   claude.startTurn = async ({ emit }) => { emit("turn.started", {}); await gate; return { outcome: "completed" }; };
-  claude.listSessionsForDirectories = async ({ cwds }) => ({
-    groups: cwds.map((cwd) => ({ cwd, sessions: cwd === "/one"
-      ? [{ sessionRef: claudeRef, canonicalCwd: cwd }]
-      : [] })),
-  });
+  claude.listSessionsForDirectories = async () => { throw new Error("count must not scan catalogs"); };
   const store = sessionStore();
   await store.bind(claudeRef, "/one", "neutral");
   const service = createAgentService({
     backends: [codex, claude], operationStore: operationStore(), sessionStore: store,
     resolveCanonicalCwd: async (cwd) => cwd,
     workspaceAdmission: { assertAllowed: async (_subject, cwd) => cwd === "/alias" ? "/one" : cwd },
+    listRawActiveSessions: () => [{ sessionRef: codexRef, canonicalCwd: "/two" }],
   });
   const context = { subjectId: "user-1" };
   assert.deepEqual(await service.countActiveSessions({ cwds: ["/alias", "/one", "/two"] }, context), { count: 1 });
@@ -1076,7 +1071,7 @@ test("active count includes unassigned main sessions across providers and follow
   assert.deepEqual(await service.countActiveSessions({ cwds: [] }, context), { count: 0 });
 });
 
-test("active count rejects incomplete provider snapshots and inaccessible workspaces", async () => {
+test("active count never scans provider histories and rejects inaccessible workspaces", async () => {
   const codex = listBackend("codex", { sessions: [] });
   codex.listSessionsForDirectories = async ({ cwds }) => ({ groups: cwds.map((cwd) => ({ cwd, sessions: [] })) });
   const claude = listBackend("claude", { sessions: [] });
@@ -1090,10 +1085,59 @@ test("active count rejects incomplete provider snapshots and inaccessible worksp
     } },
     log: { warn() {} },
   });
-  await assert.rejects(service.countActiveSessions({ cwds: ["/one"] }, { subjectId: "user-1" }),
-    /incomplete/);
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/one"] }, { subjectId: "user-1" }), { count: 0 });
   await assert.rejects(service.countActiveSessions({ cwds: ["/forbidden"] }, { subjectId: "user-1" }),
     /workspace denied/);
+});
+
+test("new unindexed sessions notify on admission, resolution, and settled completion", async () => {
+  let resolveNative;
+  let finishNative;
+  const nativeStarted = new Promise((resolve) => { resolveNative = resolve; });
+  const nativeFinish = new Promise((resolve) => { finishNative = resolve; });
+  const backend = listBackend("codex", { sessions: [] });
+  backend.getStatus = async () => ({ ...status(), backendId: "codex" });
+  backend.startTurn = async ({ resolveSession, emit }) => {
+    await nativeStarted;
+    await resolveSession({ backendId: "codex", nativeSessionId: "new-session" });
+    emit("turn.started", {});
+    await nativeFinish;
+    return { outcome: "completed" };
+  };
+  backend.listSessionsForDirectories = async () => { throw new Error("catalog is not ready"); };
+  const notifications = [];
+  let service;
+  service = createAgentService({ backends: [backend], operationStore: operationStore(),
+    sessionStore: sessionStore(), resolveCanonicalCwd: async (cwd) => cwd,
+    onActiveSessionsChanged: () => { notifications.push(service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" })); } });
+  const run = await service.startTurn(startRequest({ backendId: "codex" }), { subjectId: "user-1" });
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" }), { count: 1 });
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-2" }), { count: 0 });
+  resolveNative();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" }), { count: 1 });
+  finishNative();
+  await run.completion;
+  assert.deepEqual(await Promise.all(notifications), [{ count: 1 }, { count: 1 }, { count: 0 }]);
+});
+
+test("active count excludes classified child runs before and after native resolution", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const childRef = { backendId: "claude", nativeSessionId: "agent-child" };
+  const backend = listBackend("claude", { sessions: [] });
+  backend.getStatus = async () => ({ ...status(), backendId: "claude" });
+  backend.resolveSessionCwd = async () => "/workspace";
+  backend.startTurn = async () => { await gate; return { outcome: "completed" }; };
+  const store = sessionStore();
+  await store.bind(childRef, "/workspace", "neutral");
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(),
+    sessionStore: store, resolveCanonicalCwd: async (cwd) => cwd,
+    isSubagentSession: (ref) => ref.nativeSessionId.startsWith("agent-"), });
+  const run = await service.startTurn(startRequest({ backendId: "claude", sessionRef: childRef }), { subjectId: "user-1" });
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" }), { count: 0 });
+  release();
+  await run.completion;
 });
 
 test("scoped session snapshot calls only the target backend", async () => {

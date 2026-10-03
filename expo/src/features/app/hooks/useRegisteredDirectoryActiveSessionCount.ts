@@ -53,17 +53,10 @@ export function useRegisteredDirectoryActiveSessionCount() {
     };
     setCount(null);
     refresh();
-    const unsubscribeEvents = manager.subscribe({ channel: "agent", op: "event" }, (message) => {
-      const type = (message.payload as { type?: string } | null)?.type;
-      if (["session.resolved", "turn.started", "turn.completed", "turn.interrupted", "turn.failed"].includes(type || "")) refresh();
-    });
-    const unsubscribeAccepted = manager.subscribe({ channel: "agent", op: "turn.accepted" }, refresh);
-    const timer = setInterval(() => { if (!inFlight) refresh(); }, 30_000);
+    const unsubscribeChanged = manager.subscribe({ channel: "control", op: "sessions_active_changed" }, refresh);
     return () => {
       current = false;
-      clearInterval(timer);
-      unsubscribeEvents();
-      unsubscribeAccepted();
+      unsubscribeChanged();
     };
   }, [activeScreen, connected, directoryKey, generation, manager]);
 

@@ -351,9 +351,14 @@ test("Codex Backend tracks native thread activity for session list annotations",
   const completion = new Promise((resolve) => { finishTurn = resolve; });
   client.waitForTurnCompletion = () => ({ promise: completion, expect() {} });
   client.close = () => {};
+  const activityChanges = [];
   const backend = createCodexBackend({
     createClient: () => client,
     resolveSessionCwd: async () => "/work/project",
+    resolveNativeActiveSession: async (threadId) => threadId === "subagent-thread"
+      ? { sessionRef: { backendId: "codex", nativeSessionId: threadId }, canonicalCwd: "/work/project", isSubagent: true }
+      : null,
+    onActiveSessionsChanged: () => activityChanges.push(backend.listActiveSessions()),
     listSessions: async () => ({
       sessions: [
         { sessionRef: { backendId: "codex", nativeSessionId: "subagent-thread" }, canonicalCwd: "/work/project" },
@@ -385,6 +390,8 @@ test("Codex Backend tracks native thread activity for session list annotations",
   for (const listener of [...client.listeners]) {
     listener("thread/status/changed", { threadId: "subagent-thread", status: "active" });
   }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(backend.listActiveSessions()[0].isSubagent, true);
   const during = await backend.listSessions({ cwd: "/work/project" });
   assert.deepEqual(
     during.sessions.map((session) => [session.sessionRef.nativeSessionId, session.isActive === true]),
@@ -393,11 +400,23 @@ test("Codex Backend tracks native thread activity for session list annotations",
   const grouped = await backend.listSessionsForDirectories({ cwds: ["/work/project"] });
   assert.equal(grouped.groups[0].sessions[0].isActive, true);
 
+  // 初回status時にindexに無かったmainも、既存の一覧取得でidentityへ収束する。
+  for (const listener of [...client.listeners]) {
+    listener("thread/status/changed", { threadId: "other-thread", status: "active" });
+  }
+  await backend.listSessions({ cwd: "/work/project" });
+  assert.equal(backend.listActiveSessions().some((session) =>
+    session.sessionRef.nativeSessionId === "other-thread" && !session.isSubagent), true);
+  for (const listener of [...client.listeners]) {
+    listener("thread/status/changed", { threadId: "other-thread", status: "idle" });
+  }
+
   // idle通知(object status形)で解除される
   for (const listener of [...client.listeners]) {
     listener("thread/status/changed", { threadId: "subagent-thread", status: { type: "idle" } });
   }
   assert.equal((await backend.listSessions({ cwd: "/work/project" })).sessions[0].isActive, undefined);
+  assert.deepEqual(backend.listActiveSessions(), []);
 
   // turn接続が全て閉じたらstale activeを残さない
   for (const listener of [...client.listeners]) {
@@ -409,6 +428,7 @@ test("Codex Backend tracks native thread activity for session list annotations",
   finishTurn();
   assert.equal((await turn).outcome, "completed");
   assert.equal((await backend.listSessions({ cwd: "/work/project" })).sessions[0].isActive, undefined);
+  assert.equal(activityChanges.at(-1).length, 0);
 });
 
 test("Codex Backend preserves command details in provider-neutral tool events", async () => {

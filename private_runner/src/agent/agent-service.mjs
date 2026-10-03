@@ -131,6 +131,9 @@ export function createAgentService({
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
   onRunEvent,
+  onActiveSessionsChanged,
+  isSubagentSession = () => false,
+  listRawActiveSessions = () => [],
   log = console,
 } = {}) {
   const registry = new Map();
@@ -165,6 +168,11 @@ export function createAgentService({
   const compactQueueBySession = new Map();
   const recoveryBySession = new Map();
   let admissionQueue = Promise.resolve();
+  const notifyActiveSessionsChanged = () => {
+    try { onActiveSessionsChanged?.(); } catch (error) {
+      log.warn(`[agent] active session observer failed: ${errorText(error)}`);
+    }
+  };
 
   async function admitStart(run) {
     const previous = admissionQueue;
@@ -380,6 +388,7 @@ export function createAgentService({
     run.sessionResolved = true;
     activeRunBySession.set(key, run.runId);
     publish(run, "session.resolved", { sessionRef: resolved });
+    notifyActiveSessionsChanged();
   }
 
   async function recoverSessionLease(sessionRef, backend) {
@@ -489,6 +498,7 @@ export function createAgentService({
       activeRunBySession.delete(run.sessionKey);
     }
     removeFromCompactQueue(run);
+    notifyActiveSessionsChanged();
     run.resolveCompletion(result);
     await operationStore.complete(run.subjectId, run.clientOperationId, result).catch(() => {});
     const retentionTimer = setTimeout(() => {
@@ -713,6 +723,9 @@ export function createAgentService({
       await workspaceAdmission.assertAllowed(subjectId, canonicalCwd);
     }
     if (request.sessionRef) await recoverSessionLease(request.sessionRef, backend);
+    const isSubagent = request.sessionRef
+      ? await isSubagentSession(request.sessionRef, canonicalCwd)
+      : false;
     return await admitStart(async () => {
       const acceptedRequest = { ...request, cwd: canonicalCwd };
       const requestHash = hashAgentOperationRequest(acceptedRequest);
@@ -820,6 +833,7 @@ export function createAgentService({
         sessionResolved: Boolean(request.sessionRef),
         sessionKey: request.sessionRef ? sessionKey(request.sessionRef) : "",
         cwd: canonicalCwd,
+        isSubagent,
         model: request.model,
         effort: request.effort,
         settingsPersisted: false,
@@ -855,6 +869,7 @@ export function createAgentService({
         }
       }
       publish(run, "turn.accepted", { backendId: run.backendId, queued: queuedForCompact });
+      notifyActiveSessionsChanged();
       if (run.sessionResolved) publish(run, "session.resolved", { sessionRef: run.sessionRef });
       queueMicrotask(() => void execute(run, backend, acceptedRequest));
       const actionConsumerId = {};
@@ -1707,16 +1722,21 @@ export function createAgentService({
         if (!cwds.includes(cwd)) cwds.push(cwd);
       }
       if (cwds.length === 0) return { count: 0 };
-      const snapshot = await service.listSessionSnapshot({ cwds, includeSubagents: false }, context);
-      if (snapshot.partial) {
-        throw agentError("backend_unavailable", "active session count is incomplete");
-      }
+      const allowedCwds = new Set(cwds);
       const activeSessions = new Set();
-      for (const group of snapshot.groups) {
-        for (const session of group.sessions) {
-          if (!session.isActive || session.isSubagent || session.parentSessionRef) continue;
+      for (const run of runs.values()) {
+        if (run.terminal || run.subjectId !== subjectId || run.isSubagent || !allowedCwds.has(run.cwd)) continue;
+        activeSessions.add(run.sessionRef ? sessionKey(run.sessionRef) : `run:${run.runId}`);
+      }
+      for (const backend of registry.values()) {
+        for (const session of backend.listActiveSessions?.() || []) {
+          if (session.isSubagent || session.parentSessionRef || !allowedCwds.has(session.canonicalCwd)) continue;
           activeSessions.add(sessionKey(session.sessionRef));
         }
+      }
+      for (const session of listRawActiveSessions()) {
+        if (session.isSubagent || session.parentSessionRef || !allowedCwds.has(session.canonicalCwd)) continue;
+        activeSessions.add(sessionKey(session.sessionRef));
       }
       return { count: activeSessions.size };
     },
