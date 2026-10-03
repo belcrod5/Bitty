@@ -238,7 +238,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
           supportedProtocolVersions: [AGENT_PROTOCOL_VERSION],
           operations: [
             "turn.start", "voice.open", "voice.status", "voice.history", "voice.turn.interrupt", "voice.settings", "voice.settings.update", "voice.memory.clear", "voice.messages.clear", "voice.orchestrators.list", "voice.orchestrators.select", "voice.orchestrators.create", "voice.orchestrators.update", "voice.orchestrators.delete", "voice.approval.decision", "voice.userInput.respond", "turn.interrupt", "action.claim", "action.respond", "events.resume", "events.detach", "session.handoff",
-            "session.compact", "sessions.list", "history.read", "history.search", "conversation.read",
+            "session.compact", "sessions.list", "sessions.active-count", "history.read", "history.search", "conversation.read",
             "workspaces.list", "workspace.prepare", "workspace.confirm", "workspace.revoke",
           ],
           events: Array.from(AGENT_EVENT_TYPES),
@@ -430,6 +430,15 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
       void service.listSessions(payload, { subjectId }).then((result) => sendEnvelope(ws, {
         channel: "agent",
         op: "sessions.list.result",
+        requestId: message.requestId || "",
+        payload: result,
+      })).catch((error) => sendError(message, error));
+      return true;
+    }
+    if (message.op === "sessions.active-count") {
+      void service.countActiveSessions(payloadObject(message), { subjectId }).then((result) => sendEnvelope(ws, {
+        channel: "agent",
+        op: "sessions.active-count.result",
         requestId: message.requestId || "",
         payload: result,
       })).catch((error) => sendError(message, error));

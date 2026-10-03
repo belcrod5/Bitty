@@ -1557,7 +1557,7 @@ export function createAgentService({
           : {}),
       };
     },
-    async listSessionSnapshot(options) {
+    async listSessionSnapshot(options, context = {}) {
       const requestedBackendId = String(options?.backendId || ALL_BACKENDS_SCOPE).trim()
         || ALL_BACKENDS_SCOPE;
       const selectedBackends = requestedBackendId === ALL_BACKENDS_SCOPE
@@ -1677,7 +1677,7 @@ export function createAgentService({
           if (!sessions) continue;
           sessions.push(...await Promise.all(
             (Array.isArray(group?.sessions) ? group.sessions : [])
-              .map((session) => withStoredSessionState(session, cwd)),
+              .map((session) => withStoredSessionState(session, cwd, context)),
           ));
         }
       }
@@ -1697,6 +1697,28 @@ export function createAgentService({
           ? { partial: true, failedBackendIds: failures.map((entry) => entry.backendId) }
           : {}),
       };
+    },
+    async countActiveSessions(options, context = {}) {
+      const subjectId = String(context.subjectId || "").trim();
+      if (!Array.isArray(options?.cwds)) throw agentError("turn_rejected", "cwds are required");
+      const cwds = [];
+      for (const requestedCwd of options.cwds) {
+        const cwd = await workspaceAdmission.assertAllowed(subjectId, requestedCwd);
+        if (!cwds.includes(cwd)) cwds.push(cwd);
+      }
+      if (cwds.length === 0) return { count: 0 };
+      const snapshot = await service.listSessionSnapshot({ cwds, includeSubagents: false }, context);
+      if (snapshot.partial) {
+        throw agentError("backend_unavailable", "active session count is incomplete");
+      }
+      const activeSessions = new Set();
+      for (const group of snapshot.groups) {
+        for (const session of group.sessions) {
+          if (!session.isActive || session.isSubagent || session.parentSessionRef) continue;
+          activeSessions.add(sessionKey(session.sessionRef));
+        }
+      }
+      return { count: activeSessions.size };
     },
     async readHistory(options, context = {}) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);

@@ -1032,6 +1032,70 @@ test("multi-directory snapshot uses backend batch listing and fails closed", asy
   );
 });
 
+test("active count includes unassigned main sessions across providers and follows managed runs", async () => {
+  const codexRef = { backendId: "codex", nativeSessionId: "same-id" };
+  const claudeRef = { backendId: "claude", nativeSessionId: "same-id" };
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const codex = listBackend("codex", { sessions: [] });
+  codex.listSessionsForDirectories = async ({ cwds, includeSubagents }) => {
+    assert.equal(includeSubagents, false);
+    return { groups: cwds.map((cwd) => ({ cwd, sessions: [
+      { sessionRef: codexRef, canonicalCwd: cwd, isActive: true },
+      { sessionRef: { backendId: "codex", nativeSessionId: "child" }, canonicalCwd: cwd,
+        parentSessionRef: codexRef, isActive: true },
+      { sessionRef: { backendId: "codex", nativeSessionId: "idle" }, canonicalCwd: cwd },
+    ] })) };
+  };
+  const claude = listBackend("claude", { sessions: [] });
+  claude.getStatus = async () => ({ ...status(), backendId: "claude",
+    capabilities: { ...status().capabilities, session: { list: true } } });
+  claude.resolveSessionCwd = async () => "/one";
+  claude.startTurn = async ({ emit }) => { emit("turn.started", {}); await gate; return { outcome: "completed" }; };
+  claude.listSessionsForDirectories = async ({ cwds }) => ({
+    groups: cwds.map((cwd) => ({ cwd, sessions: cwd === "/one"
+      ? [{ sessionRef: claudeRef, canonicalCwd: cwd }]
+      : [] })),
+  });
+  const store = sessionStore();
+  await store.bind(claudeRef, "/one", "neutral");
+  const service = createAgentService({
+    backends: [codex, claude], operationStore: operationStore(), sessionStore: store,
+    resolveCanonicalCwd: async (cwd) => cwd,
+    workspaceAdmission: { assertAllowed: async (_subject, cwd) => cwd === "/alias" ? "/one" : cwd },
+  });
+  const context = { subjectId: "user-1" };
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/alias", "/one", "/two"] }, context), { count: 1 });
+  const run = await service.startTurn(startRequest({ backendId: "claude", cwd: "/one",
+    sessionRef: claudeRef }), context);
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/one", "/two"] }, context), { count: 2 });
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/two"] }, context), { count: 1 });
+  release();
+  await run.completion;
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/one", "/two"] }, context), { count: 1 });
+  assert.deepEqual(await service.countActiveSessions({ cwds: [] }, context), { count: 0 });
+});
+
+test("active count rejects incomplete provider snapshots and inaccessible workspaces", async () => {
+  const codex = listBackend("codex", { sessions: [] });
+  codex.listSessionsForDirectories = async ({ cwds }) => ({ groups: cwds.map((cwd) => ({ cwd, sessions: [] })) });
+  const claude = listBackend("claude", { sessions: [] });
+  claude.listSessionsForDirectories = async () => { throw new Error("catalog failed"); };
+  const service = createAgentService({
+    backends: [codex, claude], operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    workspaceAdmission: { assertAllowed: async (_subject, cwd) => {
+      if (cwd === "/forbidden") throw new Error("workspace denied");
+      return cwd;
+    } },
+    log: { warn() {} },
+  });
+  await assert.rejects(service.countActiveSessions({ cwds: ["/one"] }, { subjectId: "user-1" }),
+    /incomplete/);
+  await assert.rejects(service.countActiveSessions({ cwds: ["/forbidden"] }, { subjectId: "user-1" }),
+    /workspace denied/);
+});
+
 test("scoped session snapshot calls only the target backend", async () => {
   const calls = [];
   let codexFails = false;

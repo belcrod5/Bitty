@@ -143,7 +143,7 @@ export function CodexStatusSummaryMenu({
           accessibilityRole="button"
           accessibilityLabel="利用状況を更新して表示"
         >
-          <Text style={styles.chatStatusSummaryText}>
+          <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
             {statusSummaryText}
             {statusLoading ? " 更新中..." : ""}
           </Text>
