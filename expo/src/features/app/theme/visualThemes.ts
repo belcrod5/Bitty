@@ -230,7 +230,7 @@ const standardTheme: VisualTheme = {
     surface: "#ffffff",
     surfaceRaised: "#f8fafc",
     surfaceMuted: "#f1f5f9",
-    userMessageSurface: "#f1f5f9",
+    userMessageSurface: "#dbe4ee",
     surfaceSelected: "#eff6ff",
     surfaceGrouped: "#f2f2f7",
     surfaceActionSoft: "#f0fdfa",

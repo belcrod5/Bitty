@@ -133,6 +133,17 @@ test("keeps cyberpunk text and controls above their contrast targets", () => {
   }
 });
 
+test("keeps standard user messages distinct with readable text", () => {
+  const theme = VISUAL_THEMES.standard;
+  const bubble = theme.colors.userMessageSurface;
+
+  expect(contrastRatio(bubble, theme.colors.canvas)).toBeGreaterThanOrEqual(1.2);
+  expect(contrastRatio(bubble, theme.colors.surfaceRaised)).toBeGreaterThanOrEqual(1.2);
+  for (const foreground of [theme.colors.textPrimary, theme.tones.neutral.foreground, theme.colors.accentStrong]) {
+    expect(contrastRatio(foreground, bubble)).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
 test("keeps the standard board palette unchanged", () => {
   expect(VISUAL_THEMES.standard.board).toEqual({
     canvas: "#f1f5f9",
