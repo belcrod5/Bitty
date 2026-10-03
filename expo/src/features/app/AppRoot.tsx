@@ -67,7 +67,6 @@ import { useCalendarWriteRequestController } from "./hooks/useCalendarWriteReque
 import { CalendarWriteApprovalModal } from "./components/CalendarWriteApprovalModal";
 import { UserInputModal } from "./components/UserInputModal";
 import { useUserInputRequestController } from "./hooks/useUserInputRequestController";
-import { bootstrapLocationSchedules } from "../locationSchedules/locationScheduleRuntime";
 import { createCalendarToolHandler, parseCalendarToolCall } from "../calendar/calendarToolHandler";
 import { recoverCalendarWriteLedger } from "../calendar/calendarWriteLedger";
 import { useLlmTraceStateController } from "./hooks/useLlmTraceStateController";
@@ -92,6 +91,7 @@ import { useWaitingApprovalResumeActionController } from "./hooks/useWaitingAppr
 import { useAgentModelCatalog } from "./hooks/useAgentModelCatalog";
 import { useLlmCompletionNotifications } from "./hooks/useLlmCompletionNotifications";
 import { useAppSettingsPersistenceController } from "./hooks/useAppSettingsPersistenceController";
+import { mutatePersistedSettings } from "./utils/persistedSettingsFile";
 import { shouldAllowAutoCaptureDuringTts } from "./utils/autoAudioPolicy";
 import { useRunnerRouteSelection } from "./hooks/useRunnerRouteSelection";
 import { useVoiceApprovals } from "./hooks/useVoiceApprovals";
@@ -598,8 +598,26 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const baseUrl = useCallback(() => auxServerBaseUrl(), [auxServerBaseUrl]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   useEffect(() => {
-    if (!settingsLoaded || AppState.currentState !== "active") return;
-    void bootstrapLocationSchedules().catch(() => {});
+    if (!settingsLoaded) return;
+    void mutatePersistedSettings((current) => current).catch((error) => {
+      console.warn("[settings] failed to remove old location rules", error);
+    });
+    if (Platform.OS !== "ios") return;
+    void import("expo-task-manager").then(async (TaskManager) => {
+      for (const name of [
+        "bitty-location-schedule-geofence",
+        "bitty-location-schedule-refresh",
+        "bitty-background-notification",
+      ]) {
+        try {
+          if (await TaskManager.isTaskRegisteredAsync(name)) await TaskManager.unregisterTaskAsync(name);
+        } catch (error) {
+          console.warn("[settings] failed to unregister old location task", error);
+        }
+      }
+    }).catch((error) => {
+      console.warn("[settings] failed to load old task cleanup", error);
+    });
   }, [settingsLoaded]);
   // Latest session-tree refresh, assigned after its dependencies are defined
   // below; the bootstrap hook fires it once on the settingsLoaded transition

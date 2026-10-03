@@ -72,7 +72,7 @@ worktree側でサーバー再起動やiOS実機ビルドを行う場合、ユー
 ローカル初期化でメインリポジトリ側のファイルを参照する場合は、対象worktreeの `.env` または実行環境に `BITTY_MAIN_REPO_ROOT` を明示する。自動推測はしない。
 `scripts/worktree/bootstrap-local.sh --env` は、main側の `.env` コピー後も対象worktree側の `.env` に `BITTY_MAIN_REPO_ROOT` を保持する。
 
-`scripts/worktree/bootstrap-local.sh` は追加の引数なしで、worktree側の `private_runner/logs` をmain側の同じディレクトリへ向けたシンボリックリンクにする。これにより、セッション既読状態、Codex／位置スケジュール、Push端末登録、Runner tokenなどのRunner永続データを、どのworktreeからサーバーを起動しても共有する。
+`scripts/worktree/bootstrap-local.sh` は追加の引数なしで、worktree側の `private_runner/logs` をmain側の同じディレクトリへ向けたシンボリックリンクにする。これにより、セッション既読状態、Codexスケジュール、Push端末登録、Runner tokenなどのRunner永続データを、どのworktreeからサーバーを起動しても共有する。
 
 ```text
 <worktree>/private_runner/logs

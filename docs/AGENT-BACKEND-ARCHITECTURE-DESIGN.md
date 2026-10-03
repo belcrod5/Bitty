@@ -80,7 +80,6 @@ calendarの業務処理は共有可能だが、`item/tool/call`とApp Server res
 queue/compact stateは`server-runtime.mjs:6754-7395`、HTTP routeは`:8367-8488`にある。
 normal relayからrunner起点turnを始める処理は`private_runner/src/codex-relay-initiator.mjs:5-130`にある。
 `private_runner/src/codex-schedule-service.mjs`はmodelRef、reasoningEffort、threadId、turnIdをCodex前提で扱う。
-location scheduleにも`parseCodexOptions`依存がある（`location-schedule-service.mjs:116-147, 440-485`）。recurrence、location、通知等のschedule domainはBackendへ移さない。Provider固有optionの解釈とturn起動境界だけをCodex実行領域へ寄せ、neutral化後は`AgentService.startTurn`へ委譲する。
 
 ## 1.6 session・history
 

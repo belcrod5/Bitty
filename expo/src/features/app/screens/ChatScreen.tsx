@@ -84,7 +84,6 @@ import { suggestRunnerWsUrlFromRunnerUrl } from "../utils/urlResolvers";
 import { findChatMessageMatches } from "../utils/chatFind";
 import { formatMessageTimestampLabel } from "../utils/formatting";
 import { formatOutputTokens } from "../utils/messageTokens";
-import { LocationScheduleSettings } from "../../locationSchedules/LocationScheduleSettings";
 import { CodexScheduleSettings } from "../../codexSchedules/CodexScheduleSettings";
 
 type ChatFooterSelectTarget = "model" | "think";
@@ -2866,16 +2865,6 @@ export function ChatScreen({
                       <Text style={styles.settingsSectionTitle}>自動実行</Text>
                     </View>
                     <View style={styles.settingsGroup}>
-                      <View style={styles.settingsRowDivider}>
-                        <LocationScheduleSettings
-                          currentCwd={selectedDirectoryPathForView}
-                          currentModelRef={scheduleModelRef}
-                          currentReasoningEffort={reasoningEffortForView as ReasoningEffort}
-                          directories={registeredDirectories}
-                          modelOptions={scheduleModelOptions}
-                          thinkOptions={thinkOptions}
-                        />
-                      </View>
                       <CodexScheduleSettings
                         runnerUrl={runnerUrl}
                         runnerToken={runnerToken}

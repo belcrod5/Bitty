@@ -137,7 +137,7 @@ function completion(overrides = {}) {
     sessionId: "session-1",
     agentMessageText: "finished successfully",
     directory: "/work/project-a",
-    origin: "location_schedule",
+    origin: "queued_turn",
     ...overrides,
   };
 }
@@ -376,7 +376,7 @@ test("checks unread before summarization so a read during summarization does not
 
 test("deduplicates the same turn across execution origins", async () => {
   const harness = createHarness();
-  await harness.notifier.notifyTurnCompleted(completion({ origin: "location_schedule" }));
+  await harness.notifier.notifyTurnCompleted(completion({ origin: "queued_turn" }));
   await harness.notifier.notifyTurnCompleted(completion({ origin: "relay" }));
   assert.equal(harness.broadcasts.length, 1);
   assert.equal(harness.sends.length, 1);

@@ -6,6 +6,14 @@ import * as FileSystem from "expo-file-system/legacy";
 // provider tree has loaded settings into context.
 const SETTINGS_FILE_NAME = "bitty-settings.json";
 let settingsMutationQueue: Promise<unknown> = Promise.resolve();
+const REMOVED_LOCATION_SETTINGS_FIELDS = [
+  "locationSchedules",
+  "locationScheduleRunnerUrls",
+  "locationScheduleRunnerTokenId",
+  "locationSchedulePendingStates",
+  "locationScheduleLastStates",
+  "locationScheduleArchivedByRunner",
+];
 
 function settingsPaths() {
   const baseDir = FileSystem.documentDirectory;
@@ -46,7 +54,9 @@ export async function mutatePersistedSettings(
   const operation = settingsMutationQueue.then(async () => {
     const paths = settingsPaths();
     const current = await readPersistedSettingsWithoutBarrier() ?? {};
-    await FileSystem.writeAsStringAsync(paths.pendingPath, JSON.stringify(mutate(current)));
+    const next = mutate(current);
+    for (const field of REMOVED_LOCATION_SETTINGS_FIELDS) delete next[field];
+    await FileSystem.writeAsStringAsync(paths.pendingPath, JSON.stringify(next));
     await FileSystem.moveAsync({ from: paths.pendingPath, to: paths.path });
   });
   settingsMutationQueue = operation.catch(() => {});
@@ -61,15 +71,6 @@ export function configuredRunnerUrls(settings: Record<string, unknown>): string[
   return [...new Set(urls)];
 }
 
-export const LOCATION_BACKGROUND_FIELDS = [
-  "locationSchedules",
-  "locationScheduleRunnerUrls",
-  "locationScheduleRunnerTokenId",
-  "locationSchedulePendingStates",
-  "locationScheduleLastStates",
-  "locationScheduleArchivedByRunner",
-] as const;
-
 // Skiaボードの文字倍率(端末ローカル設定。ランナー共有ボードには含めない)。
 // ボード配置自体の正本はランナーが持ち、端末には保存しない(旧skiaBoardState
 // フィールドはPRESERVED対象から外れたため、次の設定保存で自然に消える)。
@@ -81,10 +82,9 @@ export const SKIA_BOARD_RUNNER_CACHE_FIELD = "skiaBoardRunnerCache";
 // ボード配置とは独立した端末固有の表示位置・倍率。
 export const SKIA_BOARD_VIEWPORT_FIELD = "skiaBoardViewport";
 
-// React側の設定stateから再構築されず、所有者(バックグラウンド位置タスク・Skiaボード)が
+// React側の設定stateから再構築されず、所有者(Skiaボード)が
 // mutatePersistedSettingsで直接書くフィールド。設定オートセーブは値を保持する。
 export const PRESERVED_SETTINGS_FIELDS = [
-  ...LOCATION_BACKGROUND_FIELDS,
   SKIA_BOARD_CARD_TEXT_SCALE_FIELD,
   SKIA_BOARD_RUNNER_CACHE_FIELD,
   SKIA_BOARD_VIEWPORT_FIELD,

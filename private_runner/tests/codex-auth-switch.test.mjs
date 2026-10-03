@@ -197,9 +197,32 @@ test("owner lock startup releases after an early stop request and never listens"
 test("schedule services start only after auth initialization", async () => {
   const source = await fs.readFile("private_runner/src/server-runtime.mjs", "utf8");
   const auth = source.indexOf("await codexAuthRuntime.initialize()");
-  const location = source.indexOf("await locationScheduleService.start()");
   const codex = source.indexOf("await codexScheduleService.start()");
-  assert.ok(auth >= 0 && location > auth && codex > location);
+  assert.ok(auth >= 0 && codex > auth);
+});
+
+test("old location routes are gone while Codex schedules remain available", async () => {
+  const service = __TESTING__.codexScheduleService;
+  const snapshot = service.snapshot;
+  service.snapshot = async () => ({ revision: 7, schedules: [] });
+  try {
+    await withServer(async (base) => {
+      const headers = { authorization: `Bearer ${RUNNER_TOKEN}` };
+      for (const [method, route] of [
+        ["GET", "/location-schedules"],
+        ["PUT", "/location-schedules"],
+        ["POST", "/location-schedules/state"],
+        ["GET", "/calendar/requests"],
+      ]) {
+        assert.equal((await fetch(`${base}${route}`, { method, headers })).status, 404);
+      }
+      const response = await fetch(`${base}/codex-schedules`, { headers });
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).schedules, []);
+    });
+  } finally {
+    service.snapshot = snapshot;
+  }
 });
 
 test("inactive profile deletion succeeds and active profile returns stable 409", async () => {

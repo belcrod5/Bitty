@@ -9,7 +9,6 @@ turn 完了時の通知(in-app WS 通知 + APNs PUSH)は、現在 **runner-ws re
 一方、turn の実行経路は relay 以外にも存在し、これらは**どの観測点も通らないため通知が一切出ない**:
 
 1. queued turn(`runCodexQueuedTurn()`、現行 7121 行付近): 復旧実行。`createCodexRpcClient` の `onNotification` は `turn/started` しか見ていない。
-2. location schedule 発火(`createLocationScheduleService` の `executeTurn` 配線、現行 1303 行付近): 同上。
 
 根本原因は「**完了の観測と通知が relay という1経路の実装に埋め込まれており、実行経路が増えるたびに通知実装が漏れる**」構造にある。本設計はこれを上流で解決する。
 
@@ -19,12 +18,10 @@ turn 完了時の通知(in-app WS 通知 + APNs PUSH)は、現在 **runner-ws re
 [経路1] relay(アプリ操作のturn)
     observeCodexRelayCompletionNotification ──────────────┐
                                                           │
-[経路2] queued turn        ─┐                             ├─→ notifyTurnCompleted()  ← 唯一の通知出口
-                            ├─ runRunnerInitiatedTurn ────┘      (dedup → WS broadcast → APNs push)
-[経路3] location schedule  ─┘   (完了テキスト捕捉込み)
+[経路2] queued turn ───── runRunnerInitiatedTurn ────────┘      (dedup → WS broadcast → APNs push)
 ```
 
-1. **実行の一本化**: Runner 自身が開始する turn(queued turn・schedule 発火・将来の Runner 発実行)は、必ず共通ヘルパー `runRunnerInitiatedTurn()` を通す。完了テキストの捕捉は実行境界 `executeCodexTurn()` 自体が行う。
+1. **実行の一本化**: Runner 自身が開始する turn(queued turn・将来の Runner 発実行)は、必ず共通ヘルパー `runRunnerInitiatedTurn()` を通す。完了テキストの捕捉は実行境界 `executeCodexTurn()` 自体が行う。
 2. **通知の一本化**: 通知の出口は新モジュールの `notifyTurnCompleted()` ただ1つ。relay 観測点もこの関数を呼ぶ形に書き換える。dedup をこの関数内に持つため、同一 turn を複数の経路が観測しても通知は1回になる。
 
 これにより「新しい実行経路を追加するときは `runRunnerInitiatedTurn()` を使う(使わなければ通知されない、は relay のような“観測型”経路のみ)」という単純な規約になる。
@@ -87,7 +84,7 @@ export function createTurnCompletionNotifier({
     sessionId,         // 任意。省略時 threadId
     agentMessageText,  // 生の完了テキスト。compact 前でよい
     directory,         // cwd。push タイトル導出用
-    origin,            // "relay" | "queued_turn" | "location_schedule" | 将来の値。ログ用
+    origin,            // "relay" | "queued_turn" | 将来の値。ログ用
   }): Promise<void>
 }
 ```
@@ -97,7 +94,7 @@ export function createTurnCompletionNotifier({
 1. `threadId` を trim。空なら return。
 2. `previewText = compactLlmCompletionPreview(agentMessageText)`(既定 180 文字)。空なら return(**失敗 turn・本文なし turn は通知しない**。現行 relay セマンティクスの維持)。
 3. **dedup**: キーは `${threadId}|${turnId || "-"}`。`Map<key, timestampMs>` を保持し、登録済みなら return。TTL 6 時間、entry 数上限 1,000(超過時は古い順に削除。呼び出し頻度は低いので毎回線形掃除でよい)。relay 側の `relay.turnCompletedNotificationSent` フラグは**削除**し、この dedup に一本化する。
-4. in-app WS 通知: `broadcast({ sessionId, threadId, previewText, completedAt: new Date().toISOString() })` を呼ぶ。戻り値は無視(送信先ゼロでも push は続行)。
+3. in-app WS 通知: `broadcast({ sessionId, threadId, previewText, completedAt: new Date().toISOString() })` を呼ぶ。戻り値は無視(送信先ゼロでも push は続行)。
 5. APNs push: 移動した `sendTurnCompletedPush` 相当を実行(`pushEnabled`/`apnsClient`/`pushSummarizer` が欠ける場合はスキップ、デバイス列挙 → summarize → 送信、410 でデバイス削除、失敗は `log.warn`。現行実装をそのまま踏襲)。
 6. 例外はすべて内部で捕捉して `log.warn`。呼び出し元へ throw しない(`void notifyTurnCompleted(...)` で fire-and-forget 可能にする)。
 
@@ -123,7 +120,7 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
 
 ```js
 async function runRunnerInitiatedTurn({
-  clientName,        // 例 "private-runner-location-schedule"
+  clientName,        // 例 "private-runner-codex-queued-turn"
   origin,            // notifier へ渡す
   signal,            // 任意(queued turn の abort 用)
   onTurnStarted,     // 任意(queued turn の turnId 記録用)
@@ -151,8 +148,7 @@ async function runRunnerInitiatedTurn({
 
 ### 適用箇所
 
-1. **location schedule**(現行 1303 行付近の `executeTurn` 配線): client 生成〜close を `runRunnerInitiatedTurn({ clientName: "private-runner-location-schedule", origin: "location_schedule", request })` の呼び出しに置き換える。`location-schedule-service.mjs` 側は変更不要(返り値の `threadId`/`turnId` のみ使用しているため互換)。
-2. **queued turn**(`runCodexQueuedTurn`、現行 7121 行付近): client 生成〜`executeCodexTurn` 呼び出しを `runRunnerInitiatedTurn({ clientName: 既存値, origin: "queued_turn", signal: abortController.signal, onTurnStarted: turnId 記録処理, request: 既存パラメータ })` に置き換える。既存の `onNotification` での `turn/started` 監視は `onTurnStarted` コールバック(executeCodexTurn が既に持つ)へ移す。
+1. **queued turn**(`runCodexQueuedTurn`、現行 7121 行付近): client 生成〜`executeCodexTurn` 呼び出しを `runRunnerInitiatedTurn({ clientName: 既存値, origin: "queued_turn", signal: abortController.signal, onTurnStarted: turnId 記録処理, request: 既存パラメータ })` に置き換える。既存の `onNotification` での `turn/started` 監視は `onTurnStarted` コールバック(executeCodexTurn が既に持つ)へ移す。
 
 ## 変更点 5: relay 観測点を notifier へ接続
 
@@ -196,29 +192,27 @@ void turnCompletionNotifier.notifyTurnCompleted({
 1. `notifyTurnCompleted`: 正常系で `broadcast` と APNs 送信(フェイク)が1回ずつ呼ばれる。
 2. 同一 `(threadId, turnId)` の2回目は no-op(broadcast も push も呼ばれない)。
 3. `agentMessageText` 空 → no-op。`threadId` 空 → no-op。
-4. `pushEnabled=false` → broadcast のみ実行、push はスキップ。
+3. `pushEnabled=false` → broadcast のみ実行、push はスキップ。
 5. push 内部例外(listDevices throw)でも reject しない。
 6. dedup TTL / 上限 1,000 の掃除。
 
 既存テストの拡張:
 
 7. `executeCodexTurn`: フェイク client に `addNotificationListener` を実装し、delta 連結・`item/completed` 置き換えの捕捉結果が `lastAgentMessageText` として返ることを検証。リスナー解除も検証。
-8. location schedule focused テスト: 発火成功時に notifier が `origin: "location_schedule"`・正しい threadId/turnId/directory で1回呼ばれること。発火失敗時(executeTurn throw)は呼ばれないこと。
-9. queued turn テスト: 完了時に notifier が1回呼ばれること。relay 観測と重なるケースで push が1回に抑止されること(dedup)。
-10. relay 経路の既存テストが `turnCompletedNotificationSent` 削除後も通ること(必要ならフラグ参照のテストを dedup 検証に書き換え)。
+8. queued turn テスト: 完了時に notifier が1回呼ばれること。relay 観測と重なるケースで push が1回に抑止されること(dedup)。
+9. relay 経路の既存テストが `turnCompletedNotificationSent` 削除後も通ること(必要ならフラグ参照のテストを dedup 検証に書き換え)。
 
 ## 受け入れ基準
 
-1. location schedule 発火の完了で、登録済みデバイスに `TURN_COMPLETED` push と in-app WS 通知が届く(APNs 設定済み環境)。
-2. 通常チャット(relay)の push 挙動は従来と同一(タイトル・本文・カテゴリ・dedup)。
-3. queued turn 完了でも通知が出る。relay と二重に観測されても通知は1回。
-4. `sendTurnCompletedPush` の直接呼び出しが `turn-completion-notification.mjs` 内の1箇所のみになる(`grep` で確認)。
-5. Runner full tests + location schedule focused tests + Expo full Jest がすべて green。
-6. 新規ファイルは 1,000 行未満。既存の責務ファイルからの移動はコピーを残さない。
+1. 通常チャット(relay)の push 挙動は従来と同一(タイトル・本文・カテゴリ・dedup)。
+2. queued turn 完了でも通知が出る。relay と二重に観測されても通知は1回。
+3. `sendTurnCompletedPush` の直接呼び出しが `turn-completion-notification.mjs` 内の1箇所のみになる(`grep` で確認)。
+4. Runner full tests + Expo full Jest がすべて green。
+5. 新規ファイルは 1,000 行未満。既存の責務ファイルからの移動はコピーを残さない。
 
 ## 実装メモ(ブレ防止)
 
-- `turnCompletionNotifier` は APNs client / summarizer / device store の生成後に1回だけ生成し、location schedule と queued turn の両方から共有する。
-- `runRunnerInitiatedTurn` 内で `client.close` を `finally` で必ず呼ぶ(現行 schedule 配線と同じ)。
-- 通知処理を `await` しないこと(turn 実行の返却・occurrence 記録を通知の遅延でブロックしない)。
+- `turnCompletionNotifier` は APNs client / summarizer / device store の生成後に1回だけ生成し、queued turnから共有する。
+- `runRunnerInitiatedTurn` 内で `client.close` を `finally` で必ず呼ぶ。
+- 通知処理を `await` しないこと(turn 実行の返却を通知の遅延でブロックしない)。
 - 本設計による store スキーマ・API・iOS 側の変更は一切ない。

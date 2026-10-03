@@ -24,14 +24,8 @@ import {
 import { installRunnerWebSocketUpgradeHandler } from "./runner-websocket-upgrade.mjs";
 import { createApnsClient, maskApnsToken } from "./apns-client.mjs";
 import { createPushDeviceStore } from "./push-device-store.mjs";
-import {
-  createCalendarScheduleRequestHandler,
-  createCalendarToolService,
-  createCalendarHttpHandler,
-  calendarConversationDynamicTools,
-  calendarScheduleDynamicTools,
-} from "./calendar-tool-service.mjs";
-import { createCalendarScheduleRuntime } from "./calendar-schedule-runtime.mjs";
+import { calendarConversationDynamicTools } from "./calendar-tool-service.mjs";
+import { removeLegacyLocationStore } from "./remove-legacy-location-store.mjs";
 import { createCalendarRelayService } from "./calendar-relay-service.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
@@ -56,11 +50,6 @@ import { createSkiaBoardIngest } from "./skia-board-ingest.mjs";
 import { createApprovalPushService } from "./approval-push-service.mjs";
 import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
 import { createCodexRawSessionOwnership } from "./agent/codex-raw-session-ownership.mjs";
-import {
-  createLocationScheduleService,
-  LocationScheduleRevisionError,
-  LocationScheduleStoreUnavailableError,
-} from "./location-schedule-service.mjs";
 import {
   createTurnCompletionNotifier,
   derivePushDirectoryTitle,
@@ -102,10 +91,6 @@ const CODEX_WS_PROXY_UPSTREAM_URL = String(
   process.env.CODEX_WS_PROXY_UPSTREAM_URL || "ws://127.0.0.1:4500"
 ).trim();
 const CODEX_WS_PROXY_UPSTREAM_TOKEN = String(process.env.CODEX_WS_PROXY_UPSTREAM_TOKEN || "").trim();
-const CALENDAR_CODEX_WS_UPSTREAM_URL = String(process.env.CALENDAR_CODEX_WS_UPSTREAM_URL || "").trim();
-const CALENDAR_CODEX_WS_UPSTREAM_TOKEN = String(process.env.CALENDAR_CODEX_WS_UPSTREAM_TOKEN || "").trim();
-const CALENDAR_CODEX_CAPABILITY_URL = String(process.env.CALENDAR_CODEX_CAPABILITY_URL || "").trim();
-const CALENDAR_CODEX_CAPABILITY_TOKEN = String(process.env.CALENDAR_CODEX_CAPABILITY_TOKEN || "").trim();
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const OPENAI_CODEX_ROUTE = "openai-codex-responses";
 const OPENAI_CODEX_MODEL_REF = String(
@@ -522,7 +507,7 @@ const PUSH_DEVICE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.PUSH_DEVICE_STORE_PATH || "private_runner/logs/push_devices.json"
 );
-const LOCATION_SCHEDULE_STORE_PATH = path.resolve(
+const LEGACY_LOCATION_SCHEDULE_STORE_PATH = path.resolve(
   WORKSPACE_ROOT,
   process.env.LOCATION_SCHEDULE_STORE_PATH || "private_runner/logs/location_schedules.json"
 );
@@ -1480,89 +1465,6 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
     return broadcastRunnerWsTurnCompletedNotification(null, payload);
   },
 });
-const calendarToolService = createCalendarToolService({
-  sendPush: async (deviceId, marker) => {
-    if (!PUSH_ENABLED || !apnsClient) return false;
-    const device = await pushDeviceStore.getDevice(deviceId);
-    if (!device) return false;
-    const result = await apnsClient.sendToDevice(device.apnsToken, {
-      aps: { "content-available": 1 },
-      bitty: marker,
-    }, { env: device.env, pushType: "background", priority: 5 });
-    return Boolean(result?.ok);
-  },
-});
-const calendarHttpHandler = createCalendarHttpHandler({
-  service: calendarToolService,
-  runnerToken: RUNNER_TOKEN,
-  parseAuthToken,
-  readJsonBody,
-  json,
-});
-const calendarScheduleRuntime = createCalendarScheduleRuntime({
-  upstreamUrl: CALENDAR_CODEX_WS_UPSTREAM_URL,
-  upstreamToken: CALENDAR_CODEX_WS_UPSTREAM_TOKEN,
-  capabilityUrl: CALENDAR_CODEX_CAPABILITY_URL,
-  capabilityToken: CALENDAR_CODEX_CAPABILITY_TOKEN,
-  fetchImpl: (...args) => fetch(...args),
-  createClient: createCodexRpcClient,
-  executeTurn: executeCodexTurn,
-  dynamicTools: calendarScheduleDynamicTools,
-  createRequestHandler: createCalendarScheduleRequestHandler,
-  createReadRequest: calendarToolService.createReadRequest,
-});
-const locationScheduleService = createLocationScheduleService({
-  storePath: LOCATION_SCHEDULE_STORE_PATH,
-  parseCodexOptions: resolveCodexRequestOptions,
-  validateCwd: async (cwd) => {
-    const resolved = path.resolve(String(cwd || "").trim());
-    const stat = await fs.stat(resolved);
-    if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${resolved}`);
-  },
-  executeTurn: (request) => {
-    if (request.calendarMode === "read") {
-      return calendarScheduleRuntime.run({
-        clientName: "private-runner-location-schedule",
-        origin: "location_schedule",
-        request,
-      });
-    }
-    return runRunnerInitiatedTurn({
-      clientName: "private-runner-location-schedule",
-      origin: "location_schedule",
-      request,
-    });
-  },
-  calendarSchedulePreflight: calendarScheduleRuntime.preflight,
-  // 最終位置状態が古いままwindowが始まった場合に、サイレントpushで端末へ現在地の再報告を求める
-  requestStateRefresh: PUSH_ENABLED && apnsClient
-    ? async ({ rules }) => {
-      const devices = await pushDeviceStore.listDevices();
-      const ownerIds = new Set(rules.map((rule) => rule.locationDeviceId).filter(Boolean));
-      if (!ownerIds.size) return;
-      const payload = {
-        aps: { "content-available": 1 },
-        bitty: { type: "location_state_refresh" },
-      };
-      for (const device of devices) {
-        if (!ownerIds.has(device.deviceId)) continue;
-        try {
-          const result = await apnsClient.sendToDevice(device.apnsToken, payload, {
-            env: device.env,
-            pushType: "background",
-            priority: 5,
-          });
-          if (!result.ok) {
-            console.warn(`[location-schedule] state refresh push rejected (${maskApnsToken(device.apnsToken)}): ${result.status} ${result.reason}`);
-          }
-        } catch (error) {
-          console.warn(`[location-schedule] state refresh push failed (${maskApnsToken(device.apnsToken)}): ${error instanceof Error ? error.message : error}`);
-        }
-      }
-    }
-    : undefined,
-});
-
 const {
   appendAppConversationToCliRollout,
 } = createLlmCliRolloutWriter({
@@ -8130,56 +8032,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === "GET" && pathname === "/location-schedules") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
-    try {
-      return json(res, 200, { ok: true, snapshot: await locationScheduleService.snapshot() });
-    } catch (error) {
-      if (error instanceof LocationScheduleStoreUnavailableError) {
-        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
-      }
-      throw error;
-    }
-  }
-
-  if (req.method === "PUT" && pathname === "/location-schedules") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
-    try {
-      const snapshot = await locationScheduleService.replaceSchedules(await readJsonBody(req, 3 * 1024 * 1024));
-      return json(res, 200, { ok: true, snapshot });
-    } catch (error) {
-      if (error instanceof LocationScheduleStoreUnavailableError) {
-        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
-      }
-      if (error instanceof LocationScheduleRevisionError) {
-        return json(res, 409, { error: "location_schedule_conflict", message: errorMessage(error) });
-      }
-      return json(res, 400, { error: "invalid_location_schedules", message: errorMessage(error) });
-    }
-  }
-
-  if (req.method === "POST" && pathname === "/location-schedules/state") {
-    if (!RUNNER_TOKEN) {
-      return json(res, 500, { error: "runner_token_missing", message: "RUNNER_TOKEN is required" });
-    }
-    if (parseAuthToken(req) !== RUNNER_TOKEN) return json(res, 401, { error: "unauthorized" });
-    try {
-      const snapshot = await locationScheduleService.recordState(await readJsonBody(req, 16 * 1024));
-      return json(res, 200, { ok: true, snapshot });
-    } catch (error) {
-      if (error instanceof LocationScheduleStoreUnavailableError) {
-        return json(res, 503, { error: "location_schedule_store_unavailable", message: errorMessage(error) });
-      }
-      return json(res, 400, { error: "invalid_location_state", message: errorMessage(error) });
-    }
-  }
-
   if (req.method === "POST" && pathname === "/codex/queued-turns") {
     if (!RUNNER_TOKEN) {
       return json(res, 500, {
@@ -8354,7 +8206,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (await calendarHttpHandler(req, res, reqUrl)) return;
   if (await codexScheduleHttpHandler(req, res, pathname)) return;
   if (await skiaBoardHttpHandler(req, res, pathname)) return;
 
@@ -12120,8 +11971,18 @@ if (!RUNNER_SKIP_SERVER_START) {
       codexAuthService.markUnready();
       console.warn("[codex-auth] initialization unavailable; auth management is unready");
     }
-    await locationScheduleService.start().catch((error) => {
-      console.warn(`[location-schedule] initialization failed: ${errorMessage(error)}`);
+    await removeLegacyLocationStore({
+      defaultPath: path.resolve(WORKSPACE_ROOT, "private_runner/logs/location_schedules.json"),
+      configuredPath: LEGACY_LOCATION_SCHEDULE_STORE_PATH,
+      protectedPaths: [
+        CODEX_SCHEDULE_DEFINITIONS_PATH,
+        CODEX_SCHEDULE_RUNTIME_PATH,
+        PUSH_DEVICE_STORE_PATH,
+        CLIENT_STATE_STORE_PATH,
+        SKIA_BOARD_STORE_PATH,
+      ],
+    }).catch((error) => {
+      console.warn(`[location-schedule] cleanup failed: ${errorMessage(error)}`);
     });
     await codexScheduleService.start().catch((error) => {
       console.warn(`[codex-schedule] initialization failed: ${errorMessage(error)}`);
@@ -12149,7 +12010,6 @@ export const __TESTING__ = {
   pushDeviceStore,
   apnsClient,
   pushSummarizer,
-  locationScheduleService,
   codexScheduleService,
   skiaBoardService,
   skiaBoardIngest,
@@ -12175,9 +12035,6 @@ export const __TESTING__ = {
   cleanupNoClientRelaysForThread,
   ensureCodexRelayCapacity,
   createCodexRelayContext,
-  calendarCapabilityMatches: calendarScheduleRuntime.capabilityMatches,
-  calendarScheduleConnectionOptions: calendarScheduleRuntime.connectionOptions,
-  calendarSchedulePreflight: calendarScheduleRuntime.preflight,
   pickBestRelayForThread,
   runnerWsServer,
   voiceContextService,

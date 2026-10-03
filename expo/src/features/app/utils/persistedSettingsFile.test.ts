@@ -48,6 +48,7 @@ test("preserved settings fields no longer carry the legacy skia board state", ()
   expect(PRESERVED_SETTINGS_FIELDS).not.toContain("registeredDirectories");
   expect(PRESERVED_SETTINGS_FIELDS).not.toContain("sessionTitleOverridesById");
   expect(PRESERVED_SETTINGS_FIELDS).not.toContain("sessionMarkerColorsById");
+  expect(PRESERVED_SETTINGS_FIELDS).not.toContain("locationSchedules");
   expect(PRESERVED_SETTINGS_FIELDS).toContain(SKIA_BOARD_VIEWPORT_FIELD);
 });
 
@@ -77,20 +78,24 @@ test("reports an unavailable persistence directory instead of silently dropping 
     .rejects.toThrow("Persistent settings directory is unavailable");
 });
 
-test("serializes background and React-style updates without losing either field set", async () => {
+test("serializes writes while removing only old location fields", async () => {
   await Promise.all([
     mutatePersistedSettings((current) => ({ ...current, runnerUrl: "http://runner" })),
     mutatePersistedSettings((current) => ({
       ...current,
+      skiaBoardViewport: { x: 1 },
       locationSchedules: [{ id: "office" }],
+      locationScheduleRunnerUrls: ["https://old-runner"],
+      locationScheduleRunnerTokenId: "old-token",
       locationSchedulePendingStates: [{ eventId: "outside" }],
+      locationScheduleLastStates: { office: "inside" },
+      locationScheduleArchivedByRunner: { old: true },
     })),
   ]);
 
   expect(await readPersistedSettings()).toEqual({
     runnerUrl: "http://runner",
-    locationSchedules: [{ id: "office" }],
-    locationSchedulePendingStates: [{ eventId: "outside" }],
+    skiaBoardViewport: { x: 1 },
   });
   expect(mockWriteAsStringAsync).toHaveBeenCalledWith(
     "file:///documents/bitty-settings.json.pending",
@@ -105,10 +110,10 @@ test("serializes background and React-style updates without losing either field 
 test("reads the complete pending replacement during the native move gap", async () => {
   mockFiles.set(
     "file:///documents/bitty-settings.json.pending",
-    JSON.stringify({ runnerUrl: "http://runner", locationSchedules: [{ id: "home" }] })
+    JSON.stringify({ runnerUrl: "http://runner", skiaBoardViewport: { x: 1 } })
   );
 
-  expect(await readPersistedSettingsField("locationSchedules")).toEqual([{ id: "home" }]);
+  expect(await readPersistedSettingsField("skiaBoardViewport")).toEqual({ x: 1 });
 });
 
 test("read barrier waits for an in-process settings mutation to finish", async () => {
