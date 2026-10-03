@@ -2,8 +2,6 @@ import { useCallback, type MutableRefObject } from "react";
 import type { ConversationMessage, TtsPlaybackTarget } from "../types/appTypes";
 
 type UseReplyAudioFlowControllerOptions = {
-  nearUnlimitedTimeoutMs: number;
-  replyLoadingRef: MutableRefObject<boolean>;
   ttsPlayingRef: MutableRefObject<boolean>;
   ttsPlaybackMessageId: string;
   ttsLoading: boolean;
@@ -17,8 +15,6 @@ type UseReplyAudioFlowControllerOptions = {
 
 export function useReplyAudioFlowController(options: UseReplyAudioFlowControllerOptions) {
   const {
-    nearUnlimitedTimeoutMs,
-    replyLoadingRef,
     ttsPlayingRef,
     ttsPlaybackMessageId,
     ttsLoading,
@@ -26,19 +22,6 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
     synthesizeSpeechStream,
     logAuto,
   } = options;
-
-  const waitForReplyIdle = useCallback(async (timeoutMs = nearUnlimitedTimeoutMs) => {
-    const startedAt = Date.now();
-    while (replyLoadingRef.current) {
-      if (Date.now() - startedAt > timeoutMs) {
-        throw new Error("reply待機タイムアウト");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    }
-  }, [
-    nearUnlimitedTimeoutMs,
-    replyLoadingRef,
-  ]);
 
   const handleAssistantAudioButtonPress = useCallback(async (
     message: ConversationMessage,
@@ -54,11 +37,6 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
       logAuto("tts_trace", { stage: "button_ignored", reason: "empty_text", messageId: message.id });
       return;
     }
-    if (replyLoadingRef.current) {
-      logAuto("tts_trace", { stage: "button_ignored", reason: "reply_loading", messageId: message.id });
-      return;
-    }
-
     const isCurrentMessagePlaying = (
       ttsPlaybackMessageId === message.id &&
       (ttsPlayingRef.current || ttsLoading)
@@ -85,7 +63,6 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
       messageId: message.id,
     });
   }, [
-    replyLoadingRef,
     logAuto,
     stopWaveformPlayback,
     synthesizeSpeechStream,
@@ -95,7 +72,6 @@ export function useReplyAudioFlowController(options: UseReplyAudioFlowController
   ]);
 
   return {
-    waitForReplyIdle,
     handleAssistantAudioButtonPress,
   };
 }

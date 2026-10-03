@@ -1307,11 +1307,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     await synthesizeSpeechStreamDelegateRef.current(textOverride, streamOptions);
   }, []);
   const {
-    waitForReplyIdle,
     handleAssistantAudioButtonPress,
   } = useReplyAudioFlowController({
-    nearUnlimitedTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
-    replyLoadingRef,
     ttsPlayingRef,
     ttsPlaybackMessageId,
     ttsLoading,
