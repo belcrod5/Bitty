@@ -23,7 +23,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Cloudflare TunnelのPairing QR読み取りと顔向き判定のためにカメラを使用します。",
+          "cameraPermission": "Cloudflare TunnelのPairing QRを読み取るためにカメラを使用します。",
           "barcodeScannerEnabled": true
         }
       ],
@@ -72,7 +72,7 @@
           "NSAllowsLocalNetworking": true
         },
         "NSLocalNetworkUsageDescription": "WebSocket接続のためにローカルネットワークを使用します。",
-        "NSCameraUsageDescription": "Cloudflare TunnelのPairing QR読み取りと顔向き判定のためにカメラを使用します。",
+        "NSCameraUsageDescription": "Cloudflare TunnelのPairing QRを読み取るためにカメラを使用します。",
         "NSMicrophoneUsageDescription": "録音して文字起こしを行うためにマイクを使用します。",
         "NSPhotoLibraryUsageDescription": "ワークスペースへ写真をアップロードするために写真ライブラリを使用します。",
         "NSCalendarsUsageDescription": "Codexとの会話で予定を読み取り、確認後に予定を作成・更新・削除するためにカレンダーへアクセスします。",

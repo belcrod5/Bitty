@@ -12,9 +12,6 @@ export type ChatComposerContextValue = {
   chatComposerInputRef: MutableRefObject<TextInput | null>;
   showComposerFullscreenToggle: boolean;
   setComposerInputFocused: (focused: boolean) => void;
-  faceTrackingEnabled: boolean;
-  faceTrackingLooking: boolean;
-  voiceInputAllowed: boolean;
   onVoiceSpeechBegin: () => void;
   voiceInputDuringTtsAllowed: boolean;
   registerVoiceInputSession: (controller: {
@@ -25,8 +22,6 @@ export type ChatComposerContextValue = {
   hasComposerText: boolean;
   canStopLlmTurn: boolean;
   stopLlmTurn: () => void;
-  setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
-  faceTrackingRunning: boolean;
   setSlashCommandSelectOpen: Dispatch<SetStateAction<boolean>>;
   slashCommandOptions: readonly SlashCommandOption[];
   onSelectSlashCommand: (command: string) => void;

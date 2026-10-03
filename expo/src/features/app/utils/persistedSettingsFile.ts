@@ -6,7 +6,8 @@ import * as FileSystem from "expo-file-system/legacy";
 // provider tree has loaded settings into context.
 const SETTINGS_FILE_NAME = "bitty-settings.json";
 let settingsMutationQueue: Promise<unknown> = Promise.resolve();
-const REMOVED_LOCATION_SETTINGS_FIELDS = [
+const REMOVED_SETTINGS_FIELDS = [
+  "faceTrackingEnabled",
   "locationSchedules",
   "locationScheduleRunnerUrls",
   "locationScheduleRunnerTokenId",
@@ -55,7 +56,7 @@ export async function mutatePersistedSettings(
     const paths = settingsPaths();
     const current = await readPersistedSettingsWithoutBarrier() ?? {};
     const next = mutate(current);
-    for (const field of REMOVED_LOCATION_SETTINGS_FIELDS) delete next[field];
+    for (const field of REMOVED_SETTINGS_FIELDS) delete next[field];
     await FileSystem.writeAsStringAsync(paths.pendingPath, JSON.stringify(next));
     await FileSystem.moveAsync({ from: paths.pendingPath, to: paths.path });
   });

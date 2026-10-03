@@ -22,7 +22,6 @@ import * as Clipboard from "../clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAvoidingView } from "../keyboardController";
 import { WebView } from "react-native-webview";
-import { isIosFaceTrackingAvailable } from "../../faceTracking/iosFaceTrackingClient";
 import type { ConversationMessage } from "../types/appTypes";
 import type { DirectoryMarkerColor } from "../types/directorySessions";
 import { useAppStyles } from "../styles";
@@ -236,16 +235,11 @@ export function ChatScreen({
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,
-    faceTrackingEnabled,
-    faceTrackingLooking,
-    voiceInputAllowed,
     onVoiceSpeechBegin,
     voiceInputDuringTtsAllowed,
     registerVoiceInputSession,
     canStopLlmTurn,
     stopLlmTurn,
-    setFaceTrackingEnabledWithRef,
-    faceTrackingRunning,
     setSlashCommandSelectOpen,
     slashCommandOptions,
     onSelectSlashCommand,
@@ -1188,7 +1182,6 @@ export function ChatScreen({
     onSample: handleStreamingSttSample,
     onError: reportStreamingSttError,
     onDiagnostic: (event, payload) => logSessionDiag(event, { panelId, ...payload }, { throttleMs: 0 }),
-    canStart: voiceInputAllowed,
     onSpeechBegin: onVoiceSpeechBegin,
     replyLoading: replyLoadingForView,
     ttsPlaybackActive: isTtsPlaybackActive,
@@ -2450,9 +2443,6 @@ export function ChatScreen({
               />
             <View style={styles.chatComposerIconRow}>
               {(() => {
-                const faceToggleVisible = Platform.OS === "ios";
-                const faceToggleActive = faceTrackingEnabled;
-                const faceToggleBlocked = faceToggleActive && !faceTrackingLooking;
                 const shouldStopLlmTurn = canStopLlmTurnForView;
                 const showSendAction = !shouldStopLlmTurn && hasComposerTextForView;
                 const disabled = shouldStopLlmTurn
@@ -2463,7 +2453,6 @@ export function ChatScreen({
                 const iconName = shouldStopLlmTurn
                   ? "stop"
                   : (showSendAction ? "caret-forward" : "mic");
-                const faceIconName = !faceToggleActive ? "eye-outline" : (faceToggleBlocked ? "eye-off" : "eye");
                 const onPress = () => {
                   if (shouldStopLlmTurn) {
                     logSessionDiag("chat_stop_llm_pressed", {
@@ -2494,20 +2483,6 @@ export function ChatScreen({
                   }
                   streamingStt.start();
                 };
-                const onPressFaceToggle = () => {
-                  if (faceToggleActive) {
-                    setFaceTrackingEnabledWithRef(false);
-                    return;
-                  }
-                  if (!isIosFaceTrackingAvailable()) {
-                    Alert.alert(
-                      "Face Tracking unavailable",
-                      "iOS Development Build で FaceTrackingModule を含めてビルドしてください。"
-                    );
-                    return;
-                  }
-                  setFaceTrackingEnabledWithRef(true);
-                };
                 return (
                   <>
                     <TouchableOpacity
@@ -2518,22 +2493,6 @@ export function ChatScreen({
                     >
                       <Text style={styles.chatSlashIconText}>/</Text>
                     </TouchableOpacity>
-                    {faceToggleVisible ? (
-                      <TouchableOpacity
-                        style={[
-                          styles.chatIconButton,
-                          styles.chatFaceTrackIconButton,
-                          faceToggleActive && styles.chatFaceTrackIconButtonEnabled,
-                          faceToggleBlocked && styles.chatFaceTrackIconButtonBlocked,
-                          !faceTrackingRunning && faceToggleActive && styles.chatFaceTrackIconButtonIdle,
-                        ]}
-                        onPress={onPressFaceToggle}
-                        accessibilityRole="button"
-                        accessibilityLabel={faceToggleActive ? "Face Trackingをオフ" : "Face Trackingをオン"}
-                      >
-                        <Ionicons name={faceIconName as keyof typeof Ionicons.glyphMap} size={17} color={theme.colors.textPrimary} />
-                      </TouchableOpacity>
-                    ) : null}
                     <TouchableOpacity
                       style={[styles.chatIconButton, styles.chatRecordIconButton, disabled && styles.buttonDisabled]}
                       onPress={onPress}

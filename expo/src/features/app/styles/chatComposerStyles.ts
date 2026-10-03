@@ -158,22 +158,6 @@ export function createChatComposerStyles(theme: VisualTheme) {
     backgroundColor: theme.colors.textSecondary,
     borderColor: theme.colors.textSecondary,
   },
-  chatFaceTrackIconButton: {
-    backgroundColor: theme.colors.surfaceMuted,
-    borderColor: theme.colors.border,
-  },
-  chatFaceTrackIconButtonEnabled: {
-    backgroundColor: theme.tones.success.background,
-    borderColor: theme.colors.positiveText,
-  },
-  chatFaceTrackIconButtonBlocked: {
-    backgroundColor: theme.tones.warning.background,
-    borderColor: theme.colors.warningBorderStrong,
-  },
-  chatFaceTrackIconButtonIdle: {
-    backgroundColor: theme.colors.surfaceRaised,
-    borderColor: theme.colors.borderStrong,
-  },
   chatSlashIconButton: {
     backgroundColor: theme.colors.surface,
     borderColor: theme.colors.border,

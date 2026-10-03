@@ -43,7 +43,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   reasoningEffort: ReasoningEffort;
   codexApprovalPolicy: CodexApprovalPolicy;
   ttsProvider: TtsProvider;
-  faceTrackingEnabled: boolean;
   ttsSpeed: number;
   selectedVoiceIdByProvider: SelectedVoiceIdByProvider;
   autoBargeInEnabled: boolean;
@@ -71,7 +70,6 @@ type UseAppSettingsPersistenceControllerArgs = {
   setCodexApprovalPolicy: Dispatch<SetStateAction<CodexApprovalPolicy>>;
   setSelectedVoiceIdByProvider: Dispatch<SetStateAction<SelectedVoiceIdByProvider>>;
   setTtsProvider: Dispatch<SetStateAction<TtsProvider>>;
-  setFaceTrackingEnabledWithRef: (enabled: boolean) => void;
   setTtsSpeedWithSync: (value: number) => void;
   setAutoBargeInEnabled: Dispatch<SetStateAction<boolean>>;
   setAutoSpeakerPriorityEnabled: Dispatch<SetStateAction<boolean>>;
@@ -102,7 +100,6 @@ export function useAppSettingsPersistenceController({
   reasoningEffort,
   codexApprovalPolicy,
   ttsProvider,
-  faceTrackingEnabled,
   ttsSpeed,
   selectedVoiceIdByProvider,
   autoBargeInEnabled,
@@ -130,7 +127,6 @@ export function useAppSettingsPersistenceController({
   setCodexApprovalPolicy,
   setSelectedVoiceIdByProvider,
   setTtsProvider,
-  setFaceTrackingEnabledWithRef,
   setTtsSpeedWithSync,
   setAutoBargeInEnabled,
   setAutoSpeakerPriorityEnabled,
@@ -179,7 +175,6 @@ export function useAppSettingsPersistenceController({
       reasoningEffort,
       codexApprovalPolicy,
       ttsProvider,
-      faceTrackingEnabled,
       ttsSpeed,
       selectedVoiceId: selectedVoiceIdByProvider.elevenlabs,
       selectedVoiceIdByProvider,
@@ -200,7 +195,6 @@ export function useAppSettingsPersistenceController({
     cloudflareRunnerUrl,
     codexApprovalPolicy,
     expandedDirectoryIds,
-    faceTrackingEnabled,
     llmBackend,
     llmDirectory,
     localRunnerUrl,
@@ -303,9 +297,6 @@ export function useAppSettingsPersistenceController({
     setCodexApprovalPolicy(parseCodexApprovalPolicy(parsed.codexApprovalPolicy));
     setSelectedVoiceIdByProvider(savedVoiceIds);
     setTtsProvider(parseTtsProvider(parsed.ttsProvider));
-    if (typeof parsed.faceTrackingEnabled === "boolean") {
-      setFaceTrackingEnabledWithRef(parsed.faceTrackingEnabled);
-    }
     setTtsSpeedWithSync(parseTtsSpeed(parsed.ttsSpeed));
     if (typeof parsed.autoBargeInEnabled === "boolean") {
       setAutoBargeInEnabled(parsed.autoBargeInEnabled);
@@ -346,7 +337,6 @@ export function useAppSettingsPersistenceController({
     setCloudflareAccessClientSecret,
     setCloudflareRunnerUrl,
     setExpandedDirectoryIds,
-    setFaceTrackingEnabledWithRef,
     setLlmBackend,
     setLlmDirectory,
     setLocalRunnerUrl,
