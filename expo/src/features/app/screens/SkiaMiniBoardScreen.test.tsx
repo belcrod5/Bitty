@@ -16,7 +16,7 @@ jest.mock("../components/CodexStatusSummaryMenu", () => ({
   CodexStatusSummaryMenu: ({ compact }: { compact?: boolean }) => {
     const ReactModule = require("react");
     const { Text } = require("react-native");
-    return ReactModule.createElement(Text, { testID: "codex-status-summary-menu", accessibilityLabel: String(compact) }, "75% | 50%");
+    return ReactModule.createElement(Text, { testID: "codex-status-summary-menu", accessibilityLabel: String(compact) }, "75%\n50%");
   },
 }));
 
@@ -1493,7 +1493,7 @@ test("floats circular navigation controls over the full-height canvas", async ()
   expect(mockSetBoardCardTextScale).toHaveBeenCalledWith(1.1);
 });
 
-test("keeps the tools at their original bottom position and floats compact usage at the right", async () => {
+test("centers the three-row usage and original tools on one bottom anchor", async () => {
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
   expect(StyleSheet.flatten(screen.getByTestId("skia-board-tools-safe-area").props.style)).toMatchObject({
@@ -1503,11 +1503,22 @@ test("keeps the tools at their original bottom position and floats compact usage
     right: 0,
     alignItems: "center",
   });
+  expect(screen.getByTestId("skia-board-footer-row").props.pointerEvents).toBe("box-none");
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-footer-row").props.style)).toMatchObject({
+    minHeight: 54,
+    marginBottom: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  });
   expect(StyleSheet.flatten(screen.getByTestId("skia-board-usage-safe-area").props.style)).toMatchObject({
     position: "absolute",
     right: 14,
     bottom: 0,
-    marginBottom: 14,
+    top: 0,
+    justifyContent: "center",
+  });
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-usage-pill").props.style)).toMatchObject({
+    paddingVertical: 3,
   });
   expect(screen.getByTestId("codex-status-summary-menu").props.accessibilityLabel).toBe("true");
   expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe(0);

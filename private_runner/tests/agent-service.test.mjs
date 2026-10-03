@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createAgentService as createBaseAgentService } from "../src/agent/agent-service.mjs";
+import { createAgentWsConnection } from "../src/agent/agent-transport.mjs";
 import { createClientStateStore } from "../src/client-state-store.mjs";
 import { operationStore, sessionStore, startRequest, status } from "./agent-service-fixtures.mjs";
 
@@ -1052,42 +1053,92 @@ test("active count includes unassigned main sessions across providers and follow
   claude.startTurn = async ({ emit }) => { emit("turn.started", {}); await gate; return { outcome: "completed" }; };
   claude.listSessionsForDirectories = async () => { throw new Error("count must not scan catalogs"); };
   const store = sessionStore();
+  let registeredDirectories = ["/alias", "/one", "/two"];
   await store.bind(claudeRef, "/one", "neutral");
   const service = createAgentService({
     backends: [codex, claude], operationStore: operationStore(), sessionStore: store,
     resolveCanonicalCwd: async (cwd) => cwd,
+    getRegisteredDirectoryPaths: async () => registeredDirectories,
     workspaceAdmission: { assertAllowed: async (_subject, cwd) => cwd === "/alias" ? "/one" : cwd },
     listRawActiveSessions: () => [{ sessionRef: codexRef, canonicalCwd: "/two" }],
   });
   const context = { subjectId: "user-1" };
-  assert.deepEqual(await service.countActiveSessions({ cwds: ["/alias", "/one", "/two"] }, context), { count: 1 });
+  assert.deepEqual(await service.countActiveSessions({}, context), { count: 1 });
   const run = await service.startTurn(startRequest({ backendId: "claude", cwd: "/one",
     sessionRef: claudeRef }), context);
-  assert.deepEqual(await service.countActiveSessions({ cwds: ["/one", "/two"] }, context), { count: 2 });
-  assert.deepEqual(await service.countActiveSessions({ cwds: ["/two"] }, context), { count: 1 });
+  assert.deepEqual(await service.countActiveSessions({}, context), { count: 2 });
+  registeredDirectories = ["/two"];
+  assert.deepEqual(await service.countActiveSessions({}, context), { count: 1 });
+  registeredDirectories = ["/one", "/two"];
   release();
   await run.completion;
-  assert.deepEqual(await service.countActiveSessions({ cwds: ["/one", "/two"] }, context), { count: 1 });
-  assert.deepEqual(await service.countActiveSessions({ cwds: [] }, context), { count: 0 });
+  assert.deepEqual(await service.countActiveSessions({}, context), { count: 1 });
+  registeredDirectories = [];
+  assert.deepEqual(await service.countActiveSessions({}, context), { count: 0 });
 });
 
-test("active count never scans provider histories and rejects inaccessible workspaces", async () => {
+test("active count uses registered canonical directories and ignores caller scope", async () => {
   const codex = listBackend("codex", { sessions: [] });
   codex.listSessionsForDirectories = async ({ cwds }) => ({ groups: cwds.map((cwd) => ({ cwd, sessions: [] })) });
   const claude = listBackend("claude", { sessions: [] });
   claude.listSessionsForDirectories = async () => { throw new Error("catalog failed"); };
+  let resolutionFails = false;
   const service = createAgentService({
     backends: [codex, claude], operationStore: operationStore(), sessionStore: sessionStore(),
-    resolveCanonicalCwd: async (cwd) => cwd,
-    workspaceAdmission: { assertAllowed: async (_subject, cwd) => {
-      if (cwd === "/forbidden") throw new Error("workspace denied");
-      return cwd;
-    } },
+    resolveCanonicalCwd: async (cwd) => {
+      if (resolutionFails && cwd === "missing") throw new Error("directory identity unavailable");
+      if (cwd === "llm_root/test") return "/workspace/llm_root/test";
+      return cwd === "missing" ? "/workspace/missing" : cwd;
+    },
+    getRegisteredDirectoryPaths: async () => ["llm_root/test", "missing"],
+    workspaceAdmission: { assertAllowed: async () => { throw new Error("execution admission must not gate count"); } },
+    listRawActiveSessions: () => [{ sessionRef: { backendId: "codex", nativeSessionId: "main" },
+      canonicalCwd: "/workspace/llm_root/test" }],
     log: { warn() {} },
   });
-  assert.deepEqual(await service.countActiveSessions({ cwds: ["/one"] }, { subjectId: "user-1" }), { count: 0 });
-  await assert.rejects(service.countActiveSessions({ cwds: ["/forbidden"] }, { subjectId: "user-1" }),
-    /workspace denied/);
+  assert.deepEqual(await service.countActiveSessions({ cwds: ["/forbidden"] }, { subjectId: "user-1" }), { count: 1 });
+  resolutionFails = true;
+  await assert.rejects(service.countActiveSessions({}, { subjectId: "user-1" }), /directory identity unavailable/);
+  await assert.rejects(service.countActiveSessions({}, {}), /authenticated subject/);
+});
+
+test("active count WebSocket reads legacy relative directories from persisted client state", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agent-active-count-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const clientState = createClientStateStore(path.join(directory, "client_state.json"));
+  await clientState.mutate({ type: "directory.upsert", directory: {
+    id: "relative", path: "llm_root/test", displayName: "Test",
+  } });
+  await clientState.mutate({ type: "directory.upsert", directory: {
+    id: "stale", path: "missing", displayName: "Missing",
+  } });
+  const backend = listBackend("codex", { sessions: [] });
+  backend.listActiveSessions = () => [{
+    sessionRef: { backendId: "codex", nativeSessionId: "active-main" },
+    canonicalCwd: "/workspace/llm_root/test",
+  }];
+  backend.listSessionsForDirectories = async () => { throw new Error("count must not read catalogs"); };
+  const service = createAgentService({ backends: [backend], operationStore: operationStore(),
+    sessionStore: sessionStore(),
+    getRegisteredDirectoryPaths: clientState.getRegisteredDirectoryPaths,
+    resolveCanonicalCwd: async (cwd) => {
+      if (cwd === "llm_root/test") return "/workspace/llm_root/test";
+      return cwd === "missing" ? "/workspace/missing" : cwd;
+    },
+    workspaceAdmission: { assertAllowed: async () => { throw new Error("execution admission cannot authorize count"); } },
+  });
+  const sent = [];
+  const connection = createAgentWsConnection({ service, ws: {}, subjectId: "owner",
+    workspaceAdmission: {}, sendEnvelope: (_ws, envelope) => sent.push(envelope) });
+  assert.equal(connection.handleMessage({ channel: "agent", op: "sessions.active-count", requestId: "count-1" }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sent.at(-1).op, "sessions.active-count.result");
+  assert.deepEqual(sent.at(-1).payload, { count: 1 });
+  await clientState.mutate({ type: "directory.remove", id: "relative" });
+  connection.handleMessage({ channel: "agent", op: "sessions.active-count", requestId: "count-2",
+    payload: { cwds: ["/workspace/llm_root/test"] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sent.at(-1).payload, { count: 0 });
 });
 
 test("new unindexed sessions notify on admission, resolution, and settled completion", async () => {
@@ -1109,6 +1160,7 @@ test("new unindexed sessions notify on admission, resolution, and settled comple
   let service;
   service = createAgentService({ backends: [backend], operationStore: operationStore(),
     sessionStore: sessionStore(), resolveCanonicalCwd: async (cwd) => cwd,
+    getRegisteredDirectoryPaths: async () => ["/workspace"],
     onActiveSessionsChanged: () => { notifications.push(service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" })); } });
   const run = await service.startTurn(startRequest({ backendId: "codex" }), { subjectId: "user-1" });
   assert.deepEqual(await service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" }), { count: 1 });
@@ -1133,6 +1185,7 @@ test("active count excludes classified child runs before and after native resolu
   await store.bind(childRef, "/workspace", "neutral");
   const service = createAgentService({ backends: [backend], operationStore: operationStore(),
     sessionStore: store, resolveCanonicalCwd: async (cwd) => cwd,
+    getRegisteredDirectoryPaths: async () => ["/workspace"],
     isSubagentSession: (ref) => ref.nativeSessionId.startsWith("agent-"), });
   const run = await service.startTurn(startRequest({ backendId: "claude", sessionRef: childRef }), { subjectId: "user-1" });
   assert.deepEqual(await service.countActiveSessions({ cwds: ["/workspace"] }, { subjectId: "user-1" }), { count: 0 });

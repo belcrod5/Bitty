@@ -36,12 +36,13 @@ beforeEach(() => {
 
 afterEach(() => jest.restoreAllMocks());
 
-test("requests all registered directories and refreshes after shared execution changes", async () => {
+test("requests the Runner's registered directory count and refreshes after shared execution changes", async () => {
   const hook = await renderHook(() => useRegisteredDirectoryActiveSessionCount());
   await waitFor(() => expect(hook.result.current).toBe(2));
   expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
-    op: "sessions.active-count", payload: { cwds: ["/one", "/two"] },
+    op: "sessions.active-count",
   }), expect.any(Object));
+  expect(mockRequest.mock.calls[0][0]).not.toHaveProperty("payload");
   mockRequest.mockResolvedValue(result(3));
   await act(async () => { mockHandlers.get("sessions_active_changed")?.({}); });
   await waitFor(() => expect(hook.result.current).toBe(3));
@@ -85,7 +86,8 @@ test("ignores old-directory responses and displays unknown on failure", async ()
   await act(async () => { mockHandlers.get("sessions_active_changed")?.({}); });
   await waitFor(() => expect(hook.result.current).toBeNull());
   mockDirectories = [];
+  mockRequest.mockResolvedValueOnce(result(0));
   await hook.rerender({ version: 2 });
-  expect(hook.result.current).toBe(0);
+  await waitFor(() => expect(hook.result.current).toBe(0));
   hook.unmount();
 });

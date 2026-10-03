@@ -134,6 +134,7 @@ export function createAgentService({
   onActiveSessionsChanged,
   isSubagentSession = () => false,
   listRawActiveSessions = () => [],
+  getRegisteredDirectoryPaths = async () => [],
   log = console,
 } = {}) {
   const registry = new Map();
@@ -1713,12 +1714,12 @@ export function createAgentService({
           : {}),
       };
     },
-    async countActiveSessions(options, context = {}) {
+    async countActiveSessions(_options, context = {}) {
       const subjectId = String(context.subjectId || "").trim();
-      if (!Array.isArray(options?.cwds)) throw agentError("turn_rejected", "cwds are required");
+      if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
       const cwds = [];
-      for (const requestedCwd of options.cwds) {
-        const cwd = await workspaceAdmission.assertAllowed(subjectId, requestedCwd);
+      for (const requestedCwd of await getRegisteredDirectoryPaths()) {
+        const cwd = await resolveCanonicalCwd(requestedCwd);
         if (!cwds.includes(cwd)) cwds.push(cwd);
       }
       if (cwds.length === 0) return { count: 0 };

@@ -82,9 +82,7 @@ export function CodexStatusSummaryMenu({
   );
   const fiveHourPct = parseLimitPct(statusFullText, "5h");
   const weeklyPct = parseLimitPct(statusFullText, "Weekly");
-  const statusSummaryText = compact
-    ? `${fiveHourPct}% | ${weeklyPct}%`
-    : `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
+  const statusSummaryText = `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
   const currentAuthId = String(authProfileId || "").trim();
   const currentDisplayName = String(authProfileItems.find((item) => item.authId === currentAuthId)?.displayName || "").trim();
   const currentAuthIdText = currentDisplayName || currentAuthId || "(未選択)";
@@ -148,10 +146,16 @@ export function CodexStatusSummaryMenu({
           accessibilityRole="button"
           accessibilityLabel="利用状況を更新して表示"
         >
-          <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
-            {statusSummaryText}
-            {statusLoading && !compact ? " 更新中..." : ""}
-          </Text>
+          {compact ? (
+            <>
+              <Text style={[styles.chatStatusSummaryText, { lineHeight: 16 }]} numberOfLines={1} accessibilityLabel={`5時間の残り ${fiveHourPct}%`}>{fiveHourPct}%</Text>
+              <Text style={[styles.chatStatusSummaryText, { lineHeight: 16 }]} numberOfLines={1} accessibilityLabel={`週間の残り ${weeklyPct}%`}>{weeklyPct}%</Text>
+            </>
+          ) : (
+            <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
+              {statusSummaryText}{statusLoading ? " 更新中..." : ""}
+            </Text>
+          )}
         </TouchableOpacity>
       </View>
       <AppModal

@@ -1664,6 +1664,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
         isSubagent: turn.isSubagent }]
       : []
   ))),
+  getRegisteredDirectoryPaths: clientStateStore.getRegisteredDirectoryPaths,
 });
 ({ service: agentService } = agentRuntime);
 const { httpHandler: agentHttpHandler, ownerSubjectId: agentOwnerSubjectId } = agentRuntime;

@@ -18,10 +18,6 @@ export function useRegisteredDirectoryActiveSessionCount() {
       setCount(null);
       return;
     }
-    if (!directoryKey) {
-      setCount(0);
-      return;
-    }
     let current = true;
     let inFlight = false;
     let refreshPending = false;
@@ -34,7 +30,6 @@ export function useRegisteredDirectoryActiveSessionCount() {
       void manager.request({
         channel: "agent",
         op: "sessions.active-count",
-        payload: { cwds: directoryKey.split("\u0000") },
       }, { timeoutMs: 60_000 }).then((response) => {
         if (!current || refreshPending) return;
         const value = response.op === "sessions.active-count.result"

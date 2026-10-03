@@ -105,7 +105,7 @@ test("agent session lists carry the authenticated owner on both transports", asy
   assert.equal(sent.at(-1).payload.sessions[0].title, "テスト①");
 });
 
-test("agent WebSocket active count forwards registered directories and authenticated owner", async () => {
+test("agent WebSocket active count forwards the authenticated owner without caller directory scope", async () => {
   let received;
   const sent = [];
   const connection = createAgentWsConnection({
@@ -117,9 +117,9 @@ test("agent WebSocket active count forwards registered directories and authentic
     sendEnvelope: (_ws, message) => sent.push(message),
   });
   assert.equal(connection.handleMessage({ channel: "agent", op: "sessions.active-count",
-    requestId: "count-1", payload: { cwds: ["/one", "/two"] } }), true);
+    requestId: "count-1" }), true);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(received, { options: { cwds: ["/one", "/two"] }, context: { subjectId: "subject" } });
+  assert.deepEqual(received, { options: {}, context: { subjectId: "subject" } });
   assert.equal(sent.at(-1).op, "sessions.active-count.result");
   assert.equal(sent.at(-1).requestId, "count-1");
   assert.deepEqual(sent.at(-1).payload, { count: 2 });

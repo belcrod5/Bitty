@@ -137,5 +137,10 @@ export function createClientStateStore(storePath) {
     )));
   }
 
-  return { snapshot: () => serialize(snapshot), mutate, getSessionTitles };
+  return {
+    snapshot: () => serialize(snapshot),
+    mutate,
+    getSessionTitles,
+    getRegisteredDirectoryPaths: () => serialize(() => state.directories.map(({ path }) => path)),
+  };
 }

@@ -61,8 +61,9 @@ describe("CodexStatusSummaryMenu", () => {
     mockSwitchAuthProfile.mockResolvedValue(true);
     const screen = await render(<CodexStatusSummaryMenu compact />);
 
-    expect(screen.getByText("75% | 50%")).toBeTruthy();
-    expect(screen.queryByText(/5h 75%/)).toBeNull();
+    expect(screen.getByText("75%")).toBeTruthy();
+    expect(screen.getByText("50%")).toBeTruthy();
+    expect(screen.queryByText(/75% \| 50%/)).toBeNull();
     await fireEvent.press(screen.getByLabelText("利用状況を更新して表示"));
     await fireEvent.press(screen.getByLabelText("認証アカウントを切り替える"));
     await fireEvent.press(screen.getByText("account-2"));

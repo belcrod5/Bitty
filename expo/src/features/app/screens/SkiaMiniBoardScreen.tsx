@@ -1891,65 +1891,69 @@ export function SkiaMiniBoardScreen({
       </SafeAreaView>
 
       <SafeAreaView pointerEvents="box-none" style={screenStyles.toolsSafeArea} testID="skia-board-tools-safe-area">
-        <View style={screenStyles.tools}>
-          <TouchableOpacity
-            style={[screenStyles.toolButton, tool === "select" && screenStyles.toolButtonSelected]}
-            onPress={() => selectTool("select")}
-            accessibilityRole="button"
-            accessibilityState={{ selected: tool === "select" }}
-            accessibilityLabel="選択と移動"
-          >
-            <Ionicons
-              name="navigate-outline"
-              size={21}
-              color={tool === "select" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[screenStyles.toolButton, tool === "section" && screenStyles.toolButtonSelected]}
-            onPress={() => selectTool("section")}
-            accessibilityRole="button"
-            accessibilityState={{ selected: tool === "section" }}
-            accessibilityLabel="セクションを作成"
-          >
-            <Ionicons
-              name="scan-outline"
-              size={22}
-              color={tool === "section" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
-            />
-          </TouchableOpacity>
-          {voicePlayback ? (
+        <View pointerEvents="box-none" style={screenStyles.footerRow} testID="skia-board-footer-row">
+          <View style={screenStyles.tools}>
             <TouchableOpacity
-              testID="skia-board-voice-conversation"
-              style={screenStyles.toolButton}
-              onPress={() => { setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setVoiceOpen(true); }}
+              style={[screenStyles.toolButton, tool === "select" && screenStyles.toolButtonSelected]}
+              onPress={() => selectTool("select")}
               accessibilityRole="button"
-              accessibilityLabel="音声会話"
+              accessibilityState={{ selected: tool === "select" }}
+              accessibilityLabel="選択と移動"
             >
-              <Ionicons name="mic-outline" size={23} color={theme.colors.iconSecondary} />
-              {voiceUnreadCount > 0 ? <View testID="skia-board-voice-unread"
-                style={{ position: "absolute", top: 0, right: 0, minWidth: 16, height: 16,
-                  borderRadius: 8, paddingHorizontal: 3, alignItems: "center", justifyContent: "center",
-                  backgroundColor: theme.colors.accent }}>
-                <Text style={{ color: theme.colors.textOnAccent, fontSize: 10, fontWeight: "700" }}>
-                  {voiceUnreadCount > 99 ? "99+" : voiceUnreadCount}
-                </Text>
-              </View> : null}
+              <Ionicons
+                name="navigate-outline"
+                size={21}
+                color={tool === "select" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
+              />
             </TouchableOpacity>
-          ) : null}
-        </View>
-      </SafeAreaView>
-      <SafeAreaView pointerEvents="box-none" style={screenStyles.usageSafeArea} testID="skia-board-usage-safe-area">
-        <View style={screenStyles.usagePill} testID="skia-board-usage-pill">
-          <Svg width={13} height={13} viewBox="0 0 11 11" fill="none">
-            <SvgPath d={BOARD_FOOTER_ICON_PATHS.subagent} stroke={theme.tones.neutral.foreground}
-              strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-          </Svg>
-          <Text style={screenStyles.usageCount} testID="skia-board-running-session-count"
-            accessibilityLabel={`実行中のセッション ${runningSessionCount ?? "不明"}件`}>
-            {runningSessionCount ?? "--"}
-          </Text>
-          <View style={screenStyles.usageSummary}><CodexStatusSummaryMenu compact /></View>
+            <TouchableOpacity
+              style={[screenStyles.toolButton, tool === "section" && screenStyles.toolButtonSelected]}
+              onPress={() => selectTool("section")}
+              accessibilityRole="button"
+              accessibilityState={{ selected: tool === "section" }}
+              accessibilityLabel="セクションを作成"
+            >
+              <Ionicons
+                name="scan-outline"
+                size={22}
+                color={tool === "section" ? theme.colors.textOnAccent : theme.colors.iconSecondary}
+              />
+            </TouchableOpacity>
+            {voicePlayback ? (
+              <TouchableOpacity
+                testID="skia-board-voice-conversation"
+                style={screenStyles.toolButton}
+                onPress={() => { setVoiceTargetId(""); setVoiceOpenSequence((current) => current + 1); setVoiceOpen(true); }}
+                accessibilityRole="button"
+                accessibilityLabel="音声会話"
+              >
+                <Ionicons name="mic-outline" size={23} color={theme.colors.iconSecondary} />
+                {voiceUnreadCount > 0 ? <View testID="skia-board-voice-unread"
+                  style={{ position: "absolute", top: 0, right: 0, minWidth: 16, height: 16,
+                    borderRadius: 8, paddingHorizontal: 3, alignItems: "center", justifyContent: "center",
+                    backgroundColor: theme.colors.accent }}>
+                  <Text style={{ color: theme.colors.textOnAccent, fontSize: 10, fontWeight: "700" }}>
+                    {voiceUnreadCount > 99 ? "99+" : voiceUnreadCount}
+                  </Text>
+                </View> : null}
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <View pointerEvents="box-none" style={screenStyles.usageSafeArea} testID="skia-board-usage-safe-area">
+            <View style={screenStyles.usagePill} testID="skia-board-usage-pill">
+              <View style={screenStyles.usageSessionRow}>
+                <Svg width={13} height={13} viewBox="0 0 11 11" fill="none">
+                  <SvgPath d={BOARD_FOOTER_ICON_PATHS.subagent} stroke={theme.tones.neutral.foreground}
+                    strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+                </Svg>
+                <Text style={screenStyles.usageCount} testID="skia-board-running-session-count"
+                  accessibilityLabel={`実行中のセッション ${runningSessionCount ?? "不明"}件`}>
+                  {runningSessionCount ?? "--"}
+                </Text>
+              </View>
+              <CodexStatusSummaryMenu compact />
+            </View>
+          </View>
         </View>
       </SafeAreaView>
       {voiceOpen && voicePlayback ? (
@@ -2053,8 +2057,14 @@ function createScreenStyles(theme: VisualTheme) {
       bottom: 0,
       alignItems: "center",
     },
-    tools: {
+    footerRow: {
+      alignSelf: "stretch",
+      minHeight: 54,
       marginBottom: 12,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    tools: {
       padding: 5,
       borderRadius: 14,
       flexDirection: "row",
@@ -2079,24 +2089,25 @@ function createScreenStyles(theme: VisualTheme) {
     usageSafeArea: {
       position: "absolute",
       right: 14,
+      top: 0,
       bottom: 0,
-      marginBottom: 14,
+      justifyContent: "center",
     },
     usagePill: {
-      minHeight: 32,
-      paddingHorizontal: 10,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
       borderRadius: 16,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
       backgroundColor: theme.colors.floatingSurface,
     },
-    usageSummary: {
-      flexShrink: 1,
+    usageSessionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
     },
     usageCount: {
       color: theme.tones.neutral.foreground,
       fontSize: theme.typography.caption.fontSize,
+      lineHeight: 16,
       fontWeight: "700",
     },
     menuBackdrop: {

@@ -201,6 +201,7 @@ test("resumed Codex main run warms a cold identity index before active classific
     listSessionsForDirectories: async (cwds) => cwds.map((directory) => ({ directory, sessions: [] })),
     listMessages: async () => ({ messages: [] }),
     resolveCanonicalCwd: async (cwd) => cwd,
+    getRegisteredDirectoryPaths: async () => [cwd],
     parseAuthToken: () => "", json: () => {}, normalizeSessionListLimit: (value) => value,
     normalizeSessionMessagesLimit: (value) => value, readJsonBody: async () => ({}),
   });
