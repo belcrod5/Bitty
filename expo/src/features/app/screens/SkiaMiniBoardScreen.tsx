@@ -93,17 +93,20 @@ import {
   SKIA_BOARD_MAX_TEXT_SCALE,
   SKIA_BOARD_MIN_TEXT_SCALE,
   SKIA_BOARD_TEXT_SCALE_STEP,
+  skiaBoardCardDirectory,
 } from "../utils/skiaBoardState";
 import {
   cardPositionFromGrid,
   gridFromCardPosition,
   gridFromSectionRect,
+  pointIsInsideCard,
   pointIsInsideSection,
   sectionRectFromGrid,
   sectionDragActionAtPoint,
   sectionRectFromPoints,
   SKIA_BOARD_CARD_GAP as CARD_GAP,
   SKIA_BOARD_CARD_HEIGHT as CARD_HEIGHT,
+  skiaBoardCardHeight,
   SKIA_BOARD_MIN_SECTION_SIZE,
   SKIA_BOARD_MIN_CARD_WIDTH,
   SKIA_BOARD_PADDING as BOARD_PADDING,
@@ -352,6 +355,7 @@ const BoardCard = memo(function BoardCard({
     return [{ translateX: position.x }, { translateY: position.y }];
   });
   const contentWidth = cardWidth - 32;
+  const cardHeight = skiaBoardCardHeight(item.kind);
   const boardImage = useSkiaBoardCardImage(
     runnerUrl,
     runnerToken,
@@ -393,29 +397,10 @@ const BoardCard = memo(function BoardCard({
     item.kind === "session"
       ? subagentIconX - (item.activityTrail.length > 0 ? item.activityTrail.length * 15 + 8 : 8)
       : cardWidth - 16;
-  const header =
-    item.kind === "session"
-      ? item.directoryName
-      : item.kind === "file"
-        ? item.rootDir.split("/").filter(Boolean).pop() || item.rootDir
-        : "ディレクトリ";
+  const header = item.kind === "session" ? item.directoryName : "";
   const title = item.kind === "session" ? item.title : item.name;
-  const detail =
-    item.kind === "session"
-      ? ""
-      : item.kind === "file"
-        ? item.unavailable
-          ? "ファイルが削除または移動されました"
-          : item.path
-        : item.directory;
-  const footer =
-    item.kind === "session"
-      ? item.updatedAtLabel
-      : item.kind === "file"
-        ? item.unavailable
-          ? "FILE NOT FOUND"
-          : "FILE"
-        : "NEW SESSION";
+  const detail = item.kind === "session" ? "" : skiaBoardCardDirectory(item);
+  const footer = item.kind === "session" ? item.updatedAtLabel : "";
   const isSession = item.kind === "session";
   const markerFill = isSession
     ? DIRECTORY_MARKER_COLORS[item.markerColor] ?? theme.colors.border
@@ -446,7 +431,7 @@ const BoardCard = memo(function BoardCard({
             return paint;
           };
           const drawCardRect = (x: number, y: number, paint: SkPaint) => {
-            canvas.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, y, cardWidth, CARD_HEIGHT), 14, 14), paint);
+            canvas.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, y, cardWidth, cardHeight), 14, 14), paint);
           };
           const drawText = (text: string, x: number, y: number, width: number, style: BoardTextStyle) => {
             const paragraph = createBoardParagraph(text, width, style);
@@ -476,20 +461,52 @@ const BoardCard = memo(function BoardCard({
               selected ? theme.borders.focus : theme.borders.thin,
             ),
           );
-          if (boardImage) {
-            const availableWidth = cardWidth - 16;
-            const availableHeight = CARD_HEIGHT - 16;
-            const imageWidth = boardImage.width();
-            const imageHeight = boardImage.height();
-            const imageScale = Math.min(availableWidth / imageWidth, availableHeight / imageHeight);
-            const width = imageWidth * imageScale;
-            const height = imageHeight * imageScale;
-            canvas.drawImageRect(
-              boardImage,
-              Skia.XYWHRect(0, 0, imageWidth, imageHeight),
-              Skia.XYWHRect((cardWidth - width) / 2, (CARD_HEIGHT - height) / 2, width, height),
-              fillPaint(theme.board.cardSurface),
-            );
+          if (!isSession) {
+            if (boardImage) {
+              const imageWidth = boardImage.width();
+              const imageHeight = boardImage.height();
+              const imageScale = Math.min(52 / imageWidth, 52 / imageHeight);
+              const width = imageWidth * imageScale;
+              const height = imageHeight * imageScale;
+              canvas.drawImageRect(
+                boardImage,
+                Skia.XYWHRect(0, 0, imageWidth, imageHeight),
+                Skia.XYWHRect(12 + (52 - width) / 2, (cardHeight - height) / 2, width, height),
+                fillPaint("#ffffff"),
+              );
+            } else {
+              const drawIconPath = (pathData: string, color: string, strokeWidth?: number) => {
+                const path = Skia.Path.MakeFromSVGString(pathData);
+                if (!path) return;
+                canvas.drawPath(path, strokeWidth ? strokePaint(color, strokeWidth) : fillPaint(color));
+                path.dispose();
+              };
+              if (item.kind === "directory") {
+                drawIconPath("M14 27V22C14 19.8 15.8 18 18 18H31L35 23H59C61.8 23 64 25.2 64 28V54H14Z", "#b9e6ff");
+                drawIconPath("M13 30C13 27.8 14.8 26 17 26H61C63.2 26 65 27.8 65 30L62 55C61.8 57 60 58 58 58H18C15.6 58 14 56.4 14 54Z", "#65b9f2");
+                drawIconPath("M14 50H62.6L62 55C61.8 57 60 58 58 58H18C15.6 58 14 56.4 14 54Z", "#439bdc");
+                drawIconPath("M17 29H61", "#e6f7ff", 1.4);
+              } else {
+                drawIconPath("M24 13H45L56 24V55C56 57.2 54.2 59 52 59H24C21.8 59 20 57.2 20 55V17C20 14.8 21.8 13 24 13Z", "#f7fbff");
+                drawIconPath("M20 49H56V55C56 57.2 54.2 59 52 59H24C21.8 59 20 57.2 20 55Z", "#e2f1fc");
+                drawIconPath("M45 13V21C45 23.2 46.8 25 49 25H56Z", "#91c9f3");
+                drawIconPath("M24 13H45L56 24V55C56 57.2 54.2 59 52 59H24C21.8 59 20 57.2 20 55V17C20 14.8 21.8 13 24 13Z", "#90b8d3", 1);
+              }
+            }
+            const textX = 78;
+            const textWidth = cardWidth - textX - 14;
+            canvas.save();
+            canvas.clipRect(Skia.XYWHRect(textX, 8, textWidth, cardHeight - 16), ClipOp.Intersect, true);
+            drawText(title, textX, 20, textWidth, {
+              fontSize: titleFontSize,
+              bold: true,
+              color: theme.board.textPrimary,
+            });
+            drawText(detail, textX, 43, textWidth, {
+              fontSize: bodyFontSize,
+              color: theme.board.textMuted,
+            });
+            canvas.restore();
             return;
           }
           if (showUnread) {
@@ -507,19 +524,12 @@ const BoardCard = memo(function BoardCard({
             bold: true,
             color: theme.board.textPrimary,
           });
-          if (isSession) {
-            messageLines.forEach((line, lineIndex) => {
-              drawText(line, 16, messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize, contentWidth, {
-                fontSize: bodyFontSize,
-                color: theme.board.textMuted,
-              });
-            });
-          } else {
-            drawText(detail, 16, 69 - bodyFontSize, contentWidth, {
+          messageLines.forEach((line, lineIndex) => {
+            drawText(line, 16, messageFirstBaseline + lineIndex * messageLineHeight - bodyFontSize, contentWidth, {
               fontSize: bodyFontSize,
               color: theme.board.textMuted,
             });
-          }
+          });
           canvas.drawLine(16, 88, cardWidth - 16, 88, strokePaint(theme.colors.borderSubtle, theme.borders.thin));
           drawText(footer, 16, 100 - bodyFontSize, Math.max(20, footerRightStart - 24), {
             fontSize: bodyFontSize,
@@ -532,23 +542,22 @@ const BoardCard = memo(function BoardCard({
               activity.active ? theme.colors.activityActive : theme.colors.borderStrong,
             );
           });
-          if (isSession) {
-            drawFooterIcon("subagent", subagentIconX, theme.board.textMuted);
-            drawText(subagentText, cardWidth - 16 - subagentTextWidth, 100 - bodyFontSize, subagentTextWidth + 1, {
-              fontSize: bodyFontSize,
-              color: theme.board.textMuted,
-            });
-          }
+          drawFooterIcon("subagent", subagentIconX, theme.board.textMuted);
+          drawText(subagentText, cardWidth - 16 - subagentTextWidth, 100 - bodyFontSize, subagentTextWidth + 1, {
+            fontSize: bodyFontSize,
+            color: theme.board.textMuted,
+          });
           canvas.restore();
           // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
         },
-        Skia.XYWHRect(-2, -2, cardWidth + 8, CARD_HEIGHT + 10),
+        Skia.XYWHRect(-2, -2, cardWidth + 8, cardHeight + 10),
       ),
     [
       // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
       activityTrailKey,
       bodyFontSize,
       boardImage,
+      cardHeight,
       cardWidth,
       contentWidth,
       detail,
@@ -906,6 +915,11 @@ export function SkiaMiniBoardScreen({
   const cardIds = useMemo(
     () => items.map((item) => item.cardId),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cardIdsKeyがitemsのカード集合を代表する
+    [cardIdsKey]
+  );
+  const cardHeights = useMemo(
+    () => items.map((item) => skiaBoardCardHeight(item.kind)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cardIdがカード種別を含む
     [cardIdsKey]
   );
   // runOnJS側のハンドラは最新itemsをrefで参照し、itemsのidentity変化でハンドラ
@@ -1329,13 +1343,7 @@ export function SkiaMiniBoardScreen({
 
         for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
-          if (
-            position
-            && x >= position.x
-            && x <= position.x + cardWidth
-            && y >= position.y
-            && y <= position.y + CARD_HEIGHT
-          ) {
+          if (pointIsInsideCard(position, cardWidth, cardHeights[index], x, y)) {
             if (toolMode.value === "section") {
               activeSectionGesture.value = { ...activeSectionGesture.value, action: "blocked" };
             } else if (selectedCardIndex.value === index) {
@@ -1490,13 +1498,7 @@ export function SkiaMiniBoardScreen({
         const y = (event.y - boardY.value) / scale.value;
         for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
-          if (
-            position
-            && x >= position.x
-            && x <= position.x + cardWidth
-            && y >= position.y
-            && y <= position.y + CARD_HEIGHT
-          ) {
+          if (pointIsInsideCard(position, cardWidth, cardHeights[index], x, y)) {
             runOnJS(handleCardTap)(index);
             return;
           }
@@ -1522,13 +1524,7 @@ export function SkiaMiniBoardScreen({
         const y = (event.y - boardY.value) / scale.value;
         for (let index = cardIds.length - 1; index >= 0; index -= 1) {
           const position = positions.value[index];
-          if (
-            position
-            && x >= position.x
-            && x <= position.x + cardWidth
-            && y >= position.y
-            && y <= position.y + CARD_HEIGHT
-          ) {
+          if (pointIsInsideCard(position, cardWidth, cardHeights[index], x, y)) {
             runOnJS(openCardContextMenu)(index);
             return;
           }
@@ -1658,6 +1654,7 @@ export function SkiaMiniBoardScreen({
     cameraTargetY,
     cameraInertiaCount,
     cardDragDirty,
+    cardHeights,
     cardIds,
     flushGestureTargets,
     releaseGestureFrameLoop,

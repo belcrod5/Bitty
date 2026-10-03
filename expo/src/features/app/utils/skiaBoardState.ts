@@ -150,6 +150,19 @@ export function skiaBoardCardDisplayName(
     || card.directory;
 }
 
+export function skiaBoardCardDirectory(card: SkiaBoardFileCard | SkiaBoardDirectoryCard): string {
+  if (card.kind === "directory") return card.directory;
+  const rootPath = card.rootDir.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  const root = /^[a-zA-Z]:$/.test(rootPath) ? `${rootPath}/` : rootPath;
+  const path = card.path.replace(/\\/g, "/");
+  const lastSeparator = path.lastIndexOf("/");
+  const parent = lastSeparator < 0 ? "" : path.slice(0, lastSeparator);
+  if (path.startsWith("/") || /^[a-zA-Z]:\//.test(path)) {
+    return /^[a-zA-Z]:$/.test(parent) ? `${parent}/` : parent || "/";
+  }
+  return parent ? `${root.replace(/\/+$/, "")}/${parent}` : root;
+}
+
 export function skiaBoardGridPosition(index: number): { col: number; row: number } {
   return {
     col: index % SKIA_BOARD_COLUMN_COUNT,

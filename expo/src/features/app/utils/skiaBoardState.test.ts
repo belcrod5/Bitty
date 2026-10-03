@@ -15,6 +15,7 @@ import {
   removeSkiaBoardFile,
   removeSkiaBoardSection,
   skiaBoardCardId,
+  skiaBoardCardDirectory,
   skiaBoardCardDisplayName,
   skiaBoardDirectoryId,
   setSkiaBoardCardTextScale,
@@ -529,6 +530,21 @@ describe("board card appearance and file identity", () => {
       ...directory,
       displayNameOverride: "Board名",
     })).toBe("Board名");
+  });
+
+  it("shows the containing directory for relative and absolute file cards", () => {
+    const file = state.cards[0];
+    const directory = state.cards[1];
+    if (file.kind !== "file" || directory.kind !== "directory") throw new Error("bad fixture");
+    expect(skiaBoardCardDirectory(file)).toBe("/workspace/docs");
+    expect(skiaBoardCardDirectory({ ...file, path: "guide.md" })).toBe("/workspace");
+    expect(skiaBoardCardDirectory({ ...file, rootDir: "/", path: "docs/guide.md" })).toBe("/docs");
+    expect(skiaBoardCardDirectory({ ...file, path: "/workspace/docs/guide.md" })).toBe("/workspace/docs");
+    expect(skiaBoardCardDirectory({ ...file, path: "/guide.md" })).toBe("/");
+    expect(skiaBoardCardDirectory({ ...file, rootDir: "C:\\", path: "guide.md" })).toBe("C:/");
+    expect(skiaBoardCardDirectory({ ...file, rootDir: "C:\\", path: "docs\\guide.md" })).toBe("C:/docs");
+    expect(skiaBoardCardDirectory({ ...file, path: "C:/guide.md" })).toBe("C:/");
+    expect(skiaBoardCardDirectory(directory)).toBe("/workspace/projects/bitty");
   });
 
   it("sets and clears appearance without a display mode", () => {

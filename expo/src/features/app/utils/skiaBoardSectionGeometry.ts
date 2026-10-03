@@ -1,4 +1,5 @@
 export const SKIA_BOARD_CARD_HEIGHT = 112;
+export const SKIA_BOARD_RESOURCE_CARD_HEIGHT = SKIA_BOARD_CARD_HEIGHT * 2 / 3;
 export const SKIA_BOARD_CARD_GAP = 18;
 export const SKIA_BOARD_PADDING = 18;
 export const SKIA_BOARD_MIN_CARD_WIDTH = 150;
@@ -12,6 +13,25 @@ export const SKIA_BOARD_MIN_SECTION_ROW_SPAN = (
   (SKIA_BOARD_CARD_GAP + MIN_PERSISTED_SECTION_SIZE)
   / (SKIA_BOARD_CARD_HEIGHT + SKIA_BOARD_CARD_GAP)
 );
+
+export function skiaBoardCardHeight(kind: "session" | "directory" | "file") {
+  return kind === "session" ? SKIA_BOARD_CARD_HEIGHT : SKIA_BOARD_RESOURCE_CARD_HEIGHT;
+}
+
+export function pointIsInsideCard(
+  position: { x: number; y: number } | undefined,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+) {
+  "worklet";
+  return !!position
+    && x >= position.x
+    && x <= position.x + width
+    && y >= position.y
+    && y <= position.y + height;
+}
 
 export type SkiaBoardSectionRect = {
   id: string;

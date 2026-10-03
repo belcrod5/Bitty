@@ -77,8 +77,17 @@ jest.mock("@shopify/react-native-skia", () => {
         const colors = target.__skiaBoardRRectColors as string[] | undefined;
         target.__skiaBoardRRectColors = [...(colors || []), String(paint.color)];
       },
-      drawCircle: () => undefined,
+      drawCircle: (x: number, y: number) => {
+        const target = globalThis as Record<string, unknown>;
+        const centers = target.__skiaBoardCircleCenters as Array<{ x: number; y: number }> | undefined;
+        target.__skiaBoardCircleCenters = [...(centers || []), { x, y }];
+      },
       drawLine: () => undefined,
+      drawImageRect: (_image: unknown, _source: unknown, destination: unknown) => {
+        const target = globalThis as Record<string, unknown>;
+        const rects = target.__skiaBoardImageRects as unknown[] | undefined;
+        target.__skiaBoardImageRects = [...(rects || []), destination];
+      },
       drawPath: (_path: unknown, paint: { color?: string }) => {
         recorded.iconColors.push(String(paint.color));
       },
@@ -110,7 +119,7 @@ jest.mock("@shopify/react-native-skia", () => {
     Line: Stub,
     Path: PathStub,
     Picture: PictureStub,
-    useImage: () => null,
+    useImage: () => (globalThis as Record<string, unknown>).__skiaBoardTestImage || null,
     RoundedRect: Stub,
     FontWeight: { Bold: 700 },
     PaintStyle: { Fill: 0, Stroke: 1 },
@@ -435,6 +444,9 @@ beforeEach(() => {
   } });
   (globalThis as Record<string, unknown>).__skiaBoardParagraphStyles = [];
   (globalThis as Record<string, unknown>).__skiaBoardRRectColors = [];
+  (globalThis as Record<string, unknown>).__skiaBoardCircleCenters = [];
+  (globalThis as Record<string, unknown>).__skiaBoardImageRects = [];
+  (globalThis as Record<string, unknown>).__skiaBoardTestImage = null;
   (globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs = 0;
   (globalThis as Record<string, unknown>).__skiaBoardDisposedRenderedParagraphs = 0;
   mockMoveBoardCard.mockClear();
@@ -1098,10 +1110,91 @@ test("opens a new session from a directory card on its second tap", async () => 
 
   expect(screen.getByLabelText("Bitty")).toBeTruthy();
   expect(screen.getByLabelText("/workspace/projects/bitty")).toBeTruthy();
+  expect(screen.queryByTestId("skia-text:NEW SESSION")).toBeNull();
+  expect((globalThis as Record<string, unknown>).__skiaBoardCircleCenters).toEqual([]);
+  expect(screen.getAllByTestId("skia-icon-path").map((icon) => icon.props.accessibilityLabel)).toContain("#65b9f2");
   await act(async () => { fireCardTap(); });
   expect(onStartNewSessionInDirectory).not.toHaveBeenCalled();
   await act(async () => { fireCardTap(); });
   expect(onStartNewSessionInDirectory).toHaveBeenCalledWith("/workspace/projects/bitty");
+});
+
+test("file cards show their containing directory and a shaded default file icon", async () => {
+  mockSessions = [{
+    kind: "file",
+    cardId: "file:/workspace\ndocs/readme.md",
+    rootDir: "/workspace",
+    path: "docs/readme.md",
+    name: "readme.md",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  const screen = await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
+  );
+
+  expect(screen.getByTestId("skia-text:readme.md")).toBeTruthy();
+  expect(screen.getByTestId("skia-text:/workspace/docs")).toBeTruthy();
+  expect(screen.queryByTestId("skia-text:docs/readme.md")).toBeNull();
+  expect(screen.queryByTestId("skia-text:FILE")).toBeNull();
+  expect((globalThis as Record<string, unknown>).__skiaBoardCircleCenters).toEqual([]);
+  expect(screen.getAllByTestId("skia-icon-path").map((icon) => icon.props.accessibilityLabel)).toContain("#91c9f3");
+});
+
+test("resource card taps, long presses and drags stop at the shorter card edge", async () => {
+  const onStartNewSessionInDirectory = jest.fn();
+  const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  mockSessions = [{
+    kind: "directory",
+    cardId: "directory:/workspace",
+    directory: "/workspace",
+    name: "Workspace",
+    col: 0,
+    row: 0,
+  } as unknown as typeof mockDefaultSession];
+  await render(
+    <SkiaMiniBoardScreen onStartNewSessionInDirectory={onStartNewSessionInDirectory} openSessionHistoryPopup={jest.fn()} />
+  );
+  const registry = gestureRegistry();
+
+  await act(async () => {
+    registry.Tap.onEnd({ x: 30, y: 108 }, true);
+    registry.Tap.onEnd({ x: 30, y: 108 }, true);
+    registry.LongPress.onStart({ x: 30, y: 108 });
+  });
+  expect(onStartNewSessionInDirectory).not.toHaveBeenCalled();
+  expect(alertSpy).not.toHaveBeenCalled();
+
+  await act(async () => {
+    registry.Tap.onEnd({ x: 30, y: 88 }, true);
+  });
+  await act(async () => {
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 30, y: 108 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 20, translationY: 20 });
+    registry.Pan.onFinalize();
+  });
+  expect(onStartNewSessionInDirectory).not.toHaveBeenCalled();
+  expect(alertSpy).not.toHaveBeenCalled();
+  expect(mockMoveBoardCard).not.toHaveBeenCalled();
+
+  // The outside pan moved the camera by (20, 20), so the selected card moved with it.
+  await act(async () => {
+    registry.Tap.onEnd({ x: 50, y: 108 }, true);
+  });
+  await act(async () => {
+    registry.LongPress.onStart({ x: 50, y: 108 });
+    registry.Pan.onTouchesDown({ numberOfTouches: 1 });
+    registry.Pan.onBegin({ x: 50, y: 108 });
+    registry.Pan.onStart();
+    registry.Pan.onUpdate({ numberOfPointers: 1, translationX: 20, translationY: 20 });
+    registry.Pan.onFinalize();
+  });
+  expect(onStartNewSessionInDirectory).toHaveBeenCalledWith("/workspace");
+  expect(alertSpy).toHaveBeenCalled();
+  expect(mockMoveBoardCard).toHaveBeenCalledTimes(1);
+  alertSpy.mockRestore();
 });
 
 test("tidies board cards only after confirmation without touching the viewport", async () => {
@@ -1322,10 +1415,20 @@ test("loads a configured image from the authenticated Runner media endpoint", as
     ok: true,
     arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
   } as Response);
+  (globalThis as Record<string, unknown>).__skiaBoardTestImage = {
+    width: () => 200,
+    height: () => 100,
+  };
 
-  await render(
+  const screen = await render(
     <SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />
   );
+
+  expect((globalThis as Record<string, unknown>).__skiaBoardImageRects).toEqual(expect.arrayContaining([
+    { x: 12, y: expect.any(Number), width: 52, height: 26 },
+  ]));
+  expect(screen.getByTestId("skia-text:Workspace")).toBeTruthy();
+  expect(screen.getByTestId("skia-text:/workspace")).toBeTruthy();
 
   await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
     "http://localhost:8787/files/media?path=%2FUsers%2Fme%2FPictures%2Fboard.png&rootDir=%2FUsers%2Fme%2FPictures",

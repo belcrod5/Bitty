@@ -1,11 +1,15 @@
 import {
   cardPositionFromGrid,
   gridFromSectionRect,
+  pointIsInsideCard,
   pointIsInsideSection,
   sectionDragActionAtPoint,
   sectionRectFromGrid,
   sectionRectFromPoints,
   SKIA_BOARD_CARD_GAP,
+  SKIA_BOARD_CARD_HEIGHT,
+  SKIA_BOARD_RESOURCE_CARD_HEIGHT,
+  skiaBoardCardHeight,
   SKIA_BOARD_MIN_SECTION_COL_SPAN,
   SKIA_BOARD_MIN_SECTION_ROW_SPAN,
   transformSectionRect,
@@ -14,6 +18,17 @@ import {
 const section = { id: "section:1", x: 100, y: 80, width: 240, height: 160 };
 
 describe("Skia board section geometry", () => {
+  it("uses a shorter resource card without changing its persisted grid step", () => {
+    expect(skiaBoardCardHeight("session")).toBe(SKIA_BOARD_CARD_HEIGHT);
+    expect(skiaBoardCardHeight("directory")).toBe(SKIA_BOARD_RESOURCE_CARD_HEIGHT);
+    expect(skiaBoardCardHeight("file")).toBe(SKIA_BOARD_CARD_HEIGHT * 2 / 3);
+    const position = cardPositionFromGrid(0, 0, 270);
+    expect(cardPositionFromGrid(0, 1, 270).y - position.y).toBe(SKIA_BOARD_CARD_HEIGHT + SKIA_BOARD_CARD_GAP);
+    expect(pointIsInsideCard(position, 270, skiaBoardCardHeight("file"), 30, position.y + 70)).toBe(true);
+    expect(pointIsInsideCard(position, 270, skiaBoardCardHeight("file"), 30, position.y + 90)).toBe(false);
+    expect(pointIsInsideCard(position, 270, skiaBoardCardHeight("session"), 30, position.y + 90)).toBe(true);
+  });
+
   it("keeps section geometry aligned with card grid positions when card width changes", () => {
     const wideRect = { id: "section:1", x: 306, y: 148, width: 558, height: 242 };
     const grid = gridFromSectionRect(wideRect, 270);
