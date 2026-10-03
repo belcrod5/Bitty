@@ -45,6 +45,7 @@ export function createPrivateRunnerAgentRuntime({
   listCodexModels,
   normalizeSessionId,
   findSession,
+  selectCachedSession,
   resolveSessionDirectory,
   listSessions,
   listSessionsForDirectories,
@@ -57,6 +58,9 @@ export function createPrivateRunnerAgentRuntime({
   normalizeSessionMessagesLimit,
   readJsonBody,
   runEventObservers = [],
+  onActiveSessionsChanged,
+  listRawActiveSessions,
+  getRegisteredDirectoryPaths,
   log = console,
 }) {
   if (typeof listSessionsForDirectories !== "function") {
@@ -101,6 +105,17 @@ export function createPrivateRunnerAgentRuntime({
     createClient: createCodexClient,
     listModels: listCodexModels,
     resolveSessionCwd: resolveCodexSessionCwd,
+    onActiveSessionsChanged,
+    resolveNativeActiveSession: async (threadId) => {
+      const entry = selectCachedSession?.(threadId);
+      const cwd = String(entry && resolveSessionDirectory(entry) || "").trim();
+      if (!cwd) return null;
+      return {
+        sessionRef: { backendId: "codex", nativeSessionId: threadId },
+        canonicalCwd: await resolveCanonicalCwd(cwd),
+        isSubagent: entry.isSubagent === true || Boolean(entry.parentSessionId),
+      };
+    },
     dynamicTools,
     developerInstructions: CONVERSATION_HISTORY_TOOL_INSTRUCTIONS,
     async listSessions({ cwd, limit, cursor, includeSubagents, parentSessionRefs }) {
@@ -205,6 +220,15 @@ export function createPrivateRunnerAgentRuntime({
     },
     workspaceAdmission,
     resolveCanonicalCwd,
+    onActiveSessionsChanged,
+    listRawActiveSessions,
+    getRegisteredDirectoryPaths,
+    isSubagentSession: (sessionRef, cwd) => {
+      if (sessionRef.backendId === "claude") return /^agent-/.test(sessionRef.nativeSessionId);
+      const entry = selectCachedSession?.(sessionRef.nativeSessionId, { directory: cwd })
+        || selectCachedSession?.(sessionRef.nativeSessionId);
+      return entry ? entry.isSubagent === true || Boolean(entry.parentSessionId) : true;
+    },
     log,
     // 全observerを独立に実行しつつ、失敗はallSettledで無音破棄せず
     // agent-service側のwarnログへ届ける(push通知欠落の診断用)。

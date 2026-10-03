@@ -14,6 +14,7 @@ type AnchorRect = {
 
 type CodexStatusSummaryMenuProps = {
   dismissed?: boolean;
+  compact?: boolean;
 };
 
 const STATUS_PREVIEW_WIDTH = 320;
@@ -37,6 +38,7 @@ function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
 
 export function CodexStatusSummaryMenu({
   dismissed = false,
+  compact = false,
 }: CodexStatusSummaryMenuProps) {
   const styles = useAppStyles();
   const {
@@ -59,11 +61,12 @@ export function CodexStatusSummaryMenu({
   const [nowTick, setNowTick] = useState(0);
 
   useEffect(() => {
+    if (compact) return;
     const timer = setInterval(() => {
       setNowTick((prev) => prev + 1);
     }, 30 * 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [compact]);
   useEffect(() => {
     if (!dismissed) return;
     setAuthSelectOpen(false);
@@ -143,10 +146,16 @@ export function CodexStatusSummaryMenu({
           accessibilityRole="button"
           accessibilityLabel="利用状況を更新して表示"
         >
-          <Text style={styles.chatStatusSummaryText}>
-            {statusSummaryText}
-            {statusLoading ? " 更新中..." : ""}
-          </Text>
+          {compact ? (
+            <>
+              <Text style={[styles.chatStatusSummaryText, { lineHeight: 16 }]} numberOfLines={1} accessibilityLabel={`5時間の残り ${fiveHourPct}%`}>{fiveHourPct}%</Text>
+              <Text style={[styles.chatStatusSummaryText, { lineHeight: 16 }]} numberOfLines={1} accessibilityLabel={`週間の残り ${weeklyPct}%`}>{weeklyPct}%</Text>
+            </>
+          ) : (
+            <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
+              {statusSummaryText}{statusLoading ? " 更新中..." : ""}
+            </Text>
+          )}
         </TouchableOpacity>
       </View>
       <AppModal

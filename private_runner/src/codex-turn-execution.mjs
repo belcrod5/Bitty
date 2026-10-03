@@ -317,6 +317,8 @@ export function createCodexBackend({
   generateActionId = () => `codex_action_${randomUUID()}`,
   clientName = "private-runner-agent",
   compactTimeoutMs = 10 * 60 * 1000,
+  resolveNativeActiveSession = () => null,
+  onActiveSessionsChanged,
 } = {}) {
   if (typeof createClient !== "function") throw new TypeError("createClient is required");
   if (typeof resolveSessionCwd !== "function") throw new TypeError("resolveSessionCwd is required");
@@ -331,27 +333,47 @@ export function createCodexBackend({
   // 「native activeなthread」を追跡する。runner自身が起動したturn以外(spawnされた
   // subagent thread等)のactive/idleはここでしか観測できず、session一覧の
   // isActive(サブエージェント実行中数の表示源)に使う。
-  const nativeActiveThreadIds = new Set();
+  const nativeActiveThreads = new Map();
   let openTurnClientCount = 0;
   const observeNativeThreadStatus = (method, params) => {
     if (method !== "thread/status/changed") return;
     const threadId = getCodexTurnEventIdentity(params).threadId;
     if (!threadId) return;
     const status = codexThreadLiveStatus(params);
-    if (status === "active") nativeActiveThreadIds.add(threadId);
-    else if (status === "idle") nativeActiveThreadIds.delete(threadId);
+    if (status === "active") {
+      if (nativeActiveThreads.has(threadId)) return;
+      const pending = Promise.resolve().then(() => resolveNativeActiveSession(threadId));
+      nativeActiveThreads.set(threadId, pending);
+      void pending.then((identity) => {
+        if (nativeActiveThreads.get(threadId) !== pending) return;
+        nativeActiveThreads.set(threadId, identity);
+        onActiveSessionsChanged?.();
+      }).catch(() => {
+        if (nativeActiveThreads.get(threadId) === pending) nativeActiveThreads.set(threadId, null);
+      });
+    } else if (status === "idle" && nativeActiveThreads.delete(threadId)) onActiveSessionsChanged?.();
   };
   const releaseTurnClient = () => {
     openTurnClientCount = Math.max(0, openTurnClientCount - 1);
     // 通知を聴く接続が無くなったらactiveの根拠も消える。stale activeを
     // 残すと一覧が「実行中」を出し続けるため、知らない=idleへ倒す。
-    if (openTurnClientCount === 0) nativeActiveThreadIds.clear();
+    if (openTurnClientCount === 0 && nativeActiveThreads.size > 0) {
+      nativeActiveThreads.clear();
+      onActiveSessionsChanged?.();
+    }
   };
-  const withNativeThreadActivity = (sessions) => (Array.isArray(sessions) ? sessions : []).map((session) => (
-    nativeActiveThreadIds.has(String(session?.sessionRef?.nativeSessionId || ""))
-      ? { ...session, isActive: true }
-      : session
-  ));
+  const withNativeThreadActivity = (sessions) => (Array.isArray(sessions) ? sessions : []).map((session) => {
+    const threadId = String(session?.sessionRef?.nativeSessionId || "");
+    if (!nativeActiveThreads.has(threadId)) return session;
+    const identity = nativeActiveThreads.get(threadId);
+    if ((!identity || typeof identity.then === "function") && session.canonicalCwd) {
+      nativeActiveThreads.set(threadId, { sessionRef: session.sessionRef,
+        canonicalCwd: session.canonicalCwd,
+        isSubagent: session.isSubagent === true || Boolean(session.parentSessionRef) });
+      onActiveSessionsChanged?.();
+    }
+    return { ...session, isActive: true };
+  });
 
   async function startTurn({ runId, sessionRef, cwd, input, model, effort, policyProfileId, signal, resolveSession, emit }) {
     if (signal?.aborted) {
@@ -719,6 +741,7 @@ export function createCodexBackend({
 
   return {
     backendId: "codex",
+    listActiveSessions: () => [...nativeActiveThreads.values()].filter((value) => value?.sessionRef),
     defaultDiscoveredSessionMode: "raw",
     getStatus: getStatus || (async () => {
       let catalog;

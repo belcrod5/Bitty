@@ -7,6 +7,19 @@ import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
 import { setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 
+let mockRunningSessionCount: number | null = 0;
+jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
+  useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
+}));
+
+jest.mock("../components/CodexStatusSummaryMenu", () => ({
+  CodexStatusSummaryMenu: ({ compact }: { compact?: boolean }) => {
+    const ReactModule = require("react");
+    const { Text } = require("react-native");
+    return ReactModule.createElement(Text, { testID: "codex-status-summary-menu", accessibilityLabel: String(compact) }, "75%\n50%");
+  },
+}));
+
 const mockPersistViewport = jest.fn();
 const mockMarkViewportInteraction = jest.fn();
 jest.mock("../hooks/useSkiaBoardViewportPersistence", () => ({
@@ -414,6 +427,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  mockRunningSessionCount = 0;
   mockBoardVoiceHandlers.clear();
   mockBoardVoiceRequest.mockReset();
   mockBoardVoiceRequest.mockResolvedValue({ op: "voice.orchestrators.list.result", payload: {
@@ -478,7 +492,7 @@ test("overlays voice input while keeping the board mounted", async () => {
     }}
   />);
   await fireEvent.press(screen.getByTestId("skia-board-voice-conversation"));
-  expect(screen.getByTestId("skia-board-status-pill")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-usage-pill")).toBeTruthy();
   const voice = screen.getByTestId("voice-conversation-screen");
   const header = screen.getByTestId("skia-board-header-safe-area");
   const siblings = header.parent?.children ?? [];
@@ -486,7 +500,7 @@ test("overlays voice input while keeping the board mounted", async () => {
   expect(StyleSheet.flatten(header.props.style).zIndex).toBeUndefined();
   await fireEvent.press(screen.getByTestId("voice-conversation-screen"));
   expect(screen.queryByTestId("voice-conversation-screen")).toBeNull();
-  expect(screen.getByTestId("skia-board-status-pill")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-usage-pill")).toBeTruthy();
 });
 
 test("persists viewport reset through the local viewport owner", async () => {
@@ -1479,16 +1493,46 @@ test("floats circular navigation controls over the full-height canvas", async ()
   expect(mockSetBoardCardTextScale).toHaveBeenCalledWith(1.1);
 });
 
-test("keeps the canvas full bleed while the status pill observes the bottom safe area", async () => {
+test("centers the three-row usage and original tools on one bottom anchor", async () => {
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
 
-  expect(StyleSheet.flatten(screen.getByTestId("skia-board-status-safe-area").props.style)).toMatchObject({
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-tools-safe-area").props.style)).toMatchObject({
     position: "absolute",
     bottom: 0,
+    left: 0,
+    right: 0,
+    alignItems: "center",
   });
-  expect(StyleSheet.flatten(screen.getByTestId("skia-board-status-pill").props.style)).toMatchObject({
-    marginBottom: 14,
+  expect(screen.getByTestId("skia-board-footer-row").props.pointerEvents).toBe("box-none");
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-footer-row").props.style)).toMatchObject({
+    minHeight: 54,
+    marginBottom: 12,
+    alignItems: "center",
+    justifyContent: "center",
   });
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-usage-safe-area").props.style)).toMatchObject({
+    position: "absolute",
+    right: 14,
+    bottom: 0,
+    top: 0,
+    justifyContent: "center",
+  });
+  expect(StyleSheet.flatten(screen.getByTestId("skia-board-usage-pill").props.style)).toMatchObject({
+    paddingVertical: 3,
+  });
+  expect(screen.getByTestId("codex-status-summary-menu").props.accessibilityLabel).toBe("true");
+  expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe(0);
+  expect(screen.queryByTestId("skia-board-status-pill")).toBeNull();
+});
+
+test("shows the live session count from the shared active-session hook", async () => {
+  mockRunningSessionCount = 3;
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe(3);
+  expect(screen.getByLabelText("実行中のセッション 3件")).toBeTruthy();
+  mockRunningSessionCount = null;
+  await screen.rerender(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()} openSessionHistoryPopup={jest.fn()} />);
+  expect(screen.getByTestId("skia-board-running-session-count").props.children).toBe("--");
 });
 
 test("renders the four retained vector activities and an ASCII subagent count", async () => {

@@ -131,6 +131,10 @@ export function createAgentService({
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
   onRunEvent,
+  onActiveSessionsChanged,
+  isSubagentSession = () => false,
+  listRawActiveSessions = () => [],
+  getRegisteredDirectoryPaths = async () => [],
   log = console,
 } = {}) {
   const registry = new Map();
@@ -165,6 +169,11 @@ export function createAgentService({
   const compactQueueBySession = new Map();
   const recoveryBySession = new Map();
   let admissionQueue = Promise.resolve();
+  const notifyActiveSessionsChanged = () => {
+    try { onActiveSessionsChanged?.(); } catch (error) {
+      log.warn(`[agent] active session observer failed: ${errorText(error)}`);
+    }
+  };
 
   async function admitStart(run) {
     const previous = admissionQueue;
@@ -380,6 +389,7 @@ export function createAgentService({
     run.sessionResolved = true;
     activeRunBySession.set(key, run.runId);
     publish(run, "session.resolved", { sessionRef: resolved });
+    notifyActiveSessionsChanged();
   }
 
   async function recoverSessionLease(sessionRef, backend) {
@@ -489,6 +499,7 @@ export function createAgentService({
       activeRunBySession.delete(run.sessionKey);
     }
     removeFromCompactQueue(run);
+    notifyActiveSessionsChanged();
     run.resolveCompletion(result);
     await operationStore.complete(run.subjectId, run.clientOperationId, result).catch(() => {});
     const retentionTimer = setTimeout(() => {
@@ -713,6 +724,9 @@ export function createAgentService({
       await workspaceAdmission.assertAllowed(subjectId, canonicalCwd);
     }
     if (request.sessionRef) await recoverSessionLease(request.sessionRef, backend);
+    const isSubagent = request.sessionRef
+      ? await isSubagentSession(request.sessionRef, canonicalCwd)
+      : false;
     return await admitStart(async () => {
       const acceptedRequest = { ...request, cwd: canonicalCwd };
       const requestHash = hashAgentOperationRequest(acceptedRequest);
@@ -820,6 +834,7 @@ export function createAgentService({
         sessionResolved: Boolean(request.sessionRef),
         sessionKey: request.sessionRef ? sessionKey(request.sessionRef) : "",
         cwd: canonicalCwd,
+        isSubagent,
         model: request.model,
         effort: request.effort,
         settingsPersisted: false,
@@ -855,6 +870,7 @@ export function createAgentService({
         }
       }
       publish(run, "turn.accepted", { backendId: run.backendId, queued: queuedForCompact });
+      notifyActiveSessionsChanged();
       if (run.sessionResolved) publish(run, "session.resolved", { sessionRef: run.sessionRef });
       queueMicrotask(() => void execute(run, backend, acceptedRequest));
       const actionConsumerId = {};
@@ -1557,7 +1573,7 @@ export function createAgentService({
           : {}),
       };
     },
-    async listSessionSnapshot(options) {
+    async listSessionSnapshot(options, context = {}) {
       const requestedBackendId = String(options?.backendId || ALL_BACKENDS_SCOPE).trim()
         || ALL_BACKENDS_SCOPE;
       const selectedBackends = requestedBackendId === ALL_BACKENDS_SCOPE
@@ -1677,7 +1693,7 @@ export function createAgentService({
           if (!sessions) continue;
           sessions.push(...await Promise.all(
             (Array.isArray(group?.sessions) ? group.sessions : [])
-              .map((session) => withStoredSessionState(session, cwd)),
+              .map((session) => withStoredSessionState(session, cwd, context)),
           ));
         }
       }
@@ -1697,6 +1713,41 @@ export function createAgentService({
           ? { partial: true, failedBackendIds: failures.map((entry) => entry.backendId) }
           : {}),
       };
+    },
+    async countActiveSessions(_options, context = {}) {
+      const subjectId = String(context.subjectId || "").trim();
+      if (!subjectId) throw agentError("turn_rejected", "authenticated subject is required");
+      const cwds = [];
+      const registeredPaths = await getRegisteredDirectoryPaths();
+      for (const requestedCwd of registeredPaths) {
+        try {
+          const cwd = await resolveCanonicalCwd(requestedCwd);
+          if (!cwds.includes(cwd)) cwds.push(cwd);
+        } catch {
+          // A broken legacy path must not hide activity in other registered directories.
+        }
+      }
+      if (registeredPaths.length > 0 && cwds.length === 0) {
+        throw agentError("turn_rejected", "registered directories could not be resolved");
+      }
+      if (cwds.length === 0) return { count: 0 };
+      const allowedCwds = new Set(cwds);
+      const activeSessions = new Set();
+      for (const run of runs.values()) {
+        if (run.terminal || run.subjectId !== subjectId || run.isSubagent || !allowedCwds.has(run.cwd)) continue;
+        activeSessions.add(run.sessionRef ? sessionKey(run.sessionRef) : `run:${run.runId}`);
+      }
+      for (const backend of registry.values()) {
+        for (const session of backend.listActiveSessions?.() || []) {
+          if (session.isSubagent || session.parentSessionRef || !allowedCwds.has(session.canonicalCwd)) continue;
+          activeSessions.add(sessionKey(session.sessionRef));
+        }
+      }
+      for (const session of listRawActiveSessions()) {
+        if (session.isSubagent || session.parentSessionRef || !allowedCwds.has(session.canonicalCwd)) continue;
+        activeSessions.add(sessionKey(session.sessionRef));
+      }
+      return { count: activeSessions.size };
     },
     async readHistory(options, context = {}) {
       const sessionRef = normalizeAgentSessionRef(options?.sessionRef);

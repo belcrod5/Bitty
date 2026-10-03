@@ -12,6 +12,8 @@ export function createCodexRawSessionOwnership({
   acquireLease,
   settleLease,
   resolveCanonicalCwd,
+  isSubagentSession = () => false,
+  onActiveSessionsChanged,
   makeConflictError,
   errorMessage,
   sendRpc,
@@ -48,7 +50,8 @@ export function createCodexRawSessionOwnership({
     const sessionRef = { backendId: "codex", nativeSessionId };
     const boundCwd = rawCwd || String((await getSessionBinding(sessionRef))?.canonicalCwd || "");
     if (!boundCwd) throw makeConflictError("session_not_found", "turn/start requires a resolved workspace");
-    await bind(relay, nativeSessionId, boundCwd);
+    const canonicalCwd = await bind(relay, nativeSessionId, boundCwd);
+    const isSubagent = await isSubagentSession(sessionRef, canonicalCwd, relay);
     const acquired = await acquireLease({
       sessionRef,
       mode: "raw",
@@ -58,13 +61,15 @@ export function createCodexRawSessionOwnership({
     if (acquired?.status !== "acquired" && acquired?.status !== "existing") {
       throw makeConflictError("session_busy", "session already has an active or recovering turn");
     }
-    relay.agentLease = { sessionRef, generation: acquired.lease.generation, kind };
+    relay.agentLease = { sessionRef, generation: acquired.lease.generation, kind, canonicalCwd, isSubagent };
+    onActiveSessionsChanged?.();
   }
 
   function settle(relay, state, expectedKind = "") {
     const lease = relay?.agentLease;
     if (!lease || (expectedKind && lease.kind !== expectedKind)) return relay?.agentLeaseSettlement;
     relay.agentLease = null;
+    onActiveSessionsChanged?.();
     const settlement = settleLease(lease.sessionRef, lease.generation, state).catch((error) => {
       log.warn(`[codex-ws-proxy] failed to ${state} session lease: ${errorMessage(error)}`);
     });

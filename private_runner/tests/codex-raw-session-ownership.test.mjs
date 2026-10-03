@@ -27,12 +27,43 @@ test("raw Codex admission binds one mode and acquires a durable generation lease
     sessionRef: { backendId: "codex", nativeSessionId: "thread-1" },
     generation: 4,
     kind: "turn",
+    canonicalCwd: "/real/workspace",
+    isSubagent: false,
   });
   assert.equal(calls[0][0], "bind");
   assert.equal(calls[1][0], "acquire");
   await ownership.settle(relay, "released");
   assert.equal(relay.agentLease, null);
   assert.equal(calls[2][0], "settle");
+});
+
+test("raw lease changes notify only after admission and synchronous settlement", async () => {
+  const active = [];
+  const relay = { relayId: "relay-child", threadId: "child", threadCwd: "/workspace", clients: new Set() };
+  const { ownership } = createOwnership({
+    isSubagentSession: () => true,
+    onActiveSessionsChanged: () => active.push(relay.agentLease?.sessionRef.nativeSessionId || null),
+  });
+  await ownership.admit(relay, { params: { threadId: "child" } }, {}, "compact");
+  assert.equal(relay.agentLease.isSubagent, true);
+  await ownership.settle(relay, "recovering", "compact");
+  assert.deepEqual(active, ["child", null]);
+});
+
+test("raw resumed main waits for cold-cache identity before acquiring its lease", async () => {
+  let resolveIdentity;
+  const identity = new Promise((resolve) => { resolveIdentity = resolve; });
+  const { ownership, calls } = createOwnership({
+    isSubagentSession: async () => await identity,
+  });
+  const relay = { relayId: "relay-main", threadId: "main", threadCwd: "/workspace", clients: new Set() };
+  const admitting = ownership.admit(relay, { params: { threadId: "main" } }, {}, "turn");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.some(([kind]) => kind === "acquire"), false);
+  resolveIdentity(false);
+  await admitting;
+  assert.equal(relay.agentLease.isSubagent, false);
+  assert.equal(relay.agentLease.canonicalCwd, "/real/workspace");
 });
 
 test("authoritative native cwd requests idle raw binding reconciliation", async () => {
