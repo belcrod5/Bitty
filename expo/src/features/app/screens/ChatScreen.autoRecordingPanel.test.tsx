@@ -125,9 +125,6 @@ jest.mock("../../stt/useStreamingStt", () => ({
   },
 }));
 jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetStringAsync(text) }));
-jest.mock("../../faceTracking/iosFaceTrackingClient", () => ({
-  isIosFaceTrackingAvailable: () => false,
-}));
 
 jest.mock("../components/ChatContextUsageMenu", () => ({ ChatContextUsageMenu: () => null }));
 jest.mock("../components/CodexStatusSummaryMenu", () => ({ CodexStatusSummaryMenu: () => null }));
@@ -331,16 +328,11 @@ jest.mock("../contexts/ChatComposerContext", () => ({
     chatComposerInputRef: { current: null },
     showComposerFullscreenToggle: false,
     setComposerInputFocused: jest.fn(),
-    faceTrackingEnabled: false,
-    faceTrackingLooking: true,
-    voiceInputAllowed: true,
     onVoiceSpeechBegin: jest.fn(),
     voiceInputDuringTtsAllowed: false,
     registerVoiceInputSession: () => jest.fn(),
     canStopLlmTurn: false,
     stopLlmTurn: jest.fn(),
-    setFaceTrackingEnabledWithRef: jest.fn(),
-    faceTrackingRunning: false,
     setSlashCommandSelectOpen: mockSetSlashCommandSelectOpen,
     slashCommandOptions: [],
     onSelectSlashCommand: jest.fn(),

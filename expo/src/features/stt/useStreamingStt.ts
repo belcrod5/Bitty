@@ -23,7 +23,7 @@ type Options = {
   onSample: (rms: number) => void;
   onError: (message: string) => void;
   onDiagnostic?: (event: string, payload: Record<string, unknown>) => void;
-  canStart: boolean;
+  canStart?: boolean;
   onSpeechBegin: () => void;
   replyLoading: boolean;
   ttsPlaybackActive: boolean;
@@ -153,7 +153,7 @@ export function useStreamingStt(options: Options) {
 
   const startSession = useCallback(() => {
     if (!listeningRef.current) return;
-    if (!latestRef.current.canStart) {
+    if (latestRef.current.canStart === false) {
       setPhase("connecting");
       scheduleStart();
       return;
@@ -336,8 +336,8 @@ export function useStreamingStt(options: Options) {
       onError("この端末ではストリーミング音声入力を利用できません。");
       return;
     }
-    if (!options.canStart) {
-      onError("Face Trackingが発話開始を許可していません。");
+    if (options.canStart === false) {
+      onError("現在は音声入力を開始できません。");
       return;
     }
     if (phase !== "idle" || listeningRef.current) return;

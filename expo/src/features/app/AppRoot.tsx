@@ -43,11 +43,6 @@ import {
 } from "./theme/visualThemes";
 import { PushNotificationRegistrar } from "./components/PushNotificationRegistrar";
 import type { PopupChatSourceRect, SessionPopupOrigin } from "./components/popupChatTypes";
-import {
-  isIosFaceTrackingAvailable,
-  startIosFaceTrackingSession,
-  type IosFaceTrackingSession,
-} from "../faceTracking/iosFaceTrackingClient";
 import { useBufferedClientLogs } from "./hooks/useBufferedClientLogs";
 import { getNetworkUsageSnapshot } from "../ws/networkUsageMetrics";
 import { useUiSfxController } from "./hooks/useUiSfxController";
@@ -120,7 +115,6 @@ import { useTtsPlaybackStateController } from "./hooks/useTtsPlaybackStateContro
 import { useTtsPlaybackWatchdogController } from "./hooks/useTtsPlaybackWatchdogController";
 import { useReplyAudioFlowController } from "./hooks/useReplyAudioFlowController";
 import { useAudioSettingsInputController } from "./hooks/useAudioSettingsInputController";
-import { useFaceTrackingStateController } from "./hooks/useFaceTrackingStateController";
 import { useAppContextActions } from "./hooks/useAppContextActions";
 import { useConversationMessageWindowController } from "./hooks/useConversationMessageWindowController";
 import { useSessionHistoryPagingController } from "./hooks/useSessionHistoryPagingController";
@@ -433,7 +427,6 @@ const TTS_PLAYBACK_RECOVER_COOLDOWN_MS = 1400;
 const TTS_PLAYBACK_WATCHDOG_ERROR_LOG_THROTTLE_MS = 1800;
 const TTS_PLAYBACK_FINISH_EPSILON_MS = 36;
 const TTS_PLAYBACK_FORCE_STOP_STALL_MS = 4000;
-const AUTO_FACE_TRACKING_ALLOW_CACHE_MS = 250;
 const AUTO_DIAGNOSTICS_ENABLED = false;
 const AUTO_DIAGNOSTIC_CRITICAL_EVENTS = new Set([
   "tts_stop_requested",
@@ -708,13 +701,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [ttsSound, setTtsSound] = useState<Audio.Sound | null>(null);
   const [ttsUri, setTtsUri] = useState("");
   const [ttsProvider, setTtsProvider] = useState<TtsProvider>(DEFAULT_TTS_PROVIDER);
-  const [faceTrackingEnabled, setFaceTrackingEnabled] = useState(false);
-  const [faceTrackingRunning, setFaceTrackingRunning] = useState(false);
-  const [faceTrackingLooking, setFaceTrackingLooking] = useState(true);
-  const [faceTrackingFaceDetected, setFaceTrackingFaceDetected] = useState(false);
-  const [, setFaceTrackingYawDeg] = useState(0);
-  const [, setFaceTrackingPitchDeg] = useState(0);
-  const [, setFaceTrackingLookScore] = useState(0);
   const [ttsSpeed, setTtsSpeed] = useState(DEFAULT_TTS_SPEED);
   const [ttsSpeedInput, setTtsSpeedInput] = useState(DEFAULT_TTS_SPEED.toFixed(1));
   const [selectedVoiceIdByProvider, setSelectedVoiceIdByProvider] =
@@ -1150,16 +1136,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     };
   }, [logSessionDiag]);
 
-  const faceTrackingEnabledRef = useRef(false);
-  const faceTrackingLookingRef = useRef(true);
-  const faceTrackingFaceDetectedRef = useRef(false);
-  const faceTrackingAllowCachedAtRef = useRef(0);
-  const faceTrackingAllowCachedValueRef = useRef(true);
-  const faceTrackingSessionRef = useRef<IosFaceTrackingSession | null>(null);
-  const faceTrackingSyncTokenRef = useRef(0);
-  const faceTrackingSuppressLogAtRef = useRef(0);
-  const faceTrackingSuppressedRef = useRef(false);
-  const faceTrackingNotLookingSinceRef = useRef(0);
   const conversationMessagesRef = useRef<ConversationMessage[]>([]);
   const setReplyLoadingWithRefDelegateRef = useRef<(next: boolean) => void>(() => {});
   type RuntimeConversationWriteOptions = {
@@ -1231,28 +1207,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const chatScreenLayoutRef = useRef({ width: 0, height: 0 });
   const youtubeWebViewRef = useRef<WebView | null>(null);
   const chatThinkingPanelSessionIdRef = useRef(String(selectedLlmSessionId || "").trim());
-  const {
-    setFaceTrackingEnabledWithRef,
-    applyFaceTrackingState,
-    faceTrackingAllowsStt,
-  } = useFaceTrackingStateController({
-    autoFaceTrackingAllowCacheMs: AUTO_FACE_TRACKING_ALLOW_CACHE_MS,
-    faceTrackingEnabledRef,
-    faceTrackingLookingRef,
-    faceTrackingFaceDetectedRef,
-    faceTrackingAllowCachedAtRef,
-    faceTrackingAllowCachedValueRef,
-    faceTrackingSuppressedRef,
-    faceTrackingSuppressLogAtRef,
-    faceTrackingNotLookingSinceRef,
-    setFaceTrackingEnabled,
-    setFaceTrackingLooking,
-    setFaceTrackingFaceDetected,
-    setFaceTrackingRunning,
-    setFaceTrackingYawDeg,
-    setFaceTrackingPitchDeg,
-    setFaceTrackingLookScore,
-  });
 
   useEffect(() => {
     const nextSelectedSessionId = String(selectedLlmSessionId || "").trim();
@@ -3743,7 +3697,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     reasoningEffort,
     codexApprovalPolicy,
     ttsProvider,
-    faceTrackingEnabled,
     ttsSpeed,
     selectedVoiceIdByProvider,
     autoBargeInEnabled,
@@ -3770,7 +3723,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     setCodexApprovalPolicy,
     setSelectedVoiceIdByProvider,
     setTtsProvider,
-    setFaceTrackingEnabledWithRef,
     setTtsSpeedWithSync,
     setAutoBargeInEnabled,
     setAutoSpeakerPriorityEnabled,
@@ -4001,7 +3953,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     autoClientLogs,
     streamSocketRef,
     streamTtsControlRef,
-    faceTrackingSessionRef,
     clearTtsPlaybackWatchdogTimer,
     ttsPlaybackWantedRef,
     ttsPlaybackTransitionInFlightRef,
@@ -4015,87 +3966,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     toolAutoApprovalMapRef.current = toolAutoApprovalMap;
   }, [toolAutoApprovalMap]);
-
-  useEffect(() => {
-    faceTrackingEnabledRef.current = faceTrackingEnabled;
-  }, [faceTrackingEnabled]);
-
-  useEffect(() => {
-    faceTrackingLookingRef.current = faceTrackingLooking;
-  }, [faceTrackingLooking]);
-
-  useEffect(() => {
-    faceTrackingFaceDetectedRef.current = faceTrackingFaceDetected;
-  }, [faceTrackingFaceDetected]);
-
-  useEffect(() => {
-    const shouldRunFaceTracking = (
-      Platform.OS === "ios" &&
-      faceTrackingEnabled &&
-      activeScreen === "skia_board"
-    );
-    const syncToken = faceTrackingSyncTokenRef.current + 1;
-    faceTrackingSyncTokenRef.current = syncToken;
-    let disposed = false;
-
-    async function syncFaceTrackingSession() {
-      const currentSession = faceTrackingSessionRef.current;
-      if (!shouldRunFaceTracking) {
-        faceTrackingSuppressedRef.current = false;
-        if (!currentSession) {
-          if (!faceTrackingEnabled) {
-            setFaceTrackingRunning(false);
-            setFaceTrackingFaceDetected(false);
-            setFaceTrackingLooking(true);
-          }
-          return;
-        }
-        faceTrackingSessionRef.current = null;
-        await currentSession.stop().catch(() => {});
-        if (disposed || faceTrackingSyncTokenRef.current !== syncToken) return;
-        setFaceTrackingRunning(false);
-        setFaceTrackingFaceDetected(false);
-        setFaceTrackingLooking(true);
-        return;
-      }
-      if (currentSession) return;
-      if (!isIosFaceTrackingAvailable()) {
-        reportError(
-          "Face Tracking は iOS Development Build でのみ利用できます。",
-          "face_tracking"
-        );
-        setFaceTrackingEnabledWithRef(false);
-        return;
-      }
-      try {
-        const nextSession = await startIosFaceTrackingSession({
-          onState: (state) => {
-            applyFaceTrackingState(state);
-          },
-          onError: (error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            logAuto("face_tracking_error", { message });
-          },
-        });
-        if (disposed || faceTrackingSyncTokenRef.current !== syncToken || !faceTrackingEnabledRef.current) {
-          await nextSession.stop().catch(() => {});
-          return;
-        }
-        faceTrackingSessionRef.current = nextSession;
-      } catch (error) {
-        reportError(error, "face_tracking:start");
-        setFaceTrackingEnabledWithRef(false);
-      }
-    }
-
-    void syncFaceTrackingSession();
-    return () => {
-      disposed = true;
-    };
-  }, [
-    activeScreen,
-    faceTrackingEnabled,
-  ]);
 
   function recoverTtsStreamAfterResume(reason: string) {
     const ws = streamSocketRef.current;
@@ -5953,17 +5823,12 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     chatComposerInputRef,
     showComposerFullscreenToggle,
     setComposerInputFocused,
-    faceTrackingEnabled,
-    faceTrackingLooking,
-    voiceInputAllowed: !faceTrackingEnabled || faceTrackingLooking,
     onVoiceSpeechBegin,
     voiceInputDuringTtsAllowed,
     registerVoiceInputSession,
     hasComposerText,
     canStopLlmTurn: replyLoading,
     stopLlmTurn: stopLlmTurnFromComposerContext,
-    setFaceTrackingEnabledWithRef,
-    faceTrackingRunning,
     setSlashCommandSelectOpen,
     slashCommandOptions: SLASH_COMMAND_OPTIONS,
     onSelectSlashCommand: handleSelectSlashCommand,

@@ -91,6 +91,16 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
+test("starts without an optional eligibility gate", async () => {
+  const { canStart: _canStart, ...options } = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+
+  await act(async () => { result.current.start(); await Promise.resolve(); });
+
+  expect(mockSessions).toHaveLength(1);
+  expect(options.onError).not.toHaveBeenCalled();
+});
+
 test("guards double start and ignores stale events after auto rearm", async () => {
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));
@@ -392,7 +402,7 @@ test("a later chat loading state cancels the early-completion grace wait", async
   expect(mockSessions).toHaveLength(2);
 });
 
-test("rechecks face eligibility before each automatic retry", async () => {
+test("rechecks voice input availability before each automatic retry", async () => {
   let options = createOptions();
   const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
   const session = await openReady(hook.result);

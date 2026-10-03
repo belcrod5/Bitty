@@ -78,7 +78,11 @@ test("reports an unavailable persistence directory instead of silently dropping 
     .rejects.toThrow("Persistent settings directory is unavailable");
 });
 
-test("serializes writes while removing only old location fields", async () => {
+test("serializes writes while removing obsolete settings and preserving other data", async () => {
+  mockFiles.set("file:///documents/bitty-settings.json", JSON.stringify({
+    faceTrackingEnabled: true,
+    faceIdRequiredForApproval: true,
+  }));
   await Promise.all([
     mutatePersistedSettings((current) => ({ ...current, runnerUrl: "http://runner" })),
     mutatePersistedSettings((current) => ({
@@ -96,6 +100,7 @@ test("serializes writes while removing only old location fields", async () => {
   expect(await readPersistedSettings()).toEqual({
     runnerUrl: "http://runner",
     skiaBoardViewport: { x: 1 },
+    faceIdRequiredForApproval: true,
   });
   expect(mockWriteAsStringAsync).toHaveBeenCalledWith(
     "file:///documents/bitty-settings.json.pending",

@@ -1,6 +1,5 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import { deactivateKeepAwake } from "expo-keep-awake";
-import type { IosFaceTrackingSession } from "../../faceTracking/iosFaceTrackingClient";
 import type { StreamTtsControlState } from "../types/appTypes";
 
 type Options = {
@@ -10,7 +9,6 @@ type Options = {
   autoClientLogs: { clearFlushTimer: () => void };
   streamSocketRef: MutableRefObject<WebSocket | null>;
   streamTtsControlRef: MutableRefObject<StreamTtsControlState | null>;
-  faceTrackingSessionRef: MutableRefObject<IosFaceTrackingSession | null>;
   clearTtsPlaybackWatchdogTimer: () => void;
   ttsPlaybackWantedRef: MutableRefObject<boolean>;
   ttsPlaybackTransitionInFlightRef: MutableRefObject<boolean>;
@@ -30,9 +28,6 @@ export function useAppUnmountCleanupController(options: Options) {
     options.streamSocketRef.current = null;
     options.streamTtsControlRef.current?.cleanup();
     options.streamTtsControlRef.current = null;
-    const faceTrackingSession = options.faceTrackingSessionRef.current;
-    options.faceTrackingSessionRef.current = null;
-    if (faceTrackingSession) void faceTrackingSession.stop().catch(() => {});
     options.clearTtsPlaybackWatchdogTimer();
     options.ttsPlaybackWantedRef.current = false;
     options.ttsPlaybackTransitionInFlightRef.current = false;
