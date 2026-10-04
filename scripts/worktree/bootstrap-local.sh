@@ -8,6 +8,7 @@ DO_ENV=0
 DO_PRIVATE_RUNNER=0
 DO_EXPO=0
 DO_IOS_NATIVE=0
+IOS_NATIVE_COPIED=0
 
 usage() {
   cat >&2 <<'EOF'
@@ -265,11 +266,13 @@ ensure_ios_native_workspace() {
   local workspace_path="${ios_dir}/Bitty.xcworkspace"
 
   if [[ ! -d "${workspace_path}" ]]; then
-    copy_ios_native_from_main || true
+    if copy_ios_native_from_main; then
+      IOS_NATIVE_COPIED=1
+    fi
   fi
 
   echo "[bootstrap-local] synchronizing expo/ios workspace"
-  (cd "${expo_dir}" && npx expo prebuild --platform ios)
+  (cd "${expo_dir}" && npx expo prebuild --platform ios --no-install)
 
   if [[ ! -d "${workspace_path}" ]]; then
     echo "[bootstrap-local] failed to prepare iOS workspace: ${workspace_path}" >&2
@@ -280,22 +283,39 @@ ensure_ios_native_workspace() {
 ensure_ios_pods() {
   local ios_dir="${REPO_ROOT}/expo/ios"
   local manifest_lock="${ios_dir}/Pods/Manifest.lock"
+  local install_needed=0
+  local marker=""
 
   if ! command -v pod >/dev/null 2>&1; then
     echo "[bootstrap-local] CocoaPods is required because expo/ios/Pods is missing" >&2
     exit 1
   fi
 
-  if [[ -d "${ios_dir}/Pods" && -f "${manifest_lock}" ]] &&
-    [[ ! "${REPO_ROOT}/expo/package.json" -nt "${manifest_lock}" ]] &&
-    [[ ! "${REPO_ROOT}/expo/package-lock.json" -nt "${manifest_lock}" ]] &&
-    [[ ! "${ios_dir}/Podfile" -nt "${manifest_lock}" ]] &&
-    [[ ! "${ios_dir}/Podfile.properties.json" -nt "${manifest_lock}" ]]; then
-    return 0
+  if [[ "${IOS_NATIVE_COPIED}" == "1" || ! -f "${manifest_lock}" ]] ||
+    [[ "${REPO_ROOT}/expo/package.json" -nt "${manifest_lock}" ]] ||
+    [[ "${REPO_ROOT}/expo/package-lock.json" -nt "${manifest_lock}" ]] ||
+    [[ "${ios_dir}/Podfile" -nt "${manifest_lock}" ]] ||
+    [[ "${ios_dir}/Podfile.properties.json" -nt "${manifest_lock}" ]]; then
+    install_needed=1
   fi
 
-  echo "[bootstrap-local] installing/updating iOS pods"
-  (cd "${ios_dir}" && pod install)
+  # CocoaPods can replace prebuilt Debug binaries without updating React Native's
+  # copied Release markers. An empty marker makes its build scripts select the
+  # requested Debug or Release archive on the next xcodebuild.
+  for marker in \
+    "${ios_dir}/Pods/.last_build_configuration" \
+    "${ios_dir}/Pods/React-Core-prebuilt/.last_build_configuration" \
+    "${ios_dir}/Pods/ReactNativeDependencies/.last_build_configuration"; do
+    if [[ -f "${marker}" ]] &&
+      [[ "${install_needed}" == "1" || "${manifest_lock}" -nt "${marker}" ]]; then
+      : > "${marker}"
+    fi
+  done
+
+  if [[ "${install_needed}" == "1" ]]; then
+    echo "[bootstrap-local] installing/updating iOS pods"
+    (cd "${ios_dir}" && pod install)
+  fi
 }
 
 if [[ "${DO_ENV}" == "1" ]]; then

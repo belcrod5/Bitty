@@ -1,6 +1,6 @@
 # オーケストレータ活動表示：実装記録
 
-状態: 製品コードと指定スキルの変更、関連自動テスト、独立レビュー完了。実機確認・main マージは未実施。
+状態: 製品コードと指定スキルの変更、関連自動テスト、独立レビュー完了。実機起動確認・main マージは未完了。
 
 目的は既存のオーケストレーションの見える化。CLI が実行元を自動付加し、Runner が親オーケストレータと活動を解決して、既存通信でカードと固定表示へ渡す。認証、承認、実行方法、接続寿命は維持する。
 
@@ -82,3 +82,11 @@ cd /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/docs/orchestrator-activity-tes
 ```
 
 ボードの個別セッション取得・会話で右上、一覧・全体操作で固定位置、native 子に親のアイコン、ツール呼び出しの状態が表示されることを確認する。パン／ズームで固定表示が動かないことと、既存操作を邪魔しないことも確認する。コマンドはユーザー検証用で、エージェントは再起動とビルドを実行していない。
+
+## 実機起動時の Hermes 修復
+
+ユーザーの初回 iPhone ビルドは画面表示前、Hermes 初期化中に `EXC_BAD_ACCESS` で終了した。生成されたアプリの React は 0.81.6 Release、Hermes は 0.81.6 Debug（UUID `B670DC88-9C32-323A-AD5D-AF6735FCA0EF`）だった。main からコピーされた `Pods/.last_build_configuration` は古い `Release` のままで、後の pod install が Debug 実体へ更新したため、React Native の置換スクリプトが Release ビルドでも Hermes の切り替えを省略した。
+
+`bootstrap-local.sh` は Expo prebuild に `--no-install` を指定して Pod 更新を既存の `ensure_ios_pods` に集約した。初回 native workspace コピー時は Pod 更新を必ず行い、更新前または Manifest が marker より新しい時に RN の 3 種の configuration marker を空にする。次の xcodebuild が要求した Debug / Release の実体を選択する。Pod install が失敗しても古い `Release` 判定は残らない。Pods 全消去や依存追加はしていない。
+
+隔離した shell fixture の `bash scripts/worktree/test-bootstrap-ios-native.sh` と `bash -n` は成功。コピー直後、既存の古い marker、正常な cache hit、pod install 失敗を確認した。親エージェントは実際の RN 0.81.6 置換スクリプトと両 Hermes archive を一時ディレクトリで実行し、古い marker では Debug UUID が残り、空 marker では Release UUID `DC7E3016…` に変わり、Debug 要求なら Debug UUID になることを確認した。アプリ再ビルド後の実機起動は未確認。
