@@ -8,6 +8,7 @@ import { VISUAL_THEMES } from "../theme/visualThemes";
 import { setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 
 let mockRunningSessionCount: number | null = 0;
+jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
 jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
   useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
 }));
@@ -65,13 +66,17 @@ jest.mock("@shopify/react-native-skia", () => {
   };
   // createPictureへ描いた内容(テキストとアイコン)を記録し、Pictureスタブが
   // ParagraphStub/PathStubと同じtestIDのViewとして描画する。
-  const createPictureStub = (cb: (canvas: unknown) => void) => {
+  const createPictureStub = (cb: (canvas: unknown) => void, bounds: unknown) => {
     const recorded = { texts: [] as string[], iconColors: [] as string[] };
+    const target = globalThis as Record<string, unknown>;
+    const pictureBounds = target.__skiaBoardPictureBounds as unknown[] | undefined;
+    target.__skiaBoardPictureBounds = [...(pictureBounds || []), bounds];
     cb({
       save: () => undefined,
       restore: () => undefined,
       translate: () => undefined,
       clipRect: () => undefined,
+      clipRRect: () => undefined,
       drawRRect: (_rect: unknown, paint: { color?: string }) => {
         const target = globalThis as Record<string, unknown>;
         const colors = target.__skiaBoardRRectColors as string[] | undefined;
@@ -455,6 +460,7 @@ beforeEach(() => {
   (globalThis as Record<string, unknown>).__skiaBoardRRectColors = [];
   (globalThis as Record<string, unknown>).__skiaBoardCircleCenters = [];
   (globalThis as Record<string, unknown>).__skiaBoardImageRects = [];
+  (globalThis as Record<string, unknown>).__skiaBoardPictureBounds = [];
   (globalThis as Record<string, unknown>).__skiaBoardTestImage = null;
   (globalThis as Record<string, unknown>).__skiaBoardActivityImages = [];
   (globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs = 0;
@@ -505,7 +511,7 @@ test("places each actor on the verified target and retains parallel work after o
     .reduce((sum, badge) => sum + badge.count, 0)).toBe(4);
 });
 
-test("activity pushes draw card and fixed global status without adding cards", async () => {
+test("activity pushes draw floating card badge and whole-board frame without adding cards", async () => {
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
     openSessionHistoryPopup={jest.fn()} />);
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
@@ -519,8 +525,25 @@ test("activity pushes draw card and fixed global status without adding cards", a
     ],
   } }));
   expect(screen.getByTestId("skia-text:読み込み中")).toBeTruthy();
-  expect(screen.getByTestId("skia-board-global-activity-two")).toBeTruthy();
-  expect(screen.getByText("取得中 · 完了")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-actor-one")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-status").props.children.join("")).toBe("読み込み中 · 実行中");
+  const bounds = (globalThis as Record<string, unknown>).__skiaBoardPictureBounds as
+    Array<{ x: number; y: number; width: number; height: number }>;
+  const floatingBadge = ((globalThis as Record<string, unknown>).__skiaBoardCircleCenters as
+    Array<{ x: number; y: number }>).find((center) => center.y === -3);
+  expect(floatingBadge).toBeDefined();
+  expect(bounds.some((rect) => floatingBadge && rect.x <= floatingBadge.x - 18 &&
+    rect.y <= floatingBadge.y - 18 && rect.x + rect.width >= floatingBadge.x + 28)).toBe(true);
+  await act(async () => mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
+    instanceId: "server", revision: 2, activities: [
+      { id: "a", orchestratorId: "one", sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+        kind: "tool", status: "running", label: "読み込み中", startedAt: 1 },
+    ],
+  } }));
+  expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+  expect(screen.queryByTestId("skia-board-activity-actor-two")).toBeNull();
   expect(mockSessions).toHaveLength(1);
 });
 

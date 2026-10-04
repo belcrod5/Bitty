@@ -53,7 +53,8 @@ import {
 } from "../hooks/useSkiaMiniChatSessions";
 import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
 import { useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
-import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
+import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
+import { SkiaBoardActivityFrame, activityStatusText } from "../components/SkiaBoardActivityFrame";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import {
   normalizeRunnerPath,
@@ -336,16 +337,6 @@ type ActivityBadge = {
 };
 const EMPTY_ACTIVITY_BADGES: ActivityBadge[] = [];
 
-function activityStatusText(status: string) {
-  switch (status) {
-    case "completed": return "完了";
-    case "failed": return "失敗";
-    case "interrupted": return "中断";
-    case "unknown": return "状態不明";
-    default: return "実行中";
-  }
-}
-
 export function placeOrchestratorActivities(
   activities: OrchestratorActivity[],
   items: SkiaMiniBoardItem[],
@@ -584,7 +575,7 @@ const BoardCard = memo(function BoardCard({
           canvas.save();
           canvas.clipRect(Skia.XYWHRect(10, 8, cardWidth - 20, CARD_HEIGHT - 16), ClipOp.Intersect, true);
           canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
-          drawText(header, 31, 14, Math.max(30, cardWidth - 47 - activityBadges.length * 42), {
+          drawText(header, 31, 14, Math.max(30, cardWidth - 53 - activityBadges.length * 52), {
             fontSize: bodyFontSize,
             color: theme.board.textMuted,
           });
@@ -618,26 +609,35 @@ const BoardCard = memo(function BoardCard({
           });
           canvas.restore();
           activityBadges.forEach((badge, badgeIndex) => {
-            const x = cardWidth - 14 - (activityBadges.length - badgeIndex) * 42;
-            canvas.drawCircle(x + 13, 16, 10, fillPaint(theme.colors.surfaceRaised));
+            const centerX = cardWidth + 2 - (activityBadges.length - badgeIndex - 1) * 54;
+            const centerY = -3;
+            canvas.drawCircle(centerX, centerY, 18, fillPaint(theme.colors.activityActive, 0.22));
+            canvas.drawCircle(centerX, centerY, 15, fillPaint(theme.colors.surfaceRaised));
             if (badge.image) {
+              canvas.save();
+              canvas.clipRRect(Skia.RRectXY(Skia.XYWHRect(centerX - 13, centerY - 13, 26, 26), 13, 13),
+                ClipOp.Intersect, true);
               canvas.drawImageRect(badge.image,
                 Skia.XYWHRect(0, 0, badge.image.width(), badge.image.height()),
-                Skia.XYWHRect(x + 4, 7, 18, 18), fillPaint("#ffffff"));
+                Skia.XYWHRect(centerX - 13, centerY - 13, 26, 26), fillPaint("#ffffff"));
+              canvas.restore();
             } else {
-              drawText([...badge.orchestrator.name.trim()][0] || "?", x + 7, 9, 15,
-                { fontSize: 11, bold: true, color: theme.board.textPrimary });
+              drawText([...badge.orchestrator.name.trim()][0] || "?", centerX - 9, centerY - 10, 18,
+                { fontSize: 15, bold: true, color: theme.board.textPrimary });
             }
+            canvas.drawCircle(centerX, centerY, 15, strokePaint(theme.colors.activityActive, 2.8));
             const stateColor = badge.status === "failed" ? theme.colors.dangerTextStrong
               : badge.status === "running" ? theme.colors.activityActive : theme.board.textMuted;
-            canvas.drawCircle(x + 23, 24, 3, fillPaint(stateColor));
+            canvas.drawCircle(centerX + 12, centerY + 12, 4, fillPaint(stateColor));
             const stateLabel = badge.status === "running" ? badge.label : activityStatusText(badge.status);
-            drawText(badge.count > 1 ? `${stateLabel}${badge.count}` : stateLabel, x - 4, 28, 41,
-              { fontSize: 8, color: theme.board.textMuted });
+            drawText(badge.count > 1 ? `${stateLabel}${badge.count}` : stateLabel, centerX - 28, 16, 56,
+              { fontSize: 9, bold: true, color: theme.board.textMuted });
           });
           // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
         },
-        Skia.XYWHRect(-2, -2, cardWidth + 8, cardHeight + 10),
+        activityBadges.length
+          ? Skia.XYWHRect(-24, -24, cardWidth + 58, cardHeight + 34)
+          : Skia.XYWHRect(-2, -2, cardWidth + 8, cardHeight + 10),
       ),
     [
       // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
@@ -1974,22 +1974,10 @@ export function SkiaMiniBoardScreen({
         </View>
       </GestureDetector>
 
-      {activityPlacement.global.length > 0 ? (
-        <SafeAreaView pointerEvents="none" style={screenStyles.activitySafeArea}>
-          <View pointerEvents="none" style={screenStyles.activityList} testID="skia-board-global-activities">
-            {activityPlacement.global.map((badge) => (
-              <View key={badge.key} style={screenStyles.activityRow}
-                testID={`skia-board-global-activity-${badge.key}`}>
-                <VoiceOrchestratorIcon orchestrator={{ ...badge.orchestrator, unreadCount: 0 }} size={28} />
-                <Text numberOfLines={1} style={screenStyles.activityText}>
-                  {badge.label || activityStatusText(badge.status)} · {activityStatusText(badge.status)}
-                  {badge.count > 1 ? ` (${badge.count})` : ""}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </SafeAreaView>
-      ) : null}
+      <SkiaBoardActivityFrame
+        badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
+        theme={theme}
+      />
 
       <SafeAreaView
         pointerEvents="box-none"
@@ -2150,31 +2138,6 @@ function createScreenStyles(theme: VisualTheme) {
       top: 0,
       left: 0,
       right: 0,
-    },
-    activitySafeArea: {
-      position: "absolute",
-      top: 54,
-      right: 12,
-      left: 12,
-      alignItems: "flex-end",
-    },
-    activityList: {
-      gap: 5,
-      maxWidth: "80%",
-    },
-    activityRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      paddingHorizontal: 8,
-      paddingVertical: 5,
-      borderRadius: 18,
-      backgroundColor: theme.colors.floatingSurface,
-    },
-    activityText: {
-      color: theme.colors.textPrimary,
-      fontSize: 11,
-      flexShrink: 1,
     },
     header: {
       minHeight: 54,
