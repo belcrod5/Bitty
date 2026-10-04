@@ -19,8 +19,8 @@ export function createVoiceRequestBridge({ send, onResolved, timeoutMs = 2 * 60 
           pending.delete(requestId);
           clearTimeout(timer);
           signal?.removeEventListener("abort", abort);
-          if (question && announced) {
-            try { onResolved?.({ requestId, operationId, orchestratorId }); } catch {}
+          if (announced) {
+            try { onResolved?.({ requestId, operationId, orchestratorId, method }); } catch {}
           }
           if (error && !question) reject(error);
           else resolve(question && error ? { answers: {} } : value);

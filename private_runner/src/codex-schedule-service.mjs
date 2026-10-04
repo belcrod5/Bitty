@@ -802,7 +802,7 @@ export function createCodexScheduleService({
             input: { blocks: [{ type: "text", text: action.prompt }] },
           } }, (state) => {
             if (!started) reject(Object.assign(new Error("Voice turn ended before it started"), { code: state.code || "turn_failed" }));
-          }, (request) => onVoiceApproval(clientOperationId, action.orchestratorId, request), {
+          }, (request, signal) => onVoiceApproval(clientOperationId, action.orchestratorId, request, signal), {
             onStarted: () => { result = voiceResult; started = true; resolve(); },
             onFailed: (error) => { if (started) onFailed(error); else reject(error); },
             onSettled: () => { if (!started) reject(new Error("Voice turn ended before it started")); },

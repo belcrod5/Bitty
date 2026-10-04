@@ -24,7 +24,7 @@ test("questions use original timestamp, validate responses and resolve only once
   assert.deepEqual(await result, answer);
   t.mock.timers.tick(1);
   assert.equal(bridge.respond("operation", id, answer), false);
-  assert.deepEqual(resolved, [{ requestId: id, operationId: "operation", orchestratorId: "other" }]);
+  assert.deepEqual(resolved, [{ requestId: id, operationId: "operation", orchestratorId: "other", method: question.method }]);
 });
 
 test("questions expire at 60 seconds and reject late answers even before the timer runs", async (t) => {
@@ -106,6 +106,20 @@ test("cancel and connection close reject outstanding approvals", async () => {
   bridge.close();
   await assert.rejects(disconnected, /channel closed/);
   await assert.rejects(bridge.request("third", request), /channel closed/);
+});
+
+test("aborting an approval removes its pending decision", async () => {
+  let sent;
+  const resolved = [];
+  const bridge = createVoiceRequestBridge({ send: (value) => { sent = value; return true; },
+    onResolved: (value) => resolved.push(value) });
+  const controller = new AbortController();
+  const pending = bridge.request("operation", request, "main", "", controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  assert.equal(bridge.decide("operation", sent.requestId, "accept"), false);
+  assert.deepEqual(resolved, [{ requestId: sent.requestId, operationId: "operation",
+    orchestratorId: "main", method: request.method }]);
 });
 
 test("send failure and timeout reject without accepting stale decisions", async () => {

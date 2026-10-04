@@ -24,6 +24,15 @@ export function useVoiceApprovals(
   }, [connected]);
 
   useEffect(() => {
+    const unsubscribeResolved = manager.subscribe({ channel: "agent", op: "voice.approval.resolved" }, (message) => {
+      const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
+        ? message.payload as Record<string, unknown> : {};
+      const requestId = String(payload.requestId || "");
+      const entry = pending.current.get(requestId);
+      if (!entry || entry.operationId !== message.operationId) return;
+      pending.current.delete(requestId);
+      callbacks.current.onResolved?.(entry.request);
+    });
     const unsubscribe = manager.subscribe({ channel: "agent", op: "voice.approval.request" }, (message) => {
       const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload)
         ? message.payload as Record<string, unknown> : {};
@@ -58,6 +67,7 @@ export function useVoiceApprovals(
     });
     return () => {
       unsubscribe();
+      unsubscribeResolved();
       for (const [requestId, { request, operationId }] of pending.current) {
         callbacks.current.onResolved?.(request);
         void manager.request({ channel: "agent", op: "voice.approval.decision",

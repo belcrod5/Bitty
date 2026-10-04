@@ -961,6 +961,37 @@ test("voice schedule schema validates IDs and rejects directory/model overrides 
     codexScheduleDefinitionHash({ ...base, action: { ...action, orchestratorId: ID_B } }));
 });
 
+test("voice schedules preserve the native approval cancellation signal", async (t) => {
+  const controller = new AbortController();
+  const request = { method: "item/commandExecution/requestApproval", threadId: "child", turnId: "child-turn" };
+  let forwarded;
+  const harness = await makeHarness({
+    voiceContextService: {
+      open: async () => ({ logicalConversationId: ID_B }),
+      start: async (_message, _notify, onApproval, hooks) => {
+        assert.equal(await onApproval(request, controller.signal), "accept");
+        hooks.onStarted();
+      },
+    },
+    onVoiceApproval: async (operationId, orchestratorId, approval, signal) => {
+      forwarded = { operationId, orchestratorId, approval, signal };
+      return "accept";
+    },
+  });
+  t.after(() => fs.rm(harness.directory, { recursive: true, force: true }));
+  const { cwd, modelRef, reasoningEffort, prompt, ...base } = definition();
+  await harness.service.replaceSchedules({ baseRevision: 0, schedules: [{ ...base,
+    action: { kind: "voice", orchestratorId: "main", prompt: "check" } }] });
+  harness.currentClock.set("2026-08-14T00:00:00.000Z");
+  await harness.service.evaluate();
+  const dispatch = (await harness.service.snapshot()).schedules[0].lastDispatch;
+  assert.equal(dispatch.status, "fired");
+  assert.equal(forwarded.operationId, dispatch.result.clientOperationId);
+  assert.equal(forwarded.orchestratorId, "main");
+  assert.equal(forwarded.approval, request);
+  assert.equal(forwarded.signal, controller.signal);
+});
+
 
 test("saved voice references do not block unrelated LLM edits or stopping a deleted target", async (t) => {
   const harness = await makeHarness();

@@ -6794,6 +6794,12 @@ const scheduledVoiceApprovals = createVoiceRequestBridge({
     }
     return sent;
   },
+  onResolved: ({ requestId, operationId, orchestratorId }) => {
+    for (const client of runnerWsActiveClients) {
+      sendRunnerWsEnvelope(client, { channel: "agent", op: "voice.approval.resolved",
+        operationId, payload: { requestId, orchestratorId } });
+    }
+  },
 });
 const codexScheduleService = createCodexScheduleService({
   definitionsPath: CODEX_SCHEDULE_DEFINITIONS_PATH,
@@ -6817,10 +6823,10 @@ const codexScheduleService = createCodexScheduleService({
   startScheduledCodexTurn,
   startShellScript: startWorkspaceShellScript,
   voiceContextService,
-  onVoiceApproval: async (operationId, orchestratorId, request) => {
+  onVoiceApproval: async (operationId, orchestratorId, request, signal) => {
     const { orchestrators } = await voiceContextService.list();
     return scheduledVoiceApprovals.request(operationId, request, orchestratorId,
-      orchestrators.find((item) => item.id === orchestratorId)?.name || "");
+      orchestrators.find((item) => item.id === orchestratorId)?.name || "", signal);
   },
 });
 const codexScheduleHttpHandler = createCodexScheduleHttpHandler({
@@ -8968,8 +8974,9 @@ runnerWsServer.on("connection", (ws, req) => {
       operationId, streamId: operationId,
       payload: { requestId, method, params, threadId, turnId, orchestratorId, orchestratorName, startedAtMs },
     }),
-    onResolved: ({ requestId, operationId, orchestratorId }) => sendRunnerWsEnvelope(ws, {
-      channel: "agent", op: "voice.userInput.resolved", operationId, payload: { requestId, orchestratorId },
+    onResolved: ({ requestId, operationId, orchestratorId, method }) => sendRunnerWsEnvelope(ws, {
+      channel: "agent", op: method === "item/tool/requestUserInput" ? "voice.userInput.resolved" : "voice.approval.resolved",
+      operationId, payload: { requestId, orchestratorId },
     }),
   });
   runnerWsActiveClients.add(ws);
@@ -9092,11 +9099,11 @@ runnerWsServer.on("connection", (ws, req) => {
     if (message.op !== "turn.start" || !Object.hasOwn(message.payload || {}, "logicalConversationId")) return false;
     const operationId = message.operationId;
     const { tts: voiceTts, ...voicePayload } = message.payload || {};
-    const onApproval = async (request) => {
+    const onApproval = async (request, signal) => {
       const orchestratorId = voicePayload.orchestratorId || "main";
       const { orchestrators } = await voiceContextService.list();
       return voiceRequests.request(operationId, request, orchestratorId,
-        orchestrators.find((item) => item.id === orchestratorId)?.name || "");
+        orchestrators.find((item) => item.id === orchestratorId)?.name || "", signal);
     };
     const voiceMessage = { ...message, payload: { ...voicePayload, orchestratorId: voicePayload.orchestratorId || "main" } };
     let voiceJob = null;

@@ -110,3 +110,27 @@ test("disconnect clears pending approvals and reconnect accepts new requests", a
   await unmount();
   expect(onResolved).toHaveBeenCalledTimes(2);
 });
+
+test("native resolution dismisses only the matching approval and ignores a later UI decision", async () => {
+  let decide: ((value: "approve_once") => void) | undefined;
+  const onRequest = jest.fn((_request: unknown) => new Promise<"approve_once">((resolve) => { decide = resolve; }));
+  const onResolved = jest.fn();
+  const { unmount } = await renderHook(() => useVoiceApprovals(onRequest, onResolved, approvalManager));
+  await act(async () => mockHandlers.get("voice.approval.request")?.(approval("child-approval", "operation-1", "main")));
+  const resolved = { operationId: "operation-1", payload: { requestId: "child-approval" } };
+  await act(async () => {
+    mockHandlers.get("voice.approval.resolved")?.({ ...resolved, operationId: "other-operation" });
+    mockHandlers.get("voice.approval.resolved")?.({ ...resolved, payload: { requestId: "other-request" } });
+  });
+  expect(onResolved).not.toHaveBeenCalled();
+  await act(async () => {
+    mockHandlers.get("voice.approval.resolved")?.(resolved);
+    mockHandlers.get("voice.approval.resolved")?.(resolved);
+    decide?.("approve_once");
+  });
+  expect(onResolved).toHaveBeenCalledTimes(1);
+  expect(onResolved).toHaveBeenCalledWith(onRequest.mock.calls[0][0]);
+  expect(request).not.toHaveBeenCalled();
+  await unmount();
+  expect(request).not.toHaveBeenCalled();
+});
