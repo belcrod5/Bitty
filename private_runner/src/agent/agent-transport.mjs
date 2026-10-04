@@ -15,6 +15,7 @@ export function createAgentHttpHandler({
   readJsonBody,
   workspaceAdmission,
   subjectId = "runner-token",
+  activity,
 }) {
   function authenticate(req, res) {
     if (!runnerToken) {
@@ -29,6 +30,14 @@ export function createAgentHttpHandler({
   }
 
   return async function handleAgentHttp(req, res, reqUrl, pathname) {
+    if (activity && runnerToken && parseAuthToken(req) === runnerToken && pathname.startsWith("/agent/")
+      && pathname !== "/agent/session-mode") {
+      const backendId = String(reqUrl.searchParams.get("backendId") || "").trim();
+      const nativeSessionId = String(reqUrl.searchParams.get("sessionId") || "").trim();
+      try { activity.observeHttp(req, res, { label: pathname.includes("history") || pathname.includes("conversation")
+        ? "取得中" : pathname.includes("workspaces") || pathname.includes("sessions") ? "一覧を取得中" : "処理中",
+      ...(backendId && nativeSessionId ? { sessionRef: { backendId, nativeSessionId } } : {}) }); } catch {}
+    }
     if (req.method === "GET" && pathname === "/agent/backends/status") {
       if (!authenticate(req, res)) return true;
       try {
@@ -156,6 +165,7 @@ export function createAgentHttpHandler({
       if (!authenticate(req, res)) return true;
       try {
         const body = await readJsonBody(req, 16 * 1024);
+        try { activity?.observeHttp(req, res, { label: "切替中", sessionRef: body?.sessionRef }); } catch {}
         json(res, 200, await service.handoffSession(body));
       } catch (error) {
         json(res, 409, { error: serializeAgentError(error) });
@@ -166,7 +176,7 @@ export function createAgentHttpHandler({
   };
 }
 
-export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, workspaceAdmission }) {
+export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, workspaceAdmission, activity, displayCaller = "" }) {
   const subscriptions = new Map();
 
   function sendError(message, error) {
@@ -249,10 +259,14 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     }
     if (message.op === "turn.start") {
       const payload = payloadObject(message);
+      let pendingId = "";
+      try { pendingId = activity?.startRunRequest(displayCaller, payload.sessionRef) || ""; } catch {}
       void service.startTurn({
         ...payload,
         clientOperationId: payload.clientOperationId || message.operationId,
       }, { subjectId }).then((run) => {
+        try { activity?.observeRun({ runId: run.runId, caller: displayCaller, sessionRef: payload.sessionRef,
+          service, subjectId, result: run.result, pendingId }); } catch {}
         if (run.result) {
           sendEnvelope(ws, {
             channel: "agent",
@@ -285,7 +299,10 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
             },
           });
         }
-      }).catch((error) => sendError(message, error));
+      }).catch((error) => {
+        try { if (pendingId) activity?.finishRunRequest(pendingId, "failed"); } catch {}
+        sendError(message, error);
+      });
       return true;
     }
     if (message.op === "events.resume") {

@@ -20,7 +20,8 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
   await fs.writeFile(tokenFile, "test-token\n", { mode: 0o600 });
   const requests = [];
   const server = http.createServer((request, response) => {
-    requests.push({ url: request.url, authorization: request.headers.authorization });
+    requests.push({ url: request.url, authorization: request.headers.authorization,
+      displayCaller: request.headers["x-bitty-display-caller"] });
     response.writeHead(200, { "content-type": "application/json" });
     if (request.url === "/client-state") {
       response.end(JSON.stringify({ snapshot: { sessions: {
@@ -54,6 +55,7 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
       ...process.env,
       BITTY_RUNNER_TOKEN_FILE: tokenFile,
       BITTY_RUNNER_URL: `http://127.0.0.1:${address.port}`,
+      CODEX_THREAD_ID: "child-thread",
     },
   });
   const payload = JSON.parse(stdout);
@@ -65,6 +67,8 @@ test("conversation history CLI emits a bounded Markdown deep link without changi
   assert.equal(payload.results[0].sessionCreatedAt, "2026-08-22T00:00:00.000Z");
   assert.equal(payload.results[0].sessionTitle, "Shared title");
   assert.equal(requests[0].authorization, "Bearer test-token");
+  assert.equal(requests[0].displayCaller, "child-thread");
+  assert.equal(requests[1].displayCaller, "child-thread");
   const requested = new URL(requests[0].url, "http://runner.test");
   assert.equal(requested.pathname, "/agent/session-history/search");
   assert.equal(requested.searchParams.get("query"), "matching words");

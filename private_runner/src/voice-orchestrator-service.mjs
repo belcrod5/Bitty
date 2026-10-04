@@ -28,7 +28,7 @@ function validateIcon(icon) {
   return icon;
 }
 
-export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId, onCompleted }) {
+export function createVoiceOrchestratorService({ rootDir, createClient, getAgentService, subjectId, onCompleted, activity }) {
   const root = path.resolve(rootDir);
   const registryFile = path.join(root, "orchestrators.json");
   const orchestratorRoot = path.join(root, "orchestrators");
@@ -347,7 +347,7 @@ export function createVoiceOrchestratorService({ rootDir, createClient, getAgent
           operationOwners.set(operationId, id);
           reservations.add(reservation);
           hooks?.onAccepted?.();
-        }, onSettled: () => {
+        }, onNativeRoot: ({ threadId, client }) => activity?.registerRoot({ threadId, client, orchestratorId: id }), onSettled: () => {
           reservations.delete(reservation);
           hooks?.onSettled?.();
         } }));

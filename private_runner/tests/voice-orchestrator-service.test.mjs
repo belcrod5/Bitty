@@ -71,7 +71,7 @@ async function fixture(t, options) {
   });
   return { rootDir, codex, service: createVoiceOrchestratorService({ rootDir,
     createClient: codex.createClient, getAgentService: options?.getAgentService,
-    subjectId: "voice-owner", onCompleted: options?.onCompleted }) };
+    subjectId: "voice-owner", onCompleted: options?.onCompleted, activity: options?.activity }) };
 }
 
 async function turn(service, orchestratorId, conversationId, text, operationId = randomUUID()) {
@@ -455,6 +455,27 @@ test("voice schedules fail when native startup fails instead of marking accepted
   assert.equal(dispatch.errorCode, "backend_unavailable");
   assert.equal(dispatch.result, null);
   assert.deepEqual(completions, []);
+});
+
+test("voice activity binds the registered root before the native turn starts and releases it afterward", async (t) => {
+  const order = [];
+  let nativeCalls = () => [];
+  const activity = { registerRoot: ({ orchestratorId, threadId }) => {
+    assert.equal(nativeCalls().some((call) => call.method === "turn/start" && call.params.approvalPolicy === "on-request"), false);
+    order.push(["root", orchestratorId, threadId]);
+    return () => order.push(["released", orchestratorId, threadId]);
+  } };
+  const { service, codex } = await fixture(t, { activity });
+  nativeCalls = () => codex.calls;
+  const conversationId = (await service.open("main")).logicalConversationId;
+  const started = await turn(service, "main", conversationId, "hello");
+  assert.equal((await started.finished).status, "completed");
+  await waitFor(() => order.some(([event]) => event === "released"));
+  const root = order.find(([event]) => event === "root");
+  assert.equal(root[1], "main");
+  assert.ok(root[2]);
+  assert.equal(codex.calls.filter((call) => call.method === "turn/start" && call.params.approvalPolicy === "on-request").length, 1);
+  assert.deepEqual(order.map(([event]) => event), ["root", "released"]);
 });
 
 
