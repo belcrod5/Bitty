@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {}, threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
@@ -15,6 +15,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
   const interruptReleases = [];
   let summaryFailuresRemaining = failSummaryCount;
   let responseTurnIndex = 0;
+  let responseThreadId = "";
   const createClient = ({ signal } = {}) => {
     let listener = () => {};
     let serverHandler = () => undefined;
@@ -54,7 +55,14 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
         if (method === "thread/start") {
           isSummaryThread = params.approvalPolicy === "never";
           if (holdThreadStart) await new Promise((resolve) => threadReleases.push(resolve));
-          return { thread: { id: randomUUID(), ephemeral } };
+          const id = randomUUID();
+          if (!isSummaryThread) responseThreadId = id;
+          return { thread: { id, ephemeral } };
+        }
+        if (method === "thread/read") {
+          if (threadReadDelayMs) await new Promise((resolve) => setTimeout(resolve, threadReadDelayMs));
+          return { thread: { id: params.threadId,
+            parentThreadId: threadParents[params.threadId] === "root" ? responseThreadId : threadParents[params.threadId] } };
         }
         if (method === "turn/interrupt" && holdInterruptRpc) {
           return new Promise((_, reject) => setTimeout(() => reject(new Error("mock interrupt timeout")), timeout));
@@ -105,6 +113,34 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
                 threadId: params.threadId, turnId, command: "echo", args: ["hello"], reason: "test",
               } });
               calls.push({ method: "approval/result", params: result });
+            }
+            if (!isSummary) for (const native of nativeRequests) {
+              const request = { id: randomUUID(), method: native.method, params: {
+                threadId: native.threadId === "root" ? params.threadId : native.threadId,
+                turnId: native.turnId === "root" ? turnId : native.turnId,
+              } };
+              const pending = serverHandler(request);
+              if (native.resolveAfterForward) {
+                await native.resolveAfterForward;
+                if (native.completeRootWhilePending) {
+                  listener("item/completed", { threadId: params.threadId, turnId,
+                    item: { type: "agentMessage", text: reply } });
+                  listener("turn/completed", { threadId: params.threadId, turnId,
+                    turn: { status: "completed" } });
+                  resolveCompletion();
+                } else {
+                  listener("serverRequest/resolved", {
+                    threadId: request.params.threadId, requestId: request.id,
+                  });
+                }
+              }
+              if (native.resolveEarly) listener("serverRequest/resolved", {
+                threadId: request.params.threadId, requestId: request.id,
+              });
+              if (native.resolveDuringRead) setTimeout(() => listener("serverRequest/resolved", {
+                threadId: request.params.threadId, requestId: request.id,
+              }), 1);
+              calls.push({ method: "native/result", request, result: await pending });
             }
             if (toolCall && !isSummary) {
               const toolParams = { namespace: "voice_subagent", tool: "status", callId: "tool-1",
@@ -1170,6 +1206,90 @@ test("lost approval channel interrupts the voice turn", async (t) => {
   assert.equal(codex.calls.some(({ method }) => method === "turn/interrupt"), true);
 });
 
+test("native child requests use verified parentage while unrelated and stale requests fail closed", async (t) => {
+  const child = randomUUID();
+  const grandchild = randomUUID();
+  const unrelated = randomUUID();
+  const nativeRequests = [
+    { method: "item/commandExecution/requestApproval", threadId: child, turnId: randomUUID() },
+    { method: "item/fileChange/requestApproval", threadId: grandchild, turnId: randomUUID() },
+    { method: "item/tool/requestUserInput", threadId: child, turnId: randomUUID() },
+    { method: "item/commandExecution/requestApproval", threadId: unrelated, turnId: randomUUID() },
+    { method: "item/commandExecution/requestApproval", threadId: "root", turnId: randomUUID() },
+    { method: "item/tool/requestUserInput", threadId: unrelated, turnId: randomUUID() },
+  ];
+  const { service, conversation, codex } = await fixture(t, {
+    nativeRequests, threadParents: { [child]: "root", [grandchild]: child },
+  });
+  const approvals = [];
+  const questions = [];
+  const answer = { answers: { choice: { answers: ["B"] } } };
+  const { result } = await complete(service, conversation, "delegate", randomUUID(), async (request) => {
+    approvals.push(request);
+    return "accept";
+  }, { onUserInput: async (request) => { questions.push(request); return answer; } });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(approvals.map(({ threadId, turnId }) => [threadId, turnId]),
+    nativeRequests.slice(0, 2).map(({ threadId, turnId }) => [threadId, turnId]));
+  assert.deepEqual(questions.map(({ threadId, turnId }) => [threadId, turnId]),
+    [[child, nativeRequests[2].turnId]]);
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "native/result").map(({ result }) => result), [
+    { decision: "accept" }, { decision: "accept" }, answer,
+    { decision: "decline" }, { decision: "decline" }, { answers: {} },
+  ]);
+  assert.equal(codex.calls.some(({ method, params }) => method === "thread/read"
+    && params.threadId === unrelated), true);
+  assert.equal(codex.calls.some(({ method, params }) => method === "thread/read"
+    && params.threadId === child), true);
+});
+
+test("a child question resolved during parentage lookup never reaches the user", async (t) => {
+  const child = randomUUID();
+  const { service, conversation, codex } = await fixture(t, {
+    nativeRequests: [{ method: "item/tool/requestUserInput", threadId: child,
+      turnId: randomUUID(), resolveDuringRead: true }],
+    threadParents: { [child]: "root" }, threadReadDelayMs: 10,
+  });
+  let questions = 0;
+  const { result } = await complete(service, conversation, "delegate", randomUUID(), async () => "decline", {
+    onUserInput: async () => { questions++; return { answers: { choice: "B" } }; },
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(questions, 0);
+  assert.deepEqual(codex.calls.find(({ method }) => method === "native/result").result, { answers: {} });
+  assert.equal(codex.calls.some(({ method, params }) => method === "thread/read"
+    && params.threadId === child), true);
+});
+
+test("forwarded child approvals close when the child resolves or the root turn completes", async (t) => {
+  for (const completeRootWhilePending of [false, true]) {
+    const child = randomUUID();
+    let resolveForwarded;
+    const resolveAfterForward = new Promise((resolve) => { resolveForwarded = resolve; });
+    const { service, conversation, codex } = await fixture(t, {
+      nativeRequests: [{ method: "item/commandExecution/requestApproval", threadId: child,
+        turnId: randomUUID(), resolveAfterForward, completeRootWhilePending }],
+      threadParents: { [child]: "root" },
+    });
+    let forwarded = 0;
+    let aborted = 0;
+    const { result } = await complete(service, conversation, "delegate", randomUUID(), (_request, signal) => {
+      forwarded++;
+      resolveForwarded();
+      return new Promise((_, reject) => signal.addEventListener("abort", () => {
+        aborted++;
+        reject(new Error("request resolved"));
+      }, { once: true }));
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(forwarded, 1);
+    assert.equal(aborted, 1);
+    assert.deepEqual(codex.calls.find(({ method }) => method === "native/result").result,
+      { decision: "decline" });
+    assert.equal(codex.calls.some(({ method }) => method === "turn/interrupt"), false);
+  }
+});
+
 test("response injects only ten recent pairs while older pairs await topic update", async (t) => {
   const { rootDir, codex, service, conversation } = await fixture(t, { holdSummaries: true });
   for (let number = 1; number <= 12; number++) {
@@ -1187,8 +1307,9 @@ test("response injects only ten recent pairs while older pairs await topic updat
   const threadStarts = codex.calls.filter(({ method }) => method === "thread/start");
   assert.ok(threadStarts.every(({ params }) => params.ephemeral === true && params.model === "gpt-6-luna"));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "workspace-write" && params.approvalPolicy === "on-request"
-    && params.config.agents.enabled === false));
-  assert.ok(threadStarts.some(({ params }) => params.sandbox === "read-only" && params.approvalPolicy === "never" && Object.hasOwn(params.config, "mcp_servers")));
+    && params.config.agents.enabled === true));
+  assert.ok(threadStarts.some(({ params }) => params.sandbox === "read-only" && params.approvalPolicy === "never"
+    && params.config.agents.enabled === false && Object.hasOwn(params.config, "mcp_servers")));
   assert.ok(threadStarts.some(({ params }) => params.sandbox === "read-only"
     && params.config.web_search === "disabled" && params.config.apps._default.enabled === false
     && params.config.features.apps === false && params.config.features.plugins === false
@@ -1226,9 +1347,10 @@ test("managed sessions remain in every voice turn beyond the ten-pair window", a
     params.dynamicTools[0].name === "voice_subagent"), true);
   assert.equal(codex.calls.filter(({ method, params }) => method === "thread/start"
     && params.approvalPolicy === "on-request").every(({ params }) =>
-    params.config.agents.enabled === false
-      && params.developerInstructions.includes("For any session or subagent delegation, use voice_subagent tools")
-      && params.developerInstructions.includes("Report a launch only when the tool confirms it")), true);
+    params.config.agents.enabled === true
+      && params.developerInstructions.includes("For Codex subagent delegation, use the native agent tools")
+      && params.developerInstructions.includes("voice_subagent tools manage Bitty Runner sessions")
+      && !params.developerInstructions.includes("For any session or subagent delegation, use voice_subagent tools")), true);
   await service.clearMessages();
 });
 
