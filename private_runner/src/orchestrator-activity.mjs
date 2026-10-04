@@ -10,7 +10,7 @@ const TOOL_LABELS = {
 const FINISHED_FOR_MS = 1_000;
 const LOOKUP_FOR_MS = 1_000;
 
-export function createOrchestratorActivity({ broadcast = () => {}, now = () => Date.now() } = {}) {
+export function createOrchestratorActivity({ broadcast = () => {}, now = () => Date.now(), log = null } = {}) {
   const instanceId = randomUUID();
   const roots = new Map();
   const descendants = new Map();
@@ -18,6 +18,21 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
   const activities = new Map();
   let revision = 0;
   let expiryTimer = null;
+
+  function trace(stage, caller, item, result) {
+    if (!log) return;
+    const ref = item?.sessionRef;
+    let backend = "none";
+    if (ref) backend = ref.backendId === "codex" || ref.backendId === "claude" ? ref.backendId : "other";
+    const nativeId = String(ref?.nativeSessionId || "");
+    const shortId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId)
+      ? nativeId.slice(0, 8) : "none";
+    try {
+      log(`[orchestrator-activity] ${stage} kind=${item?.kind || "none"} caller=${caller ? "present" : "absent"}`
+        + ` roots=${roots.size} direct=${caller && roots.has(caller) ? "yes" : "no"}`
+        + ` actor=${item?.orchestratorId ? "yes" : "no"} target=${backend}:${shortId} result=${result}`);
+    } catch { /* Diagnostics cannot affect execution. */ }
+  }
 
   function snapshot() {
     return { instanceId, revision, activities: [...activities.values()].filter((item) => item.orchestratorId).map(({
@@ -81,9 +96,15 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
   async function assignActor(item, caller) {
     if (!caller || !activities.has(item.id)) return;
     const rootId = await findRoot(caller);
-    if (!rootId || !activities.has(item.id)) return;
+    if (!rootId || !activities.has(item.id)) {
+      if (item.kind !== "tool") trace("actor_lookup", caller, item, rootId ? "expired" : "unresolved");
+      return;
+    }
     const root = roots.get(rootId);
-    if (!root || item.orchestratorId === root.orchestratorId) return;
+    if (!root || item.orchestratorId === root.orchestratorId) {
+      if (item.kind !== "tool") trace("actor_lookup", caller, item, root ? "resolved" : "root_closed");
+      return;
+    }
     item.orchestratorId = root.orchestratorId;
     if (item.runKey) for (const tool of activities.values()) {
       if (tool.runToolKey?.startsWith(`${item.runKey}\0`)) {
@@ -91,6 +112,7 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
         if (item.sessionRef) tool.sessionRef = item.sessionRef;
       }
     }
+    if (item.kind !== "tool") trace("actor_lookup", caller, item, "resolved");
     changed();
   }
 
@@ -104,6 +126,7 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
     if (runKey) item.runKey = runKey;
     activities.set(id, item);
     if (item.orchestratorId) changed();
+    if (nativeKey) trace("native_start", caller, item, "observed");
     void assignActor(item, caller).catch(() => {});
     return item;
   }
@@ -121,6 +144,7 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
 
   function observeHttp(req, res, { kind = "http", label, sessionRef } = {}) {
     const caller = String(req.headers?.["x-bitty-display-caller"] || "").trim();
+    if (caller || roots.size) trace("http_request", caller, { kind, sessionRef }, "received");
     if (!caller || typeof res.once !== "function") return;
     const id = `http:${randomUUID()}`;
     begin(id, { caller, kind, label, sessionRef });
@@ -139,6 +163,7 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
   }
 
   function startRunRequest(caller, sessionRef) {
+    trace("ws_begin", caller, { kind: "run", sessionRef }, "received");
     if (!caller) return "";
     const id = `request:${randomUUID()}`;
     begin(id, { caller, sessionRef, kind: "run", label: sessionRef ? "会話中" : "開始中" });
@@ -146,6 +171,7 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
   }
 
   function observeRun({ runId, caller, sessionRef, service, subjectId, result, pendingId }) {
+    trace("ws_observe", caller, { kind: "run", sessionRef }, runId ? "received" : "missing_run");
     if (!caller || !runId) return;
     const existingRun = [...activities.values()].find((candidate) => candidate.runKey === runId);
     const pending = activities.get(pendingId);
@@ -165,6 +191,7 @@ export function createOrchestratorActivity({ broadcast = () => {}, now = () => D
         try {
           if (event.type === "session.resolved" && event.sessionRef && !item.expiresAt) {
             item.sessionRef = event.sessionRef;
+            trace("ws_session_resolved", caller, item, "resolved");
             for (const tool of activities.values()) {
               if (tool.runToolKey?.startsWith(`${runId}\0`)) tool.sessionRef = event.sessionRef;
             }

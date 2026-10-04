@@ -1633,7 +1633,7 @@ const orchestratorActivity = createOrchestratorActivity({ broadcast: (payload) =
   for (const client of runnerWsActiveClients) {
     sendRunnerWsEnvelope(client, { channel: "control", op: "orchestrator_activity_updated", payload });
   }
-} });
+}, log: RUNNER_LOG_REQUESTS ? (message) => console.log(message) : null });
 const agentRuntime = createPrivateRunnerAgentRuntime({
   claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
   stores: {

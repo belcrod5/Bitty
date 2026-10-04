@@ -270,6 +270,64 @@ test("run observation uses existing replay/live subscribe and outlives WS detach
   release();
 });
 
+test("transport diagnostics distinguish missing caller, unresolved root, and a card target without leaking input", async () => {
+  const logs = [];
+  const client = nativeClient();
+  const activity = createOrchestratorActivity({ log: (line) => logs.push(line) });
+  const release = activity.registerRoot({ threadId: "root", orchestratorId: "voice", client });
+  const sessionRef = { backendId: "codex", nativeSessionId: "12345678-1234-4123-8123-123456789abc" };
+  let runNumber = 0;
+  const service = {
+    startTurn: async () => ({ runId: `run-${++runNumber}`, queued: false }),
+    subscribe: () => ({ replayTruncated: false, replayFromSequence: 1, activeActions: [], unsubscribe() {} }),
+  };
+  const start = async (displayCaller) => {
+    const connection = createAgentWsConnection({ service, ws: {}, sendEnvelope() {},
+      subjectId: "owner", activity, displayCaller });
+    connection.handleMessage({ channel: "agent", op: "turn.start", requestId: "request",
+      operationId: `operation-${runNumber}`, payload: { backendId: "codex", sessionRef,
+        input: { blocks: [{ type: "text", text: "private message and bearer token" }] } } });
+    await tick();
+    await tick();
+    connection.detach();
+  };
+  await start("");
+  assert.equal(activity.snapshot().activities.length, 0);
+  assert.match(logs.join("\n"), /ws_begin kind=run caller=absent roots=1 direct=no actor=no target=codex:12345678/);
+  await start("foreign");
+  assert.equal(activity.snapshot().activities.length, 0);
+  assert.match(logs.join("\n"), /actor_lookup kind=run caller=present roots=1 direct=no actor=no target=codex:12345678 result=unresolved/);
+  await start("root");
+  assert.equal(activity.snapshot().activities.some((item) => item.orchestratorId === "voice"
+    && item.sessionRef?.nativeSessionId === sessionRef.nativeSessionId), true);
+  assert.match(logs.join("\n"), /actor_lookup kind=run caller=present roots=1 direct=yes actor=yes target=codex:12345678 result=resolved/);
+  const response = new EventEmitter();
+  activity.observeHttp({ headers: {} }, response, { label: "private request", sessionRef });
+  assert.match(logs.join("\n"), /http_request kind=http caller=absent roots=1 direct=no actor=no target=codex:12345678/);
+  activity.observeHttp({ headers: {} }, response, { label: "private request",
+    sessionRef: { backendId: "private backend", nativeSessionId: "private session" } });
+  assert.match(logs.at(-1), /target=other:none/);
+  client.emit("item/started", { threadId: "root", turnId: "turn",
+    item: { id: "tool", type: "commandExecution", command: "private command" } });
+  await tick();
+  assert.match(logs.join("\n"), /native_start kind=tool caller=present roots=1 direct=yes actor=yes target=none:none/);
+  assert.equal(logs.join("\n").includes("private"), false);
+  assert.equal(logs.join("\n").includes("bearer"), false);
+  assert.equal(logs.join("\n").includes(sessionRef.nativeSessionId), false);
+  release();
+});
+
+test("a failing diagnostic logger does not affect activity observation", () => {
+  const activity = createOrchestratorActivity({ log() { throw new Error("logger failed"); } });
+  const release = activity.registerRoot({ threadId: "root", orchestratorId: "voice", client: nativeClient() });
+  const id = activity.startRunRequest("root", { backendId: "codex",
+    nativeSessionId: "12345678-1234-4123-8123-123456789abc" });
+  assert.equal(activity.snapshot().activities.find((item) => item.id === id)?.orchestratorId, "voice");
+  activity.finishRunRequest(id);
+  assert.equal(activity.snapshot().activities.find((item) => item.id === id)?.status, "completed");
+  release();
+});
+
 test("target run keeps its actor after root closes and moves all tools when the target resolves", async () => {
   const client = nativeClient();
   const activity = createOrchestratorActivity();

@@ -90,3 +90,11 @@ cd /Volumes/SSD-500GB-SanDisk/work/bitty-worktree/docs/orchestrator-activity-tes
 `bootstrap-local.sh` は Expo prebuild に `--no-install` を指定して Pod 更新を既存の `ensure_ios_pods` に集約した。初回 native workspace コピー時は Pod 更新を必ず行い、更新前または Manifest が marker より新しい時に RN の 3 種の configuration marker を空にする。次の xcodebuild が要求した Debug / Release の実体を選択する。Pod install が失敗しても古い `Release` 判定は残らない。Pods 全消去や依存追加はしていない。
 
 隔離した shell fixture の `bash scripts/worktree/test-bootstrap-ios-native.sh` と `bash -n` は成功。コピー直後、既存の古い marker、正常な cache hit、pod install 失敗を確認した。親エージェントは実際の RN 0.81.6 置換スクリプトと両 Hermes archive を一時ディレクトリで実行し、古い marker では Debug UUID が残り、空 marker では Release UUID `DC7E3016…` に変わり、Debug 要求なら Debug UUID になることを確認した。アプリ再ビルド後の実機起動は未確認。
+
+## 実機カード表示の切り分け
+
+再ビルド後の iPhone ではアプリが起動し、音声オーケストレーターの全体アイコンと native ツール状態は表示されたが、既存「テストA」セッションカードには活動アイコンが付かなかった。読み取り専用の board / sessions 応答で、このカードと送信先の backend およびセッション ID は一致した。native ツール表示は CLI の実行元ヘッダー到着とは別経路なので、現時点で送信活動の実行元欠落と親解決失敗を区別できない。
+
+既存 `RUNNER_LOG_REQUESTS` が有効な場合に限り、活動管理の HTTP / WS 開始、親照合結果、native 開始を記録する。内容、認証情報、完全なセッション ID は記録せず、backend と妥当な ID の先頭 8 桁だけを残す。診断は表示以外の処理を変更しない。実機の再試行とログ照合後に原因を確定し、不要な診断行は整理する。
+
+隔離した欠落 caller・親不明・正しい対象・logger 障害の試験を含め、親エージェントの `node --test private_runner/tests/orchestrator-activity.test.mjs private_runner/tests/agent-transport.test.mjs` は 26 成功、0 失敗、0 skip。manager / server の `node --check` と `git diff --check` も成功。別エージェントの診断差分レビューは **APPROVE**。実機再試行前なので根因とカード表示の改善は未検証。
