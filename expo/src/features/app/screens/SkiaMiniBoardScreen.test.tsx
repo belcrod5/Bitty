@@ -1,13 +1,14 @@
 import React from "react";
 import { Alert, Platform, StyleSheet } from "react-native";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { fitTailTextLines, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
+import { fitTailTextLines, placeOrchestratorActivities, SkiaMiniBoardScreen } from "./SkiaMiniBoardScreen";
 import { gridFromSectionRect } from "../utils/skiaBoardSectionGeometry";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
 import { setPendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 
 let mockRunningSessionCount: number | null = 0;
+jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => true }));
 jest.mock("../hooks/useRegisteredDirectoryActiveSessionCount", () => ({
   useRegisteredDirectoryActiveSessionCount: () => mockRunningSessionCount,
 }));
@@ -65,13 +66,17 @@ jest.mock("@shopify/react-native-skia", () => {
   };
   // createPictureへ描いた内容(テキストとアイコン)を記録し、Pictureスタブが
   // ParagraphStub/PathStubと同じtestIDのViewとして描画する。
-  const createPictureStub = (cb: (canvas: unknown) => void) => {
+  const createPictureStub = (cb: (canvas: unknown) => void, bounds: unknown) => {
     const recorded = { texts: [] as string[], iconColors: [] as string[] };
+    const target = globalThis as Record<string, unknown>;
+    const pictureBounds = target.__skiaBoardPictureBounds as unknown[] | undefined;
+    target.__skiaBoardPictureBounds = [...(pictureBounds || []), bounds];
     cb({
       save: () => undefined,
       restore: () => undefined,
       translate: () => undefined,
       clipRect: () => undefined,
+      clipRRect: () => undefined,
       drawRRect: (_rect: unknown, paint: { color?: string }) => {
         const target = globalThis as Record<string, unknown>;
         const colors = target.__skiaBoardRRectColors as string[] | undefined;
@@ -113,12 +118,15 @@ jest.mock("@shopify/react-native-skia", () => {
         })),
     ]);
   return {
+    BlurMask: Stub,
     Canvas: CanvasStub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
     Path: PathStub,
     Picture: PictureStub,
+    SweepGradient: Stub,
+    vec: (x: number, y: number) => ({ x, y }),
     useImage: () => (globalThis as Record<string, unknown>).__skiaBoardTestImage || null,
     RoundedRect: Stub,
     FontWeight: { Bold: 700 },
@@ -130,6 +138,15 @@ jest.mock("@shopify/react-native-skia", () => {
     createPicture: createPictureStub,
     Skia: {
       Color: (color: string) => color,
+      Data: { fromBase64: (base64: string) => ({ base64, dispose: () => undefined }) },
+      Image: { MakeImageFromEncoded: (data: { base64: string }) => {
+        if (data.base64 === "bad") return null;
+        const image = { width: () => 20, height: () => 20, dispose: jest.fn() };
+        const target = globalThis as Record<string, unknown>;
+        const images = target.__skiaBoardActivityImages as Array<typeof image> | undefined;
+        target.__skiaBoardActivityImages = [...(images || []), image];
+        return image;
+      } },
       Paint: () => {
         const paint = {
           color: undefined as string | undefined,
@@ -149,6 +166,7 @@ jest.mock("@shopify/react-native-skia", () => {
         Make: () => ({
           moveTo: () => undefined,
           lineTo: () => undefined,
+          quadTo: () => undefined,
         }),
         MakeFromSVGString: (svg: string) => ({ svg, dispose: () => undefined }),
       },
@@ -243,7 +261,7 @@ jest.mock("react-native-reanimated", () => {
     // setActive(起動・停止)の呼び出しも検証できるようにする。
     useFrameCallback: (callback: () => void) => {
       const target = globalThis as Record<string, unknown>;
-      target.__skiaBoardFrameCallback = callback;
+      target.__skiaBoardFrameCallback ||= callback;
       if (!target.__skiaBoardFrameLoopSetActive) {
         target.__skiaBoardFrameLoopSetActive = jest.fn();
       }
@@ -368,12 +386,12 @@ const mockDefaultSession = {
   panelId: "skia_mini_preview_session-1",
   sessionId: "session-1",
   directory: "/workspace",
-  source: "appserver",
+  source: "appserver" as const,
   title: "Title 1",
   directoryName: "Workspace",
   lastMessageContent: "hello",
   updatedAtLabel: "1分前",
-  markerColor: "none",
+  markerColor: "none" as const,
   unread: false,
   activityTrail: [] as Array<{
     kind: "reading" | "writing" | "thinking" | "web";
@@ -436,6 +454,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockRunningSessionCount = 0;
   mockBoardVoiceHandlers.clear();
   mockBoardVoiceRequest.mockReset();
@@ -446,7 +465,9 @@ beforeEach(() => {
   (globalThis as Record<string, unknown>).__skiaBoardRRectColors = [];
   (globalThis as Record<string, unknown>).__skiaBoardCircleCenters = [];
   (globalThis as Record<string, unknown>).__skiaBoardImageRects = [];
+  (globalThis as Record<string, unknown>).__skiaBoardPictureBounds = [];
   (globalThis as Record<string, unknown>).__skiaBoardTestImage = null;
+  (globalThis as Record<string, unknown>).__skiaBoardActivityImages = [];
   (globalThis as Record<string, unknown>).__skiaBoardDisposedParagraphs = 0;
   (globalThis as Record<string, unknown>).__skiaBoardDisposedRenderedParagraphs = 0;
   mockMoveBoardCard.mockClear();
@@ -466,6 +487,98 @@ beforeEach(() => {
   mockMarkViewportInteraction.mockClear();
   mockSessions = [mockDefaultSession];
   mockSections = [];
+});
+
+test("places each actor on the verified target and retains parallel work after one completion", () => {
+  const ref = { backendId: "claude", nativeSessionId: "session-1" };
+  const orchestrators = [
+    { id: "one", name: "一", icon: "" },
+    { id: "two", name: "二", icon: "" },
+  ];
+  const activities = [
+    { id: "a", orchestratorId: "one", sessionRef: ref, kind: "run", status: "completed", label: "会話中", startedAt: 1 },
+    { id: "b", orchestratorId: "one", sessionRef: ref, kind: "tool", status: "running", label: "読み込み中", startedAt: 2 },
+    { id: "c", orchestratorId: "two", sessionRef: ref, kind: "run", status: "running", label: "会話中", startedAt: 3 },
+    { id: "d", orchestratorId: null, kind: "http", status: "running", label: "取得中", startedAt: 4 },
+  ];
+  const placement = placeOrchestratorActivities(activities, [mockDefaultSession], orchestrators);
+  expect(placement.cards.get(mockDefaultSession.cardId)?.map((badge) => [badge.key, badge.count, badge.status]))
+    .toEqual([["one", 2, "running"], ["two", 1, "running"]]);
+  expect(placement.global).toHaveLength(1);
+  expect(placement.global[0].orchestrator.icon).toBe("");
+
+  const remaining = placeOrchestratorActivities(activities.filter(({ id }) => id !== "a"),
+    [mockDefaultSession], orchestrators);
+  expect(remaining.cards.get(mockDefaultSession.cardId)?.find(({ key }) => key === "one")?.count).toBe(1);
+  expect(placeOrchestratorActivities(activities, [{ ...mockDefaultSession, backendId: "codex" }], orchestrators)
+    .global.reduce((sum, badge) => sum + badge.count, 0)).toBe(4);
+  expect(placeOrchestratorActivities(activities, [], orchestrators).global
+    .reduce((sum, badge) => sum + badge.count, 0)).toBe(4);
+});
+
+test("activity pushes draw floating card badge and whole-board frame without adding cards", async () => {
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={jest.fn()} />);
+  await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "one", name: "一", icon: "" }, { id: "two", name: "二", icon: "" }],
+  } }));
+  await act(async () => mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
+    instanceId: "server", revision: 1, activities: [
+      { id: "a", orchestratorId: "one", sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+        kind: "tool", status: "running", label: "読み込み中", startedAt: 1 },
+      { id: "b", orchestratorId: "two", kind: "http", status: "completed", label: "取得中", startedAt: 2 },
+    ],
+  } }));
+  expect(screen.getByTestId("skia-text:読み込み中")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-actor-one")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
+  expect(screen.getByTestId("skia-board-activity-status").props.children.join("")).toBe("読み込み中 · 実行中");
+  const bounds = (globalThis as Record<string, unknown>).__skiaBoardPictureBounds as
+    Array<{ x: number; y: number; width: number; height: number }>;
+  const floatingBadge = ((globalThis as Record<string, unknown>).__skiaBoardCircleCenters as
+    Array<{ x: number; y: number }>).find((center) => center.y === -3);
+  expect(floatingBadge).toBeDefined();
+  expect(bounds.some((rect) => floatingBadge && rect.x <= floatingBadge.x - 18 &&
+    rect.y <= floatingBadge.y - 18 && rect.x + rect.width >= floatingBadge.x + 28)).toBe(true);
+  await act(async () => mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
+    instanceId: "server", revision: 2, activities: [
+      { id: "a", orchestratorId: "one", sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+        kind: "tool", status: "running", label: "読み込み中", startedAt: 1 },
+    ],
+  } }));
+  expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+  expect(screen.queryByTestId("skia-board-activity-actor-two")).toBeNull();
+  expect(mockSessions).toHaveLength(1);
+});
+
+test("card images update, fall back after decode failure, and release old images", async () => {
+  const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
+    openSessionHistoryPopup={jest.fn()} />);
+  const emitMetadata = async (icon: string) => act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({
+    payload: { orchestrators: [{ id: "one", name: "一", icon }] },
+  }));
+  const emitActivity = async (revision: number, activities: unknown[]) => act(async () =>
+    mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
+      instanceId: "server", revision, activities,
+    } }));
+  await emitMetadata("data:image/png;base64,first");
+  await emitActivity(1, [{ id: "a", orchestratorId: "one",
+    sessionRef: { backendId: "claude", nativeSessionId: "session-1" },
+    kind: "tool", status: "running", label: "読み込み中", startedAt: 1 }]);
+  const images = () => (globalThis as Record<string, unknown>).__skiaBoardActivityImages as Array<{ dispose: jest.Mock }>;
+  expect(images()).toHaveLength(1);
+  await emitMetadata("data:image/png;base64,second");
+  expect(images()).toHaveLength(2);
+  expect(images()[0].dispose).toHaveBeenCalledTimes(1);
+  await emitMetadata("data:image/png;base64,bad");
+  expect(screen.getByTestId("skia-text:一")).toBeTruthy();
+  expect(images()[1].dispose).toHaveBeenCalledTimes(1);
+  await emitMetadata("data:image/png;base64,third");
+  expect(images()).toHaveLength(3);
+  await emitActivity(2, []);
+  expect(images()[2].dispose).toHaveBeenCalledTimes(1);
+  await screen.unmount();
 });
 
 test("mic badge uses latest canonical voice counts and a Push opens its orchestrator", async () => {

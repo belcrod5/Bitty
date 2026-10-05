@@ -47,6 +47,7 @@ import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
 import { createSkiaBoardService } from "./skia-board-service.mjs";
 import { createSkiaBoardHttpHandler } from "./skia-board-http.mjs";
+import { createOrchestratorActivity } from "./orchestrator-activity.mjs";
 import { createSkiaBoardIngest } from "./skia-board-ingest.mjs";
 import { createApprovalPushService } from "./approval-push-service.mjs";
 import { createPrivateRunnerAgentRuntime } from "./agent/agent-runtime.mjs";
@@ -1628,6 +1629,11 @@ const approvalPushService = createApprovalPushService({
   forwardRawData: (relay, data) => forwardCodexRelayClientData(relay, data, false),
   parseAuthToken, readJsonBody, json, writeJsonRequestError,
 });
+const orchestratorActivity = createOrchestratorActivity({ broadcast: (payload) => {
+  for (const client of runnerWsActiveClients) {
+    sendRunnerWsEnvelope(client, { channel: "control", op: "orchestrator_activity_updated", payload });
+  }
+}, log: RUNNER_LOG_REQUESTS ? (message) => console.log(message) : null });
 const agentRuntime = createPrivateRunnerAgentRuntime({
   claudeBinary: AGENT_CLAUDE_BINARY, runnerToken: RUNNER_TOKEN, dynamicTools: calendarConversationDynamicTools(),
   stores: {
@@ -1652,6 +1658,7 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
   runEventObservers: [approvalPushService.onRunEvent, turnCompletionNotifier.onAgentRunEvent],
+  activity: orchestratorActivity,
   onActiveSessionsChanged: broadcastActiveSessionsChanged,
   listRawActiveSessions: () => [...codexWsRelaysById.values()].flatMap((relay) => {
     const lease = relay.agentLease;
@@ -6583,6 +6590,7 @@ const voiceContextService = createVoiceOrchestratorService({
   createClient: (options) => createCodexRpcClient(options),
   getAgentService: () => agentService,
   subjectId: () => agentOwnerSubjectId,
+  activity: orchestratorActivity,
   onCompleted: (result, orchestratorName) => {
     void broadcastVoiceUnreadState();
     void turnCompletionNotifier.notifyVoiceCompleted({ orchestratorId: result.orchestratorId,
@@ -6853,6 +6861,7 @@ const skiaBoardHttpHandler = createSkiaBoardHttpHandler({
   parseAuthToken,
   readJsonBody,
   json,
+  activity: orchestratorActivity,
 });
 const googleCloudHttpHandler = createGoogleCloudHttpHandler({
   runnerToken: RUNNER_TOKEN,
@@ -8990,6 +8999,7 @@ runnerWsServer.on("connection", (ws, req) => {
   const agentConnection = agentRuntime.createWsConnection({
     ws,
     sendEnvelope: sendRunnerWsEnvelope,
+    displayCaller: String(req?.headers?.["x-bitty-display-caller"] || "").trim(),
   });
 
   function sendVoiceError(message, error) {
@@ -9040,7 +9050,9 @@ runnerWsServer.on("connection", (ws, req) => {
       void operation.then((payload) => {
         sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
           requestId: message.requestId || "", payload });
-        if (message.op === "voice.orchestrators.delete") void broadcastVoiceUnreadState();
+        if (["voice.orchestrators.create", "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
+          void broadcastVoiceUnreadState();
+        }
       }).catch((error) => sendVoiceError(message, error));
       return true;
     }
@@ -9470,6 +9482,11 @@ runnerWsServer.on("connection", (ws, req) => {
     }
 
     const message = parsed.message;
+    if (message.channel === "control" && message.op === "orchestrator_activity_snapshot") {
+      sendRunnerWsEnvelope(ws, { channel: "control", op: "orchestrator_activity_snapshot",
+        requestId: message.requestId || "", payload: orchestratorActivity.snapshot() });
+      return;
+    }
     if (handleVoiceMessage(message) || agentConnection.handleMessage(message)) return;
 
     if (message.channel === "control" && message.op === "ping") {

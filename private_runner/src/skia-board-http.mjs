@@ -24,6 +24,7 @@ export function createSkiaBoardHttpHandler({
   parseAuthToken,
   readJsonBody,
   json,
+  activity,
 }) {
   const routes = {
     "/skia-board": {
@@ -72,6 +73,19 @@ export function createSkiaBoardHttpHandler({
 
     try {
       const body = route.method === "GET" ? undefined : await readJsonBody(req, route.maxBytes);
+      const removedId = pathname === "/skia-board/ops" && Array.isArray(body?.ops)
+        ? body.ops.find((op) => op?.type === "removeCard")?.cardId : "";
+      const sessionId = typeof removedId === "string" && removedId.startsWith("session:")
+        ? removedId.slice("session:".length) : "";
+      let cards = [];
+      if (activity && req.headers?.["x-bitty-display-caller"] && sessionId) {
+        try { cards = (await service.getBoard()).board?.cards || []; } catch {}
+      }
+      const matches = cards.filter((card) => card.kind === "session" && card.sessionId === sessionId);
+      const target = matches.length === 1 && matches[0].backendId
+        ? { backendId: matches[0].backendId, nativeSessionId: sessionId } : null;
+      try { activity?.observeHttp(req, res, { label: route.method === "GET" ? "取得中" : "更新中",
+        ...(target ? { sessionRef: target } : {}) }); } catch {}
       json(res, 200, await route.handle(body));
     } catch (error) {
       if (error instanceof SkiaBoardRevisionConflictError) {

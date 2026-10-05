@@ -24,6 +24,7 @@ import {
   Skia,
   StrokeCap,
   StrokeJoin,
+  type SkImage,
   type SkPaint,
 } from "@shopify/react-native-skia";
 import { collectGraphemes } from "unicode-segmenter/grapheme";
@@ -51,6 +52,9 @@ import {
   type SkiaMiniChatSession,
 } from "../hooks/useSkiaMiniChatSessions";
 import { useRegisteredDirectoryActiveSessionCount } from "../hooks/useRegisteredDirectoryActiveSessionCount";
+import { useOrchestratorActivities, type OrchestratorActivity } from "../hooks/useOrchestratorActivities";
+import type { VoiceOrchestrator } from "../components/VoiceOrchestratorIcon";
+import { SkiaBoardActivityFrame, activityStatusText } from "../components/SkiaBoardActivityFrame";
 import { DIRECTORY_MARKER_COLORS } from "../theme/directoryMarkerColors";
 import {
   normalizeRunnerPath,
@@ -85,7 +89,6 @@ import {
 import type { WorkspaceFileTarget } from "../utils/workspaceFiles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { VoiceConversationScreen, type VoiceConversationPlayback } from "./VoiceConversationScreen";
-import { useRunnerWebSocketManager, useRunnerWebSocketSnapshot } from "../../runnerWs/RunnerWebSocketContext";
 import { clearPendingPushVoiceOrchestratorId, getPendingPushVoiceOrchestratorId,
   subscribePendingPushVoiceOrchestratorId } from "../utils/pushApprovalNotifications";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
@@ -323,6 +326,58 @@ const BOARD_FOOTER_ICON_PATHS: Record<BoardFooterIconKind, string> = {
   subagent: "M5.5 1A2.1 2.1 0 1 0 5.5 5.2A2.1 2.1 0 1 0 5.5 1ZM1.2 10.5C1.5 7.7 3 6.4 5.5 6.4S9.5 7.7 9.8 10.5",
 };
 
+type ActivityBadge = {
+  orchestrator: VoiceOrchestrator;
+  status: string;
+  label: string;
+  count: number;
+  key: string;
+  image?: SkImage | null;
+  imageVersion?: number;
+};
+const EMPTY_ACTIVITY_BADGES: ActivityBadge[] = [];
+
+export function placeOrchestratorActivities(
+  activities: OrchestratorActivity[],
+  items: SkiaMiniBoardItem[],
+  orchestrators: VoiceOrchestrator[],
+) {
+  const cards = new Map<string, ActivityBadge[]>();
+  const global: ActivityBadge[] = [];
+  const names = new Map(orchestrators.map((item) => [item.id, item]));
+  for (const activity of activities) {
+    const ref = activity.sessionRef;
+    const matches = ref ? items.filter((item) => item.kind === "session"
+      && item.sessionId === ref.nativeSessionId
+      && item.backendId === ref.backendId) : [];
+    const cardId = matches.length === 1 ? matches[0].cardId : "";
+    const target = cardId ? (cards.get(cardId) || []) : global;
+    if (cardId && !cards.has(cardId)) cards.set(cardId, target);
+    const key = activity.orchestratorId || "unknown";
+    const existing = target.find((badge) => badge.key === key);
+    const label = ref && !cardId
+      ? `${ref.backendId}:${ref.nativeSessionId.slice(0, 8)} · ${activity.label}`
+      : activity.label;
+    if (existing) {
+      existing.count += 1;
+      if (activity.status === "running" || existing.status !== "running") {
+        existing.status = activity.status;
+        existing.label = label;
+      }
+    } else {
+      const orchestrator = activity.orchestratorId ? names.get(activity.orchestratorId) : undefined;
+      target.push({
+        key,
+        orchestrator: orchestrator || { id: key, name: "?", icon: "" },
+        status: activity.status,
+        label,
+        count: 1,
+      });
+    }
+  }
+  return { cards, global };
+}
+
 type BoardCardProps = {
   cardWidth: number;
   index: number;
@@ -334,6 +389,7 @@ type BoardCardProps = {
   bodyFontSize: number;
   runnerUrl: string;
   runnerToken: string;
+  activityBadges: ActivityBadge[];
 };
 
 // item(内容が変わった時だけidentityが変わる)以外のpropsは安定しているため、
@@ -349,6 +405,7 @@ const BoardCard = memo(function BoardCard({
   bodyFontSize,
   runnerUrl,
   runnerToken,
+  activityBadges,
 }: BoardCardProps) {
   const transform = useDerivedValue(() => {
     const position = positions.value[index] || { x: 0, y: 0 };
@@ -409,6 +466,9 @@ const BoardCard = memo(function BoardCard({
   const activityTrail = isSession ? item.activityTrail : [];
   // 配列の参照はitemsの再構築ごとに変わるため、内容ベースのキーでPicture再生成を判定する。
   const activityTrailKey = activityTrail.map((activity) => `${activity.kind}:${activity.active ? 1 : 0}`).join("|");
+  const activityBadgeKey = activityBadges.map((badge) =>
+    `${badge.key}:${badge.status}:${badge.label}:${badge.count}:${badge.orchestrator.name}:${badge.imageVersion || 0}`
+  ).join("|");
 
   // カード内容(位置transform以外)は変わった時だけSkPictureへ焼き直す。パン・ズーム中の
   // 毎フレーム再生がカード1枚あたり save/concat/drawPicture の約3コマンドに減り、
@@ -510,12 +570,12 @@ const BoardCard = memo(function BoardCard({
             return;
           }
           if (showUnread) {
-            canvas.drawCircle(cardWidth - 12, 12, 4, fillPaint(theme.colors.accent));
+            canvas.drawCircle(cardWidth - 10, 40, 4, fillPaint(theme.colors.accent));
           }
           canvas.save();
           canvas.clipRect(Skia.XYWHRect(10, 8, cardWidth - 20, CARD_HEIGHT - 16), ClipOp.Intersect, true);
           canvas.drawCircle(18, 21, 5, fillPaint(markerFill));
-          drawText(header, 31, 14, cardWidth - 47, {
+          drawText(header, 31, 14, Math.max(30, cardWidth - 53 - activityBadges.length * 52), {
             fontSize: bodyFontSize,
             color: theme.board.textMuted,
           });
@@ -548,13 +608,41 @@ const BoardCard = memo(function BoardCard({
             color: theme.board.textMuted,
           });
           canvas.restore();
+          activityBadges.forEach((badge, badgeIndex) => {
+            const centerX = cardWidth + 2 - (activityBadges.length - badgeIndex - 1) * 54;
+            const centerY = -3;
+            canvas.drawCircle(centerX, centerY, 18, fillPaint(theme.colors.activityActive, 0.22));
+            canvas.drawCircle(centerX, centerY, 15, fillPaint(theme.colors.surfaceRaised));
+            if (badge.image) {
+              canvas.save();
+              canvas.clipRRect(Skia.RRectXY(Skia.XYWHRect(centerX - 13, centerY - 13, 26, 26), 13, 13),
+                ClipOp.Intersect, true);
+              canvas.drawImageRect(badge.image,
+                Skia.XYWHRect(0, 0, badge.image.width(), badge.image.height()),
+                Skia.XYWHRect(centerX - 13, centerY - 13, 26, 26), fillPaint("#ffffff"));
+              canvas.restore();
+            } else {
+              drawText([...badge.orchestrator.name.trim()][0] || "?", centerX - 9, centerY - 10, 18,
+                { fontSize: 15, bold: true, color: theme.board.textPrimary });
+            }
+            canvas.drawCircle(centerX, centerY, 15, strokePaint(theme.colors.activityActive, 2.8));
+            const stateColor = badge.status === "failed" ? theme.colors.dangerTextStrong
+              : badge.status === "running" ? theme.colors.activityActive : theme.board.textMuted;
+            canvas.drawCircle(centerX + 12, centerY + 12, 4, fillPaint(stateColor));
+            const stateLabel = badge.status === "running" ? badge.label : activityStatusText(badge.status);
+            drawText(badge.count > 1 ? `${stateLabel}${badge.count}` : stateLabel, centerX - 28, 16, 56,
+              { fontSize: 9, bold: true, color: theme.board.textMuted });
+          });
           // 選択枠(strokeWidth 2.5)が矩形の外へ1.25pxはみ出すため、境界に余白を持たせる。
         },
-        Skia.XYWHRect(-2, -2, cardWidth + 8, cardHeight + 10),
+        activityBadges.length
+          ? Skia.XYWHRect(-24, -24, cardWidth + 58, cardHeight + 34)
+          : Skia.XYWHRect(-2, -2, cardWidth + 8, cardHeight + 10),
       ),
     [
       // activityTrailは内容ベースのactivityTrailKeyで代表する(参照は毎回変わるため)。
       activityTrailKey,
+      activityBadgeKey,
       bodyFontSize,
       boardImage,
       cardHeight,
@@ -611,28 +699,7 @@ export function SkiaMiniBoardScreen({
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceTargetId, setVoiceTargetId] = useState("");
   const [voiceOpenSequence, setVoiceOpenSequence] = useState(0);
-  const [voiceUnreadCount, setVoiceUnreadCount] = useState(0);
-  const voiceUnreadRevisionRef = useRef(0);
   const hasVoicePlayback = Boolean(voicePlayback);
-  const voiceManager = useRunnerWebSocketManager();
-  const { connected: voiceConnected, generation: voiceGeneration } = useRunnerWebSocketSnapshot();
-  useEffect(() => {
-    if (!hasVoicePlayback || !voiceConnected) return;
-    let current = true;
-    const revision = voiceUnreadRevisionRef.current;
-    void voiceManager.request({ channel: "agent", op: "voice.orchestrators.list" }).then((response) => {
-      if (!current || revision !== voiceUnreadRevisionRef.current
-        || response.op !== "voice.orchestrators.list.result") return;
-      const items = (response.payload as { orchestrators?: Array<{ unreadCount?: number }> })?.orchestrators;
-      if (Array.isArray(items)) setVoiceUnreadCount(items.reduce((sum, item) => sum + (item.unreadCount || 0), 0));
-    }).catch(() => undefined);
-    const unsubscribe = voiceManager.subscribe({ channel: "agent", op: "voice.unread.changed" }, (message) => {
-      voiceUnreadRevisionRef.current += 1;
-      const items = (message.payload as { orchestrators?: Array<{ unreadCount?: number }> })?.orchestrators;
-      if (Array.isArray(items)) setVoiceUnreadCount(items.reduce((sum, item) => sum + (item.unreadCount || 0), 0));
-    });
-    return () => { current = false; unsubscribe(); };
-  }, [hasVoicePlayback, voiceConnected, voiceGeneration, voiceManager]);
   useEffect(() => {
     const openPendingVoice = () => {
       const id = getPendingPushVoiceOrchestratorId();
@@ -649,6 +716,9 @@ export function SkiaMiniBoardScreen({
     if (activeScreen !== "skia_board") setVoiceOpen(false);
   }, [activeScreen]);
   const { runnerUrl, runnerToken, sanitizeTextForTts, handleAssistantAudioButtonPress } = useChatScreen();
+  const { activities, orchestrators } = useOrchestratorActivities(runnerUrl, runnerToken, true);
+  const voiceUnreadCount = hasVoicePlayback
+    ? orchestrators.reduce((sum, item) => sum + (item.unreadCount || 0), 0) : 0;
   const { registeredDirectories } = useConversation();
   const runningSessionCount = useRegisteredDirectoryActiveSessionCount();
   const {
@@ -667,6 +737,47 @@ export function SkiaMiniBoardScreen({
     updateBoardCardAppearance,
     tidyBoard,
   } = useSkiaMiniChatSessions();
+  const activityImages = useRef(new Map<string, { image: SkImage | null; version: number }>());
+  const activityImageVersion = useRef(0);
+  const activityPlacement = useMemo(() => {
+    const placement = placeOrchestratorActivities(activities, items, orchestrators);
+    const badges = [...placement.global, ...Array.from(placement.cards.values()).flat()];
+    for (const badge of badges) {
+      const icon = badge.orchestrator.icon;
+      if (!icon) continue;
+      if (!activityImages.current.has(icon)) {
+        let image: SkImage | null = null;
+        const base64 = icon.match(/^data:image\/(?:png|jpeg|webp);base64,(.+)$/)?.[1];
+        if (base64) {
+          try {
+            const data = Skia.Data.fromBase64(base64);
+            image = Skia.Image.MakeImageFromEncoded(data);
+            data.dispose();
+          } catch { /* Invalid images use the initial fallback. */ }
+        }
+        activityImages.current.set(icon, { image, version: ++activityImageVersion.current });
+      }
+      const cached = activityImages.current.get(icon)!;
+      badge.image = cached.image;
+      badge.imageVersion = cached.version;
+    }
+    return placement;
+  }, [activities, items, orchestrators]);
+  useEffect(() => {
+    const icons = new Set([
+      ...activityPlacement.global,
+      ...Array.from(activityPlacement.cards.values()).flat(),
+    ].map((badge) => badge.orchestrator.icon).filter(Boolean));
+    for (const [icon, cached] of activityImages.current) {
+      if (icons.has(icon)) continue;
+      cached.image?.dispose();
+      activityImages.current.delete(icon);
+    }
+  }, [activityPlacement]);
+  useEffect(() => () => {
+    for (const cached of activityImages.current.values()) cached.image?.dispose();
+    activityImages.current.clear();
+  }, []);
   const [selectedCardId, setSelectedCardId] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [editingSectionId, setEditingSectionId] = useState("");
@@ -1854,6 +1965,7 @@ export function SkiaMiniBoardScreen({
                     bodyFontSize={bodyFontSize}
                     runnerUrl={runnerUrl}
                     runnerToken={runnerToken}
+                    activityBadges={activityPlacement.cards.get(item.cardId) || EMPTY_ACTIVITY_BADGES}
                   />
                 ))}
               </Group>
@@ -1861,6 +1973,20 @@ export function SkiaMiniBoardScreen({
           </Canvas>
         </View>
       </GestureDetector>
+
+      <SkiaBoardActivityFrame
+        badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
+        theme={theme}
+        targets={items.flatMap((item, index) => {
+          const cardBadges = activityPlacement.cards.get(item.cardId) || [];
+          return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
+        })}
+        positions={positions}
+        boardX={boardX}
+        boardY={boardY}
+        scale={scale}
+        cardWidth={cardWidth}
+      />
 
       <SafeAreaView
         pointerEvents="box-none"

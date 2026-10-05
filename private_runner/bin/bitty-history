@@ -82,7 +82,8 @@ async function runnerRequest(pathname, searchParams) {
   const url = new URL(pathname, `${baseUrl}/`);
   for (const [key, value] of searchParams) url.searchParams.append(key, String(value));
   const response = await fetch(url, {
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`,
+      ...(process.env.CODEX_THREAD_ID ? { "x-bitty-display-caller": process.env.CODEX_THREAD_ID } : {}) },
     signal: AbortSignal.timeout(30_000),
   });
   const payload = await response.json().catch(() => ({}));

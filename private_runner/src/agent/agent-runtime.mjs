@@ -58,6 +58,7 @@ export function createPrivateRunnerAgentRuntime({
   normalizeSessionMessagesLimit,
   readJsonBody,
   runEventObservers = [],
+  activity,
   onActiveSessionsChanged,
   listRawActiveSessions,
   getRegisteredDirectoryPaths,
@@ -254,7 +255,7 @@ export function createPrivateRunnerAgentRuntime({
   });
   const httpHandler = createAgentHttpHandler({
     service, runnerToken, parseAuthToken, json, normalizeSessionListLimit,
-    normalizeSessionMessagesLimit, readJsonBody, workspaceAdmission, subjectId,
+    normalizeSessionMessagesLimit, readJsonBody, workspaceAdmission, subjectId, activity,
   });
   return {
     service,
@@ -262,8 +263,8 @@ export function createPrivateRunnerAgentRuntime({
     workspaceAdmission,
     httpHandler,
     close: async () => Promise.allSettled([codexBackend.close(), claudeBackend.close()]),
-    createWsConnection: ({ ws, sendEnvelope }) => createAgentWsConnection({
-      service, workspaceAdmission, ws, sendEnvelope, subjectId,
+    createWsConnection: ({ ws, sendEnvelope, displayCaller }) => createAgentWsConnection({
+      service, workspaceAdmission, ws, sendEnvelope, subjectId, activity, displayCaller,
     }),
   };
 }
