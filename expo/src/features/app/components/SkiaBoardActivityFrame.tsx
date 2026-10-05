@@ -129,7 +129,7 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
   const travel = useSharedValue(0);
   const rotation = useFrameCallback((frame) => {
     const elapsed = Math.min(frame?.timeSincePreviousFrame ?? 0, 50);
-    const start = (gradientStart.value + elapsed * 0.3) % 360;
+    const start = (gradientStart.value + elapsed * 0.72) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;
     pulseTime.value = (pulseTime.value + elapsed) % GLOW_PULSE_MS;
