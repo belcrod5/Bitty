@@ -7,7 +7,7 @@ const mockPendingSnapshots: Array<(response: unknown) => void> = [];
 const mockDefaultRequest = ({ op }: { op: string }) => op === "voice.orchestrators.list"
   ? Promise.resolve({ op: "voice.orchestrators.list.result", payload: { orchestrators: [
       { id: "parent", name: "親", icon: "", unreadCount: 2 },
-    ] } })
+    ], selectedId: "parent" } })
   : new Promise((resolve) => mockPendingSnapshots.push(resolve));
 const mockRequest = jest.fn(mockDefaultRequest);
 const mockManager = {
@@ -56,6 +56,24 @@ test("newer activity notifications win over a delayed snapshot, including a serv
   await act(async () => mockHandlers.get("orchestrator_activity_updated")?.({ payload: snapshot("second", 1, []) }));
   await act(async () => mockHandlers.get("orchestrator_activity_updated")?.({ payload: snapshot("first", 3) }));
   expect(hook.result.current.activities).toEqual([]);
+  await hook.unmount();
+});
+
+test("selected orchestrator metadata arrives with unread counts and wins over an older list", async () => {
+  let resolveList!: (value: unknown) => void;
+  mockRequest.mockImplementation(({ op }: { op: string }) => op === "voice.orchestrators.list"
+    ? new Promise((resolve) => { resolveList = resolve; })
+    : new Promise((resolve) => mockPendingSnapshots.push(resolve)));
+  const hook = await renderHook(() => useOrchestratorActivities("url", "token", true));
+  await act(async () => mockHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "parent", unreadCount: 3 }, { id: "other", unreadCount: 1 }],
+    selectedId: "other",
+  } }));
+  await act(async () => resolveList({ op: "voice.orchestrators.list.result", payload: {
+    orchestrators: [{ id: "parent", unreadCount: 2 }], selectedId: "parent",
+  } }));
+  expect(hook.result.current.selectedId).toBe("other");
+  expect(hook.result.current.orchestrators.map((item) => item.unreadCount)).toEqual([3, 1]);
   await hook.unmount();
 });
 

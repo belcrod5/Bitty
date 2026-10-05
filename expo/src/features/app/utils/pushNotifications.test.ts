@@ -47,6 +47,11 @@ describe("resolveForegroundNotificationBehavior", () => {
       shouldSetBadge: true,
     });
   });
+  it("suppresses voice completion presentation while the app is open", () => {
+    expect(resolveForegroundNotificationBehavior("VOICE_COMPLETED")).toEqual({
+      shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: true,
+    });
+  });
 });
 
 describe("getOrCreatePushDeviceId", () => {

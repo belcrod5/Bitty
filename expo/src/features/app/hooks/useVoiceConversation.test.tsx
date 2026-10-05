@@ -145,11 +145,12 @@ test("sends one final text block and reads aloud only after a completed turn", a
   await act(async () => handlers.get("voice.turn.completed")?.({
     channel: "agent", op: "voice.turn.completed",
     payload: { logicalConversationId: conversationId, clientOperationId: operationId, text: "返答",
+      completedOrdinal: 2,
       estimatedContextUsagePercent: 12, unsummarizedMessageCount: 2, memoryCharacterCount: 30 },
   }));
   await sent;
   expect(settled).toBe(true);
-  expect(result.current.reply).toEqual({ text: "返答", operationId });
+  expect(result.current.reply).toEqual({ text: "返答", operationId, completedOrdinal: 2 });
   expect(onCompleted).toHaveBeenCalledTimes(1);
   expect(onCompleted).toHaveBeenCalledWith("返答", operationId);
   expect(result.current.contextStats).toEqual({

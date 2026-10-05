@@ -556,7 +556,7 @@ test("card images update, fall back after decode failure, and release old images
   const screen = await render(<SkiaMiniBoardScreen onStartNewSessionInDirectory={jest.fn()}
     openSessionHistoryPopup={jest.fn()} />);
   const emitMetadata = async (icon: string) => act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({
-    payload: { orchestrators: [{ id: "one", name: "一", icon }] },
+    payload: { orchestrators: [{ id: "one", name: "一", icon }], selectedId: "one" },
   }));
   const emitActivity = async (revision: number, activities: unknown[]) => act(async () =>
     mockBoardVoiceHandlers.get("orchestrator_activity_updated")?.({ payload: {
@@ -594,15 +594,22 @@ test("mic badge uses latest canonical voice counts and a Push opens its orchestr
     }} />);
   await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
     orchestrators: [{ id: "main", unreadCount: 1 }, { id: "other", unreadCount: 2 }],
+    selectedId: "main",
   } }));
   expect(screen.getByTestId("skia-board-voice-unread")).toBeTruthy();
-  expect(screen.getByText("3")).toBeTruthy();
+  expect(screen.getByText("2")).toBeTruthy();
   await act(async () => resolveOld({ op: "voice.orchestrators.list.result", payload: {
     orchestrators: [{ id: "main", unreadCount: 1 }], selectedId: "main",
   } }));
-  expect(screen.getByText("3")).toBeTruthy();
+  expect(screen.getByText("2")).toBeTruthy();
+  await act(async () => mockBoardVoiceHandlers.get("voice.unread.changed")?.({ payload: {
+    orchestrators: [{ id: "main", unreadCount: 1 }, { id: "other", unreadCount: 2 }],
+    selectedId: "other",
+  } }));
+  expect(screen.getByText("1")).toBeTruthy();
   await act(async () => setPendingPushVoiceOrchestratorId("other"));
   expect(screen.getByTestId("voice-conversation-screen").props.accessibilityLabel).toBe("other");
+  expect(screen.queryByTestId("skia-board-voice-unread")).toBeNull();
 });
 
 test("overlays voice input while keeping the board mounted", async () => {

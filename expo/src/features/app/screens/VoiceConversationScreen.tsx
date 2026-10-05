@@ -205,8 +205,10 @@ function VoiceConversationSession({
     if (historyExpanded && appActive && voice.ready) void voice.refreshHistory();
   }, [appActive, historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
   useEffect(() => {
-    if (!historyExpanded || !appActive || paused || !voice.ready) return;
-    const ordinal = voice.history.reduce((max, message) => Math.max(max, message.completedOrdinal || 0), 0);
+    if (!appActive || paused || !voice.ready) return;
+    const historyOrdinal = historyExpanded
+      ? voice.history.reduce((max, message) => Math.max(max, message.completedOrdinal || 0), 0) : 0;
+    const ordinal = Math.max(historyOrdinal, voice.reply?.completedOrdinal || 0);
     if (!ordinal) return;
     void manager.request({ channel: "agent", op: "voice.read", payload: {
       orchestratorId: orchestrator.id, logicalConversationId: voice.logicalConversationId,
@@ -215,7 +217,8 @@ function VoiceConversationSession({
       if (response.op === "voice.read.result") void dismissReadVoiceNotifications(
         orchestrator.id, voice.logicalConversationId, ordinal).catch(() => undefined);
     }).catch(() => undefined);
-  }, [appActive, historyExpanded, manager, orchestrator.id, paused, voice.history, voice.logicalConversationId, voice.ready]);
+  }, [appActive, historyExpanded, manager, orchestrator.id, paused, voice.history,
+    voice.logicalConversationId, voice.ready, voice.reply?.completedOrdinal]);
   useEffect(() => {
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
