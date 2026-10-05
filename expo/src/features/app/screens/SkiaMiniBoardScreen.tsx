@@ -1977,13 +1977,15 @@ export function SkiaMiniBoardScreen({
       <SkiaBoardActivityFrame
         badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
         theme={theme}
-        targetIndexes={items.flatMap((item, index) => activityPlacement.cards.has(item.cardId) ? [index] : [])}
+        targets={items.flatMap((item, index) => {
+          const cardBadges = activityPlacement.cards.get(item.cardId) || [];
+          return cardBadges.map((_, badgeIndex) => ({ index, badgeIndex, badgeCount: cardBadges.length }));
+        })}
         positions={positions}
         boardX={boardX}
         boardY={boardY}
         scale={scale}
         cardWidth={cardWidth}
-        cardHeights={cardHeights}
       />
 
       <SafeAreaView

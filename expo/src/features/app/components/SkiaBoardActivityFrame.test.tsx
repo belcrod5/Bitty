@@ -1,11 +1,10 @@
 import React from "react";
-import { act, render, waitFor } from "@testing-library/react-native";
+import { act, render } from "@testing-library/react-native";
+import { Animated } from "react-native";
 import { SkiaBoardActivityFrame } from "./SkiaBoardActivityFrame";
-import { VisualThemeProvider } from "../theme/VisualThemeContext";
 import { VISUAL_THEMES } from "../theme/visualThemes";
 import { useSharedValue } from "react-native-reanimated";
 
-const mockPaths: Array<Array<[number, number]>> = [];
 const mockFrameLoops: Array<{ callback: (frame: { timeSincePreviousFrame: number }) => void;
   setActive: jest.Mock }> = [];
 let mockBoardValues: { positions: { value: Array<{ x: number; y: number }> };
@@ -13,29 +12,32 @@ let mockBoardValues: { positions: { value: Array<{ x: number; y: number }> };
 jest.mock("@shopify/react-native-skia", () => {
   const ReactModule = require("react");
   const { View } = require("react-native");
-  const Stub = ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
-    ReactModule.createElement(View, { testID }, children);
+  const Stub = ({ children, testID, ...props }: { children?: React.ReactNode; testID?: string }) =>
+    ReactModule.createElement(View, { testID, ...props }, children);
   return {
-    BlurMask: Stub, Canvas: Stub,
-    Group: ({ children, clip }: { children?: React.ReactNode; clip: unknown }) =>
-      ReactModule.createElement(View, { testID: "activity-glow-clip", clip }, children),
-    Line: ({ p1, p2, children }: { p1: { x: number; y: number };
+    BlurMask: Stub, Canvas: Stub, Circle: ({ c, children, ...props }: {
+      c: { value: { x: number; y: number } }; children?: React.ReactNode }) =>
+      ReactModule.createElement(View, { testID: "activity-dot", c, ...props }, children),
+    Group: ({ children, clip, opacity }: { children?: React.ReactNode; clip?: unknown; opacity?: unknown }) =>
+      ReactModule.createElement(View, { testID: clip ? "activity-glow-clip" : undefined, clip, opacity }, children),
+    Line: ({ p1, p2, children }: { p1: { value: { x: number; y: number } };
       p2: { value: { x: number; y: number } }; children?: React.ReactNode }) =>
-      ReactModule.createElement(View, { testID: "activity-target-line", p1, p2 }, children),
-    Path: Stub,
+      ReactModule.createElement(View, { testID: "activity-route-segment", p1, p2 }, children),
+    Path: ({ path, children }: { path: unknown; children?: React.ReactNode }) =>
+      ReactModule.createElement(View, { testID: "activity-path", path }, children),
     SweepGradient: ({ start, end }: { start: { value: number }; end: { value: number } }) =>
       ReactModule.createElement(View, { testID: "activity-gradient", start, end }),
     vec: (x: number, y: number) => ({ x, y }),
     Skia: {
       XYWHRect: (x: number, y: number, width: number, height: number) => ({ x, y, width, height }),
+      RRectXY: (rect: unknown, rx: number, ry: number) => ({ rect, rx, ry }),
       Path: { Make: () => {
-        const points: Array<[number, number]> = [];
-        mockPaths.push(points);
-        return {
-          moveTo: (x: number, y: number) => points.push([x, y]),
-          lineTo: (x: number, y: number) => points.push([x, y]),
-          quadTo: (_cx: number, _cy: number, x: number, y: number) => points.push([x, y]),
-        };
+        const path = { points: [] as Array<[number, number]>, roundedRect: null as unknown,
+          moveTo(x: number, y: number) { this.points.push([x, y]); },
+          lineTo(x: number, y: number) { this.points.push([x, y]); },
+          close() { this.points.push(this.points[0]); },
+          addRRect(rect: unknown) { this.roundedRect = rect; } };
+        return path;
       } },
     },
   };
@@ -57,138 +59,180 @@ jest.mock("react-native-reanimated", () => {
   };
 });
 
-const mockTransitions: Array<{
-  kind: string;
-  direction: string;
-  reduceMotion: boolean;
-  onFinish: (finished: boolean) => void;
-  stop: jest.Mock;
-}> = [];
 let mockReduceMotion = false;
 jest.mock("../hooks/useReduceMotionEnabled", () => ({
   useReduceMotionEnabled: () => mockReduceMotion,
 }));
-jest.mock("./popupChatTransitions", () => {
-  const start = (kind: string, options: { direction: string; reduceMotion: boolean;
-    onFinish: (finished: boolean) => void }) => {
-    const transition = { ...options, kind, stop: jest.fn() };
-    mockTransitions.push(transition);
-    return transition;
-  };
-  return {
-    startStandardPopupTransition: (options: Parameters<typeof start>[1]) => start("standard", options),
-    startCyberpunkPopupTransition: (options: Parameters<typeof start>[1]) => start("cyberpunk", options),
-  };
-});
 
 const actor = (id: string) => ({ id, name: id, icon: "" });
 const badge = (key: string, label: string, status = "running") => ({
   key, orchestrator: actor(key), status, label, count: 1,
 });
+type Badge = ReturnType<typeof badge>;
+type Target = { index: number; badgeIndex: number; badgeCount: number };
 const standard = VISUAL_THEMES.standard;
 const cyberpunk = VISUAL_THEMES.cyberpunk;
 
-function FrameFixture({ badges, theme }: { badges: ReturnType<typeof badge>[]; theme: typeof standard }) {
-  const positions = useSharedValue([{ x: 30, y: 40 }]);
+function FrameFixture({ badges, targets, theme = standard }: {
+  badges: Badge[]; targets: Target[]; theme?: typeof standard;
+}) {
+  const positions = useSharedValue([{ x: 30, y: 40 }, { x: 100, y: 200 }]);
   const boardX = useSharedValue(0);
   const boardY = useSharedValue(0);
   const scale = useSharedValue(1);
   mockBoardValues = { positions, boardX, boardY, scale };
-  return <VisualThemeProvider themeId={theme.id} onSelectTheme={() => undefined}>
-    <SkiaBoardActivityFrame badges={badges} theme={theme} targetIndexes={badges.length ? [0] : []}
-      positions={positions} boardX={boardX} boardY={boardY} scale={scale}
-      cardWidth={270} cardHeights={[112]} />
-  </VisualThemeProvider>;
+  return <SkiaBoardActivityFrame badges={badges} theme={theme} targets={targets}
+    positions={positions} boardX={boardX} boardY={boardY} scale={scale} cardWidth={270} />;
 }
 
-function frame(badges: ReturnType<typeof badge>[], theme = standard) {
-  return <FrameFixture badges={badges} theme={theme} />;
+const oneTarget: Target[] = [{ index: 0, badgeIndex: 0, badgeCount: 1 }];
+function frame(badges: Badge[], targets: Target[] = badges.length ? oneTarget : [], theme = standard) {
+  return <FrameFixture badges={badges} targets={targets} theme={theme} />;
 }
 
-beforeEach(() => {
-  mockPaths.length = 0;
-  mockFrameLoops.length = 0;
-  mockTransitions.length = 0;
-  mockReduceMotion = false;
-});
-
-test("draws the inner frame at the safe-area rail and connects a visible target card", async () => {
-  const screen = await render(frame([badge("one", "実行中")]));
+async function layout(screen: Awaited<ReturnType<typeof render>>, width = 400, railX = 0) {
   await act(async () => {
     screen.getByTestId("skia-board-activity-frame").props.onLayout({
-      nativeEvent: { layout: { width: 400, height: 800 } },
+      nativeEvent: { layout: { width, height: 800 } },
     });
     screen.getByTestId("skia-board-activity-safe-top").props.onLayout({
       nativeEvent: { layout: { y: 15 } },
     });
     screen.getByTestId("skia-board-activity-top-rail").props.onLayout({
-      nativeEvent: { layout: { y: 30, height: 40 } },
+      nativeEvent: { layout: { x: railX, y: 30 } },
+    });
+    screen.getByTestId("skia-board-activity-status").parent?.props.onLayout?.({
+      nativeEvent: { layout: { x: 120, y: 0, width: 150, height: 40 } },
     });
   });
-  expect(mockPaths.at(-1)).toEqual([[8, 65], [8, 782], [18, 792], [382, 792], [392, 782],
-    [392, 65], [8, 65]]);
+}
+
+const point = (value: { value: { x: number; y: number } }) => value.value;
+
+test("draws the rainbow at exact screen edges and around the command label", async () => {
+  const screen = await render(frame([badge("one", "実行中")]));
+  expect(screen.queryByTestId("activity-route-segment")).toBeNull();
+  await layout(screen, 400, 18);
+  const paths = screen.getAllByTestId("activity-path");
+  expect(paths[0].props.path.points).toEqual([[0, 0], [400, 0], [400, 800], [0, 800], [0, 0]]);
+  expect(paths[2].props.path.roundedRect).toEqual({
+    rect: { x: 138, y: 45, width: 150, height: 40 }, rx: 18, ry: 18,
+  });
+  expect(point(screen.getAllByTestId("activity-route-segment")[0].props.p1))
+    .toEqual({ x: 213, y: 85 });
   expect(screen.getByTestId("activity-glow-clip").props.clip)
-    .toEqual({ x: 8, y: 65, width: 384, height: 727 });
-  const line = screen.getByTestId("activity-target-line");
-  expect(line.props.p1).toEqual({ x: 200, y: 85 });
-  expect(line.props.p2.value).toEqual({ x: 200, y: 40 });
-  mockBoardValues.boardX.value = 20;
-  mockBoardValues.boardY.value = 20;
-  mockBoardValues.scale.value = 2;
-  expect(line.props.p2.value).toEqual({ x: 200, y: 100 });
-  mockBoardValues.boardX.value = 500;
-  expect(line.props.p2.value).toEqual(line.props.p1);
+    .toEqual({ x: 0, y: 0, width: 400, height: 800 });
+  expect(screen.getByTestId("skia-board-activity-status").parent?.props.style)
+    .not.toHaveProperty("borderColor");
   expect(mockFrameLoops[0].setActive).toHaveBeenLastCalledWith(true);
   mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
-  const gradient = screen.getAllByTestId("activity-gradient")[0];
-  expect(gradient.props.start.value).toBeCloseTo(3.6);
-  expect(gradient.props.end.value).toBeCloseTo(363.6);
+  expect(screen.getAllByTestId("activity-gradient")[0].props.start.value).toBeCloseTo(3.6);
 });
 
-test("keeps the frame through tool updates and a canceled close, then removes it after a real close", async () => {
-  const screen = await render(frame([badge("one", "取得中")]));
-  expect(mockTransitions.map((transition) => transition.direction)).toEqual(["open"]);
-  expect(screen.getByTestId("skia-board-activity-status").props.children.join("")).toBe("取得中 · 実行中");
+test("routes three orthogonal segments to each badge icon and flows three dots along them", async () => {
+  const screen = await render(frame([badge("one", "取得中"), badge("two", "実行中"), badge("three", "会話中")],
+    [{ index: 0, badgeIndex: 0, badgeCount: 2 },
+      { index: 0, badgeIndex: 1, badgeCount: 2 },
+      { index: 1, badgeIndex: 0, badgeCount: 1 }]));
+  await layout(screen);
+  const segments = screen.getAllByTestId("activity-route-segment");
+  expect(segments).toHaveLength(9);
+  expect(segments.slice(0, 3).map((line) => [point(line.props.p1), point(line.props.p2)])).toEqual([
+    [{ x: 195, y: 85 }, { x: 195, y: 113 }],
+    [{ x: 195, y: 113 }, { x: 248, y: 113 }],
+    [{ x: 248, y: 113 }, { x: 248, y: 37 }],
+  ]);
+  expect(point(segments[5].props.p2)).toEqual({ x: 302, y: 37 });
+  expect(point(segments[8].props.p2)).toEqual({ x: 372, y: 197 });
+  const dots = screen.getAllByTestId("activity-dot");
+  expect(dots).toHaveLength(18);
+  expect(point(dots[0].props.c)).toEqual({ x: 195, y: 85 });
+  mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(point(dots[0].props.c)).toEqual({ x: 195, y: 92 });
+  for (let step = 0; step < 4; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(point(dots[0].props.c)).toEqual({ x: 202, y: 113 });
+  for (let step = 0; step < 7; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(point(dots[0].props.c).x).toBe(248);
+  expect(point(dots[0].props.c).y).toBeCloseTo(110);
+  mockBoardValues.boardX.value = -40;
+  mockBoardValues.boardY.value = 10;
+  mockBoardValues.scale.value = 2;
+  expect(point(segments[2].props.p2)).toEqual({ x: 456, y: 84 });
+  mockBoardValues.boardX.value = 1000;
+  expect(segments[0].parent?.props.opacity.value).toBe(0);
+  expect(point(dots[0].props.c)).toEqual({ x: -20, y: -20 });
+});
 
-  await act(async () => screen.rerender(frame([badge("one", "書き込み中")])));
-  expect(mockTransitions).toHaveLength(1);
-  expect(screen.getByTestId("skia-board-activity-status").props.children.join("")).toBe("書き込み中 · 実行中");
+test.each([standard, cyberpunk])("fades with %s, ignores a canceled close, and removes after a completed close", async (theme) => {
+  const transitions: Array<{ duration: number; toValue: number; stop: jest.Mock;
+    finish: (finished: boolean) => void }> = [];
+  const timing = jest.spyOn(Animated, "timing").mockImplementation((_value, config) => {
+    const transition: { duration: number; toValue: number; stop: jest.Mock;
+      finish: (finished: boolean) => void } = { duration: config.duration || 0,
+        toValue: config.toValue as number, stop: jest.fn(), finish: () => undefined };
+    transitions.push(transition);
+    return { start: (callback: (result: { finished: boolean }) => void) => {
+      transition.finish = (finished: boolean) => callback({ finished });
+    }, stop: transition.stop, reset: jest.fn() } as ReturnType<typeof Animated.timing>;
+  });
+  try {
+    const screen = await render(frame([badge("one", "取得中")], oneTarget, theme));
+    expect(transitions.map(({ toValue, duration }) => [toValue, duration])).toEqual([[1, 220]]);
+    expect(screen.getByTestId("skia-board-activity-status").props.children.join("")).toBe("取得中 · 実行中");
+    await screen.rerender(frame([badge("one", "書き込み中")], oneTarget, theme));
+    expect(transitions).toHaveLength(1);
+    await screen.rerender(frame([], [], theme));
+    expect(transitions[0].stop).toHaveBeenCalledTimes(1);
+    expect(transitions[1]).toMatchObject({ duration: 220, toValue: 0 });
+    expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
+    expect(screen.queryByTestId("activity-route-segment")).toBeNull();
+    await screen.rerender(frame([badge("two", "会話中")], oneTarget, theme));
+    await act(async () => transitions[1].finish(true));
+    expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
+    await screen.rerender(frame([], [], theme));
+    await act(async () => transitions[3].finish(true));
+    expect(screen.queryByTestId("skia-board-activity-frame")).toBeNull();
+    await screen.unmount();
+    expect(transitions[3].stop).toHaveBeenCalledTimes(1);
+    expect(mockFrameLoops[0].setActive).toHaveBeenLastCalledWith(false);
+  } finally {
+    timing.mockRestore();
+  }
+});
 
-  await act(async () => screen.rerender(frame([])));
-  expect(mockTransitions[0].stop).toHaveBeenCalledTimes(1);
-  expect(mockTransitions[1].direction).toBe("close");
+test("shows global activity without routes and hides a route when its card disappears", async () => {
+  const screen = await render(frame([badge("global", "実行中")], []));
+  await layout(screen);
   expect(screen.getByTestId("skia-board-activity-frame")).toBeTruthy();
-  expect(screen.queryByTestId("activity-target-line")).toBeNull();
-
-  await act(async () => screen.rerender(frame([badge("two", "会話中")])));
-  expect(mockTransitions[1].stop).toHaveBeenCalledTimes(1);
-  expect(mockTransitions[2].direction).toBe("open");
-  await act(async () => mockTransitions[1].onFinish(true));
-  expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
-
-  await act(async () => screen.rerender(frame([])));
-  await waitFor(() => expect(mockTransitions).toHaveLength(4));
-  await act(async () => mockTransitions[3].onFinish(true));
-  expect(screen.queryByTestId("skia-board-activity-frame")).toBeNull();
-  await act(async () => screen.unmount());
-  expect(mockTransitions[3].stop).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId("activity-route-segment")).toBeNull();
+  await screen.rerender(frame([badge("one", "実行中")], oneTarget));
+  const line = screen.getAllByTestId("activity-route-segment")[0];
+  mockBoardValues.positions.value = [];
+  expect(line.parent?.props.opacity.value).toBe(0);
 });
 
-test("shows two distinct actors and prioritizes the running label with reduced motion", async () => {
+test("keeps dots still and disables the frame loop with Reduce Motion", async () => {
   mockReduceMotion = true;
   const screen = await render(frame([
     badge("one", "取得中", "completed"),
     badge("two", "ツール実行中"),
     badge("three", "会話中"),
-  ], cyberpunk));
-  await waitFor(() => expect(mockTransitions).toHaveLength(1));
+  ], oneTarget, cyberpunk));
+  await layout(screen);
+  const dots = screen.getAllByTestId("activity-dot");
+  const start = point(dots[0].props.c);
+  mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(point(dots[0].props.c)).toEqual(start);
   expect(mockFrameLoops[0].setActive).toHaveBeenLastCalledWith(false);
-  expect(mockTransitions[0].kind).toBe("cyberpunk");
-  expect(mockTransitions[0].reduceMotion).toBe(true);
   expect(screen.getByTestId("skia-board-activity-actor-one")).toBeTruthy();
   expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
   expect(screen.queryByTestId("skia-board-activity-actor-three")).toBeNull();
   expect(screen.getByText("+1")).toBeTruthy();
   expect(screen.getByTestId("skia-board-activity-status").props.children.join(""))
     .toBe("ツール実行中 · 実行中");
+});
+
+beforeEach(() => {
+  mockFrameLoops.length = 0;
+  mockReduceMotion = false;
 });
