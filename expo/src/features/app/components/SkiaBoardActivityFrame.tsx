@@ -7,8 +7,8 @@ import type { VisualTheme } from "../theme/visualThemes";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 import { RAINBOW_GLOW_COLORS } from "./rainbowGlow";
 
-const GLOW_PULSE_MS = 900;
-// Keep color rotation from dominating the 900 ms glow pulse.
+const GLOW_PULSE_MS = 1500;
+// Keep color rotation from dominating the glow pulse.
 const GLOW_COLORS = [
   "#ff9fa7", "#fbab3c", "#c3bb43", "#4fd690", "#50caff", "#bdaaff", "#ff9fa7",
 ];
