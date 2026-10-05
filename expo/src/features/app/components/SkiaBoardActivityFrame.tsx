@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { BlurMask, Canvas, Group, Line, Path, Skia, SweepGradient, vec } from "@shopify/react-native-skia";
+import { useDerivedValue, useFrameCallback, useSharedValue, type SharedValue } from "react-native-reanimated";
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import type { VisualTheme } from "../theme/visualThemes";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestratorIcon";
 import { startCyberpunkPopupTransition, startStandardPopupTransition } from "./popupChatTransitions";
+import { RAINBOW_GLOW_COLORS, RAINBOW_GLOW_DEGREES_PER_MS } from "./rainbowGlow";
 
 type FrameBadge = {
   key: string;
@@ -22,18 +25,86 @@ export function activityStatusText(status: string) {
   }
 }
 
-export function SkiaBoardActivityFrame({ badges, theme }: { badges: FrameBadge[]; theme: VisualTheme }) {
+type FrameProps = {
+  badges: FrameBadge[];
+  theme: VisualTheme;
+  targetIndexes: number[];
+  positions: SharedValue<Array<{ x: number; y: number }>>;
+  boardX: SharedValue<number>;
+  boardY: SharedValue<number>;
+  scale: SharedValue<number>;
+  cardWidth: number;
+  cardHeights: number[];
+};
+
+function ActivityTargetLine({ index, positions, boardX, boardY, scale, cardWidth, cardHeights,
+  width, height, startY, gradientStart, gradientEnd }: Omit<FrameProps, "badges" | "theme" | "targetIndexes"> & {
+  index: number; width: number; height: number; startY: number;
+  gradientStart: SharedValue<number>; gradientEnd: SharedValue<number>;
+}) {
+  const start = vec(width / 2, startY);
+  const end = useDerivedValue(() => {
+    const position = positions.value[index];
+    if (!position) return start;
+    const left = boardX.value + position.x * scale.value;
+    const top = boardY.value + position.y * scale.value;
+    const right = left + cardWidth * scale.value;
+    const bottom = top + cardHeights[index] * scale.value;
+    if (right < 0 || left > width || bottom < 0 || top > height) return start;
+    let x = Math.max(left, Math.min(start.x, right));
+    let y = Math.max(top, Math.min(start.y, bottom));
+    if (x === start.x && y === start.y) y = top;
+    return vec(x, y);
+  });
+  return (
+    <Line p1={start} p2={end} style="stroke" strokeWidth={2} opacity={0.8}>
+      <SweepGradient c={vec(width / 2, height / 2)} colors={RAINBOW_GLOW_COLORS}
+        mode="repeat" start={gradientStart} end={gradientEnd} />
+    </Line>
+  );
+}
+
+export function SkiaBoardActivityFrame({ badges, theme, targetIndexes, positions, boardX, boardY,
+  scale, cardWidth, cardHeights }: FrameProps) {
   const reduceMotion = useReduceMotionEnabled();
   const active = badges.length > 0;
   const lastBadges = useRef(badges);
   if (active) lastBadges.current = badges;
   const [present, setPresent] = useState(active);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [rail, setRail] = useState({ safeY: 0, middle: 0, bottom: 0 });
   const generation = useRef(0);
   const progress = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const scaleY = useRef(new Animated.Value(1)).current;
   const flashOpacity = useRef(new Animated.Value(0)).current;
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const gradientStart = useSharedValue(0);
+  const gradientEnd = useSharedValue(360);
+  const rotation = useFrameCallback((frame) => {
+    const elapsed = Math.min(frame?.timeSincePreviousFrame ?? 0, 50);
+    const start = (gradientStart.value + elapsed * RAINBOW_GLOW_DEGREES_PER_MS) % 360;
+    gradientStart.value = start;
+    gradientEnd.value = start + 360;
+  }, false);
+  useEffect(() => {
+    rotation.setActive((active || present) && reduceMotion === false);
+    return () => rotation.setActive(false);
+  }, [active, present, reduceMotion, rotation]);
+  const framePath = useMemo(() => {
+    const path = Skia.Path.Make();
+    const railY = rail.safeY + rail.middle;
+    if (size.width > 36 && size.height > 36) {
+      path.moveTo(8, railY);
+      path.lineTo(8, size.height - 18);
+      path.quadTo(8, size.height - 8, 18, size.height - 8);
+      path.lineTo(size.width - 18, size.height - 8);
+      path.quadTo(size.width - 8, size.height - 8, size.width - 8, size.height - 18);
+      path.lineTo(size.width - 8, railY);
+      path.lineTo(8, railY);
+    }
+    return path;
+  }, [size.width, size.height, rail.safeY, rail.middle]);
 
   useEffect(() => {
     if (reduceMotion === null || (!active && !present)) return;
@@ -66,12 +137,41 @@ export function SkiaBoardActivityFrame({ badges, theme }: { badges: FrameBadge[]
 
   return (
     <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { opacity }]}
-      testID="skia-board-activity-frame">
-      <View style={styles.edgeGlow} />
-      <View style={styles.edges} />
+      testID="skia-board-activity-frame"
+      onLayout={({ nativeEvent: { layout: { width, height } } }) =>
+        setSize((current) => current.width === width && current.height === height ? current : { width, height })}>
+      <Canvas pointerEvents="none" testID="skia-board-activity-glow" style={StyleSheet.absoluteFillObject}>
+        <Group clip={Skia.XYWHRect(8, rail.safeY + rail.middle, Math.max(0, size.width - 16),
+          Math.max(0, size.height - 8 - rail.safeY - rail.middle))}
+          opacity={0.7}>
+          <Path path={framePath} style="stroke" strokeWidth={18}>
+            <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={RAINBOW_GLOW_COLORS}
+              mode="repeat" start={gradientStart} end={gradientEnd} />
+            <BlurMask blur={8} style="normal" />
+          </Path>
+        </Group>
+        <Path path={framePath} style="stroke" strokeWidth={2}>
+          <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={RAINBOW_GLOW_COLORS}
+            mode="repeat" start={gradientStart} end={gradientEnd} />
+        </Path>
+        {targetIndexes.map((index) => (
+          <ActivityTargetLine key={index} index={index} positions={positions} boardX={boardX} boardY={boardY}
+            scale={scale} cardWidth={cardWidth} cardHeights={cardHeights} width={size.width} height={size.height}
+            startY={rail.safeY + rail.bottom} gradientStart={gradientStart} gradientEnd={gradientEnd} />
+        ))}
+      </Canvas>
       <Animated.View style={[styles.flash, { opacity: flashOpacity }]} />
-      <SafeAreaView pointerEvents="none" style={styles.safeTop}>
-        <Animated.View style={[styles.topRail, { transform: [{ scaleY }] }]}>
+      <SafeAreaView pointerEvents="none" style={styles.safeTop} testID="skia-board-activity-safe-top"
+        onLayout={({ nativeEvent: { layout: { y } } }) =>
+          setRail((current) => current.safeY === y ? current : { ...current, safeY: y })}>
+        <Animated.View style={[styles.topRail, { transform: [{ scaleY }] }]}
+          testID="skia-board-activity-top-rail"
+          onLayout={({ nativeEvent: { layout: { y, height } } }) => {
+            const middle = y + height / 2;
+            const bottom = y + height;
+            setRail((current) => current.middle === middle && current.bottom === bottom
+              ? current : { ...current, middle, bottom });
+          }}>
           <View style={styles.topRule} />
           <View style={styles.label}>
             <View style={styles.actors}>
@@ -96,16 +196,6 @@ export function SkiaBoardActivityFrame({ badges, theme }: { badges: FrameBadge[]
 function createStyles(theme: VisualTheme) {
   const color = theme.colors.activityActive;
   return StyleSheet.create({
-    edges: {
-      position: "absolute", top: 4, right: 4, bottom: 4, left: 4,
-      borderLeftWidth: 2, borderRightWidth: 2, borderBottomWidth: 2,
-      borderColor: color, borderBottomLeftRadius: 10, borderBottomRightRadius: 10,
-    },
-    edgeGlow: {
-      position: "absolute", top: 2, right: 2, bottom: 2, left: 2,
-      borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 7,
-      borderColor: color, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, opacity: 0.45,
-    },
     flash: {
       position: "absolute", top: 2, right: 2, bottom: 2, left: 2,
       borderWidth: 4, borderColor: color, borderRadius: 10,
@@ -117,8 +207,7 @@ function createStyles(theme: VisualTheme) {
       flexDirection: "row", alignItems: "center",
     },
     topRule: {
-      flex: 1, height: 2, backgroundColor: color,
-      shadowColor: color, shadowOpacity: 0.8, shadowRadius: 5,
+      flex: 1, height: 2,
     },
     label: {
       maxWidth: "62%", minWidth: 0, flexDirection: "row", alignItems: "center", gap: 5,

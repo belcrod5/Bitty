@@ -118,12 +118,15 @@ jest.mock("@shopify/react-native-skia", () => {
         })),
     ]);
   return {
+    BlurMask: Stub,
     Canvas: CanvasStub,
     Circle: Stub,
     Group: Stub,
     Line: Stub,
     Path: PathStub,
     Picture: PictureStub,
+    SweepGradient: Stub,
+    vec: (x: number, y: number) => ({ x, y }),
     useImage: () => (globalThis as Record<string, unknown>).__skiaBoardTestImage || null,
     RoundedRect: Stub,
     FontWeight: { Bold: 700 },
@@ -163,6 +166,7 @@ jest.mock("@shopify/react-native-skia", () => {
         Make: () => ({
           moveTo: () => undefined,
           lineTo: () => undefined,
+          quadTo: () => undefined,
         }),
         MakeFromSVGString: (svg: string) => ({ svg, dispose: () => undefined }),
       },
@@ -257,7 +261,7 @@ jest.mock("react-native-reanimated", () => {
     // setActive(起動・停止)の呼び出しも検証できるようにする。
     useFrameCallback: (callback: () => void) => {
       const target = globalThis as Record<string, unknown>;
-      target.__skiaBoardFrameCallback = callback;
+      target.__skiaBoardFrameCallback ||= callback;
       if (!target.__skiaBoardFrameLoopSetActive) {
         target.__skiaBoardFrameLoopSetActive = jest.fn();
       }
@@ -450,6 +454,7 @@ jest.mock("../hooks/useSkiaMiniChatSessions", () => ({
 }));
 
 beforeEach(() => {
+  (globalThis as Record<string, unknown>).__skiaBoardFrameCallback = null;
   mockRunningSessionCount = 0;
   mockBoardVoiceHandlers.clear();
   mockBoardVoiceRequest.mockReset();

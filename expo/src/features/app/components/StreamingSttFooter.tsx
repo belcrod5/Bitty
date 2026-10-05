@@ -8,9 +8,9 @@ import { useVisualTheme } from "../theme/VisualThemeContext";
 import type { StreamingSttUsage } from "../../stt/streamingSttClient";
 import type { StreamingSttPhase } from "../../stt/useStreamingStt";
 import type { VoiceContextStats } from "../types/appTypes";
+import { RAINBOW_GLOW_COLORS, RAINBOW_GLOW_DEGREES_PER_MS } from "./rainbowGlow";
 
 const GLOW_SPACE = 48;
-const RAINBOW = ["#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f"];
 const RESPONDING_COLORS = ["#46f6ff", "#537dff", "#ab67ff", "#5fffc8", "#46f6ff"];
 const SPEAKING_COLORS = ["#ff79cf", "#ffb263", "#ffe779", "#ff79cf"];
 
@@ -64,7 +64,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
   const glowColors = voiceStatus === "responding" ? RESPONDING_COLORS
-    : voiceStatus === "speaking" ? SPEAKING_COLORS : RAINBOW;
+    : voiceStatus === "speaking" ? SPEAKING_COLORS : RAINBOW_GLOW_COLORS;
 
   React.useEffect(() => {
     if (phase !== "connecting") return;
@@ -79,7 +79,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
     if (voiceStatus && reduceMotion) return;
     const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
     const speed = voiceStatus === "responding" ? 0.28
-      : voiceStatus === "speaking" ? 0.12 : 0.072 + audioLevel.value * 0.168;
+      : voiceStatus === "speaking" ? 0.12 : RAINBOW_GLOW_DEGREES_PER_MS + audioLevel.value * 0.168;
     const start = (gradientStart.value + elapsed * speed) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;

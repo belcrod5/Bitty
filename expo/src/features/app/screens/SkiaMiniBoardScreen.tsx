@@ -1977,6 +1977,13 @@ export function SkiaMiniBoardScreen({
       <SkiaBoardActivityFrame
         badges={[...activityPlacement.global, ...Array.from(activityPlacement.cards.values()).flat()]}
         theme={theme}
+        targetIndexes={items.flatMap((item, index) => activityPlacement.cards.has(item.cardId) ? [index] : [])}
+        positions={positions}
+        boardX={boardX}
+        boardY={boardY}
+        scale={scale}
+        cardWidth={cardWidth}
+        cardHeights={cardHeights}
       />
 
       <SafeAreaView
