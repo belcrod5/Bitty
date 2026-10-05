@@ -9050,7 +9050,8 @@ runnerWsServer.on("connection", (ws, req) => {
       void operation.then((payload) => {
         sendRunnerWsEnvelope(ws, { channel: "agent", op: `${message.op}.result`,
           requestId: message.requestId || "", payload });
-        if (["voice.orchestrators.create", "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
+        if (["voice.orchestrators.select", "voice.orchestrators.create",
+          "voice.orchestrators.update", "voice.orchestrators.delete"].includes(message.op)) {
           void broadcastVoiceUnreadState();
         }
       }).catch((error) => sendVoiceError(message, error));

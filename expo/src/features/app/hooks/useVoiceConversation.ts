@@ -69,7 +69,8 @@ export function useVoiceConversation(
   const { connected, generation } = useRunnerWebSocketSnapshot();
   const [logicalConversationId, setLogicalConversationId] = useState("");
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
-  const [reply, setReply] = useState<{ text: string; operationId: string; outputTokens?: number } | null>(null);
+  const [reply, setReply] = useState<{ text: string; operationId: string; outputTokens?: number;
+    completedOrdinal?: number } | null>(null);
   const [error, setError] = useState("");
   const [contextStats, setContextStats] = useState<VoiceContextStats | null>(null);
   const [history, setHistory] = useState<VoiceHistoryMessage[]>([]);
@@ -129,7 +130,8 @@ export function useVoiceConversation(
     if (status === "completed" && typeof payload.text === "string" && payload.text.trim()) {
       pending.resolve?.();
       setReply({ text: payload.text, operationId: id,
-        outputTokens: typeof payload.outputTokens === "number" ? payload.outputTokens : undefined });
+        outputTokens: typeof payload.outputTokens === "number" ? payload.outputTokens : undefined,
+        completedOrdinal: typeof payload.completedOrdinal === "number" ? payload.completedOrdinal : undefined });
       setTurnStatus("completed");
       setError("");
       if (pending.readAloud && !pending.jobId) onCompletedRef.current(payload.text, id);
@@ -222,7 +224,8 @@ export function useVoiceConversation(
         if (openPayload.status === "completed" && typeof openPayload.text === "string"
           && typeof openPayload.clientOperationId === "string") {
           setReply({ text: openPayload.text, operationId: openPayload.clientOperationId,
-            outputTokens: typeof openPayload.outputTokens === "number" ? openPayload.outputTokens : undefined });
+            outputTokens: typeof openPayload.outputTokens === "number" ? openPayload.outputTokens : undefined,
+            completedOrdinal: typeof openPayload.completedOrdinal === "number" ? openPayload.completedOrdinal : undefined });
           setTurnStatus("completed");
         } else if ((openPayload.status === "interrupted" || openPayload.status === "preflight_failed")
           && openPayload.code === "voice_cancelled") {

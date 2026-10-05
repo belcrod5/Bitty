@@ -38,7 +38,7 @@ const mockVoice = {
   logicalConversationId: "conversation-one",
   turnStatus: "completed",
   reply: { text: "表示しない返答本文", operationId: "operation-1" } as {
-    text: string; operationId: string; outputTokens?: number;
+    text: string; operationId: string; outputTokens?: number; completedOrdinal?: number;
   },
   error: "",
   contextStats: { estimatedContextUsagePercent: 31, unsummarizedMessageCount: 8, memoryCharacterCount: 55 },
@@ -269,6 +269,23 @@ test("inactive voice history does not mark a reply read", async () => {
   const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose}
     initialOrchestratorId="other" />);
   expect(screen.getByTestId("voice-conversation-history")).toBeTruthy();
+  expect(mockRequest).not.toHaveBeenCalledWith(expect.objectContaining({ op: "voice.read" }));
+});
+
+test("active collapsed voice reply is read without opening history", async () => {
+  mockVoice.reply = { text: "届いた返答", operationId: "operation-1", completedOrdinal: 3 };
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.queryByTestId("voice-conversation-history")).toBeNull();
+  await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
+    op: "voice.read", payload: { orchestratorId: "main", logicalConversationId: "conversation-one",
+      completedOrdinal: 3 },
+  })));
+});
+
+test("inactive collapsed voice reply stays unread", async () => {
+  AppState.currentState = "inactive";
+  mockVoice.reply = { text: "届いた返答", operationId: "operation-1", completedOrdinal: 3 };
+  await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
   expect(mockRequest).not.toHaveBeenCalledWith(expect.objectContaining({ op: "voice.read" }));
 });
 

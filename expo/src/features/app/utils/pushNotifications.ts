@@ -81,11 +81,9 @@ export async function registerPushDevice({
   return Boolean(data?.ok);
 }
 
-// iOS notification presentation while the app is in the foreground. Foreground push is
-// completion is shown by the in-app notification card. Scheduled failures use
-// a system alert because they can occur before a conversation exists.
+// Scheduled failures use a system alert because they can occur before a conversation exists.
 export function resolveForegroundNotificationBehavior(categoryIdentifier?: string | null) {
-  const failed = categoryIdentifier === "SCHEDULE_FAILED" || categoryIdentifier === "VOICE_COMPLETED";
+  const failed = categoryIdentifier === "SCHEDULE_FAILED";
   return {
     shouldShowBanner: failed,
     shouldShowList: failed,

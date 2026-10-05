@@ -35,6 +35,7 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
   const { connected, generation, appState } = useRunnerWebSocketSnapshot();
   const [activities, setActivities] = useState<OrchestratorActivity[]>([]);
   const [orchestrators, setOrchestrators] = useState<VoiceOrchestrator[]>([]);
+  const [selectedId, setSelectedId] = useState("");
   const metadataRevision = useRef(0);
   const credentials = useRef({ runnerUrl, runnerToken });
 
@@ -43,6 +44,7 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
     if (credentials.current.runnerUrl !== runnerUrl || credentials.current.runnerToken !== runnerToken) {
       credentials.current = { runnerUrl, runnerToken };
       setOrchestrators([]);
+      setSelectedId("");
     }
     if (!enabled || !connected || appState === "background") return;
 
@@ -62,13 +64,17 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
     };
     const applyMetadata = (value: unknown) => {
       if (!current || !value || typeof value !== "object") return;
-      const items = (value as { orchestrators?: unknown }).orchestrators;
-      if (Array.isArray(items)) setOrchestrators(items.flatMap((item): VoiceOrchestrator[] => {
-        if (!item || typeof item !== "object" || typeof item.id !== "string") return [];
-        return [{ id: item.id, name: typeof item.name === "string" ? item.name : "?",
-          icon: typeof item.icon === "string" ? item.icon : "",
-          unreadCount: typeof item.unreadCount === "number" ? item.unreadCount : 0 }];
-      }));
+      const metadata = value as { orchestrators?: unknown; selectedId?: unknown };
+      const items = metadata.orchestrators;
+      if (Array.isArray(items) && typeof metadata.selectedId === "string") {
+        setSelectedId(metadata.selectedId);
+        setOrchestrators(items.flatMap((item): VoiceOrchestrator[] => {
+          if (!item || typeof item !== "object" || typeof item.id !== "string") return [];
+          return [{ id: item.id, name: typeof item.name === "string" ? item.name : "?",
+            icon: typeof item.icon === "string" ? item.icon : "",
+            unreadCount: typeof item.unreadCount === "number" ? item.unreadCount : 0 }];
+        }));
+      }
     };
     const unsubscribeActivity = manager.subscribe(
       { channel: "control", op: "orchestrator_activity_updated" },
@@ -99,5 +105,5 @@ export function useOrchestratorActivities(runnerUrl: string, runnerToken: string
     };
   }, [manager, connected, generation, appState, runnerUrl, runnerToken, enabled]);
 
-  return { activities, orchestrators };
+  return { activities, orchestrators, selectedId };
 }
