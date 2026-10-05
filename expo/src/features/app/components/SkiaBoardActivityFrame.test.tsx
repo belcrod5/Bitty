@@ -27,8 +27,9 @@ jest.mock("@shopify/react-native-skia", () => {
       ReactModule.createElement(View, { testID: "activity-route-segment", p1, p2 }, children),
     Path: ({ path, children, ...props }: { path: unknown; children?: React.ReactNode }) =>
       ReactModule.createElement(View, { testID: "activity-path", path, ...props }, children),
-    SweepGradient: ({ start, end }: { start: { value: number }; end: { value: number } }) =>
-      ReactModule.createElement(View, { testID: "activity-gradient", start, end }),
+    SweepGradient: ({ start, end, colors }: {
+      start: { value: number }; end: { value: number }; colors: string[] }) =>
+      ReactModule.createElement(View, { testID: "activity-gradient", start, end, colors }),
     vec: (x: number, y: number) => ({ x, y }),
     Skia: {
       XYWHRect: (x: number, y: number, width: number, height: number) => ({ x, y, width, height }),
@@ -131,7 +132,16 @@ test("draws the rainbow at exact screen edges and around the command label", asy
   const blurs = screen.getAllByTestId("activity-blur");
   expect(gradients[0].props.start).toBe(gradients[2].props.start);
   expect(gradients[1].props.start).toBe(gradients[3].props.start);
-  expect(gradients[0].props.start).not.toBe(gradients[1].props.start);
+  expect(gradients[0].props.start).toBe(gradients[1].props.start);
+  const luminance = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map((index) => {
+      const value = parseInt(hex.slice(index, index + 2), 16) / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const glowLuminances = gradients[0].props.colors.map(luminance);
+  expect(Math.max(...glowLuminances) / Math.min(...glowLuminances)).toBeLessThan(1.15);
   expect(paths[0].props.strokeWidth).toBe(paths[2].props.strokeWidth);
   expect(blurs[0].props.blur).toBe(blurs[1].props.blur);
   expect(paths[0].parent?.props.opacity).toBe(paths[2].parent?.props.opacity);
@@ -140,8 +150,8 @@ test("draws the rainbow at exact screen edges and around the command label", asy
   mockFrameLoops[0].callback({ timeSincePreviousFrame: 25 });
   expect(gradients[1].props.start.value).toBeCloseTo(162);
   expect(gradients[3].props.end.value).toBeCloseTo(522);
-  expect(gradients[0].props.start.value).toBeCloseTo(67.5);
-  expect(gradients[2].props.end.value).toBeCloseTo(427.5);
+  expect(gradients[0].props.start.value).toBeCloseTo(162);
+  expect(gradients[2].props.end.value).toBeCloseTo(522);
   expect(paths[0].props.strokeWidth.value).toBeCloseTo(32);
   expect(blurs[0].props.blur.value).toBeCloseTo(13);
   expect(paths[0].parent?.props.opacity.value).toBeCloseTo(0.95);
@@ -149,13 +159,22 @@ test("draws the rainbow at exact screen edges and around the command label", asy
   mockFrameLoops[0].callback({ timeSincePreviousFrame: 25 });
   expect(gradients[1].props.start.value).toBeCloseTo(0);
   expect(gradients[3].props.end.value).toBeCloseTo(360);
-  expect(gradients[0].props.start.value).toBeCloseTo(150);
-  expect(gradients[2].props.end.value).toBeCloseTo(510);
+  expect(gradients[0].props.start.value).toBeCloseTo(0);
+  expect(gradients[2].props.end.value).toBeCloseTo(360);
   for (let step = 0; step < 3; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
   mockFrameLoops[0].callback({ timeSincePreviousFrame: 25 });
   expect(paths[2].props.strokeWidth.value).toBeCloseTo(14);
   expect(blurs[1].props.blur.value).toBeCloseTo(6);
   expect(paths[2].parent?.props.opacity.value).toBeCloseTo(0.55);
+  for (let step = 0; step < 9; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(paths[0].props.strokeWidth.value).toBeCloseTo(32);
+  expect(blurs[0].props.blur.value).toBeCloseTo(13);
+  expect(paths[0].parent?.props.opacity.value).toBeCloseTo(0.95);
+  for (let step = 0; step < 9; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(paths[0].props.strokeWidth.value).toBeCloseTo(14);
+  expect(blurs[0].props.blur.value).toBeCloseTo(6);
+  expect(paths[0].parent?.props.opacity.value).toBeCloseTo(0.55);
+  expect(gradients[0].props.start.value).toBeCloseTo(54);
 });
 
 test("routes three orthogonal segments to each badge icon and flows three dots along them", async () => {

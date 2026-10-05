@@ -8,6 +8,10 @@ import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestrat
 import { RAINBOW_GLOW_COLORS } from "./rainbowGlow";
 
 const GLOW_PULSE_MS = 900;
+// Keep color rotation from dominating the 900 ms glow pulse.
+const GLOW_COLORS = [
+  "#ff9fa7", "#fbab3c", "#c3bb43", "#4fd690", "#50caff", "#bdaaff", "#ff9fa7",
+];
 
 type FrameBadge = {
   key: string;
@@ -122,8 +126,6 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
   const styles = useMemo(() => createStyles(theme), [theme]);
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
-  const glowGradientStart = useSharedValue(0);
-  const glowGradientEnd = useSharedValue(360);
   const glowWidth = useSharedValue(23);
   const glowBlur = useSharedValue(9.5);
   const glowOpacity = useSharedValue(0.75);
@@ -134,9 +136,6 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
     const start = (gradientStart.value + elapsed * 0.72) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;
-    const glowStart = (glowGradientStart.value + elapsed * 0.3) % 360;
-    glowGradientStart.value = glowStart;
-    glowGradientEnd.value = glowStart + 360;
     pulseTime.value = (pulseTime.value + elapsed) % GLOW_PULSE_MS;
     const pulse = (Math.sin(pulseTime.value * 2 * Math.PI / GLOW_PULSE_MS) + 1) / 2;
     glowWidth.value = 14 + pulse * 18;
@@ -203,8 +202,8 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
             <Group key={index}>
               <Group opacity={glowOpacity}>
                 <Path path={path} style="stroke" strokeWidth={glowWidth}>
-                  <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={RAINBOW_GLOW_COLORS}
-                    mode="repeat" start={glowGradientStart} end={glowGradientEnd} />
+                  <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={GLOW_COLORS}
+                    mode="repeat" start={gradientStart} end={gradientEnd} />
                   <BlurMask blur={glowBlur} style="normal" />
                 </Path>
               </Group>
