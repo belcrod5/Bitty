@@ -15,7 +15,9 @@ jest.mock("@shopify/react-native-skia", () => {
   const Stub = ({ children, testID, ...props }: { children?: React.ReactNode; testID?: string }) =>
     ReactModule.createElement(View, { testID, ...props }, children);
   return {
-    BlurMask: Stub, Canvas: Stub, Circle: ({ c, children, ...props }: {
+    BlurMask: ({ blur, ...props }: { blur: unknown }) =>
+      ReactModule.createElement(View, { testID: "activity-blur", blur, ...props }),
+    Canvas: Stub, Circle: ({ c, children, ...props }: {
       c: { value: { x: number; y: number } }; children?: React.ReactNode }) =>
       ReactModule.createElement(View, { testID: "activity-dot", c, ...props }, children),
     Group: ({ children, clip, opacity }: { children?: React.ReactNode; clip?: unknown; opacity?: unknown }) =>
@@ -23,8 +25,8 @@ jest.mock("@shopify/react-native-skia", () => {
     Line: ({ p1, p2, children }: { p1: { value: { x: number; y: number } };
       p2: { value: { x: number; y: number } }; children?: React.ReactNode }) =>
       ReactModule.createElement(View, { testID: "activity-route-segment", p1, p2 }, children),
-    Path: ({ path, children }: { path: unknown; children?: React.ReactNode }) =>
-      ReactModule.createElement(View, { testID: "activity-path", path }, children),
+    Path: ({ path, children, ...props }: { path: unknown; children?: React.ReactNode }) =>
+      ReactModule.createElement(View, { testID: "activity-path", path, ...props }, children),
     SweepGradient: ({ start, end }: { start: { value: number }; end: { value: number } }) =>
       ReactModule.createElement(View, { testID: "activity-gradient", start, end }),
     vec: (x: number, y: number) => ({ x, y }),
@@ -125,8 +127,24 @@ test("draws the rainbow at exact screen edges and around the command label", asy
   expect(screen.getByTestId("skia-board-activity-status").parent?.props.style)
     .not.toHaveProperty("borderColor");
   expect(mockFrameLoops[0].setActive).toHaveBeenLastCalledWith(true);
-  mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
-  expect(screen.getAllByTestId("activity-gradient")[0].props.start.value).toBeCloseTo(3.6);
+  const gradients = screen.getAllByTestId("activity-gradient");
+  const blurs = screen.getAllByTestId("activity-blur");
+  expect(gradients[0].props.start).toBe(gradients[2].props.start);
+  expect(paths[0].props.strokeWidth).toBe(paths[2].props.strokeWidth);
+  expect(blurs[0].props.blur).toBe(blurs[1].props.blur);
+  expect(paths[0].parent?.props.opacity).toBe(paths[2].parent?.props.opacity);
+  expect(paths[0].props.strokeWidth.value).toBe(23);
+  for (let step = 0; step < 4; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  mockFrameLoops[0].callback({ timeSincePreviousFrame: 25 });
+  expect(gradients[0].props.start.value).toBeCloseTo(67.5);
+  expect(gradients[2].props.end.value).toBeCloseTo(427.5);
+  expect(paths[0].props.strokeWidth.value).toBeCloseTo(32);
+  expect(blurs[0].props.blur.value).toBeCloseTo(13);
+  expect(paths[0].parent?.props.opacity.value).toBeCloseTo(0.95);
+  for (let step = 0; step < 9; step += 1) mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
+  expect(paths[2].props.strokeWidth.value).toBeCloseTo(14);
+  expect(blurs[1].props.blur.value).toBeCloseTo(6);
+  expect(paths[2].parent?.props.opacity.value).toBeCloseTo(0.55);
 });
 
 test("routes three orthogonal segments to each badge icon and flows three dots along them", async () => {
@@ -221,9 +239,10 @@ test("keeps dots still and disables the frame loop with Reduce Motion", async ()
   await layout(screen);
   const dots = screen.getAllByTestId("activity-dot");
   const start = point(dots[0].props.c);
-  mockFrameLoops[0].callback({ timeSincePreviousFrame: 50 });
   expect(point(dots[0].props.c)).toEqual(start);
   expect(mockFrameLoops[0].setActive).toHaveBeenLastCalledWith(false);
+  expect(screen.getAllByTestId("activity-path")[0].props.strokeWidth.value).toBe(23);
+  expect(screen.getAllByTestId("activity-gradient")[0].props.start.value).toBe(0);
   expect(screen.getByTestId("skia-board-activity-actor-one")).toBeTruthy();
   expect(screen.getByTestId("skia-board-activity-actor-two")).toBeTruthy();
   expect(screen.queryByTestId("skia-board-activity-actor-three")).toBeNull();

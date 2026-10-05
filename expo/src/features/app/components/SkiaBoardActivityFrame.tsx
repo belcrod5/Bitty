@@ -5,7 +5,9 @@ import { useDerivedValue, useFrameCallback, useSharedValue, type SharedValue } f
 import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import type { VisualTheme } from "../theme/visualThemes";
 import { VoiceOrchestratorIcon, type VoiceOrchestrator } from "./VoiceOrchestratorIcon";
-import { RAINBOW_GLOW_COLORS, RAINBOW_GLOW_DEGREES_PER_MS } from "./rainbowGlow";
+import { RAINBOW_GLOW_COLORS } from "./rainbowGlow";
+
+const GLOW_PULSE_MS = 900;
 
 type FrameBadge = {
   key: string;
@@ -120,12 +122,21 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
   const styles = useMemo(() => createStyles(theme), [theme]);
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
+  const glowWidth = useSharedValue(23);
+  const glowBlur = useSharedValue(9.5);
+  const glowOpacity = useSharedValue(0.75);
+  const pulseTime = useSharedValue(0);
   const travel = useSharedValue(0);
   const rotation = useFrameCallback((frame) => {
     const elapsed = Math.min(frame?.timeSincePreviousFrame ?? 0, 50);
-    const start = (gradientStart.value + elapsed * RAINBOW_GLOW_DEGREES_PER_MS) % 360;
+    const start = (gradientStart.value + elapsed * 0.3) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;
+    pulseTime.value = (pulseTime.value + elapsed) % GLOW_PULSE_MS;
+    const pulse = (Math.sin(pulseTime.value * 2 * Math.PI / GLOW_PULSE_MS) + 1) / 2;
+    glowWidth.value = 14 + pulse * 18;
+    glowBlur.value = 6 + pulse * 7;
+    glowOpacity.value = 0.55 + pulse * 0.4;
     travel.value += elapsed * 0.14;
   }, false);
   useEffect(() => {
@@ -185,11 +196,13 @@ export function SkiaBoardActivityFrame({ badges, theme, targets, positions, boar
         <Group clip={Skia.XYWHRect(0, 0, size.width, size.height)}>
           {[framePath, labelPath].map((path, index) => (
             <Group key={index}>
-              <Path path={path} style="stroke" strokeWidth={18} opacity={0.7}>
-                <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={RAINBOW_GLOW_COLORS}
-                  mode="repeat" start={gradientStart} end={gradientEnd} />
-                <BlurMask blur={8} style="normal" />
-              </Path>
+              <Group opacity={glowOpacity}>
+                <Path path={path} style="stroke" strokeWidth={glowWidth}>
+                  <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={RAINBOW_GLOW_COLORS}
+                    mode="repeat" start={gradientStart} end={gradientEnd} />
+                  <BlurMask blur={glowBlur} style="normal" />
+                </Path>
+              </Group>
               <Path path={path} style="stroke" strokeWidth={2}>
                 <SweepGradient c={vec(size.width / 2, size.height / 2)} colors={RAINBOW_GLOW_COLORS}
                   mode="repeat" start={gradientStart} end={gradientEnd} />
