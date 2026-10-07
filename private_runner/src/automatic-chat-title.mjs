@@ -2,11 +2,12 @@ const DEFAULT_MODELS = ["gpt-6.1-luna", "gpt-6-luna"];
 const MAX_TITLE_CHARS = 12;
 const TIMEOUT_MS = 20_000;
 
-export function selectTitleModel(catalog, selectedModelId = "") {
+export function selectTitleModel(catalog, selectedModelId = "", reasoningEffort = "low") {
   const models = Array.isArray(catalog) ? catalog : [];
+  if (!selectedModelId && reasoningEffort !== "low") return null;
   const candidates = selectedModelId ? [selectedModelId] : DEFAULT_MODELS;
   return candidates.map((id) => models.find((model) => model.modelId === id &&
-    (!Array.isArray(model.effortOptions) || model.effortOptions.includes("low"))))
+    (!Array.isArray(model.effortOptions) || model.effortOptions.includes(reasoningEffort))))
     .find(Boolean) || null;
 }
 
@@ -21,8 +22,12 @@ export function normalizeAutomaticTitle(raw) {
 export async function generateAutomaticChatTitle({ input, sessionRef, catalog, store, runCodex, log = console }) {
   const source = String(input || "").trim();
   if (!source) return false;
-  const model = selectTitleModel(catalog, await store.getTitleModelId());
-  if (!model) return false;
+  const settings = await store.getTitleSettings();
+  const model = selectTitleModel(catalog, settings.modelId, settings.reasoningEffort);
+  if (!model) {
+    log.warn(`[agent] automatic title model/effort unavailable: ${settings.modelId || "auto"}/${settings.reasoningEffort}`);
+    return false;
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   timeout.unref?.();
@@ -37,7 +42,7 @@ export async function generateAutomaticChatTitle({ input, sessionRef, catalog, s
     ].join("\n");
     const result = await runCodex(prompt, {
       modelInfo: { modelRef: `openai-codex/${model.modelId}`, model: model.modelId, provider: "openai-codex" },
-      reasoningEffort: "low",
+      reasoningEffort: settings.reasoningEffort,
       signal: controller.signal,
     });
     if (controller.signal.aborted) return false;

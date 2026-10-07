@@ -3,6 +3,7 @@ import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import { requestRunnerClientState, runnerSessionKey, type RunnerClientState } from "../utils/runnerClientState";
 import type { ComposerDraft } from "./useComposerPersistence";
+import type { ReasoningEffort } from "../utils/settingsParsers";
 
 type Options = {
   settingsLoaded: boolean;
@@ -32,6 +33,7 @@ export function useRunnerClientState({
 }: Options) {
   const [messages, setMessages] = useState<string[]>([]);
   const [titleModelId, setTitleModelId] = useState("");
+  const [titleReasoningEffort, setTitleReasoningEffort] = useState<ReasoningEffort>("low");
   const [drafts, setDrafts] = useState<ComposerDraft[]>([]);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -58,6 +60,7 @@ export function useRunnerClientState({
     snapshotRef.current = snapshot;
     setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
     setTitleModelId(snapshot.titleModelId || "");
+    setTitleReasoningEffort(snapshot.titleReasoningEffort || "low");
     setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
       .map(([key, value]) => [key, value.title])));
     setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
@@ -108,6 +111,7 @@ export function useRunnerClientState({
     snapshotConnectionRef.current = "";
     setRegisteredDirectories([]);
     setTitleModelId("");
+    setTitleReasoningEffort("low");
     setSessionTitleOverridesById({});
     setSessionMarkerColorsById({});
     setMessages([]);
@@ -203,10 +207,11 @@ export function useRunnerClientState({
     };
   }, [sendDraft]);
 
-  const changeTitleModelId = useCallback((modelId: string) => {
+  const changeTitleSettings = useCallback((modelId: string, reasoningEffort: ReasoningEffort) => {
     setTitleModelId(modelId);
-    mutate({ type: "title-model.set", modelId });
+    setTitleReasoningEffort(reasoningEffort);
+    mutate({ type: "title-settings.set", modelId, reasoningEffort });
   }, [mutate]);
 
-  return { mutate, titleModelId, changeTitleModelId, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
+  return { mutate, titleModelId, titleReasoningEffort, changeTitleSettings, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
 }

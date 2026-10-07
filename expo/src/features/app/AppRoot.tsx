@@ -665,7 +665,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   const [waitingApprovalResumeStatusText, setWaitingApprovalResumeStatusText] = useState("");
   const [transcript, setTranscript] = useState("");
   const { mutate: mutateRunnerClientState,
-    titleModelId, changeTitleModelId,
+    titleModelId, titleReasoningEffort, changeTitleSettings,
     messages: composerMessageHistory, recordMessage: recordComposerMessageHistory,
     drafts: composerDrafts, draftsLoaded: composerDraftsLoaded, setDraft: setComposerDraft, clearDraft: clearComposerDraft,
     scopeId: runnerClientStateScopeId } = useRunnerClientState({
@@ -4630,7 +4630,8 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     reasoningEffort,
     modelOptions,
     titleModelId,
-    selectTitleModel: changeTitleModelId,
+    titleReasoningEffort,
+    selectTitleSettings: changeTitleSettings,
     thinkOptions: THINK_OPTIONS,
     ttsProvider,
     voicesLoading,

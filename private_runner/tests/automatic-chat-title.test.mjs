@@ -14,10 +14,13 @@ const catalog = [
   { modelId: "gpt-6.1-sol", effortOptions: ["high"] },
 ];
 
-test("title model prefers 6.1 Luna, falls back to 6 Luna, and requires low effort", () => {
+test("auto titles prefer Luna/low while explicit models require their advertised effort", () => {
   assert.equal(selectTitleModel(catalog)?.modelId, "gpt-6.1-luna");
   assert.equal(selectTitleModel(catalog.slice(0, 1))?.modelId, "gpt-6-luna");
   assert.equal(selectTitleModel(catalog, "gpt-6.1-sol"), null);
+  assert.equal(selectTitleModel(catalog, "gpt-6.1-sol", "high")?.modelId, "gpt-6.1-sol");
+  assert.equal(selectTitleModel(catalog, "gpt-6.1-luna", "high"), null);
+  assert.equal(selectTitleModel(catalog, "", "high"), null);
   assert.equal(selectTitleModel([{ modelId: "gpt-6.1-luna", effortOptions: [] }, catalog[0]])?.modelId, "gpt-6-luna");
   assert.equal(selectTitleModel(catalog, "missing"), null);
 });
@@ -26,7 +29,7 @@ test("generated titles use the selected model and preserve marker changes", asyn
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-title-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const store = createClientStateStore(path.join(dir, "client-state.json"));
-  await store.mutate({ type: "title-model.set", modelId: "gpt-6-luna" });
+  await store.mutate({ type: "title-settings.set", modelId: "gpt-6-luna", reasoningEffort: "low" });
   await store.mutate({ type: "session.set", backendId: "codex", sessionId: "first-chat", markerColor: "red" });
   let options;
   const saved = await generateAutomaticChatTitle({
@@ -40,9 +43,50 @@ test("generated titles use the selected model and preserve marker changes", asyn
   assert.equal(snapshot.sessions[JSON.stringify(["codex", "first-chat"])].title, "旅行 11/1");
   assert.equal(snapshot.sessions[JSON.stringify(["codex", "first-chat"])].markerColor, "red");
   const reopened = createClientStateStore(path.join(dir, "client-state.json"));
-  assert.equal(await reopened.getTitleModelId(), "gpt-6-luna");
+  assert.deepEqual(await reopened.getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
   assert.equal((await reopened.snapshot()).sessions[JSON.stringify(["codex", "first-chat"])].titleSource, "generated");
   assert.equal(normalizeAutomaticTitle("タイトル: お問い合わせ内容修正と確認"), "お問い合わせ内容修正と確認".slice(0, 12));
+});
+
+test("title effort is independent, persisted, and passed to the selected model", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-title-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "client-state.json");
+  const store = createClientStateStore(file);
+  await store.mutate({ type: "title-settings.set", modelId: "gpt-6.1-sol", reasoningEffort: "high" });
+  let called;
+  assert.equal(await generateAutomaticChatTitle({
+    input: "設計レビュー", sessionRef, catalog, store,
+    runCodex: async (_prompt, options) => { called = options; return "設計レビュー"; },
+  }), true);
+  assert.equal(called.modelInfo.model, "gpt-6.1-sol");
+  assert.equal(called.reasoningEffort, "high");
+  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), {
+    modelId: "gpt-6.1-sol", reasoningEffort: "high",
+  });
+  const warnings = [];
+  assert.equal(await generateAutomaticChatTitle({
+    input: "後からモデル契約変更", sessionRef: { ...sessionRef, nativeSessionId: "other-chat" },
+    catalog: [{ modelId: "gpt-6.1-sol", effortOptions: ["low"] }], store,
+    runCodex: () => { throw new Error("unsupported effort should not call Codex"); },
+    log: { warn: (message) => warnings.push(message) },
+  }), false);
+  assert.match(warnings[0], /model\/effort unavailable/u);
+  await assert.rejects(store.mutate({ type: "title-settings.set", modelId: "", reasoningEffort: "high" }),
+    /invalid title reasoningEffort/u);
+  await store.mutate({ type: "title-settings.set", modelId: "", reasoningEffort: "low" });
+  assert.deepEqual(await store.getTitleSettings(), { modelId: "", reasoningEffort: "low" });
+});
+
+test("legacy and invalid auto title settings load with low effort", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-title-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "client-state.json");
+  const oldState = { version: 1, revision: 0, directories: [], sessions: {}, composerHistory: [], drafts: {} };
+  await fs.writeFile(file, JSON.stringify(oldState));
+  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), { modelId: "", reasoningEffort: "low" });
+  await fs.writeFile(file, JSON.stringify({ ...oldState, titleModelId: "", titleReasoningEffort: "high" }));
+  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), { modelId: "", reasoningEffort: "low" });
 });
 
 test("manual edit and explicit clear win when title generation finishes later", async (t) => {

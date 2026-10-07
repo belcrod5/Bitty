@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 const COLORS = new Set(["gray", "red", "yellow", "green", "black"]);
+const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const sessionKey = (backendId, sessionId) => JSON.stringify([backendId, sessionId]);
 
 export class ClientStateStoreUnavailableError extends Error {
@@ -18,6 +19,7 @@ export function createClientStateStore(storePath) {
     version: 1,
     revision: 0,
     titleModelId: "",
+    titleReasoningEffort: "low",
     directories: [],
     sessions: {},
     composerHistory: [],
@@ -32,7 +34,13 @@ export function createClientStateStore(storePath) {
         || !Array.isArray(parsed.directories) || !parsed.sessions || !parsed.drafts
         || !Array.isArray(parsed.composerHistory)) throw new Error("invalid client state store");
       delete parsed.migrationConflicts;
-      state = { ...parsed, titleModelId: typeof parsed.titleModelId === "string" ? parsed.titleModelId : "" };
+      const titleModelId = typeof parsed.titleModelId === "string" ? parsed.titleModelId.trim().slice(0, 200) : "";
+      state = {
+        ...parsed,
+        titleModelId,
+        titleReasoningEffort: titleModelId && REASONING_EFFORTS.has(parsed.titleReasoningEffort)
+          ? parsed.titleReasoningEffort : "low",
+      };
     } catch (error) {
       if (error?.code !== "ENOENT") throw new ClientStateStoreUnavailableError(error);
     }
@@ -98,8 +106,11 @@ export function createClientStateStore(storePath) {
         state.sessions[key] = next;
         return true;
       }
-      case "title-model.set": {
+      case "title-settings.set": {
         state.titleModelId = String(operation.modelId || "").trim().slice(0, 200);
+        const effort = String(operation.reasoningEffort || "").trim();
+        if (!REASONING_EFFORTS.has(effort) || (!state.titleModelId && effort !== "low")) throw new Error("invalid title reasoningEffort");
+        state.titleReasoningEffort = effort;
         return true;
       }
       case "composer.append": {
@@ -150,8 +161,8 @@ export function createClientStateStore(storePath) {
     )));
   }
 
-  function getTitleModelId() {
-    return serialize(() => state.titleModelId);
+  function getTitleSettings() {
+    return serialize(() => ({ modelId: state.titleModelId, reasoningEffort: state.titleReasoningEffort }));
   }
 
   function setGeneratedTitle(sessionRef, title) {
@@ -168,7 +179,7 @@ export function createClientStateStore(storePath) {
     snapshot: () => serialize(snapshot),
     mutate,
     getSessionTitles,
-    getTitleModelId,
+    getTitleSettings,
     setGeneratedTitle,
     getRegisteredDirectoryPaths: () => serialize(() => state.directories.map(({ path }) => path)),
   };

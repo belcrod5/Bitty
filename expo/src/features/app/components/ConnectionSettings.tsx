@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Switch, Text, TextInput, View } from "react-native";
 import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SettingsSelect } from "./SettingsSelect";
@@ -35,7 +36,8 @@ export function ConnectionSettings() {
     reasoningEffort,
     modelOptions,
     titleModelId,
-    selectTitleModel,
+    titleReasoningEffort,
+    selectTitleSettings,
     thinkOptions,
     changeCloudflareRunnerUrl,
     changeLocalRunnerUrl,
@@ -95,13 +97,17 @@ export function ConnectionSettings() {
     label: REASONING_LABELS[effort],
   }));
   const titleModels = modelOptions.filter((option) => option.backendId === "codex" &&
-    option.selectable !== false && (!option.effortOptions || option.effortOptions.includes("low")));
+    option.selectable !== false && option.supportsReasoningEffort &&
+    (!option.effortOptions || option.effortOptions.length > 0));
   const selectedTitleModel = titleModels.find((option) => option.modelId === titleModelId);
+  const titleEfforts = titleModelId && selectedTitleModel
+    ? effortOptionsForModel(selectedTitleModel) : (["low"] as const);
 
   return (
+    <>
     <View style={styles.settingsSection}>
       <View style={styles.settingsSectionHeader}>
-        <Text style={styles.settingsSectionTitle}>接続とエージェント</Text>
+        <Text style={styles.settingsSectionTitle}>接続</Text>
       </View>
 
       <View style={styles.settingsGroup}>
@@ -192,6 +198,12 @@ export function ConnectionSettings() {
           </View>
         </View>
       </View>
+    </View>
+
+    <View style={styles.settingsSection}>
+      <View style={styles.settingsSectionHeader}>
+        <Text style={styles.settingsSectionTitle}>通常チャット</Text>
+      </View>
 
       <View style={styles.settingsGroup}>
         <SettingsSelect
@@ -201,18 +213,6 @@ export function ConnectionSettings() {
           selectedValue={selectedModelKey}
           selectedLabel={selectedModelLabel}
           onSelect={selectModel}
-        />
-        <SettingsSelect
-          icon="text-outline"
-          label="タイトル生成モデル"
-          description="新しいチャットのタイトルを初回送信から自動生成します"
-          options={[
-            { value: "", label: "自動（Luna / 低）" },
-            ...titleModels.map((option) => ({ value: option.modelId, label: option.label })),
-          ]}
-          selectedValue={titleModelId}
-          selectedLabel={selectedTitleModel?.label || (titleModelId ? "選択したモデルは利用できません" : undefined)}
-          onSelect={selectTitleModel}
         />
         <SettingsSelect
           icon="bulb-outline"
@@ -242,5 +242,39 @@ export function ConnectionSettings() {
         </View>
       </View>
     </View>
+    <View style={styles.settingsSection}>
+      <View style={styles.settingsSectionHeader}>
+        <Text style={styles.settingsSectionTitle}>タイトル生成</Text>
+      </View>
+      <View style={styles.settingsGroup}>
+        <SettingsSelect
+          icon="text-outline"
+          label="タイトル生成モデル"
+          description="新しいチャットの初回送信からタイトルを作成します"
+          options={[
+            { value: "", label: "自動（Luna / 低）" },
+            ...titleModels.map((option) => ({ value: option.modelId, label: option.label })),
+          ]}
+          selectedValue={titleModelId}
+          selectedLabel={selectedTitleModel?.label || (titleModelId ? "選択したモデルは利用できません" : undefined)}
+          onSelect={(modelId) => {
+            const model = titleModels.find((option) => option.modelId === modelId);
+            const supportedEfforts = effortOptionsForModel(model);
+            const effort = !modelId ? "low" : supportedEfforts.includes(titleReasoningEffort)
+              ? titleReasoningEffort : supportedEfforts[0] || "low";
+            selectTitleSettings(modelId, effort);
+          }}
+        />
+        <SettingsSelect
+          icon="bulb-outline"
+          label="タイトル生成の推論レベル"
+          description="自動は「低」。モデルを指定すると変更できます"
+          options={titleEfforts.map((effort) => ({ value: effort, label: REASONING_LABELS[effort] }))}
+          selectedValue={titleReasoningEffort}
+          onSelect={(effort) => selectTitleSettings(titleModelId, effort)}
+        />
+      </View>
+    </View>
+    </>
   );
 }

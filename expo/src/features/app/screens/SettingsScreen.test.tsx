@@ -27,7 +27,7 @@ const mockExportSettingsJson = jest.fn();
 const mockSelectTtsProvider = jest.fn();
 const mockSelectCodexApprovalPolicy = jest.fn();
 const mockSelectModel = jest.fn();
-const mockSelectTitleModel = jest.fn();
+const mockSelectTitleSettings = jest.fn();
 const mockSelectThinkOption = jest.fn();
 const mockLoadVoices = jest.fn();
 const mockSelectVoiceId = jest.fn();
@@ -56,7 +56,8 @@ const mockSettings = {
     { selectionKey: "codex::gpt-6.1-sol", label: "GPT-6.1 Sol", modelId: "gpt-6.1-sol", backendId: "codex", supportsReasoningEffort: true, effortOptions: ["high"] },
   ],
   titleModelId: "",
-  selectTitleModel: mockSelectTitleModel,
+  titleReasoningEffort: "low",
+  selectTitleSettings: mockSelectTitleSettings,
   thinkOptions: ["low", "medium", "high"],
   faceIdRequiredForApproval: true,
   ttsProvider: "aivisspeech",
@@ -112,12 +113,16 @@ jest.mock("../contexts/AppSettingsContext", () => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSettings.titleModelId = "";
+  mockSettings.titleReasoningEffort = "low";
 });
 
 test("renders real settings and wires their actions securely", async () => {
   const screen = await render(<SettingsScreen />);
 
-  expect(screen.getByText("接続とエージェント")).toBeTruthy();
+  expect(screen.getByText("接続")).toBeTruthy();
+  expect(screen.getByText("通常チャット")).toBeTruthy();
+  expect(screen.getByText("タイトル生成")).toBeTruthy();
   expect(screen.getByText("音声")).toBeTruthy();
   expect(screen.getByText("音声の動作")).toBeTruthy();
   expect(screen.getByText("設定の移行と承認ルール")).toBeTruthy();
@@ -229,13 +234,18 @@ test("uses dropdowns for selectable settings", async () => {
   expect(mockSelectModel).toHaveBeenCalledWith("codex::gpt-5.5");
 
   await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
-  expect(screen.queryByText("GPT-6.1 Sol")).toBeNull();
+  expect(screen.getByText("GPT-6.1 Sol")).toBeTruthy();
   await fireEvent.press(screen.getByText("GPT-6.1 Luna"));
-  expect(mockSelectTitleModel).toHaveBeenCalledWith("gpt-6.1-luna");
+  expect(mockSelectTitleSettings).toHaveBeenCalledWith("gpt-6.1-luna", "low");
   expect(mockSelectModel).toHaveBeenCalledTimes(1);
 
+  await fireEvent.press(screen.getByLabelText("タイトル生成の推論レベル"));
+  expect(screen.queryByText("中")).toBeNull();
+  await fireEvent.press(screen.getAllByText("低").at(-1)!);
+  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("", "low");
+
   await fireEvent.press(screen.getByLabelText("推論レベル"));
-  await fireEvent.press(screen.getByText("低"));
+  await fireEvent.press(screen.getAllByText("低")[0]);
   expect(mockSelectThinkOption).toHaveBeenCalledWith("low");
 
   await fireEvent.press(screen.getByLabelText("読み上げサービス"));
@@ -250,6 +260,24 @@ test("uses dropdowns for selectable settings", async () => {
   await fireEvent.press(screen.getByLabelText("承認ポリシー"));
   await fireEvent.press(screen.getByText("確認しない"));
   expect(mockSelectCodexApprovalPolicy).toHaveBeenCalledWith("never");
+});
+
+test("title effort follows only its selected model and resets with model changes", async () => {
+  mockSettings.titleModelId = "gpt-6.1-luna";
+  mockSettings.titleReasoningEffort = "medium";
+  const screen = await render(<SettingsScreen />);
+
+  await fireEvent.press(screen.getByLabelText("タイトル生成の推論レベル"));
+  await fireEvent.press(screen.getAllByText("中").at(-1)!);
+  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("gpt-6.1-luna", "medium");
+
+  await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
+  await fireEvent.press(screen.getByText("GPT-6.1 Sol"));
+  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("gpt-6.1-sol", "high");
+  await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
+  await fireEvent.press(screen.getByText("自動（Luna / 低）"));
+  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("", "low");
+  expect(mockSelectThinkOption).not.toHaveBeenCalled();
 });
 
 test("switches the visual theme from the display settings", async () => {
