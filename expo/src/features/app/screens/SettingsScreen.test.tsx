@@ -275,7 +275,7 @@ test("title effort follows only its selected model and resets with model changes
   await fireEvent.press(screen.getByText("GPT-6.1 Sol"));
   expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("gpt-6.1-sol", "high");
   await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
-  await fireEvent.press(screen.getByText("自動（Luna / 低）"));
+  await fireEvent.press(screen.getByText("自動（Luna）"));
   expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("", "low");
   expect(mockSelectThinkOption).not.toHaveBeenCalled();
 });

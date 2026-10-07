@@ -252,7 +252,7 @@ export function ConnectionSettings() {
           label="タイトル生成モデル"
           description="新しいチャットの初回送信からタイトルを作成します"
           options={[
-            { value: "", label: "自動（Luna / 低）" },
+            { value: "", label: "自動（Luna）" },
             ...titleModels.map((option) => ({ value: option.modelId, label: option.label })),
           ]}
           selectedValue={titleModelId}
