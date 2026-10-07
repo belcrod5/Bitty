@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Switch, Text, TextInput, View } from "react-native";
 import { tokenFingerprint, tokenLength } from "../../ws/tokenFingerprint";
 import { useAppSettings } from "../contexts/AppSettingsContext";
+import { effortOptionsForModel } from "../modelOptions";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { SettingsSelect } from "./SettingsSelect";
@@ -34,6 +35,9 @@ export function ConnectionSettings() {
     selectedModelLabel,
     reasoningEffort,
     modelOptions,
+    titleModelId,
+    titleReasoningEffort,
+    selectTitleSettings,
     thinkOptions,
     changeCloudflareRunnerUrl,
     changeLocalRunnerUrl,
@@ -92,11 +96,18 @@ export function ConnectionSettings() {
     value: effort,
     label: REASONING_LABELS[effort],
   }));
+  const titleModels = modelOptions.filter((option) => option.backendId === "codex" &&
+    option.selectable !== false && option.supportsReasoningEffort &&
+    (!option.effortOptions || option.effortOptions.length > 0));
+  const selectedTitleModel = titleModels.find((option) => option.modelId === titleModelId);
+  const titleEfforts = selectedTitleModel
+    ? effortOptionsForModel(selectedTitleModel) : (["low"] as const);
 
   return (
+    <>
     <View style={styles.settingsSection}>
       <View style={styles.settingsSectionHeader}>
-        <Text style={styles.settingsSectionTitle}>接続とエージェント</Text>
+        <Text style={styles.settingsSectionTitle}>接続</Text>
       </View>
 
       <View style={styles.settingsGroup}>
@@ -187,6 +198,12 @@ export function ConnectionSettings() {
           </View>
         </View>
       </View>
+    </View>
+
+    <View style={styles.settingsSection}>
+      <View style={styles.settingsSectionHeader}>
+        <Text style={styles.settingsSectionTitle}>通常チャット</Text>
+      </View>
 
       <View style={styles.settingsGroup}>
         <SettingsSelect
@@ -225,5 +242,36 @@ export function ConnectionSettings() {
         </View>
       </View>
     </View>
+    <View style={styles.settingsSection}>
+      <View style={styles.settingsSectionHeader}>
+        <Text style={styles.settingsSectionTitle}>タイトル生成</Text>
+      </View>
+      <View style={styles.settingsGroup}>
+        <SettingsSelect
+          icon="text-outline"
+          label="タイトル生成モデル"
+          description="新しいチャットの初回送信からタイトルを作成します"
+          options={titleModels.map((option) => ({ value: option.modelId, label: option.label }))}
+          selectedValue={titleModelId}
+          selectedLabel={selectedTitleModel?.label || (titleModelId === "gpt-6-luna" ? "GPT-6 Luna" : titleModelId)}
+          onSelect={(modelId) => {
+            const model = titleModels.find((option) => option.modelId === modelId);
+            const supportedEfforts = effortOptionsForModel(model);
+            const effort = supportedEfforts.includes(titleReasoningEffort)
+              ? titleReasoningEffort : supportedEfforts[0] || "low";
+            selectTitleSettings(modelId, effort);
+          }}
+        />
+        <SettingsSelect
+          icon="bulb-outline"
+          label="タイトル生成の推論レベル"
+          description="選択したモデルに対応する推論レベル"
+          options={titleEfforts.map((effort) => ({ value: effort, label: REASONING_LABELS[effort] }))}
+          selectedValue={titleReasoningEffort}
+          onSelect={(effort) => selectTitleSettings(titleModelId, effort)}
+        />
+      </View>
+    </View>
+    </>
   );
 }

@@ -29,6 +29,7 @@ import { calendarConversationDynamicTools } from "./calendar-tool-service.mjs";
 import { removeLegacyLocationStore } from "./remove-legacy-location-store.mjs";
 import { createCalendarRelayService } from "./calendar-relay-service.mjs";
 import { createPushSummarizer } from "./push-summarizer.mjs";
+import { generateAutomaticChatTitle } from "./automatic-chat-title.mjs";
 import { createRunnerWsLlmRelayIdentityIndex } from "./runner-ws-llm-relay-identity.mjs";
 import {
   codexTurnEventMatches,
@@ -1654,6 +1655,13 @@ const agentRuntime = createPrivateRunnerAgentRuntime({
   selectCachedSession: selectCliSessionIndexEntryBySessionId,
   listSessions: listLlmSessions, listSessionsForDirectories: listLlmSessionsForDirectories,
   getSessionTitles: clientStateStore.getSessionTitles,
+  onNewRegularSession: async ({ sessionRef, input }) => {
+    const { status } = await agentService.validateExecutionOptions({ backendId: "codex" });
+    await generateAutomaticChatTitle({
+      sessionRef, input, catalog: status?.capabilities?.model?.catalog,
+      store: clientStateStore, runCodex,
+    });
+  },
   listMessages: listLlmSessionMessages,
   resolveCanonicalCwd: resolveCanonicalDirectoryIdentity, parseAuthToken, json,
   normalizeSessionListLimit, normalizeSessionMessagesLimit, readJsonBody,
@@ -1789,12 +1797,14 @@ async function runCodexStreamLeased(prompt, opts = {}) {
   let upstreamRetryCount = 0;
 
   while (true) {
+    if (externalSignal?.aborted) throw new Error("openai-codex request aborted");
     const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
     const requestId = randomUUID();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), OPENAI_CODEX_TIMEOUT_MS);
     const abortHandler = () => controller.abort();
     if (externalSignal) externalSignal.addEventListener("abort", abortHandler);
+    if (externalSignal?.aborted) controller.abort();
 
     try {
       const response = await fetch(`${OPENAI_CODEX_RESPONSES_BASE_URL}/responses`, {

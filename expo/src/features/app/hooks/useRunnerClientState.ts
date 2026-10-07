@@ -3,6 +3,7 @@ import { Alert, AppState } from "react-native";
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
 import { requestRunnerClientState, runnerSessionKey, type RunnerClientState } from "../utils/runnerClientState";
 import type { ComposerDraft } from "./useComposerPersistence";
+import type { ReasoningEffort } from "../utils/settingsParsers";
 
 type Options = {
   settingsLoaded: boolean;
@@ -31,6 +32,8 @@ export function useRunnerClientState({
   setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
 }: Options) {
   const [messages, setMessages] = useState<string[]>([]);
+  const [titleModelId, setTitleModelId] = useState("gpt-6-luna");
+  const [titleReasoningEffort, setTitleReasoningEffort] = useState<ReasoningEffort>("low");
   const [drafts, setDrafts] = useState<ComposerDraft[]>([]);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -56,6 +59,8 @@ export function useRunnerClientState({
     snapshotConnectionRef.current = id;
     snapshotRef.current = snapshot;
     setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
+    setTitleModelId(snapshot.titleModelId || "gpt-6-luna");
+    setTitleReasoningEffort(snapshot.titleModelId ? snapshot.titleReasoningEffort || "low" : "low");
     setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
       .map(([key, value]) => [key, value.title])));
     setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
@@ -105,6 +110,8 @@ export function useRunnerClientState({
     snapshotRef.current = null;
     snapshotConnectionRef.current = "";
     setRegisteredDirectories([]);
+    setTitleModelId("gpt-6-luna");
+    setTitleReasoningEffort("low");
     setSessionTitleOverridesById({});
     setSessionMarkerColorsById({});
     setMessages([]);
@@ -200,5 +207,11 @@ export function useRunnerClientState({
     };
   }, [sendDraft]);
 
-  return { mutate, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
+  const changeTitleSettings = useCallback((modelId: string, reasoningEffort: ReasoningEffort) => {
+    setTitleModelId(modelId);
+    setTitleReasoningEffort(reasoningEffort);
+    mutate({ type: "title-settings.set", modelId, reasoningEffort });
+  }, [mutate]);
+
+  return { mutate, titleModelId, titleReasoningEffort, changeTitleSettings, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
 }

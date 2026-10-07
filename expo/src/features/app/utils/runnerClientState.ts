@@ -1,4 +1,5 @@
 import type { RegisteredDirectoryEntry } from "../types/directorySessions";
+import type { ReasoningEffort } from "./settingsParsers";
 
 export const runnerSessionKey = (backendId: unknown, sessionId: unknown) => JSON.stringify([
   String(backendId || "codex").trim() || "codex",
@@ -11,6 +12,8 @@ export function runnerSessionValue<T>(values: Record<string, T>, backendId: unkn
 
 export type RunnerClientState = {
   revision: number;
+  titleModelId: string;
+  titleReasoningEffort: ReasoningEffort;
   directories: RegisteredDirectoryEntry[];
   sessions: Record<string, { title: string; markerColor: RegisteredDirectoryEntry["markerColor"] }>;
   composerHistory: string[];

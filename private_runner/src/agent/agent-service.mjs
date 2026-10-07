@@ -131,6 +131,7 @@ export function createAgentService({
   now = () => new Date().toISOString(),
   generateRunId = () => `agent_run_${randomUUID()}`,
   onRunEvent,
+  onNewRegularSession,
   onActiveSessionsChanged,
   isSubagentSession = () => false,
   listRawActiveSessions = () => [],
@@ -390,6 +391,14 @@ export function createAgentService({
     activeRunBySession.set(key, run.runId);
     publish(run, "session.resolved", { sessionRef: resolved });
     notifyActiveSessionsChanged();
+    if (run.titleInput && typeof onNewRegularSession === "function") {
+      const input = run.titleInput;
+      run.titleInput = "";
+      queueMicrotask(() => {
+        Promise.resolve().then(() => onNewRegularSession({ sessionRef: resolved, input }))
+          .catch((error) => log.warn(`[agent] automatic title failed: ${errorText(error)}`));
+      });
+    }
   }
 
   async function recoverSessionLease(sessionRef, backend) {
@@ -835,6 +844,9 @@ export function createAgentService({
         sessionKey: request.sessionRef ? sessionKey(request.sessionRef) : "",
         cwd: canonicalCwd,
         isSubagent,
+        titleInput: context.regularChat === true && !request.sessionRef && !isSubagent
+          ? request.input.blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n").trim()
+          : "",
         model: request.model,
         effort: request.effort,
         settingsPersisted: false,

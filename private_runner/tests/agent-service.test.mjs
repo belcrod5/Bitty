@@ -16,6 +16,40 @@ function createAgentService(options) {
   });
 }
 
+test("only the claimed first regular chat turn schedules a background title", async () => {
+  const titleCalls = [];
+  let releaseTitle;
+  const titlePending = new Promise((resolve) => { releaseTitle = resolve; });
+  const backend = {
+    backendId: "test", getStatus: async () => status(), resolveSessionCwd: async () => "/workspace",
+    async startTurn({ sessionRef, resolveSession, emit }) {
+      if (!sessionRef) await resolveSession({ backendId: "test", nativeSessionId: "new-chat" });
+      emit("turn.started", {});
+      return { outcome: "completed" };
+    },
+  };
+  const service = createAgentService({
+    backends: [backend], operationStore: operationStore(), sessionStore: sessionStore(),
+    resolveCanonicalCwd: async (cwd) => cwd,
+    onNewRegularSession: (payload) => { titleCalls.push(payload); return titlePending; },
+  });
+  const request = startRequest({ input: { blocks: [{ type: "text", text: "最初のメッセージ" }] } });
+  const first = await service.startTurn(request, { subjectId: "user-1", regularChat: true });
+  await first.completion;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(titleCalls, [{ sessionRef: { backendId: "test", nativeSessionId: "new-chat" }, input: "最初のメッセージ" }]);
+  await service.startTurn(request, { subjectId: "user-1", regularChat: true });
+  const resumed = await service.startTurn(startRequest({
+    sessionRef: { backendId: "test", nativeSessionId: "new-chat" }, cwd: "", clientOperationId: "resumed",
+  }), { subjectId: "user-1", regularChat: true });
+  await resumed.completion;
+  const background = await service.startTurn(startRequest({ clientOperationId: "scheduled" }), { subjectId: "user-1" });
+  await background.completion;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(titleCalls.length, 1);
+  releaseTitle();
+});
+
 test("resumed question actions keep their timestamp and accept results only from the UI consumer", async () => {
   let complete;
   const gate = new Promise((resolve) => { complete = resolve; });
