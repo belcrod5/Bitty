@@ -225,6 +225,40 @@ describe("usePanelConversationWriteController", () => {
     expect(harness.setVisibleConversationMessages).not.toHaveBeenCalled();
   });
 
+  test("別セッション表示中に届いた/compact完了は元セッションだけに残す", async () => {
+    const completedCompact = [
+      ...compactConversation,
+      message({ id: "a3", role: "assistant", content: "コンテキスト圧縮が完了しました。" }),
+    ];
+    const harness = createHarness({
+      visibleSessionId: "session-b",
+      entries: { panel_1: panelEntry("panel_1", "session-b", baseConversation) },
+      runtimes: {
+        "session-a": {
+          sessionId: "session-a",
+          conversationMessages: compactConversation,
+          contextUsedPct: 80,
+          isResponding: true,
+          selectedThreadStatusType: "active",
+        },
+      },
+    });
+    const { result } = await renderHook(() => usePanelConversationWriteController(harness.options));
+
+    await act(async () => {
+      result.current.setPanelConversationMessagesForCodex("panel_1", completedCompact, {
+        sessionId: "session-a", isResponding: false, contextUsedPct: 12,
+      });
+    });
+
+    expect(harness.getRuntime("session-a")?.conversationMessages.at(-1)?.content)
+      .toBe("コンテキスト圧縮が完了しました。");
+    expect(harness.getRuntime("session-a")?.contextUsedPct).toBe(12);
+    expect(harness.getEntries().panel_1.snapshot.selectedSessionId).toBe("session-b");
+    expect(harness.getEntries().panel_1.snapshot.conversationMessages).toEqual(baseConversation);
+    expect(harness.setVisibleConversationMessages).not.toHaveBeenCalled();
+  });
+
   test("clear済みの共有パネルを遅延セッション書込が再取得しない", async () => {
     const harness = createHarness({
       visibleSessionId: "session-a",

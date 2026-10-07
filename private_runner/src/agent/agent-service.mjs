@@ -168,6 +168,7 @@ export function createAgentService({
   const runs = new Map();
   const activeRunBySession = new Map();
   const compactQueueBySession = new Map();
+  const compactOperations = new Map();
   const recoveryBySession = new Map();
   let admissionQueue = Promise.resolve();
   const notifyActiveSessionsChanged = () => {
@@ -1071,8 +1072,7 @@ export function createAgentService({
     await Promise.all(candidates.map((run) => interrupt(run.runId, { subjectId }).catch(() => {})));
   }
 
-  async function compactSession({ sessionRef: rawSessionRef }) {
-    const sessionRef = normalizeAgentSessionRef(rawSessionRef);
+  async function executeCompactSession(sessionRef, runId) {
     const backend = registry.get(sessionRef.backendId);
     if (!backend) throw agentError("backend_unavailable", "Agent Backend is unavailable");
     const status = await backend.getStatus();
@@ -1086,7 +1086,6 @@ export function createAgentService({
       if ((await sessionStore.getMode(sessionRef))?.mode !== "neutral") {
         throw agentError("session_busy", "session requires an explicit neutral handoff", { backendId: sessionRef.backendId });
       }
-      const runId = `${COMPACT_RUN_PREFIX}${randomUUID()}`;
       const acquired = await sessionStore.acquire({ sessionRef, mode: "neutral", owner: "agent-service", runId });
       if (acquired?.status !== "acquired") {
         throw agentError("session_busy", "session already has an active or recovering operation", { backendId: sessionRef.backendId });
@@ -1102,6 +1101,57 @@ export function createAgentService({
       await sessionStore.settle(sessionRef, admitted.lease.generation, stopped ? "released" : "recovering").catch(() => {});
       throw error;
     }
+  }
+
+  async function compactSession({ sessionRef: rawSessionRef, clientOperationId: rawClientOperationId }, context = {}) {
+    const sessionRef = normalizeAgentSessionRef(rawSessionRef);
+    const clientOperationId = String(rawClientOperationId || "").trim();
+    if (!clientOperationId) {
+      return executeCompactSession(sessionRef, `${COMPACT_RUN_PREFIX}${randomUUID()}`);
+    }
+    const subjectId = String(context.subjectId || "").trim();
+    if (!subjectId || clientOperationId.length > 512) {
+      throw agentError("turn_rejected", "invalid compact operation identity");
+    }
+    const requestHash = hashAgentOperationRequest({ kind: "session.compact", sessionRef });
+    const { completion } = await admitStart(async () => {
+      const replay = (operation) => {
+        if (operation.result?.outcome === "completed") return { completion: Promise.resolve(operation.result.value) };
+        if (operation.result?.outcome === "failed") {
+          const storedError = operation.result.error;
+          const error = agentError(storedError.code, storedError.message, {
+            backendId: storedError.backendId,
+            retryable: storedError.retryable,
+          });
+          return { completion: Promise.reject(error) };
+        }
+        const running = compactOperations.get(operation.runId);
+        if (!running) throw agentError("operation_status_unknown", "previous compact status is unknown");
+        return { completion: running };
+      };
+      const inspected = await operationStore.inspect(subjectId, clientOperationId, requestHash);
+      if (inspected?.status === "conflict") throw agentError("operation_conflict", "clientOperationId has different input");
+      if (inspected?.status === "unknown") throw agentError("operation_status_unknown", "previous compact status is unknown");
+      if (inspected?.status === "existing") return replay(inspected);
+
+      const runId = `${COMPACT_RUN_PREFIX}${randomUUID()}`;
+      const claimed = await operationStore.claim(subjectId, clientOperationId, requestHash, runId);
+      if (claimed?.status === "conflict") throw agentError("operation_conflict", "clientOperationId has different input");
+      if (claimed?.status === "unknown") throw agentError("operation_status_unknown", "previous compact status is unknown");
+      if (claimed?.status === "existing") return replay(claimed);
+      const completion = executeCompactSession(sessionRef, runId).then(async (value) => {
+        await operationStore.complete(subjectId, clientOperationId, { outcome: "completed", value }).catch(() => {});
+        return value;
+      }, async (error) => {
+        await operationStore.complete(subjectId, clientOperationId, {
+          outcome: "failed", error: serializeAgentError(error, sessionRef.backendId),
+        }).catch(() => {});
+        throw error;
+      }).finally(() => compactOperations.delete(runId));
+      compactOperations.set(runId, completion);
+      return { completion };
+    });
+    return completion;
   }
 
   const service = {

@@ -1,5 +1,5 @@
 import { createWebSocketWithOptionalAuth } from "../../ws/webSocketAuth";
-import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
+import { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import type {
   RunnerWsConnectionSnapshot,
   RunnerWsMessage,
@@ -9,6 +9,7 @@ import { compactCodexAppServerThread } from "./compact";
 
 jest.mock("../../ws/webSocketAuth", () => ({
   createWebSocketWithOptionalAuth: jest.fn(),
+  isWebSocketForCloudflareRunner: jest.fn(() => false),
 }));
 
 const mockCreateWebSocketWithOptionalAuth = jest.mocked(createWebSocketWithOptionalAuth);
@@ -295,3 +296,171 @@ test("neutral compact uses capability, handoff, and the Agent operation", async 
     "agent.hello", "session.handoff", "session.compact",
   ]);
 });
+
+test("neutral compact retains the backend result after a temporary connection loss", async () => {
+  const compactCompleted = {
+    channel: "agent", op: "session.compact.completed",
+    payload: { method: "thread/compact/start", accepted: true },
+  };
+  let connectionLost!: (error: Error) => void;
+  const firstCompactResponse = new Promise<RunnerWsMessage>((_resolve, reject) => {
+    connectionLost = reject;
+  });
+  const request = jest.fn()
+    .mockResolvedValueOnce({
+      channel: "agent", op: "agent.ready",
+      payload: {
+        protocolVersion: 2,
+        backends: [{ backendId: "codex", readiness: { ready: true }, capabilities: { operations: { compact: true } } }],
+      },
+    })
+    .mockResolvedValueOnce({ channel: "agent", op: "session.handoff.completed", payload: {} })
+    .mockReturnValueOnce(firstCompactResponse)
+    .mockResolvedValueOnce(compactCompleted);
+  let connectionState: RunnerWsConnectionSnapshot["connectionState"] = "ready";
+  const snapshotHandlers = new Set<() => void>();
+  const manager = {
+    request,
+    getSnapshot: () => ({ connectionState }),
+    subscribeSnapshot: (handler: () => void) => {
+      snapshotHandlers.add(handler);
+      return () => { snapshotHandlers.delete(handler); };
+    },
+  } as unknown as RunnerWebSocketManager;
+  const compact = compactCodexAppServerThread({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    threadId: "thread-1",
+    runnerWebSocketManager: manager,
+    backendId: "codex",
+    rawFallbackBackendId: "codex",
+  });
+
+  for (let i = 0; i < 5 && request.mock.calls.at(-1)?.[0].op !== "session.compact"; i += 1) {
+    await flushPromises();
+  }
+  expect(request.mock.calls.at(-1)?.[0].op).toBe("session.compact");
+  connectionState = "background";
+  connectionLost(new Error("runner_ws_disconnected"));
+  await flushPromises();
+  expect(request.mock.calls.filter((call) => call[0].op === "session.compact")).toHaveLength(1);
+  connectionState = "ready";
+  for (const handler of snapshotHandlers) handler();
+
+  await expect(compact).resolves.toEqual({
+    threadId: "thread-1", method: "thread/compact/start", accepted: true,
+  });
+  expect(request.mock.calls.filter((call) => call[0].op === "session.compact")).toHaveLength(2);
+});
+
+test.each([
+  ["runner_ws_not_ready: idle (runner_ws_url_required)", "idle"],
+  ["runner_ws_auth_failed", "stopped"],
+] as const)("compact reports terminal connection errors immediately: %s", async (message, connectionState) => {
+  const subscribeSnapshot = jest.fn();
+  const manager = {
+    request: jest.fn().mockRejectedValue(new Error(message)),
+    getSnapshot: () => ({ connectionState }),
+    subscribeSnapshot,
+  } as unknown as RunnerWebSocketManager;
+
+  await expect(compactCodexAppServerThread({
+    wsUrl: "ws://127.0.0.1:8788/runner-ws",
+    threadId: "thread-1",
+    runnerWebSocketManager: manager,
+    backendId: "claude",
+    rawFallbackBackendId: "codex",
+  })).rejects.toThrow(message);
+  expect(subscribeSnapshot).not.toHaveBeenCalled();
+});
+
+test.each(["success", "failure"] as const)(
+  "backgrounding the real manager resumes the same compact operation: %s",
+  async (backendOutcome) => {
+    const sockets: ManagedSocket[] = [];
+    const compactRequests: RunnerWsMessage[] = [];
+    class ManagedSocket extends FakeWebSocket {
+      readyState = FakeWebSocket.CONNECTING;
+      onopen: ((event: unknown) => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onclose: ((event: { reason: string; code: number }) => void) | null = null;
+      bufferedAmount = 0;
+
+      open() {
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.({});
+        this.message({ channel: "control", op: "ready" });
+      }
+
+      message(message: RunnerWsMessage) {
+        this.onmessage?.({ data: JSON.stringify(message) });
+      }
+
+      send(raw: string) {
+        const message = JSON.parse(raw) as RunnerWsMessage;
+        if (message.channel !== "agent") return;
+        if (message.op === "session.compact") compactRequests.push(message);
+        const response = message.op === "agent.hello"
+          ? { op: "agent.ready", payload: {
+            protocolVersion: 2,
+            backends: [{ backendId: "codex", readiness: { ready: true }, capabilities: { operations: { compact: true } } }],
+          } }
+          : message.op === "session.handoff"
+            ? { op: "session.handoff.completed", payload: {} }
+            : message.op === "session.compact" && sockets.length === 2
+              ? backendOutcome === "success"
+                ? { op: "session.compact.completed", payload: { method: "thread/compact/start", accepted: true } }
+                : { op: "error", payload: { message: "native compact failed" } }
+              : null;
+        if (response) queueMicrotask(() => this.message({
+          channel: "agent", requestId: message.requestId, ...response,
+        }));
+      }
+
+      close() {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.onclose?.({ reason: "", code: 1000 });
+      }
+    }
+    mockCreateWebSocketWithOptionalAuth.mockImplementation(() => {
+      const socket = new ManagedSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    });
+    const manager = new RunnerWebSocketManager({
+      url: "ws://127.0.0.1:8788/runner-ws", token: "runner-token", appState: "active",
+    });
+    const connecting = manager.connect();
+    sockets[0].open();
+    await connecting;
+
+    try {
+      const compact = compactCodexAppServerThread({
+        wsUrl: "ws://127.0.0.1:8788/runner-ws",
+        threadId: "thread-1",
+        runnerWebSocketManager: manager,
+        backendId: "codex",
+        rawFallbackBackendId: "codex",
+      });
+      for (let i = 0; i < 20 && compactRequests.length === 0; i += 1) await flushPromises();
+      expect(compactRequests).toHaveLength(1);
+
+      manager.setAppState("background");
+      await flushPromises();
+      expect(compactRequests).toHaveLength(1);
+      manager.setAppState("active");
+      sockets[1].open();
+
+      if (backendOutcome === "success") {
+        await expect(compact).resolves.toEqual({
+          threadId: "thread-1", method: "thread/compact/start", accepted: true,
+        });
+      } else {
+        await expect(compact).rejects.toThrow("native compact failed");
+      }
+      expect(compactRequests).toHaveLength(2);
+      expect(compactRequests[1].payload).toEqual(compactRequests[0].payload);
+    } finally {
+      manager.disconnect("manual");
+    }
+  }
+);
