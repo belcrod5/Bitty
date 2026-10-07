@@ -125,6 +125,29 @@ test("agent WebSocket active count forwards the authenticated owner without call
   assert.deepEqual(sent.at(-1).payload, { count: 2 });
 });
 
+test("agent WebSocket compact forwards the authenticated owner and operation identity", async () => {
+  let received;
+  const sent = [];
+  const connection = createAgentWsConnection({
+    service: { async compactSession(payload, context) {
+      received = { payload, context };
+      return { sessionRef: payload.sessionRef, method: "thread/compact/start", accepted: true };
+    } },
+    ws: {}, subjectId: "subject", workspaceAdmission: {},
+    sendEnvelope: (_ws, message) => sent.push(message),
+  });
+  const payload = {
+    sessionRef: { backendId: "codex", nativeSessionId: "session-1" },
+    clientOperationId: "compact-operation-1",
+  };
+  assert.equal(connection.handleMessage({ channel: "agent", op: "session.compact",
+    requestId: "compact-1", payload }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(received, { payload, context: { subjectId: "subject" } });
+  assert.equal(sent.at(-1).op, "session.compact.completed");
+  assert.equal(sent.at(-1).requestId, "compact-1");
+});
+
 test("agent HTTP and WebSocket forward bounded conversation search and read requests", async () => {
   const calls = [];
   const service = {

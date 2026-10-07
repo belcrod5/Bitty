@@ -107,25 +107,71 @@ export async function compactCodexAppServerThread(options: {
   if (!isRunnerWsUrl(wsUrl)) throw new Error("Codex WebSocket URL must use /runner-ws");
   if (!threadId) throw new Error("threadId is empty");
   if (runnerWebSocketManager && options.backendId) {
+    const manager = runnerWebSocketManager;
     const backendId = String(options.backendId || "codex");
+    const clientOperationId = createCodexRunnerWsLogicalId("codex_compact_op", threadId);
+    const isReconnectable = (error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      return /^runner_ws_disconnected(?:_background|_config-changed|:|$)/.test(detail) || (
+        detail.startsWith("runner_ws_not_ready") &&
+        ["background", "reconnecting", "connecting", "handshaking"].includes(
+          manager.getSnapshot().connectionState
+        )
+      );
+    };
+    const waitForReconnect = () => new Promise<void>((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => {
+        unsubscribe();
+        reject(new Error("Codex compact reconnect timed out"));
+      }, timeoutMs);
+      const check = () => {
+        const state = manager.getSnapshot().connectionState;
+        if (state !== "ready" && state !== "stopped") return;
+        clearTimeout(timer);
+        unsubscribe();
+        if (state === "ready") resolve();
+        else reject(new Error("Codex compact connection stopped"));
+      };
+      unsubscribe = manager.subscribeSnapshot(check);
+      check();
+    });
+    async function requestWithReconnect(message: RunnerWsMessage, requestTimeoutMs: number) {
+      while (true) {
+        try {
+          return await manager.request(message, { timeoutMs: requestTimeoutMs });
+        } catch (error) {
+          if (!isReconnectable(error)) throw error;
+          await waitForReconnect();
+        }
+      }
+    }
     let status = null;
-    try {
-      status = await getAgentBackendStatus(runnerWebSocketManager, backendId);
-    } catch (error) {
-      if (backendId !== options.rawFallbackBackendId) throw error;
+    while (true) {
+      try {
+        status = await getAgentBackendStatus(manager, backendId);
+        break;
+      } catch (error) {
+        if (isReconnectable(error)) {
+          await waitForReconnect();
+          continue;
+        }
+        if (backendId !== options.rawFallbackBackendId) throw error;
+        break;
+      }
     }
     if (status?.readiness?.ready && status.capabilities?.operations?.compact === true) {
-      const handoff = await runnerWebSocketManager.request({
+      const handoff = await requestWithReconnect({
         channel: "agent",
         op: "session.handoff",
         payload: { sessionRef: { backendId, nativeSessionId: threadId }, targetMode: "neutral" },
-      }, { timeoutMs: 30_000 });
+      }, 30_000);
       if (handoff.op === "error") throw new Error(String((handoff.payload as any)?.message || "Session handoff failed"));
-      const response = await runnerWebSocketManager.request({
+      const response = await requestWithReconnect({
         channel: "agent",
         op: "session.compact",
-        payload: { sessionRef: { backendId, nativeSessionId: threadId } },
-      }, { timeoutMs });
+        payload: { sessionRef: { backendId, nativeSessionId: threadId }, clientOperationId },
+      }, timeoutMs);
       if (response.op === "error") throw new Error(String((response.payload as any)?.message || "Session compact failed"));
       return {
         threadId,

@@ -433,7 +433,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
     }
     if (message.op === "session.compact") {
       const payload = payloadObject(message);
-      void service.compactSession(payload).then((result) => sendEnvelope(ws, {
+      void service.compactSession(payload, { subjectId }).then((result) => sendEnvelope(ws, {
         channel: "agent",
         op: "session.compact.completed",
         requestId: message.requestId || "",

@@ -2547,3 +2547,57 @@ test("compact uses the Backend operation under the neutral session lease", async
   assert.equal(result.accepted, true);
   assert.equal((await sessions.getMode(sessionRef)).lease, null);
 });
+
+test("compact reconnects to one operation and replays its real success or failure", async () => {
+  const sessions = sessionStore();
+  const firstSession = { backendId: "test", nativeSessionId: "session-1" };
+  const secondSession = { backendId: "test", nativeSessionId: "session-2" };
+  await sessions.bind(firstSession, "/workspace", "neutral");
+  await sessions.bind(secondSession, "/workspace", "neutral");
+  const pending = new Map();
+  const compactCalls = [];
+  const backend = {
+    backendId: "test",
+    getStatus: async () => ({
+      ...status(),
+      capabilities: { ...status().capabilities, operations: { compact: true } },
+    }),
+    resolveSessionCwd: async () => "/workspace",
+    compactSession({ sessionRef }) {
+      compactCalls.push(sessionRef.nativeSessionId);
+      return new Promise((resolve, reject) => {
+        pending.set(sessionRef.nativeSessionId, { resolve, reject });
+      });
+    },
+  };
+  const service = createAgentService({
+    backends: [backend], operationStore: operationStore(), sessionStore: sessions,
+    resolveCanonicalCwd: async (cwd) => cwd,
+  });
+  const context = { subjectId: "user-1" };
+  const firstInput = { sessionRef: firstSession, clientOperationId: "compact-operation-1" };
+  const first = service.compactSession(firstInput, context);
+  while (!pending.has("session-1")) await new Promise((resolve) => setImmediate(resolve));
+  const firstReconnected = service.compactSession(firstInput, context);
+  await assert.rejects(
+    service.compactSession({ sessionRef: secondSession, clientOperationId: "compact-operation-1" }, context),
+    { code: "operation_conflict" },
+  );
+  const success = { sessionRef: firstSession, method: "thread/compact/start", accepted: true };
+  pending.get("session-1").resolve(success);
+  assert.deepEqual(await first, success);
+  assert.deepEqual(await firstReconnected, success);
+  assert.deepEqual(await service.compactSession(firstInput, context), success);
+  assert.deepEqual(compactCalls, ["session-1"]);
+
+  const secondInput = { sessionRef: secondSession, clientOperationId: "compact-operation-2" };
+  const second = service.compactSession(secondInput, context);
+  const secondFailure = assert.rejects(second, { message: "native compact failed" });
+  while (!pending.has("session-2")) await new Promise((resolve) => setImmediate(resolve));
+  const secondReconnected = service.compactSession(secondInput, context);
+  const replayFailure = assert.rejects(secondReconnected, { message: "native compact failed" });
+  pending.get("session-2").reject(new Error("native compact failed"));
+  await Promise.all([secondFailure, replayFailure]);
+  await assert.rejects(service.compactSession(secondInput, context), { message: "native compact failed" });
+  assert.deepEqual(compactCalls, ["session-1", "session-2"]);
+});
