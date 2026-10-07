@@ -39,6 +39,9 @@ describe("normalizeNotificationMetadata", () => {
       directory: "/root",
       turnId: "turn-root",
       approvalId: "approval-root",
+      orchestratorId: "",
+      logicalConversationId: "",
+      completedOrdinal: "",
     });
   });
 
@@ -62,6 +65,9 @@ describe("normalizeNotificationMetadata", () => {
       directory: "/root",
       turnId: "turn-data",
       approvalId: "approval-root",
+      orchestratorId: "",
+      logicalConversationId: "",
+      completedOrdinal: "",
     });
   });
 });

@@ -1,4 +1,4 @@
-import * as Notifications from "expo-notifications";
+import type * as Notifications from "expo-notifications";
 
 // Must exactly match the "aps.category" values the runner sends in APPROVAL_REQUEST_HOOK /
 // TURN_COMPLETED push payloads (see docs/PUSH-NOTIFICATIONS-DESIGN.md §6). expo-notifications
@@ -68,6 +68,7 @@ export function normalizeNotificationMetadata(
 //   - approve, Face ID ON:  foreground action; JS runs Face ID (expo-local-authentication --
 //                           biometric UI cannot be shown from the background) and responds.
 export async function registerApprovalNotificationCategories(faceIdRequired: boolean): Promise<void> {
+  const Notifications = require("expo-notifications") as typeof import("expo-notifications");
   await Notifications.setNotificationCategoryAsync(TURN_COMPLETED_CATEGORY, []);
   await Notifications.setNotificationCategoryAsync(VOICE_COMPLETED_CATEGORY, []);
   await Notifications.setNotificationCategoryAsync(APPROVAL_REQUEST_CATEGORY, [
