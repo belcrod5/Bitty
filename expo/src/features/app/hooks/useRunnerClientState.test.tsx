@@ -17,7 +17,7 @@ let operations: Record<string, unknown>[];
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
-  server = { revision: 0, titleModelId: "", titleReasoningEffort: "low", directories: [], sessions: {}, composerHistory: [], drafts: {} };
+  server = { revision: 0, titleModelId: "gpt-6-luna", titleReasoningEffort: "low", directories: [], sessions: {}, composerHistory: [], drafts: {} };
   operations = [];
   jest.spyOn(AppState, "addEventListener").mockReturnValue({ remove: jest.fn() } as never);
   global.fetch = jest.fn(async (_url, init) => {
@@ -70,9 +70,20 @@ test("loads Runner state without sending a migration operation", async () => {
   server.directories = [directory];
   const { result, setRegisteredDirectories, setSessionTitleOverridesById } = await renderState();
   await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  expect(result.current.titleModelId).toBe("gpt-6-luna");
+  expect(result.current.titleReasoningEffort).toBe("low");
   expect(operations).toEqual([]);
   expect(setRegisteredDirectories).toHaveBeenCalledWith(expect.any(Function));
   expect(setSessionTitleOverridesById).toHaveBeenCalledWith({ [sessionKey]: "Runner title" });
+});
+test("shows GPT-6 Luna/low for an older empty title setting", async () => {
+  server.titleModelId = "";
+  server.titleReasoningEffort = "high";
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  expect(result.current.titleModelId).toBe("gpt-6-luna");
+  expect(result.current.titleReasoningEffort).toBe("low");
+  expect(operations).toEqual([]);
 });
 test("stores the title model and effort independently of main chat settings", async () => {
   const { result } = await renderState();

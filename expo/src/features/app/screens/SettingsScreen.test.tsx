@@ -52,10 +52,11 @@ const mockSettings = {
       backendId: "codex",
       supportsReasoningEffort: true,
     },
+    { selectionKey: "codex::gpt-6-luna", label: "GPT-6 Luna", modelId: "gpt-6-luna", backendId: "codex", supportsReasoningEffort: true, effortOptions: ["low", "medium"] },
     { selectionKey: "codex::gpt-6.1-luna", label: "GPT-6.1 Luna", modelId: "gpt-6.1-luna", backendId: "codex", supportsReasoningEffort: true, effortOptions: ["low", "medium"] },
     { selectionKey: "codex::gpt-6.1-sol", label: "GPT-6.1 Sol", modelId: "gpt-6.1-sol", backendId: "codex", supportsReasoningEffort: true, effortOptions: ["high"] },
   ],
-  titleModelId: "",
+  titleModelId: "gpt-6-luna",
   titleReasoningEffort: "low",
   selectTitleSettings: mockSelectTitleSettings,
   thinkOptions: ["low", "medium", "high"],
@@ -113,7 +114,7 @@ jest.mock("../contexts/AppSettingsContext", () => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockSettings.titleModelId = "";
+  mockSettings.titleModelId = "gpt-6-luna";
   mockSettings.titleReasoningEffort = "low";
 });
 
@@ -228,21 +229,22 @@ test("shows the build stamp and copies it to the clipboard", async () => {
 
 test("uses dropdowns for selectable settings", async () => {
   const screen = await render(<SettingsScreen />);
+  expect(screen.getByLabelText("タイトル生成モデル").props.accessibilityValue.text).toBe("GPT-6 Luna");
 
   await fireEvent.press(screen.getByLabelText("モデル"));
   await fireEvent.press(screen.getAllByText("GPT-5.5").at(-1)!);
   expect(mockSelectModel).toHaveBeenCalledWith("codex::gpt-5.5");
 
   await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
+  expect(screen.queryByText("自動（Luna）")).toBeNull();
   expect(screen.getByText("GPT-6.1 Sol")).toBeTruthy();
   await fireEvent.press(screen.getByText("GPT-6.1 Luna"));
   expect(mockSelectTitleSettings).toHaveBeenCalledWith("gpt-6.1-luna", "low");
   expect(mockSelectModel).toHaveBeenCalledTimes(1);
 
   await fireEvent.press(screen.getByLabelText("タイトル生成の推論レベル"));
-  expect(screen.queryByText("中")).toBeNull();
-  await fireEvent.press(screen.getAllByText("低").at(-1)!);
-  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("", "low");
+  await fireEvent.press(screen.getAllByText("中").at(-1)!);
+  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("gpt-6-luna", "medium");
 
   await fireEvent.press(screen.getByLabelText("推論レベル"));
   await fireEvent.press(screen.getAllByText("低")[0]);
@@ -275,8 +277,8 @@ test("title effort follows only its selected model and resets with model changes
   await fireEvent.press(screen.getByText("GPT-6.1 Sol"));
   expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("gpt-6.1-sol", "high");
   await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
-  await fireEvent.press(screen.getByText("自動（Luna）"));
-  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("", "low");
+  await fireEvent.press(screen.getAllByText("GPT-6 Luna").at(-1)!);
+  expect(mockSelectTitleSettings).toHaveBeenLastCalledWith("gpt-6-luna", "medium");
   expect(mockSelectThinkOption).not.toHaveBeenCalled();
 });
 

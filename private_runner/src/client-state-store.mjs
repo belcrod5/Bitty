@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 const COLORS = new Set(["gray", "red", "yellow", "green", "black"]);
 const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+const DEFAULT_TITLE_MODEL_ID = "gpt-6-luna";
 const sessionKey = (backendId, sessionId) => JSON.stringify([backendId, sessionId]);
 
 export class ClientStateStoreUnavailableError extends Error {
@@ -18,7 +19,7 @@ export function createClientStateStore(storePath) {
   let state = {
     version: 1,
     revision: 0,
-    titleModelId: "",
+    titleModelId: DEFAULT_TITLE_MODEL_ID,
     titleReasoningEffort: "low",
     directories: [],
     sessions: {},
@@ -34,11 +35,11 @@ export function createClientStateStore(storePath) {
         || !Array.isArray(parsed.directories) || !parsed.sessions || !parsed.drafts
         || !Array.isArray(parsed.composerHistory)) throw new Error("invalid client state store");
       delete parsed.migrationConflicts;
-      const titleModelId = typeof parsed.titleModelId === "string" ? parsed.titleModelId.trim().slice(0, 200) : "";
+      const savedTitleModelId = typeof parsed.titleModelId === "string" ? parsed.titleModelId.trim().slice(0, 200) : "";
       state = {
         ...parsed,
-        titleModelId,
-        titleReasoningEffort: titleModelId && REASONING_EFFORTS.has(parsed.titleReasoningEffort)
+        titleModelId: savedTitleModelId || DEFAULT_TITLE_MODEL_ID,
+        titleReasoningEffort: savedTitleModelId && REASONING_EFFORTS.has(parsed.titleReasoningEffort)
           ? parsed.titleReasoningEffort : "low",
       };
     } catch (error) {
@@ -107,9 +108,10 @@ export function createClientStateStore(storePath) {
         return true;
       }
       case "title-settings.set": {
-        state.titleModelId = String(operation.modelId || "").trim().slice(0, 200);
+        const modelId = requiredString(operation.modelId, "modelId", 200);
         const effort = String(operation.reasoningEffort || "").trim();
-        if (!REASONING_EFFORTS.has(effort) || (!state.titleModelId && effort !== "low")) throw new Error("invalid title reasoningEffort");
+        if (!REASONING_EFFORTS.has(effort)) throw new Error("invalid title reasoningEffort");
+        state.titleModelId = modelId;
         state.titleReasoningEffort = effort;
         return true;
       }

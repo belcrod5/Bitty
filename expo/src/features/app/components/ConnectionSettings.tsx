@@ -100,7 +100,7 @@ export function ConnectionSettings() {
     option.selectable !== false && option.supportsReasoningEffort &&
     (!option.effortOptions || option.effortOptions.length > 0));
   const selectedTitleModel = titleModels.find((option) => option.modelId === titleModelId);
-  const titleEfforts = titleModelId && selectedTitleModel
+  const titleEfforts = selectedTitleModel
     ? effortOptionsForModel(selectedTitleModel) : (["low"] as const);
 
   return (
@@ -251,16 +251,13 @@ export function ConnectionSettings() {
           icon="text-outline"
           label="タイトル生成モデル"
           description="新しいチャットの初回送信からタイトルを作成します"
-          options={[
-            { value: "", label: "自動（Luna）" },
-            ...titleModels.map((option) => ({ value: option.modelId, label: option.label })),
-          ]}
+          options={titleModels.map((option) => ({ value: option.modelId, label: option.label }))}
           selectedValue={titleModelId}
-          selectedLabel={selectedTitleModel?.label || (titleModelId ? "選択したモデルは利用できません" : undefined)}
+          selectedLabel={selectedTitleModel?.label || (titleModelId === "gpt-6-luna" ? "GPT-6 Luna" : titleModelId)}
           onSelect={(modelId) => {
             const model = titleModels.find((option) => option.modelId === modelId);
             const supportedEfforts = effortOptionsForModel(model);
-            const effort = !modelId ? "low" : supportedEfforts.includes(titleReasoningEffort)
+            const effort = supportedEfforts.includes(titleReasoningEffort)
               ? titleReasoningEffort : supportedEfforts[0] || "low";
             selectTitleSettings(modelId, effort);
           }}
@@ -268,7 +265,7 @@ export function ConnectionSettings() {
         <SettingsSelect
           icon="bulb-outline"
           label="タイトル生成の推論レベル"
-          description="自動は「低」。モデルを指定すると変更できます"
+          description="選択したモデルに対応する推論レベル"
           options={titleEfforts.map((effort) => ({ value: effort, label: REASONING_LABELS[effort] }))}
           selectedValue={titleReasoningEffort}
           onSelect={(effort) => selectTitleSettings(titleModelId, effort)}

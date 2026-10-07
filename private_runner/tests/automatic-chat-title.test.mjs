@@ -14,22 +14,21 @@ const catalog = [
   { modelId: "gpt-6.1-sol", effortOptions: ["high"] },
 ];
 
-test("auto titles prefer Luna/low while explicit models require their advertised effort", () => {
-  assert.equal(selectTitleModel(catalog)?.modelId, "gpt-6.1-luna");
-  assert.equal(selectTitleModel(catalog.slice(0, 1))?.modelId, "gpt-6-luna");
-  assert.equal(selectTitleModel(catalog, "gpt-6.1-sol"), null);
+test("title generation uses only the selected model and an advertised effort", () => {
+  assert.equal(selectTitleModel(catalog, "gpt-6-luna", "low")?.modelId, "gpt-6-luna");
+  assert.equal(selectTitleModel(catalog.slice(1), "gpt-6-luna", "low"), null);
+  assert.equal(selectTitleModel(catalog, "gpt-6.1-sol", "low"), null);
   assert.equal(selectTitleModel(catalog, "gpt-6.1-sol", "high")?.modelId, "gpt-6.1-sol");
   assert.equal(selectTitleModel(catalog, "gpt-6.1-luna", "high"), null);
-  assert.equal(selectTitleModel(catalog, "", "high"), null);
-  assert.equal(selectTitleModel([{ modelId: "gpt-6.1-luna", effortOptions: [] }, catalog[0]])?.modelId, "gpt-6-luna");
-  assert.equal(selectTitleModel(catalog, "missing"), null);
+  assert.equal(selectTitleModel([{ modelId: "gpt-6.1-luna", effortOptions: [] }, catalog[0]], "gpt-6.1-luna", "low"), null);
+  assert.equal(selectTitleModel(catalog, "missing", "low"), null);
 });
 
 test("generated titles use the selected model and preserve marker changes", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-title-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const store = createClientStateStore(path.join(dir, "client-state.json"));
-  await store.mutate({ type: "title-settings.set", modelId: "gpt-6-luna", reasoningEffort: "low" });
+  assert.deepEqual(await store.getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
   await store.mutate({ type: "session.set", backendId: "codex", sessionId: "first-chat", markerColor: "red" });
   let options;
   const saved = await generateAutomaticChatTitle({
@@ -73,20 +72,36 @@ test("title effort is independent, persisted, and passed to the selected model",
   }), false);
   assert.match(warnings[0], /model\/effort unavailable/u);
   await assert.rejects(store.mutate({ type: "title-settings.set", modelId: "", reasoningEffort: "high" }),
-    /invalid title reasoningEffort/u);
-  await store.mutate({ type: "title-settings.set", modelId: "", reasoningEffort: "low" });
-  assert.deepEqual(await store.getTitleSettings(), { modelId: "", reasoningEffort: "low" });
+    /modelId is invalid/u);
+  assert.deepEqual(await store.getTitleSettings(), { modelId: "gpt-6.1-sol", reasoningEffort: "high" });
 });
 
-test("legacy and invalid auto title settings load with low effort", async (t) => {
+test("the default GPT-6 Luna model can use another advertised effort", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-title-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = createClientStateStore(path.join(dir, "client-state.json"));
+  await store.mutate({ type: "title-settings.set", modelId: "gpt-6-luna", reasoningEffort: "medium" });
+  let effort;
+  assert.equal(await generateAutomaticChatTitle({
+    input: "旅行計画", sessionRef, catalog: [{ modelId: "gpt-6-luna", effortOptions: ["low", "medium"] }], store,
+    runCodex: async (_prompt, options) => { effort = options.reasoningEffort; return "旅行計画"; },
+  }), true);
+  assert.equal(effort, "medium");
+});
+
+test("legacy and empty title settings load as GPT-6 Luna/low", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-title-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, "client-state.json");
   const oldState = { version: 1, revision: 0, directories: [], sessions: {}, composerHistory: [], drafts: {} };
   await fs.writeFile(file, JSON.stringify(oldState));
-  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), { modelId: "", reasoningEffort: "low" });
+  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
   await fs.writeFile(file, JSON.stringify({ ...oldState, titleModelId: "", titleReasoningEffort: "high" }));
-  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), { modelId: "", reasoningEffort: "low" });
+  const restored = createClientStateStore(file);
+  assert.deepEqual(await restored.getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
+  assert.equal((await restored.snapshot()).titleModelId, "gpt-6-luna");
+  await fs.writeFile(file, JSON.stringify({ ...oldState, titleModelId: "  ", titleReasoningEffort: "high" }));
+  assert.deepEqual(await createClientStateStore(file).getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
 });
 
 test("manual edit and explicit clear win when title generation finishes later", async (t) => {

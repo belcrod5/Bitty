@@ -32,7 +32,7 @@ export function useRunnerClientState({
   setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
 }: Options) {
   const [messages, setMessages] = useState<string[]>([]);
-  const [titleModelId, setTitleModelId] = useState("");
+  const [titleModelId, setTitleModelId] = useState("gpt-6-luna");
   const [titleReasoningEffort, setTitleReasoningEffort] = useState<ReasoningEffort>("low");
   const [drafts, setDrafts] = useState<ComposerDraft[]>([]);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
@@ -59,8 +59,8 @@ export function useRunnerClientState({
     snapshotConnectionRef.current = id;
     snapshotRef.current = snapshot;
     setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
-    setTitleModelId(snapshot.titleModelId || "");
-    setTitleReasoningEffort(snapshot.titleReasoningEffort || "low");
+    setTitleModelId(snapshot.titleModelId || "gpt-6-luna");
+    setTitleReasoningEffort(snapshot.titleModelId ? snapshot.titleReasoningEffort || "low" : "low");
     setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
       .map(([key, value]) => [key, value.title])));
     setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
@@ -110,7 +110,7 @@ export function useRunnerClientState({
     snapshotRef.current = null;
     snapshotConnectionRef.current = "";
     setRegisteredDirectories([]);
-    setTitleModelId("");
+    setTitleModelId("gpt-6-luna");
     setTitleReasoningEffort("low");
     setSessionTitleOverridesById({});
     setSessionMarkerColorsById({});
