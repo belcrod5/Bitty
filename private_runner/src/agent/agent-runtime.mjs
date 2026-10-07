@@ -50,6 +50,7 @@ export function createPrivateRunnerAgentRuntime({
   listSessions,
   listSessionsForDirectories,
   getSessionTitles,
+  onNewRegularSession,
   listMessages,
   resolveCanonicalCwd,
   parseAuthToken,
@@ -219,6 +220,7 @@ export function createPrivateRunnerAgentRuntime({
         return [];
       }
     },
+    onNewRegularSession,
     workspaceAdmission,
     resolveCanonicalCwd,
     onActiveSessionsChanged,

@@ -17,6 +17,7 @@ export function createClientStateStore(storePath) {
   let state = {
     version: 1,
     revision: 0,
+    titleModelId: "",
     directories: [],
     sessions: {},
     composerHistory: [],
@@ -31,7 +32,7 @@ export function createClientStateStore(storePath) {
         || !Array.isArray(parsed.directories) || !parsed.sessions || !parsed.drafts
         || !Array.isArray(parsed.composerHistory)) throw new Error("invalid client state store");
       delete parsed.migrationConflicts;
-      state = parsed;
+      state = { ...parsed, titleModelId: typeof parsed.titleModelId === "string" ? parsed.titleModelId : "" };
     } catch (error) {
       if (error?.code !== "ENOENT") throw new ClientStateStoreUnavailableError(error);
     }
@@ -86,12 +87,19 @@ export function createClientStateStore(storePath) {
         const key = sessionKey(requiredString(operation.backendId, "backendId", 100), requiredString(operation.sessionId, "sessionId", 200));
         const previous = state.sessions[key] || { title: "", markerColor: "none" };
         const next = { ...previous };
-        if (Object.hasOwn(operation, "title")) next.title = String(operation.title || "").replace(/\s+/gu, " ").trim().slice(0, 200);
+        if (Object.hasOwn(operation, "title")) {
+          next.title = String(operation.title || "").replace(/\s+/gu, " ").trim().slice(0, 200);
+          next.titleSource = "manual";
+        }
         if (Object.hasOwn(operation, "markerColor")) {
           if (operation.markerColor !== "none" && !COLORS.has(operation.markerColor)) throw new Error("invalid markerColor");
           next.markerColor = operation.markerColor;
         }
         state.sessions[key] = next;
+        return true;
+      }
+      case "title-model.set": {
+        state.titleModelId = String(operation.modelId || "").trim().slice(0, 200);
         return true;
       }
       case "composer.append": {
@@ -113,21 +121,26 @@ export function createClientStateStore(storePath) {
     }
   }
 
+  async function commit(change) {
+    const before = snapshot();
+    try {
+      if (!change()) return false;
+      state.revision += 1;
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      const temporaryPath = `${storePath}.${randomUUID()}.tmp`;
+      await fs.writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
+      await fs.rename(temporaryPath, storePath);
+      return true;
+    } catch (error) {
+      state = before;
+      throw error;
+    }
+  }
+
   async function mutate(operation) {
     return serialize(async () => {
-      const before = snapshot();
-      try {
-        apply(operation);
-        state.revision += 1;
-        await fs.mkdir(path.dirname(storePath), { recursive: true });
-        const temporaryPath = `${storePath}.${randomUUID()}.tmp`;
-        await fs.writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
-        await fs.rename(temporaryPath, storePath);
-        return snapshot();
-      } catch (error) {
-        state = before;
-        throw error;
-      }
+      await commit(() => apply(operation));
+      return snapshot();
     });
   }
 
@@ -137,10 +150,26 @@ export function createClientStateStore(storePath) {
     )));
   }
 
+  function getTitleModelId() {
+    return serialize(() => state.titleModelId);
+  }
+
+  function setGeneratedTitle(sessionRef, title) {
+    return serialize(() => commit(() => {
+      const key = sessionKey(sessionRef.backendId, sessionRef.nativeSessionId);
+      const previous = state.sessions[key];
+      if (previous?.titleSource === "manual" || previous?.title) return false;
+      state.sessions[key] = { ...previous, title, markerColor: previous?.markerColor || "none", titleSource: "generated" };
+      return true;
+    }));
+  }
+
   return {
     snapshot: () => serialize(snapshot),
     mutate,
     getSessionTitles,
+    getTitleModelId,
+    setGeneratedTitle,
     getRegisteredDirectoryPaths: () => serialize(() => state.directories.map(({ path }) => path)),
   };
 }

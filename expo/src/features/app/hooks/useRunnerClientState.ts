@@ -31,6 +31,7 @@ export function useRunnerClientState({
   setRegisteredDirectories, setSessionTitleOverridesById, setSessionMarkerColorsById,
 }: Options) {
   const [messages, setMessages] = useState<string[]>([]);
+  const [titleModelId, setTitleModelId] = useState("");
   const [drafts, setDrafts] = useState<ComposerDraft[]>([]);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -56,6 +57,7 @@ export function useRunnerClientState({
     snapshotConnectionRef.current = id;
     snapshotRef.current = snapshot;
     setRegisteredDirectories((current) => JSON.stringify(current) === JSON.stringify(snapshot.directories) ? current : snapshot.directories);
+    setTitleModelId(snapshot.titleModelId || "");
     setSessionTitleOverridesById(Object.fromEntries(Object.entries(snapshot.sessions)
       .map(([key, value]) => [key, value.title])));
     setSessionMarkerColorsById(Object.fromEntries(Object.entries(snapshot.sessions)
@@ -105,6 +107,7 @@ export function useRunnerClientState({
     snapshotRef.current = null;
     snapshotConnectionRef.current = "";
     setRegisteredDirectories([]);
+    setTitleModelId("");
     setSessionTitleOverridesById({});
     setSessionMarkerColorsById({});
     setMessages([]);
@@ -200,5 +203,10 @@ export function useRunnerClientState({
     };
   }, [sendDraft]);
 
-  return { mutate, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
+  const changeTitleModelId = useCallback((modelId: string) => {
+    setTitleModelId(modelId);
+    mutate({ type: "title-model.set", modelId });
+  }, [mutate]);
+
+  return { mutate, titleModelId, changeTitleModelId, messages, recordMessage, drafts, draftsLoaded, setDraft, clearDraft, scopeId: currentConnection.id };
 }

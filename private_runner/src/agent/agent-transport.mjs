@@ -264,7 +264,7 @@ export function createAgentWsConnection({ service, ws, sendEnvelope, subjectId, 
       void service.startTurn({
         ...payload,
         clientOperationId: payload.clientOperationId || message.operationId,
-      }, { subjectId }).then((run) => {
+      }, { subjectId, regularChat: true }).then((run) => {
         try { activity?.observeRun({ runId: run.runId, caller: displayCaller, sessionRef: payload.sessionRef,
           service, subjectId, result: run.result, pendingId }); } catch {}
         if (run.result) {

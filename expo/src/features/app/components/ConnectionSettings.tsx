@@ -34,6 +34,8 @@ export function ConnectionSettings() {
     selectedModelLabel,
     reasoningEffort,
     modelOptions,
+    titleModelId,
+    selectTitleModel,
     thinkOptions,
     changeCloudflareRunnerUrl,
     changeLocalRunnerUrl,
@@ -92,6 +94,9 @@ export function ConnectionSettings() {
     value: effort,
     label: REASONING_LABELS[effort],
   }));
+  const titleModels = modelOptions.filter((option) => option.backendId === "codex" &&
+    option.selectable !== false && (!option.effortOptions || option.effortOptions.includes("low")));
+  const selectedTitleModel = titleModels.find((option) => option.modelId === titleModelId);
 
   return (
     <View style={styles.settingsSection}>
@@ -196,6 +201,18 @@ export function ConnectionSettings() {
           selectedValue={selectedModelKey}
           selectedLabel={selectedModelLabel}
           onSelect={selectModel}
+        />
+        <SettingsSelect
+          icon="text-outline"
+          label="タイトル生成モデル"
+          description="新しいチャットのタイトルを初回送信から自動生成します"
+          options={[
+            { value: "", label: "自動（Luna / 低）" },
+            ...titleModels.map((option) => ({ value: option.modelId, label: option.label })),
+          ]}
+          selectedValue={titleModelId}
+          selectedLabel={selectedTitleModel?.label || (titleModelId ? "選択したモデルは利用できません" : undefined)}
+          onSelect={selectTitleModel}
         />
         <SettingsSelect
           icon="bulb-outline"

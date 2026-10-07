@@ -11,6 +11,7 @@ export function runnerSessionValue<T>(values: Record<string, T>, backendId: unkn
 
 export type RunnerClientState = {
   revision: number;
+  titleModelId: string;
   directories: RegisteredDirectoryEntry[];
   sessions: Record<string, { title: string; markerColor: RegisteredDirectoryEntry["markerColor"] }>;
   composerHistory: string[];

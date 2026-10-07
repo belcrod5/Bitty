@@ -5,6 +5,7 @@ const sessionKey = JSON.stringify(["codex", "session-1"]);
 const directory = { id: "dir-1", path: "/work", displayName: "Work", markerColor: "green" as const };
 let server: {
   revision: number;
+  titleModelId: string;
   directories: typeof directory[];
   sessions: Record<string, { title: string; markerColor: string }>;
   composerHistory: string[];
@@ -15,7 +16,7 @@ let operations: Record<string, unknown>[];
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
-  server = { revision: 0, directories: [], sessions: {}, composerHistory: [], drafts: {} };
+  server = { revision: 0, titleModelId: "", directories: [], sessions: {}, composerHistory: [], drafts: {} };
   operations = [];
   jest.spyOn(AppState, "addEventListener").mockReturnValue({ remove: jest.fn() } as never);
   global.fetch = jest.fn(async (_url, init) => {
@@ -24,6 +25,9 @@ beforeEach(() => {
       operations.push(operation);
       if (operation.type === "composer.append") {
         server.composerHistory.unshift(operation.text);
+        server.revision++;
+      } else if (operation.type === "title-model.set") {
+        server.titleModelId = operation.modelId;
         server.revision++;
       } else if (operation.type === "draft.set") {
         const key = JSON.stringify([operation.backendId, operation.sessionId]);
@@ -67,6 +71,14 @@ test("loads Runner state without sending a migration operation", async () => {
   expect(operations).toEqual([]);
   expect(setRegisteredDirectories).toHaveBeenCalledWith(expect.any(Function));
   expect(setSessionTitleOverridesById).toHaveBeenCalledWith({ [sessionKey]: "Runner title" });
+});
+test("stores the title model independently of the main chat model", async () => {
+  const { result } = await renderState();
+  await waitFor(() => expect(result.current.draftsLoaded).toBe(true));
+  await act(async () => result.current.changeTitleModelId("gpt-6.1-luna"));
+  await waitFor(() => expect(server.titleModelId).toBe("gpt-6.1-luna"));
+  expect(result.current.titleModelId).toBe("gpt-6.1-luna");
+  expect(operations).toEqual([{ type: "title-model.set", modelId: "gpt-6.1-luna" }]);
 });
 test("history and drafts use item operations instead of replacing other devices' state", async () => {
   const { result } = await renderState();

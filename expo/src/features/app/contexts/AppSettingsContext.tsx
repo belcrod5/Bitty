@@ -34,6 +34,8 @@ export type AppSettingsContextValue = {
   modelRef: string;
   reasoningEffort: ReasoningEffort;
   modelOptions: readonly ModelOption[];
+  titleModelId: string;
+  selectTitleModel: (modelId: string) => void;
   thinkOptions: readonly ReasoningEffort[];
   ttsProvider: TtsProvider;
   voicesLoading: boolean;

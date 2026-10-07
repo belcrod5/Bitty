@@ -27,6 +27,7 @@ const mockExportSettingsJson = jest.fn();
 const mockSelectTtsProvider = jest.fn();
 const mockSelectCodexApprovalPolicy = jest.fn();
 const mockSelectModel = jest.fn();
+const mockSelectTitleModel = jest.fn();
 const mockSelectThinkOption = jest.fn();
 const mockLoadVoices = jest.fn();
 const mockSelectVoiceId = jest.fn();
@@ -51,7 +52,11 @@ const mockSettings = {
       backendId: "codex",
       supportsReasoningEffort: true,
     },
+    { selectionKey: "codex::gpt-6.1-luna", label: "GPT-6.1 Luna", modelId: "gpt-6.1-luna", backendId: "codex", supportsReasoningEffort: true, effortOptions: ["low", "medium"] },
+    { selectionKey: "codex::gpt-6.1-sol", label: "GPT-6.1 Sol", modelId: "gpt-6.1-sol", backendId: "codex", supportsReasoningEffort: true, effortOptions: ["high"] },
   ],
+  titleModelId: "",
+  selectTitleModel: mockSelectTitleModel,
   thinkOptions: ["low", "medium", "high"],
   faceIdRequiredForApproval: true,
   ttsProvider: "aivisspeech",
@@ -222,6 +227,12 @@ test("uses dropdowns for selectable settings", async () => {
   await fireEvent.press(screen.getByLabelText("モデル"));
   await fireEvent.press(screen.getAllByText("GPT-5.5").at(-1)!);
   expect(mockSelectModel).toHaveBeenCalledWith("codex::gpt-5.5");
+
+  await fireEvent.press(screen.getByLabelText("タイトル生成モデル"));
+  expect(screen.queryByText("GPT-6.1 Sol")).toBeNull();
+  await fireEvent.press(screen.getByText("GPT-6.1 Luna"));
+  expect(mockSelectTitleModel).toHaveBeenCalledWith("gpt-6.1-luna");
+  expect(mockSelectModel).toHaveBeenCalledTimes(1);
 
   await fireEvent.press(screen.getByLabelText("推論レベル"));
   await fireEvent.press(screen.getByText("低"));
