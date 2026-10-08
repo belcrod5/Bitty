@@ -1,12 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import { BlurMask, Canvas, Group, Path, Skia, SweepGradient, vec } from "@shopify/react-native-skia";
 import React, { forwardRef, memo, useImperativeHandle, useRef, useState, type ReactNode } from "react";
-import { Platform, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Animated, Platform, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { useFrameCallback, useSharedValue, withTiming } from "react-native-reanimated";
 import { useAppStyles } from "../styles";
 import { useVisualTheme } from "../theme/VisualThemeContext";
+import { useReduceMotionEnabled } from "../hooks/useReduceMotionEnabled";
 import type { StreamingSttUsage } from "../../stt/streamingSttClient";
 import type { StreamingSttPhase } from "../../stt/useStreamingStt";
+import type { SttCorrectionPreview } from "../../stt/sttTranscriptDiff";
 import type { VoiceContextStats } from "../types/appTypes";
 import { RAINBOW_GLOW_COLORS, RAINBOW_GLOW_DEGREES_PER_MS } from "./rainbowGlow";
 
@@ -42,7 +44,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
   leadingAccessory?: ReactNode;
-  correctionPreview?: { text: string; seconds: number } | null;
+  correctionPreview?: SttCorrectionPreview | null;
   onSendCorrection?: () => void;
   onCancelCorrection?: () => void;
   trailingAccessory?: ReactNode;
@@ -51,7 +53,13 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onCancelCorrection }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
+  const systemReduceMotion = useReduceMotionEnabled();
+  const motionReduced = reduceMotion ?? systemReduceMotion !== false;
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
+  const [, tickProgress] = useState(0);
+  const remainingMs = correctionPreview?.deadlineMs == null ? 3000
+    : Math.max(0, correctionPreview.deadlineMs - Date.now());
+  const progress = useRef(new Animated.Value(1)).current;
   const lastUsageUpdateRef = useRef(0);
   const pendingUsageRef = useRef<StreamingSttUsage | null>(null);
   const usageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -68,8 +76,11 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const audioLevel = useSharedValue(0);
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
-  const glowColors = voiceStatus === "responding" ? RESPONDING_COLORS
-    : voiceStatus === "speaking" ? SPEAKING_COLORS : RAINBOW_GLOW_COLORS;
+  const previewBorder = useSharedValue(Skia.Path.Make());
+  const previewCenter = useSharedValue(vec(0, 0));
+  const glowStatus = phase === "correcting" || phase === "preview" ? undefined : voiceStatus;
+  const glowColors = glowStatus === "responding" ? RESPONDING_COLORS
+    : glowStatus === "speaking" ? SPEAKING_COLORS : RAINBOW_GLOW_COLORS;
 
   React.useEffect(() => {
     if (phase !== "connecting") return;
@@ -80,24 +91,39 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
     setUsage(null);
   }, [phase]);
 
+  React.useEffect(() => {
+    if (!correctionPreview || correctionPreview.deadlineMs === null) return;
+    const interval = setInterval(() => tickProgress((value) => value + 1), 250);
+    return () => clearInterval(interval);
+  }, [correctionPreview?.deadlineMs]);
+
+  React.useEffect(() => {
+    if (!correctionPreview || correctionPreview.deadlineMs === null || motionReduced) return;
+    const remaining = Math.max(0, correctionPreview.deadlineMs - Date.now());
+    progress.setValue(Math.min(1, remaining / 3000));
+    const animation = Animated.timing(progress, { toValue: 0, duration: remaining, useNativeDriver: false });
+    animation.start();
+    return () => animation.stop();
+  }, [correctionPreview?.deadlineMs, motionReduced, progress]);
+
   useFrameCallback((frame) => {
-    if (voiceStatus && reduceMotion) return;
+    if (motionReduced) return;
     const elapsed = Math.min(frame.timeSincePreviousFrame ?? 0, 50);
-    const speed = voiceStatus === "responding" ? 0.28
-      : voiceStatus === "speaking" ? 0.12 : RAINBOW_GLOW_DEGREES_PER_MS + audioLevel.value * 0.168;
+    const speed = glowStatus === "responding" ? 0.28
+      : glowStatus === "speaking" ? 0.12 : RAINBOW_GLOW_DEGREES_PER_MS + audioLevel.value * 0.168;
     const start = (gradientStart.value + elapsed * speed) % 360;
     gradientStart.value = start;
     gradientEnd.value = start + 360;
-    if (voiceStatus) {
+    if (glowStatus) {
       const pulse = (Math.sin(start * Math.PI / 90) + 1) / 2;
-      glowWidth.value = (voiceStatus === "responding" ? 8 : 6) + pulse * 9;
+      glowWidth.value = (glowStatus === "responding" ? 8 : 6) + pulse * 9;
       glowBlur.value = 5 + pulse * 4;
       glowOpacity.value = 0.55 + pulse * 0.3;
     }
   });
 
   React.useEffect(() => {
-    if (!voiceStatus) return;
+    if (!glowStatus) return;
     glowWidth.value = 10;
     glowBlur.value = 6;
     glowOpacity.value = 0.7;
@@ -106,11 +132,11 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       glowBlur.value = 3;
       glowOpacity.value = 0.25;
     };
-  }, [glowBlur, glowOpacity, glowWidth, voiceStatus]);
+  }, [glowBlur, glowOpacity, glowWidth, glowStatus]);
 
   useImperativeHandle(ref, () => ({
     pushSample(sample) {
-      if (voiceStatus) return;
+      if (glowStatus) return;
       const now = Date.now();
       if (now - lastGlowUpdateRef.current < 1000 / 30) return;
       lastGlowUpdateRef.current = now;
@@ -136,7 +162,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         pendingUsageRef.current = null;
       }, 1000 - elapsed);
     },
-  }), [audioLevel, glowBlur, glowOpacity, glowWidth, voiceStatus]);
+  }), [audioLevel, glowBlur, glowOpacity, glowWidth, glowStatus]);
 
   React.useEffect(() => () => {
     if (usageTimerRef.current) clearTimeout(usageTimerRef.current);
@@ -166,23 +192,90 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   } : {};
   const panelTop = trailingAccessory ? 32 : leadingAccessory ? 8 : 0;
   const metadataTop = leadingAccessory ? (trailingAccessory ? 8 : 19) : 0;
+  const renderGlow = (path: typeof border, glowCenter: typeof center, testID: string) => (
+    <Canvas pointerEvents="none" testID={testID}
+      style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE,
+        top: -GLOW_SPACE, bottom: -GLOW_SPACE }}>
+      {themeId === "standard" ? (
+        <Path path={path} color="#101827" opacity={0.35} style="stroke" strokeWidth={26}>
+          <BlurMask blur={9} style="normal" />
+        </Path>
+      ) : null}
+      <Group opacity={glowOpacity}>
+        <Path path={path} style="stroke" strokeWidth={glowWidth}>
+          <SweepGradient c={glowCenter} colors={glowColors} mode="repeat"
+            start={gradientStart} end={gradientEnd} />
+          <BlurMask blur={glowBlur} style="normal" />
+        </Path>
+      </Group>
+      <Path path={path} style="stroke" strokeWidth={2}>
+        <SweepGradient c={glowCenter} colors={glowColors} mode="repeat"
+          start={gradientStart} end={gradientEnd} />
+      </Path>
+    </Canvas>
+  );
 
   return (
     <View>
       {correctionPreview ? (
-        <View testID="streaming-stt-correction-preview" style={{ marginBottom: 10, padding: 12,
-          borderRadius: 12, backgroundColor: "#17273b", zIndex: 2 }}>
-          <TouchableOpacity onPress={onSendCorrection} accessibilityRole="button"
-            accessibilityLabel="補正した文字起こしを今すぐ送信">
-            <Text style={{ color: "#f4f7ff", fontSize: 16 }}>{correctionPreview.text}</Text>
-            <Text style={{ color: "#a8b9cb", fontSize: 12, marginTop: 5 }}>
-              {`${correctionPreview.seconds}秒後に送信 · タップして今すぐ送信`}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onCancelCorrection} accessibilityRole="button"
-            accessibilityLabel="自動送信をキャンセルして編集" style={{ alignSelf: "flex-end", paddingTop: 8 }}>
-            <Text style={{ color: "#a8b9cb", fontSize: 13 }}>キャンセルして編集</Text>
-          </TouchableOpacity>
+        <View testID="streaming-stt-correction-preview" style={{ position: "relative", overflow: "visible",
+          marginBottom: 10, padding: 12, borderRadius: 12, backgroundColor: "#17273b", zIndex: 2 }}
+          onLayout={(event) => {
+            const { width, height } = event.nativeEvent.layout;
+            const path = Skia.Path.Make();
+            path.addRRect(Skia.RRectXY(Skia.XYWHRect(GLOW_SPACE - 2, GLOW_SPACE - 2,
+              width + 4, height + 4), 12, 12));
+            previewBorder.value = path;
+            previewCenter.value = vec(GLOW_SPACE + width / 2, GLOW_SPACE + height / 2);
+          }}>
+          {renderGlow(previewBorder, previewCenter, "streaming-stt-preview-glow")}
+          <View style={{ zIndex: 1 }}>
+            <TouchableOpacity testID="streaming-stt-correction-text" onPress={onSendCorrection}
+              accessibilityRole="button"
+              accessibilityLabel={`補正後: ${correctionPreview.text}。変更: ${correctionPreview.parts
+                .filter((part) => part.kind !== "same")
+                .map((part) => `${part.kind === "delete" ? "削除" : "追加"} ${part.text}`).join("、")}`}
+              accessibilityHint="ダブルタップで今すぐ送信">
+              <Text style={{ color: "#f4f7ff", fontSize: 16 }}>
+                {correctionPreview.parts.map((part, index) => (
+                  <Text key={index} accessibilityLabel={part.kind === "delete" ? `削除: ${part.text}`
+                    : part.kind === "insert" ? `補正: ${part.text}` : undefined}
+                    style={part.kind === "insert" ? { color: "#aaf7ff", backgroundColor: "#24516a",
+                      textDecorationLine: "underline" } : part.kind === "delete" ? {
+                      color: "#ffafbd", backgroundColor: "#563041", textDecorationLine: "line-through",
+                    } : undefined}>{part.text}</Text>
+                ))}
+              </Text>
+            </TouchableOpacity>
+            <View testID="streaming-stt-correction-progress" accessibilityRole="progressbar"
+              accessibilityLabel="自動送信まで" accessibilityValue={{ min: 0, max: 3000,
+                now: Math.min(3000, remainingMs),
+                text: `あと${Math.ceil(remainingMs / 1000)}秒で自動送信` }}
+              style={{ height: 4, borderRadius: 2, backgroundColor: "#35465c", marginTop: 12,
+                overflow: "hidden" }}>
+              {correctionPreview.deadlineMs === null || motionReduced ? (
+                <View style={{ height: 4, width: `${Math.min(100, remainingMs / 30)}%`,
+                  backgroundColor: "#69e6f8" }} />
+              ) : (
+                <Animated.View style={{ height: 4, backgroundColor: "#69e6f8",
+                  width: progress.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }) }} />
+              )}
+            </View>
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
+              <TouchableOpacity onPress={onCancelCorrection} accessibilityRole="button"
+                accessibilityLabel="自動送信をキャンセルして編集"
+                style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "#35465c",
+                  alignItems: "center", justifyContent: "center" }}>
+                <Ionicons name="pencil" size={20} color="#f4f7ff" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={onSendCorrection} accessibilityRole="button"
+                accessibilityLabel="補正した文字起こしを今すぐ送信"
+                style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "#24667e",
+                  alignItems: "center", justifyContent: "center" }}>
+                <Ionicons name="send" size={20} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
       ) : null}
     <View
@@ -202,26 +295,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           GLOW_SPACE + panelTop + (height - panelTop) / 2);
       }}
     >
-      <Canvas
-        pointerEvents="none"
-        testID="streaming-stt-glow"
-        style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE, top: -GLOW_SPACE, bottom: -GLOW_SPACE }}
-      >
-        {themeId === "standard" ? (
-          <Path path={border} color="#101827" opacity={0.35} style="stroke" strokeWidth={26}>
-            <BlurMask blur={9} style="normal" />
-          </Path>
-        ) : null}
-        <Group opacity={glowOpacity}>
-          <Path path={border} style="stroke" strokeWidth={glowWidth}>
-            <SweepGradient c={center} colors={glowColors} mode="repeat" start={gradientStart} end={gradientEnd} />
-            <BlurMask blur={glowBlur} style="normal" />
-          </Path>
-        </Group>
-        <Path path={border} style="stroke" strokeWidth={2}>
-          <SweepGradient c={center} colors={glowColors} mode="repeat" start={gradientStart} end={gradientEnd} />
-        </Path>
-      </Canvas>
+      {renderGlow(border, center, "streaming-stt-glow")}
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12",
         zIndex: 1 }]}>
         {voiceStatus === "speaking" && onCancelSpeaking ? (

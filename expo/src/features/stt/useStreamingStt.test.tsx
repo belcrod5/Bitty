@@ -102,19 +102,47 @@ test("shows changed correction for three seconds, then sends exactly once", asyn
   jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
   const options = createOptions();
   options.correctionContext = [{ role: "assistant", text: "直前の返答" }];
-  const { result } = await renderHook(() => useStreamingStt(options));
+  const { result, rerender } = await renderHook(() => useStreamingStt(options));
   const session = await openReady(result);
   await finishSpeech(session, "元の文章");
   expect(correctSttTranscript).toHaveBeenCalledWith("http://runner.test", "token", "元の文章",
     options.correctionContext, expect.any(AbortSignal));
-  expect(result.current.correctionPreview).toEqual({ text: "補正した文章", seconds: 3 });
+  expect(result.current.correctionPreview).toEqual({ text: "補正した文章",
+    deadlineMs: Date.now() + 3000,
+    parts: expect.arrayContaining([
+      { kind: "delete", text: "元の" }, { kind: "insert", text: "補正した" },
+    ]) });
+  const deadlineMs = result.current.correctionPreview!.deadlineMs;
   expect(options.sendTranscript).not.toHaveBeenCalled();
   await advanceTimers(2000);
+  await act(async () => rerender(options));
+  expect(result.current.correctionPreview?.deadlineMs).toBe(deadlineMs);
   expect(options.sendTranscript).not.toHaveBeenCalled();
   await advanceTimers(1000);
   expect(options.sendTranscript).toHaveBeenCalledTimes(1);
   expect(options.sendTranscript).toHaveBeenCalledWith("補正した文章", expect.any(Function));
   await act(async () => result.current.sendCorrectionPreview());
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("starts the full send window after the preview commits even when rendering is delayed", async () => {
+  let resolveCorrection!: (value: { changed: boolean; text: string }) => void;
+  jest.mocked(correctSttTranscript).mockImplementation(() => new Promise((resolve) => {
+    resolveCorrection = resolve;
+  }));
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  expect(result.current.phase).toBe("correcting");
+  await act(async () => {
+    resolveCorrection({ changed: true, text: "補正した文章" });
+    await Promise.resolve();
+    jest.setSystemTime(Date.now() + 800);
+  });
+  expect(result.current.correctionPreview?.deadlineMs).toBe(Date.now() + 3000);
+  await advanceTimers(2999);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(1);
   expect(options.sendTranscript).toHaveBeenCalledTimes(1);
 });
 

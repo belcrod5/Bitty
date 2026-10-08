@@ -11,6 +11,7 @@ import {
 } from "./streamingTranscript";
 import { parseStreamingSttMessage, type StreamingSttUsage } from "./streamingSttClient";
 import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
+import { diffSttTranscript, type SttCorrectionPreview } from "./sttTranscriptDiff";
 
 export type StreamingSttPhase = "idle" | "connecting" | "recording" | "finalizing" | "correcting" | "preview";
 
@@ -58,10 +59,9 @@ export function useStreamingStt(options: Options) {
   const ttsStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const correctionAbortRef = useRef<AbortController | null>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const previewTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const previewRef = useRef<{ text: string; version: number; sent: boolean } | null>(null);
+  const previewRef = useRef<(SttCorrectionPreview & { version: number; sent: boolean }) | null>(null);
   const autoSendingRef = useRef<number | null>(null);
-  const [correctionPreview, setCorrectionPreview] = useState<{ text: string; seconds: number } | null>(null);
+  const [correctionPreview, setCorrectionPreview] = useState<SttCorrectionPreview | null>(null);
   const identityRef = useRef(options.correctionIdentity);
   const transport = useStreamingSttTransport();
   const latestRef = useRef(options);
@@ -84,8 +84,6 @@ export function useStreamingStt(options: Options) {
     correctionAbortRef.current?.abort();
     correctionAbortRef.current = null;
     clearTimer(previewTimerRef);
-    if (previewTickRef.current) clearInterval(previewTickRef.current);
-    previewTickRef.current = null;
     previewRef.current = null;
     setCorrectionPreview(null);
   }, []);
@@ -199,8 +197,6 @@ export function useStreamingStt(options: Options) {
     preview.sent = true;
     previewRef.current = null;
     clearTimer(previewTimerRef);
-    if (previewTickRef.current) clearInterval(previewTickRef.current);
-    previewTickRef.current = null;
     setCorrectionPreview(null);
     setPhase("idle");
     void sendAutoTranscript(preview.text, preview.version);
@@ -242,18 +238,15 @@ export function useStreamingStt(options: Options) {
   useEffect(() => {
     const preview = previewRef.current;
     if (!preview || !correctionPreview || preview.sent) return;
-    const deadline = Date.now() + 3000;
-    previewTickRef.current = setInterval(() => {
-      setCorrectionPreview((current) => current && previewRef.current === preview
-        ? { ...current, seconds: Math.max(1, Math.ceil((deadline - Date.now()) / 1000)) } : current);
-    }, 250);
-    previewTimerRef.current = setTimeout(sendCorrectionPreview, 3000);
-    return () => {
-      clearTimer(previewTimerRef);
-      if (previewTickRef.current) clearInterval(previewTickRef.current);
-      previewTickRef.current = null;
-    };
-  }, [correctionPreview?.text, sendCorrectionPreview]);
+    if (preview.deadlineMs === null) {
+      const deadlineMs = Date.now() + 3000;
+      preview.deadlineMs = deadlineMs;
+      setCorrectionPreview({ ...correctionPreview, deadlineMs });
+      return;
+    }
+    previewTimerRef.current = setTimeout(sendCorrectionPreview, Math.max(0, preview.deadlineMs - Date.now()));
+    return () => clearTimer(previewTimerRef);
+  }, [correctionPreview, sendCorrectionPreview]);
 
   const fail = useCallback((message: string) => {
     if (terminalRef.current) return;
@@ -396,8 +389,10 @@ export function useStreamingStt(options: Options) {
               setPhase("idle");
               await sendAutoTranscript(finalText, version);
             } else {
-              previewRef.current = { text: result.text, version, sent: false };
-              setCorrectionPreview({ text: result.text, seconds: 3 });
+              const parts = diffSttTranscript(finalText, result.text);
+              const preview = { text: result.text, parts, deadlineMs: null };
+              previewRef.current = { ...preview, version, sent: false };
+              setCorrectionPreview(preview);
               setPhase("preview");
             }
           } catch {
