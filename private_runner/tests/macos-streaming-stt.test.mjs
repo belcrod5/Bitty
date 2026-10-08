@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { createMacosStreamingSttHandler } from "../src/macos-streaming-stt.mjs";
+import { MAX_DURATION_SECONDS } from "../src/streaming-stt-protocol.mjs";
 
 class FakeSocket extends EventEmitter {
   readyState = 1;
@@ -251,4 +252,125 @@ test("native no-speech error after timeout completes without a spurious failure"
   assert.equal(logs[0][1].trigger, "no_speech_timeout");
   child.emitMessage({ type: "error", code: "macos_recognition_failed" });
   assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+});
+
+test("unchanged macOS transcript ends despite loud noise and waits for the native final", async (t) => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  const logs = [];
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: { info: (...entry) => logs.push(entry) } })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  child.emitMessage({ type: "transcript", text: "途中", isFinal: false });
+  for (let index = 0; index < 3; index += 1) {
+    ws.emit("message", pcm(4000, 200), true);
+    await tick();
+    t.mock.timers.tick(500);
+    child.emitMessage({ type: "transcript", text: "途中", isFinal: false });
+  }
+  assert.equal(child.ended, undefined);
+  t.mock.timers.tick(500);
+  assert.equal(child.ended, true);
+  assert.equal(ws.sent.some((message) => message.type === "done"), false);
+  assert.equal(logs[0][1].trigger, "transcript_inactivity");
+  assert.equal(logs[0][1].silentMs, 0);
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  assert.equal(child.writes.length, 3);
+  child.emitMessage({ type: "transcript", text: "", isFinal: true });
+  child.emit("close", 0);
+  assert.deepEqual(ws.sent.at(-2), { type: "transcript", text: "途中", isFinal: true, stability: 1 });
+  assert.deepEqual(ws.sent.at(-1), { type: "done", reason: "speech_end_timeout", hasSpeech: true });
+  t.mock.timers.tick(20_000);
+  assert.equal(ws.sent.filter((message) => message.type === "done" || message.type === "error").length, 1);
+  assert.doesNotMatch(JSON.stringify(logs), /途中/);
+});
+
+test("macOS loud noise without recognized text never starts transcript completion", async (t) => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  child.emitMessage({ type: "transcript", text: " \t", isFinal: false });
+  t.mock.timers.tick(3_000);
+  assert.equal(child.ended, undefined);
+  assert.equal(ws.sent.some((message) => message.type === "speech_activity_end"), false);
+  ws.close();
+});
+
+test("macOS inactivity closes input during a submitted write without a second VAD completion", async (t) => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  let completeWrite;
+  child.stdin.write = (_buffer, callback) => { completeWrite = callback; };
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  child.emitMessage({ type: "transcript", text: "途中", isFinal: false });
+  ws.emit("message", pcm(0, 1_250), true);
+  await tick();
+  t.mock.timers.tick(2_000);
+  assert.equal(child.ended, true);
+  completeWrite();
+  await tick();
+  assert.equal(ws.sent.filter((message) => message.type === "speech_activity_end").length, 1);
+  child.emitMessage({ type: "transcript", text: "確定", isFinal: true });
+  child.emit("close", 0);
+  assert.equal(ws.sent.at(-1).hasSpeech, true);
+});
+
+test("macOS stop, disconnect, errors, and duration limit disarm transcript inactivity", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const outcome of ["user_stop", "disconnect", "error", "max_duration"]) {
+    const ws = new FakeSocket();
+    const child = new FakeChild();
+    createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+    start(ws);
+    await tick();
+    child.emitMessage({ type: "ready" });
+    if (outcome === "max_duration") {
+      ws.emit("message", pcm(4000, 200), true);
+      await tick();
+      t.mock.timers.tick(MAX_DURATION_SECONDS * 1000 - 1_000);
+    }
+    child.emitMessage({ type: "transcript", text: "途中", isFinal: false });
+    if (outcome === "user_stop") {
+      ws.emit("message", Buffer.from('{"type":"stop"}'), false);
+      await tick();
+    } else if (outcome === "disconnect") ws.close();
+    else if (outcome === "error") child.emitMessage({ type: "error", code: "macos_recognition_failed" });
+    else t.mock.timers.tick(1_000);
+    child.emitMessage({ type: "transcript", text: "遅延応答", isFinal: false });
+    t.mock.timers.tick(3_000);
+    assert.equal(ws.sent.some((message) => message.type === "speech_activity_end"), false, outcome);
+    child.emit("close", 0);
+  }
+});
+
+test("macOS inactivity finalization stays bounded even while an audio callback is pending", async (t) => {
+  const ws = new FakeSocket();
+  const child = new FakeChild();
+  child.stdin.write = () => {};
+  createMacosStreamingSttHandler({ startHelper: async () => child, log: {} })(ws);
+  start(ws);
+  await tick();
+  child.emitMessage({ type: "ready" });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  child.emitMessage({ type: "transcript", text: "途中", isFinal: false });
+  ws.emit("message", pcm(4000, 200), true);
+  await tick();
+  t.mock.timers.tick(2_000);
+  assert.equal(child.ended, true);
+  t.mock.timers.tick(15_000);
+  assert.equal(ws.sent.at(-1).code, "macos_finalization_timeout");
+  assert.equal(child.killed, true);
 });
