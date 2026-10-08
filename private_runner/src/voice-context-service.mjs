@@ -547,7 +547,7 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
     let cancellationSent = false;
     const requestControllers = new Map();
     function interruptForCancellation() {
-      if (!signal?.aborted || !onApproval) return;
+      if (!signal?.aborted) return;
       for (const { controller } of requestControllers.values()) controller.abort();
       if (!identity) {
         if (!turnStartRequested) client?.close();
@@ -562,8 +562,8 @@ export function createVoiceContextService({ rootDir, createClient, sharedWorkspa
       if (onApproval && cwd !== path.join(await fs.realpath(workspaceRoot), active.workspaceConversationId || active.logicalConversationId)) {
         throw invalid("voice_store_corrupt", "Voice working directory path is invalid");
       }
-      client = createClient({ signal: onApproval ? undefined : signal });
-      if (onApproval && signal) {
+      client = createClient();
+      if (signal) {
         signal.addEventListener("abort", interruptForCancellation, { once: true });
         removeAbortListener = () => signal.removeEventListener("abort", interruptForCancellation);
         interruptForCancellation();

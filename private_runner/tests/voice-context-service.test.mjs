@@ -6,17 +6,21 @@ import path from "node:path";
 import test from "node:test";
 import { createVoiceContextService } from "../src/voice-context-service.mjs";
 
-function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {}, threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
+function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEvents = [], completionUsage, responseOutputTokensByTurn = [], failSummary = false, failSummaryCount = 0, holdTurns = false, holdThreadStart = false, holdSummaryTurnStart = false, finishOnInterrupt = false, holdInterrupt = false, holdInterruptRpc = false, holdSummaries = false, holdModelList = false, ignoreAbort = false, toolItem = false, toolCall = false, approvalMethod = "", userInput = false, resolveUserInput = false, nativeRequests = [], threadParents = {}, threadReadDelayMs = 0, userItem = false, ephemeral = true, mcpPage, configuredMcpServers = {}, missingTurnId = false, failMethod } = {}) {
   const calls = [];
   const releases = [];
   const summaryReleases = [];
   const modelReleases = [];
   const threadReleases = [];
   const interruptReleases = [];
+  const summaryTurnStartReleases = [];
+  const clients = [];
   let summaryFailuresRemaining = failSummaryCount;
   let responseTurnIndex = 0;
   let responseThreadId = "";
   const createClient = ({ signal } = {}) => {
+    const connection = { signal, closed: false };
+    clients.push(connection);
     let listener = () => {};
     let serverHandler = () => undefined;
     let resolveCompletion = () => {};
@@ -25,7 +29,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
     return {
       openPromise: Promise.resolve(),
       notify() {},
-      close() { resolveCompletion(); },
+      close() { connection.closed = true; resolveCompletion(); },
       addNotificationListener(next) { listener = next; return () => { listener = () => {}; }; },
       addServerRequestHandler(handler) { serverHandler = handler; return () => { serverHandler = () => undefined; }; },
       waitForTurnCompletion() {
@@ -85,6 +89,7 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
             throw new Error("private summary text and credential");
           }
           const turnId = randomUUID();
+          connection.identity = { threadId: params.threadId, turnId };
           if (!isSummary) {
             for (const event of earlyAgentEvents) listener(event.method, {
               threadId: params.threadId, turnId, ...event.params,
@@ -181,13 +186,14 @@ function fakeCodex({ reply = "answer", summaryReply, agentEvents, earlyAgentEven
           if (isSummary && holdSummaries) summaryReleases.push(finish);
           else if (holdTurns) releases.push(finish);
           else queueMicrotask(() => void finish());
+          if (isSummary && holdSummaryTurnStart) await new Promise((resolve) => summaryTurnStartReleases.push(resolve));
           return { turn: { id: missingTurnId ? "" : turnId } };
         }
         return {};
       },
     };
   };
-  return { createClient, calls, releases, threadReleases, interruptReleases, summaryReleases, modelReleases };
+  return { createClient, calls, clients, releases, threadReleases, interruptReleases, summaryReleases, summaryTurnStartReleases, modelReleases };
 }
 
 async function waitFor(check) {
@@ -205,6 +211,7 @@ async function fixture(t, options = {}) {
   t.after(async () => {
     for (const release of codex.modelReleases.splice(0)) release();
     for (const release of codex.threadReleases.splice(0)) release();
+    for (const release of codex.summaryTurnStartReleases.splice(0)) release();
     for (const finish of codex.interruptReleases.splice(0)) finish();
     for (const finish of codex.releases.splice(0)) finish();
     for (const finish of codex.summaryReleases.splice(0)) finish();
@@ -969,11 +976,55 @@ test("a canceled summary cannot write after message clear", async (t) => {
   const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
   await service.open();
   await waitFor(() => codex.summaryReleases.length === 1);
+  const summaryClient = codex.clients.at(-1);
   const cleared = await service.clearMessages();
+  await waitFor(() => summaryClient.closed);
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "turn/interrupt").map(({ params }) => params),
+    [summaryClient.identity]);
   codex.summaryReleases.shift()();
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(await fs.stat(path.join(rootDir, cleared.logicalConversationId, "MEMORY.md")).then(() => true, () => false), false);
   assert.equal((await service.open()).unsummarizedMessageCount, 0);
+});
+
+for (const stage of ["thread_start", "turn_start"]) test(`summary cancellation during ${stage} stops before closing its connection`, async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, {
+    holdSummaries: true, holdThreadStart: stage === "thread_start", holdSummaryTurnStart: stage === "turn_start",
+  });
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  const releases = stage === "thread_start" ? codex.threadReleases : codex.summaryTurnStartReleases;
+  await waitFor(() => releases.length === 1);
+  const summaryClient = codex.clients.at(-1);
+  await service.clearMessages();
+  assert.equal(codex.calls.some(({ method }) => method === "turn/interrupt"), false);
+  assert.equal(summaryClient.closed, stage === "thread_start");
+  releases.shift()();
+  await waitFor(() => summaryClient.closed);
+  if (stage === "thread_start") {
+    assert.equal(codex.calls.some(({ method }) => method === "turn/start"), false);
+  } else {
+    await waitFor(() => codex.calls.some(({ method }) => method === "turn/interrupt"));
+    assert.deepEqual(codex.calls.filter(({ method }) => method === "turn/interrupt").map(({ params }) => params),
+      [summaryClient.identity]);
+  }
+});
+
+test("canceling a summary bounds an unresponsive interrupt RPC without blocking the next utterance", async (t) => {
+  const { rootDir, codex, conversation } = await fixture(t, { holdSummaries: true, holdInterruptRpc: true });
+  await seedPairs(rootDir, conversation.logicalConversationId, 11);
+  const service = createVoiceContextService({ rootDir, createClient: codex.createClient });
+  await service.open();
+  await waitFor(() => codex.summaryReleases.length === 1);
+  const summaryClient = codex.clients.at(-1);
+  assert.equal((await complete(service, conversation, "next utterance")).result.status, "completed");
+  assert.deepEqual(codex.calls.filter(({ method }) => method === "turn/interrupt").map(({ params }) => params),
+    [summaryClient.identity]);
+  assert.equal(summaryClient.closed, false);
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  assert.equal(summaryClient.closed, true);
+  await service.clearMessages();
 });
 
 test("restart completes a committed message clear before opening the new conversation", async (t) => {

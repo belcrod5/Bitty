@@ -44,8 +44,11 @@ async function waitForPort(value, child) {
   throw new Error("isolated Codex App Server did not listen");
 }
 
-for (const withGlobalMcp of [true, false]) test(
-  withGlobalMcp ? "isolated Codex App Server sends voice context with inherited MCP" : "isolated Codex App Server sends selected voice context without global MCP",
+for (const { withGlobalMcp, cancelSummary = false } of [
+  { withGlobalMcp: true }, { withGlobalMcp: false }, { withGlobalMcp: false, cancelSummary: true },
+]) test(
+  cancelSummary ? "isolated Codex App Server cancels the summary model stream before disconnecting"
+    : withGlobalMcp ? "isolated Codex App Server sends voice context with inherited MCP" : "isolated Codex App Server sends selected voice context without global MCP",
   { skip: !enabled }, async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "voice-codex-integration-"));
   execFileSync("git", ["init", "--quiet", "--template=", temp]);
@@ -59,6 +62,8 @@ for (const withGlobalMcp of [true, false]) test(
     topics: [{ name: "earlier.md", content: "- [確定] MOCK_SUMMARY [pairSeq: 1]\n" }],
   });
   const modelInput = new Promise((resolve) => { resolveInput = resolve; });
+  let resolveSummaryClosed;
+  const summaryClosed = new Promise((resolve) => { resolveSummaryClosed = resolve; });
   const mock = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -67,6 +72,12 @@ for (const withGlobalMcp of [true, false]) test(
       const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       modelRequests.push(input);
       resolveInput(input);
+      if (cancelSummary && modelRequestCount === 2) {
+        response.once("close", resolveSummaryClosed);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(": held summary\n\n");
+        return;
+      }
       if (modelRequestCount <= 2) {
         const text = modelRequestCount === 1 ? "CURRENT_ASSISTANT" : summaryText;
         const item = {
@@ -94,7 +105,10 @@ for (const withGlobalMcp of [true, false]) test(
     response.end();
   });
   await new Promise((resolve) => mock.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => mock.close(resolve)));
+  t.after(() => {
+    mock.closeAllConnections();
+    return new Promise((resolve) => mock.close(resolve));
+  });
   const modelPort = mock.address().port;
   const appPort = await port();
   const codexHome = path.join(temp, "codex-home");
@@ -251,6 +265,22 @@ for (const withGlobalMcp of [true, false]) test(
   assert.equal(Object.hasOwn(pending, "categorizeLegacy"), false);
   assert.deepEqual(pending.pairs.map(({ pairSeq }) => pairSeq), [1]);
   assert.deepEqual(Object.keys(pending).sort(), ["existingMemory", "fromPairSeq", "pairs", "throughPairSeq"]);
+  if (cancelSummary) {
+    await service.clearMessages();
+    await within(summaryClosed, 5000, "canceled summary kept the model stream open");
+    const interruptCalls = voiceCalls.filter(({ method }) => method === "turn/interrupt");
+    assert.equal(interruptCalls.length, 1);
+    assert.equal(interruptCalls[0].params.threadId,
+      voiceCalls.find(({ method, params }) => method === "turn/start" && params.approvalPolicy === "never").params.threadId);
+    assert.ok(interruptCalls[0].params.turnId);
+    assert.equal(modelRequestCount, 2);
+    assert.equal((await service.open()).unsummarizedMessageCount, 0);
+    const clearedPointer = await fs.readFile(path.join(memoryRoot, "index.md"), "utf8");
+    const clearedGeneration = clearedPointer.match(/generation=([0-9a-f-]{36})/)[1];
+    assert.equal(await fs.readFile(path.join(memoryRoot, "generations", clearedGeneration, "index.md"), "utf8"), "# Topics\n");
+    assert.equal((await fs.readFile(path.join(memoryRoot, "recent.json"), "utf8").then(JSON.parse)).length, 0);
+    return;
+  }
   await within((async () => {
     while (!(await fs.readFile(path.join(memoryRoot, "index.md"), "utf8")).includes("previous=")) await delay(25);
   })(), 20000, `summary retry did not commit: ${rpcErrors.join("; ")} ${codexError}`);
