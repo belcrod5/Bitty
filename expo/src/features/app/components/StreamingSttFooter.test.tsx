@@ -81,7 +81,8 @@ describe("StreamingSttFooter", () => {
       trailingAccessory={<View testID="status-menu" />}
       onSendCorrection={onSendCorrection} onEditCorrection={onEditCorrection} />);
     expect(screen.getByTestId("streaming-stt-correction-preview")).toBeTruthy();
-    expect(screen.getByTestId("streaming-stt-preview-glow")).toBeTruthy();
+    expect(screen.queryByTestId("streaming-stt-preview-glow")).toBeNull();
+    expect(screen.queryByText("音声の補正")).toBeNull();
     await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
     expect(mockSharedValues[6].value).toBe(0);
     const sendButton = screen.getByLabelText("補正した文字起こしを今すぐ送信");
@@ -94,11 +95,11 @@ describe("StreamingSttFooter", () => {
     expect(within(footer).getByTestId("streaming-stt-trailing-accessory")).toBeTruthy();
     await fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 112 } } });
     expect(mockRRects.at(-1)).toEqual({ x: 54, y: 78, width: 264, height: 84 });
-    await fireEvent(screen.getByTestId("streaming-stt-correction-preview"), "layout",
-      { nativeEvent: { layout: { width: 268, height: 120 } } });
-    expect(mockRRects.at(-1)).toEqual({ x: 46, y: 46, width: 272, height: 124 });
-    expect(screen.queryByText("元の")).toBeNull();
-    expect(screen.getByTestId("streaming-stt-correction-deleted").props.children).toBe("削除: 元の");
+    expect(mockRRects).toHaveLength(1);
+    expect(StyleSheet.flatten(screen.getByText("元の").props.style).textDecorationLine)
+      .toBe("line-through");
+    expect(StyleSheet.flatten(screen.getByText("元の").props.style).backgroundColor).toBeUndefined();
+    expect(screen.queryByTestId("streaming-stt-correction-deleted")).toBeNull();
     expect(StyleSheet.flatten(screen.getByText("補正した").props.style).textDecorationLine)
       .toBe("underline");
     expect(StyleSheet.flatten(screen.getByText("補正した").props.style).backgroundColor).toBeUndefined();
@@ -138,28 +139,46 @@ describe("StreamingSttFooter", () => {
     timing.mockRestore();
   });
 
-  it("replaces the preview text with an editor inside the same glowing card", async () => {
+  it("replaces the preview text with an editor and discard action inside the same card", async () => {
     const onChangeCorrectionText = jest.fn();
     const onSendCorrection = jest.fn();
+    const onDiscardCorrection = jest.fn();
     const parts = diffSttTranscript("元の文章", "補正した文章");
     const screen = await render(<StreamingSttFooter transcript="元の文章" phase="preview"
       onStop={jest.fn()} correctionPreview={{ text: "補正した文章", deadlineMs: null,
         editing: true, parts }} onChangeCorrectionText={onChangeCorrectionText}
-      onSendCorrection={onSendCorrection} />);
+      onSendCorrection={onSendCorrection} onDiscardCorrection={onDiscardCorrection} />);
     const card = screen.getByTestId("streaming-stt-correction-preview");
     const editor = within(card).getByTestId("streaming-stt-correction-editor");
     expect(editor.props.value).toBe("補正した文章");
-    expect(within(card).getByTestId("streaming-stt-preview-glow")).toBeTruthy();
+    expect(within(card).queryByTestId("streaming-stt-preview-glow")).toBeNull();
+    expect(screen.queryByText("補正を編集")).toBeNull();
     expect(within(card).queryByTestId("streaming-stt-correction-text")).toBeNull();
     expect(screen.queryByLabelText("補正した文字起こしをこのカードで編集")).toBeNull();
-    expect(screen.queryByText("削除: 元の")).toBeNull();
+    expect(screen.queryByTestId("streaming-stt-correction-deleted")).toBeNull();
     await fireEvent.changeText(editor, "編集した文章");
     expect(onChangeCorrectionText).toHaveBeenCalledWith("編集した文章");
     const send = screen.getByLabelText("編集した文字起こしを送信");
     expect(send.props.accessibilityValue?.now).toBeUndefined();
     expect(within(send).queryByTestId("streaming-stt-correction-ring")).toBeNull();
+    const discard = screen.getByLabelText("補正を破棄して元の文字起こしに戻す");
+    expect(StyleSheet.flatten(discard.props.style)).toMatchObject({ width: 44, height: 44 });
+    await fireEvent.press(discard);
+    expect(onDiscardCorrection).toHaveBeenCalledTimes(1);
     await fireEvent.press(send);
     expect(onSendCorrection).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a deletion-only change inline without clipping a long removed span", async () => {
+    const removed = "古い言葉".repeat(40);
+    const screen = await render(<StreamingSttFooter transcript={`${removed}残す`} phase="preview"
+      onStop={jest.fn()} correctionPreview={{ text: "残す", deadlineMs: Date.now() + 3000,
+        editing: false, parts: diffSttTranscript(`${removed}残す`, "残す") }} />);
+    const deletion = screen.getByText(removed);
+    expect(StyleSheet.flatten(deletion.props.style).textDecorationLine).toBe("line-through");
+    expect(screen.getByTestId("streaming-stt-correction-text").props.accessibilityLabel)
+      .toContain(`削除 ${removed}`);
+    expect(screen.queryByTestId("streaming-stt-correction-deleted")).toBeNull();
   });
 
   it("keeps the rainbow glow on the input while correction is running", async () => {

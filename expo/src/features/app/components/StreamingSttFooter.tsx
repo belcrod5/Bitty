@@ -48,11 +48,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   correctionPreview?: SttCorrectionPreview | null;
   onSendCorrection?: () => void;
   onEditCorrection?: () => void;
+  onDiscardCorrection?: () => void;
   onChangeCorrectionText?: (text: string) => void;
   trailingAccessory?: ReactNode;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
   onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
-  leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection,
+  leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection, onDiscardCorrection,
   onChangeCorrectionText }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
@@ -79,8 +80,6 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const audioLevel = useSharedValue(0);
   const gradientStart = useSharedValue(0);
   const gradientEnd = useSharedValue(360);
-  const previewBorder = useSharedValue(Skia.Path.Make());
-  const previewCenter = useSharedValue(vec(0, 0));
   const correctionInputRef = useRef<TextInput>(null);
   const glowStatus = phase === "correcting" || phase === "preview" ? undefined : voiceStatus;
   const glowColors = glowStatus === "responding" ? RESPONDING_COLORS
@@ -201,49 +200,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   } : {};
   const panelTop = trailingAccessory ? 32 : leadingAccessory ? 8 : 0;
   const metadataTop = leadingAccessory ? (trailingAccessory ? 8 : 19) : 0;
-  const removedText = correctionPreview?.parts.filter((part) => part.kind === "delete")
-    .map((part) => part.text).join(" · ");
-  const renderGlow = (path: typeof border, glowCenter: typeof center, testID: string) => (
-    <Canvas pointerEvents="none" testID={testID}
-      style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE,
-        top: -GLOW_SPACE, bottom: -GLOW_SPACE }}>
-      {themeId === "standard" ? (
-        <Path path={path} color="#101827" opacity={0.35} style="stroke" strokeWidth={26}>
-          <BlurMask blur={9} style="normal" />
-        </Path>
-      ) : null}
-      <Group opacity={glowOpacity}>
-        <Path path={path} style="stroke" strokeWidth={glowWidth}>
-          <SweepGradient c={glowCenter} colors={glowColors} mode="repeat"
-            start={gradientStart} end={gradientEnd} />
-          <BlurMask blur={glowBlur} style="normal" />
-        </Path>
-      </Group>
-      <Path path={path} style="stroke" strokeWidth={2}>
-        <SweepGradient c={glowCenter} colors={glowColors} mode="repeat"
-          start={gradientStart} end={gradientEnd} />
-      </Path>
-    </Canvas>
-  );
-
   return (
     <View>
       {correctionPreview ? (
         <View testID="streaming-stt-correction-preview" style={{ position: "relative", overflow: "visible",
           marginBottom: 14, padding: 16, borderRadius: 16, backgroundColor: "#152130",
-          borderWidth: 1, borderColor: "#365267", zIndex: 2 }}
-          onLayout={(event) => {
-            const { width, height } = event.nativeEvent.layout;
-            const path = Skia.Path.Make();
-            path.addRRect(Skia.RRectXY(Skia.XYWHRect(GLOW_SPACE - 2, GLOW_SPACE - 2,
-              width + 4, height + 4), 16, 16));
-            previewBorder.value = path;
-            previewCenter.value = vec(GLOW_SPACE + width / 2, GLOW_SPACE + height / 2);
-          }}>
-          {renderGlow(previewBorder, previewCenter, "streaming-stt-preview-glow")}
-          <View style={{ zIndex: 1 }}>
-            <Text style={{ color: "#8fb2c7", fontSize: 11, fontWeight: "600", letterSpacing: 1,
-              marginBottom: 9 }}>{correctionPreview.editing ? "補正を編集" : "音声の補正"}</Text>
+          borderWidth: 1, borderColor: "#365267", zIndex: 2 }}>
             {correctionPreview.editing ? (
               <TextInput ref={correctionInputRef} testID="streaming-stt-correction-editor"
                 value={correctionPreview.text} onChangeText={onChangeCorrectionText}
@@ -258,31 +220,35 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
                   .map((part) => `${part.kind === "delete" ? "削除" : "追加"} ${part.text}`).join("、")}`}
                 accessibilityHint="ダブルタップで今すぐ送信">
                 <Text style={{ color: "#f4f7ff", fontSize: 17, lineHeight: 25 }}>
-                  {correctionPreview.parts.filter((part) => part.kind !== "delete").map((part, index) => (
+                  {correctionPreview.parts.map((part, index) => (
                     <Text key={index} style={part.kind === "insert" ? {
                       color: "#9ee9f2", textDecorationLine: "underline",
                       textDecorationColor: "#61bfd1",
+                    } : part.kind === "delete" ? {
+                      color: "#a9b4c0", textDecorationLine: "line-through",
+                      textDecorationColor: "#a9b4c0",
                     } : undefined}>{part.text}</Text>
                   ))}
                 </Text>
               </TouchableOpacity>
             )}
-            {!correctionPreview.editing && removedText ? (
-              <Text testID="streaming-stt-correction-deleted" numberOfLines={1}
-                style={{ color: "#899bab", fontSize: 12, marginTop: 9 }}>
-                {`削除: ${removedText}`}
-              </Text>
-            ) : null}
             <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center",
               marginTop: 10, gap: 10 }}>
-              {!correctionPreview.editing ? (
+              {correctionPreview.editing ? (
+                <TouchableOpacity onPress={onDiscardCorrection} accessibilityRole="button"
+                  accessibilityLabel="補正を破棄して元の文字起こしに戻す"
+                  style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#2b3c51",
+                    alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="close" size={22} color="#dce9f2" />
+                </TouchableOpacity>
+              ) : (
                 <TouchableOpacity onPress={onEditCorrection} accessibilityRole="button"
                   accessibilityLabel="補正した文字起こしをこのカードで編集"
                   style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#2b3c51",
                     alignItems: "center", justifyContent: "center" }}>
                   <Ionicons name="pencil" size={19} color="#dce9f2" />
                 </TouchableOpacity>
-              ) : null}
+              )}
               <TouchableOpacity onPress={onSendCorrection} accessibilityRole="button"
                 accessibilityLabel={correctionPreview.editing ? "編集した文字起こしを送信" : "補正した文字起こしを今すぐ送信"}
                 accessibilityValue={correctionPreview.editing ? undefined : { min: 0, max: 3000,
@@ -304,7 +270,6 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
                 </View>
               </TouchableOpacity>
             </View>
-          </View>
         </View>
       ) : null}
     <View
@@ -324,7 +289,26 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           GLOW_SPACE + panelTop + (height - panelTop) / 2);
       }}
     >
-      {renderGlow(border, center, "streaming-stt-glow")}
+      <Canvas pointerEvents="none" testID="streaming-stt-glow"
+        style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE,
+          top: -GLOW_SPACE, bottom: -GLOW_SPACE }}>
+        {themeId === "standard" ? (
+          <Path path={border} color="#101827" opacity={0.35} style="stroke" strokeWidth={26}>
+            <BlurMask blur={9} style="normal" />
+          </Path>
+        ) : null}
+        <Group opacity={glowOpacity}>
+          <Path path={border} style="stroke" strokeWidth={glowWidth}>
+            <SweepGradient c={center} colors={glowColors} mode="repeat"
+              start={gradientStart} end={gradientEnd} />
+            <BlurMask blur={glowBlur} style="normal" />
+          </Path>
+        </Group>
+        <Path path={border} style="stroke" strokeWidth={2}>
+          <SweepGradient c={center} colors={glowColors} mode="repeat"
+            start={gradientStart} end={gradientEnd} />
+        </Path>
+      </Canvas>
       <View testID="streaming-stt-panel" style={[styles.chatInputWrapper, { minHeight: 62, backgroundColor: "#070b12",
         zIndex: 1 }]}>
         {voiceStatus === "speaking" && onCancelSpeaking ? (

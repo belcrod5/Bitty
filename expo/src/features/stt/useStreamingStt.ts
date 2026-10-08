@@ -59,7 +59,7 @@ export function useStreamingStt(options: Options) {
   const ttsStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const correctionAbortRef = useRef<AbortController | null>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const previewRef = useRef<(SttCorrectionPreview & { version: number; sent: boolean }) | null>(null);
+  const previewRef = useRef<(SttCorrectionPreview & { originalText: string; version: number; sent: boolean }) | null>(null);
   const autoSendingRef = useRef<number | null>(null);
   const [correctionPreview, setCorrectionPreview] = useState<SttCorrectionPreview | null>(null);
   const identityRef = useRef(options.correctionIdentity);
@@ -241,6 +241,12 @@ export function useStreamingStt(options: Options) {
     return true;
   }, [clearCorrection, clearReplyCycleWait]);
 
+  const discardCorrection = useCallback(() => {
+    const preview = previewRef.current;
+    if (!preview || !preview.editing || preview.sent || preview.version !== sessionVersionRef.current) return;
+    if (cancelCorrection(false)) latestRef.current.setTranscript(preview.originalText);
+  }, [cancelCorrection]);
+
   useEffect(() => {
     if (identityRef.current === options.correctionIdentity) return;
     identityRef.current = options.correctionIdentity;
@@ -412,7 +418,7 @@ export function useStreamingStt(options: Options) {
             } else {
               const parts = diffSttTranscript(finalText, result.text);
               const preview = { text: result.text, parts, deadlineMs: null, editing: false };
-              previewRef.current = { ...preview, version, sent: false };
+              previewRef.current = { ...preview, originalText: finalText, version, sent: false };
               setCorrectionPreview(preview);
               setPhase("preview");
             }
@@ -545,6 +551,7 @@ export function useStreamingStt(options: Options) {
     sendCorrectionPreview,
     beginCorrectionEdit,
     setCorrectionText,
+    discardCorrection,
     cancelCorrection,
     start,
     stop,

@@ -483,6 +483,7 @@ function VoiceConversationSession({
                     correctionPreview={streamingStt.correctionPreview}
                     onSendCorrection={streamingStt.sendCorrectionPreview}
                     onEditCorrection={streamingStt.beginCorrectionEdit}
+                    onDiscardCorrection={streamingStt.discardCorrection}
                     onChangeCorrectionText={streamingStt.setCorrectionText}
                     onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscript(text); }}
                     onFocus={() => {

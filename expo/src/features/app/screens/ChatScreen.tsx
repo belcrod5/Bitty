@@ -2412,6 +2412,7 @@ export function ChatScreen({
                 correctionPreview={streamingStt.correctionPreview}
                 onSendCorrection={streamingStt.sendCorrectionPreview}
                 onEditCorrection={streamingStt.beginCorrectionEdit}
+                onDiscardCorrection={streamingStt.discardCorrection}
                 onChangeCorrectionText={streamingStt.setCorrectionText}
                 onStop={() => {
                   streamingStt.stop();
