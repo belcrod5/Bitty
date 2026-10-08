@@ -58,6 +58,7 @@ const mockStt = {
   sendCorrectionPreview: jest.fn(),
   beginCorrectionEdit: jest.fn(),
   discardCorrection: jest.fn(),
+  reportCorrectionPreviewDisplay: jest.fn(),
   setCorrectionText: jest.fn(),
   correctionPreview: null as { editing: boolean; text: string; deadlineMs: number | null;
     parts: { kind: "same"; text: string }[] } | null,
@@ -81,6 +82,7 @@ type MockFooterProps = {
   onChangeText?: (text: string) => void;
   onEditCorrection?: () => void;
   onDiscardCorrection?: () => void;
+  onCorrectionPreviewDisplay?: (...args: unknown[]) => void;
   onChangeCorrectionText?: (text: string) => void;
   onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
   onCancelSpeaking?: () => void;
@@ -651,6 +653,7 @@ test("routes inline correction editing through the shared STT hook", async () =>
   expect(mockStt.beginCorrectionEdit).toHaveBeenCalledTimes(1);
   expect(mockStt.setCorrectionText).toHaveBeenCalledWith("編集した文章");
   expect(mockStt.discardCorrection).toHaveBeenCalledTimes(1);
+  expect(mockFooterProps?.onCorrectionPreviewDisplay).toBe(mockStt.reportCorrectionPreviewDisplay);
   mockStt.correctionPreview = { editing: true, text: "編集した文章", deadlineMs: null,
     parts: [{ kind: "same", text: "編集した文章" }] };
   await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);

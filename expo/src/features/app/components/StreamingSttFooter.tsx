@@ -46,6 +46,9 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   onHistoryToggle?: () => void;
   leadingAccessory?: ReactNode;
   correctionPreview?: SttCorrectionPreview | null;
+  onCorrectionPreviewDisplay?: (parts: SttCorrectionPreview["parts"],
+    stage: "committed" | "card_layout" | "text_layout",
+    metrics?: { width?: number; height?: number; lineCount?: number; inlineStrikethrough?: boolean }) => void;
   onSendCorrection?: () => void;
   onEditCorrection?: () => void;
   onDiscardCorrection?: () => void;
@@ -53,7 +56,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   trailingAccessory?: ReactNode;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
   onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
-  leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection, onDiscardCorrection,
+  leadingAccessory, trailingAccessory, correctionPreview, onCorrectionPreviewDisplay,
+  onSendCorrection, onEditCorrection, onDiscardCorrection,
   onChangeCorrectionText }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
@@ -113,6 +117,14 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   React.useEffect(() => {
     if (correctionPreview?.editing) correctionInputRef.current?.focus();
   }, [correctionPreview?.editing]);
+
+  React.useEffect(() => {
+    if (!correctionPreview || correctionPreview.deadlineMs === null || correctionPreview.editing) return;
+    onCorrectionPreviewDisplay?.(correctionPreview.parts, "committed", {
+      inlineStrikethrough: correctionPreview.parts.some((part) => part.kind === "delete"),
+    });
+  }, [correctionPreview?.parts, correctionPreview?.deadlineMs, correctionPreview?.editing,
+    onCorrectionPreviewDisplay]);
 
   useFrameCallback((frame) => {
     if (motionReduced) return;
@@ -205,7 +217,13 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       {correctionPreview ? (
         <View testID="streaming-stt-correction-preview" style={{ position: "relative", overflow: "visible",
           marginBottom: 14, padding: 16, borderRadius: 16, backgroundColor: "#152130",
-          borderWidth: 1, borderColor: "#365267", zIndex: 2 }}>
+          borderWidth: 1, borderColor: "#365267", zIndex: 2 }}
+          onLayout={(event) => {
+            if (!correctionPreview.editing) onCorrectionPreviewDisplay?.(correctionPreview.parts, "card_layout", {
+              width: Math.round(event.nativeEvent.layout.width),
+              height: Math.round(event.nativeEvent.layout.height),
+            });
+          }}>
             {correctionPreview.editing ? (
               <TextInput ref={correctionInputRef} testID="streaming-stt-correction-editor"
                 value={correctionPreview.text} onChangeText={onChangeCorrectionText}
@@ -219,7 +237,11 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
                   .filter((part) => part.kind !== "same")
                   .map((part) => `${part.kind === "delete" ? "削除" : "追加"} ${part.text}`).join("、")}`}
                 accessibilityHint="ダブルタップで今すぐ送信">
-                <Text style={{ color: "#f4f7ff", fontSize: 17, lineHeight: 25 }}>
+                <Text testID="streaming-stt-correction-parts" style={{ color: "#f4f7ff", fontSize: 17, lineHeight: 25 }}
+                  onTextLayout={(event) => onCorrectionPreviewDisplay?.(correctionPreview.parts, "text_layout", {
+                    lineCount: event.nativeEvent.lines.length,
+                    inlineStrikethrough: correctionPreview.parts.some((part) => part.kind === "delete"),
+                  })}>
                   {correctionPreview.parts.map((part, index) => (
                     <Text key={index} style={part.kind === "insert" ? {
                       color: "#9ee9f2", textDecorationLine: "underline",

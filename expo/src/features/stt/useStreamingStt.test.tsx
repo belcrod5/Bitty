@@ -118,7 +118,7 @@ test("shows changed correction for three seconds, then sends exactly once", asyn
     version: 2, chars: 4, contextMessages: 1,
   });
   expect(options.onDiagnostic).toHaveBeenCalledWith("stt_correction_result", {
-    version: 2, changed: true, deletedChars: 2, insertedChars: 4,
+    version: 2, changed: true, deletedChars: 2, deletedWhitespaceChars: 0, insertedChars: 4,
   });
   expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("元の文章");
   expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("補正した文章");
@@ -155,6 +155,60 @@ test("starts the full send window after the preview commits even when rendering 
   expect(options.sendTranscript).not.toHaveBeenCalled();
   await advanceTimers(1);
   expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("preview display diagnostics are once per stage, version-bound, and omit transcript text", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "残す" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "消す　\n残す");
+  const parts = result.current.correctionPreview!.parts;
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_correction_result", expect.objectContaining({
+    deletedChars: 4, deletedWhitespaceChars: 2,
+  }));
+  await act(async () => {
+    result.current.reportCorrectionPreviewDisplay(parts, "committed", { inlineStrikethrough: true });
+    result.current.reportCorrectionPreviewDisplay(parts, "committed", { inlineStrikethrough: true });
+    result.current.reportCorrectionPreviewDisplay(parts, "card_layout", { width: 260, height: 120 });
+    result.current.reportCorrectionPreviewDisplay(parts, "text_layout", { lineCount: 2,
+      inlineStrikethrough: true });
+  });
+  const displayCalls = options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_correction_preview_display");
+  expect(displayCalls).toHaveLength(3);
+  expect(displayCalls.map(([, payload]) => payload)).toEqual([
+    { version: 2, stage: "committed", deletedSpans: 1, inlineStrikethrough: true },
+    { version: 2, stage: "card_layout", deletedSpans: 1, width: 260, height: 120 },
+    { version: 2, stage: "text_layout", deletedSpans: 1, lineCount: 2, inlineStrikethrough: true },
+  ]);
+  await act(async () => result.current.reportCorrectionPreviewDisplay([...parts], "card_layout", { width: 1 }));
+  expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_correction_preview_display"))
+    .toHaveLength(3);
+  await act(async () => result.current.sendCorrectionPreview());
+  await act(async () => result.current.reportCorrectionPreviewDisplay(parts, "card_layout", { width: 1 }));
+  expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_correction_preview_display"))
+    .toHaveLength(3);
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("消す");
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("残す");
+});
+
+test("canceled preview cannot report a late native layout", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  const parts = result.current.correctionPreview!.parts;
+  await act(async () => result.current.cancelCorrection());
+  await act(async () => result.current.reportCorrectionPreviewDisplay(parts, "card_layout", { width: 260 }));
+  expect(options.onDiagnostic.mock.calls.some(([event]) => event === "stt_correction_preview_display"))
+    .toBe(false);
+  await finishSpeech(await openReady(result), "次の文章");
+  const nextParts = result.current.correctionPreview!.parts;
+  await act(async () => result.current.reportCorrectionPreviewDisplay(nextParts, "card_layout", { width: 280 }));
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_correction_preview_display", {
+    version: expect.any(Number), stage: "card_layout", deletedSpans: expect.any(Number), width: 280,
+  });
+  expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_correction_preview_display"))
+    .toHaveLength(1);
 });
 
 test("tap sends immediately and cancel leaves corrected draft editable", async () => {

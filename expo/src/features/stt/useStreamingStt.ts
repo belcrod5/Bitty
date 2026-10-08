@@ -60,6 +60,7 @@ export function useStreamingStt(options: Options) {
   const correctionAbortRef = useRef<AbortController | null>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewRef = useRef<(SttCorrectionPreview & { originalText: string; version: number; sent: boolean }) | null>(null);
+  const previewDisplayStagesRef = useRef(new Set<string>());
   const autoSendingRef = useRef<number | null>(null);
   const [correctionPreview, setCorrectionPreview] = useState<SttCorrectionPreview | null>(null);
   const identityRef = useRef(options.correctionIdentity);
@@ -219,6 +220,21 @@ export function useStreamingStt(options: Options) {
     preview.text = text;
     setCorrectionPreview((current) => current && previewRef.current === preview
       ? { ...current, text } : current);
+  }, []);
+
+  // Temporary content-free diagnostics for the deleted-span display investigation.
+  const reportCorrectionPreviewDisplay = useCallback((parts: SttCorrectionPreview["parts"],
+    stage: "committed" | "card_layout" | "text_layout",
+    metrics: { width?: number; height?: number; lineCount?: number; inlineStrikethrough?: boolean } = {}) => {
+    const current = previewRef.current;
+    if (!current || current.parts !== parts || current.sent || current.editing
+      || current.version !== sessionVersionRef.current || previewDisplayStagesRef.current.has(stage)) return;
+    previewDisplayStagesRef.current.add(stage);
+    latestRef.current.onDiagnostic?.("stt_correction_preview_display", {
+      version: current.version, stage,
+      deletedSpans: current.parts.filter((part) => part.kind === "delete").length,
+      ...metrics,
+    });
   }, []);
 
   const cancelCorrection = useCallback((restoreDraft = true, manualSubmit = false) => {
@@ -421,14 +437,17 @@ export function useStreamingStt(options: Options) {
               await sendAutoTranscript(finalText, version);
             } else {
               const parts = diffSttTranscript(finalText, result.text);
+              const deletedParts = parts.filter((part) => part.kind === "delete");
               latestRef.current.onDiagnostic?.("stt_correction_result", {
                 version, changed: true,
-                deletedChars: parts.filter((part) => part.kind === "delete")
-                  .reduce((count, part) => count + part.text.length, 0),
+                deletedChars: deletedParts.reduce((count, part) => count + part.text.length, 0),
+                deletedWhitespaceChars: deletedParts.reduce((count, part) =>
+                  count + (part.text.match(/\s/gu)?.length || 0), 0),
                 insertedChars: parts.filter((part) => part.kind === "insert")
                   .reduce((count, part) => count + part.text.length, 0),
               });
               const preview = { text: result.text, parts, deadlineMs: null, editing: false };
+              previewDisplayStagesRef.current.clear();
               previewRef.current = { ...preview, originalText: finalText, version, sent: false };
               setCorrectionPreview(preview);
               setPhase("preview");
@@ -568,6 +587,7 @@ export function useStreamingStt(options: Options) {
     sendCorrectionPreview,
     beginCorrectionEdit,
     setCorrectionText,
+    reportCorrectionPreviewDisplay,
     discardCorrection,
     cancelCorrection,
     start,

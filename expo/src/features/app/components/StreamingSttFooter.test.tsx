@@ -73,16 +73,20 @@ describe("StreamingSttFooter", () => {
   it("places the correction above the transcript with immediate send and edit actions", async () => {
     const onSendCorrection = jest.fn();
     const onEditCorrection = jest.fn();
+    const onCorrectionPreviewDisplay = jest.fn();
     const screen = await render(<StreamingSttFooter transcript="元の文章" phase="preview" onStop={jest.fn()}
       reduceMotion
       correctionPreview={{ text: "補正した文章", deadlineMs: Date.now() + 3000, editing: false,
         parts: diffSttTranscript("元の文章", "補正した文章") }}
       leadingAccessory={<View testID="orchestrator-icon" />}
       trailingAccessory={<View testID="status-menu" />}
-      onSendCorrection={onSendCorrection} onEditCorrection={onEditCorrection} />);
+      onSendCorrection={onSendCorrection} onEditCorrection={onEditCorrection}
+      onCorrectionPreviewDisplay={onCorrectionPreviewDisplay} />);
     expect(screen.getByTestId("streaming-stt-correction-preview")).toBeTruthy();
     expect(screen.queryByTestId("streaming-stt-preview-glow")).toBeNull();
     expect(screen.queryByText("音声の補正")).toBeNull();
+    expect(onCorrectionPreviewDisplay).toHaveBeenCalledWith(expect.any(Array), "committed",
+      { inlineStrikethrough: true });
     await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
     expect(mockSharedValues[6].value).toBe(0);
     const sendButton = screen.getByLabelText("補正した文字起こしを今すぐ送信");
@@ -96,6 +100,16 @@ describe("StreamingSttFooter", () => {
     await fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 112 } } });
     expect(mockRRects.at(-1)).toEqual({ x: 54, y: 78, width: 264, height: 84 });
     expect(mockRRects).toHaveLength(1);
+    await fireEvent(screen.getByTestId("streaming-stt-correction-preview"), "layout",
+      { nativeEvent: { layout: { width: 268.4, height: 120.2 } } });
+    await fireEvent(screen.getByTestId("streaming-stt-correction-parts"), "textLayout",
+      { nativeEvent: { lines: [{ text: "private line" }, { text: "private next line" }] } });
+    expect(onCorrectionPreviewDisplay).toHaveBeenCalledWith(expect.any(Array), "card_layout",
+      { width: 268, height: 120 });
+    expect(onCorrectionPreviewDisplay).toHaveBeenCalledWith(expect.any(Array), "text_layout",
+      { lineCount: 2, inlineStrikethrough: true });
+    expect(JSON.stringify(onCorrectionPreviewDisplay.mock.calls.map(([, , metrics]) => metrics)))
+      .not.toContain("private line");
     expect(StyleSheet.flatten(screen.getByText("元の").props.style).textDecorationLine)
       .toBe("line-through");
     expect(StyleSheet.flatten(screen.getByText("元の").props.style).backgroundColor).toBeUndefined();

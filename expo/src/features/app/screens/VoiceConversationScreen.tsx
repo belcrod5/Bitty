@@ -481,6 +481,7 @@ function VoiceConversationSession({
                     reduceMotion={reduceMotion !== false}
                     phase={streamingStt.phase}
                     correctionPreview={streamingStt.correctionPreview}
+                    onCorrectionPreviewDisplay={streamingStt.reportCorrectionPreviewDisplay}
                     onSendCorrection={streamingStt.sendCorrectionPreview}
                     onEditCorrection={streamingStt.beginCorrectionEdit}
                     onDiscardCorrection={streamingStt.discardCorrection}
