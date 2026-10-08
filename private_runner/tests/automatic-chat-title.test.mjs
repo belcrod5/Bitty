@@ -31,20 +31,37 @@ test("generated titles use the selected model and preserve marker changes", asyn
   assert.deepEqual(await store.getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
   await store.mutate({ type: "session.set", backendId: "codex", sessionId: "first-chat", markerColor: "red" });
   let options;
+  let input;
   const saved = await generateAutomaticChatTitle({
     input: "旅行は11月1日に行きたい", sessionRef, catalog, store,
-    runCodex: async (_prompt, opts) => { options = opts; return "「旅行 11/1」\n余計な説明"; },
+    runCodex: async (prompt, opts) => { input = prompt; options = opts; return "「旅行 11/1」\n余計な説明"; },
   });
   assert.equal(saved, true);
   assert.equal(options.modelInfo.model, "gpt-6-luna");
   assert.equal(options.reasoningEffort, "low");
+  assert.deepEqual(JSON.parse(input), { firstMessage: "旅行は11月1日に行きたい" });
+  assert.match(options.instructions, /12文字程度/u);
+  assert.match(options.instructions, /途中で切らない/u);
   const snapshot = await store.snapshot();
   assert.equal(snapshot.sessions[JSON.stringify(["codex", "first-chat"])].title, "旅行 11/1");
   assert.equal(snapshot.sessions[JSON.stringify(["codex", "first-chat"])].markerColor, "red");
   const reopened = createClientStateStore(path.join(dir, "client-state.json"));
   assert.deepEqual(await reopened.getTitleSettings(), { modelId: "gpt-6-luna", reasoningEffort: "low" });
   assert.equal((await reopened.snapshot()).sessions[JSON.stringify(["codex", "first-chat"])].titleSource, "generated");
-  assert.equal(normalizeAutomaticTitle("タイトル: お問い合わせ内容修正と確認"), "お問い合わせ内容修正と確認".slice(0, 12));
+  assert.equal(normalizeAutomaticTitle("タイトル: お問い合わせ内容修正と確認"), "お問い合わせ内容修正と確認");
+});
+
+test("natural titles longer than the guideline are saved without cutting words", async () => {
+  const title = "音声認識の誤変換と文脈補正";
+  let saved;
+  assert.equal(await generateAutomaticChatTitle({
+    input: "音声認識の誤変換を会話の文脈で直したい", sessionRef, catalog,
+    store: { getTitleSettings: async () => ({ modelId: "gpt-6-luna", reasoningEffort: "low" }),
+      setGeneratedTitle: async (_ref, value) => { saved = value; return true; } },
+    runCodex: async () => `「${title}」`,
+  }), true);
+  assert.equal(saved, title);
+  assert.equal(normalizeAutomaticTitle("  \nタイトル： 『自然な　短いタイトル』\n説明"), "自然な 短いタイトル");
 });
 
 test("title effort is independent, persisted, and passed to the selected model", async (t) => {

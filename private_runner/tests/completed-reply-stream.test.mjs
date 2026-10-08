@@ -52,6 +52,21 @@ test("Codex completed response without native deltas emits the full text once", 
   assert.deepEqual(deltas, [{ text: reply, source: "pseudo" }]);
 });
 
+test("Codex passes task instructions to the upstream request and keeps the default for other calls", async () => {
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return new Response(`data: ${JSON.stringify({ type: "response.completed", response: { output: [
+      { type: "message", content: [{ type: "output_text", text: reply }] },
+    ] } })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+  };
+  await __TESTING__.runCodexStream("title data", { instructions: "Generate only a natural short title." });
+  await __TESTING__.runCodexStream("ordinary request");
+  assert.equal(requests[0].instructions, "Generate only a natural short title.");
+  assert.ok(requests[1].instructions);
+  assert.notEqual(requests[1].instructions, requests[0].instructions);
+});
+
 test("file-tools completed reply emits once and keeps its reply identity", async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ output_text: reply }));
   const modes = [];
