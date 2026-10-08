@@ -407,23 +407,40 @@ export function useStreamingStt(options: Options) {
           setPhase("correcting");
           const controller = new AbortController();
           correctionAbortRef.current = controller;
+          latestRef.current.onDiagnostic?.("stt_correction_started", {
+            version, chars: finalText.length, contextMessages: Math.min(12, latestRef.current.correctionContext.length),
+          });
           try {
             const result = await correctSttTranscript(latestRef.current.runnerUrl, latestRef.current.runnerToken,
               finalText, latestRef.current.correctionContext.slice(-12), controller.signal);
             if (version !== sessionVersionRef.current || controller.signal.aborted) return;
             correctionAbortRef.current = null;
             if (!result.changed) {
+              latestRef.current.onDiagnostic?.("stt_correction_result", { version, changed: false });
               setPhase("idle");
               await sendAutoTranscript(finalText, version);
             } else {
               const parts = diffSttTranscript(finalText, result.text);
+              latestRef.current.onDiagnostic?.("stt_correction_result", {
+                version, changed: true,
+                deletedChars: parts.filter((part) => part.kind === "delete")
+                  .reduce((count, part) => count + part.text.length, 0),
+                insertedChars: parts.filter((part) => part.kind === "insert")
+                  .reduce((count, part) => count + part.text.length, 0),
+              });
               const preview = { text: result.text, parts, deadlineMs: null, editing: false };
               previewRef.current = { ...preview, originalText: finalText, version, sent: false };
               setCorrectionPreview(preview);
               setPhase("preview");
             }
-          } catch {
+          } catch (error) {
             if (version === sessionVersionRef.current && !controller.signal.aborted) {
+              latestRef.current.onDiagnostic?.("stt_correction_failed", {
+                version, errorName: error instanceof Error ? error.name : "unknown",
+                ...(error instanceof Error && "status" in error && typeof error.status === "number"
+                  && Number.isInteger(error.status) && error.status >= 100 && error.status <= 599
+                  ? { httpStatus: error.status } : {}),
+              });
               finishFailure("文字起こしの補正に失敗しました。内容を確認して手動で送信してください。");
             }
           }

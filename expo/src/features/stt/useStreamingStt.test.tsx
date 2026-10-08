@@ -114,6 +114,15 @@ test("shows changed correction for three seconds, then sends exactly once", asyn
     parts: expect.arrayContaining([
       { kind: "delete", text: "元の" }, { kind: "insert", text: "補正した" },
     ]) });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_correction_started", {
+    version: 2, chars: 4, contextMessages: 1,
+  });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_correction_result", {
+    version: 2, changed: true, deletedChars: 2, insertedChars: 4,
+  });
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("元の文章");
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("補正した文章");
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toContain("直前の返答");
   const deadlineMs = result.current.correctionPreview!.deadlineMs;
   expect(options.sendTranscript).not.toHaveBeenCalled();
   await advanceTimers(2000);
@@ -335,12 +344,15 @@ test("an unresolved old send cannot prevent canceling a new session preview", as
 });
 
 test("correction failure preserves the transcript and never auto sends", async () => {
-  jest.mocked(correctSttTranscript).mockRejectedValue(new Error("offline"));
+  jest.mocked(correctSttTranscript).mockRejectedValue(Object.assign(new Error("correction failed"), { status: 502 }));
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));
   await finishSpeech(await openReady(result), "元の文章");
   expect(options.setTranscript).toHaveBeenCalledWith("元の文章");
   expect(options.onError).toHaveBeenCalledWith(expect.stringContaining("手動で送信"));
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_correction_failed", {
+    version: 2, errorName: "Error", httpStatus: 502,
+  });
   await advanceTimers(4000);
   expect(options.sendTranscript).not.toHaveBeenCalled();
 });
