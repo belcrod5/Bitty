@@ -83,6 +83,22 @@ test("returns the exact original when no correction is needed", async (t) => {
     { changed: false, text: "そのまま" });
 });
 
+test("uses the latest four messages without merging context into the transcript", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-stt-correction-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const text = "その設定を確認して";
+  const context = Array.from({ length: 12 }, (_, index) => ({
+    role: index % 2 ? "assistant" : "user", text: `会話 ${index}`,
+  }));
+  const client = fakeClient({ changed: false, text });
+  const service = createSttCorrectionService({ createClient: () => client,
+    settings: { getCorrection: async () => ({ model: "gpt-6-luna", effort: "low" }) },
+    workspaceDirectory: path.join(root, "scratch") });
+  await service.correct({ text, context });
+  const turn = client.calls.find((call) => call.method === "turn/start").params;
+  assert.deepEqual(JSON.parse(turn.input[0].text), { transcript: text, recentConversation: context.slice(-4) });
+});
+
 test("abort interrupts the ephemeral turn and discards a late answer", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "bitty-stt-correction-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

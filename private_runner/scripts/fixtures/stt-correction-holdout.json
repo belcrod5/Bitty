@@ -1,0 +1,40 @@
+[
+  {
+    "id": "period-homophone",
+    "text": "試用の機関は3日間でお願いします。",
+    "context": [
+      { "role": "user", "text": "試用期間を決めたいです。" },
+      { "role": "assistant", "text": "試用期間は何日間にしますか。" }
+    ],
+    "expected": "試用の期間は3日間でお願いします。"
+  },
+  {
+    "id": "new-project-spelling",
+    "text": "つきしろの仕様書を更新して。",
+    "context": [
+      { "role": "user", "text": "新しいプロジェクト名は月白、読みはつきしろです。" },
+      { "role": "assistant", "text": "月白の仕様書を準備しました。" }
+    ],
+    "expected": "月白の仕様書を更新して。"
+  },
+  {
+    "id": "contradicting-context-facts",
+    "text": "上限は20ではなく10です。公開はまだしないで。",
+    "context": [
+      { "role": "user", "text": "上限20で公開する案を検討しています。" },
+      { "role": "assistant", "text": "上限20で公開する計画ですね。" }
+    ],
+    "expected": "上限は20ではなく10です。公開はまだしないで。",
+    "unchanged": true
+  },
+  {
+    "id": "new-topic-uncertainty",
+    "text": "その件はたぶん明日にします。話は変わるけど、コーヒー豆を買いたい。",
+    "context": [
+      { "role": "user", "text": "ネットワーク構成の変更を検討しています。" },
+      { "role": "assistant", "text": "ネットワーク構成を今日更新できます。" }
+    ],
+    "expected": "その件はたぶん明日にします。話は変わるけど、コーヒー豆を買いたい。",
+    "unchanged": true
+  }
+]

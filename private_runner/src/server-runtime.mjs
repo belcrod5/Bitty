@@ -1726,7 +1726,7 @@ function buildOpenAICodexResponseRequest(prompt, opts = {}) {
     store: false,
     stream: true,
   };
-  body.instructions = resolveOpenAICodexInstructions();
+  body.instructions = resolveOpenAICodexInstructions(opts.instructions);
   const effort = normalizeReasoningEffort(reasoningEffort, { warnInvalid: false });
   if (effort) {
     body.reasoning = { effort };
@@ -1788,6 +1788,7 @@ async function runCodexStreamLeased(prompt, opts = {}) {
   const payload = buildOpenAICodexResponseRequest(prompt, {
     modelInfo,
     reasoningEffort,
+    instructions: opts.instructions,
   });
   let streamedReply = "";
   let completedReply = "";

@@ -1,0 +1,36 @@
+[
+  {
+    "id": "context-homophone",
+    "text": "新しい通知機能の使用を説明して。",
+    "context": [
+      { "role": "user", "text": "新しい通知機能の仕様書を作っています。" },
+      { "role": "assistant", "text": "通知機能の仕様を整理しました。動作条件を説明できます。" }
+    ],
+    "expected": "新しい通知機能の仕様を説明して。"
+  },
+  {
+    "id": "proofreading-homophone",
+    "text": "この原稿の公正をお願い。",
+    "context": [
+      { "role": "user", "text": "誤字脱字のある原稿を校正したいです。" },
+      { "role": "assistant", "text": "原稿の校正を進めましょう。" }
+    ],
+    "expected": "この原稿の校正をお願い。"
+  },
+  {
+    "id": "split-technical-term",
+    "text": "オースのリフレッシュトー君が期限切れです。",
+    "context": [
+      { "role": "user", "text": "OAuthのrefresh tokenを更新する処理を確認しています。" },
+      { "role": "assistant", "text": "OAuthのrefresh tokenの有効期限と更新処理を確認しましょう。" }
+    ],
+    "expected": "OAuthのrefresh tokenが期限切れです。"
+  },
+  {
+    "id": "ambiguous-new-name",
+    "text": "ミズキさんにはまだ送らないで。",
+    "context": [],
+    "expected": "ミズキさんにはまだ送らないで。",
+    "unchanged": true
+  }
+]
