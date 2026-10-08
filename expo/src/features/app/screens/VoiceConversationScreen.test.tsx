@@ -54,6 +54,9 @@ const mockStt = {
   phase: "idle",
   start: jest.fn(),
   stop: jest.fn(),
+  cancelCorrection: jest.fn(),
+  sendCorrectionPreview: jest.fn(),
+  correctionPreview: null,
   sendManualTranscript: jest.fn(async (_text: string, onAccepted: () => boolean) => { onAccepted(); }),
   abort: mockAbort,
 };

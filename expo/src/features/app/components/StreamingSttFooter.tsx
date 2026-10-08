@@ -42,8 +42,12 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
   leadingAccessory?: ReactNode;
+  correctionPreview?: { text: string; seconds: number } | null;
+  onSendCorrection?: () => void;
+  onCancelCorrection?: () => void;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
-  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle, leadingAccessory }, ref) {
+  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle, leadingAccessory,
+  correctionPreview, onSendCorrection, onCancelCorrection }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -177,6 +181,22 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         center.value = vec(GLOW_SPACE + left + (width - left) / 2, GLOW_SPACE + top + (height - top) / 2);
       }}
     >
+      {correctionPreview ? (
+        <View testID="streaming-stt-correction-preview" style={{ marginBottom: 10, padding: 12,
+          borderRadius: 12, backgroundColor: "#17273b", zIndex: 2 }}>
+          <TouchableOpacity onPress={onSendCorrection} accessibilityRole="button"
+            accessibilityLabel="補正した文字起こしを今すぐ送信">
+            <Text style={{ color: "#f4f7ff", fontSize: 16 }}>{correctionPreview.text}</Text>
+            <Text style={{ color: "#a8b9cb", fontSize: 12, marginTop: 5 }}>
+              {`${correctionPreview.seconds}秒後に送信 · タップして今すぐ送信`}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onCancelCorrection} accessibilityRole="button"
+            accessibilityLabel="自動送信をキャンセルして編集" style={{ alignSelf: "flex-end", paddingTop: 8 }}>
+            <Text style={{ color: "#a8b9cb", fontSize: 13 }}>キャンセルして編集</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <Canvas
         pointerEvents="none"
         testID="streaming-stt-glow"
@@ -251,7 +271,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
               {...(Platform.OS === "macos" ? { submitKeyEvents: [{ key: "Enter" }] } : {})}
               multiline
               scrollEnabled
-              placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…" : "音声を聞いています…")}
+              placeholder={statusText || (phase === "idle" ? "メッセージを入力" : phase === "finalizing" ? "文字起こしを確定中…"
+                : phase === "correcting" ? "文字起こしを補正中…" : phase === "preview" ? "補正結果を確認中…" : "音声を聞いています…")}
               placeholderTextColor="#8e9bad"
               accessibilityLabel="文字起こしを編集"
               {...historyAccessibility}

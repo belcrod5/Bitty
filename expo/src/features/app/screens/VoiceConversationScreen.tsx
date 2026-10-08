@@ -202,8 +202,10 @@ function VoiceConversationSession({
       ?.orchestrators?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
   }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
   useEffect(() => {
-    if (historyExpanded && appActive && voice.ready) void voice.refreshHistory();
-  }, [appActive, historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
+    if (appActive && voice.ready && (voice.turnStatus === "idle" || voice.turnStatus === "completed")) {
+      void voice.refreshHistory();
+    }
+  }, [appActive, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
   useEffect(() => {
     if (!appActive || paused || !voice.ready) return;
     const historyOrdinal = historyExpanded
@@ -237,6 +239,13 @@ function VoiceConversationSession({
     runnerToken,
     transcript,
     autoReplyAfterStt: true,
+    correctionContext: [
+      ...voice.history.filter((message) => message.text.trim()),
+      ...(voice.reply?.text && !voice.history.some((message) => message.role === "assistant"
+        && message.clientOperationId === voice.reply?.operationId)
+        ? [{ role: "assistant" as const, text: voice.reply.text }] : []),
+    ].slice(-12).map((message) => ({ role: message.role, text: message.text.slice(0, 2000) })),
+    correctionIdentity: `${orchestrator.id}:${voice.logicalConversationId}`,
     setTranscript,
     sendTranscript: voice.sendTranscript,
     onUsage: (usage) => footerRef.current?.updateUsage(usage),
@@ -477,8 +486,12 @@ function VoiceConversationSession({
                     voiceStatus={voiceStatus}
                     reduceMotion={reduceMotion !== false}
                     phase={streamingStt.phase}
-                    onChangeText={setTranscript}
+                    correctionPreview={streamingStt.correctionPreview}
+                    onSendCorrection={streamingStt.sendCorrectionPreview}
+                    onCancelCorrection={() => { streamingStt.cancelCorrection(); setEditingTranscript(true); }}
+                    onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscript(text); }}
                     onFocus={() => {
+                      streamingStt.cancelCorrection();
                       setInitialStartPending(false);
                       setEditingTranscript(true);
                       streamingStt.stop();

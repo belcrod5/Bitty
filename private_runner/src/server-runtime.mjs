@@ -63,6 +63,7 @@ import { createGoogleCloudHttpHandler } from "./google-cloud-http.mjs";
 import { MAX_FRAME_BYTES } from "./streaming-stt-protocol.mjs";
 import { createStreamingSttHandler } from "./streaming-stt-handler.mjs";
 import { createSttSettingsService, createSttSettingsHttpHandler } from "./stt-settings.mjs";
+import { createSttCorrectionService, createSttCorrectionHttpHandler } from "./stt-correction.mjs";
 
 const SERVER_FILE_PATH = fileURLToPath(import.meta.url);
 const SERVER_DIR = path.dirname(SERVER_FILE_PATH);
@@ -6881,8 +6882,21 @@ const googleCloudHttpHandler = createGoogleCloudHttpHandler({
   googleCloudService,
   usageLedger: googleCloudUsageLedger,
 });
+const sttCorrectionService = createSttCorrectionService({
+    createClient: (options) => createCodexRpcClient(options),
+    settings: sttSettings,
+    workspaceDirectory: path.join(WORKSPACE_ROOT, "private_runner/logs/stt-correction-workspace"),
+});
 const sttSettingsHttpHandler = createSttSettingsHttpHandler({
   service: sttSettings,
+  listModels: sttCorrectionService.listModels,
+  runnerToken: RUNNER_TOKEN,
+  parseAuthToken,
+  readJsonBody,
+  json,
+});
+const sttCorrectionHttpHandler = createSttCorrectionHttpHandler({
+  service: sttCorrectionService,
   runnerToken: RUNNER_TOKEN,
   parseAuthToken,
   readJsonBody,
@@ -7603,6 +7617,7 @@ const server = http.createServer(async (req, res) => {
 
   if (await googleCloudHttpHandler(req, res, pathname)) return;
   if (await sttSettingsHttpHandler(req, res, pathname)) return;
+  if (await sttCorrectionHttpHandler(req, res, pathname)) return;
 
   if (req.method === "GET" && pathname === "/health") {
     if (req.headers.authorization) {

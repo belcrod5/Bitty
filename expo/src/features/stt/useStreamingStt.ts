@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
 import { useStreamingSttTransport } from "./useStreamingSttTransport";
 import type { StreamingSttSession } from "./streamingSttTransport";
 import {
@@ -9,14 +10,17 @@ import {
   type StreamingTranscript,
 } from "./streamingTranscript";
 import { parseStreamingSttMessage, type StreamingSttUsage } from "./streamingSttClient";
+import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
 
-export type StreamingSttPhase = "idle" | "connecting" | "recording" | "finalizing";
+export type StreamingSttPhase = "idle" | "connecting" | "recording" | "finalizing" | "correcting" | "preview";
 
 type Options = {
   runnerUrl: string;
   runnerToken: string;
   transcript: string;
   autoReplyAfterStt: boolean;
+  correctionContext: SttCorrectionContext[];
+  correctionIdentity: string;
   setTranscript: (text: string) => void;
   sendTranscript: (text: string, onAccepted: () => void) => Promise<void>;
   onUsage: (usage: StreamingSttUsage) => void;
@@ -52,6 +56,13 @@ export function useStreamingStt(options: Options) {
   const sawTtsPlaybackRef = useRef(false);
   const replyCycleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ttsStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const correctionAbortRef = useRef<AbortController | null>(null);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const previewRef = useRef<{ text: string; version: number; sent: boolean } | null>(null);
+  const autoSendingRef = useRef<number | null>(null);
+  const [correctionPreview, setCorrectionPreview] = useState<{ text: string; seconds: number } | null>(null);
+  const identityRef = useRef(options.correctionIdentity);
   const transport = useStreamingSttTransport();
   const latestRef = useRef(options);
   latestRef.current = options;
@@ -67,6 +78,16 @@ export function useStreamingStt(options: Options) {
     sawTtsPlaybackRef.current = false;
     clearTimer(replyCycleTimeoutRef);
     clearTimer(ttsStartTimerRef);
+  }, []);
+
+  const clearCorrection = useCallback(() => {
+    correctionAbortRef.current?.abort();
+    correctionAbortRef.current = null;
+    clearTimer(previewTimerRef);
+    if (previewTickRef.current) clearInterval(previewTickRef.current);
+    previewTickRef.current = null;
+    previewRef.current = null;
+    setCorrectionPreview(null);
   }, []);
 
   const settleReplyCycle = useCallback(() => {
@@ -129,17 +150,110 @@ export function useStreamingStt(options: Options) {
     return pendingAbortRef.current;
   }, []);
 
-  const finishFailure = useCallback((message: string) => {
+  const finishFailure = useCallback((message: string, draft?: string) => {
     sessionVersionRef.current += 1;
     terminalRef.current = true;
     listeningRef.current = false;
     clearReplyCycleWait();
+    clearCorrection();
     clearTimer(retryTimerRef);
     void abortSession();
-    setTranscript(finalStreamingTranscript(transcriptStateRef.current));
+    setTranscript(draft ?? finalStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
     onError(message);
-  }, [abortSession, clearReplyCycleWait, onError, setTranscript]);
+  }, [abortSession, clearCorrection, clearReplyCycleWait, onError, setTranscript]);
+
+  const sendAutoTranscript = useCallback(async (text: string, version: number) => {
+    if (version !== sessionVersionRef.current) return;
+    autoSendingRef.current = version;
+    latestRef.current.onDiagnostic?.("stt_auto_send_dispatch", { version, chars: text.length,
+      listening: listeningRef.current });
+    if (listeningRef.current) awaitReplyCycle();
+    try {
+      await latestRef.current.sendTranscript(text, () => {
+        latestRef.current.onDiagnostic?.("stt_auto_send_accepted", {
+          version, current: version === sessionVersionRef.current,
+        });
+        if (version !== sessionVersionRef.current) return;
+        latestRef.current.setTranscript("");
+        transcriptStateRef.current = startStreamingTranscript("");
+        clearTimer(replyCycleTimeoutRef);
+      });
+      if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
+        sawReplyLoadingRef.current = true;
+        updateReplyCycle();
+      }
+    } catch {
+      latestRef.current.onDiagnostic?.("stt_auto_send_failed", {
+        version, current: version === sessionVersionRef.current,
+      });
+      if (version === sessionVersionRef.current) finishFailure("文字起こし結果を送信できませんでした。", text);
+    } finally {
+      if (autoSendingRef.current === version) autoSendingRef.current = null;
+    }
+  }, [awaitReplyCycle, finishFailure, updateReplyCycle]);
+
+  const sendCorrectionPreview = useCallback(() => {
+    const preview = previewRef.current;
+    if (!preview || preview.sent || preview.version !== sessionVersionRef.current) return;
+    preview.sent = true;
+    previewRef.current = null;
+    clearTimer(previewTimerRef);
+    if (previewTickRef.current) clearInterval(previewTickRef.current);
+    previewTickRef.current = null;
+    setCorrectionPreview(null);
+    setPhase("idle");
+    void sendAutoTranscript(preview.text, preview.version);
+  }, [sendAutoTranscript]);
+
+  const cancelCorrection = useCallback((restoreDraft = true, manualSubmit = false) => {
+    if (autoSendingRef.current === sessionVersionRef.current) {
+      if (manualSubmit) return false;
+      sessionVersionRef.current += 1;
+      listeningRef.current = false;
+      clearReplyCycleWait();
+      setPhase("idle");
+      return false;
+    }
+    if (!correctionAbortRef.current && !previewRef.current) return true;
+    const preview = previewRef.current;
+    sessionVersionRef.current += 1;
+    listeningRef.current = false;
+    clearCorrection();
+    clearReplyCycleWait();
+    if (preview && restoreDraft) latestRef.current.setTranscript(preview.text);
+    setPhase("idle");
+    return true;
+  }, [clearCorrection, clearReplyCycleWait]);
+
+  useEffect(() => {
+    if (identityRef.current === options.correctionIdentity) return;
+    identityRef.current = options.correctionIdentity;
+    cancelCorrection(false);
+  }, [options.correctionIdentity, cancelCorrection]);
+
+  useEffect(() => {
+    const listener = AppState.addEventListener("change", (state) => {
+      if (state !== "active") cancelCorrection();
+    });
+    return () => listener.remove();
+  }, [cancelCorrection]);
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview || !correctionPreview || preview.sent) return;
+    const deadline = Date.now() + 3000;
+    previewTickRef.current = setInterval(() => {
+      setCorrectionPreview((current) => current && previewRef.current === preview
+        ? { ...current, seconds: Math.max(1, Math.ceil((deadline - Date.now()) / 1000)) } : current);
+    }, 250);
+    previewTimerRef.current = setTimeout(sendCorrectionPreview, 3000);
+    return () => {
+      clearTimer(previewTimerRef);
+      if (previewTickRef.current) clearInterval(previewTickRef.current);
+      previewTickRef.current = null;
+    };
+  }, [correctionPreview?.text, sendCorrectionPreview]);
 
   const fail = useCallback((message: string) => {
     if (terminalRef.current) return;
@@ -270,38 +384,25 @@ export function useStreamingStt(options: Options) {
       if (message.hasSpeech && hasFinalSpeech) {
         setPhase("idle");
         if (latestRef.current.autoReplyAfterStt && finalText.trim()) {
-          latestRef.current.onDiagnostic?.("stt_auto_send_dispatch", {
-            version,
-            chars: finalText.length,
-            listening: listeningRef.current,
-          });
-          if (listeningRef.current) {
-            awaitReplyCycle();
-          }
+          setPhase("correcting");
+          const controller = new AbortController();
+          correctionAbortRef.current = controller;
           try {
-            await latestRef.current.sendTranscript(finalText, () => {
-              latestRef.current.onDiagnostic?.("stt_auto_send_accepted", {
-                version,
-                current: version === sessionVersionRef.current,
-              });
-              if (version !== sessionVersionRef.current) return;
-              latestRef.current.setTranscript("");
-              transcriptStateRef.current = startStreamingTranscript("");
-              clearTimer(replyCycleTimeoutRef);
-            });
-            if (version === sessionVersionRef.current && awaitingReplyCycleRef.current) {
-              // A successful sendTranscript has been accepted even if a fast terminal
-              // update never rendered replyLoading=true.
-              sawReplyLoadingRef.current = true;
-              updateReplyCycle();
+            const result = await correctSttTranscript(latestRef.current.runnerUrl, latestRef.current.runnerToken,
+              finalText, latestRef.current.correctionContext.slice(-12), controller.signal);
+            if (version !== sessionVersionRef.current || controller.signal.aborted) return;
+            correctionAbortRef.current = null;
+            if (!result.changed) {
+              setPhase("idle");
+              await sendAutoTranscript(finalText, version);
+            } else {
+              previewRef.current = { text: result.text, version, sent: false };
+              setCorrectionPreview({ text: result.text, seconds: 3 });
+              setPhase("preview");
             }
           } catch {
-            latestRef.current.onDiagnostic?.("stt_auto_send_failed", {
-              version,
-              current: version === sessionVersionRef.current,
-            });
-            if (version === sessionVersionRef.current) {
-              finishFailure("文字起こし結果を送信できませんでした。");
+            if (version === sessionVersionRef.current && !controller.signal.aborted) {
+              finishFailure("文字起こしの補正に失敗しました。内容を確認して手動で送信してください。");
             }
           }
         } else {
@@ -347,6 +448,7 @@ export function useStreamingStt(options: Options) {
   }, [onError, options.canStart, phase, startSession, transcript, transport.supported]);
 
   const stop = useCallback(() => {
+    if (correctionAbortRef.current || previewRef.current) { cancelCorrection(); return; }
     if (phase === "idle" || !listeningRef.current) return;
     latestRef.current.onDiagnostic?.("stt_stopped", { version: sessionVersionRef.current, phase });
     listeningRef.current = false;
@@ -357,10 +459,11 @@ export function useStreamingStt(options: Options) {
     void abortSession();
     setTranscript(displayStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
-  }, [abortSession, clearReplyCycleWait, phase, setTranscript]);
+  }, [abortSession, cancelCorrection, clearReplyCycleWait, phase, setTranscript]);
 
   const sendManualTranscript = useCallback(async (text: string, onAccepted: () => boolean) => {
     if (!text.trim()) return;
+    if (!cancelCorrection(false, true)) return;
     const version = sessionVersionRef.current;
     try {
       await latestRef.current.sendTranscript(text, () => {
@@ -380,9 +483,10 @@ export function useStreamingStt(options: Options) {
       }
       throw error;
     }
-  }, [awaitReplyCycle, clearReplyCycleWait, updateReplyCycle]);
+  }, [awaitReplyCycle, cancelCorrection, clearReplyCycleWait, updateReplyCycle]);
 
   const abort = useCallback(async () => {
+    clearCorrection();
     latestRef.current.onDiagnostic?.("stt_aborted", {
       version: sessionVersionRef.current,
       sessionOpen: sessionRef.current !== null,
@@ -395,7 +499,7 @@ export function useStreamingStt(options: Options) {
     await abortSession();
     setTranscript(finalStreamingTranscript(transcriptStateRef.current));
     setPhase("idle");
-  }, [abortSession, clearReplyCycleWait, setTranscript]);
+  }, [abortSession, clearCorrection, clearReplyCycleWait, setTranscript]);
 
   const isArmed = useCallback(() => listeningRef.current || sessionRef.current !== null, []);
   const isCapturing = useCallback(() => sessionRef.current !== null, []);
@@ -410,9 +514,10 @@ export function useStreamingStt(options: Options) {
     terminalRef.current = true;
     sessionVersionRef.current += 1;
     clearReplyCycleWait();
+    clearCorrection();
     clearTimer(retryTimerRef);
     void abortSession();
-  }, [abortSession, clearReplyCycleWait]);
+  }, [abortSession, clearCorrection, clearReplyCycleWait]);
 
   useEffect(() => updateReplyCycle(), [options.replyLoading, options.ttsPlaybackActive,
     options.voiceInputDuringTtsAllowed, updateReplyCycle]);
@@ -420,6 +525,9 @@ export function useStreamingStt(options: Options) {
   return {
     active: phase !== "idle",
     phase,
+    correctionPreview,
+    sendCorrectionPreview,
+    cancelCorrection,
     start,
     stop,
     sendManualTranscript,

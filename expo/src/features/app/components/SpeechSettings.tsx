@@ -15,9 +15,9 @@ const TTS_PROVIDER_LABELS = {
 } as const;
 
 const SETTING_ICONS = [
-  "paper-plane-outline",
   "volume-mute-outline",
   "volume-high-outline",
+  "megaphone-outline",
 ] as const;
 
 export function SpeechSettings() {
@@ -31,7 +31,6 @@ export function SpeechSettings() {
     ttsSpeed,
     voiceFilter,
     selectedVoiceId,
-    autoReplyAfterStt,
     autoBargeInEnabled,
     autoSpeakerPriorityEnabled,
     autoSpeakAfterReply,
@@ -44,7 +43,6 @@ export function SpeechSettings() {
     increaseTtsSpeed,
     changeVoiceFilter,
     selectVoiceId,
-    toggleAutoReplyAfterStt,
     toggleAutoBargeInEnabled,
     toggleAutoSpeakerPriorityEnabled,
     toggleAutoSpeakAfterReply,
@@ -54,7 +52,6 @@ export function SpeechSettings() {
   } = useAppSettings();
 
   const behaviorSettings = [
-    { label: "文字起こし後に送信", value: autoReplyAfterStt, onChange: toggleAutoReplyAfterStt },
     { label: "再生中の割り込み発話", value: autoBargeInEnabled, onChange: toggleAutoBargeInEnabled },
     { label: "再生中は録音を停止", value: autoSpeakerPriorityEnabled, onChange: toggleAutoSpeakerPriorityEnabled },
     { label: "返答後に読み上げ", value: autoSpeakAfterReply, onChange: toggleAutoSpeakAfterReply },

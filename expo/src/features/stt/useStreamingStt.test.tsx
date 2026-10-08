@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react-native";
 import { REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_GRACE_MS, useStreamingStt } from "./useStreamingStt";
 import type { StreamingSttTransportCallbacks } from "./streamingSttTransport";
+import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
 
 const mockSessions: MockSession[] = [];
 const mockConnect = jest.fn((_url: string, _token: string, callbacks: StreamingSttTransportCallbacks) => {
@@ -21,6 +22,9 @@ class MockSession {
 jest.mock("./useStreamingSttTransport", () => ({
   useStreamingSttTransport: () => ({ supported: true, connect: mockConnect }),
 }));
+jest.mock("./sttSettingsClient", () => ({
+  correctSttTranscript: jest.fn(async (_url: string, _token: string, text: string) => ({ changed: false, text })),
+}));
 
 const usage = {
   usedSeconds: 1,
@@ -36,6 +40,8 @@ function createOptions() {
     runnerToken: "token",
     transcript: "",
     autoReplyAfterStt: true,
+    correctionContext: [] as SttCorrectionContext[],
+    correctionIdentity: "session-1",
     setTranscript: jest.fn(),
     sendTranscript: jest.fn(async (_text: string, onAccepted: () => void) => onAccepted()),
     onUsage: jest.fn(),
@@ -82,6 +88,7 @@ async function finishSpeech(session: MockSession, text: string, reason = "speech
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
+  jest.mocked(correctSttTranscript).mockImplementation(async (_url, _token, text) => ({ changed: false, text }));
   mockSessions.length = 0;
 });
 
@@ -89,6 +96,142 @@ afterEach(() => {
   cleanup();
   jest.clearAllTimers();
   jest.useRealTimers();
+});
+
+test("shows changed correction for three seconds, then sends exactly once", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  options.correctionContext = [{ role: "assistant", text: "直前の返答" }];
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await finishSpeech(session, "元の文章");
+  expect(correctSttTranscript).toHaveBeenCalledWith("http://runner.test", "token", "元の文章",
+    options.correctionContext, expect.any(AbortSignal));
+  expect(result.current.correctionPreview).toEqual({ text: "補正した文章", seconds: 3 });
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(2000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await advanceTimers(1000);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("補正した文章", expect.any(Function));
+  await act(async () => result.current.sendCorrectionPreview());
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("tap sends immediately and cancel leaves corrected draft editable", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  await act(async () => result.current.cancelCorrection());
+  expect(options.setTranscript).toHaveBeenCalledWith("補正した文章");
+  await advanceTimers(4000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  await finishSpeech(await openReady(result), "次の文章");
+  await act(async () => result.current.sendCorrectionPreview());
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("補正した文章", expect.any(Function));
+  await advanceTimers(4000);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("manual Enter during preview cancels the timer before sending the draft", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  await act(async () => result.current.sendManualTranscript("元の文章", () => true));
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("元の文章", expect.any(Function));
+  await advanceTimers(4000);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("manual Enter cannot dispatch again after the preview timer claims send", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  let resolveSend = () => {};
+  let acceptSend = () => {};
+  const options = createOptions();
+  options.sendTranscript.mockImplementation((_text, onAccepted) => new Promise<void>((resolve) => {
+    acceptSend = onAccepted;
+    resolveSend = resolve;
+  }));
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  await advanceTimers(3000);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  await act(async () => result.current.sendManualTranscript("元の文章", () => true));
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  await act(async () => { acceptSend(); resolveSend(); });
+  expect(options.setTranscript).toHaveBeenCalledWith("");
+  expect(result.current.phase).toBe("connecting");
+});
+
+test("session switch discards a pending correction without overwriting its draft", async () => {
+  let resolveCorrection!: (value: { changed: boolean; text: string }) => void;
+  jest.mocked(correctSttTranscript).mockImplementation(() => new Promise((resolve) => {
+    resolveCorrection = resolve;
+  }));
+  const options = createOptions();
+  const { result, rerender } = await renderHook((props: Options) => useStreamingStt(props),
+    { initialProps: options });
+  await finishSpeech(await openReady(result), "古い会話");
+  expect(result.current.phase).toBe("correcting");
+  await act(async () => rerender({ ...options, correctionIdentity: "session-2" }));
+  await act(async () => resolveCorrection({ changed: true, text: "古い会話の補正" }));
+  await advanceTimers(4000);
+  expect(result.current.correctionPreview).toBeNull();
+  expect(options.setTranscript).not.toHaveBeenCalledWith("古い会話の補正");
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test("session switch after dispatch ignores late acceptance from the old send", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  let acceptOld = () => {};
+  let resolveOld = () => {};
+  const old = createOptions();
+  old.sendTranscript.mockImplementation((_text, onAccepted) => new Promise<void>((resolve) => {
+    acceptOld = onAccepted;
+    resolveOld = resolve;
+  }));
+  const { result, rerender } = await renderHook((props: Options) => useStreamingStt(props),
+    { initialProps: old });
+  await finishSpeech(await openReady(result), "古い会話");
+  await act(async () => result.current.sendCorrectionPreview());
+  const next = { ...old, correctionIdentity: "session-2", setTranscript: jest.fn() };
+  await act(async () => rerender(next));
+  await act(async () => { acceptOld(); resolveOld(); });
+  expect(next.setTranscript).not.toHaveBeenCalled();
+  expect(result.current.correctionPreview).toBeNull();
+});
+
+test("an unresolved old send cannot prevent canceling a new session preview", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  options.sendTranscript.mockImplementationOnce(() => new Promise<void>(() => undefined));
+  const { result, rerender } = await renderHook((props: Options) => useStreamingStt(props),
+    { initialProps: options });
+  await finishSpeech(await openReady(result), "古い会話");
+  await act(async () => result.current.sendCorrectionPreview());
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  await act(async () => rerender({ ...options, correctionIdentity: "session-2" }));
+  await finishSpeech(await openReady(result), "新しい会話");
+  expect(result.current.correctionPreview).not.toBeNull();
+  await act(async () => result.current.cancelCorrection());
+  expect(result.current.correctionPreview).toBeNull();
+  await advanceTimers(4000);
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("correction failure preserves the transcript and never auto sends", async () => {
+  jest.mocked(correctSttTranscript).mockRejectedValue(new Error("offline"));
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  expect(options.setTranscript).toHaveBeenCalledWith("元の文章");
+  expect(options.onError).toHaveBeenCalledWith(expect.stringContaining("手動で送信"));
+  await advanceTimers(4000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
 });
 
 test("starts without an optional eligibility gate", async () => {

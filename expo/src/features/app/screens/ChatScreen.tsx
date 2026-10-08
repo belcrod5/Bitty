@@ -1176,6 +1176,9 @@ export function ChatScreen({
     runnerToken,
     transcript: transcriptForView,
     autoReplyAfterStt,
+    correctionContext: conversationMessagesForView.filter((message) => !message.kind && message.content.trim())
+      .slice(-12).map((message) => ({ role: message.role, text: message.content.slice(0, 2000) })),
+    correctionIdentity: `${panelId}:${backendIdForView}:${selectedSessionIdForView}`,
     setTranscript: setTranscriptForView,
     sendTranscript: sendStreamingTranscript,
     onUsage: handleStreamingSttUsage,
@@ -2406,16 +2409,21 @@ export function ChatScreen({
                 ref={streamingSttFooterRef}
                 transcript={transcriptForView}
                 phase={streamingStt.phase}
+                correctionPreview={streamingStt.correctionPreview}
+                onSendCorrection={streamingStt.sendCorrectionPreview}
+                onCancelCorrection={() => { streamingStt.cancelCorrection(); setEditingSttTranscript(true); }}
                 onStop={() => {
                   streamingStt.stop();
                   setEditingSttTranscript(false);
                 }}
                 onFocus={() => {
+                  streamingStt.cancelCorrection();
                   setEditingSttTranscript(true);
                   streamingStt.stop();
                 }}
-                onChangeText={setTranscriptForView}
+                onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscriptForView(text); }}
                 onSubmit={async (text, onAccepted) => {
+                  if (!streamingStt.cancelCorrection(false, true)) return;
                   await sendReplyTranscriptByPanel(text, () => {
                     if (onAccepted()) setEditingSttTranscript(false);
                   });

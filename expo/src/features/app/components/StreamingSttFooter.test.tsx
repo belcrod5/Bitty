@@ -68,6 +68,20 @@ describe("StreamingSttFooter", () => {
     mockFrameCallback = null;
   });
 
+  it("places the correction above the transcript with immediate send and edit actions", async () => {
+    const onSendCorrection = jest.fn();
+    const onCancelCorrection = jest.fn();
+    const screen = await render(<StreamingSttFooter transcript="元の文章" phase="preview" onStop={jest.fn()}
+      correctionPreview={{ text: "補正した文章", seconds: 3 }}
+      onSendCorrection={onSendCorrection} onCancelCorrection={onCancelCorrection} />);
+    expect(screen.getByTestId("streaming-stt-correction-preview")).toBeTruthy();
+    expect(screen.getByText("補正した文章")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("補正した文字起こしを今すぐ送信"));
+    await fireEvent.press(screen.getByLabelText("自動送信をキャンセルして編集"));
+    expect(onSendCorrection).toHaveBeenCalledTimes(1);
+    expect(onCancelCorrection).toHaveBeenCalledTimes(1);
+  });
+
   it("clears old Google usage when a new recording session starts", async () => {
     const ref = React.createRef<StreamingSttFooterHandle>();
     const onStop = jest.fn();
