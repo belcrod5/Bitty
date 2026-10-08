@@ -193,7 +193,8 @@ export function useStreamingStt(options: Options) {
 
   const sendCorrectionPreview = useCallback(() => {
     const preview = previewRef.current;
-    if (!preview || preview.sent || preview.version !== sessionVersionRef.current) return;
+    if (!preview || preview.sent || preview.version !== sessionVersionRef.current
+      || !preview.text.trim()) return;
     preview.sent = true;
     previewRef.current = null;
     clearTimer(previewTimerRef);
@@ -201,6 +202,24 @@ export function useStreamingStt(options: Options) {
     setPhase("idle");
     void sendAutoTranscript(preview.text, preview.version);
   }, [sendAutoTranscript]);
+
+  const beginCorrectionEdit = useCallback(() => {
+    const preview = previewRef.current;
+    if (!preview || preview.sent || preview.version !== sessionVersionRef.current || preview.editing) return;
+    clearTimer(previewTimerRef);
+    preview.editing = true;
+    preview.deadlineMs = null;
+    setCorrectionPreview((current) => current && previewRef.current === preview
+      ? { ...current, editing: true, deadlineMs: null } : current);
+  }, []);
+
+  const setCorrectionText = useCallback((text: string) => {
+    const preview = previewRef.current;
+    if (!preview || !preview.editing || preview.sent || preview.version !== sessionVersionRef.current) return;
+    preview.text = text;
+    setCorrectionPreview((current) => current && previewRef.current === preview
+      ? { ...current, text } : current);
+  }, []);
 
   const cancelCorrection = useCallback((restoreDraft = true, manualSubmit = false) => {
     if (autoSendingRef.current === sessionVersionRef.current) {
@@ -237,14 +256,16 @@ export function useStreamingStt(options: Options) {
 
   useEffect(() => {
     const preview = previewRef.current;
-    if (!preview || !correctionPreview || preview.sent) return;
+    if (!preview || !correctionPreview || preview.sent || preview.editing) return;
     if (preview.deadlineMs === null) {
       const deadlineMs = Date.now() + 3000;
       preview.deadlineMs = deadlineMs;
       setCorrectionPreview({ ...correctionPreview, deadlineMs });
       return;
     }
-    previewTimerRef.current = setTimeout(sendCorrectionPreview, Math.max(0, preview.deadlineMs - Date.now()));
+    previewTimerRef.current = setTimeout(() => {
+      if (previewRef.current === preview && !preview.editing) sendCorrectionPreview();
+    }, Math.max(0, preview.deadlineMs - Date.now()));
     return () => clearTimer(previewTimerRef);
   }, [correctionPreview, sendCorrectionPreview]);
 
@@ -390,7 +411,7 @@ export function useStreamingStt(options: Options) {
               await sendAutoTranscript(finalText, version);
             } else {
               const parts = diffSttTranscript(finalText, result.text);
-              const preview = { text: result.text, parts, deadlineMs: null };
+              const preview = { text: result.text, parts, deadlineMs: null, editing: false };
               previewRef.current = { ...preview, version, sent: false };
               setCorrectionPreview(preview);
               setPhase("preview");
@@ -522,6 +543,8 @@ export function useStreamingStt(options: Options) {
     phase,
     correctionPreview,
     sendCorrectionPreview,
+    beginCorrectionEdit,
+    setCorrectionText,
     cancelCorrection,
     start,
     stop,

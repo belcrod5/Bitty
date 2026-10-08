@@ -1,4 +1,5 @@
 import { act, cleanup, renderHook } from "@testing-library/react-native";
+import { AppState } from "react-native";
 import { REPLY_CYCLE_START_TIMEOUT_MS, TTS_START_GRACE_MS, useStreamingStt } from "./useStreamingStt";
 import type { StreamingSttTransportCallbacks } from "./streamingSttTransport";
 import { correctSttTranscript, type SttCorrectionContext } from "./sttSettingsClient";
@@ -109,6 +110,7 @@ test("shows changed correction for three seconds, then sends exactly once", asyn
     options.correctionContext, expect.any(AbortSignal));
   expect(result.current.correctionPreview).toEqual({ text: "補正した文章",
     deadlineMs: Date.now() + 3000,
+    editing: false,
     parts: expect.arrayContaining([
       { kind: "delete", text: "元の" }, { kind: "insert", text: "補正した" },
     ]) });
@@ -161,6 +163,66 @@ test("tap sends immediately and cancel leaves corrected draft editable", async (
   expect(options.sendTranscript).toHaveBeenCalledWith("補正した文章", expect.any(Function));
   await advanceTimers(4000);
   expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+});
+
+test("editing in the preview stops automatic send and sends only the latest edited text once", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  await advanceTimers(2999);
+  await act(async () => result.current.beginCorrectionEdit());
+  expect(result.current.correctionPreview).toMatchObject({ editing: true, deadlineMs: null,
+    text: "補正した文章" });
+  await act(async () => result.current.setCorrectionText("編集した文章"));
+  await advanceTimers(4000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(result.current.correctionPreview?.text).toBe("編集した文章");
+  await act(async () => { result.current.sendCorrectionPreview(); result.current.sendCorrectionPreview(); });
+  expect(options.sendTranscript).toHaveBeenCalledTimes(1);
+  expect(options.sendTranscript).toHaveBeenCalledWith("編集した文章", expect.any(Function));
+});
+
+test("empty inline edit stays in the card and cannot send", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  await act(async () => result.current.beginCorrectionEdit());
+  await act(async () => result.current.setCorrectionText("   "));
+  await act(async () => result.current.sendCorrectionPreview());
+  await advanceTimers(4000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(result.current.correctionPreview).toMatchObject({ editing: true, text: "   " });
+});
+
+test("canceling an inline edit preserves its latest text as the draft", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await finishSpeech(await openReady(result), "元の文章");
+  await act(async () => result.current.beginCorrectionEdit());
+  await act(async () => result.current.setCorrectionText("書き直した文章"));
+  await act(async () => result.current.cancelCorrection());
+  expect(options.setTranscript).toHaveBeenCalledWith("書き直した文章");
+  expect(result.current.correctionPreview).toBeNull();
+  await advanceTimers(4000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+});
+
+test("a session switch discards an inline edit and its old timer", async () => {
+  jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+  const options = createOptions();
+  const { result, rerender } = await renderHook((props: Options) => useStreamingStt(props),
+    { initialProps: options });
+  await finishSpeech(await openReady(result), "元の文章");
+  await act(async () => result.current.beginCorrectionEdit());
+  await act(async () => result.current.setCorrectionText("書き直した文章"));
+  await act(async () => rerender({ ...options, correctionIdentity: "session-2" }));
+  expect(result.current.correctionPreview).toBeNull();
+  expect(options.setTranscript).not.toHaveBeenCalledWith("書き直した文章");
+  await advanceTimers(4000);
+  expect(options.sendTranscript).not.toHaveBeenCalled();
 });
 
 test("manual Enter during preview cancels the timer before sending the draft", async () => {
@@ -688,4 +750,29 @@ test("limit reached keeps final text but does not rearm", async () => {
   expect(options.sendTranscript).toHaveBeenCalledWith("final", expect.any(Function));
   expect(hook.result.current.active).toBe(false);
   expect(session.abort).toHaveBeenCalledTimes(1);
+});
+
+test("backgrounding an inline edit restores its latest text and stops sending", async () => {
+  let onAppStateChange: ((state: "background") => void) | undefined;
+  const subscription = jest.spyOn(AppState, "addEventListener")
+    .mockImplementation((_type, listener) => {
+      onAppStateChange = listener as typeof onAppStateChange;
+      return { remove: jest.fn() };
+    });
+  try {
+    jest.mocked(correctSttTranscript).mockResolvedValue({ changed: true, text: "補正した文章" });
+    const options = createOptions();
+    const { result } = await renderHook(() => useStreamingStt(options));
+    await finishSpeech(await openReady(result), "元の文章");
+    await act(async () => result.current.beginCorrectionEdit());
+    await act(async () => result.current.setCorrectionText("背景で残す文章"));
+    await act(async () => onAppStateChange?.("background"));
+    expect(result.current.correctionPreview).toBeNull();
+    expect(options.setTranscript).toHaveBeenCalledWith("背景で残す文章");
+    await advanceTimers(4000);
+    expect(options.sendTranscript).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    subscription.mockRestore();
+  }
 });

@@ -10,6 +10,7 @@ import type { StreamingSttUsage } from "../../stt/streamingSttClient";
 import type { StreamingSttPhase } from "../../stt/useStreamingStt";
 import type { SttCorrectionPreview } from "../../stt/sttTranscriptDiff";
 import type { VoiceContextStats } from "../types/appTypes";
+import { CircularProgressRing } from "./CircularProgressRing";
 import { RAINBOW_GLOW_COLORS, RAINBOW_GLOW_DEGREES_PER_MS } from "./rainbowGlow";
 
 const GLOW_SPACE = 48;
@@ -46,11 +47,13 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   leadingAccessory?: ReactNode;
   correctionPreview?: SttCorrectionPreview | null;
   onSendCorrection?: () => void;
-  onCancelCorrection?: () => void;
+  onEditCorrection?: () => void;
+  onChangeCorrectionText?: (text: string) => void;
   trailingAccessory?: ReactNode;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
   onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
-  leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onCancelCorrection }, ref) {
+  leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onEditCorrection,
+  onChangeCorrectionText }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const systemReduceMotion = useReduceMotionEnabled();
@@ -78,6 +81,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   const gradientEnd = useSharedValue(360);
   const previewBorder = useSharedValue(Skia.Path.Make());
   const previewCenter = useSharedValue(vec(0, 0));
+  const correctionInputRef = useRef<TextInput>(null);
   const glowStatus = phase === "correcting" || phase === "preview" ? undefined : voiceStatus;
   const glowColors = glowStatus === "responding" ? RESPONDING_COLORS
     : glowStatus === "speaking" ? SPEAKING_COLORS : RAINBOW_GLOW_COLORS;
@@ -92,19 +96,24 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   }, [phase]);
 
   React.useEffect(() => {
-    if (!correctionPreview || correctionPreview.deadlineMs === null) return;
+    if (!correctionPreview || correctionPreview.deadlineMs === null || correctionPreview.editing) return;
     const interval = setInterval(() => tickProgress((value) => value + 1), 250);
     return () => clearInterval(interval);
   }, [correctionPreview?.deadlineMs]);
 
   React.useEffect(() => {
-    if (!correctionPreview || correctionPreview.deadlineMs === null || motionReduced) return;
+    if (!correctionPreview || correctionPreview.deadlineMs === null
+      || correctionPreview.editing || motionReduced) return;
     const remaining = Math.max(0, correctionPreview.deadlineMs - Date.now());
     progress.setValue(Math.min(1, remaining / 3000));
     const animation = Animated.timing(progress, { toValue: 0, duration: remaining, useNativeDriver: false });
     animation.start();
     return () => animation.stop();
   }, [correctionPreview?.deadlineMs, motionReduced, progress]);
+
+  React.useEffect(() => {
+    if (correctionPreview?.editing) correctionInputRef.current?.focus();
+  }, [correctionPreview?.editing]);
 
   useFrameCallback((frame) => {
     if (motionReduced) return;
@@ -192,6 +201,8 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   } : {};
   const panelTop = trailingAccessory ? 32 : leadingAccessory ? 8 : 0;
   const metadataTop = leadingAccessory ? (trailingAccessory ? 8 : 19) : 0;
+  const removedText = correctionPreview?.parts.filter((part) => part.kind === "delete")
+    .map((part) => part.text).join(" · ");
   const renderGlow = (path: typeof border, glowCenter: typeof center, testID: string) => (
     <Canvas pointerEvents="none" testID={testID}
       style={{ position: "absolute", left: -GLOW_SPACE, right: -GLOW_SPACE,
@@ -219,60 +230,78 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
     <View>
       {correctionPreview ? (
         <View testID="streaming-stt-correction-preview" style={{ position: "relative", overflow: "visible",
-          marginBottom: 10, padding: 12, borderRadius: 12, backgroundColor: "#17273b", zIndex: 2 }}
+          marginBottom: 14, padding: 16, borderRadius: 16, backgroundColor: "#152130",
+          borderWidth: 1, borderColor: "#365267", zIndex: 2 }}
           onLayout={(event) => {
             const { width, height } = event.nativeEvent.layout;
             const path = Skia.Path.Make();
             path.addRRect(Skia.RRectXY(Skia.XYWHRect(GLOW_SPACE - 2, GLOW_SPACE - 2,
-              width + 4, height + 4), 12, 12));
+              width + 4, height + 4), 16, 16));
             previewBorder.value = path;
             previewCenter.value = vec(GLOW_SPACE + width / 2, GLOW_SPACE + height / 2);
           }}>
           {renderGlow(previewBorder, previewCenter, "streaming-stt-preview-glow")}
           <View style={{ zIndex: 1 }}>
-            <TouchableOpacity testID="streaming-stt-correction-text" onPress={onSendCorrection}
-              accessibilityRole="button"
-              accessibilityLabel={`補正後: ${correctionPreview.text}。変更: ${correctionPreview.parts
-                .filter((part) => part.kind !== "same")
-                .map((part) => `${part.kind === "delete" ? "削除" : "追加"} ${part.text}`).join("、")}`}
-              accessibilityHint="ダブルタップで今すぐ送信">
-              <Text style={{ color: "#f4f7ff", fontSize: 16 }}>
-                {correctionPreview.parts.map((part, index) => (
-                  <Text key={index} accessibilityLabel={part.kind === "delete" ? `削除: ${part.text}`
-                    : part.kind === "insert" ? `補正: ${part.text}` : undefined}
-                    style={part.kind === "insert" ? { color: "#aaf7ff", backgroundColor: "#24516a",
-                      textDecorationLine: "underline" } : part.kind === "delete" ? {
-                      color: "#ffafbd", backgroundColor: "#563041", textDecorationLine: "line-through",
+            <Text style={{ color: "#8fb2c7", fontSize: 11, fontWeight: "600", letterSpacing: 1,
+              marginBottom: 9 }}>{correctionPreview.editing ? "補正を編集" : "音声の補正"}</Text>
+            {correctionPreview.editing ? (
+              <TextInput ref={correctionInputRef} testID="streaming-stt-correction-editor"
+                value={correctionPreview.text} onChangeText={onChangeCorrectionText}
+                multiline autoFocus selectionColor="#8fe8f2" accessibilityLabel="補正した文字起こしを編集"
+                style={{ color: "#f4f7ff", fontSize: 17, lineHeight: 25, minHeight: 60, maxHeight: 160,
+                  textAlignVertical: "top", padding: 0 }} />
+            ) : (
+              <TouchableOpacity testID="streaming-stt-correction-text" onPress={onSendCorrection}
+                accessibilityRole="button"
+                accessibilityLabel={`補正後: ${correctionPreview.text}。変更: ${correctionPreview.parts
+                  .filter((part) => part.kind !== "same")
+                  .map((part) => `${part.kind === "delete" ? "削除" : "追加"} ${part.text}`).join("、")}`}
+                accessibilityHint="ダブルタップで今すぐ送信">
+                <Text style={{ color: "#f4f7ff", fontSize: 17, lineHeight: 25 }}>
+                  {correctionPreview.parts.filter((part) => part.kind !== "delete").map((part, index) => (
+                    <Text key={index} style={part.kind === "insert" ? {
+                      color: "#9ee9f2", textDecorationLine: "underline",
+                      textDecorationColor: "#61bfd1",
                     } : undefined}>{part.text}</Text>
-                ))}
-              </Text>
-            </TouchableOpacity>
-            <View testID="streaming-stt-correction-progress" accessibilityRole="progressbar"
-              accessibilityLabel="自動送信まで" accessibilityValue={{ min: 0, max: 3000,
-                now: Math.min(3000, remainingMs),
-                text: `あと${Math.ceil(remainingMs / 1000)}秒で自動送信` }}
-              style={{ height: 4, borderRadius: 2, backgroundColor: "#35465c", marginTop: 12,
-                overflow: "hidden" }}>
-              {correctionPreview.deadlineMs === null || motionReduced ? (
-                <View style={{ height: 4, width: `${Math.min(100, remainingMs / 30)}%`,
-                  backgroundColor: "#69e6f8" }} />
-              ) : (
-                <Animated.View style={{ height: 4, backgroundColor: "#69e6f8",
-                  width: progress.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }) }} />
-              )}
-            </View>
-            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
-              <TouchableOpacity onPress={onCancelCorrection} accessibilityRole="button"
-                accessibilityLabel="自動送信をキャンセルして編集"
-                style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "#35465c",
-                  alignItems: "center", justifyContent: "center" }}>
-                <Ionicons name="pencil" size={20} color="#f4f7ff" />
+                  ))}
+                </Text>
               </TouchableOpacity>
+            )}
+            {!correctionPreview.editing && removedText ? (
+              <Text testID="streaming-stt-correction-deleted" numberOfLines={1}
+                style={{ color: "#899bab", fontSize: 12, marginTop: 9 }}>
+                {`削除: ${removedText}`}
+              </Text>
+            ) : null}
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center",
+              marginTop: 10, gap: 10 }}>
+              {!correctionPreview.editing ? (
+                <TouchableOpacity onPress={onEditCorrection} accessibilityRole="button"
+                  accessibilityLabel="補正した文字起こしをこのカードで編集"
+                  style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#2b3c51",
+                    alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="pencil" size={19} color="#dce9f2" />
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity onPress={onSendCorrection} accessibilityRole="button"
-                accessibilityLabel="補正した文字起こしを今すぐ送信"
-                style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "#24667e",
-                  alignItems: "center", justifyContent: "center" }}>
-                <Ionicons name="send" size={20} color="#ffffff" />
+                accessibilityLabel={correctionPreview.editing ? "編集した文字起こしを送信" : "補正した文字起こしを今すぐ送信"}
+                accessibilityValue={correctionPreview.editing ? undefined : { min: 0, max: 3000,
+                  now: Math.min(3000, remainingMs), text: `あと${Math.ceil(remainingMs / 1000)}秒で自動送信` }}
+                disabled={!correctionPreview.text.trim()}
+                style={{ width: 52, height: 52, alignItems: "center", justifyContent: "center",
+                  opacity: correctionPreview.text.trim() ? 1 : 0.45 }}>
+                {!correctionPreview.editing ? (
+                  <View testID="streaming-stt-correction-ring" pointerEvents="none"
+                    style={{ position: "absolute" }}>
+                    <CircularProgressRing size={52} strokeWidth={3} progress={remainingMs / 3000}
+                      animatedProgress={motionReduced || correctionPreview.deadlineMs === null ? undefined : progress}
+                      trackColor="#3b5365" progressColor="#85e5ee" />
+                  </View>
+                ) : null}
+                <View style={{ position: "absolute", width: 42, height: 42, borderRadius: 21,
+                  backgroundColor: "#2a7187", alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="send" size={19} color="#ffffff" />
+                </View>
               </TouchableOpacity>
             </View>
           </View>

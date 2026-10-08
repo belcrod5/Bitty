@@ -1,7 +1,8 @@
 import { collectGraphemes } from "unicode-segmenter/grapheme";
 
 export type SttTranscriptDiffPart = { kind: "same" | "insert" | "delete"; text: string };
-export type SttCorrectionPreview = { text: string; deadlineMs: number | null; parts: SttTranscriptDiffPart[] };
+export type SttCorrectionPreview = { text: string; deadlineMs: number | null;
+  parts: SttTranscriptDiffPart[]; editing: boolean };
 
 // Keep the quadratic comparison bounded for long transcripts. The fallback marks one
 // coarse changed span after removing common grapheme prefixes and suffixes.

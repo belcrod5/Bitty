@@ -2411,7 +2411,8 @@ export function ChatScreen({
                 phase={streamingStt.phase}
                 correctionPreview={streamingStt.correctionPreview}
                 onSendCorrection={streamingStt.sendCorrectionPreview}
-                onCancelCorrection={() => { streamingStt.cancelCorrection(); setEditingSttTranscript(true); }}
+                onEditCorrection={streamingStt.beginCorrectionEdit}
+                onChangeCorrectionText={streamingStt.setCorrectionText}
                 onStop={() => {
                   streamingStt.stop();
                   setEditingSttTranscript(false);

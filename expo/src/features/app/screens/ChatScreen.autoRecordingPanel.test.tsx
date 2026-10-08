@@ -10,6 +10,8 @@ import type { ConversationMessage } from "../types/appTypes";
 const mockStartStreamingStt = jest.fn();
 const mockStopStreamingStt = jest.fn();
 const mockCancelCorrection = jest.fn(() => true);
+const mockBeginCorrectionEdit = jest.fn();
+const mockSetCorrectionText = jest.fn();
 const mockPushStreamingSample = jest.fn();
 let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = "idle";
 let mockRunnerStatusRenderCount = 0;
@@ -121,6 +123,8 @@ jest.mock("../../stt/useStreamingStt", () => ({
       stop: mockStopStreamingStt,
       cancelCorrection: mockCancelCorrection,
       sendCorrectionPreview: jest.fn(),
+      beginCorrectionEdit: mockBeginCorrectionEdit,
+      setCorrectionText: mockSetCorrectionText,
       correctionPreview: null,
       abort: jest.fn(async () => {}),
       isArmed: () => false,
@@ -476,6 +480,12 @@ describe("ChatScreen voice input", () => {
       transcript: "既存の入力",
       phase: "recording",
     });
+    await act(async () => {
+      screen.getByTestId("streaming-stt-footer").props.onEditCorrection();
+      screen.getByTestId("streaming-stt-footer").props.onChangeCorrectionText("修正した文章");
+    });
+    expect(mockBeginCorrectionEdit).toHaveBeenCalledTimes(1);
+    expect(mockSetCorrectionText).toHaveBeenCalledWith("修正した文章");
     expect(screen.getByTestId("streaming-stt-transition").props).toMatchObject({
       entering: { type: "fade-in", duration: 220 },
       exiting: { type: "fade-out", duration: 220 },

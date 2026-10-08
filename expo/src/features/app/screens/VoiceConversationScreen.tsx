@@ -224,13 +224,6 @@ function VoiceConversationSession({
   useEffect(() => {
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
-  const footerSwipe = useMemo(() => Gesture.Pan()
-    .enabled(!editingTranscript)
-    .activeOffsetY([-24, 24])
-    .failOffsetX([-32, 32])
-    .onEnd(({ translationY }) => {
-      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
-    }), [editingTranscript]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
   const canStart = !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
@@ -261,6 +254,13 @@ function VoiceConversationSession({
     ttsPlaybackActive: playbackActive,
     voiceInputDuringTtsAllowed: false,
   });
+  const footerSwipe = useMemo(() => Gesture.Pan()
+    .enabled(!editingTranscript && !streamingStt.correctionPreview?.editing)
+    .activeOffsetY([-24, 24])
+    .failOffsetX([-32, 32])
+    .onEnd(({ translationY }) => {
+      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
+    }), [editingTranscript, streamingStt.correctionPreview?.editing]);
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
@@ -482,7 +482,8 @@ function VoiceConversationSession({
                     phase={streamingStt.phase}
                     correctionPreview={streamingStt.correctionPreview}
                     onSendCorrection={streamingStt.sendCorrectionPreview}
-                    onCancelCorrection={() => { streamingStt.cancelCorrection(); setEditingTranscript(true); }}
+                    onEditCorrection={streamingStt.beginCorrectionEdit}
+                    onChangeCorrectionText={streamingStt.setCorrectionText}
                     onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscript(text); }}
                     onFocus={() => {
                       streamingStt.cancelCorrection();
