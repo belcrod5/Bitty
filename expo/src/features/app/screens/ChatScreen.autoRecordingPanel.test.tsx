@@ -9,6 +9,10 @@ import type { ConversationMessage } from "../types/appTypes";
 
 const mockStartStreamingStt = jest.fn();
 const mockStopStreamingStt = jest.fn();
+const mockCancelCorrection = jest.fn(() => true);
+const mockBeginCorrectionEdit = jest.fn();
+const mockDiscardCorrection = jest.fn();
+const mockSetCorrectionText = jest.fn();
 const mockPushStreamingSample = jest.fn();
 let mockStreamingSttPhase: "idle" | "connecting" | "recording" | "finalizing" = "idle";
 let mockRunnerStatusRenderCount = 0;
@@ -118,6 +122,12 @@ jest.mock("../../stt/useStreamingStt", () => ({
       phase: mockStreamingSttPhase,
       start: mockStartStreamingStt,
       stop: mockStopStreamingStt,
+      cancelCorrection: mockCancelCorrection,
+      sendCorrectionPreview: jest.fn(),
+      beginCorrectionEdit: mockBeginCorrectionEdit,
+      discardCorrection: mockDiscardCorrection,
+      setCorrectionText: mockSetCorrectionText,
+      correctionPreview: null,
       abort: jest.fn(async () => {}),
       isArmed: () => false,
       isCapturing: () => false,
@@ -435,6 +445,7 @@ jest.mock("../contexts/ConversationContext", () => ({
 describe("ChatScreen voice input", () => {
   beforeEach(() => {
     mockStreamingSttPhase = "idle";
+    mockCancelCorrection.mockReturnValue(true);
     mockRunnerStatusRenderCount = 0;
     jest.clearAllMocks();
     mockSendReplyTranscriptForPanel.mockResolvedValue(undefined);
@@ -471,6 +482,14 @@ describe("ChatScreen voice input", () => {
       transcript: "既存の入力",
       phase: "recording",
     });
+    await act(async () => {
+      screen.getByTestId("streaming-stt-footer").props.onEditCorrection();
+      screen.getByTestId("streaming-stt-footer").props.onChangeCorrectionText("修正した文章");
+      screen.getByTestId("streaming-stt-footer").props.onDiscardCorrection();
+    });
+    expect(mockBeginCorrectionEdit).toHaveBeenCalledTimes(1);
+    expect(mockSetCorrectionText).toHaveBeenCalledWith("修正した文章");
+    expect(mockDiscardCorrection).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("streaming-stt-transition").props).toMatchObject({
       entering: { type: "fade-in", duration: 220 },
       exiting: { type: "fade-out", duration: 220 },
@@ -509,6 +528,16 @@ describe("ChatScreen voice input", () => {
     expect(mockSendReplyTranscriptForPanel).toHaveBeenCalledWith("panel-a", "edited transcript", expect.any(Object));
     expect(screen.queryByTestId("streaming-stt-footer")).toBeNull();
     expect(mockStartStreamingStt).not.toHaveBeenCalled();
+  });
+
+  it("does not submit the old draft after the correction timer has claimed send", async () => {
+    mockStreamingSttPhase = "recording";
+    mockCancelCorrection.mockReturnValue(false);
+    const screen = await render(<ChatScreen mode="mini_board_popup" panelId="panel-a" />);
+    await act(async () => {
+      await screen.getByTestId("streaming-stt-footer").props.onSubmit("old transcript", () => true);
+    });
+    expect(mockSendReplyTranscriptForPanel).not.toHaveBeenCalled();
   });
 
   it("logs the STT send gate and forwards transcript-free lifecycle diagnostics", async () => {

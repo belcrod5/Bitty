@@ -10,20 +10,45 @@ jest.mock("../contexts/AppSettingsContext", () => ({
 
 let selected = "google";
 let failSave = false;
+let correction = { model: "gpt-6-luna", effort: "low" };
 const fetchMock = jest.fn(async (_url: string, init?: RequestInit) => {
+  if (_url.endsWith("/stt/models")) return { ok: true, json: async () => ({ models: [
+    { modelId: "gpt-6-luna", label: "GPT-6 Luna", effortOptions: ["low", "medium"] },
+    { modelId: "gpt-6-astra", label: "GPT-6 Astra", effortOptions: ["medium", "high"] },
+  ] }) };
   if (init?.method === "PUT") {
     if (failSave) return { ok: false, status: 500, json: async () => ({ message: "保存できませんでした" }) };
     selected = JSON.parse(String(init.body)).provider;
   }
-  return { ok: true, json: async () => ({ provider: selected }) };
+  if (init?.method === "PATCH") correction = JSON.parse(String(init.body)).correction;
+  return { ok: true, json: async () => ({ provider: selected,
+    correction }) };
 });
 
 beforeEach(() => {
   jest.clearAllMocks();
   selected = "google";
   failSave = false;
+  correction = { model: "gpt-6-luna", effort: "low" };
   global.fetch = fetchMock as unknown as typeof fetch;
   jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+});
+
+test("saves model and supported effort together", async () => {
+  const screen = await render(<SpeechRecognitionSettings />);
+  await waitFor(() => expect(screen.getByLabelText("補正モデル").props.accessibilityValue)
+    .toEqual({ text: "GPT-6 Luna" }));
+  await fireEvent.press(screen.getByLabelText("補正モデル"));
+  await fireEvent.press(screen.getByText("GPT-6 Astra"));
+  await waitFor(() => expect(correction).toEqual({ model: "gpt-6-astra", effort: "medium" }));
+  await fireEvent.press(screen.getByLabelText("補正の思考量"));
+  await fireEvent.press(screen.getByText("high"));
+  await waitFor(() => expect(correction).toEqual({ model: "gpt-6-astra", effort: "high" }));
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+    .map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { correction: { model: "gpt-6-astra", effort: "medium" } },
+      { correction: { model: "gpt-6-astra", effort: "high" } },
+    ]);
 });
 afterEach(() => jest.restoreAllMocks());
 

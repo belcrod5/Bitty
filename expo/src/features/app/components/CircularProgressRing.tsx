@@ -1,9 +1,13 @@
+import { Animated } from "react-native";
 import Svg, { Circle } from "react-native-svg";
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 export type CircularProgressRingProps = {
   size: number;
   strokeWidth: number;
   progress: number;
+  animatedProgress?: Animated.Value;
   trackColor: string;
   progressColor: string;
 };
@@ -13,6 +17,7 @@ export function CircularProgressRing(props: CircularProgressRingProps) {
     size,
     strokeWidth,
     progress,
+    animatedProgress,
     trackColor,
     progressColor,
   } = props;
@@ -31,7 +36,7 @@ export function CircularProgressRing(props: CircularProgressRingProps) {
         strokeWidth={strokeWidth}
         fill="none"
       />
-      <Circle
+      <AnimatedCircle
         cx={center}
         cy={center}
         r={radius}
@@ -40,7 +45,9 @@ export function CircularProgressRing(props: CircularProgressRingProps) {
         fill="none"
         strokeLinecap="round"
         strokeDasharray={`${circumference} ${circumference}`}
-        strokeDashoffset={dashOffset}
+        strokeDashoffset={animatedProgress
+          ? animatedProgress.interpolate({ inputRange: [0, 1], outputRange: [circumference, 0] })
+          : dashOffset}
         transform={`rotate(-90 ${center} ${center})`}
       />
     </Svg>

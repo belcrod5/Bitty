@@ -1,7 +1,8 @@
 import React from "react";
 import { act, fireEvent, render, within } from "@testing-library/react-native";
-import { Platform, StyleSheet, View } from "react-native";
+import { Animated, Platform, StyleSheet, View } from "react-native";
 import { StreamingSttFooter, type StreamingSttFooterHandle } from "./StreamingSttFooter";
+import { diffSttTranscript } from "../../stt/sttTranscriptDiff";
 import { VisualThemeProvider } from "../theme/VisualThemeContext";
 
 const mockSharedValues: { value: unknown }[] = [];
@@ -13,6 +14,7 @@ let mockPathRenders = 0;
 let mockFrameCallback: ((frame: { timeSincePreviousFrame: number | null }) => void) | null = null;
 
 jest.mock("../styles", () => ({ useAppStyles: () => ({ chatInputWrapper: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12 } }) }));
+jest.mock("../hooks/useReduceMotionEnabled", () => ({ useReduceMotionEnabled: () => false }));
 
 jest.mock("@expo/vector-icons", () => {
   const ReactModule = jest.requireActual<typeof React>("react");
@@ -66,6 +68,128 @@ describe("StreamingSttFooter", () => {
     mockBlurProps.length = 0;
     mockPathRenders = 0;
     mockFrameCallback = null;
+  });
+
+  it("places the correction above the transcript with immediate send and edit actions", async () => {
+    const onSendCorrection = jest.fn();
+    const onEditCorrection = jest.fn();
+    const screen = await render(<StreamingSttFooter transcript="元の文章" phase="preview" onStop={jest.fn()}
+      reduceMotion
+      correctionPreview={{ text: "補正した文章", deadlineMs: Date.now() + 3000, editing: false,
+        parts: diffSttTranscript("元の文章", "補正した文章") }}
+      leadingAccessory={<View testID="orchestrator-icon" />}
+      trailingAccessory={<View testID="status-menu" />}
+      onSendCorrection={onSendCorrection} onEditCorrection={onEditCorrection} />);
+    expect(screen.getByTestId("streaming-stt-correction-preview")).toBeTruthy();
+    expect(screen.queryByTestId("streaming-stt-preview-glow")).toBeNull();
+    expect(screen.queryByText("音声の補正")).toBeNull();
+    await act(async () => { mockFrameCallback?.({ timeSincePreviousFrame: 50 }); });
+    expect(mockSharedValues[6].value).toBe(0);
+    const sendButton = screen.getByLabelText("補正した文字起こしを今すぐ送信");
+    expect(sendButton.props.accessibilityValue).toMatchObject({ min: 0, max: 3000,
+      now: expect.any(Number), text: expect.stringMatching(/^あと[0-3]秒で自動送信$/) });
+    expect(within(sendButton).getByTestId("streaming-stt-correction-ring")).toBeTruthy();
+    const footer = screen.getByTestId("streaming-stt-footer");
+    expect(within(footer).queryByTestId("streaming-stt-correction-preview")).toBeNull();
+    expect(within(footer).getByTestId("streaming-stt-leading-accessory")).toBeTruthy();
+    expect(within(footer).getByTestId("streaming-stt-trailing-accessory")).toBeTruthy();
+    await fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 112 } } });
+    expect(mockRRects.at(-1)).toEqual({ x: 54, y: 78, width: 264, height: 84 });
+    expect(mockRRects).toHaveLength(1);
+    expect(StyleSheet.flatten(screen.getByText("元の").props.style)).toMatchObject({
+      color: "#f0a5ad", textDecorationLine: "line-through", textDecorationColor: "#f0a5ad",
+    });
+    expect(StyleSheet.flatten(screen.getByText("元の").props.style).backgroundColor).toBeUndefined();
+    expect(screen.queryByTestId("streaming-stt-correction-deleted")).toBeNull();
+    expect(StyleSheet.flatten(screen.getByText("補正した").props.style).textDecorationLine)
+      .toBe("underline");
+    expect(StyleSheet.flatten(screen.getByText("補正した").props.style).backgroundColor).toBeUndefined();
+    expect(screen.getByText("文章")).toBeTruthy();
+    const previewText = screen.getByTestId("streaming-stt-correction-text");
+    expect(previewText.props.accessibilityLabel).toContain("補正後: 補正した文章");
+    expect(previewText.props.accessibilityLabel).toContain("削除 元の");
+    expect(previewText.props.accessibilityLabel).toContain("追加 補正した");
+    expect(previewText.props.accessibilityHint).toBe("ダブルタップで今すぐ送信");
+    expect(StyleSheet.flatten(sendButton.props.style)).toMatchObject({ width: 52, height: 52 });
+    expect(StyleSheet.flatten(screen.getByLabelText("補正した文字起こしをこのカードで編集").props.style))
+      .toMatchObject({ width: 44, height: 44 });
+    expect(screen.queryByText(/秒後に送信/)).toBeNull();
+    await fireEvent.press(previewText);
+    await fireEvent.press(sendButton);
+    await fireEvent.press(screen.getByLabelText("補正した文字起こしをこのカードで編集"));
+    expect(onSendCorrection).toHaveBeenCalledTimes(2);
+    expect(onEditCorrection).toHaveBeenCalledTimes(1);
+  });
+
+  it("animates progress toward the hook deadline without starting a send timer", async () => {
+    const animation = { start: jest.fn(), stop: jest.fn() };
+    const timing = jest.spyOn(Animated, "timing")
+      .mockReturnValue(animation as unknown as ReturnType<typeof Animated.timing>);
+    const deadlineMs = Date.now() + 2500;
+    const screen = await render(<StreamingSttFooter transcript="元" phase="preview" onStop={jest.fn()}
+      reduceMotion={false} correctionPreview={{ text: "補", deadlineMs, editing: false,
+        parts: diffSttTranscript("元", "補") }} />);
+    expect(timing).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      toValue: 0, useNativeDriver: false, duration: expect.any(Number),
+    }));
+    const duration = timing.mock.calls[0][1].duration;
+    expect(duration).toBeGreaterThan(0);
+    expect(duration).toBeLessThanOrEqual(2500);
+    await screen.unmount();
+    expect(animation.stop).toHaveBeenCalled();
+    timing.mockRestore();
+  });
+
+  it("replaces the preview text with an editor and discard action inside the same card", async () => {
+    const onChangeCorrectionText = jest.fn();
+    const onSendCorrection = jest.fn();
+    const onDiscardCorrection = jest.fn();
+    const parts = diffSttTranscript("元の文章", "補正した文章");
+    const screen = await render(<StreamingSttFooter transcript="元の文章" phase="preview"
+      onStop={jest.fn()} correctionPreview={{ text: "補正した文章", deadlineMs: null,
+        editing: true, parts }} onChangeCorrectionText={onChangeCorrectionText}
+      onSendCorrection={onSendCorrection} onDiscardCorrection={onDiscardCorrection} />);
+    const card = screen.getByTestId("streaming-stt-correction-preview");
+    const editor = within(card).getByTestId("streaming-stt-correction-editor");
+    expect(editor.props.value).toBe("補正した文章");
+    expect(within(card).queryByTestId("streaming-stt-preview-glow")).toBeNull();
+    expect(screen.queryByText("補正を編集")).toBeNull();
+    expect(within(card).queryByTestId("streaming-stt-correction-text")).toBeNull();
+    expect(screen.queryByLabelText("補正した文字起こしをこのカードで編集")).toBeNull();
+    expect(screen.queryByTestId("streaming-stt-correction-deleted")).toBeNull();
+    await fireEvent.changeText(editor, "編集した文章");
+    expect(onChangeCorrectionText).toHaveBeenCalledWith("編集した文章");
+    const send = screen.getByLabelText("編集した文字起こしを送信");
+    expect(send.props.accessibilityValue?.now).toBeUndefined();
+    expect(within(send).queryByTestId("streaming-stt-correction-ring")).toBeNull();
+    const discard = screen.getByLabelText("補正を破棄して元の文字起こしに戻す");
+    expect(StyleSheet.flatten(discard.props.style)).toMatchObject({ width: 44, height: 44 });
+    await fireEvent.press(discard);
+    expect(onDiscardCorrection).toHaveBeenCalledTimes(1);
+    await fireEvent.press(send);
+    expect(onSendCorrection).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a deletion-only change inline without clipping a long removed span", async () => {
+    const removed = "古い言葉".repeat(40);
+    const screen = await render(<StreamingSttFooter transcript={`${removed}残す`} phase="preview"
+      onStop={jest.fn()} correctionPreview={{ text: "残す", deadlineMs: Date.now() + 3000,
+        editing: false, parts: diffSttTranscript(`${removed}残す`, "残す") }} />);
+    const deletion = screen.getByText(removed);
+    expect(StyleSheet.flatten(deletion.props.style).textDecorationLine).toBe("line-through");
+    expect(screen.getByTestId("streaming-stt-correction-text").props.accessibilityLabel)
+      .toContain(`削除 ${removed}`);
+    expect(screen.queryByTestId("streaming-stt-correction-deleted")).toBeNull();
+  });
+
+  it("keeps the rainbow glow on the input while correction is running", async () => {
+    const screen = await render(<StreamingSttFooter transcript="元の文章" phase="correcting"
+      voiceStatus="speaking" onStop={jest.fn()} />);
+    expect(screen.getByTestId("streaming-stt-glow")).toBeTruthy();
+    expect(screen.queryByTestId("streaming-stt-preview-glow")).toBeNull();
+    expect(mockGradientProps.at(-1)?.colors).toEqual([
+      "#ff505f", "#ffae3d", "#f9ee56", "#56e89c", "#4cc9ff", "#987aff", "#ff505f",
+    ]);
   });
 
   it("clears old Google usage when a new recording session starts", async () => {

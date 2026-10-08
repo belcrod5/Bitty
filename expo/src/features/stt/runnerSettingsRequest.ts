@@ -17,6 +17,9 @@ export async function runnerSettingsRequest(
     },
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-  if (!response.ok) throw new Error(String(payload.message || `Runner request failed (${response.status}).`));
+  if (!response.ok) throw Object.assign(
+    new Error(String(payload.message || `Runner request failed (${response.status}).`)),
+    { status: response.status }
+  );
   return payload;
 }

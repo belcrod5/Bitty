@@ -202,8 +202,10 @@ function VoiceConversationSession({
       ?.orchestrators?.some((item) => item.id === orchestrator.id)) void voice.refreshHistory();
   }), [appActive, historyExpanded, manager, orchestrator.id, paused, voice.refreshHistory]);
   useEffect(() => {
-    if (historyExpanded && appActive && voice.ready) void voice.refreshHistory();
-  }, [appActive, historyExpanded, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
+    if (appActive && voice.ready && (voice.turnStatus === "idle" || voice.turnStatus === "completed")) {
+      void voice.refreshHistory();
+    }
+  }, [appActive, voice.logicalConversationId, voice.ready, voice.refreshHistory, voice.turnStatus]);
   useEffect(() => {
     if (!appActive || paused || !voice.ready) return;
     const historyOrdinal = historyExpanded
@@ -222,13 +224,6 @@ function VoiceConversationSession({
   useEffect(() => {
     historyAtBottomRef.current = true;
   }, [historyExpanded, voice.logicalConversationId]);
-  const footerSwipe = useMemo(() => Gesture.Pan()
-    .enabled(!editingTranscript)
-    .activeOffsetY([-24, 24])
-    .failOffsetX([-32, 32])
-    .onEnd(({ translationY }) => {
-      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
-    }), [editingTranscript]);
   const replyLoading = voice.turnStatus === "accepted" || voice.turnStatus === "running";
   const playbackActive = synthesisStarting || isTtsPlaybackActive;
   const canStart = !paused && !transitioning && voice.ready && !replyLoading && voice.turnStatus !== "sending" && !playbackActive;
@@ -237,6 +232,13 @@ function VoiceConversationSession({
     runnerToken,
     transcript,
     autoReplyAfterStt: true,
+    correctionContext: [
+      ...voice.history.filter((message) => message.text.trim()),
+      ...(voice.reply?.text && !voice.history.some((message) => message.role === "assistant"
+        && message.clientOperationId === voice.reply?.operationId)
+        ? [{ role: "assistant" as const, text: voice.reply.text }] : []),
+    ].slice(-12).map((message) => ({ role: message.role, text: message.text.slice(0, 2000) })),
+    correctionIdentity: `${orchestrator.id}:${voice.logicalConversationId}`,
     setTranscript,
     sendTranscript: voice.sendTranscript,
     onUsage: (usage) => footerRef.current?.updateUsage(usage),
@@ -252,6 +254,13 @@ function VoiceConversationSession({
     ttsPlaybackActive: playbackActive,
     voiceInputDuringTtsAllowed: false,
   });
+  const footerSwipe = useMemo(() => Gesture.Pan()
+    .enabled(!editingTranscript && !streamingStt.correctionPreview?.editing)
+    .activeOffsetY([-24, 24])
+    .failOffsetX([-32, 32])
+    .onEnd(({ translationY }) => {
+      if (translationY < -50) runOnJS(setHistoryExpanded)(true);
+    }), [editingTranscript, streamingStt.correctionPreview?.editing]);
 
   const quietAudio = useCallback(async () => {
     await streamingStt.abort();
@@ -471,8 +480,14 @@ function VoiceConversationSession({
                     voiceStatus={voiceStatus}
                     reduceMotion={reduceMotion !== false}
                     phase={streamingStt.phase}
-                    onChangeText={setTranscript}
+                    correctionPreview={streamingStt.correctionPreview}
+                    onSendCorrection={streamingStt.sendCorrectionPreview}
+                    onEditCorrection={streamingStt.beginCorrectionEdit}
+                    onDiscardCorrection={streamingStt.discardCorrection}
+                    onChangeCorrectionText={streamingStt.setCorrectionText}
+                    onChangeText={(text) => { streamingStt.cancelCorrection(); setTranscript(text); }}
                     onFocus={() => {
+                      streamingStt.cancelCorrection();
                       setInitialStartPending(false);
                       setEditingTranscript(true);
                       streamingStt.stop();

@@ -54,6 +54,13 @@ const mockStt = {
   phase: "idle",
   start: jest.fn(),
   stop: jest.fn(),
+  cancelCorrection: jest.fn(),
+  sendCorrectionPreview: jest.fn(),
+  beginCorrectionEdit: jest.fn(),
+  discardCorrection: jest.fn(),
+  setCorrectionText: jest.fn(),
+  correctionPreview: null as { editing: boolean; text: string; deadlineMs: number | null;
+    parts: { kind: "same"; text: string }[] } | null,
   sendManualTranscript: jest.fn(async (_text: string, onAccepted: () => boolean) => { onAccepted(); }),
   abort: mockAbort,
 };
@@ -72,6 +79,9 @@ type MockFooterProps = {
   onFocus?: () => void;
   onBlur?: () => void;
   onChangeText?: (text: string) => void;
+  onEditCorrection?: () => void;
+  onDiscardCorrection?: () => void;
+  onChangeCorrectionText?: (text: string) => void;
   onSubmit?: (text: string, onAccepted: () => boolean) => Promise<void>;
   onCancelSpeaking?: () => void;
   historyExpanded?: boolean;
@@ -211,6 +221,7 @@ beforeEach(() => {
   mockOnCompleted = null;
   mockOnJob = null;
   mockStt.active = false;
+  mockStt.correctionPreview = null;
   mockVoice.ready = true;
   mockVoice.logicalConversationId = "conversation-one";
   mockVoice.turnStatus = "completed";
@@ -627,6 +638,23 @@ test("editing before voice is ready prevents late auto-start and sends only the 
   expect(mockStt.start).not.toHaveBeenCalled();
   await act(async () => { await mockFooterProps?.onSubmit?.("typed draft", () => true); });
   expect(mockStt.sendManualTranscript).toHaveBeenCalledWith("typed draft", expect.any(Function));
+  await screen.unmount();
+});
+
+test("routes inline correction editing through the shared STT hook", async () => {
+  const screen = await render(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  await act(async () => {
+    mockFooterProps?.onEditCorrection?.();
+    mockFooterProps?.onChangeCorrectionText?.("編集した文章");
+    mockFooterProps?.onDiscardCorrection?.();
+  });
+  expect(mockStt.beginCorrectionEdit).toHaveBeenCalledTimes(1);
+  expect(mockStt.setCorrectionText).toHaveBeenCalledWith("編集した文章");
+  expect(mockStt.discardCorrection).toHaveBeenCalledTimes(1);
+  mockStt.correctionPreview = { editing: true, text: "編集した文章", deadlineMs: null,
+    parts: [{ kind: "same", text: "編集した文章" }] };
+  await screen.rerender(<VoiceConversationScreen {...playback} onClose={mockOnClose} />);
+  expect(screen.getByTestId("voice-history-swipe-area").props.gestureEnabled).toBe(false);
   await screen.unmount();
 });
 
