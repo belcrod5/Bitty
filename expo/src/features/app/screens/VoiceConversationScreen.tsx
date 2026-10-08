@@ -424,7 +424,7 @@ function VoiceConversationSession({
                   onContentSizeChange={() => {
                     if (historyAtBottomRef.current) historyScrollRef.current?.scrollToEnd({ animated: false });
                   }}
-                  contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 64, gap: 12 }}>
+                  contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12, gap: 12 }}>
                   {!voice.ready
                     ? <Text style={{ color: "#ffffff", textAlign: "center" }}>履歴を読み込み中…</Text>
                     : voice.historyError
@@ -458,12 +458,6 @@ function VoiceConversationSession({
                     );
                   })}
                 </ScrollView>
-                {voice.ready ? (
-                  <View testID="voice-history-account-menu"
-                    style={{ position: "absolute", right: 20, bottom: 12, zIndex: 1 }}>
-                    <CodexStatusSummaryMenu />
-                  </View>
-                ) : null}
               </Reanimated.View>
             ) : null}
             <View testID="voice-footer-inset"
@@ -515,6 +509,7 @@ function VoiceConversationSession({
                         </View>
                       </Pressable>
                     ) : undefined}
+                    trailingAccessory={<CodexStatusSummaryMenu />}
                   />
                 </View>
               </GestureDetector>

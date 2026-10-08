@@ -143,6 +143,7 @@ export function CodexStatusSummaryMenu({
         <TouchableOpacity
           onPress={openPreview}
           disabled={dismissed}
+          hitSlop={12}
           accessibilityRole="button"
           accessibilityLabel="利用状況を更新して表示"
         >
