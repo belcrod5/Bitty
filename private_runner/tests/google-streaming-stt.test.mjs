@@ -641,3 +641,108 @@ test("peer disconnect during asynchronous start never creates a Google stream", 
     usedSeconds: null,
   }]);
 });
+
+test("Google unchanged full text ends input despite activity and waits for provider finalization", async (t) => {
+  const f = fixture();
+  await start(f);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const interim = (text) => f.stream.emit("data", {
+    speechEventType: 2, results: [{ alternatives: [{ transcript: text }] }],
+  });
+  interim("前");
+  t.mock.timers.tick(1_500);
+  interim("前後");
+  t.mock.timers.tick(1_000);
+  assert.equal(f.stream.ended, false);
+  f.stream.emit("data", { results: [
+    { isFinal: true, alternatives: [{ transcript: "前" }] },
+    { isFinal: false, alternatives: [{ transcript: "後" }] },
+  ] });
+  f.stream.emit("data", { results: [] });
+  t.mock.timers.tick(999);
+  assert.equal(f.stream.ended, false);
+  interim("後");
+  t.mock.timers.tick(1);
+  assert.equal(f.stream.ended, true);
+  assert.equal(f.ws.sent.some((message) => message.type === "done"), false);
+  f.ws.emit("message", Buffer.alloc(2), true);
+  await tick();
+  assert.equal(f.stream.writes.length, 1);
+  f.stream.emit("data", { results: [{ isFinal: true, alternatives: [{ transcript: "後。" }] }] });
+  f.stream.emit("end");
+  await tick();
+  assert.equal(f.ws.sent.find((message) => message.type === "done").reason, "speech_end_timeout");
+  assert.equal(f.ws.sent.find((message) => message.type === "done").hasSpeech, true);
+  assert.deepEqual(f.ws.sent.filter((message) => message.type === "transcript" && message.isFinal).map((message) => message.text), ["前", "後。"]);
+  t.mock.timers.tick(20_000);
+  assert.equal(f.ws.sent.filter((message) => message.type === "done" || message.type === "error").length, 1);
+});
+
+test("Google no recognized text, stop, disconnect, and errors disarm inactivity", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const outcome of ["no_text", "user_stop", "disconnect", "error", "provider_end"]) {
+    const f = fixture();
+    await start(f);
+    f.stream.emit("data", {
+      speechEventType: 2, results: [{ alternatives: [{ transcript: outcome === "no_text" ? " \t" : "途中" }] }],
+    });
+    if (outcome === "user_stop") {
+      f.ws.emit("message", Buffer.from('{"type":"stop"}'), false);
+      await tick();
+    } else if (outcome === "disconnect") {
+      f.ws.readyState = 3;
+      f.ws.emit("close");
+    } else if (outcome === "error") {
+      f.stream.emit("error", Object.assign(new Error("unavailable"), { code: 14 }));
+    } else if (outcome === "provider_end") {
+      f.stream.emit("end");
+      await tick();
+    }
+    t.mock.timers.tick(3_000);
+    assert.equal(f.ws.sent.some((message) => message.type === "speech_activity_end"), false, outcome);
+    if (outcome === "no_text") assert.equal(f.stream.ended, false);
+    f.stream.emit("end");
+    await tick();
+  }
+});
+
+test("Google inactivity ends submitted audio without waiting for drain", async (t) => {
+  const f = fixture();
+  await start(f);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  f.stream.emit("data", { results: [{ alternatives: [{ transcript: "途中" }] }] });
+  f.stream.blockAudio = true;
+  f.ws.emit("message", Buffer.alloc(32_000), true);
+  await tick();
+  assert.equal(f.stream.writes.length, 2);
+  t.mock.timers.tick(2_000);
+  assert.equal(f.stream.ended, true);
+  f.stream.emit("drain");
+  await tick();
+  assert.equal(f.stream.writes.length, 2);
+  f.stream.emit("data", { results: [{ isFinal: true, alternatives: [{ transcript: "確定" }] }] });
+  f.stream.emit("end");
+  await tick();
+  assert.equal(f.ws.sent.at(-1).hasSpeech, true);
+});
+
+test("Google inactivity during usage reservation prevents writing audio after end", async (t) => {
+  let finishReservation;
+  const f = fixture({ usageLedger: {
+    reserve: () => new Promise((resolve) => { finishReservation = resolve; }),
+  } });
+  await start(f);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  f.stream.emit("data", { results: [{ alternatives: [{ transcript: "途中" }] }] });
+  f.ws.emit("message", Buffer.alloc(2), true);
+  await tick();
+  t.mock.timers.tick(2_000);
+  assert.equal(f.stream.ended, true);
+  finishReservation({ reserved: true, ...snapshot(1) });
+  await tick();
+  assert.equal(f.stream.writes.length, 1);
+  f.stream.emit("data", { results: [{ isFinal: true, alternatives: [{ transcript: "確定" }] }] });
+  f.stream.emit("end");
+  await tick();
+  assert.equal(f.ws.sent.at(-1).reason, "speech_end_timeout");
+});

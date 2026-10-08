@@ -1,6 +1,7 @@
 import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createTranscriptInactivityTimer } from "./stt-transcript-inactivity.mjs";
 import {
   BYTES_PER_SECOND, MAX_DURATION_SECONDS, MAX_PENDING_BYTES,
   validAudioFrame, validStart, validStop,
@@ -75,8 +76,13 @@ export function createMacosStreamingSttHandler({
     let noSpeechTimer;
     let maxDurationTimer;
     let finalizationTimer;
+    const transcriptInactivity = createTranscriptInactivityTimer(() => {
+      send({ type: "speech_activity_end" });
+      endInput("speech_end_timeout", "transcript_inactivity");
+    });
 
     const clearTimers = () => {
+      transcriptInactivity.stop();
       clearTimeout(startupTimer);
       clearTimeout(noSpeechTimer);
       clearTimeout(maxDurationTimer);
@@ -117,6 +123,7 @@ export function createMacosStreamingSttHandler({
     const endInput = (reason, trigger = reason) => {
       if (terminal || inputEnded) return;
       inputEnded = true;
+      transcriptInactivity.stop();
       inputEndedAt = performance.now();
       endReason = reason;
       phase = "finalizing";
@@ -165,6 +172,7 @@ export function createMacosStreamingSttHandler({
         if (!message.isFinal && nativeHadText) lastPartialText = message.text;
         const usedPartialFallback = message.isFinal && !nativeHadText && !finalHadText && !!lastPartialText;
         const transcript = usedPartialFallback ? lastPartialText : message.text;
+        transcriptInactivity.update(transcript);
         if (message.isFinal) {
           if (transcript.trim()) {
             finalHadText = true;
@@ -245,6 +253,7 @@ export function createMacosStreamingSttHandler({
       }
       await new Promise((resolve, reject) => child.stdin.write(audio, (error) => error ? reject(error) : resolve()));
       sentBytes += audio.length;
+      if (terminal || inputEnded) return;
       const durationMs = audio.length / BYTES_PER_SECOND * 1000;
       lastRms = audioLevel(audio);
       if (lastRms >= VAD_THRESHOLD) {

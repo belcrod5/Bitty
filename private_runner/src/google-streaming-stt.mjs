@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { performance } from "node:perf_hooks";
 import { v2 as speech } from "@google-cloud/speech";
+import { createTranscriptInactivityTimer } from "./stt-transcript-inactivity.mjs";
 import {
   SAMPLE_RATE, BYTES_PER_SECOND, MAX_FRAME_BYTES, MAX_PENDING_BYTES, MAX_DURATION_SECONDS,
   validStart, validStop, validAudioFrame,
@@ -114,6 +115,8 @@ export function createGoogleStreamingSttHandler({
     let pendingBytes = 0;
     let speechBegan = false;
     let finalHadText = false;
+    let finalText = "";
+    let interimText = "";
     let endReason = "";
     let terminal = false;
     let inputEnded = false;
@@ -130,6 +133,10 @@ export function createGoogleStreamingSttHandler({
     const startedAt = now().toISOString();
     const sessionStartMs = performance.now();
     const elapsedMs = () => Math.round(performance.now() - sessionStartMs);
+    const transcriptInactivity = createTranscriptInactivityTimer(() => {
+      send({ type: "speech_activity_end" });
+      endInput("speech_end_timeout");
+    });
     const timing = {
       firstAudioReceivedMs: null,
       firstGrpcAudioWriteMs: null,
@@ -151,6 +158,7 @@ export function createGoogleStreamingSttHandler({
     };
 
     const closeGoogle = async () => {
+      transcriptInactivity.stop();
       clearTimeout(maxDurationTimer);
       clearTimeout(finalizationTimer);
       googleStream?.destroy();
@@ -225,6 +233,7 @@ export function createGoogleStreamingSttHandler({
       if (inputEnded || terminal) return;
       localEndRequest = { reason: reason || "closed_write_race", atMs: elapsedMs(), closeGoogleInput };
       inputEnded = true;
+      transcriptInactivity.stop();
       phase = "finalizing";
       endReason = reason || endReason;
       clearTimeout(maxDurationTimer);
@@ -256,6 +265,8 @@ export function createGoogleStreamingSttHandler({
       }
       const normalized = normalizeStreamingResults(response?.results);
       if (normalized.finalAppend) {
+        finalText += normalized.finalAppend;
+        interimText = "";
         const atMs = elapsedMs();
         timing.firstFinalMs ??= atMs;
         timing.lastFinalMs = atMs;
@@ -264,6 +275,7 @@ export function createGoogleStreamingSttHandler({
         send({ type: "transcript", text: normalized.finalAppend, isFinal: true, stability: 1 });
       }
       if (normalized.interimReplacement) {
+        interimText = normalized.interimReplacement;
         timing.firstInterimMs ??= elapsedMs();
         timing.interimCount += 1;
         send({
@@ -273,6 +285,7 @@ export function createGoogleStreamingSttHandler({
           stability: normalized.interimStability,
         });
       }
+      transcriptInactivity.update(finalText + interimText);
     };
 
     const start = async (payload) => {
@@ -317,6 +330,7 @@ export function createGoogleStreamingSttHandler({
           finishError(safe.code, safe.message, safe.retryable, safeFailureDetail(error, "google_stream"));
         });
         googleStream.once("end", () => {
+          transcriptInactivity.stop();
           googleStreamEnded = true;
           googleEndObservedMs = elapsedMs();
           inputEnded = true;
@@ -461,6 +475,7 @@ export function createGoogleStreamingSttHandler({
     ws.on("close", () => {
       if (terminal) return;
       terminal = true;
+      transcriptInactivity.stop();
       clearTimeout(maxDurationTimer);
       clearTimeout(finalizationTimer);
       googleStream?.destroy();
