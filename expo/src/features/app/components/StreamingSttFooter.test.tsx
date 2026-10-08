@@ -73,8 +73,16 @@ describe("StreamingSttFooter", () => {
     const onCancelCorrection = jest.fn();
     const screen = await render(<StreamingSttFooter transcript="元の文章" phase="preview" onStop={jest.fn()}
       correctionPreview={{ text: "補正した文章", seconds: 3 }}
+      leadingAccessory={<View testID="orchestrator-icon" />}
+      trailingAccessory={<View testID="status-menu" />}
       onSendCorrection={onSendCorrection} onCancelCorrection={onCancelCorrection} />);
     expect(screen.getByTestId("streaming-stt-correction-preview")).toBeTruthy();
+    const footer = screen.getByTestId("streaming-stt-footer");
+    expect(within(footer).queryByTestId("streaming-stt-correction-preview")).toBeNull();
+    expect(within(footer).getByTestId("streaming-stt-leading-accessory")).toBeTruthy();
+    expect(within(footer).getByTestId("streaming-stt-trailing-accessory")).toBeTruthy();
+    await fireEvent(footer, "layout", { nativeEvent: { layout: { width: 268, height: 112 } } });
+    expect(mockRRects.at(-1)).toEqual({ x: 54, y: 78, width: 264, height: 84 });
     expect(screen.getByText("補正した文章")).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("補正した文字起こしを今すぐ送信"));
     await fireEvent.press(screen.getByLabelText("自動送信をキャンセルして編集"));
@@ -152,6 +160,33 @@ describe("StreamingSttFooter", () => {
       leadingAccessory={<View testID="orchestrator-icon" />} />);
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-speaking-cancel").props.style).zIndex).toBe(2);
     expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-leading-accessory").props.style).zIndex).toBe(3);
+  });
+
+  it("keeps an optional upper-right accessory clear of the speaking overlay and stop button", async () => {
+    const props = { transcript: "", phase: "recording" as const, onStop: jest.fn(),
+      voiceStatus: "speaking" as const, onCancelSpeaking: jest.fn() };
+    const screen = await render(<StreamingSttFooter {...props} />);
+    expect(screen.queryByTestId("streaming-stt-trailing-accessory")).toBeNull();
+    await screen.rerender(<StreamingSttFooter {...props}
+      leadingAccessory={<View testID="orchestrator-icon" />}
+      trailingAccessory={<View testID="status-menu" />} />);
+    const accessory = screen.getByTestId("streaming-stt-trailing-accessory");
+    expect(within(accessory).getByTestId("status-menu")).toBeTruthy();
+    expect(within(screen.getByTestId("streaming-stt-panel")).queryByTestId("status-menu")).toBeNull();
+    expect(StyleSheet.flatten(accessory.props.style)).toMatchObject({
+      left: 60, right: 0, top: 0, minHeight: 32, zIndex: 3,
+    });
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-footer").props.style).paddingTop).toBe(32);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-metadata").props.style).marginTop).toBe(8);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-speaking-cancel").props.style).zIndex).toBe(2);
+    expect(screen.getByTestId("streaming-stt-stop")).toBeTruthy();
+    await act(async () => {
+      fireEvent(screen.getByTestId("streaming-stt-footer"), "layout",
+        { nativeEvent: { layout: { width: 268, height: 112 } } });
+    });
+    expect(mockRRects.at(-1)).toEqual({ x: 54, y: 78, width: 264, height: 84 });
+    await screen.rerender(<StreamingSttFooter {...props} trailingAccessory={<View testID="status-menu" />} />);
+    expect(StyleSheet.flatten(screen.getByTestId("streaming-stt-trailing-accessory").props.style).left).toBe(0);
   });
 
   it("offers a screen-reader history action on the existing transcript element", async () => {

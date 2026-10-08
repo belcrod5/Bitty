@@ -80,6 +80,7 @@ type MockFooterProps = {
   historyExpanded?: boolean;
   onHistoryToggle?: () => void;
   leadingAccessory?: ReactNode;
+  trailingAccessory?: ReactNode;
 };
 let mockFooterProps: MockFooterProps | null = null;
 const mockFooterRenders: { transcript: string; voiceStatus?: "responding" | "speaking" }[] = [];
@@ -127,7 +128,8 @@ jest.mock("../components/StreamingSttFooter", () => ({
     return ReactModule.createElement(View, { testID: "streaming-stt-footer" },
       ReactModule.createElement(Text, null, props.statusText || props.transcript),
       ReactModule.createElement(TouchableOpacity, { testID: "streaming-stt-stop", onPress: props.onStop }),
-      props.leadingAccessory);
+      props.leadingAccessory,
+      ReactModule.createElement(View, { testID: "streaming-stt-trailing-accessory" }, props.trailingAccessory));
   },
 }));
 jest.mock("../components/CodexStatusSummaryMenu", () => ({
@@ -335,6 +337,8 @@ test("the footer reveals stored messages and closes the history panel", async ()
     gestureVerticalRange: [-24, 24], gestureHorizontalRange: [-32, 32],
   });
   expect(within(screen.getByTestId("voice-history-swipe-area")).getByTestId("voice-orchestrator-floating")).toBeTruthy();
+  expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
+    .getByTestId("codex-status-summary-menu")).toBeTruthy();
   expect(StyleSheet.flatten(screen.getByTestId("voice-footer-inset").props.style))
     .toMatchObject({ paddingLeft: 12, paddingRight: 20 });
   expect(StyleSheet.flatten(screen.getByTestId("voice-orchestrator-floating").props.style))
@@ -358,7 +362,7 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(StyleSheet.flatten(screen.getByTestId("voice-conversation-history").props.style)).toMatchObject({ flex: 1, width: "100%" });
   expect(StyleSheet.flatten(screen.getByTestId("voice-history-messages").props.style)).toMatchObject({ flex: 1 });
   expect(screen.getByTestId("voice-history-messages").props.contentContainerStyle).toMatchObject({
-    paddingHorizontal: 20, paddingBottom: 64,
+    paddingHorizontal: 20, paddingBottom: 12,
   });
   expect(screen.getByTestId("voice-history-close").props).toMatchObject({
     accessibilityRole: "button", accessibilityLabel: "履歴を閉じる",
@@ -371,12 +375,9 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.queryByTestId("voice-history-handle")).toBeNull();
   expect(screen.getByText("最初の質問")).toBeTruthy();
   expect(screen.getByText("最初の返答")).toBeTruthy();
-  const accountMenu = screen.getByTestId("voice-history-account-menu");
-  expect(accountMenu.parent).toBe(screen.getByTestId("voice-conversation-history"));
-  expect(StyleSheet.flatten(accountMenu.props.style)).toMatchObject({
-    position: "absolute", right: 20, bottom: 12, zIndex: 1,
-  });
-  expect(screen.getByTestId("codex-status-summary-menu")).toBeTruthy();
+  expect(screen.queryByTestId("voice-history-account-menu")).toBeNull();
+  expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
+    .getByTestId("codex-status-summary-menu")).toBeTruthy();
   expect(screen.getByText("total 24 tok")).toBeTruthy();
   expect(screen.getByText("09/27 12:34")).toBeTruthy();
   expect(screen.getByText("09/27 12:35")).toBeTruthy();
@@ -393,6 +394,8 @@ test("the footer reveals stored messages and closes the history panel", async ()
   expect(screen.getByTestId("voice-conversation-backdrop").props.pointerEvents).toBe("none");
   expect(screen.queryByTestId("voice-conversation-board-blur")).toBeNull();
   expect(screen.queryByText("最初の質問")).toBeNull();
+  expect(within(screen.getByTestId("streaming-stt-trailing-accessory"))
+    .getByTestId("codex-status-summary-menu")).toBeTruthy();
   await screen.unmount();
 });
 

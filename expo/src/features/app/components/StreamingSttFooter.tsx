@@ -45,9 +45,10 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
   correctionPreview?: { text: string; seconds: number } | null;
   onSendCorrection?: () => void;
   onCancelCorrection?: () => void;
+  trailingAccessory?: ReactNode;
 }>(function StreamingSttFooter({ transcript, phase, onStop, voiceStatus, reduceMotion, voiceContextStats, statusText,
-  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle, leadingAccessory,
-  correctionPreview, onSendCorrection, onCancelCorrection }, ref) {
+  onChangeText, onFocus, onBlur, onSubmit, onCancelSpeaking, historyExpanded, onHistoryToggle,
+  leadingAccessory, trailingAccessory, correctionPreview, onSendCorrection, onCancelCorrection }, ref) {
   const styles = useAppStyles();
   const { themeId } = useVisualTheme();
   const [usage, setUsage] = useState<StreamingSttUsage | null>(null);
@@ -163,24 +164,11 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
       if (event.nativeEvent.actionName === "toggleHistory") onHistoryToggle();
     },
   } : {};
+  const panelTop = trailingAccessory ? 32 : leadingAccessory ? 8 : 0;
+  const metadataTop = leadingAccessory ? (trailingAccessory ? 8 : 19) : 0;
 
   return (
-    <View
-      testID="streaming-stt-footer"
-      style={{ position: "relative", overflow: "visible", paddingTop: leadingAccessory ? 8 : 0,
-        paddingLeft: leadingAccessory ? 8 : 0 }}
-      onLayout={(event) => {
-        const { width, height } = event.nativeEvent.layout;
-        const top = leadingAccessory ? 8 : 0;
-        const left = leadingAccessory ? 8 : 0;
-        const path = Skia.Path.Make();
-        path.addRRect(Skia.RRectXY(
-          Skia.XYWHRect(GLOW_SPACE + left - 2, GLOW_SPACE + top - 2, width - left + 4, height - top + 4), 16, 16
-        ));
-        border.value = path;
-        center.value = vec(GLOW_SPACE + left + (width - left) / 2, GLOW_SPACE + top + (height - top) / 2);
-      }}
-    >
+    <View>
       {correctionPreview ? (
         <View testID="streaming-stt-correction-preview" style={{ marginBottom: 10, padding: 12,
           borderRadius: 12, backgroundColor: "#17273b", zIndex: 2 }}>
@@ -197,6 +185,23 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           </TouchableOpacity>
         </View>
       ) : null}
+    <View
+      testID="streaming-stt-footer"
+      style={{ position: "relative", overflow: "visible", paddingTop: panelTop,
+        paddingLeft: leadingAccessory ? 8 : 0 }}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        const left = leadingAccessory ? 8 : 0;
+        const path = Skia.Path.Make();
+        path.addRRect(Skia.RRectXY(
+          Skia.XYWHRect(GLOW_SPACE + left - 2, GLOW_SPACE + panelTop - 2,
+            width - left + 4, height - panelTop + 4), 16, 16
+        ));
+        border.value = path;
+        center.value = vec(GLOW_SPACE + left + (width - left) / 2,
+          GLOW_SPACE + panelTop + (height - panelTop) / 2);
+      }}
+    >
       <Canvas
         pointerEvents="none"
         testID="streaming-stt-glow"
@@ -231,7 +236,7 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
         <View style={{ flex: 1, minWidth: 0 }}>
           {leadingAccessory || voiceContextStats !== undefined || usage || phase === "finalizing" ? (
             <View testID="streaming-stt-metadata" style={{ flexDirection: "row", flexWrap: "wrap",
-              alignItems: "center", marginTop: leadingAccessory ? 19 : 0,
+              alignItems: "center", marginTop: metadataTop,
               minHeight: leadingAccessory ? 11 : 0, marginBottom: 2 }}>
               {phase === "finalizing" || usage ? (
                 <Text style={{ color: "#8e9bad", fontSize: 11 }}>
@@ -315,6 +320,14 @@ export const StreamingSttFooter = memo(forwardRef<StreamingSttFooterHandle, {
           {leadingAccessory}
         </View>
       ) : null}
+      {trailingAccessory ? (
+        <View testID="streaming-stt-trailing-accessory"
+          style={{ position: "absolute", left: leadingAccessory ? 60 : 0, right: 0, top: 0,
+            minHeight: 32, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", zIndex: 3 }}>
+          <View style={{ flexShrink: 1 }}>{trailingAccessory}</View>
+        </View>
+      ) : null}
+    </View>
     </View>
   );
 }));
