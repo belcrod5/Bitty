@@ -1,4 +1,35 @@
-import { formatCodexAuthRateLimits, parseCodexAuthRateLimits } from "./codexAuthRateLimits";
+import { formatCodexAuthRateLimits, parseCodexAuthRateLimits, parseCodexStatusLimit } from "./codexAuthRateLimits";
+
+describe("Codex status remaining limits", () => {
+  it.each([
+    [0, "danger"],
+    [1, "warning"],
+    [10, "warning"],
+    [11, "neutral"],
+    [50, "neutral"],
+    [100, "neutral"],
+    [0.4, "danger"],
+    [10.4, "warning"],
+    [10.5, "neutral"],
+  ] as const)("classifies the displayed remaining %s%% as %s", (percent, tone) => {
+    expect(parseCodexStatusLimit(`5h limit: [██░░] ${percent}% left\nWeekly limit: 80% left`, "5h")).toEqual({
+      remainingPercent: Math.round(percent),
+      tone,
+    });
+  });
+
+  it("reads each window independently and tolerates label case", () => {
+    const status = "5h limit: 0% left\nweekly limit: [██░░] 10% left (resets tomorrow)";
+    expect(parseCodexStatusLimit(status, "5h")).toEqual({ remainingPercent: 0, tone: "danger" });
+    expect(parseCodexStatusLimit(status, "Weekly")).toEqual({ remainingPercent: 10, tone: "warning" });
+  });
+
+  it.each(["", "5h limit: unavailable\nWeekly limit: 0% left", "5h limit: -1% left", "5h limit: 101% left"])(
+    "keeps missing or invalid remaining percentages neutral: %s", (status) => {
+      expect(parseCodexStatusLimit(status, "5h")).toEqual({ remainingPercent: null, tone: "neutral" });
+    }
+  );
+});
 
 describe("Codex auth account helpers", () => {
   it("parses rate limit objects and arrays safely", () => {
