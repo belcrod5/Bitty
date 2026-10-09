@@ -595,6 +595,135 @@ test("Runner error is terminal even if a late done arrives", async () => {
   expect(result.current.active).toBe(false);
 });
 
+test("retryable Runner failure waits for cleanup, preserves the draft, and ignores stale callbacks", async () => {
+  let resolveAbort = () => {};
+  const options = { ...createOptions(), transcript: "draft" };
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "transcript", text: "final", isFinal: true });
+  await emit(session, { type: "transcript", text: "private partial", isFinal: false });
+  session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+  await emit(session, { type: "error", code: "macos_recognition_failed", message: "private failure", retryable: true });
+  expect(result.current.phase).toBe("connecting");
+  expect(result.current.isArmed()).toBe(true);
+  expect(session.abort).toHaveBeenCalledTimes(1);
+  expect(options.setTranscript).toHaveBeenLastCalledWith("draft final");
+  await act(async () => { session.callbacks.onClose(); session.callbacks.onError("late error"); });
+  await emit(session, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  await advanceTimers(10_000);
+  expect(mockSessions).toHaveLength(1);
+  await act(async () => { resolveAbort(); });
+  await advanceTimers(249);
+  expect(mockSessions).toHaveLength(1);
+  await advanceTimers(1);
+  expect(mockSessions).toHaveLength(2);
+  const retry = mockSessions[1];
+  await emit(retry, { type: "ready" });
+  expect(result.current.phase).toBe("recording");
+  await emit(retry, { type: "transcript", text: "next", isFinal: false });
+  expect(options.setTranscript).toHaveBeenLastCalledWith("draft final next");
+  expect(options.onError).not.toHaveBeenCalled();
+  expect(options.sendTranscript).not.toHaveBeenCalled();
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_runner_error", {
+    version: 1, code: "macos_recognition_failed", retryable: true, retries: 0,
+  });
+  expect(options.onDiagnostic).toHaveBeenCalledWith("stt_error_retry", { version: 2, attempt: 1 });
+  expect(JSON.stringify(options.onDiagnostic.mock.calls)).not.toMatch(/private partial|private failure/);
+});
+
+test.each(["stop", "abort", "unmount"])("%s during retry cleanup prevents reconnection", async (action) => {
+  let resolveAbort = () => {};
+  const options = createOptions();
+  const hook = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(hook.result);
+  session.abort.mockImplementation(() => new Promise<void>((resolve) => { resolveAbort = resolve; }));
+  await emit(session, { type: "error", code: "macos_recognition_failed", message: "failed", retryable: true });
+  let abort: Promise<void> | undefined;
+  if (action === "unmount") await hook.unmount();
+  else await act(async () => {
+    if (action === "stop") hook.result.current.stop();
+    else abort = hook.result.current.abort();
+  });
+  await act(async () => { resolveAbort(); await abort; });
+  await advanceTimers(10_000);
+  expect(mockSessions).toHaveLength(1);
+  expect(session.abort).toHaveBeenCalledTimes(1);
+  expect(options.onError).not.toHaveBeenCalled();
+});
+
+test("stop cancels a scheduled error retry and manual start gets a new session", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  const session = await openReady(result);
+  await emit(session, { type: "error", code: "google_unavailable", message: "failed", retryable: true });
+  await act(async () => { result.current.stop(); });
+  await advanceTimers(10_000);
+  expect(mockSessions).toHaveLength(1);
+  expect(result.current.isArmed()).toBe(false);
+  await openReady(result);
+  expect(mockSessions).toHaveLength(2);
+});
+
+test("retries are bounded across ready messages and manual start resets the budget", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await openReady(result);
+  for (const delay of [250, 500, 1_000]) {
+    await emit(mockSessions.at(-1)!, { type: "error", code: "macos_recognition_failed", message: "failed", retryable: true });
+    const sessions = mockSessions.length;
+    await advanceTimers(delay - 1);
+    expect(mockSessions).toHaveLength(sessions);
+    await advanceTimers(1);
+    expect(mockSessions).toHaveLength(sessions + 1);
+    await emit(mockSessions.at(-1)!, { type: "ready" });
+  }
+  await emit(mockSessions.at(-1)!, { type: "error", code: "macos_recognition_failed", message: "failed", retryable: true });
+  await advanceTimers(10_000);
+  expect(mockSessions).toHaveLength(4);
+  expect(result.current.phase).toBe("idle");
+  expect(options.onError).toHaveBeenCalledTimes(1);
+  await openReady(result);
+  await emit(mockSessions.at(-1)!, { type: "error", code: "google_unavailable", message: "failed", retryable: true });
+  await advanceTimers(250);
+  expect(mockSessions).toHaveLength(6);
+});
+
+test("successful no-speech completion resets the error retry budget", async () => {
+  const options = createOptions();
+  const { result } = await renderHook(() => useStreamingStt(options));
+  await openReady(result);
+  await emit(mockSessions.at(-1)!, { type: "error", code: "google_unavailable", message: "failed", retryable: true });
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "ready" });
+  await emit(mockSessions.at(-1)!, { type: "done", reason: "no_speech_timeout", hasSpeech: false });
+  await advanceTimers(250);
+  await emit(mockSessions.at(-1)!, { type: "error", code: "google_unavailable", message: "failed", retryable: true });
+  await advanceTimers(250);
+  expect(mockSessions).toHaveLength(4);
+  expect(options.onDiagnostic).toHaveBeenLastCalledWith("stt_session_start", expect.any(Object));
+  expect(options.onDiagnostic.mock.calls.filter(([event]) => event === "stt_error_retry")
+    .map(([, payload]) => payload)).toEqual([
+    { version: 2, attempt: 1 }, { version: 6, attempt: 1 },
+  ]);
+});
+
+test("retryable startup failure respects availability before reconnecting", async () => {
+  let options = createOptions();
+  const hook = await renderHook((props: Options) => useStreamingStt(props), { initialProps: options });
+  await act(async () => { hook.result.current.start(); });
+  options = { ...options, canStart: false };
+  await hook.rerender(options);
+  await emit(mockSessions[0], { type: "error", code: "macos_start_timeout", message: "failed", retryable: true });
+  await advanceTimers(1_000);
+  expect(mockSessions).toHaveLength(1);
+  options = { ...options, canStart: true };
+  await hook.rerender(options);
+  await advanceTimers(250);
+  expect(mockSessions).toHaveLength(2);
+  await emit(mockSessions[1], { type: "ready" });
+  expect(hook.result.current.phase).toBe("recording");
+});
+
 test("delivers volume samples and handles transport errors, close, and invalid JSON", async () => {
   const options = createOptions();
   const { result } = await renderHook(() => useStreamingStt(options));

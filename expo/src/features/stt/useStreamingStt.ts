@@ -39,6 +39,7 @@ const EMPTY_TRANSCRIPT = startStreamingTranscript("");
 export const REPLY_CYCLE_START_TIMEOUT_MS = 15_000;
 export const TTS_START_GRACE_MS = 500;
 const RETRY_DELAY_MS = 250;
+const MAX_ERROR_RETRIES = 3;
 
 export function useStreamingStt(options: Options) {
   const { transcript, setTranscript, onError } = options;
@@ -52,6 +53,7 @@ export function useStreamingStt(options: Options) {
   const listeningRef = useRef(false);
   const startSessionRef = useRef<() => void>(() => {});
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const errorRetriesRef = useRef(0);
   const awaitingReplyCycleRef = useRef(false);
   const sawReplyLoadingRef = useRef(false);
   const sawTtsPlaybackRef = useRef(false);
@@ -374,7 +376,27 @@ export function useStreamingStt(options: Options) {
       return;
     }
     if (message.type === "error") {
-      latestRef.current.onDiagnostic?.("stt_runner_error", { version: sessionVersionRef.current });
+      latestRef.current.onDiagnostic?.("stt_runner_error", {
+        version: sessionVersionRef.current,
+        code: /^[a-z][a-z0-9_]{0,63}$/.test(message.code) ? message.code : "unknown",
+        retryable: message.retryable,
+        retries: errorRetriesRef.current,
+      });
+      if (message.retryable && listeningRef.current && errorRetriesRef.current < MAX_ERROR_RETRIES) {
+        terminalRef.current = true;
+        const version = ++sessionVersionRef.current;
+        const attempt = ++errorRetriesRef.current;
+        const draft = finalStreamingTranscript(transcriptStateRef.current);
+        transcriptStateRef.current = startStreamingTranscript(draft);
+        latestRef.current.setTranscript(draft);
+        setPhase("connecting");
+        latestRef.current.onDiagnostic?.("stt_error_retry", { version, attempt });
+        void abortSession().then(() => {
+          if (version !== sessionVersionRef.current || !listeningRef.current) return;
+          scheduleStart(RETRY_DELAY_MS * 2 ** (attempt - 1));
+        });
+        return;
+      }
       fail(message.message || "音声認識に失敗しました。");
       return;
     }
@@ -390,6 +412,7 @@ export function useStreamingStt(options: Options) {
     });
     terminalRef.current = true;
     if (sessionRef.current !== session) return;
+    errorRetriesRef.current = 0;
     const version = ++sessionVersionRef.current;
     if (message.usage) latestRef.current.onUsage(message.usage);
     void abortSession().then(async () => {
@@ -482,6 +505,7 @@ export function useStreamingStt(options: Options) {
     }
     if (phase !== "idle" || listeningRef.current) return;
     transcriptStateRef.current = startStreamingTranscript(transcript);
+    errorRetriesRef.current = 0;
     listeningRef.current = true;
     startSession();
   }, [onError, options.canStart, phase, startSession, transcript, transport.supported]);
