@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dimensions, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { useAppStyles } from "../styles";
 import { AppModal } from "./AppModal";
-import { formatCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
+import { formatCodexAuthRateLimits, parseCodexStatusLimit } from "../utils/codexAuthRateLimits";
 import { useChatDiagnostics } from "../contexts/ChatDiagnosticsContext";
+import { useVisualTheme } from "../theme/VisualThemeContext";
 
 type AnchorRect = {
   x: number;
@@ -18,11 +19,6 @@ type CodexStatusSummaryMenuProps = {
 };
 
 const STATUS_PREVIEW_WIDTH = 320;
-
-function parseLimitPct(statusFullText: string, label: "5h" | "Weekly") {
-  const match = statusFullText.match(new RegExp(`${label} limit:[^\\n]*?(\\d+)%\\s*left`, "i"));
-  return match?.[1] || "--";
-}
 
 function formatStatusElapsed(statusFetchedAtMs: number, tick: number) {
   void tick;
@@ -41,6 +37,7 @@ export function CodexStatusSummaryMenu({
   compact = false,
 }: CodexStatusSummaryMenuProps) {
   const styles = useAppStyles();
+  const { theme } = useVisualTheme();
   const {
     codexCliStatusText: statusText,
     codexCliStatusFetchedAtMs: statusFetchedAtMs,
@@ -80,9 +77,10 @@ export function CodexStatusSummaryMenu({
     () => (Array.isArray(authProfiles) ? authProfiles : []),
     [authProfiles]
   );
-  const fiveHourPct = parseLimitPct(statusFullText, "5h");
-  const weeklyPct = parseLimitPct(statusFullText, "Weekly");
-  const statusSummaryText = `5h ${fiveHourPct}% | 週 ${weeklyPct}% (${formatStatusElapsed(safeFetchedAtMs, nowTick)})`;
+  const fiveHourLimit = parseCodexStatusLimit(statusFullText, "5h");
+  const weeklyLimit = parseCodexStatusLimit(statusFullText, "Weekly");
+  const fiveHourPct = fiveHourLimit.remainingPercent ?? "--";
+  const weeklyPct = weeklyLimit.remainingPercent ?? "--";
   const currentAuthId = String(authProfileId || "").trim();
   const currentDisplayName = String(authProfileItems.find((item) => item.authId === currentAuthId)?.displayName || "").trim();
   const currentAuthIdText = currentDisplayName || currentAuthId || "(未選択)";
@@ -136,6 +134,20 @@ export function CodexStatusSummaryMenu({
     )
   );
   const previewTop = Math.max(8, anchor.y - previewEstimatedHeight - 6);
+  const fiveHourSummary = (
+    <Text
+      style={[styles.chatStatusSummaryText, compact && { lineHeight: 16 }, { color: theme.tones[fiveHourLimit.tone].foreground }]}
+      numberOfLines={1}
+      accessibilityLabel={`5時間の残り ${fiveHourPct}%`}
+    >{fiveHourPct}%</Text>
+  );
+  const weeklySummary = (
+    <Text
+      style={[styles.chatStatusSummaryText, compact && { lineHeight: 16 }, { color: theme.tones[weeklyLimit.tone].foreground }]}
+      numberOfLines={1}
+      accessibilityLabel={`週間の残り ${weeklyPct}%`}
+    >{weeklyPct}%</Text>
+  );
 
   return (
     <>
@@ -149,12 +161,12 @@ export function CodexStatusSummaryMenu({
         >
           {compact ? (
             <>
-              <Text style={[styles.chatStatusSummaryText, { lineHeight: 16 }]} numberOfLines={1} accessibilityLabel={`5時間の残り ${fiveHourPct}%`}>{fiveHourPct}%</Text>
-              <Text style={[styles.chatStatusSummaryText, { lineHeight: 16 }]} numberOfLines={1} accessibilityLabel={`週間の残り ${weeklyPct}%`}>{weeklyPct}%</Text>
+              {fiveHourSummary}
+              {weeklySummary}
             </>
           ) : (
             <Text style={styles.chatStatusSummaryText} numberOfLines={1}>
-              {statusSummaryText}{statusLoading ? " 更新中..." : ""}
+              5h {fiveHourSummary} | 週 {weeklySummary} ({formatStatusElapsed(safeFetchedAtMs, nowTick)}){statusLoading ? " 更新中..." : ""}
             </Text>
           )}
         </TouchableOpacity>

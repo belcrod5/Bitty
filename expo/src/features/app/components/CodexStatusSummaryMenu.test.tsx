@@ -1,14 +1,17 @@
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 import { CodexStatusSummaryMenu } from "./CodexStatusSummaryMenu";
+import { VisualThemeProvider } from "../theme/VisualThemeContext";
+import { VISUAL_THEMES, type VisualThemeId } from "../theme/visualThemes";
 
 jest.mock("./AppModal", () => ({ AppModal: ({ children }: { children: ReactNode }) => children }));
 const mockSwitchAuthProfile = jest.fn();
 const mockRefreshStatus = jest.fn();
 const mockLoadAuthProfiles = jest.fn();
+let mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
 jest.mock("../contexts/ChatDiagnosticsContext", () => ({
   useChatDiagnostics: () => ({
-    codexCliStatusText: "5h limit: 75% left\nWeekly limit: 50% left",
+    codexCliStatusText: mockStatusText,
     codexCliStatusFetchedAtMs: Date.now(),
     codexCliStatusLoading: false,
     codexAuthProfileId: "account-1",
@@ -34,7 +37,54 @@ jest.mock("../contexts/ChatDiagnosticsContext", () => ({
 }));
 
 describe("CodexStatusSummaryMenu", () => {
+  beforeEach(() => {
+    mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
+  });
   afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    ["standard", false],
+    ["standard", true],
+    ["cyberpunk", false],
+    ["cyberpunk", true],
+  ] as const)("uses %s theme colors for each limit (compact: %s)", async (themeId: VisualThemeId, compact) => {
+    mockStatusText = "5h limit: 0% left\nWeekly limit: 10% left";
+    const screen = await render(
+      <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+        <CodexStatusSummaryMenu compact={compact} />
+      </VisualThemeProvider>
+    );
+    const theme = VISUAL_THEMES[themeId];
+    expect(screen.getByLabelText("5時間の残り 0%")).toHaveStyle({ color: theme.tones.danger.foreground });
+    expect(screen.getByLabelText("週間の残り 10%")).toHaveStyle({ color: theme.tones.warning.foreground });
+
+    mockStatusText = "5h limit: 1% left\nWeekly limit: 0% left";
+    await screen.rerender(
+      <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+        <CodexStatusSummaryMenu compact={compact} />
+      </VisualThemeProvider>
+    );
+    expect(screen.getByLabelText("5時間の残り 1%")).toHaveStyle({ color: theme.tones.warning.foreground });
+    expect(screen.getByLabelText("週間の残り 0%")).toHaveStyle({ color: theme.tones.danger.foreground });
+
+    mockStatusText = "5h limit: 10% left\nWeekly limit: 10% left";
+    await screen.rerender(
+      <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+        <CodexStatusSummaryMenu compact={compact} />
+      </VisualThemeProvider>
+    );
+    expect(screen.getByLabelText("5時間の残り 10%")).toHaveStyle({ color: theme.tones.warning.foreground });
+    expect(screen.getByLabelText("週間の残り 10%")).toHaveStyle({ color: theme.tones.warning.foreground });
+
+    mockStatusText = "5h limit: 11% left";
+    await screen.rerender(
+      <VisualThemeProvider themeId={themeId} onSelectTheme={() => undefined}>
+        <CodexStatusSummaryMenu compact={compact} />
+      </VisualThemeProvider>
+    );
+    expect(screen.getByLabelText("5時間の残り 11%")).toHaveStyle({ color: theme.tones.neutral.foreground });
+    expect(screen.getByLabelText("週間の残り --%")).toHaveStyle({ color: theme.tones.neutral.foreground });
+  });
 
   it("uses the saved account name and shows remaining limits", async () => {
     const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);

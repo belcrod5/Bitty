@@ -1,5 +1,20 @@
 import type { CodexAuthProfileEntry, CodexAuthRateLimit } from "../types/appTypes";
 
+export function parseCodexStatusLimit(statusText: string, label: "5h" | "Weekly"): {
+  remainingPercent: number | null;
+  tone: "neutral" | "warning" | "danger";
+} {
+  const match = statusText.match(new RegExp(`${label} limit:[^\\n]*?(-?\\d+(?:\\.\\d+)?)%\\s*left`, "i"));
+  const percent = match ? Number(match[1]) : NaN;
+  const remainingPercent = Number.isFinite(percent) && percent >= 0 && percent <= 100
+    ? Math.round(percent)
+    : null;
+  return {
+    remainingPercent,
+    tone: remainingPercent === 0 ? "danger" : remainingPercent !== null && remainingPercent <= 10 ? "warning" : "neutral",
+  };
+}
+
 export function parseCodexAuthRateLimits(value: unknown): CodexAuthRateLimit[] {
   const values = Array.isArray(value) ? value : value && typeof value === "object" ? Object.values(value) : [];
   return values.flatMap((raw) => {
