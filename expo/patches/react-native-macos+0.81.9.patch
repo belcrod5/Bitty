@@ -1,3 +1,18 @@
+diff --git a/node_modules/react-native-macos/Libraries/Animated/shouldUseTurboAnimatedModule.js b/node_modules/react-native-macos/Libraries/Animated/shouldUseTurboAnimatedModule.js
+--- a/node_modules/react-native-macos/Libraries/Animated/shouldUseTurboAnimatedModule.js
++++ b/node_modules/react-native-macos/Libraries/Animated/shouldUseTurboAnimatedModule.js
+@@ -16,7 +16,10 @@ function shouldUseTurboAnimatedModule(): boolean {
+   if (ReactNativeFeatureFlags.cxxNativeAnimatedEnabled()) {
+     return false;
+   } else {
+-    return Platform.OS === 'ios' && global.RN$Bridgeless === true;
++    return (
++      (Platform.OS === 'ios' || Platform.OS === 'macos') &&
++      global.RN$Bridgeless === true
++    );
+   }
+ }
+ 
 diff --git a/node_modules/react-native-macos/Libraries/Pressability/Pressability.js b/node_modules/react-native-macos/Libraries/Pressability/Pressability.js
 index bbee6d1..fc2ad8c 100644
 --- a/node_modules/react-native-macos/Libraries/Pressability/Pressability.js

@@ -6,7 +6,16 @@ can reattach a view without another layout callback; without this, the surface
 stays uninitialized and animated frames cannot be drawn. Later size changes
 still follow Skia's existing layout path. iOS behavior is unchanged.
 
-`react-native-macos+0.81.9.patch` keeps Fabric scroll interactions bracketed for
+`react-native-macos+0.81.9.patch` selects `NativeAnimatedTurboModule` on bridgeless
+macOS, matching iOS. The original selector only checks iOS, so macOS selects
+the legacy module, which relies on bridge UIManager and surface presenter
+APIs that the bridgeless bridge proxy does not support. This breaks the
+Fabric animation lifecycle used to reveal the board's activity frame, glow,
+and routes together. Bridge mode, Android,
+and the C++ animation feature flag retain their existing module selection.
+Remove this part of the patch once React Native macOS includes the same fix.
+
+The patch also keeps Fabric scroll interactions bracketed for
 React Native, smooths phase-less mouse-wheel ticks, and doubles only their
 vertical distance. Precise trackpad and horizontal scrolling remain native. It
 also reads display-link timestamps from the host clock: Worklets pauses the
