@@ -117,7 +117,6 @@ export function FileViewerHeader({
             key={action.label}
             style={[
               styles.button,
-              action.primary ? styles.primaryButton : null,
               (disabled || action.disabled) ? styles.disabled : null,
             ]}
             onPress={action.onPress}
@@ -130,7 +129,7 @@ export function FileViewerHeader({
             <Ionicons
               name={action.icon}
               size={22}
-              color={action.primary ? theme.colors.textOnAccent : theme.colors.textSecondary}
+              color={action.primary ? theme.colors.primaryAction : theme.colors.textSecondary}
             />
           </TouchableOpacity>
         ))}
@@ -205,7 +204,6 @@ function createHeaderStyles(theme: VisualTheme) {
       alignItems: "center",
       justifyContent: "center",
     },
-    primaryButton: { backgroundColor: theme.colors.primaryAction },
     disabled: { opacity: 0.5 },
   });
 }
