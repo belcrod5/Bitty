@@ -84,7 +84,8 @@ test("sends exactly one push for a new approval request with the command in the 
   assert.equal(calls[0].token, "token-1");
   assert.equal(calls[0].payload.aps.alert.title, "承認リクエスト");
   assert.match(calls[0].payload.aps.alert.body, /npm test/);
-  assert.equal(calls[0].payload.aps.sound, "default");
+  assert.equal(calls[0].payload.aps.sound, "bitty-approval-request.wav");
+  assert.equal(calls[0].payload.aps["mutable-content"], 1);
   assert.equal(calls[0].payload.aps.category, "APPROVAL_REQUEST");
   assert.equal(calls[0].payload.aps["interruption-level"], "time-sensitive");
   assert.equal(calls[0].payload.approvalId, "relay-approval-test:42");
