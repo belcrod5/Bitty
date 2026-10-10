@@ -26,3 +26,8 @@ test("renders drawio XML safely with the official static viewer", () => {
   expect(html).not.toContain("postMessage");
   expect(html).not.toContain("pinchEnabled");
 });
+
+
+jest.mock("../keyboardController", () => ({
+  KeyboardAvoidingView: require("react-native").KeyboardAvoidingView,
+}));

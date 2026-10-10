@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -10,24 +10,23 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
-import { RUNNER_FILE_HTTP_TIMEOUT_MS } from "../utils/runnerFileContextMenu";
+import { RUNNER_FILE_HTTP_TIMEOUT_MS, type RunnerFileTarget } from "../utils/runnerFileContextMenu";
 import type {
   WorkspaceFileTarget,
   WorkspaceFileWriteResult,
 } from "../utils/workspaceFiles";
 import { AppModal } from "./AppModal";
+import { FileViewerHeader } from "./FileViewerHeader";
 import { MarkdownText } from "./MarkdownText";
 import { ModalTextInputDraft } from "./ModalTextInputDraft";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
 type WorkspaceTextFileEditorProps = {
-  target: WorkspaceFileTarget | null;
+  target: RunnerFileTarget | null;
   runnerUrl: string;
   runnerToken: string;
   rootDirectory: string;
@@ -55,6 +54,8 @@ export function WorkspaceTextFileEditor({
   const [initialContent, setInitialContent] = useState("");
   const [version, setVersion] = useState("");
   const [saving, setSaving] = useState(false);
+  const [fileActionBusy, setFileActionBusy] = useState(false);
+  const contentRef = useRef("");
   const [mode, setMode] = useState<"edit" | "preview">("edit");
 
   const targetPath = target?.path || "";
@@ -62,11 +63,13 @@ export function WorkspaceTextFileEditor({
   const isMarkdown = /\.md$/iu.test(targetPath);
 
   useEffect(() => {
+    contentRef.current = "";
     setContent("");
     setInitialContent("");
     setVersion("");
     setLoadError("");
     setSaving(false);
+    setFileActionBusy(false);
     setMode("edit");
     if (!targetPath) return;
     let cancelled = false;
@@ -80,6 +83,7 @@ export function WorkspaceTextFileEditor({
     })
       .then((result) => {
         if (cancelled) return;
+        contentRef.current = result.content;
         setContent(result.content);
         setInitialContent(result.content);
         setVersion(result.version);
@@ -100,8 +104,8 @@ export function WorkspaceTextFileEditor({
   const dirty = !loading && !loadError && content !== initialContent;
 
   const requestClose = useCallback(() => {
-    if (saving) return;
-    if (!dirty) {
+    if (saving || fileActionBusy) return;
+    if (contentRef.current === initialContent) {
       onClose();
       return;
     }
@@ -113,17 +117,17 @@ export function WorkspaceTextFileEditor({
         { text: "破棄する", style: "destructive", onPress: onClose },
       ]
     );
-  }, [dirty, onClose, saving]);
+  }, [fileActionBusy, initialContent, onClose, saving]);
 
   const save = useCallback(() => {
-    if (!target || !dirty || saving) return;
+    if (!target || !dirty || saving || fileActionBusy) return;
     setSaving(true);
-    onSave(target, content, version)
+    onSave(target, contentRef.current, version)
       .then(() => onClose())
       .catch(() => {
         setSaving(false);
       });
-  }, [content, dirty, onClose, onSave, saving, target, version]);
+  }, [dirty, fileActionBusy, onClose, onSave, saving, target, version]);
 
   const toggleMode = useCallback(() => {
     setMode((currentMode) => {
@@ -143,55 +147,38 @@ export function WorkspaceTextFileEditor({
           style={editorStyles.body}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <View style={editorStyles.header}>
-            <TouchableOpacity
-              style={editorStyles.headerButton}
-              onPress={requestClose}
-              disabled={saving}
-            >
-              <Text style={editorStyles.headerCloseText}>閉じる</Text>
-            </TouchableOpacity>
-            <View style={editorStyles.headerTitleArea}>
-              <Text style={editorStyles.headerTitle} numberOfLines={1}>
-                {target?.name || ""}
-              </Text>
-              <Text style={editorStyles.headerPath} numberOfLines={1}>
-                {targetPath}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={[
-                editorStyles.modeButton,
-                (loading || loadError || saving) ? editorStyles.disabledButton : null,
+          {target ? (
+            <FileViewerHeader
+              key={`${targetRootDirectory}\0${targetPath}`}
+              target={target}
+              saving={saving}
+              onClose={onClose}
+              onRequestClose={requestClose}
+              onBusyChange={setFileActionBusy}
+              beforeMutation={() => {
+                if (loading || loadError) return false;
+                if (contentRef.current === initialContent) return true;
+                Alert.alert("変更を保存してください", "名前変更・削除の前に、編集中の内容を保存してください。");
+                return false;
+              }}
+              actions={[
+                {
+                  icon: mode === "edit" ? "eye-outline" : "create-outline",
+                  label: mode === "edit" ? "プレビューを表示" : "編集モードに戻る",
+                  onPress: toggleMode,
+                  disabled: loading || Boolean(loadError) || fileActionBusy,
+                  testID: "workspace-text-file-editor-mode-toggle",
+                },
+                {
+                  icon: "save-outline",
+                  label: "保存",
+                  onPress: save,
+                  disabled: !dirty || fileActionBusy,
+                  primary: true,
+                },
               ]}
-              onPress={toggleMode}
-              disabled={loading || Boolean(loadError) || saving}
-              accessibilityRole="button"
-              accessibilityLabel={mode === "edit" ? "プレビューを表示" : "編集モードに戻る"}
-              testID="workspace-text-file-editor-mode-toggle"
-            >
-              <Ionicons
-                name={mode === "edit" ? "eye-outline" : "create-outline"}
-                size={20}
-                color={theme.colors.textSecondary}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                editorStyles.headerButton,
-                editorStyles.saveButton,
-                (!dirty || saving) ? editorStyles.disabledButton : null,
-              ]}
-              onPress={save}
-              disabled={!dirty || saving}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color={theme.colors.textOnAccent} />
-              ) : (
-                <Text style={editorStyles.saveButtonText}>保存</Text>
-              )}
-            </TouchableOpacity>
-          </View>
+            />
+          ) : null}
           {loading ? (
             <View style={editorStyles.centerArea}>
               <ActivityIndicator size="large" color={theme.colors.primaryAction} />
@@ -204,7 +191,10 @@ export function WorkspaceTextFileEditor({
             <ModalTextInputDraft
               key={`${targetRootDirectory}\0${targetPath}\0${version}`}
               value={content}
-              onChangeText={setContent}
+              onChangeText={(value) => {
+                contentRef.current = value;
+                setContent(value);
+              }}
             >
               {(draft) =>
                 mode === "edit" ? (
@@ -213,7 +203,7 @@ export function WorkspaceTextFileEditor({
                     style={editorStyles.textInput}
                     value={draft.value}
                     onChangeText={draft.changeText}
-                    editable={!saving}
+                    editable={!saving && !fileActionBusy}
                     multiline
                     autoCapitalize="none"
                     autoCorrect={false}
@@ -254,58 +244,6 @@ function createWorkspaceTextFileEditorStyles(theme: VisualTheme) {
   },
   body: {
     flex: 1,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: theme.borders.thin,
-    borderBottomColor: theme.colors.borderSubtle,
-  },
-  headerButton: {
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  headerCloseText: {
-    color: theme.colors.textSecondary,
-    fontWeight: "600",
-  },
-  headerTitleArea: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: "center",
-  },
-  headerTitle: {
-    fontSize: theme.typography.input.fontSize,
-    fontWeight: "700",
-    color: theme.colors.textPrimary,
-  },
-  headerPath: {
-    fontSize: theme.typography.caption.fontSize,
-    color: theme.colors.textMuted,
-  },
-  saveButton: {
-    minWidth: 64,
-    alignItems: "center",
-    backgroundColor: theme.colors.primaryAction,
-  },
-  modeButton: {
-    width: theme.controls.compactSize,
-    height: theme.controls.compactSize,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.colors.surfaceMuted,
-  },
-  saveButtonText: {
-    color: theme.colors.textOnAccent,
-    fontWeight: "700",
-  },
-  disabledButton: {
-    opacity: 0.5,
   },
   centerArea: {
     flex: 1,

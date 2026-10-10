@@ -50,7 +50,18 @@ export type RunnerFileViewerKind = "html" | "drawio" | "checklist";
 
 export type RunnerFileOpenKind = RunnerMediaKind | RunnerFileViewerKind | "text";
 
-export type RunnerFileViewerTarget = WorkspaceFileTarget & {
+export type RunnerFileTarget = WorkspaceFileTarget & {
+  renameFile?: RenameRunnerMediaFile;
+  deleteFile?: (target: WorkspaceFileTarget) => void | Promise<boolean | void>;
+  openContextMenu?: (options: RunnerFileContextMenuOptions) => void;
+};
+
+export type RunnerFileContextMenuOptions = {
+  onRequestRename?: (target: WorkspaceFileTarget) => void;
+  onRequestDelete?: (target: WorkspaceFileTarget) => void | Promise<boolean | void>;
+};
+
+export type RunnerFileViewerTarget = RunnerFileTarget & {
   kind: RunnerFileViewerKind;
   rootDirectory: string;
 };
@@ -137,13 +148,13 @@ export type RunnerFileActionParams = {
   allowMutate?: boolean;
   getPathLabel: (pathRaw: unknown) => string;
   showInfoToast: (textRaw: unknown) => void;
-  onOpenMedia: (media: RunnerMediaFile) => void;
+  onOpenMedia?: (media: RunnerMediaFile) => void;
   onOpenFile?: (target: RunnerFileViewerTarget) => void;
   onSpeakText?: (text: string, target: WorkspaceFileTarget) => void;
   onShellScriptStarted?: (result: StartRunnerShellScriptResult, fileName: string) => void;
   onRequestRename?: (target: WorkspaceFileTarget) => void;
-  onRequestEdit?: (target: WorkspaceFileTarget) => void;
-  onRequestDelete?: (target: WorkspaceFileTarget) => void;
+  onRequestEdit?: (target: RunnerFileTarget) => void;
+  onRequestDelete?: (target: WorkspaceFileTarget) => void | Promise<boolean | void>;
   onRenameFile?: RenameRunnerMediaFile;
   mediaItems?: RunnerMediaItem[];
   skiaBoard?: {
@@ -194,26 +205,17 @@ export function openRunnerFile(params: RunnerFileActionParams): boolean {
     return false;
   }
   if (presentation.kind === "editor") {
-    if (!params.onRequestEdit) return false;
-    const location = getRunnerFileLocation(filePath, params.rootDir);
-    params.onRequestEdit({
-      path: location.path,
-      name: fileName,
-      rootDirectory: location.rootDirectory,
-    });
+    params.onRequestEdit?.(createRunnerFileTarget(params));
     return true;
   }
   if (presentation.kind === "viewer") {
-    if (!params.onOpenFile) return false;
-    const location = getRunnerFileLocation(filePath, params.rootDir);
-    params.onOpenFile({
+    params.onOpenFile?.({
+      ...createRunnerFileTarget(params),
       kind: presentation.viewerKind,
-      path: location.path,
-      name: fileName,
-      rootDirectory: location.rootDirectory,
     });
     return true;
   }
+  if (!params.onOpenMedia) return false;
 
   const currentItem = buildRunnerMediaItem({
     runnerUrl: params.runnerUrl,
@@ -254,7 +256,28 @@ export function openRunnerFile(params: RunnerFileActionParams): boolean {
   return true;
 }
 
-export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
+export function createRunnerFileTarget(params: RunnerFileActionParams): RunnerFileTarget & { rootDirectory: string } {
+  const location = getRunnerFileLocation(params.filePathRaw, params.rootDir);
+  const name = String(params.fileNameRaw || "").trim()
+    || params.getPathLabel(location.path)
+    || location.path;
+  return {
+    ...location,
+    name,
+    renameFile: params.allowMutate ? params.onRenameFile : undefined,
+    deleteFile: params.allowMutate ? params.onRequestDelete : undefined,
+    openContextMenu: (options) => openRunnerFileContextMenu({
+      ...params,
+      rootDir: location.rootDirectory,
+      filePathRaw: location.path,
+      fileNameRaw: name,
+      onRequestRename: options.onRequestRename ?? params.onRequestRename,
+      onRequestDelete: options.onRequestDelete ?? params.onRequestDelete,
+    }, false),
+  };
+}
+
+export function openRunnerFileContextMenu(params: RunnerFileActionParams, includeOpenAction = true) {
   const {
   filePathRaw,
   fileNameRaw,
@@ -384,10 +407,9 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
         {
           text: "削除",
           style: "destructive",
-          onPress: () => onRequestDelete?.({
-            path: filePath,
-            name: fileName,
-          }),
+          onPress: () => {
+            void onRequestDelete?.({ ...fileLocation, name: fileName });
+          },
         },
       ]
     );
@@ -403,14 +425,14 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
     },
   ];
   if (openPresentation?.kind === "video" || openPresentation?.kind === "image") {
-    buttons.push({
+    if (includeOpenAction) buttons.push({
       text: openPresentation.buttonText,
       onPress: () => {
         openRunnerFile(params);
       },
     });
   } else {
-    if (openPresentation) {
+    if (includeOpenAction && openPresentation) {
       buttons.push({
         text: openPresentation.buttonText,
         onPress: () => {
@@ -440,10 +462,7 @@ export function openRunnerFileContextMenu(params: RunnerFileActionParams) {
     buttons.push({
       text: "名前を変更",
       onPress: () => {
-        onRequestRename({
-          path: filePath,
-          name: fileName,
-        });
+        onRequestRename({ ...fileLocation, name: fileName });
       },
     });
   }
