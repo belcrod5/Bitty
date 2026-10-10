@@ -1,5 +1,61 @@
 # PUSH通知 設計ドキュメント
 
+## 用途別アイコン・通知音（2026-10）
+
+現在のリモート通知は次の5用途。分類は既存の `aps.category` をそのまま用い、
+通知を作る2つのサービスから `push-notification-presentation.mjs` を共有する。
+本文からの推測、送信先やAPNsクライアントでの用途判断は行わない。
+
+| 用途 | category | 発生元 |
+|---|---|---|
+| 作業完了 | `TURN_COMPLETED` | Codex/Claude Agent、Codex relay、キュー実行、スケジュールCodex完了 |
+| 音声会話完了 | `VOICE_COMPLETED` | 音声オーケストレーター |
+| 承認要求 | `APPROVAL_REQUEST` | Agent action、Codex relay approval |
+| スケジュール失敗 | `SCHEDULE_FAILED` | LLM・shell・オーケストレーターの実行失敗 |
+| Codex利用上限 | `CODEX_USAGE_LIMIT` | アカウント利用状況サービスの新しい制限episode |
+
+利用上限の重複抑止はアカウントサービスが所有し、スケジュールの利用上限失敗は
+別途 `SCHEDULE_FAILED` を送らない。通常完了の既読判定、通知badge、承認buttons、
+タップ時の遷移、前景での通知抑制は既存どおり。前景でOSの通知と音を出すのは
+`SCHEDULE_FAILED` のみで、`CODEX_USAGE_LIMIT` はWS経由で利用状況表示を更新する。
+
+初期素材は `expo/notifications/assets` のsimple案。Bittyの通常アイコンに用途マークを
+合成したPNGと、用途別の短いPCM WAVを同梱する。PNG名はcategoryを小文字・ハイフンへ
+変換したもの、音名は `bitty-<同じ名前>.wav`。候補の切替設定は設けない。
+
+OS通知の画像はCommunication Notificationsのavatarを利用する。これはアプリアイコン
+そのものを通知ごとに差し替えるAPIではない。合成PNGをavatarへ指定し、OSが表示位置と
+小さいアプリアイコンの重なりを決める。用途別通知に `mutable-content: 1` を付け、
+独立した `BittyNotificationService` が同梱PNGから `INSendMessageIntent` を作り、
+incoming interactionのdonation完了後に元のcontentを `updating(from:)` へ渡す。
+送信者IDは用途ごとの固定Bitty ID、連絡先IDは指定せず、表示名は元通知タイトルとする。
+
+この方式はJSや画像ダウンロードを使わず、アプリが起動していない場合もリモート通知の
+表示前に処理できる。元のcategory、userInfo、badge、thread、interruption levelが
+変わった場合は加工を採用せず元通知を返す。音・本文は元contentから引き継がせ、
+タイトル・副題はOSのcommunication表示仕様に従う。未知category、素材不足、
+donation/update失敗、時間切れも元通知へ戻す。成功したcontentを再編集しない。
+
+Communication Notificationsは画像装飾以外にSiriの学習、通知要約やFocusによる表示判断、
+対応機器での読み上げにも関わる。5用途をBittyからの通信として扱うが、
+`notifyRecipientAnyway` や架空の電話番号・メールアドレスは使わない。
+表示・音・Focusの実際の動作は端末の通知設定とOSにも依存するため、実機確認が必要。
+
+Expoのlocal plugin `withPushNotificationPresentation` がprebuildごとにNSEを再現する。
+Apple公式sampleに合わせ、Communication Notifications entitlementと
+`NSUserActivityTypes: [INSendMessageIntent]` はmainアプリへ付与する。
+NSEへ不要なIntents extensionや権限、App Group、React Native依存は加えない。
+新しいNSEの署名とmainのcapability更新を含むアプリ再ビルドが必要で、OTA更新だけでは動かない。
+旧アプリへ送った場合は加工前の通知が表示され、未同梱の音名はOSの標準音へfallbackする。
+
+ローカル通知は別経路：承認送信失敗（Swift/JS）とFace IDによるアプリ起動要求（Swift）。
+NSEが対象とするのはリモート通知のみなので、これらをcommunication扱いには拡張しない。
+
+参考：[Communication Notifications実装](https://developer.apple.com/documentation/usernotifications/implementing-communication-notifications)、
+[Apple公式sample](https://developer.apple.com/documentation/UserNotifications/handling-communication-notifications-and-focus-status-updates)、
+[NSEとmutable-content](https://developer.apple.com/documentation/usernotifications/modifying-content-in-newly-delivered-notifications)。
+
+
 状態: 相談中(ドラフト)
 ブランチ: feat/push-notifications
 
