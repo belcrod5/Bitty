@@ -172,3 +172,10 @@ describe("registerPushDevice", () => {
     ).rejects.toThrow("unauthorized");
   });
 });
+
+
+test("account quota Push is silent in the foreground where the shared indicator shows the limit", () => {
+  expect(resolveForegroundNotificationBehavior("CODEX_USAGE_LIMIT")).toEqual({
+    shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: true,
+  });
+});

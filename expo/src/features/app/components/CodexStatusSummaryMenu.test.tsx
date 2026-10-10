@@ -8,10 +8,12 @@ jest.mock("./AppModal", () => ({ AppModal: ({ children }: { children: ReactNode 
 const mockSwitchAuthProfile = jest.fn();
 const mockRefreshStatus = jest.fn();
 const mockLoadAuthProfiles = jest.fn();
+let mockUsageLimitReached = false;
 let mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
 jest.mock("../contexts/ChatDiagnosticsContext", () => ({
   useChatDiagnostics: () => ({
     codexCliStatusText: mockStatusText,
+    codexUsageLimitReached: mockUsageLimitReached,
     codexCliStatusFetchedAtMs: Date.now(),
     codexCliStatusLoading: false,
     codexAuthProfileId: "account-1",
@@ -38,6 +40,7 @@ jest.mock("../contexts/ChatDiagnosticsContext", () => ({
 
 describe("CodexStatusSummaryMenu", () => {
   beforeEach(() => {
+    mockUsageLimitReached = false;
     mockStatusText = "5h limit: 75% left\nWeekly limit: 50% left";
   });
   afterEach(() => jest.restoreAllMocks());
@@ -119,4 +122,16 @@ describe("CodexStatusSummaryMenu", () => {
     await fireEvent.press(screen.getByText("account-2"));
     await waitFor(() => expect(mockSwitchAuthProfile).toHaveBeenCalledWith("account-2"));
   });
+});
+
+
+test("typed quota failure displays the red shared limit indicator even without percentage data", async () => {
+  mockUsageLimitReached = true;
+  mockStatusText = "Codex の利用上限に達しました。";
+  const screen = await render(
+    <VisualThemeProvider themeId="standard" onSelectTheme={() => undefined}>
+      <CodexStatusSummaryMenu />
+    </VisualThemeProvider>
+  );
+  expect(screen.getByLabelText("Codex 利用上限")).toHaveStyle({ color: VISUAL_THEMES.standard.tones.danger.foreground });
 });

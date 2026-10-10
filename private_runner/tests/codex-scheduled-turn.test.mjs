@@ -153,3 +153,24 @@ test("scheduled turns report terminal failures only after starting and retain ex
     assert.equal(unsubscribed, true);
   }
 });
+
+
+test("scheduled agent quota failure retains the upstream quota code", async () => {
+  const completion = deferred();
+  let emit;
+  const service = {
+    startTurn: async () => ({ runId: "quota-run", completion: completion.promise }),
+    subscribe(_id, options) { emit = options.onEvent; return { activeActions: [], unsubscribe() {} }; },
+  };
+  const failed = [];
+  const start = createScheduledCodexTurnStarter({ agentService: service, subjectId: "runner" });
+  const started = start({ inputText: "check", cwd: "/work", onFailed: (error) => failed.push(error.code) });
+  await new Promise((resolve) => setImmediate(resolve));
+  emit({ type: "session.resolved", payload: { sessionRef: { backendId: "codex", nativeSessionId: "quota-thread" } } });
+  emit({ type: "turn.started", payload: { nativeTurnId: "quota-turn" } });
+  await started;
+  emit({ type: "turn.failed", payload: { error: { code: "usage_limit_exceeded", message: "quota exhausted" } } });
+  completion.resolve({ outcome: "failed" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(failed, ["usage_limit_exceeded"]);
+});

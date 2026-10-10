@@ -40,6 +40,7 @@ export function CodexStatusSummaryMenu({
   const { theme } = useVisualTheme();
   const {
     codexCliStatusText: statusText,
+    codexUsageLimitReached: usageLimitReached,
     codexCliStatusFetchedAtMs: statusFetchedAtMs,
     codexCliStatusLoading: statusLoading,
     codexAuthProfileId: authProfileId,
@@ -159,7 +160,9 @@ export function CodexStatusSummaryMenu({
           accessibilityRole="button"
           accessibilityLabel="利用状況を更新して表示"
         >
-          {compact ? (
+          {usageLimitReached && fiveHourLimit.remainingPercent !== 0 && weeklyLimit.remainingPercent !== 0 ? (
+            <Text style={[styles.chatStatusSummaryText, { color: theme.tones.danger.foreground }]} accessibilityLabel="Codex 利用上限">利用上限</Text>
+          ) : compact ? (
             <>
               {fiveHourSummary}
               {weeklySummary}

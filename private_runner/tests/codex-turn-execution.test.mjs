@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodexBackend, executeCodexTurn, startCodexTurn } from "../src/codex-turn-execution.mjs";
+import { serializeAgentError } from "../src/agent/agent-protocol.mjs";
 import { CONVERSATION_HISTORY_TOOL_INSTRUCTIONS } from "../src/agent/agent-runtime.mjs";
 
 function fakeClient(notifications = [{ method: "turn/completed", params: {} }]) {
@@ -967,4 +968,24 @@ test("requires a notification listener API so completion capture cannot be skipp
     executeCodexTurn({ client, clientName: "queued-turn", inputText: "run", cwd: "/work/project" }),
     /client\.addNotificationListener is required/
   );
+});
+
+
+test("usage quota failures preserve their precise code through execution and agent serialization", async () => {
+  const notifications = [{ method: "turn/completed", params: { turn: { status: "failed", error: {
+    message: "account quota exhausted", codexErrorInfo: "usageLimitExceeded",
+  } } } }];
+  const direct = fakeClient(notifications);
+  await assert.rejects(executeCodexTurn({ client: direct, inputText: "hello", cwd: "/work/project" }), { code: "usage_limit_exceeded" });
+  const client = fakeClient(notifications);
+  const backend = createCodexBackend({ createClient: () => client, resolveSessionCwd: async () => "/work/project",
+    listSessions: async () => ({ sessions: [] }), readHistory: async () => ({ items: [] }) });
+  await assert.rejects(backend.startTurn({ runId: "quota-run", cwd: "/work/project",
+    input: { blocks: [{ type: "text", text: "hello" }] }, policyProfileId: "codex-on-request",
+    resolveSession: async () => {}, emit: () => {}, signal: new AbortController().signal,
+  }), (error) => {
+    assert.equal(error.nativeActivity, "stopped");
+    assert.equal(serializeAgentError(error, "codex").code, "usage_limit_exceeded");
+    return true;
+  });
 });

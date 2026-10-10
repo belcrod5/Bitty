@@ -1,5 +1,6 @@
-import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import type { AppScreen, CodexAuthProfileEntry, CodexAuthProfilesSnapshot, CodexCliStatusLimitLine, CodexCliStatusSnapshot } from "../types/appTypes";
+import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import type { CodexAuthProfileEntry, CodexAuthProfilesSnapshot, CodexCliStatusLimitLine, CodexCliStatusSnapshot } from "../types/appTypes";
+import type { RunnerWebSocketManager } from "../../runnerWs/RunnerWebSocketManager";
 import { parseCodexAuthRateLimits } from "../utils/codexAuthRateLimits";
 
 type RefreshCodexCliStatusOptions = {
@@ -8,7 +9,7 @@ type RefreshCodexCliStatusOptions = {
 };
 
 type UseCodexStatusAuthControllerArgs = {
-  activeScreen: AppScreen;
+  runnerWebSocketManager: Pick<RunnerWebSocketManager, "subscribe">;
   appStateRef: MutableRefObject<string>;
   auxServerBaseUrl: () => string;
   runnerToken: string;
@@ -30,7 +31,7 @@ export type CodexAuthRegistration = { authId: string; registrationId: string; ve
 function parseCodexCliStatusSnapshot(data: unknown): CodexCliStatusSnapshot | null {
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
   const statusText = String(record.statusText || "").trim();
-  if (!statusText) return null;
+  if (!statusText && typeof record.usageLimitReached !== "boolean") return null;
   const rawLimitLines = Array.isArray(record.limitLines) ? record.limitLines : [];
   const limitLines = rawLimitLines
     .map((item: unknown): CodexCliStatusLimitLine | null => {
@@ -47,6 +48,7 @@ function parseCodexCliStatusSnapshot(data: unknown): CodexCliStatusSnapshot | nu
     statusText,
     limitLines,
     fetchedAt: String(record.fetchedAt || new Date().toISOString()),
+    usageLimitReached: record.usageLimitReached === true,
   };
 }
 
@@ -79,7 +81,7 @@ export function parseCodexAuthProfilesSnapshot(data: unknown, fallbackAuthId = "
 }
 
 export function useCodexStatusAuthController({
-  activeScreen,
+  runnerWebSocketManager,
   appStateRef,
   auxServerBaseUrl,
   runnerToken,
@@ -96,22 +98,34 @@ export function useCodexStatusAuthController({
   setCodexAuthSwitching,
   setCodexAuthSwitchError,
 }: UseCodexStatusAuthControllerArgs) {
-  const isCodexStatusScreenActive = activeScreen === "skia_board";
+  const accountGenerationRef = useRef(0);
+  const switchingRef = useRef(false);
 
   const applyCodexCliStatusSnapshot = useCallback((snapshot: CodexCliStatusSnapshot) => {
     const parsedAt = Date.parse(snapshot.fetchedAt);
     const fetchedAtMs = Number.isFinite(parsedAt) ? parsedAt : Date.now();
+    if (fetchedAtMs < codexCliStatusLastFetchedAtMsRef.current) return;
     codexCliStatusLastFetchedAtMsRef.current = fetchedAtMs;
     setCodexCliStatusSnapshot(snapshot);
     setCodexCliStatusFetchedAtMs(fetchedAtMs);
   }, [codexCliStatusLastFetchedAtMsRef, setCodexCliStatusFetchedAtMs, setCodexCliStatusSnapshot]);
 
-  const fetchRunnerCodexCliStatusForSlash = useCallback(async (): Promise<CodexCliStatusSnapshot | null> => {
+  useEffect(() => runnerWebSocketManager.subscribe(
+    { channel: "control", op: "codex_usage_updated" },
+    (message) => {
+      if (switchingRef.current) return;
+      const snapshot = parseCodexCliStatusSnapshot(message.payload);
+      if (snapshot) applyCodexCliStatusSnapshot(snapshot);
+    },
+  ), [applyCodexCliStatusSnapshot, runnerWebSocketManager]);
+
+  const fetchRunnerCodexCliStatusForSlash = useCallback(async (force = false): Promise<CodexCliStatusSnapshot | null> => {
     const targetLlmUrl = auxServerBaseUrl();
     const token = runnerToken.trim();
     if (!targetLlmUrl || !token) return null;
     try {
       const url = new URL(`${targetLlmUrl}/codex-cli/status`);
+      if (force) url.searchParams.set("force", "1");
       const res = await fetch(url.toString(), {
         method: "GET",
         headers: {
@@ -127,11 +141,10 @@ export function useCodexStatusAuthController({
   }, [auxServerBaseUrl, runnerToken]);
 
   const refreshCodexCliStatusForWidget = useCallback(async (options?: RefreshCodexCliStatusOptions) => {
-    if (!isCodexStatusScreenActive) return;
     if (appStateRef.current !== "active") return;
     const force = Boolean(options?.force);
     const now = Date.now();
-    if (!force && codexCliStatusLastAttemptAtMsRef.current > 0) {
+    if (!force && options?.source !== "resume" && codexCliStatusLastAttemptAtMsRef.current > 0) {
       const elapsedMs = Math.max(0, now - codexCliStatusLastAttemptAtMsRef.current);
       if (elapsedMs < codexCliStatusMinRefreshGapMs) return;
     }
@@ -139,9 +152,10 @@ export function useCodexStatusAuthController({
     codexCliStatusRefreshInFlightRef.current = true;
     codexCliStatusLastAttemptAtMsRef.current = now;
     setCodexCliStatusLoading(true);
+    const accountGeneration = accountGenerationRef.current;
     try {
-      const snapshot = await fetchRunnerCodexCliStatusForSlash();
-      if (snapshot?.statusText) {
+      const snapshot = await fetchRunnerCodexCliStatusForSlash(force);
+      if (snapshot && accountGeneration === accountGenerationRef.current) {
         applyCodexCliStatusSnapshot(snapshot);
       }
     } finally {
@@ -217,6 +231,8 @@ export function useCodexStatusAuthController({
       return false;
     }
     setCodexAuthSwitching(true);
+    accountGenerationRef.current += 1;
+    switchingRef.current = true;
     setCodexAuthSwitchError("");
     try {
       const url = new URL(`${targetLlmUrl}/codex-auth/switch`);
@@ -235,24 +251,31 @@ export function useCodexStatusAuthController({
         return false;
       }
       applyCodexAuthProfilesSnapshot(parseCodexAuthProfilesSnapshot(data, authId));
-      await refreshCodexCliStatusForWidget({
-        force: true,
-        source: "manual",
-      });
+      setCodexCliStatusSnapshot(null);
+      codexCliStatusLastFetchedAtMsRef.current = 0;
+      setCodexCliStatusFetchedAtMs(0);
+      switchingRef.current = false;
+      const status = await fetchRunnerCodexCliStatusForSlash(true);
+      if (status) applyCodexCliStatusSnapshot(status);
       return true;
     } catch (err) {
       setCodexAuthSwitchError(err instanceof Error ? err.message : String(err));
       return false;
     } finally {
+      switchingRef.current = false;
       setCodexAuthSwitching(false);
     }
   }, [
     applyCodexAuthProfilesSnapshot,
     auxServerBaseUrl,
-    refreshCodexCliStatusForWidget,
+    fetchRunnerCodexCliStatusForSlash,
+    applyCodexCliStatusSnapshot,
     runnerToken,
     setCodexAuthSwitchError,
     setCodexAuthSwitching,
+    setCodexCliStatusSnapshot,
+    setCodexCliStatusFetchedAtMs,
+    codexCliStatusLastFetchedAtMsRef,
   ]);
 
   const authRequest = useCallback(async (path: string, method = "GET", body?: unknown) => {

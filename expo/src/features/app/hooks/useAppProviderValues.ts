@@ -499,6 +499,7 @@ export function useChatDiagnosticsContextValue(
   return useMemo(
     () => ({
       codexCliStatusText: codexCliStatusSnapshot?.statusText || "",
+      codexUsageLimitReached: codexCliStatusSnapshot?.usageLimitReached || false,
       codexCliStatusFetchedAtMs,
       codexCliStatusLoading,
       codexAuthProfileId: codexAuthProfilesSnapshot?.currentAuthId || "",

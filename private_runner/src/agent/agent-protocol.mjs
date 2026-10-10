@@ -39,6 +39,7 @@ const AGENT_ERROR_CODES = new Set([
   "action_expired",
   "action_denied",
   "rate_limited",
+  "usage_limit_exceeded",
   "timeout",
   "capability_unsupported",
   "history_unavailable",

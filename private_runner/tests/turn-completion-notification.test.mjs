@@ -537,3 +537,15 @@ test("failure push delivery isolates APNs errors and removes expired tokens", as
   assert.deepEqual(harness.removals, ["expired"]);
   assert.equal(harness.warnings.length, 1);
 });
+
+
+test("scheduled quota failures use the account alert rather than duplicate schedule alerts", async () => {
+  const harness = createHarness();
+  const failure = { schedule: { id: "quota-schedule", name: "check", action: { kind: "llm", cwd: "/work" } },
+    occurrenceAt: "2026-10-10T00:00:00.000Z", errorCode: "usage_limit_exceeded", errorMessage: "quota exhausted" };
+  await harness.notifier.notifyScheduleFailed(failure);
+  await harness.notifier.notifyScheduleFailed({ ...failure, schedule: { ...failure.schedule, id: "second-schedule" } });
+  assert.equal(harness.sends.length, 0);
+  await harness.notifier.notifyScheduleFailed({ ...failure, errorCode: "turn_failed" });
+  assert.equal(harness.sends.length, 1);
+});

@@ -920,3 +920,21 @@ test("duplicate refresh token with a different account is rejected", async () =>
     await assert.rejects(() => managed.completeRegistration(result.registrationId, "Duplicate"), /duplicate_account/);
   });
 });
+
+test("full account permission is observed even when display windows are unavailable", async () => {
+  await withService(async (root) => {
+    const observations = [];
+    const access = `x.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url")}.x`;
+    const response = { accountId: "a", ordinaryUsageAllowed: false, rateLimits: { primary: null, secondary: null } };
+    const service = createCodexAuthService({ rootDir: root,
+      isolatedProcessFactory: async () => createFakeRateLimitProcess(response),
+      onRateLimits: (accountId, update, options) => observations.push({ accountId, update, options }),
+    });
+    await service.save(profile("a", { tokens: { access_token: access, refresh_token: "refresh", account_id: "a" } }));
+    await assert.rejects(() => service.refreshRateLimits("a"), /rate limits unavailable/);
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0].accountId, "a");
+    assert.equal(observations[0].update, response);
+    assert.equal(typeof observations[0].options.observedAt, "number");
+  });
+});
