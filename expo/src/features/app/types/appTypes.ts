@@ -221,6 +221,7 @@ export type CodexCliStatusLimitLine = {
 
 export type CodexCliStatusSnapshot = {
   statusText: string;
+  usageLimitReached?: boolean;
   limitLines: CodexCliStatusLimitLine[];
   fetchedAt: string;
 };

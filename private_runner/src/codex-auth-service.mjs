@@ -114,7 +114,7 @@ function sanitizeRateLimits(value) {
     const safe = {};
     for (const key of ["usedPercent", "windowDurationMins", "resetsAt"]) {
       const item = limit[key];
-      if (key === "resetsAt" ? Number.isFinite(Number(item)) : Number.isFinite(Number(item))) safe[key] = Number(item);
+      if (typeof item === "number" && Number.isFinite(item)) safe[key] = item;
     }
     if (Object.keys(safe).length) result[name] = safe;
   }
@@ -139,7 +139,7 @@ function validateProfile(profile, expectedAuthId = "") {
   return { ...profile, authId };
 }
 
-export function createCodexAuthService({ rootDir, pid = process.pid, now = () => Date.now(), kill = process.kill, staleLockMs = 60_000, fetchImpl = globalThis.fetch, registrationProcessFactory, isolatedProcessFactory, codexBin = "codex", spawnImpl = spawn, registrationTempRoot = os.tmpdir(), childEnv = process.env } = {}) {
+export function createCodexAuthService({ rootDir, pid = process.pid, now = () => Date.now(), kill = process.kill, staleLockMs = 60_000, fetchImpl = globalThis.fetch, registrationProcessFactory, isolatedProcessFactory, codexBin = "codex", spawnImpl = spawn, registrationTempRoot = os.tmpdir(), childEnv = process.env, onRateLimits } = {}) {
   if (!rootDir) throw new TypeError("rootDir is required");
   const profilesDir = path.join(rootDir, "profiles");
   const markerPath = path.join(profilesDir, ".active_auth_id");
@@ -324,7 +324,9 @@ export function createCodexAuthService({ rootDir, pid = process.pid, now = () =>
         process.notify("initialized", {});
         const login = await process.request("account/login/start", { type: "chatgptAuthTokens", accessToken: payload.accessToken, chatgptAccountId: payload.chatgptAccountId, ...(payload.chatgptPlanType ? { chatgptPlanType: payload.chatgptPlanType } : {}) });
         if (login?.type !== "chatgptAuthTokens") throw new Error("rate limits login rejected");
+        const observedAt = now();
         const response = await process.request("account/rateLimits/read", {});
+        await onRateLimits?.(payload.chatgptAccountId, response, { observedAt });
         const rateLimits = sanitizeRateLimits(response?.rateLimits || response);
         await updateMetadata(checked, { rateLimits, status: "active" });
         return rateLimits;

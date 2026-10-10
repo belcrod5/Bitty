@@ -234,7 +234,25 @@ export function createTurnCompletionNotifier({
     });
   }
 
+  // Usage episodes are reserved by the account service, never by a turn/session.
+  async function notifyUsageLimitReached({ accountId, episode }) {
+    if (!pushEnabled || !apnsClient) return;
+    const payload = {
+      aps: {
+        alert: { title: "Codex 利用上限", body: "Codex の利用上限に達しました。アプリで利用状況を確認してください。" },
+        sound: "default", category: "CODEX_USAGE_LIMIT", "thread-id": `codex-usage:${accountId}`,
+      },
+      usageLimitReached: true, episode,
+    };
+    try {
+      const devices = await pushDeviceStore.listDevices();
+      await sendNotifications(devices.map((device) => ({ device, payload })));
+    } catch (error) { log.warn(`[push] usage limit notification failed: ${errorMessage(error)}`); }
+  }
+
   async function notifyScheduleFailed({ schedule, occurrenceAt, result, errorCode, errorMessage: failureMessage }) {
+    // The account service already owns the quota alert, including scheduled runs.
+    if (errorCode === "usage_limit_exceeded") return;
     if (!pushEnabled || !apnsClient) return;
     const key = JSON.stringify(["schedule", schedule.id, occurrenceAt]);
     if (!rememberTurn(pushedAtByTurn, key, Number(now()))) return;
@@ -330,5 +348,5 @@ export function createTurnCompletionNotifier({
     }
   }
 
-  return { notifyTurnCompleted, notifyVoiceCompleted, notifyScheduleFailed, onAgentRunEvent };
+  return { notifyTurnCompleted, notifyVoiceCompleted, notifyScheduleFailed, notifyUsageLimitReached, onAgentRunEvent };
 }

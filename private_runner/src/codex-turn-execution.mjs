@@ -650,7 +650,8 @@ export function createCodexBackend({
         return { outcome: "interrupted" };
       }
       if (terminal?.method !== "turn/completed" || !SUCCESSFUL_TURN_STATUSES.has(status)) {
-        const error = new Error("Codex turn ended without completing");
+        const error = new Error(String(terminal?.params?.turn?.error?.message || "Codex turn ended without completing"));
+        if (terminal?.params?.turn?.error?.codexErrorInfo === "usageLimitExceeded") error.code = "usage_limit_exceeded";
         if (terminal?.method === "turn/completed") error.nativeActivity = "stopped";
         throw error;
       }
@@ -887,6 +888,7 @@ export async function executeCodexTurn(options) {
 
   let lastAgentMessageText = "";
   let turnCompleted = false;
+  let turnError;
   let expectedThreadId = "";
   let expectedTurnId = "";
   const notificationsBeforeTurnStarted = [];
@@ -895,6 +897,7 @@ export async function executeCodexTurn(options) {
     if (method === "turn/completed") {
       const status = String(params?.turn?.status || params?.status || "").trim().toLowerCase();
       turnCompleted = SUCCESSFUL_TURN_STATUSES.has(status);
+      turnError = params?.turn?.error;
       return;
     }
     if (method === "item/agentMessage/delta") {
@@ -922,7 +925,11 @@ export async function executeCodexTurn(options) {
       applyOwnedNotification(notification.method, notification.params);
     }
     await (completion?.promise || completion);
-    if (!turnCompleted) throw new Error("Codex turn ended without completing");
+    if (!turnCompleted) {
+      const error = new Error(String(turnError?.message || "Codex turn ended without completing"));
+      if (turnError?.codexErrorInfo === "usageLimitExceeded") error.code = "usage_limit_exceeded";
+      throw error;
+    }
     return { threadId: expectedThreadId, turnId: expectedTurnId, lastAgentMessageText };
   } finally {
     removeNotificationListener();

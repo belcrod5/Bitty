@@ -8,6 +8,7 @@ import type { CodexAuthRegistration } from "../hooks/useCodexStatusAuthControlle
 
 export type ChatDiagnosticsContextValue = {
   codexCliStatusText: string;
+  codexUsageLimitReached?: boolean;
   codexCliStatusFetchedAtMs: number;
   codexCliStatusLoading: boolean;
   codexAuthProfileId: string;

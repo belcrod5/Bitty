@@ -43,6 +43,7 @@ import { createStreamTtsSegments } from "./stream-tts-segments.mjs";
 import { createVoiceRequestBridge } from "./voice-request-bridge.mjs";
 import { createCodexAuthService } from "./codex-auth-service.mjs";
 import { createCodexAuthRuntime } from "./codex-auth-runtime.mjs";
+import { createCodexUsageService, codexUsageFromWham, buildCodexStatusFromWham } from "./codex-usage-service.mjs";
 import { createScheduledCodexTurnStarter } from "./codex-scheduled-turn.mjs";
 import { createCodexScheduleService } from "./codex-schedule-service.mjs";
 import { createCodexScheduleHttpHandler } from "./codex-schedule-http.mjs";
@@ -76,7 +77,10 @@ const RUNNER_MOCK = process.env.RUNNER_MOCK === "1";
 const RUNNER_SKIP_SERVER_START = process.env.RUNNER_SKIP_SERVER_START === "1";
 const CODEX_AUTH_STORE_DIR = path.resolve(process.env.CODEX_AUTH_STORE_DIR || "private_runner/logs/codex-auth");
 const CODEX_BIN = String(process.env.CODEX_BIN || "codex").trim() || "codex";
-const codexAuthService = createCodexAuthService({ rootDir: CODEX_AUTH_STORE_DIR, codexBin: CODEX_BIN });
+const codexAuthService = createCodexAuthService({ rootDir: CODEX_AUTH_STORE_DIR, codexBin: CODEX_BIN,
+  onRateLimits: (accountId, update, options) => codexUsageService.observe(accountId, update, options)
+    .catch(() => console.warn("[codex-usage] profile quota observation failed")),
+});
 let codexAuthOwnerLockRelease = null;
 let codexAuthOwnerLockReleased = false;
 const releaseCodexAuthOwnerLock = async () => {
@@ -1470,6 +1474,40 @@ const turnCompletionNotifier = createTurnCompletionNotifier({
     return broadcastRunnerWsTurnCompletedNotification(null, payload);
   },
 });
+const codexUsageService = createCodexUsageService({
+  storePath: path.join(CODEX_AUTH_STORE_DIR, "usage.json"),
+  onLimitReached: turnCompletionNotifier.notifyUsageLimitReached,
+  onChanged: async ({ accountId, snapshot }) => {
+    if (accountId !== await captureCodexUsageAccount()) return;
+    const authId = await codexAuthService.activeAuthId();
+    if (codexAuthRuntime.activePayload()?.chatgptAccountId && accountId !== codexAuthRuntime.activePayload().chatgptAccountId) return;
+    codexCliStatusCache = { authId, fetchedAtMs: Date.now(), snapshot };
+    for (const client of runnerWsActiveClients) {
+      sendRunnerWsEnvelope(client, { channel: "control", op: "codex_usage_updated", payload: snapshot });
+    }
+  },
+});
+
+// Capture while the client's auth lease prevents switching. The promise belongs
+// to this connection, so late notifications retain their original account.
+function captureCodexUsageAccount() {
+  const accountId = codexAuthRuntime.activePayload()?.chatgptAccountId;
+  if (accountId) return Promise.resolve(accountId);
+  return readOAuthAuthJson().then((auth) => resolveAccountId(resolveOAuthProfileRecord(auth).record.tokens)).catch(() => "");
+}
+
+function observeCodexUsageNotification(account, method, params) {
+  if (method !== "account/rateLimits/updated" && method !== "error" && method !== "turn/completed") return;
+  void Promise.resolve(account).then(async (accountId) => {
+    // Rolling quota updates are account-global. Idle raw relays can survive a
+    // switch, so their old connection cannot identify this unscoped message.
+    if (method === "account/rateLimits/updated" &&
+      (codexAuthService.gateSnapshot().state !== "open" || accountId !== await captureCodexUsageAccount())) return;
+    return codexUsageService.observeNotification(accountId, method, params);
+  })
+    .catch(() => console.warn("[codex-usage] quota observation failed"));
+}
+
 const {
   appendAppConversationToCliRollout,
 } = createLlmCliRolloutWriter({
@@ -3157,82 +3195,6 @@ async function runCommandWithCapture(bin, args, opts = {}) {
   }
 }
 
-function clampPercent(raw) {
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function computeLeftPercent(windowObj) {
-  const usedPercent = Number(windowObj?.used_percent);
-  if (!Number.isFinite(usedPercent)) return 0;
-  return clampPercent(100 - usedPercent);
-}
-
-function formatLimitBar(leftPercent, width = 10) {
-  const normalizedWidth = Math.max(4, Math.min(40, Number(width) || 10));
-  const pct = clampPercent(leftPercent);
-  const filled = pct >= 100
-    ? normalizedWidth
-    : Math.max(0, Math.min(normalizedWidth - 1, Math.round((pct / 100) * normalizedWidth)));
-  return `[${"█".repeat(filled)}${"░".repeat(Math.max(0, normalizedWidth - filled))}]`;
-}
-
-function formatResetAt(resetAtSeconds, opts = {}) {
-  const resetSec = Number(resetAtSeconds);
-  if (!Number.isFinite(resetSec) || resetSec <= 0) return "-";
-  const includeDate = opts.includeDate === true;
-  const date = new Date(resetSec * 1000);
-  const timeText = new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
-  if (!includeDate) return timeText;
-  const dateText = new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "short",
-  }).format(date);
-  return `${timeText} on ${dateText}`;
-}
-
-function buildCodexStatusFromWham(whamUsage) {
-  const rateLimit = whamUsage?.rate_limit && typeof whamUsage.rate_limit === "object"
-    ? whamUsage.rate_limit
-    : null;
-  const windows = [rateLimit?.primary_window, rateLimit?.secondary_window]
-    .filter((windowObj) => windowObj && typeof windowObj === "object");
-  const formattedLimits = [
-    { seconds: 5 * 60 * 60, label: "5h limit", includeDate: false },
-    { seconds: 7 * 24 * 60 * 60, label: "Weekly limit", includeDate: true },
-  ].flatMap(({ seconds, label, includeDate }) => {
-    const windowObj = windows.find(
-      (candidate) => Number(candidate.limit_window_seconds) === seconds
-    );
-    if (!windowObj) return [];
-    const leftPercent = computeLeftPercent(windowObj);
-    return [{
-      label,
-      value: `${formatLimitBar(leftPercent)} ${leftPercent}% left`,
-      reset: formatResetAt(windowObj.reset_at, { includeDate }),
-    }];
-  });
-  if (formattedLimits.length === 0) {
-    throw new Error("wham usage payload missing 5h/weekly windows");
-  }
-
-  return {
-    statusText: formattedLimits
-      .flatMap(({ label, value, reset }) => [`${label}: ${value}`, `(resets ${reset})`])
-      .join("\n"),
-    limitLines: formattedLimits.map(({ label, value, reset }) => ({
-      section: "default",
-      label,
-      value: `${value} (resets ${reset})`,
-    })),
-  };
-}
-
 async function fetchWhamUsage(accessToken, accountId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CODEX_CLI_STATUS_HTTP_TIMEOUT_MS);
@@ -3276,16 +3238,16 @@ async function fetchCodexCliStatusSnapshotLeased() {
   let triedAuthRefresh = false;
   while (true) {
     const auth = await resolveCodexResponseAuth({ forceRefresh: triedAuthRefresh });
+    const observedAt = Date.now();
     const whamUsage = await fetchWhamUsage(auth.accessToken, auth.accountId);
     if (!whamUsage?.rate_limit && !triedAuthRefresh) {
       triedAuthRefresh = true;
       continue;
     }
-    const formatted = buildCodexStatusFromWham(whamUsage);
+    buildCodexStatusFromWham(whamUsage); // Validate supported quota windows before persisting.
+    const formatted = await codexUsageService.observe(auth.accountId, codexUsageFromWham(whamUsage), { observedAt });
     return {
-      statusText: formatted.statusText,
-      limitLines: formatted.limitLines,
-      fetchedAt: new Date().toISOString(),
+      ...formatted,
       exitCode: 0,
       durationMs: Date.now() - startedAt,
     };
@@ -6582,8 +6544,9 @@ function createCodexRpcClient({
   bypassAuthGate = false,
 } = {}) {
   const authLease = bypassAuthGate ? null : codexAuthService.acquireLease();
+  const usageAccount = bypassAuthGate ? null : captureCodexUsageAccount();
   try {
-    return createCodexAppServerClient({
+    const client = createCodexAppServerClient({
       signal,
       upstreamUrl,
       upstreamToken,
@@ -6591,6 +6554,8 @@ function createCodexRpcClient({
       onClose: () => authLease?.(),
       turnCompletionTimeoutMs: NEAR_UNLIMITED_TIMEOUT_MS,
     });
+    if (usageAccount) client.addNotificationListener((method, params) => observeCodexUsageNotification(usageAccount, method, params));
+    return client;
   } catch (error) {
     authLease?.();
     throw error;
@@ -7804,11 +7769,9 @@ const server = http.createServer(async (req, res) => {
           return { cached: true, snapshot: codexCliStatusCache.snapshot };
         }
         const snapshot = await fetchCodexCliStatusSnapshotLeased();
-        codexCliStatusCache = {
-          authId,
-          fetchedAtMs: Date.now(),
-          snapshot,
-        };
+        if (codexCliStatusCache.authId !== authId || !codexCliStatusCache.snapshot || Date.parse(snapshot.fetchedAt) >= Date.parse(codexCliStatusCache.snapshot.fetchedAt)) {
+          codexCliStatusCache = { authId, fetchedAtMs: Date.now(), snapshot };
+        }
         return { cached: false, snapshot };
       });
       return json(res, 200, {
@@ -11102,6 +11065,7 @@ function observeCodexRelayCompletionNotification(relay, rpcPayload, meta) {
     return;
   }
   if (method !== "turn/completed") return;
+  if (params.turn?.status && !["completed", "complete", "succeeded", "success"].includes(String(params.turn.status).toLowerCase())) return;
   const threadId = pickFirstNonEmptyString(
     meta?.threadId,
     params.threadId,
@@ -11130,6 +11094,7 @@ function handleCodexRelayUpstreamMessage(relay, data, isBinary, params = {}) {
   relay.updatedAtMs = codexRelayNowMs();
   const meta = parseCodexRpcMeta(data, isBinary);
   const rpcPayload = parseCodexRpcObject(data, isBinary);
+  if (relay.usageAccount && rpcPayload?.method) observeCodexUsageNotification(relay.usageAccount, rpcPayload.method, rpcPayload.params);
   if (meta?.method === "account/chatgptAuthTokens/refresh" && meta.id !== null) {
     void (async () => {
       let response;
@@ -11726,6 +11691,7 @@ function forwardCodexRelayClientData(relay, data, isBinary, params = {}) {
       if (meta.id !== null && requestClientWs) sendCodexRelayRpcToClient(relay, requestClientWs, JSON.stringify({ jsonrpc: "2.0", id: meta.id, error: { code: -32001, message: "Codex auth gate unavailable" } }));
       return;
     }
+    relay.usageAccount = captureCodexUsageAccount();
     if (relay.authLeasesByRpcId instanceof Map) relay.authLeasesByRpcId.set(clientRequestRpcKey, lease);
     else lease();
     params = { ...params, authLeaseAcquired: true };
@@ -12128,6 +12094,8 @@ export const __TESTING__ = {
   server,
   codexAuthService,
   codexAuthRuntime,
+  codexUsageService,
+  createCodexRpcClient,
   RUNNER_TOKEN,
   buildCodexStatusFromWham,
   pushDeviceStore,

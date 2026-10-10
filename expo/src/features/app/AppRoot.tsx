@@ -2505,7 +2505,7 @@ function AppContent({ onReady }: { onReady?: () => void }) {
     startCodexAuthRegistration, completeCodexAuthRegistration, getCodexAuthRegistration, cancelCodexAuthRegistration,
     reauthCodexAuthProfile, deleteCodexAuthProfile,
   } = useCodexStatusAuthController({
-    activeScreen,
+    runnerWebSocketManager,
     appStateRef,
     auxServerBaseUrl,
     runnerToken,
@@ -3661,7 +3661,6 @@ function AppContent({ onReady }: { onReady?: () => void }) {
   }, [activeScreen, refreshGitChangedFiles, registeredDirectories, runnerToken]);
 
   useCodexStatusRefreshEffects({
-    activeScreen,
     runnerUrl,
     runnerToken,
     appStateRef,
