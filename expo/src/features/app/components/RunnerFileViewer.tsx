@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   SafeAreaView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { WebView } from "react-native-webview";
+import { FileViewerHeader } from "./FileViewerHeader";
 import { ChecklistFileViewer } from "./ChecklistFileViewer";
 import { parseChecklistFile, type ChecklistItem } from "../utils/checklistFile";
 import { fetchRunnerTextFileContent } from "../utils/runnerFileContent";
@@ -106,6 +106,8 @@ export function RunnerFileViewer({
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [version, setVersion] = useState("");
   const [checklistSaving, setChecklistSaving] = useState(false);
+  const [fileActionBusy, setFileActionBusy] = useState(false);
+  const [checklistDraft, setChecklistDraft] = useState(false);
 
   const targetPath = target?.path || "";
   const targetKind = target?.kind || null;
@@ -150,11 +152,13 @@ export function RunnerFileViewer({
 
   useEffect(() => {
     setChecklistSaving(false);
-  }, [targetKind, targetPath]);
+    setFileActionBusy(false);
+    setChecklistDraft(false);
+  }, [targetKind, targetPath, targetRootDirectory]);
 
   const requestClose = useCallback(() => {
-    if (!checklistSaving) onRequestClose();
-  }, [checklistSaving, onRequestClose]);
+    if (!checklistSaving && !fileActionBusy) onRequestClose();
+  }, [checklistSaving, fileActionBusy, onRequestClose]);
 
   if (!target) {
     return null;
@@ -170,29 +174,20 @@ export function RunnerFileViewer({
     >
       <GestureHandlerRootView style={viewerStyles.root} testID="runner-file-viewer-gesture-root">
         <SafeAreaView style={viewerStyles.root}>
-          <View style={viewerStyles.header}>
-            <View style={viewerStyles.titleWrap}>
-              <Text style={viewerStyles.title} numberOfLines={1}>{target.name || "ファイル"}</Text>
-              <Text style={viewerStyles.path} numberOfLines={1}>{targetPath}</Text>
-            </View>
-            <TouchableOpacity
-              style={viewerStyles.closeButton}
-              onPress={requestClose}
-              disabled={checklistSaving}
-              accessibilityRole="button"
-              accessibilityLabel={checklistSaving
-                ? "保存中はファイルビューアーを閉じられません"
-                : "ファイルビューアーを閉じる"}
-              accessibilityState={{ disabled: checklistSaving }}
-              testID="runner-file-viewer-close"
-            >
-              {checklistSaving ? (
-                <ActivityIndicator size="small" color={theme.dark.textMuted} />
-              ) : (
-                <Ionicons name="close" size={24} color={theme.dark.textMuted} />
-              )}
-            </TouchableOpacity>
-          </View>
+          <FileViewerHeader
+            key={`${targetRootDirectory}\0${targetPath}`}
+            target={target}
+            saving={checklistSaving}
+            onClose={onRequestClose}
+            onBusyChange={setFileActionBusy}
+            beforeMutation={() => {
+              if (loading || loadError) return false;
+              if (!checklistDraft) return true;
+              Alert.alert("項目の編集を完了してください", "名前変更・削除の前に、編集中の項目を確定するかキャンセルしてください。");
+              return false;
+            }}
+            closeTestID="runner-file-viewer-close"
+          />
           {loading ? (
             <View style={viewerStyles.centerArea}>
               <ActivityIndicator size="large" color={theme.dark.accent} />
@@ -208,6 +203,8 @@ export function RunnerFileViewer({
               initialVersion={version}
               onSave={onAutoSave}
               onSavingChange={setChecklistSaving}
+              disabled={fileActionBusy}
+              onDraftChange={setChecklistDraft}
             />
           ) : (
             <WebView
@@ -228,36 +225,6 @@ function createRunnerFileViewerStyles(theme: VisualTheme) {
   root: {
     flex: 1,
     backgroundColor: theme.dark.canvas,
-  },
-  header: {
-    minHeight: 64,
-    paddingLeft: 16,
-    paddingRight: 10,
-    paddingVertical: 10,
-    borderBottomWidth: theme.borders.divider,
-    borderBottomColor: theme.dark.border,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  titleWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  title: {
-    color: theme.dark.text,
-    fontSize: theme.typography.control.fontSize,
-    fontWeight: "700",
-  },
-  path: {
-    marginTop: 2,
-    color: theme.dark.textMuted,
-    fontSize: theme.typography.caption.fontSize,
-  },
-  closeButton: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
   },
   centerArea: {
     flex: 1,

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   FlatList,
@@ -42,6 +41,8 @@ type ChecklistFileViewerProps = {
     expectedVersion: string,
   ) => Promise<WorkspaceFileWriteResult>;
   onSavingChange: (saving: boolean) => void;
+  disabled?: boolean;
+  onDraftChange?: (dirty: boolean) => void;
 };
 
 type ChecklistRowProps = {
@@ -224,11 +225,15 @@ export function ChecklistFileViewer({
   initialVersion,
   onSave,
   onSavingChange,
+  disabled = false,
+  onDraftChange,
 }: ChecklistFileViewerProps) {
   const { theme, themeId } = useVisualTheme();
   const styles = stylesByTheme[themeId];
   const nextIdRef = useRef(1);
   const savingRef = useRef(false);
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
   const versionRef = useRef(initialVersion);
   const itemsRef = useRef<ChecklistViewItem[]>([]);
   const [items, setItems] = useState<ChecklistViewItem[]>([]);
@@ -253,8 +258,12 @@ export function ChecklistFileViewer({
     onSavingChange(false);
   }, [initialItems, initialVersion, onSavingChange, target.path]);
 
+  useEffect(() => {
+    onDraftChange?.(editingId !== null || Boolean(newItemText.trim()));
+  }, [editingId, newItemText, onDraftChange]);
+
   const saveItems = useCallback(async (nextItems: ChecklistViewItem[]) => {
-    if (savingRef.current) return false;
+    if (savingRef.current || disabledRef.current) return false;
     const previousItems = itemsRef.current;
     savingRef.current = true;
     onSavingChange(true);
@@ -280,7 +289,7 @@ export function ChecklistFileViewer({
     }
   }, [onSave, onSavingChange, target]);
 
-  const interactionDisabled = saving || editingId !== null;
+  const interactionDisabled = disabled || saving || editingId !== null;
   const checkedCount = items.filter((item) => item.checked).length;
 
   const toggleItem = useCallback((index: number) => {
@@ -318,7 +327,7 @@ export function ChecklistFileViewer({
   }, [interactionDisabled]);
 
   const commitEdit = useCallback(() => {
-    if (saving || editingId === null) return;
+    if (disabled || saving || editingId === null) return;
     const text = editText.trim();
     if (!text) {
       Alert.alert("入力を確認してください", "項目の内容を入力してください。");
@@ -339,7 +348,7 @@ export function ChecklistFileViewer({
         setEditText("");
       }
     });
-  }, [editText, editingId, items, saveItems, saving]);
+  }, [disabled, editText, editingId, items, saveItems, saving]);
 
   const addItems = useCallback(() => {
     if (interactionDisabled) return;
@@ -386,18 +395,10 @@ export function ChecklistFileViewer({
     <KeyboardAvoidingView
       style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={64}
+      keyboardVerticalOffset={52}
     >
       <View style={styles.actionBar}>
         <Text style={styles.summary}>{items.length}件</Text>
-        {saving ? (
-          <View style={styles.savingStatus}>
-            <ActivityIndicator size="small" color={theme.colors.textMuted} />
-            <Text style={styles.savingText}>保存中</Text>
-          </View>
-        ) : (
-          <Text style={styles.savedText}>保存済み</Text>
-        )}
         <TouchableOpacity
           style={[
             styles.deleteCheckedButton,
@@ -421,13 +422,13 @@ export function ChecklistFileViewer({
         data={items}
         keyExtractor={(item) => String(item.id)}
         keyboardShouldPersistTaps="handled"
-        scrollEnabled={!saving && !dragging}
+        scrollEnabled={!disabled && !saving && !dragging}
         renderItem={({ item, index }) => (
           <ChecklistRow
             item={item}
             index={index}
             itemCount={items.length}
-            disabled={saving || (editingId !== null && editingId !== item.id)}
+            disabled={disabled || saving || (editingId !== null && editingId !== item.id)}
             editing={editingId === item.id}
             editText={editText}
             onToggle={() => toggleItem(index)}
@@ -500,19 +501,6 @@ function createChecklistStyles(theme: VisualTheme) {
     color: theme.colors.textSecondary,
     fontSize: theme.typography.compact.fontSize,
     fontWeight: "700",
-  },
-  savingStatus: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
-  savingText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.small.fontSize,
-  },
-  savedText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.small.fontSize,
   },
   deleteCheckedButton: {
     marginLeft: "auto",

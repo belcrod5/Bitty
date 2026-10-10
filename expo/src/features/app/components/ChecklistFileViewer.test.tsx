@@ -89,7 +89,7 @@ test("auto-saves toggles and uses the returned version for the next action", asy
     "- [x] A\n- [ ] B\n",
     "version-1",
   ));
-  await waitFor(() => expect(view.getByText("保存済み")).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId("checklist-toggle-0").props.accessibilityState.disabled).toBe(false));
 
   await fireEvent.press(view.getByTestId("checklist-delete-1"));
   expect(onSave).toHaveBeenCalledTimes(1);
@@ -234,7 +234,7 @@ test("does not start a second write while the current version is still saving", 
   expect(onSave).toHaveBeenCalledTimes(1);
 
   resolveSave?.({ ok: true, path: target.path, version: "version-2" });
-  await waitFor(() => expect(view.getByText("保存済み")).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId("checklist-toggle-0").props.accessibilityState.disabled).toBe(false));
 });
 
 test("reorders with the drag handle accessibility actions and keeps bounds", async () => {
@@ -318,4 +318,23 @@ test("reorders through the handle gesture callback sequence and restores scrolli
   } finally {
     setValue.mockRestore();
   }
+});
+
+
+test("rejects a delayed row-delete confirmation after file mutation disables the checklist", async () => {
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const props = {
+    target,
+    initialItems: [{ checked: false, text: "A" }],
+    initialVersion: "v1",
+    onSave: jest.fn(),
+    onSavingChange: jest.fn(),
+  };
+  const view = await render(<ChecklistFileViewer {...props} />);
+  await fireEvent.press(view.getByTestId("checklist-delete-0"));
+  const confirmation = alert.mock.calls[0][2]?.find((button) => button.text === "削除");
+  await view.rerender(<ChecklistFileViewer {...props} disabled />);
+  await act(async () => { confirmation?.onPress?.(); });
+  expect(props.onSave).not.toHaveBeenCalled();
+  expect(view.getByText("A")).toBeTruthy();
 });

@@ -1,6 +1,7 @@
 import { Alert } from "react-native";
 import { fetchRunnerTextFileContent } from "./runnerFileContent";
 import {
+  createRunnerFileTarget,
   getRunnerFileOpenKind,
   getRunnerFileViewerKind,
   getRunnerFileLocation,
@@ -106,12 +107,12 @@ test.each([
   const openButton = buttons.find((button) => button.text === "開く");
   expect(openButton).toBeDefined();
   openButton?.onPress?.();
-  expect(onOpenFile).toHaveBeenCalledWith({
+  expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
     kind,
     path: filePath,
     name: filePath,
     rootDirectory: "project",
-  });
+  }));
 });
 
 test.each([
@@ -125,12 +126,12 @@ test.each([
     onOpenFile,
   });
   buttons.find((button) => button.text === "開く")?.onPress?.();
-  expect(onOpenFile).toHaveBeenCalledWith({
+  expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
     kind,
     path: filePath,
     name: filePath,
     rootDirectory: filePath.slice(0, filePath.lastIndexOf("/")),
-  });
+  }));
 });
 
 test("keeps relative viewer paths with normalized POSIX and Windows roots", () => {
@@ -190,11 +191,11 @@ test("shows the open button for editable text files", () => {
   expect(openButton).toBeDefined();
   expect(buttons.some((button) => button.text === "編集")).toBe(false);
   openButton?.onPress?.();
-  expect(onRequestEdit).toHaveBeenCalledWith({
+  expect(onRequestEdit).toHaveBeenCalledWith(expect.objectContaining({
     path: "docs/readme.md",
     name: "docs/readme.md",
     rootDirectory: "project",
-  });
+  }));
 });
 
 test.each(["docs/readme.md", "notes.txt"])(
@@ -267,12 +268,12 @@ test("opens files directly with the same viewer and media behavior as the contex
   };
 
   expect(openRunnerFile({ ...common, filePathRaw: "tasks/today.checklist" })).toBe(true);
-  expect(onOpenFile).toHaveBeenCalledWith({
+  expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
     kind: "checklist",
     path: "tasks/today.checklist",
     name: "tasks/today.checklist",
     rootDirectory: "/workspace",
-  });
+  }));
 
   expect(openRunnerFile({ ...common, filePathRaw: "images/map.png" })).toBe(true);
   expect(onOpenMedia).toHaveBeenCalledWith(expect.objectContaining({
@@ -298,18 +299,18 @@ test("opens text files directly in the editor with their safe location", () => {
   };
 
   expect(openRunnerFile({ ...common, filePathRaw: "docs/readme.md" })).toBe(true);
-  expect(onRequestEdit).toHaveBeenLastCalledWith({
+  expect(onRequestEdit).toHaveBeenLastCalledWith(expect.objectContaining({
     path: "docs/readme.md",
     name: "docs/readme.md",
     rootDirectory: "/workspace",
-  });
+  }));
 
   expect(openRunnerFile({ ...common, filePathRaw: "/external/notes.txt" })).toBe(true);
-  expect(onRequestEdit).toHaveBeenLastCalledWith({
+  expect(onRequestEdit).toHaveBeenLastCalledWith(expect.objectContaining({
     path: "/external/notes.txt",
     name: "/external/notes.txt",
     rootDirectory: "/external",
-  });
+  }));
 });
 
 test("shows an explicit fallback when a file type has no default open behavior", () => {
@@ -468,12 +469,12 @@ test("passes the same external absolute location to open and Skia board actions"
 
   buttons.find((button) => button.text === "開く")?.onPress?.();
   buttons.find((button) => button.text === "Skiaボードへ追加")?.onPress?.();
-  expect(onOpenFile).toHaveBeenCalledWith({
+  expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
     kind: "checklist",
     path: "/external/tasks/today.checklist",
     name: "/external/tasks/today.checklist",
     rootDirectory: "/external/tasks",
-  });
+  }));
   expect(hasFile).toHaveBeenCalledWith(
     "/external/tasks",
     "/external/tasks/today.checklist",
@@ -483,4 +484,80 @@ test("passes the same external absolute location to open and Skia board actions"
     path: "/external/tasks/today.checklist",
     name: "/external/tasks/today.checklist",
   });
+});
+
+
+test.each(["/external/note.md", "/external/today.checklist"])(
+  "carries the shared menu and safe mutation target into an opened %s",
+  async (path) => {
+    const onOpenFile = jest.fn();
+    const onRequestEdit = jest.fn();
+    const onRequestDelete = jest.fn();
+    const onRequestRename = jest.fn();
+    const onRenameFile = jest.fn();
+    const hasFile = jest.fn(() => true);
+    const removeFile = jest.fn();
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    openRunnerFile({
+      filePathRaw: path,
+      runnerUrl: "http://runner.test",
+      runnerToken: "token",
+      rootDir: "/workspace",
+      getPathLabel: String,
+      showInfoToast: jest.fn(),
+      allowMutate: true,
+      onOpenFile,
+      onRequestEdit,
+      onRequestRename,
+      onRequestDelete,
+      onRenameFile,
+      skiaBoard: { hasFile, removeFile },
+    });
+    const target = (onOpenFile.mock.calls[0] || onRequestEdit.mock.calls[0])[0];
+    expect(target.renameFile).toBe(onRenameFile);
+    expect(target.deleteFile).toBe(onRequestDelete);
+    const nestedRename = jest.fn();
+    const nestedDelete = jest.fn();
+    target.openContextMenu({ onRequestRename: nestedRename, onRequestDelete: nestedDelete });
+    const buttons = alert.mock.calls[0][2] || [];
+    expect(alert.mock.calls[0].slice(0, 2)).toEqual([path, path]);
+    expect(buttons.some((button) => button.text === "開く")).toBe(false);
+    buttons.find((button) => button.text === "名前を変更")?.onPress?.();
+    expect(nestedRename).toHaveBeenCalledWith({ path, name: path, rootDirectory: "/external" });
+    expect(onRequestRename).not.toHaveBeenCalled();
+    buttons.find((button) => button.text === "削除")?.onPress?.();
+    expect(nestedDelete).not.toHaveBeenCalled();
+    alert.mock.calls[1][2]?.find((button) => button.text === "削除")?.onPress?.();
+    expect(nestedDelete).toHaveBeenCalledWith({ path, name: path, rootDirectory: "/external" });
+    expect(onRequestDelete).not.toHaveBeenCalled();
+    buttons.find((button) => button.text === "Skiaボードから除外")?.onPress?.();
+    expect(removeFile).toHaveBeenCalledWith("/external", path);
+    fetchRunnerTextFileContentMock.mockResolvedValue({ content: "body" });
+    buttons.find((button) => button.text === "ファイル内容をコピー")?.onPress?.();
+    await flushPromises();
+    expect(fetchRunnerTextFileContentMock).toHaveBeenCalledWith(expect.objectContaining({
+      rootDir: "/external", path,
+    }));
+  },
+);
+
+test("read-only viewer targets carry a menu without mutation operations", () => {
+  const target = createRunnerFileTarget({
+    filePathRaw: "docs/report.html",
+    rootDir: "/workspace",
+    runnerUrl: "http://runner.test",
+    runnerToken: "token",
+    getPathLabel: String,
+    showInfoToast: jest.fn(),
+    allowMutate: false,
+    onRenameFile: jest.fn(),
+    onRequestDelete: jest.fn(),
+  });
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  target.openContextMenu?.({ onRequestRename: jest.fn(), onRequestDelete: jest.fn() });
+  expect(target.renameFile).toBeUndefined();
+  expect(target.deleteFile).toBeUndefined();
+  expect(alert.mock.calls[0][2]?.map((button) => button.text)).toEqual([
+    "相対パスをコピー", "ファイル内容をコピー", "キャンセル",
+  ]);
 });

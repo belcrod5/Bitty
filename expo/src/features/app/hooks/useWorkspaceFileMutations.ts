@@ -8,6 +8,8 @@ import {
   type WorkspaceFileTarget,
 } from "../utils/workspaceFiles";
 import {
+  createRunnerFileTarget,
+  type RunnerFileTarget,
   isRunnerEditableTextFile,
   normalizeRunnerPath,
 } from "../utils/runnerFileContextMenu";
@@ -38,9 +40,9 @@ export function useWorkspaceFileMutations({
   refreshChangedFiles,
   showInfoToast,
 }: UseWorkspaceFileMutationsParams) {
-  const { renameFile: renameBoardFile, markFileUnavailable } = useSkiaBoard();
+  const { renameFile: renameBoardFile, markFileUnavailable, hasFile, addFile, removeFile } = useSkiaBoard();
   const [renameTarget, setRenameTarget] = useState<WorkspaceFileTarget | null>(null);
-  const [editTarget, setEditTarget] = useState<WorkspaceFileTarget | null>(null);
+  const [editTarget, setEditTarget] = useState<RunnerFileTarget | null>(null);
   const [createFileDirectory, setCreateFileDirectory] = useState<string | null>(null);
 
   const refreshAfterMutation = useCallback(async (result: WorkspaceFileMutationResult) => {
@@ -75,14 +77,14 @@ export function useWorkspaceFileMutations({
       const result = await mutateWorkspaceFile({
         runnerUrl,
         runnerToken,
-        rootDirectory,
+        rootDirectory: target.rootDirectory || rootDirectory,
         path: target.path,
         operation: "rename",
         name: nextName,
       });
       setRenameTarget(null);
       if (normalizeRunnerPath(result.path) !== normalizeRunnerPath(target.path)) {
-        renameBoardFile(rootDirectory, target.path, result.path);
+        renameBoardFile(target.rootDirectory || rootDirectory, target.path, result.path);
       }
       showInfoToast(`名前を変更しました: ${result.path}`);
       await refreshAfterMutationWithAlert(result);
@@ -105,38 +107,6 @@ export function useWorkspaceFileMutations({
     if (!target) return;
     await renameFileTarget(target, nextName);
   }, [renameFileTarget, renameTarget]);
-
-  const createFile = useCallback(async (name: string) => {
-    const directory = createFileDirectory;
-    if (!directory) return;
-    try {
-      const result = await createWorkspaceTextFile({
-        runnerUrl,
-        runnerToken,
-        rootDirectory,
-        targetDirectory: directory,
-        name,
-      });
-      setCreateFileDirectory(null);
-      showInfoToast(`作成しました: ${result.path}`);
-      await refreshAfterMutationWithAlert(result);
-      // テキストファイルならそのまま編集を開始する
-      if (isRunnerEditableTextFile(result.path)) {
-        setEditTarget({ path: result.path, name: result.name || name });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      Alert.alert("作成失敗", message || "ファイルの作成に失敗しました。");
-      throw err;
-    }
-  }, [
-    createFileDirectory,
-    refreshAfterMutationWithAlert,
-    rootDirectory,
-    runnerToken,
-    runnerUrl,
-    showInfoToast,
-  ]);
 
   const persistFileContent = useCallback(async (
     target: WorkspaceFileTarget,
@@ -190,20 +160,82 @@ export function useWorkspaceFileMutations({
       const result = await mutateWorkspaceFile({
         runnerUrl,
         runnerToken,
-        rootDirectory,
+        rootDirectory: target.rootDirectory || rootDirectory,
         path: target.path,
         operation: "delete",
       });
-      markFileUnavailable(rootDirectory, target.path);
+      markFileUnavailable(target.rootDirectory || rootDirectory, target.path);
       showInfoToast(`削除しました: ${result.path || target.path}`);
       await refreshAfterMutationWithAlert(result);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Alert.alert("削除失敗", message || "ファイルの削除に失敗しました。");
+      return false;
     }
   }, [
     refreshAfterMutationWithAlert,
     markFileUnavailable,
+    rootDirectory,
+    runnerToken,
+    runnerUrl,
+    showInfoToast,
+  ]);
+
+  const requestEdit = useCallback((target: RunnerFileTarget) => {
+    setEditTarget(target.openContextMenu ? target : createRunnerFileTarget({
+      filePathRaw: target.path,
+      fileNameRaw: target.name,
+      rootDir: target.rootDirectory || rootDirectory,
+      runnerUrl,
+      runnerToken,
+      allowMutate: true,
+      getPathLabel: (path) => String(path).split("/").pop() || String(path),
+      showInfoToast,
+      onRequestRename: setRenameTarget,
+      onRequestDelete: deleteFile,
+      onRenameFile: renameFileTarget,
+      skiaBoard: { hasFile, addFile, removeFile },
+    }));
+  }, [
+    addFile,
+    deleteFile,
+    hasFile,
+    removeFile,
+    renameFileTarget,
+    rootDirectory,
+    runnerToken,
+    runnerUrl,
+    showInfoToast,
+  ]);
+
+  const createFile = useCallback(async (name: string) => {
+    const directory = createFileDirectory;
+    if (!directory) return;
+    try {
+      const result = await createWorkspaceTextFile({
+        runnerUrl,
+        runnerToken,
+        rootDirectory,
+        targetDirectory: directory,
+        name,
+      });
+      setCreateFileDirectory(null);
+      showInfoToast(`作成しました: ${result.path}`);
+      await refreshAfterMutationWithAlert(result);
+      // テキストファイルならそのまま編集を開始する
+      if (isRunnerEditableTextFile(result.path)) {
+        requestEdit({ path: result.path, name: result.name || name, rootDirectory });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert("作成失敗", message || "ファイルの作成に失敗しました。");
+      throw err;
+    }
+  }, [
+    requestEdit,
+    createFileDirectory,
+    refreshAfterMutationWithAlert,
     rootDirectory,
     runnerToken,
     runnerUrl,
@@ -217,7 +249,7 @@ export function useWorkspaceFileMutations({
     renameFile,
     renameFileTarget,
     editTarget,
-    requestEdit: setEditTarget,
+    requestEdit,
     cancelEdit: () => setEditTarget(null),
     writeFileContent,
     autoSaveFileContent,

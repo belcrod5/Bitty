@@ -1,6 +1,7 @@
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Alert, Platform } from "react-native";
 
+import { createRunnerFileTarget } from "../utils/runnerFileContextMenu";
 import { WorkspaceTextFileEditor } from "./WorkspaceTextFileEditor";
 
 const mockFetchRunnerTextFileContent = jest.fn();
@@ -63,7 +64,7 @@ test("saves with the version returned when the file was opened", async () => {
   const editor = view.getByTestId("workspace-text-file-editor-input");
   await waitFor(() => expect(editor.props.value).toBe("before"));
   await fireEvent.changeText(editor, "after");
-  await fireEvent.press(view.getByText("保存"));
+  await fireEvent.press(view.getByLabelText("保存"));
 
   await waitFor(() => expect(onSave).toHaveBeenCalledWith(
     { path: "project/note.md", name: "note.md" },
@@ -147,7 +148,7 @@ test("treats the current macOS draft as unsaved when closing", async () => {
     view.getByTestId("workspace-text-file-editor-input").props.value
   ).toBe("before"));
   await fireEvent.changeText(view.getByTestId("workspace-text-file-editor-input"), "after");
-  await fireEvent.press(view.getByText("閉じる"));
+  await fireEvent.press(view.getByLabelText("ファイルビューアーを閉じる"));
 
   expect(alert).toHaveBeenCalledWith(
     "変更を破棄しますか？",
@@ -191,7 +192,7 @@ test("opens Markdown in edit mode and previews the current content", async () =>
   await fireEvent.press(view.getByLabelText("プレビューを表示"));
 
   expect(view.getByTestId("markdown-preview").props.children).toBe("# After");
-  expect(view.getByText("保存")).toBeTruthy();
+  expect(view.getByLabelText("保存")).toBeTruthy();
   await fireEvent.press(view.getByLabelText("編集モードに戻る"));
   expect(view.getByTestId("workspace-text-file-editor-input").props.value).toBe("# After");
 });
@@ -221,4 +222,47 @@ test("previews txt files as selectable plain text", async () => {
 
   expect(view.getByText("# Plain text").props.selectable).toBe(true);
   expect(view.queryByTestId("markdown-preview")).toBeNull();
+});
+
+
+jest.mock("../keyboardController", () => ({
+  KeyboardAvoidingView: require("react-native").KeyboardAvoidingView,
+}));
+
+
+test("keeps a macOS draft while blocking rename and delete, and exposes file operations in preview", async () => {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: "macos" });
+  mockFetchRunnerTextFileContent.mockResolvedValue({ content: "before", version: "v1" });
+  const renameFile = jest.fn();
+  const deleteFile = jest.fn();
+  const target = createRunnerFileTarget({
+    filePathRaw: "docs/note.md", fileNameRaw: "note.md",
+    runnerUrl: "http://runner.test", runnerToken: "token", rootDir: "/external",
+    getPathLabel: String, showInfoToast: jest.fn(), allowMutate: true,
+    onRequestRename: jest.fn(), onRenameFile: renameFile, onRequestDelete: deleteFile,
+  });
+  const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  const onClose = jest.fn();
+  const view = await render(
+    <WorkspaceTextFileEditor target={target} runnerUrl="http://runner.test" runnerToken="token"
+      rootDirectory="/workspace" onClose={onClose} onSave={jest.fn()} />,
+  );
+  await waitFor(() => expect(view.getByTestId("workspace-text-file-editor-input").props.value).toBe("before"));
+  expect(view.queryByText("docs/note.md")).toBeNull();
+  await fireEvent.changeText(view.getByTestId("workspace-text-file-editor-input"), "draft");
+  await fireEvent.press(view.getByLabelText("プレビューを表示"));
+  await fireEvent.press(view.getByLabelText("ファイルの操作メニューを開く"));
+  const buttons = alert.mock.calls[0][2] || [];
+  expect(alert.mock.calls[0][1]).toBe("docs/note.md");
+  expect(buttons.some((button) => button.text === "開く")).toBe(false);
+  buttons.find((button) => button.text === "名前を変更")?.onPress?.();
+  expect(alert).toHaveBeenLastCalledWith("変更を保存してください", expect.any(String));
+  buttons.find((button) => button.text === "削除")?.onPress?.();
+  const confirmation = alert.mock.calls.at(-1)?.[2] || [];
+  confirmation.find((button) => button.text === "削除")?.onPress?.();
+  expect(deleteFile).not.toHaveBeenCalled();
+  expect(renameFile).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  await fireEvent.press(view.getByLabelText("編集モードに戻る"));
+  expect(view.getByTestId("workspace-text-file-editor-input").props.value).toBe("draft");
 });

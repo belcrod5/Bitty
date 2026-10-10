@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { useWorkspaceFileMutations } from "./useWorkspaceFileMutations";
-import { mutateWorkspaceFile, writeWorkspaceTextFile } from "../utils/workspaceFiles";
+import { createWorkspaceTextFile, mutateWorkspaceFile, writeWorkspaceTextFile } from "../utils/workspaceFiles";
 
 jest.mock("../utils/workspaceFiles", () => ({
   createWorkspaceTextFile: jest.fn(),
@@ -14,6 +14,9 @@ jest.mock("../contexts/SkiaBoardContext", () => ({
   useSkiaBoard: () => ({
     renameFile: mockRenameBoardFile,
     markFileUnavailable: mockMarkFileUnavailable,
+    hasFile: () => false,
+    addFile: jest.fn(),
+    removeFile: jest.fn(),
   }),
 }));
 
@@ -175,4 +178,53 @@ test("auto-saves without showing the manual save success toast", async () => {
 
   expect(mockWriteWorkspaceTextFile).toHaveBeenCalledTimes(1);
   expect(showInfoToast).not.toHaveBeenCalled();
+});
+
+
+test.each(["/external", "/", "D:/"])(
+  "renames and deletes with target location %s and updates the same board identity",
+  async (rootDirectory) => {
+    const hook = await renderMutations();
+    const target = { path: "note.md", name: "note.md", rootDirectory };
+    mockMutateWorkspaceFile.mockResolvedValueOnce({ ok: true, path: "renamed.md" })
+      .mockResolvedValueOnce({ ok: true, path: "note.md" });
+    await act(async () => {
+      await hook.result.current.renameFileTarget(target, "renamed.md");
+      expect(await hook.result.current.deleteFile(target)).toBe(true);
+    });
+    expect(mockMutateWorkspaceFile).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      rootDirectory, path: "note.md", operation: "rename", name: "renamed.md",
+    }));
+    expect(mockMutateWorkspaceFile).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      rootDirectory, path: "note.md", operation: "delete",
+    }));
+    expect(mockRenameBoardFile).toHaveBeenCalledWith(rootDirectory, "note.md", "renamed.md");
+    expect(mockMarkFileUnavailable).toHaveBeenCalledWith(rootDirectory, "note.md");
+  },
+);
+
+test("reports a failed delete without marking a board file unavailable", async () => {
+  const hook = await renderMutations();
+  mockMutateWorkspaceFile.mockRejectedValue(new Error("failed"));
+  await act(async () => {
+    expect(await hook.result.current.deleteFile({ path: "note.md", name: "note.md" })).toBe(false);
+  });
+  expect(mockMarkFileUnavailable).not.toHaveBeenCalled();
+});
+
+test("direct editor requests and newly created text files also carry viewer operations", async () => {
+  const hook = await renderMutations();
+  await act(async () => {
+    hook.result.current.requestEdit({ path: "note.md", name: "note.md", rootDirectory: "/external" });
+  });
+  expect(hook.result.current.editTarget).toEqual(expect.objectContaining({
+    rootDirectory: "/external", openContextMenu: expect.any(Function),
+    renameFile: expect.any(Function), deleteFile: expect.any(Function),
+  }));
+  (createWorkspaceTextFile as jest.Mock).mockResolvedValue({ ok: true, path: "docs/new.md" });
+  await act(async () => { hook.result.current.requestCreateFile("docs"); });
+  await act(async () => { await hook.result.current.createFile("new.md"); });
+  expect(hook.result.current.editTarget).toEqual(expect.objectContaining({
+    path: "docs/new.md", rootDirectory: "/workspace", openContextMenu: expect.any(Function),
+  }));
 });
