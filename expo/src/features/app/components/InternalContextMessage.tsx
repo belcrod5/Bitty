@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View, type StyleProp, type TextStyle } from "react-native";
-import { MarkdownText } from "./MarkdownText";
+import { MarkdownText, type MarkdownTextProps } from "./MarkdownText";
 import { useVisualTheme } from "../theme/VisualThemeContext";
 import { createStylesByTheme, type VisualTheme } from "../theme/visualThemes";
 
@@ -10,6 +10,7 @@ type InternalContextMessageProps = {
   // 既定のCODEX CONTEXT以外の見出し(subagent会話等)を出したい時に指定する。
   title?: string;
   textStyle: StyleProp<TextStyle>;
+  resolveImageSource?: MarkdownTextProps["resolveImageSource"];
   onLocalFileLinkPress?: (path: string) => void;
   onSelectedTextTtsPress?: (text: string) => void;
 };
@@ -36,6 +37,7 @@ export function InternalContextMessage(props: InternalContextMessageProps) {
       {expanded ? (
         <MarkdownText
           content={props.content}
+          resolveImageSource={props.resolveImageSource}
           tone="assistant"
           textStyle={props.textStyle}
           onLocalFileLinkPress={props.onLocalFileLinkPress}

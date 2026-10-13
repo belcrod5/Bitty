@@ -1,8 +1,798 @@
+diff --git a/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java b/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java
+index 041cd4f..85d5e0f 100644
+--- a/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java
++++ b/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerDelegate.java
+@@ -25,6 +25,12 @@ public class EnrichedMarkdownManagerDelegate<T extends View, U extends BaseViewM
+   @Override
+   public void setProperty(T view, String propName, @Nullable Object value) {
+     switch (propName) {
++      case "resolveImages":
++        mViewManager.setResolveImages(view, value == null ? false : (boolean) value);
++        break;
++      case "imageSources":
++        mViewManager.setImageSources(view, (ReadableArray) value);
++        break;
+       case "markdown":
+         mViewManager.setMarkdown(view, value == null ? null : (String) value);
+         break;
+diff --git a/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerInterface.java b/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerInterface.java
+index f5673ef..d2c2077 100644
+--- a/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerInterface.java
++++ b/node_modules/react-native-enriched-markdown/android/generated/java/com/facebook/react/viewmanagers/EnrichedMarkdownManagerInterface.java
+@@ -16,6 +16,8 @@ import com.facebook.react.bridge.ReadableMap;
+ import com.facebook.react.uimanager.ViewManagerWithGeneratedInterface;
+ 
+ public interface EnrichedMarkdownManagerInterface<T extends View> extends ViewManagerWithGeneratedInterface {
++  void setResolveImages(T view, boolean value);
++  void setImageSources(T view, @Nullable ReadableArray value);
+   void setMarkdown(T view, @Nullable String value);
+   void setMarkdownStyle(T view, @Nullable ReadableMap value);
+   void setEnableLinkPreview(T view, boolean value);
+diff --git a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.cpp b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.cpp
+index ea444f1..892c73d 100644
+--- a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.cpp
++++ b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.cpp
+@@ -13,6 +13,23 @@
+ 
+ namespace facebook::react {
+ 
++void EnrichedMarkdownEventEmitter::onImageSources(OnImageSources event) const {
++  dispatchEvent("imageSources", [event=std::move(event)](jsi::Runtime &runtime) {
++    auto payload = jsi::Object(runtime);
++    payload.setProperty(runtime, "markdown", event.markdown);
++
++    auto urls = jsi::Array(runtime, event.urls.size());
++    size_t urlsIndex = 0;
++    for (auto urlsValue : event.urls) {
++      urls.setValueAtIndex(runtime, urlsIndex++, urlsValue);
++    }
++    payload.setProperty(runtime, "urls", urls);
++  
++    return payload;
++  });
++}
++
++
+ void EnrichedMarkdownEventEmitter::onLinkPress(OnLinkPress event) const {
+   dispatchEvent("linkPress", [event=std::move(event)](jsi::Runtime &runtime) {
+     auto payload = jsi::Object(runtime);
+diff --git a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.h b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.h
+index 797de6a..81cc9f6 100644
+--- a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.h
++++ b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/EventEmitters.h
+@@ -17,6 +17,11 @@ class EnrichedMarkdownEventEmitter : public ViewEventEmitter {
+  public:
+   using ViewEventEmitter::ViewEventEmitter;
+ 
++  struct OnImageSources {
++      std::string markdown;
++    std::vector<std::string> urls;
++    };
++
+   struct OnLinkPress {
+       std::string url;
+     };
+@@ -37,6 +42,8 @@ class EnrichedMarkdownEventEmitter : public ViewEventEmitter {
+     int selectionStart;
+     int selectionEnd;
+     };
++  void onImageSources(OnImageSources value) const;
++
+   void onLinkPress(OnLinkPress value) const;
+ 
+   void onLinkLongPress(OnLinkLongPress value) const;
+diff --git a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.cpp b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.cpp
+index f1fa74a..795974c 100644
+--- a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.cpp
++++ b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.cpp
+@@ -19,6 +19,8 @@ EnrichedMarkdownProps::EnrichedMarkdownProps(
+     const EnrichedMarkdownProps &sourceProps,
+     const RawProps &rawProps): ViewProps(context, sourceProps, rawProps),
+ 
++    resolveImages(convertRawProp(context, rawProps, "resolveImages", sourceProps.resolveImages, {false})),
++    imageSources(convertRawProp(context, rawProps, "imageSources", sourceProps.imageSources, {})),
+     markdown(convertRawProp(context, rawProps, "markdown", sourceProps.markdown, {})),
+     markdownStyle(convertRawProp(context, rawProps, "markdownStyle", sourceProps.markdownStyle, {})),
+     enableLinkPreview(convertRawProp(context, rawProps, "enableLinkPreview", sourceProps.enableLinkPreview, {true})),
+@@ -47,6 +49,14 @@ folly::dynamic EnrichedMarkdownProps::getDiffProps(
+   }
+   folly::dynamic result = HostPlatformViewProps::getDiffProps(prevProps);
+   
++  if (resolveImages != oldProps->resolveImages) {
++    result["resolveImages"] = resolveImages;
++  }
++    
++  if (imageSources != oldProps->imageSources) {
++    result["imageSources"] = toDynamic(imageSources);
++  }
++    
+   if (markdown != oldProps->markdown) {
+     result["markdown"] = markdown;
+   }
+diff --git a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.h b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.h
+index c9e1984..75550d4 100644
+--- a/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.h
++++ b/node_modules/react-native-enriched-markdown/android/generated/jni/react/renderer/components/EnrichedMarkdownTextSpec/Props.h
+@@ -18,6 +18,110 @@
+ 
+ namespace facebook::react {
+ 
++struct EnrichedMarkdownImageSourcesHeadersStruct {
++  std::string name{};
++  std::string value{};
++
++#ifdef RN_SERIALIZABLE_STATE
++  bool operator==(const EnrichedMarkdownImageSourcesHeadersStruct&) const = default;
++
++  folly::dynamic toDynamic() const {
++    folly::dynamic result = folly::dynamic::object();
++    result["name"] = name;
++    result["value"] = value;
++    return result;
++  }
++#endif
++};
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, EnrichedMarkdownImageSourcesHeadersStruct &result) {
++  auto map = (std::unordered_map<std::string, RawValue>)value;
++
++  auto tmp_name = map.find("name");
++  if (tmp_name != map.end()) {
++    fromRawValue(context, tmp_name->second, result.name);
++  }
++  auto tmp_value = map.find("value");
++  if (tmp_value != map.end()) {
++    fromRawValue(context, tmp_value->second, result.value);
++  }
++}
++
++static inline std::string toString(const EnrichedMarkdownImageSourcesHeadersStruct &value) {
++  return "[Object EnrichedMarkdownImageSourcesHeadersStruct]";
++}
++
++#ifdef RN_SERIALIZABLE_STATE
++static inline folly::dynamic toDynamic(const EnrichedMarkdownImageSourcesHeadersStruct &value) {
++  return value.toDynamic();
++}
++#endif
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, std::vector<EnrichedMarkdownImageSourcesHeadersStruct> &result) {
++  auto items = (std::vector<RawValue>)value;
++  for (const auto &item : items) {
++    EnrichedMarkdownImageSourcesHeadersStruct newItem;
++    fromRawValue(context, item, newItem);
++    result.emplace_back(newItem);
++  }
++}
++
++
++struct EnrichedMarkdownImageSourcesStruct {
++  std::string url{};
++  std::string uri{};
++  std::vector<EnrichedMarkdownImageSourcesHeadersStruct> headers{};
++
++#ifdef RN_SERIALIZABLE_STATE
++  bool operator==(const EnrichedMarkdownImageSourcesStruct&) const = default;
++
++  folly::dynamic toDynamic() const {
++    folly::dynamic result = folly::dynamic::object();
++    result["url"] = url;
++    result["uri"] = uri;
++    result["headers"] = ::facebook::react::toDynamic(headers);
++    return result;
++  }
++#endif
++};
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, EnrichedMarkdownImageSourcesStruct &result) {
++  auto map = (std::unordered_map<std::string, RawValue>)value;
++
++  auto tmp_url = map.find("url");
++  if (tmp_url != map.end()) {
++    fromRawValue(context, tmp_url->second, result.url);
++  }
++  auto tmp_uri = map.find("uri");
++  if (tmp_uri != map.end()) {
++    fromRawValue(context, tmp_uri->second, result.uri);
++  }
++  auto tmp_headers = map.find("headers");
++  if (tmp_headers != map.end()) {
++    fromRawValue(context, tmp_headers->second, result.headers);
++  }
++}
++
++static inline std::string toString(const EnrichedMarkdownImageSourcesStruct &value) {
++  return "[Object EnrichedMarkdownImageSourcesStruct]";
++}
++
++#ifdef RN_SERIALIZABLE_STATE
++static inline folly::dynamic toDynamic(const EnrichedMarkdownImageSourcesStruct &value) {
++  return value.toDynamic();
++}
++#endif
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, std::vector<EnrichedMarkdownImageSourcesStruct> &result) {
++  auto items = (std::vector<RawValue>)value;
++  for (const auto &item : items) {
++    EnrichedMarkdownImageSourcesStruct newItem;
++    fromRawValue(context, item, newItem);
++    result.emplace_back(newItem);
++  }
++}
++
++
+ struct EnrichedMarkdownMarkdownStyleParagraphStruct {
+   Float fontSize{0.0};
+   std::string fontFamily{};
+@@ -1950,6 +2054,8 @@ class EnrichedMarkdownProps final : public ViewProps {
+ 
+ #pragma mark - Props
+ 
++  bool resolveImages{false};
++  std::vector<EnrichedMarkdownImageSourcesStruct> imageSources{};
+   std::string markdown{};
+   EnrichedMarkdownMarkdownStyleStruct markdownStyle{};
+   bool enableLinkPreview{true};
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt
+index dceb56a..5962db5 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt
+@@ -1,6 +1,7 @@
+ package com.swmansion.enriched.markdown
+ 
+ import android.content.Context
++import com.swmansion.enriched.markdown.utils.text.ResolvedImageSource
+ import android.content.res.Configuration
+ import android.os.Build
+ import android.os.Handler
+@@ -37,6 +38,21 @@ class EnrichedMarkdown
+     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+ 
+     private var currentRenderId = 0L
++    private var imageSources: Map<String, ResolvedImageSource> = emptyMap()
++    private var resolveImages = false
++    var onImageSourcesCallback: ((String, List<String>) -> Unit)? = null
++
++    fun setImageSources(sources: Map<String, ResolvedImageSource>) {
++      if (imageSources == sources) return
++      imageSources = sources
++      scheduleRenderIfNeeded()
++    }
++
++    fun setResolveImages(enabled: Boolean) {
++      if (resolveImages == enabled) return
++      resolveImages = enabled
++      scheduleRenderIfNeeded()
++    }
+     private val segmentViews = mutableListOf<View>()
+ 
+     var currentMarkdown: String = ""
+@@ -171,6 +187,7 @@ class EnrichedMarkdown
+       val markdown = currentMarkdown.takeIf { it.isNotEmpty() } ?: return
+ 
+       val renderId = ++currentRenderId
++      val sources = if (resolveImages) imageSources else null
+ 
+       executor.execute {
+         try {
+@@ -180,6 +197,12 @@ class EnrichedMarkdown
+               return@execute
+             }
+ 
++          val imageURLs = linkedSetOf<String>()
++          fun collectImages(node: MarkdownASTNode) {
++            if (node.type == MarkdownASTNode.NodeType.Image) node.getAttribute("url")?.let { imageURLs.add(it) }
++            node.children.forEach(::collectImages)
++          }
++          if (sources != null) collectImages(ast)
+           val segments = splitASTIntoSegments(ast)
+           val renderedSegments =
+             MarkdownSegmentRenderer.render(
+@@ -188,9 +211,13 @@ class EnrichedMarkdown
+               context,
+               onLinkPressCallback,
+               onLinkLongPressCallback,
++              sources,
+             )
+ 
+-          postToMain(renderId) { applyRenderedSegments(renderedSegments, style) }
++          postToMain(renderId) {
++            applyRenderedSegments(renderedSegments, style)
++            if (sources != null) onImageSourcesCallback?.invoke(markdown, imageURLs.toList())
++          }
+         } catch (e: Exception) {
+           Log.e(TAG, "Render failed", e)
+           postToMain(renderId) { clearSegments() }
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownManager.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownManager.kt
+index 89a3153..2cc840c 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownManager.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdownManager.kt
+@@ -13,6 +13,8 @@ import com.facebook.react.viewmanagers.EnrichedMarkdownManagerInterface
+ import com.facebook.yoga.YogaMeasureMode
+ import com.swmansion.enriched.markdown.spoiler.SpoilerOverlay
+ import com.swmansion.enriched.markdown.utils.common.emitContextMenuItemPress
++import com.swmansion.enriched.markdown.utils.common.emitImageSources
++import com.swmansion.enriched.markdown.utils.text.ResolvedImageSource
+ import com.swmansion.enriched.markdown.utils.common.emitLinkLongPress
+ import com.swmansion.enriched.markdown.utils.common.emitLinkPress
+ import com.swmansion.enriched.markdown.utils.common.emitTaskListItemPress
+@@ -33,6 +35,7 @@ class EnrichedMarkdownManager :
+ 
+   override fun createViewInstance(reactContext: ThemedReactContext): EnrichedMarkdown {
+     val view = EnrichedMarkdown(reactContext)
++    view.onImageSourcesCallback = { markdown, urls -> emitImageSources(view, markdown, urls) }
+     view.onContextMenuItemPressCallback = { itemText, selectedText, selectionStart, selectionEnd ->
+       emitContextMenuItemPress(view, itemText, selectedText, selectionStart, selectionEnd)
+     }
+@@ -64,6 +67,30 @@ class EnrichedMarkdownManager :
+     view?.setMarkdownContent(markdown ?: "")
+   }
+ 
++  @ReactProp(name = "resolveImages")
++  override fun setResolveImages(view: EnrichedMarkdown?, enabled: Boolean) {
++    view?.setResolveImages(enabled)
++  }
++
++  @ReactProp(name = "imageSources")
++  override fun setImageSources(view: EnrichedMarkdown?, values: ReadableArray?) {
++    val sources = mutableMapOf<String, ResolvedImageSource>()
++    for (index in 0 until (values?.size() ?: 0)) {
++      val source = values?.getMap(index) ?: continue
++      val url = source.getString("url") ?: continue
++      val uri = source.getString("uri") ?: continue
++      val headers = mutableMapOf<String, String>()
++      val entries = source.getArray("headers")
++      for (headerIndex in 0 until (entries?.size() ?: 0)) {
++        val header = entries?.getMap(headerIndex) ?: continue
++        val name = header.getString("name") ?: continue
++        headers[name] = header.getString("value") ?: continue
++      }
++      sources[url] = ResolvedImageSource(uri, headers)
++    }
++    view?.setImageSources(sources)
++  }
++
+   @ReactProp(name = "markdownStyle")
+   override fun setMarkdownStyle(
+     view: EnrichedMarkdown?,
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/events/ImageSourcesEvent.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/events/ImageSourcesEvent.kt
+new file mode 100644
+index 0000000..361e72b
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/events/ImageSourcesEvent.kt
+@@ -0,0 +1,15 @@
++package com.swmansion.enriched.markdown.events
++
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.WritableMap
++import com.facebook.react.uimanager.events.Event
++
++class ImageSourcesEvent(surfaceId: Int, viewId: Int, private val markdown: String, private val urls: List<String>) :
++  Event<ImageSourcesEvent>(surfaceId, viewId) {
++  override fun getEventName(): String = EVENT_NAME
++  override fun getEventData(): WritableMap = Arguments.createMap().apply {
++    putString("markdown", markdown)
++    putArray("urls", Arguments.createArray().apply { urls.forEach { pushString(it) } })
++  }
++  companion object { const val EVENT_NAME = "onImageSources" }
++}
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/NodeRenderer.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/NodeRenderer.kt
+index 5e2af33..fd77f7a 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/NodeRenderer.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/NodeRenderer.kt
+@@ -1,6 +1,7 @@
+ package com.swmansion.enriched.markdown.renderer
+ 
+ import android.content.Context
++import com.swmansion.enriched.markdown.utils.text.ResolvedImageSource
+ import android.text.SpannableStringBuilder
+ import com.swmansion.enriched.markdown.parser.MarkdownASTNode
+ import com.swmansion.enriched.markdown.spans.ImageSpan
+@@ -20,6 +21,7 @@ interface NodeRenderer {
+ 
+ data class RendererConfig(
+   val style: StyleConfig,
++  val imageSources: Map<String, ResolvedImageSource>? = null,
+ )
+ 
+ class RendererFactory(
+@@ -42,7 +44,8 @@ class RendererFactory(
+     isInline: Boolean,
+     altText: String,
+   ): ImageSpan {
+-    val key = "${imageUrl}_$isInline"
++    val source = if (config.imageSources == null) ResolvedImageSource(imageUrl) else config.imageSources[imageUrl]
++    val key = "${imageUrl}_${source?.cacheKey}_$isInline"
+     val existing = activeImageSpans[key]?.get()
+     if (existing != null && existing.imageUrl == imageUrl) {
+       return existing
+@@ -51,6 +54,7 @@ class RendererFactory(
+       ImageSpan(
+         context = context,
+         imageUrl = imageUrl,
++        source = source,
+         styleConfig = config.style,
+         isInline = isInline,
+         altText = altText,
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/Renderer.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/Renderer.kt
+index d638126..e64291d 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/Renderer.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/renderer/Renderer.kt
+@@ -1,6 +1,7 @@
+ package com.swmansion.enriched.markdown.renderer
+ 
+ import android.content.Context
++import com.swmansion.enriched.markdown.utils.text.ResolvedImageSource
+ import android.text.SpannableString
+ import android.text.SpannableStringBuilder
+ import com.swmansion.enriched.markdown.parser.MarkdownASTNode
+@@ -12,6 +13,7 @@ class Renderer {
+   private var cachedFactory: RendererFactory? = null
+   private var cachedStyle: StyleConfig? = null
+   private var cachedContext: Context? = null
++  private var cachedImageSources: Map<String, ResolvedImageSource>? = null
+ 
+   private val collectedImageSpans = mutableListOf<ImageSpan>()
+   private var lastElementMarginBottom: Float = 0f
+@@ -19,14 +21,16 @@ class Renderer {
+   fun configure(
+     style: StyleConfig,
+     context: Context,
++    imageSources: Map<String, ResolvedImageSource>? = null,
+   ) {
+-    if (cachedStyle === style && cachedContext === context) return
++    if (cachedStyle === style && cachedContext === context && cachedImageSources == imageSources) return
+ 
+     cachedStyle = style
+     cachedContext = context
++    cachedImageSources = imageSources
+     cachedFactory =
+       RendererFactory(
+-        RendererConfig(style),
++        RendererConfig(style, imageSources),
+         context,
+       ) { span -> reportImageSpan(span) }
+   }
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/spans/ImageSpan.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/spans/ImageSpan.kt
+index 7e71c04..362eeb5 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/spans/ImageSpan.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/spans/ImageSpan.kt
+@@ -18,6 +18,7 @@ import androidx.core.graphics.withSave
+ import com.swmansion.enriched.markdown.styles.StyleConfig
+ import com.swmansion.enriched.markdown.utils.text.ImageCache
+ import com.swmansion.enriched.markdown.utils.text.ImageDownloader
++import com.swmansion.enriched.markdown.utils.text.ResolvedImageSource
+ import java.lang.ref.WeakReference
+ import java.util.concurrent.Executors
+ import android.text.style.ImageSpan as AndroidImageSpan
+@@ -26,6 +27,7 @@ import android.text.style.LineHeightSpan as AndroidLineHeightSpan
+ class ImageSpan(
+   private val context: Context,
+   val imageUrl: String,
++  private val source: ResolvedImageSource? = ResolvedImageSource(imageUrl),
+   styleConfig: StyleConfig,
+   val isInline: Boolean = false,
+   val altText: String = "",
+@@ -35,6 +37,7 @@ class ImageSpan(
+     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ALIGN_CENTER else ALIGN_BASELINE,
+   ),
+   AndroidLineHeightSpan {
++  private val resourceKey = source?.cacheKey ?: "unresolved:$imageUrl"
+   private var loadedDrawable: Drawable? = null
+   private val height: Int = if (isInline) styleConfig.inlineImageStyle.size.toInt() else styleConfig.imageStyle.height.toInt()
+   private val borderRadiusPx: Int = (styleConfig.imageStyle.borderRadius * context.resources.displayMetrics.density).toInt()
+@@ -48,20 +51,21 @@ class ImageSpan(
+   }
+ 
+   private fun loadImage() {
+-    if (imageUrl.startsWith("http")) {
+-      ImageDownloader.download(context, imageUrl) { bitmap ->
++    val requestSource = source ?: return
++    if (requestSource.uri.startsWith("http")) {
++      ImageDownloader.download(context, requestSource) { bitmap ->
+         if (bitmap != null) {
+           sourceDrawable = bitmap.toDrawable(context.resources)
+           wrapAndAssignDrawable()
+         }
+       }
+     } else {
+-      val path = imageUrl.removePrefix("file://")
++      val path = requestSource.uri.removePrefix("file://")
+       try {
+-        val cached = ImageCache.getOriginal(imageUrl)
++        val cached = ImageCache.getOriginal(resourceKey)
+         val bitmap = cached ?: ImageDownloader.decodeFileDownsampled(context, path)
+         if (bitmap != null) {
+-          if (cached == null) ImageCache.putOriginal(imageUrl, bitmap)
++          if (cached == null) ImageCache.putOriginal(resourceKey, bitmap)
+           sourceDrawable = bitmap.toDrawable(context.resources)
+           wrapAndAssignDrawable()
+         }
+@@ -81,7 +85,7 @@ class ImageSpan(
+         available.coerceAtLeast(0)
+       }
+ 
+-    val cachedBitmap = ImageCache.getProcessed(imageUrl, targetWidth, height, borderRadiusPx)
++    val cachedBitmap = ImageCache.getProcessed(resourceKey, targetWidth, height, borderRadiusPx)
+     if (cachedBitmap != null) {
+       loadedDrawable =
+         cachedBitmap.toDrawable(context.resources).apply {
+@@ -95,7 +99,7 @@ class ImageSpan(
+           targetHeight = height,
+           borderRadius = borderRadiusPx,
+           isBlockImage = !isInline,
+-          cacheKey = CacheKey(imageUrl, targetWidth, height, borderRadiusPx),
++          cacheKey = CacheKey(resourceKey, targetWidth, height, borderRadiusPx),
+         )
+     }
+     requestReflow()
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/MarkdownViewManagerUtils.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/MarkdownViewManagerUtils.kt
+index 9f3152d..7159d69 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/MarkdownViewManagerUtils.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/MarkdownViewManagerUtils.kt
+@@ -5,6 +5,7 @@ import com.facebook.react.bridge.ReadableArray
+ import com.facebook.react.bridge.ReadableMap
+ import com.facebook.react.uimanager.UIManagerHelper
+ import com.swmansion.enriched.markdown.events.ContextMenuItemPressEvent
++import com.swmansion.enriched.markdown.events.ImageSourcesEvent
+ import com.swmansion.enriched.markdown.events.LinkLongPressEvent
+ import com.swmansion.enriched.markdown.events.LinkPressEvent
+ import com.swmansion.enriched.markdown.events.TaskListItemPressEvent
+@@ -19,6 +20,7 @@ fun markdownEventTypeConstants(): MutableMap<String, Any> {
+     mapOf("registrationName" to TaskListItemPressEvent.EVENT_NAME)
+   map[ContextMenuItemPressEvent.EVENT_NAME] =
+     mapOf("registrationName" to ContextMenuItemPressEvent.EVENT_NAME)
++  map[ImageSourcesEvent.EVENT_NAME] = mapOf("registrationName" to ImageSourcesEvent.EVENT_NAME)
+   return map
+ }
+ 
+@@ -78,6 +80,13 @@ fun emitContextMenuItemPress(
+   )
+ }
+ 
++fun emitImageSources(view: View, markdown: String, urls: List<String>) {
++  val context = view.context as com.facebook.react.bridge.ReactContext
++  UIManagerHelper.getEventDispatcherForReactTag(context, view.id)?.dispatchEvent(
++    ImageSourcesEvent(UIManagerHelper.getSurfaceId(context), view.id, markdown, urls),
++  )
++}
++
+ fun parseMd4cFlags(flags: ReadableMap?): Md4cFlags =
+   Md4cFlags(
+     underline = flags?.getBoolean("underline") ?: false,
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/RenderedSegment.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/RenderedSegment.kt
+index 0120d3f..7ec2e77 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/RenderedSegment.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/common/RenderedSegment.kt
+@@ -1,6 +1,7 @@
+ package com.swmansion.enriched.markdown.utils.common
+ 
+ import android.content.Context
++import com.swmansion.enriched.markdown.utils.text.ResolvedImageSource
+ import android.text.SpannableString
+ import com.swmansion.enriched.markdown.parser.MarkdownASTNode
+ import com.swmansion.enriched.markdown.renderer.Renderer
+@@ -31,10 +32,11 @@ object MarkdownSegmentRenderer {
+     context: Context,
+     onLinkPress: ((String) -> Unit)?,
+     onLinkLongPress: ((String) -> Unit)?,
++    imageSources: Map<String, ResolvedImageSource>? = null,
+   ): List<RenderedSegment> =
+     segments.map { segment ->
+       when (segment) {
+-        is MarkdownSegment.Text -> renderTextSegment(segment.nodes, style, context, onLinkPress, onLinkLongPress)
++        is MarkdownSegment.Text -> renderTextSegment(segment.nodes, style, context, onLinkPress, onLinkLongPress, imageSources)
+         is MarkdownSegment.Table -> RenderedSegment.Table(segment.node)
+         is MarkdownSegment.Math -> RenderedSegment.Math(segment.latex)
+       }
+@@ -46,9 +48,10 @@ object MarkdownSegmentRenderer {
+     context: Context,
+     onLinkPress: ((String) -> Unit)?,
+     onLinkLongPress: ((String) -> Unit)?,
++    imageSources: Map<String, ResolvedImageSource>? = null,
+   ): RenderedSegment.Text {
+     val documentWrapper = MarkdownASTNode(type = MarkdownASTNode.NodeType.Document, children = nodes)
+-    val renderer = Renderer().apply { configure(style, context) }
++    val renderer = Renderer().apply { configure(style, context, imageSources) }
+ 
+     return RenderedSegment.Text(
+       styledText = renderer.renderDocument(documentWrapper, onLinkPress, onLinkLongPress),
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ImageDownloader.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ImageDownloader.kt
+index cca83ec..40ebcb5 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ImageDownloader.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ImageDownloader.kt
+@@ -25,6 +25,7 @@ object ImageDownloader {
+ 
+   @Volatile
+   private var client: OkHttpClient? = null
++  private var authenticatedClient: OkHttpClient? = null
+   private var maxTargetWidth: Int = 0
+ 
+   private val inFlight = HashMap<String, MutableList<(Bitmap?) -> Unit>>()
+@@ -49,25 +50,32 @@ object ImageDownloader {
+ 
+   fun download(
+     context: Context,
+-    url: String,
++    source: ResolvedImageSource,
+     callback: (Bitmap?) -> Unit,
+   ) {
+-    ImageCache.getOriginal(url)?.let {
++    val url = source.uri
++    val key = source.cacheKey
++    ImageCache.getOriginal(key)?.let {
+       callback(it)
+       return
+     }
+ 
+     synchronized(inFlight) {
+-      val existing = inFlight[url]
++      val existing = inFlight[key]
+       if (existing != null) {
+         existing.add(callback)
+         return
+       }
+-      inFlight[url] = mutableListOf(callback)
++      inFlight[key] = mutableListOf(callback)
+     }
+ 
+-    val request = Request.Builder().url(url).build()
+-    getClient(context).newCall(request).enqueue(
++    val builder = Request.Builder().url(url)
++    source.headers.forEach { (name, value) -> builder.header(name, value) }
++    val client = if (source.headers.isEmpty()) getClient(context) else synchronized(this) {
++      authenticatedClient ?: getClient(context).newBuilder().cache(null)
++        .followRedirects(false).followSslRedirects(false).build().also { authenticatedClient = it }
++    }
++    client.newCall(builder.build()).enqueue(
+       object : Callback {
+         override fun onResponse(
+           call: Call,
+@@ -76,6 +84,7 @@ object ImageDownloader {
+           val bitmap =
+             response.use {
+               try {
++                if (!it.isSuccessful) return@use null
+                 val bytes = it.body?.bytes() ?: return@use null
+                 decodeDownsampled(bytes, maxTargetWidth)
+               } catch (_: OutOfMemoryError) {
+@@ -87,8 +96,8 @@ object ImageDownloader {
+               }
+             }
+ 
+-          bitmap?.let { ImageCache.putOriginal(url, it) }
+-          dispatchCallbacks(url, bitmap)
++          bitmap?.let { ImageCache.putOriginal(key, it) }
++          dispatchCallbacks(key, bitmap)
+         }
+ 
+         override fun onFailure(
+@@ -96,7 +105,7 @@ object ImageDownloader {
+           e: IOException,
+         ) {
+           Log.e(TAG, "Failed to download image: $url", e)
+-          dispatchCallbacks(url, null)
++          dispatchCallbacks(key, null)
+         }
+       },
+     )
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ResolvedImageSource.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ResolvedImageSource.kt
+new file mode 100644
+index 0000000..b331271
+--- /dev/null
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/utils/text/ResolvedImageSource.kt
+@@ -0,0 +1,9 @@
++package com.swmansion.enriched.markdown.utils.text
++
++import org.json.JSONArray
++
++data class ResolvedImageSource(val uri: String, val headers: Map<String, String> = emptyMap()) {
++  val cacheKey: String = JSONArray().put(uri).put(JSONArray().apply {
++    headers.toSortedMap().forEach { (name, value) -> put(JSONArray().put(name).put(value)) }
++  }).toString()
++}
 diff --git a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm
-index 9227b78..4f0fa77 100644
+index 9227b78..67ba5fd 100644
 --- a/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm
 +++ b/node_modules/react-native-enriched-markdown/ios/EnrichedMarkdown.mm
-@@ -740,7 +740,7 @@ - (void)textTapped:(ENRMTapRecognizer *)recognizer
+@@ -94,6 +94,8 @@ @interface EnrichedMarkdown () <RCTEnrichedMarkdownViewProtocol, UITextViewDeleg
+ 
+ @implementation EnrichedMarkdown {
+   ENRMMarkdownParser *_parser;
++  NSDictionary<NSString *, NSDictionary *> *_imageSources;
++  BOOL _resolveImages;
+   StyleConfig *_config;
+   ENRMMd4cFlags *_md4cFlags;
+   NSString *_cachedMarkdown;
+@@ -322,6 +324,8 @@ - (void)renderMarkdownContent:(NSString *)markdownString
+   BOOL allowFontScaling = _fontScaleObserver.allowFontScaling;
+   CGFloat maxFontSizeMultiplier = _maxFontSizeMultiplier;
+   BOOL allowTrailingMargin = _allowTrailingMargin;
++  NSDictionary *imageSources = _imageSources;
++  BOOL resolveImages = _resolveImages;
+ 
+   dispatch_async(_renderQueue, ^{
+     MarkdownASTNode *ast = [parser parseMarkdown:markdownString flags:md4cFlags];
+@@ -329,6 +333,8 @@ - (void)renderMarkdownContent:(NSString *)markdownString
+       return;
+     }
+ 
++    NSMutableOrderedSet<NSString *> *imageURLs = [NSMutableOrderedSet new];
++    [self prepareImagesInNode:ast sources:imageSources resolving:resolveImages urls:imageURLs];
+     NSArray *segments = [self splitASTIntoSegments:ast];
+ 
+     NSMutableArray *renderedSegments = [NSMutableArray array];
+@@ -357,10 +363,33 @@ - (void)renderMarkdownContent:(NSString *)markdownString
+       }
+ 
+       [self applyRenderedSegments:renderedSegments];
++      if (resolveImages) {
++        auto emitter = std::static_pointer_cast<EnrichedMarkdownEventEmitter const>(self->_eventEmitter);
++        if (emitter) {
++          std::vector<std::string> urls;
++          for (NSString *url in imageURLs) urls.emplace_back(url.UTF8String);
++          emitter->onImageSources({.markdown = std::string(markdownString.UTF8String), .urls = urls});
++        }
++      }
+     });
+   });
+ }
+ 
++- (void)prepareImagesInNode:(MarkdownASTNode *)node sources:(NSDictionary *)sources
++                 resolving:(BOOL)resolving urls:(NSMutableOrderedSet<NSString *> *)urls
++{
++  if (node.type == MarkdownNodeTypeImage) {
++    NSString *url = node.attributes[@"url"];
++    if (url.length) {
++      [urls addObject:url];
++      if (resolving) node.attributes[@"resolvedSource"] = sources[url] ?: @{};
++    }
++  }
++  for (MarkdownASTNode *child in node.children) {
++    [self prepareImagesInNode:child sources:sources resolving:resolving urls:urls];
++  }
++}
++
+ - (NSArray *)parseAndRenderSegments:(NSString *)markdownString
+ {
+   MarkdownASTNode *ast = [_parser parseMarkdown:markdownString flags:_md4cFlags];
+@@ -368,6 +397,7 @@ - (NSArray *)parseAndRenderSegments:(NSString *)markdownString
+     return nil;
+   }
+ 
++  [self prepareImagesInNode:ast sources:_imageSources resolving:_resolveImages urls:[NSMutableOrderedSet new]];
+   NSArray *segments = [self splitASTIntoSegments:ast];
+   NSMutableArray *renderedSegments = [NSMutableArray array];
+ 
+@@ -637,6 +667,18 @@ - (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &
+     _md4cFlags.latexMath = newViewProps.md4cFlags.latexMath;
+     md4cFlagsChanged = YES;
+   }
++  NSMutableDictionary *sources = [NSMutableDictionary new];
++  for (const auto &source : newViewProps.imageSources) {
++    NSMutableDictionary *headers = [NSMutableDictionary new];
++    for (const auto &header : source.headers) {
++      headers[@(header.name.c_str())] = @(header.value.c_str());
++    }
++    sources[@(source.url.c_str())] = @{@"uri": @(source.uri.c_str()), @"headers": headers};
++  }
++  BOOL imageSourcesChanged = ![_imageSources isEqualToDictionary:sources] ||
++                             _resolveImages != newViewProps.resolveImages;
++  _resolveImages = newViewProps.resolveImages;
++  _imageSources = sources;
+   BOOL markdownChanged = oldViewProps.markdown != newViewProps.markdown;
+   BOOL allowTrailingMarginChanged = newViewProps.allowTrailingMargin != oldViewProps.allowTrailingMargin;
+ 
+@@ -657,7 +699,7 @@ - (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &
+     }
+   }
+ 
+-  if (markdownChanged || stylePropChanged || md4cFlagsChanged || allowTrailingMarginChanged) {
++  if (markdownChanged || imageSourcesChanged || stylePropChanged || md4cFlagsChanged || allowTrailingMarginChanged) {
+     NSString *markdownString = [[NSString alloc] initWithUTF8String:newViewProps.markdown.c_str()];
+     [self renderMarkdownContent:markdownString];
+   }
+@@ -740,7 +782,7 @@ - (void)textTapped:(ENRMTapRecognizer *)recognizer
              if (eventEmitter) {
                eventEmitter->onTaskListItemPress({
                    .index = (int)index,
@@ -24,6 +814,291 @@ index 239e435..442fff5 100644
                    .text = std::string([itemText UTF8String] ?: ""),
                });
              }
+diff --git a/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.h b/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.h
+index 140bb92..53b8187 100644
+--- a/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.h
++++ b/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.h
+@@ -15,7 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
+ @property (nonatomic, readonly) NSString *imageURL;
+ @property (nonatomic, readonly) BOOL isInline;
+ 
+-+ (instancetype)attachmentForURL:(NSString *)imageURL config:(StyleConfig *)config isInline:(BOOL)isInline;
+++ (instancetype)attachmentForURL:(NSString *)imageURL source:(NSDictionary *_Nullable)source config:(StyleConfig *)config isInline:(BOOL)isInline;
+ 
+ + (void)clearAttachmentRegistry;
+ 
+diff --git a/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.m b/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.m
+index 68aecf1..7168341 100644
+--- a/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.m
++++ b/node_modules/react-native-enriched-markdown/ios/attachments/ENRMImageAttachment.m
+@@ -22,6 +22,8 @@ static inline NSUInteger ENRMImageByteCost(RCTUIImage *image)
+ @interface ENRMImageAttachment ()
+ 
+ @property (nonatomic, copy) NSString *imageURL;
++@property (nonatomic, copy) NSDictionary *source;
++@property (nonatomic, copy) NSString *resourceKey;
+ @property (nonatomic, assign) BOOL isInline;
+ @property (nonatomic, assign) CGFloat cachedHeight;
+ @property (nonatomic, assign) CGFloat cachedBorderRadius;
+@@ -64,14 +66,17 @@ @implementation ENRMImageAttachment
+   return _attachmentRegistry;
+ }
+ 
+-+ (instancetype)attachmentForURL:(NSString *)imageURL config:(StyleConfig *)config isInline:(BOOL)isInline
+++ (instancetype)attachmentForURL:(NSString *)imageURL source:(NSDictionary *)source config:(StyleConfig *)config isInline:(BOOL)isInline
+ {
+-  NSString *key = [NSString stringWithFormat:@"%@_%d", imageURL, isInline];
++  NSDictionary *requestSource = source ?: @{@"uri": imageURL, @"headers": @{}};
++  NSString *resourceKey = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:requestSource
++      options:NSJSONWritingSortedKeys error:nil] encoding:NSUTF8StringEncoding];
++  NSString *key = [NSString stringWithFormat:@"%@_%@_%d", imageURL, resourceKey, isInline];
+   ENRMImageAttachment *existing = [[self attachmentRegistry] objectForKey:key];
+   if (existing && existing.loadedImage) {
+     return existing;
+   }
+-  ENRMImageAttachment *attachment = [[self alloc] initWithImageURL:imageURL config:config isInline:isInline];
++  ENRMImageAttachment *attachment = [[self alloc] initWithImageURL:imageURL source:requestSource resourceKey:resourceKey config:config isInline:isInline];
+   [[self attachmentRegistry] setObject:attachment forKey:key];
+   return attachment;
+ }
+@@ -81,11 +86,13 @@ + (void)clearAttachmentRegistry
+   [[self attachmentRegistry] removeAllObjects];
+ }
+ 
+-- (instancetype)initWithImageURL:(NSString *)imageURL config:(StyleConfig *)config isInline:(BOOL)isInline
++- (instancetype)initWithImageURL:(NSString *)imageURL source:(NSDictionary *)source resourceKey:(NSString *)resourceKey config:(StyleConfig *)config isInline:(BOOL)isInline
+ {
+   self = [super init];
+   if (self) {
+     _imageURL = imageURL;
++    _source = source;
++    _resourceKey = resourceKey;
+     _isInline = isInline;
+ 
+     _cachedHeight = isInline ? [config inlineImageSize] : [config imageHeight];
+@@ -162,7 +169,7 @@ - (void)processAndApplyImage:(RCTUIImage *)image withTargetWidth:(CGFloat)target
+   if (targetWidth <= 0)
+     return;
+ 
+-  NSString *processedKey = CACHE_KEY_PROCESSED(self.imageURL, targetWidth, self.cachedHeight, self.cachedBorderRadius);
++  NSString *processedKey = CACHE_KEY_PROCESSED(self.resourceKey, targetWidth, self.cachedHeight, self.cachedBorderRadius);
+ 
+   if ([processedKey isEqualToString:self.lastProcessedKey])
+     return;
+@@ -250,7 +257,7 @@ - (void)startDownloadingImage
+     return;
+ 
+   __weak typeof(self) weakSelf = self;
+-  [[ENRMImageDownloader shared] downloadURL:self.imageURL
++  [[ENRMImageDownloader shared] downloadSource:self.source cacheKey:self.resourceKey
+                                  completion:^(RCTUIImage *image) { [weakSelf handleLoadedImage:image]; }];
+ }
+ 
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp
+index ea444f1..892c73d 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.cpp
+@@ -13,6 +13,23 @@
+ 
+ namespace facebook::react {
+ 
++void EnrichedMarkdownEventEmitter::onImageSources(OnImageSources event) const {
++  dispatchEvent("imageSources", [event=std::move(event)](jsi::Runtime &runtime) {
++    auto payload = jsi::Object(runtime);
++    payload.setProperty(runtime, "markdown", event.markdown);
++
++    auto urls = jsi::Array(runtime, event.urls.size());
++    size_t urlsIndex = 0;
++    for (auto urlsValue : event.urls) {
++      urls.setValueAtIndex(runtime, urlsIndex++, urlsValue);
++    }
++    payload.setProperty(runtime, "urls", urls);
++  
++    return payload;
++  });
++}
++
++
+ void EnrichedMarkdownEventEmitter::onLinkPress(OnLinkPress event) const {
+   dispatchEvent("linkPress", [event=std::move(event)](jsi::Runtime &runtime) {
+     auto payload = jsi::Object(runtime);
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h
+index 797de6a..81cc9f6 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/EventEmitters.h
+@@ -17,6 +17,11 @@ class EnrichedMarkdownEventEmitter : public ViewEventEmitter {
+  public:
+   using ViewEventEmitter::ViewEventEmitter;
+ 
++  struct OnImageSources {
++      std::string markdown;
++    std::vector<std::string> urls;
++    };
++
+   struct OnLinkPress {
+       std::string url;
+     };
+@@ -37,6 +42,8 @@ class EnrichedMarkdownEventEmitter : public ViewEventEmitter {
+     int selectionStart;
+     int selectionEnd;
+     };
++  void onImageSources(OnImageSources value) const;
++
+   void onLinkPress(OnLinkPress value) const;
+ 
+   void onLinkLongPress(OnLinkLongPress value) const;
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
+index f1fa74a..795974c 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.cpp
+@@ -19,6 +19,8 @@ EnrichedMarkdownProps::EnrichedMarkdownProps(
+     const EnrichedMarkdownProps &sourceProps,
+     const RawProps &rawProps): ViewProps(context, sourceProps, rawProps),
+ 
++    resolveImages(convertRawProp(context, rawProps, "resolveImages", sourceProps.resolveImages, {false})),
++    imageSources(convertRawProp(context, rawProps, "imageSources", sourceProps.imageSources, {})),
+     markdown(convertRawProp(context, rawProps, "markdown", sourceProps.markdown, {})),
+     markdownStyle(convertRawProp(context, rawProps, "markdownStyle", sourceProps.markdownStyle, {})),
+     enableLinkPreview(convertRawProp(context, rawProps, "enableLinkPreview", sourceProps.enableLinkPreview, {true})),
+@@ -47,6 +49,14 @@ folly::dynamic EnrichedMarkdownProps::getDiffProps(
+   }
+   folly::dynamic result = HostPlatformViewProps::getDiffProps(prevProps);
+   
++  if (resolveImages != oldProps->resolveImages) {
++    result["resolveImages"] = resolveImages;
++  }
++    
++  if (imageSources != oldProps->imageSources) {
++    result["imageSources"] = toDynamic(imageSources);
++  }
++    
+   if (markdown != oldProps->markdown) {
+     result["markdown"] = markdown;
+   }
+diff --git a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
+index c9e1984..75550d4 100644
+--- a/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
++++ b/node_modules/react-native-enriched-markdown/ios/generated/ReactCodegen/EnrichedMarkdownTextSpec/Props.h
+@@ -18,6 +18,110 @@
+ 
+ namespace facebook::react {
+ 
++struct EnrichedMarkdownImageSourcesHeadersStruct {
++  std::string name{};
++  std::string value{};
++
++#ifdef RN_SERIALIZABLE_STATE
++  bool operator==(const EnrichedMarkdownImageSourcesHeadersStruct&) const = default;
++
++  folly::dynamic toDynamic() const {
++    folly::dynamic result = folly::dynamic::object();
++    result["name"] = name;
++    result["value"] = value;
++    return result;
++  }
++#endif
++};
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, EnrichedMarkdownImageSourcesHeadersStruct &result) {
++  auto map = (std::unordered_map<std::string, RawValue>)value;
++
++  auto tmp_name = map.find("name");
++  if (tmp_name != map.end()) {
++    fromRawValue(context, tmp_name->second, result.name);
++  }
++  auto tmp_value = map.find("value");
++  if (tmp_value != map.end()) {
++    fromRawValue(context, tmp_value->second, result.value);
++  }
++}
++
++static inline std::string toString(const EnrichedMarkdownImageSourcesHeadersStruct &value) {
++  return "[Object EnrichedMarkdownImageSourcesHeadersStruct]";
++}
++
++#ifdef RN_SERIALIZABLE_STATE
++static inline folly::dynamic toDynamic(const EnrichedMarkdownImageSourcesHeadersStruct &value) {
++  return value.toDynamic();
++}
++#endif
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, std::vector<EnrichedMarkdownImageSourcesHeadersStruct> &result) {
++  auto items = (std::vector<RawValue>)value;
++  for (const auto &item : items) {
++    EnrichedMarkdownImageSourcesHeadersStruct newItem;
++    fromRawValue(context, item, newItem);
++    result.emplace_back(newItem);
++  }
++}
++
++
++struct EnrichedMarkdownImageSourcesStruct {
++  std::string url{};
++  std::string uri{};
++  std::vector<EnrichedMarkdownImageSourcesHeadersStruct> headers{};
++
++#ifdef RN_SERIALIZABLE_STATE
++  bool operator==(const EnrichedMarkdownImageSourcesStruct&) const = default;
++
++  folly::dynamic toDynamic() const {
++    folly::dynamic result = folly::dynamic::object();
++    result["url"] = url;
++    result["uri"] = uri;
++    result["headers"] = ::facebook::react::toDynamic(headers);
++    return result;
++  }
++#endif
++};
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, EnrichedMarkdownImageSourcesStruct &result) {
++  auto map = (std::unordered_map<std::string, RawValue>)value;
++
++  auto tmp_url = map.find("url");
++  if (tmp_url != map.end()) {
++    fromRawValue(context, tmp_url->second, result.url);
++  }
++  auto tmp_uri = map.find("uri");
++  if (tmp_uri != map.end()) {
++    fromRawValue(context, tmp_uri->second, result.uri);
++  }
++  auto tmp_headers = map.find("headers");
++  if (tmp_headers != map.end()) {
++    fromRawValue(context, tmp_headers->second, result.headers);
++  }
++}
++
++static inline std::string toString(const EnrichedMarkdownImageSourcesStruct &value) {
++  return "[Object EnrichedMarkdownImageSourcesStruct]";
++}
++
++#ifdef RN_SERIALIZABLE_STATE
++static inline folly::dynamic toDynamic(const EnrichedMarkdownImageSourcesStruct &value) {
++  return value.toDynamic();
++}
++#endif
++
++static inline void fromRawValue(const PropsParserContext& context, const RawValue &value, std::vector<EnrichedMarkdownImageSourcesStruct> &result) {
++  auto items = (std::vector<RawValue>)value;
++  for (const auto &item : items) {
++    EnrichedMarkdownImageSourcesStruct newItem;
++    fromRawValue(context, item, newItem);
++    result.emplace_back(newItem);
++  }
++}
++
++
+ struct EnrichedMarkdownMarkdownStyleParagraphStruct {
+   Float fontSize{0.0};
+   std::string fontFamily{};
+@@ -1950,6 +2054,8 @@ class EnrichedMarkdownProps final : public ViewProps {
+ 
+ #pragma mark - Props
+ 
++  bool resolveImages{false};
++  std::vector<EnrichedMarkdownImageSourcesStruct> imageSources{};
+   std::string markdown{};
+   EnrichedMarkdownMarkdownStyleStruct markdownStyle{};
+   bool enableLinkPreview{true};
 diff --git a/node_modules/react-native-enriched-markdown/ios/input/EnrichedMarkdownTextInput.mm b/node_modules/react-native-enriched-markdown/ios/input/EnrichedMarkdownTextInput.mm
 index 96969e8..2f9a4ae 100644
 --- a/node_modules/react-native-enriched-markdown/ios/input/EnrichedMarkdownTextInput.mm
@@ -66,6 +1141,186 @@ index 96969e8..2f9a4ae 100644
            },
    });
  }
+diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/ENRMImageRenderer.m b/node_modules/react-native-enriched-markdown/ios/renderer/ENRMImageRenderer.m
+index ec06911..6b065a9 100644
+--- a/node_modules/react-native-enriched-markdown/ios/renderer/ENRMImageRenderer.m
++++ b/node_modules/react-native-enriched-markdown/ios/renderer/ENRMImageRenderer.m
+@@ -30,7 +30,7 @@ - (void)renderNode:(MarkdownASTNode *)node into:(NSMutableAttributedString *)out
+   }
+ 
+   BOOL isInline = [self isInlineImageInOutput:output];
+-  ENRMImageAttachment *attachment = [ENRMImageAttachment attachmentForURL:imageURL config:_config isInline:isInline];
++  ENRMImageAttachment *attachment = [ENRMImageAttachment attachmentForURL:imageURL source:node.attributes[@"resolvedSource"] config:_config isInline:isInline];
+ 
+   NSUInteger startIndex = output.length;
+ 
+diff --git a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.h b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.h
+index 557939d..967d23d 100644
+--- a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.h
++++ b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.h
+@@ -9,7 +9,7 @@ typedef void (^ENRMImageDownloadCompletion)(RCTUIImage *_Nullable image);
+ 
+ + (instancetype)shared;
+ 
+-- (void)downloadURL:(NSString *)url completion:(ENRMImageDownloadCompletion)completion;
++- (void)downloadSource:(NSDictionary *)source cacheKey:(NSString *)cacheKey completion:(ENRMImageDownloadCompletion)completion;
+ 
+ @end
+ 
+diff --git a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m
+index 720d864..2073475 100644
+--- a/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m
++++ b/node_modules/react-native-enriched-markdown/ios/utils/ENRMImageDownloader.m
+@@ -13,8 +13,12 @@ static inline NSUInteger ENRMImageByteCost(RCTUIImage *image)
+   return CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
+ }
+ 
++@interface ENRMImageDownloader () <NSURLSessionTaskDelegate>
++@end
++
+ @implementation ENRMImageDownloader {
+   NSURLSession *_session;
++  NSURLSession *_authenticatedSession;
+   NSMutableDictionary<NSString *, NSMutableArray<ENRMImageDownloadCompletion> *> *_inFlightRequests;
+ }
+ 
+@@ -38,52 +42,73 @@ - (instancetype)init
+     config.timeoutIntervalForRequest = 15;
+     config.timeoutIntervalForResource = 30;
+     _session = [NSURLSession sessionWithConfiguration:config];
++    NSURLSessionConfiguration *authenticatedConfig = [NSURLSessionConfiguration ephemeralSessionConfiguration];
++    authenticatedConfig.URLCache = nil;
++    authenticatedConfig.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
++    authenticatedConfig.timeoutIntervalForRequest = 15;
++    authenticatedConfig.timeoutIntervalForResource = 30;
++    _authenticatedSession = [NSURLSession sessionWithConfiguration:authenticatedConfig delegate:self delegateQueue:nil];
+     _inFlightRequests = [NSMutableDictionary dictionary];
+   }
+   return self;
+ }
+ 
+-- (void)downloadURL:(NSString *)url completion:(ENRMImageDownloadCompletion)completion
++- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
++    willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
++    completionHandler:(void (^)(NSURLRequest *_Nullable))completionHandler
++{
++  // Authenticated resources are direct requests; never forward caller headers through redirects.
++  completionHandler(nil);
++}
++
++- (void)downloadSource:(NSDictionary *)source cacheKey:(NSString *)cacheKey completion:(ENRMImageDownloadCompletion)completion
+ {
++  NSString *url = source[@"uri"];
+   if (url.length == 0) {
+     completion(nil);
+     return;
+   }
+ 
+-  RCTUIImage *cached = [[ENRMImageAttachment originalImageCache] objectForKey:url];
++  RCTUIImage *cached = [[ENRMImageAttachment originalImageCache] objectForKey:cacheKey];
+   if (cached) {
+     completion(cached);
+     return;
+   }
+ 
+   @synchronized(_inFlightRequests) {
+-    NSMutableArray *existing = _inFlightRequests[url];
++    NSMutableArray *existing = _inFlightRequests[cacheKey];
+     if (existing) {
+       [existing addObject:completion];
+       return;
+     }
+-    _inFlightRequests[url] = [NSMutableArray arrayWithObject:completion];
++    _inFlightRequests[cacheKey] = [NSMutableArray arrayWithObject:completion];
+   }
+ 
+   NSURL *nsURL = [NSURL URLWithString:url];
+   if (!nsURL) {
+-    [self dispatchCallbacksForURL:url image:nil];
++    [self dispatchCallbacksForURL:cacheKey image:nil];
+     return;
+   }
+ 
+-  [[_session dataTaskWithURL:nsURL
++  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:nsURL];
++  NSDictionary *headers = source[@"headers"] ?: @{};
++  for (NSString *name in headers) [request setValue:headers[name] forHTTPHeaderField:name];
++  NSURLSession *session = headers.count ? _authenticatedSession : _session;
++  [[session dataTaskWithRequest:request
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
++             BOOL success = ![response isKindOfClass:[NSHTTPURLResponse class]] ||
++               (((NSHTTPURLResponse *)response).statusCode >= 200 && ((NSHTTPURLResponse *)response).statusCode < 300);
+ #if !TARGET_OS_OSX
+-             RCTUIImage *image = (data && !error) ? [RCTUIImage imageWithData:data] : nil;
++             RCTUIImage *image = (data && !error && success) ? [RCTUIImage imageWithData:data] : nil;
+ #else
+-        RCTUIImage *image = (data && !error) ? [[RCTUIImage alloc] initWithData:data] : nil;
++        RCTUIImage *image = (data && !error && success) ? [[RCTUIImage alloc] initWithData:data] : nil;
+ #endif
+ 
+              if (image) {
+-               [[ENRMImageAttachment originalImageCache] setObject:image forKey:url cost:ENRMImageByteCost(image)];
++               [[ENRMImageAttachment originalImageCache] setObject:image forKey:cacheKey cost:ENRMImageByteCost(image)];
+              }
+ 
+-             [self dispatchCallbacksForURL:url image:image];
++             [self dispatchCallbacksForURL:cacheKey image:image];
+            }] resume];
+ }
+ 
+diff --git a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
+index dca3717..7684019 100644
+--- a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
++++ b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
+@@ -11,31 +11,29 @@ @implementation TextViewLayoutManager
+ 
+ - (void)drawBackgroundForGlyphRange:(NSRange)glyphsToShow atPoint:(CGPoint)origin
+ {
+-  // 1. UIKit standard background drawing
+-  [super drawBackgroundForGlyphRange:glyphsToShow atPoint:origin];
+-
+   NSTextStorage *storage = self.textStorage;
+-  if (!storage || storage.length == 0)
+-    return;
+-
+-  // 2. Safely get the container and config
+-  NSTextContainer *textContainer = [self textContainerForGlyphAtIndex:glyphsToShow.location effectiveRange:NULL];
+-  if (!textContainer)
+-    return;
+-
+-  StyleConfig *config = self.config;
+-  if (!config)
+-    return;
++  NSTextContainer *textContainer = nil;
++  StyleConfig *config = nil;
++  if (storage && storage.length > 0) {
++    textContainer = [self textContainerForGlyphAtIndex:glyphsToShow.location effectiveRange:NULL];
++    config = self.config;
++  }
+ 
+-  // 3. Draw specialized layers
++  // Draw code backgrounds first so the native selection background remains visible.
+   // We fetch the objects into local variables FIRST to ensure they don't
+   // disappear mid-method if setConfig: is called on another thread.
++  if (textContainer && config) {
++    CodeBackground *codeBg = [self getCodeBackgroundWithConfig:config];
++    [codeBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++
++    CodeBlockBackground *codeBlockBg = [self getCodeBlockBackgroundWithConfig:config];
++    [codeBlockBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  }
+ 
+-  CodeBackground *codeBg = [self getCodeBackgroundWithConfig:config];
+-  [codeBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  [super drawBackgroundForGlyphRange:glyphsToShow atPoint:origin];
+ 
+-  CodeBlockBackground *codeBlockBg = [self getCodeBlockBackgroundWithConfig:config];
+-  [codeBlockBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  if (!textContainer || !config)
++    return;
+ 
+   BlockquoteBorder *quoteBorder = [self getBlockquoteBorderWithConfig:config];
+   [quoteBorder drawBordersForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
 diff --git a/node_modules/react-native-enriched-markdown/ios/views/ENRMContextMenuTextView+macOS.h b/node_modules/react-native-enriched-markdown/ios/views/ENRMContextMenuTextView+macOS.h
 index 58d865a..f67b831 100644
 --- a/node_modules/react-native-enriched-markdown/ios/views/ENRMContextMenuTextView+macOS.h
@@ -149,56 +1404,169 @@ index 3da7fe6..a1360be 100644
  @end
  
  #endif
-diff --git a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
-index f24ed21..25cbe9e 100644
---- a/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
-+++ b/node_modules/react-native-enriched-markdown/ios/utils/TextViewLayoutManager.mm
-@@ -11,31 +11,29 @@
+diff --git a/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js
+index 490b567..4750e57 100644
+--- a/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js
++++ b/node_modules/react-native-enriched-markdown/lib/module/native/EnrichedMarkdownText.js
+@@ -1,6 +1,4 @@
+-"use strict";
+-
+-import { useMemo, useCallback, useRef, useEffect } from 'react';
++import { useMemo, useCallback, useRef, useEffect, useState } from 'react';
+ import EnrichedMarkdownTextNativeComponent from '../EnrichedMarkdownTextNativeComponent';
+ import EnrichedMarkdownNativeComponent from '../EnrichedMarkdownNativeComponent';
+ import { normalizeMarkdownStyle } from '../normalizeMarkdownStyle';
+@@ -26,6 +24,7 @@ export const EnrichedMarkdownText = ({
+   streamingAnimation = false,
+   spoilerOverlay = 'particles',
+   contextMenuItems,
++  resolveImageSource,
+   ...rest
+ }) => {
+   const normalizedStyleRef = useRef(null);
+@@ -98,6 +97,28 @@ export const EnrichedMarkdownText = ({
+       text
+     });
+   }, [onTaskListItemPress]);
++  const [imageDestinations, setImageDestinations] = useState(null);
++  const currentMarkdownRef = useRef(markdown);
++  currentMarkdownRef.current = markdown;
++  const handleImageSources = useCallback(event => {
++    const value = event.nativeEvent;
++    if (value.markdown !== currentMarkdownRef.current) return;
++    setImageDestinations(previous => previous?.markdown === value.markdown && previous.urls.length === value.urls.length && previous.urls.every((url, index) => url === value.urls[index]) ? previous : value);
++  }, []);
++  const imageSources = useMemo(() => {
++    if (!resolveImageSource || imageDestinations?.markdown !== markdown) return [];
++    return imageDestinations.urls.flatMap(url => {
++      const source = resolveImageSource(url);
++      return source ? [{
++        url,
++        uri: source.uri,
++        headers: Object.entries(source.headers ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => ({
++          name,
++          value
++        }))
++      }] : [];
++    });
++  }, [imageDestinations, markdown, resolveImageSource]);
+   const sharedProps = {
+     markdown,
+     markdownStyle: normalizedStyle,
+@@ -119,7 +140,10 @@ export const EnrichedMarkdownText = ({
+   };
+   if (flavor === 'github') {
+     return /*#__PURE__*/_jsx(EnrichedMarkdownNativeComponent, {
+-      ...sharedProps
++      ...sharedProps,
++      resolveImages: Boolean(resolveImageSource),
++      imageSources: imageSources,
++      onImageSources: handleImageSources
+     });
+   }
+   return /*#__PURE__*/_jsx(EnrichedMarkdownTextNativeComponent, {
+@@ -127,4 +151,3 @@ export const EnrichedMarkdownText = ({
+   });
+ };
+ export default EnrichedMarkdownText;
+-//# sourceMappingURL=EnrichedMarkdownText.js.map
+\ No newline at end of file
+diff --git a/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownTextProps.d.ts b/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownTextProps.d.ts
+index b912aa6..ebb5275 100644
+--- a/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownTextProps.d.ts
++++ b/node_modules/react-native-enriched-markdown/lib/typescript/src/types/MarkdownTextProps.d.ts
+@@ -18,6 +18,8 @@ export interface ContextMenuItem {
+     visible?: boolean;
+ }
+ export interface EnrichedMarkdownTextProps extends Omit<ViewProps, 'style'> {
++  /** Resolve parsed image destinations. Native GitHub flavor only; null leaves a placeholder. */
++  resolveImageSource?: (url: string) => { uri: string; headers?: Record<string, string> } | null;
+     /**
+      * Markdown content to render.
+      * @platform ios, android, web
+diff --git a/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownNativeComponent.ts b/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownNativeComponent.ts
+index 06024b4..67f60a6 100644
+--- a/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownNativeComponent.ts
++++ b/node_modules/react-native-enriched-markdown/src/EnrichedMarkdownNativeComponent.ts
+@@ -226,7 +226,13 @@ export interface Md4cFlagsInternal {
+   latexMath: boolean;
+ }
  
- - (void)drawBackgroundForGlyphRange:(NSRange)glyphsToShow atPoint:(CGPoint)origin
- {
--  // 1. UIKit standard background drawing
--  [super drawBackgroundForGlyphRange:glyphsToShow atPoint:origin];
--
-   NSTextStorage *storage = self.textStorage;
--  if (!storage || storage.length == 0)
--    return;
--
--  // 2. Safely get the container and config
--  NSTextContainer *textContainer = [self textContainerForGlyphAtIndex:glyphsToShow.location effectiveRange:NULL];
--  if (!textContainer)
--    return;
--
--  StyleConfig *config = self.config;
--  if (!config)
--    return;
-+  NSTextContainer *textContainer = nil;
-+  StyleConfig *config = nil;
-+  if (storage && storage.length > 0) {
-+    textContainer = [self textContainerForGlyphAtIndex:glyphsToShow.location effectiveRange:NULL];
-+    config = self.config;
-+  }
++interface ImageHeader { name: string; value: string; }
++interface ImageSource { url: string; uri: string; headers: ReadonlyArray<ImageHeader>; }
++interface ImageSourcesEvent { markdown: string; urls: string[]; }
+ export interface NativeProps extends ViewProps {
++  resolveImages?: CodegenTypes.WithDefault<boolean, false>;
++  imageSources?: ReadonlyArray<ImageSource>;
++  onImageSources?: CodegenTypes.DirectEventHandler<ImageSourcesEvent>;
+   /**
+    * Markdown content to render.
+    */
+diff --git a/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownText.tsx b/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownText.tsx
+index 236c2b7..1376f3f 100644
+--- a/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownText.tsx
++++ b/node_modules/react-native-enriched-markdown/src/native/EnrichedMarkdownText.tsx
+@@ -1,4 +1,4 @@
+-import { useMemo, useCallback, useRef, useEffect } from 'react';
++import { useMemo, useCallback, useRef, useEffect, useState } from 'react';
+ import EnrichedMarkdownTextNativeComponent from '../EnrichedMarkdownTextNativeComponent';
+ import type { MarkdownStyleInternal } from '../EnrichedMarkdownTextNativeComponent';
+ import EnrichedMarkdownNativeComponent from '../EnrichedMarkdownNativeComponent';
+@@ -42,6 +42,7 @@ export const EnrichedMarkdownText = ({
+   streamingAnimation = false,
+   spoilerOverlay = 'particles',
+   contextMenuItems,
++  resolveImageSource,
+   ...rest
+ }: EnrichedMarkdownTextProps) => {
+   const normalizedStyleRef = useRef<MarkdownStyleInternal | null>(null);
+@@ -120,6 +121,25 @@ export const EnrichedMarkdownText = ({
+     [onTaskListItemPress]
+   );
  
--  // 3. Draw specialized layers
-+  // Draw code backgrounds first so the native selection background remains visible.
-   // We fetch the objects into local variables FIRST to ensure they don't
-   // disappear mid-method if setConfig: is called on another thread.
-+  if (textContainer && config) {
-+    CodeBackground *codeBg = [self getCodeBackgroundWithConfig:config];
-+    [codeBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
++  const [imageDestinations, setImageDestinations] = useState<{ markdown: string; urls: string[] } | null>(null);
++  const currentMarkdownRef = useRef(markdown);
++  currentMarkdownRef.current = markdown;
++  const handleImageSources = useCallback((event: NativeSyntheticEvent<{ markdown: string; urls: string[] }>) => {
++    const value = event.nativeEvent;
++    if (value.markdown !== currentMarkdownRef.current) return;
++    setImageDestinations(previous => previous?.markdown === value.markdown &&
++      previous.urls.length === value.urls.length && previous.urls.every((url, index) => url === value.urls[index])
++      ? previous : value);
++  }, []);
++  const imageSources = useMemo(() => {
++    if (!resolveImageSource || imageDestinations?.markdown !== markdown) return [];
++    return imageDestinations.urls.flatMap(url => {
++      const source = resolveImageSource(url);
++      return source ? [{ url, uri: source.uri, headers: Object.entries(source.headers ?? {})
++        .sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => ({ name, value })) }] : [];
++    });
++  }, [imageDestinations, markdown, resolveImageSource]);
 +
-+    CodeBlockBackground *codeBlockBg = [self getCodeBlockBackgroundWithConfig:config];
-+    [codeBlockBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
-+  }
+   const sharedProps = {
+     markdown,
+     markdownStyle: normalizedStyle,
+@@ -141,7 +161,9 @@ export const EnrichedMarkdownText = ({
+   };
  
--  CodeBackground *codeBg = [self getCodeBackgroundWithConfig:config];
--  [codeBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
-+  [super drawBackgroundForGlyphRange:glyphsToShow atPoint:origin];
+   if (flavor === 'github') {
+-    return <EnrichedMarkdownNativeComponent {...sharedProps} />;
++    return <EnrichedMarkdownNativeComponent {...sharedProps}
++      resolveImages={Boolean(resolveImageSource)} imageSources={imageSources}
++      onImageSources={handleImageSources} />;
+   }
  
--  CodeBlockBackground *codeBlockBg = [self getCodeBlockBackgroundWithConfig:config];
--  [codeBlockBg drawBackgroundsForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
-+  if (!textContainer || !config)
-+    return;
+   return <EnrichedMarkdownTextNativeComponent {...sharedProps} />;
+diff --git a/node_modules/react-native-enriched-markdown/src/types/MarkdownTextProps.ts b/node_modules/react-native-enriched-markdown/src/types/MarkdownTextProps.ts
+index d450699..954150c 100644
+--- a/node_modules/react-native-enriched-markdown/src/types/MarkdownTextProps.ts
++++ b/node_modules/react-native-enriched-markdown/src/types/MarkdownTextProps.ts
+@@ -21,6 +21,8 @@ export interface ContextMenuItem {
+ }
  
-   BlockquoteBorder *quoteBorder = [self getBlockquoteBorderWithConfig:config];
-   [quoteBorder drawBordersForGlyphRange:glyphsToShow layoutManager:self textContainer:textContainer atPoint:origin];
+ export interface EnrichedMarkdownTextProps extends Omit<ViewProps, 'style'> {
++  /** Resolve parsed image destinations. Native GitHub flavor only; null leaves a placeholder. */
++  resolveImageSource?: (url: string) => { uri: string; headers?: Record<string, string> } | null;
+   /**
+    * Markdown content to render.
+    * @platform ios, android, web

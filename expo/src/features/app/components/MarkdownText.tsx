@@ -62,6 +62,7 @@ export type MarkdownTextProps = {
   content: string;
   tone: "user" | "assistant";
   textStyle: StyleProp<TextStyle>;
+  resolveImageSource?: (url: string) => { uri: string; headers?: Record<string, string> } | null;
   onLocalFileLinkPress?: (path: string) => void;
   onSelectedTextTtsPress?: (text: string) => void;
 };
@@ -289,6 +290,7 @@ export function MarkdownText(props: MarkdownTextProps) {
     return (
       <EnrichedMarkdownText
         markdown={markdown}
+        resolveImageSource={props.resolveImageSource}
         selectable
         flavor="github"
         allowTrailingMargin={false}
@@ -319,6 +321,7 @@ export function MarkdownText(props: MarkdownTextProps) {
           <EnrichedMarkdownText
             key={`markdown-${index}`}
             markdown={segment.markdown}
+            resolveImageSource={props.resolveImageSource}
             selectable
             flavor="github"
             allowTrailingMargin={false}

@@ -1,3 +1,4 @@
+import { resolveRunnerMarkdownImage } from "../utils/runnerFileResources";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   ActivityIndicator,
@@ -1485,6 +1486,9 @@ export function ChatScreen({
     sanitizeTextForTts,
     showInfoToast,
   ]);
+  const resolveChatImageSource = useCallback((url: string) => resolveRunnerMarkdownImage(url, {
+    runnerUrl, runnerToken, rootDir: selectedDirectoryPathForView,
+  }), [runnerUrl, runnerToken, selectedDirectoryPathForView]);
   const openChatFileLinkContextMenu = useCallback((filePathRaw: unknown) => {
     const filePath = normalizeRunnerPath(filePathRaw);
     if (!filePath) return;
@@ -1772,6 +1776,7 @@ export function ChatScreen({
           {message.kind === "internal_context" || message.kind === "unclassified_context" || message.kind === "sidechain" ? (
             <InternalContextMessage
               content={message.content}
+              resolveImageSource={resolveChatImageSource}
               unclassified={message.kind === "unclassified_context"}
               {...(message.kind === "sidechain" ? { title: "SUBAGENT" } : {})}
               textStyle={[styles.chatBubbleText, styles.chatBubbleTextAssistant]}
@@ -1781,6 +1786,7 @@ export function ChatScreen({
           ) : message.content ? (
             <MarkdownText
               content={message.content}
+              resolveImageSource={resolveChatImageSource}
               tone={isUser ? "user" : "assistant"}
               textStyle={[
                 styles.chatBubbleText,
