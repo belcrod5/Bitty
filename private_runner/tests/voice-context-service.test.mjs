@@ -695,6 +695,28 @@ test("context usage keeps the last measurement on new input and resets on settin
   assert.equal((await service.clearMessages()).contextUsagePercent, null);
 });
 
+test("context usage survives unchanged settings and resets when model, effort or instructions change", async (t) => {
+  for (const changes of [
+    { model: "gpt-6-luna", effort: "low" },
+    { effort: "high" },
+    { systemInstruction: "Use the updated instructions." },
+  ]) {
+    const { service, conversation } = await fixture(t, {
+      contextUsageByTurn: [[{ last: { totalTokens: 420 }, modelContextWindow: 1000 }]],
+    });
+    await service.configure("another-model", "medium");
+    await complete(service, conversation, "measure usage");
+    const settings = await service.getSettings();
+    await service.configure(settings.model, settings.effort, settings.systemInstruction);
+    assert.equal((await service.open()).contextUsagePercent, 42);
+    await service.configure(settings.model, settings.effort);
+    assert.equal((await service.open()).contextUsagePercent, 42);
+    const changed = { ...settings, ...changes };
+    await service.configure(changed.model, changed.effort, changed.systemInstruction);
+    assert.equal((await service.open()).contextUsagePercent, null);
+  }
+});
+
 test("missing or invalid measurements remain unknown, while over-window values clamp to 100", async (t) => {
   const usages = [
     { last: { totalTokens: 1200 }, modelContextWindow: 1000 },
